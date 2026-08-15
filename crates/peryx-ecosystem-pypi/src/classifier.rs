@@ -1,8 +1,6 @@
-//! Trove classifiers, the value grammar of the `Classifier` core-metadata field.
-//!
-//! Core Metadata defers to the list `PyPI` publishes, and that list grows — a new Python release
+//! Core Metadata defers to the list `PyPI` publishes, and that list grows - a new Python release
 //! adds a classifier that yesterday's peryx would have rejected. Validation has to answer offline,
-//! so the list is vendored by `ci/vendor-classifiers.py` rather than fetched, and staying current
+//! so the list is vendored by `tools/vendor-classifiers.py` rather than fetched, and staying current
 //! is a generator run.
 
 mod data;

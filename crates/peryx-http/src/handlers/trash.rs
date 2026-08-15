@@ -1,18 +1,13 @@
-//! Operator inspection of soft-deleted artifacts across every ecosystem.
-//!
-//! One neutral query ([`AppState::query_trash`](peryx_driver::state::AppState::query_trash)) feeds both
-//! this API and the web view. An administrator inspects every repository and sees the deleting actor; a
-//! repository reader inspects one repository they can read, with actor details redacted by the role
-//! filter. Responses never enter a shared cache.
-
 use std::sync::Arc;
 
+use axum::Extension;
 use axum::body::Body;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, Request, StatusCode, Uri, header};
 use axum::response::{IntoResponse as _, Response};
 use peryx_core::{Ecosystem, TrashState};
 use peryx_driver::authz::{Decision, DenyReason, ScopedDecision};
+use peryx_driver::http_services::{HttpDomainServices, TrashService};
 use peryx_driver::state::AppState;
 use peryx_driver::trash::{TrashItem, TrashPage, TrashQuery, TrashQueryError, TrashRef};
 use peryx_identity::{Action, Resource, Scope, UserId, parse_basic};
@@ -35,28 +30,34 @@ pub struct TrashListParams {
 pub struct TrashInspectParams {
     ecosystem: String,
     repository: String,
-    name: String,
-    reference: Option<String>,
+    resource: String,
+    artifact: Option<String>,
     digest: Option<String>,
 }
 
-/// `GET /+trash`: a filtered, paginated page of soft-deleted artifacts.
-pub async fn list_trash(State(state): State<Arc<AppState>>, request: Request<Body>) -> Response {
+pub async fn list_trash(
+    State(state): State<Arc<AppState>>,
+    Extension(services): Extension<HttpDomainServices>,
+    request: Request<Body>,
+) -> Response {
     let (request, _) = request.into_parts();
-    let mut response = list_trash_response(&state, &request.headers, &request.uri).await;
+    let mut response = list_trash_response(&state, services.trash(), &request.headers, &request.uri).await;
     ProtectedCachePolicy::NoStore.apply(response.headers_mut());
     response
 }
 
-/// `GET /+trash/record`: one soft-deleted artifact identified by its ecosystem, repository, and name.
-pub async fn inspect_trash(State(state): State<Arc<AppState>>, request: Request<Body>) -> Response {
+pub async fn inspect_trash(
+    State(state): State<Arc<AppState>>,
+    Extension(services): Extension<HttpDomainServices>,
+    request: Request<Body>,
+) -> Response {
     let (request, _) = request.into_parts();
-    let mut response = inspect_trash_response(&state, &request.headers, &request.uri).await;
+    let mut response = inspect_trash_response(&state, services.trash(), &request.headers, &request.uri).await;
     ProtectedCachePolicy::NoStore.apply(response.headers_mut());
     response
 }
 
-async fn list_trash_response(state: &AppState, headers: &HeaderMap, uri: &Uri) -> Response {
+async fn list_trash_response(state: &AppState, trash: &dyn TrashService, headers: &HeaderMap, uri: &Uri) -> Response {
     let identity = match authenticate(state, headers).await {
         Ok(identity) => identity,
         Err(rejection) => return rejection.response(),
@@ -79,13 +80,18 @@ async fn list_trash_response(state: &AppState, headers: &HeaderMap, uri: &Uri) -
         cursor: params.cursor,
         limit: params.limit.unwrap_or(25),
     };
-    match state.query_trash(&query) {
+    match trash.query(&query) {
         Ok(page) => trash_page(page, authorization.actor, authorization.response),
         Err(error) => trash_error_response(&error),
     }
 }
 
-async fn inspect_trash_response(state: &AppState, headers: &HeaderMap, uri: &Uri) -> Response {
+async fn inspect_trash_response(
+    state: &AppState,
+    trash: &dyn TrashService,
+    headers: &HeaderMap,
+    uri: &Uri,
+) -> Response {
     let identity = match authenticate(state, headers).await {
         Ok(identity) => identity,
         Err(rejection) => return rejection.response(),
@@ -102,12 +108,12 @@ async fn inspect_trash_response(state: &AppState, headers: &HeaderMap, uri: &Uri
     };
     let reference = TrashRef {
         ecosystem,
-        repository: params.repository,
-        name: params.name,
-        reference: params.reference,
+        repository: params.repository.into(),
+        resource: params.resource.into(),
+        artifact: params.artifact.map(Into::into),
         digest: params.digest,
     };
-    match state.inspect_trash(&reference) {
+    match trash.inspect(&reference) {
         Ok(Some(item)) => trash_record(item, authorization.actor, authorization.response),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(error) => trash_error_response(&error),
@@ -124,7 +130,7 @@ enum ActorDetail {
 #[derive(Debug)]
 enum TrashIdentity {
     Local(UserId),
-    LegacyToken,
+    EcosystemCredential,
 }
 
 #[derive(Debug)]
@@ -153,25 +159,26 @@ impl TrashRejection {
     }
 }
 
-impl From<super::LegacyDenied> for TrashRejection {
-    fn from(denied: super::LegacyDenied) -> Self {
+impl From<super::EcosystemCredentialDenied> for TrashRejection {
+    fn from(denied: super::EcosystemCredentialDenied) -> Self {
         match denied {
-            super::LegacyDenied::Forbidden => Self::Forbidden,
-            super::LegacyDenied::Unauthorized => Self::Unauthorized,
+            super::EcosystemCredentialDenied::Forbidden => Self::Forbidden,
+            super::EcosystemCredentialDenied::Unauthorized => Self::Unauthorized,
         }
     }
 }
 
 async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<TrashIdentity, TrashRejection> {
-    let credentials = headers
+    let authorization = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-        .and_then(parse_basic)
         .ok_or(TrashRejection::Unauthorized)?;
-    if credentials.user == "__token__" {
-        return Ok(TrashIdentity::LegacyToken);
+    if state.recognizes_index_credential(authorization) {
+        return Ok(TrashIdentity::EcosystemCredential);
     }
+    let credentials = parse_basic(authorization).ok_or(TrashRejection::Unauthorized)?;
     state
+        .serving
         .users
         .authenticate(&credentials.user, &credentials.password)
         .await
@@ -188,7 +195,7 @@ fn authorize(
 ) -> Result<TrashAuthorization, TrashRejection> {
     match identity {
         TrashIdentity::Local(actor) => authorize_local(state, actor, route),
-        TrashIdentity::LegacyToken => authorize_legacy(state, headers, route),
+        TrashIdentity::EcosystemCredential => authorize_ecosystem(state, headers, route),
     }
 }
 
@@ -201,9 +208,11 @@ fn authorize_local(
     route: Option<&str>,
 ) -> Result<TrashAuthorization, TrashRejection> {
     let Some(route) = route else {
-        let authorization = state
-            .authorization
-            .authorize_scoped(actor, Scope::AdministrationRead, &Resource::Operator);
+        let authorization =
+            state
+                .serving
+                .authorization
+                .authorize_scoped(actor, Scope::AdministrationRead, &Resource::Operator);
         require_permission(authorization)?;
         return Ok(TrashAuthorization {
             repository: None,
@@ -212,12 +221,14 @@ fn authorize_local(
         });
     };
     let index = super::index_by_route(state, route).ok_or(TrashRejection::NotFound)?;
-    let authorization =
-        state
-            .authorization
-            .authorize_scoped(actor, Scope::RepositoryRead, &Resource::Repository(index.name.clone()));
+    let authorization = state.serving.authorization.authorize_scoped(
+        actor,
+        Scope::RepositoryRead,
+        &Resource::Repository(index.name.clone()),
+    );
     require_permission(authorization)?;
     let operator = state
+        .serving
         .authorization
         .authorize_scoped(actor, Scope::AdministrationRead, &Resource::Operator);
     Ok(TrashAuthorization {
@@ -231,13 +242,13 @@ fn authorize_local(
     })
 }
 
-fn authorize_legacy(
+fn authorize_ecosystem(
     state: &AppState,
     headers: &HeaderMap,
     route: Option<&str>,
 ) -> Result<TrashAuthorization, TrashRejection> {
     let route = route.ok_or(TrashRejection::Unauthorized)?;
-    let index = super::authorize_legacy_route(state, headers, route, Action::Write)?;
+    let index = super::authorize_ecosystem_credential(state, headers, route, Action::Write)?;
     Ok(TrashAuthorization {
         repository: Some(index.name.clone()),
         actor: ActorDetail::Redacted,
@@ -267,10 +278,10 @@ fn parse_state(value: Option<String>) -> Result<Option<TrashState>, ()> {
 
 #[derive(serde::Serialize)]
 struct TrashRecordResponse {
-    ecosystem: &'static str,
-    repository: String,
-    name: String,
-    reference: Option<String>,
+    ecosystem: Ecosystem,
+    repository: peryx_core::RepositoryKey,
+    resource: peryx_core::ResourceKey,
+    artifact: Option<peryx_core::ArtifactKey>,
     digest: Option<String>,
     reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -285,10 +296,10 @@ impl TrashRecordResponse {
     fn new(item: TrashItem, actor: ActorDetail) -> Self {
         let record = item.record;
         Self {
-            ecosystem: record.ecosystem.as_str(),
+            ecosystem: record.ecosystem,
             repository: record.repository,
-            name: record.name,
-            reference: record.reference,
+            resource: record.resource,
+            artifact: record.artifact,
             digest: record.digest,
             reason: record.reason,
             actor: matches!(actor, ActorDetail::Full).then_some(record.actor).flatten(),
@@ -301,11 +312,10 @@ impl TrashRecordResponse {
 }
 
 fn trash_page(page: TrashPage, actor: ActorDetail, authorization: ResponseAuthorization) -> Response {
-    let records = page
-        .items
-        .into_iter()
-        .map(|item| TrashRecordResponse::new(item, actor))
-        .collect::<Vec<_>>();
+    let mut records = Vec::with_capacity(page.items.len());
+    for item in page.items {
+        records.push(TrashRecordResponse::new(item, actor));
+    }
     axum::Json(serde_json::Value::Object(
         filter_fields(
             authorization,
@@ -363,7 +373,7 @@ fn invalid_query() -> Response {
         .into_response()
 }
 
-/// Keep validation failures actionable without exposing storage details.
+/// Return validation details for client errors; redact store failures.
 #[must_use]
 pub fn trash_error_response(error: &TrashQueryError) -> Response {
     let (status, message) = match error {

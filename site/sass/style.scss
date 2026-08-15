@@ -11,8 +11,7 @@
   --accent-strong: #8a2c00;
   // Links are blue, not brand orange: any orange vivid enough to separate from the near-black body
   // copy on this cream page falls under AA (the brand #f74c00 manages only 3.2:1). Blue carries the
-  // same job at 5.8:1, reads as a link without an underline, and leaves orange to mean "peryx" —
-  // buttons, active nav, accents. The dark theme lifts it to stay legible on the dark page.
+  // same job at 5.8:1, reads as a link without an underline, and leaves orange to mean "peryx" -   // buttons, active nav, accents. The dark theme lifts it to stay legible on the dark page.
   --link: #0b57d0;
   --link-hover: #08409c;
   --brand-a: #f74c00;
@@ -860,7 +859,7 @@ a {
 }
 
 // Docs shell: three columns on desktop (nav | content | on-this-page), following the proportions
-// the Material-based docs (uv/ruff) settle on — a ~16rem section tree, a readable content column
+// the Material-based docs (uv/ruff) settle on - a ~16rem section tree, a readable content column
 // capped near 54rem, and a ~15rem table of contents. Below 72rem the TOC drops; below 52rem both
 // rails fold into <details> disclosures stacked above the content. Either rail can also be collapsed
 // by hand to a stub column holding just its toggle, which the prose then reflows into.
@@ -1113,7 +1112,7 @@ $rail-stub: 2.6rem;
 }
 
 // Desktop keeps both rails open as columns (JS holds the open attribute in sync with the breakpoint),
-// so each summary is a static header rather than a disclosure — the only live control in it is the
+// so each summary is a static header rather than a disclosure - the only live control in it is the
 // collapse button.
 @media (min-width: #{$docs-break-nav + 0.01rem}) {
   .docs-nav > summary,
@@ -1189,7 +1188,7 @@ $rail-stub: 2.6rem;
 // Phone/tablet: the two rails sit side by side as collapsible cards above the content (each takes
 // half the row); opening one expands it to the full width and pushes the other to its own line.
 // align-items must be stretch here (the desktop grid sets it to start), otherwise the content
-// column sizes to its widest child — a wide table — instead of the viewport, and text stops
+// column sizes to its widest child - a wide table - instead of the viewport, and text stops
 // wrapping.
 @media (max-width: $docs-break-nav) {
   .docs-shell {

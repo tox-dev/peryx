@@ -1,13 +1,5 @@
-//! The neutral read model for a repository's quota status.
-//!
-//! Reservation admission and counter upkeep live in `peryx-storage`; this reads the counters that
-//! substrate already maintains and the limits an index configures, and pairs them into a status a
-//! caller can render. It derives the remaining headroom every client would otherwise compute, and
-//! leaves it `null` when a counter is unlimited so "no limit" never reads as an enormous number.
-//!
-//! The model is ecosystem-neutral: quota is accounted the same way for every format, so a `PyPI` and an
-//! `OCI` repository report the same shape. Counters are keyed by an index's name, the identity a writer
-//! reserves against, while the status reports the caller-facing route.
+//! Quota status derives headroom from persisted counters and reports unlimited capacity as `null`.
+//! Counters use repository names; responses use caller-facing routes.
 
 use peryx_storage::meta::{QuotaUsage, QuotaValue};
 use serde::Serialize;
@@ -16,39 +8,37 @@ use crate::Index;
 
 /// One repository's configured limits alongside its committed and reserved counters.
 ///
-/// The `accounted_bytes` and `projects` meters carry the repository-level caps a write is admitted
-/// against; `file_bytes` is the logical footprint, which no repository-level limit bounds. The per-file
-/// and per-project caps that admission also uses appear under `limits`, since neither pairs with a
+/// The `accounted_bytes` and `resources` meters carry the repository-level caps a write is admitted
+/// against; `artifact_bytes` is the logical footprint, which no repository-level limit bounds. The per-artifact
+/// and per-resource caps that admission also uses appear under `limits`, since neither pairs with a
 /// repository-wide counter.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RepositoryQuota {
     pub repository: String,
-    pub ecosystem: &'static str,
+    pub ecosystem: String,
     pub limits: RepositoryLimits,
-    pub file_bytes: QuotaMeter,
+    pub artifact_bytes: QuotaMeter,
     pub accounted_bytes: QuotaMeter,
-    pub projects: QuotaMeter,
+    pub resources: QuotaMeter,
 }
 
-/// Read the status for one index from its usage counters. The `usage` a caller passes is read from the
-/// store under the index's name; the reported `repository` is the index's route.
 #[must_use]
 pub fn repository_quota(index: &Index, usage: &QuotaUsage) -> RepositoryQuota {
     let policy = &index.policy;
     RepositoryQuota {
         repository: index.route.clone(),
-        ecosystem: index.ecosystem.as_str(),
+        ecosystem: index.ecosystem.as_str().to_owned(),
         limits: RepositoryLimits {
-            max_file_bytes: policy.max_file_size(),
-            max_project_bytes: policy.max_project_size(),
+            max_artifact_bytes: policy.max_artifact_size(),
+            max_resource_bytes: policy.max_resource_size(),
             max_accounted_bytes: policy.max_accounted_bytes(),
-            max_projects: policy.max_projects(),
-            max_versions_per_project: policy.max_versions_per_project(),
+            max_resources: policy.max_resources(),
+            max_groups_per_resource: policy.max_groups_per_resource(),
             audit: policy.quota_audit(),
         },
-        file_bytes: QuotaMeter::new(usage.file_bytes, None),
+        artifact_bytes: QuotaMeter::new(usage.artifact_bytes, None),
         accounted_bytes: QuotaMeter::new(usage.accounted_bytes, policy.max_accounted_bytes()),
-        projects: QuotaMeter::new(usage.projects, policy.max_projects()),
+        resources: QuotaMeter::new(usage.resources, policy.max_resources()),
     }
 }
 
@@ -56,11 +46,11 @@ pub fn repository_quota(index: &Index, usage: &QuotaUsage) -> RepositoryQuota {
 /// limit records a violation instead of refusing the write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct RepositoryLimits {
-    pub max_file_bytes: Option<u64>,
-    pub max_project_bytes: Option<u64>,
+    pub max_artifact_bytes: Option<u64>,
+    pub max_resource_bytes: Option<u64>,
     pub max_accounted_bytes: Option<u64>,
-    pub max_projects: Option<u64>,
-    pub max_versions_per_project: Option<u64>,
+    pub max_resources: Option<u64>,
+    pub max_groups_per_resource: Option<u64>,
     pub audit: bool,
 }
 

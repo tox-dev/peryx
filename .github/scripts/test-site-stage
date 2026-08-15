@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+stage="$scratch/site"
+
+"$repo/site/scripts/stage.sh" "$stage"
+
+compare_tree() {
+  local source=$1
+  local destination=$2
+  [[ ! -d $source ]] || while IFS= read -r -d '' file; do
+    relative=${file#"$source/"}
+    cmp "$file" "$destination/$relative"
+  done < <(find "$source" -type f -print0)
+}
+
+compare_tree "$repo/site/diagrams" "$stage/diagrams"
+
+printf '# Ecosystem owners declare these records.\n' >"$scratch/ecosystem-owners.toml"
+while IFS= read -r declaration; do
+  docs=${declaration%/ecosystem.toml}
+  owner=$(sed -n 's/^[[:space:]]*id = "\([a-z0-9-]*\)".*/\1/p' "$declaration" | head -1)
+  compare_tree "$docs/static" "$stage/static"
+  compare_tree "$docs/templates" "$stage/templates"
+  compare_tree "$docs/data" "$stage/data/ecosystems/$owner"
+  cat "$declaration" >>"$scratch/ecosystem-owners.toml"
+  printf '\n' >>"$scratch/ecosystem-owners.toml"
+done < <(find "$repo/crates" -type f -path '*/docs/ecosystem.toml' | sort)
+
+cmp "$scratch/ecosystem-owners.toml" "$stage/data/ecosystem-owners.toml"
+grep -Fq '{{<trusted_publishing_config />}}' \
+  "$stage/content/ecosystems/pypi/guides/trusted-publishing.md"
+if rg -n -i '\b(pypi|oci)\b|trusted[_-]publishing' \
+  "$repo/site/scripts/stage.sh" "$repo/site/scripts/migrate_content.mjs"; then
+  exit 1
+fi
+if rg -n '\]\((\.{0,2}/)*[A-Za-z0-9_./-]+\.md([#)]|$)' "$stage/content/ecosystems"; then
+  exit 1
+fi
+
+for generated in public static/openapi.json data/bench; do
+  [[ ! -e $stage/$generated ]]
+done

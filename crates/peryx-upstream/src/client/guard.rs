@@ -1,16 +1,5 @@
-//! Outbound destination policy for URLs an upstream index controls.
-//!
-//! A Simple API response chooses the URLs peryx fetches for artifacts, core metadata, and
-//! provenance. Left unchecked, a hostile index can steer those requests at loopback, private, or
-//! cloud-metadata addresses (SSRF). [`OutboundGuard`] rejects any host that does not resolve to a
-//! global address, so the connection never happens. Two operator-controlled origins stay reachable:
-//! the configured upstream itself (its host is trusted automatically) and an explicit allowlist of
-//! private artifact servers.
-//!
-//! Enforcement runs at two layers because a hostname check before DNS is open to rebinding. IP
-//! literals are validated on the [`Url`] before the request leaves ([`OutboundGuard::check_url`]);
-//! hostnames are validated on the address the resolver returns, which is the address the connection
-//! uses ([`OutboundGuard`] as a [`Resolve`]).
+//! Blocks SSRF to non-global addresses while trusting operator-configured hosts. Checks IP literals
+//! before requests and resolved addresses at connection time to prevent DNS rebinding.
 
 use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -21,7 +10,6 @@ use url::{Host, Url};
 
 use super::UpstreamError;
 
-/// Decides which hosts peryx may connect to when following an upstream-controlled URL.
 #[derive(Clone)]
 pub struct OutboundGuard {
     trusted: Arc<HashSet<String>>,
@@ -38,8 +26,7 @@ impl std::fmt::Debug for OutboundGuard {
 }
 
 impl OutboundGuard {
-    /// Trust `base`'s host (the operator configured it) plus every entry in `trusted_hosts`, and
-    /// resolve everything else through the system resolver.
+    /// Trusts the operator-configured `base` host and each `trusted_hosts` entry.
     pub fn new<I, S>(base: &Url, trusted_hosts: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -48,28 +35,29 @@ impl OutboundGuard {
         Self::with_resolver(base, trusted_hosts, Arc::new(SystemResolver))
     }
 
-    pub fn with_resolver<I, S>(base: &Url, trusted_hosts: I, inner: Arc<dyn Resolve>) -> Self
+    fn with_resolver<I, S>(base: &Url, trusted_hosts: I, inner: Arc<dyn Resolve>) -> Self
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let mut trusted = HashSet::new();
-        if let Some(host) = base.host() {
-            trusted.insert(canonical_host(&host));
-        }
-        for entry in trusted_hosts {
-            if let Some(host) = canonical_entry(entry.as_ref()) {
-                trusted.insert(host);
-            }
-        }
+        let mut trusted = base
+            .host()
+            .map(|host| canonical_host(&host))
+            .into_iter()
+            .collect::<HashSet<_>>();
+        trusted.extend(
+            trusted_hosts
+                .into_iter()
+                .filter_map(|entry| canonical_entry(entry.as_ref())),
+        );
         Self {
             trusted: Arc::new(trusted),
             inner,
         }
     }
 
-    /// Reject `url` before the request leaves: the scheme must be HTTP or HTTPS, and an IP-literal
-    /// host must be trusted or global. Hostnames pass here and are checked once resolved.
+    /// Requires HTTP or HTTPS and rejects untrusted, non-global IP literals before sending.
+    /// Hostnames remain subject to the connection-time resolver check.
     ///
     /// # Errors
     /// Returns [`UpstreamError::BlockedDestination`] when the scheme or the literal address is not
@@ -148,7 +136,7 @@ fn canonical_entry(entry: &str) -> Option<String> {
     Some(entry.to_ascii_lowercase())
 }
 
-pub const fn is_global_ip(ip: IpAddr) -> bool {
+const fn is_global_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => is_global_ipv4(ip),
         IpAddr::V6(ip) => is_global_ipv6(ip),
@@ -239,3 +227,7 @@ impl Resolve for SystemResolver {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/client/guard_tests.rs"]
+mod tests;

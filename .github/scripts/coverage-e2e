@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$repo"
+.github/scripts/coverage-session-guard
+scripts/ci/coverage-system-suite e2e "${1:-.tox/coverage/e2e.lcov}"

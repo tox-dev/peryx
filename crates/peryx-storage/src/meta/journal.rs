@@ -3,17 +3,23 @@ use std::ops::Bound::{Excluded, Unbounded};
 use redb::ReadableTable as _;
 use serde::{Deserialize, Serialize};
 
+pub use peryx_core::JournalCommit;
+
 use super::error::MetaError;
 use super::{JOURNAL, JOURNAL_BLOBS, JOURNAL_MUTATIONS, MetaStore, SERIAL, SERIAL_KEY};
 
-/// One content blob required by a journal transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DriverCommit<T> {
+    pub value: T,
+    pub journal: Option<JournalCommit>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct DriverBlobReference {
     pub sha256: String,
     pub size: u64,
 }
 
-/// One final driver row change committed with a journal transaction.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "kebab-case")]
 pub enum DriverMutation {
@@ -21,7 +27,6 @@ pub enum DriverMutation {
     Delete { key: String },
 }
 
-/// One journal payload paired with its authoritative serial and row changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JournalRecord {
     pub serial: u64,
@@ -30,7 +35,7 @@ pub struct JournalRecord {
     pub blobs: Vec<DriverBlobReference>,
 }
 
-/// A bounded journal read and the head serial from the same database snapshot.
+/// Keeps the page and head serial consistent by reading both from one snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JournalSnapshot {
     pub current_serial: u64,
@@ -38,7 +43,7 @@ pub struct JournalSnapshot {
 }
 
 impl MetaStore {
-    /// The current serial (0 before any write).
+    /// Returns `0` before the first write.
     ///
     /// # Errors
     /// Returns a store error if the read fails.
@@ -48,7 +53,7 @@ impl MetaStore {
         Ok(table.get(SERIAL_KEY)?.map_or(0, |value| value.value()))
     }
 
-    /// Read at most `limit` journal values after `after` and the head serial from one snapshot.
+    /// Reads at most `limit` values after `after` with the head serial from the same snapshot.
     ///
     /// # Errors
     /// Returns a store error if the read fails.
@@ -110,8 +115,6 @@ impl MetaStore {
         })
     }
 
-    /// Increment the serial and return the new value.
-    ///
     /// # Errors
     /// Returns a store error if the write or commit fails.
     pub fn next_serial(&self) -> Result<u64, MetaError> {
@@ -126,7 +129,7 @@ impl MetaStore {
         Ok(next)
     }
 
-    /// Read at most `limit` journal records after `serial`, in serial order.
+    /// Returns at most `limit` records after `serial`, in serial order.
     ///
     /// # Errors
     /// Returns a store error if the read fails.
@@ -134,7 +137,7 @@ impl MetaStore {
         self.journal_page_after(serial, limit).map(|(_, records)| records)
     }
 
-    /// Read the current serial and at most `limit` later journal records from one snapshot.
+    /// Returns the current serial and at most `limit` later records from one snapshot.
     ///
     /// # Errors
     /// Returns a store error if the read fails.

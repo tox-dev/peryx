@@ -4,21 +4,661 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use axum::Json;
+use axum::extract::Request;
+use axum::http::{HeaderValue, Method, StatusCode, header};
+use axum::response::{IntoResponse, Response};
 use peryx_core::{
-    UiArtifactSource, UiAttestation, UiByteAvailability, UiMeta, UiProject, UiProvenance, UiProvenanceSource,
+    BrowseBadge, BrowseCell, BrowseLink, BrowsePage, BrowseProperty, BrowseRow, BrowseSection, UiAction,
+    UiActionMethod, UiArtifactSource, UiByteAvailability,
 };
-use peryx_driver::ServingState;
+use peryx_driver::access::ReadAccess;
+use peryx_driver::{AppState, ServingState};
+use peryx_ha::{ArtifactPlacementStore, ArtifactSource, ByteAvailability};
+use peryx_identity::{Denial, ResourceMatch};
 use peryx_index::{Index, IndexKind};
 use peryx_storage::blob::{BlobLease, Digest};
-use peryx_storage::meta::{ArtifactSource, ByteAvailability};
 
 use crate::cache::{self, CacheError};
 use crate::store::PypiStore as _;
+use crate::view::{
+    AttestationView, FileView, MetadataBlock, MetadataView, ProjectView, ProvenanceSource, ProvenanceView, SubjectMatch,
+};
 use crate::{
     ProjectDetail, file_matches_version, normalize_name, parse_version, to_json, ui_meta, ui_project_from_detail,
 };
 
-/// The project names of the cached/hosted/virtual index at `position`.
+pub(super) const BROWSE_PATHS: &[&str] = &[
+    "/upload",
+    "/+ui/projects",
+    "/+ui/project",
+    "/+ui/members",
+    "/+ui/member",
+    "/+ui/browse",
+];
+
+pub(super) async fn browse_http(state: Arc<AppState>, request: Request) -> Response {
+    if request.uri().path() == "/upload" {
+        return if request.method() == Method::GET {
+            super::upload_ui::response(&state)
+        } else {
+            StatusCode::METHOD_NOT_ALLOWED.into_response()
+        };
+    }
+    let raw_query = request.uri().query().unwrap_or_default().to_owned();
+    let query = match BrowseQuery::parse(&raw_query) {
+        Ok(query) => query,
+        Err(message) => return (StatusCode::BAD_REQUEST, message).into_response(),
+    };
+    let Some(position) = state
+        .serving
+        .indexes
+        .iter()
+        .position(|index| index.route == query.index && index.ecosystem == crate::ECOSYSTEM)
+    else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let access = ReadAccess::from_headers(&state.serving, request.headers());
+    let index_access = access.for_index(state.serving.index_at(position));
+    let authorized = query.project.as_deref().map_or_else(
+        || index_access.authorize_any_resource(),
+        |project| index_access.authorize_resource(ResourceMatch::Pattern(project)),
+    );
+    if let Err(denial) = authorized {
+        return denial_response(denial);
+    }
+    match browse(state.serving.clone(), position, &raw_query).await {
+        Ok(Some(page)) => no_store(Json(page).into_response()),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(message) => (StatusCode::INTERNAL_SERVER_ERROR, message).into_response(),
+    }
+}
+
+pub(super) async fn browse(
+    state: Arc<ServingState>,
+    position: usize,
+    raw_query: &str,
+) -> Result<Option<BrowsePage>, String> {
+    let query = BrowseQuery::parse(raw_query)?;
+    if let Some(project) = query.project.clone() {
+        if let Some((digest, filename)) = query.archive()? {
+            return archive_page(state, position, project, digest, filename, query)
+                .await
+                .map(Some);
+        }
+        return project_page(state, position, project)
+            .await?
+            .map(|(project, metadata)| project_browse_page(&query, project, metadata))
+            .transpose();
+    }
+    Ok(Some(project_list_page(
+        &state.index_at(position).route,
+        project_names(&state, position)?,
+    )))
+}
+
+#[derive(Clone, Default)]
+struct BrowseQuery {
+    index: String,
+    project: Option<String>,
+    version: Option<String>,
+    filename: Option<String>,
+    filename_match: Option<String>,
+    sha256: Option<String>,
+    file: Option<String>,
+    containers: Vec<String>,
+    member: Option<String>,
+    offset: u64,
+}
+
+impl BrowseQuery {
+    fn parse(raw: &str) -> Result<Self, String> {
+        let mut query = Self::default();
+        for (key, value) in url::form_urlencoded::parse(raw.as_bytes()) {
+            let value = value.into_owned();
+            match key.as_ref() {
+                "index" => query.index = value,
+                "project" if !value.is_empty() => query.project = Some(value),
+                "version" if !value.is_empty() => query.version = Some(value),
+                "filename" if !value.is_empty() => query.filename = Some(value),
+                "filename_match" if !value.is_empty() => query.filename_match = Some(value),
+                "sha256" if !value.is_empty() => query.sha256 = Some(value),
+                "file" if !value.is_empty() => query.file = Some(value),
+                "container" if !value.is_empty() => query.containers.push(value),
+                "member" if !value.is_empty() => query.member = Some(value),
+                "offset" if !value.is_empty() => {
+                    query.offset = value.parse().map_err(|_| format!("invalid archive offset {value:?}"))?;
+                }
+                _ => {}
+            }
+        }
+        if query.index.is_empty() {
+            return Err("missing index".to_owned());
+        }
+        Ok(query)
+    }
+
+    fn archive(&self) -> Result<Option<(String, String)>, String> {
+        match (&self.sha256, &self.file) {
+            (Some(digest), Some(filename)) => Ok(Some((digest.clone(), filename.clone()))),
+            (None, Some(address)) => address
+                .split_once('/')
+                .map(|(digest, filename)| Some((digest.to_owned(), filename.to_owned())))
+                .ok_or_else(|| "archive query requires sha256".to_owned()),
+            (Some(_), None) => Err("archive query requires file".to_owned()),
+            (None, None) if self.member.is_some() || !self.containers.is_empty() => {
+                Err("archive query requires file and sha256".to_owned())
+            }
+            (None, None) => Ok(None),
+        }
+    }
+}
+
+fn denial_response(denial: Denial) -> Response {
+    match denial {
+        Denial::Unauthenticated => (
+            StatusCode::UNAUTHORIZED,
+            [(header::WWW_AUTHENTICATE, "Basic realm=\"peryx\"")],
+            "unauthorized",
+        )
+            .into_response(),
+        Denial::Forbidden | Denial::Unavailable => StatusCode::FORBIDDEN.into_response(),
+    }
+}
+
+fn no_store(mut response: Response) -> Response {
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+fn project_list_page(route: &str, names: Vec<String>) -> BrowsePage {
+    BrowsePage {
+        title: route.to_owned(),
+        sections: vec![BrowseSection::Links {
+            heading: "Projects".to_owned(),
+            entries: names
+                .into_iter()
+                .map(|name| BrowseLink {
+                    href: browse_url(route, Some(&name), &[]),
+                    label: name,
+                })
+                .collect(),
+            empty: "No projects observed on this index yet.".to_owned(),
+        }],
+        ..BrowsePage::default()
+    }
+}
+
+fn project_browse_page(
+    query: &BrowseQuery,
+    project: ProjectView,
+    metadata: MetadataView,
+) -> Result<BrowsePage, String> {
+    let file_regex = match (query.filename.as_deref(), query.filename_match.as_deref()) {
+        (Some(pattern), Some("regex")) => {
+            Some(regex::Regex::new(pattern).map_err(|error| format!("invalid regex: {error}"))?)
+        }
+        _ => None,
+    };
+    let mut sections = metadata_sections(metadata.description, metadata.blocks);
+    sections.push(release_section(&query.index, &project));
+    sections.push(file_section(query, &project, file_regex.as_ref()));
+    Ok(BrowsePage {
+        breadcrumbs: vec![BrowseLink {
+            label: query.index.clone(),
+            href: browse_url(&query.index, None, &[]),
+        }],
+        title: project.name,
+        subtitle: metadata.version,
+        summary: metadata.summary,
+        command: project.client_command,
+        badges: project
+            .status
+            .into_iter()
+            .map(|status| BrowseBadge {
+                class: format!("status-{}", status.marker),
+                label: status.marker,
+                hint: status.reason,
+            })
+            .collect(),
+        sections,
+        actions: project.actions,
+    })
+}
+
+fn metadata_sections(
+    description: Option<peryx_core::RenderedDescription>,
+    blocks: Vec<MetadataBlock>,
+) -> Vec<BrowseSection> {
+    let mut sections = description
+        .map(|description| BrowseSection::Markup {
+            heading: "Description".to_owned(),
+            html: description.html,
+            notice: description.notice,
+        })
+        .into_iter()
+        .collect::<Vec<_>>();
+    sections.extend(blocks.into_iter().map(|block| {
+        match block {
+            MetadataBlock::KeyValue { label, value } => BrowseSection::Properties {
+                heading: label.clone(),
+                entries: vec![BrowseProperty {
+                    label,
+                    value,
+                    href: None,
+                }],
+            },
+            MetadataBlock::Chips { label, values } => BrowseSection::Properties {
+                heading: label.clone(),
+                entries: values
+                    .into_iter()
+                    .map(|value| BrowseProperty {
+                        label: label.clone(),
+                        value,
+                        href: None,
+                    })
+                    .collect(),
+            },
+            MetadataBlock::Links { label, links } => BrowseSection::Links {
+                heading: label,
+                entries: links
+                    .into_iter()
+                    .map(|(label, href)| BrowseLink { label, href })
+                    .collect(),
+                empty: String::new(),
+            },
+            MetadataBlock::Groups { label, groups } => BrowseSection::Properties {
+                heading: label,
+                entries: groups
+                    .into_iter()
+                    .map(|(label, values)| BrowseProperty {
+                        label,
+                        value: values.join(", "),
+                        href: None,
+                    })
+                    .collect(),
+            },
+        }
+    }));
+    sections
+}
+
+fn release_section(route: &str, project: &ProjectView) -> BrowseSection {
+    BrowseSection::Table {
+        heading: "Releases".to_owned(),
+        columns: vec!["Version".to_owned(), "Status".to_owned()],
+        rows: project
+            .versions
+            .iter()
+            .map(|release| BrowseRow {
+                cells: vec![
+                    BrowseCell {
+                        text: release.version.clone(),
+                        href: Some(browse_url(
+                            route,
+                            Some(&project.name),
+                            &[("version", release.version.as_str())],
+                        )),
+                        code: true,
+                    },
+                    BrowseCell {
+                        text: release
+                            .lifecycle
+                            .as_ref()
+                            .map_or_else(|| "active".to_owned(), |lifecycle| lifecycle.label.clone()),
+                        href: None,
+                        code: false,
+                    },
+                ],
+                badges: lifecycle_badges(release.lifecycle.as_ref()),
+                actions: release.actions.clone(),
+            })
+            .collect(),
+        empty: "No releases are listed.".to_owned(),
+    }
+}
+
+fn file_section(query: &BrowseQuery, project: &ProjectView, regex: Option<&regex::Regex>) -> BrowseSection {
+    BrowseSection::Table {
+        heading: "Files".to_owned(),
+        columns: ["File", "Version", "Size", "Uploaded", "Source", "Availability"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        rows: project
+            .files
+            .iter()
+            .filter(|file| {
+                query
+                    .version
+                    .as_ref()
+                    .is_none_or(|version| file.release.as_ref() == Some(version))
+            })
+            .filter(|file| filename_matches(file, query.filename.as_deref(), regex))
+            .map(|file| file_row(query, project, file))
+            .collect(),
+        empty: "No files match this query.".to_owned(),
+    }
+}
+
+fn filename_matches(file: &FileView, pattern: Option<&str>, regex: Option<&regex::Regex>) -> bool {
+    regex.map_or_else(
+        || pattern.is_none_or(|pattern| file.filename.to_lowercase().contains(&pattern.to_lowercase())),
+        |regex| regex.is_match(&file.filename),
+    )
+}
+
+fn file_row(query: &BrowseQuery, project: &ProjectView, file: &FileView) -> BrowseRow {
+    BrowseRow {
+        cells: vec![
+            BrowseCell {
+                text: file.filename.clone(),
+                href: file.browsable.then(|| {
+                    browse_url(
+                        &query.index,
+                        Some(&project.name),
+                        &[("sha256", file.sha256.as_str()), ("file", file.filename.as_str())],
+                    )
+                }),
+                code: true,
+            },
+            BrowseCell {
+                text: file.release.clone().unwrap_or_default(),
+                href: None,
+                code: true,
+            },
+            BrowseCell {
+                text: file.size.map_or_else(String::new, |size| size.to_string()),
+                href: None,
+                code: false,
+            },
+            BrowseCell {
+                text: file.upload_time.clone().unwrap_or_default(),
+                href: None,
+                code: false,
+            },
+            BrowseCell {
+                text: file.source.as_str().to_owned(),
+                href: file.upstream.clone(),
+                code: false,
+            },
+            BrowseCell {
+                text: file.availability.as_str().to_owned(),
+                href: None,
+                code: false,
+            },
+        ],
+        badges: lifecycle_badges(file.lifecycle.as_ref())
+            .into_iter()
+            .chain(provenance_badges(file.provenance_detail.as_ref()))
+            .collect(),
+        actions: Vec::new(),
+    }
+}
+
+fn lifecycle_badges(lifecycle: Option<&crate::view::LifecycleView>) -> Vec<BrowseBadge> {
+    lifecycle
+        .map(|lifecycle| BrowseBadge {
+            label: lifecycle.label.clone(),
+            class: format!("lifecycle-{}", lifecycle.label),
+            hint: (!lifecycle.reasons.is_empty()).then(|| lifecycle.reasons.join("; ")),
+        })
+        .into_iter()
+        .collect()
+}
+
+fn provenance_badges(provenance: Option<&ProvenanceView>) -> impl Iterator<Item = BrowseBadge> + '_ {
+    provenance.into_iter().map(|provenance| BrowseBadge {
+        label: match provenance.source {
+            ProvenanceSource::Hosted => "hosted provenance",
+            ProvenanceSource::Mirrored => "upstream provenance",
+        }
+        .to_owned(),
+        class: if provenance.malformed {
+            "provenance-malformed"
+        } else {
+            "provenance-valid"
+        }
+        .to_owned(),
+        hint: attestation_hint(&provenance.attestations),
+    })
+}
+
+fn attestation_hint(attestations: &[AttestationView]) -> Option<String> {
+    (!attestations.is_empty()).then(|| {
+        attestations
+            .iter()
+            .map(|attestation| {
+                let subject = match attestation.subject {
+                    SubjectMatch::Matched => "matched",
+                    SubjectMatch::Mismatched => "mismatched",
+                    SubjectMatch::Unknown => "unknown",
+                };
+                attestation
+                    .predicate_type
+                    .as_ref()
+                    .map_or_else(|| subject.to_owned(), |predicate| format!("{predicate}: {subject}"))
+            })
+            .collect::<Vec<_>>()
+            .join("; ")
+    })
+}
+
+async fn archive_page(
+    state: Arc<ServingState>,
+    position: usize,
+    project: String,
+    digest: String,
+    filename: String,
+    query: BrowseQuery,
+) -> Result<BrowsePage, String> {
+    let lease = artifact_path_in_project(state, position, project.clone(), digest.clone(), filename.clone()).await?;
+    match query.member.clone() {
+        Some(member) => archive_member_page(query, project, digest, filename, member, lease).await,
+        None => archive_listing_page(query, project, digest, filename, lease).await,
+    }
+}
+
+async fn archive_listing_page(
+    query: BrowseQuery,
+    project: String,
+    digest: String,
+    filename: String,
+    lease: BlobLease,
+) -> Result<BrowsePage, String> {
+    let task_filename = filename.clone();
+    let containers = query.containers.clone();
+    let members = tokio::task::spawn_blocking(move || {
+        crate::archive::list_members_nested_path(&task_filename, lease.path(), &containers)
+    })
+    .await
+    .map_err(super::archive_listing_task_error)?
+    .map_err(crate::error_message)?;
+    Ok(BrowsePage {
+        breadcrumbs: archive_breadcrumbs(&query.index, &project, &digest, &filename, &query.containers),
+        title: query.containers.last().cloned().unwrap_or_else(|| filename.clone()),
+        sections: vec![BrowseSection::Table {
+            heading: "Archive members".to_owned(),
+            columns: vec!["Path".to_owned(), "Size".to_owned(), "Kind".to_owned()],
+            rows: members
+                .into_iter()
+                .map(|member| {
+                    let href = if member.kind.as_str() == "archive" {
+                        Some(archive_url(
+                            &query,
+                            &project,
+                            &digest,
+                            &filename,
+                            Some((&member.path, true)),
+                            None,
+                        ))
+                    } else if member.previewable {
+                        Some(archive_url(
+                            &query,
+                            &project,
+                            &digest,
+                            &filename,
+                            Some((&member.path, false)),
+                            None,
+                        ))
+                    } else {
+                        None
+                    };
+                    BrowseRow {
+                        cells: vec![
+                            BrowseCell {
+                                text: member.path,
+                                href,
+                                code: true,
+                            },
+                            BrowseCell {
+                                text: member.size.to_string(),
+                                href: None,
+                                code: false,
+                            },
+                            BrowseCell {
+                                text: member.kind.as_str().to_owned(),
+                                href: None,
+                                code: false,
+                            },
+                        ],
+                        badges: Vec::new(),
+                        actions: Vec::new(),
+                    }
+                })
+                .collect(),
+            empty: "The archive has no members.".to_owned(),
+        }],
+        ..BrowsePage::default()
+    })
+}
+
+async fn archive_member_page(
+    query: BrowseQuery,
+    project: String,
+    digest: String,
+    filename: String,
+    member: String,
+    lease: BlobLease,
+) -> Result<BrowsePage, String> {
+    let task_filename = filename.clone();
+    let containers = query.containers.clone();
+    let selected = member.clone();
+    let chunk = tokio::task::spawn_blocking(move || {
+        crate::archive::read_text_member_chunk_nested_path(
+            &task_filename,
+            lease.path(),
+            &containers,
+            &selected,
+            query.offset,
+            crate::archive::DEFAULT_MEMBER_CHUNK,
+        )
+    })
+    .await
+    .map_err(super::archive_member_task_error)?
+    .map_err(crate::error_message)?;
+    Ok(BrowsePage {
+        breadcrumbs: archive_breadcrumbs(&query.index, &project, &digest, &filename, &query.containers),
+        title: member.clone(),
+        sections: vec![BrowseSection::Content {
+            heading: "Member".to_owned(),
+            text: super::member_text(&member, chunk.bytes)?,
+            size: Some(chunk.size),
+            offset: chunk.offset,
+            next: chunk.next_offset.map(|offset| BrowseLink {
+                label: "Next chunk".to_owned(),
+                href: archive_url(
+                    &query,
+                    &project,
+                    &digest,
+                    &filename,
+                    Some((&member, false)),
+                    Some(offset),
+                ),
+            }),
+        }],
+        ..BrowsePage::default()
+    })
+}
+
+fn archive_breadcrumbs(
+    route: &str,
+    project: &str,
+    digest: &str,
+    filename: &str,
+    containers: &[String],
+) -> Vec<BrowseLink> {
+    let mut links = vec![
+        BrowseLink {
+            label: route.to_owned(),
+            href: browse_url(route, None, &[]),
+        },
+        BrowseLink {
+            label: project.to_owned(),
+            href: browse_url(route, Some(project), &[]),
+        },
+        BrowseLink {
+            label: filename.to_owned(),
+            href: browse_url(route, Some(project), &[("sha256", digest), ("file", filename)]),
+        },
+    ];
+    for count in 0..containers.len() {
+        let mut serializer = browse_serializer(route, Some(project));
+        serializer.append_pair("sha256", digest).append_pair("file", filename);
+        for container in &containers[..=count] {
+            serializer.append_pair("container", container);
+        }
+        links.push(BrowseLink {
+            label: containers[count].clone(),
+            href: serializer.finish(),
+        });
+    }
+    links
+}
+
+fn archive_url(
+    query: &BrowseQuery,
+    project: &str,
+    digest: &str,
+    filename: &str,
+    selected: Option<(&str, bool)>,
+    offset: Option<u64>,
+) -> String {
+    let mut serializer = browse_serializer(&query.index, Some(project));
+    serializer.append_pair("sha256", digest).append_pair("file", filename);
+    for container in &query.containers {
+        serializer.append_pair("container", container);
+    }
+    if let Some((path, container)) = selected {
+        serializer.append_pair(if container { "container" } else { "member" }, path);
+    }
+    if let Some(offset) = offset {
+        serializer.append_pair("offset", &offset.to_string());
+    }
+    serializer.finish()
+}
+
+fn browse_url(route: &str, project: Option<&str>, pairs: &[(&str, &str)]) -> String {
+    let mut serializer = browse_serializer(route, project);
+    serializer.extend_pairs(pairs.iter().copied());
+    serializer.finish()
+}
+
+fn browse_serializer(route: &str, project: Option<&str>) -> url::form_urlencoded::Serializer<'static, String> {
+    let mut serializer = url::form_urlencoded::Serializer::for_suffix("/browse?".to_owned(), "/browse?".len());
+    serializer.append_pair("index", route);
+    if let Some(project) = project {
+        serializer.append_pair("project", project);
+    }
+    serializer
+}
+
+#[cfg(test)]
+#[path = "../../tests/unit/serving/web/url_tests.rs"]
+mod url_tests;
+
 pub(super) fn project_names(state: &ServingState, position: usize) -> Result<Vec<String>, String> {
     let list = cache::resolve_list(state, state.index_at(position))?;
     Ok(list.projects.into_iter().map(|entry| entry.name).collect())
@@ -30,7 +670,7 @@ pub(super) async fn project_page(
     state: Arc<ServingState>,
     position: usize,
     project: String,
-) -> Result<Option<(UiProject, UiMeta)>, String> {
+) -> Result<Option<(ProjectView, MetadataView)>, String> {
     let route = state.index_at(position).route.clone();
     let normalized = normalize_name(&project);
     let index = state.index_at(position);
@@ -48,6 +688,14 @@ pub(super) async fn project_page(
     // `to_json` serializes the detail, so parsing it straight back cannot fail.
     let value = serde_json::from_str(&to_json(&detail)).expect("to_json emits JSON that round-trips");
     let mut ui = ui_project_from_detail(&value);
+    if let Some(display) = state
+        .meta
+        .get_project(&index.name, &normalized)
+        .map_err(crate::error_message)?
+    {
+        ui.name = display;
+    }
+    apply_actions(&route, &mut ui);
     apply_placement(&state, &hosted, &mut ui);
     apply_provenance(&state, &mut ui).await;
     let default = default_version(&ui);
@@ -58,10 +706,81 @@ pub(super) async fn project_page(
     };
     let mut meta = match sibling {
         Some(file) => metadata_for(&state, &route, file).await?,
-        None => UiMeta::default(),
+        None => MetadataView::default(),
     };
     meta.version = default.or(meta.version);
+    ui.client_command = Some(install_command(&route, &ui.name, meta.version.as_deref()));
     Ok(Some((ui, meta)))
+}
+
+fn apply_actions(route: &str, project: &mut ProjectView) {
+    project.actions.push(UiAction {
+        label: "delete whole project".to_owned(),
+        method: UiActionMethod::Delete,
+        endpoint: mutation_endpoint(route, &project.name, None, None),
+        destructive: true,
+    });
+    for release in &mut project.versions {
+        let endpoint = mutation_endpoint(route, &project.name, Some(&release.version), Some("yank"));
+        release.actions = vec![
+            UiAction {
+                label: "yank".to_owned(),
+                method: UiActionMethod::Put,
+                endpoint: endpoint.clone(),
+                destructive: false,
+            },
+            UiAction {
+                label: "un-yank".to_owned(),
+                method: UiActionMethod::Delete,
+                endpoint,
+                destructive: false,
+            },
+            UiAction {
+                label: "delete".to_owned(),
+                method: UiActionMethod::Delete,
+                endpoint: mutation_endpoint(route, &project.name, Some(&release.version), None),
+                destructive: true,
+            },
+        ];
+    }
+}
+
+fn mutation_endpoint(route: &str, project: &str, version: Option<&str>, action: Option<&str>) -> String {
+    let mut endpoint = String::new();
+    endpoint.push('/');
+    peryx_core::url_encoding::push_path(&mut endpoint, route);
+    endpoint.push('/');
+    peryx_core::url_encoding::push_component(&mut endpoint, project);
+    endpoint.push('/');
+    if let Some(version) = version {
+        peryx_core::url_encoding::push_component(&mut endpoint, version);
+        endpoint.push('/');
+    }
+    if let Some(action) = action {
+        endpoint.push_str(action);
+    }
+    endpoint
+}
+
+fn install_command(route: &str, project: &str, version: Option<&str>) -> String {
+    let target = version.map_or_else(
+        || shell_quote(project),
+        |version| shell_quote(&format!("{project}=={version}")),
+    );
+    let mut endpoint = String::new();
+    endpoint.push_str("<origin>/");
+    peryx_core::url_encoding::push_path(&mut endpoint, route);
+    endpoint.push_str("/simple/");
+    format!("uv pip install --index-url {endpoint} {target}")
+}
+
+fn shell_quote(value: &str) -> String {
+    if value.bytes().all(|byte| {
+        byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'=' | b'+' | b':' | b'@' | b'/' | b',')
+    }) {
+        return value.to_owned();
+    }
+    format!("'{}'", value.replace('\'', r"'\''"))
 }
 
 /// Resolve a project's detail together with the filenames its hosted layers published, so both store
@@ -111,10 +830,10 @@ fn collect_hosted_filenames(
 ///
 /// The availability comes straight from the stored projection, which a repair pass keeps in step with
 /// the content store; a listing therefore never reads a blob per row. A file the placement store has
-/// not recorded — an upstream catalog entry never fetched — stays proxied and remote-only. A store
+/// not recorded - an upstream catalog entry never fetched - stays proxied and remote-only. A store
 /// read that fails falls back to that same default: the page was built from earlier reads of the same
 /// store, so a failure here is a torn database the caller cannot recover a truer answer from.
-fn apply_placement(state: &ServingState, hosted: &BTreeSet<String>, ui: &mut UiProject) {
+fn apply_placement(state: &ServingState, hosted: &BTreeSet<String>, ui: &mut ProjectView) {
     for file in &mut ui.files {
         let is_hosted = hosted.contains(&file.filename);
         file.upstream = if is_hosted {
@@ -127,7 +846,9 @@ fn apply_placement(state: &ServingState, hosted: &BTreeSet<String>, ui: &mut UiP
                 .flatten()
                 .and_then(|source| source.upstream)
         };
-        let placement = state.meta.get_artifact_placement(&file.sha256).ok().flatten();
+        let placement = ArtifactPlacementStore::get_artifact_placement(&state.meta, &file.sha256)
+            .ok()
+            .flatten();
         if is_hosted {
             file.source = UiArtifactSource::Hosted;
             // The upload is authoritative and its bytes are local. Only a hosted-source placement,
@@ -149,7 +870,6 @@ fn apply_placement(state: &ServingState, hosted: &BTreeSet<String>, ui: &mut UiP
     }
 }
 
-/// Map the neutral storage source onto its view-model twin.
 const fn ui_source(source: ArtifactSource) -> UiArtifactSource {
     match source {
         ArtifactSource::Hosted => UiArtifactSource::Hosted,
@@ -158,7 +878,6 @@ const fn ui_source(source: ArtifactSource) -> UiArtifactSource {
     }
 }
 
-/// Map the neutral storage availability projection onto its view-model twin.
 const fn ui_availability(availability: ByteAvailability) -> UiByteAvailability {
     match availability {
         ByteAvailability::Local => UiByteAvailability::Local,
@@ -175,9 +894,9 @@ const MAX_PROVENANCE_BYTES: u64 = 2 * 1024 * 1024;
 ///
 /// A hosted file's stored provenance document is summarized into per-attestation records; a mirrored
 /// file is flagged as an upstream claim without reading or fetching its document. This reads only
-/// local storage — it never calls upstream and never verifies a signature — so a listing stays a
+/// local storage - it never calls upstream and never verifies a signature - so a listing stays a
 /// projection of what peryx already holds.
-async fn apply_provenance(state: &Arc<ServingState>, ui: &mut UiProject) {
+async fn apply_provenance(state: &Arc<ServingState>, ui: &mut ProjectView) {
     for file in &mut ui.files {
         file.provenance_detail = provenance_detail(state, file).await;
     }
@@ -186,26 +905,24 @@ async fn apply_provenance(state: &Arc<ServingState>, ui: &mut UiProject) {
 /// The provenance panel for one file, or `None` when it advertises no provenance. A hosted document
 /// that cannot be read is reported as `malformed` rather than hidden, so the page never implies an
 /// advertised attestation is absent.
-async fn provenance_detail(state: &Arc<ServingState>, file: &peryx_core::UiFile) -> Option<UiProvenance> {
+async fn provenance_detail(state: &Arc<ServingState>, file: &FileView) -> Option<ProvenanceView> {
     file.provenance.as_ref()?;
     if file.source != UiArtifactSource::Hosted {
-        return Some(UiProvenance {
-            source: UiProvenanceSource::Mirrored,
+        return Some(ProvenanceView {
+            source: ProvenanceSource::Mirrored,
             attestations: Vec::new(),
             malformed: false,
         });
     }
     let attestations = hosted_attestations(state, file).await;
-    Some(UiProvenance {
-        source: UiProvenanceSource::Hosted,
+    Some(ProvenanceView {
+        source: ProvenanceSource::Hosted,
         malformed: attestations.is_none(),
         attestations: attestations.unwrap_or_default(),
     })
 }
 
-/// Summarize a hosted file's stored provenance document, or `None` when no record exists, its blob is
-/// gone, or the document does not parse as a provenance object.
-async fn hosted_attestations(state: &Arc<ServingState>, file: &peryx_core::UiFile) -> Option<Vec<UiAttestation>> {
+async fn hosted_attestations(state: &Arc<ServingState>, file: &FileView) -> Option<Vec<AttestationView>> {
     let (provenance_hex, _size) = state.meta.get_provenance(&file.sha256).ok()??;
     let digest = Digest::from_hex(&provenance_hex)?;
     let bytes = state.blobs.read_bytes(&digest, MAX_PROVENANCE_BYTES).await.ok()?;
@@ -218,14 +935,14 @@ async fn hosted_attestations(state: &Arc<ServingState>, file: &peryx_core::UiFil
 ///
 /// A version that does not parse as PEP 440 counts as neither stable nor greater than a parseable
 /// one, so it wins only when nothing else can, and then the greatest string takes it.
-fn default_version(project: &UiProject) -> Option<String> {
+fn default_version(project: &ProjectView) -> Option<String> {
     project
         .versions
         .iter()
         .map(|release| {
             let parsed = parse_version(&release.version);
             let stable = parsed.as_ref().is_some_and(|parsed| !parsed.any_prerelease());
-            ((!release.yanked, stable, parsed), &release.version)
+            ((release.lifecycle.is_none(), stable, parsed), &release.version)
         })
         .max()
         .map(|(_, version)| version.clone())
@@ -234,16 +951,18 @@ fn default_version(project: &UiProject) -> Option<String> {
 /// The file whose PEP 658 metadata sibling describes `version`, so the page never borrows another
 /// release's metadata. An active file outranks a yanked one, and the filename settles the rest, so a
 /// release with several siblings always renders the same one.
-fn metadata_file<'a>(project: &'a UiProject, version: &str) -> Option<&'a peryx_core::UiFile> {
+fn metadata_file<'a>(project: &'a ProjectView, version: &str) -> Option<&'a FileView> {
     project
         .files
         .iter()
         .filter(|file| file.has_metadata && file_matches_version(&file.filename, version))
-        .min_by(|left, right| (left.yanked, &left.filename).cmp(&(right.yanked, &right.filename)))
+        .min_by(|left, right| {
+            (left.lifecycle.is_some(), &left.filename).cmp(&(right.lifecycle.is_some(), &right.filename))
+        })
 }
 
 /// Fetch and parse the PEP 658 metadata sibling of `file` into the neutral view model.
-async fn metadata_for(state: &Arc<ServingState>, route: &str, file: &peryx_core::UiFile) -> Result<UiMeta, String> {
+async fn metadata_for(state: &Arc<ServingState>, route: &str, file: &FileView) -> Result<MetadataView, String> {
     let Some(digest) = Digest::from_hex(&file.sha256) else {
         return Err(format!(
             "metadata fetch on index {route:?} for file {:?}: invalid sha256 digest {:?}",

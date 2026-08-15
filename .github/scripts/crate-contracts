@@ -1,0 +1,300 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$repo"
+requested_output="${1:?pass an output directory}"
+shift
+if [[ -z ${PERYX_COVERAGE_RUN_DIR:-} ]]; then
+  exec "$repo/.github/scripts/coverage-session-guard" --output "$requested_output" -- \
+    "$repo/.github/scripts/crate-contracts" "$requested_output" "$@"
+fi
+output_parent=$(dirname -- "$requested_output")
+mkdir -p "$output_parent"
+output_parent=$(cd "$output_parent" && pwd -P)
+output="$output_parent/$(basename -- "$requested_output")"
+rm -rf "$output"
+session=$(mktemp -d "$output_parent/.${output##*/}.session."'XXX''XXX')
+published=0
+cleanup() {
+  rm -rf "$session"
+  ((published)) || rm -rf "$output"
+}
+trap cleanup EXIT
+if (($# == 0)); then
+  printf 'pass at least one package\n' >&2
+  exit 1
+fi
+if [[ -n ${COVERAGE_NO_CLEAN:-} || -n ${COVERAGE_NO_REPORT:-} ]]; then
+  printf 'crate contracts reject accumulated coverage profiles\n' >&2
+  exit 2
+fi
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$session/target}"
+mkdir -p "$CARGO_TARGET_DIR"
+timings="$session/timings.jsonl"
+: >"$timings"
+scratch=$(TMPDIR="$session" mktemp -d)
+metadata="$scratch/metadata.json"
+root_index="$scratch/package-roots"
+policy_digest_file="$scratch/policy.digest"
+
+failed=0
+last_exit_code=0
+result_statuses=()
+result_seconds=()
+result_steps=()
+current_digest_file=
+workspace_dynamic_targets=()
+
+record_timing() {
+  local package=$1
+  local phase=$2
+  local elapsed=$3
+  local status=passed
+  local input_sha256=
+  local policy_sha256=
+  if ((last_exit_code)); then
+    status=failed
+    failed=1
+  fi
+  if [[ -n $package && -s $current_digest_file ]]; then
+    input_sha256=$(cat "$current_digest_file")
+  fi
+  if [[ -n $package && -s $policy_digest_file ]]; then
+    policy_sha256=$(cat "$policy_digest_file")
+  fi
+  jq -cn --arg package "$package" --arg phase "$phase" --arg status "$status" \
+    --arg input_sha256 "$input_sha256" --arg policy_sha256 "$policy_sha256" \
+    --argjson seconds "$elapsed" \
+    '{package: (if $package == "" then null else $package end), phase: $phase, status: $status, seconds: $seconds,
+      input_sha256: (if $input_sha256 == "" then null else $input_sha256 end),
+      policy_sha256: (if $policy_sha256 == "" then null else $policy_sha256 end)}' \
+    >>"$timings"
+  result_statuses+=("$status")
+  result_seconds+=("$elapsed")
+  if [[ -n $package ]]; then
+    result_steps+=("$package $phase")
+  else
+    result_steps+=("$phase")
+  fi
+}
+
+run_timed() {
+  local package=$1
+  local phase=$2
+  shift 2
+  local started=$SECONDS
+  last_exit_code=0
+  "$@" || last_exit_code=$?
+  record_timing "$package" "$phase" "$((SECONDS - started))"
+}
+
+run_package_step() {
+  if ((package_failed)); then
+    return
+  fi
+  run_timed "$@"
+  if ((last_exit_code)); then
+    package_failed=1
+  fi
+}
+
+run_with_timeout() {
+  local seconds=$1
+  shift
+  if [[ ! $seconds =~ ^[1-9][0-9]*$ ]]; then
+    printf 'timeout must be a positive integer: %s\n' "$seconds" >&2
+    return 2
+  fi
+  local status=0
+  perl -e 'alarm shift; exec @ARGV or die "exec: $!\n"' "$seconds" "$@" || status=$?
+  if ((status == 142)); then
+    printf 'command timed out after %s seconds: %s\n' "$seconds" "$*" >&2
+    return 124
+  fi
+  return "$status"
+}
+
+clean_package_coverage() {
+  local package=$1
+  cargo clean -p "$package" --target-dir "$CARGO_TARGET_DIR"
+  cargo clean -p "$package" --target-dir "$CARGO_LLVM_COV_TARGET_DIR"
+  local source_roots=()
+  mapfile -t source_roots < <(awk -F '\t' -v package="$package" '$1 == package { print $2 "/" }' "$root_index")
+  local target
+  for target in "$CARGO_TARGET_DIR" "$CARGO_LLVM_COV_TARGET_DIR"; do
+    local binary_root
+    for binary_root in "$target/debug" "$target/debug/deps" "$target/debug/examples"; do
+      [[ -d $binary_root ]] || continue
+      local dynamic_target
+      for dynamic_target in "${workspace_dynamic_targets[@]}"; do
+        while IFS= read -r -d '' object; do
+          local source_root
+          for source_root in "${source_roots[@]}"; do
+            if LC_ALL=C grep -aFq "$source_root" "$object"; then
+              rm -f "$object"
+              break
+            fi
+          done
+        done < <(find "$binary_root" -maxdepth 1 -type f \
+          \( -name "lib$dynamic_target*.dylib" -o -name "lib$dynamic_target*.so" \
+          -o -name "$dynamic_target*.dll" \) -print0)
+      done
+    done
+  done
+  find "$CARGO_LLVM_COV_TARGET_DIR" -type f \
+    \( -name '*.profraw' -o -name '*.profdata' -o -name '*-profraw-list' \) -delete
+  cargo llvm-cov clean --profraw-only
+}
+
+run_timed_to() {
+  local destination=$1
+  local package=$2
+  local phase=$3
+  shift 3
+  local started=$SECONDS
+  last_exit_code=0
+  "$@" >"$destination" || last_exit_code=$?
+  record_timing "$package" "$phase" "$((SECONDS - started))"
+}
+
+print_results() {
+  printf '\n%-8s %8s  %s\n' STATUS SECONDS STEP
+  local index
+  for index in "${!result_statuses[@]}"; do
+    printf '%-8s %8s  %s\n' "${result_statuses[$index]}" \
+      "${result_seconds[$index]}" "${result_steps[$index]}"
+  done
+}
+
+run_timed_to "$metadata" '' metadata cargo metadata --no-deps --format-version 1
+if ((last_exit_code)); then
+  print_results
+  exit "$failed"
+fi
+mapfile -t workspace_dynamic_targets < <(
+  jq -r '.packages[].targets[] | select(any(.crate_types[]?; . == "dylib" or . == "cdylib")) | .name
+    | gsub("-"; "_")' "$metadata"
+)
+run_timed_to "$root_index" '' 'source index' .github/scripts/package-source-roots \
+  --metadata "$metadata" --index
+if ((last_exit_code)); then
+  print_results
+  exit "$failed"
+fi
+run_timed_to "$policy_digest_file" '' 'policy digest' .github/scripts/coverage-contract policy-digest
+if ((last_exit_code)); then
+  print_results
+  exit "$failed"
+fi
+for package in "$@"; do
+  package_metadata=$(jq -c --arg package "$package" '.packages[] | select(.name == $package)' "$metadata")
+  if [[ -z $package_metadata ]]; then
+    printf 'unknown package: %s\n' "$package" >&2
+    failed=1
+    continue
+  fi
+
+  report="$session/$package.lcov"
+  contract="$session/$package.contract.json"
+  rm -f "$report"
+  rm -f "$contract"
+  digest_file="$scratch/$package.digest"
+  current_digest_file=$digest_file
+  package_result_start=${#result_statuses[@]}
+  package_failed=0
+  test_feature_args=(--all-features)
+  if jq -e '(.metadata["peryx-ci"]["crate-contract"] // {}) | has("test-features")' \
+    <<<"$package_metadata" >/dev/null; then
+    test_feature_args=()
+    test_features=$(jq -r \
+      '[.metadata["peryx-ci"]["crate-contract"]["test-features"][]] | join(",")' \
+      <<<"$package_metadata")
+    [[ -z $test_features ]] || test_feature_args+=(--features "$test_features")
+  fi
+  run_timed_to "$digest_file" "$package" 'input digest' .github/scripts/coverage-contract digest \
+    --metadata "$metadata" --root-index "$root_index" "$package"
+  if ((last_exit_code)); then
+    package_failed=1
+  fi
+  run_package_step "$package" 'clean package coverage' clean_package_coverage "$package"
+  run_package_step "$package" build cargo check -p "$package" --all-targets --all-features
+  mapfile -t bench_targets < <(
+    jq -r '.targets[] | select(.kind | index("bench")) | .name' <<<"$package_metadata"
+  )
+  if jq -e 'any(.targets[]; .doctest)' <<<"$package_metadata" >/dev/null; then
+    run_package_step "$package" doctests cargo test -p "$package" --doc --all-features
+  fi
+  test_targets=()
+  if jq -e 'any(.targets[]; .test and ((.kind | index("lib")) or (.kind | index("rlib"))))' \
+    <<<"$package_metadata" >/dev/null; then
+    test_targets+=(--lib)
+  fi
+  if jq -e 'any(.targets[]; .test and (.kind | index("bin")))' <<<"$package_metadata" >/dev/null; then
+    test_targets+=(--bins)
+  fi
+  if jq -e 'any(.targets[]; .kind | index("example"))' <<<"$package_metadata" >/dev/null; then
+    test_targets+=(--examples)
+  fi
+  if jq -e 'any(.targets[]; .test and (.kind | index("test")))' <<<"$package_metadata" >/dev/null; then
+    test_targets+=(--tests)
+  fi
+  if ((${#test_targets[@]})); then
+    run_package_step "$package" 'test targets' cargo llvm-cov nextest -p "$package" \
+      "${test_feature_args[@]}" "${test_targets[@]}" --no-report
+  fi
+  for bench in "${bench_targets[@]}"; do
+    run_package_step "$package" "bench $bench" run_with_timeout "${BENCH_TIMEOUT_SECONDS:-900}" \
+      cargo llvm-cov -p "$package" --all-features --bench "$bench" --no-report
+  done
+  if ((package_failed)); then
+    rm -f "$report" "$contract"
+    continue
+  fi
+  run_package_step "$package" report cargo llvm-cov report -p "$package" \
+    --no-default-ignore-filename-regex --lcov --output-path "$report"
+  if ((package_failed)); then
+    rm -f "$report" "$contract"
+    continue
+  fi
+  if [[ -s $report ]] && grep -q '^SF:.' "$report" && grep -q '^end_of_record$' "$report"; then
+    run_timed "$package" 'source inventory' .github/scripts/check-lcov-sources \
+      --metadata "$metadata" --root-index "$root_index" "$report" "$package"
+    while IFS= read -r source_root; do
+      run_timed "$package" "function coverage ($source_root)" env COVERAGE_ROOT="$source_root" \
+        COVERAGE_REQUIRE_EXECUTABLE=1 \
+        .github/scripts/check-lcov-functions.awk "$report"
+      run_timed "$package" "line coverage ($source_root)" env COVERAGE_ROOT="$source_root" \
+        COVERAGE_REQUIRE_EXECUTABLE=1 \
+        .github/scripts/check-lcov-lines.awk "$report"
+    done < <(awk -F '\t' -v package="$package" '$1 == package { print $2 }' "$root_index")
+  else
+    printf 'coverage report missing, empty, or invalid for %s\n' "$package" >&2
+    rm -f "$report" "$contract"
+    failed=1
+  fi
+  package_passed=1
+  for ((index = package_result_start; index < ${#result_statuses[@]}; index++)); do
+    [[ ${result_statuses[$index]} == passed ]] || package_passed=0
+  done
+  if ((package_passed)); then
+    run_timed "$package" 'write contract' .github/scripts/coverage-contract write \
+      --metadata "$metadata" --root-index "$root_index" --expected-digest "$(cat "$digest_file")" \
+      --expected-policy-digest "$(cat "$policy_digest_file")" \
+      "$report" "$contract" "$package"
+  fi
+done
+
+if ((failed == 0)); then
+  .github/scripts/coverage-contract verify-timings --metadata "$metadata" --root-index "$root_index" \
+    --contracts-root "$session" "$timings" || failed=1
+  for package in "$@"; do
+    .github/scripts/coverage-contract verify --metadata "$metadata" --root-index "$root_index" \
+      "$session/$package.contract.json" "$session/$package.lcov" || failed=1
+  done
+fi
+print_results
+((failed == 0)) || exit "$failed"
+rm -rf "$scratch"
+mv "$session" "$output"
+published=1

@@ -1,19 +1,17 @@
-//! Explaining virtual-repository shadowing from stored records.
-//!
 //! [`resolve`](super::resolve) merges members in shadow order and drops the candidates a member
-//! shadows; this replays the same order and records the losers instead. It reads only stored records —
-//! a hosted member's uploads and a cached member's already-fetched page — so it never probes an
+//! shadows; this replays the same order and records the losers instead. It reads only stored records:
+//! a hosted member's uploads and a cached member's fetched page. It never probes an
 //! upstream per row, and it applies the repository's fallback mode exactly as resolution does.
 
 use std::collections::BTreeSet;
 
-use peryx_core::{ShadowCandidate, ShadowReason, ShadowSource};
+use crate::policy::{FallbackMode, PypiPolicy as _};
 use peryx_driver::state::ServingState;
 use peryx_index::{Index, IndexKind};
-use peryx_policy::FallbackMode;
 
 use super::CacheError;
 use super::resolve::{local_detail, raw_to_detail};
+use crate::shadow::{ShadowCandidate, ShadowReason, ShadowSource};
 use crate::store::PypiStore as _;
 use crate::{ProjectDetail, name};
 

@@ -1,5 +1,3 @@
-//! The timer that submits registered node-local jobs from configured schedules.
-//!
 //! One bounded timer drives every schedule from a single min-heap keyed by next-due instant, so a
 //! large schedule set costs one heap pop per fire rather than a scan of every entry on each tick. The
 //! timer keeps no durable state: a restart recomputes each schedule's next run one interval after
@@ -13,12 +11,109 @@ use std::time::Duration;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+use peryx_core::Ecosystem;
+
 use super::{
-    CACHE_MAINTENANCE, CatalogSyncParameters, DcCopyParameters, JobHistoryCleanup, JobScheduler, MAINTENANCE_INTERVAL,
-    PlacementReconcileParameters, ReclamationParameters, WriteLedgerReap, scheduled_job, submit_dc_copy,
-    submit_maintenance, submit_placement_reconcile, submit_reclamation,
+    CACHE_MAINTENANCE, JobHistoryCleanup, JobScheduler, MAINTENANCE_INTERVAL, WriteLedgerReap, scheduled_job,
+    submit_maintenance,
 };
 use crate::state::AppState;
+
+pub trait ScheduledJobFactory: Send + Sync {
+    fn kind(&self) -> &'static str;
+    fn settings(&self) -> toml::Table;
+
+    /// # Errors
+    /// Returns a user-facing configuration error when runtime state cannot satisfy the compiled job.
+    fn create(&self, app: &AppState) -> Result<Arc<dyn super::NodeJob>, String>;
+}
+
+#[derive(Clone)]
+pub struct PluginScheduledJob {
+    ecosystem: Ecosystem,
+    pub(super) factory: Arc<dyn ScheduledJobFactory>,
+}
+
+impl PluginScheduledJob {
+    #[must_use]
+    pub fn new(ecosystem: Ecosystem, factory: Arc<dyn ScheduledJobFactory>) -> Self {
+        Self { ecosystem, factory }
+    }
+
+    #[must_use]
+    pub fn ecosystem(&self) -> Ecosystem {
+        self.ecosystem.clone()
+    }
+
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        self.factory.kind()
+    }
+
+    #[must_use]
+    pub fn settings(&self) -> toml::Table {
+        self.factory.settings()
+    }
+}
+
+impl std::fmt::Debug for PluginScheduledJob {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PluginScheduledJob")
+            .field("ecosystem", &self.ecosystem)
+            .field("kind", &self.kind())
+            .field("settings", &self.settings())
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for PluginScheduledJob {
+    fn eq(&self, other: &Self) -> bool {
+        self.ecosystem == other.ecosystem && self.kind() == other.kind() && self.settings() == other.settings()
+    }
+}
+
+impl Eq for PluginScheduledJob {}
+
+#[derive(Clone)]
+pub struct RegisteredScheduledJob {
+    pub(super) factory: Arc<dyn ScheduledJobFactory>,
+}
+
+impl RegisteredScheduledJob {
+    #[must_use]
+    pub fn new(factory: Arc<dyn ScheduledJobFactory>) -> Self {
+        Self { factory }
+    }
+
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        self.factory.kind()
+    }
+
+    #[must_use]
+    pub fn settings(&self) -> toml::Table {
+        self.factory.settings()
+    }
+}
+
+impl std::fmt::Debug for RegisteredScheduledJob {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RegisteredScheduledJob")
+            .field("kind", &self.kind())
+            .field("settings", &self.settings())
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for RegisteredScheduledJob {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind() == other.kind() && self.settings() == other.settings()
+    }
+}
+
+impl Eq for RegisteredScheduledJob {}
 
 /// A registered node-local job kind a schedule can name.
 ///
@@ -28,37 +123,33 @@ use crate::state::AppState;
 pub enum ScheduledJob {
     /// Reclaim idle process resources and revalidate stale cached pages, per ecosystem.
     CacheMaintenance,
-    /// Refresh one remote project catalog and a bounded set of its project metadata.
-    CatalogSync(CatalogSyncParameters),
-    /// Copy the filesystem blobs the local data center owes from its peers, in the background.
-    DcCopy(DcCopyParameters),
-    /// Reconcile the local data center's filesystem placements against the replication policy, retiring
-    /// out-of-policy copies and re-verifying stored ones, in the background.
-    PlacementReconcile(PlacementReconcileParameters),
-    /// Select unreferenced blobs safe for replicated reclamation, recording tombstones without deleting.
-    Reclamation(ReclamationParameters),
+    Plugin(PluginScheduledJob),
+    Registered(RegisteredScheduledJob),
 }
 
 impl ScheduledJob {
-    /// The stable label this kind carries in configuration and logs.
     #[must_use]
-    pub const fn as_str(&self) -> &'static str {
+    pub fn as_str(&self) -> &str {
         match self {
             Self::CacheMaintenance => CACHE_MAINTENANCE,
-            Self::CatalogSync(_) => "catalog_sync",
-            Self::DcCopy(_) => "dc_copy",
-            Self::PlacementReconcile(_) => "placement_reconcile",
-            Self::Reclamation(_) => "reclamation",
+            Self::Plugin(job) => job.kind(),
+            Self::Registered(job) => job.kind(),
+        }
+    }
+
+    #[must_use]
+    pub fn settings(&self) -> toml::Table {
+        match self {
+            Self::CacheMaintenance => toml::Table::new(),
+            Self::Plugin(job) => job.settings(),
+            Self::Registered(job) => job.settings(),
         }
     }
 
     fn submit(&self, app: &AppState, scheduler: &JobScheduler) {
         match self {
             Self::CacheMaintenance => submit_maintenance(app, scheduler),
-            Self::DcCopy(parameters) => submit_dc_copy(scheduler, *parameters),
-            Self::PlacementReconcile(parameters) => submit_placement_reconcile(scheduler, *parameters),
-            Self::Reclamation(parameters) => submit_reclamation(scheduler, *parameters),
-            Self::CatalogSync(_) => match scheduled_job(app, self) {
+            Self::Plugin(_) | Self::Registered(_) => match scheduled_job(app, self) {
                 Ok(job) => {
                     scheduler.submit(job);
                 }
@@ -92,36 +183,51 @@ pub async fn run_schedules(
     plan: Vec<Schedule>,
     cancel: CancellationToken,
 ) {
-    let start = Instant::now();
-    let cleanup = plan.len();
-    let mut due: BinaryHeap<Reverse<(Instant, usize)>> = plan
-        .iter()
-        .enumerate()
-        .map(|(index, schedule)| Reverse((start + schedule.interval, index)))
-        .chain(std::iter::once(Reverse((start, cleanup))))
-        .collect();
-    while let Some(Reverse((at, index))) = due.pop() {
-        tokio::select! {
-            () = cancel.cancelled() => return,
-            () = tokio::time::sleep_until(at) => {}
+    ScheduleTimer::new(plan).run(&app, &scheduler, cancel).await;
+}
+
+pub(super) struct ScheduleTimer {
+    plan: Vec<Schedule>,
+    cleanup: usize,
+    due: BinaryHeap<Reverse<(Instant, usize)>>,
+}
+
+impl ScheduleTimer {
+    pub(super) fn new(plan: Vec<Schedule>) -> Self {
+        let start = Instant::now();
+        let cleanup = plan.len();
+        let due = plan
+            .iter()
+            .enumerate()
+            .map(|(index, schedule)| Reverse((start + schedule.interval, index)))
+            .chain(std::iter::once(Reverse((start, cleanup))))
+            .collect();
+        Self { plan, cleanup, due }
+    }
+
+    pub(super) async fn run(mut self, app: &AppState, scheduler: &JobScheduler, cancel: CancellationToken) {
+        while let Some(Reverse((at, index))) = self.due.pop() {
+            tokio::select! {
+                () = cancel.cancelled() => return,
+                () = tokio::time::sleep_until(at) => {}
+            }
+            let interval = if index == self.cleanup {
+                scheduler.submit(Arc::new(JobHistoryCleanup::default()));
+                scheduler.submit(Arc::new(WriteLedgerReap::default()));
+                MAINTENANCE_INTERVAL
+            } else {
+                let schedule = &self.plan[index];
+                let job = schedule.job.as_str();
+                tracing::debug!(job, "schedule fired");
+                schedule.job.submit(app, scheduler);
+                schedule.interval
+            };
+            self.due
+                .push(Reverse((reschedule(at, Instant::now(), interval), index)));
         }
-        let interval = if index == cleanup {
-            scheduler.submit(Arc::new(JobHistoryCleanup));
-            scheduler.submit(Arc::new(WriteLedgerReap));
-            MAINTENANCE_INTERVAL
-        } else {
-            let schedule = &plan[index];
-            let job = schedule.job.as_str();
-            tracing::debug!(job, "schedule fired");
-            schedule.job.submit(&app, &scheduler);
-            schedule.interval
-        };
-        due.push(Reverse((reschedule(at, Instant::now(), interval), index)));
     }
 }
 
-/// The next fire for a schedule that just ran at due instant `at`, given the wake instant `woke`.
-///
 /// One interval past the due instant holds a steady cadence. When the fire woke past its due instant,
 /// from a slow tick or a clock advanced across intervals, the next run is one interval past the wake
 /// instant instead, so a long gap yields a single run rather than a replayed backlog.

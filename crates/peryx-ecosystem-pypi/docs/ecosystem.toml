@@ -1,0 +1,6 @@
+[[items]]
+id = "pypi"
+name = "PyPI"
+subtitle = "Python"
+color = "#3775A9"
+chip = false

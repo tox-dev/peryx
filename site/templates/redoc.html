@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}{{ page.title }} — {{ config.title }}{% endblock title %}
+{% block title %}{{ page.title }} | {{ config.title }}{% endblock title %}
 
 {% block content %}
 <div class="container docs api-intro">
@@ -48,7 +48,6 @@
       Redoc.init(specUrl, { hideDownloadButton: false, expandResponses: "200", scrollYOffset: ".site-header", theme: redocTheme(isDark()) }, container);
     }
 
-    // Re-render when the header toggle (or the OS) changes the theme.
     new MutationObserver(render).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
     window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", render);
     render();

@@ -1,5 +1,3 @@
-//! Usage counters: the `/+stats` drill-down, the per-ecosystem rollup, and Prometheus `/metrics`.
-
 use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -15,13 +13,12 @@ use peryx_identity::{Resource, Scope, parse_basic};
 
 use crate::response_security::ProtectedCachePolicy;
 
-/// Per-index totals joined to each index's ecosystem and role.
-///
 /// The join lets the render layer scope role-only and ecosystem-only counters. Indexes with no
 /// activity yet report zeros.
 fn per_index_metrics(state: &AppState) -> Vec<(IndexDescription, peryx_events::metrics::Counters)> {
-    let totals = state.metrics.index_totals();
+    let totals = state.serving.metrics.index_totals();
     state
+        .serving
         .describe_indexes()
         .into_iter()
         .map(|index| {
@@ -31,26 +28,25 @@ fn per_index_metrics(state: &AppState) -> Vec<(IndexDescription, peryx_events::m
         .collect()
 }
 
-/// The per-ecosystem rollup for `/+status` and the dashboard.
-///
 /// Activity is summed across every index of an ecosystem, with that ecosystem's own counter
 /// families folded in under `families`. Ordered by ecosystem name so the output is stable.
 #[must_use]
 pub fn ecosystem_summaries(state: &AppState) -> Vec<peryx_events::metrics::EcosystemSummary> {
-    let mut summaries: std::collections::BTreeMap<&'static str, peryx_events::metrics::EcosystemSummary> =
+    let mut summaries: std::collections::BTreeMap<String, peryx_events::metrics::EcosystemSummary> =
         std::collections::BTreeMap::new();
     for (index, counters) in per_index_metrics(state) {
-        let summary = summaries
-            .entry(index.ecosystem)
-            .or_insert_with(|| peryx_events::metrics::EcosystemSummary {
-                ecosystem: index.ecosystem.to_owned(),
-                ..Default::default()
-            });
+        let summary =
+            summaries
+                .entry(index.ecosystem.clone())
+                .or_insert_with(|| peryx_events::metrics::EcosystemSummary {
+                    ecosystem: index.ecosystem.clone(),
+                    ..Default::default()
+                });
         summary.pages += counters.base.pages;
-        summary.downloads += counters.base.downloads;
+        summary.reads += counters.base.reads;
         summary.bytes += counters.base.bytes;
         summary.rejected += counters.base.rejected;
-        summary.uploads += counters.hosted.uploads;
+        summary.writes += counters.hosted.writes;
         for (family, value) in counters.ecosystem {
             *summary.families.entry(family.to_owned()).or_default() += value;
         }
@@ -62,28 +58,31 @@ pub fn ecosystem_summaries(state: &AppState) -> Vec<peryx_events::metrics::Ecosy
 /// ecosystem's vocabulary.
 #[must_use]
 pub fn family_descriptors(state: &AppState) -> Vec<peryx_events::metrics::FamilyDescriptor> {
-    state
-        .drivers()
-        .flat_map(|serving| serving.metric_families())
-        .map(|family| peryx_events::metrics::FamilyDescriptor {
-            key: family.key.to_owned(),
-            label: family.ui_label.to_owned(),
-            roles: family.roles.iter().map(|role| role.as_str().to_owned()).collect(),
-        })
-        .collect()
+    let mut descriptors = Vec::new();
+    for (_, driver) in state.driver_set().metrics() {
+        for family in driver.metric_families() {
+            let mut roles = Vec::with_capacity(family.roles.len());
+            for role in family.roles {
+                roles.push(role.as_str().to_owned());
+            }
+            descriptors.push(peryx_events::metrics::FamilyDescriptor {
+                key: family.key.to_owned(),
+                label: family.ui_label.to_owned(),
+                roles,
+            });
+        }
+    }
+    descriptors
 }
 
 /// The `/+stats` drill-down selectors.
 #[derive(Debug, serde::Deserialize)]
 pub struct StatsQuery {
-    index: Option<String>,
-    project: Option<String>,
+    repository: Option<String>,
+    resource: Option<String>,
 }
 
-/// `GET /+stats`: usage counters aggregated off-thread, drillable: no parameters for per-index
-/// totals, `?index={route}` for its projects, `&project={name}` for its files.
-///
-/// The tree names repositories and projects, so it needs operator authority; a repository token
+/// The tree names repositories and resources, so it needs operator authority; a repository token
 /// reads its own usage through `/+analytics/*` instead. The response is never cached.
 pub async fn stats(
     State(state): State<Arc<AppState>>,
@@ -92,7 +91,11 @@ pub async fn stats(
 ) -> Response {
     let mut response = match authorize_operator(&state, &headers).await {
         Ok(()) => {
-            let tree = state.metrics.drill(query.index.as_deref(), query.project.as_deref());
+            let mut tree = state
+                .serving
+                .metrics
+                .drill(query.repository.as_deref(), query.resource.as_deref());
+            render_extension_fields(&state, &query, &mut tree);
             axum::Json(tree).into_response()
         }
         Err(rejection) => rejection.response(),
@@ -128,7 +131,6 @@ impl StatsRejection {
     }
 }
 
-/// Authenticate a local user and require the server-wide operator read scope.
 async fn authorize_operator(state: &AppState, headers: &HeaderMap) -> Result<(), StatsRejection> {
     let credentials = headers
         .get(header::AUTHORIZATION)
@@ -136,12 +138,14 @@ async fn authorize_operator(state: &AppState, headers: &HeaderMap) -> Result<(),
         .and_then(parse_basic)
         .ok_or(StatsRejection::Unauthorized)?;
     let actor = state
+        .serving
         .users
         .authenticate(&credentials.user, &credentials.password)
         .await
         .map_err(|_| StatsRejection::Unavailable)?
         .ok_or(StatsRejection::Unauthorized)?;
     match state
+        .serving
         .authorization
         .authorize_scoped(&actor, Scope::OperatorRead, &Resource::Operator)
         .decision()
@@ -163,7 +167,7 @@ struct NeutralFamily {
 }
 
 /// The neutral per-index families: a base group every role reports, a caching group only a cached
-/// index fills, and an upload group only a hosted index fills.
+/// index fills, and an write group only a hosted index fills.
 const NEUTRAL_FAMILIES: &[NeutralFamily] = &[
     NeutralFamily {
         name: "peryx_pages_served_total",
@@ -176,7 +180,7 @@ const NEUTRAL_FAMILIES: &[NeutralFamily] = &[
         name: "peryx_artifacts_served_total",
         help: "Artifacts served.",
         role: None,
-        read: |c| c.base.downloads,
+        read: |c| c.base.reads,
         kind: "counter",
     },
     NeutralFamily {
@@ -222,56 +226,19 @@ const NEUTRAL_FAMILIES: &[NeutralFamily] = &[
         kind: "counter",
     },
     NeutralFamily {
-        name: "peryx_catalog_syncs_total",
-        help: "Remote root-catalog synchronizations.",
-        role: Some(Role::Cached),
-        read: |c| c.cached.catalog_syncs,
-        kind: "counter",
-    },
-    NeutralFamily {
-        name: "peryx_catalog_published_total",
-        help: "Remote root-catalog generations published.",
-        role: Some(Role::Cached),
-        read: |c| c.cached.catalog_published,
-        kind: "counter",
-    },
-    NeutralFamily {
-        name: "peryx_catalog_not_modified_total",
-        help: "Remote root-catalog revalidations answered not modified.",
-        role: Some(Role::Cached),
-        read: |c| c.cached.catalog_not_modified,
-        kind: "counter",
-    },
-    NeutralFamily {
-        name: "peryx_catalog_errors_total",
-        help: "Failed remote root-catalog synchronizations.",
-        role: Some(Role::Cached),
-        read: |c| c.cached.catalog_errors,
-        kind: "counter",
-    },
-    NeutralFamily {
-        name: "peryx_catalog_projects",
-        help: "Projects in the current remote root catalog.",
-        role: Some(Role::Cached),
-        read: |c| c.cached.catalog_projects,
-        kind: "gauge",
-    },
-    NeutralFamily {
         name: "peryx_artifacts_uploaded_total",
         help: "Distributions uploaded.",
         role: Some(Role::Hosted),
-        read: |c| c.hosted.uploads,
+        read: |c| c.hosted.writes,
         kind: "counter",
     },
 ];
 
-/// `GET /metrics`: Prometheus text exposition.
-///
 /// The global request counter plus the stats tree aggregated by bounded ecosystem and role labels.
 /// Role-scoped families emit only for the role that owns them; ecosystem families come from the
 /// driver.
 pub async fn metrics(State(state): State<Arc<AppState>>) -> Response {
-    let requests = state.requests.load(Ordering::Relaxed);
+    let requests = state.serving.requests.load(Ordering::Relaxed);
     let mut body = format!(
         "# HELP peryx_requests_total Total HTTP requests served.\n\
          # TYPE peryx_requests_total counter\n\
@@ -288,15 +255,21 @@ pub async fn metrics(State(state): State<Arc<AppState>>) -> Response {
             }
         }
     }
-    for driver in state.drivers() {
+    for (driver_ecosystem, driver) in state.driver_set().metrics() {
         for family in driver.metric_families() {
             let _ = writeln!(body, "# HELP {} {}", family.prom_name, family.help);
-            let _ = writeln!(body, "# TYPE {} counter", family.prom_name);
+            let _ = writeln!(body, "# TYPE {} {}", family.prom_name, family.kind.as_str());
             for ((ecosystem, role), counters) in &totals {
-                if *ecosystem == driver.ecosystem().as_str()
-                    && family.roles.iter().any(|family_role| family_role.as_str() == *role)
-                {
-                    let value = counters.ecosystem.get(family.key).copied().unwrap_or(0);
+                let mut supports_role = false;
+                for family_role in family.roles {
+                    if family_role.as_str() == *role {
+                        supports_role = true;
+                        break;
+                    }
+                }
+                if *ecosystem == driver_ecosystem.as_str() && supports_role {
+                    let values = family.json_name.map_or(&counters.ecosystem, |_| &counters.extensions);
+                    let value = values.get(family.key).copied().unwrap_or(0);
                     write_metric(&mut body, family.prom_name, ecosystem, role, value);
                 }
             }
@@ -308,19 +281,22 @@ pub async fn metrics(State(state): State<Arc<AppState>>) -> Response {
 
 fn prometheus_totals(
     state: &AppState,
-) -> std::collections::BTreeMap<(&'static str, &'static str), peryx_events::metrics::Counters> {
+) -> std::collections::BTreeMap<(String, &'static str), peryx_events::metrics::Counters> {
     let snapshots = state
+        .serving
         .metrics
-        .totals_for_routes(state.indexes.iter().map(|index| index.route.as_str()));
+        .totals_for_routes(state.serving.indexes.iter().map(|index| index.route.as_str()));
     let mut totals = std::collections::BTreeMap::new();
-    for (index, counters) in state.indexes.iter().zip(snapshots) {
+    for (index, counters) in state.serving.indexes.iter().zip(snapshots) {
         let role = match &index.kind {
             IndexKind::Cached { .. } => Role::Cached,
             IndexKind::Hosted { .. } => Role::Hosted,
             IndexKind::Virtual { .. } => Role::Virtual,
         };
         merge_counters(
-            totals.entry((index.ecosystem.as_str(), role.as_str())).or_default(),
+            totals
+                .entry((index.ecosystem.as_str().to_owned(), role.as_str()))
+                .or_default(),
             counters,
         );
     }
@@ -329,21 +305,90 @@ fn prometheus_totals(
 
 fn merge_counters(target: &mut peryx_events::metrics::Counters, source: peryx_events::metrics::Counters) {
     target.base.pages += source.base.pages;
-    target.base.downloads += source.base.downloads;
+    target.base.reads += source.base.reads;
     target.base.bytes += source.base.bytes;
     target.base.rejected += source.base.rejected;
     target.cached.refreshes += source.cached.refreshes;
     target.cached.changed += source.cached.changed;
     target.cached.stale_served += source.cached.stale_served;
     target.cached.upstream_errors += source.cached.upstream_errors;
-    target.cached.catalog_syncs += source.cached.catalog_syncs;
-    target.cached.catalog_published += source.cached.catalog_published;
-    target.cached.catalog_not_modified += source.cached.catalog_not_modified;
-    target.cached.catalog_errors += source.cached.catalog_errors;
-    target.cached.catalog_projects += source.cached.catalog_projects;
-    target.hosted.uploads += source.hosted.uploads;
+    target.hosted.writes += source.hosted.writes;
     for (family, value) in source.ecosystem {
         *target.ecosystem.entry(family).or_default() += value;
+    }
+    for (family, value) in source.extensions {
+        *target.extensions.entry(family).or_default() += value;
+    }
+}
+
+fn render_extension_fields(state: &AppState, query: &StatsQuery, tree: &mut serde_json::Value) {
+    let totals = state.serving.metrics.index_totals();
+    let indexes: Vec<_> = state
+        .serving
+        .indexes
+        .iter()
+        .filter(|index| {
+            query
+                .repository
+                .as_ref()
+                .is_none_or(|repository| repository == &index.route)
+        })
+        .collect();
+    for index in indexes {
+        let role = match index.kind {
+            IndexKind::Cached { .. } => Role::Cached,
+            IndexKind::Hosted { .. } => Role::Hosted,
+            IndexKind::Virtual { .. } => Role::Virtual,
+        };
+        let Some(metrics) = state.driver_set().get_metrics(&index.ecosystem) else {
+            continue;
+        };
+        let fields: Vec<_> = metrics
+            .metric_families()
+            .iter()
+            .filter(|family| family.roles.contains(&role))
+            .filter_map(|family| family.json_name.map(|name| (family.key, name)))
+            .collect();
+        if fields.is_empty() {
+            continue;
+        }
+        match (query.repository.as_ref(), query.resource.as_ref()) {
+            (Some(_), Some(_)) => write_extension_fields(&mut tree["totals"], role, &fields, None),
+            (Some(_), None) => {
+                write_extension_fields(&mut tree["totals"], role, &fields, totals.get(&index.route));
+                if let Some(resources) = tree["resources"].as_object_mut() {
+                    for counters in resources.values_mut() {
+                        write_extension_fields(counters, role, &fields, None);
+                    }
+                }
+            }
+            (None, _) => write_extension_fields(&mut tree[&index.route], role, &fields, totals.get(&index.route)),
+        }
+    }
+}
+
+fn write_extension_fields(
+    counters: &mut serde_json::Value,
+    role: Role,
+    fields: &[(&str, &str)],
+    totals: Option<&peryx_events::metrics::Counters>,
+) {
+    let Some(group) = counters
+        .get_mut(role.as_str())
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+    for (key, name) in fields {
+        group.insert(
+            (*name).to_owned(),
+            serde_json::Value::from(
+                totals
+                    .and_then(|totals| totals.extensions.get(key))
+                    .copied()
+                    .unwrap_or(0),
+            ),
+        );
     }
 }
 
@@ -358,7 +403,7 @@ fn write_rate_limit_metrics(body: &mut String, state: &AppState) {
         "# HELP peryx_rate_limit_allowed_total HTTP requests allowed by the hosted rate limiter.\n\
          # TYPE peryx_rate_limit_allowed_total counter"
     );
-    for counter in state.rate_limits.counters() {
+    for counter in state.serving.rate_limits.counters() {
         let _ = writeln!(
             body,
             "peryx_rate_limit_allowed_total{{class=\"{}\"}} {}",
@@ -370,7 +415,7 @@ fn write_rate_limit_metrics(body: &mut String, state: &AppState) {
         "# HELP peryx_rate_limit_denied_total HTTP requests denied by the hosted rate limiter.\n\
          # TYPE peryx_rate_limit_denied_total counter"
     );
-    for counter in state.rate_limits.counters() {
+    for counter in state.serving.rate_limits.counters() {
         let _ = writeln!(
             body,
             "peryx_rate_limit_denied_total{{class=\"{}\"}} {}",
@@ -382,7 +427,7 @@ fn write_rate_limit_metrics(body: &mut String, state: &AppState) {
         "# HELP peryx_upstream_rate_limit_denied_total Upstream fetches denied by the hosted concurrency cap.\n\
          # TYPE peryx_upstream_rate_limit_denied_total counter"
     );
-    let upstream = state.upstream_limits.totals();
+    let upstream = state.serving.upstream_limits.totals();
     let _ = writeln!(body, "peryx_upstream_rate_limit_denied_total {}", upstream.denied);
     let _ = writeln!(
         body,

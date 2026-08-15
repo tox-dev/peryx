@@ -1,6 +1,6 @@
 +++
 title = "Brand"
-description = "The peryx identity: the falcon mark, the rust-to-amber gradient, the ecosystem colours, typography, voice, motion, and how to use them."
+description = "Rules for the peryx mark, colour, typography, voice, and motion."
 sort_by = "weight"
 template = "section.html"
 weight = 50
@@ -10,43 +10,39 @@ logos = [ "mark.svg"]
 
 {{ brand_defs() }}
 
-peryx is **fast as the falcon, sealed as the pyx**: one blazing-fast, open-source vault for a wide range of ecosystems.
-The identity is built on a mark traced from a photo of a diving peregrine.
+peryx is an open-source artifact service for multiple ecosystems. Its mark is traced from a diving peregrine.
 
 ## The name
 
-Two real roots make one coined word. Between them they cover the three traits. Say it **PERR-iks**; always lowercase.
+Two roots form the name and describe its traits. Say it **PERR-iks** and write it in lowercase.
 
-- **per· · the peregrine** — speed, and every land. The fastest animal alive, over 380 km/h in a dive. Its Latin root
-  *peregrinus* means "from every land", which stands for the wide-ecosystem axis: one vault, artifacts from many
-  ecosystems.
-- **·yx · the pyx** — a sealed, assayed vault. A *pyx* is a sealed box for safekeeping. In the *Trial of the Pyx*,
-  sample coins are locked away, then assayed to prove they are genuine. That is the upload pipeline.
+- **per· · the peregrine:** the peregrine reaches over 380 km/h in a dive. Its Latin root, *peregrinus*, means "from
+  every land".
+- **·yx · the pyx:** a sealed, assayed vault. A *pyx* is a sealed box for safekeeping. During the *Trial of the Pyx*,
+  officials lock sample coins away and assay them to prove authenticity. Artifact verification follows that model.
 
 ## What peryx is
 
-- **Open source** — free, inspectable, self-hosted. No seat tax to run your own registry.
-- **Blazing fast** — features you do not enable cost nothing: no CPU, RAM, or latency for anything switched off.
-- **Wide ecosystem support** — PyPI and OCI today; npm, Maven, and Cargo next. Each is a driver behind one model.
+peryx is MIT-licensed and self-hosted. One binary serves every configured role. Configuration activates only the
+selected ecosystem owners and availability mode; inactive implementations add no runtime work.
 
 ## Voice & taglines
 
-Concise, technical, plain. Describe what it does and let the numbers carry the boast. Active voice; a control says what
-happens.
+Use concise, technical language. State behavior directly. Controls name the action they perform.
 
-| Register | Line                                                           |
-| -------- | -------------------------------------------------------------- |
-| Lead     | Fast as the falcon, sealed as the pyx.                         |
-| Sub      | One blazing-fast vault for a wide range of ecosystems.         |
-| Dev      | Catch every package and prove every artifact, at falcon speed. |
-| Security | Held under seal. Proven on push. Served at falcon speed.       |
+| Register | Line                                                         |
+| -------- | ------------------------------------------------------------ |
+| Lead     | Artifact storage across ecosystems.                          |
+| Sub      | Cache upstream artifacts and host private artifacts.         |
+| Dev      | One binary with protocol behavior in ecosystem owner crates. |
+| Security | Verify artifact digests before storage and service.          |
 
-**Voice is not:** enterprise buzzwords, "revolutionary", exclamation marks, or jargon a newcomer cannot decode.
+Avoid enterprise buzzwords, "revolutionary", exclamation marks, and jargon that a newcomer cannot decode.
 
 ## The logo
 
-A peregrine seen head-on in a full stoop, wings raised, diving. We traced it from a photograph rather than drawing it,
-mirrored it for symmetry, and reduced it to one gradient silhouette.
+The mark shows a peregrine head-on in a full stoop with raised wings. We traced a photograph, mirrored it for symmetry,
+and reduced it to one gradient silhouette.
 
 <div class="brand-logo-hero">
   <div><div class="brand-tile brand-tile-dark">{{ falcon(label="peryx mark") }}</div><p class="brand-capt">gradient · dark</p></div>
@@ -59,8 +55,8 @@ mirrored it for symmetry, and reduced it to one gradient silhouette.
   <span class="brand-frame"><img src="../seal.svg" alt="the pyx seal" width="56" height="56"></span>
 </div>
 
-**One silhouette, two uses.** The bare falcon is the everyday mark. Sealed inside the hexagonal pyx it becomes the app
-icon and the verified-artifact badge. The enclosure survives the OS icon masks that clip the bare mark.
+Use the bare falcon as the standard mark. Inside the hexagonal pyx, it becomes the app icon and verified-artifact badge.
+The enclosure survives OS icon masks that clip the bare mark.
 
 ### Clear space & minimum size
 
@@ -70,8 +66,8 @@ Keep clear space of half the mark's height on all sides. Minimum size 16 px, whe
 
 ## Logo expressions
 
-Every form the mark ships in, all from one path plus the gradient. The complete interactive brand book, with
-copy-to-clipboard swatches and the live ecosystem palette, is at [the brand book](../brand-book/).
+The shipped forms use one path and gradient. The interactive brand book, with copy-to-clipboard swatches and the live
+ecosystem palette, is at [the brand book](../brand-book/).
 
 ### Wordmark lockups
 
@@ -80,8 +76,8 @@ copy-to-clipboard swatches and the live ecosystem palette, is at [the brand book
   <div class="brand-lockcell"><img src="../lockup-stacked.svg" alt="peryx stacked lockup" height="76"></div>
 </div>
 
-Lowercase, weight 800, tracking −2%. Gradient at display sizes, solid `--text` in body and nav. Never enclose the
-wordmark in the pyx.
+Use lowercase, weight 800, and -2% tracking. Use the gradient at display sizes and solid `--text` in body text and
+navigation. Keep the wordmark outside the pyx.
 
 ### Sizes, single-colour & seal
 
@@ -95,13 +91,13 @@ wordmark in the pyx.
 
 ## Motion
 
-The mark has one move: the stoop. It folds in from up and back, accelerates like gravity, throws off speed streaks, and
-settles in about 0.7 s. Click to replay. The seal never animates.
+The mark uses one motion, the stoop. It folds in from above, accelerates, emits speed streaks, and settles in about 0.7
+s. Click to replay. Keep the seal static.
 
 {{ brand_motion() }}
 
-Transform and opacity only. Motion is a flourish, not a dependency: with `prefers-reduced-motion` the mark paints
-settled, the loop holds still, and progress bars show their value without animating.
+Animate transform and opacity. With `prefers-reduced-motion`, paint the mark in its settled position, hold the loop, and
+show progress-bar values without animation.
 
 ## Colour
 
@@ -117,10 +113,9 @@ One bold element, the rust-to-amber gradient, over neutral graphite. The signatu
 | `--accent`        | `#d94400` / `#ff8a3d` | 217 68 0 / 255 138 61 |
 | `--accent-strong` | `#b23800`             | 178 56 0              |
 
-Light and dark are one palette, not two brands: ink `#1c2026` on paper `#ffffff`, mist `#9aa4b0` on night `#12151a`.
+Light and dark share one palette: ink `#1c2026` on paper `#ffffff`, mist `#9aa4b0` on night `#12151a`.
 
-Semantic colours signal **state, not brand**. They never stand in for the gradient, and colour never carries meaning on
-its own.
+Semantic colours signal **state**. Keep the gradient for brand elements, and pair each colour with another signal.
 
 | State       | Hex       |
 | ----------- | --------- |
@@ -131,11 +126,8 @@ its own.
 
 ## Ecosystems
 
-A coloured device carries the ecosystem, and it is kept **off the mark** — the falcon never takes an ecosystem's colour.
-Each package type wears its own project's brand colour, so a PyPI index reads as PyPI and an OCI registry reads as OCI
-while both sit under one peryx gradient. It maps across the package types Artifactory supports, each in that project's
-own brand colour. A green dot marks the ones live in peryx today; the rest are what the `(role × ecosystem)` model is
-built to absorb without rework.
+Use a coloured device for each ecosystem and keep it **off the mark**. Use the ecosystem's brand colour so owner
+identities remain distinct from the peryx gradient. A green dot marks owners compiled into peryx.
 
 {{ ecosystems() }}
 
@@ -145,14 +137,14 @@ System stacks: a mono for labels, data, and the CLI the tool lives in, and a san
 sans is `system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`; the mono is
 `ui-monospace, "SF Mono", Menlo, Consolas, monospace`.
 
-<div class="brand-typerow"><span class="brand-typelabel">Display / wordmark — sans 800, −2% tracking</span><span class="brand-type-display">peryx</span></div>
-<div class="brand-typerow"><span class="brand-typelabel">Heading — sans 700</span><span class="brand-type-h">Serve a wide range of ecosystems from one vault.</span></div>
-<div class="brand-typerow"><span class="brand-typelabel">Body — sans 400</span><span class="brand-type-body">A caching proxy, a hosted store, and a virtual index that merges the two so local packages override upstream.</span></div>
-<div class="brand-typerow"><span class="brand-typelabel">Mono — labels, code, CLI</span><span class="brand-type-mono">$ peryx mirror sync --ecosystem pypi <span class="brand-dim"># 1,284 files · 0.6s</span></span></div>
+<div class="brand-typerow"><span class="brand-typelabel">Display / wordmark: sans 800, -2% tracking</span><span class="brand-type-display">peryx</span></div>
+<div class="brand-typerow"><span class="brand-typelabel">Heading: sans 700</span><span class="brand-type-h">Cache and host artifacts across ecosystems.</span></div>
+<div class="brand-typerow"><span class="brand-typelabel">Body: sans 400</span><span class="brand-type-body">A virtual index composes cached and hosted resources under one route.</span></div>
+<div class="brand-typerow"><span class="brand-typelabel">Mono: labels, code, CLI</span><span class="brand-type-mono">$ peryx config check --config peryx.toml <span class="brand-dim"># valid</span></span></div>
 
 ## In product
 
-The system in use: buttons, badges, and status, all drawn from the gradient and the neutrals.
+Buttons, badges, and status use the gradient and neutral palette.
 
 <div class="brand-comp">
   <div class="brand-compcard">
@@ -209,10 +201,10 @@ The system in use: buttons, badges, and status, all drawn from the gradient and 
 
 ## Startup banner
 
-The startup logo prints when the service boots. Two separate builds for two eras of terminal. Pick one at runtime; keep
-both off for non-TTY output and CI.
+The service prints the startup logo at boot. Choose one of two terminal variants at runtime; suppress both for non-TTY
+output and CI.
 
-### Modern terminals — truecolor & Unicode blocks
+### Modern terminals: truecolor and Unicode blocks
 
 <div class="brand-terminal"><div class="brand-terminal-bar"><span></span><span></span><span></span></div><pre><span class="brand-banner-grad" aria-hidden="true">  ██████  ███████ ██████  ██   ██ ██   ██
   ██   ██ ██      ██   ██  ██ ██   ██ ██
@@ -221,12 +213,12 @@ both off for non-TTY output and CI.
   ██      ███████ ██   ██    ██   ██   ██</span>
    <span class="brand-dim">the artifact vault · v0.1.0</span>
 
-<span class="brand-g">→</span> proxy <span class="brand-dim">pypi.org, ghcr.io</span> <span class="brand-g">→</span>
-hosted <span class="brand-dim">2,481 packages · 6.2 GB</span> <span class="brand-g">→</span> virtual
-<span class="brand-dim">/simple, /v2</span> <span class="brand-ok">✓</span> ready in <span class="brand-ok">0.42s</span>
-on <span class="brand-ok">:8080</span></pre></div>
+<span class="brand-g">→</span> proxy <span class="brand-dim">upstream.example</span> <span class="brand-g">→</span>
+hosted <span class="brand-dim">2,481 resources · 6.2 GB</span> <span class="brand-g">→</span> virtual
+<span class="brand-dim">/cache, /hosted</span> <span class="brand-ok">✓</span> ready in
+<span class="brand-ok">0.42s</span> on <span class="brand-ok">:8080</span></pre></div>
 
-### Old terminals — ASCII only, 16-colour or mono
+### Old terminals: ASCII, 16-colour, or mono
 
 <div class="brand-terminal"><div class="brand-terminal-bar"><span></span><span></span><span></span></div><pre><span aria-hidden="true">   _ __   ___ _ __ _   ___  __
   | '_ \ / _ \ '__| | | \ \/ /
@@ -235,9 +227,9 @@ on <span class="brand-ok">:8080</span></pre></div>
   |_|              |___/</span>
   the artifact vault   v0.1.0
   ------------------------------------
-  <span class="brand-g">-&gt;</span> proxy    pypi.org, ghcr.io
-  <span class="brand-g">-&gt;</span> hosted   2481 packages, 6.2 GB
-  <span class="brand-g">-&gt;</span> virtual  /simple, /v2
+  <span class="brand-g">-&gt;</span> proxy    upstream.example
+  <span class="brand-g">-&gt;</span> hosted   2481 resources, 6.2 GB
+  <span class="brand-g">-&gt;</span> virtual  /cache, /hosted
   [<span class="brand-ok">ok</span>] ready in 0.42s on :8080</pre></div>
 
 Pick at runtime: truecolor plus UTF-8 selects the modern build; an older `TERM`, `NO_COLOR`, or a non-TTY pipe drops to
@@ -245,28 +237,23 @@ the ASCII build in the terminal's own foreground.
 
 ## Accessibility
 
-Built to pass WCAG 2.1 AA. Contrast, focus, motion, and language are part of the system, not an afterthought.
+The system targets WCAG 2.1 AA. Its requirements cover contrast, focus, motion, and language.
 
 | Surface (measured)     | Contrast |
 | ---------------------- | -------- |
-| Body text · light      | 9.9 : 1  |
-| Body text · dark       | 9.9 : 1  |
-| Headings · both        | 15 : 1   |
-| Secondary labels       | ≥ 5 : 1  |
-| Accent / links · light | 4.7 : 1  |
+| Body text · light      | 9.9:1    |
+| Body text · dark       | 9.9:1    |
+| Headings · both        | 15:1     |
+| Secondary labels       | ≥ 5:1    |
+| Accent / links · light | 4.7:1    |
 
-Beyond contrast:
-
-- **Focus** — every control shows a visible focus ring.
-- **Keyboard** — interactive demos run on Tab + Enter.
-- **Motion** — `prefers-reduced-motion` stops the dive, loop, and progress bars.
-- **Colour never carries meaning alone** — ecosystem is a dot plus its name; status is an icon plus a word.
-- **Minimum sizes** — mark 16 px, seal 32 px, body 16 px.
-- **Plain language** — active voice, no jargon a newcomer cannot decode.
+Each control shows a visible focus ring, and interactive demos support Tab + Enter. `prefers-reduced-motion` stops the
+dive, loop, and progress bars. Ecosystem indicators pair a dot with a name; status indicators pair an icon with a word.
+Use a 16 px minimum for the mark and body text, and 32 px for the seal. Write in active voice with familiar terms.
 
 ## Usage
 
-A few rules keep it coherent.
+Apply these examples to keep the identity consistent.
 
 <div class="brand-dd">
   <div class="brand-ddc brand-good"><div class="brand-stage">{{ falcon() }}</div><div class="brand-capt"><span class="brand-mark-good">✓</span> Gradient mark on a clean, contrasting ground.</div></div>

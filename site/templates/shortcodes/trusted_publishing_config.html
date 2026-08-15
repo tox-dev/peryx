@@ -1,3 +1,0 @@
-{%- set source = load_data(path="data/snippets/trusted-publishing.toml", format="plain") -%}
-{%- set block = "```toml\n" ~ source ~ "```" -%}
-{{ block | markdown | safe }}

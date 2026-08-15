@@ -1,0 +1,249 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly POLICY_VERSION=1
+
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
+
+command=${1:?coverage contract command is required}
+shift
+metadata=
+root_index=
+expected_digest=
+expected_policy_digest=
+contracts_root=
+policy_root=$repo
+while (($#)); do
+  case $1 in
+    --metadata)
+      metadata=${2:?Cargo metadata is required}
+      shift 2
+      ;;
+    --root-index)
+      root_index=${2:?source-root index is required}
+      shift 2
+      ;;
+    --expected-digest)
+      expected_digest=${2:?input digest is required}
+      shift 2
+      ;;
+    --expected-policy-digest)
+      expected_policy_digest=${2:?policy digest is required}
+      shift 2
+      ;;
+    --contracts-root)
+      contracts_root=${2:?contract root is required}
+      shift 2
+      ;;
+    --policy-root)
+      policy_root=${2:?policy root is required}
+      shift 2
+      ;;
+    *) break ;;
+  esac
+done
+
+policy_root=$(cd -- "$policy_root" && pwd -P)
+scratch=$(mktemp -d)
+contract_stage=
+trap 'rm -rf "$scratch"; [[ -z $contract_stage ]] || rm -f "$contract_stage"' EXIT
+
+hash_stream() {
+  if command -v sha256sum >/dev/null; then
+    sha256sum | awk '{ print $1 }'
+  else
+    shasum -a 256 | awk '{ print $1 }'
+  fi
+}
+
+policy_digest() {
+  local input
+  local -a inputs=(
+    .github/scripts/check-coverage-contracts
+    .github/scripts/check-lcov-functions.awk
+    .github/scripts/check-lcov-lines.awk
+    .github/scripts/check-lcov-sources
+    .github/scripts/coverage-availability
+    .github/scripts/coverage-combine
+    .github/scripts/coverage-contract
+    .github/scripts/coverage-e2e
+    .github/scripts/coverage-e2e-live
+    .github/scripts/coverage-frontend
+    .github/scripts/coverage-linux
+    .github/scripts/coverage-merge
+    .github/scripts/coverage-native
+    .github/scripts/coverage-session-guard
+    .github/scripts/coverage-simulation
+    .github/scripts/coverage-system-clients
+    .github/scripts/coverage-system-distributed
+    .github/scripts/coverage-system-storage
+    .github/scripts/coverage-toolchain
+    .github/scripts/crate-contracts
+    .github/scripts/package-contract-inputs
+    .github/scripts/package-source-roots
+    .github/workflows/ci.yml
+    compose.yaml
+    justfile
+    nextest/config.toml
+    scripts/ci/coverage-system-clients
+    scripts/ci/coverage-system-distributed
+    scripts/ci/coverage-system-suite
+    scripts/ci/workspace-package-list
+    scripts/ci/workspace-packages
+  )
+  {
+    printf 'coverage-policy-v%s\0' "$POLICY_VERSION"
+    for input in "${inputs[@]}"; do
+      [[ -f $policy_root/$input ]] || {
+        printf 'coverage policy input is missing: %s\n' "$policy_root/$input" >&2
+        return 1
+      }
+      printf '%s\0' "$input"
+      cat "$policy_root/$input"
+      printf '\0'
+    done
+  } | hash_stream
+}
+
+if [[ $command == policy-digest ]]; then
+  (($# == 0)) || { printf 'policy-digest takes no arguments\n' >&2; exit 2; }
+  policy_digest
+  exit
+fi
+
+if [[ -z $metadata ]]; then
+  metadata=$scratch/metadata.json
+  cargo metadata --no-deps --format-version 1 >"$metadata"
+fi
+if [[ -z $root_index ]]; then
+  root_index=$scratch/root-index
+  "$repo/.github/scripts/package-source-roots" --metadata "$metadata" --index >"$root_index"
+fi
+
+digest_inputs() {
+  local package=$1
+  local input label workspace_root
+  workspace_root=$(jq -r '.workspace_root // empty' "$metadata")
+  while IFS= read -r input; do
+    case $input in
+      "$workspace_root"/*) label=${input#"$workspace_root"/} ;;
+      *) label=$input ;;
+    esac
+    printf '%s\0' "$label"
+    cat "$input"
+    printf '\0'
+  done < <("$repo/.github/scripts/package-contract-inputs" "$metadata" "$root_index" "$package") |
+    hash_stream
+}
+
+hash_file() {
+  hash_stream <"$1"
+}
+
+case $command in
+  digest)
+    (($# == 1)) || { printf 'digest requires a package\n' >&2; exit 2; }
+    digest_inputs "$1"
+    ;;
+  write)
+    (($# == 3)) || { printf 'write requires a report, output, and package\n' >&2; exit 2; }
+    report=$1
+    requested_output=$2
+    package=$3
+    output_parent=$(dirname -- "$requested_output")
+    mkdir -p "$output_parent"
+    output_parent=$(cd "$output_parent" && pwd -P)
+    output="$output_parent/$(basename -- "$requested_output")"
+    rm -f "$output"
+    [[ -s $report ]] || { printf 'coverage report is missing: %s\n' "$report" >&2; exit 1; }
+    digest=$(digest_inputs "$package")
+    policy_sha256=$(policy_digest)
+    if [[ -n $expected_digest && $digest != "$expected_digest" ]]; then
+      printf 'coverage inputs changed while measuring %s\n' "$package" >&2
+      exit 1
+    fi
+    if [[ -n $expected_policy_digest && $policy_sha256 != "$expected_policy_digest" ]]; then
+      printf 'coverage policy changed while measuring %s\n' "$package" >&2
+      exit 1
+    fi
+    contract_stage=$(mktemp "$output_parent/.${output##*/}.session."'XXX''XXX')
+    jq -n --arg package "$package" --arg report "$(basename -- "$report")" \
+      --arg input_sha256 "$digest" --arg report_sha256 "$(hash_file "$report")" \
+      --arg policy_sha256 "$policy_sha256" --argjson policy_version "$POLICY_VERSION" \
+      '{version: 2, policy_version: $policy_version, package: $package, report: $report,
+        input_sha256: $input_sha256, policy_sha256: $policy_sha256,
+        report_sha256: $report_sha256}' >"$contract_stage"
+    mv "$contract_stage" "$output"
+    contract_stage=
+    ;;
+  verify)
+    (($# == 2)) || { printf 'verify requires a contract and report\n' >&2; exit 2; }
+    contract=$1
+    report=$2
+    [[ -s $contract && -s $report ]] || { printf 'coverage contract or report is missing\n' >&2; exit 1; }
+    package=$(jq -er '.package' "$contract")
+    [[ $(jq -er '.version' "$contract") == 2 ]] || { printf 'unsupported coverage contract version\n' >&2; exit 1; }
+    [[ $(jq -er '.policy_version' "$contract") == "$POLICY_VERSION" ]] || {
+      printf 'unsupported coverage policy version\n' >&2
+      exit 1
+    }
+    [[ $(jq -er '.report' "$contract") == "$(basename -- "$report")" ]] || {
+      printf 'coverage contract report mismatch for %s\n' "$package" >&2
+      exit 1
+    }
+    [[ $(jq -er '.input_sha256' "$contract") == "$(digest_inputs "$package")" ]] || {
+      printf 'stale coverage contract for %s\n' "$package" >&2
+      exit 1
+    }
+    [[ $(jq -er '.policy_sha256' "$contract") == "$(policy_digest)" ]] || {
+      printf 'stale coverage policy for %s\n' "$package" >&2
+      exit 1
+    }
+    [[ $(jq -er '.report_sha256' "$contract") == "$(hash_file "$report")" ]] || {
+      printf 'coverage report digest mismatch for %s\n' "$package" >&2
+      exit 1
+    }
+    ;;
+  verify-timings)
+    (($# == 1)) || { printf 'verify-timings requires a timing log\n' >&2; exit 2; }
+    timings=$1
+    [[ -s $timings ]] || { printf 'timing log is missing: %s\n' "$timings" >&2; exit 1; }
+    jq -e 'select(.package != null and
+      (.input_sha256 == null or .input_sha256 == "" or .policy_sha256 == null or .policy_sha256 == ""))' "$timings" \
+      >/dev/null && { printf 'timing log has an unsigned package phase\n' >&2; exit 1; }
+    jq -r 'select(.package != null) | [.package, .input_sha256, .policy_sha256] | @tsv' "$timings" |
+      sort -u >"$scratch/timing-digests"
+    [[ -s $scratch/timing-digests ]] || { printf 'timing log has no package phases\n' >&2; exit 1; }
+    current_policy_digest=
+    [[ -n $contracts_root ]] || current_policy_digest=$(policy_digest)
+    while IFS=$'\t' read -r package digest policy_sha256; do
+      if [[ -n $contracts_root ]]; then
+        contract=$contracts_root/$package.contract.json
+        [[ -s $contract ]] || { printf 'timing contract is missing for %s\n' "$package" >&2; exit 1; }
+        [[ $digest == "$(jq -er '.input_sha256' "$contract")" ]] || {
+          printf 'timing input does not match the contract for %s\n' "$package" >&2
+          exit 1
+        }
+        [[ $policy_sha256 == "$(jq -er '.policy_sha256' "$contract")" ]] || {
+          printf 'timing policy does not match the contract for %s\n' "$package" >&2
+          exit 1
+        }
+      else
+        [[ $digest == "$(digest_inputs "$package")" ]] || {
+          printf 'stale timing artifact for %s\n' "$package" >&2
+          exit 1
+        }
+        [[ $policy_sha256 == "$current_policy_digest" ]] || {
+          printf 'stale timing policy for %s\n' "$package" >&2
+          exit 1
+        }
+      fi
+    done <"$scratch/timing-digests"
+    duplicates=$(cut -f1 "$scratch/timing-digests" | sort | uniq -d)
+    [[ -z $duplicates ]] || { printf 'timing log has conflicting package digests\n' >&2; exit 1; }
+    ;;
+  *)
+    printf 'unknown coverage contract command: %s\n' "$command" >&2
+    exit 2
+    ;;
+esac

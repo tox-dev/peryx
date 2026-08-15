@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
+
+if [[ ${1:-} == clean ]]; then
+  if ! command -v docker >/dev/null || ! docker info >/dev/null 2>&1; then
+    exit
+  fi
+
+  while IFS= read -r project; do
+    [[ -n $project ]] || continue
+    COMPOSE_PROJECT_NAME=$project docker compose \
+      --profile test \
+      --profile system \
+      --profile analysis \
+      --profile 16g \
+      --profile system-16g \
+      --profile codspeed \
+      down --remove-orphans
+  done < <(
+    {
+      while IFS= read -r container; do
+        docker inspect --format '{{ index .Config.Labels "com.docker.compose.project" }}' "$container"
+      done < <(docker ps -aq --filter "label=com.docker.compose.project.working_dir=$repo")
+    } | sort -u
+  )
+  exit
+fi
+
+profile=${1:?profile is required}
+service=${2:?service is required}
+shift 2
+
+export COMPOSE_PROJECT_NAME=${PERYX_COMPOSE_PROJECT_NAME:-peryx-test-${UID}-$$}
+
+cleanup() {
+  status=$?
+  trap - EXIT INT TERM
+  set +e
+  docker compose --profile "$profile" down --volumes --remove-orphans
+  cleanup_status=$?
+  if ((status == 0 && cleanup_status != 0)); then
+    status=$cleanup_status
+  fi
+  exit "$status"
+}
+
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+docker compose --profile "$profile" run --rm "$service" "$@"

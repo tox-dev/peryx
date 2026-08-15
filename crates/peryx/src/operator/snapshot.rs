@@ -1,7 +1,5 @@
-//! Config snapshot serialization for backup manifests.
-
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use ipnet::IpNet;
 use peryx_core::Ecosystem;
@@ -17,8 +15,7 @@ use toml::{Table, Value};
 use crate::config::{
     AcmeConfig, AuthConfig, AvailabilityConfig, Config, CredentialFailureMode, CredentialRefreshConfig, IndexConfig,
     IndexKind, JobsConfig, JobsMode, LdapBindConfig, LdapProviderConfig, LogConfig, LogFormat, LogSink,
-    OidcProviderConfig, PrefetchConfig, PrefetchMode, ReplicationConfig, SecretSource, TlsConfig, TokenConfig,
-    WebhookConfig, WebhookSecret,
+    OidcProviderConfig, ReplicationConfig, SecretSource, TlsConfig, TokenConfig, WebhookConfig, WebhookSecret,
 };
 
 #[derive(Serialize)]
@@ -61,25 +58,17 @@ struct SnapshotJobs {
 
 #[derive(Serialize)]
 struct SnapshotSchedule {
-    job: &'static str,
+    job: String,
     interval_secs: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    repository: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    source: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_projects: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    concurrency: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    timeout_secs: Option<u64>,
+    #[serde(flatten)]
+    settings: Table,
 }
 
 #[derive(Serialize)]
 struct SnapshotIndex<'a> {
     name: &'a str,
     route: &'a str,
-    ecosystem: Ecosystem,
+    ecosystem: &'a Ecosystem,
     #[serde(flatten)]
     kind: SnapshotIndexKind<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -104,7 +93,7 @@ enum SnapshotIndexKind<'a> {
         pins: &'a std::collections::BTreeMap<String, String>,
         upstream_concurrency: usize,
         offline: bool,
-        prefetch: SnapshotPrefetch<'a>,
+        prefetch: &'a Table,
     },
     Hosted {
         hosted: bool,
@@ -113,7 +102,7 @@ enum SnapshotIndexKind<'a> {
     Virtual {
         layers: &'a [String],
         #[serde(skip_serializing_if = "Option::is_none")]
-        upload: Option<&'a str>,
+        write_target: Option<&'a str>,
     },
 }
 
@@ -168,28 +157,13 @@ struct SnapshotCredentialExec<'a> {
 }
 
 #[derive(Serialize)]
-struct SnapshotPrefetch<'a> {
-    mode: &'static str,
-    packages: &'a [String],
-    requirements: &'a [PathBuf],
-    include_wheels: bool,
-    include_sdists: bool,
-    python_tags: &'a [String],
-    abi_tags: &'a [String],
-    platform_tags: &'a [String],
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_file_size_bytes: Option<u64>,
-    metadata_only: bool,
-}
-
-#[derive(Serialize)]
 struct SnapshotToken<'a> {
     name: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     secret: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     secret_file: Option<&'a Path>,
-    projects: &'a [String],
+    resources: &'a [String],
     actions: &'a BTreeSet<Action>,
     #[serde(skip_serializing_if = "Option::is_none")]
     expires_at: Option<String>,
@@ -256,13 +230,12 @@ struct SnapshotAuth<'a> {
     signing_key_file: Option<&'a Path>,
     token_ttl_secs: i64,
     default_anonymous_read: bool,
-    oidc_audience: &'a str,
-    #[serde(rename = "trusted_publisher", skip_serializing_if = "Vec::is_empty")]
-    trusted_publishers: Vec<SnapshotTrustedPublisher<'a>>,
     #[serde(rename = "ldap_provider", skip_serializing_if = "Vec::is_empty")]
     ldap_providers: Vec<SnapshotLdapProvider<'a>>,
     #[serde(rename = "oidc_provider", skip_serializing_if = "Vec::is_empty")]
     oidc_providers: Vec<SnapshotOidcProvider<'a>>,
+    #[serde(flatten)]
+    extensions: &'a toml::Table,
 }
 
 #[derive(Serialize)]
@@ -336,16 +309,6 @@ struct SnapshotExternalGroupGrant<'a> {
 }
 
 #[derive(Serialize)]
-struct SnapshotTrustedPublisher<'a> {
-    id: &'a str,
-    issuer: &'a str,
-    repository: &'a str,
-    subject: &'a str,
-    projects: &'a [String],
-    claims: &'a std::collections::BTreeMap<String, String>,
-}
-
-#[derive(Serialize)]
 struct SnapshotAvailability<'a> {
     mode: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -380,8 +343,7 @@ pub(super) fn config_snapshot(config: &Config) -> anyhow::Result<String> {
         data_dir,
         netrc,
         writer_identity,
-        // A node's own consensus identity is a per-node fact like the listener binding below, not
-        // restorable cluster state, so a backup omits it; a restored node re-reads it from configuration.
+        // Snapshots omit node-local and runtime-resolved fields; restore reads them from target configuration.
         node_identity: _,
         offline,
         read_only,
@@ -395,17 +357,9 @@ pub(super) fn config_snapshot(config: &Config) -> anyhow::Result<String> {
         rate_limit,
         auth,
         availability,
-        // The write-ack quorum and deadline are resolved from configuration on startup, not restorable
-        // cluster state, so a restored node re-reads them from its config like the roster and listener below.
         write_ack: _,
-        // The static datacenter roster does not yet drive the runtime, so a backup omits it and
-        // restores to the same effective behavior; snapshotting it lands with the migration work.
         dc_membership: _,
-        // The availability listener is a per-node network binding, not restorable cluster state, so a
-        // backup omits it; a restored node re-reads its listener from configuration, like the roster above.
         availability_listener: _,
-        // Read-through bounds are node-local serving tunables read from configuration, not restorable
-        // cluster state, so a backup omits them, like the listener above.
         read_through: _,
         jobs,
         // A backup only ever captures a filesystem-backed repository: an object-store backend is
@@ -422,10 +376,9 @@ pub(super) fn config_snapshot(config: &Config) -> anyhow::Result<String> {
         signing_key,
         token_ttl_secs,
         default_anonymous_read,
-        oidc_audience,
-        trusted_publishers,
         ldap_providers,
         oidc_providers,
+        extensions,
     } = auth;
     let (tls, acme) = snapshot_tls(tls.as_ref());
     let (signing_key, signing_key_file, _) = secret_parts(signing_key.as_ref());
@@ -456,20 +409,9 @@ pub(super) fn config_snapshot(config: &Config) -> anyhow::Result<String> {
             signing_key_file,
             token_ttl_secs: *token_ttl_secs,
             default_anonymous_read: *default_anonymous_read,
-            oidc_audience,
-            trusted_publishers: trusted_publishers
-                .iter()
-                .map(|publisher| SnapshotTrustedPublisher {
-                    id: &publisher.id,
-                    issuer: &publisher.issuer,
-                    repository: &publisher.repository,
-                    subject: &publisher.subject,
-                    projects: &publisher.projects,
-                    claims: &publisher.claims,
-                })
-                .collect(),
             ldap_providers: ldap_providers.iter().map(snapshot_ldap_provider).collect(),
             oidc_providers: oidc_providers.iter().map(snapshot_oidc_provider).collect(),
+            extensions,
         },
         availability: snapshot_availability(availability),
         jobs: snapshot_jobs(jobs),
@@ -555,31 +497,10 @@ fn snapshot_jobs(jobs: &JobsConfig) -> Option<SnapshotJobs> {
     } else {
         jobs.schedules
             .iter()
-            .map(|schedule| {
-                let (repository, source, max_projects, concurrency, timeout_secs) = match &schedule.job {
-                    peryx_driver::jobs::ScheduledJob::CacheMaintenance
-                    | peryx_driver::jobs::ScheduledJob::PlacementReconcile(_)
-                    | peryx_driver::jobs::ScheduledJob::Reclamation(_) => (None, None, None, None, None),
-                    peryx_driver::jobs::ScheduledJob::DcCopy(parameters) => {
-                        (None, None, None, Some(parameters.concurrency.get()), None)
-                    }
-                    peryx_driver::jobs::ScheduledJob::CatalogSync(parameters) => (
-                        Some(parameters.repository.clone()),
-                        parameters.source.clone(),
-                        Some(parameters.max_projects.get()),
-                        Some(parameters.concurrency.get()),
-                        Some(parameters.timeout.as_secs()),
-                    ),
-                };
-                SnapshotSchedule {
-                    job: schedule.job.as_str(),
-                    interval_secs: schedule.interval.as_secs(),
-                    repository,
-                    source,
-                    max_projects,
-                    concurrency,
-                    timeout_secs,
-                }
+            .map(|schedule| SnapshotSchedule {
+                job: schedule.job.as_str().to_owned(),
+                interval_secs: schedule.interval.as_secs(),
+                settings: schedule.job.settings(),
             })
             .collect()
     };
@@ -658,21 +579,21 @@ fn snapshot_index(index: &IndexConfig) -> anyhow::Result<SnapshotIndex<'_>> {
             pins: &routing.pins,
             upstream_concurrency: *upstream_concurrency,
             offline: *offline,
-            prefetch: snapshot_prefetch(prefetch),
+            prefetch: &prefetch.options,
         },
         IndexKind::Hosted { volatile } => SnapshotIndexKind::Hosted {
             hosted: true,
             volatile: *volatile,
         },
-        IndexKind::Virtual { layers, upload } => SnapshotIndexKind::Virtual {
+        IndexKind::Virtual { layers, write_target } => SnapshotIndexKind::Virtual {
             layers,
-            upload: upload.as_deref(),
+            write_target: write_target.as_deref(),
         },
     };
     Ok(SnapshotIndex {
         name,
         route,
-        ecosystem: *ecosystem,
+        ecosystem,
         kind,
         anonymous_read: *anonymous_read,
         policy: snapshot_policy(policy, ecosystem_policy)?,
@@ -727,78 +648,47 @@ const fn snapshot_credential_refresh(refresh: CredentialRefreshConfig) -> Snapsh
     }
 }
 
-fn snapshot_prefetch(prefetch: &PrefetchConfig) -> SnapshotPrefetch<'_> {
-    let PrefetchConfig {
-        mode,
-        packages,
-        requirements,
-        include_wheels,
-        include_sdists,
-        python_tags,
-        abi_tags,
-        platform_tags,
-        max_file_size_bytes,
-        metadata_only,
-    } = prefetch;
-    SnapshotPrefetch {
-        mode: prefetch_mode(*mode),
-        packages,
-        requirements,
-        include_wheels: *include_wheels,
-        include_sdists: *include_sdists,
-        python_tags,
-        abi_tags,
-        platform_tags,
-        max_file_size_bytes: *max_file_size_bytes,
-        metadata_only: *metadata_only,
-    }
-}
-
 fn snapshot_policy(config: &PolicyConfig, ecosystem: &Table) -> anyhow::Result<Table> {
     let PolicyConfig {
-        allow_projects,
-        block_projects,
-        protected_names,
-        max_file_size_bytes,
-        max_project_size_bytes,
+        allow_resources,
+        block_resources,
+        protected_resources,
+        max_artifact_size_bytes,
+        max_resource_size_bytes,
         max_accounted_bytes,
-        max_projects,
-        max_versions_per_project,
+        max_resources,
         quota_audit,
     } = config;
     let mut policy = ecosystem.clone();
     policy.insert(
-        "allow_projects".to_owned(),
-        Value::Array(allow_projects.iter().cloned().map(Value::String).collect()),
+        "allow_resources".to_owned(),
+        Value::Array(allow_resources.iter().cloned().map(Value::String).collect()),
     );
     policy.insert(
-        "block_projects".to_owned(),
-        Value::Array(block_projects.iter().cloned().map(Value::String).collect()),
+        "block_resources".to_owned(),
+        Value::Array(block_resources.iter().cloned().map(Value::String).collect()),
     );
     policy.insert(
-        "protected_names".to_owned(),
-        Value::Array(protected_names.iter().cloned().map(Value::String).collect()),
+        "protected_resources".to_owned(),
+        Value::Array(protected_resources.iter().cloned().map(Value::String).collect()),
     );
-    if let Some(value) = max_file_size_bytes {
-        policy.insert("max_file_size_bytes".to_owned(), Value::Integer((*value).try_into()?));
-    }
-    if let Some(value) = max_project_size_bytes {
+    if let Some(value) = max_artifact_size_bytes {
         policy.insert(
-            "max_project_size_bytes".to_owned(),
+            "max_artifact_size_bytes".to_owned(),
+            Value::Integer((*value).try_into()?),
+        );
+    }
+    if let Some(value) = max_resource_size_bytes {
+        policy.insert(
+            "max_resource_size_bytes".to_owned(),
             Value::Integer((*value).try_into()?),
         );
     }
     if let Some(value) = max_accounted_bytes {
         policy.insert("max_accounted_bytes".to_owned(), Value::Integer((*value).try_into()?));
     }
-    if let Some(value) = max_projects {
-        policy.insert("max_projects".to_owned(), Value::Integer((*value).try_into()?));
-    }
-    if let Some(value) = max_versions_per_project {
-        policy.insert(
-            "max_versions_per_project".to_owned(),
-            Value::Integer((*value).try_into()?),
-        );
+    if let Some(value) = max_resources {
+        policy.insert("max_resources".to_owned(), Value::Integer((*value).try_into()?));
     }
     if *quota_audit {
         policy.insert("quota_audit".to_owned(), Value::Boolean(true));
@@ -810,7 +700,7 @@ fn snapshot_token(token: &TokenConfig) -> anyhow::Result<SnapshotToken<'_>> {
     let TokenConfig {
         name,
         secret,
-        projects,
+        resources,
         actions,
         expires_at,
     } = token;
@@ -819,7 +709,7 @@ fn snapshot_token(token: &TokenConfig) -> anyhow::Result<SnapshotToken<'_>> {
         name,
         secret,
         secret_file,
-        projects,
+        resources,
         actions,
         expires_at: expires_at
             .map(|timestamp| OffsetDateTime::from_unix_timestamp(timestamp)?.format(&Rfc3339))
@@ -909,14 +799,6 @@ fn secret_parts(source: Option<&SecretSource>) -> (Option<&str>, Option<&Path>, 
         Some(SecretSource::File(path)) => (None, Some(path), None),
         Some(SecretSource::Env(var)) => (None, None, Some(var)),
         None => (None, None, None),
-    }
-}
-
-const fn prefetch_mode(mode: PrefetchMode) -> &'static str {
-    match mode {
-        PrefetchMode::All => "all",
-        PrefetchMode::Selected => "selected",
-        PrefetchMode::MetadataOnly => "metadata-only",
     }
 }
 

@@ -7,7 +7,6 @@ use futures_util::StreamExt as _;
 
 use crate::{RangeError, UpstreamClient, UpstreamError};
 
-/// Artifact client for one metadata source and its optional mirror.
 #[derive(Debug, Clone)]
 pub struct ArtifactClient {
     origin: UpstreamClient,
@@ -37,7 +36,7 @@ impl ArtifactClient {
         Ok(mirror.base().join(original.path().trim_start_matches('/'))?)
     }
 
-    /// Stream an artifact from its mirror, falling back to its advertised URL when configured.
+    /// Tries the mirror before the advertised URL when `fallback` is true.
     ///
     /// # Errors
     /// Returns [`UpstreamError`] if no eligible source starts a successful response.
@@ -56,14 +55,12 @@ impl ArtifactClient {
         Ok(self.origin.stream_bytes(url).await?.boxed())
     }
 
-    /// Whether either eligible artifact source may support byte ranges.
     #[must_use]
     pub fn may_support_ranges(&self) -> bool {
         self.mirror.as_ref().is_some_and(UpstreamClient::may_support_ranges)
             || (self.fallback || self.mirror.is_none()) && self.origin.may_support_ranges()
     }
 
-    /// Stop range attempts for every eligible artifact source during this process.
     pub fn disable_ranges(&self) {
         if let Some(mirror) = &self.mirror {
             mirror.disable_ranges();
@@ -71,7 +68,7 @@ impl ArtifactClient {
         self.origin.disable_ranges();
     }
 
-    /// Fetch artifact headers from the mirror, then the advertised URL when configured.
+    /// Tries the mirror before the advertised URL when `fallback` is true.
     ///
     /// # Errors
     /// Returns [`RangeError`] if no eligible source provides usable range metadata.
@@ -87,7 +84,7 @@ impl ArtifactClient {
         self.origin.head_file_for_range(url).await
     }
 
-    /// Fetch an artifact range from the mirror, then the advertised URL when configured.
+    /// Tries the mirror before the advertised URL when `fallback` is true.
     ///
     /// # Errors
     /// Returns [`RangeError`] if no eligible source provides the requested range.
@@ -110,14 +107,14 @@ impl From<UpstreamClient> for ArtifactClient {
     }
 }
 
-/// The result of the latest completed request to one configured source.
+/// Health state from the latest completed request to one source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpstreamHealth {
-    /// No request has completed since process start.
+    /// No request has completed in this process.
     Configured,
-    /// The latest request found a usable source.
+    /// The latest request found the source usable.
     Healthy,
-    /// The latest request found a transport, protocol, authentication, rate-limit, or server failure.
+    /// The latest request failed to use the source.
     Unhealthy,
 }
 
@@ -130,7 +127,7 @@ impl UpstreamHealth {
         }
     }
 
-    /// Stable status text for operator surfaces.
+    /// Returns stable text for operator surfaces.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -141,7 +138,6 @@ impl UpstreamHealth {
     }
 }
 
-/// One configured upstream and the name recorded as its source.
 #[derive(Debug, Clone)]
 pub struct NamedUpstream {
     name: String,
@@ -151,7 +147,6 @@ pub struct NamedUpstream {
 }
 
 impl NamedUpstream {
-    /// Pair a configuration name with its client.
     #[must_use]
     pub fn new(name: impl Into<String>, client: UpstreamClient) -> Self {
         Self {
@@ -162,53 +157,46 @@ impl NamedUpstream {
         }
     }
 
-    /// Route artifacts through `mirror`, falling back to their advertised URLs when enabled.
+    /// Tries `mirror` before advertised artifact URLs when `fallback` is true.
     #[must_use]
     pub fn with_artifact_mirror(mut self, mirror: UpstreamClient, fallback: bool) -> Self {
         self.artifacts = ArtifactClient::with_mirror(self.client.clone(), mirror, fallback);
         self
     }
 
-    /// The stable source name used in records and operator output.
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
     }
 
-    /// The client for this source.
     #[must_use]
     pub const fn client(&self) -> &UpstreamClient {
         &self.client
     }
 
-    /// The artifact client for this metadata source.
     #[must_use]
     pub const fn artifacts(&self) -> &ArtifactClient {
         &self.artifacts
     }
 
-    /// Read the result of the latest completed request to this source.
     #[must_use]
     pub fn health(&self) -> UpstreamHealth {
         match self.health.load(Ordering::Acquire) {
+            0 => UpstreamHealth::Configured,
             1 => UpstreamHealth::Healthy,
-            2 => UpstreamHealth::Unhealthy,
-            _ => UpstreamHealth::Configured,
+            _ => UpstreamHealth::Unhealthy,
         }
     }
 
-    /// Record a request that found a usable source.
     pub fn mark_healthy(&self) {
         self.health.store(UpstreamHealth::Healthy.value(), Ordering::Release);
     }
 
-    /// Record a request that could not use this source.
     pub fn mark_unhealthy(&self) {
         self.health.store(UpstreamHealth::Unhealthy.value(), Ordering::Release);
     }
 }
 
-/// Invalid upstream routing configuration.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum RouteError {
     #[error("an upstream route needs at least one source")]
@@ -217,13 +205,13 @@ pub enum RouteError {
     EmptyName,
     #[error("duplicate upstream source {0:?}")]
     DuplicateName(String),
-    #[error("project pins must not be empty")]
-    EmptyProject,
-    #[error("cannot pin project {project:?} to unknown upstream {upstream:?}")]
-    UnknownPin { project: String, upstream: String },
+    #[error("route keys must not be empty")]
+    EmptyKey,
+    #[error("cannot pin key {key:?} to unknown upstream {upstream:?}")]
+    UnknownPin { key: String, upstream: String },
 }
 
-/// Ordered upstream selection with strict package pins and fallback controls.
+/// Selects upstreams in operator order while enforcing key pins and fallback policy.
 #[derive(Debug, Clone)]
 pub struct UpstreamRouter {
     upstreams: Vec<NamedUpstream>,
@@ -234,7 +222,7 @@ pub struct UpstreamRouter {
 }
 
 impl UpstreamRouter {
-    /// Build an ordered route. The first source is the primary.
+    /// Treats the first source as primary.
     ///
     /// # Errors
     /// Returns [`RouteError`] if there are no sources or their names are empty or duplicated.
@@ -260,49 +248,48 @@ impl UpstreamRouter {
         })
     }
 
-    /// Enable or disable fallback after the primary source.
     #[must_use]
     pub const fn with_fallback(mut self, fallback: bool) -> Self {
         self.fallback = fallback;
         self
     }
 
-    /// Route one canonical project name only to `upstream`.
+    /// Restricts `key` to `upstream`.
     ///
     /// # Errors
-    /// Returns [`RouteError`] if the project is empty or the source is not part of this route.
-    pub fn pin(mut self, project: impl Into<String>, upstream: &str) -> Result<Self, RouteError> {
-        let project = project.into();
-        if project.is_empty() {
-            return Err(RouteError::EmptyProject);
+    /// Returns [`RouteError`] if the key is empty or the source is not part of this route.
+    pub fn pin(mut self, key: impl Into<String>, upstream: &str) -> Result<Self, RouteError> {
+        let key = key.into();
+        if key.is_empty() {
+            return Err(RouteError::EmptyKey);
         }
         let Some(&position) = self.positions.get(upstream) else {
             return Err(RouteError::UnknownPin {
-                project,
+                key,
                 upstream: upstream.to_owned(),
             });
         };
-        self.pins.insert(project, position);
+        self.pins.insert(key, position);
         Ok(self)
     }
 
-    /// Prevent one canonical project name from falling past the primary source.
+    /// Restricts `key` to the primary source.
     ///
     /// # Errors
-    /// Returns [`RouteError::EmptyProject`] if the project is empty.
-    pub fn protect(mut self, project: impl Into<String>) -> Result<Self, RouteError> {
-        let project = project.into();
-        if project.is_empty() {
-            return Err(RouteError::EmptyProject);
+    /// Returns [`RouteError::EmptyKey`] if the key is empty.
+    pub fn protect(mut self, key: impl Into<String>) -> Result<Self, RouteError> {
+        let key = key.into();
+        if key.is_empty() {
+            return Err(RouteError::EmptyKey);
         }
-        self.protected.insert(project);
+        self.protected.insert(key);
         Ok(self)
     }
 
-    /// Sources eligible for `project`, in request order.
-    pub fn candidates<'a>(&'a self, project: &'a str) -> impl Iterator<Item = &'a NamedUpstream> + 'a {
-        let pinned = self.pins.get(project).copied();
-        let fallback = self.fallback && !self.protected.contains(project);
+    /// Yields sources eligible for `key` in request order.
+    pub fn candidates<'a>(&'a self, key: &'a str) -> impl Iterator<Item = &'a NamedUpstream> + 'a {
+        let pinned = self.pins.get(key).copied();
+        let fallback = self.fallback && !self.protected.contains(key);
         self.upstreams
             .iter()
             .enumerate()
@@ -310,12 +297,11 @@ impl UpstreamRouter {
             .map(|(_, upstream)| upstream)
     }
 
-    /// Every configured source in operator order, independent of package routing rules.
+    /// Yields all configured sources in operator order, ignoring key routing rules.
     pub fn sources(&self) -> impl Iterator<Item = &NamedUpstream> {
         self.upstreams.iter()
     }
 
-    /// The configured source named `name`.
     #[must_use]
     pub fn source(&self, name: &str) -> Option<&NamedUpstream> {
         self.positions.get(name).map(|&position| &self.upstreams[position])

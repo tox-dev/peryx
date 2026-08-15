@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+site="$scratch/site"
+owner="$scratch/crates/peryx-ecosystem-example/docs"
+mkdir -p "$site/scripts" "$site/content" "$site/diagrams" "$owner/content" "$owner/diagrams"
+cp "$repo/site/scripts/render_diagrams.mjs" "$repo/site/scripts/inline_diagrams.py" "$site/scripts/"
+touch "$owner/ecosystem.toml"
+core_source='flowchart LR
+A --> B'
+owner_source='flowchart LR
+C --> D'
+printf '{%% mermaid() %%} %s {%% end %%}\n' "$core_source" >"$site/content/index.md"
+printf '{%% mermaid() %%} %s {%% end %%}\n' "$owner_source" >"$owner/content/index.md"
+hash() {
+  node -e 'const {createHash}=require("node:crypto"); process.stdout.write(createHash("sha256").update(process.argv[1]).digest("hex").slice(0,16))' "$1"
+}
+core_hash=$(hash "$core_source")
+owner_hash=$(hash "$owner_source")
+partial="$site/diagrams/$core_hash.html"
+printf '<figure class="mermaid-figure"><div class="mermaid-svg mermaid-light"><svg id="peryx-%s-light"></svg></div><div class="mermaid-svg mermaid-dark"><svg id="peryx-%s-dark"></svg></div></figure>\n' \
+  "$core_hash" "$core_hash" >"$partial"
+owner_partial="$owner/diagrams/$owner_hash.html"
+printf '<figure class="mermaid-figure"><div class="mermaid-svg mermaid-light"><svg id="peryx-%s-light"></svg></div><div class="mermaid-svg mermaid-dark"><svg id="peryx-%s-dark"></svg></div></figure>\n' \
+  "$owner_hash" "$owner_hash" >"$owner_partial"
+node "$site/scripts/render_diagrams.mjs" --check
+
+mkdir -p "$site/public/ecosystems/example"
+printf '<pre class="mermaid">%s</pre>\n' "$owner_source" >"$site/public/ecosystems/example/index.html"
+python3 "$site/scripts/inline_diagrams.py" "$site/public"
+grep -Fq "peryx-$owner_hash-light" "$site/public/ecosystems/example/index.html"
+
+rm "$partial"
+if node "$site/scripts/render_diagrams.mjs" --check 2>"$scratch/missing"; then
+  printf 'missing diagram passed\n' >&2
+  exit 1
+fi
+grep -Fq "$core_hash.html" "$scratch/missing"
+
+printf '<figure class="mermaid-figure"></figure>\n' >"$partial"
+if node "$site/scripts/render_diagrams.mjs" --check 2>"$scratch/malformed"; then
+  printf 'malformed diagram passed\n' >&2
+  exit 1
+fi
+grep -Fq 'is missing <div class="mermaid-svg mermaid-light">' "$scratch/malformed"
+
+printf '<figure class="mermaid-figure"><div class="mermaid-svg mermaid-light"><svg id="peryx-%s-light"></svg></div><div class="mermaid-svg mermaid-dark"><svg id="peryx-%s-dark"></svg></div></figure>\n' \
+  "$core_hash" "$core_hash" >"$partial"
+touch "$site/diagrams/orphan.html"
+if node "$site/scripts/render_diagrams.mjs" --check 2>"$scratch/orphan"; then
+  printf 'orphaned diagram passed\n' >&2
+  exit 1
+fi
+grep -Fq 'orphan.html has no source' "$scratch/orphan"
+
+rm "$site/diagrams/orphan.html"
+touch "$owner/diagrams/orphan.html"
+if node "$site/scripts/render_diagrams.mjs" --check 2>"$scratch/owner-orphan"; then
+  printf 'orphaned owner diagram passed\n' >&2
+  exit 1
+fi
+grep -Fq 'orphan.html has no source' "$scratch/owner-orphan"
+
+rm "$owner/diagrams/orphan.html"
+printf '{%% mermaid() %%} %s {%% end %%}\n' "$core_source" >"$owner/content/index.md"
+if node "$site/scripts/render_diagrams.mjs" --check 2>"$scratch/duplicate-source"; then
+  printf 'duplicate diagram source passed\n' >&2
+  exit 1
+fi
+grep -Fq "duplicate diagram $core_hash:" "$scratch/duplicate-source"
+
+printf '{%% mermaid() %%} %s {%% end %%}\n' "$owner_source" >"$owner/content/index.md"
+cp "$owner_partial" "$site/diagrams/$owner_hash.html"
+if python3 "$site/scripts/inline_diagrams.py" "$site/public" 2>"$scratch/duplicate-partial"; then
+  printf 'duplicate rendered diagram passed\n' >&2
+  exit 1
+fi
+grep -Fq "duplicate rendered diagram $owner_hash:" "$scratch/duplicate-partial"

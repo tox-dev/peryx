@@ -12,7 +12,7 @@ use super::HealthLabel;
 /// The word an administrator reads plus the css class that tints it. The word stands alone, so a
 /// color-blind reader loses nothing, and a write that has not settled never borrows the published tint.
 #[must_use]
-pub fn operation_status_label(status: UiOperationStatus) -> HealthLabel {
+pub const fn operation_status_label(status: UiOperationStatus) -> HealthLabel {
     match status {
         UiOperationStatus::Published => HealthLabel {
             text: "Published",

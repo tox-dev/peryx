@@ -1,85 +1,47 @@
 +++
-title = "When to use peryx (and when not)"
-description = "The problems a read-through cache and private index solves for any ecosystem, and the honest list of problems it does not."
-weight = 0
+title = "When to use peryx"
+description = "Choose peryx for bounded caches, private artifact hosting, and multi-ecosystem operations."
+weight = 3
 +++
 
-peryx sits between your clients and the indexes they download from: Python installers and [pypi.org](https://pypi.org/),
-container clients and [Docker Hub](https://hub.docker.com/), whatever the ecosystem. That position solves a specific set
-of problems. If yours is on the first list, peryx is a one-binary answer; if it is on the second, use the tool named
-there instead.
+Peryx fits deployments that need one artifact service with shared storage, observability, and availability controls.
+Ecosystem crates retain client protocol behavior.
 
-## Use peryx when…
+## Good fits
 
-### Your CI re-downloads the same artifacts all day
+### Shared CI cache
 
-Container-based CI rebuilds environments from scratch on every run, so a busy monorepo pulls the same wheels from
-pypi.org and the same base images from Docker Hub hundreds of times a day. That is slow for you and expensive for the
-upstream. PyPI's operators
-[ask CI-heavy users to run local mirrors](https://discuss.python.org/t/draft-pep-pypi-cost-solutions-ci-mirrors-containers-and-caching-to-scale/3681),
-and Docker Hub enforces [pull-rate limits](https://docs.docker.com/docker-hub/download-rate-limit/) that stall
-unauthenticated builds. A read-through cache fixes both with a one-line change: point the client's index or registry at
-peryx and every job after the first serves from local disk. The [usage counters](@/core/monitor.md) show what it saves
-you.
+A cached index reduces repeated upstream transfers across jobs. Single-flight fetches collapse concurrent misses, and
+the stale window keeps stored metadata available through a bounded upstream outage.
 
-### You install private artifacts next to public ones
+### Private artifacts with fallback
 
-The common pattern (a private index alongside the public one as fallback) is how
-[dependency confusion](https://medium.com/@alex.birsan/dependency-confusion-4a5d60fec610) works: the client happily
-takes a same-named, higher-versioned artifact from the public side. It is a real attack; it compromised
-[PyTorch nightly users](https://pytorch.org/blog/compromised-nightly-dependency/) and earned one researcher bug bounties
-from 35 companies, and the same name-collision risk applies to container image names. peryx's virtual indexes answer it
-server-side: your uploads shadow upstream artifacts with the same name, for every client at once.
-[The index model](@/core/indexes.md) explains the mechanics.
+A hosted index accepts writes defined by its ecosystem contract. A virtual index places it ahead of a cached member, so
+internal content can take precedence through one client endpoint.
 
-### The upstream being down should not stop your team
+### Restricted networks
 
-When an upstream or its CDN degrades, every build that depends on it turns red. peryx serves stale index pages when the
-upstream errors, and serves cached artifacts forever because they are immutable, addressed by their hash. An outage
-upstream degrades to "no brand-new releases for a while" instead of "nobody can deploy".
+Populate the cache before restricting egress, then use offline mode to prevent upstream access. Verify that every needed
+metadata record and blob exists before closing the network boundary; a cold miss cannot repair itself offline.
 
-### You need an internal index in a restricted network
+### Shared storage and operations
 
-Full mirrors are the traditional air-gap answer, and a full public mirror is enormous: a complete PyPI mirror is
-[double-digit terabytes](https://github.com/pypa/bandersnatch/issues/1105) and growing, and image registries are larger
-still. A read-through cache is a partial mirror that populates itself on first use, or ahead of time with
-`peryx mirror sync`. On a network with controlled egress, peryx is the one approved path to the upstream; for a true air
-gap, sync the working set on a connected network and carry the data directory across.
+The content-addressed store deduplicates equal bytes across indexes. Access controls, metrics, logs, backup, and
+availability use shared services. Ecosystem crates implement protocol behavior.
 
-### Artifacts are big and your bandwidth is not
+## Poor fits
 
-A CUDA-enabled torch wheel is measured in gigabytes, and a GPU container image larger. A classroom, a Raspberry Pi
-fleet, or a team behind one uplink downloads each once through peryx and then never again: the store is
-content-addressed, so one copy serves every project, tag, and machine, and a layer shared across images is stored once.
-Where an ecosystem offers a metadata shortcut (Python's `.metadata` siblings, a registry's manifest before its blobs),
-peryx speaks it, so a resolver reads what it needs without pulling the whole artifact.
+Choose an archival mirror when you need a complete upstream history or an ecosystem-specific delta format. Choose a
+build service when artifacts must be compiled or transformed; peryx stores and serves accepted bytes. Do not select
+peryx when the ecosystem guide omits a required client operation.
 
-### You would run Artifactory or Nexus for one format alone
+## Ecosystem guides
 
-The universal artifact managers do this job, priced and sized for doing every job: a JVM, gigabytes of RAM, and license
-costs that scale with usage. If you need one or two ecosystems, peryx is one static binary, one TOML file, and one data
-directory.
+The [ecosystem guides](@/ecosystems/_index.md) provide client commands, endpoint examples, air-gap procedures, and
+protocol limits.
 
-## …and when not
+## Next steps
 
-- **You need a full mirror protocol or delta mirror tooling.** `peryx mirror sync --mode all` can walk an upstream, but
-  ecosystem-specific full-mirror tools own that workflow and its operational conventions, such as
-  [bandersnatch](https://github.com/pypa/bandersnatch) for PyPI.
-- **You need an ecosystem peryx does not serve yet.** peryx serves PyPI and OCI (container images); its architecture is
-  per-ecosystem (an index is a role paired with an ecosystem; see [ecosystems](@/ecosystems/_index.md)) and more formats
-  plug in as drivers, but those are not built yet. If you need one right now, that is
-  [Artifactory](https://jfrog.com/artifactory/) and [Nexus](https://www.sonatype.com/products/nexus-repository)
-  territory.
-- **You need automatic failover or built-in replication.** peryx supports read replicas and
-  [manual promotion](@/core/high-availability.md), but it does not copy data between nodes, coordinate shared blob
-  storage, or elect a writer.
-- **You need per-user authentication and read ACLs.** Today's auth is one upload token per hosted index; reads are open
-  to whoever can reach the port. Put it behind your network boundary or a reverse proxy that handles identity.
-- **You need a build farm** the way [piwheels](https://www.piwheels.org/) compiles wheels for Raspberry Pi. peryx serves
-  what upstream has; it does not build anything.
-
-## In practice
-
-- Get running: [getting started](@/core/getting-started.md), then your [ecosystem](@/ecosystems/_index.md).
-- Host private artifacts safely: [the index model](@/core/indexes.md).
-- Understand the machinery: [architecture](@/core/architecture.md).
+- [Install and start peryx](@/core/getting-started.md)
+- [Understand index roles](@/core/indexes.md)
+- [Read the architecture](@/core/architecture.md)

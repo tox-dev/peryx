@@ -1,6 +1,3 @@
-//! The home-side finalize sweep: turn this node's admitted-but-pending `PyPI` ingress intents into
-//! published releases.
-//!
 //! An upload is admitted wherever a client reaches, staged as a [pending ingress
 //! intent](peryx_storage::meta::IntentPhase::Pending) whose bytes are already durable at the ingress
 //! datacenter. Its authority's home is the one node that turns it into a release. The scheduled
@@ -55,8 +52,8 @@ pub async fn finalize_admitted(state: &Arc<ServingState>) -> u64 {
 }
 
 /// Finalize the one intent staged under `key`, returning whether it reached a terminal outcome. Returns
-/// `false` for an intent this node cannot finalize — not `PyPI`, no stored rows, no write token, or fenced
-/// out — so the caller counts only the intents it advanced.
+/// `false` for an intent this node cannot finalize - not `PyPI`, no stored rows, no write token, or fenced
+/// out - so the caller counts only the intents it advanced.
 async fn finalize_one(state: &Arc<ServingState>, key: &str, intent: &StagedIntent) -> bool {
     let Some(filename) = pypi_filename(key) else {
         return false;
@@ -125,8 +122,13 @@ fn write_principal(index: &Index, project: &str) -> Option<Principal> {
         let principal = Principal::Named {
             subject: token.name.clone(),
         };
-        authorize(&principal, &index.acl, Some(project), Action::Write)
-            .is_ok()
-            .then_some(principal)
+        authorize(
+            &principal,
+            &index.acl,
+            peryx_identity::ResourceMatch::Pattern(project),
+            Action::Write,
+        )
+        .is_ok()
+        .then_some(principal)
     })
 }

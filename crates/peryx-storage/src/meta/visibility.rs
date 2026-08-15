@@ -1,26 +1,23 @@
-//! The durable snapshot of a replica's replicated artifact visibility.
-//!
-//! The replication layer folds trash, restore, revoke, and lift operations into an in-memory
-//! visibility apply state and encodes it to opaque bytes. This module holds those bytes in one
-//! metadata singleton, so a follower recovers every tombstone across a restart or a metadata log
-//! compaction without the storage layer needing to understand the encoding.
+//! Stores the replication layer's opaque visibility state so followers retain tombstones across restarts
+//! and log compaction without coupling storage to its encoding.
 
-use super::{MetaError, MetaStore, VISIBILITY_SNAPSHOT, VISIBILITY_SNAPSHOT_KEY};
+use peryx_ha::VisibilitySnapshotStore;
+
+use super::{MetaError, MetaStore, VISIBILITY_SNAPSHOT, VISIBILITY_SNAPSHOT_KEY, open_optional_table};
 
 impl MetaStore {
-    /// Read the persisted visibility snapshot, or `None` before the first save.
+    /// Returns `None` before the first save.
     ///
     /// # Errors
     /// Returns a store error if the read fails.
     pub fn visibility_snapshot(&self) -> Result<Option<Vec<u8>>, MetaError> {
         let txn = self.db.begin_read()?;
-        let table = txn.open_table(VISIBILITY_SNAPSHOT)?;
+        let Some(table) = open_optional_table(&txn, VISIBILITY_SNAPSHOT)? else {
+            return Ok(None);
+        };
         Ok(table.get(VISIBILITY_SNAPSHOT_KEY)?.map(|value| value.value().to_vec()))
     }
 
-    /// Overwrite the persisted visibility snapshot with `snapshot`, replacing any prior one so the
-    /// durable copy always reflects the latest compacted apply state.
-    ///
     /// # Errors
     /// Returns a store error if the write fails.
     pub fn save_visibility_snapshot(&self, snapshot: &[u8]) -> Result<(), MetaError> {
@@ -31,5 +28,17 @@ impl MetaStore {
         }
         txn.commit()?;
         Ok(())
+    }
+}
+
+impl VisibilitySnapshotStore for MetaStore {
+    type Error = MetaError;
+
+    fn load_snapshot(&self) -> Result<Option<Vec<u8>>, Self::Error> {
+        self.visibility_snapshot()
+    }
+
+    fn save_snapshot(&self, bytes: &[u8]) -> Result<(), Self::Error> {
+        self.save_visibility_snapshot(bytes)
     }
 }

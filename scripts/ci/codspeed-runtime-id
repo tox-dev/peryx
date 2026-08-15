@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+revision=${1:?revision is required}
+{
+    for path in .github/codspeed/Dockerfile .github/workflows/codspeed.yml ci/run-codspeed.sh; do
+        printf '%s\0' "$path"
+        git show "$revision:$path"
+        printf '\0'
+    done
+} | sha256sum | cut -d ' ' -f 1

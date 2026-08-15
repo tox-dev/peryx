@@ -1,10 +1,10 @@
 +++
 title = "Core"
-description = "Cross-cutting peryx features every ecosystem shares: installation, configuration, the CLI, the index model, TLS, logging, monitoring, and the web UI."
+description = "Shared peryx services: installation, configuration, the CLI, repositories, TLS, logging, monitoring, and the web UI."
 sort_by = "weight"
 template = "section.html"
 weight = 0
 +++
 
-These topics apply to peryx whatever it serves. The [ecosystems](@/ecosystems/_index.md) each build on them with their
-own protocol, clients, and workflows.
+These topics cover contracts and services shared by ecosystem owners. Each [owner guide](@/ecosystems/_index.md) covers
+its protocol, clients, settings, and workflows.

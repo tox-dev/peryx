@@ -25,12 +25,8 @@ pub fn normalize_name(name: &str) -> String {
 
 /// The canonical authority key of a `PyPI` project: its PEP 503 normalized name.
 ///
-/// Every spelling of a project — differing in case or in any run of `-`, `_`, or `.` — folds to one
-/// key, so a project's home is assigned and fenced under a single authority no matter which variant a
-/// publish arrives as. `PyPI` projects hold the unprefixed authority keyspace; an ecosystem whose
-/// identifiers could otherwise collide with a normalized project name (a single-segment OCI repository,
-/// for one) prefixes its own keys with a scheme, and a normalized name never contains the `:` such a
-/// scheme uses.
+/// Case and separator variants share one unprefixed key, so every spelling resolves to one authority.
+/// PEP 503 normalized names cannot contain `:`.
 #[must_use]
 pub fn authority_key(name: &str) -> String {
     normalize_name(name)
@@ -64,7 +60,7 @@ fn is_normalized(name: &str) -> bool {
 /// The project a distribution filename belongs to, normalized per PEP 503. Used to key usage
 /// aggregation by project when only the filename is at hand.
 ///
-/// The name is read with [`distribution_name_segment`], which puts the name/version boundary at the
+/// The name is read with [`crate::distribution_name_segment`], which puts the name/version boundary at the
 /// last `-` for an sdist archive and the first `-` for a wheel, so a hyphenated legacy sdist like
 /// `python-dateutil-2.8.2.tar.gz` keys `python-dateutil` rather than `python`. A filename with no
 /// recognized extension falls back to the segment before the first `-`.
@@ -92,13 +88,11 @@ pub fn is_valid_name(name: &str) -> bool {
 pub struct PackageName(String);
 
 impl PackageName {
-    /// Normalize `raw` and wrap it.
     #[must_use]
     pub fn new(raw: &str) -> Self {
         Self(normalize_name(raw))
     }
 
-    /// The normalized name as a string slice.
     #[must_use]
     pub const fn as_str(&self) -> &str {
         self.0.as_str()
@@ -113,7 +107,7 @@ impl fmt::Display for PackageName {
 
 /// Whether a distribution filename belongs to `version` of a project.
 ///
-/// The version is read with [`distribution_version_segment`], which places it after the first `-` for
+/// The version is read with [`crate::distribution_version_segment`], which places it after the first `-` for
 /// a wheel but the last `-` for an sdist whose project name may itself contain `-`. Versions compare
 /// PEP 440-equal, so `1.0` matches a file of `1.0.0` but never one of `1.0.1`.
 #[must_use]

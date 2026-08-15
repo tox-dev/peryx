@@ -1,14 +1,10 @@
-//! The `config` command group: validate a resolved configuration before a restart.
-
 use clap::{Args, Subcommand};
 
 use super::RuntimeArgs;
 
-/// Inspect a resolved configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum ConfigCommand {
-    /// Resolve the configuration from every source and report whether the server would accept it,
-    /// without opening the data directory, binding a socket, or reaching an upstream.
+    /// Resolve every configuration source and validate the result before opening storage or network access.
     Check(ConfigCheckArgs),
 }
 
@@ -21,7 +17,6 @@ impl ConfigCommand {
     }
 }
 
-/// Options for `peryx config check`.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct ConfigCheckArgs {
     #[command(flatten)]

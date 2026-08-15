@@ -1,22 +1,17 @@
-//! The neutral trash-inspection query.
-//!
-//! Each ecosystem driver reads its own soft-delete keyspace through
-//! [`trash_records`](crate::serving::EcosystemDriver::trash_records); this merges those neutral
-//! records, applies the operator's filters, derives restorable state against one clock read, and
-//! pages the result on a stable identity cursor. No ecosystem format is named here.
+//! Neutral soft-delete queries over owner records.
 
 use std::collections::HashMap;
 
-use peryx_core::{Ecosystem, TrashRecord, TrashState};
+use peryx_core::{ArtifactKey, Ecosystem, RepositoryKey, ResourceKey, TrashRecord, TrashState};
 
-use crate::state::AppState;
+use crate::driver_set::DriverSet;
+use crate::state::{AppState, ServingState};
 
 const MAX_LIMIT: usize = 100;
 const DEFAULT_LIMIT: usize = 25;
 const MAX_REPOSITORY_BYTES: usize = 512;
 const MAX_CURSOR_BYTES: usize = 1024;
 
-/// What an operator asked to see: optional filters, a page size, and an exclusive cursor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrashQuery {
     pub repository: Option<String>,
@@ -42,7 +37,6 @@ impl Default for TrashQuery {
     }
 }
 
-/// Why a trash query could not run: a bad page request, or a store the scan could not read.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum TrashQueryError {
     #[error("limit must be between 1 and {MAX_LIMIT}")]
@@ -84,8 +78,11 @@ impl TrashQuery {
     fn matches(&self, record: &TrashRecord, now_unix: i64) -> bool {
         self.repository
             .as_deref()
-            .is_none_or(|repository| record.repository == repository)
-            && self.ecosystem.is_none_or(|ecosystem| record.ecosystem == ecosystem)
+            .is_none_or(|repository| record.repository.as_str() == repository)
+            && self
+                .ecosystem
+                .as_ref()
+                .is_none_or(|ecosystem| &record.ecosystem == ecosystem)
             && self.state.is_none_or(|state| record.state(now_unix) == state)
             && self
                 .deadline_before_unix
@@ -125,9 +122,9 @@ pub struct TrashPage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrashRef {
     pub ecosystem: Ecosystem,
-    pub repository: String,
-    pub name: String,
-    pub reference: Option<String>,
+    pub repository: RepositoryKey,
+    pub resource: ResourceKey,
+    pub artifact: Option<ArtifactKey>,
     pub digest: Option<String>,
 }
 
@@ -135,33 +132,42 @@ impl TrashRef {
     fn matches(&self, record: &TrashRecord) -> bool {
         record.ecosystem == self.ecosystem
             && record.repository == self.repository
-            && record.name == self.name
-            && record.reference == self.reference
+            && record.resource == self.resource
+            && record.artifact == self.artifact
             && record.digest == self.digest
     }
 }
 
-impl AppState {
-    /// Merge, filter, and page every ecosystem's trash records for one operator query.
-    ///
+pub struct TrashServices {
+    serving: std::sync::Arc<ServingState>,
+    drivers: DriverSet,
+}
+
+impl TrashServices {
+    #[must_use]
+    pub fn for_state(state: &AppState) -> Self {
+        Self {
+            serving: std::sync::Arc::clone(&state.serving),
+            drivers: state.driver_set().clone(),
+        }
+    }
+
     /// # Errors
     /// Returns a validation error for a bad limit, cursor, or filter, or a store error when an
     /// ecosystem's trash scan fails.
-    pub fn query_trash(&self, query: &TrashQuery) -> Result<TrashPage, TrashQueryError> {
+    pub fn query(&self, query: &TrashQuery) -> Result<TrashPage, TrashQueryError> {
         query.validate()?;
-        let now_unix = (self.clock)();
-        let records = self.collect_trash(query.repository.as_deref(), query.ecosystem)?;
+        let now_unix = (self.serving.clock)();
+        let records = self.collect_trash(query.repository.as_deref(), query.ecosystem.as_ref())?;
         Ok(paginate(records, query, now_unix))
     }
 
-    /// The one trashed record matching `reference`, with its derived state, or `None`.
-    ///
     /// # Errors
     /// Returns a store error when the ecosystem's trash scan fails.
-    pub fn inspect_trash(&self, reference: &TrashRef) -> Result<Option<TrashItem>, TrashQueryError> {
-        let now_unix = (self.clock)();
+    pub fn inspect(&self, reference: &TrashRef) -> Result<Option<TrashItem>, TrashQueryError> {
+        let now_unix = (self.serving.clock)();
         Ok(self
-            .collect_trash(Some(&reference.repository), Some(reference.ecosystem))?
+            .collect_trash(Some(reference.repository.as_str()), Some(&reference.ecosystem))?
             .into_iter()
             .find(|record| reference.matches(record))
             .map(|record| TrashItem::new(record, now_unix)))
@@ -172,31 +178,41 @@ impl AppState {
     fn collect_trash(
         &self,
         repository: Option<&str>,
-        ecosystem: Option<Ecosystem>,
+        ecosystem: Option<&Ecosystem>,
     ) -> Result<Vec<TrashRecord>, TrashQueryError> {
         let mut by_ecosystem: HashMap<Ecosystem, Vec<String>> = HashMap::new();
-        for index in &self.indexes {
-            if ecosystem.is_some_and(|wanted| index.ecosystem != wanted)
+        for index in &self.serving.indexes {
+            if ecosystem.is_some_and(|wanted| &index.ecosystem != wanted)
                 || repository.is_some_and(|wanted| index.name != wanted)
             {
                 continue;
             }
             by_ecosystem
-                .entry(index.ecosystem)
+                .entry(index.ecosystem.clone())
                 .or_default()
                 .push(index.name.clone());
         }
         let mut records = Vec::new();
         for (ecosystem, names) in by_ecosystem {
-            if let Some(driver) = self.driver_for(ecosystem) {
+            if let Some(driver) = self.drivers.get_trash(&ecosystem) {
                 records.extend(
                     driver
-                        .trash_records(&self.meta, &names)
+                        .trash_records(&self.serving.meta, &names)
                         .map_err(TrashQueryError::Store)?,
                 );
             }
         }
         Ok(records)
+    }
+}
+
+impl crate::http_services::TrashService for TrashServices {
+    fn query(&self, query: &TrashQuery) -> Result<TrashPage, TrashQueryError> {
+        self.query(query)
+    }
+
+    fn inspect(&self, reference: &TrashRef) -> Result<Option<TrashItem>, TrashQueryError> {
+        self.inspect(reference)
     }
 }
 
@@ -219,207 +235,5 @@ fn paginate(mut records: Vec<TrashRecord>, query: &TrashQuery, now_unix: i64) ->
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{DEFAULT_LIMIT, TrashItem, TrashQuery, TrashQueryError, TrashRef, paginate};
-    use peryx_core::{Ecosystem, TRASH_GRACE_SECS, TrashRecord, TrashState};
-
-    fn record(repository: &str, name: &str, deleted_at_unix: i64, retained: bool) -> TrashRecord {
-        TrashRecord {
-            ecosystem: Ecosystem::Pypi,
-            repository: repository.to_owned(),
-            name: name.to_owned(),
-            reference: Some(format!("{name}.whl")),
-            digest: Some("sha256:abc".to_owned()),
-            reason: None,
-            actor: Some("alice".to_owned()),
-            deleted_at_unix,
-            retained,
-        }
-    }
-
-    fn query(limit: usize) -> TrashQuery {
-        TrashQuery {
-            limit,
-            ..TrashQuery::default()
-        }
-    }
-
-    #[test]
-    fn test_default_query_carries_the_default_page_size() {
-        assert_eq!(TrashQuery::default().limit, DEFAULT_LIMIT);
-    }
-
-    #[test]
-    fn test_validate_rejects_bad_limit_cursor_and_repository() {
-        assert_eq!(query(0).validate(), Err(TrashQueryError::InvalidLimit));
-        assert_eq!(query(101).validate(), Err(TrashQueryError::InvalidLimit));
-        assert_eq!(
-            TrashQuery {
-                cursor: Some(String::new()),
-                ..query(25)
-            }
-            .validate(),
-            Err(TrashQueryError::InvalidCursor)
-        );
-        assert_eq!(
-            TrashQuery {
-                cursor: Some("x".repeat(1_025)),
-                ..query(25)
-            }
-            .validate(),
-            Err(TrashQueryError::InvalidCursor)
-        );
-        assert_eq!(
-            TrashQuery {
-                repository: Some("r".repeat(513)),
-                ..query(25)
-            }
-            .validate(),
-            Err(TrashQueryError::RepositoryTooLong)
-        );
-        assert_eq!(query(25).validate(), Ok(()));
-    }
-
-    #[test]
-    fn test_error_messages_are_actionable() {
-        assert_eq!(
-            TrashQueryError::InvalidLimit.to_string(),
-            "limit must be between 1 and 100"
-        );
-        assert_eq!(TrashQueryError::InvalidCursor.to_string(), "invalid trash cursor");
-        assert_eq!(
-            TrashQueryError::RepositoryTooLong.to_string(),
-            "repository filter exceeds 512 bytes"
-        );
-        assert_eq!(TrashQueryError::Store("boom".to_owned()).to_string(), "boom");
-    }
-
-    #[test]
-    fn test_paginate_orders_newest_first_and_derives_state() {
-        let records = vec![
-            record("hosted", "old", 1_000, true),
-            record("hosted", "new", 2_000, true),
-        ];
-
-        let page = paginate(records, &query(25), 2_000);
-
-        assert_eq!(page.next_cursor, None);
-        let names: Vec<&str> = page.items.iter().map(|item| item.record.name.as_str()).collect();
-        assert_eq!(names, vec!["new", "old"], "newest deletion leads");
-        assert!(page.items[0].restorable);
-        assert_eq!(page.items[0].state, TrashState::Restorable);
-        assert_eq!(page.items[0].deadline_unix, 2_000 + TRASH_GRACE_SECS);
-    }
-
-    #[test]
-    fn test_paginate_cursor_resumes_after_the_last_row_and_stays_stable() {
-        let records = vec![
-            record("hosted", "a", 3_000, true),
-            record("hosted", "b", 2_000, true),
-            record("hosted", "c", 1_000, true),
-        ];
-
-        let first = paginate(records.clone(), &query(2), 3_000);
-        assert_eq!(
-            first
-                .items
-                .iter()
-                .map(|item| item.record.name.clone())
-                .collect::<Vec<_>>(),
-            vec!["a", "b"]
-        );
-        let cursor = first.next_cursor.expect("a third row remains");
-
-        // A newer artifact entering trash does not shift the boundary the cursor names.
-        let mut grown = records;
-        grown.push(record("hosted", "z", 4_000, true));
-        let second = paginate(
-            grown,
-            &TrashQuery {
-                cursor: Some(cursor),
-                ..query(2)
-            },
-            4_000,
-        );
-
-        assert_eq!(
-            second
-                .items
-                .iter()
-                .map(|item| item.record.name.clone())
-                .collect::<Vec<_>>(),
-            vec!["c"],
-            "the resumed page holds despite the insertion"
-        );
-        assert_eq!(second.next_cursor, None);
-    }
-
-    #[test]
-    fn test_paginate_filters_by_repository_ecosystem_state_and_deadline() {
-        let records = vec![
-            record("hosted", "keep", 1_000, true),
-            record("other", "wrong-repo", 1_000, true),
-            TrashRecord {
-                ecosystem: Ecosystem::Oci,
-                ..record("hosted", "wrong-eco", 1_000, true)
-            },
-            record("hosted", "expired", 1_000, false),
-        ];
-
-        let restorable = paginate(
-            records.clone(),
-            &TrashQuery {
-                repository: Some("hosted".to_owned()),
-                ecosystem: Some(Ecosystem::Pypi),
-                state: Some(TrashState::Restorable),
-                ..query(25)
-            },
-            1_000,
-        );
-        assert_eq!(
-            restorable
-                .items
-                .iter()
-                .map(|item| item.record.name.clone())
-                .collect::<Vec<_>>(),
-            vec!["keep"]
-        );
-
-        let expiring = paginate(
-            records,
-            &TrashQuery {
-                deadline_before_unix: Some(1_000 + TRASH_GRACE_SECS),
-                ..query(25)
-            },
-            1_000,
-        );
-        assert_eq!(expiring.items.len(), 4, "every record's deadline is at the cutoff");
-    }
-
-    #[test]
-    fn test_trash_ref_matches_only_the_named_record() {
-        let record = record("hosted", "flask", 1_000, true);
-        let reference = TrashRef {
-            ecosystem: Ecosystem::Pypi,
-            repository: "hosted".to_owned(),
-            name: "flask".to_owned(),
-            reference: Some("flask.whl".to_owned()),
-            digest: Some("sha256:abc".to_owned()),
-        };
-        assert!(reference.matches(&record));
-        assert!(
-            !TrashRef {
-                name: "other".to_owned(),
-                ..reference
-            }
-            .matches(&record)
-        );
-    }
-
-    #[test]
-    fn test_trash_item_new_derives_expired_for_unretained_content() {
-        let item = TrashItem::new(record("hosted", "flask", 1_000, false), 1_000);
-        assert!(!item.restorable);
-        assert_eq!(item.state, TrashState::Expired);
-    }
-}
+#[path = "../tests/unit/trash/tests.rs"]
+mod tests;

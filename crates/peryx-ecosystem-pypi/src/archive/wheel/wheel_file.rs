@@ -1,10 +1,8 @@
-//! The `WHEEL` file: its `Wheel-Version`, and that its `Tag` and `Build` agree with the filename.
-
 use std::collections::BTreeSet;
 
-use super::{ArchiveError, SUPPORTED_WHEEL_MAJOR_VERSION, invalid_wheel};
+use super::{ArchiveError, ExpectedDistInfo, SUPPORTED_WHEEL_MAJOR_VERSION, invalid_wheel};
 
-pub(super) fn validate_wheel_file(filename: &str, bytes: &[u8]) -> Result<(), ArchiveError> {
+pub(super) fn validate_wheel_file(expected: &ExpectedDistInfo, bytes: &[u8]) -> Result<(), ArchiveError> {
     let text = std::str::from_utf8(bytes).map_err(|_| invalid_wheel("WHEEL is not valid UTF-8"))?;
     let versions = header_values(text, "Wheel-Version");
     let [version] = versions.as_slice() else {
@@ -26,7 +24,7 @@ pub(super) fn validate_wheel_file(filename: &str, bytes: &[u8]) -> Result<(), Ar
         return Err(invalid_wheel(format!("Root-Is-Purelib has invalid value {purelib:?}")));
     }
 
-    validate_wheel_build(filename, &header_values(text, "Build"))?;
+    validate_wheel_build(expected.build.as_deref(), &header_values(text, "Build"))?;
 
     let tags = header_values(text, "Tag");
     if tags.is_empty() {
@@ -36,19 +34,18 @@ pub(super) fn validate_wheel_file(filename: &str, bytes: &[u8]) -> Result<(), Ar
         .into_iter()
         .map(validate_wheel_tag)
         .collect::<Result<BTreeSet<_>, _>>()?;
-    let expected = expected_wheel_tags(filename);
-    if actual != expected {
+    if actual != expected.tags {
         return Err(invalid_wheel(format!(
             "WHEEL Tag fields do not match filename tags; expected {}, got {}",
-            expected.into_iter().collect::<Vec<_>>().join(", "),
+            expected.tags.iter().cloned().collect::<Vec<_>>().join(", "),
             actual.into_iter().collect::<Vec<_>>().join(", ")
         )));
     }
     Ok(())
 }
 
-fn validate_wheel_build(filename: &str, actual: &[&str]) -> Result<(), ArchiveError> {
-    match (expected_wheel_build(filename), actual) {
+fn validate_wheel_build(expected: Option<&str>, actual: &[&str]) -> Result<(), ArchiveError> {
+    match (expected, actual) {
         (None, []) => Ok(()),
         (None, [_]) => Err(invalid_wheel(
             "WHEEL contains a Build field, but the filename has no build tag",
@@ -102,32 +99,4 @@ fn validate_wheel_tag(value: &str) -> Result<String, ArchiveError> {
         return Err(invalid_wheel(format!("invalid WHEEL Tag {value:?}")));
     }
     Ok(value.to_owned())
-}
-
-fn expected_wheel_tags(filename: &str) -> BTreeSet<String> {
-    let parts = wheel_filename_parts(filename);
-    let python_tags = parts[parts.len() - 3].split('.');
-    let abi_tags = parts[parts.len() - 2].split('.');
-    let platform_tags = parts[parts.len() - 1].split('.');
-    let mut tags = BTreeSet::new();
-    for python in python_tags {
-        for abi in abi_tags.clone() {
-            for platform in platform_tags.clone() {
-                tags.insert(format!("{python}-{abi}-{platform}"));
-            }
-        }
-    }
-    tags
-}
-
-fn expected_wheel_build(filename: &str) -> Option<&str> {
-    let parts = wheel_filename_parts(filename);
-    (parts.len() == 6).then_some(parts[2])
-}
-
-fn wheel_filename_parts(filename: &str) -> Vec<&str> {
-    let stem = &filename[..filename.len() - 4];
-    let parts = stem.split('-').collect::<Vec<_>>();
-    debug_assert!(matches!(parts.len(), 5 | 6));
-    parts
 }

@@ -1,14 +1,12 @@
-//! Persistent single-writer identity claims.
-//!
-//! Claims have no timeout. Failover replaces one known identity atomically, which prevents a delayed
-//! former writer from reclaiming the store without an explicit operator promotion.
+//! Writer claims do not expire. Failover atomically replaces a known identity so a delayed former writer
+//! cannot reclaim the store without operator promotion.
 
 use redb::ReadableTable as _;
 
 use super::{MetaError, MetaStore, WRITER, WRITER_KEY, WriterIdentityError};
 
 impl MetaStore {
-    /// Return the identity allowed to start as writer, if one has been claimed.
+    /// Returns `None` until an identity claims the store.
     ///
     /// # Errors
     /// Returns a store error if the identity cannot be read.
@@ -22,7 +20,7 @@ impl MetaStore {
         Ok(table.get(WRITER_KEY)?.map(|identity| identity.value().to_owned()))
     }
 
-    /// Claim an unclaimed store for `identity`; repeated claims by the same identity are safe.
+    /// Repeated claims by the current identity succeed.
     ///
     /// # Errors
     /// Returns [`WriterIdentityError::Empty`] for an empty identity, a conflict when another writer
@@ -53,7 +51,7 @@ impl MetaStore {
         Ok(())
     }
 
-    /// Replace `expected` with `replacement` in one transaction during manual failover.
+    /// Replaces `expected` atomically during manual failover.
     ///
     /// # Errors
     /// Returns [`WriterIdentityError::Empty`] for an empty identity, a stale-identity error if the

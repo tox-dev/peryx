@@ -1,15 +1,8 @@
-//! The `/+quota` read surface: an operator summary of every repository's quota, and a per-repository
-//! detail a reader of that repository may fetch.
-//!
-//! `GET /+quota` pages over the configured indexes, so its cursor stays stable while a reservation
-//! changes a counter under it, and it needs operator authority to enumerate repositories and limits.
-//! `GET /+quota/repository` names one repository and answers a caller who can read it, whether a local
-//! user or that repository's legacy upload token. Both read committed and reserved counter rows rather
-//! than scanning artifacts, and both mark their response private so a shared cache never holds one
-//! authenticated caller's view for another.
+//! Responses use persisted counters and private caching to prevent cross-user reuse.
 
 use std::sync::Arc;
 
+use axum::Extension;
 use axum::body::Body;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, Request, StatusCode, Uri, header};
@@ -19,7 +12,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::json;
 
 use peryx_driver::authz::{Decision, DenyReason, ScopedDecision};
-use peryx_driver::quota::repository_quota;
+use peryx_driver::http_services::HttpDomainServices;
 use peryx_driver::state::{AppState, Index};
 use peryx_identity::{Action, Resource, Scope, UserId, parse_basic};
 
@@ -29,18 +22,24 @@ const DEFAULT_LIMIT: usize = 25;
 const MAX_LIMIT: usize = 100;
 const MAX_REPOSITORY_BYTES: usize = 512;
 
-/// One page of every repository's quota, newest configuration order, for an operator.
-pub async fn quota_summary(State(state): State<Arc<AppState>>, request: Request<Body>) -> Response {
+pub async fn quota_summary(
+    State(state): State<Arc<AppState>>,
+    Extension(services): Extension<HttpDomainServices>,
+    request: Request<Body>,
+) -> Response {
     let (parts, _) = request.into_parts();
-    let mut response = summary_response(&state, &parts.headers, &parts.uri).await;
+    let mut response = summary_response(&state, &services, &parts.headers, &parts.uri).await;
     ProtectedCachePolicy::Private.apply(response.headers_mut());
     response
 }
 
-/// One repository's quota for a caller who can read it.
-pub async fn quota_repository(State(state): State<Arc<AppState>>, request: Request<Body>) -> Response {
+pub async fn quota_repository(
+    State(state): State<Arc<AppState>>,
+    Extension(services): Extension<HttpDomainServices>,
+    request: Request<Body>,
+) -> Response {
     let (parts, _) = request.into_parts();
-    let mut response = detail_response(&state, &parts.headers, &parts.uri).await;
+    let mut response = detail_response(&state, &services, &parts.headers, &parts.uri).await;
     ProtectedCachePolicy::Private.apply(response.headers_mut());
     response
 }
@@ -54,7 +53,7 @@ struct QuotaParams {
     limit: Option<usize>,
 }
 
-async fn summary_response(state: &AppState, headers: &HeaderMap, uri: &Uri) -> Response {
+async fn summary_response(state: &AppState, services: &HttpDomainServices, headers: &HeaderMap, uri: &Uri) -> Response {
     let identity = match authenticate(state, headers).await {
         Ok(identity) => identity,
         Err(rejection) => return rejection.response(),
@@ -72,19 +71,15 @@ async fn summary_response(state: &AppState, headers: &HeaderMap, uri: &Uri) -> R
         Ok(bounds) => bounds,
         Err(message) => return bad_request(message),
     };
-    let mut rows = Vec::new();
-    for index in state.indexes.iter().skip(offset).take(limit + 1) {
-        match state.meta.quota_usage(&index.name) {
-            Ok(usage) => rows.push(repository_quota(index, &usage)),
-            Err(_) => return unavailable(),
-        }
-    }
+    let Ok(mut rows) = services.quota().summaries(&state.serving.indexes, offset, limit + 1) else {
+        return unavailable();
+    };
     let next_cursor = (rows.len() > limit).then(|| encode_cursor(offset + limit));
     rows.truncate(limit);
     axum::Json(json!({ "repositories": rows, "next_cursor": next_cursor })).into_response()
 }
 
-async fn detail_response(state: &AppState, headers: &HeaderMap, uri: &Uri) -> Response {
+async fn detail_response(state: &AppState, services: &HttpDomainServices, headers: &HeaderMap, uri: &Uri) -> Response {
     let identity = match authenticate(state, headers).await {
         Ok(identity) => identity,
         Err(rejection) => return rejection.response(),
@@ -102,10 +97,10 @@ async fn detail_response(state: &AppState, headers: &HeaderMap, uri: &Uri) -> Re
         Ok(index) => index,
         Err(rejection) => return rejection.response(),
     };
-    state.meta.quota_usage(&index.name).map_or_else(
-        |_| unavailable(),
-        |usage| axum::Json(repository_quota(index, &usage)).into_response(),
-    )
+    services
+        .quota()
+        .repository(index)
+        .map_or_else(|_| unavailable(), |quota| axum::Json(quota).into_response())
 }
 
 fn page_bounds(limit: Option<usize>, cursor: Option<&str>) -> Result<(usize, usize), &'static str> {
@@ -123,7 +118,7 @@ fn page_bounds(limit: Option<usize>, cursor: Option<&str>) -> Result<(usize, usi
 #[derive(Debug)]
 enum Identity {
     Local(UserId),
-    LegacyToken,
+    EcosystemCredential,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -145,25 +140,26 @@ impl Rejection {
     }
 }
 
-impl From<super::LegacyDenied> for Rejection {
-    fn from(denied: super::LegacyDenied) -> Self {
+impl From<super::EcosystemCredentialDenied> for Rejection {
+    fn from(denied: super::EcosystemCredentialDenied) -> Self {
         match denied {
-            super::LegacyDenied::Forbidden => Self::Forbidden,
-            super::LegacyDenied::Unauthorized => Self::Unauthorized,
+            super::EcosystemCredentialDenied::Forbidden => Self::Forbidden,
+            super::EcosystemCredentialDenied::Unauthorized => Self::Unauthorized,
         }
     }
 }
 
 async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<Identity, Rejection> {
-    let credentials = headers
+    let authorization = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-        .and_then(parse_basic)
         .ok_or(Rejection::Unauthorized)?;
-    if credentials.user == "__token__" {
-        return Ok(Identity::LegacyToken);
+    if state.recognizes_index_credential(authorization) {
+        return Ok(Identity::EcosystemCredential);
     }
+    let credentials = parse_basic(authorization).ok_or(Rejection::Unauthorized)?;
     state
+        .serving
         .users
         .authenticate(&credentials.user, &credentials.password)
         .await
@@ -173,15 +169,13 @@ async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<Identity,
 }
 
 fn require_administrator(state: &AppState, actor: &UserId) -> Result<(), Rejection> {
-    require_permission(
-        state
-            .authorization
-            .authorize_scoped(actor, Scope::AdministrationRead, &Resource::Operator),
-    )
+    require_permission(state.serving.authorization.authorize_scoped(
+        actor,
+        Scope::AdministrationRead,
+        &Resource::Operator,
+    ))
 }
 
-/// Resolve the named repository for a caller who can read it: a local user through the authorization
-/// service, a legacy token through the repository's own access rules.
 fn authorize_repository<'state>(
     state: &'state AppState,
     headers: &HeaderMap,
@@ -190,26 +184,27 @@ fn authorize_repository<'state>(
 ) -> Result<&'state Index, Rejection> {
     match identity {
         Identity::Local(actor) => authorize_local(state, actor, route),
-        Identity::LegacyToken => authorize_legacy(state, headers, route),
+        Identity::EcosystemCredential => authorize_ecosystem(state, headers, route),
     }
 }
 
 fn authorize_local<'state>(state: &'state AppState, actor: &UserId, route: &str) -> Result<&'state Index, Rejection> {
     let index = super::index_by_route(state, route).ok_or(Rejection::NotFound)?;
-    let decision =
-        state
-            .authorization
-            .authorize_scoped(actor, Scope::RepositoryRead, &Resource::Repository(index.name.clone()));
+    let decision = state.serving.authorization.authorize_scoped(
+        actor,
+        Scope::RepositoryRead,
+        &Resource::Repository(index.name.clone()),
+    );
     require_permission(decision)?;
     Ok(index)
 }
 
-fn authorize_legacy<'state>(
+fn authorize_ecosystem<'state>(
     state: &'state AppState,
     headers: &HeaderMap,
     route: &str,
 ) -> Result<&'state Index, Rejection> {
-    super::authorize_legacy_route(state, headers, route, Action::Read).map_err(Into::into)
+    super::authorize_ecosystem_credential(state, headers, route, Action::Read).map_err(Into::into)
 }
 
 const fn require_permission(decision: ScopedDecision) -> Result<(), Rejection> {

@@ -1,78 +1,54 @@
 +++
 title = "Getting started"
-description = "Install peryx, start it with no configuration, then continue with the ecosystem you serve: PyPI or OCI."
+description = "Install the binary, start a local process, and choose an ecosystem owner guide."
 weight = 1
 +++
 
-This page gets a peryx binary running on your machine. It is the same first two steps whatever you serve (install the
-binary, start the server), so it lives here in Core. Once peryx is listening, pick the ecosystem you use and its
-getting-started tutorial carries on from there: caching an upstream, installing or pulling, and publishing your own.
+## Install
 
-## Prerequisites
-
-Two things: a peryx binary, and a client for the ecosystem you serve: an installer like `pip` or `uv` for Python
-packages, or a container client like `docker` or `podman` for images. The ecosystem tutorial names the exact client.
-
-Install peryx through whichever channel fits; [installation](@/core/installation.md) lists them all:
-
-{% tabs(names="installer, uv, pip, from source") %}
+Use the installer on Unix:
 
 ```shell
-# standalone binary, no Python involved
 curl -LsSf https://github.com/tox-dev/peryx/releases/latest/download/peryx-installer.sh | sh
 ```
 
-%%%
+Or build from a checkout:
 
 ```shell
-uv tool install peryx
-```
-
-%%%
-
-```shell
-pip install peryx
-```
-
-%%%
-
-```shell
-# needs a Rust toolchain (https://rustup.rs); rust-toolchain.toml pins the version
-git clone https://github.com/tox-dev/peryx.git
-cd peryx
 cargo build --release
 ```
 
-{% end %}
+See [installation](@/core/installation.md) for Windows and update behavior.
 
-## Start peryx
-
-peryx needs no configuration to start. Run it and it listens on `127.0.0.1:4433` with a default topology: a cached proxy
-of an upstream, a private hosted store, and a virtual index combining them:
+## Start the process
 
 ```shell
-peryx serve            # ./target/release/peryx serve when built from source
+peryx serve
 ```
 
-Open [http://127.0.0.1:4433/](http://127.0.0.1:4433/) for the web dashboard: the configured indexes, their
-[roles](@/core/indexes.md), and live request counters. Leave the server running.
+A source build can run `./target/release/peryx serve`. With no config file, the process listens on
+`http://127.0.0.1:4433` and uses `availability.mode = "none"`. That mode starts no availability subsystem.
 
-## Continue with your ecosystem
+Check the shared status surface:
 
-peryx is up. From here the steps depend on what you serve: the client, the wire protocol, and how you publish differ by
-ecosystem. Follow the tutorial for yours:
+```shell
+curl --fail http://127.0.0.1:4433/+status
+```
 
-- [**PyPI**: Python packages](@/ecosystems/pypi/tutorials/getting-started.md): cache [pypi.org](https://pypi.org/),
-  install with [pip](https://pip.pypa.io/) and [uv](https://docs.astral.sh/uv/), publish a private package, then yank
-  and delete it.
-- [**OCI**: container images](@/ecosystems/oci/tutorials/getting-started.md): cache
-  [Docker Hub](https://hub.docker.com/), pull an image, build and push one of your own, then verify it round-trips.
+## Configure an ecosystem
 
-Each starts from a running peryx and takes about ten minutes.
+The binary includes the shipped ecosystem owners. Each `[[index]]` selects one with its `ecosystem` key; the
+`[availability]` table selects `none`, `dc`, or `ha` for the process. The TOML file holds both choices.
 
-## Where next
+Owner guides define valid IDs and owner-specific behavior:
 
-- [The index model](@/core/indexes.md): cached, hosted, and virtual indexes, and how a virtual index resolves.
-- [Issue your first access token](@/core/first-token.md): scope a token to a set of projects and publish through it.
-- [Configuration reference](@/core/configuration.md): every TOML key.
-- [Ecosystems](@/ecosystems/_index.md): the per-ecosystem "Set Me Up" hubs.
+- [Ecosystem owner documentation](@/ecosystems/_index.md)
+
+Use the [configuration reference](@/core/configuration.md) for shared process, storage, access, job, and availability
+keys. `peryx config check --config peryx.toml` rejects unknown owner IDs, unknown availability modes, and incomplete
+distributed settings before startup.
+
+## Default indexes
+
+With no explicit `[[index]]`, configuration collects default indexes from all linked owner registrations. Adding any
+explicit `[[index]]` replaces that complete default topology.

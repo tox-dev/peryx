@@ -1,5 +1,10 @@
 name: CodSpeed
 
+env:
+  GIT_CONFIG_COUNT: "1"
+  GIT_CONFIG_KEY_0: init.defaultBranch
+  GIT_CONFIG_VALUE_0: main
+
 on:
   push:
     branches: [main]
@@ -14,22 +19,22 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Pull requests build affected benchmark legs. Pushes and manual runs refresh the complete baseline.
   changes:
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     outputs:
       bench_matrix: ${{ steps.matrix.outputs.include }}
       workflow_changed: ${{ steps.filter.outputs.workflow }}
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
           filters: |
-            # Rust src/tests modules compile only under cfg(test), so they cannot affect benchmark binaries.
             shared:
+              - 'crates/peryx-archive/{Cargo.toml,build.rs,src/*,src/!(tests)/**,benches/**}'
               - 'crates/peryx-core/{Cargo.toml,build.rs,src/*,src/!(tests)/**,benches/**}'
               - 'crates/peryx-storage/{Cargo.toml,build.rs,src/*,src/!(tests)/**,benches/**}'
               - 'crates/peryx-http/{Cargo.toml,build.rs,src/*,src/!(tests)/**,benches/**}'
@@ -40,22 +45,32 @@ jobs:
               - 'crates/peryx-events/{Cargo.toml,build.rs,src/*,src/!(tests)/**,benches/**}'
               - 'crates/peryx-upstream/{Cargo.toml,build.rs,src/*,src/!(tests)/**,benches/**}'
               - 'crates/peryx-search/{Cargo.toml,build.rs,src/*,src/!(tests)/**,benches/**}'
-              - 'crates/peryx-replication/{Cargo.toml,build.rs,src/*,src/!(tests)/**,benches/**}'
+              - 'crates/peryx-ha/{Cargo.toml,build.rs,src/*,src/!(tests)/**,benches/**}'
+              - 'crates/peryx-ha-distributed/{Cargo.toml,build.rs,src/*,src/!(tests)/**,benches/**}'
+              - 'crates/peryx-plugin-registry/{Cargo.toml,build.rs,src/*,src/!(tests)/**,benches/**}'
+              - 'crates/peryx-bench-core/{Cargo.toml,build.rs,src/*,src/!(tests)/**,benches/**}'
+              - 'crates/peryx-pql/{Cargo.toml,build.rs,src/*,src/!(tests)/**,benches/**}'
               - 'crates/peryx/{Cargo.toml,build.rs,src/*,src/!(tests)/**,benches/**}'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.cargo/**'
               - 'rust-toolchain*'
+              - 'justfile'
             runner:
               - '.github/codspeed/**'
               - '.github/workflows/codspeed.yml'
               - 'ci/run-codspeed*.sh'
+              - 'scripts/ci/codspeed-*'
+              - 'justfile'
             workflow:
               - '.github/workflows/codspeed.yml'
             pypi:
               - 'crates/peryx-ecosystem-pypi/{Cargo.toml,build.rs,src/*,src/!(tests)/**,benches/**}'
             oci:
               - 'crates/peryx-ecosystem-oci/{Cargo.toml,build.rs,src/*,src/!(tests)/**,benches/**}'
+      - uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10
+        with:
+          tool: just
       - id: matrix
         env:
           EVENT: ${{ github.event_name }}
@@ -63,23 +78,9 @@ jobs:
           SHARED: ${{ steps.filter.outputs.shared }}
           OCI: ${{ steps.filter.outputs.oci }}
           PYPI: ${{ steps.filter.outputs.pypi }}
-        run: |
-          # The standard no-LTO benchmark profile keeps links short and within the standard ARM
-          # runner's memory, so both ecosystems build in parallel.
-          oci='{"ecosystem":"OCI","package":"peryx-ecosystem-oci","cargo_jobs":4}'
-          pypi='{"ecosystem":"PyPI","package":"peryx-ecosystem-pypi","cargo_jobs":4}'
-          legs=()
-          if [ "$EVENT" == "push" ] || [ "$EVENT" == "workflow_dispatch" ]; then
-            legs=("$oci" "$pypi")
-          elif [ "$SHARED" = "true" ]; then
-            legs=("$oci" "$pypi")
-          else
-            if [ "$OCI" = "true" ]; then legs+=("$oci"); fi
-            if [ "$PYPI" = "true" ]; then legs+=("$pypi"); fi
-            if [ ${#legs[@]} -eq 0 ] && [ "$RUNNER" = "true" ]; then legs+=("$pypi"); fi
-          fi
-          IFS=,
-          echo "include=[${legs[*]}]" >> "$GITHUB_OUTPUT"
+        run: >-
+          echo "include=$(just codspeed-matrix "$EVENT" "$RUNNER" "$SHARED"
+          --change "oci=$OCI" --change "pypi=$PYPI")" >> "$GITHUB_OUTPUT"
 
   baseline:
     name: Compatible baseline
@@ -90,14 +91,16 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
-      actions: write
       contents: read
     outputs:
       compatible: ${{ steps.baseline.outputs.compatible }}
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10
+        with:
+          tool: just
       - name: Find compatible baseline
         id: baseline
         env:
@@ -109,63 +112,32 @@ jobs:
           set -euo pipefail
           echo "compatible=false" >> "$GITHUB_OUTPUT"
 
-          for attempt in {1..90}; do
-            baseline=$(
-              gh run list \
-                --repo "$GH_REPO" \
-                --workflow codspeed.yml \
-                --branch "$DEFAULT_BRANCH" \
-                --commit "$BASE_SHA" \
-                --event push \
-                --limit 10 \
-                --json conclusion,createdAt,headSha,status,url \
-                --jq 'sort_by(.createdAt) | last // {}'
-            ) || exit 0
-            status=$(jq -r '.status // "missing"' <<< "$baseline")
-            if [[ "$status" == completed ]]; then
-              conclusion=$(jq -r '.conclusion' <<< "$baseline")
-              if [[ "$conclusion" != success ]]; then
-                echo "The exact base benchmark concluded: $conclusion"
-                exit 0
-              fi
-              echo "Found the exact base benchmark: $(jq -r '.url' <<< "$baseline")"
-              break
-            fi
-            echo "Waiting for the exact base benchmark ($status, attempt $attempt/90)."
-            sleep 10
-          done
-          if [[ "$status" != completed ]]; then
-            echo "The exact base benchmark did not complete within 15 minutes."
-            exit 0
+          baseline=$(gh run list \
+            --repo "$GH_REPO" \
+            --workflow codspeed.yml \
+            --branch "$DEFAULT_BRANCH" \
+            --commit "$BASE_SHA" \
+            --event push \
+            --limit 10 \
+            --json conclusion,createdAt,headSha,status,url \
+            --jq 'sort_by(.createdAt) | last // {}')
+          status=$(jq -r '.status // "missing"' <<< "$baseline")
+          conclusion=$(jq -r '.conclusion // "missing"' <<< "$baseline")
+          if [[ "$status" != completed || "$conclusion" != success ]]; then
+            printf 'exact base benchmark is not ready: %s/%s\n' "$status" "$conclusion" >&2
+            exit 1
           fi
+          echo "Found the exact base benchmark: $(jq -r '.url' <<< "$baseline")"
 
           git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null || git fetch --depth=1 origin "$BASE_SHA"
 
-          runtime_id() {
-            local revision=$1
-            local path
-            {
-              for path in \
-                .github/codspeed/Dockerfile \
-                .github/workflows/codspeed.yml \
-                ci/run-codspeed.sh; do
-                printf '%s\0' "$path"
-                git show "$revision:$path"
-                printf '\0'
-              done
-            } | sha256sum | cut -d ' ' -f 1
-          }
-
-          head_runtime=$(runtime_id HEAD)
-          base_runtime=$(runtime_id "$BASE_SHA")
+          head_runtime=$(just codspeed-runtime-id HEAD)
+          base_runtime=$(just codspeed-runtime-id "$BASE_SHA")
           if [[ "$head_runtime" == "$base_runtime" ]]; then
             echo "compatible=true" >> "$GITHUB_OUTPUT"
           else
             echo "The pull request changes the benchmark runtime; results will not be uploaded."
           fi
-      - name: Cancel remaining jobs on failure
-        if: failure() && !cancelled()
-        uses: ./.github/actions/cancel-on-failure
 
   codspeed-image:
     name: CodSpeed runtime image
@@ -174,30 +146,36 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
     permissions:
-      actions: write
       contents: read
       packages: write
     outputs:
       available: ${{ steps.image.outputs.available }}
       image: ${{ steps.image.outputs.image }}
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 2
           persist-credentials: false
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10
+        with:
+          tool: just
       - name: Resolve immutable runtime image
         id: image
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           EVENT: ${{ github.event_name }}
-          GH_TOKEN: ${{ github.token }}
           IMAGE: ghcr.io/${{ github.repository_owner }}/peryx-codspeed
         run: |
           set -euo pipefail
-          echo "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
-          definition=$(sha256sum .github/codspeed/Dockerfile | cut -d ' ' -f 1)
-          tag="$IMAGE:definition-$definition"
+          tag=$(just codspeed-image-tag "$IMAGE")
+          definition=${tag##*:definition-}
           digest=$(docker buildx imagetools inspect "$tag" --format '{{.Manifest.Digest}}' 2>/dev/null || true)
           if [[ "$digest" == sha256:* ]]; then
             echo "available=true" >> "$GITHUB_OUTPUT"
@@ -226,18 +204,11 @@ jobs:
             exit 0
           fi
 
-          "${build[@]}" --provenance=mode=max --sbom=true --push .
-          for attempt in {1..5}; do
-            digest=$(docker buildx imagetools inspect "$tag" --format '{{.Manifest.Digest}}' 2>/dev/null || true)
-            [[ "$digest" == sha256:* ]] && break
-            sleep $((attempt * 2))
-          done
-          [[ "$digest" == sha256:* ]]
+          metadata_file="$RUNNER_TEMP/codspeed-image-metadata.json"
+          "${build[@]}" --metadata-file "$metadata_file" --provenance=mode=max --sbom=true --push .
+          digest=$(jq -er '."containerimage.digest" | select(startswith("sha256:"))' "$metadata_file")
           echo "available=true" >> "$GITHUB_OUTPUT"
           echo "image=$IMAGE@$digest" >> "$GITHUB_OUTPUT"
-      - name: Cancel remaining jobs on failure
-        if: failure() && !cancelled()
-        uses: ./.github/actions/cancel-on-failure
 
   operations:
     name: ${{ matrix.ecosystem }} operation benchmarks
@@ -249,24 +220,14 @@ jobs:
       needs.codspeed-image.outputs.available == 'true' &&
       needs.changes.outputs.bench_matrix != '[]'
     concurrency:
-      # GitHub left ARM jobs running after workflow-level cancellation in #280.
+      # This catches ARM jobs missed by workflow cancellation in #280.
       group: codspeed-${{ matrix.ecosystem }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
       cancel-in-progress: true
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.changes.outputs.bench_matrix) }}
     runs-on: ubuntu-24.04-arm
-    container:
-      image: ${{ needs.codspeed-image.outputs.image }} # zizmor: ignore[unpinned-images] output is digest-pinned
-      # CodSpeed's Valgrind runner uses setarch; Docker's default seccomp profile blocks personality.
-      options: --security-opt seccomp=unconfined
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ github.token }}
-    defaults:
-      run:
-        shell: bash
     timeout-minutes: 30
     permissions:
       actions: read
@@ -274,152 +235,76 @@ jobs:
       id-token: write
       packages: read
     env:
-      # GitHub hands out heterogeneous ARM CPUs for ubuntu-24.04-arm. glibc then picks CPU-specific
-      # memcpy/memset/malloc paths per runner, so cachegrind (simulation mode) measures the same
-      # benchmark differently and reports phantom regressions on unrelated benchmarks. Forcing the
-      # generic aarch64 code path and a single malloc arena makes the measurement CPU-independent.
-      # See CodSpeed's write-up on runner CPU variance (codspeed.io/blog/why-glibc-faster-github-actions).
-      GLIBC_TUNABLES: glibc.cpu.name=generic:glibc.malloc.arena_max=1
-      # cargo codspeed builds with the release profile, whose project-wide fat LTO does a serial,
-      # memory-heavy whole-program link. Cargo's standard optimized benchmark profile disables LTO;
-      # use that here so changed sources remain quick to link. Production and dist builds keep LTO.
-      CARGO_PROFILE_RELEASE_LTO: "false"
       CODSPEED_SKIP_UPLOAD: >-
         ${{ github.event_name == 'pull_request' &&
             (needs.changes.outputs.workflow_changed == 'true' || needs.baseline.outputs.compatible != 'true') }}
+      PERYX_CODSPEED_IMAGE: ${{ needs.codspeed-image.outputs.image }}
+      PERYX_CODSPEED_REGISTRY_ACTOR: ${{ github.actor }}
+      PERYX_CODSPEED_REGISTRY_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10
+        with:
+          tool: just
       - name: Compute benchmark source key
         id: source
-        run: |
-          git config --global --add safe.directory "$(pwd)"
-          git ls-files -s -- \
-            .cargo \
-            .github/codspeed \
-            .github/workflows/codspeed.yml \
-            ci/run-codspeed.sh \
-            crates \
-            Cargo.lock \
-            Cargo.toml \
-            rust-toolchain.toml \
-            | sha256sum \
-            | sed 's/ .*//' \
-            | xargs -I {} echo "key={}" >> "$GITHUB_OUTPUT"
-      # rust-cache removes workspace outputs before saving. That made an exact 848 MB cache hit
-      # recompile and relink every benchmark for eight minutes. Retain the complete CodSpeed target;
-      # source-specific keys make main reruns immediate, while pull requests restore the newest main
-      # artifacts for incremental builds without filling the cache with merge-ref-only archives.
+        run: echo "key=$(just codspeed-source-key)" >> "$GITHUB_OUTPUT"
+      # rust-cache drops workspace outputs and forces benchmark relinking.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: benchmark-cache
         with:
           path: |
-            /usr/local/cargo/git/db
-            /usr/local/cargo/registry/cache
-            /usr/local/cargo/registry/index
-            target
+            .tox/codspeed/cargo/git/db
+            .tox/codspeed/cargo/registry/cache
+            .tox/codspeed/cargo/registry/index
+            .tox/codspeed/target
           key: codspeed-v3-${{ runner.os }}-${{ runner.arch }}-${{ matrix.package }}-${{ steps.source.outputs.key }}
           restore-keys: codspeed-v3-${{ runner.os }}-${{ runner.arch }}-${{ matrix.package }}-
-      # Cargo uses mtimes for freshness. Age files only when their blobs match the cached manifest, so
-      # a pull request rebuilds changed sources while reusing every unaffected main-branch artifact.
+      # Preserve timestamps only for sources represented by the cache key.
       - name: Preserve cached benchmark build
         if: steps.benchmark-cache.outputs.cache-matched-key != ''
         env:
           CURRENT_KEY: codspeed-v3-${{ runner.os }}-${{ runner.arch }}-${{ matrix.package }}-${{ steps.source.outputs.key }}
           RESTORED_KEY: ${{ steps.benchmark-cache.outputs.cache-matched-key }}
-        run: |
-          if [[ -f target/codspeed-sources ]]; then
-            comm -z -12 \
-              <(sort -z target/codspeed-sources) \
-              <(git ls-files -s -z -- .cargo crates Cargo.lock Cargo.toml rust-toolchain.toml | sort -z) \
-              | cut -z -f2 \
-              | xargs -0 -r touch --date=@0 --
-          elif [[ "$RESTORED_KEY" == "$CURRENT_KEY" ]]; then
-            git ls-files -z -- .cargo crates Cargo.lock Cargo.toml rust-toolchain.toml \
-              | xargs -0 touch --date=@0 --
-          fi
-      - run: ci/run-codspeed.sh ${{ matrix.package }} ${{ matrix.cargo_jobs }}
+        run: just codspeed-preserve-cache "$CURRENT_KEY" "$RESTORED_KEY"
+      - run: just codspeed ${{ matrix.package }} ${{ matrix.cargo_jobs }}
         env:
           GH_MATRIX: ${{ toJSON(matrix) }}
           GH_STRATEGY: ${{ toJSON(strategy) }}
       - name: Record benchmark sources
         if: github.ref == 'refs/heads/main' && steps.benchmark-cache.outputs.cache-hit != 'true'
-        run: git ls-files -s -z -- .cargo crates Cargo.lock Cargo.toml rust-toolchain.toml > target/codspeed-sources
+        run: just codspeed-record-sources
       - name: Save benchmark cache
         if: github.ref == 'refs/heads/main' && steps.benchmark-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            /usr/local/cargo/git/db
-            /usr/local/cargo/registry/cache
-            /usr/local/cargo/registry/index
-            target
+            .tox/codspeed/cargo/git/db
+            .tox/codspeed/cargo/registry/cache
+            .tox/codspeed/cargo/registry/index
+            .tox/codspeed/target
           key: codspeed-v3-${{ runner.os }}-${{ runner.arch }}-${{ matrix.package }}-${{ steps.source.outputs.key }}
 
-  analysis:
-    name: CodSpeed analysis
-    if: always()
-    needs: [changes, baseline, operations]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    permissions:
-      actions: read
-      checks: read
-      contents: read
-    steps:
-      - name: Verify the aggregate analysis
-        env:
-          ANALYSIS_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          EXPECT_ANALYSIS: >-
-            ${{ github.event_name == 'pull_request' &&
-                needs.changes.outputs.bench_matrix != '[]' &&
-                needs.changes.outputs.workflow_changed != 'true' &&
-                needs.baseline.outputs.compatible == 'true' &&
-                needs.operations.result == 'success' }}
-          GH_REPO: ${{ github.repository }}
-          GH_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ github.run_id }}
-        run: |
-          if [[ "$EXPECT_ANALYSIS" != true ]]; then
-            echo "No uploaded pull-request analysis is expected."
-            exit 0
-          fi
-
-          run_started_at=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID" --jq .created_at)
-          for attempt in {1..60}; do
-            check=$(gh api "repos/$GH_REPO/commits/$ANALYSIS_SHA/check-runs?per_page=100" \
-              | jq --arg started "$run_started_at" \
-                '[.check_runs[] | select(.name == "CodSpeed Performance Analysis" and .app.slug == "codspeed-hq" and .started_at >= $started)] | sort_by(.started_at) | last // {}')
-            status=$(jq -r '.status // "missing"' <<< "$check")
-            if [[ "$status" == completed ]]; then
-              conclusion=$(jq -r '.conclusion' <<< "$check")
-              echo "CodSpeed analysis concluded: $conclusion"
-              [[ "$conclusion" == success ]]
-              exit
-            fi
-            echo "Waiting for aggregate CodSpeed analysis ($status, attempt $attempt/60)."
-            sleep 10
-          done
-          echo "::warning::CodSpeed did not publish aggregate analysis within 10 minutes; benchmark uploads succeeded."
-          echo "CodSpeed analysis unavailable" >> "$GITHUB_STEP_SUMMARY"
-
-  # Required-status-check anchor: branch protection requires this job, not base/operations, because a
-  # skipped required check blocks merge on GitHub. Passes when every dependency succeeded or skipped;
-  # fails if any failed or was cancelled.
+  # Branch protection requires an unconditional gate.
   codspeed-gate:
     if: always()
-    needs: [changes, baseline, codspeed-image, operations, analysis]
+    needs: [changes, baseline, codspeed-image, operations]
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
-      - name: Verify no required job failed
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10
+        with:
+          tool: just
+      - name: Verify required jobs
         env:
-          RESULTS: ${{ join(needs.*.result, ' ') }}
-        run: |
-          echo "dependency results: $RESULTS"
-          for result in $RESULTS; do
-            case "$result" in
-              failure|cancelled) echo "a required job reported: $result"; exit 1 ;;
-            esac
-          done
-          echo "all required jobs passed or were skipped"
+          CI_CONTEXT: >-
+            {"event":"${{ github.event_name }}",
+            "benchmarks":${{ needs.changes.outputs.bench_matrix != '[]' }},
+            "image_available":${{ needs.codspeed-image.outputs.available == 'true' }}}
+          CI_RESULTS: ${{ toJSON(needs) }}
+        run: just ci-gate codspeed

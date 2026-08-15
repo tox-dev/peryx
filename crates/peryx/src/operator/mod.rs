@@ -1,5 +1,3 @@
-//! Operator workflows for offline state movement and local artifact import.
-
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read as _, Write};
@@ -21,14 +19,18 @@ mod verify;
 mod writer;
 
 #[cfg(test)]
-#[path = "parent_tests.rs"]
+#[path = "../../tests/unit/tests/operator/parent_tests.rs"]
 mod parent_tests;
 
-pub use backup::backup_create;
-pub use import::import_dir;
-pub use restore::restore;
-pub use verify::backup_verify;
-pub use writer::{claim_writer, promote_writer};
+#[cfg(test)]
+#[path = "../../tests/unit/tests/operator/mod.rs"]
+mod tests;
+
+pub use backup::{backup_create, backup_create_with_plugins};
+pub use import::{import_dir, import_dir_with_plugins};
+pub use restore::{restore, restore_with_plugins};
+pub use verify::{backup_verify, backup_verify_with_plugins};
+pub use writer::{claim_writer, claim_writer_with_plugins, promote_writer, promote_writer_with_plugins};
 
 const BACKUP_FORMAT: u32 = 2;
 const BUFFER_BYTES: usize = 1024 * 1024;
@@ -121,6 +123,25 @@ fn config_availability(config: &Config) -> (String, Option<ManifestMembership>) 
     )
 }
 
+fn backup_config_with_plugins(
+    backup: &Path,
+    manifest: &BackupManifest,
+    plugins: &peryx_plugin_registry::PluginRegistry,
+) -> anyhow::Result<Config> {
+    let path = backup.join(&manifest.config.path);
+    let text = std::fs::read_to_string(&path).with_context(|| format!("read backup config {}", path.display()))?;
+    Config::with_plugins(plugins)
+        .apply_with_plugins(crate::config::from_toml(path, &text)?, plugins)
+        .context("parse backup config snapshot")
+}
+
+fn backup_plugins(
+    config: &Config,
+    plugins: &peryx_plugin_registry::PluginRegistry,
+) -> anyhow::Result<peryx_plugin_registry::PluginRegistry> {
+    crate::server::activate_plugins(config, plugins)
+}
+
 fn manifest_membership(membership: &DcMembership) -> ManifestMembership {
     ManifestMembership {
         group: membership.group.clone(),
@@ -175,15 +196,16 @@ fn create_private_dir_all(path: &Path) -> anyhow::Result<()> {
 
 /// Strip group and other access from an existing directory so a pre-created backup root cannot leak
 /// its contents. A no-op on platforms without Unix modes.
+#[cfg(unix)]
 fn tighten_private_dir(path: &Path) -> anyhow::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-            .context(format!("tighten backup directory {}", path.display()))?;
-    }
-    #[cfg(not(unix))]
-    let _ = path;
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+        .context(format!("tighten backup directory {}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn tighten_private_dir(_path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
@@ -215,7 +237,18 @@ fn read_manifest(path: &Path) -> anyhow::Result<BackupManifest> {
     if manifest.format != BACKUP_FORMAT {
         bail!("unsupported backup format {}", manifest.format);
     }
+    ensure_manifest_path(&manifest.config.path, "config.toml", "config")?;
+    ensure_manifest_path(&manifest.metadata.path, "metadata/peryx.redb", "metadata")?;
+    ensure_manifest_path(&manifest.blob_index.file.path, "blobs.tsv", "blob index")?;
     Ok(manifest)
+}
+
+fn ensure_manifest_path(actual: &str, expected: &str, kind: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        actual == expected,
+        "invalid {kind} path {actual:?}; expected {expected:?}"
+    );
+    Ok(())
 }
 
 /// Name the directory a hashed file is written below. Backup and restore targets always nest under a
@@ -223,7 +256,7 @@ fn read_manifest(path: &Path) -> anyhow::Result<BackupManifest> {
 /// error rather than crashing the operator flow.
 fn hashed_parent(path: &Path) -> anyhow::Result<&Path> {
     path.parent()
-        .with_context(|| format!("hashed file {} has no parent directory", path.display()))
+        .context(format!("hashed file {} has no parent directory", path.display()))
 }
 
 fn copy_hashed(source: &Path, dest: &Path, manifest_path: &str, access: Access) -> anyhow::Result<ManifestFile> {

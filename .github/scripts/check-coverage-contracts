@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+metadata=
+root_index=
+packages_file=
+while (($#)); do
+  case $1 in
+    --metadata)
+      metadata=${2:?pass Cargo metadata}
+      shift 2
+      ;;
+    --root-index)
+      root_index=${2:?pass a source-root index}
+      shift 2
+      ;;
+    --packages-file)
+      packages_file=${2:?pass a package list}
+      shift 2
+      ;;
+    *) break ;;
+  esac
+done
+(($#)) || { printf 'pass at least one coverage artifact root\n' >&2; exit 2; }
+
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+if [[ -z $metadata ]]; then
+  metadata=$scratch/metadata.json
+  cargo metadata --no-deps --format-version 1 >"$metadata"
+fi
+if [[ -z $root_index ]]; then
+  root_index=$scratch/root-index
+  "$repo/.github/scripts/package-source-roots" --metadata "$metadata" --index >"$root_index"
+fi
+if [[ -z $packages_file ]]; then
+  packages_file=$scratch/packages
+  "$repo/scripts/ci/workspace-package-list" contracts >"$packages_file"
+fi
+
+: >"$scratch/contracts"
+: >"$scratch/reports"
+for artifact_root in "$@"; do
+  if [[ -d $artifact_root ]]; then
+    find "$artifact_root" -type f -name '*.contract.json' -print
+  elif [[ $artifact_root == *.contract.json ]]; then
+    printf '%s\n' "$artifact_root"
+  else
+    printf '%s\n' "$artifact_root" >>"$scratch/reports"
+    directory=$(dirname -- "$artifact_root")
+    find "$directory" -maxdepth 2 -type f -name '*.contract.json' -print
+  fi
+done | sort -u >"$scratch/contracts"
+
+while IFS= read -r package; do
+  matches=$(while IFS= read -r contract; do
+    [[ $(jq -r '.package // empty' "$contract") == "$package" ]] && printf '%s\n' "$contract"
+  done <"$scratch/contracts"; true)
+  match_count=$(awk 'NF { count++ } END { print count + 0 }' <<<"$matches")
+  if ((match_count != 1)); then
+    printf 'expected one coverage contract for %s, found %s\n' "$package" "$match_count" >&2
+    exit 1
+  fi
+  report_name=$(jq -er '.report' "$matches")
+  report=$(dirname -- "$matches")/$report_name
+  if [[ ! -f $report ]]; then
+    report_matches=$(while IFS= read -r candidate; do
+      [[ $(basename -- "$candidate") == "$report_name" ]] && printf '%s\n' "$candidate"
+    done <"$scratch/reports"; true)
+    report_match_count=$(awk 'NF { count++ } END { print count + 0 }' <<<"$report_matches")
+    if ((report_match_count != 1)); then
+      printf 'expected one report for %s, found %s\n' "$package" "$report_match_count" >&2
+      exit 1
+    fi
+    report=$report_matches
+  fi
+  "$repo/.github/scripts/coverage-contract" verify --metadata "$metadata" --root-index "$root_index" \
+    "$matches" "$report"
+done <"$packages_file"

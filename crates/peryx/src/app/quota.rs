@@ -1,5 +1,3 @@
-//! Quota status reads over the local store: a table of every repository, or one repository as JSON.
-//!
 //! Both resolve the configured indexes so a repository's limits come from its policy, and read the
 //! committed and reserved counters the store maintains rather than scanning artifacts. `list` prints a
 //! tab-separated row per repository; `inspect` prints one repository's full status as JSON. Neither
@@ -15,14 +13,25 @@ use crate::cli::{QuotaCommand, QuotaInspectArgs};
 use crate::config::Config;
 use crate::server;
 
-/// Run a quota command against the configured store.
-///
 /// # Errors
 /// Returns an error if the configured indexes cannot be built, the metadata store cannot be read, the
 /// named index is unknown, or output fails.
 pub fn quota(config: &Config, command: &QuotaCommand, out: &mut dyn Write) -> anyhow::Result<()> {
-    let stores = CacheStores::open(config)?;
-    let indexes = server::build_indexes(&config.indexes, &config.auth, config.offline)?;
+    quota_with_plugins(config, &crate::compiled_plugins(), command, out)
+}
+
+/// # Errors
+///
+/// Returns an error when store access, index construction or lookup, serialization, or output fails.
+pub fn quota_with_plugins(
+    config: &Config,
+    plugins: &peryx_plugin_registry::PluginRegistry,
+    command: &QuotaCommand,
+    out: &mut dyn Write,
+) -> anyhow::Result<()> {
+    let plugins = crate::server::activate_plugins(config, plugins)?;
+    let stores = CacheStores::open(config, &plugins, false)?;
+    let indexes = server::build_indexes_with_plugins(&config.indexes, &config.auth, config.offline, &plugins)?;
     match command {
         QuotaCommand::List(_) => list(&stores, &indexes, out),
         QuotaCommand::Inspect(args) => inspect(&stores, &indexes, args, out),
@@ -32,7 +41,7 @@ pub fn quota(config: &Config, command: &QuotaCommand, out: &mut dyn Write) -> an
 fn list(stores: &CacheStores, indexes: &[peryx_driver::Index], out: &mut dyn Write) -> anyhow::Result<()> {
     writeln!(
         out,
-        "repository\tecosystem\tused_bytes\treserved_bytes\tbyte_limit\tremaining_bytes\tprojects\tproject_limit\taudit"
+        "repository\tecosystem\tused_bytes\treserved_bytes\tbyte_limit\tremaining_bytes\tresources\tresource_limit\taudit"
     )?;
     for index in indexes {
         let usage = read_usage(stores, &index.name)?;
@@ -46,8 +55,8 @@ fn list(stores: &CacheStores, indexes: &[peryx_driver::Index], out: &mut dyn Wri
             status.accounted_bytes.reserved,
             optional(status.accounted_bytes.limit),
             optional(status.accounted_bytes.remaining),
-            status.projects.committed,
-            optional(status.projects.limit),
+            status.resources.committed,
+            optional(status.resources.limit),
             status.limits.audit,
         )?;
     }
@@ -80,3 +89,7 @@ fn read_usage(stores: &CacheStores, name: &str) -> anyhow::Result<peryx_storage:
 fn optional(value: Option<u64>) -> String {
     value.map_or_else(|| "-".to_owned(), |value| value.to_string())
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/tests/app/quota_tests.rs"]
+mod tests;

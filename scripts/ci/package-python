@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+kind=${1:?package kind is required}
+output=${2:?output directory is required}
+shift 2
+case "$kind" in
+    wheel)
+        exec maturin build --release --locked --out "$output" "$@"
+        ;;
+    sdist)
+        exec maturin sdist --out "$output"
+        ;;
+    *)
+        printf 'unknown package kind: %s\n' "$kind" >&2
+        exit 2
+        ;;
+esac

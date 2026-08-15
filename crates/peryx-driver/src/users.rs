@@ -10,11 +10,7 @@ use tokio::sync::Semaphore;
 /// count so a burst of logins cannot starve request serving.
 const DEFAULT_PASSWORD_CHECKS: usize = 4;
 
-/// Application operations over persistent server users, including local password authentication.
-///
-/// Password derivation is memory-hard by design, so every hash and every check runs on the blocking
-/// pool rather than a request worker, and a semaphore caps how many run at once. A flood of logins
-/// therefore bounds its own memory and never consumes the threads that serve packages.
+/// Persistent users and bounded local-password authentication.
 #[derive(Debug, Clone)]
 pub struct UserService {
     store: MetaStore,
@@ -41,13 +37,11 @@ pub enum BootstrapError {
 }
 
 impl UserService {
-    /// Build a service with the OWASP-recommended password policy and the default check concurrency.
     #[must_use]
     pub fn new(store: MetaStore) -> Self {
         Self::with_password_settings(store, PasswordPolicy::recommended(), DEFAULT_PASSWORD_CHECKS)
     }
 
-    /// Build a service with an explicit password policy and a cap on concurrent password derivations.
     #[must_use]
     pub fn with_password_settings(store: MetaStore, policy: PasswordPolicy, max_concurrent_checks: usize) -> Self {
         Self {
@@ -57,24 +51,18 @@ impl UserService {
         }
     }
 
-    /// Create an active server user.
-    ///
     /// # Errors
     /// Returns a validation, uniqueness, or storage error.
     pub fn create(&self, display_name: &str) -> Result<ServerUser, UserStoreError> {
         self.store.create_user(display_name)
     }
 
-    /// Inspect a server user by stable ID, whether active or disabled.
-    ///
     /// # Errors
     /// Returns a storage error when the user cannot be read.
     pub fn inspect(&self, id: &UserId) -> Result<Option<ServerUser>, MetaError> {
         self.store.get_user(id)
     }
 
-    /// Resolve an active identity by display name.
-    ///
     /// Disabled users remain inspectable but do not resolve through this operation.
     ///
     /// # Errors
@@ -86,40 +74,30 @@ impl UserService {
             .filter(|user| user.state == UserState::Active))
     }
 
-    /// Change a user's display name while preserving its stable ID.
-    ///
     /// # Errors
     /// Returns a validation, uniqueness, missing-user, or storage error.
     pub fn rename(&self, id: &UserId, display_name: &str) -> Result<ServerUser, UserStoreError> {
         self.store.rename_user(id, display_name)
     }
 
-    /// Stop a user from resolving as an identity.
-    ///
     /// # Errors
     /// Returns a missing-user or storage error.
     pub fn disable(&self, id: &UserId) -> Result<ServerUser, UserStoreError> {
         self.store.set_user_state(id, UserState::Disabled)
     }
 
-    /// Allow a disabled user to resolve as an identity again.
-    ///
     /// # Errors
     /// Returns a missing-user or storage error.
     pub fn reactivate(&self, id: &UserId) -> Result<ServerUser, UserStoreError> {
         self.store.set_user_state(id, UserState::Active)
     }
 
-    /// Read one user's actor-neutral lifecycle history.
-    ///
     /// # Errors
     /// Returns a storage error when the events cannot be read.
     pub fn events(&self, id: &UserId) -> Result<Vec<UserLifecycleEvent>, MetaError> {
         self.store.user_events(id)
     }
 
-    /// Enroll or replace a user's password, discarding the plaintext once a verifier is derived.
-    ///
     /// # Errors
     /// Returns [`EnrollError::Hash`] when derivation fails and [`EnrollError::Store`] for an unknown
     /// user or a storage failure.
@@ -129,8 +107,6 @@ impl UserService {
         Ok(())
     }
 
-    /// Derive a password verifier on the bounded worker pool and commit the first administrator.
-    ///
     /// # Errors
     /// Returns [`BootstrapError::Hash`] when derivation fails or [`BootstrapError::Store`] when an
     /// administrator already exists, the identity conflicts, or the metadata transaction aborts.
@@ -144,7 +120,7 @@ impl UserService {
     }
 
     /// Remove a user's password, leaving the account unable to authenticate by password until a new one
-    /// is enrolled — the recovery path when a local password is lost.
+    /// is enrolled - the recovery path when a local password is lost.
     ///
     /// # Errors
     /// Returns a missing-user or storage error.
@@ -152,10 +128,8 @@ impl UserService {
         self.store.clear_user_password(id)
     }
 
-    /// Authenticate a display name and password, returning the stable user ID on success.
-    ///
     /// An unknown name, a disabled account, a passwordless account, and a wrong password all fail the
-    /// same way — `Ok(None)` after spending one derivation's worth of work — so none is distinguishable
+    /// same way - `Ok(None)` after spending one derivation's worth of work - so none is distinguishable
     /// from the others by its response or its timing. A successful check whose verifier has fallen
     /// behind the policy re-enrolls it under the same ID before returning, and a failure to do so does
     /// not deny the login that already succeeded.
@@ -198,8 +172,7 @@ impl UserService {
         self.gated(move || policy.spend_decoy(&password)).await;
     }
 
-    /// Run one memory-hard derivation on the blocking pool, holding a semaphore permit for its whole
-    /// span so a login burst neither runs on a request worker nor exceeds the configured concurrency.
+    // Password derivation must not consume async request workers.
     async fn gated<T: Send + 'static>(&self, work: impl FnOnce() -> T + Send + 'static) -> T {
         let permit = Arc::clone(&self.verifications)
             .acquire_owned()

@@ -1,5 +1,3 @@
-//! One downloadable file and its per-file markers (yank, core metadata, provenance).
-
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -56,7 +54,6 @@ pub enum CoreMetadata {
 }
 
 impl CoreMetadata {
-    /// Whether the file does not advertise a core-metadata sibling.
     #[must_use]
     pub const fn is_absent(&self) -> bool {
         matches!(self, Self::Absent)
@@ -165,7 +162,6 @@ impl File {
         self.hashes.get("sha256").map(String::as_str)
     }
 
-    /// The effective metadata sibling advertised by either spelling, preferring the current key.
     #[must_use]
     pub const fn metadata(&self) -> &CoreMetadata {
         if self.core_metadata.is_absent() {
@@ -181,7 +177,6 @@ impl File {
         self.dist_info_metadata = CoreMetadata::Absent;
     }
 
-    /// Set both metadata spellings for locally extracted metadata.
     pub fn set_metadata(&mut self, metadata: CoreMetadata) {
         self.core_metadata = metadata.clone();
         self.dist_info_metadata = metadata;

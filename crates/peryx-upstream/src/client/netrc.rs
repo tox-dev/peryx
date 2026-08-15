@@ -1,5 +1,3 @@
-//! Startup-loaded netrc credentials for upstream HTTP origins.
-
 use std::fmt;
 use std::fs::File;
 use std::io::Read as _;
@@ -9,7 +7,6 @@ use url::{Host, Url};
 
 use super::Auth;
 
-/// Credentials parsed from one operator-selected netrc file.
 pub struct Netrc {
     parsed: uv_netrc::Netrc,
 }
@@ -24,7 +21,7 @@ impl fmt::Debug for Netrc {
 }
 
 impl Netrc {
-    /// Read, permission-check, and parse `path`.
+    /// Checks file type and Unix ownership and permissions before parsing.
     ///
     /// # Errors
     /// Returns [`NetrcError`] when the file cannot be read, is not a regular file, has unsafe Unix
@@ -52,18 +49,14 @@ impl Netrc {
         Ok(Self { parsed })
     }
 
-    /// Resolve Basic credentials for a URL string.
-    ///
     /// # Errors
     /// Returns [`url::ParseError`] when `url` is invalid.
     pub fn auth_for_str(&self, url: &str) -> Result<Auth, url::ParseError> {
         Url::parse(url).map(|url| self.auth_for(&url))
     }
 
-    /// Resolve Basic credentials for `url`.
-    ///
-    /// Origin-form entries have the highest precedence, followed by `host:port`, a pip-compatible
-    /// bare host, and `default`. Empty entries do not authenticate.
+    /// Origin-form entries have the highest precedence, followed by `host:port`, a bare host, and
+    /// `default`. Empty entries do not authenticate.
     #[must_use]
     pub fn auth_for(&self, url: &Url) -> Auth {
         let Some(host) = url.host() else {
@@ -102,7 +95,7 @@ impl Netrc {
     }
 }
 
-/// A redacted netrc startup error.
+/// Error messages omit netrc contents.
 #[derive(Debug, thiserror::Error)]
 pub enum NetrcError {
     #[error("cannot read netrc file {path}: {source}")]

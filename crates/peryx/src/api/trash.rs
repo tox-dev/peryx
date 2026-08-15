@@ -1,5 +1,3 @@
-//! The `OpenAPI` description of the operator trash-inspection endpoints.
-
 use serde_json::json;
 use utoipa::openapi::path::{HttpMethod, OperationBuilder, ParameterBuilder, ParameterIn, PathItemBuilder};
 use utoipa::openapi::{PathsBuilder, Required, ResponseBuilder, SecurityRequirement};
@@ -22,10 +20,10 @@ pub(super) fn trash_paths(paths: PathsBuilder) -> PathsBuilder {
 
 fn trash_record_example() -> serde_json::Value {
     json!({
-        "ecosystem": "pypi",
+        "ecosystem": "example",
         "repository": "hosted",
         "name": "example",
-        "reference": "example-1.0-py3-none-any.whl",
+        "reference": "example-1.0.bin",
         "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         "reason": "compromised build",
         "actor": "usr_550e8400e29b41d4a716446655440000",
@@ -41,22 +39,19 @@ fn list_trash() -> OperationBuilder {
         .tag("operations")
         .summary(Some("List trashed artifacts"))
         .description(Some(
-            "Soft-deleted PyPI and OCI artifacts across repositories, newest deletion first. An \
-             administrator inspects every repository and sees the deleting actor; a repository reader \
-             inspects one repository they can read, with actor details redacted by the role filter. A \
-             repository's legacy upload token retains access to that repository under the `__token__` \
-             username. `restorable` and its `state` are derived from whether the content is still \
-             retained and the recovery window is open; a record leaves the window after its \
-             `deadline_unix`. Responses carry no credentials or request headers and never enter a \
-             shared cache.",
+            "Soft-deleted artifacts across repositories, newest first. Administrators can inspect every \
+             repository and see actor details. Repository readers and authorized ecosystem credentials \
+             can inspect one repository; role filtering redacts actor details. `restorable` and `state` \
+             reflect content retention and the recovery deadline. Responses exclude credentials and \
+             request headers and use `no-store`.",
         ))
-        .security(SecurityRequirement::new("uploadToken", Vec::<String>::new()))
+        .security(SecurityRequirement::new("writeToken", Vec::<String>::new()))
         .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
         .response(
             "200",
             api_json_response(
                 "The matching trash records, newest first",
-                json!({"trash": [trash_record_example()], "next_cursor": "0009223372036800000\u{1f}pypi\u{1f}hosted\u{1f}example\u{1f}example-1.0-py3-none-any.whl\u{1f}sha256:0123"}),
+                json!({"trash": [trash_record_example()], "next_cursor": "0009223372036800000\u{1f}example\u{1f}hosted\u{1f}example\u{1f}example-1.0.bin\u{1f}sha256:0123"}),
             ),
         )
         .response(
@@ -68,11 +63,11 @@ fn list_trash() -> OperationBuilder {
         )
         .response(
             "401",
-            ResponseBuilder::new().description("No valid local user credential or repository token was presented"),
+            ResponseBuilder::new().description("No valid local or ecosystem credential was presented"),
         )
         .response(
             "403",
-            ResponseBuilder::new().description("The repository token cannot inspect trash"),
+            ResponseBuilder::new().description("The credential cannot inspect trash"),
         )
         .response(
             "404",
@@ -98,7 +93,7 @@ fn list_trash() -> OperationBuilder {
             "Repository route to inspect, at most 512 bytes",
             json!("hosted"),
         ),
-        ("ecosystem", "Filter by `pypi` or `oci`", json!("pypi")),
+        ("ecosystem", "Filter by registered ecosystem", json!("example")),
         ("state", "Filter by `restorable` or `expired`", json!("restorable")),
         (
             "deadline_before",
@@ -108,9 +103,7 @@ fn list_trash() -> OperationBuilder {
         (
             "cursor",
             "Exclusive cursor from the prior page",
-            json!(
-                "0009223372036800000\u{1f}pypi\u{1f}hosted\u{1f}example\u{1f}example-1.0-py3-none-any.whl\u{1f}sha256:0123"
-            ),
+            json!("0009223372036800000\u{1f}example\u{1f}hosted\u{1f}example\u{1f}example-1.0.bin\u{1f}sha256:0123"),
         ),
         ("limit", "Rows to return, from 1 through 100; defaults to 25", json!(25)),
     ] {
@@ -132,9 +125,9 @@ fn inspect_trash() -> OperationBuilder {
         .description(Some(
             "One soft-deleted artifact identified by its ecosystem, repository, and name, with the same \
              role-filtered actor visibility as the list. Returns the current derived state without \
-             changing package yank, trash, retention, or policy state.",
+             changing lifecycle, retention, or policy state.",
         ))
-        .security(SecurityRequirement::new("uploadToken", Vec::<String>::new()))
+        .security(SecurityRequirement::new("writeToken", Vec::<String>::new()))
         .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
         .response(
             "200",
@@ -146,11 +139,11 @@ fn inspect_trash() -> OperationBuilder {
         )
         .response(
             "401",
-            ResponseBuilder::new().description("No valid local user credential or repository token was presented"),
+            ResponseBuilder::new().description("No valid local or ecosystem credential was presented"),
         )
         .response(
             "403",
-            ResponseBuilder::new().description("The repository token cannot inspect trash"),
+            ResponseBuilder::new().description("The credential cannot inspect trash"),
         )
         .response(
             "404",
@@ -160,8 +153,8 @@ fn inspect_trash() -> OperationBuilder {
         (
             "ecosystem",
             true,
-            "The artifact's ecosystem, `pypi` or `oci`",
-            json!("pypi"),
+            "The artifact's registered ecosystem",
+            json!("example"),
         ),
         (
             "repository",
@@ -169,17 +162,12 @@ fn inspect_trash() -> OperationBuilder {
             "The repository route the artifact was deleted from",
             json!("hosted"),
         ),
-        (
-            "name",
-            true,
-            "The PyPI project or OCI repository path",
-            json!("example"),
-        ),
+        ("name", true, "The ecosystem artifact name", json!("example")),
         (
             "reference",
             false,
-            "The distribution filename or OCI tag, if any",
-            json!("example-1.0-py3-none-any.whl"),
+            "The ecosystem artifact reference, if any",
+            json!("example-1.0.bin"),
         ),
         (
             "digest",

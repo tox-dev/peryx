@@ -1,65 +1,287 @@
-//! Turning the registry's stored manifests and layers into the neutral web view models, so the web
-//! crate renders an OCI repository, manifest, and layer without parsing any `/v2/` wire document.
+use peryx_core::{BrowseCell, BrowseLink, BrowsePage, BrowseProperty, BrowseRow, BrowseSection};
+use serde::Serialize;
 
-use peryx_core::{UiArtifactRef, UiManifest, UiMember};
+use crate::name::Reference;
 
-/// Parse a stored manifest's JSON bytes into the neutral manifest view.
-///
-/// # Errors
-/// Returns a message when the bytes are not valid JSON.
-pub fn manifest_from_bytes(bytes: &[u8]) -> Result<UiManifest, String> {
-    let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|err| err.to_string())?;
-    Ok(manifest_from_json(&value))
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ManifestContentReference {
+    pub digest: String,
+    pub size: u64,
+    pub media_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    pub browsable: bool,
 }
 
-/// Shape a manifest document into the neutral view: an image index of per-platform children, or an
-/// image manifest with a config blob and layers. The total size sums what the view shows.
-fn manifest_from_json(value: &serde_json::Value) -> UiManifest {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ManifestContent {
+    pub media_type: String,
+    pub is_index: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config: Option<ManifestContentReference>,
+    pub entries: Vec<ManifestContentReference>,
+    pub total_size: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_command: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Member {
+    pub path: String,
+    pub size: u64,
+    pub kind: String,
+    pub previewable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+pub struct MemberChunk {
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    pub offset: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_offset: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RepositoryContent {
+    References { names: Vec<String> },
+}
+
+#[must_use]
+pub fn pull_command(name: &str, reference: &Reference) -> String {
+    match reference {
+        Reference::Tag(tag) => format!("docker pull <host>/{name}:{tag}"),
+        Reference::Digest(digest) => format!("docker pull <host>/{name}@{digest}"),
+    }
+}
+
+/// # Errors
+/// Returns a message when the manifest is not valid JSON.
+pub fn manifest_content_from_bytes(bytes: &[u8]) -> Result<ManifestContent, String> {
+    serde_json::from_slice(bytes)
+        .map(|value| manifest_content_from_json(&value))
+        .map_err(|error| error.to_string())
+}
+
+#[must_use]
+pub fn index_page(route: &str, repositories: Vec<String>) -> BrowsePage {
+    BrowsePage {
+        title: route.to_owned(),
+        sections: vec![BrowseSection::Links {
+            heading: "Repositories".to_owned(),
+            entries: repositories
+                .into_iter()
+                .map(|repository| BrowseLink {
+                    href: browse_url(route, &[("project", &repository)]),
+                    label: repository,
+                })
+                .collect(),
+            empty: "No repositories observed on this index yet.".to_owned(),
+        }],
+        ..BrowsePage::default()
+    }
+}
+
+#[must_use]
+pub fn repository_page(route: &str, repository: &str, references: Vec<String>) -> BrowsePage {
+    BrowsePage {
+        breadcrumbs: vec![BrowseLink {
+            label: route.to_owned(),
+            href: browse_url(route, &[]),
+        }],
+        title: repository.to_owned(),
+        sections: vec![BrowseSection::Links {
+            heading: "Tags".to_owned(),
+            entries: references
+                .into_iter()
+                .map(|reference| BrowseLink {
+                    href: browse_url(route, &[("project", repository), ("ref", &reference)]),
+                    label: reference,
+                })
+                .collect(),
+            empty: "No tags observed for this repository yet.".to_owned(),
+        }],
+        ..BrowsePage::default()
+    }
+}
+
+#[must_use]
+pub fn manifest_page(route: &str, repository: &str, reference: &str, manifest: ManifestContent) -> BrowsePage {
+    let heading = if manifest.is_index {
+        "Platform manifests"
+    } else {
+        "Layers"
+    };
+    let columns = if manifest.is_index {
+        vec!["Digest", "Platform", "Size", "Media type"]
+    } else {
+        vec!["Digest", "Size", "Media type", "Contents"]
+    };
+    let rows = manifest
+        .entries
+        .into_iter()
+        .map(|entry| manifest_row(route, repository, reference, manifest.is_index, entry))
+        .collect();
+    let mut properties = vec![
+        BrowseProperty {
+            label: "Media type".to_owned(),
+            value: manifest.media_type,
+            href: None,
+        },
+        BrowseProperty {
+            label: "Total size".to_owned(),
+            value: manifest.total_size.to_string(),
+            href: None,
+        },
+    ];
+    if let Some(config) = manifest.config {
+        properties.push(BrowseProperty {
+            label: "Config".to_owned(),
+            value: config.digest,
+            href: None,
+        });
+    }
+    BrowsePage {
+        breadcrumbs: repository_breadcrumbs(route, repository),
+        title: format!("{repository}:{reference}"),
+        command: manifest.client_command,
+        sections: vec![
+            BrowseSection::Properties {
+                heading: "Manifest".to_owned(),
+                entries: properties,
+            },
+            BrowseSection::Table {
+                heading: heading.to_owned(),
+                columns: columns.into_iter().map(str::to_owned).collect(),
+                rows,
+                empty: format!("No {heading} found."),
+            },
+        ],
+        ..BrowsePage::default()
+    }
+}
+
+#[must_use]
+pub fn members_page(route: &str, repository: &str, reference: &str, digest: &str, members: Vec<Member>) -> BrowsePage {
+    BrowsePage {
+        breadcrumbs: manifest_breadcrumbs(route, repository, reference),
+        title: "Layer contents".to_owned(),
+        subtitle: Some(digest.to_owned()),
+        sections: vec![BrowseSection::Table {
+            heading: "Members".to_owned(),
+            columns: ["Path", "Size", "Kind"].into_iter().map(str::to_owned).collect(),
+            rows: members
+                .into_iter()
+                .map(|member| BrowseRow {
+                    cells: vec![
+                        BrowseCell {
+                            href: member.previewable.then(|| {
+                                browse_url(
+                                    route,
+                                    &[
+                                        ("project", repository),
+                                        ("ref", reference),
+                                        ("layer", digest),
+                                        ("member", &member.path),
+                                    ],
+                                )
+                            }),
+                            text: member.path,
+                            code: true,
+                        },
+                        BrowseCell {
+                            text: member.size.to_string(),
+                            ..BrowseCell::default()
+                        },
+                        BrowseCell {
+                            text: member.kind,
+                            ..BrowseCell::default()
+                        },
+                    ],
+                    ..BrowseRow::default()
+                })
+                .collect(),
+            empty: "No files found in this layer.".to_owned(),
+        }],
+        ..BrowsePage::default()
+    }
+}
+
+#[must_use]
+pub fn member_page(
+    route: &str,
+    repository: &str,
+    reference: &str,
+    digest: &str,
+    member: &str,
+    chunk: MemberChunk,
+) -> BrowsePage {
+    let next = chunk.next_offset.map(|offset| BrowseLink {
+        label: "Next chunk".to_owned(),
+        href: browse_url(
+            route,
+            &[
+                ("project", repository),
+                ("ref", reference),
+                ("layer", digest),
+                ("member", member),
+                ("offset", &offset.to_string()),
+            ],
+        ),
+    });
+    BrowsePage {
+        breadcrumbs: layer_breadcrumbs(route, repository, reference, digest),
+        title: member.to_owned(),
+        sections: vec![BrowseSection::Content {
+            heading: "Preview".to_owned(),
+            text: chunk.text,
+            size: chunk.size,
+            offset: chunk.offset,
+            next,
+        }],
+        ..BrowsePage::default()
+    }
+}
+
+fn manifest_content_from_json(value: &serde_json::Value) -> ManifestContent {
     let media_type = string_at(value, "mediaType");
     if let Some(children) = value["manifests"].as_array() {
-        let entries: Vec<UiArtifactRef> = children.iter().map(artifact_ref).collect();
-        let total_size = saturating_total(entries.iter().map(|entry| entry.size));
-        return UiManifest {
+        let entries: Vec<ManifestContentReference> = children.iter().map(content_reference).collect();
+        return ManifestContent {
             media_type,
             is_index: true,
             config: None,
+            total_size: saturating_total(entries.iter().map(|entry| entry.size)),
             entries,
-            total_size,
+            client_command: None,
         };
     }
-    let config = value["config"].is_object().then(|| artifact_ref(&value["config"]));
-    let entries: Vec<UiArtifactRef> = value["layers"]
+    let config = value["config"].is_object().then(|| content_reference(&value["config"]));
+    let entries: Vec<ManifestContentReference> = value["layers"]
         .as_array()
         .into_iter()
         .flatten()
-        .map(artifact_ref)
+        .map(content_reference)
         .collect();
-    let total_size = saturating_total(
-        config
-            .as_ref()
-            .map(|blob| blob.size)
-            .into_iter()
-            .chain(entries.iter().map(|entry| entry.size)),
-    );
-    UiManifest {
+    ManifestContent {
         media_type,
         is_index: false,
+        total_size: saturating_total(
+            config
+                .as_ref()
+                .map(|entry| entry.size)
+                .into_iter()
+                .chain(entries.iter().map(|entry| entry.size)),
+        ),
         config,
         entries,
-        total_size,
+        client_command: None,
     }
 }
 
-/// Sum descriptor sizes for the view total. The sizes come from an untrusted manifest, so a document
-/// whose declared sizes total past `u64::MAX` saturates here. A plain sum would wrap and misreport the
-/// total, and it would panic the render under the overflow checks the dev and test profiles enable.
-fn saturating_total(sizes: impl Iterator<Item = u64>) -> u64 {
-    sizes.fold(0, u64::saturating_add)
-}
-
-/// One referenced blob or child manifest as a neutral view item. `browsable` is decided here — a tar
-/// layer the archive engine can list — so shared web code never inspects a media type.
-fn artifact_ref(value: &serde_json::Value) -> UiArtifactRef {
+fn content_reference(value: &serde_json::Value) -> ManifestContentReference {
     let platform = value["platform"].is_object().then(|| {
         format!(
             "{}/{}",
@@ -68,33 +290,80 @@ fn artifact_ref(value: &serde_json::Value) -> UiArtifactRef {
         )
     });
     let media_type = string_at(value, "mediaType");
-    let browsable = media_type.contains("tar");
-    UiArtifactRef {
+    ManifestContentReference {
         digest: string_at(value, "digest"),
-        size: value["size"].as_u64().unwrap_or(0),
+        size: value["size"].as_u64().unwrap_or_default(),
+        browsable: media_type.contains("tar"),
         media_type,
         platform,
-        browsable,
     }
 }
 
-/// Parse a stored layer-inspect listing's JSON bytes into the neutral member view.
-///
-/// # Errors
-/// Returns a message when the bytes are not valid JSON.
-pub fn members_from_bytes(bytes: &[u8]) -> Result<Vec<UiMember>, String> {
-    let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|err| err.to_string())?;
-    Ok(members_from_listing(&value))
+fn manifest_row(
+    route: &str,
+    repository: &str,
+    reference: &str,
+    is_index: bool,
+    entry: ManifestContentReference,
+) -> BrowseRow {
+    let href = if is_index {
+        Some(browse_url(route, &[("project", repository), ("ref", &entry.digest)]))
+    } else {
+        entry.browsable.then(|| {
+            browse_url(
+                route,
+                &[("project", repository), ("ref", reference), ("layer", &entry.digest)],
+            )
+        })
+    };
+    let mut cells = vec![BrowseCell {
+        text: entry.digest,
+        href: href.clone(),
+        code: true,
+    }];
+    if is_index {
+        cells.push(BrowseCell {
+            text: entry.platform.unwrap_or_default(),
+            ..BrowseCell::default()
+        });
+    }
+    cells.extend([
+        BrowseCell {
+            text: entry.size.to_string(),
+            ..BrowseCell::default()
+        },
+        BrowseCell {
+            text: entry.media_type,
+            ..BrowseCell::default()
+        },
+    ]);
+    if !is_index {
+        cells.push(BrowseCell {
+            text: if entry.browsable { "contents" } else { "" }.to_owned(),
+            href,
+            code: false,
+        });
+    }
+    BrowseRow {
+        cells,
+        ..BrowseRow::default()
+    }
 }
 
-/// Rebuild a layer's member listing from the neutral archive-inspect document the layer browser serves.
-#[must_use]
-fn members_from_listing(value: &serde_json::Value) -> Vec<UiMember> {
+/// # Errors
+/// Returns a message when the listing is not valid JSON.
+pub fn members_from_bytes(bytes: &[u8]) -> Result<Vec<Member>, String> {
+    serde_json::from_slice(bytes)
+        .map(|value| members_from_listing(&value))
+        .map_err(|error| error.to_string())
+}
+
+fn members_from_listing(value: &serde_json::Value) -> Vec<Member> {
     value["members"]
         .as_array()
         .into_iter()
         .flatten()
-        .map(|member| UiMember {
+        .map(|member| Member {
             path: string_at(member, "path"),
             size: member["size"].as_u64().unwrap_or_default(),
             kind: member["kind"].as_str().unwrap_or("unknown").to_owned(),
@@ -103,9 +372,53 @@ fn members_from_listing(value: &serde_json::Value) -> Vec<UiMember> {
         .collect()
 }
 
-/// Parse a `u64` response header, or `None` when it is absent or unparsable.
+#[must_use]
 pub fn header_u64(headers: &axum::http::HeaderMap, name: &str) -> Option<u64> {
     headers.get(name)?.to_str().ok()?.parse().ok()
+}
+
+fn repository_breadcrumbs(route: &str, repository: &str) -> Vec<BrowseLink> {
+    vec![
+        BrowseLink {
+            label: route.to_owned(),
+            href: browse_url(route, &[]),
+        },
+        BrowseLink {
+            label: repository.to_owned(),
+            href: browse_url(route, &[("project", repository)]),
+        },
+    ]
+}
+
+fn manifest_breadcrumbs(route: &str, repository: &str, reference: &str) -> Vec<BrowseLink> {
+    let mut links = repository_breadcrumbs(route, repository);
+    links.push(BrowseLink {
+        label: reference.to_owned(),
+        href: browse_url(route, &[("project", repository), ("ref", reference)]),
+    });
+    links
+}
+
+fn layer_breadcrumbs(route: &str, repository: &str, reference: &str, digest: &str) -> Vec<BrowseLink> {
+    let mut links = manifest_breadcrumbs(route, repository, reference);
+    links.push(BrowseLink {
+        label: digest.to_owned(),
+        href: browse_url(route, &[("project", repository), ("ref", reference), ("layer", digest)]),
+    });
+    links
+}
+
+fn browse_url(route: &str, pairs: &[(&str, &str)]) -> String {
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    query.append_pair("index", route);
+    for (key, value) in pairs {
+        query.append_pair(key, value);
+    }
+    format!("/browse?{}", query.finish())
+}
+
+fn saturating_total(sizes: impl Iterator<Item = u64>) -> u64 {
+    sizes.fold(0, u64::saturating_add)
 }
 
 fn string_at(value: &serde_json::Value, key: &str) -> String {
@@ -113,48 +426,5 @@ fn string_at(value: &serde_json::Value, key: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use rstest::rstest;
-
-    use super::{manifest_from_bytes, members_from_bytes};
-
-    #[test]
-    fn test_members_from_bytes_parses_a_listing() {
-        let members =
-            members_from_bytes(br#"{"members":[{"path":"a.txt","size":3,"kind":"text","previewable":true}]}"#).unwrap();
-        assert_eq!(members.len(), 1);
-        assert_eq!(members[0].path, "a.txt");
-    }
-
-    #[test]
-    fn test_members_from_bytes_rejects_invalid_json() {
-        assert!(members_from_bytes(b"not json").is_err());
-    }
-
-    #[test]
-    fn test_manifest_from_bytes_rejects_invalid_json() {
-        assert!(manifest_from_bytes(b"not json").is_err());
-    }
-
-    #[rstest]
-    #[case::image(br#"{"config":{"size":10},"layers":[{"size":3},{"size":4}]}"#, false, 17)]
-    #[case::index(br#"{"manifests":[{"size":5},{"size":6}]}"#, true, 11)]
-    #[case::image_saturates(
-        br#"{"config":{"size":18446744073709551615},"layers":[{"size":1}]}"#,
-        false,
-        u64::MAX
-    )]
-    #[case::index_saturates(
-        br#"{"manifests":[{"size":18446744073709551615},{"size":18446744073709551615}]}"#,
-        true,
-        u64::MAX
-    )]
-    fn test_manifest_from_bytes_totals_sizes_and_saturates_overflow(
-        #[case] bytes: &[u8],
-        #[case] is_index: bool,
-        #[case] total_size: u64,
-    ) {
-        let manifest = manifest_from_bytes(bytes).unwrap();
-        assert_eq!((manifest.is_index, manifest.total_size), (is_index, total_size));
-    }
-}
+#[path = "../tests/unit/web/tests.rs"]
+mod tests;

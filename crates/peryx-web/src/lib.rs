@@ -1,30 +1,16 @@
-//! The peryx web UI: a Leptos application, server-side rendered by the peryx binary and hydrated in
-//! the browser for reactivity (live counters, client-side search, and upload management).
-//!
-//! The `ssr` feature (default) compiles the axum integration; cargo-leptos compiles the same
-//! components to wasm with `--no-default-features --features hydrate` for the client bundle. Pages
-//! render fully without the bundle, so the server works with no wasm toolchain at all.
-
-// The view! macro produces deeply nested static types; hydration codegen needs headroom.
 #![recursion_limit = "256"]
-#![allow(
-    clippy::must_use_candidate,
-    reason = "the #[component] macro consumes attributes, so #[must_use] cannot reach the generated functions"
-)]
-#![allow(
-    clippy::missing_const_for_fn,
-    reason = "cfg-split helpers are const only without the hydrate feature; constness cannot vary by cfg"
-)]
 
 use leptos::prelude::*;
 use leptos_meta::{MetaTags, Style, Title, provide_meta_context};
 use leptos_router::components::{Route, Router, Routes};
+use leptos_router::hooks::use_query_map;
 use leptos_router::{SsrMode, path};
 
 use crate::data::load_search;
 use crate::markdown::external_link_rel;
 use crate::model::UiSearchResult;
-use crate::url::{browse_project_url, search_page_url};
+use crate::url::browse_index_url;
+use crate::url::search_page_url;
 
 pub mod data;
 pub mod markdown;
@@ -37,10 +23,11 @@ pub mod url;
 
 use pages::{
     AdminStatus, ArtifactPlacements, AvailabilityTopology, Browse, Dashboard, Login, PendingOperations,
-    PolicyDecisions, Search, ShadowInspection, Stats, Trash, Upload, UsageAnalytics,
+    PolicyDecisions, Search, Stats, Trash, UsageAnalytics,
 };
 
-/// The HTML document shell used by server rendering: head, hydration scripts, and the app.
+pub use app as App;
+
 #[must_use]
 pub fn shell(options: LeptosOptions) -> impl IntoView {
     view! {
@@ -59,15 +46,14 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 <MetaTags />
             </head>
             <body>
-                <App />
+                {App()}
             </body>
         </html>
     }
 }
 
-/// The application: header, routes, and shared metadata.
-#[component]
-pub fn App() -> impl IntoView {
+#[must_use]
+pub fn app() -> impl IntoView {
     provide_meta_context();
     view! {
         <Style>{style::CSS}</Style>
@@ -75,11 +61,7 @@ pub fn App() -> impl IntoView {
         <Router>
             <Header />
             <main>
-                // These pages read runtime state through a `Suspense`. `SsrMode::Async` resolves those
-                // resources before the server emits the document, instead of streaming the `loading`
-                // fallback first and swapping the content in. Out-of-order streaming truncates that
-                // fallback into the response under load — on the live server, not only in tests — so a
-                // full resolve is both deterministic to assert on and correct for no-JS and slow clients.
+                // In-order rendering prevents Suspense fallbacks from truncating responses under load.
                 <Routes fallback=|| view! { <p class="dim">"not found"</p> }>
                     <Route path=path!("/") view=Dashboard ssr=SsrMode::Async />
                     <Route path=path!("/admin/status") view=AdminStatus ssr=SsrMode::Async />
@@ -87,13 +69,11 @@ pub fn App() -> impl IntoView {
                     <Route path=path!("/admin/placements") view=ArtifactPlacements ssr=SsrMode::Async />
                     <Route path=path!("/admin/operations") view=PendingOperations ssr=SsrMode::Async />
                     <Route path=path!("/admin/policy-decisions") view=PolicyDecisions />
-                    <Route path=path!("/admin/shadow") view=ShadowInspection />
                     <Route path=path!("/admin/trash") view=Trash />
                     <Route path=path!("/admin/analytics") view=UsageAnalytics />
                     <Route path=path!("/browse") view=Browse ssr=SsrMode::Async />
                     <Route path=path!("/search") view=Search ssr=SsrMode::Async />
                     <Route path=path!("/stats") view=Stats ssr=SsrMode::Async />
-                    <Route path=path!("/upload") view=Upload ssr=SsrMode::Async />
                     <Route path=path!("/login") view=Login ssr=SsrMode::Async />
                 </Routes>
             </main>
@@ -122,10 +102,8 @@ fn Header() -> impl IntoView {
                     <a href="/admin/placements">"Placement"</a>
                     <a href="/admin/operations">"Operations"</a>
                     <a href="/admin/policy-decisions">"Policy"</a>
-                    <a href="/admin/shadow">"Shadowing"</a>
                     <a href="/admin/trash">"Trash"</a>
                     <a href="/admin/analytics">"Usage"</a>
-                    <a href="/upload">"Upload"</a>
                     <a href="/login">"Login"</a>
                     <a href=DOCS_URL rel=external_link_rel(DOCS_URL)>"Docs"</a>
                     <a href=REPO_URL rel=external_link_rel(REPO_URL)>"GitHub"</a>
@@ -138,7 +116,8 @@ fn Header() -> impl IntoView {
 
 #[component]
 fn HeaderSearch() -> impl IntoView {
-    let (query, set_query) = signal(String::new());
+    let query_map = use_query_map();
+    let (query, set_query) = signal(query_map.read().get("q").unwrap_or_default());
     let suggestions = Resource::new(
         move || query.get(),
         |query| async move {
@@ -150,48 +129,73 @@ fn HeaderSearch() -> impl IntoView {
                 .map(|page| page.results.into_iter().take(6).collect::<Vec<_>>())
         },
     );
-    let (last, set_last) = signal(Vec::<UiSearchResult>::new());
-    #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
-    Effect::new(move |_| {
-        if query.get().trim().chars().count() < 2 {
-            set_last.set(Vec::new());
-            return;
-        }
-        if let Some(Ok(results)) = suggestions.get() {
-            set_last.set(results);
-        }
-    });
-    #[cfg(any(feature = "ssr", not(feature = "hydrate")))]
-    let _ = (set_last, suggestions);
     view! {
         <form class="header-search" method="get" action="/search">
-            <input
-                type="search"
-                name="q"
-                autocomplete="off"
-                placeholder="Search packages"
-                on:input:target=move |event| set_query.set(event.target().value())
-            />
+            <HeaderSearchInput value=query.get_untracked() set_query />
             <input type="hidden" name="page_size" value="25" />
-            {move || {
-                let query = query.get();
-                (query.trim().chars().count() >= 2)
-                    .then(|| view! {
-                        <div class="suggestions">
-                            {last
-                                .get()
-                                .into_iter()
-                                .map(|result| {
-                                    let href = browse_project_url(&result.route, &result.normalized_name);
-                                    view! { <Suggestion result href /> }
-                                })
-                                .collect_view()}
-                            <a class="suggestion all-results" href=search_page_url(&query, "all", "all", 1, 25)>"All results"</a>
-                        </div>
-                    })
-            }}
+            <HeaderSuggestions query suggestions />
         </form>
     }
+}
+
+#[component]
+fn HeaderSuggestions(
+    query: ReadSignal<String>,
+    suggestions: Resource<Result<Vec<UiSearchResult>, String>>,
+) -> impl IntoView {
+    view! {
+        <Suspense fallback=|| ()>
+            {move || Suspend::new(async move {
+                suggestion_panel(&query.get(), suggestions.await.unwrap_or_default())
+            })}
+        </Suspense>
+    }
+}
+
+fn suggestion_panel(query: &str, results: Vec<UiSearchResult>) -> impl IntoView + use<> {
+    (query.trim().chars().count() >= 2).then(|| {
+        view! {
+            <div class="suggestions">
+                <SuggestionList results />
+                <a class="suggestion all-results" href=search_page_url(query, "all", "all", 1, 25)>"All results"</a>
+            </div>
+        }
+    })
+}
+
+#[component]
+#[cfg(not(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate")))]
+fn HeaderSearchInput(value: String, set_query: WriteSignal<String>) -> impl IntoView {
+    let _ = set_query;
+    view! {
+        <input type="search" name="q" autocomplete="off" placeholder="Search indexes" value=value />
+    }
+}
+
+#[component]
+#[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
+fn HeaderSearchInput(value: String, set_query: WriteSignal<String>) -> impl IntoView {
+    view! {
+        <input
+            type="search"
+            name="q"
+            autocomplete="off"
+            placeholder="Search indexes"
+            value=value
+            on:input:target=move |event| set_query.set(event.target().value())
+        />
+    }
+}
+
+#[component]
+fn SuggestionList(results: Vec<UiSearchResult>) -> impl IntoView {
+    results
+        .into_iter()
+        .map(|result| {
+            let href = browse_index_url(&result.route);
+            view! { <Suggestion result href /> }
+        })
+        .collect_view()
 }
 
 #[component]
@@ -200,14 +204,13 @@ fn Suggestion(result: UiSearchResult, href: String) -> impl IntoView {
     let source_label = result.source_label();
     view! {
         <a class="suggestion" href=href>
-            <span>{result.display_name}</span>
-            <code>{result.normalized_name}</code>
+            <span>{result.display_label}</span>
+            <code>{result.resource_key}</code>
             <span class=source_class>{source_label}</span>
         </a>
     }
 }
 
-/// The falcon mark (a diving peregrine), inline so it needs no asset pipeline.
 #[component]
 fn BrandMark() -> impl IntoView {
     view! {
@@ -223,58 +226,26 @@ fn BrandMark() -> impl IntoView {
     }
 }
 
-/// Light/dark toggle: OS preference by default, explicit choice saved to `localStorage`, matching
-/// the documentation site's behavior.
 #[component]
 fn ThemeToggle() -> impl IntoView {
     view! {
-        <button class="theme-toggle" type="button" aria-label="Switch color theme" on:click=|_| toggle_theme()>
+        <button
+            class="theme-toggle"
+            type="button"
+            aria-label="Switch color theme"
+            onclick="var r=document.documentElement,d=r.dataset.theme==='dark',n=d?'light':'dark';r.dataset.theme=n;localStorage.setItem('theme',n)"
+        >
             "◐"
         </button>
     }
 }
 
-fn toggle_theme() {
-    #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
-    {
-        use wasm_bindgen::JsCast as _;
-        let Some(window) = web_sys::window() else {
-            return;
-        };
-        let Some(document) = window.document() else {
-            return;
-        };
-        let Some(root) = document.document_element() else {
-            return;
-        };
-        let Ok(root) = root.dyn_into::<web_sys::HtmlElement>() else {
-            return;
-        };
-        let dark = root.dataset().get("theme").map_or_else(
-            || {
-                window
-                    .match_media("(prefers-color-scheme: dark)")
-                    .ok()
-                    .flatten()
-                    .is_some_and(|media| media.matches())
-            },
-            |theme| theme == "dark",
-        );
-        let next = if dark { "light" } else { "dark" };
-        let _ = root.dataset().set("theme", next);
-        if let Ok(Some(storage)) = window.local_storage() {
-            let _ = storage.set_item("theme", next);
-        }
-    }
-}
-
-/// The browser entry point: hydrate the server-rendered document.
 #[cfg(all(not(feature = "ssr"), feature = "hydrate", target_arch = "wasm32"))]
 #[wasm_bindgen::prelude::wasm_bindgen]
 pub fn hydrate() {
     console_error_panic_hook::set_once();
     leptos::mount::hydrate_body(App);
-    // Mark completion so tooling (the Playwright suite) can wait for interactivity.
+    // Playwright waits for this marker before testing client-side behavior.
     if let Some(body) = web_sys::window()
         .and_then(|window| window.document())
         .and_then(|document| document.body())
@@ -283,5 +254,25 @@ pub fn hydrate() {
     }
 }
 
+#[cfg(all(target_arch = "wasm32", feature = "wasm-coverage"))]
+#[wasm_bindgen::prelude::wasm_bindgen]
+#[expect(unsafe_code, reason = "Wasm exports serialize minicov's exclusive capture")]
+pub fn capture_coverage() -> Vec<u8> {
+    let mut profile = Vec::new();
+    unsafe {
+        minicov::capture_coverage(&mut profile).expect("coverage profile must serialize");
+    }
+    profile
+}
+
 #[cfg(test)]
+#[path = "../tests/unit/tests.rs"]
 mod tests;
+
+#[cfg(all(test, feature = "ssr"))]
+#[path = "../tests/unit/page_contract_tests.rs"]
+mod page_contract_tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/ssr_contract.rs"]
+mod ssr_contract;

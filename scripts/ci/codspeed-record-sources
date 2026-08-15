@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+mkdir -p .tox/codspeed/target
+git ls-files -s -z -- .cargo crates Cargo.lock Cargo.toml rust-toolchain.toml \
+    >.tox/codspeed/target/codspeed-sources

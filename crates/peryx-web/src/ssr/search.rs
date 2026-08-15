@@ -6,7 +6,7 @@ use peryx_search::{AvailabilityFilter, SearchParams, SourceFilter};
 
 use crate::model::UiSearchPage;
 
-/// Search cached packages during server rendering.
+/// Search cached artifacts during server rendering.
 ///
 /// # Errors
 /// Returns a user-visible message when search fails.
@@ -29,17 +29,20 @@ pub async fn search(
             _ => 25,
         },
     };
-    let access = if app.indexes.iter().all(|index| index.acl.anonymous_read) {
+    let access = if app.serving.indexes.iter().all(|index| index.acl.anonymous_read) {
         None
     } else {
-        Some(super::read_access(&app).await?.search_access(&app.indexes))
+        Some(
+            super::read_access(&app.serving)
+                .await?
+                .search_access(&app.serving.indexes),
+        )
     };
     let response = if let Some(access) = access {
-        app.search.search_authorized(&app.search_ctx(), params, &access)
+        app.serving.search.search_authorized(&app.search_ctx(), params, &access)
     } else {
-        app.search.search(&app.search_ctx(), params)
+        app.serving.search.search(&app.search_ctx(), params)
     }
-    .map_err(|err| format!("package search: {err}"))?;
-    let value = serde_json::to_value(response).map_err(|err| format!("search result: {err}"))?;
-    UiSearchPage::from_search(&value)
+    .map_err(|error| format!("artifact search: {error}"))?;
+    Ok(UiSearchPage::from(response))
 }

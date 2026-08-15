@@ -1,5 +1,3 @@
-//! `/+search` query parameters and the source-type filter.
-
 use serde::{Deserialize, Serialize};
 
 use crate::error::SearchError;
@@ -31,8 +29,6 @@ impl Default for SearchParams {
 }
 
 impl SearchParams {
-    /// Parse `/+search` query parameters.
-    ///
     /// # Errors
     /// Returns an error for an unknown `type` or `availability` filter.
     pub fn from_query(query: Option<&str>) -> Result<Self, SearchError> {
@@ -108,21 +104,17 @@ impl SourceFilter {
         }
     }
 
-    pub(super) const fn package_source(self) -> Option<PackageSource> {
+    pub(super) const fn content_source(self) -> Option<ContentSource> {
         match self {
             Self::All => None,
-            Self::Uploaded => Some(PackageSource::Uploaded),
-            Self::Cached => Some(PackageSource::Cached),
-            Self::Override => Some(PackageSource::Override),
+            Self::Uploaded => Some(ContentSource::Uploaded),
+            Self::Cached => Some(ContentSource::Cached),
+            Self::Override => Some(ContentSource::Override),
         }
     }
 }
 
-/// Whether a search returns every indexed package or only the locally available ones.
-///
-/// A package is locally available when its bytes can be served from this instance's storage right now.
-/// Each ecosystem indexer decides that from stored placement metadata, so this neutral filter matches
-/// on an already-computed flag rather than probing the content store per result.
+/// Uses an indexed availability flag to avoid storage probes per result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum AvailabilityFilter {
@@ -148,7 +140,6 @@ impl AvailabilityFilter {
         }
     }
 
-    /// Whether the filter restricts results to locally available packages.
     pub(super) const fn local_only(self) -> bool {
         matches!(self, Self::Local)
     }
@@ -156,13 +147,13 @@ impl AvailabilityFilter {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum PackageSource {
+pub enum ContentSource {
     Uploaded,
     Cached,
     Override,
 }
 
-impl PackageSource {
+impl ContentSource {
     #[must_use]
     pub fn from_value(value: &str) -> Option<Self> {
         match value {

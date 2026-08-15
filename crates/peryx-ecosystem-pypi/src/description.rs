@@ -1,5 +1,3 @@
-//! Rendering a project's long description to safe HTML on the server.
-//!
 //! Package authors control descriptions, so the renderer keeps embedded HTML off the page and accepts
 //! only HTTP, HTTPS, mailto, or relative destinations. It runs here, in the driver, rather than in the
 //! browser: the reStructuredText renderer aborts on nodes it never implemented, and that abort cannot

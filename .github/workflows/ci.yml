@@ -14,44 +14,69 @@ permissions:
 env:
   CARGO_HTTP_MULTIPLEXING: "false"
   CARGO_NET_RETRY: "10"
-  TWINE_VERSION: "6.2.0"
-  UV_VERSION: "0.11.29"
+  GIT_CONFIG_COUNT: "1"
+  GIT_CONFIG_KEY_0: init.defaultBranch
+  GIT_CONFIG_VALUE_0: main
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 jobs:
-  # Path-based gating lets pull requests run only affected jobs. Pushes, schedules, and manual runs
-  # exercise the complete suite.
   changes:
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     outputs:
-      rust: ${{ steps.filter.outputs.shared == 'true' || steps.filter.outputs.pypi == 'true' || steps.filter.outputs.oci == 'true' || steps.filter.outputs.web == 'true' }}
+      rust: ${{ steps.filter.outputs.rust }}
+      crate_matrix: ${{ steps.crates.outputs.matrix }}
+      automation: ${{ steps.filter.outputs.automation }}
       shared: ${{ steps.filter.outputs.shared }}
       pypi: ${{ steps.filter.outputs.pypi }}
+      oci: ${{ steps.filter.outputs.oci }}
       frontend_tests: ${{ steps.filter.outputs.frontend_tests }}
       docs: ${{ steps.filter.outputs.docs }}
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
           filters: |
+            rust:
+              - 'crates/**'
+              - '!crates/*/docs/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.cargo/**'
+              - 'rust-toolchain*'
+              - 'hawk.toml'
+              - 'justfile'
+              - 'compose.yaml'
+              - 'scripts/ci/Dockerfile'
+              - 'scripts/ci/**'
+              - '.github/scripts/**'
+              - '.github/workflows/ci.yml'
+              - '.pre-commit-config.yaml'
+              - 'mise.toml'
             shared:
+              - 'crates/peryx-archive/**'
               - 'crates/peryx-core/**'
               - 'crates/peryx-storage/**'
               - 'crates/peryx-http/**'
               - 'crates/peryx-driver/**'
               - 'crates/peryx-identity/**'
               - 'crates/peryx-policy/**'
+              - 'crates/peryx-pql/**'
               - 'crates/peryx-index/**'
               - 'crates/peryx-events/**'
               - 'crates/peryx-upstream/**'
               - 'crates/peryx-search/**'
-              - 'crates/peryx-replication/**'
+              - 'crates/peryx-ha/**'
+              - 'crates/peryx-ha-distributed/**'
+              - 'crates/peryx-plugin-registry/**'
+              - 'crates/peryx-test-support/**'
+              - 'crates/peryx-bench-core/**'
               - 'crates/peryx/**'
               - 'crates/peryx-bench/**'
               - 'Cargo.toml'
@@ -59,457 +84,662 @@ jobs:
               - '.cargo/**'
               - 'rust-toolchain*'
               - 'hawk.toml'
+              - 'justfile'
+              - 'compose.yaml'
+              - 'scripts/ci/Dockerfile'
+              - 'scripts/ci/**'
+              - '.github/scripts/**'
               - '.github/workflows/ci.yml'
+              - '.pre-commit-config.yaml'
+              - 'mise.toml'
             pypi:
               - 'crates/peryx-ecosystem-pypi/**'
             oci:
               - 'crates/peryx-ecosystem-oci/**'
-            web:
-              - 'crates/peryx-web/**'
             frontend_tests:
-              - 'tests/frontend/**'
+              - 'crates/peryx-web/tests/frontend/**'
             docs:
+              - 'README.md'
+              - 'CONTRIBUTING.md'
+              - 'crates/**/*.rs'
+              - 'crates/*/docs/**'
               - 'site/**'
+              - '.pre-commit-config.yaml'
               - '.github/workflows/ci.yml'
+            automation:
+              - '.github/**'
+              - '.pre-commit-config.yaml'
+              - 'compose.yaml'
+              - 'deny.toml'
+              - 'dist-workspace.toml'
+              - 'justfile'
+              - 'mise.toml'
+              - 'renovate.json'
+              - 'scripts/ci/Dockerfile'
+              - 'scripts/ci/**'
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        if: steps.filter.outputs.rust == 'true' || github.event_name != 'pull_request'
+        with:
+          cache: false
+      - uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10
+        if: steps.filter.outputs.rust == 'true' || github.event_name != 'pull_request'
+        with:
+          tool: just,ripgrep
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.filter.outputs.rust == 'true' || github.event_name != 'pull_request'
+        with:
+          path: .tox/ci-timings/timings.jsonl
+          key: crate-timings-${{ github.event.pull_request.base.sha || github.sha }}
+          restore-keys: crate-timings-
+      - id: crates
+        if: steps.filter.outputs.rust == 'true' || github.event_name != 'pull_request'
+        run: echo "matrix=$(just workspace-packages 8 contracts .tox/ci-timings/timings.jsonl)" >> "$GITHUB_OUTPUT"
 
-  lint:
+  lint-source:
     needs: changes
     if: >-
       needs.changes.outputs.rust == 'true' || github.event_name == 'push' ||
       github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     permissions:
-      actions: write
       contents: read
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        env:
+          NODE_OPTIONS: --no-deprecation # https://github.com/Swatinem/rust-cache/issues/331
         with:
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - name: Deny dead code
-        run: cargo check --workspace --all-targets --all-features
-        env:
-          RUSTFLAGS: -D dead_code
-      # Hawk flags dead public surface: `pub` items with no use inside or outside their crate. It needs
-      # its own toolchain (0.1.12 builds under 1.97.1) and a prebuilt release binary. hawk.toml carries
-      # the production targets and the allow-list. See issue #1017.
+      - uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10
+        with:
+          tool: just,ripgrep
       - name: Install Hawk
         run: |
           curl -fsSL -o /tmp/cargo-hawk.tar.gz \
-            https://github.com/astral-sh/hawk/releases/download/0.1.12/cargo-hawk-x86_64-unknown-linux-gnu.tar.gz
+            https://github.com/astral-sh/hawk/releases/latest/download/cargo-hawk-x86_64-unknown-linux-gnu.tar.gz
           tar -xzf /tmp/cargo-hawk.tar.gz -C /tmp
           chmod +x /tmp/cargo-hawk-x86_64-unknown-linux-gnu/cargo-hawk /tmp/cargo-hawk-x86_64-unknown-linux-gnu/cargo-hawk-driver
           echo "/tmp/cargo-hawk-x86_64-unknown-linux-gnu" >> "$GITHUB_PATH"
-      - run: rustup toolchain install 1.97.1
-      - name: Run Hawk dead-public
-        env:
-          RUSTUP_TOOLCHAIN: "1.97.1"
-        run: >
-          cargo-hawk check --manifest-path Cargo.toml --only dead-public
-          --deny hawk::dead_public --output-format json
-      - name: Cancel remaining jobs on failure
-        if: failure() && !cancelled()
-        uses: ./.github/actions/cancel-on-failure
+      - run: just lint-source
 
-  # One build+test job per platform, uniform across the matrix. sccache (shared with local dev) plus
-  # the workspace target cache keep the Windows compile — the reason this leg was once split into a
-  # build-once plus sharded-run workaround — down to a single job like the others. A failure fails the
-  # matrix fast: `fail-fast` cancels the sibling platforms and nextest stops at the first failing test.
-  test:
+  lint-docs:
     needs: changes
     if: >-
-      needs.changes.outputs.rust == 'true' || github.event_name == 'push' ||
-      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    strategy:
-      fail-fast: true
-      matrix:
-        include:
-          - os: ubuntu-24.04
-            features: --all-features
-          - os: macos-26
-            features: ""
-          - os: windows-2025
-            features: ""
-    runs-on: ${{ matrix.os }}
+      needs.changes.outputs.rust == 'true' || needs.changes.outputs.docs == 'true' ||
+      github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     permissions:
-      actions: write
       contents: read
-    # Homebrew (pulled in by taiki-e/install-action on macOS) warns about the runner's pre-installed
-    # aws/tap unless tap-trust checks are disabled.
-    env:
-      HOMEBREW_NO_REQUIRE_TAP_TRUST: "1"
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: sccache
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        env:
+          NODE_OPTIONS: --no-deprecation # https://github.com/Swatinem/rust-cache/issues/331
+        with:
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10
+        with:
+          tool: just,ripgrep
+      - run: uv tool install prek
+      - run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: just lint-docs
+
+  lint-automation:
+    needs: changes
+    if: >-
+      needs.changes.outputs.automation == 'true' || github.event_name == 'push' ||
+      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10
+        with:
+          tool: just,ripgrep
+      - run: uv tool install prek
+      - run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - run: just lint-automation
+
+  lint-deps:
+    needs: changes
+    if: >-
+      needs.changes.outputs.rust == 'true' || needs.changes.outputs.automation == 'true' ||
+      github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
           cache: false
-      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+      - uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10
         with:
-          # v0.17 exceeds Windows' command limit after expanding Rust response files.
-          # https://github.com/mozilla/sccache/issues/2397
-          version: "v0.16.0"
-      - name: Verify sccache response files
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          if ((sccache --version) -ne "sccache 0.16.0") {
-            throw "unexpected sccache version"
-          }
-          $directory = Join-Path $env:RUNNER_TEMP "sccache-response-file"
-          New-Item -ItemType Directory -Force $directory | Out-Null
-          $source = Join-Path $directory "response_file.rs"
-          Set-Content -Encoding utf8NoBOM -Path $source -Value "pub fn response_file_works() {}"
-          $padding = 1..2048 | ForEach-Object { "--cfg"; "sccache_response_file_$($_)" }
-          $response = Join-Path $directory "arguments"
-          @(
-            "--crate-name=sccache_response_file"
-            "--crate-type=rlib"
-            "--emit=link,dep-info"
-            "--out-dir=$directory"
-            $padding
-            $source
-          ) | Set-Content -Encoding utf8NoBOM -Path $response
-          sccache rustc "@$response"
-          if ($LASTEXITCODE -ne 0) {
-            exit $LASTEXITCODE
-          }
-          if (-not (Test-Path (Join-Path $directory "libsccache_response_file.rlib"))) {
-            throw "rustc did not produce the response-file artifact"
-          }
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-        with:
-          shared-key: test
-          add-rust-environment-hash-key: false
-          cache-on-failure: true
-          cache-workspace-crates: true
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
-        with:
-          tool: cargo-nextest
-      - run: cargo nextest run --workspace ${{ matrix.features }} -E 'not(binary(e2e)) & not(binary(availability)) & not(binary(observability)) & not(binary(sim_campaign))'
-      - name: Cancel remaining jobs on failure
-        if: failure() && !cancelled()
-        uses: ./.github/actions/cancel-on-failure
+          tool: cargo-deny,cargo-shear,just
+      - run: just lint-deps
 
-  coverage:
+  lint-contracts:
+    needs: changes
+    if: >-
+      needs.changes.outputs.rust == 'true' || needs.changes.outputs.automation == 'true' ||
+      github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        env:
+          NODE_OPTIONS: --no-deprecation # https://github.com/Swatinem/rust-cache/issues/331
+        with:
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10
+        with:
+          tool: cargo-hack,cargo-insta,cargo-nextest,cargo-semver-checks,just,ripgrep
+      - name: Install cargo-dist
+        run: curl --proto '=https' --tlsv1.2 --silent --show-error --fail --location https://github.com/axodotdev/cargo-dist/releases/latest/download/cargo-dist-installer.sh | sh
+      - run: just lint-contracts "$BASE_REV"
+        env:
+          BASE_REV: ${{ github.event.pull_request.base.sha || github.event.before || 'origin/main' }}
+
+  platform-test:
+    name: platform contract (${{ matrix.os }})
     needs: changes
     if: >-
       needs.changes.outputs.rust == 'true' || github.event_name == 'push' ||
       github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-24.04
-    permissions:
-      actions: write
-      contents: read
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-        with:
-          persist-credentials: false
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
-        with:
-          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
-        with:
-          tool: cargo-llvm-cov,cargo-nextest
-      # LCOV DA records aggregate source-line hits across test binaries. LLVM's line total counts
-      # uncovered generic instantiations separately, so it can regress when dependency edges change.
-      # Functions remain LLVM-gated. main.rs is the entrypoint shell; peryx-web is the UI, whose
-      # browser-event closures only execute as wasm. peryx's UI tests assert server rendering;
-      # Playwright asserts browser interactivity.
-      - run: .github/scripts/test-check-lcov-lines
-      - run: >
-          cargo llvm-cov nextest --workspace --ignore-filename-regex '(main\.rs|crates/peryx-web/|crates/peryx-bench/)' --fail-under-functions 100 --lcov --output-path lcov.info
-      - run: .github/scripts/check-lcov-lines.awk lcov.info
-      # Retain lcov.info even when a gate fails so the regressed function or line can be diagnosed.
-      - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: coverage-lcov
-          path: lcov.info
-      - uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
-        with:
-          files: lcov.info
-          fail_ci_if_error: false
-      - name: Cancel remaining jobs on failure
-        if: failure() && !cancelled()
-        uses: ./.github/actions/cancel-on-failure
-
-  # Hermetic end-to-end: real pip/uv drive a spawned peryx that proxies a local fixture index, so no
-  # external network is touched. Proves downstream clients work through peryx on every PR.
-  e2e:
-    needs: changes
-    if: >-
-      needs.changes.outputs.pypi == 'true' || needs.changes.outputs.shared == 'true' ||
-      github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-24.04
-    permissions:
-      actions: write
-      contents: read
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-        with:
-          persist-credentials: false
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
-        with:
-          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
-        with:
-          tool: cargo-nextest
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: "3.13"
-      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
-        with:
-          cache-dependency-glob: .github/workflows/ci.yml
-          version: ${{ env.UV_VERSION }}
-      - run: uv tool install twine==${TWINE_VERSION}
-      - run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: Build e2e tests
-        run: cargo build -p peryx --features e2e --tests
-      - name: Run e2e tests
-        run: cargo nextest run -p peryx --features e2e
-      - name: Cancel remaining jobs on failure
-        if: failure() && !cancelled()
-        uses: ./.github/actions/cancel-on-failure
-
-  # The same client flows against the real pypi.org, to catch upstream drift.
-  e2e-live:
-    needs: changes
-    if: >-
-      needs.changes.outputs.pypi == 'true' || needs.changes.outputs.shared == 'true' ||
-      github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-24.04
-    permissions:
-      actions: write
-      contents: read
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-        with:
-          persist-credentials: false
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
-        with:
-          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
-        with:
-          tool: cargo-nextest
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: "3.13"
-      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
-        with:
-          cache-dependency-glob: .github/workflows/ci.yml
-          version: ${{ env.UV_VERSION }}
-      - run: uv tool install twine==${TWINE_VERSION}
-      - run: echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: Build e2e tests
-        run: cargo build -p peryx --features e2e-live --tests
-      - name: Run live e2e tests
-        run: cargo nextest run -p peryx --features e2e-live -E 'test(e2e_live)'
-      - name: Cancel remaining jobs on failure
-        if: failure() && !cancelled()
-        uses: ./.github/actions/cancel-on-failure
-
-  # The multi-process availability harness: spawns real peryx binaries and injects network faults
-  # through Toxiproxy. Off the default test matrix (it needs the toxiproxy-server binary); run here.
-  availability:
-    needs: changes
-    if: >-
-      needs.changes.outputs.shared == 'true' || github.event_name == 'push' ||
-      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-24.04
-    permissions:
-      actions: write
-      contents: read
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-        with:
-          persist-credentials: false
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
-        with:
-          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
-        with:
-          tool: cargo-nextest
-      - name: Install toxiproxy-server
-        env:
-          TOXIPROXY_VERSION: "2.12.0"
-        run: |
-          curl -fsSL -o "${RUNNER_TEMP}/toxiproxy-server" \
-            "https://github.com/Shopify/toxiproxy/releases/download/v${TOXIPROXY_VERSION}/toxiproxy-server-linux-amd64"
-          chmod +x "${RUNNER_TEMP}/toxiproxy-server"
-          echo "${RUNNER_TEMP}" >> "${GITHUB_PATH}"
-      - name: Build availability harness tests
-        run: cargo build -p peryx --features availability-e2e --tests
-      - name: Run availability harness tests
-        run: cargo nextest run -p peryx --features availability-e2e
-      - name: Cancel remaining jobs on failure
-        if: failure() && !cancelled()
-        uses: ./.github/actions/cancel-on-failure
-
-  # The availability safety-simulator seed campaign: a bounded seed sweep plus the checked-in regression
-  # corpus, per pull request. A break writes the minimized trace as an artifact with a repro command.
-  sim-campaign:
-    needs: changes
-    if: >-
-      needs.changes.outputs.shared == 'true' || github.event_name == 'push' ||
-      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-24.04
-    permissions:
-      actions: write
-      contents: read
-    env:
-      PERYX_SIM_ARTIFACTS: ${{ github.workspace }}/sim-artifacts
-    steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-        with:
-          persist-credentials: false
-      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
-        with:
-          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
-        with:
-          tool: cargo-nextest
-      - name: Run the pull-request seed campaign
-        run: cargo nextest run -p peryx --features sim-campaign
-      - name: Upload failing traces
-        if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: sim-campaign-traces
-          path: ${{ env.PERYX_SIM_ARTIFACTS }}
-          if-no-files-found: ignore
-      - name: Cancel remaining jobs on failure
-        if: failure() && !cancelled()
-        uses: ./.github/actions/cancel-on-failure
-
-  # A large sharded seed campaign, scheduled only: each shard runs a disjoint slice of the range once.
-  # A shard that finds a violating seed uploads its trace; promote that seed into the corpus with its fix.
-  sim-campaign-scheduled:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+        os: [macos-26, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    # Homebrew rejects the runner's preinstalled aws/tap as untrusted.
     env:
-      PERYX_SIM_SEEDS: "200000"
-      PERYX_SIM_SHARD_INDEX: ${{ matrix.shard }}
-      PERYX_SIM_SHARD_TOTAL: "8"
-      PERYX_SIM_ARTIFACTS: ${{ github.workspace }}/sim-artifacts
+      HOMEBREW_NO_REQUIRE_TAP_TRUST: "1"
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
         with:
-          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
+          cache: false
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
         with:
-          tool: cargo-nextest
-      - name: Run seed campaign shard ${{ matrix.shard }}
-        run: cargo nextest run -p peryx --features sim-campaign -E 'test(availability_seed_campaign)'
-      - name: Upload failing traces
-        if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+          # v0.17 exceeds Windows' response-file limit: https://github.com/mozilla/sccache/issues/2397
+          version: "v0.16.0"
+      - uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10
         with:
-          name: sim-campaign-traces-shard-${{ matrix.shard }}
-          path: ${{ env.PERYX_SIM_ARTIFACTS }}
-          if-no-files-found: ignore
+          tool: cargo-nextest,just
+      - name: Verify sccache response files
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: just sccache-smoke
+      - run: just platform-contract
 
-  # The hydrated web UI, driven by Playwright: the wasm bundle is built with cargo-leptos and the
-  # suite exercises search, the project page, the archive browser, and token-authenticated actions.
+  crate-contracts:
+    name: crate contracts (shard ${{ matrix.shard }}, weight ${{ matrix.weight }})
+    needs: changes
+    if: >-
+      needs.changes.outputs.rust == 'true' || github.event_name == 'push' ||
+      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix: ${{ fromJSON(needs.changes.outputs.crate_matrix) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      RUSTC_WRAPPER: sccache
+      SCCACHE_GHA_ENABLED: "true"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          cache: false
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        env:
+          NODE_OPTIONS: --no-deprecation # https://github.com/Swatinem/rust-cache/issues/331
+        with:
+          shared-key: crate-contracts-${{ matrix.shard }}
+          cache-on-failure: true
+          workspaces: ". -> .tox/crate-contracts/target"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10
+        with:
+          tool: cargo-llvm-cov,cargo-nextest,just
+      - if: contains(format(' {0} ', matrix.packages), ' peryx ')
+        run: |
+          curl -fsSL -o "${RUNNER_TEMP}/toxiproxy-server" \
+            https://github.com/Shopify/toxiproxy/releases/download/v2.12.0/toxiproxy-server-linux-amd64
+          chmod +x "${RUNNER_TEMP}/toxiproxy-server"
+          echo "${RUNNER_TEMP}" >> "$GITHUB_PATH"
+      - run: |
+          read -r -a packages <<< "$PACKAGES"
+          just crate-contracts ".tox/crate-contracts/shard-$SHARD" "${packages[@]}"
+          cp ".tox/crate-contracts/shard-$SHARD/timings.jsonl" \
+            ".tox/crate-contracts/shard-$SHARD/timings-$SHARD.jsonl"
+        env:
+          PERYX_COVERAGE_TARGET_DIR: .tox/crate-contracts/target
+          PACKAGES: ${{ matrix.packages }}
+          SHARD: ${{ matrix.shard }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: coverage-crates-${{ matrix.shard }}
+          path: |
+            .tox/crate-contracts/shard-${{ matrix.shard }}/*.lcov
+            .tox/crate-contracts/shard-${{ matrix.shard }}/*.contract.json
+            .tox/crate-contracts/shard-${{ matrix.shard }}/timings-${{ matrix.shard }}.jsonl
+          if-no-files-found: error
+
+  system:
+    name: system coverage (${{ matrix.lane }})
+    needs: changes
+    if: >-
+      needs.changes.outputs.rust == 'true' || github.event_name == 'push' ||
+      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: clients
+            recipe: coverage-system-clients
+            report: .tox/coverage/system-clients.lcov
+            client_tools: true
+            proxy: false
+          - lane: distributed
+            recipe: coverage-system-distributed
+            report: .tox/coverage/system-distributed.lcov
+            client_tools: false
+            proxy: true
+          - lane: storage
+            recipe: coverage-system-storage
+            report: .tox/coverage/system-storage.lcov
+            client_tools: false
+            proxy: false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        env:
+          NODE_OPTIONS: --no-deprecation # https://github.com/Swatinem/rust-cache/issues/331
+        with:
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        if: matrix.client_tools
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        if: matrix.client_tools
+      - uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10
+        with:
+          tool: cargo-llvm-cov,cargo-nextest,just
+      - if: matrix.proxy
+        run: |
+          curl -fsSL -o "${RUNNER_TEMP}/toxiproxy-server" \
+            https://github.com/Shopify/toxiproxy/releases/download/v2.12.0/toxiproxy-server-linux-amd64
+          chmod +x "${RUNNER_TEMP}/toxiproxy-server"
+          echo "${RUNNER_TEMP}" >> "$GITHUB_PATH"
+      - run: just ${{ matrix.recipe }} "${{ matrix.report }}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: coverage-system-${{ matrix.lane }}
+          path: ${{ matrix.report }}
+          if-no-files-found: error
+
   frontend:
     needs: changes
     if: >-
       needs.changes.outputs.rust == 'true' || needs.changes.outputs.frontend_tests == 'true' ||
       github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
     permissions:
-      actions: write
       contents: read
-    env:
-      CARGO_LEPTOS_VERSION: "0.3.6"
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        env:
+          NODE_OPTIONS: --no-deprecation # https://github.com/Swatinem/rust-cache/issues/331
         with:
+          cache-directories: .tox/coverage-target/frontend
+          cache-shared-key: frontend
           cache-save-if: ${{ github.ref == 'refs/heads/main' }}
           target: wasm32-unknown-unknown
-      - name: Install cargo-leptos
-        run: |
-          curl -sL "https://github.com/leptos-rs/cargo-leptos/releases/download/v${CARGO_LEPTOS_VERSION}/cargo-leptos-x86_64-unknown-linux-musl.tar.gz" | tar xz --strip-components=1
-          sudo mv cargo-leptos /usr/local/bin/
-      - run: cargo leptos build
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: tests/frontend/package-lock.json
-      - run: npm ci
-        working-directory: tests/frontend
-      - run: npx playwright install --with-deps chromium
-        working-directory: tests/frontend
-      - run: npx playwright test
-        working-directory: tests/frontend
-      - name: Cancel remaining jobs on failure
-        if: failure() && !cancelled()
-        uses: ./.github/actions/cancel-on-failure
+          cache-dependency-path: |
+            crates/peryx-web/tests/frontend/package-lock.json
+            crates/peryx-ecosystem-pypi/tests/frontend/package-lock.json
+            crates/peryx-ecosystem-oci/tests/frontend/package-lock.json
+      - uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10
+        with:
+          tool: cargo-leptos,cargo-llvm-cov,cargo-nextest,just
+      - run: just frontend-deps
+      - run: just frontend-browser-deps --with-deps
+      - name: Install matching LLVM
+        run: |
+          llvm_major="$(rustc -vV | awk '/^LLVM version:/ { split($3, version, "."); print version[1] }')"
+          curl --fail --location --output llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo apt-get update
+          sudo apt-get install --yes lcov
+          sudo ./llvm.sh "$llvm_major"
+          echo "CLANG=clang-$llvm_major" >> "$GITHUB_ENV"
+      - name: Run instrumented frontend tests
+        run: just coverage-frontend
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: coverage-frontend
+          path: .tox/coverage/frontend-*.lcov
+          if-no-files-found: error
 
-  # Mermaid diagrams are pre-rendered from source to committed dual-theme SVG partials (site/diagrams,
-  # keyed by a hash of the diagram source) because the docs host has no headless browser. This job
-  # builds the site and inlines those partials; inline_diagrams.py fails when a source's partial is
-  # missing, so a changed diagram that was not re-rendered is caught here. Regenerate with
-  # `npm --prefix site run render` (a git pre-commit hook does this automatically) and commit the result.
+  coverage:
+    needs: [changes, crate-contracts, frontend, fuzz-oci, fuzz-pypi, system]
+    if: >-
+      always() &&
+      (needs.changes.outputs.rust == 'true' || github.event_name == 'push' ||
+      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
+      needs.crate-contracts.result == 'success' && needs.frontend.result == 'success' &&
+      needs.system.result == 'success' &&
+      (needs.fuzz-oci.result == 'success' || needs.fuzz-oci.result == 'skipped') &&
+      (needs.fuzz-pypi.result == 'success' || needs.fuzz-pypi.result == 'skipped')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: coverage-*
+          path: .tox/coverage-parts
+          merge-multiple: true
+      - run: sudo apt-get update && sudo apt-get install --yes lcov
+      - uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10
+        with:
+          tool: just
+      - name: Merge executed coverage
+        run: just coverage-merge .tox/coverage/lcov.info .tox/coverage-parts/*.lcov
+      - name: Preserve measured crate timings
+        run: |
+          mkdir -p .tox/ci-timings
+          cat .tox/coverage-parts/timings-*.jsonl > .tox/ci-timings/timings.jsonl
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .tox/ci-timings/timings.jsonl
+          key: crate-timings-${{ github.sha }}
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: coverage-lcov
+          path: |
+            .tox/coverage/lcov.info
+            .tox/coverage/lcov.contracts/*.contract.json
+          if-no-files-found: error
+      - if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        with:
+          files: .tox/coverage/lcov.info
+          fail_ci_if_error: true
+
   docs:
     needs: changes
     if: >-
       needs.changes.outputs.docs == 'true' || github.event_name == 'push' ||
       github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     permissions:
-      actions: write
       contents: read
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install zola
-        run: |
-          curl -sL "https://github.com/getzola/zola/releases/download/v0.22.1/zola-v0.22.1-x86_64-unknown-linux-gnu.tar.gz" | tar xz
-          sudo mv zola /usr/local/bin/
-      - run: zola --root site build
-      - run: python3 site/scripts/inline_diagrams.py site/public
-      - name: Cancel remaining jobs on failure
-        if: failure() && !cancelled()
-        uses: ./.github/actions/cancel-on-failure
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+      - uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10
+        with:
+          tool: just,zola
+      - run: just docs
 
-  # Required-status-check anchor: branch protection requires this job, not the conditional ones above,
-  # because a skipped required check blocks merge on GitHub. Passes when every dependency succeeded or
-  # skipped; fails if any failed or was cancelled.
+  scheduled-nightly:
+    name: nightly analysis (${{ matrix.recipe }})
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        recipe: [direct-minimum, miri, sanitizer-address, sanitizer-thread]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          toolchain: nightly
+          components: miri,rust-src
+          cache: false
+      - uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10
+        with:
+          tool: cargo-nextest,just
+      - run: just ${{ matrix.recipe }}
+
+  scheduled-mutation:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        with:
+          cache: false
+      - uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10
+        with:
+          tool: cargo-mutants,cargo-nextest,just
+      - run: just mutation-full 2 "${{ matrix.shard }}/8"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: mutation-report-${{ matrix.shard }}
+          path: .tox/mutants
+          if-no-files-found: ignore
+
+  mutation-diff:
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        env:
+          NODE_OPTIONS: --no-deprecation # https://github.com/Swatinem/rust-cache/issues/331
+        with:
+          cache-shared-key: mutation-diff
+      - uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10
+        with:
+          tool: cargo-mutants,cargo-nextest,just
+      - run: just mutation "$BASE_REV" 1 true "${{ matrix.shard }}/8"
+        env:
+          BASE_REV: ${{ github.event.pull_request.base.sha }}
+          CARGO_BUILD_JOBS: 2
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: mutation-diff-report-${{ matrix.shard }}
+          path: .tox/mutants
+          if-no-files-found: ignore
+
+  fuzz-pypi:
+    needs: changes
+    if: >-
+      needs.changes.outputs.pypi == 'true' || needs.changes.outputs.shared == 'true' ||
+      github.event_name == 'push' ||
+      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        env:
+          NODE_OPTIONS: --no-deprecation # https://github.com/Swatinem/rust-cache/issues/331
+        with:
+          toolchain: nightly
+          components: llvm-tools-preview
+          cache-directories: .tox/fuzz-target/peryx-ecosystem-pypi
+          cache-shared-key: fuzz-pypi
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10
+        with:
+          tool: cargo-fuzz,cargo-llvm-cov,cargo-nextest,just
+      - run: just fuzz-package peryx-ecosystem-pypi 30 .tox/coverage/fuzz-pypi.lcov
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: coverage-fuzz-pypi
+          path: .tox/coverage/fuzz-pypi.lcov
+          if-no-files-found: error
+
+  fuzz-oci:
+    needs: changes
+    if: >-
+      needs.changes.outputs.oci == 'true' || needs.changes.outputs.shared == 'true' ||
+      github.event_name == 'push' ||
+      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        env:
+          NODE_OPTIONS: --no-deprecation # https://github.com/Swatinem/rust-cache/issues/331
+        with:
+          toolchain: nightly
+          components: llvm-tools-preview
+          cache-directories: .tox/fuzz-target/peryx-ecosystem-oci
+          cache-shared-key: fuzz-oci
+          cache-save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10
+        with:
+          tool: cargo-fuzz,cargo-llvm-cov,cargo-nextest,just
+      - run: just fuzz-package peryx-ecosystem-oci 30 .tox/coverage/fuzz-oci.lcov
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: coverage-fuzz-oci
+          path: .tox/coverage/fuzz-oci.lcov
+          if-no-files-found: error
+
   ci-gate:
     if: always()
-    needs: [changes, lint, test, coverage, e2e, e2e-live, availability, sim-campaign, frontend, docs]
+    needs:
+      - changes
+      - coverage
+      - crate-contracts
+      - docs
+      - frontend
+      - fuzz-oci
+      - fuzz-pypi
+      - lint-automation
+      - lint-contracts
+      - lint-deps
+      - lint-docs
+      - lint-source
+      - mutation-diff
+      - platform-test
+      - scheduled-mutation
+      - scheduled-nightly
+      - system
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
-      - name: Verify no required job failed
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10
+        with:
+          tool: just
+      - name: Verify required jobs
         env:
-          RESULTS: ${{ join(needs.*.result, ' ') }}
-        run: |
-          echo "dependency results: $RESULTS"
-          for result in $RESULTS; do
-            case "$result" in
-              failure|cancelled) echo "a required job reported: $result"; exit 1 ;;
-            esac
-          done
-          echo "all required jobs passed or were skipped"
+          CI_CONTEXT: >-
+            {"event":"${{ github.event_name }}","automation":${{ needs.changes.outputs.automation == 'true' }},
+            "docs":${{ needs.changes.outputs.docs == 'true' }},
+            "frontend_tests":${{ needs.changes.outputs.frontend_tests == 'true' }},
+            "oci":${{ needs.changes.outputs.oci == 'true' }},"pypi":${{ needs.changes.outputs.pypi == 'true' }},
+            "rust":${{ needs.changes.outputs.rust == 'true' }},
+            "shared":${{ needs.changes.outputs.shared == 'true' }}}
+          CI_RESULTS: ${{ toJSON(needs) }}
+        run: just ci-gate main

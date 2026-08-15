@@ -1,7 +1,7 @@
-//! The Simple repository API: the project list and a project's detail page.
-
-#[allow(clippy::wildcard_imports, reason = "shared is this module's OpenAPI-builder prelude")]
-use super::shared::*;
+use super::shared::{
+    OperationBuilder, ResponseBuilder, accept_param, json, json_response, policy_denial_response, project_param,
+    route_param,
+};
 
 pub(super) fn project_list() -> OperationBuilder {
     OperationBuilder::new()

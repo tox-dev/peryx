@@ -1,7 +1,3 @@
-//! The trove classifier set `PyPI` validates uploads against.
-//!
-//! Generated from trove-classifiers 2026.6.1.19 by `ci/vendor-classifiers.py`.
-
 /// Classifiers `PyPI` accepts, sorted so a refresh shows up as a clean diff.
 pub(super) const KNOWN: [&str; 895] = [
     "Development Status :: 1 - Planning",

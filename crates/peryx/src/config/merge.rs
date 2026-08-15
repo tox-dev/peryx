@@ -1,18 +1,12 @@
-//! Overlay merging and raw-table classification: how a [`PartialConfig`] resolves onto defaults.
-
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use peryx_core::Ecosystem;
-use peryx_driver::jobs::{
-    CatalogSyncParameters, DcCopyParameters, MAX_CATALOG_CONCURRENCY, MAX_CATALOG_PROJECTS_PER_RUN,
-    MAX_CATALOG_TIMEOUT, MAX_DC_COPY_CONCURRENCY, PlacementReconcileParameters, ReclamationParameters, Schedule,
-    ScheduledJob,
-};
+use peryx_driver::jobs::{Schedule, ScheduledJob};
 use peryx_driver::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig, RouteLimit};
+use peryx_driver::serving::{JobConfig, JobIndexConfig};
+use peryx_ha_distributed::DurabilityPolicy;
 use peryx_identity::{ExternalGroup, ExternalGroupGrant, GrantScope, ProviderId};
-use peryx_replication::DurabilityPolicy;
 use peryx_upstream::{CredentialFailure, ExecCredentialConfig, ExecCredentialConfigError};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -22,29 +16,40 @@ use std::collections::HashSet;
 
 use super::ConfigError;
 use super::model::{
-    AcmeConfig, AuthConfig, AvailabilityConfig, AvailabilityListenerConfig, AvailabilityListenerTls, AvailabilityMode,
-    BlobStorageConfig, Config, CredentialFailureMode, CredentialRefreshConfig, DEFAULT_REPLICA_PAGE_SIZE,
+    AcmeConfig, AuthConfig, AvailabilityConfig, AvailabilityListenerConfig, AvailabilityListenerTls, BlobStorageConfig,
+    Config, CredentialFailureMode, CredentialRefreshConfig, DEFAULT_REPLICA_PAGE_SIZE,
     DEFAULT_REPLICA_POLL_INTERVAL_SECS, DEFAULT_WRITE_ACK_DEADLINE_SECS, DcMember, DcMembership, DcRole, IndexConfig,
     IndexKind, JobsConfig, LdapBindConfig, LdapProviderConfig, LogConfig, MAX_TOKEN_TTL_SECS, OidcProviderConfig,
-    ReplicationConfig, S3StorageConfig, SecretSource, TlsConfig, TokenConfig, TrustedPublisherConfig, UpstreamConfig,
-    UpstreamRoutingConfig, UpstreamTlsConfig, WebhookConfig, WebhookSecret, WriteAckConfig,
+    ReplicationConfig, S3StorageConfig, SecretSource, TlsConfig, TokenConfig, UpstreamConfig, UpstreamRoutingConfig,
+    UpstreamTlsConfig, WebhookConfig, WebhookSecret, WriteAckConfig,
 };
 use super::raw::{
     PartialAuthConfig, PartialConfig, PartialJobsConfig, PartialLogConfig, PartialRateLimitConfig, PartialRouteLimit,
     RawAcme, RawAvailability, RawAvailabilityListener, RawBlobStorage, RawCredentialExec, RawDcMember,
     RawExternalGroupGrant, RawIndex, RawJobSchedule, RawLdapMode, RawLdapProvider, RawOidcProvider, RawReadThrough,
-    RawReplication, RawScheduledJob, RawTls, RawToken, RawUpstream, RawWebhook, RawWriteAck, RawWriteAckPolicy,
+    RawReplication, RawTls, RawToken, RawUpstream, RawWebhook, RawWriteAck, RawWriteAckPolicy,
 };
-use peryx_driver::read_through::{DEFAULT_READ_THROUGH_LIMITS, ReadThroughLimits};
-use peryx_replication::{CircuitConfig, ReconnectPolicy};
+use peryx_core::Ecosystem;
+use peryx_ha::AvailabilityMode;
+use peryx_ha_distributed::read_through::{DEFAULT_READ_THROUGH_LIMITS, ReadThroughLimits};
+use peryx_ha_distributed::{CircuitConfig, ReconnectPolicy};
 
 impl Config {
-    /// Overlay a partial source on top of these values, returning the merged config.
-    ///
     /// # Errors
     /// Returns [`ConfigError::Index`] if the partial defines indexes but one is not classifiable as a
     /// cached, hosted, or virtual.
-    pub fn apply(mut self, partial: PartialConfig) -> Result<Self, ConfigError> {
+    pub fn apply(self, partial: PartialConfig) -> Result<Self, ConfigError> {
+        self.apply_with_plugins(partial, &crate::compiled_plugins())
+    }
+
+    /// # Errors
+    /// Returns an error when the source contains invalid index, TLS, authentication, availability,
+    /// storage, or job settings.
+    pub fn apply_with_plugins(
+        mut self,
+        partial: PartialConfig,
+        plugins: &peryx_plugin_registry::PluginRegistry,
+    ) -> Result<Self, ConfigError> {
         if let Some(host) = partial.host {
             self.host = host;
         }
@@ -82,7 +87,10 @@ impl Config {
             self.cache_ttl_secs = cache_ttl_secs;
         }
         if let Some(raw) = partial.indexes {
-            self.indexes = raw.into_iter().map(classify_index).collect::<Result<_, _>>()?;
+            self.indexes = raw
+                .into_iter()
+                .map(|index| classify_index(index, plugins))
+                .collect::<Result<_, _>>()?;
         }
         if partial.tls.is_some() || partial.acme.is_some() {
             self.tls = classify_tls(partial.tls, partial.acme)?;
@@ -105,14 +113,22 @@ impl Config {
         if let Some(blob) = partial.blob {
             self.blob = classify_blob(blob)?;
         }
-        self.jobs = self.jobs.apply(partial.jobs)?;
-        validate_schedules(&self.indexes, &self.jobs.schedules)?;
+        self.jobs = self
+            .jobs
+            .apply(partial.jobs, &self.indexes, self.availability.mode(), plugins)?;
+        self.jobs.validate_availability(self.availability.mode())?;
         Ok(self)
     }
 }
 
 impl JobsConfig {
-    fn apply(mut self, partial: PartialJobsConfig) -> Result<Self, ConfigError> {
+    fn apply(
+        mut self,
+        partial: PartialJobsConfig,
+        indexes: &[IndexConfig],
+        availability: AvailabilityMode,
+        plugins: &peryx_plugin_registry::PluginRegistry,
+    ) -> Result<Self, ConfigError> {
         if let Some(mode) = partial.mode {
             self.mode = mode;
         }
@@ -120,65 +136,47 @@ impl JobsConfig {
             self.schedules = schedules
                 .into_iter()
                 .enumerate()
-                .map(|(index, raw)| classify_schedule(index, raw))
+                .map(|(index, raw)| classify_schedule(index, &raw, indexes, availability, plugins))
                 .collect::<Result<_, _>>()?;
         }
         Ok(self)
     }
 }
 
-fn classify_schedule(index: usize, raw: RawJobSchedule) -> Result<Schedule, ConfigError> {
+fn classify_schedule(
+    index: usize,
+    raw: &RawJobSchedule,
+    indexes: &[IndexConfig],
+    availability: AvailabilityMode,
+    plugins: &peryx_plugin_registry::PluginRegistry,
+) -> Result<Schedule, ConfigError> {
+    if availability == AvailabilityMode::None && peryx_ha_distributed::is_scheduled_job_kind(&raw.job) {
+        return Err(ConfigError::Jobs {
+            index,
+            reason: "`none` availability cannot schedule distributed jobs",
+        });
+    }
+    let distributed = peryx_ha_distributed::compile_scheduled_job(&raw.job, &raw.settings);
     let Some(interval) = std::num::NonZeroU64::new(raw.interval_secs) else {
         return Err(ConfigError::Jobs {
             index,
             reason: "`interval_secs` must be positive",
         });
     };
-    let job = match raw.job {
-        RawScheduledJob::CacheMaintenance => {
-            if raw.repository.is_some()
-                || raw.source.is_some()
-                || raw.max_projects.is_some()
-                || raw.concurrency.is_some()
-                || raw.timeout_secs.is_some()
-            {
+    let job = match raw.job.as_str() {
+        "cache_maintenance" => {
+            if !raw.settings.is_empty() {
                 return Err(ConfigError::Jobs {
                     index,
-                    reason: "cache maintenance accepts no catalog-sync fields",
+                    reason: "cache maintenance accepts no job-specific fields",
                 });
             }
             ScheduledJob::CacheMaintenance
         }
-        RawScheduledJob::CatalogSync => ScheduledJob::CatalogSync(classify_catalog_sync(index, raw)?),
-        RawScheduledJob::DcCopy => ScheduledJob::DcCopy(classify_dc_copy(index, &raw)?),
-        RawScheduledJob::PlacementReconcile => {
-            if raw.repository.is_some()
-                || raw.source.is_some()
-                || raw.max_projects.is_some()
-                || raw.concurrency.is_some()
-                || raw.timeout_secs.is_some()
-            {
-                return Err(ConfigError::Jobs {
-                    index,
-                    reason: "placement reconcile accepts no job-specific fields",
-                });
-            }
-            ScheduledJob::PlacementReconcile(PlacementReconcileParameters::new())
-        }
-        RawScheduledJob::Reclamation => {
-            if raw.repository.is_some()
-                || raw.source.is_some()
-                || raw.max_projects.is_some()
-                || raw.concurrency.is_some()
-                || raw.timeout_secs.is_some()
-            {
-                return Err(ConfigError::Jobs {
-                    index,
-                    reason: "reclamation accepts no job-specific fields",
-                });
-            }
-            ScheduledJob::Reclamation(ReclamationParameters::new())
-        }
+        _ => match distributed {
+            Some(result) => result.map_err(|reason| ConfigError::Jobs { index, reason })?,
+            None => compile_plugin_job(index, &raw.job, &raw.settings, indexes, plugins)?,
+        },
     };
     Ok(Schedule {
         job,
@@ -186,113 +184,48 @@ fn classify_schedule(index: usize, raw: RawJobSchedule) -> Result<Schedule, Conf
     })
 }
 
-fn classify_dc_copy(index: usize, raw: &RawJobSchedule) -> Result<DcCopyParameters, ConfigError> {
-    if raw.repository.is_some() || raw.source.is_some() || raw.max_projects.is_some() || raw.timeout_secs.is_some() {
-        return Err(ConfigError::Jobs {
-            index,
-            reason: "cross-datacenter copy accepts only `concurrency`",
-        });
-    }
-    let mut parameters = DcCopyParameters::new();
-    if let Some(concurrency) = raw.concurrency {
-        parameters.concurrency = std::num::NonZeroUsize::new(concurrency).ok_or(ConfigError::Jobs {
-            index,
-            reason: "cross-datacenter copy `concurrency` must be positive",
-        })?;
-    }
-    if parameters.concurrency.get() > MAX_DC_COPY_CONCURRENCY {
-        return Err(ConfigError::Jobs {
-            index,
-            reason: "cross-datacenter copy `concurrency` exceeds the per-pass limit",
-        });
-    }
-    Ok(parameters)
-}
-
-fn classify_catalog_sync(index: usize, raw: RawJobSchedule) -> Result<CatalogSyncParameters, ConfigError> {
-    let Some(repository) = raw.repository.filter(|repository| !repository.trim().is_empty()) else {
-        return Err(ConfigError::Jobs {
-            index,
-            reason: "catalog sync needs a non-empty `repository`",
-        });
-    };
-    if raw.source.as_deref().is_some_and(|source| source.trim().is_empty()) {
-        return Err(ConfigError::Jobs {
-            index,
-            reason: "catalog sync `source` must not be empty",
-        });
-    }
-    let mut parameters = CatalogSyncParameters::new(repository);
-    parameters.source = raw.source;
-    if let Some(max_projects) = raw.max_projects {
-        parameters.max_projects = std::num::NonZeroUsize::new(max_projects).ok_or(ConfigError::Jobs {
-            index,
-            reason: "catalog sync `max_projects` must be positive",
-        })?;
-    }
-    if parameters.max_projects.get() > MAX_CATALOG_PROJECTS_PER_RUN {
-        return Err(ConfigError::Jobs {
-            index,
-            reason: "catalog sync `max_projects` exceeds the per-run limit",
-        });
-    }
-    if let Some(concurrency) = raw.concurrency {
-        parameters.concurrency = std::num::NonZeroUsize::new(concurrency).ok_or(ConfigError::Jobs {
-            index,
-            reason: "catalog sync `concurrency` must be positive",
-        })?;
-    }
-    if parameters.concurrency.get() > MAX_CATALOG_CONCURRENCY {
-        return Err(ConfigError::Jobs {
-            index,
-            reason: "catalog sync `concurrency` exceeds the per-run limit",
-        });
-    }
-    if let Some(timeout_secs) = raw.timeout_secs {
-        parameters.timeout = Duration::from_secs(timeout_secs);
-    }
-    if parameters.timeout.is_zero() || parameters.timeout > MAX_CATALOG_TIMEOUT {
-        return Err(ConfigError::Jobs {
-            index,
-            reason: "catalog sync `timeout_secs` must be between 1 and 86400",
-        });
-    }
-    Ok(parameters)
-}
-
-fn validate_schedules(indexes: &[IndexConfig], schedules: &[Schedule]) -> Result<(), ConfigError> {
-    for (position, schedule) in schedules.iter().enumerate() {
-        let ScheduledJob::CatalogSync(parameters) = &schedule.job else {
-            continue;
-        };
-        let Some(repository) = indexes.iter().find(|index| index.name == parameters.repository) else {
-            return Err(ConfigError::Jobs {
-                index: position,
-                reason: "catalog sync `repository` must name a configured index",
-            });
-        };
-        let IndexKind::Cached { routing, offline, .. } = &repository.kind else {
-            return Err(ConfigError::Jobs {
-                index: position,
-                reason: "catalog sync `repository` must name a cached index",
-            });
-        };
-        if repository.ecosystem != Ecosystem::Pypi || *offline {
-            return Err(ConfigError::Jobs {
-                index: position,
-                reason: "catalog sync needs an online PyPI repository",
-            });
-        }
-        if let Some(source) = &parameters.source
-            && !routing.upstreams.iter().any(|upstream| upstream.name == *source)
-        {
-            return Err(ConfigError::Jobs {
-                index: position,
-                reason: "catalog sync `source` must name a repository upstream",
-            });
-        }
-    }
-    Ok(())
+fn compile_plugin_job(
+    index: usize,
+    kind: &str,
+    settings: &toml::Table,
+    indexes: &[IndexConfig],
+    plugins: &peryx_plugin_registry::PluginRegistry,
+) -> Result<ScheduledJob, ConfigError> {
+    let configured = indexes
+        .iter()
+        .map(|configured| {
+            let (cached, offline, upstreams) = match &configured.kind {
+                IndexKind::Cached { routing, offline, .. } => (
+                    true,
+                    *offline,
+                    routing
+                        .upstreams
+                        .iter()
+                        .map(|upstream| upstream.name.as_str())
+                        .collect(),
+                ),
+                IndexKind::Hosted { .. } | IndexKind::Virtual { .. } => (false, false, Vec::new()),
+            };
+            JobIndexConfig {
+                name: &configured.name,
+                ecosystem: configured.ecosystem.clone(),
+                cached,
+                offline,
+                upstreams,
+            }
+        })
+        .collect::<Vec<_>>();
+    let plugins = plugins
+        .activate(indexes.iter().map(|configured| configured.ecosystem.clone()))
+        .expect("classified indexes use installed ecosystems");
+    plugins
+        .compile_job(JobConfig {
+            kind,
+            settings,
+            indexes: &configured,
+        })
+        .map(ScheduledJob::Plugin)
+        .map_err(|reason| ConfigError::Plugin(format!("jobs schedule [{index}]: {reason}")))
 }
 
 fn classify_blob(raw: RawBlobStorage) -> Result<BlobStorageConfig, ConfigError> {
@@ -432,7 +365,7 @@ fn classify_replication(raw: RawReplication) -> Result<ReplicationConfig, Config
                     reason: "`page_size` must be positive",
                 });
             };
-            if page_size.get() > peryx_replication::DEFAULT_MAX_CHANGE_PAGE_SIZE {
+            if page_size.get() > peryx_ha_distributed::DEFAULT_MAX_CHANGE_PAGE_SIZE {
                 return Err(ConfigError::Replication {
                     reason: "`page_size` exceeds the primary limit",
                 });
@@ -486,7 +419,15 @@ fn classify_listener(
     mode: AvailabilityMode,
     raw: Option<RawAvailabilityListener>,
 ) -> Result<Option<AvailabilityListenerConfig>, ConfigError> {
-    let Some(raw) = raw else { return Ok(None) };
+    let Some(raw) = raw else {
+        return if mode == AvailabilityMode::Ha {
+            Err(ConfigError::Availability {
+                reason: "`ha` mode requires `[availability.listener]` for Raft RPC",
+            })
+        } else {
+            Ok(None)
+        };
+    };
     if mode == AvailabilityMode::None {
         return Err(ConfigError::Availability {
             reason: "`none` mode opens no availability listener; select `dc` or `ha` first",
@@ -559,8 +500,6 @@ fn classify_listener_tls(raw: RawTls) -> Result<AvailabilityListenerTls, ConfigE
     }
 }
 
-/// Validate a group's members: non-blank identities, a distinct group identity, unique node,
-/// datacenter, and address identities, exactly one writer, and at least one replica.
 fn resolve_members(group: &str, raw: Vec<RawDcMember>) -> Result<Vec<DcMember>, ConfigError> {
     let mut members = Vec::with_capacity(raw.len());
     let (mut writers, mut replicas) = (0usize, 0usize);
@@ -583,7 +522,6 @@ fn resolve_members(group: &str, raw: Vec<RawDcMember>) -> Result<Vec<DcMember>, 
         });
     }
     reject_duplicate(members.iter().map(|member| member.node.as_str()), "node identity")?;
-    reject_duplicate(members.iter().map(|member| member.dc.as_str()), "datacenter identity")?;
     reject_duplicate(
         members.iter().map(|member| member.address.as_str()),
         "advertised address",
@@ -640,17 +578,24 @@ fn membership_error(reason: impl Into<String>) -> ConfigError {
     ConfigError::DcMembership { reason: reason.into() }
 }
 
-/// Turn a raw `[[index]]` table into a classified [`IndexConfig`]: `layers` makes a virtual index, else
-/// `[[index.upstream]]` makes a cached index, else `hosted` makes a hosted store.
-fn classify_index(raw: RawIndex) -> Result<IndexConfig, ConfigError> {
+fn classify_index(raw: RawIndex, plugins: &peryx_plugin_registry::PluginRegistry) -> Result<IndexConfig, ConfigError> {
     let mut raw = raw;
     let route = raw.route.clone().unwrap_or_else(|| raw.name.clone());
     let ecosystem = match &raw.ecosystem {
-        Some(value) => value.parse().map_err(|_| ConfigError::Index {
-            name: raw.name.clone(),
-            reason: "unknown ecosystem",
-        })?,
-        None => Ecosystem::default(),
+        Some(value) => {
+            let ecosystem = value.parse::<Ecosystem>().map_err(|_| ConfigError::Index {
+                name: raw.name.clone(),
+                reason: "unknown ecosystem",
+            })?;
+            if !plugins.is_installed(&ecosystem) {
+                return Err(ConfigError::Index {
+                    name: raw.name.clone(),
+                    reason: "unknown ecosystem",
+                });
+            }
+            ecosystem
+        }
+        None => plugins.default_ecosystem(),
     };
     let kind = classify_index_kind(&mut raw)?;
     let tokens = classify_tokens(&raw.name, raw.tokens)?;
@@ -677,7 +622,7 @@ fn classify_index_kind(raw: &mut RawIndex) -> Result<IndexKind, ConfigError> {
     if let Some(layers) = raw.layers.take() {
         return Ok(IndexKind::Virtual {
             layers,
-            upload: raw.upload.take(),
+            write_target: raw.write_target.take(),
         });
     }
     if !raw.upstreams.is_empty() {
@@ -695,10 +640,10 @@ fn classify_index_kind(raw: &mut RawIndex) -> Result<IndexKind, ConfigError> {
 }
 
 fn validate_index_kind(raw: &RawIndex) -> Result<(), ConfigError> {
-    if raw.upload.is_some() && raw.layers.is_none() {
+    if raw.write_target.is_some() && raw.layers.is_none() {
         return Err(ConfigError::Index {
             name: raw.name.clone(),
-            reason: "`upload` names the layer that receives uploads and requires `layers`",
+            reason: "`write_target` requires `layers`",
         });
     }
     if raw.layers.is_some() && !raw.upstreams.is_empty() {
@@ -889,53 +834,21 @@ impl AuthConfig {
                 reason: "`token_ttl_secs` must not exceed 86400 (one day)",
             });
         }
-        let oidc_audience = partial.oidc_audience.unwrap_or(self.oidc_audience);
-        if oidc_audience.trim().is_empty() {
-            return Err(ConfigError::Auth {
-                reason: "`oidc_audience` must not be empty",
-            });
-        }
-        let trusted_publishers = partial
-            .trusted_publishers
-            .map_or(self.trusted_publishers, |publishers| {
-                publishers
-                    .into_iter()
-                    .map(|publisher| TrustedPublisherConfig {
-                        id: publisher.id,
-                        issuer: publisher.issuer,
-                        repository: publisher.repository,
-                        subject: publisher.subject,
-                        projects: publisher.projects,
-                        claims: publisher.claims,
-                    })
-                    .collect()
-            });
-        if trusted_publishers.iter().any(|publisher| {
-            publisher.id.trim().is_empty()
-                || publisher.issuer.trim().is_empty()
-                || publisher.repository.trim().is_empty()
-                || publisher.subject.trim().is_empty()
-                || publisher.projects.is_empty()
-                || publisher.projects.iter().any(|project| project.trim().is_empty())
-        }) {
-            return Err(ConfigError::Auth {
-                reason: "trusted publisher fields and project lists must not be empty",
-            });
-        }
         let ldap_providers = partial.ldap_providers.map_or(Ok(self.ldap_providers), |providers| {
             providers.into_iter().map(classify_ldap_provider).collect()
         })?;
         let oidc_providers = partial.oidc_providers.map_or(Ok(self.oidc_providers), |providers| {
             providers.into_iter().map(classify_oidc_provider).collect()
         })?;
+        let mut extensions = self.extensions;
+        extensions.extend(partial.extensions);
         Ok(Self {
             signing_key: signing_key.or(self.signing_key),
             token_ttl_secs,
             default_anonymous_read: partial.default_anonymous_read.unwrap_or(self.default_anonymous_read),
-            oidc_audience,
-            trusted_publishers,
             ldap_providers,
             oidc_providers,
+            extensions,
         })
     }
 }
@@ -994,8 +907,10 @@ fn classify_oidc_provider(mut raw: RawOidcProvider) -> Result<OidcProviderConfig
 }
 
 fn secure_https(value: &str) -> Option<url::Url> {
-    let url = url::Url::parse(value).ok()?;
-    (url.scheme() == "https" && url.host_str().is_some()).then_some(url)
+    match url::Url::parse(value) {
+        Ok(url) if url.scheme() == "https" && url.host_str().is_some() => Some(url),
+        Ok(_) | Err(_) => None,
+    }
 }
 
 fn claim(value: Option<String>, default: &str) -> Option<String> {
@@ -1178,10 +1093,10 @@ fn classify_token(index: &str, raw: RawToken) -> Result<TokenConfig, ConfigError
     Ok(TokenConfig {
         name: raw.name,
         secret,
-        projects: if raw.projects.is_empty() {
+        resources: if raw.resources.is_empty() {
             vec!["*".to_owned()]
         } else {
-            raw.projects
+            raw.resources
         },
         actions: raw.actions.into_iter().collect(),
         expires_at,
@@ -1195,9 +1110,7 @@ fn parse_timestamp(value: &str) -> Result<i64, &'static str> {
         .map_err(|_| "`expires_at` must be an RFC 3339 timestamp, for example 2027-01-01T00:00:00Z")
 }
 
-/// Resolve the mutually exclusive `[tls]` and `[acme]` tables into one TLS mode. Manual TLS needs both
-/// a certificate and a key; ACME needs at least one domain and a contact.
-pub fn classify_tls(tls: Option<RawTls>, acme: Option<RawAcme>) -> Result<Option<TlsConfig>, ConfigError> {
+pub(super) fn classify_tls(tls: Option<RawTls>, acme: Option<RawAcme>) -> Result<Option<TlsConfig>, ConfigError> {
     match (tls, acme) {
         (Some(_), Some(_)) => Err(ConfigError::Tls {
             reason: "set at most one of `[tls]` or `[acme]`",

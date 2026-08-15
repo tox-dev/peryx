@@ -1,7 +1,7 @@
 //! The artifact placement-health view models, shared by the server renderer and the hydrated client.
 //!
 //! The neutral [`PlacementView`] crosses the server/browser boundary unchanged; the source and byte
-//! availability chips reuse the package page's [`file_source_label`](super::file_source_label) and
+//! availability chips reuse the artifact page's [`file_source_label`](super::file_source_label) and
 //! [`byte_availability_label`](super::byte_availability_label), so a placement row and a file row read
 //! the same word for the same state.
 
@@ -17,7 +17,7 @@ use super::HealthLabel;
 /// color-blind reader loses nothing, and a datacenter that does not hold a verified copy never borrows
 /// the served tint.
 #[must_use]
-pub fn blob_placement_status_label(status: BlobPlacementStatus) -> HealthLabel {
+pub const fn blob_placement_status_label(status: BlobPlacementStatus) -> HealthLabel {
     match status {
         BlobPlacementStatus::Verified => HealthLabel {
             text: "Verified",

@@ -1,13 +1,4 @@
-//! The textual front-end: a hand-written lexer and recursive-descent parser.
-//!
-//! This is the only textual layer in the crate. It turns bounded query text into an [`Ast`]; a
-//! future JSON-AST wire form would emit the same tree, so nothing downstream depends on the query
-//! having been text. Input is length-capped and predicate nesting is depth-capped, so the parser
-//! cannot be driven into unbounded work.
-//!
-//! Parameters are bound out of band: a `:name` reference lexes to [`Literal::Param`] and is replaced
-//! with a supplied value by [`bind`] after parsing, so a caller value can never alter the query's
-//! structure.
+//! Parameters enter the AST as [`Literal::Param`], so values cannot alter query structure.
 
 use std::collections::BTreeMap;
 
@@ -20,16 +11,12 @@ use crate::ast::{
 use crate::error::PqlError;
 use crate::value::Value;
 
-/// The largest query text the parser will accept, so it never receives an unbounded string.
 pub const MAX_QUERY_BYTES: usize = 4096;
-/// The deepest the `where` predicate may nest, so parsing cannot recurse without bound.
 pub const MAX_PREDICATE_DEPTH: usize = 32;
 
-/// Supplied parameter values, keyed by name without the leading colon.
+/// Keys omit the leading colon.
 pub type Params = BTreeMap<String, Value>;
 
-/// Parse query text into an unbound [`Ast`] whose parameters are still [`Literal::Param`] holes.
-///
 /// # Errors
 /// Returns [`PqlError::Parse`] for text that is too long, does not tokenize, or does not match the
 /// grammar.
@@ -49,8 +36,6 @@ pub fn parse(text: &str) -> Result<Ast, PqlError> {
     Ok(ast)
 }
 
-/// Replace every [`Literal::Param`] in an [`Ast`] with a supplied value.
-///
 /// # Errors
 /// Returns [`PqlError::MissingParameter`] when the query references a parameter the caller did not
 /// supply.
@@ -163,8 +148,7 @@ fn lex_operator(bytes: &[u8], index: usize, tokens: &mut Vec<Token>) -> Result<u
 }
 
 fn lex_string(text: &str, index: usize, tokens: &mut Vec<Token>) -> Result<usize, PqlError> {
-    // Iterate whole `char`s, not bytes: a multibyte UTF-8 char inside the quotes must survive as one
-    // codepoint rather than being split into Latin-1 bytes. Escapes only ever introduce ASCII.
+    // Whole characters preserve UTF-8 inside quotes; escapes introduce only ASCII.
     let mut value = String::new();
     let mut chars = text[index + 1..].char_indices();
     while let Some((offset, character)) = chars.next() {
@@ -228,9 +212,7 @@ fn token_end(text: &str, start: usize) -> usize {
     cursor
 }
 
-/// One deeper into the predicate, refusing a query whose boolean nesting — `and`, `or`, `not`, or
-/// parentheses — would recurse past the cap, so parsing, binding, validation, and evaluation stay
-/// within a bounded stack.
+/// Bounds recursive parsing and evaluation depth.
 fn deepen(depth: usize) -> Result<usize, PqlError> {
     if depth >= MAX_PREDICATE_DEPTH {
         return Err(PqlError::Parse("predicate nests too deeply".to_owned()));
@@ -372,9 +354,9 @@ impl Parser<'_> {
             return Ok(None);
         }
         match self.advance() {
-            Some(Token::Int(value)) if u32::try_from(*value).is_ok() => {
-                Ok(Some(u32::try_from(*value).expect("bounded above by u32::MAX")))
-            }
+            Some(Token::Int(value)) => u32::try_from(*value)
+                .map(Some)
+                .map_err(|_| PqlError::Parse("limit must be a non-negative integer".to_owned())),
             _ => Err(PqlError::Parse("limit must be a non-negative integer".to_owned())),
         }
     }

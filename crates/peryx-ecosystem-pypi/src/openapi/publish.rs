@@ -1,7 +1,7 @@
-//! Publishing and mutating a hosted index: upload, yank, restore, promote, delete.
-
-#[allow(clippy::wildcard_imports, reason = "shared is this module's OpenAPI-builder prelude")]
-use super::shared::*;
+use super::shared::{
+    ContentBuilder, OperationBuilder, ParameterBuilder, ParameterIn, RequestBodyBuilder, Required, ResponseBuilder,
+    SecurityRequirement, json, policy_denial_response, project_param, route_param, text_response, version_param,
+};
 
 pub(super) fn upload() -> OperationBuilder {
     OperationBuilder::new()

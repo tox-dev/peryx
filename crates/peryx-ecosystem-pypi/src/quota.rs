@@ -1,6 +1,6 @@
 use peryx_core::Role;
 use peryx_driver::ServingState;
-use peryx_events::metrics::{Event, MetricFamily};
+use peryx_events::metrics::{MetricFamily, Observation};
 use peryx_index::Index;
 use peryx_storage::meta::{AccountingClass, MetaStore, NewQuotaReservation, QuotaError, QuotaReservationRecord};
 
@@ -12,6 +12,8 @@ const QUOTA_ADMITTED_FAMILY: MetricFamily = MetricFamily {
     help: "Hosted PyPI uploads admitted against a project quota.",
     ui_label: "Quota admitted uploads",
     roles: &[Role::Hosted],
+    json_name: None,
+    kind: peryx_events::metrics::MetricKind::Counter,
 };
 
 const QUOTA_REJECTED_FAMILY: MetricFamily = MetricFamily {
@@ -20,6 +22,8 @@ const QUOTA_REJECTED_FAMILY: MetricFamily = MetricFamily {
     help: "Hosted PyPI uploads refused by a project quota.",
     ui_label: "Quota rejected uploads",
     roles: &[Role::Hosted],
+    json_name: None,
+    kind: peryx_events::metrics::MetricKind::Counter,
 };
 
 pub const QUOTA_FAMILIES: &[MetricFamily] = &[QUOTA_ADMITTED_FAMILY, QUOTA_REJECTED_FAMILY];
@@ -37,8 +41,8 @@ pub const fn quota_reservation<'a>(
 ) -> NewQuotaReservation<'a> {
     NewQuotaReservation {
         repository,
-        project: Some(project.as_str()),
-        version,
+        resource: Some(project.as_str()),
+        group: version,
         digest,
         bytes,
         class,
@@ -96,21 +100,21 @@ pub fn admit_upload(
     limit: u64,
     audit: bool,
 ) -> Result<Admission, QuotaError> {
-    match meta.reserve_project_quota(request, limit, audit) {
+    match meta.reserve_resource_quota(request, limit, audit) {
         Ok(record) => Ok(Admission::Reserved(PendingQuota {
             meta: meta.clone(),
             record: Some(record),
         })),
-        Err(QuotaError::ProjectExceeded { total }) => Ok(Admission::Rejected { total }),
+        Err(QuotaError::ResourceExceeded { total }) => Ok(Admission::Rejected { total }),
         Err(err) => Err(err),
     }
 }
 
 pub fn record_decision(state: &ServingState, index: &Index, project: &str, rejected: bool) {
-    state.metrics.record(Event::Ecosystem {
-        route: index.route.clone(),
-        project: project.to_owned(),
-        filename: None,
+    state.metrics.record(Observation::Ecosystem {
+        repository: index.route.clone(),
+        resource: project.to_owned(),
+        artifact: None,
         family: if rejected {
             QUOTA_REJECTED_FAMILY.key
         } else {
@@ -120,14 +124,5 @@ pub fn record_decision(state: &ServingState, index: &Index, project: &str, rejec
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_log_release_error_accepts_quota_errors() {
-        let error = QuotaError::Empty { field: "project" };
-
-        log_release_error(Some(&error), &"reservation");
-        log_release_error(None, &"reservation");
-    }
-}
+#[path = "../tests/unit/quota/tests.rs"]
+mod tests;

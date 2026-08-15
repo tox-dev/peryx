@@ -1,3 +1,0 @@
-{%- set source = load_data(path="data/snippets/trusted-publishing-gitlab.yml", format="plain") -%}
-{%- set block = "```yaml\n" ~ source ~ "```" -%}
-{{ block | markdown | safe }}

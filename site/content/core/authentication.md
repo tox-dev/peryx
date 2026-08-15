@@ -1,55 +1,47 @@
 +++
 title = "Authentication and access control"
-description = "The neutral access model every ecosystem shares: principals, actions, project-glob grants, per-index tokens, and the anonymous-read policy."
+description = "The neutral access model every ecosystem shares: principals, actions, resource-glob grants, per-index tokens, and the anonymous-read policy."
 weight = 10
 +++
 
-peryx answers one access question the same way for every packaging format: may this client take this action on this
-project in this index. The model that answers it is ecosystem-neutral, so a PyPI upload and an OCI push run through the
-same rules and differ only in how the client presents its credential. This page is the reference for that model and its
-configuration keys.
+peryx uses one access model across ecosystems. It decides whether a principal may take an action on a resource in an
+index. Ecosystem owners map client credentials, resource names, and routes onto that model.
 
-For a walkthrough see [issue your first access token](@/core/first-token.md); for task recipes see
-[control access to an index](@/core/control-access.md); for the reasoning behind the design see
+For task recipes see [control access to an index](@/core/control-access.md); for the reasoning behind the design see
 [client auth versus upstream credentials](@/core/access-explained.md).
 
 ## The model
 
 An access decision has four inputs.
 
-A **principal** is who a request speaks as once its credential was checked. It is either anonymous or a named subject,
+A **principal** is who a request speaks as after peryx checks its credential. It is either anonymous or a named subject,
 the name of the token that authenticated it. A credential that matches no token leaves the request anonymous, so an
 invalid token is exactly as privileged as no token at all.
 
-An **action** is one of `read`, `write`, and `delete`. Each ecosystem maps its verbs onto these: a pull or an install is
-a read, a push or an upload is a write, and a removal is a delete.
+An **action** is one of `read`, `write`, and `delete`. The ecosystem owner maps protocol operations onto these actions.
 
-A **grant** pairs a set of actions with a set of project globs. A token carries one grant, and a grant lets its actions
-reach any project one of its globs matches.
+A **grant** pairs a set of actions with a set of resource globs. A token carries one grant, and a grant lets its actions
+reach any resource one of its globs matches.
 
-An **index ACL** is what an index declares: whether anonymous reads are allowed, plus the tokens it accepts. Every index
-has one, so a cached index, a hosted store, and a virtual index all answer the same question.
+An **index ACL** declares whether the index permits anonymous reads and which tokens it accepts. Each index has one, so
+a cached index, a hosted store, and a virtual index all answer the same question.
 
 ## Where the model is enforced
 
-Write and delete authorization runs through the model in this release. A PyPI upload and a `docker push` present their
-token as an HTTP Basic password, peryx resolves it to a principal against the target index's tokens, and the write
-proceeds only if a grant covers the project and action.
+Core resolves the index ACL and grant before an implementation performs a protected action. The implementation defines
+its credential exchange, canonical resource identity, protected routes, and error response. Read coverage can differ by
+implementation and route.
 
-OCI reads also run through the model. The registry challenges clients through its Bearer token realm, mints
-repository-scoped tokens, and checks manifest, blob, tag, and catalog access. Server-rendered project pages, hydrated UI
-requests, and search apply the same read ACLs, so they do not disclose inaccessible repositories.
+Supported access implementations:
 
-PyPI's Simple API, JSON, metadata, and artifact routes do not consult read ACLs yet. `GET /+status` now classifies its
-fields: version, coarse health, and the basic index list stay public so the browser can still navigate and upload; the
-counters and per-ecosystem rollups need `operator:read`; and the per-index upstream hosts, upload-token state, and
-recent uploads need `administration:read`. `GET /+stats` needs `operator:read` because its drill names repositories and
-projects. The neutral discovery endpoints and the aggregate `GET /metrics` remain public; `/metrics` carries only
-ecosystem-and-role labels, so restrict it at the reverse proxy per the Prometheus security model. OpenID Connect adds
-browser sign-in and a read-only web session; the session authenticates only the UI, so every package operation still
-presents a token. LDAP resolves server users for login consumers but does not add an HTTP login yet. PyPI publishing can
-separately use a configured CI provider's OIDC identity for trusted publishing, a machine path distinct from browser
-login.
+- [Ecosystem owner documentation](@/ecosystems/_index.md)
+
+`GET /+status` classifies version, coarse health, and the basic index list as public. Counters and implementation
+rollups require `operator:read`; upstream hosts, access-token state, and recent writes require `administration:read`.
+`GET /+stats` requires `operator:read` because it names repositories and resources. Discovery endpoints and aggregate
+`GET /metrics` remain public. Restrict `/metrics` at the reverse proxy under the Prometheus security model. OpenID
+Connect can add browser sign-in and a read-only web session. LDAP resolves server users for login consumers but does not
+add an HTTP login route.
 
 ## Server roles and protected responses
 
@@ -102,20 +94,21 @@ storing a caller-specific response while allowing a private cache to retain it; 
 reuse. The [`no-store` directive](https://www.rfc-editor.org/rfc/rfc9111.html#section-5.2.2.5) applies to private and
 shared caches. These directives constrain conforming caches and do not replace route authorization or TLS.
 
-## Project globs
+## Resource globs
 
-A grant's `projects` are patterns matched against a project or repository name. `*` stands for any run of characters,
-including `/`, and every other character matches itself.
+A grant's `resources` contains patterns that peryx matches against the implementation's canonical resource name. `*`
+stands for any run of characters, including `/`; other characters match themselves.
 
 | Pattern         | Matches                      | Does not match         |
 | --------------- | ---------------------------- | ---------------------- |
-| `*`             | every project in the index   |                        |
+| `*`             | every resource in the index  |                        |
 | `team-*`        | `team-widgets`, `team-tools` | `other-widgets`        |
 | `team/*`        | `team/api`, `team/api/edge`  | `team`, `teamwork/api` |
 | `acme-internal` | `acme-internal` only         | `acme-public`          |
 
-A PyPI project name is matched after [PEP 503](https://peps.python.org/pep-0503/) normalization; an OCI repository name
-is matched as written. Because `*` crosses `/`, `team/*` covers a whole repository subtree however deeply nested.
+Because `*` crosses `/`, `team/*` covers a resource subtree at any nesting depth. Supported identity rules:
+
+- [Ecosystem owner documentation](@/ecosystems/_index.md)
 
 ## `[auth]`
 
@@ -127,20 +120,15 @@ The `[auth]` table holds the settings every index's access rules share. All keys
 | `signing_key_file`       | Path to read `signing_key` from instead of inlining it                               | (none)  |
 | `token_ttl_secs`         | Lifetime of a minted token, in seconds; must be positive and at most 86400 (one day) | `300`   |
 | `default_anonymous_read` | What an index's `anonymous_read` defaults to when the index omits it                 | `true`  |
-| `oidc_audience`          | Audience external CI identity tokens must carry                                      | `peryx` |
 
-`signing_key` and `token_ttl_secs` configure the token realm used by OCI and PyPI trusted publishing. peryx reads the
-key at startup and uses it to sign repository-scoped tokens. Set at most one of `signing_key` and `signing_key_file`.
-
-Each `[[auth.trusted_publisher]]` binds one CI issuer, subject, required claim set, writable PyPI repository, and
-project glob list. Peryx adds the exchange routes after an operator configures a binding. See
-[publish from CI identities](@/ecosystems/pypi/guides/trusted-publishing.md) for the full table and provider examples.
+`signing_key` and `token_ttl_secs` configure token-minting implementations. peryx reads the key at startup and uses it
+to sign scoped tokens. Set at most one of `signing_key` and `signing_key_file`.
 
 ### LDAP providers
 
 Each `[[auth.ldap_provider]]` names one StartTLS directory. Peryx constructs these providers at startup without opening
-a connection; the first login performs the connection, TLS upgrade, search, and bind. Only `ldap://` URLs are accepted
-because every connection upgrades with StartTLS. A custom CA file extends the platform trust roots.
+a connection; the first login performs the connection, TLS upgrade, search, and bind. peryx accepts only `ldap://` URLs
+because each connection upgrades with StartTLS. A custom CA file extends the platform trust roots.
 
 ```toml
 [[auth.ldap_provider]]
@@ -160,7 +148,7 @@ request_timeout_secs = 5
 max_connections = 8
 
 [[auth.ldap_provider.group_mapping]]
-group = "cn=package-readers,ou=groups,dc=example,dc=com"
+group = "cn=artifact-readers,ou=groups,dc=example,dc=com"
 role = "repository_reader"
 repository = "private"
 ```
@@ -175,23 +163,22 @@ email, username, and display name do not. `display_name_attribute` supplies the 
 optional. When present, its exact values select `group_mapping` entries. A mapping without `repository` grants its role
 at server scope; a mapping with `repository` must name a configured index.
 
-LDAP filters and DN components are escaped before use. Searches return at most one entry and request only the configured
-attributes. `max_connections` is the total socket bound for the provider. A socket that has carried a user bind is
-discarded instead of returning to the pool, including when cancellation or a timeout interrupts the login. Failed
+peryx escapes LDAP filters and DN components before use. Searches return at most one entry and request the configured
+attributes. `max_connections` is the total socket bound for the provider. peryx discards a socket that has carried a
+user bind instead of returning it to the pool, including when cancellation or a timeout interrupts the login. Failed
 credentials return no identity and cannot update the local user or managed grants. Directory and timeout failures remain
 distinct errors without exposing the username, password, subject, groups, or CA contents.
 
 The provider service returns a stable local user ID after the provider-subject link commits. It does not mint a token,
-create a session, accept HTTP Basic credentials, or change a package route; those are separate consumers of the login
+create a session, accept HTTP Basic credentials, or change a artifact route; those are separate consumers of the login
 service.
 
 ### OIDC login providers
 
 Each `[[auth.oidc_provider]]` configures one OpenID Connect issuer for browser sign-in through the Authorization Code
 flow with PKCE. Peryx builds the provider at startup without a network call; the first login fetches and caches the
-issuer's discovery document and signing keys and pins the configured issuer. A signing key is required: the browser
-session cookie is sealed with a key derived from `[auth].signing_key`, so an `[[auth.oidc_provider]]` without a
-configured `signing_key` is rejected at startup.
+issuer's discovery document and signing keys and pins the configured issuer. The browser session cookie uses a key
+derived from `[auth].signing_key`; startup rejects an `[[auth.oidc_provider]]` without a configured `signing_key`.
 
 ```toml
 [[auth.oidc_provider]]
@@ -199,7 +186,7 @@ id = "corporate"
 issuer = "https://idp.example/realms/main"
 client_id = "peryx"
 client_secret_file = "/run/secrets/peryx-oidc-secret"
-redirect_uri = "https://registry.example/_/login/corporate/callback"
+redirect_uri = "https://artifacts.example/_/login/corporate/callback"
 scopes = ["openid", "email", "groups"]
 subject_claim = "sub"
 display_name_claim = "name"
@@ -208,13 +195,13 @@ clock_skew_secs = 30
 request_timeout_secs = 8
 
 [[auth.oidc_provider.group_mapping]]
-group = "registry-admins"
+group = "service-admins"
 role = "administrator"
 
 [[auth.oidc_provider.group_mapping]]
 group = "packagers"
 role = "repository_reader"
-repository = "packages"
+repository = "artifacts"
 ```
 
 `issuer` and `redirect_uri` must be `https` and carry no fragment, and the issuer must carry no query. Register
@@ -222,30 +209,29 @@ repository = "packages"
 (and its `_file` and `_env` siblings) for a public client that relies on PKCE alone, or set exactly one of them for a
 confidential client. `scopes` always includes `openid`. `subject_claim` names the stable, opaque claim that identifies
 the user; an email or a display name, which can be reassigned, does not belong here. `display_name_claim` supplies the
-initial local name. `groups_claim` is optional; when present its values select `group_mapping` entries the way LDAP
-groups do — a mapping without `repository` grants a server-scoped role, one with `repository` must name a configured
-index.
+initial local name. `groups_claim` is optional; when present, its values select `group_mapping` entries the way LDAP
+groups do. A mapping without `repository` grants a server-scoped role, while one with `repository` must name a
+configured index.
 
-**The login flow.** `GET /_/login/{id}` mints `state`, a `nonce`, and a PKCE verifier, seals them into a single-use,
-short-lived cookie, and redirects the browser to the provider. The provider returns to `/_/login/{id}/callback`, where
-peryx re-opens the sealed handoff and validates the response: the `state` must match, and the ID token must carry the
+**The login flow.** `GET /_/login/{id}` mints `state`, a `nonce`, and a PKCE verifier. It seals them into a single-use,
+short-lived cookie and redirects the browser to the provider. The provider returns to `/_/login/{id}/callback`, where
+peryx re-opens the sealed handoff and validates the response. The `state` must match, and the ID token must carry the
 pinned issuer, this client's audience, a matching `nonce`, and a signature from the issuer's current keys, all within
-`clock_skew_secs`. Any mismatch fails the login. A rotated signing key is picked up on a bounded metadata refresh.
+`clock_skew_secs`. Any mismatch fails the login. A bounded metadata refresh picks up a rotated signing key.
 
-**The session.** A completed login seals the resolved user into a `peryx_session` cookie — `HttpOnly`, `Secure`,
-`SameSite=Lax`, and short-lived — and redirects to the dashboard. The session authenticates only the read-only web UI.
-Every state-changing request — a PyPI upload, a `docker push`, a token or grant mutation — still authenticates with an
-`Authorization`-header token exactly as before; the session cookie is never accepted as authorization for a mutation, so
-it opens no CSRF surface. `GET /_/session` reports the signed-in user and the configured providers for the login page,
-and `POST /_/logout` clears the cookie.
+**The session.** A completed login seals the resolved user into a short-lived `peryx_session` cookie with `HttpOnly`,
+`Secure`, and `SameSite=Lax`, then redirects to the dashboard. The session authenticates the read-only web UI. A
+state-changing request still authenticates with an `Authorization` header token. peryx does not accept the session
+cookie as authorization for a mutation, which prevents a CSRF surface. `GET /_/session` reports the signed-in user and
+configured providers for the login page. `POST /_/logout` clears the cookie.
 
-**Outages.** Discovery, key, token, and user-info requests are bounded by `request_timeout_secs`, and once a session
-exists no request reaches the provider. A provider outage fails an in-progress browser login with a retryable `503` and
-never touches API-token authentication, so uploads and pulls keep working while the identity provider is down. A
-metadata-fetch failure keeps the cached keys and never disables signature validation.
+**Outages.** `request_timeout_secs` bounds discovery, key, token, and user-info requests. Once a session exists, no
+request reaches the provider. A provider outage fails an in-progress browser login with a retryable `503` but leaves
+API-token authentication available, so protected operations continue while the identity provider is down. A
+metadata-fetch failure retains cached keys and signature validation.
 
-`default_anonymous_read = false` makes every index's ACL deny anonymous reads by default. It closes the enforced OCI and
-project-presentation paths; the public paths listed above stay open. An index that should stay open sets
+`default_anonymous_read = false` makes each index ACL deny anonymous reads by default. An implementation applies that
+default to its protected routes. Public core routes stay open. An index that should stay open sets
 `anonymous_read = true`.
 
 ## Per-index keys
@@ -256,7 +242,7 @@ These keys sit in an `[[index]]` table and are also listed under [configuration]
 | ---------------- | ---- | -------------------------------------------------------- | ------------------------------- |
 | `anonymous_read` | all  | Whether a request with no credential may read this index | `[auth].default_anonymous_read` |
 
-A hosted index accepts uploads through the `[[index.access_token]]` grants that permit writes.
+A hosted index accepts writes through `[[index.access_token]]` grants that permit the `write` action.
 
 ## `[[index.access_token]]`
 
@@ -271,7 +257,7 @@ hosted = true
 [[index.access_token]]
 name = "ci"
 secret = "ci-secret"
-projects = ["team-*"]
+resources = ["team-*"]
 actions = ["write", "delete"]
 expires_at = "2027-01-01T00:00:00Z"
 ```
@@ -279,9 +265,9 @@ expires_at = "2027-01-01T00:00:00Z"
 | Key           | Meaning                                                                              | Default    |
 | ------------- | ------------------------------------------------------------------------------------ | ---------- |
 | `name`        | Subject a request authenticating with this token speaks as; unique per index         | (required) |
-| `secret`      | Password a client presents as its Basic password                                     | (required) |
+| `secret`      | Shared secret an ecosystem authentication adapter verifies                           | (required) |
 | `secret_file` | Path to read `secret` from instead of inlining it                                    | (none)     |
-| `projects`    | Project globs the token may act on                                                   | `["*"]`    |
+| `resources`   | Resource globs the token may act on                                                  | `["*"]`    |
 | `actions`     | Any of `read`, `write`, `delete`; at least one                                       | (required) |
 | `expires_at`  | [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) time after which it stops working | never      |
 
@@ -290,7 +276,7 @@ request presenting it becomes anonymous, exactly as if the password were wrong.
 
 ## Secret files
 
-Every secret key (`signing_key`, an access token's `secret`, and an LDAP `bind_password`) has a `_file` sibling naming a
+Each secret key (`signing_key`, an access token's `secret`, and an LDAP `bind_password`) has a `_file` sibling naming a
 path to read the value from, so no plaintext lives in the config file. peryx reads each file once at startup and trims
 surrounding whitespace; an empty file is a startup error. The rationale and the tools it composes with are in
 [client auth versus upstream credentials](@/core/access-explained.md).
@@ -302,7 +288,7 @@ opaque ID at creation. Renaming changes its display name and canonical lookup ke
 the [NIST subscriber-account model](https://pages.nist.gov/800-63-4/sp800-63a/accounts/), in which mutable account
 attributes do not replace the stable subject identifier.
 
-Display names are trimmed for storage. Lookups compare an NFC-normalized lowercase key, so case changes and equivalent
+peryx trims display names for storage. Lookups compare an NFC-normalized lowercase key, so case changes and equivalent
 composed Unicode spellings identify the same user. Creating or renaming to an existing canonical name fails without
 changing either account. The original display spelling remains available for presentation.
 
@@ -312,10 +298,11 @@ in the same transaction as the account change. No operation in this lifecycle st
 external identity subject.
 
 Opening an existing metadata store creates the user tables in one metadata transaction. Existing index configuration,
-cached package records, and access policy remain in their current tables. If table initialization fails, the transaction
-does not leave a partial user schema, and the prior metadata remains available to the existing recovery procedure.
+cached artifact records, and access policy remain in their current tables. If table initialization fails, the
+transaction does not leave a partial user schema, and the prior metadata remains available to the existing recovery
+procedure.
 
-Server users do not yet authorize package requests: mapping an authenticated user to grants waits on the role model.
+Server users do not yet authorize artifact requests: mapping an authenticated user to grants waits on the role model.
 Existing `[[index.access_token]]` credentials keep their current subjects and behavior when a server user is renamed or
 disabled.
 
@@ -341,7 +328,7 @@ Diagnostics and security events omit provider subjects and group names. Link eve
 ID, result, and managed-grant count. Peryx persists the subject because the provider uses it as the stable lookup key.
 
 The linking model is transport-neutral. OIDC and LDAP provide login transports; browser sessions and SCIM provisioning
-remain separate integrations. The PyPI trusted-publisher path handles CI publishing and does not create server users.
+remain separate integrations.
 
 ## Local password authentication
 
@@ -364,14 +351,13 @@ A successful login whose verifier no longer matches the current policy re-enroll
 returning, so tightening the parameters upgrades verifiers as their owners sign in. A re-enrollment that cannot be
 stored does not deny the login that already succeeded.
 
-Derivation is memory-hard on purpose, so every hash and every check runs on the blocking pool rather than a request
-worker, and a semaphore caps how many run at once. A burst of logins therefore bounds its own memory and cannot starve
-the threads that serve packages.
+Each hash and check runs on the blocking pool because Argon2id uses 19 MiB per derivation. A semaphore caps concurrent
+checks, which bounds login memory without starving request workers.
 
 Passwords and verifiers are secrets end to end: neither appears in logs, errors, diagnostics, or any serialized account
-view, and a verifier's debug rendering is redacted. Enrolling again replaces the verifier; clearing it removes password
-authentication entirely. Clearing and then enrolling a new password is the recovery path when a local password is lost —
-this release adds no self-service reset, password-reset email, or browser session.
+view, and debug rendering redacts a verifier. Enrolling again replaces the verifier; clearing it removes password
+authentication entirely. Clearing and then enrolling a new password is the recovery path when a local password is lost.
+peryx provides no self-service reset, password-reset email, or browser session.
 
 ## What this does not do
 
@@ -382,7 +368,6 @@ would be unsafe for a cache.
 
 ## Related
 
-- The write endpoints each ecosystem exposes: [PyPI endpoints](@/ecosystems/pypi/reference/endpoints.md),
-  [OCI endpoints](@/ecosystems/oci/reference/endpoints.md)
+- [Ecosystem owner documentation](@/ecosystems/_index.md)
 - Every other TOML key: [configuration](@/core/configuration.md)
 - Security-event records for an authorization decision: [logging](@/core/logging.md)

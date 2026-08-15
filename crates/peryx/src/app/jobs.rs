@@ -1,135 +1,148 @@
-//! Durable job-run history commands.
-
 use std::io::Write;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{Context as _, ensure};
+use peryx_driver::AppState;
 use peryx_driver::jobs::{
-    CatalogSyncParameters, JobLimits, JobScheduler, MAX_CATALOG_CONCURRENCY, MAX_CATALOG_PROJECTS_PER_RUN,
-    MAX_CATALOG_TIMEOUT, MAX_SEARCH_REBUILD_CHUNK, ScheduledJob, SearchRebuildJob, scheduled_job,
+    JobLimits, JobScheduler, MAX_SEARCH_REBUILD_CHUNK, NodeJob, ScheduledJob, SearchRebuildJob, scheduled_job,
 };
+use peryx_ha_distributed::AuthorityDrainJob;
 use peryx_storage::meta::{JobRunQuery, MetaStore};
 
 use crate::cli::JobCommand;
 use crate::config::Config;
 
-/// List or show durable job-run history.
-///
 /// # Errors
-/// Returns an error if the metadata store cannot be opened or read, the job run is unknown, or
-/// output fails.
+/// Returns an error when storage or output fails, a job run is unknown, or execution cannot start.
 pub fn job(config: &Config, command: &JobCommand, out: &mut dyn Write) -> anyhow::Result<()> {
+    job_with_plugins(config, &crate::compiled_plugins(), command, out)
+}
+
+/// # Errors
+/// Returns an error when store access, job construction or execution, runtime startup, or output fails.
+pub fn job_with_plugins(
+    config: &Config,
+    plugins: &peryx_plugin_registry::PluginRegistry,
+    command: &JobCommand,
+    out: &mut dyn Write,
+) -> anyhow::Result<()> {
+    let plugins = crate::server::activate_plugins(config, plugins)?;
+    job_with_active_plugins(config, &plugins, command, out)
+}
+
+pub fn job_with_active_plugins(
+    config: &Config,
+    plugins: &peryx_plugin_registry::PluginRegistry,
+    command: &JobCommand,
+    out: &mut dyn Write,
+) -> anyhow::Result<()> {
     match command {
-        JobCommand::List(_) => job_list(&open_store(config)?, out),
-        JobCommand::Show(args) => job_show(&open_store(config)?, &args.id, out),
+        JobCommand::List(_) => job_list(&open_store(config, plugins)?, out),
+        JobCommand::Show(args) => job_show(&open_store(config, plugins)?, &args.id, out),
         JobCommand::Run {
-            repository,
+            target,
             source,
-            max_projects,
+            item_limit,
             concurrency,
             timeout_secs,
             ..
-        } => run_catalog_sync(
+        } => run_registered_job(
             config,
-            repository,
-            source.as_deref(),
-            *max_projects,
-            *concurrency,
-            *timeout_secs,
+            plugins,
+            peryx_plugin_registry::OperatorJobRequest {
+                target,
+                source: source.as_deref(),
+                item_limit: *item_limit,
+                concurrency: *concurrency,
+                timeout_secs: *timeout_secs,
+            },
             out,
         ),
-        JobCommand::Reindex { chunk_size, .. } => run_search_rebuild(config, *chunk_size, out),
-        JobCommand::Drain { authority, .. } => run_authority_drain(config, authority, out),
+        JobCommand::Reindex { chunk_size, .. } => run_search_rebuild(config, plugins, *chunk_size, out),
+        JobCommand::Drain { authority, .. } => run_authority_drain(config, plugins, authority, out),
     }
 }
 
-fn open_store(config: &Config) -> anyhow::Result<MetaStore> {
+fn open_store(config: &Config, plugins: &peryx_plugin_registry::PluginRegistry) -> anyhow::Result<MetaStore> {
     let path = config.data_dir.join("peryx.redb");
-    MetaStore::open_existing(&path).with_context(|| format!("open metadata store {}", path.display()))
+    crate::metadata::open_existing_read_only(&path, plugins)
 }
 
-fn run_catalog_sync(
+fn run_registered_job(
     config: &Config,
-    repository: &str,
-    source: Option<&str>,
-    max_projects: usize,
-    concurrency: usize,
-    timeout_secs: u64,
+    plugins: &peryx_plugin_registry::PluginRegistry,
+    request: peryx_plugin_registry::OperatorJobRequest<'_>,
     out: &mut dyn Write,
 ) -> anyhow::Result<()> {
-    ensure!(!repository.trim().is_empty(), "repository must not be empty");
-    ensure!(
-        source.is_none_or(|source| !source.trim().is_empty()),
-        "source must not be empty"
-    );
-    ensure!(
-        max_projects <= MAX_CATALOG_PROJECTS_PER_RUN,
-        "max-projects exceeds the per-run limit"
-    );
-    ensure!(
-        concurrency <= MAX_CATALOG_CONCURRENCY,
-        "concurrency exceeds the per-run limit"
-    );
-    ensure!(
-        timeout_secs <= MAX_CATALOG_TIMEOUT.as_secs(),
-        "timeout-secs exceeds the per-run limit"
-    );
-    let max_projects = NonZeroUsize::new(max_projects).context("max-projects must be positive")?;
-    let concurrency = NonZeroUsize::new(concurrency).context("concurrency must be positive")?;
-    ensure!(timeout_secs > 0, "timeout-secs must be positive");
-    let parameters = CatalogSyncParameters {
-        repository: repository.to_owned(),
-        source: source.map(str::to_owned),
-        max_projects,
-        concurrency,
-        timeout: Duration::from_secs(timeout_secs),
-    };
-    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
-    let report = runtime.block_on(async {
-        let state = crate::server::build_state(config)?;
-        let scheduler = JobScheduler::new(state.serving.clone(), JobLimits::node_local());
-        let job = scheduled_job(&state, &ScheduledJob::CatalogSync(parameters)).map_err(anyhow::Error::msg)?;
-        let result = scheduler.run(job).await.map_err(anyhow::Error::msg);
-        scheduler.shutdown().await;
-        result
-    })?;
-    writeln!(out, "processed\t{}", report.processed)?;
-    writeln!(out, "changed\t{}", report.changed)?;
-    Ok(())
+    let configured = plugins
+        .compile_operator_job("run", request)
+        .map_err(anyhow::Error::msg)?;
+    run_node_job(
+        config,
+        plugins,
+        move |state| scheduled_job(state, &ScheduledJob::Plugin(configured)),
+        out,
+    )
 }
 
-fn run_search_rebuild(config: &Config, chunk_size: usize, out: &mut dyn Write) -> anyhow::Result<()> {
+fn run_search_rebuild(
+    config: &Config,
+    plugins: &peryx_plugin_registry::PluginRegistry,
+    chunk_size: usize,
+    out: &mut dyn Write,
+) -> anyhow::Result<()> {
     ensure!(
         chunk_size <= MAX_SEARCH_REBUILD_CHUNK,
         "chunk-size exceeds the per-run limit"
     );
     let chunk = NonZeroUsize::new(chunk_size).context("chunk-size must be positive")?;
-    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
-    let report = runtime.block_on(async {
-        let state = crate::server::build_state(config)?;
-        let scheduler = JobScheduler::new(state.serving.clone(), JobLimits::node_local());
-        let result = scheduler
-            .run(Arc::new(SearchRebuildJob::new(chunk)))
-            .await
-            .map_err(anyhow::Error::msg);
-        scheduler.shutdown().await;
-        result
-    })?;
-    writeln!(out, "processed\t{}", report.processed)?;
-    writeln!(out, "changed\t{}", report.changed)?;
-    Ok(())
+    run_node_job(
+        config,
+        plugins,
+        move |_| Ok(Arc::new(SearchRebuildJob::new(chunk))),
+        out,
+    )
 }
 
-fn run_authority_drain(config: &Config, authority: &str, out: &mut dyn Write) -> anyhow::Result<()> {
+fn run_authority_drain(
+    config: &Config,
+    plugins: &peryx_plugin_registry::PluginRegistry,
+    authority: &str,
+    out: &mut dyn Write,
+) -> anyhow::Result<()> {
     ensure!(!authority.trim().is_empty(), "authority must not be empty");
+    ensure!(
+        config.availability.mode().is_distributed(),
+        "authority drain requires distributed availability"
+    );
+    run_node_job(
+        config,
+        plugins,
+        move |state| {
+            let drainer = state
+                .serving
+                .authority_drainer()
+                .cloned()
+                .ok_or_else(|| "distributed availability did not install authority draining".to_owned())?;
+            Ok(Arc::new(AuthorityDrainJob::new(authority, drainer)))
+        },
+        out,
+    )
+}
+
+fn run_node_job(
+    config: &Config,
+    plugins: &peryx_plugin_registry::PluginRegistry,
+    create: impl FnOnce(&AppState) -> Result<Arc<dyn NodeJob>, String>,
+    out: &mut dyn Write,
+) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
     let report = runtime.block_on(async {
-        let state = crate::server::build_state(config)?;
+        let state = crate::server::build_state_with_active_plugins(config, plugins)?;
         let scheduler = JobScheduler::new(state.serving.clone(), JobLimits::node_local());
         let result = scheduler
-            .run(Arc::new(crate::replication::AuthorityDrainJob::new(authority)))
+            .run(create(&state).map_err(anyhow::Error::msg)?)
             .await
             .map_err(anyhow::Error::msg);
         scheduler.shutdown().await;
@@ -154,3 +167,7 @@ fn job_show(store: &MetaStore, id: &str, out: &mut dyn Write) -> anyhow::Result<
     writeln!(out)?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/tests/app/job_tests.rs"]
+mod tests;

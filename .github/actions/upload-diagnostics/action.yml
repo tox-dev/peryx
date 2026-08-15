@@ -1,0 +1,20 @@
+name: Upload runner diagnostics
+description: Capture local runner state and publish it with the job artifacts.
+inputs:
+  name:
+    description: Unique artifact suffix.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Capture diagnostics
+      shell: bash
+      env:
+        DIAGNOSTICS_NAME: ${{ inputs.name }}
+      run: just ci-diagnostics ".tox/diagnostics/${DIAGNOSTICS_NAME}"
+    - name: Upload diagnostics
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      with:
+        name: diagnostics-${{ inputs.name }}
+        path: .tox/diagnostics/${{ inputs.name }}
+        if-no-files-found: error

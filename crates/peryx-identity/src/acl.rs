@@ -1,23 +1,19 @@
-//! The access model: who a request speaks as, what an index grants, and the decision between them.
-
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
 use crate::{parse_basic, secrets_match};
 
-/// Whether `principal` may take `action` on `project` in the index `acl` describes.
-///
-/// `project` is `None` when the caller must decide before it knows the name — a `PyPI` upload is
-/// authorized before its multipart body is read — and then asks the weaker question: may this
-/// principal take the action on *any* project here? The named check follows once the name is known.
-///
 /// # Errors
-/// Returns [`Denial::Unavailable`] when no token in the index grants the action to anyone (the
-/// capability is off, not a credential problem), [`Denial::Unauthenticated`] when the request
-/// presented no credential that the action would need, and [`Denial::Forbidden`] when the principal
-/// is known but holds no grant covering this project and action.
-pub fn authorize(principal: &Principal, acl: &IndexAcl, project: Option<&str>, action: Action) -> Result<(), Denial> {
+/// Returns [`Denial::Unavailable`] when the index grants the action to no token,
+/// [`Denial::Unauthenticated`] when the request lacks a required credential, or
+/// [`Denial::Forbidden`] when the principal lacks a matching grant.
+pub fn authorize(
+    principal: &Principal,
+    acl: &IndexAcl,
+    resource: ResourceMatch<'_>,
+    action: Action,
+) -> Result<(), Denial> {
     if action == Action::Read && acl.anonymous_read {
         return Ok(());
     }
@@ -25,13 +21,13 @@ pub fn authorize(principal: &Principal, acl: &IndexAcl, project: Option<&str>, a
         Principal::Named { subject } => acl
             .token(subject)
             .ok_or(Denial::Forbidden)
-            .and_then(|token| authorize_grants(&token.grants, project, action)),
+            .and_then(|token| authorize_grants(&token.grants, resource, action)),
         Principal::Anonymous if acl.grants_to_anyone(action) => Err(Denial::Unauthenticated),
         Principal::Anonymous => Err(Denial::Unavailable),
     }
 }
 
-/// A catalog includes future projects, so current membership cannot prove access; require an explicit `*` grant.
+/// Catalogs may gain resources; an explicit `*` grant authorizes the full catalog.
 ///
 /// # Errors
 /// Returns the same denial classes as [`authorize`].
@@ -53,40 +49,32 @@ pub fn authorize_all(principal: &Principal, acl: &IndexAcl, action: Action) -> R
     }
 }
 
-/// Apply the grants recovered from a verified token without resolving its subject through an index ACL.
-///
 /// # Errors
-/// Returns `Denial::Forbidden` when no grant covers the project and action.
-pub fn authorize_grants(grants: &[Grant], project: Option<&str>, action: Action) -> Result<(), Denial> {
+/// Returns [`Denial::Forbidden`] when no grant covers the resource and action.
+pub fn authorize_grants(grants: &[Grant], resource: ResourceMatch<'_>, action: Action) -> Result<(), Denial> {
     grants
         .iter()
-        .any(|grant| grant.allows(project, action))
+        .any(|grant| grant.allows(resource, action))
         .then_some(())
         .ok_or(Denial::Forbidden)
 }
 
-/// Registry resources bypass project glob expansion to keep the protocol namespaces separate.
-///
-/// # Errors
-/// Returns [`Denial::Forbidden`] when no exact grant covers the resource and action.
-pub fn authorize_exact_grants(grants: &[Grant], resource: &str, action: Action) -> Result<(), Denial> {
-    grants
-        .iter()
-        .any(|grant| grant.actions.contains(&action) && grant.projects.iter().any(|project| project.0 == resource))
-        .then_some(())
-        .ok_or(Denial::Forbidden)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResourceMatch<'a> {
+    Any,
+    Pattern(&'a str),
+    Exact(&'a str),
 }
 
-/// Who a request speaks as, once its credential was checked. A credential that matched nothing leaves
-/// the request anonymous, so an invalid token is exactly as privileged as no token at all.
+/// A credential that matches no token leaves the request anonymous, with the same authority as no
+/// credential.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Principal {
     Anonymous,
     Named { subject: String },
 }
 
-/// What a request wants to do. The three verbs every ecosystem's protocol maps onto: a pull is a read,
-/// a push is a write, and a removal is a delete.
+/// Protocols map pulls to reads, pushes to writes, and removals to deletes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Action {
@@ -95,23 +83,19 @@ pub enum Action {
     Delete,
 }
 
-/// Why a request was refused. The three cases carry different HTTP answers: an ecosystem tells a client
-/// with no credential to authenticate, and one with a valid but insufficient credential not to retry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Denial {
     /// No token grants this action to anyone on this index.
     Unavailable,
     /// The request carried no credential the action accepts.
     Unauthenticated,
-    /// The principal is known and lacks a grant for this project and action.
+    /// The principal is known and lacks a matching grant.
     Forbidden,
 }
 
-/// One index's access rules.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexAcl {
-    /// Whether a request with no credential may read. Defaults to `true`, the behavior of every index
-    /// peryx served before it had an ACL.
+    /// Defaults to `true` to preserve pre-ACL read behavior.
     pub anonymous_read: bool,
     pub tokens: Vec<NamedToken>,
 }
@@ -126,8 +110,8 @@ impl Default for IndexAcl {
 }
 
 impl IndexAcl {
-    /// Resolve an `Authorization` header against this ACL at `now` (unix seconds). A header that is
-    /// absent, unparsable, or carries a password matching no live token yields [`Principal::Anonymous`].
+    /// Resolves an `Authorization` header at `now`, in Unix seconds. Missing or malformed headers and
+    /// passwords that match no live token yield [`Principal::Anonymous`].
     #[must_use]
     pub fn identify(&self, header: Option<&str>, now: i64) -> Identity {
         let Some(credentials) = header.and_then(parse_basic) else {
@@ -149,8 +133,7 @@ impl IndexAcl {
         }
     }
 
-    /// The grants a principal holds here, which a token endpoint intersects with what a client asked
-    /// for. Anonymous requests hold none: an anonymous read is `anonymous_read`, not a grant.
+    /// Anonymous reads come from `anonymous_read`, so anonymous principals have no grants.
     #[must_use]
     pub fn grants(&self, principal: &Principal) -> &[Grant] {
         match principal {
@@ -159,8 +142,6 @@ impl IndexAcl {
         }
     }
 
-    /// Whether any token here grants `action` to anyone, which is what an index means by "uploads are
-    /// enabled": a capability the index offers to some credential, not one this request holds.
     #[must_use]
     pub fn grants_to_anyone(&self, action: Action) -> bool {
         self.tokens
@@ -173,24 +154,19 @@ impl IndexAcl {
     }
 }
 
-/// A request's resolved identity: the principal every access decision runs against, and the username
-/// its credential presented.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Identity {
     pub principal: Principal,
-    /// The username the Basic credential carried, whether or not it authenticated. Audit context only:
-    /// an unverified name proves nothing, so it is never an input to [`authorize`].
+    /// Audit context; [`authorize`] does not trust an unverified username.
     pub user: Option<String>,
 }
 
-/// One credential an index accepts, and what it may do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NamedToken {
-    /// The subject a request authenticating with this token speaks as.
     pub name: String,
     pub secret: String,
     pub grants: Vec<Grant>,
-    /// Unix seconds after which the token stops authenticating; `None` never expires.
+    /// Unix seconds after which the token stops authenticating; `None` has no expiry.
     pub expires_at: Option<i64>,
 }
 
@@ -200,29 +176,29 @@ impl NamedToken {
     }
 }
 
-/// A set of actions over a set of project globs. A token carries one grant per scope it was issued
-/// for, and a minted JWT carries the grants a token endpoint approved.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Grant {
-    pub projects: Vec<Glob>,
+    pub resources: Vec<Glob>,
     pub actions: BTreeSet<Action>,
 }
 
 impl Grant {
-    fn allows(&self, project: Option<&str>, action: Action) -> bool {
+    fn allows(&self, resource: ResourceMatch<'_>, action: Action) -> bool {
         self.actions.contains(&action)
-            && project.is_none_or(|project| self.projects.iter().any(|glob| glob.matches(project)))
+            && match resource {
+                ResourceMatch::Any => true,
+                ResourceMatch::Pattern(resource) => self.resources.iter().any(|pattern| pattern.matches(resource)),
+                ResourceMatch::Exact(resource) => self.resources.iter().any(|pattern| pattern.as_str() == resource),
+            }
     }
 
     fn allows_all(&self, action: Action) -> bool {
-        self.actions.contains(&action) && self.projects.iter().any(|glob| glob.0 == "*")
+        self.actions.contains(&action) && self.resources.iter().any(|pattern| pattern.as_str() == "*")
     }
 }
 
-/// A project pattern.
-///
 /// `*` stands for any run of characters, `/` included, so `team/*` covers every repository under
-/// `team` however deeply nested, and `*` covers the whole index. Every other character matches itself.
+/// `team`, at any depth. `*` covers the whole index; all other characters match themselves.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Glob(String);
@@ -238,13 +214,12 @@ impl Glob {
         &self.0
     }
 
-    /// Whether some value beginning with `prefix` can match this pattern.
     #[must_use]
     pub fn matches_prefix(&self, prefix: &str) -> bool {
         self.remainders_after(prefix).next().is_some()
     }
 
-    /// Pattern suffixes that can still match after `prefix` has been consumed.
+    /// Returns each suffix that can match after consuming `prefix`.
     pub fn remainders_after<'a>(&'a self, prefix: &str) -> impl Iterator<Item = &'a str> {
         let pattern = self.0.as_bytes();
         let mut reachable = vec![false; pattern.len() + 1];
@@ -272,19 +247,17 @@ impl Glob {
             .map(|(position, _)| &self.0[position..])
     }
 
-    /// Whether `project` matches this pattern, by the usual backtracking wildcard walk: on a mismatch,
-    /// return to the last `*` and let it swallow one more character.
     #[must_use]
-    pub fn matches(&self, project: &str) -> bool {
-        let (pattern, project) = (self.0.as_bytes(), project.as_bytes());
+    pub fn matches(&self, resource: &str) -> bool {
+        let (pattern, resource) = (self.0.as_bytes(), resource.as_bytes());
         let (mut at, mut cursor) = (0, 0);
         let (mut star, mut resume) = (None, 0);
-        while cursor < project.len() {
+        while cursor < resource.len() {
             if pattern.get(at) == Some(&b'*') {
                 star = Some(at);
                 resume = cursor;
                 at += 1;
-            } else if pattern.get(at) == Some(&project[cursor]) {
+            } else if pattern.get(at) == Some(&resource[cursor]) {
                 at += 1;
                 cursor += 1;
             } else if let Some(position) = star {

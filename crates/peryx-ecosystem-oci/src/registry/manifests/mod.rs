@@ -1,6 +1,3 @@
-//! Manifest pull and tag revalidation: the read path. The write path (push, referrers, delete) is in
-//! the `write` submodule.
-
 mod write;
 pub(super) use write::{delete_manifest, put_manifest, restore_manifest};
 
@@ -13,7 +10,7 @@ use axum::body::Body;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::Response;
 use peryx_driver::ServingState;
-use peryx_events::metrics::Event;
+use peryx_events::metrics::Observation;
 use peryx_index::Index;
 use peryx_policy::PolicyAction;
 use peryx_storage::blob::Digest;
@@ -117,12 +114,11 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
             response
                 .headers_mut()
                 .insert(header::VARY, HeaderValue::from_static("accept"));
-            // A served manifest is this ecosystem's index document, so it counts as a page like a Simple
-            // page does; a HEAD is a metadata check and carries no body, so it does not.
+            // Manifest bodies count as page traffic; metadata-only HEAD responses do not.
             if !head {
-                state.metrics.record(Event::Page {
-                    route: index.route.clone(),
-                    project: repo.to_owned(),
+                state.metrics.record(Observation::Page {
+                    repository: index.route.clone(),
+                    resource: repo.to_owned(),
                 });
             }
         }
@@ -222,8 +218,6 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         fetched
     }
 
-    /// Fetch a manifest by digest from one member and store it, verifying the upstream bytes hash to
-    /// the requested digest. The single-flight gate around this lives in [`Self::pull_manifest_by_digest`].
     async fn fetch_manifest_by_digest(
         &self,
         state: &ServingState,
@@ -296,7 +290,6 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         fetched
     }
 
-    /// Fetch a proxy tag from upstream and store it, returning the served manifest.
     async fn revalidate_tag(
         &self,
         state: &ServingState,
@@ -343,10 +336,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
                     }
                 },
             )),
-            // A `404` is upstream saying the tag is gone, which is an answer. Everything else is a
-            // failure to get one, and a failure to confirm a tag is not a reason to forget it: an
-            // expired token draws a `401` from Docker Hub, which must serve the cached image rather
-            // than report it unknown — and, with nothing cached, report the auth failure itself.
+            // Only 404 proves a tag is absent. Preserve cached tags for authentication and transport failures.
             Err(UpstreamError::Status(StatusCode::NOT_FOUND)) => {
                 if store::delete_tag(&state.meta, index, repo, tag)? {
                     state.bump_search_epoch();
@@ -382,8 +372,8 @@ fn unchanged_tag(
     Ok(Some(manifest_response(manifest, &cached, head)))
 }
 
-/// Serve a proxy tag past its freshness window while the upstream cannot confirm it, bounded by
-/// `max_stale_secs` exactly as a cached `PyPI` page is. `0` removes the bound.
+/// Serve a proxy tag past its freshness window while the upstream cannot confirm it. `max_stale_secs`
+/// bounds the stale interval; `0` removes the bound.
 ///
 /// Only reached once revalidation has already failed: a tag whose upstream answered is never stale.
 fn stale_tag(
@@ -441,10 +431,7 @@ async fn store_manifest(
         .map(str::to_owned);
     let bytes = bounded_body(response, MAX_MANIFEST_BYTES).await?;
     let canonical = format!("sha256:{}", Digest::of(&bytes).as_str());
-    // A corrupting proxy or CDN between peryx and upstream could return altered bytes; a sha256 digest
-    // upstream advertises must hash to it, or the manifest is not stored. The spec permits another
-    // algorithm (e.g. sha512), which peryx cannot recompute but still content-addresses under its own
-    // sha256, so a non-sha256 advertisement is not a mismatch to reject.
+    // Verify an advertised SHA-256 digest; retain other algorithms as upstream content addresses.
     if let Some(advertised) = advertised
         && advertised.starts_with("sha256:")
         && advertised != canonical
@@ -453,10 +440,7 @@ async fn store_manifest(
             "upstream digest {advertised} does not match manifest content {canonical}"
         )));
     }
-    // A by-sha256-digest pull must hash to the requested digest before anything is committed: storing
-    // first and rejecting after would leave the mismatched bytes and their repository membership cached
-    // under `canonical`. A non-sha256 request content-addresses upstream and peryx cannot recompute it,
-    // so it is served under the requested digest rather than rejected here.
+    // Verify a requested SHA-256 digest before publishing repository membership.
     if let Some(expected) = expected
         && expected.starts_with("sha256:")
         && canonical != expected
@@ -471,6 +455,7 @@ async fn store_manifest(
         bytes: bytes.to_vec(),
     };
     store::record_manifest(&state.meta, index, repo, &canonical, &manifest)?;
+    store::record_content_placement(&state.meta, &canonical, store::OciArtifactOrigin::Mirrored, true)?;
     if let Some(tag) = tag {
         if store::put_tag(&state.meta, index, repo, tag, &canonical)? {
             state.bump_search_epoch();
@@ -490,8 +475,6 @@ const DOCKER_MANIFEST_LIST_TYPE: &str = "application/vnd.docker.distribution.man
 fn media_type_base(value: &str) -> &str {
     value.split(';').next().unwrap_or(value).trim()
 }
-/// Whether a media type names an image index or manifest list, the two list types a manifest read may
-/// have to negotiate against the client's `Accept`.
 fn is_list_media_type(media_type: &str) -> bool {
     let base = media_type_base(media_type);
     base == OCI_INDEX_TYPE || base == DOCKER_MANIFEST_LIST_TYPE
@@ -535,7 +518,7 @@ fn parse_media_range(entry: &str) -> Option<MediaRange<'_>> {
 }
 
 /// Whether `media_type` is acceptable under the combined `Accept` list per RFC 9110: its effective
-/// quality — the weight of the most specific matching range, exact over `type/*` over `*/*` — is
+/// quality - the weight of the most specific matching range, exact over `type/*` over `*/*` - is
 /// positive. A `q=0` on the most specific match rejects the type even when a broader range would
 /// accept it. An `Accept` with no parseable range expresses no preference and accepts anything.
 fn media_type_acceptable(accept: &str, media_type: &str) -> bool {

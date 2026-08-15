@@ -1,13 +1,6 @@
-//! The content-addressed blob store.
-//!
-//! A blob is stored once, keyed by the sha256 of its bytes, under a two-level hex fan-out
-//! (`sha256/ab/cd/<digest>`). Writes go to a temp file in the destination directory, are fsynced,
-//! and atomically renamed into place, so a blob is never visible until it is complete. The path is
-//! the digest, so anything present is by construction correct.
+//! Content-addressed blob storage with atomic publication at `sha256/ab/cd/<digest>`.
 
 use std::path::Path;
-
-use sha2::{Digest as _, Sha256};
 
 mod backend;
 mod chunked;
@@ -19,59 +12,16 @@ mod storage;
 mod store;
 
 pub use backend::{
-    BlobBackend, BlobCapabilities, BlobDurability, BlobLease, BlobRead, BlobReadBody, BlobStaged, BlobSupport,
-    BlobTail, BlobWrite,
+    BlobBackend, BlobCapabilities, BlobLease, BlobRead, BlobReadBody, BlobStaged, BlobSupport, BlobTail, BlobWrite,
 };
 pub use chunked::{CHUNK_BYTES, ChunkedDigest, ChunkedDigestBuilder};
-pub use durability::{DurabilityCapabilities, DurabilityRequirement, DurabilityShortfall, PlacementReceipt};
+pub use durability::{DurabilityCapabilities, DurabilityShortfall, PlacementReceipt};
 pub use error::{BlobError, BlobErrorContext, BlobErrorKind, BlobOperation, BlobScanError};
+pub use peryx_core::{BlobDurability, BlobMetadata, Digest, DurabilityRequirement};
 pub use range::{RangeRequest, parse_range};
 pub use s3::{S3Addressing, S3Backend, S3Client, S3Config, S3ConfigError, S3Error, S3Settings};
 pub use storage::{BlobBlocking, BlobStorage};
 pub use store::{BlobEntry, BlobStore, PendingBlob, StagedBlob};
-
-/// Metadata returned without fetching a blob's contents.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BlobMetadata {
-    pub bytes: u64,
-    pub modified: Option<std::time::SystemTime>,
-}
-
-/// A sha256 digest rendered as lowercase hex.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Digest(String);
-
-impl Digest {
-    /// Compute the digest of `bytes`.
-    #[must_use]
-    pub fn of(bytes: &[u8]) -> Self {
-        Self(to_hex(&Sha256::digest(bytes)))
-    }
-
-    /// The digest as lowercase hex.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    /// Parse a 64-character lowercase-hex sha256 digest, rejecting anything else.
-    #[must_use]
-    pub fn from_hex(hex: &str) -> Option<Self> {
-        if hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
-            Some(Self(hex.to_owned()))
-        } else {
-            None
-        }
-    }
-}
-
-impl From<&peryx_identity::ArtifactDigest> for Digest {
-    /// An [`ArtifactDigest`](peryx_identity::ArtifactDigest) is a validated lowercase-hex sha256, which is
-    /// exactly a blob [`Digest`], so the conversion carries the hex across without re-parsing.
-    fn from(digest: &peryx_identity::ArtifactDigest) -> Self {
-        Self(digest.sha256().to_owned())
-    }
-}
 
 fn to_hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
@@ -83,9 +33,7 @@ fn to_hex(bytes: &[u8]) -> String {
     out
 }
 
-/// fsync the directory a blob was renamed into, so the rename itself survives a crash even though the
-/// data file was already fsynced. Failing to open or sync the directory is not fatal to the write, so
-/// it is ignored rather than surfaced.
+/// Syncing the file does not make its rename crash-durable. Directory sync failures do not fail the write.
 fn sync_parent(path: &Path) {
     if let Some(parent) = path.parent()
         && let Ok(directory) = std::fs::File::open(parent)

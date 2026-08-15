@@ -1,12 +1,16 @@
 base_url = "https://peryx.readthedocs.io"
 title = "peryx"
-description = "peryx — one blazing-fast, open-source vault for a wide range of ecosystems. Fast as the falcon, sealed as the pyx."
+description = "An artifact server with owner plugins and config-selected availability."
 compile_sass = true
 build_search_index = false
 generate_feeds = false
 
 [markdown]
 highlighting = { theme = "ayu-dark" }
+
+[link_checker]
+internal_level = "error"
+skip_prefixes = ["http://", "https://"]
 
 [extra]
 repo = "https://github.com/tox-dev/peryx"

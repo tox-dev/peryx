@@ -6,8 +6,8 @@ ADD --checksum=sha256:e3853c5a252fca15252d07cb23a1bdd9377a8c6f3efa01531109281ae4
 ADD --checksum=sha256:0e4d7f4c9cce5130c9cf9b8ce69ae988fcf8c14c2562dcb7e4c0e4e81fac71f8 \
     https://github.com/CodSpeedHQ/codspeed-rust/releases/download/v5.0.1/cargo-codspeed-aarch64-unknown-linux-musl \
     /artifacts/cargo-codspeed
-ADD --checksum=sha256:115957037b94626e8788ced04664f2421d093fb4e8504c23c93d95e3108837e3 \
-    https://github.com/CodSpeedHQ/codspeed/releases/download/v4.18.4/codspeed-runner-aarch64-unknown-linux-musl.tar.gz \
+ADD --checksum=sha256:6466d89a79836ab4f0c2916ea3f7dcd83cda6733d7baee3ce989c5ea6211f0fa \
+    https://github.com/CodSpeedHQ/codspeed/releases/download/v5.0.2/codspeed-runner-aarch64-unknown-linux-musl.tar.gz \
     /artifacts/codspeed.tar.gz
 ADD --checksum=sha256:47e71ef8a095a8dc26e31e7a5d66c3665ff2d68a3f0350d351d7affe3aec2944 \
     https://github.com/CodSpeedHQ/valgrind-codspeed/releases/download/3.26.0-0codspeed6/valgrind_3.26.0-0codspeed6_ubuntu-24.04_arm64.deb \
@@ -28,12 +28,14 @@ ENV CARGO_HOME=/usr/local/cargo \
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 RUN --mount=from=artifacts,source=/artifacts,target=/artifacts \
-    apt-get update \
+    sed -i '\|path-exclude=/usr/share/man|d' /etc/dpkg/dpkg.cfg.d/excludes \
+    && apt-get update \
     && apt-get install --yes --no-install-recommends \
         /artifacts/valgrind.deb \
         build-essential \
         ca-certificates \
         git \
+        jq \
         libc6-dbg \
         pkg-config \
         util-linux \
@@ -48,7 +50,6 @@ RUN --mount=from=artifacts,source=/artifacts,target=/artifacts \
     && mkdir /tmp/codspeed \
     && tar -xzf /artifacts/codspeed.tar.gz --strip-components=1 -C /tmp/codspeed \
     && install -m 0755 /tmp/codspeed/codspeed /usr/local/bin/codspeed \
-    && test -x /usr/local/bin/cargo-codspeed \
-    && test -x /usr/local/bin/codspeed \
+    && command -v cargo cargo-codspeed codspeed git jq perl sha256sum valgrind \
     && valgrind --version \
     && rm -rf /tmp/codspeed /tmp/rustup-init

@@ -1,151 +1,116 @@
-//! Subcommand entry point and the per-ecosystem mirror dispatch boundary.
+use std::io::Write;
 
-use std::sync::Arc;
+use anyhow::Context as _;
+use peryx_driver::serving::{MirrorAction, MirrorRequest};
 
-use peryx_driver::AppState;
-
-use super::Output;
-use super::oci::{oci_images, oci_lookup, oci_mirror, oci_plan, oci_settings};
-use super::pypi::{pypi_plan, pypi_sync, pypi_verify};
-use crate::cli::{PrefetchCommand, PrefetchOptions};
-use crate::config::Config;
+use crate::cli::PrefetchCommand;
+use crate::config::{Config, IndexKind};
 use crate::server;
 
-/// Run a `peryx prefetch` subcommand.
-///
 /// # Errors
-/// Returns an error when configuration is invalid, upstream access fails, selected cache entries
-/// fail verification, or output cannot be written.
-pub async fn run(config: &Config, command: &PrefetchCommand, out: &mut Output) -> anyhow::Result<()> {
-    let state = server::build_state(config)?;
+/// Returns configuration, index resolution, or implementation errors.
+pub async fn run(config: &Config, command: &PrefetchCommand, output: &mut (dyn Write + Send)) -> anyhow::Result<()> {
+    run_with_plugins(config, &crate::compiled_plugins(), command, output).await
+}
+
+/// # Errors
+/// Returns an error if state or mirror options are invalid, the index cannot be resolved, or mirroring fails.
+pub async fn run_with_plugins(
+    config: &Config,
+    plugins: &peryx_plugin_registry::PluginRegistry,
+    command: &PrefetchCommand,
+    output: &mut (dyn Write + Send),
+) -> anyhow::Result<()> {
+    let plugins = server::activate_plugins(config, plugins)?;
+    run_with_active_plugins(config, &plugins, command, output).await
+}
+
+pub async fn run_with_active_plugins(
+    config: &Config,
+    plugins: &peryx_plugin_registry::PluginRegistry,
+    command: &PrefetchCommand,
+    output: &mut (dyn Write + Send),
+) -> anyhow::Result<()> {
+    let state = server::build_state_with_active_plugins(config, plugins)?;
     let options = command.options();
-    let driver = mirror_driver(&state, &options.index);
-    match command {
-        PrefetchCommand::Plan(_) => driver.plan(config, &state, options, out).await,
-        PrefetchCommand::Sync(_) => driver.sync(config, &state, options, out).await,
-        PrefetchCommand::Verify(_) => driver.verify(config, &state, options, out).await,
-    }
-}
-
-/// A per-ecosystem mirror: `plan` lists, `sync` fetches, `verify` checks. Each ecosystem's custom
-/// behavior lives in its own impl, so the orchestration above dispatches once and never branches.
-#[async_trait::async_trait]
-trait IndexMirror: Sync {
-    async fn plan(
-        &self,
-        config: &Config,
-        state: &Arc<AppState>,
-        options: &PrefetchOptions,
-        out: &mut Output,
-    ) -> anyhow::Result<()>;
-    async fn sync(
-        &self,
-        config: &Config,
-        state: &Arc<AppState>,
-        options: &PrefetchOptions,
-        out: &mut Output,
-    ) -> anyhow::Result<()>;
-    async fn verify(
-        &self,
-        config: &Config,
-        state: &Arc<AppState>,
-        options: &PrefetchOptions,
-        out: &mut Output,
-    ) -> anyhow::Result<()>;
-}
-
-const PYPI_MIRROR: PypiMirror = PypiMirror;
-const OCI_MIRROR: OciMirror = OciMirror;
-
-/// Select the mirror by the target index's ecosystem, the one dispatch boundary. An unknown or a
-/// `PyPI` index takes the `PyPI` mirror, which reports the unknown through its own resolution.
-fn mirror_driver(state: &Arc<AppState>, name: &str) -> &'static dyn IndexMirror {
-    let is_oci = state
+    let index = config
         .indexes
         .iter()
-        .any(|index| (index.name == name || index.route == name) && index.ecosystem == peryx_core::Ecosystem::Oci);
-    if is_oci { &OCI_MIRROR } else { &PYPI_MIRROR }
-}
-
-struct PypiMirror;
-struct OciMirror;
-
-#[async_trait::async_trait]
-impl IndexMirror for PypiMirror {
-    async fn plan(
-        &self,
-        config: &Config,
-        state: &Arc<AppState>,
-        options: &PrefetchOptions,
-        out: &mut Output,
-    ) -> anyhow::Result<()> {
-        pypi_plan(config, state, options, out).await
-    }
-    async fn sync(
-        &self,
-        config: &Config,
-        state: &Arc<AppState>,
-        options: &PrefetchOptions,
-        out: &mut Output,
-    ) -> anyhow::Result<()> {
-        pypi_sync(config, state, options, out).await
-    }
-    async fn verify(
-        &self,
-        config: &Config,
-        state: &Arc<AppState>,
-        options: &PrefetchOptions,
-        out: &mut Output,
-    ) -> anyhow::Result<()> {
-        pypi_verify(config, state, options, out).await
-    }
-}
-
-#[async_trait::async_trait]
-impl IndexMirror for OciMirror {
-    async fn plan(
-        &self,
-        config: &Config,
-        state: &Arc<AppState>,
-        options: &PrefetchOptions,
-        out: &mut Output,
-    ) -> anyhow::Result<()> {
-        oci_plan(oci_lookup(state, &options.index), &oci_images(config, options), out)
-    }
-    async fn sync(
-        &self,
-        config: &Config,
-        state: &Arc<AppState>,
-        options: &PrefetchOptions,
-        out: &mut Output,
-    ) -> anyhow::Result<()> {
-        let images = oci_images(config, options);
-        oci_mirror(
-            state,
-            oci_lookup(state, &options.index),
-            oci_settings(config, &options.index),
-            &images,
-            peryx_ecosystem_oci::MirrorMode::Sync,
-            out,
+        .find(|index| index.name == options.index || index.route == options.index)
+        .ok_or_else(|| anyhow::anyhow!("unknown cached index {:?}", options.index))?;
+    let driver = state
+        .mirror_driver_for(&index.ecosystem)
+        .context("configured ecosystem does not support mirroring")?;
+    let configured = mirror_configuration(config, index)?;
+    let overrides = mirror_overrides(&options.overrides)?;
+    driver
+        .mirror(
+            state.clone(),
+            MirrorRequest {
+                action: action(command),
+                index: &options.index,
+                settings: &index.ecosystem_settings,
+                configured: &configured,
+                overrides: &overrides,
+            },
+            output,
         )
         .await
+        .map_err(anyhow::Error::msg)
+}
+
+fn mirror_configuration(config: &Config, index: &crate::config::IndexConfig) -> anyhow::Result<toml::Table> {
+    let prefetch = match &index.kind {
+        IndexKind::Cached { prefetch, .. } => prefetch,
+        IndexKind::Hosted { .. } => anyhow::bail!("index {:?} is hosted and has no upstream", index.name),
+        IndexKind::Virtual { layers, .. } => {
+            let mut cached = layers.iter().filter_map(|layer| {
+                config
+                    .indexes
+                    .iter()
+                    .find(|index| index.name == *layer)
+                    .and_then(|index| match &index.kind {
+                        IndexKind::Cached { prefetch, .. } => Some(prefetch),
+                        _ => None,
+                    })
+            });
+            let Some(prefetch) = cached.next() else {
+                anyhow::bail!("index {:?} has no cached member", index.name);
+            };
+            anyhow::ensure!(
+                cached.next().is_none(),
+                "index {:?} has more than one cached member",
+                index.name
+            );
+            prefetch
+        }
+    };
+    Ok(prefetch.options.clone())
+}
+
+fn mirror_overrides(options: &[String]) -> anyhow::Result<toml::Table> {
+    let mut overrides = toml::Table::new();
+    for option in options {
+        let Some((key, value)) = option
+            .split_once('=')
+            .filter(|(key, value)| !key.is_empty() && !value.is_empty())
+        else {
+            anyhow::bail!("mirror option {option:?} must be KEY=VALUE");
+        };
+        let mut table = toml::from_str::<toml::Table>(&format!("value = {value}"))
+            .map_err(|error| anyhow::anyhow!("invalid value for mirror option {key:?}: {error}"))?;
+        overrides.insert(
+            key.to_owned(),
+            table.remove("value").expect("the parser preserves the key"),
+        );
     }
-    async fn verify(
-        &self,
-        config: &Config,
-        state: &Arc<AppState>,
-        options: &PrefetchOptions,
-        out: &mut Output,
-    ) -> anyhow::Result<()> {
-        let images = oci_images(config, options);
-        oci_mirror(
-            state,
-            oci_lookup(state, &options.index),
-            oci_settings(config, &options.index),
-            &images,
-            peryx_ecosystem_oci::MirrorMode::Verify,
-            out,
-        )
-        .await
+    Ok(overrides)
+}
+
+const fn action(command: &PrefetchCommand) -> MirrorAction {
+    match command {
+        PrefetchCommand::Plan(_) => MirrorAction::Plan,
+        PrefetchCommand::Sync(_) => MirrorAction::Sync,
+        PrefetchCommand::Verify(_) => MirrorAction::Verify,
     }
 }

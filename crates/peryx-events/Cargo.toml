@@ -8,18 +8,16 @@ repository.workspace = true
 description = "What a peryx process reports about itself: usage counters, security event logging, and signed webhook delivery."
 
 [features]
-# Exposes the aggregator's deterministic settle barrier (`Metrics::settle`) to downstream test suites
-# so they await drained state instead of polling on a timer.
 test-util = []
 
 [dependencies]
 peryx-core.workspace = true
 peryx-identity.workspace = true
-peryx-replication.workspace = true
+peryx-ha.workspace = true
 peryx-storage.workspace = true
 futures-util.workspace = true
 http.workspace = true
-reqwest.workspace = true
+reqwest = { workspace = true, features = ["gzip", "http2", "rustls-native-certs", "rustls-no-provider", "stream"] }
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -30,14 +28,11 @@ tracing.workspace = true
 url.workspace = true
 
 [dev-dependencies]
-# Depend on ourselves with `test-util` so benches reach the settle barrier and the daily-snapshot seed
-# the aggregator's own tests use, letting a bench pin a deterministic checkpoint at a chosen cardinality.
-peryx-events = { path = ".", features = ["test-util"] }
-base64.workspace = true
 criterion = { workspace = true, features = ["async_tokio"] }
+redb.workspace = true
 rstest.workspace = true
 tempfile.workspace = true
-tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "test-util"] }
 tracing-subscriber.workspace = true
 wiremock.workspace = true
 

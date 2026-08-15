@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+suite=${1:?suite is required}
+output=${2:?output is required}
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
+if [[ -z ${PERYX_COVERAGE_RUN_DIR:-} ]]; then
+  exec "$repo/.github/scripts/coverage-session-guard" --output "$output" -- \
+    "$repo/scripts/ci/coverage-system-suite" "$suite" "$output"
+fi
+mkdir -p "$(dirname -- "$output")"
+if [[ ${COVERAGE_NO_CLEAN:-0} != 1 ]]; then
+  cargo llvm-cov clean --workspace
+fi
+metadata=$(cargo metadata --no-deps --format-version 1)
+packages=$(jq -r --arg suite "$suite" '
+  .packages[] | select(.metadata["peryx-ci"].coverage[$suite] != null) | .name
+' <<<"$metadata")
+if [[ -z $packages ]]; then
+  printf 'no packages declare coverage suite: %s\n' "$suite" >&2
+  exit 2
+fi
+while IFS= read -r package; do
+  cargo check --package "$package" --all-targets --all-features
+  command=(cargo llvm-cov nextest --package "$package")
+  features=$(jq -r --arg package "$package" --arg suite "$suite" '
+    [.packages[] | select(.name == $package) | .metadata["peryx-ci"].coverage[$suite].features[]?]
+    | join(",")
+  ' <<<"$metadata")
+  [[ -z $features ]] || command+=(--features "$features")
+  mapfile -t tests < <(jq -r --arg package "$package" --arg suite "$suite" '
+    .packages[] | select(.name == $package) | .metadata["peryx-ci"].coverage[$suite].tests[]?
+  ' <<<"$metadata")
+  if ((${#tests[@]})); then
+    for test in "${tests[@]}"; do
+      command+=(--test "$test")
+    done
+  else
+    command+=(--tests)
+  fi
+  command+=(--no-report)
+  filter=$(jq -r --arg package "$package" --arg suite "$suite" '
+    .packages[] | select(.name == $package) | .metadata["peryx-ci"].coverage[$suite].filter // empty
+  ' <<<"$metadata")
+  [[ -z $filter ]] || command+=(-E "$filter")
+  "${command[@]}"
+done <<<"$packages"
+if [[ ${COVERAGE_NO_REPORT:-0} != 1 ]]; then
+  cargo llvm-cov report --no-default-ignore-filename-regex --lcov --output-path "$output"
+fi

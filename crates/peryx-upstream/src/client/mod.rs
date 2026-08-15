@@ -1,9 +1,7 @@
-//! The upstream HTTP client.
-
 mod credential;
 mod error;
 mod exec;
-pub(crate) mod guard;
+mod guard;
 mod netrc;
 pub mod retry;
 mod tls;
@@ -42,8 +40,6 @@ const USER_AGENT: &str = concat!("peryx/", env!("CARGO_PKG_VERSION"));
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// How peryx authenticates to a private upstream. `Basic` covers pypi.org tokens (`__token__` +
-/// token) and Artifactory/GitLab username/password; `Bearer` covers access/identity tokens.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub enum Auth {
     #[default]
@@ -65,7 +61,7 @@ impl std::fmt::Debug for Auth {
     }
 }
 
-/// Redacted authentication shape for status surfaces.
+/// Authentication type without credential values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthStatus {
     None,
@@ -84,7 +80,7 @@ impl AuthStatus {
     }
 }
 
-/// The result of the most recent connection attempt to an upstream.
+/// Outcome of the most recent upstream connection attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reachability {
     Unknown,
@@ -103,12 +99,12 @@ impl Reachability {
     }
 }
 
-/// A client for one upstream index, rooted at its `/simple/` base URL.
+/// An HTTP client that blocks unsafe destinations and cross-origin credential forwarding.
 #[derive(Debug, Clone)]
 pub struct UpstreamClient {
     http: reqwest::Client,
-    /// File downloads only: HTTP/2 would multiplex every artifact over one TCP connection and its
-    /// single congestion window, so bulk transfers force HTTP/1.1 and get a connection each.
+    /// HTTP/1.1 gives concurrent artifact downloads separate congestion windows; HTTP/2 would
+    /// multiplex them over one connection.
     bulk: reqwest::Client,
     cross_origin_http: reqwest::Client,
     cross_origin_bulk: reqwest::Client,
@@ -127,7 +123,7 @@ const REACHABILITY_REACHABLE: u8 = 1;
 const REACHABILITY_UNREACHABLE: u8 = 2;
 
 impl UpstreamClient {
-    /// Build an unauthenticated client for `base` (for example `https://pypi.org/simple/`).
+    /// Uses no request authentication.
     ///
     /// # Errors
     /// Returns [`UpstreamError::Url`] if `base` is not a valid URL, or [`UpstreamError::Http`] if
@@ -136,8 +132,7 @@ impl UpstreamClient {
         Self::with_auth(base, Auth::None)
     }
 
-    /// Build a client for `base` with the given upstream authentication. A trailing slash is added
-    /// if missing so project paths join correctly.
+    /// Uses fixed upstream authentication.
     ///
     /// # Errors
     /// Returns [`UpstreamError::Url`] if `base` is not a valid URL, or [`UpstreamError::Http`] if
@@ -146,7 +141,7 @@ impl UpstreamClient {
         Self::with_auth_and_tls(base, auth, &UpstreamTls::default())
     }
 
-    /// Build a client for `base` with HTTP authentication and per-upstream TLS material.
+    /// Applies fixed authentication and per-upstream TLS material.
     ///
     /// # Errors
     /// Returns [`UpstreamError::Url`] if `base` is not a valid URL, or [`UpstreamError::Http`] if
@@ -155,8 +150,8 @@ impl UpstreamClient {
         Self::with_auth_and_tls_for_origin(base, auth, tls, base)
     }
 
-    /// Build a client whose TLS identity is available only when `base` shares `identity_origin`.
-    /// Custom trust roots remain available on another origin.
+    /// Restricts the TLS identity to bases that share `identity_origin`. Custom trust roots apply
+    /// across origins.
     ///
     /// # Errors
     /// Returns [`UpstreamError::Url`] if either origin is invalid, or [`UpstreamError::Http`] if
@@ -170,11 +165,11 @@ impl UpstreamClient {
         Self::with_credentials_and_tls_for_origin(base, CredentialProvider::fixed(auth), tls, identity_origin, &[])
     }
 
-    /// Build a client with refreshable credentials. Clones of `credentials` share one refresh gate
-    /// and generation, which lets an artifact mirror use its metadata source's credential provider.
+    /// Clones of `credentials` share one refresh gate and generation, allowing an artifact mirror
+    /// to use its metadata source's provider.
     ///
-    /// `trusted_hosts` names private artifact servers the outbound policy may reach even though they
-    /// do not resolve to a public address; the configured `base` host is trusted without listing.
+    /// `trusted_hosts` permits private artifact servers; the operator-configured `base` host is
+    /// trusted without listing.
     ///
     /// # Errors
     /// Returns [`UpstreamError::Url`] if either origin is invalid, or [`UpstreamError::Http`] if
@@ -186,8 +181,8 @@ impl UpstreamClient {
         identity_origin: &str,
         trusted_hosts: &[String],
     ) -> Result<Self, UpstreamError> {
-        // Pin the ring crypto provider: unlike aws-lc it is pure Rust plus portable assembly, so
-        // every release target cross-compiles without a C toolchain. Err means already installed.
+        // ring avoids the C toolchain that aws-lc requires for release cross-compilation. Provider
+        // installation is process-wide, so another caller may have installed it first.
         let _ = rustls::crypto::ring::default_provider().install_default();
         let mut base = Url::parse(base)?;
         let include_identity = same_origin(&base, &Url::parse(identity_origin)?);
@@ -268,8 +263,8 @@ impl UpstreamClient {
         }
     }
 
-    /// Open a connection to the upstream host ahead of traffic, so the first real request skips
-    /// the TCP and TLS handshakes. Failures are the first real request's problem to report.
+    /// Opens a connection before traffic so the first request skips TCP and TLS handshakes.
+    /// A failed warm-up does not fail future requests.
     pub async fn warm(&self) {
         let Ok(credentials) = self.credentials.credential().await else {
             self.reachability.store(REACHABILITY_UNREACHABLE, Ordering::Relaxed);
@@ -290,17 +285,16 @@ impl UpstreamClient {
         );
     }
 
-    /// Whether the most recent request reached the upstream host.
     #[must_use]
     pub fn reachability(&self) -> Reachability {
         match self.reachability.load(Ordering::Relaxed) {
+            REACHABILITY_UNKNOWN => Reachability::Unknown,
             REACHABILITY_REACHABLE => Reachability::Reachable,
-            REACHABILITY_UNREACHABLE => Reachability::Unreachable,
-            _ => Reachability::Unknown,
+            _ => Reachability::Unreachable,
         }
     }
 
-    /// Start fetching a file's bytes from an absolute URL, for streaming.
+    /// Streams bytes from an absolute URL.
     ///
     /// # Errors
     /// Returns [`UpstreamError::Credential`] when refresh fails, or [`UpstreamError::Http`] when the
@@ -325,7 +319,7 @@ impl UpstreamClient {
         Ok(response.bytes_stream().map_err(UpstreamError::from))
     }
 
-    /// Fetch a file's bytes from an absolute URL.
+    /// Fetches bytes from an absolute URL.
     ///
     /// # Errors
     /// Returns [`UpstreamError::Credential`] when refresh fails, or [`UpstreamError::Http`] when the
@@ -356,7 +350,7 @@ impl UpstreamClient {
         }
     }
 
-    /// Fetch a file's bytes from an absolute URL without reading more than `limit` bytes.
+    /// Reads at most `limit` bytes from an absolute URL.
     ///
     /// # Errors
     /// Returns [`UpstreamError::ResponseTooLarge`] if the response exceeds `limit`, or
@@ -407,18 +401,16 @@ impl UpstreamClient {
         }
     }
 
-    /// Whether this index should still try byte range reads.
     #[must_use]
     pub fn may_support_ranges(&self) -> bool {
         self.range_support.load(Ordering::Relaxed) != RANGE_UNSUPPORTED
     }
 
-    /// Stop trying byte range reads for this index during this process.
     pub fn disable_ranges(&self) {
         self.range_support.store(RANGE_UNSUPPORTED, Ordering::Relaxed);
     }
 
-    /// Fetch artifact headers for a future range read.
+    /// Requires byte-range support and a content length.
     ///
     /// # Errors
     /// Returns [`RangeError::Unsupported`] when upstream omits range support or length metadata,
@@ -455,7 +447,7 @@ impl UpstreamClient {
         Ok(FileHead { len })
     }
 
-    /// Fetch an inclusive byte range from an artifact URL.
+    /// Fetches the inclusive byte range `start..=end`.
     ///
     /// # Errors
     /// Returns [`RangeError::Unsupported`] or [`RangeError::Invalid`] when upstream cannot satisfy
@@ -512,34 +504,31 @@ impl UpstreamClient {
         Ok(bytes)
     }
 
-    /// The upstream base URL with user info, query, and fragment removed for status pages.
+    /// Removes user info, query, and fragment for display.
     #[must_use]
     pub fn redacted_base_url(&self) -> String {
         redact_url(self.base.as_ref())
     }
 
-    /// The configured upstream base URL, trailing slash included. Carries credential material if the
-    /// configured URL did, so callers that surface it to users must redact first.
+    /// Includes a trailing slash and may contain credentials; redact before display.
     #[must_use]
     pub fn base_url(&self) -> &str {
         self.base.as_str()
     }
 
-    /// The configured upstream base URL as a [`Url`], for an ecosystem layer that joins ecosystem
-    /// paths onto it (the `PyPI` Simple client builds `{base}/{project}/`). Carries credential
-    /// material if the configured URL did, so anything user-facing must redact first.
+    /// Callers join source paths onto this base [`Url`]. It may contain credentials; redact before
+    /// display.
     #[must_use]
     pub const fn base(&self) -> &Url {
         &self.base
     }
 
-    /// The credential provider shared by ecosystem-specific authentication flows.
     #[must_use]
     pub const fn auth(&self) -> &CredentialProvider {
         &self.credentials
     }
 
-    /// The authentication scheme without credential material.
+    /// Omits credential values.
     #[must_use]
     pub fn auth_status(&self) -> AuthStatus {
         match self.credentials.snapshot().configured_auth() {
@@ -549,7 +538,7 @@ impl UpstreamClient {
         }
     }
 
-    /// Return the last resolved credential without checking its refresh deadline.
+    /// Returns the last credential without applying its refresh deadline.
     ///
     /// # Errors
     /// Returns the provider's last redacted refresh error under `fail` policy.
@@ -557,10 +546,8 @@ impl UpstreamClient {
         self.credentials.current().map_err(UpstreamError::from)
     }
 
-    /// Send a conditional `GET` to `url` with the caller's `Accept` and optional `If-None-Match`,
-    /// run through the shared retry engine, and hand back the open response for the caller to read or
-    /// stream. This is the neutral primitive an ecosystem's index-fetch layer (the `PyPI` Simple
-    /// client) builds its document requests on; `304`/`404` are surfaced, not raised.
+    /// Sends a retryable `GET` with `Accept` and optional `If-None-Match`. The caller receives the
+    /// open response, including `304` and `404` statuses.
     ///
     /// # Errors
     /// Returns [`UpstreamError::Credential`] when refresh fails, or [`UpstreamError::Http`] when the
@@ -574,8 +561,8 @@ impl UpstreamClient {
         self.send_validated(url, accept, etag, None).await
     }
 
-    /// Send a conditional metadata request. `If-None-Match` takes precedence; modification time is
-    /// the fallback for upstreams that do not provide entity tags.
+    /// Sends a conditional metadata request. `If-None-Match` takes precedence over modification
+    /// time.
     ///
     /// # Errors
     /// Returns [`UpstreamError::Credential`] when refresh fails, or [`UpstreamError::Http`] when the
@@ -670,9 +657,8 @@ fn configure_http_client(
         .redirect(redirect)
 }
 
-/// A redirect policy that enforces the outbound destination on every hop. It keeps the client's TLS
-/// identity from following a cross-origin redirect and rejects a hop to a disallowed IP-literal host
-/// before the connection; hostname hops are caught by the guarding resolver.
+/// Rejects redirect hops to disallowed IP literals and prevents a TLS identity from crossing
+/// origins. The resolver checks hostname destinations at connection time.
 fn guarded_redirect_policy(
     base: &Url,
     tls: &UpstreamTls,
@@ -709,7 +695,7 @@ impl std::fmt::Display for TooManyRedirects {
 
 impl std::error::Error for TooManyRedirects {}
 
-/// Remove credential-bearing URL parts before displaying configured upstreams.
+/// Removes user info, query, and fragment before display.
 #[must_use]
 pub fn redact_url(value: &str) -> String {
     let Ok(mut url) = Url::parse(value) else {
@@ -752,7 +738,7 @@ fn validate_content_range(headers: &HeaderMap, start: u64, end: u64) -> Result<(
             "expected Content-Range bytes {start}-{end}, got {value:?}"
         )));
     }
-    // RFC 9110: complete-length is "*" (unknown) or a decimal strictly greater than last-byte-pos.
+    // RFC 9110 permits "*" or a decimal greater than last-byte-pos for complete-length.
     if total != "*" && total.parse::<u64>().ok().is_none_or(|total| total <= end) {
         return Err(RangeError::Invalid(format!(
             "invalid Content-Range total for bytes {start}-{end}, got {value:?}"

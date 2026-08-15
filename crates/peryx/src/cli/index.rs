@@ -1,10 +1,7 @@
-//! The `index` command group: list and inspect configured indexes.
-
 use clap::{Args, Subcommand};
 
-use super::{EcosystemArg, RuntimeArgs};
+use super::RuntimeArgs;
 
-/// Inspect the configured indexes.
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum IndexCommand {
     /// List the configured indexes.
@@ -23,18 +20,16 @@ impl IndexCommand {
     }
 }
 
-/// Options for `peryx index list`.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct IndexListArgs {
     #[command(flatten)]
     pub runtime: RuntimeArgs,
 
-    /// Show only indexes of this ecosystem.
-    #[arg(long, value_enum)]
-    pub ecosystem: Option<EcosystemArg>,
+    /// Filter by ecosystem.
+    #[arg(long)]
+    pub ecosystem: Option<String>,
 }
 
-/// Options for `peryx index show`.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct IndexShowArgs {
     #[command(flatten)]

@@ -69,8 +69,6 @@ pub fn referenced_blob_digests(meta: &MetaStore) -> Result<BTreeSet<String>, Str
     Ok(digests)
 }
 
-/// The provenance blob digest a record names, when both its artifact key and its blob digest are
-/// valid sha256 hex.
 fn valid_provenance<'a>(artifact_digest: &str, value: &'a str) -> Option<&'a str> {
     let (provenance_digest, size) = value.split_once('\n')?;
     (Digest::from_hex(artifact_digest).is_some()
@@ -91,7 +89,7 @@ pub fn cache_pages(meta: &MetaStore, index_names: &[&str]) -> Result<Vec<CachePa
         let (index, project) = split_page_key(&page.key, index_names);
         pages.push(CachePage {
             index,
-            project,
+            resource: project,
             fetched_at_unix: page.summary.fetched_at_unix,
             fresh_secs: page.summary.fresh_secs,
             body_bytes: page.summary.body_bytes,
@@ -104,8 +102,6 @@ pub fn cache_pages(meta: &MetaStore, index_names: &[&str]) -> Result<Vec<CachePa
     Ok(pages)
 }
 
-/// This driver's cached metadata record counts, labeled by kind, for `cache size`.
-///
 /// # Errors
 /// Returns a message when the store cannot be read.
 pub fn cache_record_counts(meta: &MetaStore) -> Result<Vec<(String, u64)>, String> {
@@ -177,10 +173,15 @@ pub fn policy_dry_run(
         let Some(index) = matching_index(indexes, &index_name, index_filter) else {
             return Ok(());
         };
-        if project_filter.as_deref().is_some_and(|filter| filter != project) {
+        if let Some(filter) = project_filter.as_deref()
+            && filter != project
+        {
             return Ok(());
         }
-        let record = CachedIndex::decode(bytes).map_err(|err| format!("corrupt cached page {key}: {err}"))?;
+        let record = match CachedIndex::decode(bytes) {
+            Ok(record) => record,
+            Err(err) => return Err(format!("corrupt cached page {key}: {err}")),
+        };
         let parsed = parse_detail(&record.body).map_err(crate::error_message)?;
         let detail = ProjectDetail {
             meta: parsed.meta,
@@ -201,7 +202,9 @@ pub fn policy_dry_run(
         let Some(index) = matching_index(indexes, &index_name, index_filter) else {
             return Ok(());
         };
-        if project_filter.as_deref().is_some_and(|filter| filter != project) {
+        if let Some(filter) = project_filter.as_deref()
+            && filter != project
+        {
             return Ok(());
         }
         let uploaded: Uploaded = serde_json::from_slice(bytes).map_err(crate::error_message)?;
@@ -216,9 +219,10 @@ pub fn policy_dry_run(
 
 fn matching_index<'a>(indexes: &'a [Index], index_name: &str, filter: Option<&str>) -> Option<&'a Index> {
     let index = indexes.iter().find(|index| index.name == index_name)?;
-    filter
-        .is_none_or(|filter| filter == index.name || filter == index.route)
-        .then_some(index)
+    match filter {
+        Some(filter) if filter != index.name && filter != index.route => None,
+        _ => Some(index),
+    }
 }
 
 fn write_denial(out: &mut dyn Write, index: &str, denial: &PolicyDenial) -> std::io::Result<()> {
@@ -226,9 +230,9 @@ fn write_denial(out: &mut dyn Write, index: &str, denial: &PolicyDenial) -> std:
         out,
         "{}\t{index}\t{}\t{}\t{}\t{}\t{}\t{}",
         denial.action,
-        denial.project,
-        denial.filename.as_deref().unwrap_or(""),
-        denial.version.as_deref().unwrap_or(""),
+        denial.resource,
+        denial.artifact.as_deref().unwrap_or(""),
+        denial.group.as_deref().unwrap_or(""),
         denial.rule,
         denial.field,
         denial.reason
@@ -241,10 +245,10 @@ fn split_page_key(key: &str, index_names: &[&str]) -> (String, String) {
             return ((*name).to_owned(), project.to_owned());
         }
     }
-    key.split_once('/').map_or_else(
-        || (key.to_owned(), String::new()),
-        |(index, project)| (index.to_owned(), project.to_owned()),
-    )
+    match key.split_once('/') {
+        Some((index, project)) => (index.to_owned(), project.to_owned()),
+        None => (key.to_owned(), String::new()),
+    }
 }
 
 fn upload_key_parts<'a>(key: &'a str, index_names: &[&str]) -> Option<(String, &'a str, &'a str)> {
@@ -285,7 +289,7 @@ pub fn purge_project(meta: &MetaStore, index: &str, project: &str, apply: bool) 
             .map_err(crate::error_message)?
     };
     Ok(PurgeReport {
-        project: normalized,
+        resource: normalized,
         categories: vec![
             ("index_pages".to_owned(), counts.index_pages as u64),
             ("project_records".to_owned(), counts.project_records as u64),
@@ -305,12 +309,14 @@ struct CacheRefs {
 fn project_refs(meta: &MetaStore, target_key: &str) -> Result<CacheRefs, String> {
     let Some(record) = meta
         .get_index(target_key)
-        .map_err(|err| format!("read cached project {target_key}: {err}"))?
+        .map_err(|err| format!("read cached project {target_key}: {}", crate::error_message(err)))?
     else {
         return Ok(CacheRefs::default());
     };
     let mut refs = CacheRefs::default();
-    add_index_refs(&mut refs, &record).map_err(|err| format!("read cached project {target_key}: {err}"))?;
+    if let Err(err) = add_index_refs(&mut refs, &record) {
+        return Err(format!("read cached project {target_key}: {err}"));
+    }
     Ok(refs)
 }
 
@@ -320,12 +326,21 @@ fn preserved_refs(meta: &MetaStore, target_key: &str) -> Result<CacheRefs, Strin
         if key == target_key {
             return Ok(());
         }
-        let record = CachedIndex::decode(bytes).map_err(|err| format!("corrupt cached page {key}: {err}"))?;
-        add_index_refs(&mut refs, &record).map_err(|err| format!("corrupt cached page {key}: {err}"))
+        let record = match CachedIndex::decode(bytes) {
+            Ok(record) => record,
+            Err(err) => return Err(format!("corrupt cached page {key}: {err}")),
+        };
+        match add_index_refs(&mut refs, &record) {
+            Ok(()) => Ok(()),
+            Err(err) => Err(format!("corrupt cached page {key}: {err}")),
+        }
     })
     .map_err(crate::error_message)?;
     meta.scan_upload_records(|key, bytes| {
-        for digest in upload_digests(bytes).ok_or_else(|| format!("invalid upload record {key}"))? {
+        let Some(digests) = upload_digests(bytes) else {
+            return Err(format!("invalid upload record {key}"));
+        };
+        for digest in digests {
             refs.files.insert(digest.as_str().to_owned());
         }
         Ok::<(), String>(())
@@ -357,9 +372,6 @@ fn add_index_refs(refs: &mut CacheRefs, record: &CachedIndex) -> Result<(), Stri
     Ok(())
 }
 
-/// Validate every `PyPI` metadata record in `meta`, writing one tab-separated line per problem to
-/// `out` and returning the count. Blob contents are the neutral caller's to verify.
-///
 /// # Errors
 /// Returns a message when the store cannot be read or `out` cannot be written.
 pub fn fsck_metadata(meta: &MetaStore, blobs: &BlobStorage, out: &mut dyn Write) -> Result<u64, String> {
@@ -480,263 +492,5 @@ fn valid_upload_key(key: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use peryx_identity::IndexAcl;
-    use std::convert::Infallible;
-
-    use peryx_index::{Index, IndexKind};
-    use peryx_policy::Policy;
-    use peryx_storage::blob::{BlobStore, Digest};
-    use peryx_storage::meta::{MetaError, MetaScanError, MetaStore};
-
-    use super::{cache_pages, cache_record_counts, fsck_metadata, policy_dry_run, referenced_blob_digests};
-    use crate::store::{CachedIndex, PypiStore as _};
-
-    fn store() -> (tempfile::TempDir, MetaStore) {
-        let dir = tempfile::tempdir().unwrap();
-        let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-        (dir, meta)
-    }
-
-    /// A valid cached simple-index page whose body parses into a project detail.
-    fn seed_valid_page(meta: &MetaStore) {
-        let digest = Digest::of(b"wheel");
-        let metadata_digest = Digest::of(b"metadata");
-        let body = format!(
-            r#"{{"meta":{{"api-version":"1.1"}},"name":"flask","versions":["1.0"],"files":[{{"filename":"flask-1.0.whl","url":"https://files/flask.whl","hashes":{{"sha256":"{d}"}},"core-metadata":{{"sha256":"{m}"}},"yanked":false}}]}}"#,
-            d = digest.as_str(),
-            m = metadata_digest.as_str(),
-        );
-        meta.put_index(
-            "pypi/flask",
-            &CachedIndex {
-                etag: None,
-                last_serial: None,
-                fetched_at_unix: 0,
-                content_type: Some("application/vnd.pypi.simple.v1+json".to_owned()),
-                fresh_secs: Some(1),
-                body: body.into_bytes(),
-            },
-        )
-        .unwrap();
-        meta.put_project("pypi", "flask", "Flask").unwrap();
-        meta.put_file_url(digest.as_str(), "https://files/flask.whl", "pypi")
-            .unwrap();
-        meta.put_metadata(
-            digest.as_str(),
-            "https://files/flask.whl.metadata",
-            metadata_digest.as_str(),
-            "pypi",
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn test_error_message_renders_store_and_visit_scan_faults() {
-        let decode = serde_json::from_str::<u8>("x").unwrap_err();
-        assert!(!crate::error_message(MetaScanError::<Infallible>::from(MetaError::Decode(decode))).is_empty());
-        assert_eq!(crate::error_message(MetaScanError::Visit("boom".to_owned())), "boom");
-        assert_eq!(
-            crate::error_message(MetaScanError::Visit(std::io::Error::other("disk"))).as_str(),
-            "disk"
-        );
-    }
-
-    #[test]
-    fn test_cache_pages_lists_the_stored_pages_split_by_index() {
-        let (_dir, meta) = store();
-        seed_valid_page(&meta);
-        let pages = cache_pages(&meta, &["pypi"]).unwrap();
-        assert_eq!(pages.len(), 1);
-        assert_eq!((pages[0].index.as_str(), pages[0].project.as_str()), ("pypi", "flask"));
-    }
-
-    #[test]
-    fn test_cache_record_counts_counts_each_record_kind() {
-        let (_dir, meta) = store();
-        seed_valid_page(&meta);
-        meta.put_upload("pypi", "flask", "flask-1.0.whl", br#"{"version":"1.0"}"#)
-            .unwrap();
-        meta.put_override("pypi", "flask", "flask-1.0.whl", "yanked", 0)
-            .unwrap();
-        meta.put_provenance(&"a".repeat(64), &"b".repeat(64), 16).unwrap();
-        let counts: std::collections::HashMap<String, u64> = cache_record_counts(&meta).unwrap().into_iter().collect();
-        assert_eq!(counts["file_url_records"], 1);
-        assert_eq!(counts["metadata_records"], 1);
-        assert_eq!(counts["project_records"], 1);
-        assert_eq!(counts["upload_records"], 1);
-        assert_eq!(counts["override_records"], 1);
-        assert_eq!(counts["provenance_records"], 1);
-    }
-
-    #[test]
-    fn test_referenced_blob_digests_rejects_a_corrupt_file_url_record() {
-        let (_dir, meta) = store();
-        // A file-URL row keyed by a non-hex digest is a corrupt record. `pypi\0f\0` is its namespace.
-        meta.put_driver_value("pypi\u{0}f\u{0}not-hex", b"https://files/x\npypi")
-            .unwrap();
-        assert!(referenced_blob_digests(&meta).is_err());
-    }
-
-    #[test]
-    fn test_referenced_blob_digests_rejects_a_corrupt_metadata_record() {
-        let (_dir, meta) = store();
-        // A PEP 658 row keyed by a non-hex digest. `pypi\0d\0` is the metadata-sidecar namespace.
-        meta.put_driver_value("pypi\u{0}d\u{0}not-hex", b"https://files/x.metadata\nabc\npypi")
-            .unwrap();
-        assert!(referenced_blob_digests(&meta).is_err());
-    }
-
-    #[test]
-    fn test_referenced_blob_digests_rejects_a_corrupt_upload_record() {
-        let (_dir, meta) = store();
-        meta.put_upload("pypi", "flask", "flask-1.0.whl", b"not json").unwrap();
-        assert!(referenced_blob_digests(&meta).is_err());
-    }
-
-    #[test]
-    fn test_referenced_blob_digests_includes_the_provenance_blob() {
-        let (_dir, meta) = store();
-        let provenance_blob = "c".repeat(64);
-        meta.put_provenance(&"a".repeat(64), &provenance_blob, 16).unwrap();
-        assert!(referenced_blob_digests(&meta).unwrap().contains(&provenance_blob));
-    }
-
-    #[test]
-    fn test_referenced_blob_digests_rejects_a_corrupt_provenance_record() {
-        let (_dir, meta) = store();
-        // A provenance row keyed by a non-hex digest. `pypi\0a\0` is the provenance namespace.
-        meta.put_driver_value("pypi\u{0}a\u{0}not-hex", b"abc\n16").unwrap();
-        assert!(referenced_blob_digests(&meta).is_err());
-    }
-
-    #[test]
-    fn test_fsck_metadata_reports_every_invalid_record_kind() {
-        let (dir, meta) = store();
-        let blobs = BlobStore::new(dir.path().join("blobs")).into();
-        meta.put_driver_value("pypi\u{0}i\u{0}pypi/flask", b"garbage").unwrap();
-        meta.put_driver_value("pypi\u{0}f\u{0}not-hex", b"u\npypi").unwrap();
-        meta.put_driver_value("pypi\u{0}d\u{0}not-hex", b"u\nm\npypi").unwrap();
-        meta.put_driver_value("pypi\u{0}p\u{0}pypi/flask", b"").unwrap();
-        meta.put_upload("pypi", "flask", "flask-1.0.whl", b"not json").unwrap();
-        meta.put_override("pypi", "flask", "flask-1.0.whl", "bogus", 0).unwrap();
-        meta.put_driver_value("pypi\u{0}a\u{0}not-hex", b"abc\n16").unwrap();
-        // A valid provenance row exercises the fsck scan's accept path alongside the invalid one.
-        meta.put_provenance(&"a".repeat(64), &"b".repeat(64), 16).unwrap();
-        let mut out = Vec::new();
-        let problems = fsck_metadata(&meta, &blobs, &mut out).unwrap();
-        assert_eq!(problems, 7, "{}", String::from_utf8_lossy(&out));
-    }
-
-    #[test]
-    fn test_policy_dry_run_reports_a_corrupt_cached_page() {
-        let (_dir, meta) = store();
-        meta.put_driver_value("pypi\u{0}i\u{0}pypi/flask", b"garbage").unwrap();
-        let indexes = [pypi_index()];
-        let mut out = Vec::new();
-        assert!(policy_dry_run(&meta, &indexes, None, None, &mut out).is_err());
-    }
-
-    #[test]
-    fn test_policy_dry_run_reports_a_corrupt_upload_record() {
-        let (_dir, meta) = store();
-        meta.put_upload("pypi", "flask", "flask-1.0.whl", b"not json").unwrap();
-        let indexes = [pypi_index()];
-        let mut out = Vec::new();
-        assert!(policy_dry_run(&meta, &indexes, None, None, &mut out).is_err());
-    }
-
-    /// A framed page whose body decodes but is not a valid project detail, so `parse_detail` fails.
-    fn seed_undecodable_detail(meta: &MetaStore, key: &str) {
-        meta.put_index(
-            key,
-            &CachedIndex {
-                etag: None,
-                last_serial: None,
-                fetched_at_unix: 0,
-                content_type: None,
-                fresh_secs: None,
-                body: b"not a project detail document".to_vec(),
-            },
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn test_policy_dry_run_reports_a_page_whose_body_is_not_a_detail() {
-        let (_dir, meta) = store();
-        seed_undecodable_detail(&meta, "pypi/flask");
-        let indexes = [pypi_index()];
-        let mut out = Vec::new();
-        assert!(policy_dry_run(&meta, &indexes, None, None, &mut out).is_err());
-    }
-
-    #[test]
-    fn test_purge_project_counts_the_removed_records() {
-        let (_dir, meta) = store();
-        seed_valid_page(&meta);
-        let report = super::purge_project(&meta, "pypi", "flask", false).unwrap();
-        assert_eq!(report.project, "flask");
-        let index_pages = report
-            .categories
-            .iter()
-            .find(|(label, _)| label == "index_pages")
-            .map(|(_, count)| *count);
-        assert_eq!(index_pages, Some(1));
-    }
-
-    #[test]
-    fn test_purge_project_reports_a_corrupt_preserved_page() {
-        let (_dir, meta) = store();
-        seed_valid_page(&meta);
-        // A second, non-target page whose body is not a detail: scanned as a preserved reference and
-        // rejected.
-        seed_undecodable_detail(&meta, "pypi/other");
-        assert!(super::purge_project(&meta, "pypi", "flask", false).is_err());
-    }
-
-    fn pypi_index() -> Index {
-        Index {
-            name: "pypi".to_owned(),
-            route: "pypi".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
-            kind: IndexKind::Hosted { volatile: false },
-            policy: Policy::default(),
-            acl: IndexAcl::default(),
-        }
-    }
-
-    fn hosted_index() -> Index {
-        Index {
-            name: "hosted".to_owned(),
-            route: "hosted".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
-            kind: IndexKind::Hosted { volatile: false },
-            policy: Policy::default(),
-            acl: IndexAcl::default(),
-        }
-    }
-
-    #[test]
-    fn test_policy_dry_run_skips_uploads_it_cannot_attribute() {
-        let dir = tempfile::tempdir().unwrap();
-        let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-        // An upload on an index no configured index names: attributed by the fallback split, then
-        // skipped because it matches no index.
-        meta.put_upload("ghost", "proj", "file.whl", br#"{"version":"1.0"}"#)
-            .unwrap();
-        // An upload on a configured index, filtered out by a project filter that does not match it.
-        meta.put_upload("hosted", "flask", "flask-1.0.whl", br#"{"version":"1.0"}"#)
-            .unwrap();
-        // A corrupt upload row whose key carries no project/filename split is skipped entirely. The
-        // `pypi\0u\0` prefix is the on-disk upload namespace.
-        meta.put_driver_value("pypi\u{0}u\u{0}noslashkey", b"x").unwrap();
-
-        let indexes = [hosted_index()];
-        let mut out = Vec::new();
-        policy_dry_run(&meta, &indexes, None, Some("other"), &mut out).unwrap();
-
-        // No configured, unfiltered upload reaches a policy check, so nothing is written.
-        assert_eq!(String::from_utf8(out).unwrap(), "");
-    }
-}
+#[path = "../tests/unit/admin/tests.rs"]
+mod tests;

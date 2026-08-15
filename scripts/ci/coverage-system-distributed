@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+output=${1:-.tox/coverage/system-distributed.lcov}
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
+if [[ -z ${PERYX_COVERAGE_RUN_DIR:-} ]]; then
+  exec "$repo/.github/scripts/coverage-session-guard" --output "$output" -- \
+    "$repo/scripts/ci/coverage-system-distributed" "$output"
+fi
+mkdir -p "$(dirname -- "$output")"
+if [[ ${COVERAGE_NO_CLEAN:-0} == 1 ]]; then
+  if [[ ${PERYX_COVERAGE_SESSION:-} != linux ]]; then
+    printf 'coverage profile accumulation requires the coverage-linux session\n' >&2
+    exit 2
+  fi
+else
+  cargo llvm-cov clean --workspace
+fi
+cargo llvm-cov nextest -p peryx --features availability-e2e,sim-campaign \
+  --test availability --test cluster --test observability --test sim_campaign --no-report
+COVERAGE_NO_CLEAN=1 COVERAGE_NO_REPORT=1 scripts/ci/coverage-system-suite availability "$output"
+if [[ ${COVERAGE_NO_REPORT:-0} != 1 ]]; then
+  cargo llvm-cov report --no-default-ignore-filename-regex --lcov --output-path "$output"
+fi

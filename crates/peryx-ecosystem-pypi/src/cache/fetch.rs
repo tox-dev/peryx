@@ -1,5 +1,3 @@
-//! Upstream page fetch, revalidation, and persistence for cached indexes.
-
 use std::io::{Read, Seek as _, Write};
 use std::sync::Arc;
 
@@ -13,7 +11,7 @@ use crate::store::{
 };
 use crate::{CoreMetadata, ProjectDetail, parse_detail, parse_detail_html, to_json};
 use peryx_driver::state::ServingState;
-use peryx_events::metrics::Event;
+use peryx_events::metrics::Observation;
 use peryx_index::serving::Inflight;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::{Policy, PolicyAction};
@@ -29,11 +27,6 @@ use super::{
     CacheError, NEGATIVE_TTL_SECS, cached_record, is_json, mirror_route, project_negative_key, upstream_permit,
 };
 
-/// Fetch a page (buffered) and persist the raw body plus all file registrations in one transaction.
-/// Used by the non-streaming path: HTML upstreams, HTML clients, and internal consumers.
-///
-/// Every outcome that a log line describes also lands in the metrics tree: revalidations (and
-/// whether upstream actually changed), stale fallbacks, and hard upstream failures.
 pub(super) async fn fetch_and_store(
     state: &ServingState,
     key: &str,
@@ -41,7 +34,7 @@ pub(super) async fn fetch_and_store(
     project: &str,
     client: &UpstreamClient,
 ) -> Result<Option<CachedIndex>, CacheError> {
-    mirror_policy(state, name).check_project(PolicyAction::Cached, project)?;
+    mirror_policy(state, name).check_resource(PolicyAction::Cached, project)?;
     let now = (state.clock)();
     let cached = cached_record(state, key)?;
     let etag = cached.as_ref().and_then(|record| record.etag.clone());
@@ -67,9 +60,9 @@ pub(super) async fn fetch_and_store(
                 if changed {
                     tracing::info!(%key, "upstream page changed");
                 }
-                let event = Event::Refresh {
-                    route,
-                    project: event_project,
+                let event = Observation::Refresh {
+                    repository: route,
+                    resource: event_project,
                     changed,
                 };
                 state.metrics.record(event);
@@ -84,9 +77,9 @@ pub(super) async fn fetch_and_store(
             state
                 .meta
                 .touch_index_freshness(key, record.fetched_at_unix, record.fresh_secs)?;
-            state.metrics.record(Event::Refresh {
-                route,
-                project: event_project,
+            state.metrics.record(Observation::Refresh {
+                repository: route,
+                resource: event_project,
                 changed: false,
             });
             Ok(Some(record))
@@ -96,7 +89,7 @@ pub(super) async fn fetch_and_store(
             .retire_cached_project(key, name, project)
             .map_err(CacheError::from)
             .map(|()| {
-                state.invalidate_project(project);
+                state.invalidate_resource(project);
                 state.remember_negative(project_negative_key(key), NEGATIVE_TTL_SECS);
                 None
             }),
@@ -106,17 +99,17 @@ pub(super) async fn fetch_and_store(
             .filter(|record| super::servable_stale(state, record))
             .map_or_else(
                 || {
-                    state.metrics.record(Event::UpstreamError {
-                        route: route.clone(),
-                        project: event_project.clone(),
+                    state.metrics.record(Observation::UpstreamError {
+                        repository: route.clone(),
+                        resource: event_project.clone(),
                     });
                     Err(CacheError::Unavailable)
                 },
                 |record| {
                     tracing::warn!(%key, status = response.status, "upstream errored; serving stale page");
-                    state.metrics.record(Event::StaleServed {
-                        route: route.clone(),
-                        project: event_project.clone(),
+                    state.metrics.record(Observation::StaleServed {
+                        repository: route.clone(),
+                        resource: event_project.clone(),
                     });
                     Ok(Some(record))
                 },
@@ -125,17 +118,17 @@ pub(super) async fn fetch_and_store(
             .filter(|record| super::servable_stale(state, record))
             .map_or_else(
                 || {
-                    state.metrics.record(Event::UpstreamError {
-                        route: route.clone(),
-                        project: event_project.clone(),
+                    state.metrics.record(Observation::UpstreamError {
+                        repository: route.clone(),
+                        resource: event_project.clone(),
                     });
                     Err(CacheError::Upstream(err))
                 },
                 |record| {
                     tracing::warn!(%key, "upstream unreachable; serving stale page");
-                    state.metrics.record(Event::StaleServed {
-                        route: route.clone(),
-                        project: event_project.clone(),
+                    state.metrics.record(Observation::StaleServed {
+                        repository: route.clone(),
+                        resource: event_project.clone(),
                     });
                     Ok(Some(record))
                 },
@@ -184,7 +177,7 @@ pub async fn refresh_stale_pages(state: &Arc<ServingState>) -> Result<RefreshSum
         if offline {
             continue;
         }
-        if let Err(denial) = index.policy.check_project(PolicyAction::Cached, &project) {
+        if let Err(denial) = index.policy.check_resource(PolicyAction::Cached, &project) {
             log_cache_sync(&index.route, &project, "denied", false, Some(&denial.reason));
             continue;
         }
@@ -219,15 +212,13 @@ pub async fn refresh_stale_pages(state: &Arc<ServingState>) -> Result<RefreshSum
 fn log_cache_sync(index: &str, project: &str, result: &'static str, changed: bool, reason: Option<&str>) {
     peryx_events::security::Event::new("mirror_sync", result)
         .index(index)
-        .project(Some(project))
+        .resource(Some(project))
         .changed(changed)
         .count(1)
         .reason(reason)
         .emit();
 }
 
-/// Map a cache key (`{cached index name}/{project}`) back to its cached index and client; the longest matching
-/// name wins when one cached's name prefixes another's.
 fn mirror_for_key<'a>(state: &'a ServingState, key: &str) -> Option<(&'a Index, &'a UpstreamClient, bool, String)> {
     state
         .indexes
@@ -282,17 +273,6 @@ pub(super) fn canonical_json(body: &[u8], base: &Url) -> Result<Vec<u8>, CacheEr
     Ok(to_json(&detail).into_bytes())
 }
 
-#[cfg(test)]
-pub fn persist_page(
-    state: &ServingState,
-    key: &str,
-    name: &str,
-    project: &str,
-    record: &CachedIndex,
-) -> Result<(), CacheError> {
-    persist_page_from(state, key, name, project, record, None)
-}
-
 pub(super) fn persist_page_from(
     state: &ServingState,
     key: &str,
@@ -313,9 +293,6 @@ pub(super) fn persist_page_from(
         let Some(sha256) = file.hashes.get("sha256") else {
             continue;
         };
-        if file.url.starts_with('/') {
-            continue; // a legacy record with peryx-route URLs has nothing to register
-        }
         files.push((sha256.clone(), file.url.clone(), file.size));
         if let CoreMetadata::Hashes(hashes) = file.metadata()
             && let Some(digest) = hashes.get("sha256")
@@ -333,22 +310,22 @@ pub(super) fn persist_page_from(
     let display = if parsed.name.is_empty() { project } else { &parsed.name };
     state
         .meta
-        .put_cached_page(
+        .put_cached_page(crate::store::CachedPageWrite {
             key,
             record,
-            name,
-            project,
+            index: name,
+            normalized: project,
             display,
-            name,
+            source: name,
             upstream,
-            parsed.meta.project_status.as_deref(),
-            parsed.meta.project_status_reason.as_deref(),
-            &files,
-            &metadata,
-            &attestations,
-        )
+            project_status: parsed.meta.project_status.as_deref(),
+            project_status_reason: parsed.meta.project_status_reason.as_deref(),
+            files: &files,
+            metadata: &metadata,
+            attestations: &attestations,
+        })
         .map_err(CacheError::from)?;
-    state.invalidate_project(project);
+    state.invalidate_resource(project);
     Ok(())
 }
 
@@ -472,23 +449,25 @@ async fn publish_project_response(
     let etag = head.etag.clone();
     let last_modified = head.last_modified.clone();
     let last_serial = head.last_serial;
-    let mut file = tempfile::NamedTempFile::new()?;
-    let bytes = write_project_stream(head.into_stream(), file.as_file_mut(), MAX_PROJECT_BYTES).await?;
+    let mut file = tempfile::tempfile()?;
+    let bytes = write_project_stream(head.into_stream(), &mut file, MAX_PROJECT_BYTES).await?;
     file.flush()?;
     file.rewind()?;
 
     let (generation, expected_active) = begin_project_generation(meta, index, project)?;
     let parsed = parse_project(
-        file.as_file_mut(),
-        format,
-        &base,
-        meta,
-        index,
-        policy,
-        project,
-        generation,
-        upstream.as_deref(),
-        MAX_PROJECT_FILES,
+        &mut file,
+        ParseProject {
+            format,
+            base: &base,
+            meta,
+            index,
+            policy,
+            project,
+            generation,
+            upstream: upstream.as_deref(),
+            max_files: MAX_PROJECT_FILES,
+        },
     );
     let (files, detail) = match parsed {
         Ok(result) => result,
@@ -552,22 +531,34 @@ struct ParsedDetailHeader {
     project_status_reason: Option<String>,
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the parse threads every staging input through one call"
-)]
+#[derive(Clone, Copy)]
+struct ParseProject<'a> {
+    format: &'a str,
+    base: &'a Url,
+    meta: &'a MetaStore,
+    index: &'a str,
+    policy: &'a Policy,
+    project: &'a str,
+    generation: u64,
+    upstream: Option<&'a str>,
+    max_files: u64,
+}
+
 fn parse_project(
     reader: &mut impl Read,
-    format: &str,
-    base: &Url,
-    meta: &MetaStore,
-    index: &str,
-    policy: &Policy,
-    project: &str,
-    generation: u64,
-    upstream: Option<&str>,
-    max_files: u64,
+    input: ParseProject<'_>,
 ) -> Result<(u64, ParsedDetailHeader), ProjectSyncError> {
+    let ParseProject {
+        format,
+        base,
+        meta,
+        index,
+        policy,
+        project,
+        generation,
+        upstream,
+        max_files,
+    } = input;
     let mut batcher = FileBatcher::new(meta, index, project, policy, generation, upstream, max_files);
     let header = if format == "json" {
         let detail = stream_detail_json(reader, base, &mut batcher)?;
@@ -679,668 +670,5 @@ impl DetailSink for FileBatcher<'_> {
 }
 
 #[cfg(test)]
-mod sync_tests {
-    use std::collections::BTreeMap;
-
-    use peryx_index::serving::Inflight;
-    use peryx_policy::Policy;
-    use peryx_storage::meta::MetaStore;
-    use peryx_upstream::UpstreamClient;
-    use wiremock::matchers::{header, method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    use super::{
-        MAX_PROJECT_BYTES, PROJECT_FILE_BATCH, ProjectSyncError, ProjectSyncOutcome, parse_project,
-        publish_project_response, sync_project_files, write_project_chunk,
-    };
-    use crate::SimpleClientExt as _;
-    use crate::simple::{CoreMetadata, File, Provenance, Yanked};
-    use crate::store::PypiStore as _;
-    use crate::store::{
-        ProjectGeneration, active_project_generation, begin_project_generation, list_project_files, project_meta_state,
-        publish_project_generation, put_project_files,
-    };
-
-    const JSON: &str = "application/vnd.pypi.simple.v1+json";
-
-    fn store() -> (tempfile::TempDir, MetaStore) {
-        let dir = tempfile::tempdir().unwrap();
-        let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-        (dir, meta)
-    }
-
-    fn file(filename: &str, sha256: &str) -> File {
-        File {
-            filename: filename.to_owned(),
-            url: format!("https://files.example/{filename}"),
-            hashes: BTreeMap::from([("sha256".to_owned(), sha256.to_owned())]),
-            requires_python: Some(">=3.8".to_owned()),
-            size: Some(10),
-            upload_time: None,
-            yanked: Yanked::No,
-            core_metadata: CoreMetadata::Absent,
-            dist_info_metadata: CoreMetadata::Absent,
-            gpg_sig: None,
-            provenance: Provenance::Absent,
-        }
-    }
-
-    fn seed_active(meta: &MetaStore, index: &str, project: &str, etag: &str, files: &[File]) -> u64 {
-        let (id, expected) = begin_project_generation(meta, index, project).unwrap();
-        let admitted = put_project_files(meta, index, project, id, index, None, files).unwrap();
-        publish_project_generation(
-            meta,
-            index,
-            project,
-            expected,
-            ProjectGeneration {
-                generation: id,
-                source: index.to_owned(),
-                url: "https://pypi.org/simple/flask/".to_owned(),
-                format: "json".to_owned(),
-                etag: Some(etag.to_owned()),
-                last_modified: None,
-                last_serial: None,
-                fetched_at_unix: 1,
-                bytes: 1,
-                files: admitted,
-                versions: Vec::new(),
-                project_status: None,
-                project_status_reason: None,
-            },
-        )
-        .unwrap();
-        id
-    }
-
-    fn client_for(server: &MockServer) -> UpstreamClient {
-        UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap()
-    }
-
-    #[tokio::test]
-    async fn test_sync_publishes_a_json_detail() {
-        let server = MockServer::start().await;
-        let body = format!(
-            r#"{{"meta":{{"api-version":"1.1"}},"name":"flask","versions":["1.0"],"files":[
-                {{"filename":"flask-1.0-py3-none-any.whl","url":"flask-1.0-py3-none-any.whl","hashes":{{"sha256":"{a}"}},"size":10}},
-                {{"filename":"flask-1.0.tar.gz","url":"flask-1.0.tar.gz","hashes":{{"sha256":"{b}"}}}}]}}"#,
-            a = "a".repeat(64),
-            b = "b".repeat(64),
-        );
-        Mock::given(method("GET"))
-            .and(path("/simple/flask/"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("etag", "v1")
-                    .set_body_raw(body, JSON),
-            )
-            .mount(&server)
-            .await;
-        let client = client_for(&server);
-        let (_dir, meta) = store();
-
-        let outcome = sync_project_files(
-            &client,
-            &Inflight::default(),
-            &meta,
-            "pypi",
-            &Policy::default(),
-            "flask",
-            client.base_url(),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(outcome, ProjectSyncOutcome::Published { files: 2 });
-        let files = list_project_files(&meta, "pypi", "flask").unwrap();
-        assert_eq!(files.len(), 2);
-        let active = active_project_generation(&meta, "pypi", "flask").unwrap().unwrap();
-        assert_eq!(active.format, "json");
-        assert_eq!(active.etag.as_deref(), Some("v1"));
-        assert!(meta.get_file_url(&"a".repeat(64)).unwrap().is_some());
-    }
-
-    #[tokio::test]
-    async fn test_sync_html_and_json_agree_on_shared_fields() {
-        let sha = "a".repeat(64);
-        let json = format!(
-            r#"{{"meta":{{"api-version":"1.1"}},"name":"flask","files":[
-                {{"filename":"flask-1.0.tar.gz","url":"https://files.example/flask-1.0.tar.gz","hashes":{{"sha256":"{sha}"}},"requires-python":">=3.8","size":10}}]}}"#,
-        );
-        let html = format!(
-            r#"<!DOCTYPE html><html><body><a href="https://files.example/flask-1.0.tar.gz#sha256={sha}" data-requires-python="&gt;=3.8" data-size="10">flask-1.0.tar.gz</a></body></html>"#,
-        );
-
-        let mut listed = Vec::new();
-        for (format, body, media) in [
-            ("json", json, JSON),
-            ("html", html, "application/vnd.pypi.simple.v1+html"),
-        ] {
-            let server = MockServer::start().await;
-            Mock::given(method("GET"))
-                .and(path("/simple/flask/"))
-                .respond_with(ResponseTemplate::new(200).set_body_raw(body, media))
-                .mount(&server)
-                .await;
-            let client = client_for(&server);
-            let (_dir, meta) = store();
-            sync_project_files(
-                &client,
-                &Inflight::default(),
-                &meta,
-                format,
-                &Policy::default(),
-                "flask",
-                client.base_url(),
-            )
-            .await
-            .unwrap();
-            listed.push(list_project_files(&meta, format, "flask").unwrap());
-        }
-
-        let (json_files, html_files) = (&listed[0], &listed[1]);
-        assert_eq!(json_files.len(), 1);
-        assert_eq!(json_files[0].filename, html_files[0].filename);
-        assert_eq!(json_files[0].url, html_files[0].url);
-        assert_eq!(json_files[0].hashes, html_files[0].hashes);
-        assert_eq!(json_files[0].size, html_files[0].size);
-        assert_eq!(json_files[0].requires_python, html_files[0].requires_python);
-    }
-
-    #[tokio::test]
-    async fn test_sync_304_reuses_the_active_generation() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/simple/flask/"))
-            .and(header("if-none-match", "v1"))
-            .respond_with(ResponseTemplate::new(304).insert_header("etag", "v2"))
-            .mount(&server)
-            .await;
-        let client = client_for(&server);
-        let (_dir, meta) = store();
-        let id = seed_active(
-            &meta,
-            "pypi",
-            "flask",
-            "v1",
-            &[file("flask-1.0.tar.gz", &"a".repeat(64))],
-        );
-
-        let outcome = sync_project_files(
-            &client,
-            &Inflight::default(),
-            &meta,
-            "pypi",
-            &Policy::default(),
-            "flask",
-            client.base_url(),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(outcome, ProjectSyncOutcome::NotModified { files: 1 });
-        let active = active_project_generation(&meta, "pypi", "flask").unwrap().unwrap();
-        assert_eq!(
-            active.generation, id,
-            "a 304 keeps the same generation, so artifact placement is untouched"
-        );
-        assert_eq!(active.etag.as_deref(), Some("v2"));
-        assert_eq!(list_project_files(&meta, "pypi", "flask").unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_sync_304_without_an_active_generation_errors() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/simple/flask/"))
-            .respond_with(ResponseTemplate::new(304))
-            .mount(&server)
-            .await;
-        let client = client_for(&server);
-        let (_dir, meta) = store();
-
-        let error = sync_project_files(
-            &client,
-            &Inflight::default(),
-            &meta,
-            "pypi",
-            &Policy::default(),
-            "flask",
-            client.base_url(),
-        )
-        .await
-        .unwrap_err();
-
-        assert!(matches!(error, ProjectSyncError::Store(_)));
-    }
-
-    #[tokio::test]
-    async fn test_sync_404_leaves_the_prior_generation_serviceable() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/simple/flask/"))
-            .respond_with(ResponseTemplate::new(404))
-            .mount(&server)
-            .await;
-        let client = client_for(&server);
-        let (_dir, meta) = store();
-        seed_active(
-            &meta,
-            "pypi",
-            "flask",
-            "v1",
-            &[file("flask-1.0.tar.gz", &"a".repeat(64))],
-        );
-
-        let outcome = sync_project_files(
-            &client,
-            &Inflight::default(),
-            &meta,
-            "pypi",
-            &Policy::default(),
-            "flask",
-            client.base_url(),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(outcome, ProjectSyncOutcome::Missing);
-        assert_eq!(list_project_files(&meta, "pypi", "flask").unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_sync_parse_failure_preserves_the_active_generation() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/simple/flask/"))
-            .respond_with(ResponseTemplate::new(200).set_body_raw("not json", JSON))
-            .mount(&server)
-            .await;
-        let client = client_for(&server);
-        let (_dir, meta) = store();
-        let id = seed_active(
-            &meta,
-            "pypi",
-            "flask",
-            "v1",
-            &[file("flask-1.0.tar.gz", &"a".repeat(64))],
-        );
-
-        let error = sync_project_files(
-            &client,
-            &Inflight::default(),
-            &meta,
-            "pypi",
-            &Policy::default(),
-            "flask",
-            client.base_url(),
-        )
-        .await
-        .unwrap_err();
-
-        assert!(matches!(error, ProjectSyncError::Simple(_)));
-        let state = project_meta_state(&meta, "pypi", "flask").unwrap();
-        assert_eq!(state.active.unwrap().generation, id);
-        assert!(state.staging.is_none());
-        assert_eq!(list_project_files(&meta, "pypi", "flask").unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_sync_replaces_the_active_generation_and_sweeps_the_retired_one() {
-        let server = MockServer::start().await;
-        let body = format!(
-            r#"{{"meta":{{"api-version":"1.1"}},"name":"flask","files":[
-                {{"filename":"flask-2.0.tar.gz","url":"flask-2.0.tar.gz","hashes":{{"sha256":"{b}"}}}},
-                {{"filename":"flask-2.0-py3-none-any.whl","url":"flask-2.0-py3-none-any.whl","hashes":{{"sha256":"{c}"}}}}]}}"#,
-            b = "b".repeat(64),
-            c = "c".repeat(64),
-        );
-        Mock::given(method("GET"))
-            .and(path("/simple/flask/"))
-            .respond_with(ResponseTemplate::new(200).set_body_raw(body, JSON))
-            .mount(&server)
-            .await;
-        let client = client_for(&server);
-        let (_dir, meta) = store();
-        seed_active(
-            &meta,
-            "pypi",
-            "flask",
-            "v1",
-            &[file("flask-1.0.tar.gz", &"a".repeat(64))],
-        );
-
-        let outcome = sync_project_files(
-            &client,
-            &Inflight::default(),
-            &meta,
-            "pypi",
-            &Policy::default(),
-            "flask",
-            client.base_url(),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(outcome, ProjectSyncOutcome::Published { files: 2 });
-        let files = list_project_files(&meta, "pypi", "flask").unwrap();
-        assert_eq!(files.len(), 2, "only the new generation's files remain servable");
-        let state = project_meta_state(&meta, "pypi", "flask").unwrap();
-        assert!(
-            state.retired.is_none(),
-            "the displaced generation is swept after publication"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_sync_skips_a_file_without_a_hash() {
-        let server = MockServer::start().await;
-        let body = format!(
-            r#"{{"meta":{{"api-version":"1.1"}},"name":"flask","files":[
-                {{"filename":"flask-1.0.tar.gz","url":"flask-1.0.tar.gz","hashes":{{"sha256":"{a}"}}}},
-                {{"filename":"unhashed.tar.gz","url":"unhashed.tar.gz","hashes":{{}}}}]}}"#,
-            a = "a".repeat(64),
-        );
-        Mock::given(method("GET"))
-            .and(path("/simple/flask/"))
-            .respond_with(ResponseTemplate::new(200).set_body_raw(body, JSON))
-            .mount(&server)
-            .await;
-        let client = client_for(&server);
-        let (_dir, meta) = store();
-
-        let outcome = sync_project_files(
-            &client,
-            &Inflight::default(),
-            &meta,
-            "pypi",
-            &Policy::default(),
-            "flask",
-            client.base_url(),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(outcome, ProjectSyncOutcome::Published { files: 1 });
-    }
-
-    #[tokio::test]
-    async fn test_sync_registers_upstream_provenance_with_the_cached_index() {
-        let server = MockServer::start().await;
-        let digest = "a".repeat(64);
-        let filename = "flask-1.0.tar.gz";
-        let provenance = format!("{}/integrity/{filename}.provenance", server.uri());
-        let body = format!(
-            r#"{{"meta":{{"api-version":"1.4"}},"name":"flask","files":[{{"filename":"{filename}","url":"{filename}","hashes":{{"sha256":"{digest}"}},"provenance":"{provenance}"}}]}}"#,
-        );
-        Mock::given(method("GET"))
-            .and(path("/simple/flask/"))
-            .respond_with(ResponseTemplate::new(200).set_body_raw(body, JSON))
-            .mount(&server)
-            .await;
-        let client = client_for(&server);
-        let (_dir, meta) = store();
-
-        sync_project_files(
-            &client,
-            &Inflight::default(),
-            &meta,
-            "pypi",
-            &Policy::default(),
-            "flask",
-            client.base_url(),
-        )
-        .await
-        .unwrap();
-
-        let record = meta
-            .get_upstream_attestation("pypi", "flask", &digest, filename)
-            .unwrap()
-            .unwrap();
-        assert_eq!(record.url, provenance);
-        assert_eq!(record.source, "pypi");
-        assert_eq!(record.upstream, None);
-    }
-
-    #[tokio::test]
-    async fn test_sync_returns_the_upstream_status() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/simple/flask/"))
-            .respond_with(ResponseTemplate::new(500))
-            .mount(&server)
-            .await;
-        let client = client_for(&server);
-        let (_dir, meta) = store();
-
-        let error = sync_project_files(
-            &client,
-            &Inflight::default(),
-            &meta,
-            "pypi",
-            &Policy::default(),
-            "flask",
-            client.base_url(),
-        )
-        .await
-        .unwrap_err();
-
-        assert!(matches!(error, ProjectSyncError::Status(500)));
-    }
-
-    #[tokio::test]
-    async fn test_sync_coalesces_concurrent_fetches() {
-        let server = MockServer::start().await;
-        let body = format!(
-            r#"{{"meta":{{"api-version":"1.1"}},"name":"flask","files":[
-                {{"filename":"flask-1.0.tar.gz","url":"flask-1.0.tar.gz","hashes":{{"sha256":"{a}"}}}}]}}"#,
-            a = "a".repeat(64),
-        );
-        Mock::given(method("GET"))
-            .and(path("/simple/flask/"))
-            .respond_with(ResponseTemplate::new(200).set_body_raw(body, JSON))
-            .mount(&server)
-            .await;
-        let client = client_for(&server);
-        let (_dir, meta) = store();
-        let inflight = Inflight::default();
-        let policy = Policy::default();
-
-        let (first, second) = tokio::join!(
-            sync_project_files(&client, &inflight, &meta, "pypi", &policy, "flask", client.base_url()),
-            sync_project_files(&client, &inflight, &meta, "pypi", &policy, "flask", client.base_url()),
-        );
-
-        assert_eq!(first.unwrap(), ProjectSyncOutcome::Published { files: 1 });
-        assert_eq!(second.unwrap(), ProjectSyncOutcome::NotModified { files: 1 });
-    }
-
-    #[tokio::test]
-    async fn test_sync_scopes_same_key_coalescing_to_one_store() {
-        let first_server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/simple/flask/"))
-            .and(header("if-none-match", "v1"))
-            .respond_with(ResponseTemplate::new(304).set_delay(std::time::Duration::from_millis(100)))
-            .mount(&first_server)
-            .await;
-        let second_server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/simple/flask/"))
-            .and(header("if-none-match", "v1"))
-            .respond_with(ResponseTemplate::new(404))
-            .mount(&second_server)
-            .await;
-        let first_client = client_for(&first_server);
-        let second_client = client_for(&second_server);
-        let (_first_dir, first_meta) = store();
-        let (_second_dir, second_meta) = store();
-        let previous = [file("flask-1.0.tar.gz", &"a".repeat(64))];
-        seed_active(&first_meta, "pypi", "flask", "v1", &previous);
-        seed_active(&second_meta, "pypi", "flask", "v1", &previous);
-        let first_inflight = Inflight::default();
-        let second_inflight = Inflight::default();
-        let policy = Policy::default();
-
-        let (first, second) = tokio::join!(
-            sync_project_files(
-                &first_client,
-                &first_inflight,
-                &first_meta,
-                "pypi",
-                &policy,
-                "flask",
-                first_client.base_url(),
-            ),
-            sync_project_files(
-                &second_client,
-                &second_inflight,
-                &second_meta,
-                "pypi",
-                &policy,
-                "flask",
-                second_client.base_url(),
-            ),
-        );
-
-        assert_eq!(first.unwrap(), ProjectSyncOutcome::NotModified { files: 1 });
-        assert_eq!(second.unwrap(), ProjectSyncOutcome::Missing);
-    }
-
-    #[tokio::test]
-    async fn test_sync_rejects_a_declared_oversize_body() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/simple/flask/"))
-            .respond_with(ResponseTemplate::new(200).set_body_raw("{}", JSON))
-            .mount(&server)
-            .await;
-        let client = client_for(&server);
-        let (_dir, meta) = store();
-        let mut head = client.head_project("flask", None).await.unwrap();
-        head.content_length = Some(MAX_PROJECT_BYTES + 1);
-
-        let error = publish_project_response(&meta, "pypi", &Policy::default(), "flask", client.base_url(), head, 1)
-            .await
-            .unwrap_err();
-
-        assert!(matches!(error, ProjectSyncError::TooLarge));
-        assert!(active_project_generation(&meta, "pypi", "flask").unwrap().is_none());
-    }
-
-    #[tokio::test]
-    async fn test_sync_reports_an_unreachable_upstream() {
-        let client = UpstreamClient::new("http://127.0.0.1:1/simple/").unwrap();
-        let (_dir, meta) = store();
-
-        let error = sync_project_files(
-            &client,
-            &Inflight::default(),
-            &meta,
-            "pypi",
-            &Policy::default(),
-            "flask",
-            client.base_url(),
-        )
-        .await
-        .unwrap_err();
-
-        assert!(matches!(error, ProjectSyncError::Upstream(_)));
-    }
-
-    #[test]
-    fn test_write_project_chunk_caps_unknown_length() {
-        let mut output = Vec::new();
-        let mut bytes = 0;
-        write_project_chunk(&mut output, b"1234", &mut bytes, 7).unwrap();
-        let error = write_project_chunk(&mut output, b"5678", &mut bytes, 7).unwrap_err();
-        assert!(matches!(error, ProjectSyncError::TooLarge));
-        assert_eq!(output, b"1234");
-    }
-
-    #[test]
-    fn test_write_project_chunk_propagates_a_writer_error() {
-        struct FailWriter;
-        impl std::io::Write for FailWriter {
-            fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
-                Err(std::io::Error::other("disk full"))
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Err(std::io::Error::other("disk full"))
-            }
-        }
-        let mut writer = FailWriter;
-        let mut bytes = 0;
-        let error = write_project_chunk(&mut writer, b"data", &mut bytes, 100).unwrap_err();
-        assert!(matches!(error, ProjectSyncError::Io(_)));
-        assert!(
-            std::io::Write::flush(&mut writer).is_err(),
-            "the doubled writer fails every operation"
-        );
-    }
-
-    #[test]
-    fn test_project_sync_error_messages_name_the_limit() {
-        assert_eq!(
-            ProjectSyncError::Status(500).to_string(),
-            "upstream project detail returned 500"
-        );
-        assert!(ProjectSyncError::TooLarge.to_string().contains("byte limit"));
-        assert!(ProjectSyncError::TooManyFiles.to_string().contains("file limit"));
-        assert_eq!(ProjectSyncError::Io(std::io::Error::other("boom")).to_string(), "boom");
-    }
-
-    #[test]
-    fn test_parse_project_rejects_too_many_files() {
-        let (_dir, meta) = store();
-        let (id, _) = begin_project_generation(&meta, "pypi", "flask").unwrap();
-        let html = format!(
-            r#"<a href="https://files.example/a.tar.gz#sha256={a}">a.tar.gz</a><a href="https://files.example/b.tar.gz#sha256={b}">b.tar.gz</a>"#,
-            a = "a".repeat(64),
-            b = "b".repeat(64),
-        );
-
-        let error = parse_project(
-            &mut std::io::Cursor::new(html),
-            "html",
-            &url::Url::parse("https://files.example/simple/flask/").unwrap(),
-            &meta,
-            "pypi",
-            &Policy::default(),
-            "flask",
-            id,
-            None,
-            1,
-        )
-        .unwrap_err();
-
-        assert!(matches!(error, ProjectSyncError::TooManyFiles));
-    }
-
-    #[test]
-    fn test_parse_project_flushes_at_the_batch_limit() {
-        let (_dir, meta) = store();
-        let (id, _) = begin_project_generation(&meta, "pypi", "flask").unwrap();
-        let files = (0..PROJECT_FILE_BATCH)
-            .map(|index| format!(r#"{{"filename":"pkg-{index}.tar.gz","url":"pkg-{index}.tar.gz","hashes":{{"sha256":"{index:064}"}}}}"#))
-            .collect::<Vec<_>>()
-            .join(",");
-        let body = format!(r#"{{"meta":{{"api-version":"1.1"}},"files":[{files}]}}"#);
-
-        let (admitted, _) = parse_project(
-            &mut std::io::Cursor::new(body),
-            "json",
-            &url::Url::parse("https://files.example/simple/flask/").unwrap(),
-            &meta,
-            "pypi",
-            &Policy::default(),
-            "flask",
-            id,
-            None,
-            super::MAX_PROJECT_FILES,
-        )
-        .unwrap();
-
-        assert_eq!(admitted, PROJECT_FILE_BATCH as u64);
-    }
-}
+#[path = "../../tests/unit/cache/fetch/sync_tests.rs"]
+mod sync_tests;

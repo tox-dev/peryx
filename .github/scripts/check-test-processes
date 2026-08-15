@@ -1,0 +1,215 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import re
+import sys
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
+from pathlib import Path
+from runpy import run_path
+from typing import Final, cast
+
+TestDocuments = Callable[[Path], Iterable[tuple[Path, str]]]
+TEST_DOCUMENTS = cast(
+    "TestDocuments",
+    run_path(str(Path(__file__).with_name("check-test-timing")))["test_documents"],
+)
+RUST_DISCARDED_TASK: Final = re.compile(
+    r"(?m)^[ \t]*(?:(?P<discard>let\s+_\s*=\s*))?"
+    r"(?P<spawn>(?:(?:tokio|actix_rt)::(?:task::)?spawn|(?:std::)?thread::spawn))\s*\("
+)
+RUST_DISCARDED_COMMAND: Final = re.compile(
+    r"(?ms)^[ \t]*(?:let\s+_\s*=\s*)?"
+    r"(?P<command>(?:(?:std|tokio)::process::)?Command::new\s*\([^;]+?\.spawn\s*\([^;]*?;)"
+)
+JAVASCRIPT_CHILD: Final = re.compile(
+    r"(?m)^[ \t]*(?:(?:const|let)\s+(?P<name>[A-Za-z_$][\w$]*)\s*=\s*)?"
+    r"(?:(?:child_process|Bun)\.)?(?:spawn|fork)\s*\("
+)
+JAVASCRIPT_SERVER: Final = re.compile(
+    r"(?m)^[ \t]*(?:const|let)\s+(?P<name>[A-Za-z_$][\w$]*)\s*=\s*"
+    r"(?:https?\.)?createServer\s*\("
+)
+
+
+@dataclass(frozen=True)
+class Finding:
+    path: Path
+    offset: int
+    message: str
+
+
+def main() -> int:
+    check_rust_task_detection()
+    root = Path(sys.argv[1] if len(sys.argv) == 2 else ".").resolve()
+    violations = list(findings(root))
+    for violation in violations:
+        source = violation.path.read_text(encoding="utf-8")
+        line = source.count("\n", 0, violation.offset) + 1
+        display_path = violation.path.relative_to(root) if root.is_dir() else Path(root.name)
+        sys.stderr.write(f"{display_path}:{line}: {violation.message}\n")
+    return int(bool(violations))
+
+
+def check_rust_task_detection() -> None:
+    cases = (
+        ("tokio::spawn(async {});", True),
+        ("let _ = std::thread::spawn(|| {});", True),
+        (
+            """
+fn capture_stream() -> JoinHandle<()> {
+    std::thread::spawn(|| {
+        consume(r#")"#);
+    })
+}
+""",
+            False,
+        ),
+        (
+            """
+let handles = values.map(|value| {
+    tokio::spawn(async move { consume(value).await })
+}).collect::<Vec<_>>();
+""",
+            False,
+        ),
+        (
+            """
+let handle = {
+    actix_rt::spawn(async { serve().await })
+};
+handles.push(handle);
+""",
+            False,
+        ),
+    )
+    for source, expected in cases:
+        if bool(tuple(rust_findings(Path("fixture.rs"), source))) != expected:
+            raise RuntimeError("Rust task ownership check failed its regression case")
+
+
+def findings(root: Path) -> Iterable[Finding]:
+    for path, source in TEST_DOCUMENTS(root):
+        if path.suffix == ".rs":
+            yield from rust_findings(path, source)
+        elif path.suffix in {".cjs", ".js", ".jsx", ".mjs", ".ts", ".tsx"}:
+            yield from javascript_findings(path, source)
+
+
+def rust_findings(path: Path, source: str) -> Iterable[Finding]:
+    for match in RUST_DISCARDED_TASK.finditer(source):
+        if match.group("discard") is not None or rust_call_is_statement(source, match.end() - 1):
+            yield Finding(path, match.start("spawn"), "discarded task or thread handle; retain and join it")
+    for match in RUST_DISCARDED_COMMAND.finditer(source):
+        yield Finding(path, match.start("command"), "discarded child process; retain, stop, and reap it")
+
+
+def rust_call_is_statement(source: str, opening: int) -> bool:
+    if (closing := rust_matching_paren(source, opening)) is None:
+        return False
+    return (token := rust_next_token(source, closing + 1)) is not None and source[token] == ";"
+
+
+def rust_matching_paren(source: str, opening: int) -> int | None:
+    depth = 1
+    cursor = opening + 1
+    while cursor < len(source):
+        if source.startswith("//", cursor):
+            cursor = source.find("\n", cursor + 2)
+            if cursor == -1:
+                return None
+        elif source.startswith("/*", cursor):
+            cursor = rust_block_comment_end(source, cursor)
+        elif (raw_string := re.match(r'(?:b|c)?r(?P<hashes>#{0,255})"', source[cursor:])) is not None:
+            delimiter = '"' + raw_string.group("hashes")
+            cursor = source.find(delimiter, cursor + raw_string.end())
+            if cursor == -1:
+                return None
+            cursor += len(delimiter)
+        elif source[cursor] == '"':
+            cursor = rust_quoted_end(source, cursor, '"')
+        elif source[cursor] == "'" and re.match(r"'(?:\\(?:.|u\{[0-9A-Fa-f_]+\})|[^\\'\n])'", source[cursor:]):
+            cursor = rust_quoted_end(source, cursor, "'")
+        elif source[cursor] == "(":
+            depth += 1
+            cursor += 1
+        elif source[cursor] == ")":
+            depth -= 1
+            if depth == 0:
+                return cursor
+            cursor += 1
+        else:
+            cursor += 1
+    return None
+
+
+def rust_block_comment_end(source: str, opening: int) -> int:
+    depth = 1
+    cursor = opening + 2
+    while cursor < len(source) and depth:
+        if source.startswith("/*", cursor):
+            depth += 1
+            cursor += 2
+        elif source.startswith("*/", cursor):
+            depth -= 1
+            cursor += 2
+        else:
+            cursor += 1
+    return cursor
+
+
+def rust_quoted_end(source: str, opening: int, quote: str) -> int:
+    cursor = opening + 1
+    while cursor < len(source):
+        if source[cursor] == "\\":
+            cursor += 2
+        elif source[cursor] == quote:
+            return cursor + 1
+        else:
+            cursor += 1
+    return cursor
+
+
+def rust_next_token(source: str, start: int) -> int | None:
+    cursor = start
+    while cursor < len(source):
+        if source[cursor].isspace():
+            cursor += 1
+        elif source.startswith("//", cursor):
+            cursor = source.find("\n", cursor + 2)
+            if cursor == -1:
+                return None
+        elif source.startswith("/*", cursor):
+            cursor = rust_block_comment_end(source, cursor)
+        else:
+            return cursor
+    return None
+
+
+def javascript_findings(path: Path, source: str) -> Iterable[Finding]:
+    for match in JAVASCRIPT_CHILD.finditer(source):
+        if (name := match.group("name")) is None:
+            yield Finding(path, match.start(), "discarded child process; retain, stop, and reap it")
+        elif not javascript_child_owned(source, name, match.end()):
+            yield Finding(path, match.start(), f"child process {name!r} has no exit or cleanup ownership")
+    for match in JAVASCRIPT_SERVER.finditer(source):
+        name = match.group("name")
+        if re.search(rf"\b{re.escape(name)}\.(?:close|closeAllConnections)\s*\(", source[match.end() :]) is None:
+            yield Finding(path, match.start(), f"server {name!r} has no close ownership")
+
+
+def javascript_child_owned(source: str, name: str, start: int) -> bool:
+    remainder = source[start:]
+    escaped = re.escape(name)
+    return any(
+        re.search(pattern, remainder) is not None
+        for pattern in (
+            rf"\b{escaped}\.(?:kill|dispose|Symbol\.dispose)\s*\(",
+            rf"\b{escaped}\.(?:once|on)\s*\(\s*['\"](?:close|exit)['\"]",
+            rf"\bonce\s*\(\s*{escaped}\s*,\s*['\"](?:close|exit)['\"]",
+        )
+    )
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

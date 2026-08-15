@@ -1,10 +1,3 @@
-//! Validation, the cost gate, and the resolved plan.
-//!
-//! Planning turns a bound [`Ast`] and a [`DomainSchema`] into a [`Plan`]: it type-checks every field
-//! against the catalog, refuses aggregates that are not declared, defaults ordering and paging, and
-//! runs the static cost gate. The gate reads the source's own indexability rather than guessing, so
-//! an unbounded domain with no cheap leading filter is refused before it runs, not after.
-
 use crate::ast::{Aggregate, AggregateFunc, Ast, CompareOp, Literal, OrderKey, Predicate, Selection};
 use crate::catalog::{Column, DomainSchema, FieldClass};
 use crate::error::PqlError;
@@ -12,12 +5,9 @@ use crate::eval::literal_value;
 use crate::source::FetchFilter;
 use crate::value::{Value, ValueType};
 
-/// The default page size for an interactive read.
 pub const DEFAULT_LIMIT: u32 = 25;
-/// The largest page an interactive read may request.
 pub const MAX_LIMIT: u32 = 100;
 
-/// One column of the result, with the authority needed to read it and its type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputColumn {
     pub name: String,
@@ -25,7 +15,6 @@ pub struct OutputColumn {
     pub value_type: ValueType,
 }
 
-/// A validated, cost-checked plan ready to execute.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plan {
     pub order_by: Vec<OrderKey>,
@@ -33,8 +22,6 @@ pub struct Plan {
     pub outputs: Vec<OutputColumn>,
 }
 
-/// Validate and cost a single-domain query against its schema.
-///
 /// # Errors
 /// Returns [`PqlError::Validation`] for an unknown or mistyped field or a misused aggregate, and
 /// [`PqlError::CostExceeded`] when an unbounded domain is queried without a cheap leading filter.
@@ -44,14 +31,6 @@ pub fn plan(ast: &Ast, schema: &DomainSchema) -> Result<Plan, PqlError> {
     Ok(plan)
 }
 
-/// Cost-bound a two-domain join before either side is read.
-///
-/// The probe (build) side is materialized whole to index it, so it must be a bounded domain; the
-/// outer side is streamed, so it must be affordable on its own — bounded, or narrowed by a cheap
-/// leading filter, which is the single-domain gate applied over the outer schema. The join-key index
-/// the validator checks does not bound this cost, because the executor materializes the whole probe
-/// domain rather than doing a per-key lookup.
-///
 /// # Errors
 /// Returns [`PqlError::UnboundedJoin`] when the probe domain is unbounded, and
 /// [`PqlError::CostExceeded`] when the outer domain is unbounded without a cheap leading filter.
@@ -65,11 +44,6 @@ pub fn gate_join(ast: &Ast, outer: &DomainSchema, probe: &DomainSchema) -> Resul
     cost_gate(ast, outer)
 }
 
-/// Validate a query body against a schema without applying the single-domain cost gate.
-///
-/// A join validates its body against the two domains' merged schema and bounds its own cost through
-/// the join admission check instead, so it uses this rather than [`plan`].
-///
 /// # Errors
 /// Returns [`PqlError::Validation`] for an unknown or mistyped field or a misused aggregate.
 pub fn validate(ast: &Ast, schema: &DomainSchema) -> Result<Plan, PqlError> {
@@ -268,15 +242,6 @@ fn cost_gate(ast: &Ast, schema: &DomainSchema) -> Result<(), PqlError> {
     }
 }
 
-/// The cost gate's leading filter: the first equality or membership on a pushdown column.
-///
-/// The column must be one the source pushes its fetch down on ([`DomainSchema::pushdown`]), and the
-/// values are lowered to concrete literals. This is both what admits an unbounded domain (a `Some`
-/// result means the query is affordable) and what the executor hands to
-/// [`crate::source::DataSource::fetch`] so the source narrows through its index rather than scanning the
-/// whole domain (constraint 6). Restricting it to the pushdown set keeps the two aligned: an unbounded
-/// domain is never admitted on a cheap-to-group column the fetch would not actually narrow on. A leading
-/// `and` term satisfies it; an `or`, `not`, or an unbound parameter does not.
 #[must_use]
 pub fn leading_filter(predicate: &Predicate, schema: &DomainSchema) -> Option<FetchFilter> {
     match predicate {

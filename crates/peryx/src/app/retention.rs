@@ -1,5 +1,3 @@
-//! Retention-plan preview and export over the local store.
-//!
 //! Both commands resolve the target index's ecosystem driver and drive the shared
 //! [query](peryx_driver::retention), so the CLI and the HTTP API produce the same ordered candidates.
 //! A dry-run prints a page of tab-separated candidates; an export streams the whole plan as
@@ -10,40 +8,52 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Context as _;
+use peryx_driver::DriverSet;
 use peryx_driver::retention::{RetentionQuery, decode_cursor, plan, summary};
-use peryx_driver::serving::EcosystemDriver;
+use peryx_driver::serving::RetentionDriver;
+use peryx_plugin_registry::PluginRegistry;
 use peryx_policy::{RetentionConfig, RetentionDecision, RetentionPolicy, RetentionSummary};
 
 use super::CacheStores;
 use crate::cli::{RetentionCommand, RetentionDryRunArgs, RetentionExportArgs};
 use crate::config::Config;
-use crate::server;
 
-/// Run a retention command against the configured store.
-///
 /// # Errors
 /// Returns an error if the store cannot be opened, the index is unknown or has no retention-planning
 /// driver, the rules file cannot be read, the cursor is stale or malformed, or output fails.
 pub fn retention(config: &Config, command: &RetentionCommand, out: &mut dyn Write) -> anyhow::Result<()> {
-    let stores = CacheStores::open(config)?;
+    retention_with_plugins(config, &crate::compiled_plugins(), command, out)
+}
+
+/// # Errors
+/// Returns an error when configuration, storage, retention planning, or output fails.
+pub fn retention_with_plugins(
+    config: &Config,
+    plugins: &PluginRegistry,
+    command: &RetentionCommand,
+    out: &mut dyn Write,
+) -> anyhow::Result<()> {
+    let plugins = crate::server::activate_plugins(config, plugins)?;
+    let stores = CacheStores::open(config, &plugins, false)?;
     match command {
-        RetentionCommand::DryRun(args) => dry_run(config, &stores, args, out),
-        RetentionCommand::Export(args) => export(config, &stores, args, out),
+        RetentionCommand::DryRun(args) => dry_run(config, plugins.drivers(), &stores, args, out),
+        RetentionCommand::Export(args) => export(config, plugins.drivers(), &stores, args, out),
     }
 }
 
 fn dry_run(
     config: &Config,
+    drivers: &DriverSet,
     stores: &CacheStores,
     args: &RetentionDryRunArgs,
     out: &mut dyn Write,
 ) -> anyhow::Result<()> {
-    let driver = resolve_driver(config, &args.index)?;
+    let driver = resolve_driver(config, drivers, &args.index)?;
     let policy = load_rules(args.rules.as_deref())?;
     let (after, expect) = resume(args.cursor.as_deref())?;
     writeln!(
         out,
-        "action\tproject\tversion\tartifact\tdigest\tclass\tvisibility\tbytes\trule"
+        "action\tresource\tgroup\tartifact\tdigest\tclass\tvisibility\tbytes\trule"
     )?;
     let query = RetentionQuery {
         index: &args.index,
@@ -66,14 +76,15 @@ fn dry_run(
 
 fn export(
     config: &Config,
+    drivers: &DriverSet,
     stores: &CacheStores,
     args: &RetentionExportArgs,
     out: &mut dyn Write,
 ) -> anyhow::Result<()> {
-    let driver = resolve_driver(config, &args.index)?;
+    let driver = resolve_driver(config, drivers, &args.index)?;
     let policy = load_rules(args.rules.as_deref())?;
     let (after, expect) = resume(args.cursor.as_deref())?;
-    let summary = summary(&stores.meta, &args.index, &policy).map_err(|err| anyhow::anyhow!("{err}"))?;
+    let summary = summary(&stores.meta, &args.index, &policy).map_err(anyhow::Error::msg)?;
     // Refuse a resume the repository has outgrown before writing a header the reader would trust.
     if expect.is_some_and(|expected| expected != summary) {
         anyhow::bail!("the plan cursor is stale: the repository changed since it was issued");
@@ -98,17 +109,18 @@ fn export(
     Ok(())
 }
 
-fn resolve_driver(config: &Config, index: &str) -> anyhow::Result<Arc<dyn EcosystemDriver>> {
+fn resolve_driver(config: &Config, drivers: &DriverSet, index: &str) -> anyhow::Result<Arc<dyn RetentionDriver>> {
     let ecosystem = config
         .indexes
         .iter()
         .find(|configured| configured.name == index)
         .context(format!("unknown index {index:?}"))?
-        .ecosystem;
-    server::drivers()
-        .get(ecosystem)
-        .context(format!("no driver for the {ecosystem} ecosystem"))
+        .ecosystem
+        .clone();
+    drivers
+        .get_retention(&ecosystem)
         .cloned()
+        .context("the ecosystem does not support retention planning")
 }
 
 fn load_rules(path: Option<&Path>) -> anyhow::Result<RetentionPolicy> {
@@ -137,8 +149,8 @@ fn write_row(out: &mut dyn Write, decision: &RetentionDecision) -> std::io::Resu
         out,
         "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
         name(&decision.outcome),
-        decision.project,
-        decision.version.as_deref().unwrap_or(""),
+        decision.resource,
+        decision.group.as_deref().unwrap_or(""),
         decision.artifact,
         decision.digest,
         name(&decision.class),
@@ -148,8 +160,6 @@ fn write_row(out: &mut dyn Write, decision: &RetentionDecision) -> std::io::Resu
     )
 }
 
-/// The `snake_case` name of a unit enum, for a tab-separated cell. The value serializes to a JSON
-/// string whose quotes this strips.
 fn name(value: &impl serde::Serialize) -> String {
     serde_json::to_string(value)
         .expect("a retention enum always serializes")
@@ -179,3 +189,7 @@ fn now() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX))
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/tests/app/retention_tests.rs"]
+mod tests;

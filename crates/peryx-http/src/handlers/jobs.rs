@@ -1,10 +1,5 @@
-//! Cancel a running node-local job.
-//!
-//! The durable job-run history the `job` CLI lists lives in every node's store, but a run's cooperative
-//! cancellation signal lives only in the process running it, so no CLI in a separate process can reach
-//! it. This endpoint reaches the live node's attempt control, letting an administrator stop a stuck
-//! node-local job without restarting the node. A denial answers the same `404` a missing run does, so
-//! it cannot confirm a run id to a probe.
+//! Cancellation signals are process-local, so remote callers use the serving node. Denials return the
+//! same `404` as missing runs.
 
 use std::sync::Arc;
 
@@ -16,17 +11,15 @@ use peryx_driver::jobs::CancelJobRun;
 use peryx_driver::state::AppState;
 use peryx_identity::{Resource, Scope, parse_basic};
 
-/// `POST /+jobs/{id}/cancel`: signal a running node-local job run to stop.
+/// Requests cooperative cancellation for a local run.
 ///
-/// Cancellation is cooperative: the run observes the signal and unwinds within its grace period, so a
-/// delivered signal answers `202 Accepted` rather than a completed stop. A run this node is not
-/// currently running answers `409 Conflict`, and an unknown run — or a caller without the
-/// administration-write scope — a `404`.
+/// A delivered signal returns `202 Accepted` while the run unwinds. A non-local or finished run returns
+/// `409 Conflict`. Unknown and unauthorized runs return `404 Not Found`.
 pub async fn cancel_job(State(state): State<Arc<AppState>>, headers: HeaderMap, Path(id): Path<String>) -> Response {
     if let Err(rejection) = authorize_administrator(&state, &headers).await {
         return rejection.response();
     }
-    match state.job_attempts.cancel(&id) {
+    match state.serving.job_attempts.cancel(&id) {
         Ok(CancelJobRun::Requested) => StatusCode::ACCEPTED.into_response(),
         Ok(CancelJobRun::Finished) => conflict("job run already finished"),
         Ok(CancelJobRun::Unavailable) => conflict("job run is not running on this node"),
@@ -44,12 +37,14 @@ async fn authorize_administrator(state: &AppState, headers: &HeaderMap) -> Resul
         .and_then(parse_basic)
         .ok_or(Rejection::Unauthorized)?;
     let actor = state
+        .serving
         .users
         .authenticate(&credentials.user, &credentials.password)
         .await
         .map_err(|_| Rejection::Unavailable)?
         .ok_or(Rejection::Unauthorized)?;
     match state
+        .serving
         .authorization
         .authorize_scoped(&actor, Scope::AdministrationWrite, &Resource::Operator)
         .decision()

@@ -52,8 +52,6 @@ impl std::fmt::Display for ChangelogRequestError {
 
 impl std::error::Error for ChangelogRequestError {}
 
-/// Parse the two Warehouse XML-RPC methods used for changelog mirroring.
-///
 /// # Errors
 /// Returns [`ChangelogRequestError`] for invalid XML, an unsupported method, or invalid parameters.
 pub fn parse_changelog_request(body: &[u8]) -> Result<ChangelogRequest, ChangelogRequestError> {
@@ -122,7 +120,6 @@ pub fn parse_changelog_request(body: &[u8]) -> Result<ChangelogRequest, Changelo
     }
 }
 
-/// Render a `changelog_last_serial` result.
 #[must_use]
 pub fn render_last_serial_response(serial: u64) -> String {
     format!(
@@ -131,7 +128,6 @@ pub fn render_last_serial_response(serial: u64) -> String {
     )
 }
 
-/// Render `changelog_since_serial` rows in Warehouse tuple order.
 #[must_use]
 pub fn render_changelog_response(entries: &[ChangelogEntry]) -> String {
     let mut response = String::from("<?xml version=\"1.0\"?><methodResponse><params><param><value><array><data>");
@@ -149,7 +145,6 @@ pub fn render_changelog_response(entries: &[ChangelogEntry]) -> String {
     response
 }
 
-/// Render an XML-RPC fault document.
 #[must_use]
 pub fn render_changelog_fault(code: i32, message: &str) -> String {
     let mut response = format!(

@@ -1,15 +1,10 @@
-"""Generate an llms.txt (llmstxt.org format) from the Zola content tree.
-
-Zola cannot template arbitrary output files, so this runs after `zola build`: it reads the
-front-matter of each content page and writes an LLM-friendly index of the documentation.
-
-Usage: gen_llms.py --base-url URL --content DIR --out FILE
-"""
+"""Generate llms.txt from Zola content front matter."""
 
 from __future__ import annotations
 
 import argparse
 import re
+import sys
 from pathlib import Path
 from typing import Final, NamedTuple
 
@@ -105,7 +100,7 @@ def main() -> None:
     base_url = args.base_url.rstrip("/")
     root_desc, groups = collect(args.content, base_url)
     args.out.write_text(render(base_url, root_desc, groups), encoding="utf-8")
-    print(f"wrote {args.out} ({sum(len(e) for _, e in groups)} pages)")  # noqa: T201 - build-step status line
+    sys.stdout.write(f"wrote {args.out} ({sum(len(entries) for _, entries in groups)} pages)\n")
 
 
 if __name__ == "__main__":

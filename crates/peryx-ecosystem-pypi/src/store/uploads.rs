@@ -82,7 +82,6 @@ pub enum Guard {
     Skip,
 }
 
-/// What a per-file upload mutation does to one record inside the transaction.
 pub enum UploadMutation {
     Keep,
     Replace(Vec<u8>),
@@ -108,16 +107,34 @@ pub enum UploadMutation {
 /// Returns the guard's error, or a store error mapped into it, if the transaction fails.
 pub fn publish_file_if<E: From<MetaError>>(
     meta: &MetaStore,
+    outbox: bool,
     file: &PublishedFile,
     guard: impl FnOnce(Option<&[u8]>) -> Result<Guard, E>,
 ) -> Result<bool, E> {
     let Some(reservation) = file.quota else {
-        return meta.commit_driver_txn(|txn| publish_file_in_txn(txn, file, guard));
+        return meta.commit_driver_txn(|txn| publish_file_in_txn(txn, outbox, file, guard));
     };
     meta.commit_driver_txn_with_quota_if(
         reservation.id,
         |stored| *stored,
-        |txn| publish_file_in_txn(txn, file, guard).map_err(PublishError::Body),
+        |txn| publish_file_in_txn(txn, outbox, file, guard).map_err(PublishError::Body),
+    )
+    .map_err(map_publish_error)
+}
+
+pub fn publish_file_with_commit_if<E: From<MetaError>>(
+    meta: &MetaStore,
+    outbox: bool,
+    file: &PublishedFile,
+    guard: impl FnOnce(Option<&[u8]>) -> Result<Guard, E>,
+) -> Result<peryx_storage::meta::DriverCommit<bool>, E> {
+    let Some(reservation) = file.quota else {
+        return meta.commit_driver_txn_with_commit(|txn| publish_file_in_txn(txn, outbox, file, guard));
+    };
+    meta.commit_driver_txn_with_quota_if_commit(
+        reservation.id,
+        |stored| *stored,
+        |txn| publish_file_in_txn(txn, outbox, file, guard).map_err(PublishError::Body),
     )
     .map_err(map_publish_error)
 }
@@ -149,6 +166,7 @@ impl<E> From<QuotaError> for PublishError<E> {
 
 pub fn publish_file_in_txn<E: From<MetaError>>(
     txn: &mut DriverTxn,
+    outbox: bool,
     file: &PublishedFile,
     guard: impl FnOnce(Option<&[u8]>) -> Result<Guard, E>,
 ) -> Result<(bool, Vec<Vec<u8>>), E> {
@@ -169,14 +187,18 @@ pub fn publish_file_in_txn<E: From<MetaError>>(
             }
             txn.put(&upload, file.record)?;
             txn.put(&project_key(file.index, file.normalized), file.display.as_bytes())?;
-            let journal = journal_bytes(
-                "add-file",
-                file.normalized,
-                Some(file.version),
-                Some(file.filename),
-                file.submitted_at_unix,
-            );
-            Ok((true, vec![journal]))
+            Ok((
+                true,
+                journal_entries(outbox, || {
+                    journal_bytes(
+                        "add-file",
+                        file.normalized,
+                        Some(file.version),
+                        Some(file.filename),
+                        file.submitted_at_unix,
+                    )
+                }),
+            ))
         }
     }
 }
@@ -215,6 +237,7 @@ pub fn put_upload(
 /// Returns the guard's error, or a store error mapped into it, if the transaction fails.
 pub fn promote_files_checked<E: From<MetaError>>(
     meta: &MetaStore,
+    outbox: bool,
     release: &PromotedRelease<'_>,
     guard: impl Fn(&str, &str, Option<&[u8]>) -> Result<Guard, E>,
 ) -> Result<usize, E> {
@@ -231,13 +254,15 @@ pub fn promote_files_checked<E: From<MetaError>>(
                         txn.reference_blob(token, *size);
                     }
                     written += 1;
-                    journal.push(journal_bytes(
-                        "add-file",
-                        release.normalized,
-                        journal_version(filename, record).as_deref(),
-                        Some(filename),
-                        release.submitted_at_unix,
-                    ));
+                    journal.extend(journal_entries(outbox, || {
+                        journal_bytes(
+                            "add-file",
+                            release.normalized,
+                            journal_version(filename, record).as_deref(),
+                            Some(filename),
+                            release.submitted_at_unix,
+                        )
+                    }));
                 }
             }
         }
@@ -258,17 +283,16 @@ pub fn promote_files_checked<E: From<MetaError>>(
 /// its entry. `mutate` sees each `(filename, record)` and returns [`UploadMutation::Keep`] to leave
 /// it, [`UploadMutation::Replace`] to rewrite it, or [`UploadMutation::Delete`] to remove it; an
 /// error aborts the whole transaction unchanged. Every rewritten or removed record records one
-/// `action` entry against its filename — `yank`, `unyank`, or `delete-file`, the mutation the caller
-/// knows it applied but the opaque record bytes cannot reveal — so a replica replays exactly the
+/// `action` entry against its filename - `yank`, `unyank`, or `delete-file`, the mutation the caller
+/// knows it applied but the opaque record bytes cannot reveal - so a replica replays exactly the
 /// files that changed. Returns how many records were rewritten or removed.
 ///
 /// # Errors
 /// Returns the closure's error, or a store error mapped into it, if the transaction fails.
 ///
-/// # Panics
-/// Never in practice: every key comes from a prefix scan of `prefix`, so each carries it.
 pub fn mutate_uploads<E: From<MetaError>>(
     meta: &MetaStore,
+    outbox: bool,
     index: &str,
     normalized: &str,
     action: &str,
@@ -277,11 +301,10 @@ pub fn mutate_uploads<E: From<MetaError>>(
 ) -> Result<usize, E> {
     let prefix = format!("{UPLOAD_PREFIX}{index}/{normalized}/");
     meta.commit_driver_txn(|txn| {
+        let mut changed = 0;
         let mut journal = Vec::new();
         for (key, record) in txn.prefix(&prefix)? {
-            let filename = key
-                .strip_prefix(&prefix)
-                .expect("a key from the prefix scan carries the prefix");
+            let filename = &key[prefix.len()..];
             match mutate(filename, &record)? {
                 UploadMutation::Keep => continue,
                 UploadMutation::Replace(bytes) => txn.put(&key, &bytes)?,
@@ -289,20 +312,21 @@ pub fn mutate_uploads<E: From<MetaError>>(
                     txn.remove(&key)?;
                 }
             }
-            journal.push(journal_bytes(
-                action,
-                normalized,
-                journal_version(filename, &record).as_deref(),
-                Some(filename),
-                submitted_at_unix,
-            ));
+            changed += 1;
+            journal.extend(journal_entries(outbox, || {
+                journal_bytes(
+                    action,
+                    normalized,
+                    journal_version(filename, &record).as_deref(),
+                    Some(filename),
+                    submitted_at_unix,
+                )
+            }));
         }
-        Ok((journal.len(), journal))
+        Ok((changed, journal))
     })
 }
 
-/// List the `(filename, record)` pairs uploaded for `normalized` on `index`, sorted by filename.
-///
 /// # Errors
 /// Returns a store error if the read fails.
 pub fn list_upload_entries(
@@ -312,25 +336,17 @@ pub fn list_upload_entries(
 ) -> Result<Vec<(String, Vec<u8>)>, MetaError> {
     let prefix = format!("{UPLOAD_PREFIX}{index}/{normalized}/");
     let mut entries = Vec::new();
-    for key in meta.driver_prefix_keys(&prefix)? {
-        if let (Some(filename), Some(record)) = (key.strip_prefix(&prefix), meta.get_driver_value(&key)?) {
-            entries.push((filename.to_owned(), record));
-        }
-    }
+    meta.visit_driver_prefix(&prefix, |key, record| {
+        entries.push((key[prefix.len()..].to_owned(), record.to_vec()));
+    })?;
     Ok(entries)
 }
 
-/// Delete one uploaded file record, journaling `delete-file` in the same transaction, and return
-/// whether it existed.
-///
-/// The removal and its journal entry commit together for the reason [`publish_file_if`] gives: a
-/// deletion no replica observes resurrects the file downstream, and nothing reconciles that later.
-/// A missing record is a no-op that records nothing.
-///
 /// # Errors
 /// Returns a store error if the write fails.
 pub fn delete_upload(
     meta: &MetaStore,
+    outbox: bool,
     index: &str,
     normalized: &str,
     filename: &str,
@@ -342,13 +358,15 @@ pub fn delete_upload(
             txn.remove(&key)?;
             Ok((
                 true,
-                vec![journal_bytes(
-                    "delete-file",
-                    normalized,
-                    journal_version(filename, &record).as_deref(),
-                    Some(filename),
-                    submitted_at_unix,
-                )],
+                journal_entries(outbox, || {
+                    journal_bytes(
+                        "delete-file",
+                        normalized,
+                        journal_version(filename, &record).as_deref(),
+                        Some(filename),
+                        submitted_at_unix,
+                    )
+                }),
             ))
         } else {
             Ok((false, Vec::new()))
@@ -356,28 +374,25 @@ pub fn delete_upload(
     })
 }
 
-/// Visit raw upload records, keyed by `{index}/{normalized}/{filename}`.
-///
 /// # Errors
 /// Returns a scan error if the store read fails or the visitor returns an error.
 ///
-/// # Panics
-/// Never in practice: a key the prefix scan just returned still has its value.
 pub fn scan_upload_records<E>(
     meta: &MetaStore,
     mut visit: impl FnMut(&str, &[u8]) -> Result<(), E>,
 ) -> Result<(), MetaScanError<E>> {
-    for key in meta.driver_prefix_keys(UPLOAD_PREFIX)? {
-        let record = meta
-            .get_driver_value(&key)?
-            .expect("a key from the prefix scan still has its value");
-        visit(&key[UPLOAD_PREFIX.len()..], &record).map_err(MetaScanError::Visit)?;
+    let mut error = None;
+    meta.visit_driver_prefix(UPLOAD_PREFIX, |key, record| {
+        if error.is_none() {
+            error = visit(&key[UPLOAD_PREFIX.len()..], record).err();
+        }
+    })?;
+    if let Some(err) = error {
+        return Err(MetaScanError::Visit(err));
     }
     Ok(())
 }
 
-/// Visit one index's upload records and policy-input generation from one metadata snapshot.
-///
 /// # Errors
 /// Returns a scan error if the store read fails or the visitor returns an error.
 pub fn scan_upload_policy_snapshot<E>(
@@ -401,6 +416,7 @@ pub fn scan_upload_policy_snapshot<E>(
 /// Returns a store error if the write fails.
 pub fn put_override(
     meta: &MetaStore,
+    outbox: bool,
     index: &str,
     normalized: &str,
     filename: &str,
@@ -416,13 +432,15 @@ pub fn put_override(
         let action = if kind == "hidden" { "hide" } else { "yank" };
         Ok((
             (),
-            vec![journal_bytes(
-                action,
-                normalized,
-                distribution_version_segment(filename),
-                Some(filename),
-                submitted_at_unix,
-            )],
+            journal_entries(outbox, || {
+                journal_bytes(
+                    action,
+                    normalized,
+                    distribution_version_segment(filename),
+                    Some(filename),
+                    submitted_at_unix,
+                )
+            }),
         ))
     })
 }
@@ -437,6 +455,7 @@ pub fn put_override(
 /// Returns a store error if the write fails.
 pub fn delete_override(
     meta: &MetaStore,
+    outbox: bool,
     index: &str,
     normalized: &str,
     filename: &str,
@@ -451,47 +470,48 @@ pub fn delete_override(
         let action = if prior == b"hidden" { "restore" } else { "unyank" };
         Ok((
             true,
-            vec![journal_bytes(
-                action,
-                normalized,
-                distribution_version_segment(filename),
-                Some(filename),
-                submitted_at_unix,
-            )],
+            journal_entries(outbox, || {
+                journal_bytes(
+                    action,
+                    normalized,
+                    distribution_version_segment(filename),
+                    Some(filename),
+                    submitted_at_unix,
+                )
+            }),
         ))
     })
 }
 
-/// List the `(filename, kind)` overrides recorded for `normalized` on `index`.
-///
 /// # Errors
 /// Returns a store error if the read fails.
 pub fn list_overrides(meta: &MetaStore, index: &str, normalized: &str) -> Result<Vec<(String, String)>, MetaError> {
     let prefix = format!("{OVERRIDE_PREFIX}{index}/{normalized}/");
     let mut entries = Vec::new();
-    for key in meta.driver_prefix_keys(&prefix)? {
-        if let (Some(filename), Some(kind)) = (
-            key.strip_prefix(&prefix),
-            meta.get_driver_value(&key)?.and_then(|raw| String::from_utf8(raw).ok()),
-        ) {
-            entries.push((filename.to_owned(), kind));
+    meta.visit_driver_prefix(&prefix, |key, raw| {
+        if let Ok(kind) = std::str::from_utf8(raw) {
+            entries.push((key[prefix.len()..].to_owned(), kind.to_owned()));
         }
-    }
+    })?;
     Ok(entries)
 }
 
-/// Visit raw override records, keyed by `{index}/{normalized}/{filename}`.
-///
 /// # Errors
 /// Returns a scan error if the store read fails or the visitor returns an error.
 pub fn scan_override_records<E>(
     meta: &MetaStore,
     mut visit: impl FnMut(&str, &str) -> Result<(), E>,
 ) -> Result<(), MetaScanError<E>> {
-    for key in meta.driver_prefix_keys(OVERRIDE_PREFIX)? {
-        if let Some(kind) = meta.get_driver_value(&key)?.and_then(|raw| String::from_utf8(raw).ok()) {
-            visit(&key[OVERRIDE_PREFIX.len()..], &kind).map_err(MetaScanError::Visit)?;
+    let mut error = None;
+    meta.visit_driver_prefix(OVERRIDE_PREFIX, |key, raw| {
+        if error.is_none()
+            && let Ok(kind) = std::str::from_utf8(raw)
+        {
+            error = visit(&key[OVERRIDE_PREFIX.len()..], kind).err();
         }
+    })?;
+    if let Some(err) = error {
+        return Err(MetaScanError::Visit(err));
     }
     Ok(())
 }
@@ -516,6 +536,10 @@ fn journal_bytes(
     .expect("journal entry always serializes")
 }
 
+fn journal_entries(outbox: bool, payload: impl FnOnce() -> Vec<u8>) -> Vec<Vec<u8>> {
+    if outbox { vec![payload()] } else { Vec::new() }
+}
+
 fn journal_version(filename: &str, record: &[u8]) -> Option<String> {
     serde_json::from_slice::<serde_json::Value>(record)
         .ok()
@@ -524,631 +548,5 @@ fn journal_version(filename: &str, record: &[u8]) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::collections::BTreeMap;
-
-    use peryx_storage::meta::{AccountingClass, NewQuotaReservation};
-
-    use super::{
-        Guard, MetaError, MetaStore, MetadataSibling, PromotedRelease, ProvenanceSibling, PublishError, PublishedFile,
-        UploadMutation, map_publish_error, override_key, upload_key,
-    };
-    use crate::store::{PypiStore as _, read_journal_entries};
-    use crate::upload::UploadStoreError;
-
-    fn store() -> (tempfile::TempDir, MetaStore) {
-        let dir = tempfile::tempdir().unwrap();
-        let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-        (dir, meta)
-    }
-
-    fn published() -> PublishedFile<'static> {
-        PublishedFile {
-            index: "hosted",
-            normalized: "flask",
-            display: "Flask",
-            filename: "flask-1.0.whl",
-            artifact_sha256: "artifact-sha",
-            artifact_size: 8,
-            record: b"record",
-            version: "1.0",
-            submitted_at_unix: 123,
-            metadata: Some(MetadataSibling {
-                url: "uploaded",
-                metadata_sha256: "metadata-sha",
-                size: 8,
-                source: "hosted",
-            }),
-            provenance: None,
-            quota: None,
-        }
-    }
-
-    #[test]
-    fn test_publish_file_if_commit_writes_record_sibling_project_and_serial() {
-        let (_dir, meta) = store();
-
-        let wrote = meta
-            .publish_file_if(&published(), |existing| {
-                assert!(existing.is_none(), "a first publish sees no prior record");
-                Ok::<_, MetaError>(Guard::Commit)
-            })
-            .unwrap();
-
-        assert!(wrote);
-        assert_eq!(
-            meta.get_driver_value(&upload_key("hosted", "flask", "flask-1.0.whl"))
-                .unwrap()
-                .as_deref(),
-            Some(b"record".as_slice())
-        );
-        assert!(
-            meta.get_metadata("artifact-sha").unwrap().is_some(),
-            "the sibling row is written"
-        );
-        assert_eq!(meta.get_project("hosted", "flask").unwrap().as_deref(), Some("Flask"));
-        let journal = read_journal_entries(&meta, 0, 1).unwrap().entries.pop().unwrap();
-        assert_eq!(journal.action, "add-file");
-        assert_eq!(journal.version.as_deref(), Some("1.0"));
-        assert_eq!(journal.filename.as_deref(), Some("flask-1.0.whl"));
-        assert_eq!(journal.submitted_at_unix, 123);
-    }
-
-    #[test]
-    fn test_publish_file_if_commits_quota_with_a_new_record() {
-        let (_dir, meta) = store();
-        let reservation = reservation(&meta);
-
-        let wrote = meta
-            .publish_file_if(
-                &PublishedFile {
-                    quota: Some(&reservation),
-                    ..published()
-                },
-                |_existing| Ok::<_, MetaError>(Guard::Commit),
-            )
-            .unwrap();
-
-        assert!(wrote);
-        assert_eq!(
-            meta.quota_project_usage("hosted", "flask")
-                .unwrap()
-                .file_bytes
-                .committed,
-            8
-        );
-    }
-
-    #[test]
-    fn test_publish_file_if_releases_quota_for_a_duplicate() {
-        let (_dir, meta) = store();
-        meta.publish_file_if(&published(), |_existing| Ok::<_, MetaError>(Guard::Commit))
-            .unwrap();
-        let reservation = reservation(&meta);
-
-        let wrote = meta
-            .publish_file_if(
-                &PublishedFile {
-                    quota: Some(&reservation),
-                    ..published()
-                },
-                |_existing| Ok::<_, MetaError>(Guard::Skip),
-            )
-            .unwrap();
-
-        assert!(!wrote);
-        assert_eq!(meta.quota_reservation(reservation.id).unwrap(), None);
-        assert_eq!(
-            meta.quota_project_usage("hosted", "flask").unwrap().file_bytes,
-            peryx_storage::meta::QuotaValue::default()
-        );
-    }
-
-    #[test]
-    fn test_publish_file_if_leaves_quota_pending_after_a_guard_error() {
-        let (_dir, meta) = store();
-        let reservation = reservation(&meta);
-
-        let result = meta.publish_file_if(
-            &PublishedFile {
-                quota: Some(&reservation),
-                ..published()
-            },
-            |_existing| Err::<Guard, _>(MetaError::DriverPrecondition("conflict".to_owned())),
-        );
-
-        assert!(matches!(result, Err(MetaError::DriverPrecondition(reason)) if reason == "conflict"));
-        assert_eq!(
-            meta.quota_project_usage("hosted", "flask").unwrap().file_bytes.reserved,
-            8
-        );
-    }
-
-    #[test]
-    fn test_publish_file_if_rejects_a_used_quota_reservation() {
-        let (_dir, meta) = store();
-        let reservation = reservation(&meta);
-        meta.commit_quota_reservation(reservation.id).unwrap();
-
-        let result = meta.publish_file_if(
-            &PublishedFile {
-                quota: Some(&reservation),
-                ..published()
-            },
-            |_existing| Ok::<_, MetaError>(Guard::Commit),
-        );
-
-        assert!(matches!(result, Err(MetaError::DriverPrecondition(reason)) if reason.contains("already committed")));
-        assert!(
-            meta.get_driver_value(&upload_key("hosted", "flask", "flask-1.0.whl"))
-                .unwrap()
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn test_publish_file_if_preserves_quota_store_errors() {
-        let error = map_publish_error::<UploadStoreError>(PublishError::from(MetaError::DriverPrecondition(
-            "store".to_owned(),
-        )));
-
-        assert!(matches!(error, UploadStoreError::Meta(MetaError::DriverPrecondition(reason)) if reason == "store"));
-    }
-
-    #[test]
-    fn test_publish_file_if_preserves_driver_store_errors() {
-        let error =
-            map_publish_error::<MetaError>(PublishError::from(MetaError::DriverPrecondition("store".to_owned())));
-
-        assert!(matches!(error, MetaError::DriverPrecondition(reason) if reason == "store"));
-    }
-
-    fn reservation(meta: &MetaStore) -> peryx_storage::meta::QuotaReservationRecord {
-        meta.reserve_project_quota(
-            NewQuotaReservation {
-                repository: "hosted",
-                project: Some("flask"),
-                version: Some("1.0"),
-                digest: "artifact-sha",
-                bytes: 8,
-                class: AccountingClass::Hosted,
-                created_at_unix: 123,
-            },
-            8,
-            false,
-        )
-        .unwrap()
-    }
-
-    #[test]
-    fn test_publish_file_if_commit_without_a_metadata_sibling_writes_no_sibling() {
-        let (_dir, meta) = store();
-
-        let wrote = meta
-            .publish_file_if(
-                &PublishedFile {
-                    metadata: None,
-                    ..published()
-                },
-                |_existing| Ok::<_, MetaError>(Guard::Commit),
-            )
-            .unwrap();
-
-        assert!(wrote);
-        assert!(
-            meta.get_metadata("artifact-sha").unwrap().is_none(),
-            "a file without metadata records no sibling row"
-        );
-        assert_eq!(
-            meta.get_driver_value(&upload_key("hosted", "flask", "flask-1.0.whl"))
-                .unwrap()
-                .as_deref(),
-            Some(b"record".as_slice())
-        );
-    }
-
-    #[test]
-    fn test_publish_file_if_records_artifact_and_metadata_blobs() {
-        let (_dir, meta) = store();
-
-        meta.publish_file_if(&published(), |_existing| Ok::<_, MetaError>(Guard::Commit))
-            .unwrap();
-
-        assert_eq!(
-            meta.journal_after(0, 1).unwrap()[0].blobs,
-            vec![
-                peryx_storage::meta::DriverBlobReference {
-                    sha256: "artifact-sha".to_owned(),
-                    size: 8,
-                },
-                peryx_storage::meta::DriverBlobReference {
-                    sha256: "metadata-sha".to_owned(),
-                    size: 8,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn test_publish_file_if_writes_the_provenance_row_and_references_its_blob() {
-        let (_dir, meta) = store();
-
-        meta.publish_file_if(
-            &PublishedFile {
-                provenance: Some(ProvenanceSibling {
-                    provenance_sha256: "provenance-sha",
-                    size: 16,
-                }),
-                ..published()
-            },
-            |_existing| Ok::<_, MetaError>(Guard::Commit),
-        )
-        .unwrap();
-
-        assert_eq!(
-            meta.get_provenance("artifact-sha").unwrap(),
-            Some(("provenance-sha".to_owned(), 16))
-        );
-        assert!(
-            meta.journal_after(0, 1).unwrap()[0]
-                .blobs
-                .contains(&peryx_storage::meta::DriverBlobReference {
-                    sha256: "provenance-sha".to_owned(),
-                    size: 16,
-                }),
-            "the provenance blob is recorded so a purge keeps it"
-        );
-    }
-
-    #[test]
-    fn test_publish_file_if_without_provenance_writes_no_provenance_row() {
-        let (_dir, meta) = store();
-
-        meta.publish_file_if(&published(), |_existing| Ok::<_, MetaError>(Guard::Commit))
-            .unwrap();
-
-        assert!(meta.get_provenance("artifact-sha").unwrap().is_none());
-    }
-
-    #[test]
-    fn test_publish_file_if_skip_leaves_the_store_unchanged() {
-        let (_dir, meta) = store();
-
-        let wrote = meta
-            .publish_file_if(&published(), |_existing| Ok::<_, MetaError>(Guard::Skip))
-            .unwrap();
-
-        assert!(!wrote);
-        assert!(
-            meta.get_driver_value(&upload_key("hosted", "flask", "flask-1.0.whl"))
-                .unwrap()
-                .is_none()
-        );
-        assert_eq!(meta.current_serial().unwrap(), 0, "a skipped publish records no serial");
-    }
-
-    #[test]
-    fn test_publish_file_if_propagates_a_guard_rejection_without_writing() {
-        let (_dir, meta) = store();
-
-        let result = meta.publish_file_if(&published(), |_existing| {
-            Err::<Guard, _>(MetaError::from(
-                serde_json::from_str::<serde_json::Value>("{").unwrap_err(),
-            ))
-        });
-
-        assert!(result.is_err());
-        assert!(
-            meta.get_driver_value(&upload_key("hosted", "flask", "flask-1.0.whl"))
-                .unwrap()
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn test_promote_files_checked_writes_the_release_project_and_journal() {
-        let (_dir, meta) = store();
-        let records = vec![(
-            "flask-1.0.whl".to_owned(),
-            "artifact-sha".to_owned(),
-            br#"{"version":"1.0"}"#.to_vec(),
-        )];
-        let blob_sizes = BTreeMap::from([("artifact-sha".to_owned(), 8)]);
-
-        let written = meta
-            .promote_files_checked(
-                &PromotedRelease {
-                    index: "hosted",
-                    normalized: "flask",
-                    display: "Flask",
-                    records: &records,
-                    blob_sizes: &blob_sizes,
-                    submitted_at_unix: 123,
-                },
-                |filename, digest, existing| {
-                    assert_eq!((filename, digest, existing), ("flask-1.0.whl", "artifact-sha", None));
-                    Ok::<_, MetaError>(Guard::Commit)
-                },
-            )
-            .unwrap();
-
-        assert_eq!(written, 1);
-        assert_eq!(
-            meta.get_driver_value(&upload_key("hosted", "flask", "flask-1.0.whl"))
-                .unwrap()
-                .as_deref(),
-            Some(br#"{"version":"1.0"}"#.as_slice())
-        );
-        assert_eq!(meta.get_project("hosted", "flask").unwrap().as_deref(), Some("Flask"));
-        let batch = meta.journal_after(0, 1).unwrap().pop().unwrap();
-        assert_eq!(
-            batch.blobs,
-            vec![peryx_storage::meta::DriverBlobReference {
-                sha256: "artifact-sha".to_owned(),
-                size: 8,
-            }]
-        );
-        let journal = read_journal_entries(&meta, 0, 1).unwrap().entries.pop().unwrap();
-        assert_eq!(journal.action, "add-file");
-        assert_eq!(journal.version.as_deref(), Some("1.0"));
-        assert_eq!(journal.filename.as_deref(), Some("flask-1.0.whl"));
-        assert_eq!(journal.submitted_at_unix, 123);
-    }
-
-    #[test]
-    fn test_scan_upload_records_visits_each_row() {
-        let (_dir, meta) = store();
-        meta.put_upload("hosted", "flask", "flask-1.0.whl", b"upload").unwrap();
-        let mut seen = Vec::new();
-        meta.scan_upload_records(|key, value| {
-            seen.push((key.to_owned(), value.to_vec()));
-            Ok::<(), std::io::Error>(())
-        })
-        .unwrap();
-        assert_eq!(
-            seen,
-            vec![("hosted/flask/flask-1.0.whl".to_owned(), b"upload".to_vec())]
-        );
-    }
-
-    #[test]
-    fn test_scan_override_records_visits_valid_and_skips_non_utf8() {
-        let (_dir, meta) = store();
-        meta.put_override("hosted", "flask", "flask-1.0.whl", "hidden", 123)
-            .unwrap();
-        meta.put_driver_value(&override_key("hosted", "flask", "bad.whl"), &[0xff, 0xfe])
-            .unwrap();
-        let mut seen = Vec::new();
-        meta.scan_override_records(|key, value| {
-            seen.push((key.to_owned(), value.to_owned()));
-            Ok::<(), std::io::Error>(())
-        })
-        .unwrap();
-        assert_eq!(
-            seen,
-            vec![("hosted/flask/flask-1.0.whl".to_owned(), "hidden".to_owned())]
-        );
-    }
-
-    #[test]
-    fn test_mutate_uploads_journals_the_action_for_each_rewritten_record() {
-        let (_dir, meta) = store();
-        meta.put_upload("hosted", "flask", "flask-1.0.whl", b"a").unwrap();
-        meta.put_upload("hosted", "flask", "flask-2.0.whl", b"b").unwrap();
-
-        let changed = meta
-            .mutate_uploads("hosted", "flask", "yank", 123, |_filename, _record| {
-                Ok::<_, MetaError>(UploadMutation::Replace(b"yanked".to_vec()))
-            })
-            .unwrap();
-
-        assert_eq!(changed, 2);
-        assert_eq!(
-            meta.current_serial().unwrap(),
-            2,
-            "each rewritten record allocates its own serial"
-        );
-        assert_eq!(
-            read_journal_entries(&meta, 0, 2)
-                .unwrap()
-                .entries
-                .into_iter()
-                .map(|entry| (entry.action, entry.version, entry.filename))
-                .collect::<Vec<_>>(),
-            [
-                (
-                    "yank".to_owned(),
-                    Some("1.0".to_owned()),
-                    Some("flask-1.0.whl".to_owned()),
-                ),
-                (
-                    "yank".to_owned(),
-                    Some("2.0".to_owned()),
-                    Some("flask-2.0.whl".to_owned()),
-                ),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_mutate_uploads_journals_only_the_removed_record_and_keeps_the_rest() {
-        let (_dir, meta) = store();
-        meta.put_upload("hosted", "flask", "flask-1.0.whl", b"a").unwrap();
-        meta.put_upload("hosted", "flask", "flask-2.0.whl", b"b").unwrap();
-
-        let changed = meta
-            .mutate_uploads("hosted", "flask", "delete-file", 123, |filename, _record| {
-                Ok::<_, MetaError>(if filename == "flask-1.0.whl" {
-                    UploadMutation::Delete
-                } else {
-                    UploadMutation::Keep
-                })
-            })
-            .unwrap();
-
-        assert_eq!(changed, 1);
-        assert!(
-            meta.get_driver_value(&upload_key("hosted", "flask", "flask-1.0.whl"))
-                .unwrap()
-                .is_none()
-        );
-        assert_eq!(
-            meta.current_serial().unwrap(),
-            1,
-            "only the removed record is journaled"
-        );
-        assert_eq!(
-            read_journal_entries(&meta, 0, 1).unwrap().entries[0].version.as_deref(),
-            Some("1.0")
-        );
-    }
-
-    #[test]
-    fn test_mutate_uploads_that_keeps_every_record_journals_nothing() {
-        let (_dir, meta) = store();
-        meta.put_upload("hosted", "flask", "flask-1.0.whl", b"a").unwrap();
-
-        let changed = meta
-            .mutate_uploads("hosted", "flask", "yank", 123, |_filename, _record| {
-                Ok::<_, MetaError>(UploadMutation::Keep)
-            })
-            .unwrap();
-
-        assert_eq!(changed, 0);
-        assert_eq!(meta.current_serial().unwrap(), 0, "an all-keep batch records no serial");
-    }
-
-    #[test]
-    fn test_delete_upload_removes_the_record_and_journals_delete_file() {
-        let (_dir, meta) = store();
-        meta.put_upload("hosted", "flask", "flask-1.0.whl", b"record").unwrap();
-
-        let existed = meta.delete_upload("hosted", "flask", "flask-1.0.whl", 123).unwrap();
-
-        assert!(existed);
-        assert!(
-            meta.get_driver_value(&upload_key("hosted", "flask", "flask-1.0.whl"))
-                .unwrap()
-                .is_none()
-        );
-        assert_eq!(meta.current_serial().unwrap(), 1, "the deletion is journaled");
-        assert_eq!(
-            read_journal_entries(&meta, 0, 1).unwrap().entries[0].version.as_deref(),
-            Some("1.0")
-        );
-    }
-
-    #[test]
-    fn test_delete_upload_of_a_missing_record_journals_nothing() {
-        let (_dir, meta) = store();
-
-        let existed = meta.delete_upload("hosted", "flask", "flask-1.0.whl", 123).unwrap();
-
-        assert!(!existed);
-        assert_eq!(meta.current_serial().unwrap(), 0, "a no-op delete records no serial");
-    }
-
-    #[test]
-    fn test_put_override_hidden_journals_hide() {
-        let (_dir, meta) = store();
-
-        meta.put_override("hosted", "flask", "flask-1.0.whl", "hidden", 123)
-            .unwrap();
-
-        assert_eq!(
-            meta.get_driver_value(&override_key("hosted", "flask", "flask-1.0.whl"))
-                .unwrap()
-                .as_deref(),
-            Some(b"hidden".as_slice())
-        );
-        assert_eq!(meta.current_serial().unwrap(), 1, "the override is journaled");
-        assert_eq!(
-            read_journal_entries(&meta, 0, 1).unwrap().entries[0].version.as_deref(),
-            Some("1.0")
-        );
-    }
-
-    #[test]
-    fn test_put_override_yanked_journals_yank() {
-        let (_dir, meta) = store();
-
-        meta.put_override("hosted", "flask", "flask-1.0.whl", "yanked", 123)
-            .unwrap();
-
-        assert_eq!(
-            meta.get_driver_value(&override_key("hosted", "flask", "flask-1.0.whl"))
-                .unwrap()
-                .as_deref(),
-            Some(b"yanked".as_slice())
-        );
-        assert_eq!(meta.current_serial().unwrap(), 1, "the override is journaled");
-    }
-
-    #[test]
-    fn test_put_override_that_repeats_the_current_value_journals_nothing() {
-        let (_dir, meta) = store();
-        meta.put_override("hosted", "flask", "flask-1.0.whl", "yanked", 123)
-            .unwrap();
-
-        meta.put_override("hosted", "flask", "flask-1.0.whl", "yanked", 456)
-            .unwrap();
-
-        assert_eq!(
-            meta.current_serial().unwrap(),
-            1,
-            "re-recording an identical override allocates no second serial"
-        );
-        assert_eq!(
-            read_journal_entries(&meta, 0, 1).unwrap().entries[0].submitted_at_unix,
-            123
-        );
-    }
-
-    #[test]
-    fn test_delete_override_of_a_hidden_file_journals_restore() {
-        let (_dir, meta) = store();
-        meta.put_driver_value(&override_key("hosted", "flask", "flask-1.0.whl"), b"hidden")
-            .unwrap();
-
-        let existed = meta.delete_override("hosted", "flask", "flask-1.0.whl", 123).unwrap();
-
-        assert!(existed);
-        assert!(
-            meta.get_driver_value(&override_key("hosted", "flask", "flask-1.0.whl"))
-                .unwrap()
-                .is_none()
-        );
-        assert_eq!(meta.current_serial().unwrap(), 1, "the restore is journaled");
-        assert_eq!(
-            read_journal_entries(&meta, 0, 1).unwrap().entries[0].version.as_deref(),
-            Some("1.0")
-        );
-    }
-
-    #[test]
-    fn test_delete_override_of_a_yanked_file_journals_unyank() {
-        let (_dir, meta) = store();
-        meta.put_driver_value(&override_key("hosted", "flask", "flask-1.0.whl"), b"yanked")
-            .unwrap();
-
-        let existed = meta.delete_override("hosted", "flask", "flask-1.0.whl", 123).unwrap();
-
-        assert!(existed);
-        assert!(
-            meta.get_driver_value(&override_key("hosted", "flask", "flask-1.0.whl"))
-                .unwrap()
-                .is_none()
-        );
-        assert_eq!(meta.current_serial().unwrap(), 1, "the un-yank is journaled");
-    }
-
-    #[test]
-    fn test_delete_override_of_a_missing_file_journals_nothing() {
-        let (_dir, meta) = store();
-
-        let existed = meta.delete_override("hosted", "flask", "flask-1.0.whl", 123).unwrap();
-
-        assert!(!existed);
-        assert_eq!(meta.current_serial().unwrap(), 0, "a no-op reversal records no serial");
-    }
-}
+#[path = "../../tests/unit/store/uploads/tests.rs"]
+mod tests;

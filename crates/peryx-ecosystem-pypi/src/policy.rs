@@ -1,10 +1,4 @@
-//! The `PyPI` half of the policy engine.
-//!
-//! [`peryx_policy::Policy`] enforces the ecosystem-neutral rules (project-name allow/block and byte
-//! size). Everything a package format understands lives here: PEP 440 version specifiers, wheel and
-//! sdist package types, wheel Python and platform tags, the config keys, the matchers compiled
-//! into [`ArtifactRule`]s, and the mapping from `PyPI` `File`s and `ProjectDetail`s into neutral
-//! [`ArtifactFacts`]. The neutral engine names no `PyPI` concept and pulls in no PEP 440 dependency.
+//! Maps `PyPI` policy config and metadata into neutral facts and rules.
 
 use std::collections::{BTreeSet, HashSet};
 use std::str::FromStr as _;
@@ -12,19 +6,26 @@ use std::sync::Arc;
 
 use pep440_rs::{Version, VersionSpecifiers};
 use peryx_policy::{
-    ArtifactFacts, ArtifactRule, FallbackMode, Policy, PolicyAction, PolicyDenial, RemoteMetadataMode, retain_versions,
+    ArtifactFacts, ArtifactRule, Policy, PolicyAction, PolicyCapabilities, PolicyDenial, PolicyLimits, ResourceRule,
 };
 use serde::Deserialize;
 
 use crate::{DistributionKind, File, ProjectDetail, ProjectList, normalize_name, parse_distribution_filename};
 
 /// The `PyPI`-specific policy keys, parsed alongside the neutral [`peryx_policy::PolicyConfig`] and
-/// compiled into [`ArtifactRule`]s with [`compile_rules`].
+/// compiled into [`ArtifactRule`]s with [`compile_capabilities`].
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct PypiPolicyConfig {
     pub fallback_mode: FallbackMode,
     pub upstream_attestations: RemoteMetadataMode,
+    pub allow_projects: Vec<String>,
+    pub block_projects: Vec<String>,
+    pub protected_names: Vec<String>,
+    pub max_file_size_bytes: Option<u64>,
+    pub max_project_size_bytes: Option<u64>,
+    pub max_projects: Option<u64>,
+    pub max_versions_per_project: Option<u64>,
     pub allow_versions: Option<String>,
     pub allow_package_types: Vec<PackageType>,
     pub block_package_types: Vec<PackageType>,
@@ -45,6 +46,13 @@ impl PypiPolicyConfig {
     pub const KEYS: &'static [&'static str] = &[
         "fallback_mode",
         "upstream_attestations",
+        "allow_projects",
+        "block_projects",
+        "protected_names",
+        "max_file_size_bytes",
+        "max_project_size_bytes",
+        "max_projects",
+        "max_versions_per_project",
         "allow_versions",
         "allow_package_types",
         "block_package_types",
@@ -58,9 +66,54 @@ impl PypiPolicyConfig {
     ];
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FallbackMode {
+    #[default]
+    Fallback,
+    PrivateFirst,
+    NoFallback,
+}
+
+impl FallbackMode {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Fallback => "fallback",
+            Self::PrivateFirst => "private-first",
+            Self::NoFallback => "no-fallback",
+        }
+    }
+}
+
+impl std::fmt::Display for FallbackMode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RemoteMetadataMode {
+    #[default]
+    Direct,
+    Proxy,
+    Cache,
+}
+
+impl RemoteMetadataMode {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::Proxy => "proxy",
+            Self::Cache => "cache",
+        }
+    }
+}
+
 /// Whether an unmet required-attestation rule blocks the upload or only records what it would block.
 ///
-/// Each mode carries its own denial rule name (see [`AttestationMode::rule_name`]), which reaches the
+/// Each mode carries its own denial rule name through `AttestationMode::rule_name`, which reaches the
 /// upload handler through the persisted decision, so the handler tells an audit observation from an
 /// enforced rejection.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -130,22 +183,33 @@ pub enum PypiPolicyError {
     EmptyPredicateType,
 }
 
-/// Compile the `PyPI` policy keys into rules to attach to a neutral [`Policy`] via
-/// [`Policy::with_rules`](peryx_policy::Policy::with_rules).
-///
 /// # Errors
 /// Returns an error when a version specifier does not parse or a tag filter is empty.
-pub fn compile_rules(config: &PypiPolicyConfig) -> Result<Vec<Arc<dyn ArtifactRule>>, PypiPolicyError> {
+pub fn compile_capabilities(config: &PypiPolicyConfig) -> Result<PolicyCapabilities, PypiPolicyError> {
+    let mut capabilities = PolicyCapabilities::default().with_limits(PolicyLimits {
+        max_artifact_bytes: config.max_file_size_bytes,
+        max_resource_bytes: config.max_project_size_bytes,
+        max_accounted_bytes: None,
+        max_resources: config.max_projects,
+        max_groups_per_resource: config.max_versions_per_project,
+    });
+    if config.fallback_mode != FallbackMode::default() {
+        capabilities = capabilities
+            .with_owner_setting("pypi.fallback-mode", config.fallback_mode.as_str())
+            .with_policy_activation();
+    }
+    if config.upstream_attestations != RemoteMetadataMode::default() {
+        capabilities =
+            capabilities.with_owner_setting("pypi.remote-metadata-mode", config.upstream_attestations.as_str());
+    }
+    if !config.allow_projects.is_empty() || !config.block_projects.is_empty() || !config.protected_names.is_empty() {
+        capabilities = capabilities.with_resource_rules(vec![Arc::new(PypiProjectRule::new(config))]);
+    }
     let mut rules: Vec<Arc<dyn ArtifactRule>> = Vec::new();
-    if config.fallback_mode != FallbackMode::Fallback {
-        rules.push(Arc::new(FallbackRule(config.fallback_mode)));
-    }
-    if config.upstream_attestations != RemoteMetadataMode::Direct {
-        rules.push(Arc::new(RemoteMetadataRule(config.upstream_attestations)));
-    }
     if let Some(specifier) = &config.allow_versions {
-        let allowed = VersionSpecifiers::from_str(specifier)
-            .map_err(|_| PypiPolicyError::VersionSpecifiers(specifier.clone()))?;
+        let Ok(allowed) = VersionSpecifiers::from_str(specifier) else {
+            return Err(PypiPolicyError::VersionSpecifiers(specifier.clone()));
+        };
         rules.push(Arc::new(VersionRule { allowed }));
     }
     let allow = package_mask(&config.allow_package_types);
@@ -195,36 +259,53 @@ pub fn compile_rules(config: &PypiPolicyConfig) -> Result<Vec<Arc<dyn ArtifactRu
             mode: config.attestation_mode,
         }));
     }
-    Ok(rules)
+    Ok(capabilities.with_artifact_rules(rules))
 }
 
 #[derive(Debug)]
-struct FallbackRule(FallbackMode);
+struct PypiProjectRule {
+    allow_projects: HashSet<String>,
+    block_projects: HashSet<String>,
+    protected_names: Vec<String>,
+}
 
-impl ArtifactRule for FallbackRule {
-    fn check(&self, _action: PolicyAction, _facts: &ArtifactFacts) -> Result<(), PolicyDenial> {
-        Ok(())
+impl PypiProjectRule {
+    fn new(config: &PypiPolicyConfig) -> Self {
+        Self {
+            allow_projects: config.allow_projects.iter().map(|name| normalize_name(name)).collect(),
+            block_projects: config.block_projects.iter().map(|name| normalize_name(name)).collect(),
+            protected_names: config.protected_names.iter().map(|name| normalize_name(name)).collect(),
+        }
     }
 
-    fn fallback_mode(&self) -> Option<FallbackMode> {
-        Some(self.0)
+    fn protected(&self, project: &str) -> bool {
+        self.protected_names.iter().any(|rule| {
+            rule.strip_suffix('*')
+                .map_or_else(|| rule == project, |prefix| project.starts_with(prefix))
+        })
     }
 }
 
-#[derive(Debug)]
-struct RemoteMetadataRule(RemoteMetadataMode);
-
-impl ArtifactRule for RemoteMetadataRule {
-    fn check(&self, _action: PolicyAction, _facts: &ArtifactFacts) -> Result<(), PolicyDenial> {
-        Ok(())
-    }
-
-    fn filters_artifacts(&self) -> bool {
-        false
-    }
-
-    fn remote_metadata_mode(&self) -> Option<RemoteMetadataMode> {
-        Some(self.0)
+impl ResourceRule for PypiProjectRule {
+    fn check(&self, action: PolicyAction, project: &str) -> Result<(), PolicyDenial> {
+        let denial = if action == PolicyAction::Cached && self.protected(project) {
+            Some((
+                "protected-name",
+                format!("project {project:?} is protected from upstream fallback"),
+            ))
+        } else if !self.allow_projects.is_empty() && !self.allow_projects.contains(project) {
+            Some((
+                "project-allow-list",
+                format!("project {project:?} is not in the allow list"),
+            ))
+        } else if self.block_projects.contains(project) {
+            Some(("project-block-list", format!("project {project:?} is blocked")))
+        } else {
+            None
+        };
+        denial.map_or(Ok(()), |(rule, reason)| {
+            Err(PolicyDenial::new(action, project, None, None, rule, "project", reason))
+        })
     }
 }
 
@@ -257,7 +338,7 @@ struct VersionRule {
 
 impl ArtifactRule for VersionRule {
     fn check(&self, action: PolicyAction, facts: &ArtifactFacts) -> Result<(), PolicyDenial> {
-        let Some(version) = &facts.version else {
+        let Some(version) = &facts.group else {
             return Err(facts.denial(
                 action,
                 "version-specifier",
@@ -449,8 +530,8 @@ fn tags(values: &[String]) -> Result<HashSet<String>, PypiPolicyError> {
 
 /// Policy operations phrased in `PyPI` terms, implemented on the neutral [`Policy`].
 pub trait PypiPolicy {
-    /// Check whether one Simple-API file record is allowed.
-    ///
+    fn fallback_mode(&self) -> FallbackMode;
+    fn remote_metadata_mode(&self) -> RemoteMetadataMode;
     /// # Errors
     /// Returns a denial when the file's parsed facts match a configured policy rule.
     fn check_file(&self, action: PolicyAction, project: &str, file: &File) -> Result<(), PolicyDenial>;
@@ -469,8 +550,6 @@ pub trait PypiPolicy {
         predicate_types: &BTreeSet<String>,
     ) -> Result<(), PolicyDenial>;
 
-    /// Check whether a direct artifact or metadata download is allowed.
-    ///
     /// # Errors
     /// Returns a denial when the filename or known size matches a configured policy rule.
     fn check_download(&self, action: PolicyAction, filename: &str, size: Option<u64>) -> Result<(), PolicyDenial>;
@@ -489,14 +568,28 @@ pub trait PypiPolicy {
         now: Option<i64>,
     ) -> Result<ProjectDetail, PolicyDenial>;
 
-    /// Filter a project list to the projects this policy allows.
     fn apply_list(&self, list: ProjectList) -> ProjectList;
 
-    /// Every denial a project detail would raise, for dry-run reporting.
     fn preview_detail(&self, action: PolicyAction, detail: &ProjectDetail) -> Vec<PolicyDenial>;
 }
 
 impl PypiPolicy for Policy {
+    fn fallback_mode(&self) -> FallbackMode {
+        match self.owner_setting("pypi.fallback-mode") {
+            Some("private-first") => FallbackMode::PrivateFirst,
+            Some("no-fallback") => FallbackMode::NoFallback,
+            _ => FallbackMode::Fallback,
+        }
+    }
+
+    fn remote_metadata_mode(&self) -> RemoteMetadataMode {
+        match self.owner_setting("pypi.remote-metadata-mode") {
+            Some("proxy") => RemoteMetadataMode::Proxy,
+            Some("cache") => RemoteMetadataMode::Cache,
+            _ => RemoteMetadataMode::Direct,
+        }
+    }
+
     fn check_file(&self, action: PolicyAction, project: &str, file: &File) -> Result<(), PolicyDenial> {
         self.check_facts(action, &facts_from_file(project, file))
     }
@@ -526,7 +619,7 @@ impl PypiPolicy for Policy {
         mut detail: ProjectDetail,
         now: Option<i64>,
     ) -> Result<ProjectDetail, PolicyDenial> {
-        self.check_project(action, project)?;
+        self.check_resource(action, project)?;
         if !self.active() {
             return Ok(detail);
         }
@@ -535,7 +628,7 @@ impl PypiPolicy for Policy {
             facts.now = now;
             self.check_facts(action, &facts).is_ok()
         });
-        if let Some(limit) = self.max_project_size() {
+        if let Some(limit) = self.max_resource_size() {
             apply_project_size_limit(action, project, limit, &detail)?;
         }
         retain_versions_with_files(&mut detail);
@@ -552,7 +645,7 @@ impl PypiPolicy for Policy {
                 .projects
                 .into_iter()
                 .filter(|entry| {
-                    self.check_project(PolicyAction::Serve, &normalize_name(&entry.name))
+                    self.check_resource(PolicyAction::Serve, &normalize_name(&entry.name))
                         .is_ok()
                 })
                 .collect(),
@@ -561,7 +654,7 @@ impl PypiPolicy for Policy {
 
     fn preview_detail(&self, action: PolicyAction, detail: &ProjectDetail) -> Vec<PolicyDenial> {
         let mut denials = Vec::new();
-        if let Err(denial) = self.check_project(action, &detail.name) {
+        if let Err(denial) = self.check_resource(action, &detail.name) {
             denials.push(denial);
             return denials;
         }
@@ -572,7 +665,7 @@ impl PypiPolicy for Policy {
                 Err(denial) => denials.push(denial),
             }
         }
-        if let Some(limit) = self.max_project_size()
+        if let Some(limit) = self.max_resource_size()
             && let Some(denial) = project_size_denial(action, &detail.name, allowed, limit)
         {
             denials.push(denial);
@@ -591,9 +684,9 @@ const fn package_type_of(kind: DistributionKind) -> PackageType {
 fn facts_from_file(project: &str, file: &File) -> ArtifactFacts {
     let parsed = parse_distribution_filename(&file.filename).ok();
     ArtifactFacts {
-        project: project.to_owned(),
-        filename: Some(file.filename.clone()),
-        version: parsed.as_ref().map(|parsed| parsed.version.to_string()),
+        resource: project.to_owned(),
+        artifact: Some(file.filename.clone()),
+        group: parsed.as_ref().map(|parsed| parsed.version.to_string()),
         source: None,
         size: file.size,
         upload_time: file.upload_time.as_deref().and_then(parse_upload_time),
@@ -621,11 +714,11 @@ fn facts_from_upload(project: &str, file: &File, predicate_types: &BTreeSet<Stri
 fn facts_from_filename(filename: &str, size: Option<u64>) -> ArtifactFacts {
     let parsed = parse_distribution_filename(filename).ok();
     ArtifactFacts {
-        project: parsed
+        resource: parsed
             .as_ref()
             .map_or_else(|| "<unknown>".to_owned(), |parsed| parsed.normalized_name.clone()),
-        filename: Some(filename.to_owned()),
-        version: parsed.as_ref().map(|parsed| parsed.version.to_string()),
+        artifact: Some(filename.to_owned()),
+        group: parsed.as_ref().map(|parsed| parsed.version.to_string()),
         source: None,
         size,
         upload_time: None,
@@ -707,17 +800,14 @@ fn retain_versions_with_files(detail: &mut ProjectDetail) {
         .filter_map(|file| parse_distribution_filename(&file.filename).ok())
         .map(|parsed| parsed.version.to_string())
         .collect::<BTreeSet<_>>();
-    retain_versions(&mut detail.versions, versions);
+    detail.versions.retain(|version| versions.contains(version));
+    for version in versions {
+        if !detail.versions.contains(&version) {
+            detail.versions.push(version);
+        }
+    }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::PackageType;
-
-    #[test]
-    fn test_package_type_parse_rejects_an_unknown_value() {
-        assert_eq!(PackageType::parse("wheel"), Some(PackageType::Wheel));
-        assert_eq!(PackageType::parse("sdist"), Some(PackageType::Sdist));
-        assert_eq!(PackageType::parse("egg"), None);
-    }
-}
+#[path = "../tests/unit/policy/tests.rs"]
+mod tests;

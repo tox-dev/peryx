@@ -25,7 +25,7 @@ use crate::store::{Guard, MetadataSibling, ProvenanceSibling, PublishedFile};
 use serde::{Deserialize, Serialize};
 
 pub use peryx_core::TrashInfo;
-use peryx_core::path::{local_file_url, validate_filename};
+use peryx_core::path::{local_artifact_url, validate_artifact_name};
 
 /// An uploaded file plus the version it belongs to, stored per file on a private index and
 /// reassembled into the project's detail page.
@@ -182,9 +182,6 @@ pub enum UploadStoreError {
     FileExists(String),
 }
 
-/// Validate a parsed upload form and turn it into a stored-file record addressed by the content's
-/// sha256, with its download URL pointing at peryx's own file route on `index`.
-///
 /// # Errors
 /// Returns [`UploadError`] if the action is wrong, a required field is missing, or a declared digest
 /// does not match the content, or the filename is not a safe URL path segment.
@@ -206,7 +203,7 @@ pub fn prepare(
         return Err(UploadError::InvalidVersion(version));
     };
     let filename = form.filename.take().ok_or(UploadError::Missing("filename"))?;
-    validate_filename(&filename).map_err(|_| UploadError::InvalidFilename(filename.clone()))?;
+    validate_artifact_name(&filename).map_err(|_| UploadError::InvalidFilename(filename.clone()))?;
     let normalized = normalize_name(&name);
     let parsed = parse_filename(&filename)?;
     if parsed.normalized_name != normalized {
@@ -266,7 +263,7 @@ pub fn prepare(
         .or(form_requires_python);
     let upload_time = upload_time(upload_time_unix)?;
     let digest = staged.blob.digest().clone();
-    let url = local_file_url(index, digest.as_str(), &filename);
+    let url = local_artifact_url(index, digest.as_str(), &filename);
     let provenance = prepared_provenance(form.attestations.as_deref(), digest.as_str(), &filename, &url)?;
     let file = uploaded_file(UploadedFile {
         filename: filename.clone(),
@@ -397,10 +394,11 @@ pub(crate) async fn stage_publish(
 pub(crate) struct Published {
     /// `false` for a same-bytes duplicate the store left unchanged.
     pub stored: bool,
-    /// The committed blobs — the content artifact, its metadata sibling, and any provenance — each with
+    /// The committed blobs - the content artifact, its metadata sibling, and any provenance - each with
     /// its byte length. The bytes are on disk whatever `stored` reports, since a duplicate re-commits the
     /// same content, so recording each placement stays correct on a re-push.
     pub placements: Vec<(Digest, u64)>,
+    pub commit: Option<peryx_storage::meta::JournalCommit>,
 }
 
 /// Write the store record that publishes a staged upload, bumping the serial. Reports a same-bytes
@@ -414,6 +412,7 @@ pub(crate) fn commit_publish(
     name: &str,
     publish: PreparedPublish,
     mut quota: Option<crate::quota::PendingQuota>,
+    outbox: bool,
 ) -> Result<Published, UploadStoreError> {
     let PreparedPublish {
         record,
@@ -427,22 +426,25 @@ pub(crate) fn commit_publish(
     if let Some((digest, size)) = &provenance {
         placements.push((digest.clone(), *size));
     }
-    let stored = store_record(
+    let committed = store_record_with_commit(
         meta,
         name,
         record,
         &metadata_digest,
         provenance.as_ref(),
         quota.as_ref(),
+        outbox,
     )?;
     if let Some(quota) = &mut quota {
         quota.finish();
     }
-    Ok(Published { stored, placements })
+    Ok(Published {
+        stored: committed.value,
+        placements,
+        commit: committed.journal,
+    })
 }
 
-/// Blocking counterpart for offline import commands.
-///
 /// # Errors
 /// Returns [`UploadStoreError`] if staging or publication fails.
 pub fn store_prepared_blocking(
@@ -466,10 +468,17 @@ pub fn store_prepared_blocking(
     if let Some(provenance) = provenance {
         blocking.commit(provenance)?;
     }
-    store_record(meta, name, record, &metadata_digest, provenance_ref.as_ref(), None)
+    store_record(
+        meta,
+        name,
+        record,
+        &metadata_digest,
+        provenance_ref.as_ref(),
+        None,
+        false,
+    )
 }
 
-/// The digest and byte length a staged provenance blob contributes to its store record.
 fn staged_reference(blob: &BlobStaged) -> (Digest, u64) {
     (blob.digest().clone(), blob.len())
 }
@@ -510,6 +519,7 @@ fn store_record(
     metadata_digest: &Digest,
     provenance: Option<&(Digest, u64)>,
     quota: Option<&crate::quota::PendingQuota>,
+    outbox: bool,
 ) -> Result<bool, UploadStoreError> {
     let PreparedRecord {
         normalized,
@@ -546,14 +556,63 @@ fn store_record(
         }),
         quota: quota.map(crate::quota::PendingQuota::record),
     };
-    meta.publish_file_if(&file, |existing| {
+    meta.publish_file_if(outbox, &file, |existing| {
+        upload_conflict(existing, content_digest.as_str(), &filename)
+    })
+}
+
+fn store_record_with_commit(
+    meta: &MetaStore,
+    name: &str,
+    prepared: PreparedRecord,
+    metadata_digest: &Digest,
+    provenance: Option<&(Digest, u64)>,
+    quota: Option<&crate::quota::PendingQuota>,
+    outbox: bool,
+) -> Result<peryx_storage::meta::DriverCommit<bool>, UploadStoreError> {
+    let PreparedRecord {
+        normalized,
+        display_name,
+        filename,
+        digest: content_digest,
+        content_size,
+        metadata,
+        mut record,
+        submitted_at_unix,
+    } = prepared;
+    let hashes = BTreeMap::from([("sha256".to_owned(), metadata_digest.as_str().to_owned())]);
+    record.file.set_metadata(CoreMetadata::Hashes(hashes));
+    let body = to_json(&record).into_bytes();
+    let file = PublishedFile {
+        index: name,
+        normalized: &normalized,
+        display: &display_name,
+        filename: &filename,
+        artifact_sha256: content_digest.as_str(),
+        artifact_size: content_size,
+        record: &body,
+        version: record.version.as_str(),
+        submitted_at_unix,
+        metadata: Some(MetadataSibling {
+            url: "uploaded",
+            metadata_sha256: metadata_digest.as_str(),
+            size: metadata.len() as u64,
+            source: name,
+        }),
+        provenance: provenance.map(|(digest, size)| ProvenanceSibling {
+            provenance_sha256: digest.as_str(),
+            size: *size,
+        }),
+        quota: quota.map(crate::quota::PendingQuota::record),
+    };
+    crate::store::publish_file_with_commit_if(meta, outbox, &file, |existing| {
         upload_conflict(existing, content_digest.as_str(), &filename)
     })
 }
 
 /// The upload publish precondition, evaluated inside the write transaction: a first upload commits,
 /// an identical re-upload is an idempotent no-op, and the same filename with different bytes is a
-/// conflict — so two concurrent different-content uploads cannot both publish.
+/// conflict - so two concurrent different-content uploads cannot both publish.
 fn upload_conflict(existing: Option<&[u8]>, digest: &str, filename: &str) -> Result<Guard, UploadStoreError> {
     let Some(existing) = existing else {
         return Ok(Guard::Commit);
@@ -609,11 +668,17 @@ fn verify_declared_hash(field: &'static str, declared: Option<&str>, actual: &st
 
 fn content_md5(path: &std::path::Path) -> Result<String, UploadError> {
     let invalid_content = |err: std::io::Error| UploadError::InvalidContent(err.to_string());
-    let mut content =
-        std::io::BufReader::with_capacity(64 * 1024, std::fs::File::open(path).map_err(&invalid_content)?);
+    let mut content = std::fs::File::open(path).map_err(&invalid_content)?;
     let mut md5 = Md5::new();
-    std::io::copy(&mut content, &mut md5).map_err(&invalid_content)?;
-    Ok(to_hex(md5.finalize().as_slice()))
+    let mut chunk = vec![0; 64 * 1024];
+    loop {
+        let count = std::io::Read::read(&mut content, &mut chunk).map_err(&invalid_content)?;
+        if count == 0 {
+            break;
+        }
+        md5.update(&chunk[..count]);
+    }
+    Ok(to_hex(&md5.finalize()))
 }
 
 fn to_hex(bytes: &[u8]) -> String {
@@ -734,8 +799,8 @@ fn validate_metadata_version(value: Option<&str>) -> Result<u8, UploadError> {
 }
 
 /// Core Metadata introduced each field in a version, and a document may not use a field that
-/// postdates the version it declares. Deprecating a field leaves it usable — `License` still reads
-/// under 2.4 — so an introduction is the only bound.
+/// postdates the version it declares. Deprecating a field leaves it usable - `License` still reads
+/// under 2.4 - so an introduction is the only bound.
 ///
 /// Versions follow the field history in
 /// <https://packaging.python.org/en/latest/specifications/core-metadata/>.
@@ -989,8 +1054,6 @@ fn validate_import_value<'a>(field: &'static str, raw: &'a str, allow_empty: boo
     }
 }
 
-/// Whether a name is a Python identifier. Peryx checks ASCII identifiers, as it does for project and
-/// extra names, since import names in published metadata are ASCII in practice.
 fn is_python_identifier(name: &str) -> bool {
     let mut bytes = name.bytes();
     bytes
@@ -1030,8 +1093,6 @@ fn compare_metadata_field(field: &'static str, form: Option<&str>, metadata: Opt
     }
 }
 
-/// Core Metadata locates each `License-File` below the project root, as `packaging` does: no parent
-/// components, no unresolved globs, relative, and `/`-delimited.
 fn validate_license_files(values: &[String]) -> Result<(), UploadError> {
     for value in values {
         let reason = if value.contains("..") {

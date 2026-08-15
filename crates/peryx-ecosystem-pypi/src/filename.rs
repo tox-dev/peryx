@@ -1,5 +1,3 @@
-//! Python distribution filename parsing for upload identity checks.
-
 use crate::{Version, is_valid_name, normalize_name, parse_version};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,7 +63,7 @@ fn strip_ascii_suffix_ignore_case<'a>(value: &'a str, suffix: &str) -> Option<&'
     let split = value.len().checked_sub(suffix.len())?;
     value.as_bytes()[split..]
         .eq_ignore_ascii_case(suffix.as_bytes())
-        .then_some(&value[..split])
+        .then(|| &value[..split])
 }
 
 /// Sdist archive suffixes whose project name may itself keep a `-`, so the version is the segment
@@ -139,9 +137,9 @@ fn parse_wheel_filename(stem: &str) -> Result<DistributionFilename, Distribution
             return Err(DistributionFilenameError::InvalidWheelShape);
         };
         validate_build_tag(build)?;
-        return parsed(name, version, [*python, *abi, *platform], DistributionKind::Wheel);
+        return parsed(name, version, &[*python, *abi, *platform], DistributionKind::Wheel);
     };
-    parsed(name, version, [*python, *abi, *platform], DistributionKind::Wheel)
+    parsed(name, version, &[*python, *abi, *platform], DistributionKind::Wheel)
 }
 
 // A legacy (pre-PEP 625) sdist name was not escaped, so the last `-` is only a heuristic for the
@@ -152,13 +150,13 @@ fn parse_sdist_filename(stem: &str, kind: DistributionKind) -> Result<Distributi
     let Some((name, version)) = stem.rsplit_once('-') else {
         return Err(DistributionFilenameError::InvalidSdistShape);
     };
-    parsed(name, version, [], kind)
+    parsed(name, version, &[], kind)
 }
 
-fn parsed<const N: usize>(
+fn parsed(
     name: &str,
     version: &str,
-    tags: [&str; N],
+    tags: &[&str],
     kind: DistributionKind,
 ) -> Result<DistributionFilename, DistributionFilenameError> {
     if !is_valid_name(name) {

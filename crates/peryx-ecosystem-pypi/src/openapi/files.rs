@@ -1,7 +1,9 @@
 //! Downloading an artifact and its PEP 658 metadata sibling.
 
-#[allow(clippy::wildcard_imports, reason = "shared is this module's OpenAPI-builder prelude")]
-use super::shared::*;
+use super::shared::{
+    ContentBuilder, OperationBuilder, ResponseBuilder, filename_param, if_modified_since_param, if_none_match_param,
+    if_range_param, policy_denial_response, range_param, route_param, sha256_param, text_response,
+};
 
 pub(super) fn file_download() -> OperationBuilder {
     OperationBuilder::new()
@@ -28,7 +30,7 @@ pub(super) fn file_download() -> OperationBuilder {
         .response(
             "200",
             ResponseBuilder::new()
-                .description("The artifact bytes")
+                .description("Content-addressed artifact body")
                 .content("application/octet-stream", ContentBuilder::new().build()),
         )
         .response(

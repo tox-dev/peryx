@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+cd "$repo"
+source .github/scripts/mutation-environment
+mutation_environment "$repo"
+baseline=${1:?pass a base revision}
+jobs=${2:-2}
+in_place=${3:-false}
+part=${4:-1/1}
+budget=${PERYX_MUTATION_BUDGET:-32}
+if [[ ! $budget =~ ^[1-9][0-9]*$ ]]; then
+  printf 'mutation budget must be a positive integer: %s\n' "$budget" >&2
+  exit 2
+fi
+if [[ ! $part =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]]; then
+  printf 'mutation part must be INDEX/COUNT: %s\n' "$part" >&2
+  exit 2
+fi
+part_index=${BASH_REMATCH[1]}
+part_count=${BASH_REMATCH[2]}
+if ((part_index > part_count)); then
+  printf 'mutation part index exceeds its count: %s\n' "$part" >&2
+  exit 2
+fi
+if ! git cat-file -e "$baseline^{commit}" 2>/dev/null; then
+  git fetch --no-tags --depth=1 origin "$baseline"
+fi
+mkdir -p .tox
+diff_file=$(mktemp)
+list_file=$(mktemp)
+trap 'rm -f "$diff_file" "$list_file"' EXIT
+git diff --no-ext-diff --unified=0 "$baseline" -- \
+  ':(glob)crates/*/src/*.rs' \
+  ':(glob)crates/*/src/**/*.rs' \
+  ':(exclude,glob)crates/*/src/tests/**' >"$diff_file"
+selection=(--workspace --all-features --in-diff "$diff_file")
+cargo mutants "${selection[@]}" --list >"$list_file"
+candidates=$(wc -l <"$list_file" | tr -d ' ')
+if ((candidates == 0)); then
+  printf 'no changed production mutants\n'
+  exit 0
+fi
+part_budget=$(((budget + part_count - 1) / part_count))
+shards=$(((candidates + part_budget - 1) / part_budget))
+if ((part_index > shards)); then
+  printf 'mutation candidates=%d budget=%d part=%s selected=0\n' "$candidates" "$budget" "$part"
+  exit 0
+fi
+printf 'mutation candidates=%d budget=%d part=%s shard=%d/%d\n' \
+  "$candidates" "$budget" "$part" "$part_index" "$shards"
+args=("${selection[@]}" --test-tool=nextest --baseline skip --output .tox/mutants)
+if ((shards > 1)); then
+  args+=(--shard "$part_index/$shards" --sharding round-robin)
+fi
+if [[ $in_place == true ]]; then
+  args+=(--in-place)
+else
+  args+=(--jobs "$jobs")
+fi
+cargo mutants "${args[@]}"

@@ -1,11 +1,8 @@
-//! The one authorization service HTTP, UI, and CLI-backed operations share to decide a role-based
-//! access question.
+//! Authorization combines persisted role grants ([`MetaStore`]) with the fixed
+//! [`peryx_identity::grants_permit`] decision model.
 //!
-//! It wraps the persisted role grants ([`MetaStore`]) and the fixed decision model
-//! ([`peryx_identity::grants_permit`]). Every decision reads the authoritative grants for the user, so
-//! there is no cached copy to invalidate: a revoked grant is absent from the very next decision without
-//! a restart. A read is a snapshot-isolated redb transaction and never a write, so authorizing a
-//! package download performs no database write.
+//! Each decision reads authoritative grants. Revocations take effect on the next decision without
+//! cache invalidation. Snapshot reads do not write to the database.
 //!
 //! Decisions fail closed. When the grant store cannot be read the answer is [`Decision::Deny`] with
 //! [`DenyReason::StorageUnavailable`], never an allow, so a storage fault cannot open access. Each
@@ -14,9 +11,10 @@
 
 use peryx_events::security::{AuthorizationDenial, authorization_denied};
 use peryx_identity::{GrantScope, Resource, Role, RoleGrant, Scope, UserId, grants_permit};
-use peryx_storage::meta::{
-    CreateGrantOutcome, DeleteGrantOutcome, MetaError, MetaStore, RoleGrantPage, RoleGrantQuery, RoleGrantQueryError,
-    RoleGrantStoreError, StoredRoleGrant,
+use peryx_storage::meta::{CreateGrantOutcome, MetaError, MetaStore, RoleGrantPage};
+pub use peryx_storage::meta::{
+    DeleteGrantOutcome, RoleGrantFilter, RoleGrantQuery, RoleGrantQueryError, RoleGrantStoreError, StoredRoleGrant,
+    role_grant_reach,
 };
 
 /// Role-based authorization over persistent server users.
@@ -73,8 +71,6 @@ impl AuthorizationService {
         Self { store }
     }
 
-    /// Grant a role to a user over one reach, idempotently.
-    ///
     /// # Errors
     /// Returns [`RoleGrantStoreError::UnknownUser`] for an unknown user or a store error when the
     /// grant cannot be committed.
@@ -82,25 +78,18 @@ impl AuthorizationService {
         self.store.grant_role(user, role, scope)
     }
 
-    /// Revoke a role a user held over one reach, reporting whether a binding was present. The next
-    /// [`authorize`](Self::authorize) reflects the removal with no restart.
-    ///
     /// # Errors
     /// Returns a store error when the revocation cannot be committed.
     pub fn revoke(&self, user: &UserId, role: Role, scope: &GrantScope) -> Result<bool, MetaError> {
         self.store.revoke_role(user, role, scope)
     }
 
-    /// Read every role a user holds.
-    ///
     /// # Errors
     /// Returns a store error when the grants cannot be read.
     pub fn grants(&self, user: &UserId) -> Result<Vec<RoleGrant>, MetaError> {
         self.store.user_role_grants(user)
     }
 
-    /// Grant a role through the management API, recording the granter, the time, and a fresh version.
-    ///
     /// # Errors
     /// Returns [`RoleGrantStoreError`] for a missing or disabled user, or a store fault.
     pub fn create_managed_grant(
@@ -112,32 +101,24 @@ impl AuthorizationService {
         self.store.create_managed_grant(grant, granted_by, now)
     }
 
-    /// Read one managed binding by its opaque identifier.
-    ///
     /// # Errors
     /// Returns a store error when the record cannot be read or decoded.
     pub fn managed_grant(&self, id: &str) -> Result<Option<StoredRoleGrant>, MetaError> {
         self.store.managed_grant(id)
     }
 
-    /// Conditionally revoke a managed binding, honoring the version precondition.
-    ///
     /// # Errors
     /// Returns a store error when the transaction cannot commit.
     pub fn delete_managed_grant(&self, id: &str, expected_version: u64) -> Result<DeleteGrantOutcome, MetaError> {
         self.store.delete_managed_grant(id, expected_version)
     }
 
-    /// List managed bindings, one bounded page at a time.
-    ///
     /// # Errors
     /// Returns [`RoleGrantQueryError`] for an out-of-range limit or a store fault.
     pub fn list_managed_grants(&self, query: &RoleGrantQuery) -> Result<RoleGrantPage, RoleGrantQueryError> {
         self.store.list_managed_grants(query)
     }
 
-    /// Decide whether `user` may take `scope` on `resource`, failing closed on a storage fault and
-    /// emitting one bounded security event for the outcome. Denied events omit the resource.
     #[must_use]
     pub fn authorize(&self, user: &UserId, scope: Scope, resource: &Resource) -> Decision {
         let decision = match self.store.user_role_grants(user) {
@@ -176,7 +157,6 @@ impl AuthorizationService {
         decision
     }
 
-    /// Decide and retain the checked scope for consumers that derive data visibility from it.
     #[must_use]
     pub fn authorize_scoped(&self, user: &UserId, scope: Scope, resource: &Resource) -> ScopedDecision {
         ScopedDecision {

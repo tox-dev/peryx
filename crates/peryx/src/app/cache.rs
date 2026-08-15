@@ -1,39 +1,52 @@
-//! Cache inspection: list, size, and the dispatch into fsck and purge.
-
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context as _;
+use peryx_driver::DriverSet;
+use peryx_plugin_registry::PluginRegistry;
 
 use super::fsck::fsck_cache;
-use super::purge::{purge_orphaned_blobs, purge_project};
+use super::purge::{purge_orphaned_blobs, purge_resource, validate_orphan_purge_mode};
 use super::{CacheStores, index_names, reject_object_store_blob};
 use crate::cli::{CacheCommand, CacheListArgs, CachePurgeCommand};
 use crate::config::Config;
 
-/// Run a cache inspection or maintenance command.
-///
 /// # Errors
-/// Returns an error if the repository uses an object-store blob backend, the metadata store or blob
-/// store cannot be read, or if output fails.
+/// Returns an error when storage or output fails or the configured blob backend is unsupported.
 pub fn cache(config: &Config, command: &CacheCommand, out: &mut dyn Write) -> anyhow::Result<()> {
-    cache_at(config, command, unix_now(), out)
+    cache_with_plugins(config, &crate::compiled_plugins(), command, out)
 }
 
-fn cache_at(config: &Config, command: &CacheCommand, now: i64, out: &mut dyn Write) -> anyhow::Result<()> {
+/// # Errors
+/// Returns an error when storage, a plugin cache capability, or output fails.
+pub fn cache_with_plugins(
+    config: &Config,
+    plugins: &PluginRegistry,
+    command: &CacheCommand,
+    out: &mut dyn Write,
+) -> anyhow::Result<()> {
+    let plugins = crate::server::activate_plugins(config, plugins)?;
     reject_object_store_blob(config, "cache maintenance")?;
-    let stores = CacheStores::open(config)?;
+    if matches!(command, CacheCommand::Purge(CachePurgeCommand::OrphanedBlobs(_))) {
+        validate_orphan_purge_mode(config.availability.mode())?;
+    }
+    let writable = matches!(command, CacheCommand::Purge(_));
+    let stores = CacheStores::open(config, &plugins, writable)?;
+    let drivers = plugins.drivers();
     match command {
-        CacheCommand::List(args) => list_cache(config, &stores, args, now, out),
-        CacheCommand::Size(_) => size_cache(config, &stores, now, out),
-        CacheCommand::Fsck(_) => fsck_cache(&stores, out),
-        CacheCommand::Purge(CachePurgeCommand::Project(args)) => purge_project(config, &stores, args, out),
-        CacheCommand::Purge(CachePurgeCommand::OrphanedBlobs(args)) => purge_orphaned_blobs(&stores, args, now, out),
+        CacheCommand::List(args) => list_cache(config, drivers, &stores, args, unix_now(), out),
+        CacheCommand::Size(_) => size_cache(config, drivers, &stores, unix_now(), out),
+        CacheCommand::Fsck(_) => fsck_cache(drivers, &stores, out),
+        CacheCommand::Purge(CachePurgeCommand::Resource(args)) => purge_resource(config, drivers, &stores, args, out),
+        CacheCommand::Purge(CachePurgeCommand::OrphanedBlobs(args)) => {
+            purge_orphaned_blobs(drivers, &stores, args, unix_now(), out)
+        }
     }
 }
 
 fn list_cache(
     config: &Config,
+    drivers: &DriverSet,
     stores: &CacheStores,
     args: &CacheListArgs,
     now: i64,
@@ -41,50 +54,32 @@ fn list_cache(
 ) -> anyhow::Result<()> {
     writeln!(
         out,
-        "kind\tindex\tproject\tdigest\tage_secs\tfresh_secs\tstale\tsize_bytes\tkey"
+        "kind\tindex\tresource\tdigest\tage_secs\tfresh_secs\tstale\tsize_bytes\tkey"
     )?;
     if args.digest.is_none() {
         let names = index_names(config);
-        for driver in crate::server::drivers().present() {
-            // Each ecosystem produces its own cached pages, split into its own terms; the filtering
-            // and row shape stay neutral. The write shares the scan's context so a broken pipe here
-            // surfaces the same way an unreadable store would.
-            let mut render = || -> anyhow::Result<()> {
-                let project_filter = args.project.as_deref().map(|project| driver.normalize_name(project));
-                let pages = driver.cache_pages(&stores.meta, &names).map_err(anyhow::Error::msg)?;
-                for page in pages {
-                    let age = age_secs(now, page.fetched_at_unix);
-                    let ttl = page.fresh_secs.unwrap_or(config.cache_ttl_secs);
-                    let stale = is_stale(age, ttl);
-                    if args
-                        .index
-                        .as_deref()
-                        .is_some_and(|filter| filter != page.index.as_str())
-                        || project_filter
-                            .as_deref()
-                            .is_some_and(|filter| filter != page.project.as_str())
-                        || args.stale && !stale
-                        || args.min_age_secs.is_some_and(|min| age < min)
-                        || args.min_size_bytes.is_some_and(|min| page.body_bytes < min)
-                    {
-                        continue;
-                    }
-                    writeln!(
-                        out,
-                        "index\t{}\t{}\t\t{age}\t{}\t{stale}\t{}\t{}",
-                        page.index,
-                        page.project,
-                        page.fresh_secs.map_or_else(|| "-".to_owned(), |secs| secs.to_string()),
-                        page.body_bytes,
-                        page.key,
-                    )?;
-                }
-                Ok(())
+        let context = CacheListContext {
+            config,
+            stores,
+            args,
+            index_names: &names,
+            now,
+        };
+        for ecosystem_driver in drivers.present() {
+            let ecosystem = ecosystem_driver.ecosystem();
+            let Some(driver) = drivers.get_cache(&ecosystem) else {
+                continue;
             };
-            render().context("scan cached index pages")?;
+            list_driver_cache(
+                &context,
+                driver.as_ref(),
+                drivers.get_name(&ecosystem).map(std::convert::AsRef::as_ref),
+                out,
+            )
+            .context("scan cached index pages")?;
         }
     }
-    if args.index.is_some() || args.project.is_some() || args.stale || args.min_age_secs.is_some() {
+    if args.index.is_some() || args.resource.is_some() || args.stale || args.min_age_secs.is_some() {
         return Ok(());
     }
     stores
@@ -111,13 +106,71 @@ fn list_cache(
     Ok(())
 }
 
-fn size_cache(config: &Config, stores: &CacheStores, now: i64, out: &mut dyn Write) -> anyhow::Result<()> {
+struct CacheListContext<'a> {
+    config: &'a Config,
+    stores: &'a CacheStores,
+    args: &'a CacheListArgs,
+    index_names: &'a [&'a str],
+    now: i64,
+}
+
+fn list_driver_cache(
+    context: &CacheListContext<'_>,
+    driver: &dyn peryx_driver::serving::CacheDriver,
+    names: Option<&dyn peryx_driver::serving::NameDriver>,
+    out: &mut dyn Write,
+) -> anyhow::Result<()> {
+    let resource_filter = context
+        .args
+        .resource
+        .as_deref()
+        .map(|resource| names.map_or_else(|| resource.to_owned(), |driver| driver.normalize_name(resource)));
+    for page in driver
+        .cache_pages(&context.stores.meta, context.index_names)
+        .map_err(anyhow::Error::msg)?
+    {
+        let age = age_secs(context.now, page.fetched_at_unix);
+        let stale = is_stale(age, page.fresh_secs.unwrap_or(context.config.cache_ttl_secs));
+        if context
+            .args
+            .index
+            .as_deref()
+            .is_some_and(|filter| filter != page.index.as_str())
+            || resource_filter
+                .as_deref()
+                .is_some_and(|filter| filter != page.resource.as_str())
+            || context.args.stale && !stale
+            || context.args.min_age_secs.is_some_and(|min| age < min)
+            || context.args.min_size_bytes.is_some_and(|min| page.body_bytes < min)
+        {
+            continue;
+        }
+        writeln!(
+            out,
+            "index\t{}\t{}\t\t{age}\t{}\t{stale}\t{}\t{}",
+            page.index,
+            page.resource,
+            page.fresh_secs.map_or_else(|| "-".to_owned(), |secs| secs.to_string()),
+            page.body_bytes,
+            page.key,
+        )?;
+    }
+    Ok(())
+}
+
+fn size_cache(
+    config: &Config,
+    drivers: &DriverSet,
+    stores: &CacheStores,
+    now: i64,
+    out: &mut dyn Write,
+) -> anyhow::Result<()> {
     let mut index_pages = 0_u64;
     let mut index_bytes = 0_u64;
     let mut stale_index_pages = 0_u64;
     let mut record_counts: Vec<(String, u64)> = Vec::new();
     let names = index_names(config);
-    for driver in crate::server::drivers().present() {
+    for driver in drivers.cache_drivers() {
         let pages = driver
             .cache_pages(&stores.meta, &names)
             .map_err(anyhow::Error::msg)
@@ -129,8 +182,6 @@ fn size_cache(config: &Config, stores: &CacheStores, now: i64, out: &mut dyn Wri
             let ttl = page.fresh_secs.unwrap_or(config.cache_ttl_secs);
             stale_index_pages += u64::from(is_stale(age, ttl));
         }
-        // Each driver labels its own record kinds, so the labels across drivers never collide; the
-        // counts append rather than merge.
         record_counts.extend(driver.cache_record_counts(&stores.meta).map_err(anyhow::Error::msg)?);
     }
 
@@ -173,3 +224,7 @@ fn unix_now() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs().try_into().unwrap_or(i64::MAX))
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/tests/app/cache_tests.rs"]
+mod tests;

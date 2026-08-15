@@ -1,12 +1,8 @@
-//! Loading configuration from a TOML file and from `PERYX_*` environment variables.
-
 use std::path::PathBuf;
 
 use super::ConfigError;
 use super::raw::{PartialAuthConfig, PartialConfig, PartialJobsConfig, PartialLogConfig, PartialRateLimitConfig};
 
-/// Parse a TOML document into a [`PartialConfig`].
-///
 /// # Errors
 /// Returns [`ConfigError::Parse`] when `text` is not valid TOML for the schema. `path` is used only
 /// for the error message.
@@ -26,7 +22,7 @@ pub fn from_env() -> Result<PartialConfig, ConfigError> {
     from_env_source(|var| std::env::var(var).ok())
 }
 
-pub fn from_env_source(get: impl Fn(&str) -> Option<String>) -> Result<PartialConfig, ConfigError> {
+pub(super) fn from_env_source(get: impl Fn(&str) -> Option<String>) -> Result<PartialConfig, ConfigError> {
     let get = |var: &str| get(var).filter(|value| !value.is_empty());
     Ok(PartialConfig {
         host: get("PERYX_HOST"),
@@ -82,8 +78,6 @@ fn parse_env_enum<T: clap::ValueEnum>(
         .transpose()
 }
 
-/// Read a config file from disk into a [`PartialConfig`].
-///
 /// # Errors
 /// Returns [`ConfigError::Read`] if the file cannot be read and [`ConfigError::Parse`] if it is not
 /// valid TOML.

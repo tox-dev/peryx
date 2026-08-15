@@ -1,10 +1,6 @@
-# Vendored third-party artwork stays byte-for-byte as published.
-exclude: ^site/static/logos/
-
 ci:
   autoupdate_schedule: monthly
-  # pre-commit.ci has neither a Rust toolchain nor a headless browser; CI runs fmt/clippy, and the docs
-  # job re-inlines the committed diagrams (a missing partial fails there).
+  # GitHub Actions runs hooks that need Rust or Node.
   skip: [cargo-fmt, cargo-clippy, render-diagrams]
 
 repos:
@@ -19,16 +15,26 @@ repos:
       - id: cargo-clippy
         name: cargo clippy
         language: system
-        entry: cargo clippy --target-dir .tox/pre-commit-target --workspace --all-targets -- -D warnings
+        entry: cargo clippy --target-dir .tox/pre-commit-target --workspace --all-targets --all-features -- -D warnings
         types: [rust]
         pass_filenames: false
-      # Mermaid diagrams render to committed SVG partials because the docs host has no browser. Editing a
-      # diagram's source changes its content-hash, so this re-renders and stages the partial on commit.
-      - id: render-diagrams
-        name: render mermaid diagrams
+      - id: test-layout
+        name: test layout
         language: system
-        entry: npm --prefix site run render
-        files: ^site/content/.*\.md$
+        entry: .github/scripts/check-test-layout
+        types: [rust]
+        pass_filenames: false
+      - id: test-timing
+        name: test timing
+        language: system
+        entry: .github/scripts/check-test-timing
+        files: \.(bash|cjs|js|jsx|mjs|rs|sh|ts|tsx|zsh)$
+        pass_filenames: false
+      - id: render-diagrams
+        name: check mermaid diagrams
+        language: system
+        entry: node site/scripts/render_diagrams.mjs --check
+        files: ^(site/content|crates/peryx-ecosystem-(pypi|oci)/docs/content)/.*\.md$
         pass_filenames: false
   - repo: https://github.com/hukkin/mdformat
     rev: 1.0.0
@@ -45,6 +51,8 @@ repos:
           - mdformat-web>=0.2
           - mdformat-rustfmt>=0.0.3
           - mdformat-zola>=1
+          - mdformat-ruff>=0.1.3
+          - ruff>=0.16.2
         args: ["--wrap", "120"]
   - repo: https://github.com/python-jsonschema/check-jsonschema
     rev: 0.37.4
@@ -55,11 +63,10 @@ repos:
     rev: v2.4.3
     hooks:
       - id: codespell
-        # `opps` (a framework) and `ukranian` (deprecated) are trove classifiers, spelled as PyPI publishes them.
-        # `atleast` is the `DurabilityPolicy::AtLeast` replication variant, not a misspelling of "at least".
-        args: ["--ignore-words-list=ser,unparseable,opps,ukranian,atleast"]
-        # Generated mermaid SVGs contain mermaid's own class names (e.g. `.composit`).
-        exclude: "^site/diagrams/"
+        exclude: ^site/diagrams/
+        args:
+          - --ignore-words-list=ser,unparseable,atleast,wronly
+          - --ignore-words=crates/peryx-ecosystem-pypi/docs/.codespell-ignore-words.txt
   - repo: https://github.com/zizmorcore/zizmor-pre-commit
     rev: v1.29.0
     hooks:

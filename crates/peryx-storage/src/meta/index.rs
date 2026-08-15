@@ -7,7 +7,7 @@ use super::{
 };
 
 impl MetaStore {
-    /// Store a driver-owned value under `key`. The store treats both as opaque bytes.
+    /// Treats keys and values as opaque bytes.
     ///
     /// # Errors
     /// Returns a store error if the write fails.
@@ -21,8 +21,6 @@ impl MetaStore {
         Ok(())
     }
 
-    /// Fetch a driver-owned value by `key`.
-    ///
     /// # Errors
     /// Returns a store error if the read fails.
     pub fn get_driver_value(&self, key: &str) -> Result<Option<Vec<u8>>, MetaError> {
@@ -31,8 +29,6 @@ impl MetaStore {
         Ok(table.get(key)?.map(|value| value.value().to_vec()))
     }
 
-    /// Remove a driver-owned value, reporting whether it was present.
-    ///
     /// # Errors
     /// Returns a store error if the write fails.
     pub fn delete_driver_value(&self, key: &str) -> Result<bool, MetaError> {
@@ -45,7 +41,76 @@ impl MetaStore {
         Ok(removed)
     }
 
-    /// Collect every driver-owned key that starts with `prefix`, in key order.
+    /// Commits the read, transformation, and write atomically.
+    ///
+    /// # Errors
+    /// Returns a store error if the read, transformation, or write fails.
+    pub fn update_driver_value<R>(
+        &self,
+        key: &str,
+        update: impl FnOnce(Option<&[u8]>) -> Result<(Option<Vec<u8>>, R), MetaError>,
+    ) -> Result<R, MetaError> {
+        let txn = self.db.begin_write()?;
+        let result;
+        {
+            let mut table = txn.open_table(DRIVER_KV)?;
+            let current = table.get(key)?;
+            let (next, updated) = update(current.as_ref().map(redb::AccessGuard::value))?;
+            drop(current);
+            match next {
+                Some(value) => {
+                    table.insert(key, value.as_slice())?;
+                }
+                None => {
+                    table.remove(key)?;
+                }
+            }
+            result = updated;
+        }
+        txn.commit()?;
+        Ok(result)
+    }
+
+    /// Removes at most `limit` matching values accepted by `remove`.
+    ///
+    /// # Errors
+    /// Returns a store error if scanning, classification, or deletion fails.
+    pub fn remove_driver_values_if(
+        &self,
+        prefix: &str,
+        limit: usize,
+        mut remove: impl FnMut(&[u8]) -> Result<bool, MetaError>,
+    ) -> Result<Vec<String>, MetaError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let txn = self.db.begin_write()?;
+        let removed;
+        {
+            let mut table = txn.open_table(DRIVER_KV)?;
+            let mut keys = Vec::new();
+            for entry in table.range(prefix..)? {
+                let (key, value) = entry?;
+                if !key.value().starts_with(prefix) {
+                    break;
+                }
+                if remove(value.value())? {
+                    keys.push(key.value().to_owned());
+                    if keys.len() == limit {
+                        break;
+                    }
+                }
+            }
+            for key in &keys {
+                table.remove(key.as_str())?;
+            }
+            removed = keys;
+        }
+        txn.commit()?;
+        Ok(removed)
+    }
+
+    /// Returns matching keys in key order.
     ///
     /// # Errors
     /// Returns a store error if the read fails.
@@ -53,7 +118,7 @@ impl MetaStore {
         self.driver_prefix_keys_limited(prefix, usize::MAX)
     }
 
-    /// Collect at most `limit` driver-owned keys that start with `prefix`, in key order.
+    /// Returns at most `limit` matching keys in key order.
     ///
     /// # Errors
     /// Returns a store error if the read fails.
@@ -77,7 +142,7 @@ impl MetaStore {
         Ok(keys)
     }
 
-    /// Visit driver-owned records that start with `prefix`, in key order, without collecting them.
+    /// Visits matching records in key order without collecting them.
     ///
     /// # Errors
     /// Returns a store error if the read fails.
@@ -94,7 +159,7 @@ impl MetaStore {
         Ok(())
     }
 
-    /// Visit driver records and read one repository's policy-input generation from one snapshot.
+    /// Reads driver records and policy generation from one snapshot.
     ///
     /// # Errors
     /// Returns a scan error if the store read fails or the visitor rejects one row.
@@ -131,17 +196,14 @@ impl MetaStore {
         Ok(generation)
     }
 
-    /// Apply a batch of driver-owned writes in one transaction. `durable` requests an fsync-backed
-    /// commit; pass `false` for re-fetchable cache data, where skipping the fsync keeps a large-page
-    /// write at memory speed and a crash before the next durable commit only costs a refetch — the
-    /// fast path a write per key would lose.
+    /// Commits a driver batch atomically. `durable = false` skips fsync for data that callers can refetch
+    /// after a crash.
     ///
     /// # Errors
     /// Returns a store error if the write or commit fails.
     ///
     /// # Panics
-    /// Never in practice: reducing durability is rejected only after savepoint use, and this
-    /// transaction takes none.
+    /// Panics if redb rejects reduced durability despite this transaction having no savepoints.
     pub fn commit_driver_batch(&self, batch: &DriverBatch, durable: bool) -> Result<(), MetaError> {
         let mut txn = self.db.begin_write()?;
         if !durable {
@@ -161,17 +223,15 @@ impl MetaStore {
         Ok(())
     }
 
-    /// Run a read-modify-write transaction for re-fetchable driver cache rows without waiting for
-    /// an fsync. Reads and writes remain atomic; a crash before a later durable commit may discard
-    /// them.
+    /// Keeps cache reads and writes atomic but skips fsync; a crash may discard them before a durable
+    /// commit.
     ///
     /// # Errors
     /// Returns the body's error, or a store error mapped into it, if the transaction fails to open,
     /// read, write, or commit.
     ///
     /// # Panics
-    /// Never in practice: reducing durability is rejected only after savepoint use, and this
-    /// transaction takes none.
+    /// Panics if redb rejects reduced durability despite this transaction having no savepoints.
     pub fn commit_driver_cache_txn<T, E: From<MetaError>>(
         &self,
         body: impl FnOnce(&mut DriverTxn) -> Result<T, E>,
@@ -185,17 +245,9 @@ impl MetaStore {
         )
     }
 
-    /// Run a driver-owned read-modify-write over the neutral table in one write transaction.
-    ///
-    /// A check and the writes it gates commit together, so neither can interleave with another
-    /// writer. `body` reads current rows through the [`DriverTxn`], stages its puts and deletes, and
-    /// returns the value to hand back paired with the journal entries to record: each allocates the
-    /// next serial and is written in the same transaction, in order, so a batch that changes many
-    /// files records one entry per file and a replica observes every one. An empty list commits the
-    /// rows alone, for a change no replica reconciles. Returning an error from `body` drops the
-    /// transaction, so a rejected precondition leaves the store untouched. The final journal entry
-    /// carries the transaction's final row values, so a page boundary cannot expose partial row
-    /// changes from a multi-entry commit.
+    /// Commits checks, driver rows, and serial-ordered journal entries atomically. An empty journal list
+    /// records no replicated change; a body error commits nothing. The final journal entry carries the
+    /// transaction's final row values so page boundaries cannot expose partial changes.
     ///
     /// # Errors
     /// Returns the body's error, or a store error mapped into it, if the transaction fails to open,
@@ -204,37 +256,19 @@ impl MetaStore {
         &self,
         body: impl FnOnce(&mut DriverTxn) -> Result<(T, Vec<Vec<u8>>), E>,
     ) -> Result<T, E> {
-        self.commit_driver_txn_at(None, None, true, |_, _| Ok(()), body)
+        self.commit_driver_txn_with_commit(body).map(|commit| commit.value)
     }
 
-    /// Commit driver rows and close the finalizing upload `session` in the same transaction, so an
-    /// unmetered upload cannot land membership while leaving the client's recovery handle dangling. A
-    /// `None` session commits the rows alone.
-    ///
     /// # Errors
-    /// Returns the body's error, or a store error mapped into it, if the transaction fails to open,
-    /// read, write, or commit.
-    pub fn commit_driver_txn_closing_upload<T, E: From<MetaError>>(
+    /// Returns the body's error or a mapped store error when the transaction fails.
+    pub fn commit_driver_txn_with_commit<T, E: From<MetaError>>(
         &self,
-        session: Option<&str>,
         body: impl FnOnce(&mut DriverTxn) -> Result<(T, Vec<Vec<u8>>), E>,
-    ) -> Result<T, E> {
-        self.commit_driver_txn_at(
-            None,
-            None,
-            true,
-            move |txn, _| {
-                if let Some(session) = session {
-                    super::upload_session::close_upload_in_txn(txn, session)?;
-                }
-                Ok(())
-            },
-            body,
-        )
+    ) -> Result<super::DriverCommit<T>, E> {
+        self.commit_driver_txn_at_with_commit(None, None, true, |_, _| Ok(()), body)
     }
 
-    /// Commit driver rows and publish the catalog generation that produced their policy inputs in
-    /// the same transaction.
+    /// Commits driver rows and their catalog generation atomically.
     ///
     /// # Errors
     /// Returns the body's error, or a store error mapped into it, if the transaction cannot be read,
@@ -248,11 +282,8 @@ impl MetaStore {
         self.commit_driver_txn_at(None, Some((repository, catalog_generation)), true, |_, _| Ok(()), body)
     }
 
-    /// Apply replicated driver rows and copied journal entries only when the local serial matches
-    /// `expected_serial`.
-    ///
-    /// The rows, journal, and serial commit together. A stale follower cannot apply the same page
-    /// twice or skip over local state changed by another writer.
+    /// Commits replicated rows, journal, and serial only at `expected_serial`, preventing duplicate pages
+    /// and writes over divergent local state.
     ///
     /// # Errors
     /// Returns [`MetaError::ReplicaSerialConflict`] through `E` when the local serial differs, the
@@ -273,21 +304,24 @@ impl MetaStore {
         finalize: impl FnOnce(&redb::WriteTransaction, &T) -> Result<(), E>,
         body: impl FnOnce(&mut DriverTxn) -> Result<(T, Vec<Vec<u8>>), E>,
     ) -> Result<T, E> {
+        self.commit_driver_txn_at_with_commit(expected_serial, catalog_generation, durable, finalize, body)
+            .map(|commit| commit.value)
+    }
+
+    pub(super) fn commit_driver_txn_at_with_commit<T, E: From<MetaError>>(
+        &self,
+        expected_serial: Option<u64>,
+        catalog_generation: Option<(&str, u64)>,
+        durable: bool,
+        finalize: impl FnOnce(&redb::WriteTransaction, &T) -> Result<(), E>,
+        body: impl FnOnce(&mut DriverTxn) -> Result<(T, Vec<Vec<u8>>), E>,
+    ) -> Result<super::DriverCommit<T>, E> {
         let mut txn = self.db.begin_write().map_err(MetaError::from)?;
         if !durable {
             txn.set_durability(redb::Durability::None)
                 .expect("no savepoints in this transaction");
         }
-        if let Some(expected) = expected_serial {
-            let serials = txn.open_table(SERIAL).map_err(MetaError::from)?;
-            let actual = serials
-                .get(SERIAL_KEY)
-                .map_err(MetaError::from)?
-                .map_or(0, |value| value.value());
-            if actual != expected {
-                return Err(MetaError::ReplicaSerialConflict { expected, actual }.into());
-            }
-        }
+        check_replica_serial(&txn, expected_serial)?;
         let (value, journal, mutations, blobs) = {
             let mut driver = DriverTxn {
                 table: txn.open_table(DRIVER_KV).map_err(MetaError::from)?,
@@ -318,7 +352,9 @@ impl MetaStore {
                 }
             }
         }
-        if !journal.is_empty() {
+        let journal_commit = if journal.is_empty() {
+            None
+        } else {
             let mut serials = txn.open_table(SERIAL).map_err(MetaError::from)?;
             let mut journal_table = txn.open_table(JOURNAL).map_err(MetaError::from)?;
             let mut next = serials
@@ -344,7 +380,8 @@ impl MetaStore {
                     .map_err(MetaError::from)?;
             }
             serials.insert(SERIAL_KEY, next).map_err(MetaError::from)?;
-        }
+            Some(super::JournalCommit::new(next))
+        };
         if let Some((repository, catalog)) = catalog_generation {
             let mut generations = txn.open_table(POLICY_INPUT_GENERATION).map_err(MetaError::from)?;
             let mut generation = generations
@@ -368,14 +405,29 @@ impl MetaStore {
         }
         finalize(&txn, &value)?;
         txn.commit().map_err(MetaError::from)?;
-        Ok(value)
+        Ok(super::DriverCommit {
+            value,
+            journal: journal_commit,
+        })
     }
 }
 
-/// A handle to the neutral key-value table inside an open write transaction.
-///
-/// Handed to a [`commit_driver_txn`](MetaStore::commit_driver_txn) body so it can read current rows
-/// and stage writes atomically. Keys and values stay opaque bytes the store never interprets.
+fn check_replica_serial<E: From<MetaError>>(txn: &redb::WriteTransaction, expected: Option<u64>) -> Result<(), E> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    let serials = txn.open_table(SERIAL).map_err(MetaError::from)?;
+    let actual = serials
+        .get(SERIAL_KEY)
+        .map_err(MetaError::from)?
+        .map_or(0, |value| value.value());
+    if actual != expected {
+        return Err(MetaError::ReplicaSerialConflict { expected, actual }.into());
+    }
+    Ok(())
+}
+
+/// Gives a [`MetaStore::commit_driver_txn`] body atomic access to opaque driver rows.
 pub struct DriverTxn<'txn> {
     table: redb::Table<'txn, &'static str, &'static [u8]>,
     touched: std::collections::BTreeSet<String>,
@@ -383,7 +435,7 @@ pub struct DriverTxn<'txn> {
 }
 
 impl DriverTxn<'_> {
-    /// The current value of `key`, reflecting writes already staged in this transaction.
+    /// Includes writes staged earlier in this transaction.
     ///
     /// # Errors
     /// Returns a store error if the read fails.
@@ -391,7 +443,7 @@ impl DriverTxn<'_> {
         Ok(self.table.get(key)?.map(|value| value.value().to_vec()))
     }
 
-    /// Every `(key, value)` whose key starts with `prefix`, in key order.
+    /// Returns matching rows in key order.
     ///
     /// # Errors
     /// Returns a store error if the read fails.
@@ -407,8 +459,6 @@ impl DriverTxn<'_> {
         Ok(entries)
     }
 
-    /// Stage an upsert of `key` to `value`.
-    ///
     /// # Errors
     /// Returns a store error if the write fails.
     pub fn put(&mut self, key: &str, value: &[u8]) -> Result<(), MetaError> {
@@ -416,7 +466,7 @@ impl DriverTxn<'_> {
         Ok(())
     }
 
-    /// Stage a process-local value that replicas must not copy.
+    /// Excludes the value from replicated mutations.
     ///
     /// # Errors
     /// Returns a store error if the write fails.
@@ -425,7 +475,14 @@ impl DriverTxn<'_> {
         Ok(())
     }
 
-    /// Record content bytes that replicas need before committing this transaction.
+    /// Adds no replicated mutation.
+    ///
+    /// # Errors
+    /// Returns a store error if the write fails.
+    pub fn remove_local(&mut self, key: &str) -> Result<bool, MetaError> {
+        Ok(self.table.remove(key)?.is_some())
+    }
+
     pub fn reference_blob(&mut self, sha256: &str, size: u64) {
         self.blobs.insert(DriverBlobReference {
             sha256: sha256.to_owned(),
@@ -433,7 +490,7 @@ impl DriverTxn<'_> {
         });
     }
 
-    /// Preserve insert-versus-replace information while staging a write.
+    /// Returns whether the write inserted a new key.
     ///
     /// # Errors
     /// Returns a store error if the write fails.
@@ -443,7 +500,7 @@ impl DriverTxn<'_> {
         Ok(inserted)
     }
 
-    /// Stage a removal of `key`, reporting whether it was present.
+    /// Returns whether `key` was present.
     ///
     /// # Errors
     /// Returns a store error if the write fails.
@@ -472,64 +529,5 @@ impl DriverTxn<'_> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{MetaScanError, MetaStore};
-
-    #[test]
-    fn test_driver_prefix_keys_limited_bounds_results() {
-        let dir = tempfile::tempdir().unwrap();
-        let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-        for key in ["catalog/1", "catalog/2", "catalog/3", "other/1"] {
-            meta.put_driver_value(key, b"value").unwrap();
-        }
-
-        assert!(meta.driver_prefix_keys_limited("catalog/", 0).unwrap().is_empty());
-        assert_eq!(
-            meta.driver_prefix_keys_limited("catalog/", 2).unwrap(),
-            vec!["catalog/1", "catalog/2"]
-        );
-        assert_eq!(meta.driver_prefix_keys("other/").unwrap(), vec!["other/1"]);
-        let mut visited = Vec::new();
-        meta.visit_driver_prefix("catalog/", |key, value| {
-            visited.push((key.to_owned(), value.to_vec()));
-        })
-        .unwrap();
-        assert_eq!(visited.len(), 3);
-    }
-
-    #[test]
-    fn test_visit_driver_policy_snapshot_is_consistent() {
-        let dir = tempfile::tempdir().unwrap();
-        let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-        meta.put_driver_value("catalog/1", b"one").unwrap();
-        meta.put_driver_value("catalog/2", b"two").unwrap();
-        meta.put_driver_value("other/1", b"other").unwrap();
-        meta.advance_policy_generation("private").unwrap();
-        let mut visited = Vec::new();
-
-        let snapshot = meta
-            .visit_driver_policy_snapshot("catalog/", "private", |key, value| {
-                visited.push((key.to_owned(), value.to_vec()));
-                if visited.len() == 1 {
-                    meta.put_driver_value("catalog/3", b"three").unwrap();
-                    meta.advance_policy_generation("private").unwrap();
-                }
-                Ok::<(), std::io::Error>(())
-            })
-            .unwrap();
-
-        assert_eq!(
-            visited,
-            vec![
-                ("catalog/1".to_owned(), b"one".to_vec()),
-                ("catalog/2".to_owned(), b"two".to_vec())
-            ]
-        );
-        assert_eq!(snapshot.policy, 1);
-        assert_eq!(meta.policy_input_generation("private").unwrap().policy, 2);
-        let error = meta
-            .visit_driver_policy_snapshot("catalog/", "private", |_key, _value| Err(std::io::Error::other("stop")))
-            .unwrap_err();
-        assert!(matches!(error, MetaScanError::Visit(_)));
-    }
-}
+#[path = "../../tests/unit/meta/index/tests.rs"]
+mod tests;

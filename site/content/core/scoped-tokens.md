@@ -5,8 +5,8 @@ weight = 12
 +++
 
 A scoped token is a named, expiring credential an authorized user mints over a reach: the whole server, or one named
-repository. It is the managed complement to the config-only `[[index.token]]` credentials — created, rotated, and
-revoked through the live API instead of a configuration file, with each change recorded and its secret shown only once.
+repository. It is the managed complement to config-only `[[index.token]]` credentials, created, rotated, and revoked
+through the live API instead of a configuration file, with each change recorded and its secret shown only once.
 
 The token carries a set of actions (`read`, `write`, `delete`) over its reach, the same vocabulary an index ACL grant
 speaks. Peryx stores only a SHA-256 verifier of the secret, never the secret itself, so a leaked metadata store
@@ -14,9 +14,9 @@ discloses no usable credential.
 
 ## Authority: you can only grant what you hold
 
-Creating a token validates its reach against the caller's own role grants. A server-wide token — one with no repository
-— requires administrator authority. A repository-scoped token requires the caller's authority for each requested action
-on that repository. So a repository manager can mint a token for their own repository but cannot mint a server-wide or
+Creating a token validates its reach against the caller's own role grants. A server-wide token, with no repository :
+requires administrator authority. A repository-scoped token requires the caller's authority for each requested action on
+that repository. So a repository manager can mint a token for their own repository but cannot mint a server-wide or
 cross-repository one; the request answers `404`, disclosing neither the repository nor the token.
 
 Listing, inspecting, rotating, and revoking a token require write authority over its reach: repository write for a
@@ -41,10 +41,10 @@ and cursor-paginated within one reach, at most 100 rows per page.
 
 ```console
 $ admin=(--user admin --password-file /run/secrets/peryx-admin-password)
-$ curl -su admin:@- https://packages.example/+tokens \
+$ curl -su admin:@- https://artifacts.example/+tokens \
     -H 'content-type: application/json' \
-    -d '{"name":"ci-upload","repository":"hosted","actions":["read","write"],"expires_at":1800600000}'
-{"token":{"id":"tok_...","name":"ci-upload","reach":{"kind":"repository","name":"hosted"},...},"secret":"peryx_..."}
+    -d '{"name":"ci-writer","repository":"hosted","actions":["read","write"],"expires_at":1800600000}'
+{"token":{"id":"tok_...","name":"ci-writer","reach":{"kind":"repository","name":"hosted"},...},"secret":"peryx_..."}
 ```
 
 ## The secret, expiry, and revocation
@@ -62,7 +62,7 @@ token valid. Revocation is idempotent: revoking an already-revoked token returns
 Each create, rotate, and revoke emits one security event carrying the actor and the stable token id, never the secret or
 its verifier.
 
-## Migrating a configured upload token
+## Migrating a configured index token
 
 A hosted index's `[[index.access_token]]` entries keep working unchanged. To move one to a managed token, mint a scoped
 token for that repository with the same actions, distribute its one-time secret to the client, then remove the

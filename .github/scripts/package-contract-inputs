@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+metadata=${1:?pass Cargo metadata}
+root_index=${2:?pass a source-root index}
+package=${3:?pass a package}
+package_metadata=$(jq -c --arg package "$package" '.packages[] | select(.name == $package)' "$metadata")
+if [[ -z $package_metadata ]]; then
+  printf 'unknown package: %s\n' "$package" >&2
+  exit 2
+fi
+
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+awk -F '\t' -v package="$package" '$1 == package { print $2 }' "$root_index" >"$scratch/selected-roots"
+cut -f2 "$root_index" | sort -u >"$scratch/package-roots"
+workspace_root=$(jq -r '.workspace_root // empty' "$metadata")
+if [[ -z $workspace_root ]]; then
+  workspace_root=$(cd -- "$(dirname -- "$(jq -r '.manifest_path' <<<"$package_metadata")")" && pwd -P)
+fi
+jq -r --arg package "$package" '.workspace_metadata["peryx-ci"]["coverage-inputs"][$package][]?' \
+  "$metadata" | while IFS= read -r input_root; do
+    (cd "$workspace_root/$input_root" && pwd -P)
+  done >>"$scratch/selected-roots"
+sort -u -o "$scratch/selected-roots" "$scratch/selected-roots"
+{
+  jq -r '.targets[]? | .src_path // empty' <<<"$package_metadata"
+  while IFS= read -r selected_root; do
+    find "$selected_root" -type f \
+      -not -path "$selected_root/.git/*" \
+      -not -path "$selected_root/.tox/*" \
+      -not -path "$selected_root/node_modules/*" \
+      -not -path "$selected_root/playwright-report/*" \
+      -not -path "$selected_root/target/*" \
+      -not -path "$selected_root/test-results/*" \
+      -print0 |
+      while IFS= read -r -d '' source; do
+        while IFS= read -r other_root; do
+          case $other_root in
+            "$selected_root"/*)
+              case $source in
+                "$other_root"/*) continue 2 ;;
+              esac
+              ;;
+          esac
+        done <"$scratch/package-roots"
+        printf '%s\n' "$source"
+      done
+  done <"$scratch/selected-roots"
+
+  jq -r '.manifest_path' <<<"$package_metadata"
+  for input in Cargo.toml Cargo.lock rust-toolchain rust-toolchain.toml nextest/config.toml \
+    .cargo/config .cargo/config.toml; do
+    [[ -f $workspace_root/$input ]] && printf '%s\n' "$workspace_root/$input"
+  done
+} >"$scratch/inputs"
+sort -u "$scratch/inputs"

@@ -1,16 +1,5 @@
-//! The opaque pagination cursor, bound to the scope it was minted under.
-//!
-//! A cursor carries the domain, the scan position, and a hash of the caller's resolved scope. On
-//! decode the hash is recomputed from the caller's current scope and compared: a cursor minted under
-//! one grant cannot be replayed under another, because a changed grant changes the hash and the
-//! replay is refused rather than silently re-scoped.
-//!
-//! The encoding is base64 of unsigned JSON, so it is opaque but not integrity-protected: a caller can
-//! edit the decoded offset. That is safe because the offset only positions a scan the scope predicate
-//! has already narrowed to the caller's own rows, so a tampered offset can page within the caller's
-//! own results but never reaches a row outside their scope. The security property the cursor enforces
-//! is cross-scope, not offset integrity: the scope-hash check refuses a cursor carried across a grant
-//! change or forged for a different scope.
+//! The unsigned offset is safe to edit because scope filtering precedes pagination. The scope hash
+//! prevents replay after visibility changes.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -26,11 +15,8 @@ struct CursorPayload {
     offset: u64,
 }
 
-/// Mint a cursor for the next page.
-///
 /// # Panics
-/// Never in practice: the payload is a fixed shape of a string, a string, and an integer, which
-/// always serializes.
+/// The fixed scalar payload always serializes.
 #[must_use]
 pub fn encode(domain: &str, scope: &QueryScope, offset: u64) -> String {
     let payload = CursorPayload {
@@ -42,9 +28,6 @@ pub fn encode(domain: &str, scope: &QueryScope, offset: u64) -> String {
     URL_SAFE_NO_PAD.encode(json)
 }
 
-/// Decode a cursor and return its scan offset, refusing a cursor that does not belong to this domain
-/// and scope.
-///
 /// # Errors
 /// Returns [`PqlError::InvalidCursor`] when the text is malformed or names a different domain, and
 /// [`PqlError::CursorScopeChanged`] when the caller's scope no longer matches the one the cursor was

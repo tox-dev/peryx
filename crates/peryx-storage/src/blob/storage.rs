@@ -7,7 +7,6 @@ use super::{
     BlobScanError, BlobStaged, BlobStore, BlobWrite, Digest, DurabilityCapabilities, S3Config,
 };
 
-/// The blob backend selected for this process.
 #[derive(Debug, Clone)]
 pub struct BlobStorage {
     backend: Backend,
@@ -34,14 +33,22 @@ fn filesystem_context<T>(
     }
 }
 
+async fn filesystem_worker<T>(
+    worker: tokio::task::JoinHandle<Result<T, BlobError>>,
+    operation: BlobOperation,
+    digest: Option<&Digest>,
+) -> Result<T, BlobError> {
+    worker
+        .await
+        .map_err(|error| BlobError::from(error).with_context("filesystem", operation, digest))?
+}
+
 impl BlobStorage {
-    /// Select the filesystem backend rooted at `root`.
     #[must_use]
     pub fn filesystem(root: impl Into<std::path::PathBuf>) -> Self {
         Self::from(BlobStore::new(root))
     }
 
-    /// Select the S3-compatible backend for `config`, staging local writes under `staging_dir`.
     #[must_use]
     pub fn s3(config: S3Config, staging_dir: std::path::PathBuf) -> Self {
         Self {
@@ -49,7 +56,6 @@ impl BlobStorage {
         }
     }
 
-    /// Stable backend name for status and error surfaces.
     #[must_use]
     pub const fn name(&self) -> &'static str {
         match self.backend {
@@ -58,17 +64,13 @@ impl BlobStorage {
         }
     }
 
-    /// This backend's identity for a blob placement key, so a placement records where bytes actually
-    /// live rather than a free-form label.
+    /// Derives placement identity from the configured backend instead of a caller-provided label.
     #[must_use]
     pub fn backend_id(&self) -> crate::meta::BackendId {
         crate::meta::BackendId::from_static(self.name())
     }
 
-    /// The underlying filesystem store, or `None` on the S3 backend.
-    ///
-    /// Cross-data-center copy publishes verified bytes through the local filesystem store's atomic
-    /// write; the S3 backend replicates through the object store itself and exposes no such store.
+    /// Returns `None` for S3, which replicates through the object store instead of a local store.
     #[must_use]
     pub const fn filesystem_store(&self) -> Option<&BlobStore> {
         match &self.backend {
@@ -77,7 +79,6 @@ impl BlobStorage {
         }
     }
 
-    /// The effective configured backend contract.
     #[must_use]
     pub fn capabilities(&self) -> BlobCapabilities {
         match &self.backend {
@@ -86,10 +87,7 @@ impl BlobStorage {
         }
     }
 
-    /// The durability guarantees the configured backend proves for a completed write.
-    ///
-    /// A single-host filesystem commits behind an atomic rename that refuses to clobber and verifies
-    /// the digest; an object store proves only what its configured endpoint honors.
+    /// Reports only guarantees that the configured endpoint claims.
     #[must_use]
     pub fn durability(&self) -> DurabilityCapabilities {
         match &self.backend {
@@ -98,14 +96,12 @@ impl BlobStorage {
         }
     }
 
-    /// Explicit blocking access for offline import and maintenance commands.
+    /// Reserved for offline import and maintenance paths.
     #[must_use]
     pub const fn blocking(&self) -> BlobBlocking<'_> {
         BlobBlocking { backend: &self.backend }
     }
 
-    /// Check that the configured backend is usable.
-    ///
     /// # Errors
     /// Returns a contextual backend error when the check fails.
     pub async fn health(&self) -> Result<(), BlobError> {
@@ -115,7 +111,7 @@ impl BlobStorage {
         }
     }
 
-    /// Open a whole blob or one end-exclusive byte range without collecting it.
+    /// Streams a whole blob or one end-exclusive byte range.
     ///
     /// # Errors
     /// Returns a contextual not-found, range, or backend error.
@@ -126,7 +122,7 @@ impl BlobStorage {
         }
     }
 
-    /// Collect a blob only when its declared size fits `max_bytes`.
+    /// Rejects a declared size above `max_bytes` before collecting the blob.
     ///
     /// # Errors
     /// Returns a contextual size, read, or backend error.
@@ -138,8 +134,6 @@ impl BlobStorage {
             .map_err(|error| error.with_context(self.name(), BlobOperation::Open, Some(digest)))
     }
 
-    /// Read metadata without fetching blob contents.
-    ///
     /// # Errors
     /// Returns a contextual backend error.
     pub async fn head(&self, digest: &Digest) -> Result<Option<BlobMetadata>, BlobError> {
@@ -149,13 +143,11 @@ impl BlobStorage {
         }
     }
 
-    /// Check many content addresses in one backend task.
+    /// Keeps filesystem metadata calls off the async executor.
     ///
     /// # Errors
     /// Returns a contextual metadata error.
     ///
-    /// # Panics
-    /// Panics if the internal blocking task panics.
     pub async fn present(&self, digests: Vec<Digest>) -> Result<HashSet<Digest>, BlobError> {
         match &self.backend {
             Backend::Filesystem(store) => {
@@ -170,7 +162,7 @@ impl BlobStorage {
                     Ok::<_, BlobError>(present)
                 })
                 .await
-                .expect("blob presence task never panics")
+                .map_err(|error| BlobError::from(error).with_context("filesystem", BlobOperation::Head, None))?
             }
             Backend::S3(backend) => {
                 Box::pin(async {
@@ -187,8 +179,6 @@ impl BlobStorage {
         }
     }
 
-    /// Begin a streamed write.
-    ///
     /// # Errors
     /// Returns a contextual backend error when staging cannot start.
     pub async fn begin(&self) -> Result<BlobWrite, BlobError> {
@@ -198,8 +188,6 @@ impl BlobStorage {
         }
     }
 
-    /// Stage bytes already held in memory.
-    ///
     /// # Errors
     /// Returns a contextual write error.
     pub async fn stage_bytes(&self, bytes: &[u8]) -> Result<BlobStaged, BlobError> {
@@ -208,8 +196,6 @@ impl BlobStorage {
         write.finish().await
     }
 
-    /// Persist bytes already held in memory and return their digest.
-    ///
     /// # Errors
     /// Returns a contextual write or commit error.
     pub async fn put_bytes(&self, bytes: &[u8]) -> Result<Digest, BlobError> {
@@ -219,7 +205,7 @@ impl BlobStorage {
         Ok(digest)
     }
 
-    /// Persist in-memory bytes only at the expected content address.
+    /// Commits only when `bytes` hash to `expected`.
     ///
     /// # Errors
     /// Returns a contextual digest mismatch, write, or commit error.
@@ -227,16 +213,11 @@ impl BlobStorage {
         self.stage_bytes(bytes).await?.commit_as(expected).await.map(drop)
     }
 
-    /// Append `chunk` to `session`'s durable upload stage, returning the new staged length.
-    ///
-    /// Only a backend that proves same-DC durability behind a resumable stage supports this; an object
-    /// store does not, so it is rejected rather than treated as durable.
+    /// Requires a resumable stage with same-data-center durability; S3 returns `Unsupported`.
     ///
     /// # Errors
     /// Returns a contextual write error, or an unsupported-operation error on the object store.
     ///
-    /// # Panics
-    /// Panics if the internal blocking task panics.
     pub async fn stage_upload_chunk(&self, session: &str, offset: u64, chunk: &[u8]) -> Result<u64, BlobError> {
         match &self.backend {
             Backend::Filesystem(store) => {
@@ -251,19 +232,17 @@ impl BlobStorage {
                     )
                 })
                 .await
-                .expect("blob upload-stage task never panics")
+                .map_err(|error| BlobError::from(error).with_context("filesystem", BlobOperation::Write, None))?
             }
             Backend::S3(_) => Err(unsupported_blocking(BlobOperation::Write)),
         }
     }
 
-    /// The bytes durably staged for `session` so far, or `None` when it has no stage.
+    /// Returns `None` when `session` has no stage; S3 returns `Unsupported`.
     ///
     /// # Errors
     /// Returns a contextual read error, or an unsupported-operation error on the object store.
     ///
-    /// # Panics
-    /// Panics if the internal blocking task panics.
     pub async fn staged_upload_len(&self, session: &str) -> Result<Option<u64>, BlobError> {
         match &self.backend {
             Backend::Filesystem(store) => {
@@ -273,47 +252,47 @@ impl BlobStorage {
                     filesystem_context(store.staged_upload_len(&session), BlobOperation::Head, None)
                 })
                 .await
-                .expect("blob upload-length task never panics")
+                .map_err(|error| BlobError::from(error).with_context("filesystem", BlobOperation::Head, None))?
             }
             Backend::S3(_) => Err(unsupported_blocking(BlobOperation::Head)),
         }
     }
 
-    /// Verify `session`'s staged bytes hash to `expected`, publish them, and clear the stage.
+    /// Publishes only staged bytes that hash to `expected`; S3 returns `Unsupported`.
     ///
     /// # Errors
     /// Returns a contextual digest mismatch, not-found, or commit error, or an unsupported-operation
     /// error on the object store.
     ///
-    /// # Panics
-    /// Panics if the internal blocking task panics.
     pub async fn finish_upload(&self, session: &str, expected: &Digest) -> Result<(), BlobError> {
         match &self.backend {
             Backend::Filesystem(store) => {
                 let store = store.clone();
                 let session = session.to_owned();
                 let expected = expected.clone();
-                tokio::task::spawn_blocking(move || {
-                    filesystem_context(
-                        store.finish_upload(&session, &expected),
-                        BlobOperation::Commit,
-                        Some(&expected),
-                    )
-                })
+                let context_digest = expected.clone();
+                filesystem_worker(
+                    tokio::task::spawn_blocking(move || {
+                        filesystem_context(
+                            store.finish_upload(&session, &expected),
+                            BlobOperation::Commit,
+                            Some(&expected),
+                        )
+                    }),
+                    BlobOperation::Commit,
+                    Some(&context_digest),
+                )
                 .await
-                .expect("blob upload-finish task never panics")
             }
             Backend::S3(_) => Err(unsupported_blocking(BlobOperation::Commit)),
         }
     }
 
-    /// Discard `session`'s durable upload stage, tolerating one already gone.
+    /// Treats an absent stage as success; S3 returns `Unsupported`.
     ///
     /// # Errors
     /// Returns a contextual delete error, or an unsupported-operation error on the object store.
     ///
-    /// # Panics
-    /// Panics if the internal blocking task panics.
     pub async fn discard_upload(&self, session: &str) -> Result<(), BlobError> {
         match &self.backend {
             Backend::Filesystem(store) => {
@@ -323,14 +302,12 @@ impl BlobStorage {
                     filesystem_context(store.discard_upload(&session), BlobOperation::Delete, None)
                 })
                 .await
-                .expect("blob upload-discard task never panics")
+                .map_err(|error| BlobError::from(error).with_context("filesystem", BlobOperation::Delete, None))?
             }
             Backend::S3(_) => Err(unsupported_blocking(BlobOperation::Delete)),
         }
     }
 
-    /// Verify stored bytes against their address.
-    ///
     /// # Errors
     /// Returns a contextual not-found or backend error.
     pub async fn verify(&self, digest: &Digest) -> Result<bool, BlobError> {
@@ -340,8 +317,6 @@ impl BlobStorage {
         }
     }
 
-    /// Delete a blob, reporting whether it existed.
-    ///
     /// # Errors
     /// Returns a contextual backend error.
     pub async fn delete(&self, digest: &Digest) -> Result<bool, BlobError> {
@@ -351,7 +326,7 @@ impl BlobStorage {
         }
     }
 
-    /// Hold a seekable local representation for archive or backup work.
+    /// Keeps the local representation alive for the returned lease's lifetime.
     ///
     /// # Errors
     /// Returns a contextual not-found or materialization error.
@@ -363,14 +338,16 @@ impl BlobStorage {
     }
 }
 
-/// Blocking blob operations kept out of protocol request paths.
+#[cfg(test)]
+#[path = "../../tests/unit/blob/storage/tests.rs"]
+mod tests;
+
+/// Blocking access for offline import and maintenance paths.
 pub struct BlobBlocking<'storage> {
     backend: &'storage Backend,
 }
 
 impl BlobBlocking<'_> {
-    /// Stage bytes from a blocking reader.
-    ///
     /// # Errors
     /// Returns a contextual read or staging error.
     pub fn stage_reader(&self, reader: &mut dyn std::io::Read) -> Result<BlobStaged, BlobError> {
@@ -392,23 +369,19 @@ impl BlobBlocking<'_> {
         }
     }
 
-    /// Stage bytes already held in memory.
-    ///
     /// # Errors
     /// Returns a contextual staging error.
     pub fn stage_bytes(&self, bytes: &[u8]) -> Result<BlobStaged, BlobError> {
         self.stage_reader(&mut std::io::Cursor::new(bytes))
     }
 
-    /// Publish a blocking stage.
-    ///
     /// # Errors
     /// Returns a contextual commit error.
     pub fn commit(&self, staged: BlobStaged) -> Result<(), BlobError> {
         staged.commit_blocking().map(drop)
     }
 
-    /// Publish a blocking stage only at the expected digest.
+    /// Publishes only when the stage has `expected` as its digest.
     ///
     /// # Errors
     /// Returns a contextual mismatch or commit error.
@@ -416,8 +389,6 @@ impl BlobBlocking<'_> {
         staged.commit_as_blocking(expected).map(drop)
     }
 
-    /// Read metadata without fetching bytes.
-    ///
     /// # Errors
     /// Returns a contextual backend error.
     pub fn head(&self, digest: &Digest) -> Result<Option<BlobMetadata>, BlobError> {
@@ -427,7 +398,7 @@ impl BlobBlocking<'_> {
         }
     }
 
-    /// Collect an already bounded blob.
+    /// Rejects a declared size above `max_bytes` before collecting the blob.
     ///
     /// # Errors
     /// Returns a contextual size or read error.
@@ -470,8 +441,6 @@ impl BlobBlocking<'_> {
         }
     }
 
-    /// Persist bytes already held in memory.
-    ///
     /// # Errors
     /// Returns a contextual write or commit error.
     pub fn put_bytes(&self, bytes: &[u8]) -> Result<Digest, BlobError> {
@@ -481,7 +450,7 @@ impl BlobBlocking<'_> {
         Ok(digest)
     }
 
-    /// Persist in-memory bytes only at the expected content address.
+    /// Commits only when `bytes` hash to `expected`.
     ///
     /// # Errors
     /// Returns a contextual digest mismatch, write, or commit error.
@@ -489,7 +458,7 @@ impl BlobBlocking<'_> {
         self.commit_as(self.stage_bytes(bytes)?, expected)
     }
 
-    /// Hold a seekable local representation.
+    /// Keeps the local representation alive for the returned lease's lifetime.
     ///
     /// # Errors
     /// Returns a contextual materialization error.
@@ -510,8 +479,6 @@ impl BlobBlocking<'_> {
         }
     }
 
-    /// Verify a stored blob.
-    ///
     /// # Errors
     /// Returns a contextual read error.
     pub fn verify(&self, digest: &Digest) -> Result<bool, BlobError> {
@@ -523,8 +490,6 @@ impl BlobBlocking<'_> {
         }
     }
 
-    /// Delete a stored blob.
-    ///
     /// # Errors
     /// Returns a contextual delete error.
     pub fn delete(&self, digest: &Digest) -> Result<bool, BlobError> {
@@ -534,7 +499,7 @@ impl BlobBlocking<'_> {
         }
     }
 
-    /// Visit backend entries without collecting them.
+    /// Invokes `visit` as entries are discovered instead of collecting them.
     ///
     /// # Errors
     /// Returns a contextual listing or visitor error.

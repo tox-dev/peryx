@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+mkdir -p "$scratch/bin"
+for package in alpha beta gamma; do
+  mkdir -p "$scratch/packages/$package/src"
+  printf '[package]\nname = "%s"\nversion = "0.0.0"\n' "$package" \
+    >"$scratch/packages/$package/Cargo.toml"
+  printf 'pub fn %s() {}\n' "$package" >"$scratch/packages/$package/src/lib.rs"
+done
+jq -n --arg root "$scratch/packages" '{workspace_members: ["alpha", "beta", "gamma"], packages: [
+  {id: "alpha", name: "alpha", manifest_path: ($root + "/alpha/Cargo.toml"), metadata: {}},
+  {id: "beta", name: "beta", manifest_path: ($root + "/beta/Cargo.toml"), metadata: {}},
+  {id: "gamma", name: "gamma", manifest_path: ($root + "/gamma/Cargo.toml"), metadata: {}}
+]}' >"$scratch/metadata.json"
+cat >"$scratch/bin/cargo" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ $1 == metadata ]]
+cat "$CARGO_METADATA"
+EOF
+chmod +x "$scratch/bin/cargo"
+cat >"$scratch/timings.jsonl" <<'EOF'
+{"package":"alpha","phase":"tests","status":"passed","seconds":100}
+{"package":"alpha","phase":"report","status":"failed","seconds":900}
+{"package":"beta","phase":"tests","status":"passed","seconds":40}
+EOF
+export CARGO_METADATA="$scratch/metadata.json"
+export PATH="$scratch/bin:$PATH"
+first=$(cd "$repo" && scripts/ci/workspace-packages 2 contracts "$scratch/timings.jsonl")
+second=$(cd "$repo" && scripts/ci/workspace-packages 2 contracts "$scratch/timings.jsonl")
+[[ $first == "$second" ]]
+jq -e '.include | length == 2 and all(.[]; (.packages | length) > 0)' <<<"$first" >/dev/null
+measured=$(cd "$repo" && scripts/ci/workspace-packages 3 contracts "$scratch/timings.jsonl")
+jq -e 'any(.include[]; .packages == "alpha" and .weight == 100) and any(.include[]; .packages == "beta" and .weight == 40)' \
+  <<<"$measured" >/dev/null
+fallback=$(cd "$repo" && scripts/ci/workspace-packages 2 contracts "$scratch/absent")
+jq -e '.include | length == 2' <<<"$fallback" >/dev/null

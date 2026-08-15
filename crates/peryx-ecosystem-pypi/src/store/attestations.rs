@@ -1,5 +1,3 @@
-//! Persistence for mutable provenance objects advertised by upstream Simple API records.
-
 use std::collections::BTreeMap;
 
 use peryx_storage::meta::{DriverTxn, MetaError, MetaStore};

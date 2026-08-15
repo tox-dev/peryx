@@ -1,12 +1,6 @@
-//! The `PyPI` Simple-repository protocol over the neutral upstream transport.
-//!
-//! [`UpstreamClient`] is ecosystem-neutral HTTP: it sends conditional `GET`s and streams files, and
-//! knows nothing about PEP 503/691. This module is the seam where those neutral sends become
-//! Simple-API document fetches — the `Accept` negotiation, the content-type validation, and the
-//! `x-pypi-last-serial`/`Cache-Control` parsing that only the `PyPI` ecosystem cares about. Status is
-//! kept agnostic: `304` and `404` come back to the caller rather than raised, so the cache layer
-//! decides what to do.
+//! Preserves `304` and `404` so the Simple-page cache can apply its own policy.
 
+use std::collections::VecDeque;
 use std::future::Future;
 
 use bytes::{Bytes, BytesMut};
@@ -67,35 +61,29 @@ pub struct SimpleHead {
 }
 
 impl SimpleHead {
-    /// Read the whole body.
-    ///
     /// # Errors
     /// Returns [`UpstreamError::Http`] if the transfer fails.
     pub async fn bytes(self) -> Result<Bytes, UpstreamError> {
         read_capped(self.response.bytes_stream(), MAX_SIMPLE_PAGE_BYTES).await
     }
 
-    /// Consume the body as a stream of chunks.
     pub fn into_stream(self) -> impl Stream<Item = Result<Bytes, UpstreamError>> + Send + use<> {
         use futures_util::TryStreamExt as _;
         self.response.bytes_stream().map_err(UpstreamError::from)
     }
 }
 
-/// Fetch a project's index document, then the project list, then a file's bytes — the `PyPI` Simple
+/// Fetch a project's index document, then the project list, then a file's bytes - the `PyPI` Simple
 /// protocol layered over an [`UpstreamClient`] as an extension trait so call sites keep method syntax.
 pub trait SimpleClientExt {
-    /// Fetch a project's simple page, optionally revalidating with `If-None-Match`.
     fn fetch_project(
         &self,
         project: &str,
         etag: Option<&str>,
     ) -> impl Future<Output = Result<SimpleResponse, UpstreamError>> + Send;
 
-    /// Fetch the upstream root project list.
     fn fetch_index(&self) -> impl Future<Output = Result<SimpleResponse, UpstreamError>> + Send;
 
-    /// Start fetching the root project list with validators scoped to `source`.
     fn head_index(
         &self,
         source: Option<&str>,
@@ -114,12 +102,11 @@ pub trait SimpleClientExt {
 
 impl SimpleClientExt for UpstreamClient {
     async fn fetch_project(&self, project: &str, etag: Option<&str>) -> Result<SimpleResponse, UpstreamError> {
-        let url = self.base().join(&format!("{project}/"))?;
-        fetch_simple(self, url, etag).await
+        fetch_simple(self, simple_project_url(self, project)?, etag).await
     }
 
     async fn fetch_index(&self) -> Result<SimpleResponse, UpstreamError> {
-        fetch_simple(self, self.base().clone(), None).await
+        fetch_simple(self, simple_index_url(self), None).await
     }
 
     async fn head_index(
@@ -129,25 +116,35 @@ impl SimpleClientExt for UpstreamClient {
         last_modified: Option<&str>,
     ) -> Result<SimpleHead, UpstreamError> {
         simple_head(
-            self.send_validated(self.base().clone(), ACCEPT_SIMPLE, etag, last_modified)
+            self.send_validated(simple_index_url(self), ACCEPT_SIMPLE, etag, last_modified)
                 .await?,
         )
     }
 
     async fn head_project(&self, project: &str, etag: Option<&str>) -> Result<SimpleHead, UpstreamError> {
-        let url = self.base().join(&format!("{project}/"))?;
-        simple_head(self.send_conditional(url, ACCEPT_SIMPLE, etag).await?)
+        simple_head(
+            self.send_conditional(simple_project_url(self, project)?, ACCEPT_SIMPLE, etag)
+                .await?,
+        )
     }
+}
+
+fn simple_index_url(client: &UpstreamClient) -> Url {
+    client.base().clone()
+}
+
+fn simple_project_url(client: &UpstreamClient, project: &str) -> Result<Url, UpstreamError> {
+    Ok(simple_index_url(client).join(&format!("{project}/"))?)
 }
 
 impl SimpleClientExt for UpstreamRouter {
     async fn fetch_project(&self, project: &str, _etag: Option<&str>) -> Result<SimpleResponse, UpstreamError> {
-        let mut candidates = self.candidates(project).peekable();
+        let mut candidates = NonEmptyCandidates::new(self, project);
         loop {
-            let upstream = candidates.next().expect("an upstream route always has a candidate");
+            let upstream = candidates.current();
             let result = SimpleClientExt::fetch_project(upstream.client(), project, None).await;
             record_health(upstream, &result);
-            if fallback_result(&result) && candidates.peek().is_some() {
+            if fallback_result(&result) && candidates.advance() {
                 tracing::warn!(project, upstream = upstream.name(), "trying fallback");
                 continue;
             }
@@ -156,12 +153,12 @@ impl SimpleClientExt for UpstreamRouter {
     }
 
     async fn fetch_index(&self) -> Result<SimpleResponse, UpstreamError> {
-        let mut candidates = self.candidates("").peekable();
+        let mut candidates = NonEmptyCandidates::new(self, "");
         loop {
-            let upstream = candidates.next().expect("an upstream route always has a candidate");
+            let upstream = candidates.current();
             let result = SimpleClientExt::fetch_index(upstream.client()).await;
             record_health(upstream, &result);
-            if fallback_result(&result) && candidates.peek().is_some() {
+            if fallback_result(&result) && candidates.advance() {
                 tracing::warn!(upstream = upstream.name(), "upstream unavailable, trying fallback");
                 continue;
             }
@@ -175,9 +172,9 @@ impl SimpleClientExt for UpstreamRouter {
         etag: Option<&str>,
         last_modified: Option<&str>,
     ) -> Result<SimpleHead, UpstreamError> {
-        let mut candidates = self.candidates("").peekable();
+        let mut candidates = NonEmptyCandidates::new(self, "");
         loop {
-            let upstream = candidates.next().expect("an upstream route always has a candidate");
+            let upstream = candidates.current();
             let matches_source = source == Some(upstream.name());
             let result = upstream
                 .client()
@@ -188,7 +185,7 @@ impl SimpleClientExt for UpstreamRouter {
                 )
                 .await;
             record_health(upstream, &result);
-            if fallback_result(&result) && candidates.peek().is_some() {
+            if fallback_result(&result) && candidates.advance() {
                 tracing::warn!(upstream = upstream.name(), "upstream unavailable, trying fallback");
                 continue;
             }
@@ -197,17 +194,45 @@ impl SimpleClientExt for UpstreamRouter {
     }
 
     async fn head_project(&self, project: &str, _etag: Option<&str>) -> Result<SimpleHead, UpstreamError> {
-        let mut candidates = self.candidates(project).peekable();
+        let mut candidates = NonEmptyCandidates::new(self, project);
         loop {
-            let upstream = candidates.next().expect("an upstream route always has a candidate");
+            let upstream = candidates.current();
             let result = upstream.client().head_project(project, None).await;
             record_health(upstream, &result);
-            if fallback_result(&result) && candidates.peek().is_some() {
+            if fallback_result(&result) && candidates.advance() {
                 tracing::warn!(project, upstream = upstream.name(), "trying fallback");
                 continue;
             }
             return attribute_source(upstream, result);
         }
+    }
+}
+
+struct NonEmptyCandidates<'a> {
+    current: &'a NamedUpstream,
+    remaining: VecDeque<&'a NamedUpstream>,
+}
+
+impl<'a> NonEmptyCandidates<'a> {
+    fn new(router: &'a UpstreamRouter, key: &'a str) -> Self {
+        let mut candidates = router.candidates(key);
+        let current = candidates.next().expect("validated routes contain an upstream");
+        Self {
+            current,
+            remaining: candidates.collect(),
+        }
+    }
+
+    const fn current(&self) -> &'a NamedUpstream {
+        self.current
+    }
+
+    fn advance(&mut self) -> bool {
+        let Some(current) = self.remaining.pop_front() else {
+            return false;
+        };
+        self.current = current;
+        true
     }
 }
 
@@ -239,8 +264,7 @@ fn fallback_result<T: SimpleStatus>(result: &Result<T, UpstreamError>) -> bool {
         Err(
             UpstreamError::Credential(_)
             | UpstreamError::Url(_)
-            | UpstreamError::MissingContentType { .. }
-            | UpstreamError::UnsupportedContentType { .. }
+            | UpstreamError::InvalidResponse { .. }
             | UpstreamError::ResponseTooLarge { .. }
             | UpstreamError::BlockedDestination { .. },
         ) => false,
@@ -352,7 +376,9 @@ fn simple_head(response: reqwest::Response) -> Result<SimpleHead, UpstreamError>
 
 fn validate_simple_content_type(url: &Url, content_type: Option<&str>) -> Result<(), UpstreamError> {
     let Some(content_type) = content_type else {
-        return Err(UpstreamError::MissingContentType { url: url.clone() });
+        return Err(UpstreamError::InvalidResponse {
+            reason: format!("missing Simple API Content-Type from {url}"),
+        });
     };
     let media_type = content_type
         .split_once(';')
@@ -365,13 +391,11 @@ fn validate_simple_content_type(url: &Url, content_type: Option<&str>) -> Result
     ) {
         return Ok(());
     }
-    Err(UpstreamError::UnsupportedContentType {
-        url: url.clone(),
-        content_type: content_type.to_owned(),
+    Err(UpstreamError::InvalidResponse {
+        reason: format!("unsupported Simple API Content-Type {content_type:?} from {url}"),
     })
 }
 
-/// The freshness lifetime a `Cache-Control` header grants a shared cache.
 fn max_age(headers: &HeaderMap) -> Option<i64> {
     response_cache_policy(headers).fresh_secs
 }
@@ -434,27 +458,20 @@ fn delta_seconds(value: &str) -> Option<i64> {
 
 /// The upstream fetch protocol a proxy index speaks.
 ///
-/// A proxy revalidates and caches an upstream's index documents and files. This trait is the seam
-/// that logic plugs into: [`UpstreamClient`] speaks the `PyPI` PEP 503/691 simple API here, and an OCI
-/// registry (`/v2/`) or an npm registry are sibling ecosystems. It is dispatched **statically**: one
-/// concrete client today, an enum per proxy once a second protocol dispatches through it, never a
-/// boxed object, so proxying costs nothing over calling the client directly. Parsing the returned
-/// document is the ecosystem driver's job; this trait only fetches.
+/// A proxy revalidates and caches upstream index documents and files through this trait. Static
+/// dispatch avoids allocation and virtual calls. The caller parses each returned document.
 ///
 /// Returns are written as `impl Future + Send` rather than `async fn` so callers can spawn the futures
 /// on a multi-threaded runtime without the trait dictating auto-trait bounds.
 pub trait UpstreamProtocol {
-    /// Fetch a project's index document, conditional on `etag`.
     fn fetch_project(
         &self,
         project: &str,
         etag: Option<&str>,
     ) -> impl Future<Output = Result<SimpleResponse, UpstreamError>> + Send;
 
-    /// Fetch the full project list.
     fn fetch_index(&self) -> impl Future<Output = Result<SimpleResponse, UpstreamError>> + Send;
 
-    /// Fetch a file's bytes by URL.
     fn fetch_bytes(&self, url: &str) -> impl Future<Output = Result<Bytes, UpstreamError>> + Send;
 }
 
@@ -477,43 +494,5 @@ impl UpstreamProtocol for UpstreamClient {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    use bytes::Bytes;
-    use futures_util::{Stream, StreamExt as _, stream};
-    use peryx_upstream::UpstreamError;
-
-    use super::{MAX_SIMPLE_PAGE_BYTES, read_capped};
-
-    fn body(sizes: Vec<usize>) -> impl Stream<Item = Result<Bytes, reqwest::Error>> {
-        stream::iter(sizes.into_iter().map(|size| Ok(Bytes::from(vec![b'a'; size]))))
-    }
-
-    #[tokio::test]
-    async fn test_read_capped_returns_a_body_within_the_limit() {
-        let read = read_capped(body(vec![8, 8]), 64).await.unwrap();
-
-        assert_eq!(read.len(), 16);
-    }
-
-    #[tokio::test]
-    async fn test_read_capped_stops_at_the_first_chunk_past_the_limit() {
-        let polled = Arc::new(AtomicUsize::new(0));
-        let counter = Arc::clone(&polled);
-        let stream = body(vec![20, 20]).inspect(move |_| {
-            counter.fetch_add(1, Ordering::SeqCst);
-        });
-
-        let error = read_capped(stream, 8).await.unwrap_err();
-
-        assert!(matches!(error, UpstreamError::ResponseTooLarge { limit: 8 }));
-        assert_eq!(polled.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn test_simple_page_cap_matches_the_project_sync_cap() {
-        assert_eq!(MAX_SIMPLE_PAGE_BYTES as u64, crate::cache::MAX_PROJECT_BYTES);
-    }
-}
+#[path = "../tests/unit/simple_client/tests.rs"]
+mod tests;

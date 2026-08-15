@@ -1,8 +1,3 @@
-//! `RECORD`: every member of the wheel listed with its digest and size, and each one verified.
-//!
-//! The hash comparison is constant-time. A wheel is attacker-supplied, and leaking where two digests
-//! first differ would let a caller search for a collision one byte at a time.
-
 use std::collections::BTreeMap;
 use std::io::{Read, Seek};
 

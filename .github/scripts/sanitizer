@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$repo"
+sanitizer=${1:?pass address or thread}
+case "$sanitizer" in
+  address|thread) ;;
+  *) printf 'unsupported sanitizer: %s\n' "$sanitizer" >&2; exit 2 ;;
+esac
+target="$(rustc +nightly -vV | awk '/^host:/ { print $2 }')"
+case "$target" in
+  *-unknown-linux-gnu) ;;
+  *) printf 'sanitizers require a Linux GNU target: %s\n' "$target" >&2; exit 2 ;;
+esac
+export RUSTFLAGS="-Zsanitizer=$sanitizer"
+export RUSTDOCFLAGS="$RUSTFLAGS"
+rustup toolchain install nightly --profile minimal --component rust-src
+cargo +nightly nextest run -Z build-std --workspace --target "$target" \
+  --lib --bins --tests --examples

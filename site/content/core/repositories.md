@@ -1,146 +1,79 @@
 +++
 title = "Repository management API"
-description = "Create, inspect, list, update, and disable repositories over versioned HTTP operations."
+description = "Create, inspect, list, update, disable, and enable repository records."
 weight = 15
 +++
 
-A repository is a persistent record that binds a unique route to an ecosystem and a definition. The store keys each
-record by a stable, opaque id and keeps that id fixed across a rename or a state change, so a reference never re-homes.
-The management API exposes the record's whole life over `/+repositories`: create, inspect, list, update, disable, and
-re-enable. Every operation is administrator-only and every mutation commits exactly one repository version.
+A repository record binds a stable identifier to an index route and a registered ecosystem owner. Renames and state
+changes preserve the identifier. Each committed mutation creates one repository version.
 
-The API is not a reload switch. A management transaction commits one record; it does not reparse configuration, rebuild
-unrelated indexes, or delay package downloads behind that write.
+## Record schema
 
-## The record
+| Field             | Mutable | Contract                                          |
+| ----------------- | ------- | ------------------------------------------------- |
+| `id`              | No      | Stable opaque repository identifier               |
+| `route`           | No      | Unique client-facing route                        |
+| `ecosystem`       | No      | Registered owner identifier                       |
+| `display_name`    | Yes     | Human-readable name                               |
+| `definition`      | Yes     | Schema owned and validated by the ecosystem owner |
+| `state`           | Yes     | `enabled` or `disabled`                           |
+| `version`         | Server  | Revision incremented by each committed mutation   |
+| `created_by`      | Server  | Identity that created the record                  |
+| `created_at_unix` | Server  | Creation time                                     |
+| `updated_by`      | Server  | Identity that committed the current revision      |
+| `updated_at_unix` | Server  | Current revision time                             |
 
-A repository serializes as an opaque record. The `id` is stable; the `route` and `ecosystem` are fixed for the record's
-life; `display_name` and `definition` are the mutable surface; `version` increments on every commit.
+Neutral templates use `<registered-ecosystem-id>` for `ecosystem`. Concrete definitions belong in the selected owner's
+endpoint reference. The plugin registry sends each definition to that owner for validation before storage.
 
-```json
-{
-  "id": "repo_2f7e6a1b9c4d4e2f8a1b2c3d4e5f6a7b",
-  "route": "root/pypi",
-  "display_name": "PyPI mirror",
-  "ecosystem": "pypi",
-  "definition": {},
-  "state": "enabled",
-  "version": 1,
-  "created_by": "usr_550e8400e29b41d4a716446655440000",
-  "created_at_unix": 1700000000,
-  "updated_by": "usr_550e8400e29b41d4a716446655440000",
-  "updated_at_unix": 1700000000
-}
-```
+## Operations
+
+| Operation | Method | Route                         | Scope                  | Precondition |
+| --------- | ------ | ----------------------------- | ---------------------- | ------------ |
+| List      | `GET`  | `/+repositories`              | `administration:read`  | None         |
+| Create    | `POST` | `/+repositories`              | `administration:write` | None         |
+| Inspect   | `GET`  | `/+repositories/{id}`         | `administration:read`  | None         |
+| Update    | `PUT`  | `/+repositories/{id}`         | `administration:write` | `If-Match`   |
+| Disable   | `POST` | `/+repositories/{id}/disable` | `administration:write` | `If-Match`   |
+| Enable    | `POST` | `/+repositories/{id}/enable`  | `administration:write` | `If-Match`   |
+
+List results use identifier order, an opaque cursor, and a `limit` from 1 through 100. The `state` query filters enabled
+or disabled records. A null `next_cursor` marks the last page.
+
+## Create
+
+The create body supplies `route`, `display_name`, `ecosystem`, and `definition`. The active owner validates `definition`
+before commit. Success returns the record, its `ETag`, and a `Location` header. A duplicate route returns
+`409 Conflict`; unsupported media returns `415`; invalid fields or JSON return `422`.
+
+## Conditional mutations
+
+Inspect and create responses expose the repository version through `ETag`. Update, disable, and enable requests copy
+that value into `If-Match`. A missing precondition returns `428 Precondition Required`. A malformed precondition returns
+`400 Bad Request`.
+
+If another writer commits first, the service returns `409 Conflict`, includes the current version in the body and
+`ETag`, and leaves the record unchanged. The caller reads the current record, applies its change, and retries.
+
+Update accepts `display_name` and `definition`. It cannot change the route or ecosystem owner. Disable and enable keep
+the same route and identifier. Disabling a disabled repository at its current version returns the unchanged record.
 
 ## Authorization
 
-Every route authenticates an administrator with HTTP Basic credentials and checks a management scope over the operator
-resource. Reads require `administration:read`; mutations require `administration:write`. A caller that authenticates but
-lacks the scope reads the same `404` as a caller asking for a repository that does not exist, so an outsider cannot tell
-an inaccessible repository from an absent one.
+Every operation requires local administrator authentication. A missing or wrong credential returns `401 Unauthorized`
+with a Basic challenge. An authenticated caller without the required scope receives the same `404 Not Found` response as
+an absent record.
 
-| Operation | Route                         | Method | Scope                  | Precondition |
-| --------- | ----------------------------- | ------ | ---------------------- | ------------ |
-| List      | `/+repositories`              | `GET`  | `administration:read`  | —            |
-| Create    | `/+repositories`              | `POST` | `administration:write` | —            |
-| Inspect   | `/+repositories/{id}`         | `GET`  | `administration:read`  | —            |
-| Update    | `/+repositories/{id}`         | `PUT`  | `administration:write` | `If-Match`   |
-| Disable   | `/+repositories/{id}/disable` | `POST` | `administration:write` | `If-Match`   |
-| Enable    | `/+repositories/{id}/enable`  | `POST` | `administration:write` | `If-Match`   |
+## Configuration reconciliation
 
-A missing or wrong credential returns `401` with a `WWW-Authenticate: Basic` challenge. A denied-but-authenticated
-caller returns `404`.
+The process holding mutation authority reconciles configured index routes into repository records at startup. It creates
+a record for a new route and reuses the identifier for a known route. An unchanged definition does not increment the
+version. In `dc` and `ha` modes, replicas receive records through metadata replication and do not reconcile
+configuration.
 
-## Create a repository
+Configuration provides one-way onboarding. API changes do not rewrite the configuration file. Removing a configured
+entry does not delete its stored record.
 
-`POST /+repositories` mints a stable id under a unique route. The route and ecosystem are fixed once set. The response
-carries the record, an `ETag` for a later `If-Match`, and a `Location` for the new resource.
+## Owner definitions
 
-```console
-$ curl -sS -u "$ADMIN" https://packages.example/+repositories \
-    -H 'content-type: application/json' \
-    -d '{"route": "root/pypi", "display_name": "PyPI mirror", "ecosystem": "pypi", "definition": {}}'
-```
-
-A second repository on the same route returns `409`. An empty or oversized field returns `422`. A body that is not
-`application/json` returns `415`; a malformed JSON body returns `422`.
-
-## List repositories
-
-`GET /+repositories` returns repositories in id order with a bounded page and an opaque cursor. Filter by `state`
-(`enabled` or `disabled`), page with `limit` (1..=100, default 25), and continue with `cursor` from the prior page's
-`next_cursor`. A `next_cursor` of `null` marks the last page.
-
-```console
-$ curl -sS -u "$ADMIN" 'https://packages.example/+repositories?state=enabled&limit=50'
-```
-
-```json
-{
-  "repositories": [
-    {
-      "id": "repo_2f7e6a1b9c4d4e2f8a1b2c3d4e5f6a7b",
-      "route": "root/pypi",
-      "display_name": "PyPI mirror",
-      "ecosystem": "pypi",
-      "definition": {},
-      "state": "enabled",
-      "version": 1,
-      "created_by": "usr_550e8400e29b41d4a716446655440000",
-      "created_at_unix": 1700000000,
-      "updated_by": "usr_550e8400e29b41d4a716446655440000",
-      "updated_at_unix": 1700000000
-    }
-  ],
-  "next_cursor": "repo_9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d"
-}
-```
-
-A `limit` outside `1..=100` returns `400`.
-
-## Conditional updates
-
-Update, disable, and enable are conditional. Each read returns the current version in an `ETag`; each mutation must echo
-that version in `If-Match`. A mutation with no `If-Match` returns `428 Precondition Required`; an `If-Match` that is not
-a version returns `400`. When the stored version has moved on, the write loses with `409 Conflict`, the winning version
-rides back on both the body's `current_version` and the response `ETag`, and the stored record is untouched — refetch,
-re-apply, and retry.
-
-```console
-$ etag=$(curl -sS -u "$ADMIN" -D - -o /dev/null \
-    https://packages.example/+repositories/repo_2f7e6a1b9c4d4e2f8a1b2c3d4e5f6a7b \
-    | awk -F': ' 'tolower($1) == "etag" { print $2 }' | tr -d '\r')
-
-$ curl -sS -u "$ADMIN" -X PUT \
-    https://packages.example/+repositories/repo_2f7e6a1b9c4d4e2f8a1b2c3d4e5f6a7b \
-    -H "if-match: $etag" -H 'content-type: application/json' \
-    -d '{"display_name": "PyPI mirror (west)", "definition": {}}'
-```
-
-The id survives the rename; the version increments and the new value returns in the `ETag`. Only `display_name` and
-`definition` change — an attempt to move the route or ecosystem is not expressible through update.
-
-## Disable and enable
-
-`POST /+repositories/{id}/disable` takes a repository out of service under the same `If-Match` rule;
-`POST /+repositories/{id}/enable` restores it. Disable is idempotent: disabling an already-disabled repository at its
-current version returns it unchanged. A stale precondition conflicts exactly as an update does.
-
-```console
-$ curl -sS -u "$ADMIN" -X POST -H "if-match: $etag" \
-    https://packages.example/+repositories/repo_2f7e6a1b9c4d4e2f8a1b2c3d4e5f6a7b/disable
-```
-
-## Migrating from `[[index]]` configuration
-
-Repositories defined statically under `[[index]]` route exactly as before; the configuration file stays their source of
-truth for routing. On startup an authoritative node reconciles each configured index into a stored record, matched by
-route. A route with no record yet mints one, keyed to that route in the store; a route that already has a record reuses
-its id, so a restart assigns nothing new and a later rename through the API never re-homes a reference. Reconciling an
-unchanged configuration is a no-op that bumps no version. A read-only replica skips the reconcile and receives records
-through its normal replication path.
-
-The migration is one-way onboarding, not a two-way sync. It gives a configured route a stable id and a record to manage;
-it does not push later API edits back into the configuration file, and it does not delete a record when its `[[index]]`
-entry goes away.
+- [Ecosystem owner documentation](@/ecosystems/_index.md)

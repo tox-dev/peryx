@@ -1,0 +1,27 @@
+[package]
+name = "peryx-bench-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Ecosystem-neutral benchmark measurement and reporting for peryx."
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+clap.workspace = true
+reqwest = { workspace = true, features = ["gzip", "http2", "rustls-native-certs", "rustls-no-provider", "stream"] }
+rustls.workspace = true
+serde.workspace = true
+statrs.workspace = true
+sysinfo.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+toml.workspace = true
+
+[dev-dependencies]
+rstest.workspace = true
+
+[lints]
+workspace = true

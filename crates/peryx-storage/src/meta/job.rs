@@ -1,36 +1,64 @@
 use std::ops::Bound::{Excluded, Unbounded};
 
 use redb::{ReadableTable as _, ReadableTableMetadata as _};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::error::MetaError;
 use super::{JOB_RUN, JOB_SERIAL_KEY, MetaStore, SERIAL};
 
-#[cfg(not(test))]
 const JOB_RETENTION_BATCH: usize = 128;
-#[cfg(test)]
-const JOB_RETENTION_BATCH: usize = 4;
 const MAX_QUERY_LIMIT: usize = 100;
 const MAX_ERROR_BYTES: usize = 2_048;
 const MAX_SCOPE_BYTES: usize = 512;
 const RESTART_ERROR: &str = "node restarted before the job finished";
 
-/// The maintenance task a job run carried out. Each variant is produced by one background task; the
-/// enum grows as scheduled kinds (mirror sync, cleanup, verify, backup) gain their runners.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum JobKind {
-    /// Finalizing a failed home's retained ingress intents at the new home after authority transfer.
-    AuthorityDrain,
-    /// The background sweep that revalidates stale cached pages.
-    CacheRefresh,
-    /// A bounded remote project-catalog and file-metadata refresh.
-    CatalogSync,
-    /// A full rebuild of the derived package search index from authoritative metadata.
-    SearchRebuild,
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct JobKind(String);
+
+impl JobKind {
+    /// # Errors
+    /// Returns an error when `value` cannot serve as a stable storage and metric key.
+    pub fn new(value: impl Into<String>) -> Result<Self, JobKindError> {
+        let value = value.into();
+        if value.is_empty()
+            || value.len() > 64
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_' || byte == b'-')
+        {
+            return Err(JobKindError(value));
+        }
+        Ok(Self(value))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
-/// Where a job run stands: in flight, or finished one way or the other.
+impl Serialize for JobKind {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for JobKind {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Self::new(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("invalid job kind {0:?}")]
+pub struct JobKindError(String);
+
+impl std::fmt::Display for JobKind {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JobState {
@@ -40,16 +68,13 @@ pub enum JobState {
     Cancelled,
 }
 
-/// A durable record of one background job run: what ran, when, and how it ended. Written when a task
-/// starts and updated when it finishes, so the read-only history survives a restart.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JobRunRecord {
     pub id: String,
     pub kind: JobKind,
-    /// The repository or index the job acted on, or empty for a store-wide task.
+    /// Empty for store-wide tasks.
     pub scope: String,
-    /// The configured repository this run is authorized against. Node- and ecosystem-wide work has
-    /// no repository owner and remains visible only through operator authorization.
+    /// `None` keeps node-wide work visible only through operator authorization.
     #[serde(default)]
     pub repository: Option<String>,
     pub state: JobState,
@@ -60,8 +85,7 @@ pub struct JobRunRecord {
     pub error: Option<String>,
 }
 
-/// The fields a caller supplies to open a job run.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct NewJobRun<'a> {
     pub kind: JobKind,
     pub scope: &'a str,
@@ -69,7 +93,6 @@ pub struct NewJobRun<'a> {
     pub started_at_unix: i64,
 }
 
-/// The result a caller records when a job run finishes.
 #[derive(Debug, Clone, Copy)]
 pub struct JobOutcome<'a> {
     state: JobState,
@@ -114,7 +137,6 @@ impl<'a> JobOutcome<'a> {
     }
 }
 
-/// The durable result of closing one running attempt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FinishJobRun {
     Finished(JobRunRecord),
@@ -122,7 +144,6 @@ pub enum FinishJobRun {
     Missing,
 }
 
-/// A bounded stable query over job-run history, newest first.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JobRunQuery {
     pub cursor: Option<String>,
@@ -138,7 +159,6 @@ impl Default for JobRunQuery {
     }
 }
 
-/// One page of job-run history.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct JobRunPage {
     #[serde(rename = "attempts")]
@@ -146,7 +166,6 @@ pub struct JobRunPage {
     pub next_cursor: Option<String>,
 }
 
-/// A rejected job-run write.
 #[derive(Debug, thiserror::Error)]
 pub enum JobRunStoreError {
     #[error(transparent)]
@@ -157,7 +176,6 @@ pub enum JobRunStoreError {
     RepositoryTooLong,
 }
 
-/// A rejected job-run query.
 #[derive(Debug, thiserror::Error)]
 pub enum JobRunQueryError {
     #[error(transparent)]
@@ -169,8 +187,6 @@ pub enum JobRunQueryError {
 }
 
 impl MetaStore {
-    /// Open a job run in the `Running` state and return its ID.
-    ///
     /// # Errors
     /// Returns a store error if the write fails or the record cannot be encoded.
     pub fn start_job_run(&self, run: NewJobRun<'_>) -> Result<String, JobRunStoreError> {
@@ -217,7 +233,7 @@ impl MetaStore {
         Ok(id)
     }
 
-    /// Record the outcome of a job run, returning the updated record when it still exists.
+    /// Returns the updated record or [`FinishJobRun::Missing`] when it no longer exists.
     ///
     /// # Errors
     /// Returns a store error if the write fails or the record cannot be decoded or encoded.
@@ -250,8 +266,6 @@ impl MetaStore {
         Ok(FinishJobRun::Finished(record))
     }
 
-    /// Fetch one job run by ID.
-    ///
     /// # Errors
     /// Returns a store error if the read fails or the record cannot be decoded.
     pub fn get_job_run(&self, id: &str) -> Result<Option<JobRunRecord>, MetaError> {
@@ -263,7 +277,7 @@ impl MetaStore {
             .transpose()?)
     }
 
-    /// Query job runs newest first with an exclusive stable cursor.
+    /// Returns newest runs first after an exclusive stable cursor.
     ///
     /// # Errors
     /// Returns a validation error for an invalid limit or cursor, or a store error if a record cannot
@@ -283,7 +297,7 @@ impl MetaStore {
         Ok(JobRunPage { runs, next_cursor })
     }
 
-    /// Return at most 100 of the newest job runs.
+    /// Returns at most 100 runs, newest first.
     ///
     /// # Errors
     /// Returns a store error if a record cannot be read or decoded.
@@ -291,10 +305,7 @@ impl MetaStore {
         self.read_job_runs(None, MAX_QUERY_LIMIT)
     }
 
-    /// Mark records left running by an earlier process as failed.
-    ///
-    /// Each write transaction changes at most 128 records. The method repeats bounded transactions
-    /// until no interrupted record remains.
+    /// Marks interrupted runs failed in transactions of at most 128 records.
     ///
     /// # Errors
     /// Returns a store error if a record cannot be read, decoded, encoded, or committed.
@@ -340,7 +351,7 @@ impl MetaStore {
         Ok(changed)
     }
 
-    /// Remove one bounded batch of the oldest terminal attempts while retaining every running one.
+    /// Removes one bounded batch of terminal runs and retains running records.
     ///
     /// # Errors
     /// Returns a store error if history cannot be read, decoded, or committed.
@@ -409,5 +420,5 @@ fn encode_job_run(record: &JobRunRecord) -> Vec<u8> {
 }
 
 #[cfg(test)]
-#[path = "job_fault_tests.rs"]
+#[path = "../../tests/unit/meta/job_fault_tests.rs"]
 mod fault_tests;

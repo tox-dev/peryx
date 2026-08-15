@@ -1,5 +1,3 @@
-//! The per-request inputs and outputs of the streaming page transform.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use peryx_policy::Policy;

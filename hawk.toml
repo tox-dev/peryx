@@ -13,9 +13,14 @@ bin = "peryx"
 reason = "The server binary; its reachable API is the consumed surface."
 
 [[production]]
-package = "peryx-bench"
-bin = "peryx-bench"
-reason = "The benchmark binary, built in the workspace and consuming library API."
+package = "peryx-ecosystem-pypi"
+bin = "peryx-bench-pypi"
+reason = "The PyPI benchmark entrypoint."
+
+[[production]]
+package = "peryx-ecosystem-oci"
+bin = "peryx-bench-oci"
+reason = "The OCI benchmark entrypoint."
 
 [[override]]
 lint = "hawk::dead_public"

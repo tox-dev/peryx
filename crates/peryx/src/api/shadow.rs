@@ -1,5 +1,3 @@
-//! The `OpenAPI` description of the operator shadowed-candidate endpoint.
-
 use serde_json::json;
 use utoipa::openapi::path::{HttpMethod, OperationBuilder, ParameterBuilder, ParameterIn, PathItemBuilder};
 use utoipa::openapi::{PathsBuilder, Required, ResponseBuilder, SecurityRequirement};
@@ -21,21 +19,21 @@ fn shadow_example() -> serde_json::Value {
             {
                 "member": "hosted",
                 "source": "hosted",
-                "filename": "example-1.0-py3-none-any.whl",
+                "artifact": "artifact.bin",
                 "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
                 "selected": true
             },
             {
-                "member": "pypi",
+                "member": "example",
                 "source": "cached",
-                "filename": "example-1.0-py3-none-any.whl",
+                "artifact": "artifact.bin",
                 "digest": "sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
                 "selected": false,
                 "reason": "precedence",
                 "decision": {
                     "state": "deny",
-                    "rule": "blocked-project",
-                    "reason": "project is blocked by policy",
+                    "rule": "blocked-subject",
+                    "reason": "subject is blocked by policy",
                     "evaluated_at_unix": 1_700_000_000,
                     "fresh": true
                 }
@@ -51,19 +49,19 @@ fn shadow_parameters(mut operation: OperationBuilder) -> OperationBuilder {
             "repository",
             true,
             "The virtual repository route to inspect",
-            json!("root/pypi"),
+            json!("root/artifacts"),
         ),
         (
-            "project",
+            "resource",
             true,
-            "The project to explain, normalized to the ecosystem's canonical form",
+            "The resource to explain, normalized to the ecosystem's canonical form",
             json!("example"),
         ),
         (
             "cursor",
             false,
             "Exclusive cursor from the prior page",
-            json!("example-1.0-py3-none-any.whl\u{1f}0\u{1f}hosted"),
+            json!("artifact.bin\u{1f}0\u{1f}hosted"),
         ),
         (
             "limit",
@@ -90,43 +88,36 @@ fn shadow_candidates() -> OperationBuilder {
             .tag("operations")
             .summary(Some("Virtual repository shadowed candidates"))
             .description(Some(
-                "Explains how a virtual repository resolves one project: the selected candidate for each \
-                 distribution filename and every candidate a member shadowed, with its configured member, \
-                 source class, digest, and the reason it lost — `precedence` when a higher-precedence \
-                 member already supplied the filename, or `fallback` when the repository's fallback policy \
-                 excluded a cached member. Each candidate also carries the recorded policy decision that \
-                 governs its filename when one exists — `allow`, `deny`, or `wait`, with the matched rule, \
-                 a reason already stripped of any upstream URL or credential, and a retry time for a wait — \
-                 so an operator sees blocked and held candidates beside the shadowed ones. A caller who can \
-                 read the repository may inspect it; the server operator role, which carries no repository \
-                 access, cannot. A repository's legacy upload token retains access under the `__token__` \
-                 username. The query reads stored records only and never changes member order, installer \
-                 responses, or policy evaluation, so shadowed candidates stay absent from HTML and JSON \
-                 installer selection.",
+                "Explains candidate selection for one subject in a virtual repository. Each row identifies \
+                 its member, source, digest, and rejection reason: `precedence` when another member supplied \
+                 the artifact first, or `fallback` when policy excluded a cached member. A recorded policy \
+                 decision includes its state, matched rule, sanitized reason, and retry time. Repository \
+                 readers and authorized ecosystem credentials can inspect the repository. Server operators \
+                 without repository access cannot. The query reads stored records without changing selection.",
             ))
-            .security(SecurityRequirement::new("uploadToken", Vec::<String>::new()))
+            .security(SecurityRequirement::new("writeToken", Vec::<String>::new()))
             .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
             .response(
                 "200",
                 api_json_response(
-                    "The selected and shadowed candidates, filenames ascending and the selected candidate first",
+                    "The selected and shadowed candidates, artifacts ascending and the selected candidate first",
                     shadow_example(),
                 ),
             )
             .response(
                 "400",
                 api_json_response(
-                    "The limit, cursor, or project is invalid, or a required parameter is missing",
+                    "The limit, cursor, or resource is invalid, or a required parameter is missing",
                     json!({"error": "limit must be between 1 and 100"}),
                 ),
             )
             .response(
                 "401",
-                ResponseBuilder::new().description("No valid local user credential or repository token was presented"),
+                ResponseBuilder::new().description("No valid local or ecosystem credential was presented"),
             )
             .response(
                 "403",
-                ResponseBuilder::new().description("The repository token cannot inspect shadowed candidates"),
+                ResponseBuilder::new().description("The credential cannot inspect shadowed candidates"),
             )
             .response(
                 "404",

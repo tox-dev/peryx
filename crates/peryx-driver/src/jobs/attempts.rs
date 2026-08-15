@@ -68,8 +68,6 @@ impl JobAttemptControl {
         result
     }
 
-    /// Signal one attempt owned by this process, or classify its durable state.
-    ///
     /// # Errors
     /// Returns a store error if an inactive ID cannot be inspected.
     pub fn cancel(&self, id: &str) -> Result<CancelJobRun, MetaError> {
@@ -86,8 +84,6 @@ impl JobAttemptControl {
         })
     }
 
-    /// Mark attempts left running by an earlier process as failed.
-    ///
     /// # Errors
     /// Returns a store error if recovery cannot read or update durable history.
     pub fn recover_interrupted(&self, recovered_at_unix: i64) -> Result<usize, MetaError> {
@@ -97,14 +93,8 @@ impl JobAttemptControl {
     fn lock(&self) -> MutexGuard<'_, HashMap<String, CancellationToken>> {
         self.active.lock().unwrap_or_else(PoisonError::into_inner)
     }
-
-    #[cfg(test)]
-    pub(super) fn activate(&self, id: String, cancel: CancellationToken) {
-        self.lock().insert(id, cancel);
-    }
-
-    #[cfg(test)]
-    pub(super) fn is_active(&self, id: &str) -> bool {
-        self.lock().contains_key(id)
-    }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/jobs/attempts/tests.rs"]
+mod tests;

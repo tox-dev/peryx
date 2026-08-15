@@ -1,0 +1,35 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests",
+    ":preserveSemverRanges"
+  ],
+  "timezone": "America/Los_Angeles",
+  "minimumReleaseAge": "3 days",
+  "schedule": ["before 6am on Monday"],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 6am on Monday"]
+  },
+  "packageRules": [
+    {
+      "description": "Update compatible Rust dependencies together",
+      "matchManagers": ["cargo"],
+      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
+      "groupName": "Rust dependencies"
+    },
+    {
+      "description": "Keep action digest updates in one review",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
+      "groupName": "GitHub Actions"
+    },
+    {
+      "description": "Update compatible container images together",
+      "matchManagers": ["dockerfile", "docker-compose"],
+      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
+      "groupName": "Container images"
+    }
+  ]
+}

@@ -1,21 +1,14 @@
-#![allow(
-    clippy::must_use_candidate,
-    reason = "the #[component] macro consumes attributes, so #[must_use] cannot reach the generated functions"
-)]
-#![allow(
-    clippy::missing_const_for_fn,
-    reason = "cfg-split helpers are const only without the hydrate feature; constness cannot vary by cfg"
-)]
-
+use leptos::either::Either;
 use leptos::prelude::*;
 use leptos_router::hooks::use_query_map;
 
 use super::ErrorMessage;
 use crate::data::load_search;
-use crate::model::{UiSearchPage, source_label};
-use crate::url::{browse_project_url, search_page_url};
+use crate::model::{UiSearchPage, UiSearchResult};
+use crate::url::{browse_index_url, search_page_url};
 
 #[component]
+#[must_use]
 pub fn Search() -> impl IntoView {
     let query_map = use_query_map();
     let query = Memo::new(move |_| query_map.read().get("q").unwrap_or_default());
@@ -92,10 +85,11 @@ pub fn Search() -> impl IntoView {
 }
 
 #[component]
+#[must_use]
 fn SearchForm(query: String, source_type: String, availability: String, page_size: usize) -> impl IntoView {
     view! {
         <form class="search-controls" method="get" action="/search">
-            <input class="search" type="search" name="q" value=query placeholder="Search packages and images" />
+            <input class="search" type="search" name="q" value=query placeholder="Search indexed entries" />
             <select name="type" aria-label="Source type">
                 <option value="all" selected=source_type == "all">"All"</option>
                 <option value="uploaded" selected=source_type == "uploaded">"Uploaded"</option>
@@ -106,11 +100,7 @@ fn SearchForm(query: String, source_type: String, availability: String, page_siz
                 <option value="all" selected=availability == "all">"Any availability"</option>
                 <option value="local" selected=availability == "local">"Local only"</option>
             </select>
-            <select
-                name="page_size"
-                aria-label="Page size"
-                on:change:target=move |event| store_search_page_size(&event.target().value())
-            >
+            <select name="page_size" aria-label="Page size">
                 <option value="25" selected=page_size == 25>"25"</option>
                 <option value="50" selected=page_size == 50>"50"</option>
                 <option value="100" selected=page_size == 100>"100"</option>
@@ -120,9 +110,98 @@ fn SearchForm(query: String, source_type: String, availability: String, page_siz
     }
 }
 
-/// The badge class, label, and hover text for a result's local availability, so a row shows whether
-/// its bytes can be served now the same way the file view flags each artifact.
-fn availability_badge(available: bool) -> (&'static str, &'static str, &'static str) {
+#[component]
+#[must_use]
+fn SearchResults(query: String, source_type: String, availability: String, page_data: UiSearchPage) -> impl IntoView {
+    if page_data.total == 0 {
+        let message = if query.trim().is_empty() {
+            "Nothing indexed yet. Cached resources appear after their artifacts are requested."
+        } else {
+            "Nothing matched this search."
+        };
+        return Either::Left(view! { <p class="dim">{message}</p> });
+    }
+    let Some((start, end)) = page_data.shown_range() else {
+        let last_page = page_data.total.div_ceil(page_data.page_size);
+        let href = search_page_url(&query, &source_type, &availability, last_page, page_data.page_size);
+        return Either::Right(Either::Left(view! {
+            <p class="dim">"This page is past the last result of "{page_data.total}"."</p>
+            <nav class="pagination" aria-label="Search pages">
+                <a class="page-link" href=href>"Go to last page"</a>
+            </nav>
+        }));
+    };
+    let UiSearchPage {
+        page,
+        page_size,
+        total,
+        results,
+        ..
+    } = page_data;
+    let previous = (page > 1).then(|| search_page_url(&query, &source_type, &availability, page - 1, page_size));
+    let next = (end < total).then(|| search_page_url(&query, &source_type, &availability, page + 1, page_size));
+    Either::Right(Either::Right(view! {
+        <p class="result-count">"Showing "{start}"-"{end}" of "{total}</p>
+        <div class="table-scroll">
+            <table class="files search-results">
+                <thead>
+                    <tr>
+                        <th>"Name"</th>
+                        <th>"Type"</th>
+                        <th>"Normalized"</th>
+                        <th>"Source"</th>
+                        <th>"Availability"</th>
+                        <th>"Index"</th>
+                        <th>"Summary"</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {results
+                        .into_iter()
+                        .map(|result| view! { <SearchResult result /> })
+                        .collect_view()}
+                </tbody>
+            </table>
+        </div>
+        <nav class="pagination" aria-label="Search pages">
+            {previous
+                .map_or_else(
+                    || view! { <span class="page-link disabled">"Previous"</span> }.into_any(),
+                    |href| view! { <a class="page-link" href=href>"Previous"</a> }.into_any(),
+                )}
+            <span>"Page "{page}</span>
+            {next
+                .map_or_else(
+                    || view! { <span class="page-link disabled">"Next"</span> }.into_any(),
+                    |href| view! { <a class="page-link" href=href>"Next"</a> }.into_any(),
+                )}
+        </nav>
+    }))
+}
+
+#[component]
+#[must_use]
+fn SearchResult(result: UiSearchResult) -> impl IntoView {
+    let href = browse_index_url(&result.route);
+    let source_class = format!("badge source-{}", result.source_type);
+    let source_title =
+        (result.source_type == "override").then_some("Hosted files or overrides affect this upstream entry");
+    let (available_class, available_label, available_title) = availability_badge(result.available);
+    let source_label = result.source_label();
+    view! {
+        <tr>
+            <td><a href=href>{result.display_label}</a></td>
+            <td><span class="badge">{result.type_label}</span></td>
+            <td><code>{result.resource_key}</code></td>
+            <td><span class=source_class title=source_title>{source_label}</span></td>
+            <td><span class=available_class title=available_title>{available_label}</span></td>
+            <td><code>{result.index}</code></td>
+            <td>{result.summary.unwrap_or_default()}</td>
+        </tr>
+    }
+}
+
+const fn availability_badge(available: bool) -> (&'static str, &'static str, &'static str) {
     if available {
         (
             "badge available-local",
@@ -138,114 +217,6 @@ fn availability_badge(available: bool) -> (&'static str, &'static str, &'static 
     }
 }
 
-fn store_search_page_size(value: &str) {
-    #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
-    {
-        if let Some(window) = web_sys::window()
-            && let Ok(Some(storage)) = window.local_storage()
-        {
-            let _ = storage.set_item("peryx.search.page_size", value);
-        }
-    }
-    #[cfg(any(feature = "ssr", not(feature = "hydrate")))]
-    {
-        let _ = value;
-    }
-}
-
-#[component]
-fn SearchResults(query: String, source_type: String, availability: String, page_data: UiSearchPage) -> impl IntoView {
-    if page_data.total == 0 {
-        let message = if query.trim().is_empty() {
-            "Nothing indexed yet. Cached items appear after their pages or tags are fetched."
-        } else {
-            "Nothing matched this search."
-        };
-        return view! { <p class="dim">{message}</p> }.into_any();
-    }
-    let Some((start, end)) = page_data.shown_range() else {
-        let last_page = page_data.total.div_ceil(page_data.page_size);
-        let href = search_page_url(&query, &source_type, &availability, last_page, page_data.page_size);
-        return view! {
-            <p class="dim">"This page is past the last result of "{page_data.total}"."</p>
-            <nav class="pagination" aria-label="Search pages">
-                <a class="page-link" href=href>"Go to last page"</a>
-            </nav>
-        }
-        .into_any();
-    };
-    let previous = (page_data.page > 1).then(|| {
-        search_page_url(
-            &query,
-            &source_type,
-            &availability,
-            page_data.page - 1,
-            page_data.page_size,
-        )
-    });
-    let next = (end < page_data.total).then(|| {
-        search_page_url(
-            &query,
-            &source_type,
-            &availability,
-            page_data.page + 1,
-            page_data.page_size,
-        )
-    });
-    view! {
-        <p class="result-count">"Showing "{start}"-"{end}" of "{page_data.total}</p>
-        <div class="table-scroll">
-            <table class="files search-results">
-                <thead>
-                    <tr>
-                        <th>"Name"</th>
-                        <th>"Type"</th>
-                        <th>"Normalized"</th>
-                        <th>"Source"</th>
-                        <th>"Availability"</th>
-                        <th>"Index"</th>
-                        <th>"Summary"</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {page_data
-                        .results
-                        .into_iter()
-                        .map(|result| {
-                            let href = browse_project_url(&result.route, &result.normalized_name);
-                            let source_class = format!("badge source-{}", result.source_type);
-                            let source_title = (result.source_type == "override")
-                                .then_some("Hosted files or hosted overrides affect this upstream package");
-                            let (available_class, available_label, available_title) = availability_badge(result.available);
-                            view! {
-                                <tr>
-                                    <td><a href=href>{result.display_name}</a></td>
-                                    <td><span class="badge">{result.type_label}</span></td>
-                                    <td><code>{result.normalized_name}</code></td>
-                                    <td><span class=source_class title=source_title>{source_label(&result.source_type)}</span></td>
-                                    <td><span class=available_class title=available_title>{available_label}</span></td>
-                                    <td><code>{result.index}</code></td>
-                                    <td>{result.summary.unwrap_or_default()}</td>
-                                </tr>
-                            }
-                        })
-                        .collect_view()}
-                </tbody>
-            </table>
-        </div>
-        <nav class="pagination" aria-label="Search pages">
-            {previous
-                .map_or_else(
-                    || view! { <span class="page-link disabled">"Previous"</span> }.into_any(),
-                    |href| view! { <a class="page-link" href=href>"Previous"</a> }.into_any(),
-                )}
-            <span>"Page "{page_data.page}</span>
-            {next
-                .map_or_else(
-                    || view! { <span class="page-link disabled">"Next"</span> }.into_any(),
-                    |href| view! { <a class="page-link" href=href>"Next"</a> }.into_any(),
-                )}
-        </nav>
-    }
-    .into_any()
-}
+#[cfg(all(test, feature = "ssr"))]
+#[path = "../../tests/unit/pages/search/tests.rs"]
+mod tests;

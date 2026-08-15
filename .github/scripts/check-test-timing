@@ -1,0 +1,301 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import os
+import re
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Final
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+LANGUAGES: Final = {
+    ".bash": "shell",
+    ".cjs": "javascript",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".mjs": "javascript",
+    ".rs": "rust",
+    ".sh": "shell",
+    ".ts": "javascript",
+    ".tsx": "javascript",
+    ".zsh": "shell",
+}
+TEST_DIRECTORIES: Final = {"benches", "fuzz", "tests"}
+BENCHMARK_SOURCE_DIRECTORIES: Final = {("src", "bench")}
+IGNORED_DIRECTORIES: Final = {
+    ".git",
+    ".tox",
+    "coverage",
+    "node_modules",
+    "public",
+    "target",
+    "vendor",
+}
+RUST_VIRTUAL_TIME: Final = re.compile(r"start_paused\s*=\s*true|tokio::time::(?:advance|pause)\s*\(")
+RUST_SLEEP: Final = re.compile(r"(?<!fn )\b(?:[A-Za-z_][A-Za-z0-9_]*::)*(?:sleep|sleep_until)\s*\(")
+RUST_ASSERTION: Final = re.compile(r"\b(?:debug_)?assert(?:_eq|_ne|_matches)?!\s*\(")
+RUST_INTERVAL: Final = re.compile(r"\btokio::time::interval(?:_at)?\s*\(")
+RUST_LOOP: Final = re.compile(
+    r"(?m)(?:^[ \t]*|[;{}][ \t]*)"
+    r"(?P<header>loop|while\b[^\n{]*|for\s+[A-Za-z_][^\n{]*\s+in\s+[^\n{]*)\s*\{"
+)
+RUST_TIMEOUT: Final = re.compile(r"\b(?:tokio::time::)?timeout(?:_at)?\s*\(")
+RUST_YIELD: Final = re.compile(r"\b(?:[A-Za-z_][A-Za-z0-9_]*::)*yield_now\s*\(")
+RUST_SPIN: Final = re.compile(r"\b(?:[A-Za-z_][A-Za-z0-9_]*::)*spin_loop\s*\(")
+RUST_POLL: Final = re.compile(r"\btry_(?:lock|read|recv|wait|write)\s*\(")
+RUST_WALL_CLOCK: Final = re.compile(r"\belapsed\s*\(|\bduration_since\s*\(|\b(?:Instant|SystemTime)::now\s*\(\s*\)\s*-")
+RUST_CURRENT_EXE: Final = re.compile(r"\b(?:std::)?env::current_exe\s*\(")
+RUST_RESPONSE_EOF: Final = re.compile(r"^while\s+[A-Za-z_][A-Za-z0-9_]*\.chunk\(\)\.await\?*\.is_some\(\)\s*$")
+SHELL_SLEEP: Final = re.compile(r"(?:^|[;&|])\s*sleep(?:\s|$)")
+SHELL_BUSY_LOOP: Final = re.compile(
+    r"\b(?:while|until)\b[^\n;]*(?:;|\n)\s*do\s*(?::|true|\[\s*[^\]]+\s*\])?\s*;?\s*done\b",
+    re.DOTALL,
+)
+JAVASCRIPT_DELAY: Final = re.compile(r"\bwaitForTimeout\s*\(|\bsetTimeout\s*\(")
+JAVASCRIPT_EXPECT_POLL: Final = re.compile(r"\bexpect\s*\.\s*poll\s*\(")
+JAVASCRIPT_ASSERTION: Final = re.compile(r"\b(?:assert|expect)\s*\(")
+JAVASCRIPT_LOOP: Final = re.compile(
+    r"\b(?:while\s*\([^)]*\)|for\s*\(\s*;\s*;\s*\))\s*\{",
+    re.DOTALL,
+)
+JAVASCRIPT_RACE: Final = re.compile(r"\bPromise\.race\s*\(")
+JAVASCRIPT_YIELD: Final = re.compile(r"\b(?:scheduler\.)?yield\s*\(|\bsetImmediate\s*\(|\bPromise\.resolve\s*\(")
+EMBEDDED_SHELL: Final = re.compile(
+    r"\b(?:while|until)\s+\[[^\n]+\]\s*;\s*do\s*(?::|true)\s*;\s*done\b|"
+    r"(?:^|[;&|])\s*sleep\s+[0-9$]",
+    re.MULTILINE,
+)
+
+
+@dataclass(frozen=True)
+class Finding:
+    path: Path
+    offset: int
+    message: str
+
+
+def test_sources(root: Path) -> Iterable[Path]:
+    def selected(parts: tuple[str, ...]) -> bool:
+        return bool(TEST_DIRECTORIES.intersection(parts)) or any(
+            parts[index : index + len(candidate)] == candidate
+            for candidate in BENCHMARK_SOURCE_DIRECTORIES
+            for index in range(len(parts) - len(candidate) + 1)
+        )
+
+    if root.is_file():
+        if root.suffix in LANGUAGES and selected(root.parts):
+            yield root
+        return
+    for directory, directories, files in os.walk(root):
+        directories[:] = sorted(name for name in directories if name not in IGNORED_DIRECTORIES)
+        relative_directory = Path(directory).relative_to(root)
+        if not selected(relative_directory.parts):
+            continue
+        for name in sorted(files):
+            path = Path(directory, name)
+            if path.suffix in LANGUAGES:
+                yield path
+
+
+def test_documents(root: Path) -> Iterable[tuple[Path, str]]:
+    for path in sorted(test_sources(root)):
+        yield path, path.read_text(encoding="utf-8")
+
+
+def balanced_end(source: str, start: int, opening: str, closing: str) -> int:
+    depth = 0
+    quote = ""
+    escaped = False
+    for index in range(start, len(source)):
+        character = source[index]
+        if quote:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                quote = ""
+            continue
+        if character in {'"', "'", "`"}:
+            quote = character
+        elif character == opening:
+            depth += 1
+        elif character == closing:
+            depth -= 1
+            if depth == 0:
+                return index + 1
+    return len(source)
+
+
+def enclosing_rust_function(source: str, offset: int) -> str:
+    function = ""
+    for match in re.finditer(r"\b(?:async\s+)?fn\s+[A-Za-z_][A-Za-z0-9_]*[^;{]*\{", source):
+        if match.start() > offset:
+            break
+        end = balanced_end(source, source.find("{", match.start()), "{", "}")
+        if offset < end:
+            function = source[max(0, match.start() - 300) : end]
+    return function
+
+
+def assertion_span(source: str, match: re.Match[str]) -> str:
+    opening = source.find("(", match.start())
+    return source[match.start() : balanced_end(source, opening, "(", ")")]
+
+
+def bounded_by_rust_timeout(source: str, offset: int) -> bool:
+    for match in RUST_TIMEOUT.finditer(source, 0, offset):
+        opening = source.find("(", match.start())
+        if balanced_end(source, opening, "(", ")") > offset:
+            return True
+    return False
+
+
+def bounded_by_javascript_race(source: str, offset: int) -> bool:
+    for match in JAVASCRIPT_RACE.finditer(source, 0, offset):
+        opening = source.find("(", match.start())
+        if balanced_end(source, opening, "(", ")") > offset:
+            return True
+    return False
+
+
+def javascript_timeout_is_boundary(source: str, match: re.Match[str]) -> bool:
+    if bounded_by_javascript_race(source, match.start()):
+        return True
+    opening = source.find("(", match.start())
+    end = balanced_end(source, opening, "(", ")")
+    if re.match(r"\s*\.unref\s*\(", source[end:]):
+        return True
+    line_start = source.rfind("\n", 0, match.start()) + 1
+    assignment = re.search(
+        r"\b(?:const|let)\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*$",
+        source[line_start : match.start()],
+    )
+    return (
+        assignment is not None
+        and re.search(rf"\bclearTimeout\s*\(\s*{re.escape(assignment.group(1))}\s*\)", source[end:]) is not None
+    )
+
+
+def rust_findings(path: Path, source: str) -> Iterable[Finding]:
+    for match in RUST_CURRENT_EXE.finditer(source):
+        yield Finding(path, match.start(), "test self-execution; use an explicit fixture process")
+    for match in RUST_SLEEP.finditer(source):
+        function = enclosing_rust_function(source, match.start())
+        if not RUST_VIRTUAL_TIME.search(function) and not benchmark_pacing_sleep(path, source, match, function):
+            yield Finding(path, match.start(), "blind sleep; wait on a signal or use Tokio virtual time")
+    for match in RUST_INTERVAL.finditer(source):
+        yield Finding(path, match.start(), "interval polling; wait on an event with a boundary timeout")
+    for loop in RUST_LOOP.finditer(source):
+        if (finding := rust_loop_finding(path, source, loop)) is not None:
+            yield finding
+    for assertion in RUST_ASSERTION.finditer(source):
+        if (finding := rust_assertion_finding(path, source, assertion)) is not None:
+            yield finding
+    for match in EMBEDDED_SHELL.finditer(source):
+        yield Finding(path, match.start(), "busy or sleeping embedded shell; use process signaling")
+
+
+def benchmark_pacing_sleep(path: Path, source: str, match: re.Match[str], function: str) -> bool:
+    if not any(path.parts[index : index + 2] == ("src", "bench") for index in range(len(path.parts) - 1)):
+        return False
+    opening = source.find("(", match.start())
+    argument = source[opening + 1 : balanced_end(source, opening, "(", ")") - 1].strip()
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", argument) is None:
+        return False
+    return (
+        re.search(rf"\b{re.escape(argument)}\s*\+=\s*[A-Za-z_][A-Za-z0-9_]*\s*;", function) is not None
+        and re.search(r"\bwhile\s+[A-Za-z_][A-Za-z0-9_]*::now\(\)\s*<\s*[A-Za-z_][A-Za-z0-9_]*\s*\{", function)
+        is not None
+    )
+
+
+def rust_loop_finding(path: Path, source: str, loop: re.Match[str]) -> Finding | None:
+    loop_start = loop.start("header")
+    opening = source.find("{", loop_start)
+    body = source[opening : balanced_end(source, opening, "{", "}")]
+    for pattern, message in (
+        (RUST_YIELD, "yield-based polling loop; wait on an event with a boundary timeout"),
+        (RUST_SPIN, "unbounded spin loop; wait on an event with a boundary timeout"),
+    ):
+        if (match := pattern.search(body)) is not None:
+            return Finding(path, opening + match.start(), message)
+    if (match := RUST_POLL.search(loop.group())) is not None:
+        return Finding(
+            path,
+            loop.start() + match.start(),
+            "try-poll loop; wait on an event with a boundary timeout",
+        )
+    if (
+        re.fullmatch(r"\{\s*\}", body)
+        and RUST_RESPONSE_EOF.fullmatch(loop.group("header")) is None
+        and not bounded_by_rust_timeout(source, loop_start)
+    ):
+        return Finding(path, opening, "unbounded empty loop; wait on an event with a boundary timeout")
+    return None
+
+
+def rust_assertion_finding(path: Path, source: str, assertion: re.Match[str]) -> Finding | None:
+    if not RUST_WALL_CLOCK.search(assertion_span(source, assertion)):
+        return None
+    if RUST_VIRTUAL_TIME.search(enclosing_rust_function(source, assertion.start())):
+        return None
+    return Finding(path, assertion.start(), "wall-clock assertion; assert the event or advance virtual time")
+
+
+def shell_findings(path: Path, source: str) -> Iterable[Finding]:
+    for match in SHELL_SLEEP.finditer(source):
+        yield Finding(path, match.start(), "blind sleep; wait on process, socket, or service readiness")
+    for match in SHELL_BUSY_LOOP.finditer(source):
+        yield Finding(path, match.start(), "unbounded busy poll; use a bounded boundary wait")
+    for match in re.finditer(
+        r"\b(?:assert|test|\[\[?)\b[^\n]*(?:SECONDS|date\s+\+%s)[^\n]*-(?:lt|le|gt|ge)|"
+        r"\[\[?[^\n]*(?:SECONDS|date\s+\+%s)[^\n]*[<>]",
+        source,
+    ):
+        yield Finding(path, match.start(), "wall-clock assertion; assert the completed operation")
+
+
+def javascript_findings(path: Path, source: str) -> Iterable[Finding]:
+    for match in JAVASCRIPT_DELAY.finditer(source):
+        if match.group().startswith("waitForTimeout") or not javascript_timeout_is_boundary(source, match):
+            yield Finding(path, match.start(), "blind delay; wait on a DOM, process, or network event")
+    for match in JAVASCRIPT_EXPECT_POLL.finditer(source):
+        yield Finding(path, match.start(), "expect.poll retries; wait on a DOM, process, or network event")
+    for assertion in JAVASCRIPT_ASSERTION.finditer(source):
+        expression = assertion_span(source, assertion)
+        if re.search(r"\b(?:Date|performance)\.(?:now)\s*\(", expression):
+            yield Finding(path, assertion.start(), "wall-clock assertion; assert the observable event")
+    for loop in JAVASCRIPT_LOOP.finditer(source):
+        opening = source.find("{", loop.start())
+        body = source[opening : balanced_end(source, opening, "{", "}")]
+        if re.fullmatch(r"\{\s*\}", body) or JAVASCRIPT_YIELD.search(body):
+            yield Finding(path, loop.start(), "unbounded busy poll; await an event with a timeout")
+
+
+def findings(root: Path) -> Iterable[Finding]:
+    scanners = {
+        "javascript": javascript_findings,
+        "rust": rust_findings,
+        "shell": shell_findings,
+    }
+    for path, source in test_documents(root):
+        yield from scanners[LANGUAGES[path.suffix]](path, source)
+
+
+def main() -> int:
+    root = Path(sys.argv[1] if len(sys.argv) == 2 else ".").resolve()
+    violations = list(findings(root))
+    for violation in violations:
+        source = violation.path.read_text(encoding="utf-8")
+        line = source.count("\n", 0, violation.offset) + 1
+        display_path = violation.path.relative_to(root) if root.is_dir() else Path(root.name)
+        sys.stderr.write(f"{display_path}:{line}: {violation.message}\n")
+    return int(bool(violations))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -21,7 +21,7 @@ fn bench_blob_serve(criterion: &mut Criterion) {
         OciRegistryWithHasher::<BuildHasherDefault<DefaultHasher>>::default(),
     );
     let uri = format!("/v2/store/app/blobs/{blob_digest}");
-    // Random-seeded results are not a valid baseline for this fixed layout.
+    // Fixed inputs keep benchmark samples comparable.
     criterion.bench_function("oci_blob_serve_fixed_hash", |bencher| {
         bencher.to_async(&runtime).iter(|| get(&app, &uri));
     });

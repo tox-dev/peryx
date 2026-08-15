@@ -1,24 +1,16 @@
-//! Server-level operations: discovery, search, status, stats, metrics, and this document.
-
 use serde_json::json;
 use utoipa::openapi::content::ContentBuilder;
 use utoipa::openapi::path::{HttpMethod, OperationBuilder, ParameterBuilder, ParameterIn, PathItemBuilder};
 use utoipa::openapi::request_body::RequestBodyBuilder;
 use utoipa::openapi::{PathsBuilder, Required, ResponseBuilder, SecurityRequirement};
 
-use peryx_driver::openapi::{api_json_response, package_search, text_response};
+use peryx_driver::openapi::{api_json_response, artifact_search, text_response};
 
 /// Register the `/+analytics/*` usage query family, kept apart so the service path list stays short.
 fn analytics_paths(paths: PathsBuilder) -> PathsBuilder {
     paths
         .path(
-            "/+analytics/completeness",
-            PathItemBuilder::new()
-                .operation(HttpMethod::Get, analytics_completeness())
-                .build(),
-        )
-        .path(
-            "/+analytics/top-packages",
+            "/+analytics/top-resources",
             PathItemBuilder::new()
                 .operation(HttpMethod::Get, analytics_top())
                 .build(),
@@ -30,9 +22,9 @@ fn analytics_paths(paths: PathsBuilder) -> PathsBuilder {
                 .build(),
         )
         .path(
-            "/+analytics/versions",
+            "/+analytics/groups",
             PathItemBuilder::new()
-                .operation(HttpMethod::Get, analytics_versions())
+                .operation(HttpMethod::Get, analytics_groups())
                 .build(),
         )
         .path(
@@ -99,8 +91,8 @@ fn repository_paths(paths: PathsBuilder) -> PathsBuilder {
 
 fn repository_example() -> serde_json::Value {
     json!({
-        "id": "repo_2f7e6a1b9c4d4e2f8a1b2c3d4e5f6a7b", "route": "root/pypi", "display_name": "PyPI mirror",
-        "ecosystem": "pypi", "definition": {}, "state": "enabled", "version": 1,
+        "id": "repo_2f7e6a1b9c4d4e2f8a1b2c3d4e5f6a7b", "route": "root/artifacts", "display_name": "Artifact mirror",
+        "ecosystem": "example", "definition": {}, "state": "enabled", "version": 1,
         "created_by": "usr_550e8400e29b41d4a716446655440000", "created_at_unix": 1_700_000_000,
         "updated_by": "usr_550e8400e29b41d4a716446655440000", "updated_at_unix": 1_700_000_000
     })
@@ -179,9 +171,9 @@ fn create_repository() -> OperationBuilder {
                  `Location`.",
             ))
             .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
-            .request_body(Some(RequestBodyBuilder::new().required(Some(Required::True)).content("application/json", ContentBuilder::new().example(Some(json!({"route": "root/pypi", "display_name": "PyPI mirror", "ecosystem": "pypi", "definition": {}}))).build()).build()))
+            .request_body(Some(RequestBodyBuilder::new().required(Some(Required::True)).content("application/json", ContentBuilder::new().example(Some(json!({"route": "root/artifacts", "display_name": "Artifact mirror", "ecosystem": "example", "definition": {}}))).build()).build()))
             .response("201", api_json_response("The created repository", repository_example()))
-            .response("409", api_json_response("Another repository already serves the route", json!({"error": "a repository already serves route \"root/pypi\""})))
+            .response("409", api_json_response("Another repository already serves the route", json!({"error": "a repository already serves route \"root/artifacts\""})))
             .response("415", ResponseBuilder::new().description("The request is not JSON"))
             .response("422", api_json_response("The body is malformed or a field is invalid", json!({"error": "route must not be empty"}))),
     )
@@ -219,7 +211,7 @@ fn update_repository() -> OperationBuilder {
                     .content(
                         "application/json",
                         ContentBuilder::new()
-                            .example(Some(json!({"display_name": "PyPI mirror", "definition": {}})))
+                            .example(Some(json!({"display_name": "Artifact mirror", "definition": {}})))
                             .build(),
                     )
                     .build(),
@@ -320,7 +312,8 @@ fn pql_paths(paths: PathsBuilder) -> PathsBuilder {
 }
 
 pub(super) fn service_paths(paths: PathsBuilder) -> PathsBuilder {
-    let paths = grant_paths(quota_paths(analytics_paths(pql_paths(availability_paths(paths)))))
+    let paths = grant_paths(quota_paths(analytics_paths(pql_paths(paths))));
+    let paths = paths
         .path(
             "/+status",
             PathItemBuilder::new().operation(HttpMethod::Get, status()).build(),
@@ -344,7 +337,7 @@ pub(super) fn service_paths(paths: PathsBuilder) -> PathsBuilder {
         .path(
             "/+search",
             PathItemBuilder::new()
-                .operation(HttpMethod::Get, package_search(false))
+                .operation(HttpMethod::Get, artifact_search(false))
                 .build(),
         )
         .path(
@@ -398,53 +391,6 @@ pub(super) fn service_paths(paths: PathsBuilder) -> PathsBuilder {
             "/api-docs/openapi.json",
             PathItemBuilder::new()
                 .operation(HttpMethod::Get, openapi_endpoint())
-                .build(),
-        )
-        .path(
-            "/_/oidc/audience",
-            PathItemBuilder::new()
-                .operation(HttpMethod::Get, oidc_audience())
-                .build(),
-        )
-        .path(
-            "/_/oidc/mint-token",
-            PathItemBuilder::new()
-                .operation(HttpMethod::Post, oidc_mint_token())
-                .build(),
-        )
-}
-
-/// Register the availability topology paths, kept apart so the service path list stays short.
-fn availability_paths(paths: PathsBuilder) -> PathsBuilder {
-    paths
-        .path(
-            "/+availability/topology",
-            PathItemBuilder::new()
-                .operation(HttpMethod::Get, availability_topology())
-                .build(),
-        )
-        .path(
-            "/+availability/topology/stream",
-            PathItemBuilder::new()
-                .operation(HttpMethod::Get, availability_topology_stream())
-                .build(),
-        )
-        .path(
-            "/+availability/operations",
-            PathItemBuilder::new()
-                .operation(HttpMethod::Get, availability_operations())
-                .build(),
-        )
-        .path(
-            "/+availability/placements",
-            PathItemBuilder::new()
-                .operation(HttpMethod::Get, availability_placements())
-                .build(),
-        )
-        .path(
-            "/+availability/placements/{digest}",
-            PathItemBuilder::new()
-                .operation(HttpMethod::Get, availability_blob_placements())
                 .build(),
         )
 }
@@ -536,10 +482,10 @@ fn acl() -> OperationBuilder {
         .description(Some(
             "The tokens, grants, expiry, and anonymous-read policy one index is configured with. peryx \
              has no server-wide administrator, so the gate is the index's own: authenticate with HTTP \
-             Basic as an access token that holds write over every project here. Token secrets are never \
+             Basic as an access token that holds write over every resource here. Token secrets are never \
              returned, only a marker that one is set.",
         ))
-        .security(SecurityRequirement::new("uploadToken", Vec::<String>::new()))
+        .security(SecurityRequirement::new("writeToken", Vec::<String>::new()))
         .parameter(
             ParameterBuilder::new()
                 .name("index")
@@ -557,10 +503,10 @@ fn acl() -> OperationBuilder {
                     "route": "hosted",
                     "anonymous_read": true,
                     "tokens": [
-                        {"name": "uploader", "secret": {"configured": true, "redacted": "<redacted>"},
-                         "expires_at": null, "grants": [{"projects": ["*"], "actions": ["write", "delete"]}]},
+                        {"name": "writer", "secret": {"configured": true, "redacted": "<redacted>"},
+                         "expires_at": null, "grants": [{"resources": ["*"], "actions": ["write", "delete"]}]},
                         {"name": "ci", "secret": {"configured": true, "redacted": "<redacted>"},
-                         "expires_at": 1_800_000_000, "grants": [{"projects": ["team/*"], "actions": ["read"]}]}
+                         "expires_at": 1_800_000_000, "grants": [{"resources": ["team/*"], "actions": ["read"]}]}
                     ]
                 }),
             ),
@@ -582,8 +528,7 @@ fn discovery() -> OperationBuilder {
         .summary(Some("Discover this server"))
         .description(Some(
             "A compact server document with global URLs and one discovery entry per configured \
-             index. It is built from configuration and request context, without reading package \
-             indexes.",
+             index. It is built from configuration and request context, without reading artifact metadata.",
         ))
         .response(
             "200",
@@ -614,14 +559,14 @@ fn status() -> OperationBuilder {
             "Version, health, counters, and the configured indexes, each filtered to the caller's \
              class. Version, role, coarse health, and the basic index list are public; the serial, \
              request count, blob backend, per-ecosystem rollups, and metric families need operator \
-             authority; each index's upstream hosts, upload-token state, and recent uploads need \
+             authority; each index's upstream hosts, write-token state, and recent writes need \
              administrator authority. The response is `private, no-cache`. The example shows the \
              administrator view.",
         ))
         .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
         .response(
             "200",
-            ResponseBuilder::new().description("The status document").content(
+            ResponseBuilder::new().description("Caller-filtered process status").content(
                 "application/json",
                 ContentBuilder::new()
                     .example(Some(json!({
@@ -637,247 +582,33 @@ fn status() -> OperationBuilder {
                         },
                         "requests": 128,
                         "by_ecosystem": [
-                            {"ecosystem": "pypi", "pages": 128, "downloads": 6, "bytes": 64_733_247,
-                             "rejected": 0, "uploads": 4, "families": {"metadata": 37}}
+                            {"ecosystem": "example", "pages": 128, "reads": 6, "bytes": 64_733_247,
+                             "rejected": 0, "writes": 4, "families": {"metadata": 37}}
                         ],
                         "metric_families": [
-                            {"key": "metadata", "label": "PEP 658 metadata hits",
+                            {"key": "metadata", "label": "metadata hits",
                              "roles": ["cached", "hosted", "virtual"]}
                         ],
                         "indexes": [
-                            {"name": "pypi", "route": "pypi", "kind": "cached", "layers": [],
-                             "uploads": false, "volatile_deletes": false, "upload_to": null,
-                             "upstream": {"url": "https://pypi.org/simple/", "auth": {"kind": "none", "redacted": null}, "status": "configured", "offline": false},
-                             "hosted": null, "project_count": 128, "upload_count": 0, "recent_uploads": []},
+                            {"name": "example", "route": "example", "kind": "cached", "layers": [],
+                             "writes": false, "volatile_deletes": false, "write_to": null,
+                             "upstream": {"url": "https://upstream.example/artifacts/", "auth": {"kind": "none", "redacted": null}, "status": "configured", "offline": false},
+                             "hosted": null, "resource_count": 128, "write_count": 0, "recent_writes": []},
                             {"name": "hosted", "route": "hosted", "kind": "hosted", "layers": [],
-                             "uploads": true, "volatile_deletes": true, "upload_to": null, "upstream": null,
-                             "hosted": {"volatile": true, "upload_token": {"configured": true, "redacted": "<redacted>"}},
-                             "project_count": 2, "upload_count": 4,
-                             "recent_uploads": [{"project": "peryxpkg", "filename": "peryxpkg-1.0-py3-none-any.whl",
-                                                "version": "1.0", "uploaded_at": "2026-01-01T00:00:00Z", "size": 1832}]},
-                            {"name": "root/pypi", "route": "root/pypi", "kind": "virtual",
-                             "layers": ["hosted", "pypi"], "uploads": true, "volatile_deletes": true,
-                             "upload_to": "hosted",
-                             "upstream": null, "hosted": null, "project_count": 0, "upload_count": 0,
-                             "recent_uploads": []}
+                             "writes": true, "volatile_deletes": true, "write_to": null, "upstream": null,
+                             "hosted": {"volatile": true, "write_token": {"configured": true, "redacted": "<redacted>"}},
+                             "resource_count": 2, "write_count": 4,
+                             "recent_writes": [{"resource": "widget", "artifact": "widget-1.0.bin",
+                                                "group": "1.0", "written_at": "2026-01-01T00:00:00Z", "size": 1832}]},
+                            {"name": "root/artifacts", "route": "root/artifacts", "kind": "virtual",
+                             "layers": ["hosted", "example"], "writes": true, "volatile_deletes": true,
+                             "write_to": "hosted",
+                             "upstream": null, "hosted": null, "resource_count": 0, "write_count": 0,
+                             "recent_writes": []}
                         ]
                     })))
                     .build(),
             ),
-        )
-}
-
-fn availability_topology() -> OperationBuilder {
-    OperationBuilder::new()
-        .tag("operations")
-        .summary(Some("Availability topology snapshot"))
-        .description(Some(
-            "One immutable picture of the availability group, taken at a single instant and filtered to \
-             the caller's class, so an operator surface renders it without traversing live membership and \
-             storage state. The mode, group, node identities, datacenters, and roles are public; each \
-             node's liveness and this node's committed frontier need operator authority; the advertised \
-             peer addresses need administrator authority. A peer's liveness is `unknown` until a \
-             consensus layer observes it, so stale peer data never reads as healthy. `captured_at` dates \
-             the snapshot, `node_count` reports the full roster size when the node list is capped, and \
-             the response is `no-store`. The example shows the administrator view.",
-        ))
-        .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
-        .response(
-            "200",
-            ResponseBuilder::new()
-                .description("The availability topology snapshot")
-                .content(
-                    "application/json",
-                    ContentBuilder::new()
-                        .example(Some(json!({
-                            "mode": "dc",
-                            "group": "east",
-                            "captured_at": 1_800_000_000,
-                            "node_count": 2,
-                            "local": {"role": "writer", "liveness": "live", "frontier": 42},
-                            "nodes": [
-                                {"node": "writer-a", "dc": "east-1", "role": "writer", "local": true,
-                                 "liveness": "live", "frontier": 42, "address": "10.0.0.1:8080"},
-                                {"node": "replica-b", "dc": "east-2", "role": "replica", "local": false,
-                                 "liveness": "unknown", "address": "10.0.0.2:8080"}
-                            ]
-                        })))
-                        .build(),
-                ),
-        )
-}
-
-fn availability_topology_stream() -> OperationBuilder {
-    OperationBuilder::new()
-        .tag("operations")
-        .summary(Some("Availability topology stream"))
-        .description(Some(
-            "The same role-filtered snapshot as `/+availability/topology`, pushed as a bounded stream of \
-             Server-Sent Events so an operator surface updates live without polling. The first event \
-             carries the current snapshot; a later event fires only when the meaningful state changes, so \
-             traffic tracks the change rate rather than the roster size or the number of open pages, and \
-             `captured_at` advancing on its own emits nothing. An idle stream carries only keep-alive \
-             comments every fifteen seconds. Each event's `id` increases monotonically, so a browser \
-             resumes from `Last-Event-ID` on reconnect; a disconnect the browser cannot recover reads as \
-             a frozen feed rather than fresh data. A slow reader coalesces to the latest snapshot because \
-             each sample re-reads live state and the connection buffers no backlog. Authentication, the \
-             per-class field filtering, and the `no-store` policy match the one-shot endpoint.",
-        ))
-        .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
-        .response(
-            "200",
-            ResponseBuilder::new()
-                .description("An event stream of availability topology snapshots")
-                .content(
-                    "text/event-stream",
-                    ContentBuilder::new()
-                        .example(Some(json!(concat!(
-                            "id: 1\n",
-                            "event: topology\n",
-                            "data: {\"mode\":\"dc\",\"group\":\"east\",\"captured_at\":1800000000,\"node_count\":2,",
-                            "\"local\":{\"role\":\"writer\",\"liveness\":\"live\",\"frontier\":42},\"nodes\":[]}\n\n",
-                        ))))
-                        .build(),
-                ),
-        )
-}
-
-fn availability_blob_placements() -> OperationBuilder {
-    OperationBuilder::new()
-        .tag("operations")
-        .summary(Some("Blob placement across datacenters"))
-        .description(Some(
-            "Where one blob's bytes are placed across datacenters, keyed by its content digest, so an \
-             administrator reads which datacenters hold a blob and in what state. Administrator only, \
-             because the datacenter layout is topology an operator does not read; a caller below \
-             administrator reads nothing. Each entry names its datacenter and lifecycle (`pending`, \
-             `verified`, `failed`, or `revoked`) with the verified byte size, but never the backend or \
-             the on-disk location, so the view reveals convergence without an internal path. Entries come \
-             in datacenter order, are capped by the store's per-digest placement bound, and the response \
-             is `no-store`.",
-        ))
-        .parameter(
-            ParameterBuilder::new()
-                .name("digest")
-                .parameter_in(ParameterIn::Path)
-                .description(Some("The blob's content digest, for example `sha256:0f1e…`"))
-                .example(Some(json!("sha256:0f1e"))),
-        )
-        .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
-        .response(
-            "200",
-            ResponseBuilder::new()
-                .description("The blob's placement across datacenters")
-                .content(
-                    "application/json",
-                    ContentBuilder::new()
-                        .example(Some(json!({
-                            "digest": "sha256:0f1e",
-                            "datacenters": [
-                                {"data_center": "east-1", "status": "verified", "size": 4096, "updated_at": 1_800_000_000},
-                                {"data_center": "west-2", "status": "pending", "updated_at": 1_800_000_050}
-                            ]
-                        })))
-                        .build(),
-                ),
-        )
-}
-
-fn availability_operations() -> OperationBuilder {
-    OperationBuilder::new()
-        .tag("operations")
-        .summary(Some("Pending operations health"))
-        .description(Some(
-            "The admitted writes the node retains, filtered to the caller's class, so an administrator \
-             watches convergence without paging the ledger by hand. The `health` aggregate counts writes \
-             by client-facing status (pending, published, failed, expired) across the whole ledger and \
-             needs operator authority. The per-operation `rows` carry an operation id, so they need \
-             administrator authority and page in operation-id order: a full page carries a `next_cursor` \
-             pointing at its last id, and `limit` bounds the page at 1 to 100 rows. A caller below operator \
-             reads nothing, `captured_at` dates the view, and the response is `no-store`. A row names an \
-             operation without revealing what it wrote or who owns it.",
-        ))
-        .parameter(
-            ParameterBuilder::new()
-                .name("cursor")
-                .parameter_in(ParameterIn::Query)
-                .description(Some("Resume the row page after this operation id, exclusive"))
-                .example(Some(json!("op-0f1e"))),
-        )
-        .parameter(
-            ParameterBuilder::new()
-                .name("limit")
-                .parameter_in(ParameterIn::Query)
-                .description(Some("Rows per page, 1 to 100 (default 25)"))
-                .example(Some(json!(25))),
-        )
-        .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
-        .response(
-            "200",
-            ResponseBuilder::new()
-                .description("The pending-operations-health view")
-                .content(
-                    "application/json",
-                    ContentBuilder::new()
-                        .example(Some(json!({
-                            "captured_at": 1_800_000_000,
-                            "health": {"pending": 2, "published": 5, "failed": 1, "expired": 1, "total": 9},
-                            "rows": [
-                                {"operation": "op-0f1e", "status": "pending", "updated_at": 1_800_000_000, "expires_at": 1_800_000_600}
-                            ],
-                            "next_cursor": "op-0f1e"
-                        })))
-                        .build(),
-                ),
-        )
-}
-
-fn availability_placements() -> OperationBuilder {
-    OperationBuilder::new()
-        .tag("operations")
-        .summary(Some("Artifact placement health"))
-        .description(Some(
-            "How the store's bytes are placed, filtered to the caller's class, so an administrator watches \
-             convergence without paging every artifact by hand. The `health` aggregate counts artifacts by \
-             byte availability across the whole store and needs operator authority. The per-digest `rows` \
-             carry a content digest, so they need administrator authority and page in digest order: a full \
-             page carries a `next_cursor` pointing at its last digest, and `limit` bounds the page at 1 to \
-             100 rows. A caller below operator reads nothing, `captured_at` dates the view, and the \
-             response is `no-store`. A digest names an artifact without revealing where it lives or who \
-             owns it.",
-        ))
-        .parameter(
-            ParameterBuilder::new()
-                .name("cursor")
-                .parameter_in(ParameterIn::Query)
-                .description(Some("Resume the row page after this digest, exclusive"))
-                .example(Some(json!("sha256:0f1e"))),
-        )
-        .parameter(
-            ParameterBuilder::new()
-                .name("limit")
-                .parameter_in(ParameterIn::Query)
-                .description(Some("Rows per page, 1 to 100 (default 25)"))
-                .example(Some(json!(25))),
-        )
-        .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
-        .response(
-            "200",
-            ResponseBuilder::new()
-                .description("The artifact placement-health view")
-                .content(
-                    "application/json",
-                    ContentBuilder::new()
-                        .example(Some(json!({
-                            "captured_at": 1_800_000_000,
-                            "health": {"local": 3, "remote_only": 1, "unavailable": 2, "total": 6},
-                            "rows": [
-                                {"digest": "sha256:0f1e", "source": "proxy", "availability": "remote_only"}
-                            ],
-                            "next_cursor": "sha256:0f1e"
-                        })))
-                        .build(),
-                ),
         )
 }
 
@@ -899,7 +630,7 @@ fn readiness() -> OperationBuilder {
         .tag("operations")
         .summary(Some("Read or write readiness"))
         .description(Some(
-            "Checks the bounded local metadata and blob-store dependencies used to serve package requests. Set `writes=true` to require a writer. The probe does not enumerate repositories or contact upstreams.",
+            "Checks the bounded local metadata and blob-store dependencies used to serve artifact requests. Set `writes=true` to require a writer. The probe does not enumerate repositories or contact upstreams.",
         ))
         .parameter(
             ParameterBuilder::new()
@@ -927,12 +658,12 @@ fn stats() -> OperationBuilder {
         .summary(Some("Usage statistics"))
         .description(Some(
             "Counters aggregated off the request path, drillable: no parameters for per-index totals, \
-             `?index={route}` for one index's projects, `&project={name}` for one project's files. \
-             The tree names repositories and projects, so it needs operator authority and is never \
+             `?index={route}` for one index's resources, `&resource={name}` for one resource's artifacts. \
+             The tree names repositories and resources, so it needs operator authority and is never \
              cached; a repository token reads its own usage through `/+analytics/*` instead. Counters \
              are grouped by the role that owns them: a neutral `base` group every index reports, a \
-             `cached` group only a caching index fills, a `hosted` group only an upload store fills, \
-             and an `ecosystem` map of the driver's own counters (PyPI's PEP 658 sibling under \
+             `cached` group only a caching index fills, a `hosted` group only a writable store fills, \
+             and an `ecosystem` map of the driver's own counters (an adapter-specific metadata family under \
              `metadata`).",
         ))
         .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
@@ -955,15 +686,15 @@ fn stats() -> OperationBuilder {
             ParameterBuilder::new()
                 .name("index")
                 .parameter_in(ParameterIn::Query)
-                .description(Some("Drill into one index's projects"))
-                .example(Some(json!("root/pypi"))),
+                .description(Some("Drill into one index's resources"))
+                .example(Some(json!("root/artifacts"))),
         )
         .parameter(
             ParameterBuilder::new()
-                .name("project")
+                .name("resource")
                 .parameter_in(ParameterIn::Query)
-                .description(Some("With `index`, drill into one project's files"))
-                .example(Some(json!("pandas"))),
+                .description(Some("With `index`, drill into one resource's artifacts"))
+                .example(Some(json!("widget"))),
         )
         .response(
             "200",
@@ -973,10 +704,10 @@ fn stats() -> OperationBuilder {
                     "application/json",
                     ContentBuilder::new()
                         .example(Some(json!({
-                            "root/pypi": {
-                                "base": {"pages": 12, "downloads": 6, "bytes": 64_733_247, "rejected": 0},
+                            "root/artifacts": {
+                                "base": {"pages": 12, "reads": 6, "bytes": 64_733_247, "rejected": 0},
                                 "cached": {"refreshes": 2, "changed": 1, "stale_served": 0, "upstream_errors": 0},
-                                "hosted": {"uploads": 0},
+                                "hosted": {"writes": 0},
                                 "ecosystem": {"metadata": 6}
                             }
                         })))
@@ -985,7 +716,6 @@ fn stats() -> OperationBuilder {
         )
 }
 
-/// The example resolved window every analytics response echoes back.
 fn analytics_interval() -> serde_json::Value {
     json!({
         "from_day": 19_722,
@@ -1002,7 +732,7 @@ fn analytics_interval() -> serde_json::Value {
 fn analytics_query(operation: OperationBuilder) -> OperationBuilder {
     let mut operation = operation
         .tag("operations")
-        .security(SecurityRequirement::new("uploadToken", Vec::<String>::new()))
+        .security(SecurityRequirement::new("writeToken", Vec::<String>::new()))
         .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
         .response(
             "400",
@@ -1034,7 +764,7 @@ fn analytics_query(operation: OperationBuilder) -> OperationBuilder {
         (
             "repository",
             "Index route to scope the query to; omit for an operator-wide query, at most 512 bytes",
-            json!("root/pypi"),
+            json!("root/artifacts"),
         ),
         (
             "from",
@@ -1067,18 +797,18 @@ fn analytics_query(operation: OperationBuilder) -> OperationBuilder {
 fn analytics_top() -> OperationBuilder {
     analytics_query(
         OperationBuilder::new()
-            .summary(Some("Most-downloaded packages"))
+            .summary(Some("Most-read resources"))
             .description(Some(
-                "Downloads and bytes grouped by repository and project over the resolved window, ordered by \
-                 downloads, bytes, repository, then project.",
+                "Reads and bytes grouped by repository and resource over the resolved window, ordered by reads, \
+                 bytes, repository, then resource.",
             )),
     )
     .response(
         "200",
         api_json_response(
-            "The highest-usage projects, newest window first",
+            "The most-read resources, newest window first",
             json!({
-                "packages": [{"repository": "root/pypi", "project": "pandas", "downloads": 42, "bytes": 64_733_247}],
+                "resources": [{"repository": "root/content", "resource": "artifact-a", "reads": 42, "bytes": 64_733_247}],
                 "interval": analytics_interval(),
                 "next_cursor": null,
             }),
@@ -1089,19 +819,19 @@ fn analytics_top() -> OperationBuilder {
 fn analytics_unused() -> OperationBuilder {
     analytics_query(
         OperationBuilder::new()
-            .summary(Some("Unused packages"))
+            .summary(Some("Unused resources"))
             .description(Some(
-                "Projects with durable lifetime downloads but none inside the window, ordered by lifetime \
-                 downloads, repository, then project. A `window_clamped_to_retention` interval marks results \
+                "Resources with durable lifetime reads but none inside the window, ordered by lifetime reads and \
+                 repository. A `window_clamped_to_retention` interval marks results \
                  assessed only over retained data.",
             )),
     )
     .response(
         "200",
         api_json_response(
-            "Projects idle across the window",
+            "Resources idle across the window",
             json!({
-                "unused": [{"repository": "root/pypi", "project": "legacy-tool", "lifetime_downloads": 7}],
+                "unused": [{"repository": "root/content", "resource": "legacy-artifact", "lifetime_reads": 7}],
                 "interval": analytics_interval(),
                 "next_cursor": null,
             }),
@@ -1109,22 +839,22 @@ fn analytics_unused() -> OperationBuilder {
     )
 }
 
-fn analytics_versions() -> OperationBuilder {
+fn analytics_groups() -> OperationBuilder {
     analytics_query(
         OperationBuilder::new()
-            .summary(Some("Per-version usage"))
+            .summary(Some("Per-group usage"))
             .description(Some(
-                "Downloads and bytes grouped by repository, project, and version over the window. A null \
-                 version is a distribution the ecosystem reported no version for.",
+                "Reads and bytes grouped by repository, resource, and owner-defined group over the window. A null \
+                 group means the ecosystem supplied no grouping dimension.",
             )),
     )
     .response(
         "200",
         api_json_response(
-            "The highest-usage versions",
+            "The highest-usage groups",
             json!({
-                "versions": [
-                    {"repository": "root/pypi", "project": "pandas", "version": "2.2.0", "downloads": 30, "bytes": 48_000_000}
+                "groups": [
+                    {"repository": "root/content", "resource": "artifact-a", "group": "stable", "reads": 30, "bytes": 48_000_000}
                 ],
                 "interval": analytics_interval(),
                 "next_cursor": null,
@@ -1138,7 +868,7 @@ fn analytics_sources() -> OperationBuilder {
         OperationBuilder::new()
             .summary(Some("Per-source usage"))
             .description(Some(
-                "Downloads and bytes grouped by the routed upstream a cache miss fetched from; a null source is \
+                "Reads and bytes grouped by the routed upstream a cache miss fetched from; a null source is \
                  the local store. The source dimension is operator-scoped, so a repository-only credential \
                  cannot inspect this view.",
             )),
@@ -1149,7 +879,7 @@ fn analytics_sources() -> OperationBuilder {
             "The highest-usage sources",
             json!({
                 "sources": [
-                    {"repository": "root/pypi", "project": "pandas", "source": "pypi", "downloads": 40, "bytes": 60_000_000}
+                    {"repository": "root/content", "resource": "artifact-b", "source": "example", "reads": 40, "bytes": 60_000_000}
                 ],
                 "interval": analytics_interval(),
                 "next_cursor": null,
@@ -1163,7 +893,7 @@ fn analytics_timeline() -> OperationBuilder {
         OperationBuilder::new()
             .summary(Some("Usage over time"))
             .description(Some(
-                "Downloads and bytes bucketed by UTC day, ascending, each carrying explicit half-open \
+                "Reads and bytes bucketed by UTC day, ascending, each carrying explicit half-open \
                  `[start_unix, end_unix)` bounds for the day it aggregates.",
             )),
     )
@@ -1173,47 +903,10 @@ fn analytics_timeline() -> OperationBuilder {
             "The daily usage series",
             json!({
                 "buckets": [
-                    {"day": 19_752, "start_unix": 1_706_572_800_i64, "end_unix": 1_706_659_200_i64, "downloads": 12, "bytes": 9_000_000}
+                    {"day": 19_752, "start_unix": 1_706_572_800_i64, "end_unix": 1_706_659_200_i64, "reads": 12, "bytes": 9_000_000}
                 ],
                 "interval": analytics_interval(),
                 "next_cursor": null,
-            }),
-        ),
-    )
-}
-
-fn analytics_completeness() -> OperationBuilder {
-    analytics_query(
-        OperationBuilder::new()
-            .summary(Some("Distributed analytics completeness"))
-            .description(Some(
-                "Whether the accepted analytics totals over the window cover every expected producer. \
-                 `completeness` is `complete` when every configured writer has been folded through the \
-                 cluster frontier, `delayed` when one trails it, and `unavailable` when one has delivered \
-                 nothing or no writer is configured. The per-producer frontier, the cluster frontier, and \
-                 the lag are operator-only; a repository-scoped caller reads only the verdict and its own \
-                 totals.",
-            )),
-    )
-    .response(
-        "200",
-        api_json_response(
-            "The completeness verdict, accepted totals, and per-producer frontiers",
-            json!({
-                "completeness": "delayed",
-                "interval": analytics_interval(),
-                "totals": {"downloads": 128, "bytes": 64_733_247},
-                "buckets": [
-                    {"day": 19_752, "start_unix": 1_706_572_800_i64, "end_unix": 1_706_659_200_i64, "downloads": 12, "bytes": 9_000_000}
-                ],
-                "next_cursor": null,
-                "frontier_day": 19_752,
-                "required_day": 19_752,
-                "lag_days": 1,
-                "producers": [
-                    {"producer": "east-writer", "dc": "east", "state": "complete", "accepted_epoch": 1, "accepted_day": 19_752},
-                    {"producer": "west-writer", "dc": "west", "state": "delayed", "accepted_epoch": 1, "accepted_day": 19_750}
-                ]
             }),
         ),
     )
@@ -1224,14 +917,14 @@ fn policy_decisions_example() -> serde_json::Value {
         "decisions": [{
             "id": "550e8400-e29b-41d4-a716-446655440000",
             "repository": "private",
-            "project": "example",
-            "version": "1.0",
-            "filename": "example-1.0-py3-none-any.whl",
-            "source": "pypi",
+            "resource": "example",
+            "group": "1.0",
+            "artifact": "example-1.0.bin",
+            "source": "example",
             "action": "serve",
             "state": "deny",
-            "rule": "blocked-project",
-            "reason": "project is blocked",
+            "rule": "blocked-resource",
+            "reason": "resource is blocked",
             "evaluated_at_unix": 1_800_000_000,
             "input_generation": {"repository": 42, "catalog": 7, "policy": 3},
             "next_eligible_at_unix": null,
@@ -1247,14 +940,14 @@ fn pql_query() -> OperationBuilder {
         .summary(Some("Run a PQL query"))
         .description(Some(
             "Runs one read-only Peryx Query Language (PQL) query over a typed domain and returns a bounded page of \
-             rows. The `query` is a small textual DSL — `from <domain> [join <domain> on <keys>] [where ...] \
-             [select ...] [aggregate ... by ...] [order by ...] [limit n]` — and `params` binds `:name` placeholders \
+             rows. The `query` is a small textual DSL - `from <domain> [join <domain> on <keys>] [where ...] \
+             [select ...] [aggregate ... by ...] [order by ...] [limit n]` - and `params` binds `:name` placeholders \
              out of band, so a value never changes the query's structure. Two domains are served: `policy.decisions` \
-             and `usage.downloads`, and a bounded declared join correlates them on their shared `repository` and \
-             `project` keys. The caller's authorized scope is injected by the evaluator and cannot be named or \
+             and `usage.reads`, and a bounded declared join correlates them on their shared `repository` and \
+             `resource` keys. The caller's authorized scope is injected by the evaluator and cannot be named or \
              widened; columns above the caller's classification are dropped, and operator-classified results are \
              never cached. `next_cursor`, presented back, resumes the next page and is refused if the caller's scope \
-             has changed. Authenticate with a repository token to read one repository, or a local administrator to \
+             has changed. Authenticate with an ecosystem credential to read one repository, or a local administrator to \
              read operator-wide.",
         ))
         .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
@@ -1267,7 +960,7 @@ fn pql_query() -> OperationBuilder {
                         .example(Some(json!({
                             "query": "from policy.decisions where repository == :repo and state == \"deny\" \
                                       order by evaluated_at desc limit 25",
-                            "params": {"repo": "pypi-proxy"},
+                            "params": {"repo": "artifact-cache"},
                             "cursor": null
                         })))
                         .build(),
@@ -1280,8 +973,8 @@ fn pql_query() -> OperationBuilder {
                 "One bounded page of typed rows",
                 json!({
                     "rows": [{
-                        "repository": "pypi-proxy",
-                        "project": "requests",
+                        "repository": "artifact-cache",
+                        "resource": "artifact-a",
                         "state": "deny",
                         "action": "serve",
                         "evaluated_at": 1_800_000_000,
@@ -1325,13 +1018,13 @@ fn policy_decisions() -> OperationBuilder {
         .tag("operations")
         .summary(Some("Repository policy decisions"))
         .description(Some(
-            "Bounded policy decision history. Administrators may inspect all repositories or select one. Repository \
-             readers and publishers may inspect a selected repository they can read; the server operator role carries \
-             no repository access. A repository's legacy upload token retains access to that repository when presented \
-             with the `__token__` username. Records contain package subjects and matched rule IDs without credentials \
-             or request headers. `fresh` is false after repository data, catalog, or policy inputs change.",
+            "Returns bounded policy decision history. Administrators may inspect all repositories or select one. \
+             Repository readers, publishers, and authorized ecosystem credentials may inspect a selected \
+             repository. The server operator role has no repository access. Records contain artifact subjects and \
+             matched rule IDs without credentials or request headers. `fresh` becomes false after repository data, \
+             catalog, or policy inputs change.",
         ))
-        .security(SecurityRequirement::new("uploadToken", Vec::<String>::new()))
+        .security(SecurityRequirement::new("writeToken", Vec::<String>::new()))
         .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
         .response(
             "200",
@@ -1346,11 +1039,11 @@ fn policy_decisions() -> OperationBuilder {
         )
         .response(
             "401",
-            ResponseBuilder::new().description("No valid local user credential or repository token was presented"),
+            ResponseBuilder::new().description("No valid local or ecosystem credential was presented"),
         )
         .response(
             "403",
-            ResponseBuilder::new().description("The repository token cannot inspect policy decisions"),
+            ResponseBuilder::new().description("The credential cannot inspect policy decisions"),
         )
         .response(
             "404",
@@ -1377,17 +1070,17 @@ fn policy_decisions() -> OperationBuilder {
             json!("private"),
         ),
         (
-            "project",
-            "Filter to one project's decisions, at most 512 bytes",
+            "resource",
+            "Filter to one resource's decisions, at most 512 bytes",
             json!("example"),
         ),
         ("state", "Filter by `allow`, `deny`, or `wait`", json!("deny")),
         (
             "rule",
             "Filter by matched rule ID, at most 512 bytes",
-            json!("blocked-project"),
+            json!("blocked-resource"),
         ),
-        ("source", "Filter by routed source, at most 512 bytes", json!("pypi")),
+        ("source", "Filter by routed source, at most 512 bytes", json!("example")),
         ("from", "Minimum evaluation Unix timestamp", json!(1_700_000_000)),
         ("to", "Maximum evaluation Unix timestamp", json!(1_800_000_000)),
         (
@@ -1455,17 +1148,20 @@ fn inspect_revocation() -> OperationBuilder {
             .tag("operations")
             .summary(Some("Inspect a digest revocation"))
             .description(Some(
-                "Returns the current lifecycle record without changing package yank, trash, retention, or policy state.",
+                "Returns the current record without changing lifecycle, retention, or policy state.",
             ))
-            .security(SecurityRequirement::new(
-                "administratorPassword",
-                Vec::<String>::new(),
-            ))
+            .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
             .parameter(digest_parameter())
-            .response("200", api_json_response("The current revocation record", revocation_example()))
+            .response(
+                "200",
+                api_json_response("The current revocation record", revocation_example()),
+            )
             .response(
                 "400",
-                api_json_response("The digest is not canonical SHA-256", json!({"error": "invalid digest"})),
+                api_json_response(
+                    "The digest is not canonical SHA-256",
+                    json!({"error": "invalid digest"}),
+                ),
             ),
     )
 }
@@ -1609,19 +1305,19 @@ fn quota_meter_example(committed: u64, reserved: u64, limit: Option<u64>, remain
 
 fn quota_repository_example() -> serde_json::Value {
     json!({
-        "repository": "root/pypi",
-        "ecosystem": "pypi",
+        "repository": "root/artifacts",
+        "ecosystem": "example",
         "limits": {
-            "max_file_bytes": 104_857_600,
-            "max_project_bytes": null,
+            "max_artifact_bytes": 104_857_600,
+            "max_resource_bytes": null,
             "max_accounted_bytes": 10_737_418_240_u64,
-            "max_projects": 500,
-            "max_versions_per_project": 100,
+            "max_resources": 500,
+            "max_groups_per_resource": 100,
             "audit": false
         },
-        "file_bytes": quota_meter_example(4_294_967_296, 1_048_576, None, None),
+        "artifact_bytes": quota_meter_example(4_294_967_296, 1_048_576, None, None),
         "accounted_bytes": quota_meter_example(3_221_225_472, 1_048_576, Some(10_737_418_240), Some(7_515_144_192)),
-        "projects": quota_meter_example(128, 1, Some(500), Some(371))
+        "resources": quota_meter_example(128, 1, Some(500), Some(371))
     })
 }
 
@@ -1633,7 +1329,7 @@ fn quota_summary() -> OperationBuilder {
             "One bounded page of every repository's quota in configuration order, for a local administrator. Each \
              row pairs the committed and reserved counters the store maintains with the limits the index \
              configures, and reports the remaining headroom, or null when a counter is unlimited. The page omits \
-             per-project and per-artifact detail; name a repository through `/+quota/repository` for one \
+             per-resource and per-artifact detail; name a repository through `/+quota/repository` for one \
              repository. The cursor pages over the static index list, so it stays stable while a reservation \
              changes a counter under it.",
         ))
@@ -1658,7 +1354,7 @@ fn quota_summary() -> OperationBuilder {
         )
         .response(
             "403",
-            ResponseBuilder::new().description("A repository token cannot enumerate repositories"),
+            ResponseBuilder::new().description("An ecosystem credential cannot enumerate repositories"),
         )
         .response(
             "404",
@@ -1691,12 +1387,11 @@ fn quota_repository() -> OperationBuilder {
         .tag("operations")
         .summary(Some("Repository quota detail"))
         .description(Some(
-            "One repository's quota for a caller who can read it: a local user through the authorization service, \
-             or that repository's legacy upload token with the `__token__` username. It pairs the committed and \
-             reserved counters with the configured limits and reports the remaining headroom, null when a counter \
-             is unlimited. It names no individual artifact.",
+            "Returns one repository's quota to local users and ecosystem credentials authorized to read it. The \
+             response pairs committed and reserved counters with configured limits and reports remaining headroom, \
+             or null for an unlimited counter. It identifies no individual artifact.",
         ))
-        .security(SecurityRequirement::new("uploadToken", Vec::<String>::new()))
+        .security(SecurityRequirement::new("writeToken", Vec::<String>::new()))
         .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
         .parameter(
             ParameterBuilder::new()
@@ -1704,7 +1399,7 @@ fn quota_repository() -> OperationBuilder {
                 .parameter_in(ParameterIn::Query)
                 .required(Required::True)
                 .description(Some("Index route to inspect, at most 512 bytes"))
-                .example(Some(json!("root/pypi"))),
+                .example(Some(json!("root/artifacts"))),
         )
         .response(
             "200",
@@ -1719,7 +1414,7 @@ fn quota_repository() -> OperationBuilder {
         )
         .response(
             "401",
-            ResponseBuilder::new().description("No valid local user credential or repository token was presented"),
+            ResponseBuilder::new().description("No valid local or ecosystem credential was presented"),
         )
         .response(
             "403",
@@ -1743,7 +1438,7 @@ fn grant_example() -> serde_json::Value {
         "id": "rg_7573725f31322f7265706f7369746f72795f726561646572",
         "user": "usr_550e8400e29b41d4a716446655440000",
         "role": "repository_reader",
-        "scope": {"kind": "repository", "name": "root/pypi"},
+        "scope": {"kind": "repository", "name": "root/artifacts"},
         "version": 1,
         "granted_by": "usr_98b2271831d647c09a1e6f630cc48ef7",
         "granted_at_unix": 1_800_000_000
@@ -1792,7 +1487,7 @@ fn list_grants() -> OperationBuilder {
         (
             "resource",
             "Filter to one reach: `server` or `repository/<name>`",
-            json!("repository/root/pypi"),
+            json!("repository/root/artifacts"),
         ),
         (
             "cursor",
@@ -1839,7 +1534,7 @@ fn create_grant() -> OperationBuilder {
                             .example(Some(json!({
                                 "user": "usr_550e8400e29b41d4a716446655440000",
                                 "role": "repository_reader",
-                                "scope": {"kind": "repository", "name": "root/pypi"}
+                                "scope": {"kind": "repository", "name": "root/artifacts"}
                             })))
                             .build(),
                     )
@@ -1921,7 +1616,7 @@ fn retention_request_body() -> utoipa::openapi::request_body::RequestBody {
             "application/json",
             ContentBuilder::new()
                 .example(Some(json!({
-                    "repository": "root/pypi",
+                    "repository": "root/artifacts",
                     "keep": [{"selector": "keep-latest", "count": 3}],
                     "expire": [{"selector": "age", "older_than_seconds": 7_776_000}],
                     "cursor": null,
@@ -1934,16 +1629,16 @@ fn retention_request_body() -> utoipa::openapi::request_body::RequestBody {
 
 fn retention_candidate_example() -> serde_json::Value {
     json!({
-        "project": "example",
-        "version": "1.0",
-        "artifact": "example-1.0-py3-none-any.whl",
+        "resource": "example",
+        "group": "1.0",
+        "artifact": "example-1.0.bin",
         "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         "class": "hosted",
         "visibility": "active",
         "bytes": 20_480,
         "outcome": "remove",
         "rule": "age",
-        "retained_alternatives": ["2.0"]
+        "retained_groups": ["2.0"]
     })
 }
 
@@ -2039,7 +1734,7 @@ fn retention_export() -> OperationBuilder {
                 "The plan as JSON Lines, the identity first",
                 "application/x-ndjson",
                 "{\"summary\":{\"policy_version\":42,\"frontier\":{\"repository\":7,\"catalog\":3,\"policy\":2}}}\n\
-                 {\"project\":\"example\",\"version\":\"1.0\",\"artifact\":\"example-1.0-py3-none-any.whl\",\
+                 {\"resource\":\"example\",\"group\":\"1.0\",\"artifact\":\"example-1.0.bin\",\
                  \"digest\":\"sha256:0123\",\"class\":\"hosted\",\"visibility\":\"active\",\"bytes\":20480,\
                  \"outcome\":\"remove\",\"rule\":\"age\"}\n",
             ),
@@ -2098,7 +1793,7 @@ fn retention_export() -> OperationBuilder {
 fn scoped_token_example() -> serde_json::Value {
     json!({
         "id": "tok_550e8400e29b41d4a716446655440000",
-        "name": "ci-upload",
+        "name": "ci-write",
         "reach": {"kind": "repository", "name": "hosted"},
         "actions": ["read", "write"],
         "created_by": "usr_98b2271831d647c09a1e6f630cc48ef7",
@@ -2158,7 +1853,7 @@ fn create_token() -> OperationBuilder {
                         "application/json",
                         ContentBuilder::new()
                             .example(Some(json!({
-                                "name": "ci-upload",
+                                "name": "ci-write",
                                 "repository": "hosted",
                                 "actions": ["read", "write"],
                                 "expires_at": 1_800_600_000
@@ -2297,10 +1992,7 @@ fn metrics() -> OperationBuilder {
                 "text/plain; version=0.0.4",
                 "# HELP peryx_requests_total Total HTTP requests served.\n\
                  # TYPE peryx_requests_total counter\n\
-                 peryx_requests_total 128\n\
-                 # HELP peryx_metadata_served_total PEP 658 metadata siblings served.\n\
-                 # TYPE peryx_metadata_served_total counter\n\
-                 peryx_metadata_served_total{ecosystem=\"pypi\",role=\"virtual\"} 37\n",
+                 peryx_requests_total 128\n",
             ),
         )
 }
@@ -2308,74 +2000,11 @@ fn metrics() -> OperationBuilder {
 fn openapi_endpoint() -> OperationBuilder {
     OperationBuilder::new()
         .tag("operations")
-        .summary(Some("This document"))
+        .summary(Some("OpenAPI schema"))
         .response(
             "200",
             ResponseBuilder::new()
-                .description("The OpenAPI 3.1 description of this server")
+                .description("OpenAPI 3.1 schema")
                 .content("application/json", ContentBuilder::new().build()),
-        )
-}
-
-fn oidc_audience() -> OperationBuilder {
-    OperationBuilder::new()
-        .tag("trusted publishing")
-        .summary(Some("Discover the CI identity audience"))
-        .description(Some(
-            "Peryx returns the audience a CI provider must put in its OIDC identity. Peryx adds this route after an operator configures a trusted publisher.",
-        ))
-        .response(
-            "200",
-            api_json_response(
-                "The configured OIDC audience",
-                json!({"audience": "packages.example"}),
-            ),
-        )
-        .response("404", ResponseBuilder::new().description("No trusted publisher exists"))
-}
-
-fn oidc_mint_token() -> OperationBuilder {
-    OperationBuilder::new()
-        .tag("trusted publishing")
-        .summary(Some("Exchange a CI identity for an upload token"))
-        .description(Some(
-            "Peryx verifies one external OIDC identity against a configured publisher and returns a short-lived token restricted to that publisher's repository and projects.",
-        ))
-        .request_body(Some(
-            RequestBodyBuilder::new()
-                .required(Some(Required::True))
-                .content(
-                    "application/json",
-                    ContentBuilder::new()
-                        .example(Some(json!({"token": "eyJhbGciOiJSUzI1NiIs..."})))
-                        .build(),
-                )
-                .build(),
-        ))
-        .response(
-            "200",
-            api_json_response(
-                "A repository- and project-scoped upload token",
-                json!({"token": "eyJhbGciOiJIUzI1NiIs...", "expires": 1_800_000_000_i64}),
-            ),
-        )
-        .response("404", ResponseBuilder::new().description("No trusted publisher exists"))
-        .response(
-            "413",
-            ResponseBuilder::new().description("The exchange request exceeds the fixed body limit"),
-        )
-        .response(
-            "422",
-            api_json_response(
-                "The external identity is invalid or unauthorized",
-                json!({"message": "identity token rejected"}),
-            ),
-        )
-        .response(
-            "503",
-            api_json_response(
-                "The identity provider or replay guard is unavailable",
-                json!({"message": "identity provider unavailable"}),
-            ),
         )
 }

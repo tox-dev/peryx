@@ -1,13 +1,8 @@
-//! An S3-compatible [`BlobBackend`](super::BlobBackend).
-//!
-//! Streamed writes stage to a local temp file like the filesystem backend, so the digest is
-//! known before anything reaches S3 and readers can tail an in-progress stage. Commit uploads the
-//! finished stage under its digest key, with bounded concurrency and a durable multipart journal.
+//! Streamed writes stay local until their digest is known. Commit uploads the verified stage under its
+//! digest key with bounded concurrency and a durable multipart journal.
 
 mod client;
 mod config;
-#[cfg(test)]
-mod public_tests;
 
 use std::collections::HashMap;
 use std::io::Write as _;
@@ -33,7 +28,6 @@ use super::{
     BlobReadBody, BlobStaged, BlobSupport, BlobWrite, Digest, DurabilityCapabilities, PlacementReceipt,
 };
 
-/// The S3-compatible blob backend.
 #[derive(Debug, Clone)]
 pub struct S3Backend {
     client: S3Client,
@@ -54,7 +48,6 @@ struct PartSlice {
 }
 
 impl S3Backend {
-    /// Build a backend for `config`, staging local writes and downloads under `staging_dir`.
     #[must_use]
     pub fn new(config: S3Config, staging_dir: PathBuf) -> Self {
         Self {
@@ -64,7 +57,6 @@ impl S3Backend {
         }
     }
 
-    /// The durability guarantees the configured endpoint proves for a completed write.
     #[must_use]
     pub const fn durability(&self) -> DurabilityCapabilities {
         self.client.config().durability()
@@ -412,12 +404,14 @@ async fn create_journal(path: &Path, upload_id: &str) -> Result<(), std::io::Err
     let path = path.to_owned();
     let upload_id = upload_id.to_owned();
     tokio::task::spawn_blocking(move || {
-        AtomicFile::new(path, DisallowOverwrite)
+        AtomicFile::new(&path, DisallowOverwrite)
             .write(|file| file.write_all(upload_id.as_bytes()))
-            .map_err(std::io::Error::from)
+            .map_err(std::io::Error::from)?;
+        tracing::debug!(target: "peryx_storage::s3_journal", path = %path.display(), "persisted multipart upload journal");
+        Ok(())
     })
     .await
-    .expect("journal persistence task must not panic")
+    .map_err(std::io::Error::other)?
 }
 
 async fn remove_journal(path: &Path) -> Result<(), S3Error> {
@@ -433,7 +427,7 @@ fn digest_checksum(digest: &Digest) -> String {
         .encode(hex::decode(digest.as_str()).expect("digest contains validated lowercase hex"))
 }
 
-/// A shared non-capturing mapper prevents one dead stream-error monomorphization per caller.
+/// Sharing this non-capturing mapper avoids a stream-error monomorphization per caller.
 fn stream_body(response: S3Get) -> BoxStream<'static, Result<Bytes, BlobError>> {
     response.body.map_err(BlobError::from).boxed()
 }
@@ -455,19 +449,8 @@ fn blob_error(error: S3Error, digest: Option<&Digest>) -> BlobError {
 }
 
 #[cfg(test)]
-mod error_tests {
-    use super::{BlobError, S3Error};
-    use crate::blob::BlobErrorKind;
-
-    #[test]
-    fn test_blob_error_from_s3_error() {
-        assert_eq!(BlobError::from(S3Error::NotFound).kind(), BlobErrorKind::Io);
-        assert_eq!(
-            BlobError::from(S3Error::Request("reset".to_owned())).kind(),
-            BlobErrorKind::Io
-        );
-    }
-}
+#[path = "../../../tests/unit/blob/s3/tests.rs"]
+mod tests;
 
 impl BlobBackend for S3Backend {
     fn capabilities(&self) -> BlobCapabilities {
@@ -529,8 +512,6 @@ impl BlobBackend for S3Backend {
     }
 }
 
-/// A streamed S3 write: a local filesystem stage whose commit uploads to S3 instead of publishing
-/// into a content tree.
 pub struct S3Write {
     inner: Box<BlobWrite>,
     backend: S3Backend,
@@ -538,7 +519,7 @@ pub struct S3Write {
 
 impl S3Write {
     pub(crate) async fn write_chunk(&mut self, chunk: Bytes) -> Result<(), BlobError> {
-        // `BlobWrite` recurses through this wrapper, so boxing keeps the future finite.
+        // Boxing terminates the recursive future type through `BlobWrite`.
         Box::pin(self.inner.write_chunk(chunk)).await
     }
 
@@ -566,7 +547,6 @@ impl S3Write {
     }
 }
 
-/// A finished S3 stage: a local temp file uploaded to S3 on commit and discarded either way.
 #[derive(Debug)]
 pub struct S3Staged {
     inner: Box<BlobStaged>,
@@ -586,16 +566,13 @@ impl S3Staged {
         self.inner.is_empty()
     }
 
-    /// Keeping this non-generic avoids dead monomorphizations in crates that inspect filesystem
-    /// stages.
+    /// A non-generic callback avoids monomorphizing callers that inspect filesystem stages.
     pub(crate) const fn inner(&self) -> &BlobStaged {
         &self.inner
     }
 
     pub(crate) async fn commit(self) -> Result<PlacementReceipt, BlobError> {
         self.backend.upload(&self.inner).await?;
-        // The object store proved the write durable at its own scope; capture the receipt before the
-        // local stage is discarded.
         let receipt = PlacementReceipt {
             digest: self.inner.digest().clone(),
             size: self.inner.len(),

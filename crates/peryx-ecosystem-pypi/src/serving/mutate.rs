@@ -1,9 +1,3 @@
-//! Yank, restore, promote, and delete mutations behind PUT and DELETE.
-#![allow(
-    clippy::result_large_err,
-    reason = "handler helpers carry an axum Response as their error; boxing it everywhere adds noise"
-)]
-
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -12,13 +6,14 @@ use axum::response::{IntoResponse, Response};
 use peryx_core::path::{self};
 use peryx_driver::not_found;
 use peryx_driver::state::ServingState;
-use peryx_events::webhook::{WebhookEvent, WebhookEventKind};
 use peryx_identity::Action;
 use peryx_index::{Index, IndexKind};
 
 use crate::cache::{self, CacheError};
+use crate::webhook::{self, PypiWebhook};
 use crate::{Yanked, normalize_name};
 
+use super::HttpResult;
 use super::post::{UploadStatusBlock, upload_status_response};
 use super::response::{CacheContext, cache_error_response};
 use super::{authorize, identify, path_error_response, request_id, upload_target};
@@ -40,32 +35,37 @@ fn emit_promotion_status_event(audit: &PromotionAudit<'_>, block: &UploadStatusB
         .index(audit.route)
         .source_index(audit.source_index)
         .hosted_index(audit.hosted_index)
-        .project(Some(audit.project))
-        .version(Some(audit.version))
+        .resource(Some(audit.project))
+        .group(Some(audit.version))
         .reason(Some(&block.reason))
         .request(audit.headers)
         .emit();
 }
 
-fn promotion_source_route(query: Option<&str>) -> Result<String, Response> {
+fn promotion_source_route(query: Option<&str>) -> HttpResult<String> {
     let Some(query) = query else {
-        return Err((StatusCode::BAD_REQUEST, "promotion requires from={source route}").into_response());
+        return Err((StatusCode::BAD_REQUEST, "promotion requires from={source route}")
+            .into_response()
+            .into());
     };
     for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
         if key == "from" && !value.is_empty() {
             return Ok(value.into_owned());
         }
     }
-    Err((StatusCode::BAD_REQUEST, "promotion requires from={source route}").into_response())
+    Err((StatusCode::BAD_REQUEST, "promotion requires from={source route}")
+        .into_response()
+        .into())
 }
 
-fn promotion_source<'a>(state: &'a ServingState, route: &str) -> Result<&'a Index, Response> {
+fn promotion_source<'a>(state: &'a ServingState, route: &str) -> HttpResult<&'a Index> {
     let route = route.trim_matches('/');
     state
         .indexes
         .iter()
         .find(|index| index.route == route)
         .ok_or_else(not_found)
+        .map_err(Into::into)
 }
 
 /// `PUT /{route}/{project}/[{version}/]yank` marks files yanked (PEP 592, reversible);
@@ -75,7 +75,7 @@ pub async fn pypi_dispatch_put(state: Arc<ServingState>, uri: axum::http::Uri, h
     let path = uri.path().trim_start_matches('/');
     let (index, hosted, spec, identity) = match removal_target(&state, path, &headers, Action::Write) {
         Ok(target) => target,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
     let actor = peryx_events::security::actor(&identity);
     if let Some(spec) = strip_action_segment(spec, "promote") {
@@ -101,11 +101,11 @@ async fn promote_request(
 ) -> Response {
     let source_route = match promotion_source_route(query) {
         Ok(route) => route,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
     let source = match promotion_source(state, &source_route) {
         Ok(source) => source,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
     let Some(source_local) = upload_target(state, source) else {
         return (
@@ -117,7 +117,7 @@ async fn promote_request(
     let (project, version) = match parse_project_version(spec) {
         Ok((project, Some(version))) => (project, version),
         Ok((_project, None)) => return (StatusCode::BAD_REQUEST, "promotion requires a version").into_response(),
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
     let audit = PromotionAudit {
         headers,
@@ -160,7 +160,7 @@ async fn yank_request(
 ) -> Response {
     let (project, version) = match parse_project_version(spec) {
         Ok(parsed) => parsed,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
     let result = cache::set_yanked(
         state,
@@ -183,7 +183,7 @@ async fn yank_request(
         request_id: request_id(headers),
     };
     security_mutation_event(&audit, &result);
-    emit_mutation_webhook(state.clone(), WebhookEventKind::Yank, &audit, &result);
+    emit_mutation_webhook(state, webhook::YANK, &audit, &result);
     count_response(result)
 }
 
@@ -197,7 +197,7 @@ async fn restore_request(
 ) -> Response {
     let (project, version) = match parse_project_version(spec) {
         Ok(parsed) => parsed,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
     let result = cache::restore_files(state, &hosted.name, &project, version.as_deref()).await;
     let audit = MutationAudit {
@@ -212,7 +212,7 @@ async fn restore_request(
         request_id: request_id(headers),
     };
     security_mutation_event(&audit, &result);
-    emit_mutation_webhook(state.clone(), WebhookEventKind::Restore, &audit, &result);
+    emit_mutation_webhook(state, webhook::RESTORE, &audit, &result);
     count_response(result)
 }
 
@@ -223,13 +223,13 @@ pub async fn pypi_dispatch_delete(state: Arc<ServingState>, uri: axum::http::Uri
     let path = uri.path().trim_start_matches('/');
     let (index, hosted, spec, identity) = match removal_target(&state, path, &headers, Action::Delete) {
         Ok(target) => target,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
     let actor = peryx_events::security::actor(&identity);
     if let Some(spec) = strip_action_segment(spec, "yank") {
         let (project, version) = match parse_project_version(spec) {
             Ok(parsed) => parsed,
-            Err(response) => return response,
+            Err(error) => return error.into_response(),
         };
         let result = cache::set_yanked(&state, index, &hosted.name, &project, version.as_deref(), Yanked::No).await;
         let audit = MutationAudit {
@@ -244,12 +244,12 @@ pub async fn pypi_dispatch_delete(state: Arc<ServingState>, uri: axum::http::Uri
             request_id: request_id(&headers),
         };
         security_mutation_event(&audit, &result);
-        emit_mutation_webhook(state.clone(), WebhookEventKind::Unyank, &audit, &result);
+        emit_mutation_webhook(&state, webhook::UNYANK, &audit, &result);
         return count_response(result);
     }
     let (project, version) = match parse_project_version(spec) {
         Ok(parsed) => parsed,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
     let volatile = is_volatile(hosted);
     let reason = delete_reason(uri.query());
@@ -280,18 +280,16 @@ pub async fn pypi_dispatch_delete(state: Arc<ServingState>, uri: axum::http::Uri
         request_id: request_id(&headers),
     };
     security_mutation_event(&audit, &result);
-    emit_mutation_webhook(state.clone(), WebhookEventKind::Delete, &audit, &result);
+    emit_mutation_webhook(&state, webhook::DELETE, &audit, &result);
     count_response(result)
 }
 
-/// Resolve the writable hosted index for a mutation request and authorize it, returning the serving
-/// index, its hosted layer, the path remainder (the `{project}/...` part), and the caller's identity.
 fn removal_target<'a>(
     state: &'a ServingState,
     path: &'a str,
     headers: &HeaderMap,
     action: Action,
-) -> Result<(&'a Index, &'a Index, &'a str, super::UploadIdentity), Response> {
+) -> HttpResult<(&'a Index, &'a Index, &'a str, super::UploadIdentity)> {
     let (index, rest) = state.resolve(path).ok_or_else(not_found)?;
     let hosted = upload_target(state, index)
         .ok_or_else(|| (StatusCode::METHOD_NOT_ALLOWED, "index is read-only").into_response())?;
@@ -307,8 +305,6 @@ fn removal_target<'a>(
     Ok((index, hosted, rest, identity))
 }
 
-/// The project a mutation names: the first segment of the path remainder, normalized the way a stored
-/// project is. `None` when the path names no project, which authorizes against the index alone.
 fn mutation_project(spec: &str) -> Option<String> {
     let project = spec.split('/').find(|segment| !segment.is_empty())?;
     Some(normalize_name(project))
@@ -341,8 +337,8 @@ fn security_mutation_event(audit: &MutationAudit<'_>, result: &Result<usize, Cac
         .actor(audit.actor)
         .index(audit.route)
         .hosted_index(audit.hosted_index)
-        .project(Some(audit.project))
-        .version(audit.version)
+        .resource(Some(audit.project))
+        .group(audit.version)
         .count(count)
         .reason(reason.as_deref())
         .request(audit.headers)
@@ -363,8 +359,8 @@ fn security_promotion_event(audit: PromotionAudit<'_>, result: &Result<usize, Ca
         .index(audit.route)
         .source_index(audit.source_index)
         .hosted_index(audit.hosted_index)
-        .project(Some(audit.project))
-        .version(Some(audit.version))
+        .resource(Some(audit.project))
+        .group(Some(audit.version))
         .count(count)
         .reason(reason.as_deref())
         .request(audit.headers)
@@ -372,8 +368,8 @@ fn security_promotion_event(audit: PromotionAudit<'_>, result: &Result<usize, Ca
 }
 
 fn emit_mutation_webhook(
-    state: Arc<ServingState>,
-    kind: WebhookEventKind,
+    state: &ServingState,
+    event: &'static str,
     audit: &MutationAudit<'_>,
     result: &Result<usize, CacheError>,
 ) {
@@ -384,21 +380,21 @@ fn emit_mutation_webhook(
         return;
     }
     let created_at_unix = (state.clock)();
-    peryx_events::webhook::emit(
+    webhook::emit(
         state,
-        &WebhookEvent {
-            kind,
+        PypiWebhook {
+            event,
             created_at_unix,
-            index: audit.index.to_owned(),
-            route: audit.route.to_owned(),
-            hosted_index: audit.hosted_index.to_owned(),
-            project: audit.project.to_owned(),
-            version: audit.version.map(str::to_owned),
+            index: audit.index,
+            route: audit.route,
+            hosted_index: audit.hosted_index,
+            project: audit.project,
+            version: audit.version,
             filename: None,
             digest: None,
             count: *count,
-            actor: audit.actor.map(str::to_owned),
-            request_id: audit.request_id.clone(),
+            actor: audit.actor,
+            request_id: audit.request_id.as_deref(),
         },
     );
 }
@@ -412,7 +408,7 @@ fn strip_action_segment<'a>(spec: &'a str, action: &str) -> Option<&'a str> {
     base.ends_with('/').then_some(base)
 }
 
-fn parse_project_version(spec: &str) -> Result<(String, Option<String>), Response> {
+fn parse_project_version(spec: &str) -> HttpResult<(String, Option<String>)> {
     let trimmed = spec.trim_matches('/');
     let mut parts = trimmed.splitn(2, '/');
     let project = parts
@@ -436,8 +432,6 @@ fn parse_project_version(spec: &str) -> Result<(String, Option<String>), Respons
     Ok((normalize_name(&project), version))
 }
 
-/// The soft-delete reason from a DELETE query's `reason=`, recorded in the trash metadata. Absent when
-/// no query, no `reason`, or an empty one.
 fn delete_reason(query: Option<&str>) -> Option<String> {
     let mut reason = None;
     for (key, value) in url::form_urlencoded::parse(query?.as_bytes()) {

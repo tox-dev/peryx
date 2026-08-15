@@ -1,19 +1,15 @@
 +++
 title = "Control access to an index"
-description = "Recipes for the common access tasks: scope a token to some projects, declare an index's reads private, close a whole server, and keep a secret in a file."
+description = "Recipes for the common access tasks: scope a token to some resources, declare an index's reads private, close a whole server, and keep a secret in a file."
 weight = 11
 +++
 
-Each task below is self-contained. They share one model, described in full under
-[authentication and access control](@/core/authentication.md); this page is the cookbook.
+These recipes use the model in [authentication and access control](@/core/authentication.md). Ecosystem owners map their
+client credentials and routes onto the shared actions.
 
-Write and delete authorization runs through the model today, enforced as HTTP Basic auth on a PyPI upload and on a
-`docker push`. The read side (`anonymous_read`) is recorded now and enforced when the read challenge ships, so you can
-declare the policy ahead of the enforcement.
+## Scope a token to some resources
 
-## Scope a token to some projects
-
-Add an `[[index.access_token]]` table to the hosted index. `projects` is a list of globs; `actions` is any of `read`,
+Add an `[[index.access_token]]` table to the hosted index. `resources` is a list of globs; `actions` is any of `read`,
 `write`, and `delete`.
 
 ```toml
@@ -24,19 +20,23 @@ hosted = true
 [[index.access_token]]
 name = "ci"
 secret = "ci-secret"
-projects = ["team-*", "shared/tools"]
+resources = ["team-*", "shared/tools"]
 actions = ["write"]
 ```
 
-A client presents the secret as its Basic password (`-u __token__ -p ci-secret` for twine, `-p ci-secret` for
-`docker login`). The token may write any project matching `team-*` or the exact name `shared/tools`, and nothing else. A
-write to another name returns `403`. Give a token `actions = ["write", "delete"]` if the same credential should also
-remove releases. An index can carry several `[[index.access_token]]` tables; each needs a distinct `name`.
+The client presents the secret through its ecosystem authentication flow. The token may write a resource matching
+`team-*` or the exact name `shared/tools`. A write to another name returns the implementation's authorization denial.
+Give a token `actions = ["write", "delete"]` when the same credential may remove resources. An index can carry several
+`[[index.access_token]]` tables; each needs a distinct `name`.
+
+Supported client flows:
+
+- [Ecosystem owner documentation](@/ecosystems/_index.md)
 
 ## Let one token write everywhere
 
-For a hosted index that a single trusted credential may write and delete across every project, one
-`[[index.access_token]]` grant with no `projects` filter is the whole configuration:
+For a hosted index that a single trusted credential may write and delete across every resource, one
+`[[index.access_token]]` grant with no `resources` filter is the whole configuration:
 
 ```toml
 [[index]]
@@ -44,13 +44,13 @@ name = "hosted"
 hosted = true
 
 [[index.access_token]]
-name = "upload"
+name = "writer"
 secret = "hosted-secret"
 actions = ["write", "delete"]
 ```
 
-An omitted `projects` filter defaults to `*`, so this one token writes and deletes everywhere. Add a `projects` list the
-moment you need per-project scope.
+An omitted `resources` filter defaults to `*`, so this one token writes and deletes everywhere. Add a `resources` list
+the moment you need per-resource scope.
 
 ## Declare an index's reads private
 
@@ -65,13 +65,12 @@ anonymous_read = false
 [[index.access_token]]
 name = "reader"
 secret = "reader-secret"
-projects = ["*"]
+resources = ["*"]
 actions = ["read"]
 ```
 
-The flag records that this index's reads are not open, and a read-granting token expresses who may still read it. Read
-enforcement arrives with the read challenge; until then the flag is recorded but reads are served openly, so treat this
-as declaring the policy ahead of the gate.
+The flag denies anonymous reads on routes the selected owner protects. A token with the `read` action names the
+resources its principal may read. See the supported client flows above for route coverage.
 
 ## Close a whole server
 
@@ -88,21 +87,13 @@ One knob makes a fully private server the default and a public index the excepti
 
 ## Rate-limit named principals
 
-Enable local rate limits when authenticated clients need buckets separate from callers sharing their IP address.
+Enable local rate limits when authenticated clients need buckets separate from callers sharing their IP address. peryx
+verifies a presented credential through the capability registered for the route's ecosystem. Credentials resolving to
+the same named principal share one bucket per route class, including after a Basic username or bearer change. Invalid
+and anonymous credentials share the source-address bucket.
 
-```toml
-[rate_limit]
-enabled = true
-max_clients = 4096
-
-[rate_limit.upload]
-requests = 30
-window_secs = 60
-```
-
-peryx verifies a presented credential through the driver that owns the route. Credentials resolving to the same named
-principal share one bucket per route class, including after a Basic username or bearer change. Invalid and anonymous
-credentials share the source-address bucket. A client cannot allocate fresh buckets by rotating invalid credentials.
+Route classes and their configuration keys belong to the ecosystem owner. See the
+[ecosystem owner documentation](@/ecosystems/_index.md) for its rate-limit example.
 
 ## Preserve client buckets behind a reverse proxy
 
@@ -116,10 +107,10 @@ trusted_proxies = ["127.0.0.1/32", "10.42.0.0/16"]
 
 Add proxy addresses and exclude client networks. The edge proxy must replace caller-supplied `X-Forwarded-For`,
 `X-Forwarded-Host`, and `X-Forwarded-Proto`; each later trusted proxy appends its own peer. Peryx starts at the socket
-peer and selects the nearest address outside the configured networks. It uses the forwarded host and protocol in API
-links and OCI token challenges. Requests from other peers use the request URI or `Host`; a relative URI defaults to
-HTTP. This check applies even when the rate limiter is disabled. Peryx uses the socket peer when a trusted
-client-address suffix contains malformed input.
+peer and selects the nearest address outside the configured networks. It uses the forwarded host and protocol in public
+links. Requests from other peers use the request URI or `Host`; a relative URI defaults to HTTP. This check applies even
+when the rate limiter is disabled. Peryx uses the socket peer when a trusted client-address suffix contains malformed
+input.
 
 Leave `trusted_proxies` empty when clients connect to peryx without a proxy. See
 [serve HTTPS](@/core/serve-https.md#terminate-tls-at-a-reverse-proxy) for an nginx configuration that overwrites the
@@ -138,25 +129,25 @@ name = "hosted"
 hosted = true
 
 [[index.access_token]]
-name = "upload"
+name = "writer"
 secret_file = "/run/secrets/hosted-token"
 actions = ["write", "delete"]
 
 [[index.access_token]]
 name = "ci"
 secret_file = "/run/secrets/ci-token"
-projects = ["team-*"]
+resources = ["team-*"]
 actions = ["write"]
 ```
 
 peryx reads each file once at startup and trims trailing whitespace, so a file written by `echo` or mounted by an
 orchestrator works unchanged. An empty file is a startup error. Set a key or its `_file` sibling, never both. This
-composes with Docker and Kubernetes secret mounts under `/run/secrets`, systemd `LoadCredential`, and files rendered by
+composes with secret mounts under `/run/secrets`, systemd `LoadCredential`, and files rendered by
 [Vault](https://developer.hashicorp.com/vault) or [SOPS](https://github.com/getsops/sops), covered in
 [client auth versus upstream credentials](@/core/access-explained.md).
 
 ## Related
 
 - The full model and every key: [authentication and access control](@/core/authentication.md)
-- A start-to-finish walkthrough: [issue your first access token](@/core/first-token.md)
+- [Ecosystem owner documentation](@/ecosystems/_index.md)
 - The `[auth]` and `[[index.access_token]]` keys in context: [configuration](@/core/configuration.md)

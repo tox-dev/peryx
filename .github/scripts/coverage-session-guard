@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
+
+if [[ -n ${COVERAGE_NO_CLEAN:-} || -n ${COVERAGE_NO_REPORT:-} ]]; then
+  if [[ ${PERYX_COVERAGE_SESSION:-} != linux ]]; then
+    printf 'coverage profile accumulation requires the coverage-linux session\n' >&2
+    exit 2
+  fi
+fi
+
+find_source_profiles() {
+  find "$repo" \
+    \( -path "$repo/.git" -o -path "$repo/.tox" -o -path "$repo/target" \) -prune -o \
+    -type f -name '*.profraw' -print
+}
+
+reject_source_profiles() {
+  local profiles
+  profiles=$(find_source_profiles)
+  [[ -z $profiles ]] || {
+    printf 'coverage profiles escaped the artifact directory:\n%s\n' "$profiles" >&2
+    return 1
+  }
+}
+
+reject_source_profiles
+(($#)) || exit 0
+[[ $1 == --output ]] || { printf 'expected --output before the coverage command\n' >&2; exit 2; }
+output=${2:?coverage output path is required}
+shift 2
+[[ ${1:-} == -- ]] || { printf 'expected -- before the coverage command\n' >&2; exit 2; }
+shift
+(($#)) || { printf 'coverage command is required\n' >&2; exit 2; }
+
+mkdir -p "$repo/.tox/coverage-sessions"
+session=$(mktemp -d "$repo/.tox/coverage-sessions/$(basename -- "$output")."'XXX''XXX')
+target=${PERYX_COVERAGE_TARGET_DIR:-$repo/.tox/coverage-target}
+mkdir -p "$target"
+target=$(cd "$target" && pwd -P)
+coverage_target=${CARGO_LLVM_COV_TARGET_DIR:-$session/llvm-cov-target}
+lock=$coverage_target.lock
+mkdir -p "$(dirname -- "$lock")"
+if ! mkdir "$lock" 2>/dev/null; then
+  holder=$(cat "$lock/pid" 2>/dev/null || true)
+  if [[ $holder =~ ^[1-9][0-9]*$ ]] && kill -0 "$holder" 2>/dev/null; then
+    printf 'coverage target is in use by process %s: %s\n' "$holder" "$coverage_target" >&2
+    exit 2
+  fi
+  rm -rf -- "$lock"
+  mkdir "$lock"
+fi
+printf '%s\n' "$$" >"$lock/pid"
+trap 'rm -rf -- "$session" "$lock"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+mkdir -p "$coverage_target"
+export CARGO_TARGET_DIR=$target
+export CARGO_LLVM_COV_TARGET_DIR=$coverage_target
+export LLVM_PROFILE_FILE=$coverage_target/peryx-%p-%10m.profraw
+export PERYX_COVERAGE_RUN_DIR=$session
+
+status=0
+"$@" || status=$?
+reject_source_profiles || status=1
+exit "$status"

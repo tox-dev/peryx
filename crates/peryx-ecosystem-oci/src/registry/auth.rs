@@ -1,5 +1,3 @@
-//! The OCI Bearer token realm: the wire protocol peryx wraps around the neutral access model.
-//!
 //! `GET /v2/` challenges with `WWW-Authenticate: Bearer realm=…,service="peryx"` when any OCI index
 //! restricts access, so `docker login` learns where to authenticate; `GET /v2/token` mints a JWT whose
 //! grants are the intersection of the requested scope with what the caller may do; and every
@@ -10,11 +8,10 @@
 use axum::body::Body;
 use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
-use peryx_core::Ecosystem;
 use peryx_driver::ServingState;
 use peryx_driver::discovery::BaseUrl;
 use peryx_identity::{
-    Action, Denial, Glob, Grant, Identity, IndexAcl, Principal, authorize, authorize_all, authorize_exact_grants,
+    Action, Denial, Glob, Grant, Identity, IndexAcl, Principal, ResourceMatch, authorize, authorize_all,
     authorize_grants, strip_auth_scheme,
 };
 use serde_json::json;
@@ -43,13 +40,11 @@ pub(super) fn rate_limit_principal(state: &ServingState, headers: &HeaderMap) ->
     verified_principal(state, headers).unwrap_or(Principal::Anonymous)
 }
 
-/// Whether any OCI index restricts access, which is what turns the frictionless zero-config `200` into
-/// a Bearer challenge: reads that are not anonymous, or any named credential a `docker login` validates.
 fn restricts(state: &ServingState) -> bool {
     state
         .indexes
         .iter()
-        .filter(|index| index.ecosystem == Ecosystem::Oci)
+        .filter(|index| index.ecosystem == crate::ECOSYSTEM)
         .any(|index| !index.acl.anonymous_read || !index.acl.tokens.is_empty())
 }
 
@@ -81,7 +76,7 @@ pub(super) fn issue_token(state: &ServingState, headers: &HeaderMap, query: &str
     };
     let requester = match resolve_requester(state, authorization(headers)) {
         Ok(requester) => requester,
-        Err(response) => return response,
+        Err(rejection) => return rejection.into_response(),
     };
     let grants = approved_grants(state, &requester, &scopes);
     let now = (state.clock)();
@@ -95,13 +90,13 @@ pub(super) fn issue_token(state: &ServingState, headers: &HeaderMap, query: &str
     ([(header::CONTENT_TYPE, "application/json")], body).into_response()
 }
 
-/// The identity and source credential a token request speaks as: anonymous with no credential, the
-/// named subject a Basic password authenticates, or a `401` when Basic authenticates nowhere.
-fn resolve_requester<'a>(state: &'a ServingState, header: Option<&'a str>) -> Result<TokenRequester<'a>, Response> {
+fn resolve_requester<'a>(
+    state: &'a ServingState,
+    header: Option<&'a str>,
+) -> Result<TokenRequester<'a>, super::RequestRejection> {
     match header {
-        Some(header) if strip_auth_scheme(header, "Basic").is_some() => {
-            named_requester(state, header).ok_or_else(|| error_response(ErrorCode::Unauthorized, "invalid credentials"))
-        }
+        Some(header) if strip_auth_scheme(header, "Basic").is_some() => named_requester(state, header)
+            .ok_or_else(|| error_response(ErrorCode::Unauthorized, "invalid credentials").into()),
         _ => Ok(TokenRequester {
             principal: Principal::Anonymous,
             basic: None,
@@ -109,13 +104,12 @@ fn resolve_requester<'a>(state: &'a ServingState, header: Option<&'a str>) -> Re
     }
 }
 
-/// The named subject and first OCI index a Basic password authenticates against.
 fn named_requester<'a>(state: &'a ServingState, header: &'a str) -> Option<TokenRequester<'a>> {
     let now = (state.clock)();
     state
         .indexes
         .iter()
-        .filter(|index| index.ecosystem == Ecosystem::Oci)
+        .filter(|index| index.ecosystem == crate::ECOSYSTEM)
         .find_map(|index| match index.acl.identify(Some(header), now).principal {
             Principal::Named { subject } => Some(TokenRequester {
                 principal: Principal::Named { subject },
@@ -167,17 +161,19 @@ fn approved_grants(state: &ServingState, requester: &TokenRequester<'_>, scopes:
                     .actions
                     .iter()
                     .copied()
-                    .filter(|&action| authorize(&requester.principal, &index.acl, Some(repo), action).is_ok())
+                    .filter(|&action| {
+                        authorize(&requester.principal, &index.acl, ResourceMatch::Pattern(repo), action).is_ok()
+                    })
                     .collect();
                 if !actions.is_empty() {
                     grants.push(Grant {
-                        projects: vec![Glob::new(name.clone())],
+                        resources: vec![Glob::new(name.clone())],
                         actions,
                     });
                 }
             }
             ScopeResource::Catalog if authorize_catalog_requester(state, requester).is_ok() => grants.push(Grant {
-                projects: vec![Glob::new(CATALOG_GRANT)],
+                resources: vec![Glob::new(CATALOG_GRANT)],
                 actions: BTreeSet::from([Action::Read]),
             }),
             ScopeResource::Catalog => {}
@@ -196,8 +192,6 @@ struct RequestedScope {
     actions: BTreeSet<Action>,
 }
 
-/// Validate the request's one service and return its scopes. A client sends one `scope` per
-/// repository, or several space-separated in one parameter; both spellings are accepted.
 fn parse_token_request(query: &str, audience: &str) -> Option<Vec<RequestedScope>> {
     let mut requested_service = None;
     let mut scopes = Vec::new();
@@ -232,8 +226,6 @@ fn parse_scope(scope: &str) -> Option<RequestedScope> {
     }
 }
 
-/// The neutral actions one OCI scope verb requests: `pull` reads, `push` writes, `delete` deletes, and
-/// `*` all three; an unknown verb requests nothing.
 fn scope_actions(verb: &str) -> &'static [Action] {
     match verb {
         "pull" => &[Action::Read],
@@ -248,24 +240,28 @@ fn scope_actions(verb: &str) -> &'static [Action] {
 /// the presented credential against the index ACL. On refusal it returns the scoped challenge to send.
 /// A name that resolves to no index passes through so the handler answers name-unknown itself: there is
 /// no ACL to check and no artifact to protect.
-pub(super) fn authorize_read(state: &ServingState, headers: &HeaderMap, name: &str) -> Result<(), Response> {
+pub(super) fn authorize_read(
+    state: &ServingState,
+    headers: &HeaderMap,
+    name: &str,
+) -> Result<(), super::RequestRejection> {
     let Some((index, repo)) = super::resolve(&state.indexes, name) else {
         return Ok(());
     };
     let presented = identify(state, &index.acl, headers);
     presented
         .authorize(&index.acl, repo, name, Action::Read)
-        .map_err(|denial| resource_challenge(state, headers, name, Action::Read, denial, presented.bad_token()))
+        .map_err(|denial| resource_challenge(state, headers, name, Action::Read, denial, presented.bad_token()).into())
 }
 
-pub(super) fn authorize_catalog(state: &ServingState, headers: &HeaderMap) -> Result<(), Response> {
+pub(super) fn authorize_catalog(state: &ServingState, headers: &HeaderMap) -> Result<(), super::RequestRejection> {
     if let Some(token) = authorization(headers).and_then(|header| strip_auth_scheme(header, "Bearer"))
         && let Some(signer) = &state.signer
     {
         return match signer.verify(token) {
-            Ok((_, grants)) => authorize_exact_grants(&grants, CATALOG_GRANT, Action::Read)
-                .map_err(|denial| access_challenge(state, headers, CATALOG_SCOPE, denial, false)),
-            Err(_) => Err(access_challenge(state, headers, CATALOG_SCOPE, Denial::Forbidden, true)),
+            Ok((_, grants)) => authorize_grants(&grants, ResourceMatch::Exact(CATALOG_GRANT), Action::Read)
+                .map_err(|denial| access_challenge(state, headers, CATALOG_SCOPE, denial, false).into()),
+            Err(_) => Err(access_challenge(state, headers, CATALOG_SCOPE, Denial::Forbidden, true).into()),
         };
     }
     let requester = authorization(headers)
@@ -276,11 +272,11 @@ pub(super) fn authorize_catalog(state: &ServingState, headers: &HeaderMap) -> Re
             basic: None,
         });
     authorize_catalog_requester(state, &requester)
-        .map_err(|denial| access_challenge(state, headers, CATALOG_SCOPE, denial, false))
+        .map_err(|denial| access_challenge(state, headers, CATALOG_SCOPE, denial, false).into())
 }
 
 fn authorize_catalog_requester(state: &ServingState, requester: &TokenRequester<'_>) -> Result<(), Denial> {
-    for index in state.indexes.iter().filter(|index| index.ecosystem == Ecosystem::Oci) {
+    for index in state.indexes.iter().filter(|index| index.ecosystem == crate::ECOSYSTEM) {
         if index.acl.anonymous_read {
             continue;
         }
@@ -298,7 +294,6 @@ fn authorize_catalog_requester(state: &ServingState, requester: &TokenRequester<
     Ok(())
 }
 
-/// Resolve a resource credential, retaining a verified bearer's embedded grants for authorization.
 pub(super) fn identify(state: &ServingState, acl: &IndexAcl, headers: &HeaderMap) -> PresentedIdentity {
     let header = authorization(headers);
     if let Some(token) = header.and_then(|header| strip_auth_scheme(header, "Bearer"))
@@ -344,10 +339,13 @@ impl PresentedIdentity {
         action: Action,
     ) -> Result<(), Denial> {
         match &self.authorization {
-            PresentedAuthorization::Bearer(grants) => authorize_grants(grants, Some(resource), action),
-            PresentedAuthorization::Acl | PresentedAuthorization::InvalidBearer => {
-                authorize(&self.identity.principal, acl, Some(repository), action)
-            }
+            PresentedAuthorization::Bearer(grants) => authorize_grants(grants, ResourceMatch::Exact(resource), action),
+            PresentedAuthorization::Acl | PresentedAuthorization::InvalidBearer => authorize(
+                &self.identity.principal,
+                acl,
+                ResourceMatch::Pattern(repository),
+                action,
+            ),
         }
     }
 
@@ -361,7 +359,7 @@ impl PresentedIdentity {
 }
 
 /// The response for a refused resource request: with a realm configured, a `401` Bearer challenge
-/// carrying the scope the request needed and an `error` a client acts on — `invalid_token` retries with
+/// carrying the scope the request needed and an `error` a client acts on - `invalid_token` retries with
 /// fresh credentials, `insufficient_scope` does not. Without a realm the registry keeps the Basic answers
 /// a pushing client already handles, so an existing `docker login -u _ -p <token>` flow is untouched.
 pub(super) fn resource_challenge(
@@ -411,8 +409,6 @@ fn resource_scope(name: &str, action: Action) -> String {
     format!("repository:{name}:{verbs}")
 }
 
-/// A `401` carrying the Bearer challenge: the realm to authenticate at, the service the token binds to,
-/// and optionally the scope needed and the `error` explaining the refusal.
 fn challenge(service: &str, headers: &HeaderMap, scope: Option<&str>, error: Option<&str>) -> Response {
     use std::fmt::Write as _;
     let mut value = format!("Bearer realm=\"{}\",service=\"{service}\"", realm(headers));
@@ -425,8 +421,6 @@ fn challenge(service: &str, headers: &HeaderMap, scope: Option<&str>, error: Opt
     unauthorized(&value)
 }
 
-/// The Basic challenge a realm-less registry falls back to, the answer an existing `docker login`
-/// push flow already expects.
 fn basic_challenge() -> Response {
     unauthorized("Basic realm=\"peryx\"")
 }
@@ -442,8 +436,6 @@ fn unauthorized(www_authenticate: &str) -> Response {
         .expect("unauthorized response builds from validated parts")
 }
 
-/// The absolute realm URL a challenge points at, derived from the request's forwarded origin; a request
-/// that carries no host falls back to the relative path, still enough for a client on the same origin.
 fn realm(headers: &HeaderMap) -> String {
     let placeholder = Uri::from_static("/");
     BaseUrl::from_request(headers, &placeholder, true)
@@ -455,28 +447,5 @@ fn authorization(headers: &HeaderMap) -> Option<&str> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{Action, resource_scope, scope_actions};
-
-    #[test]
-    fn test_scope_actions_maps_each_verb() {
-        assert_eq!(scope_actions("pull"), &[Action::Read]);
-        assert_eq!(scope_actions("push"), &[Action::Write]);
-        assert_eq!(scope_actions("delete"), &[Action::Delete]);
-        assert_eq!(scope_actions("*"), &[Action::Read, Action::Write, Action::Delete]);
-        assert!(scope_actions("mystery").is_empty());
-    }
-
-    #[test]
-    fn test_resource_scope_advertises_the_verbs_for_each_action() {
-        assert_eq!(resource_scope("team/app", Action::Read), "repository:team/app:pull");
-        assert_eq!(
-            resource_scope("team/app", Action::Write),
-            "repository:team/app:pull,push"
-        );
-        assert_eq!(
-            resource_scope("team/app", Action::Delete),
-            "repository:team/app:pull,delete"
-        );
-    }
-}
+#[path = "../../tests/unit/registry/auth/tests.rs"]
+mod tests;

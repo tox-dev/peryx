@@ -1,5 +1,3 @@
-//! How the OCI driver lays its data into the neutral stores.
-//!
 //! Blobs and manifests are content-addressed, so they share the global
 //! [`BlobStorage`](peryx_storage::blob::BlobStorage)/manifest
 //! namespace and dedupe across proxies. Tags are mutable per proxy, so a tag key carries the index
@@ -9,8 +7,9 @@
 use std::collections::BTreeSet;
 
 pub use peryx_core::TrashInfo;
-use peryx_core::{Ecosystem, TrashRecord};
-use peryx_storage::meta::{ArtifactOrigin, ArtifactSource, DriverTxn, MetaError, MetaStore};
+use peryx_core::TrashRecord;
+use peryx_ha::{ArtifactOrigin, ArtifactPlacement, ArtifactSource};
+use peryx_storage::meta::{DriverTxn, MetaError, MetaStore};
 use serde::{Deserialize, Serialize};
 
 use crate::outbox::{self, OciMutation};
@@ -85,7 +84,6 @@ pub struct Manifest {
 }
 
 impl Manifest {
-    /// Encode as a `u16` media-type length, the media type, then the body.
     fn encode(&self) -> Vec<u8> {
         let media_type = self.media_type.as_bytes();
         let mut out = Vec::with_capacity(2 + media_type.len() + self.bytes.len());
@@ -95,7 +93,6 @@ impl Manifest {
         out
     }
 
-    /// Decode the length-prefixed form, or `None` if the bytes are truncated.
     fn decode(raw: &[u8]) -> Option<Self> {
         let (length, rest) = raw.split_first_chunk::<2>()?;
         let length = usize::from(u16::from_be_bytes(*length));
@@ -107,18 +104,14 @@ impl Manifest {
     }
 }
 
-/// The driver-KV key a manifest is stored under: its digest, globally, since the bytes are the same
-/// wherever the manifest came from.
 fn manifest_key(digest: &str) -> String {
     format!("{MANIFEST_PREFIX}{digest}")
 }
 
-/// The driver-KV key a tag resolves under, scoped to the proxy and the upstream repository.
 fn tag_key(index: &str, repo: &str, tag: &str) -> String {
     format!("{TAG_PREFIX}{index}\u{0}{repo}\u{0}{tag}")
 }
 
-/// The prefix that enumerates every tag of one repository under one proxy.
 fn tag_prefix(index: &str, repo: &str) -> String {
     format!("{TAG_PREFIX}{index}\u{0}{repo}\u{0}")
 }
@@ -135,19 +128,8 @@ fn tag_trash_prefix(index: &str, repo: &str) -> String {
     format!("{TAG_TRASH_PREFIX}{index}\u{0}{repo}\u{0}")
 }
 
-/// Store a manifest under its digest, without recording membership — a test seed for the by-digest
-/// read and delete paths that expects a manifest present in the global pool but served by no
-/// repository.
-///
-/// # Errors
-/// Returns a store error if the write fails.
-#[cfg(test)]
-pub fn put_manifest(meta: &MetaStore, digest: &str, manifest: &Manifest) -> Result<(), MetaError> {
-    meta.put_driver_value(&manifest_key(digest), &manifest.encode())
-}
-
-/// Store a manifest and record it as one `(index, repo)` serves: its own digest, and — for an image
-/// index or manifest list — each child it names. A by-digest read authorizes against this per-repository
+/// Store a manifest and record it as one `(index, repo)` serves: its own digest, and - for an image
+/// index or manifest list - each child it names. A by-digest read authorizes against this per-repository
 /// membership, not the digest's presence in the global content store the bytes dedupe into, so a
 /// manifest one repository cached is not readable by digest under another.
 ///
@@ -190,8 +172,6 @@ pub fn record_manifest_txn(
     Ok(())
 }
 
-/// The driver-KV key marking that `(index, repo)` serves `digest`. The value is empty: the key's
-/// presence is the authorization a by-digest read checks.
 fn membership_key(index: &str, repo: &str, digest: &str) -> String {
     format!("{MEMBERSHIP_PREFIX}{index}\u{0}{repo}\u{0}{digest}")
 }
@@ -207,12 +187,16 @@ pub fn record_content_placement(
     origin: OciArtifactOrigin,
     present: bool,
 ) -> Result<(), MetaError> {
-    meta.record_artifact_placement(digest, origin.artifact_source(), present)?;
-    Ok(())
+    meta.put_artifact_placement(digest, &ArtifactPlacement::record(origin.artifact_source(), present))
 }
 
-/// Fetch a manifest by digest.
-///
+/// Read local availability without creating the optional placement table.
+pub fn content_available_locally(meta: &MetaStore, digest: &str) -> Result<bool, MetaError> {
+    Ok(meta
+        .get_artifact_placement(digest)?
+        .is_some_and(|placement| placement.availability.is_local()))
+}
+
 /// # Errors
 /// Returns a store error if the read fails.
 pub fn get_manifest(meta: &MetaStore, digest: &str) -> Result<Option<Manifest>, MetaError> {
@@ -221,8 +205,6 @@ pub fn get_manifest(meta: &MetaStore, digest: &str) -> Result<Option<Manifest>, 
         .and_then(|raw| Manifest::decode(&raw)))
 }
 
-/// Whether `(index, repo)` records `digest` as one it serves — the authorization for a by-digest read.
-///
 /// # Errors
 /// Returns a store error if the read fails.
 pub fn manifest_is_member(meta: &MetaStore, index: &str, repo: &str, digest: &str) -> Result<bool, MetaError> {
@@ -247,8 +229,6 @@ pub fn blob_membership_key(index: &str, repo: &str, digest: &str) -> String {
     format!("{BLOB_MEMBERSHIP_PREFIX}{index}\u{0}{repo}\u{0}{digest}")
 }
 
-/// Returns `true` when the searchable tag set grows; retargeting an existing tag returns `false`.
-///
 /// # Errors
 /// Returns a store error if the write fails.
 pub fn put_tag(meta: &MetaStore, index: &str, repo: &str, tag: &str, digest: &str) -> Result<bool, MetaError> {
@@ -287,8 +267,6 @@ pub fn publish_manifest_txn(
     put_tag_txn(txn, index, repo, tag, digest)
 }
 
-/// Resolve a tag to its cached manifest digest.
-///
 /// # Errors
 /// Returns a store error if the read fails.
 pub fn get_tag(meta: &MetaStore, index: &str, repo: &str, tag: &str) -> Result<Option<String>, MetaError> {
@@ -297,8 +275,6 @@ pub fn get_tag(meta: &MetaStore, index: &str, repo: &str, tag: &str) -> Result<O
         .and_then(|raw| String::from_utf8(raw).ok()))
 }
 
-/// Whether a repository has hidden `digest` in its manifest trash.
-///
 /// # Errors
 /// Returns a store error if the read fails.
 pub fn manifest_is_trashed(meta: &MetaStore, index: &str, repo: &str, digest: &str) -> Result<bool, MetaError> {
@@ -307,8 +283,6 @@ pub fn manifest_is_trashed(meta: &MetaStore, index: &str, repo: &str, digest: &s
         .is_some())
 }
 
-/// Whether a repository has hidden `tag` and no live value currently supersedes that deletion.
-///
 /// # Errors
 /// Returns a store error if the read fails.
 pub fn tag_is_trashed(meta: &MetaStore, index: &str, repo: &str, tag: &str) -> Result<bool, MetaError> {
@@ -318,8 +292,6 @@ pub fn tag_is_trashed(meta: &MetaStore, index: &str, repo: &str, tag: &str) -> R
     )
 }
 
-/// Resolve a tag's retained trash record.
-///
 /// # Errors
 /// Returns a store error if the read fails.
 pub fn trashed_tag_digest(meta: &MetaStore, index: &str, repo: &str, tag: &str) -> Result<Option<String>, MetaError> {
@@ -329,8 +301,6 @@ pub fn trashed_tag_digest(meta: &MetaStore, index: &str, repo: &str, tag: &str) 
         .map(|trash| trash.digest))
 }
 
-/// List hidden tag names for one repository, in key order.
-///
 /// # Errors
 /// Returns a store error if a scan or read fails.
 pub fn list_trashed_tags(meta: &MetaStore, index: &str, repo: &str) -> Result<Vec<String>, MetaError> {
@@ -387,16 +357,16 @@ fn trash_record(
     meta: &MetaStore,
     index: &str,
     repo: &str,
-    reference: Option<String>,
+    artifact: Option<String>,
     digest: String,
     info: &TrashInfo,
 ) -> Result<TrashRecord, MetaError> {
     let retained = meta.get_driver_value(&manifest_key(&digest))?.is_some();
     Ok(TrashRecord {
-        ecosystem: Ecosystem::Oci,
-        repository: index.to_owned(),
-        name: repo.to_owned(),
-        reference,
+        ecosystem: crate::ECOSYSTEM,
+        repository: index.into(),
+        resource: repo.into(),
+        artifact: artifact.map(Into::into),
         digest: Some(digest),
         reason: info.reason.clone(),
         actor: info.actor.clone(),
@@ -424,8 +394,6 @@ pub fn list_repositories(meta: &MetaStore, index: &str) -> Result<Vec<String>, M
     Ok(repos.into_iter().collect())
 }
 
-/// List every cached tag of a repository under a proxy, in key order.
-///
 /// # Errors
 /// Returns a store error if the scan fails.
 pub fn list_tags(meta: &MetaStore, index: &str, repo: &str) -> Result<Vec<String>, MetaError> {
@@ -437,8 +405,6 @@ pub fn list_tags(meta: &MetaStore, index: &str, repo: &str) -> Result<Vec<String
         .collect())
 }
 
-/// List each cached tag and its manifest digest under one repository snapshot.
-///
 /// # Errors
 /// Returns a store error if the scan fails.
 pub fn list_tag_targets(meta: &MetaStore, index: &str, repo: &str) -> Result<Vec<(String, String)>, MetaError> {
@@ -452,17 +418,6 @@ pub fn list_tag_targets(meta: &MetaStore, index: &str, repo: &str) -> Result<Vec
     Ok(targets)
 }
 
-/// Remove a manifest by digest, reporting whether it was present.
-///
-/// # Errors
-/// Returns a store error if the write fails.
-#[cfg(test)]
-pub fn delete_manifest(meta: &MetaStore, digest: &str) -> Result<bool, MetaError> {
-    meta.delete_driver_value(&manifest_key(digest))
-}
-
-/// Remove a tag, reporting whether it was present. Its proxy freshness record goes with it.
-///
 /// # Errors
 /// Returns a store error if the write fails.
 pub fn delete_tag(meta: &MetaStore, index: &str, repo: &str, tag: &str) -> Result<bool, MetaError> {
@@ -483,7 +438,7 @@ pub fn trash_tag(
     repo: &str,
     tag: &str,
     info: &TrashInfo,
-    journal: bool,
+    journal: crate::outbox::Outbox,
 ) -> Result<Option<String>, MetaError> {
     meta.commit_driver_txn(|txn| {
         let key = tag_key(index, repo, tag);
@@ -508,9 +463,6 @@ pub fn trash_tag(
     })
 }
 
-/// Move a repository's manifest digest and every tag currently pointing to it into trash atomically.
-/// The content, memberships, descriptors, and blob references remain intact for restore.
-///
 /// # Errors
 /// Returns a store error if the transition fails.
 pub fn trash_manifest(
@@ -519,7 +471,7 @@ pub fn trash_manifest(
     repo: &str,
     digest: &str,
     info: &TrashInfo,
-    journal: bool,
+    journal: crate::outbox::Outbox,
 ) -> Result<Option<usize>, MetaError> {
     meta.commit_driver_txn(|txn| {
         if txn.get(&manifest_trash_key(index, repo, digest))?.is_some()
@@ -570,7 +522,7 @@ pub fn restore_tag(
     index: &str,
     repo: &str,
     tag: &str,
-    journal: bool,
+    journal: crate::outbox::Outbox,
 ) -> Result<RestoreTagOutcome, MetaError> {
     meta.commit_driver_txn(|txn| {
         let trash_key = tag_trash_key(index, repo, tag);
@@ -615,9 +567,6 @@ fn release_trashed_tag(txn: &mut DriverTxn, index: &str, repo: &str, digest: &st
     Ok(())
 }
 
-/// Restore one digest and every captured tag whose live slot remains free. Tags republished with
-/// another digest remain live and are reported as conflicts.
-///
 /// # Errors
 /// Returns a store error if the transition fails.
 pub fn restore_manifest(
@@ -625,7 +574,7 @@ pub fn restore_manifest(
     index: &str,
     repo: &str,
     digest: &str,
-    journal: bool,
+    journal: crate::outbox::Outbox,
 ) -> Result<RestoreManifestOutcome, MetaError> {
     meta.commit_driver_txn(|txn| {
         let trash_key = manifest_trash_key(index, repo, digest);
@@ -661,9 +610,6 @@ fn tag_page_key(index: &str, repo: &str, query: &str) -> String {
     format!("oci\u{0}tp\u{0}{index}\u{0}{repo}\u{0}{query}")
 }
 
-/// Record an upstream tag-list page: when it was fetched, the `Link` header that names the next one,
-/// and the body verbatim.
-///
 /// # Errors
 /// Returns a store error if the write fails.
 pub fn set_tag_page(
@@ -687,8 +633,6 @@ pub fn set_tag_page(
 /// A stored tag-list page: when it was fetched, the `Link` to the next page, and the body.
 pub type TagPage = (i64, Option<String>, Vec<u8>);
 
-/// The stored tag-list page for `query`, or `None` if none was ever fetched.
-///
 /// # Errors
 /// Returns a store error if the read fails.
 pub fn tag_page(meta: &MetaStore, index: &str, repo: &str, query: &str) -> Result<Option<TagPage>, MetaError> {
@@ -710,7 +654,6 @@ pub fn tag_page(meta: &MetaStore, index: &str, repo: &str, query: &str) -> Resul
     Ok(Some((i64::from_be_bytes(*at), link, body.to_vec())))
 }
 
-/// The driver-KV key a proxy tag's last-fetch record lives under.
 fn tag_freshness_key(index: &str, repo: &str, tag: &str) -> String {
     format!("oci\u{0}tf\u{0}{index}\u{0}{repo}\u{0}{tag}")
 }
@@ -768,9 +711,6 @@ pub fn put_referrer(
     )
 }
 
-/// The descriptors of every manifest that declares `subject` as its subject in `repo`, in digest
-/// order.
-///
 /// # Errors
 /// Returns a store error if the scan fails.
 pub fn list_referrers(meta: &MetaStore, index: &str, repo: &str, subject: &str) -> Result<Vec<Vec<u8>>, MetaError> {
@@ -784,435 +724,10 @@ pub fn list_referrers(meta: &MetaStore, index: &str, repo: &str, subject: &str) 
     Ok(descriptors)
 }
 
-/// The driver-KV key prefix referrer descriptors live under, scoped to the index, repo, and subject.
 fn referrer_prefix(index: &str, repo: &str, subject: &str) -> String {
     format!("{REFERRER_PREFIX}{index}\u{0}{repo}\u{0}{subject}\u{0}")
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn store() -> (tempfile::TempDir, MetaStore) {
-        let dir = tempfile::tempdir().unwrap();
-        let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-        (dir, meta)
-    }
-
-    #[test]
-    fn test_tag_page_round_trips_with_and_without_a_link() {
-        let (_dir, meta) = store();
-        set_tag_page(&meta, "hub", "library/nginx", "", 42, Some("</v2/x?n=1>"), b"{}").unwrap();
-        assert_eq!(
-            tag_page(&meta, "hub", "library/nginx", "").unwrap(),
-            Some((42, Some("</v2/x?n=1>".to_owned()), b"{}".to_vec()))
-        );
-
-        set_tag_page(&meta, "hub", "library/nginx", "n=1", 7, None, b"[]").unwrap();
-        assert_eq!(
-            tag_page(&meta, "hub", "library/nginx", "n=1").unwrap(),
-            Some((7, None, b"[]".to_vec()))
-        );
-    }
-
-    #[test]
-    fn test_a_truncated_tag_page_record_reads_as_absent() {
-        let (_dir, meta) = store();
-        // Anything shorter than the header, or claiming a link longer than the bytes that follow, is
-        // not a page. Answering with a fragment of one would be worse than fetching it again.
-        for raw in [
-            vec![0u8; 4],  // no timestamp
-            vec![0u8; 10], // timestamp, no link length
-            [&0i64.to_be_bytes()[..], &99u32.to_be_bytes()[..], b"x"].concat(),
-        ] {
-            meta.put_driver_value(&tag_page_key("hub", "repo", ""), &raw).unwrap();
-            assert_eq!(tag_page(&meta, "hub", "repo", "").unwrap(), None, "{raw:?}");
-        }
-    }
-
-    #[test]
-    fn test_manifest_round_trips_through_the_store() {
-        let (_dir, meta) = store();
-        let manifest = Manifest {
-            media_type: "application/vnd.oci.image.manifest.v1+json".to_owned(),
-            bytes: b"{\"schemaVersion\":2}".to_vec(),
-        };
-        put_manifest(&meta, "sha256:abc", &manifest).unwrap();
-        assert_eq!(get_manifest(&meta, "sha256:abc").unwrap(), Some(manifest));
-        assert_eq!(get_manifest(&meta, "sha256:missing").unwrap(), None);
-    }
-
-    #[test]
-    fn test_origin_maps_to_the_neutral_source() {
-        assert_eq!(OciArtifactOrigin::Pushed.artifact_source(), ArtifactSource::Hosted);
-        assert_eq!(OciArtifactOrigin::Mirrored.artifact_source(), ArtifactSource::Proxy);
-    }
-
-    #[test]
-    fn test_content_placement_records_local_and_reprojects_on_eviction() {
-        use peryx_storage::meta::{ByteAvailability, PlacementEvent};
-
-        let (_dir, meta) = store();
-        record_content_placement(&meta, "sha256:abc", OciArtifactOrigin::Pushed, true).unwrap();
-        assert_eq!(
-            meta.get_artifact_placement("sha256:abc").unwrap().unwrap().availability,
-            ByteAvailability::Local
-        );
-        record_content_placement(&meta, "sha256:def", OciArtifactOrigin::Mirrored, true).unwrap();
-        let evicted = meta
-            .apply_placement_event("sha256:def", PlacementEvent::BytesRemoved)
-            .unwrap()
-            .unwrap();
-        assert_eq!(evicted.availability, ByteAvailability::RemoteOnly);
-    }
-
-    #[test]
-    fn test_decode_rejects_truncated_manifest() {
-        assert_eq!(Manifest::decode(&[0x00]), None);
-        assert_eq!(Manifest::decode(&[0x00, 0x05, b'a']), None);
-    }
-
-    #[test]
-    fn test_tag_freshness_round_trips_and_rejects_corrupt_records() {
-        let (_dir, meta) = store();
-        assert_eq!(tag_freshness(&meta, "hub", "repo", "latest").unwrap(), None);
-        set_tag_freshness(&meta, "hub", "repo", "latest", "sha256:abc", 1234).unwrap();
-        assert_eq!(
-            tag_freshness(&meta, "hub", "repo", "latest").unwrap(),
-            Some((1234, "sha256:abc".to_owned()))
-        );
-        // A record too short for the timestamp prefix, or one with a non-utf8 digest, reads as absent.
-        meta.put_driver_value(&tag_freshness_key("hub", "repo", "short"), &[0x00])
-            .unwrap();
-        assert_eq!(tag_freshness(&meta, "hub", "repo", "short").unwrap(), None);
-        let mut corrupt = 5i64.to_be_bytes().to_vec();
-        corrupt.push(0xff);
-        meta.put_driver_value(&tag_freshness_key("hub", "repo", "badutf"), &corrupt)
-            .unwrap();
-        assert_eq!(tag_freshness(&meta, "hub", "repo", "badutf").unwrap(), None);
-        // Deleting the tag removes its freshness record too.
-        put_tag(&meta, "hub", "repo", "latest", "sha256:abc").unwrap();
-        delete_tag(&meta, "hub", "repo", "latest").unwrap();
-        assert_eq!(tag_freshness(&meta, "hub", "repo", "latest").unwrap(), None);
-    }
-
-    #[test]
-    fn test_tags_scope_to_index_and_repo_and_sort() {
-        let (_dir, meta) = store();
-        put_tag(&meta, "hub", "library/nginx", "latest", "sha256:1").unwrap();
-        put_tag(&meta, "hub", "library/nginx", "1.25", "sha256:2").unwrap();
-        put_tag(&meta, "hub", "library/other", "latest", "sha256:3").unwrap();
-        put_tag(&meta, "gitlab", "library/nginx", "edge", "sha256:9").unwrap();
-        assert_eq!(
-            get_tag(&meta, "hub", "library/nginx", "latest").unwrap(),
-            Some("sha256:1".to_owned())
-        );
-        assert_eq!(get_tag(&meta, "hub", "library/nginx", "absent").unwrap(), None);
-        assert_eq!(
-            list_tags(&meta, "hub", "library/nginx").unwrap(),
-            vec!["1.25", "latest"]
-        );
-        assert_eq!(
-            list_tag_targets(&meta, "hub", "library/nginx").unwrap(),
-            vec![
-                ("1.25".to_owned(), "sha256:2".to_owned()),
-                ("latest".to_owned(), "sha256:1".to_owned()),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_put_tag_reports_insert_and_repoints() {
-        let (_dir, meta) = store();
-
-        assert_eq!(
-            (
-                put_tag(&meta, "hub", "library/nginx", "latest", "sha256:1").unwrap(),
-                put_tag(&meta, "hub", "library/nginx", "latest", "sha256:2").unwrap(),
-                get_tag(&meta, "hub", "library/nginx", "latest").unwrap()
-            ),
-            (true, false, Some("sha256:2".to_owned()))
-        );
-    }
-
-    #[test]
-    fn test_referrers_scope_to_index_repo_and_subject() {
-        let (_dir, meta) = store();
-        put_referrer(
-            &meta,
-            "store",
-            "app",
-            "sha256:subj",
-            "sha256:ref1",
-            b"{\"digest\":\"sha256:ref1\"}",
-        )
-        .unwrap();
-        put_referrer(
-            &meta,
-            "store",
-            "app",
-            "sha256:subj",
-            "sha256:ref2",
-            b"{\"digest\":\"sha256:ref2\"}",
-        )
-        .unwrap();
-        put_referrer(
-            &meta,
-            "store",
-            "other",
-            "sha256:subj",
-            "sha256:ref3",
-            b"{\"digest\":\"sha256:ref3\"}",
-        )
-        .unwrap();
-        put_referrer(&meta, "store", "app", "sha256:elsewhere", "sha256:ref4", b"{}").unwrap();
-
-        let referrers = list_referrers(&meta, "store", "app", "sha256:subj").unwrap();
-        assert_eq!(referrers.len(), 2);
-        assert!(referrers.iter().any(|value| value == b"{\"digest\":\"sha256:ref1\"}"));
-        assert!(referrers.iter().any(|value| value == b"{\"digest\":\"sha256:ref2\"}"));
-        assert!(list_referrers(&meta, "store", "app", "sha256:none").unwrap().is_empty());
-    }
-
-    fn index_of(child: &str) -> Manifest {
-        Manifest {
-            media_type: "application/vnd.oci.image.index.v1+json".to_owned(),
-            bytes: format!(r#"{{"manifests":[{{"digest":"{child}"}}]}}"#).into_bytes(),
-        }
-    }
-
-    #[test]
-    fn test_record_manifest_marks_the_manifest_and_its_index_children() {
-        let (_dir, meta) = store();
-        let child = format!("sha256:{}", "c".repeat(64));
-        record_manifest(&meta, "store", "app", "sha256:idx", &index_of(&child)).unwrap();
-        // The index and the child it names are both ones this repo serves; another repo and an
-        // unrecorded digest are not.
-        assert!(manifest_is_member(&meta, "store", "app", "sha256:idx").unwrap());
-        assert!(manifest_is_member(&meta, "store", "app", &child).unwrap());
-        assert!(!manifest_is_member(&meta, "store", "other", "sha256:idx").unwrap());
-        assert!(!manifest_is_member(&meta, "store", "app", "sha256:absent").unwrap());
-    }
-
-    #[test]
-    fn test_blob_membership_is_repository_scoped() {
-        let (_dir, meta, digest) = blob_member();
-
-        assert_eq!(
-            (
-                blob_is_member(&meta, "store", "app", &digest).unwrap(),
-                blob_is_member(&meta, "store", "other", &digest).unwrap(),
-            ),
-            (true, false)
-        );
-    }
-
-    #[test]
-    fn test_record_manifest_marks_its_blob_descriptors() {
-        let (_dir, meta) = store();
-        let config = format!("sha256:{}", "a".repeat(64));
-        let layer = format!("sha256:{}", "b".repeat(64));
-        let manifest = Manifest {
-            media_type: "application/vnd.oci.image.manifest.v1+json".to_owned(),
-            bytes: format!(r#"{{"config":{{"digest":"{config}"}},"layers":[{{"digest":"{layer}"}}]}}"#).into_bytes(),
-        };
-
-        record_manifest(&meta, "store", "app", "sha256:manifest", &manifest).unwrap();
-
-        assert_eq!(
-            (
-                blob_is_member(&meta, "store", "app", &config).unwrap(),
-                blob_is_member(&meta, "store", "app", &layer).unwrap(),
-                blob_is_member(&meta, "store", "other", &config).unwrap(),
-            ),
-            (true, true, false)
-        );
-    }
-
-    fn image(bytes: &str) -> Manifest {
-        Manifest {
-            media_type: "application/vnd.oci.image.manifest.v1+json".to_owned(),
-            bytes: bytes.as_bytes().to_vec(),
-        }
-    }
-
-    fn info() -> TrashInfo {
-        TrashInfo {
-            deleted_at_unix: 100,
-            actor: Some("alice".to_owned()),
-            reason: Some("bad build".to_owned()),
-        }
-    }
-
-    #[test]
-    fn test_trash_records_lists_a_trashed_tag_with_provenance_and_retention() {
-        let (_dir, meta) = store();
-        record_manifest(&meta, "hub", "library/nginx", "sha256:a", &image("{}")).unwrap();
-        put_tag(&meta, "hub", "library/nginx", "latest", "sha256:a").unwrap();
-        trash_tag(&meta, "hub", "library/nginx", "latest", &info(), false).unwrap();
-
-        let records = trash_records(&meta, "hub").unwrap();
-
-        assert_eq!(records.len(), 1);
-        let record = &records[0];
-        assert_eq!(record.ecosystem, Ecosystem::Oci);
-        assert_eq!(record.repository, "hub");
-        assert_eq!(record.name, "library/nginx");
-        assert_eq!(record.reference.as_deref(), Some("latest"));
-        assert_eq!(record.digest.as_deref(), Some("sha256:a"));
-        assert_eq!(record.reason.as_deref(), Some("bad build"));
-        assert_eq!(record.actor.as_deref(), Some("alice"));
-        assert_eq!(record.deleted_at_unix, 100);
-        assert!(record.retained, "the manifest content is still stored");
-    }
-
-    #[test]
-    fn test_trash_records_reports_an_untagged_digest_deletion_once() {
-        let (_dir, meta) = store();
-        record_manifest(&meta, "hub", "library/nginx", "sha256:a", &image("{}")).unwrap();
-        trash_manifest(&meta, "hub", "library/nginx", "sha256:a", &info(), false).unwrap();
-
-        let records = trash_records(&meta, "hub").unwrap();
-
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].reference, None, "an untagged digest carries no tag");
-        assert_eq!(records[0].digest.as_deref(), Some("sha256:a"));
-    }
-
-    #[test]
-    fn test_trash_records_does_not_double_count_a_tagged_manifest_deletion() {
-        let (_dir, meta) = store();
-        record_manifest(&meta, "hub", "app", "sha256:a", &image("{}")).unwrap();
-        put_tag(&meta, "hub", "app", "1.0", "sha256:a").unwrap();
-        put_tag(&meta, "hub", "app", "latest", "sha256:a").unwrap();
-        trash_manifest(&meta, "hub", "app", "sha256:a", &info(), false).unwrap();
-
-        let mut references: Vec<Option<String>> = trash_records(&meta, "hub")
-            .unwrap()
-            .into_iter()
-            .map(|record| record.reference)
-            .collect();
-        references.sort();
-
-        assert_eq!(
-            references,
-            vec![Some("1.0".to_owned()), Some("latest".to_owned())],
-            "the two captured tags are the only records, not a third digest row"
-        );
-    }
-
-    #[test]
-    fn test_trash_records_marks_purged_content_as_not_retained() {
-        let (_dir, meta) = store();
-        record_manifest(&meta, "hub", "app", "sha256:a", &image("{}")).unwrap();
-        put_tag(&meta, "hub", "app", "latest", "sha256:a").unwrap();
-        trash_tag(&meta, "hub", "app", "latest", &info(), false).unwrap();
-        delete_manifest(&meta, "sha256:a").unwrap();
-
-        let records = trash_records(&meta, "hub").unwrap();
-
-        assert_eq!(records.len(), 1);
-        assert!(!records[0].retained, "purged content is not restorable");
-    }
-
-    #[test]
-    fn test_trash_records_scope_to_one_index_and_skip_corrupt_rows() {
-        let (_dir, meta) = store();
-        record_manifest(&meta, "hub", "app", "sha256:a", &image("{}")).unwrap();
-        put_tag(&meta, "hub", "app", "latest", "sha256:a").unwrap();
-        trash_tag(&meta, "hub", "app", "latest", &info(), false).unwrap();
-        meta.put_driver_value(&tag_trash_key("hub", "app", "corrupt"), b"not json")
-            .unwrap();
-
-        assert_eq!(
-            trash_records(&meta, "hub").unwrap().len(),
-            1,
-            "the corrupt row is skipped"
-        );
-        assert!(
-            trash_records(&meta, "other").unwrap().is_empty(),
-            "records scope to the index"
-        );
-    }
-
-    #[test]
-    fn test_restore_tag_reports_a_missing_tag() {
-        let (_dir, meta) = store();
-        assert_eq!(
-            restore_tag(&meta, "hub", "app", "absent", false).unwrap(),
-            RestoreTagOutcome::Missing
-        );
-    }
-
-    #[test]
-    fn test_restore_tag_without_a_manifest_record_restores_the_tag() {
-        let (_dir, meta) = store();
-        record_manifest(&meta, "hub", "app", "sha256:a", &image("{}")).unwrap();
-        put_tag(&meta, "hub", "app", "v1", "sha256:a").unwrap();
-        trash_tag(&meta, "hub", "app", "v1", &info(), false).unwrap();
-
-        assert_eq!(
-            restore_tag(&meta, "hub", "app", "v1", false).unwrap(),
-            RestoreTagOutcome::Restored {
-                digest: "sha256:a".to_owned()
-            }
-        );
-        assert_eq!(get_tag(&meta, "hub", "app", "v1").unwrap(), Some("sha256:a".to_owned()));
-    }
-
-    #[test]
-    fn test_restore_tag_keeps_shared_manifest_trash_until_the_last_tag() {
-        let (_dir, meta) = store();
-        record_manifest(&meta, "hub", "app", "sha256:a", &image("{}")).unwrap();
-        put_tag(&meta, "hub", "app", "v1", "sha256:a").unwrap();
-        put_tag(&meta, "hub", "app", "v2", "sha256:a").unwrap();
-        trash_manifest(&meta, "hub", "app", "sha256:a", &info(), false).unwrap();
-
-        assert_eq!(
-            restore_tag(&meta, "hub", "app", "v1", false).unwrap(),
-            RestoreTagOutcome::Restored {
-                digest: "sha256:a".to_owned()
-            }
-        );
-        // v1 is live again, yet the digest stays trashed because v2's restore still needs the record.
-        assert_eq!(get_tag(&meta, "hub", "app", "v1").unwrap(), Some("sha256:a".to_owned()));
-        assert!(manifest_is_trashed(&meta, "hub", "app", "sha256:a").unwrap());
-        assert_eq!(list_trashed_tags(&meta, "hub", "app").unwrap(), vec!["v2"]);
-
-        assert_eq!(
-            restore_tag(&meta, "hub", "app", "v2", false).unwrap(),
-            RestoreTagOutcome::Restored {
-                digest: "sha256:a".to_owned()
-            }
-        );
-        // Restoring the last captured tag clears the shared record.
-        assert!(!manifest_is_trashed(&meta, "hub", "app", "sha256:a").unwrap());
-        assert!(list_trashed_tags(&meta, "hub", "app").unwrap().is_empty());
-    }
-
-    #[test]
-    fn test_restore_tag_leaves_an_independent_untagged_deletion() {
-        let (_dir, meta) = store();
-        record_manifest(&meta, "hub", "app", "sha256:a", &image("{}")).unwrap();
-        put_tag(&meta, "hub", "app", "v1", "sha256:a").unwrap();
-        // v1 is trashed on its own, then the still-live untagged digest is trashed separately, so the
-        // manifest record captures no tags.
-        trash_tag(&meta, "hub", "app", "v1", &info(), false).unwrap();
-        trash_manifest(&meta, "hub", "app", "sha256:a", &info(), false).unwrap();
-
-        restore_tag(&meta, "hub", "app", "v1", false).unwrap();
-
-        assert_eq!(get_tag(&meta, "hub", "app", "v1").unwrap(), Some("sha256:a".to_owned()));
-        assert!(
-            manifest_is_trashed(&meta, "hub", "app", "sha256:a").unwrap(),
-            "the untagged digest deletion is not this tag's to undo"
-        );
-    }
-
-    fn blob_member() -> (tempfile::TempDir, MetaStore, String) {
-        let (dir, meta) = store();
-        let digest = format!("sha256:{}", "a".repeat(64));
-        record_blob_membership(&meta, "store", "app", &digest).unwrap();
-        (dir, meta, digest)
-    }
-}
+#[path = "../tests/unit/store/tests.rs"]
+mod tests;

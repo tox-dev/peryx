@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$repo"
+metadata=$(cargo metadata --no-deps --format-version 1)
+jobs=${PERYX_PACKAGE_JOBS:-2}
+if [[ ! $jobs =~ ^[1-9][0-9]*$ ]]; then
+  printf 'PERYX_PACKAGE_JOBS must be a positive integer\n' >&2
+  exit 2
+fi
+# Mixed cdylib/rlib builds share an unhashed rlib across incompatible feature sets.
+while IFS= read -r package; do
+  cargo clean --package "$package"
+done < <(jq -r '
+  .packages[]
+  | select(any(.targets[]; (.crate_types | index("cdylib")) and (.crate_types | index("rlib"))))
+  | .name
+' <<<"$metadata")
+failed=0
+while IFS= read -r package; do
+  patches=()
+  while IFS=$'\t' read -r dependency path; do
+    patches+=(--config "patch.crates-io.$dependency.path='$path'")
+  done < <(jq -r --arg package "$package" '
+    .packages as $packages
+    | ($packages | map({key: (.manifest_path | sub("/Cargo.toml$"; "")), value: .name}) | from_entries) as $workspace
+    | $packages[]
+    | select(.name == $package)
+    | .dependencies[]?
+    | select(.path != null and $workspace[.path] != null and $workspace[.path] != $package)
+    | [$workspace[.path], .path]
+    | @tsv
+  ' <<<"$metadata" | sort -u)
+  cargo package --package "$package" --allow-dirty --locked --jobs "$jobs" "${patches[@]}" || failed=1
+done < <(jq -r '.packages[] | select(.publish == null or (.publish | length > 0)) | .name' \
+  <<<"$metadata" | sort)
+exit "$failed"

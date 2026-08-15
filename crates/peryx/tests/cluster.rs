@@ -1,21 +1,43 @@
-//! A live-process proof that a three-node `ha` cluster forms.
-//!
-//! Three real `peryx serve` binaries run the embedded ownership Raft node, exchange peer RPCs over the
-//! mounted receive router, reach quorum, elect a leader, and report it on the availability status
-//! resource ([#540]). Without the mounted router a voter answers no RPCs and this never reaches a leader.
-//!
-//! Gated behind the `availability-e2e` feature so the default `cargo test` and the coverage gate skip it;
-//! it spawns real binaries and drives them only over HTTP.
-//!
-//! [#540]: https://github.com/tox-dev/peryx/issues/540
+#![cfg(feature = "availability-e2e")]
 
 mod harness;
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use harness::{ADMIN_PASSWORD, ADMIN_USER, Cluster, MemberSpec, Role, Topology};
+use harness::{ADMIN_PASSWORD, ADMIN_USER, Cluster, MemberSpec, ProcessHarness, Role, Topology};
 use serde_json::Value;
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+enum FixtureNode {
+    Writer,
+    WestReplica,
+    SouthReplica,
+}
+
+impl FixtureNode {
+    const fn identity(self) -> &'static str {
+        match self {
+            Self::Writer => "node-a",
+            Self::WestReplica => "node-b",
+            Self::SouthReplica => "node-c",
+        }
+    }
+
+    const fn datacenter(self) -> &'static str {
+        match self {
+            Self::Writer => "east",
+            Self::WestReplica => "west",
+            Self::SouthReplica => "south",
+        }
+    }
+
+    fn from_datacenter(value: &str) -> Option<Self> {
+        [Self::Writer, Self::WestReplica, Self::SouthReplica]
+            .into_iter()
+            .find(|node| node.datacenter() == value)
+    }
+}
 
 #[test]
 fn test_a_three_node_ha_cluster_forms_and_reports_its_leader() {
@@ -27,16 +49,12 @@ fn test_a_three_node_ha_cluster_forms_and_reports_its_leader() {
             MemberSpec::new("node-c", "south", Role::Replica),
         ],
     )
+    .with_process_harness(ProcessHarness::new(env!("CARGO_BIN_EXE_peryx")))
     .with_admin()
     .start()
     .expect("the three-node ha cluster starts");
 
-    let consensus = await_quorum_leader(&cluster);
-    let leader = consensus["leader"].as_str().expect("a quorum-agreed leader datacenter");
-    assert!(
-        ["east", "west", "south"].contains(&leader),
-        "the leader is a group member: {leader}"
-    );
+    let (_, consensus) = await_quorum_leader(&cluster);
     let voters = consensus["voters"].as_array().expect("voters is an array").len();
     assert_eq!(
         voters, 3,
@@ -54,118 +72,104 @@ fn test_killing_the_home_leader_fails_authority_over_to_a_survivor() {
             MemberSpec::new("node-c", "south", Role::Replica),
         ],
     )
+    .with_process_harness(ProcessHarness::new(env!("CARGO_BIN_EXE_peryx")))
     .with_admin()
     .start()
     .expect("the three-node ha cluster starts");
 
-    // Settle on a leader before the failure, so the transfer is observed against a known starting home.
-    let home = await_quorum_leader(&cluster)["leader"]
-        .as_str()
-        .expect("a quorum-agreed leader datacenter")
-        .to_owned();
-
-    // Kill the datacenter that holds authority. Two of three genuine voters survive, still a quorum, so
-    // the group elects a new leader among them and authority moves off the dead home. If every node ran
-    // under the writer's voter id, no survivor could take over and this would time out.
-    let identity = identity_for(&home);
+    let (home, _) = await_quorum_leader(&cluster);
     let node = cluster
         .nodes_mut()
         .iter_mut()
-        .find(|node| node.identity() == identity)
+        .find(|node| node.identity() == home.identity())
         .expect("the leader datacenter runs one of the nodes");
     node.kill();
 
-    let new_home = await_leader_change(&cluster, &home);
-    assert!(
-        ["east", "west", "south"].contains(&new_home.as_str()) && new_home != home,
-        "authority moved to a surviving datacenter: {new_home}",
-    );
+    assert_ne!(await_leader_change(&cluster, home), home);
 }
 
-/// The node identity each datacenter runs under, so a test can kill the datacenter that holds authority.
-fn identity_for(datacenter: &str) -> &'static str {
-    match datacenter {
-        "east" => "node-a",
-        "west" => "node-b",
-        "south" => "node-c",
-        other => panic!("unexpected leader datacenter {other}"),
-    }
+fn await_leader_change(cluster: &Cluster, old: FixtureNode) -> FixtureNode {
+    cluster
+        .await_topology_signal(Duration::from_secs(90), |cluster| {
+            let leader = quorum_leader(cluster)
+                .map(|(leader, _)| leader)
+                .filter(|leader| *leader != old);
+            (
+                leader,
+                format!(
+                    "authority did not leave {} within the deadline:\n{}",
+                    old.datacenter(),
+                    cluster.failure_report().render(),
+                ),
+            )
+        })
+        .expect("a surviving node signals the leader change")
 }
 
-/// Wait until a quorum of the surviving nodes agrees on a leader that is not `old`, the signal that
-/// authority failed over off the killed home. The budget matches a real re-election under a saturated CI
-/// runner, not a slow algorithm.
-fn await_leader_change(cluster: &Cluster, old: &str) -> String {
-    let deadline = Instant::now() + Duration::from_secs(90);
-    loop {
-        if let Some(block) = quorum_leader(cluster)
-            && let Some(leader) = block["leader"].as_str()
-            && leader != old
-        {
-            return leader.to_owned();
-        }
-        assert!(
-            Instant::now() < deadline,
-            "authority did not leave {old} within the deadline:\n{}",
-            cluster.failure_report().render(),
-        );
-        std::thread::sleep(Duration::from_millis(200));
-    }
+fn await_quorum_leader(cluster: &Cluster) -> (FixtureNode, Value) {
+    cluster
+        .await_topology_signal(Duration::from_secs(90), |cluster| {
+            (
+                quorum_leader(cluster),
+                format!(
+                    "the ha group did not agree on a leader within the deadline:\n{}",
+                    cluster.failure_report().render(),
+                ),
+            )
+        })
+        .expect("a node signals quorum agreement")
 }
 
-/// Wait until a majority of the group agrees on the same leader with all three voters committed, then
-/// return that consensus block.
-///
-/// This polls every node, not one. The seed stands for election alone through the startup window before
-/// its peers answer RPCs, inflating its term, and each node's raft metrics lag the group by a heartbeat,
-/// so one node reporting no leader does not mean the group has none. Agreement across a quorum is the
-/// true "formed" signal and does not flap on a transient single-node view. The budget is generous
-/// because a saturated CI runner starves the three real processes' async schedulers, not because the
-/// election itself is slow; a formed group converges here on the first poll.
-fn await_quorum_leader(cluster: &Cluster) -> Value {
-    let deadline = Instant::now() + Duration::from_secs(90);
-    loop {
-        if let Some(block) = quorum_leader(cluster) {
-            return block;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the ha group did not agree on a leader within the deadline:\n{}",
-            cluster.failure_report().render(),
-        );
-        std::thread::sleep(Duration::from_millis(200));
-    }
-}
-
-/// The consensus block a majority of nodes agree on: the same non-null leader named by a committed
-/// membership of three voters. `None` until at least two nodes concur, so a single node's transient or
-/// lagging view never trips the wait.
-fn quorum_leader(cluster: &Cluster) -> Option<Value> {
-    let mut agreed: HashMap<String, (usize, Value)> = HashMap::new();
-    for node in cluster.nodes() {
-        let Some((200, body)) = node.control_get_as(ADMIN_USER, ADMIN_PASSWORD, "/availability/v1/status") else {
-            continue;
-        };
-        let Ok(status) = serde_json::from_str::<Value>(&body) else {
-            continue;
-        };
-        let Some(block) = status.get("consensus") else {
-            continue;
-        };
-        let Some(leader) = block.get("leader").and_then(Value::as_str) else {
-            continue;
-        };
-        if block
-            .get("voters")
-            .and_then(Value::as_array)
-            .is_some_and(|voters| voters.len() == 3)
-        {
-            let entry = agreed.entry(leader.to_owned()).or_insert_with(|| (0, block.clone()));
-            entry.0 += 1;
-        }
+fn quorum_leader(cluster: &Cluster) -> Option<(FixtureNode, Value)> {
+    let mut agreed: HashMap<FixtureNode, (usize, Value)> = HashMap::new();
+    for (leader, block) in cluster
+        .nodes()
+        .iter()
+        .filter_map(|node| node.control_get_as(ADMIN_USER, ADMIN_PASSWORD, "/availability/v1/status"))
+        .filter(|(status, _)| *status == 200)
+        .filter_map(|(_, body)| consensus_vote(&body))
+    {
+        let entry = agreed.entry(leader).or_insert((0, block));
+        entry.0 += 1;
     }
     agreed
-        .into_values()
-        .find(|(count, _)| *count >= 2)
-        .map(|(_, block)| block)
+        .into_iter()
+        .find(|(_, (count, _))| *count >= 2)
+        .map(|(leader, (_, block))| (leader, block))
+}
+
+fn consensus_vote(body: &str) -> Option<(FixtureNode, Value)> {
+    let status = serde_json::from_str::<Value>(body).ok()?;
+    let block = status.get("consensus")?;
+    let leader = block
+        .get("leader")
+        .and_then(Value::as_str)
+        .and_then(FixtureNode::from_datacenter)?;
+    (block.get("voters").and_then(Value::as_array).map(Vec::len) == Some(3)).then(|| (leader, block.clone()))
+}
+
+#[test]
+fn test_fixture_nodes_map_identity_and_datacenter() {
+    assert_eq!(FixtureNode::WestReplica.identity(), "node-b");
+    assert_eq!(FixtureNode::SouthReplica.identity(), "node-c");
+    assert_eq!(FixtureNode::from_datacenter("west"), Some(FixtureNode::WestReplica));
+    assert_eq!(FixtureNode::from_datacenter("south"), Some(FixtureNode::SouthReplica));
+    assert_eq!(FixtureNode::from_datacenter("unknown"), None);
+}
+
+#[test]
+fn test_consensus_vote_requires_valid_leader_and_three_voters() {
+    for body in [
+        "invalid",
+        "{}",
+        r#"{"consensus":{"leader":"unknown","voters":[1,2,3]}}"#,
+        r#"{"consensus":{"leader":"east","voters":[1,2]}}"#,
+    ] {
+        assert_eq!(consensus_vote(body), None);
+    }
+
+    let body = r#"{"consensus":{"leader":"east","voters":[1,2,3]}}"#;
+    let (leader, block) = consensus_vote(body).expect("valid consensus vote");
+    assert_eq!(leader, FixtureNode::Writer);
+    assert_eq!(block["voters"].as_array().map(Vec::len), Some(3));
 }

@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 
 use axum::http::{HeaderMap, header};
-use peryx_identity::{Action, Denial, Grant, Principal, authorize, authorize_grants, strip_auth_scheme};
+use peryx_identity::{Action, Denial, Grant, Principal, ResourceMatch, authorize, authorize_grants, strip_auth_scheme};
 use peryx_search::{SearchAccess, SearchAccessPattern};
 
 use crate::{Index, ServingState};
@@ -72,22 +72,27 @@ impl ReadAccess {
                     glob: "*".to_owned(),
                 }),
                 IndexCredential::Acl(principal) => {
-                    patterns.extend(read_globs(index, principal).map(|glob| SearchAccessPattern {
-                        route: index.route.clone(),
-                        glob: glob.to_owned(),
-                    }));
+                    for glob in read_globs(index, principal) {
+                        patterns.push(SearchAccessPattern {
+                            route: index.route.clone(),
+                            glob: glob.to_owned(),
+                        });
+                    }
                 }
                 IndexCredential::Bearer(grants) => {
                     let prefix = resource_prefix(&index.route);
-                    for glob in grants
-                        .iter()
-                        .filter(|grant| grant.actions.contains(&Action::Read))
-                        .flat_map(|grant| &grant.projects)
-                    {
-                        patterns.extend(glob.remainders_after(&prefix).map(|glob| SearchAccessPattern {
-                            route: index.route.clone(),
-                            glob: glob.to_owned(),
-                        }));
+                    for grant in *grants {
+                        if !grant.actions.contains(&Action::Read) {
+                            continue;
+                        }
+                        for glob in &grant.resources {
+                            for remainder in glob.remainders_after(&prefix) {
+                                patterns.push(SearchAccessPattern {
+                                    route: index.route.clone(),
+                                    glob: remainder.to_owned(),
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -100,18 +105,18 @@ impl IndexReadAccess<'_> {
     /// Avoids index enumeration when the credential holds no possible read.
     ///
     /// # Errors
-    /// Returns the index ACL denial when no read grant can cover a project.
-    pub fn authorize_any_project(&self) -> Result<(), Denial> {
+    /// Returns the index ACL denial when no read grant can cover a resource.
+    pub fn authorize_any_resource(&self) -> Result<(), Denial> {
         match &self.credential {
             IndexCredential::Public => Ok(()),
-            IndexCredential::Acl(principal) => authorize(principal, &self.index.acl, None, Action::Read),
+            IndexCredential::Acl(principal) => authorize(principal, &self.index.acl, ResourceMatch::Any, Action::Read),
             IndexCredential::Bearer(grants) => {
                 let prefix = resource_prefix(&self.index.route);
                 grants
                     .iter()
                     .any(|grant| {
                         grant.actions.contains(&Action::Read)
-                            && grant.projects.iter().any(|project| project.matches_prefix(&prefix))
+                            && grant.resources.iter().any(|resource| resource.matches_prefix(&prefix))
                     })
                     .then_some(())
                     .ok_or(Denial::Forbidden)
@@ -119,28 +124,27 @@ impl IndexReadAccess<'_> {
         }
     }
 
-    /// Prevents a repository grant from exposing its siblings.
-    ///
     /// # Errors
-    /// Returns the index ACL denial when the credential cannot read `project`.
-    pub fn authorize_project(&self, project: &str) -> Result<(), Denial> {
+    /// Returns the index ACL denial when the credential cannot read `resource`.
+    pub fn authorize_resource(&self, resource: ResourceMatch<'_>) -> Result<(), Denial> {
         match &self.credential {
             IndexCredential::Public => Ok(()),
-            IndexCredential::Acl(principal) => authorize(principal, &self.index.acl, Some(project), Action::Read),
-            IndexCredential::Bearer(grants) => {
-                authorize_grants(grants, Some(&resource_name(&self.index.route, project)), Action::Read)
-            }
+            IndexCredential::Acl(principal) => authorize(principal, &self.index.acl, resource, Action::Read),
+            IndexCredential::Bearer(grants) => authorize_bearer(grants, &self.index.route, resource),
         }
     }
 }
 
-fn read_globs<'a>(index: &'a Index, principal: &'a Principal) -> impl Iterator<Item = &'a str> {
-    index
-        .acl
-        .grants(principal)
-        .iter()
-        .filter(|grant| grant.actions.contains(&Action::Read))
-        .flat_map(|grant| grant.projects.iter().map(peryx_identity::Glob::as_str))
+fn read_globs<'a>(index: &'a Index, principal: &'a Principal) -> Vec<&'a str> {
+    let mut globs = Vec::new();
+    for grant in index.acl.grants(principal) {
+        if grant.actions.contains(&Action::Read) {
+            for resource in &grant.resources {
+                globs.push(resource.as_str());
+            }
+        }
+    }
+    globs
 }
 
 fn resource_prefix(route: &str) -> Cow<'_, str> {
@@ -151,10 +155,34 @@ fn resource_prefix(route: &str) -> Cow<'_, str> {
     }
 }
 
-fn resource_name<'a>(route: &str, project: &'a str) -> Cow<'a, str> {
+fn resource_name<'a>(route: &str, resource: &'a str) -> Cow<'a, str> {
     if route.is_empty() {
-        Cow::Borrowed(project)
+        Cow::Borrowed(resource)
     } else {
-        Cow::Owned(format!("{route}/{project}"))
+        Cow::Owned(format!("{route}/{resource}"))
+    }
+}
+
+fn authorize_bearer(grants: &[Grant], route: &str, resource: ResourceMatch<'_>) -> Result<(), Denial> {
+    match resource {
+        ResourceMatch::Any => {
+            let prefix = resource_prefix(route);
+            grants
+                .iter()
+                .any(|grant| {
+                    grant.actions.contains(&Action::Read)
+                        && grant.resources.iter().any(|resource| resource.matches_prefix(&prefix))
+                })
+                .then_some(())
+                .ok_or(Denial::Forbidden)
+        }
+        ResourceMatch::Pattern(resource) => {
+            let resource = resource_name(route, resource);
+            authorize_grants(grants, ResourceMatch::Pattern(&resource), Action::Read)
+        }
+        ResourceMatch::Exact(resource) => {
+            let resource = resource_name(route, resource);
+            authorize_grants(grants, ResourceMatch::Exact(&resource), Action::Read)
+        }
     }
 }

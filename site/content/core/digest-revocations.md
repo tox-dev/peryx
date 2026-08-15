@@ -1,47 +1,56 @@
 +++
 title = "Digest revocations"
-description = "Manage administrator-controlled artifact revocations without deleting evidence."
+description = "Block immutable content by digest while retaining incident evidence."
 weight = 9
 +++
 
-A digest revocation records a server-wide decision about immutable artifact bytes. Peryx keys the current record by
-canonical `sha256:<64 lowercase hex>` and returns the digest in the in-toto shape `{"sha256":"<hex>"}`. Each record
-keeps its reason and lifecycle evidence, including the authenticated administrator's stable user ID.
+A digest revocation records a server-wide decision about immutable content. The active record keeps its reason,
+revision, timestamps, and the stable user ID of the administrator who changed it.
 
-Revocation leaves package visibility and retention unchanged. A lifecycle change does not alter yank, trash, or
-repository policy state. It also leaves stored bytes and external caches intact. PyPI yanks can satisfy exact pins;
-download handlers use revocation as a separate fail-closed decision.
+Revocation does not delete bytes or alter retention state. Discovery and download behavior belongs to each ecosystem:
 
-## Manage records from the CLI
+- [Ecosystem owner documentation](@/ecosystems/_index.md)
 
-The management command calls the live HTTP API. It reads the administrator password from standard input or a secret
-file; no argument or environment option accepts the secret. Input must be UTF-8 and no larger than 1 MiB. The reader
-removes one terminal LF or CRLF. The client refuses redirects, applies the same 1 MiB limit to responses, and permits
-plain HTTP for `localhost` and loopback IP addresses.
+## Command-line management
+
+The CLI calls the live management API. It reads the administrator password from standard input or a secret file. It does
+not accept the password as an argument or environment value. Input and responses have a 1 MiB limit. The client removes
+one terminal LF or CRLF, rejects redirects, and permits HTTP for loopback addresses.
 
 ```console
-$ digest=sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-$ printf '%s\n' "$PERYX_ADMIN_PASSWORD" | peryx revocation put \
-    --server https://packages.example \
+$ peryx revocation put \
+    --server https://artifacts.example \
     --user admin \
-    --password-stdin \
+    --password-file /run/secrets/peryx-admin-password \
     --reason 'compromised build host' \
-    "$digest"
-$ admin=(--server https://packages.example --user admin --password-file /run/secrets/peryx-admin-password)
-$ peryx revocation inspect "${admin[@]}" "$digest"
-$ peryx revocation list "${admin[@]}" --status active --limit 25
-$ peryx revocation lift "${admin[@]}" "$digest"
+    <digest>
+$ peryx revocation inspect \
+    --server https://artifacts.example \
+    --user admin \
+    --password-file /run/secrets/peryx-admin-password \
+    <digest>
+$ peryx revocation list \
+    --server https://artifacts.example \
+    --user admin \
+    --password-file /run/secrets/peryx-admin-password \
+    --status active \
+    --limit 25
+$ peryx revocation lift \
+    --server https://artifacts.example \
+    --user admin \
+    --password-file /run/secrets/peryx-admin-password \
+    <digest>
 ```
 
-The output is JSON. `put` creates an absent record. A retry with the same active reason returns the unchanged record; a
-different reason conflicts. Putting a lifted digest starts another active incident with a higher revision and fresh
-lifecycle evidence. Repeating `lift` leaves an existing lifted record unchanged.
+Commands print JSON. `put` creates an absent record. Repeating `put` with the active reason returns the same record; a
+different reason conflicts. Putting a lifted digest opens a new revision. Repeating `lift` returns the existing lifted
+record.
 
-## HTTP operations and authorization
+## API and authorization
 
 The API uses local-user HTTP Basic authentication. Inspect and list require `administration:read`; put and lift require
-`administration:write`. The built-in administrator role carries both. Peryx derives the actor from the authenticated
-user ID and rejects actor fields in JSON.
+`administration:write`. The server takes the actor ID from the authenticated user and rejects actor fields supplied by
+the caller.
 
 | Operation                | Request                                               |
 | ------------------------ | ----------------------------------------------------- |
@@ -50,22 +59,18 @@ user ID and rejects actor fields in JSON.
 | List                     | `GET /+revocations?status=active&limit=25&cursor=...` |
 | Lift                     | `POST /+revocations/{digest}/lift`                    |
 
-Reasons must contain non-whitespace text and cannot exceed 2,048 UTF-8 bytes. The administrator API is their sole read
-path. Mutation security events include the stable actor and digest plus the transition result. They exclude the
-free-form reason and credential material.
+Reasons must contain non-whitespace text and cannot exceed 2,048 UTF-8 bytes. Management responses use
+`Cache-Control: no-store`. Security events include the actor, digest, and transition result, but omit the free-form
+reason and credentials.
 
-Authentication and authorization run before digest parsing or record lookup. Invalid credentials receive one generic
-challenge. Peryx returns `404 Not Found` to authenticated users without administrator authority for any target state,
-including malformed input. Protected responses carry `Cache-Control: no-store`.
+Authentication and authorization run before digest parsing or lookup. Invalid credentials receive one generic challenge.
+An authenticated user without administrator authority receives `404 Not Found` for valid and malformed targets.
 
-## Decision cache and failure behavior
+## Decision cache
 
-The serving decision API caches clear and revoked answers in a capacity-bounded Moka cache with a 60-second TTL. Hot
-hits do not lock. A cache miss holds a shared gate while it reads the digest-indexed metadata row. Mutations hold the
-exclusive gate through commit and exact-digest invalidation, preventing an older clear answer from entering the cache.
+The serving service caches clear and revoked decisions for 60 seconds with a fixed capacity. Mutation commits invalidate
+the changed digest before releasing the write gate, which prevents an older clear decision from replacing the new state.
 
-The cache does not store metadata errors. A failed store read returns unavailable so download handlers can deny the
-artifact. The CLI changes records through the live HTTP process and triggers exact-key invalidation. Replication and
-cross-process cache purge remain outside this lifecycle. PyPI and OCI responses limit compliant client and proxy caches
-to the same 60-second bound; see [revoked PyPI content](@/ecosystems/pypi/revoked-content.md) and
-[revoked OCI content](@/ecosystems/oci/revoked-content.md).
+The cache does not retain metadata errors. A failed metadata read returns unavailable, so an ecosystem owner can deny
+the content. Cross-process invalidation is outside this lifecycle. Ecosystem responses apply the same 60-second bound to
+compliant client and proxy caches.

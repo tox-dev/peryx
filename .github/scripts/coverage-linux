@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$repo"
+output="${1:-.tox/coverage}"
+unset COVERAGE_NO_CLEAN COVERAGE_NO_REPORT PERYX_COVERAGE_SESSION
+rm -rf "$output"
+mkdir -p "$output"
+export PERYX_COVERAGE_TARGET_DIR="$repo/.tox/coverage-target/linux"
+export CARGO_TARGET_DIR="$PERYX_COVERAGE_TARGET_DIR"
+cargo llvm-cov clean --workspace
+.github/scripts/coverage-native "$output/native.lcov"
+export COVERAGE_NO_CLEAN=1
+export COVERAGE_NO_REPORT=1
+export PERYX_COVERAGE_SESSION=linux
+.github/scripts/coverage-system-clients "$output/system-clients.lcov"
+.github/scripts/coverage-system-distributed "$output/system-distributed.lcov"
+.github/scripts/coverage-system-storage "$output/system-storage.lcov"
+unset COVERAGE_NO_REPORT
+cargo llvm-cov report --no-default-ignore-filename-regex --lcov --output-path "$output/system.lcov"
+just frontend-deps
+.github/scripts/coverage-frontend "$output/frontend-native.lcov" "$output/frontend-wasm.lcov"
+.github/scripts/coverage-merge "$output/lcov.info" "$output"/*.lcov

@@ -1,0 +1,5 @@
+wheel=".whl"
+sdist=".tar.gz"
+zip=".zip"
+separator="-"
+build="py3-none-any"

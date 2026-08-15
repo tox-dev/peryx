@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+
+mutation_environment() {
+  local repo=$1
+  local scratch=${PERYX_MUTANTS_TMPDIR:-${RUNNER_TEMP:-/tmp}}
+  mkdir -p "$scratch"
+  scratch=$(cd -- "$scratch" && pwd -P)
+  if [[ $scratch == "$repo" || $scratch == "$repo/"* ]]; then
+    printf 'mutation scratch directory is inside the checkout %s\n' "$scratch" >&2
+    return 1
+  fi
+  export TMPDIR=$scratch
+}

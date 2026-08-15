@@ -1,5 +1,3 @@
-//! Lifecycle counters for the node-local job scheduler.
-//!
 //! The series are deliberately low-cardinality: labels carry only a job's static `kind` and a bounded
 //! `outcome`/`reason`, never a scope or repository name. A run of any kind therefore adds a fixed,
 //! small number of series, so the exposition stays flat as the store grows.
@@ -10,7 +8,6 @@ use std::sync::{Mutex, PoisonError};
 
 use crate::state::PrometheusSource;
 
-/// How a job run ended, for the `finished` counter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     Succeeded,
@@ -18,15 +15,12 @@ pub enum Outcome {
     Cancelled,
 }
 
-/// Why a submission never ran, for the `rejected` counter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reject {
     Conflict,
     QueueFull,
 }
 
-/// The counters one job kind accumulates. Every field is emitted for every seen kind, so a single
-/// populated kind exercises the whole exposition.
 #[derive(Debug, Default, Clone, Copy)]
 struct KindCounters {
     started: u64,

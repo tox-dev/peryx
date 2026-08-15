@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+package=${1:?pass a package}
+target=${2:?pass a fuzz target}
+seconds=${3:-60}
+manifest="$repo/crates/$package/fuzz/Cargo.toml"
+if [[ ! -f "$manifest" ]]; then
+  printf 'fuzz manifest not found: %s\n' "$manifest" >&2
+  exit 2
+fi
+cd "$(dirname -- "$manifest")"
+cargo +nightly fuzz run "$target" -- -max_total_time="$seconds"

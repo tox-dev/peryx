@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+cd "$repo"
+source .github/scripts/mutation-environment
+mutation_environment "$repo"
+mkdir -p .tox
+args=(--workspace --all-features --test-tool=nextest --jobs "${1:-2}" --output .tox/mutants)
+if [[ -n ${2:-} ]]; then
+  args+=(--shard "$2" --sharding round-robin)
+fi
+cargo mutants "${args[@]}"

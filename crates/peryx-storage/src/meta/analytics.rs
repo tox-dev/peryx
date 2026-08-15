@@ -5,19 +5,13 @@ use super::{
     ANALYTICS, ANALYTICS_APPLY_KEY, ANALYTICS_DAILY_KEY, ANALYTICS_KEY, ANALYTICS_PRODUCER_KEY, MetaDatabase, MetaStore,
 };
 
-/// A shared, `Clone`-cheap handle onto the metadata store's analytics table.
-///
-/// The metrics aggregator holds one to persist and restore download aggregates off the request path.
-/// It borrows the store's database weakly, so the aggregator thread can outlive the store without
-/// pinning the redb file lock: once the [`MetaStore`] drops, the handle's reads and writes turn into
-/// no-ops instead of keeping the database open.
+/// Does not keep the database open.
 #[derive(Debug, Clone)]
 pub struct AnalyticsHandle {
     db: Weak<MetaDatabase>,
 }
 
 impl MetaStore {
-    /// A handle the metrics aggregator uses to persist and restore download aggregates.
     #[must_use]
     pub fn analytics(&self) -> AnalyticsHandle {
         AnalyticsHandle {
@@ -27,27 +21,20 @@ impl MetaStore {
 }
 
 impl AnalyticsHandle {
-    /// Read the persisted per-file download-aggregate snapshot, or `None` before the first save or
-    /// after the store has dropped.
-    ///
     /// # Errors
     /// Returns a store error if the read fails.
     pub fn load(&self) -> Result<Option<Vec<u8>>, MetaError> {
         self.read(ANALYTICS_KEY)
     }
 
-    /// Overwrite the persisted per-file download-aggregate snapshot, or do nothing once the store has
-    /// dropped.
-    ///
     /// # Errors
     /// Returns a store error if the write fails.
     pub fn save(&self, snapshot: &[u8]) -> Result<(), MetaError> {
         self.write(ANALYTICS_KEY, snapshot)
     }
 
-    /// Read the persisted daily version-and-source usage snapshot, or `None` before the first save or
-    /// after the store has dropped. Held under its own key so it evolves independently of the all-time
-    /// per-file totals.
+    /// Returns `None` before the first save or after the store drops. A separate key lets this format
+    /// evolve independently from all-time per-artifact totals.
     ///
     /// # Errors
     /// Returns a store error if the read fails.
@@ -55,8 +42,7 @@ impl AnalyticsHandle {
         self.read(ANALYTICS_DAILY_KEY)
     }
 
-    /// Overwrite the persisted daily version-and-source usage snapshot, or do nothing once the store
-    /// has dropped.
+    /// Does nothing after the store drops.
     ///
     /// # Errors
     /// Returns a store error if the write fails.
@@ -64,8 +50,7 @@ impl AnalyticsHandle {
         self.write(ANALYTICS_DAILY_KEY, snapshot)
     }
 
-    /// Read the receiving replica's converged analytics apply-state snapshot, or `None` before the first
-    /// save or after the store has dropped.
+    /// Returns `None` before the first save or after the store drops.
     ///
     /// # Errors
     /// Returns a store error if the read fails.
@@ -73,8 +58,7 @@ impl AnalyticsHandle {
         self.read(ANALYTICS_APPLY_KEY)
     }
 
-    /// Overwrite the receiving replica's converged analytics apply-state snapshot, or do nothing once the
-    /// store has dropped.
+    /// Does nothing after the store drops.
     ///
     /// # Errors
     /// Returns a store error if the write fails.
@@ -82,8 +66,7 @@ impl AnalyticsHandle {
         self.write(ANALYTICS_APPLY_KEY, snapshot)
     }
 
-    /// Read the producing node's durable analytics generation and export watermark, or `None` before the
-    /// first save or after the store has dropped.
+    /// Returns `None` before the first save or after the store drops.
     ///
     /// # Errors
     /// Returns a store error if the read fails.
@@ -91,8 +74,7 @@ impl AnalyticsHandle {
         self.read(ANALYTICS_PRODUCER_KEY)
     }
 
-    /// Overwrite the producing node's durable analytics generation and export watermark, or do nothing
-    /// once the store has dropped.
+    /// Does nothing after the store drops.
     ///
     /// # Errors
     /// Returns a store error if the write fails.

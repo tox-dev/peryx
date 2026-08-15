@@ -5,6 +5,5 @@ weight = 3
 template = "redoc.html"
 +++
 
-Each endpoint below carries its parameters, an example request, and example responses per status code. The
-`peryx openapi` subcommand generates this document from the source, so it cannot drift from the server; a running peryx
-serves its own copy at `/api-docs/openapi.json`.
+Each endpoint below lists its parameters, an example request, and responses by status code. `peryx openapi` generates
+the document from the compiled routes. A running server exposes the same schema at `/api-docs/openapi.json`.

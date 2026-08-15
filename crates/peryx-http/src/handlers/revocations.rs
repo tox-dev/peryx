@@ -6,12 +6,12 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, Request, StatusCode, header};
 use axum::response::{IntoResponse as _, Response};
 use peryx_driver::authz::{Decision, ScopedDecision};
-use peryx_driver::state::AppState;
-use peryx_identity::{ArtifactDigest, Resource, RevocationReason, Scope, UserId, parse_basic};
-use peryx_storage::meta::{
+use peryx_driver::revocations::{
     DigestRevocation, DigestRevocationQuery, DigestRevocationQueryError, DigestRevocationStatus, LiftRevocationOutcome,
     PutRevocationError, PutRevocationOutcome,
 };
+use peryx_driver::state::AppState;
+use peryx_identity::{ArtifactDigest, Resource, RevocationReason, Scope, UserId, parse_basic};
 
 use crate::response_security::{
     ClassifiedField, FieldClassification, ProtectedCachePolicy, ResponseAuthorization, filter_fields,
@@ -65,7 +65,11 @@ pub async fn put_revocation(
     let Ok(reason) = RevocationReason::new(body.reason) else {
         return problem(StatusCode::BAD_REQUEST, "invalid revocation reason");
     };
-    match state.revocations.put(&digest, &reason, &actor, (state.clock)()) {
+    match state
+        .serving
+        .revocations
+        .put(&digest, &reason, &actor, (state.serving.clock)())
+    {
         Ok(outcome) => {
             let status = if matches!(outcome, PutRevocationOutcome::Unchanged(_)) {
                 StatusCode::OK
@@ -91,7 +95,7 @@ pub async fn inspect_revocation(
     let Ok(digest) = ArtifactDigest::from_str(&digest) else {
         return problem(StatusCode::BAD_REQUEST, "invalid digest");
     };
-    match state.revocations.inspect(&digest) {
+    match state.serving.revocations.inspect(&digest) {
         Ok(Some(record)) => record_response(StatusCode::OK, &record, authorization, None),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(_) => unavailable(),
@@ -114,7 +118,7 @@ pub async fn list_revocations(
         },
         None => None,
     };
-    match state.revocations.list(&DigestRevocationQuery {
+    match state.serving.revocations.list(&DigestRevocationQuery {
         status: query.status,
         cursor,
         limit: query.limit.unwrap_or(25),
@@ -141,7 +145,7 @@ pub async fn lift_revocation(
     let Ok(digest) = ArtifactDigest::from_str(&digest) else {
         return problem(StatusCode::BAD_REQUEST, "invalid digest");
     };
-    match state.revocations.lift(&digest, &actor, (state.clock)()) {
+    match state.serving.revocations.lift(&digest, &actor, (state.serving.clock)()) {
         Ok(Some(LiftRevocationOutcome::Lifted(record) | LiftRevocationOutcome::Unchanged(record))) => {
             record_response(StatusCode::OK, &record, authorization, None)
         }
@@ -161,12 +165,16 @@ async fn administrator(
         .and_then(parse_basic)
         .ok_or_else(unauthorized)?;
     let actor = state
+        .serving
         .users
         .authenticate(&credentials.user, &credentials.password)
         .await
         .map_err(|_| unavailable())?
         .ok_or_else(unauthorized)?;
-    let decision = state.authorization.authorize_scoped(&actor, scope, &Resource::Operator);
+    let decision = state
+        .serving
+        .authorization
+        .authorize_scoped(&actor, scope, &Resource::Operator);
     if decision.decision() != Decision::Allow {
         return Err(StatusCode::NOT_FOUND.into_response());
     }

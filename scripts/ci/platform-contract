@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
+cd "$repo"
+cargo check --workspace --all-targets --all-features
+selector='package(peryx) & binary(cli_entrypoint)'
+selector+=' | package(peryx-upstream) & (binary(tls) | test(/client::(exec|credential|netrc)/))'
+selector+=' | package(peryx-test-support) & test(/process/)'
+selector+=' | package(peryx-storage) & binary(integration) & test(/blob_backend/)'
+cargo nextest run --workspace --all-features -E "$selector"

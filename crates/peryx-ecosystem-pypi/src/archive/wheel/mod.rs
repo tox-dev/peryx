@@ -49,11 +49,8 @@ fn invalid_wheel(message: impl std::fmt::Display) -> ArchiveError {
     ArchiveError::Invalid(format!("invalid wheel: {message}"))
 }
 
-/// Validate a wheel's required structure and return its exact `METADATA` bytes with the license
-/// files it declares but does not carry.
-///
 /// # Errors
-/// Returns [`ArchiveError::InvalidWheel`] when required wheel metadata is missing or inconsistent,
+/// Returns [`ArchiveError::Invalid`] when required wheel metadata is missing or inconsistent,
 /// and [`ArchiveError::Read`] when the staged file or ZIP cannot be read.
 pub fn validate_wheel_path(filename: &str, path: &Path) -> Result<ValidatedArchive, ArchiveError> {
     let file = std::fs::File::open(path).map_err(read_error)?;
@@ -82,7 +79,7 @@ fn validate_wheel_reader(filename: &str, reader: impl Read + Seek) -> Result<Val
 
     let metadata = read_zip_member_limited(&mut archive, &metadata_path, MAX_WHEEL_METADATA_BYTES)?;
     let wheel = read_zip_member_limited(&mut archive, &wheel_path, MAX_WHEEL_METADATA_BYTES)?;
-    validate_wheel_file(filename, &wheel)?;
+    validate_wheel_file(&expected, &wheel)?;
 
     let record = read_zip_member_limited(&mut archive, &record_path, MAX_WHEEL_RECORD_BYTES)?;
     validate_record(&mut archive, &members.files, &record, &record_path, dist_info)?;
@@ -102,7 +99,7 @@ fn validate_wheel_reader(filename: &str, reader: impl Read + Seek) -> Result<Val
 /// `License-File` without a member there names a file the wheel does not ship. Upload validation
 /// rejects a malformed declared path on its own, so here one merely reads as missing.
 fn missing_license_files(metadata: &[u8], dist_info: &str, files: &BTreeMap<String, WheelMember>) -> Vec<String> {
-    // A malformed document is the caller's to reject, so here it simply declares no license file.
+    // A malformed document is the caller's to reject, so this layer declares no license file.
     let Ok(doc) = crate::parse_metadata(&String::from_utf8_lossy(metadata)) else {
         return Vec::new();
     };
@@ -202,6 +199,8 @@ struct ExpectedDistInfo {
     dir: String,
     normalized_name: String,
     version: Version,
+    build: Option<String>,
+    tags: BTreeSet<String>,
 }
 
 fn expected_wheel_dist_info(filename: &str) -> Result<ExpectedDistInfo, ArchiveError> {
@@ -212,10 +211,24 @@ fn expected_wheel_dist_info(filename: &str) -> Result<ExpectedDistInfo, ArchiveE
     }
     let name = parsed.normalized_name.replace('-', "_");
     let version = parsed.version.to_string().replace('-', "_");
+    let parts = filename[..filename.len() - 4].split('-').collect::<Vec<_>>();
+    let python_tags = parts[parts.len() - 3].split('.');
+    let abi_tags = parts[parts.len() - 2].split('.');
+    let platform_tags = parts[parts.len() - 1].split('.');
+    let mut tags = BTreeSet::new();
+    for python in python_tags {
+        for abi in abi_tags.clone() {
+            for platform in platform_tags.clone() {
+                tags.insert(format!("{python}-{abi}-{platform}"));
+            }
+        }
+    }
     Ok(ExpectedDistInfo {
         dir: format!("{name}-{version}.dist-info"),
         normalized_name: parsed.normalized_name,
         version: parsed.version,
+        build: (parts.len() == 6).then(|| parts[2].to_owned()),
+        tags,
     })
 }
 
@@ -235,8 +248,7 @@ fn read_zip_member_limited<R: Read + Seek>(
             entry.size()
         )));
     }
-    let capacity = usize::try_from(entry.size()).expect("wheel validation limit fits usize");
-    let mut bytes = Vec::with_capacity(capacity);
+    let mut bytes = Vec::with_capacity(usize::try_from(entry.size()).map_err(invalid_wheel)?);
     entry.read_to_end(&mut bytes).map_err(read_error)?;
     Ok(bytes)
 }
@@ -262,49 +274,5 @@ fn account_member_expansion(running: u64, name: &str, size: u64, compressed: u64
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_account_member_expansion_sums_within_budget() {
-        assert_eq!(account_member_expansion(10, "pkg/a", 5, 5).unwrap(), 15);
-    }
-
-    #[test]
-    fn test_account_member_expansion_allows_max_ratio() {
-        assert_eq!(
-            account_member_expansion(0, "pkg/a", MAX_WHEEL_COMPRESSION_RATIO, 1).unwrap(),
-            MAX_WHEEL_COMPRESSION_RATIO
-        );
-    }
-
-    #[test]
-    fn test_account_member_expansion_rejects_high_ratio() {
-        let message = account_member_expansion(0, "pkg/bomb", MAX_WHEEL_COMPRESSION_RATIO + 1, 1)
-            .unwrap_err()
-            .to_string();
-        assert!(message.contains("above the 1000:1 expansion limit"), "{message}");
-    }
-
-    #[test]
-    fn test_account_member_expansion_rejects_zero_compressed_with_content() {
-        let message = account_member_expansion(0, "pkg/bomb", 1, 0).unwrap_err().to_string();
-        assert!(message.contains("expansion limit"), "{message}");
-    }
-
-    #[test]
-    fn test_account_member_expansion_rejects_over_budget() {
-        let message = account_member_expansion(MAX_WHEEL_EXPANDED_BYTES, "pkg/a", 1, 1)
-            .unwrap_err()
-            .to_string();
-        assert!(message.contains("expand to more than"), "{message}");
-    }
-
-    #[test]
-    fn test_account_member_expansion_rejects_size_overflow() {
-        let message = account_member_expansion(1, "pkg/a", u64::MAX, u64::MAX)
-            .unwrap_err()
-            .to_string();
-        assert!(message.contains("expand to more than"), "{message}");
-    }
-}
+#[path = "../../../tests/unit/archive/wheel/tests.rs"]
+mod tests;

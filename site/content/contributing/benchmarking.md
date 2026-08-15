@@ -1,92 +1,61 @@
 +++
 title = "Run the benchmarks"
-description = "The peryx-bench harness: comparison runs, per-ecosystem runs, and the A/B regression gate against a base commit."
+description = "Own, test, and run package benchmarks."
 weight = 5
 +++
 
-`peryx-bench` produces the tables the documentation publishes and gates a change against a regression. Every command
-below assumes a checked-out repository and a release build. A debug build times unoptimized code, so its numbers say
-nothing about peryx.
+`peryx-bench-core` owns neutral measurements and reports. `peryx-bench` owns neutral execution and comparison. Ecosystem
+owners keep workloads, fixtures, command arguments, and result interpretation in their own crates.
 
-## Compare peryx against the other tools
+## Benchmark contracts
 
-The published comparison tables come from this form, which runs every server on one machine, in one run, against the
-same workload:
-
-```shell
-cargo run --release -p peryx-bench                       # every ecosystem
-cargo run --release -p peryx-bench -- --ecosystem pypi   # one ecosystem
-cargo run --release -p peryx-bench -- --ecosystem oci
-```
-
-## Check a change against a base commit
-
-The A/B form builds both revisions and measures each through this same harness, so the method matches on both sides. It
-prints a per-metric verdict aggregated with the geometric mean and gates only the local metrics, since network variance
-peryx does not control dominates any row that fetches from a real upstream:
+`just test` runs crate tests, then executes all workspace benchmark harnesses. The benchmark lane uses a 20-minute
+deadline by default:
 
 ```shell
-cargo run --release -p peryx-bench -- --rounds 7 ab <base-commit>
-cargo run --release -p peryx-bench -- --rounds 7 ab <base-commit> --head-first
+just benchmark
+just benchmark 600
 ```
 
-Run both orders on the same machine. A result that changes with the order is thermal or background-load drift, not a
-regression. Keep the machine on AC power, close other CPU and disk work, and compare the two revisions without changing
-the compiler, dependency lockfile, power mode, or host. The harness reports the median, coefficient of variation,
-min-max range, and outliers; it excludes a noisy metric from the gate instead of treating it as evidence.
+The argument is a positive timeout in seconds. A timeout fails the recipe rather than leaving a harness running.
 
-## OCI runs need Docker and a mirror
-
-The OCI benchmarks need a running [Docker](https://www.docker.com/) daemon. Pulling from
-[Docker Hub](https://hub.docker.com/) with nothing in front of it, an anonymous account hits the pull ceiling partway
-through a comparison, so export `DOCKERHUB_USERNAME` and a read-only
-[access token](https://docs.docker.com/security/for-developers/access-tokens/) in `DOCKERHUB_TOKEN`; the harness threads
-them into every registry and into [crane](https://github.com/google/go-containerregistry).
-
-Under `--mirror` the harness stands a local pull-through cache in front of Docker Hub and points every registry at it,
-so the run is rate-limit-free and repeatable. Without it the cold rows carry the real upstream fetch, so the harness
-marks them network-bound and keeps them out of the regression gate:
+Each non-system crate contract compiles and executes that crate's benchmark targets under coverage:
 
 ```shell
-cargo run --release -p peryx-bench -- --ecosystem oci --mirror
+just crate-contract PACKAGE .tox/crate-contracts/PACKAGE
 ```
 
-## Run the same CPU benchmarks locally and in CI
+A benchmark target must fail when setup or the measured path fails. Keep behavior assertions in the crate's `tests/`
+tree; measurement code belongs in `benches/`. A benchmark does not replace a unit or integration test.
 
-GitHub Actions uses CodSpeed's CPU simulation because shared-runner wall time changes with host load and CPU model. The
-simulation counts the work performed by the benchmark on a simulated CPU. It runs once, excludes time spent inside
-system calls, and is therefore suited to the in-process parser, renderer, and router benchmarks rather than the
-end-to-end network workloads above.
+## Run one target
 
-The local runner uses the immutable CI image when its Dockerfile definition has been published. The image pins Ubuntu,
-Rust, cargo-codspeed, the CodSpeed CLI, and CodSpeed's Valgrind fork; the runner also uses the CI workspace path, thin
-LTO, generic glibc CPU routines, and one malloc arena. On an ARM64 host with Docker:
+List targets without measuring them:
 
 ```shell
-ci/run-codspeed-local.sh login
-ci/run-codspeed-local.sh peryx-ecosystem-pypi
-ci/run-codspeed-local.sh peryx-ecosystem-oci
+cargo bench --workspace --all-features --no-run
 ```
 
-`login` is needed once and stores the CodSpeed credential in a Docker volume. Build artifacts use a separate volume
-keyed by the image definition. If the current Dockerfile has not been published, the runner builds it locally; compare
-those results only with another run using the same definition.
-
-Pull requests publish affected benchmarks after the exact base commit produces a compatible baseline. Pushes to `main`
-publish every target and refresh the shared baseline.
-
-CodSpeed simulation does not measure kernel, filesystem, socket, or upstream latency. Use `peryx-bench` for those paths.
-The OCI blob-serving benchmark reads the blob from disk inside each router request, so CodSpeed excludes it from CPU
-simulation. It remains available through standard Criterion, along with every CPU benchmark. Host wall-clock results are
-valid only on the same quiet machine under the same toolchain and power conditions:
+Execute one harness through the same Cargo mode used by the repository gate:
 
 ```shell
-cargo bench --locked -p peryx-ecosystem-pypi
-cargo bench --locked -p peryx-ecosystem-oci
+cargo test --locked -p PACKAGE --all-features --bench TARGET -- --help
 ```
 
-The methodology follows [CodSpeed's CPU simulation guidance](https://codspeed.io/docs/instruments/cpu), its
-[variance controls](https://codspeed.io/docs/instruments/cpu/reducing-variance),
-[Criterion's measurement guidance](https://bheisler.github.io/criterion.rs/book/user_guide/command_line_options.html),
-and the
-[Google Benchmark interleaving rationale](https://github.com/google/benchmark/blob/main/docs/random_interleaving.md).
+Replace `--help` with the target's documented arguments. Keep the toolchain and `Cargo.lock` fixed between revisions.
+Record the host, power mode, scratch filesystem, and competing load with measured results. Wait for service readiness
+during setup. A pacing sleep is valid when elapsed time is part of the workload.
+
+## CodSpeed
+
+CodSpeed runs owner-selected compute benchmarks in the repository container:
+
+```shell
+just codspeed PACKAGE
+```
+
+Package metadata declares the selected targets, job count, label, and change key. Add selection there instead of adding
+package branches to workflow YAML.
+
+Use CodSpeed for in-process compute paths. Use a named benchmark on one quiet host for filesystem, socket, subprocess,
+or upstream measurements, then compare revisions under the same host conditions.

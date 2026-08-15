@@ -1,0 +1,92 @@
+[package]
+name = "peryx-pypi-system-tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[package.metadata.peryx-ci]
+kind = "system"
+
+[package.metadata.peryx-ci.tools]
+install = "scripts/install-clients"
+
+[package.metadata.peryx-ci.coverage.availability]
+tests = ["availability"]
+
+[package.metadata.peryx-ci.coverage.clients]
+features = ["e2e-live"]
+filter = "not(binary(availability))"
+
+[package.metadata.peryx-ci.coverage.e2e]
+features = ["e2e"]
+filter = "not(test(e2e_live)) & not(binary(availability))"
+
+[package.metadata.peryx-ci.coverage.e2e-live]
+features = ["e2e-live"]
+tests = ["e2e"]
+filter = "test(e2e_live)"
+
+[[bin]]
+name = "peryx-pypi-system-server"
+path = "src/main.rs"
+test = false
+bench = false
+doc = false
+
+[[bin]]
+name = "peryx-pypi-s3-upload-fixture"
+path = "tests/fixtures/s3_upload.rs"
+test = false
+bench = false
+doc = false
+
+[features]
+default = []
+e2e = []
+e2e-live = ["e2e"]
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+base64.workspace = true
+clap.workspace = true
+peryx = { path = "../../../peryx", version = "0.0.1", default-features = false, features = ["composition-pypi"] }
+peryx-core.workspace = true
+peryx-identity.workspace = true
+peryx-policy.workspace = true
+peryx-storage.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+toml.workspace = true
+tower = { workspace = true, features = ["util"] }
+
+[dev-dependencies]
+flate2.workspace = true
+futures-util.workspace = true
+http-body-util.workspace = true
+peryx-driver.workspace = true
+peryx-ecosystem-pypi.workspace = true
+peryx-ha.workspace = true
+peryx-ha-distributed.workspace = true
+peryx-index.workspace = true
+peryx-test-support.workspace = true
+peryx-upstream.workspace = true
+redb.workspace = true
+reqwest = { workspace = true, features = ["blocking", "gzip", "http2", "json", "multipart", "rustls-native-certs", "rustls-no-provider", "stream"] }
+rstest.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tar.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["io-util", "net", "process", "sync", "test-util", "time"] }
+url.workspace = true
+wiremock.workspace = true
+zip.workspace = true
+
+[target.'cfg(unix)'.dev-dependencies]
+nix = { version = "0.31", features = ["fs"] }
+
+[lints]
+workspace = true

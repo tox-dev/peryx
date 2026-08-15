@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+repo=${1:-"$script_dir/../.."}
+cd "$repo"
+
+status=0
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+while IFS= read -r declaration; do
+  printf './%s\n' "${declaration%/ecosystem.toml}"
+done < <(find crates -type f -path '*/docs/ecosystem.toml' | sort) >"$scratch/owner-docs"
+
+reject_matches() {
+  local message=$1
+  local pattern=$2
+  local paths=$3
+  local matches
+  [[ -s $paths ]] || return 0
+  matches=$(xargs -0 rg -n -i -- "$pattern" <"$paths" || true)
+  if [[ -n $matches ]]; then
+    printf '%s\n%s\n' "$matches" "$message" >&2
+    status=1
+  fi
+}
+
+while IFS= read -r manifest; do
+  case $manifest in
+    Cargo.toml | crates/peryx/Cargo.toml | crates/peryx-ecosystem-pypi/* | crates/peryx-ecosystem-oci/*) ;;
+    *)
+      printf 'ecosystem implementation dependency is not allowed in %s\n' "$manifest" >&2
+      status=1
+      ;;
+  esac
+done < <(
+  find . -type f -name Cargo.toml -exec grep -El 'peryx-ecosystem-(pypi|oci)' {} + \
+    | sed 's#^\./##' \
+    | sort
+)
+
+for ecosystem in pypi oci; do
+  manifest="crates/peryx-ecosystem-$ecosystem/Cargo.toml"
+  other=pypi
+  [[ $ecosystem == pypi ]] && other=oci
+  while IFS= read -r owner_manifest; do
+    printf 'ecosystem implementation dependency crosses owner crates in %s\n' "$owner_manifest" >&2
+    status=1
+  done < <(
+    find "crates/peryx-ecosystem-$ecosystem" -type f -name Cargo.toml \
+      -exec grep -El "peryx-ecosystem-$other" {} + \
+      | sort
+  )
+  if ! awk '
+    /^\[/ { section = $0 }
+    /peryx-ha-distributed/ && section !~ /dev-dependencies/ { exit 1 }
+  ' "$manifest"; then
+    printf 'distributed implementation dependency must be test-only in %s\n' "$manifest" >&2
+    status=1
+  fi
+
+  while IFS= read -r source; do
+    case $source in
+      */src/tests/*) ;;
+      *)
+        printf 'distributed implementation import is not allowed in %s\n' "$source" >&2
+        status=1
+        ;;
+    esac
+  done < <(rg -l 'peryx_ha_distributed' "crates/peryx-ecosystem-$ecosystem/src" --glob '*.rs' || true)
+done
+
+find crates -type f -name '*.rs' \
+  \( -path '*/src/*' -o -path '*/tests/*' -o -path '*/benches/*' -o -path '*/fuzz/*' \) \
+  ! -path 'crates/peryx-ecosystem-pypi/*' \
+  ! -path 'crates/peryx-ecosystem-oci/*' \
+  ! -path 'crates/peryx/src/lib.rs' \
+  -print0 >"$scratch/non-composition-rust"
+find crates -type f -name '*.rs' \
+  \( -path '*/src/*' -o -path '*/tests/*' -o -path '*/benches/*' -o -path '*/fuzz/*' \) \
+  ! -path 'crates/peryx-ecosystem-pypi/*' \
+  ! -path 'crates/peryx-ecosystem-oci/*' \
+  ! -path 'crates/peryx/*' \
+  -print0 >"$scratch/shared-rust"
+
+reject_matches \
+  'ecosystem implementation import is allowed only in crates/peryx/src/lib.rs' \
+  'peryx[_-]ecosystem[_-](pypi|oci)' \
+  "$scratch/non-composition-rust"
+reject_matches \
+  'named ecosystem vocabulary is not allowed in shared Rust code' \
+  '\b(pypi|oci)\b|(pypi|oci)[_-]|[_-](pypi|oci)' \
+  "$scratch/shared-rust"
+
+find . \
+  \( -path './.git' -o -path './.tox' -o -path './target' -o -path '*/node_modules' \
+     -o -path './site/public' \
+     -o -path './crates/peryx-ecosystem-pypi' -o -path './crates/peryx-ecosystem-oci' \
+     -o -path './.github/scripts/check-ecosystem-boundaries' \
+     -o -path './.github/scripts/test-check-ecosystem-boundaries' \
+     -o -path './.github/scripts/test-site-stage' \
+     -o -path './.github/scripts/fixtures/ecosystem-boundaries' \) -prune \
+  -o -type f \
+  \( -name '*.md' -o -name '*.rst' -o -name '*.adoc' \
+     -o -path './docs/*' -o -path '*/docs/*' -o -path './design/*' -o -path './site/*' \
+     -o -path '*/src/*' -o -path '*/examples/*' -o -path '*/tools/*' \
+     -o -path '*/data/*' -o -path '*/templates/*' -o -path '*/assets/*' -o -path '*/static/*' \
+     -o -path './.github/*' -o -path './ci/*' -o -path './scripts/*' \
+     -o -path '*/benches/*' -o -path '*/bench/*' -o -path '*/benchmarks/*' \
+     -o -path '*/fixtures/*' -o -path '*/fuzz/*' -o -path '*/tests/*' \
+     -o -name 'Cargo.toml' -o -iname '*openapi*' \) \
+  -print0 >"$scratch/artifacts"
+
+: >"$scratch/non-owner-artifacts"
+: >"$scratch/non-owner-schema-artifacts"
+while IFS= read -r -d '' artifact; do
+  owned=0
+  while IFS= read -r docs; do
+    if [[ $artifact == "$docs/"* ]]; then
+      owned=1
+      break
+    fi
+  done <"$scratch/owner-docs"
+  if [[ $owned == 0 ]]; then
+    printf '%s\0' "$artifact" >>"$scratch/non-owner-artifacts"
+    case $artifact in
+      *.md | *.rst | *.adoc | ./docs/* | */docs/* | ./design/* | ./site/* | */templates/* | */fixtures/* | */tests/*)
+        printf '%s\0' "$artifact" >>"$scratch/non-owner-schema-artifacts"
+        ;;
+    esac
+  fi
+done <"$scratch/artifacts"
+
+reject_matches \
+  'ecosystem implementation detail is not allowed outside owner trees' \
+  "/(simple|v2)(/|[\"'\`?#[:space:]]|$)|application/vnd\.(pypi|oci)|application/vnd\.docker\.distribution|docker-(content-digest|distribution-api-version)|oci-(subject|layout)|\.whl(\.metadata)?\b|requires[-_]python|dist[-_]info[-_]metadata|core[-_]metadata|\b(project_name|normalized_project|yanked_reason)\b" \
+  "$scratch/non-owner-artifacts"
+reject_matches \
+  'ecosystem implementation detail is not allowed outside owner trees' \
+  "[\"'](project|projects|filename)[\"'][[:space:]]*:|\bprojects[[:space:]]*=[[:space:]]*\[|\`project-prefix\`|\b(project|projects)\b.*\b(version|filename)\b|\b(version|filename)\b.*\b(project|projects)\b" \
+  "$scratch/non-owner-schema-artifacts"
+
+: >"$scratch/shared-site-scripts"
+if [[ -d site/scripts ]]; then
+  find site/scripts -type f -print0 >"$scratch/shared-site-scripts"
+fi
+reject_matches \
+  'owner name or component is not allowed in shared site scripts' \
+  '\b(pypi|oci)\b|trusted[_-]publishing' \
+  "$scratch/shared-site-scripts"
+
+while IFS= read -r owner_artifact; do
+  printf 'owner documentation artifact is not allowed in the shared site tree: %s\n' "$owner_artifact" >&2
+  status=1
+done < <(find site -type f \
+  \( -path 'site/data/snippets/trusted-publishing*' \
+     -o -path 'site/templates/shortcodes/trusted_publishing*' \) \
+  -print)
+
+while IFS= read -r generated; do
+  printf 'generated site artifact is not allowed in the source tree: %s\n' "$generated" >&2
+  status=1
+done < <(find site -type f \
+  \( -path 'site/public/*' -o -path 'site/static/openapi.json' \
+     -o -path 'site/data/bench/*' -o -path 'site/data/ecosystems/*' \
+     -o -path 'site/data/ecosystem-owners.toml' \) \
+  -print)
+
+exit "$status"

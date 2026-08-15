@@ -54,9 +54,9 @@ dropping the newer grant.
 | Version differs from the precondition | `412 Precondition Failed`   |
 | No `If-Match` presented               | `428 Precondition Required` |
 
-Peryx rejects a grant to an unknown or disabled user, and an inert pairing whose role reaches nothing over its scope —
-`operator` over a repository, say — with `422 Unprocessable Entity`. A caller without authority over the target reach
-receives `403 Forbidden` on a grant and `404 Not Found` on an inspect or revoke.
+Peryx rejects a grant to an unknown or disabled user, and an inert pairing whose role reaches nothing over its scope :
+`operator` over a repository, for example, with `422 Unprocessable Entity`. A caller without authority over the target
+reach receives `403 Forbidden` on a grant and `404 Not Found` on an inspect or revoke.
 
 ## Security events and timing
 

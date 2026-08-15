@@ -1,0 +1,6 @@
+[[items]]
+id = "oci"
+name = "OCI"
+subtitle = "Docker"
+color = "#2496ED"
+chip = true

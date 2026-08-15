@@ -1,0 +1,54 @@
+[package]
+name = "peryx-oci-system-tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[package.metadata.peryx-ci]
+kind = "system"
+
+[package.metadata.peryx-ci.coverage.availability]
+tests = ["availability"]
+
+[package.metadata.peryx-ci.coverage.clients]
+filter = "not(binary(availability))"
+
+[package.metadata.peryx-ci.coverage.e2e]
+filter = "not(binary(availability))"
+
+[[bin]]
+name = "peryx-oci-system-server"
+path = "src/main.rs"
+test = false
+doc = false
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+peryx = { path = "../../../peryx", version = "0.0.1", default-features = false, features = ["composition-oci"] }
+
+[dev-dependencies]
+axum.workspace = true
+base64.workspace = true
+flate2.workspace = true
+http-body-util.workspace = true
+peryx-driver.workspace = true
+peryx-ecosystem-oci.workspace = true
+peryx-identity.workspace = true
+peryx-policy.workspace = true
+peryx-storage.workspace = true
+peryx-test-support.workspace = true
+reqwest = { workspace = true, features = ["blocking", "gzip", "http2", "json", "rustls-native-certs", "rustls-no-provider", "stream"] }
+rstest.workspace = true
+serde_json.workspace = true
+tar.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
+toml.workspace = true
+tower = { workspace = true, features = ["util"] }
+
+[lints]
+workspace = true

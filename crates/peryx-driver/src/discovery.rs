@@ -1,10 +1,8 @@
-//! Neutral discovery scaffolding shared by every ecosystem.
-//!
 //! `GET /+api` describes the running server: its service endpoints and one entry per configured index.
+//!
 //! The envelope (version, service URLs) and the public-base-URL resolution are ecosystem-agnostic and
-//! live here; each ecosystem renders its own per-index entry (the Simple-API setup for `PyPI`, the
-//! `docker pull` setup for `OCI`) through
-//! [`EcosystemDriver::discover_index`](crate::serving::EcosystemDriver::discover_index).
+//! live here; each ecosystem renders its per-index entry through its registered
+//! [`ClientDiscovery`](crate::serving::ClientDiscovery) capability.
 
 use std::str::FromStr as _;
 
@@ -27,8 +25,6 @@ pub enum BaseUrlError {
 }
 
 impl BaseUrl {
-    /// Parse the public base URL used for absolute discovery URLs.
-    ///
     /// # Errors
     /// Returns [`BaseUrlError::Invalid`] unless the URL is absolute HTTP(S) without credentials,
     /// query, or fragment.
@@ -75,7 +71,6 @@ impl BaseUrl {
         Self::from_parts(scheme, authority).ok()
     }
 
-    /// Append `path` (an absolute `/…` path) to the base origin and prefix.
     #[must_use]
     pub fn join(&self, path: &str) -> String {
         let mut url = String::with_capacity(self.origin.len() + self.prefix.len() + path.len());
@@ -85,7 +80,7 @@ impl BaseUrl {
         url
     }
 
-    /// The `host[:port]` a registry client dials, without the scheme. `docker`/`podman` name a
+    /// The `host[:port]` a client dials, without the scheme. Clients name a
     /// registry by authority rather than URL.
     #[must_use]
     pub fn host_port(&self) -> &str {
@@ -108,19 +103,16 @@ impl BaseUrl {
     }
 }
 
-/// Render `path` (an absolute `/…` path) against the base, or return it relative when no base is known.
 #[must_use]
 pub fn link(base: Option<&BaseUrl>, path: &str) -> String {
     base.map_or_else(|| path.to_owned(), |base| base.join(path))
 }
 
-/// The web dashboard path for one index (`/browse?index=<route>`).
 #[must_use]
 pub fn browse_path(route: &str) -> String {
     query_path("/browse", route)
 }
 
-/// The stats path for one index (`/stats?index=<route>`).
 #[must_use]
 pub fn stats_path(route: &str) -> String {
     query_path("/stats", route)
@@ -145,7 +137,6 @@ pub fn minimal_entry(index: &crate::state::IndexDescription) -> Value {
     })
 }
 
-/// The full `GET /+api` document: version, service endpoints, and one entry per index.
 #[must_use]
 pub fn root_envelope(base: Option<&BaseUrl>, indexes: Vec<Value>) -> Value {
     json!({
@@ -155,7 +146,6 @@ pub fn root_envelope(base: Option<&BaseUrl>, indexes: Vec<Value>) -> Value {
     })
 }
 
-/// The `GET /{index}/+api` document: version and the single index's entry.
 #[must_use]
 pub fn index_envelope(index: Value) -> Value {
     let mut document = serde_json::Map::new();
@@ -196,89 +186,5 @@ where
 }
 
 #[cfg(test)]
-mod tests {
-    use axum::http::{HeaderMap, HeaderValue, Uri};
-    use rstest::rstest;
-
-    use super::{BaseUrl, browse_path};
-
-    #[test]
-    fn test_base_url_rejects_credentials_query_and_fragment() {
-        for url in [
-            "not a url",
-            "file:///tmp/simple",
-            "https://user@example.test/",
-            "https://example.test/?x=1",
-            "https://example.test/#frag",
-        ] {
-            assert!(BaseUrl::parse(url).is_err(), "{url}");
-        }
-    }
-
-    #[test]
-    fn test_base_url_from_request_uses_forwarded_origin() {
-        let mut headers = HeaderMap::new();
-        headers.insert("host", HeaderValue::from_static("internal.test"));
-        headers.insert(
-            "x-forwarded-host",
-            HeaderValue::from_static("packages.example, proxy.local"),
-        );
-        headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
-        let base = BaseUrl::from_request(&headers, &Uri::from_static("/+api"), true).unwrap();
-        assert_eq!(
-            base.join("/root/pypi/simple/"),
-            "https://packages.example/root/pypi/simple/"
-        );
-    }
-
-    #[rstest]
-    #[case::no_headers(None, None)]
-    #[case::unsupported_scheme(Some("packages.example"), Some("ssh"))]
-    #[case::credentials_in_host(Some("user@packages.example"), Some("https"))]
-    #[case::invalid_host(Some("packages example"), Some("https"))]
-    fn test_base_url_from_request_rejects_invalid_forwarded_origin(
-        #[case] host: Option<&str>,
-        #[case] proto: Option<&str>,
-    ) {
-        let mut headers = HeaderMap::new();
-        if let Some(host) = host {
-            headers.insert("x-forwarded-host", HeaderValue::from_str(host).unwrap());
-        }
-        if let Some(proto) = proto {
-            headers.insert("x-forwarded-proto", HeaderValue::from_str(proto).unwrap());
-        }
-        assert!(BaseUrl::from_request(&headers, &Uri::from_static("/+api"), true).is_none());
-    }
-
-    #[test]
-    fn test_base_url_from_request_uses_host_header_without_proxy_headers() {
-        let mut headers = HeaderMap::new();
-        headers.insert("host", HeaderValue::from_static("packages.example"));
-        let base = BaseUrl::from_request(&headers, &Uri::from_static("/+api"), false).unwrap();
-        assert_eq!(
-            base.join("/root/pypi/simple/"),
-            "http://packages.example/root/pypi/simple/"
-        );
-    }
-
-    #[test]
-    fn test_base_url_from_request_ignores_untrusted_forwarded_origin() {
-        let mut headers = HeaderMap::new();
-        headers.insert("host", HeaderValue::from_static("packages.example"));
-        headers.insert("x-forwarded-host", HeaderValue::from_static("attacker.example"));
-        headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
-        let base = BaseUrl::from_request(&headers, &Uri::from_static("/+api"), false).unwrap();
-        assert_eq!(base.join("/+api"), "http://packages.example/+api");
-    }
-
-    #[test]
-    fn test_host_port_strips_scheme() {
-        let base = BaseUrl::parse("https://registry.example:5000/cache/").unwrap();
-        assert_eq!(base.host_port(), "registry.example:5000");
-    }
-
-    #[test]
-    fn test_browse_url_percent_encodes_route_query() {
-        assert_eq!(browse_path("root/pypi"), "/browse?index=root%2Fpypi");
-    }
-}
+#[path = "../tests/unit/discovery/tests.rs"]
+mod tests;

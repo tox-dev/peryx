@@ -2,12 +2,12 @@
 
 use std::sync::Arc;
 
+use crate::policy::{PypiPolicy as _, RemoteMetadataMode};
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
 use futures_util::{FutureExt as _, StreamExt as _, TryFutureExt as _, TryStreamExt as _};
 use peryx_driver::state::ServingState;
 use peryx_index::{Index, IndexKind};
-use peryx_policy::RemoteMetadataMode;
 use peryx_storage::blob::Digest;
 use reqwest::StatusCode;
 use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE, ETAG, LAST_MODIFIED};
@@ -37,8 +37,6 @@ pub struct ProvenanceBody {
     pub availability: AttestationAvailability,
 }
 
-/// Resolve hosted provenance or apply the index's direct, proxy, or cache policy to an upstream object.
-///
 /// # Errors
 /// Returns a store, blob, policy, validation, or upstream error when no representation can be served.
 pub async fn provenance_bytes(
@@ -647,7 +645,10 @@ fn header_string(value: Option<&reqwest::header::HeaderValue>) -> Option<String>
 
 fn provenance_media_type(url: &Url, value: Option<&reqwest::header::HeaderValue>) -> Result<String, CacheError> {
     let Some(value) = value.and_then(|value| value.to_str().ok()) else {
-        return Err(peryx_upstream::UpstreamError::MissingContentType { url: url.clone() }.into());
+        return Err(peryx_upstream::UpstreamError::InvalidResponse {
+            reason: format!("missing provenance Content-Type from {url}"),
+        }
+        .into());
     };
     let media_type = value
         .split_once(';')
@@ -660,9 +661,8 @@ fn provenance_media_type(url: &Url, value: Option<&reqwest::header::HeaderValue>
     ) {
         return Ok(media_type);
     }
-    Err(peryx_upstream::UpstreamError::UnsupportedContentType {
-        url: url.clone(),
-        content_type: value.to_owned(),
+    Err(peryx_upstream::UpstreamError::InvalidResponse {
+        reason: format!("unsupported provenance Content-Type {value:?} from {url}"),
     }
     .into())
 }
@@ -738,9 +738,5 @@ struct UpstreamEnvelope<'a> {
 }
 
 #[cfg(test)]
-mod tests {
-    #[test]
-    fn test_artifact_project_falls_back_for_a_legacy_distribution() {
-        assert_eq!(super::artifact_project("Legacy_Name-1.0.egg"), "legacy-name");
-    }
-}
+#[path = "../../tests/unit/cache/provenance/tests.rs"]
+mod tests;

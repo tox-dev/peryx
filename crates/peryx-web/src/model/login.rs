@@ -25,3 +25,7 @@ impl UiLoginState {
         Self { user, providers }
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/model/login/tests.rs"]
+mod tests;

@@ -12,9 +12,9 @@ pub struct UiPolicyDecisionPage {
 pub struct UiPolicyDecision {
     pub id: String,
     pub repository: String,
-    pub project: String,
-    pub version: Option<String>,
-    pub filename: Option<String>,
+    pub resource: String,
+    pub group: Option<String>,
+    pub artifact: Option<String>,
     pub source: Option<String>,
     pub action: String,
     pub state: String,
@@ -48,7 +48,7 @@ impl UiPolicyDecision {
 
     #[must_use]
     pub fn next_eligible_at(&self) -> String {
-        self.next_eligible_at_unix.map_or_else(|| "—".to_owned(), format_unix)
+        self.next_eligible_at_unix.map_or_else(|| "-".to_owned(), format_unix)
     }
 }
 

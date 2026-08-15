@@ -1,9 +1,12 @@
 //! Core-metadata parsing: the `METADATA` document of a wheel (also served as the PEP 658 sibling),
 //! RFC 822-style headers followed by an optional long-description body.
 
+#[cfg(feature = "serving")]
 use std::collections::HashMap;
 
+#[cfg(feature = "serving")]
 use crate::distribution_version_segment;
+#[cfg(feature = "serving")]
 use crate::version::{Version, VersionKey, parse_version, version_key, version_order_desc};
 
 /// The fields of a core-metadata document that the web UI presents, in the spirit of a pypi.org
@@ -99,8 +102,6 @@ const SINGLE_USE_FIELDS: [&str; 16] = [
     "requires-python",
 ];
 
-/// Parse a core-metadata document.
-///
 /// # Errors
 /// Returns [`MetadataError`] when the header block is not a well-formed RFC 822 message, or when a
 /// single-use field repeats.
@@ -232,11 +233,9 @@ fn public_imports(values: &[String]) -> Vec<String> {
 }
 
 impl CoreMetadataDoc {
-    /// Turn this `PyPI` core-metadata document into the neutral view model the web UI renders, mapping
-    /// each header to a metadata-panel block the way a pypi.org project page presents it.
     #[must_use]
-    pub fn to_ui_meta(&self) -> peryx_core::UiMeta {
-        use peryx_core::{UiBlock, UiMeta};
+    pub fn to_ui_meta(&self) -> crate::view::MetadataView {
+        use crate::view::{MetadataBlock, MetadataView};
 
         let mut blocks = Vec::new();
         for (label, value) in [
@@ -248,7 +247,7 @@ impl CoreMetadataDoc {
             ("Maintainer Email", self.maintainer_email.as_ref()),
         ] {
             if let Some(value) = value {
-                blocks.push(UiBlock::KeyValue {
+                blocks.push(MetadataBlock::KeyValue {
                     label: label.to_owned(),
                     value: value.clone(),
                 });
@@ -256,7 +255,7 @@ impl CoreMetadataDoc {
         }
         for (label, values) in [("Keywords", &self.keywords), ("Dependencies", &self.requires_dist)] {
             if !values.is_empty() {
-                blocks.push(UiBlock::Chips {
+                blocks.push(MetadataBlock::Chips {
                     label: label.to_owned(),
                     values: values.clone(),
                 });
@@ -268,7 +267,7 @@ impl CoreMetadataDoc {
         ] {
             let names = public_imports(values);
             if !names.is_empty() {
-                blocks.push(UiBlock::Chips {
+                blocks.push(MetadataBlock::Chips {
                     label: label.to_owned(),
                     values: names,
                 });
@@ -286,18 +285,18 @@ impl CoreMetadataDoc {
             links.push(("Homepage".to_owned(), home_page.clone()));
         }
         if !links.is_empty() {
-            blocks.push(UiBlock::Links {
+            blocks.push(MetadataBlock::Links {
                 label: "Links".to_owned(),
                 links,
             });
         }
         if let Some(groups) = classifier_groups(&self.classifiers) {
-            blocks.push(UiBlock::Groups {
+            blocks.push(MetadataBlock::Groups {
                 label: "Classifiers".to_owned(),
                 groups,
             });
         }
-        UiMeta {
+        MetadataView {
             version: non_empty(&self.version),
             summary: self.summary.clone(),
             description: self.render_description(),
@@ -362,21 +361,19 @@ fn classifier_groups(classifiers: &[String]) -> Option<Vec<(String, Vec<String>)
     Some(groups)
 }
 
-/// Parse a `PyPI` core-metadata document straight into the neutral [`UiMeta`](peryx_core::UiMeta) the
-/// web UI renders.
-///
 /// # Errors
 /// Returns [`MetadataError`] when the document's header block is malformed.
-pub fn ui_meta(metadata_text: &str) -> Result<peryx_core::UiMeta, MetadataError> {
+pub fn ui_meta(metadata_text: &str) -> Result<crate::view::MetadataView, MetadataError> {
     Ok(parse_metadata(metadata_text)?.to_ui_meta())
 }
 
-/// Build a neutral [`UiProject`](peryx_core::UiProject) from a PEP 691 project-detail JSON document.
+/// Build a neutral [`ProjectView`](crate::view::ProjectView) from a PEP 691 project-detail document.
 ///
 /// This is the shape the web project page renders. The `PyPI`-specific field names (`core-metadata`,
 /// PEP 592 `yanked`) are read here so the UI never sees them.
 #[must_use]
-pub fn ui_project_from_detail(value: &serde_json::Value) -> peryx_core::UiProject {
+#[cfg(feature = "serving")]
+pub fn ui_project_from_detail(value: &serde_json::Value) -> crate::view::ProjectView {
     fn string_at(value: &serde_json::Value, key: &str) -> String {
         value[key].as_str().unwrap_or_default().to_owned()
     }
@@ -394,57 +391,60 @@ pub fn ui_project_from_detail(value: &serde_json::Value) -> peryx_core::UiProjec
         .flatten()
         .map(|file| {
             let filename = string_at(file, "filename");
+            let browsable = crate::archive::is_supported_archive(&filename);
             let release = distribution_version_segment(&filename)
                 .and_then(|version| release_by_key.get(&version_key(version)).copied().flatten())
                 .map(str::to_owned);
-            peryx_core::UiFile {
+            crate::view::FileView {
                 filename,
                 release,
                 url: string_at(file, "url"),
                 sha256: file["hashes"]["sha256"].as_str().unwrap_or_default().to_owned(),
                 size: file["size"].as_u64(),
                 upload_time: file["upload-time"].as_str().map(str::to_owned),
-                yanked: file_yanked(file),
-                yanked_reason: file["yanked"]
-                    .as_str()
-                    .filter(|reason| !reason.is_empty())
-                    .map(str::to_owned),
+                lifecycle: file_yanked(file).then(|| crate::view::LifecycleView {
+                    label: "yanked".to_owned(),
+                    reasons: file["yanked"]
+                        .as_str()
+                        .filter(|reason| !reason.is_empty())
+                        .map(str::to_owned)
+                        .into_iter()
+                        .collect(),
+                }),
                 has_metadata: file["core-metadata"].is_object() || file["core-metadata"].as_bool() == Some(true),
-                // PEP 740 provenance sits on the file it belongs to; an explicit `null` or empty URL
-                // carries none, and the renderer vets the scheme before it becomes a link.
+                browsable,
                 provenance: file["provenance"]
                     .as_str()
                     .filter(|url| !url.is_empty())
                     .map(str::to_owned),
-                // The panel is resolved from stored metadata in `serving::web::project_page`; a file
-                // parsed straight from the wire document carries none yet.
                 provenance_detail: None,
                 upstream: None,
-                // The wire document names an upstream catalog entry, so a file starts proxied and not
-                // yet local; `serving::web::project_page` resolves both against the placement store.
                 source: peryx_core::UiArtifactSource::Proxy,
                 availability: peryx_core::UiByteAvailability::RemoteOnly,
             }
         })
         .collect();
-    peryx_core::UiProject {
+    crate::view::ProjectView {
         name: string_at(value, "name"),
         status: project_status(value),
         versions,
         files,
+        actions: Vec::new(),
+        client_command: None,
     }
 }
 
 /// The publish status the page flags, drawn from the PEP 792 `project-status` marker in the detail
 /// document's `meta`. Active, absent, and unrecognized markers carry `None`, so the page flags only a
 /// state that departs from serving the project as usual.
-fn project_status(value: &serde_json::Value) -> Option<Box<peryx_core::UiProjectStatus>> {
+#[cfg(feature = "serving")]
+fn project_status(value: &serde_json::Value) -> Option<Box<crate::view::ProjectStatusView>> {
     let meta = &value["meta"];
     let status = meta["project-status"]
         .as_str()
         .and_then(crate::ProjectStatus::from_marker)
         .filter(|status| *status != crate::ProjectStatus::Active)?;
-    Some(Box::new(peryx_core::UiProjectStatus {
+    Some(Box::new(crate::view::ProjectStatusView {
         marker: status.marker().to_owned(),
         reason: meta["project-status-reason"]
             .as_str()
@@ -454,6 +454,7 @@ fn project_status(value: &serde_json::Value) -> Option<Box<peryx_core::UiProject
 }
 
 /// PEP 592 spells a yank as `true` or as the reason itself, so a string counts as a yank too.
+#[cfg(feature = "serving")]
 fn file_yanked(file: &serde_json::Value) -> bool {
     file["yanked"].as_bool().unwrap_or(false) || file["yanked"].is_string()
 }
@@ -467,7 +468,8 @@ fn file_yanked(file: &serde_json::Value) -> bool {
 /// Releases sort newest-first under PEP 440 so the page shows an ordered history even when an upstream
 /// lists its versions out of order; a version that does not parse keeps its listed order after the
 /// parseable ones.
-fn releases(value: &serde_json::Value) -> Vec<peryx_core::UiRelease> {
+#[cfg(feature = "serving")]
+fn releases(value: &serde_json::Value) -> Vec<crate::view::ReleaseView> {
     let mut yanks: HashMap<VersionKey, ReleaseYank> = HashMap::new();
     for file in value["files"].as_array().into_iter().flatten() {
         let Some(version) = file["filename"].as_str().and_then(distribution_version_segment) else {
@@ -482,7 +484,7 @@ fn releases(value: &serde_json::Value) -> Vec<peryx_core::UiRelease> {
             yank.reasons.push(reason.to_owned());
         }
     }
-    let mut releases: Vec<(Option<Version>, peryx_core::UiRelease)> = value["versions"]
+    let mut releases: Vec<(Option<Version>, crate::view::ReleaseView)> = value["versions"]
         .as_array()
         .into_iter()
         .flatten()
@@ -491,10 +493,13 @@ fn releases(value: &serde_json::Value) -> Vec<peryx_core::UiRelease> {
             let yank = yanks.get(&version_key(version)).filter(|yank| !yank.active);
             (
                 parse_version(version),
-                peryx_core::UiRelease {
+                crate::view::ReleaseView {
                     version: version.to_owned(),
-                    yanked: yank.is_some(),
-                    yanked_reasons: yank.map(|yank| yank.reasons.clone()).unwrap_or_default(),
+                    lifecycle: yank.map(|yank| crate::view::LifecycleView {
+                        label: "yanked".to_owned(),
+                        reasons: yank.reasons.clone(),
+                    }),
+                    actions: Vec::new(),
                 },
             )
         })
@@ -503,6 +508,7 @@ fn releases(value: &serde_json::Value) -> Vec<peryx_core::UiRelease> {
     releases.into_iter().map(|(_, release)| release).collect()
 }
 
+#[cfg(feature = "serving")]
 #[derive(Default)]
 struct ReleaseYank {
     /// Whether any file of the release is still usable, which keeps the whole release active.

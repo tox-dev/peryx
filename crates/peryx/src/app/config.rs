@@ -1,17 +1,33 @@
-//! The `config check` command: preflight a resolved configuration.
-
 use std::io::Write;
 
 use crate::config::{AvailabilityConfig, Config, ReplicationConfig, TlsConfig};
 use crate::server;
 
-/// Run `peryx config check`: report whether the server would accept this configuration.
-///
 /// # Errors
 /// Returns the configuration error the server would hit while assembling its state, or an output
 /// error while writing the summary.
 pub fn config_check(config: &Config, out: &mut dyn Write) -> anyhow::Result<()> {
-    server::check_config(config)?;
+    config_check_with_plugins(config, &crate::compiled_plugins(), out)
+}
+
+/// # Errors
+///
+/// Returns an error when validation, state assembly, or output fails.
+pub fn config_check_with_plugins(
+    config: &Config,
+    plugins: &peryx_plugin_registry::PluginRegistry,
+    out: &mut dyn Write,
+) -> anyhow::Result<()> {
+    let plugins = server::activate_plugins(config, plugins)?;
+    config_check_with_active_plugins(config, &plugins, out)
+}
+
+pub fn config_check_with_active_plugins(
+    config: &Config,
+    plugins: &peryx_plugin_registry::PluginRegistry,
+    out: &mut dyn Write,
+) -> anyhow::Result<()> {
+    server::check_config_with_active_plugins(config, plugins)?;
     writeln!(out, "configuration is valid")?;
     let scheme = match &config.tls {
         None => "http",
@@ -48,3 +64,7 @@ fn availability_summary(config: &Config) -> String {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/tests/app/config_tests.rs"]
+mod tests;

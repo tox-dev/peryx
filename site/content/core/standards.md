@@ -1,43 +1,21 @@
 +++
 title = "Standards"
-description = "How peryx relates to the interoperability standards each ecosystem defines, and where the per-ecosystem specs live."
+description = "Find the interoperability standards implemented by each ecosystem."
 weight = 4
 +++
 
-peryx implements the interoperability standards that let unmodified clients talk to it. Those standards are
-ecosystem-specific: Python has the packaging [PEPs](https://peps.python.org/), containers have the
-[OCI](https://opencontainers.org/) specifications. The detailed maps live on each ecosystem's own Standards page. This
-page is the frame they share.
+Each owner crate implements its protocol and registers ecosystem-neutral core capabilities. A cached repository parses
+upstream responses and serves client responses. A hosted repository validates incoming content before storing it.
 
-## peryx sits on both sides
+The core repository model supplies two shared properties:
 
-Whatever it serves, peryx is two things at once: a **server** answering your clients, and a **client** fetching from its
-upstreams. So every standard has a "served" side and a "parsed" side. A [cached](@/core/indexes.md) index parses an
-upstream's responses and re-serves them in the modern wire format; a [hosted](@/core/indexes.md) index validates what
-you publish before it stores it. The per-ecosystem pages mark which direction each spec applies to.
+- The storage layer verifies immutable content against the digest supplied by the owner.
+- An owner may retain usable cached state when an upstream request fails.
 
-## What holds across ecosystems
+Protocol negotiation, media types, response formats, digest rules, and status mappings belong to the ecosystem
+references:
 
-Two guarantees are ecosystem-neutral, and both come from the [index model](@/core/indexes.md) rather than any one
-protocol:
+- [Ecosystem owner documentation](@/ecosystems/_index.md)
+- [Capability matrix](@/ecosystems/capabilities.md)
 
-- **Content-addressing.** Every artifact is stored and verified by the sha256 of its bytes, so a file needed by many
-  projects is stored once and a client always verifies what it received against the hash the index advertised.
-- **Graceful degradation.** When an upstream implements only part of its ecosystem's stack, peryx fills the gap where it
-  can and degrades per file rather than per index, then re-serves the richest format its own clients can use. An
-  upstream fault becomes a `502`, never a client error the caller would not retry.
-
-## The per-ecosystem maps
-
-- [PyPI standards](@/ecosystems/pypi/reference/standards.md): the
-  [Simple API](https://packaging.python.org/en/latest/specifications/simple-repository-api/) and the packaging PEPs
-  (503/691, 700, 592, 658/714, 440, 427/625, core metadata, legacy JSON and upload).
-- [OCI standards](@/ecosystems/oci/reference/standards.md): the
-  [distribution spec](https://github.com/opencontainers/distribution-spec) `/v2/` API, the
-  [image spec](https://github.com/opencontainers/image-spec) manifests and blobs, the referrers API, and bearer-token
-  auth.
-
-## In practice
-
-- The machinery that serves these: [architecture](@/core/architecture.md)
-- What each ecosystem supports: [capability matrix](@/core/capabilities.md)
+See [code architecture](@/contributing/architecture.md) for the boundary between core contracts and ecosystem crates.

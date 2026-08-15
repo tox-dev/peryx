@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$repo"
+requested_output=${1:?pass an output path}
+shift
+output_parent=$(dirname -- "$requested_output")
+mkdir -p "$output_parent"
+output_parent=$(cd "$output_parent" && pwd -P)
+output="$output_parent/$(basename -- "$requested_output")"
+contract_output="$output_parent/$(basename -- "${requested_output%.*}.contracts")"
+rm -f "$output"
+rm -rf "$contract_output"
+session=$(mktemp -d "$output_parent/.${output##*/}.session.XXXXXX")
+staged_output="$session/${output##*/}"
+staged_contracts="$session/${contract_output##*/}"
+scratch="$session/work"
+mkdir "$scratch" "$staged_contracts"
+published=0
+cleanup() {
+  rm -rf "$session"
+  if ((!published)); then
+    rm -f "$output"
+    rm -rf "$contract_output"
+  fi
+}
+trap cleanup EXIT
+.github/scripts/check-coverage-contracts "$@"
+.github/scripts/coverage-combine "$staged_output" "$@"
+.github/scripts/check-lcov-sources "$staged_output"
+env COVERAGE_REQUIRE_EXECUTABLE=1 .github/scripts/check-lcov-functions.awk "$staged_output"
+env COVERAGE_REQUIRE_EXECUTABLE=1 .github/scripts/check-lcov-lines.awk "$staged_output"
+
+cargo metadata --no-deps --format-version 1 >"$scratch/metadata.json"
+.github/scripts/package-source-roots --metadata "$scratch/metadata.json" --index >"$scratch/root-index"
+scripts/ci/workspace-package-list system >"$scratch/system-packages"
+policy_digest=$(.github/scripts/coverage-contract policy-digest)
+while IFS= read -r package; do
+  .github/scripts/check-lcov-sources --metadata "$scratch/metadata.json" \
+    --root-index "$scratch/root-index" "$staged_output" "$package"
+  while IFS= read -r source_root; do
+    env COVERAGE_ROOT="$source_root" COVERAGE_REQUIRE_EXECUTABLE=1 \
+      .github/scripts/check-lcov-functions.awk "$staged_output"
+    env COVERAGE_ROOT="$source_root" COVERAGE_REQUIRE_EXECUTABLE=1 \
+      .github/scripts/check-lcov-lines.awk "$staged_output"
+  done < <(awk -F '\t' -v package="$package" '$1 == package { print $2 }' "$scratch/root-index")
+  digest=$(.github/scripts/coverage-contract digest --metadata "$scratch/metadata.json" \
+    --root-index "$scratch/root-index" "$package")
+  .github/scripts/coverage-contract write --metadata "$scratch/metadata.json" \
+    --root-index "$scratch/root-index" --expected-digest "$digest" \
+    --expected-policy-digest "$policy_digest" "$staged_output" \
+    "$staged_contracts/$package.contract.json" "$package"
+done <"$scratch/system-packages"
+.github/scripts/check-coverage-contracts --metadata "$scratch/metadata.json" \
+  --root-index "$scratch/root-index" --packages-file "$scratch/system-packages" \
+  "$staged_contracts" "$staged_output"
+mv "$staged_output" "$output"
+mv "$staged_contracts" "$contract_output"
+published=1

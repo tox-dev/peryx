@@ -1,12 +1,6 @@
-//! Persistent repository records: the durable definition a management API creates, inspects, lists,
-//! updates, and disables, versioned so an update can carry a precondition.
-//!
-//! A repository is identified by an opaque [`RepositoryId`] that survives display-name changes, and
-//! addressed on the wire by a unique `route`. The `definition` is an ecosystem-agnostic JSON envelope
-//! the store never interprets — the format-specific shape and its validation live in the ecosystem
-//! crates, so this neutral store grows no per-ecosystem tables. Each mutation bumps a monotonic
-//! [`version`](RepositoryRecord::version), the strong validator an update or disable checks its
-//! precondition against, and the whole change commits in one redb transaction.
+//! [`RepositoryId`] values survive display-name changes, while unique routes identify repositories on
+//! the wire. The store keeps definitions as opaque JSON; ecosystem crates own their shape and
+//! validation. Each mutation uses one transaction and advances the version used for precondition checks.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -23,14 +17,12 @@ const MAX_ROUTE_BYTES: usize = 512;
 const MAX_DISPLAY_NAME_BYTES: usize = 256;
 const MAX_ECOSYSTEM_BYTES: usize = 64;
 
-/// An opaque repository identifier that stays stable when a repository's display name or definition
-/// changes, so a rename never re-homes the records that reference it.
+/// Stable across display-name and definition changes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct RepositoryId(String);
 
 impl RepositoryId {
-    /// Mint a fresh random identifier.
     #[must_use]
     pub fn random() -> Self {
         Self(format!("repo_{}", uuid::Uuid::new_v4().simple()))
@@ -48,8 +40,7 @@ impl fmt::Display for RepositoryId {
     }
 }
 
-/// Whether a repository is serving or has been administratively turned off. Disable is reversible and
-/// keeps the record, so a repository can be re-enabled without recreating it.
+/// Disabling keeps the record and can be reversed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RepositoryState {
@@ -57,11 +48,7 @@ pub enum RepositoryState {
     Disabled,
 }
 
-/// The durable definition of one repository.
-///
-/// `route`, `ecosystem`, and `id` are fixed for the record's life; a display-name change or a
-/// definition edit keeps all three so references stay valid. `definition` is opaque JSON the store
-/// never reads.
+/// `route`, `ecosystem`, and `id` are immutable. The store does not interpret `definition`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepositoryRecord {
     pub id: RepositoryId,
@@ -77,7 +64,7 @@ pub struct RepositoryRecord {
     pub updated_at_unix: i64,
 }
 
-/// The fields a create supplies; the store assigns the id, version, state, and timestamps.
+/// The store assigns the ID, version, state, and timestamps.
 #[derive(Debug)]
 pub struct NewRepository {
     pub route: String,
@@ -87,15 +74,14 @@ pub struct NewRepository {
     pub created_by: UserId,
 }
 
-/// The fields an update replaces. `route` and `ecosystem` are immutable, so they are absent here.
+/// `route` and `ecosystem` are immutable.
 #[derive(Debug)]
 pub struct RepositoryUpdate {
     pub display_name: String,
     pub definition: serde_json::Value,
 }
 
-/// A rejected repository field: a create or update validates the definition before it opens a
-/// transaction, so an invalid request never touches the store.
+/// Field validation runs before opening a transaction.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum RepositoryFieldError {
     #[error("repository route must not be empty")]
@@ -112,7 +98,6 @@ pub enum RepositoryFieldError {
     EcosystemTooLong,
 }
 
-/// A rejected repository create.
 #[derive(Debug, thiserror::Error)]
 pub enum CreateRepositoryError {
     #[error(transparent)]
@@ -123,8 +108,7 @@ pub enum CreateRepositoryError {
     DuplicateRoute { route: String },
 }
 
-/// A rejected repository update. `VersionConflict` reports the winning version so a caller can refetch
-/// and retry.
+/// `VersionConflict` reports the stored version for refetch and retry.
 #[derive(Debug, thiserror::Error)]
 pub enum UpdateRepositoryError {
     #[error(transparent)]
@@ -137,7 +121,6 @@ pub enum UpdateRepositoryError {
     VersionConflict { current: u64 },
 }
 
-/// A rejected enable or disable transition.
 #[derive(Debug, thiserror::Error)]
 pub enum RepositoryStateError {
     #[error(transparent)]
@@ -148,7 +131,7 @@ pub enum RepositoryStateError {
     VersionConflict { current: u64 },
 }
 
-/// A bounded, stable query over repository records in identifier order.
+/// A bounded query in identifier order with an exclusive cursor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepositoryQuery {
     pub state: Option<RepositoryState>,
@@ -166,14 +149,12 @@ impl Default for RepositoryQuery {
     }
 }
 
-/// One bounded page of repository records in identifier order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RepositoryPage {
     pub repositories: Vec<RepositoryRecord>,
     pub next_cursor: Option<String>,
 }
 
-/// A rejected repository list.
 #[derive(Debug, thiserror::Error)]
 pub enum RepositoryQueryError {
     #[error(transparent)]
@@ -182,11 +163,7 @@ pub enum RepositoryQueryError {
     InvalidLimit,
 }
 
-/// One repository a configuration source wants persisted, matched to a record by its route.
-///
-/// A migration builds one of these per configured repository. The route is the match key: a route
-/// already backed by a record keeps that record's identifier and version lineage, so a repository
-/// carried over from TOML is never re-homed.
+/// Reconciliation matches by route and preserves an existing record's ID and version lineage.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesiredRepository {
     pub route: String,
@@ -195,7 +172,6 @@ pub struct DesiredRepository {
     pub definition: serde_json::Value,
 }
 
-/// What [`reconcile_repositories`](MetaStore::reconcile_repositories) did for one desired repository.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReconcileAction {
     Created,
@@ -203,15 +179,12 @@ pub enum ReconcileAction {
     Unchanged,
 }
 
-/// The record a reconcile settled on for one route, and how it got there.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReconciledRepository {
     pub record: RepositoryRecord,
     pub action: ReconcileAction,
 }
 
-/// A rejected reconcile. The whole batch commits or none of it does, so any of these leaves every
-/// record untouched.
 #[derive(Debug, thiserror::Error)]
 pub enum ReconcileRepositoryError {
     #[error(transparent)]
@@ -229,11 +202,12 @@ pub enum ReconcileRepositoryError {
 }
 
 impl MetaStore {
-    /// Create a repository at version 1, rejecting a route another repository already holds.
+    /// Creates version 1 only when the route is unclaimed.
     ///
     /// # Errors
-    /// Returns [`RepositoryFieldError`] for an empty or oversized field, [`CreateRepositoryError::DuplicateRoute`]
-    /// when the route is taken, or a store error when the record cannot be encoded or committed.
+    /// Returns [`RepositoryFieldError`] for an empty or oversized field,
+    /// [`CreateRepositoryError::DuplicateRoute`] for a claimed route, or a store error when encoding or
+    /// committing fails.
     pub fn create_repository(&self, new: NewRepository, now: i64) -> Result<RepositoryRecord, CreateRepositoryError> {
         validate_route(&new.route)?;
         validate_display_name(&new.display_name)?;
@@ -274,10 +248,8 @@ impl MetaStore {
         Ok(record)
     }
 
-    /// Inspect one repository by its identifier.
-    ///
     /// # Errors
-    /// Returns a store error when the record cannot be read or decoded.
+    /// Returns a store error when reading or decoding fails.
     pub fn repository(&self, id: &RepositoryId) -> Result<Option<RepositoryRecord>, MetaError> {
         let txn = self.db.begin_read()?;
         let table = txn.open_table(REPOSITORY)?;
@@ -287,10 +259,8 @@ impl MetaStore {
             .transpose()?)
     }
 
-    /// Inspect the repository serving `route`, resolved through the route index.
-    ///
     /// # Errors
-    /// Returns a store error when the record cannot be read or decoded.
+    /// Returns a store error when reading or decoding fails.
     pub fn repository_by_route(&self, route: &str) -> Result<Option<RepositoryRecord>, MetaError> {
         let txn = self.db.begin_read()?;
         let id = txn
@@ -307,13 +277,12 @@ impl MetaStore {
             .transpose()?)
     }
 
-    /// Replace a repository's display name and definition, requiring `expected_version` to match, and
-    /// commit the next version. The identifier, route, and ecosystem are preserved.
+    /// Requires `expected_version` to match and preserves the ID, route, and ecosystem.
     ///
     /// # Errors
     /// Returns [`RepositoryFieldError`] for an invalid display name, [`UpdateRepositoryError::NotFound`]
-    /// when no record holds the identifier, [`UpdateRepositoryError::VersionConflict`] when the
-    /// precondition is stale, or a store error when the record cannot be read, encoded, or committed.
+    /// for an unknown ID, [`UpdateRepositoryError::VersionConflict`] for a stale precondition, or a
+    /// store error when reading, encoding, or committing fails.
     pub fn update_repository(
         &self,
         id: &RepositoryId,
@@ -340,14 +309,13 @@ impl MetaStore {
         Ok(record)
     }
 
-    /// Enable or disable a repository, requiring `expected_version` to match. A transition commits the
-    /// next version; a request for the state a repository already holds is an idempotent no-op that
-    /// returns the record unchanged.
+    /// Requires `expected_version` to match. Repeating the current state returns the record unchanged;
+    /// a transition advances the version.
     ///
     /// # Errors
-    /// Returns [`RepositoryStateError::NotFound`] when no record holds the identifier,
-    /// [`RepositoryStateError::VersionConflict`] when the precondition is stale, or a store error when
-    /// the record cannot be read, encoded, or committed.
+    /// Returns [`RepositoryStateError::NotFound`] for an unknown ID,
+    /// [`RepositoryStateError::VersionConflict`] for a stale precondition, or a store error when
+    /// reading, encoding, or committing fails.
     pub fn set_repository_enabled(
         &self,
         id: &RepositoryId,
@@ -380,11 +348,11 @@ impl MetaStore {
         Ok(record)
     }
 
-    /// List repositories in identifier order with an exclusive cursor, optionally filtered by state.
+    /// Lists repositories in ID order after an exclusive cursor, with an optional state filter.
     ///
     /// # Errors
-    /// Returns [`RepositoryQueryError::InvalidLimit`] for an out-of-range limit, or a store error when
-    /// rows cannot be read or decoded.
+    /// Returns [`RepositoryQueryError::InvalidLimit`] for a limit outside 1 through 100, or a store
+    /// error when reading or decoding fails.
     pub fn list_repositories(&self, query: &RepositoryQuery) -> Result<RepositoryPage, RepositoryQueryError> {
         if !(1..=MAX_QUERY_LIMIT).contains(&query.limit) {
             return Err(RepositoryQueryError::InvalidLimit);
@@ -419,21 +387,14 @@ impl MetaStore {
         })
     }
 
-    /// Reconcile the store against a configuration source, minting a stable identifier for each new
-    /// route and preserving the identifier of every route already backed by a record.
-    ///
-    /// A route absent from the store is created at version 1; a route whose display name or definition
-    /// changed commits its next version; an unchanged route keeps its version. Routes in the store but
-    /// absent from `desired` are left untouched, so a stable identifier outlives a configuration edit
-    /// that stops mentioning it. Ecosystem is immutable: a route whose configured ecosystem no longer
-    /// matches its record is rejected rather than re-homed. The whole batch commits in one transaction,
-    /// so any rejection leaves every record untouched.
+    /// Matches records by route. New routes start at version 1, changed records advance their version,
+    /// and unchanged or omitted routes retain their records. Ecosystem changes fail the atomic batch.
     ///
     /// # Errors
-    /// Returns [`ReconcileRepositoryError::DuplicateRoute`] when `desired` names one route twice,
-    /// [`ReconcileRepositoryError::EcosystemChanged`] when a route's ecosystem no longer matches its
-    /// record, [`RepositoryFieldError`] for an invalid field, or a store error when the batch cannot be
-    /// read, encoded, or committed.
+    /// Returns [`ReconcileRepositoryError::DuplicateRoute`] for duplicate desired routes,
+    /// [`ReconcileRepositoryError::EcosystemChanged`] for an ecosystem mismatch,
+    /// [`RepositoryFieldError`] for an invalid field, or a store error when reading, encoding, or
+    /// committing fails.
     pub fn reconcile_repositories(
         &self,
         desired: &[DesiredRepository],

@@ -1,9 +1,3 @@
-//! The `OpenAPI` builders every ecosystem's operations share, plus peryx's own per-index endpoints.
-//!
-//! An ecosystem crate describes its own wire protocol with these. The two operations here — `+api`
-//! and `+search` — are peryx's own, served for every index whatever ecosystem it speaks, so each
-//! driver mounts them under its route rather than redescribing them.
-
 use serde_json::json;
 use utoipa::openapi::content::ContentBuilder;
 use utoipa::openapi::path::{OperationBuilder, ParameterBuilder, ParameterIn};
@@ -15,8 +9,8 @@ pub fn route_param() -> ParameterBuilder {
         .name("route")
         .parameter_in(ParameterIn::Path)
         .required(Required::True)
-        .description(Some("The index route, for example `root/pypi`"))
-        .example(Some(json!("root/pypi")))
+        .description(Some("The index route, for example `team/catalog`"))
+        .example(Some(json!("team/catalog")))
 }
 
 #[must_use]
@@ -44,24 +38,24 @@ pub fn text_response(description: &str, content_type: &str, example: &str) -> Re
 }
 
 #[must_use]
-pub fn package_search(scoped: bool) -> OperationBuilder {
+pub fn artifact_search(scoped: bool) -> OperationBuilder {
     let mut operation = OperationBuilder::new()
         .tag("search")
         .summary(Some(if scoped {
             "Search one index route"
         } else {
-            "Search cached packages"
+            "Search cached resources"
         }))
         .description(Some(
-            "Searches the derived package index built from cached simple pages, local uploads, \
-             and cached core metadata. `q` uses substring matching; prefix it with `re:` for a \
-             regex. Index policy removes denied packages before indexing. Results are sorted \
+            "Searches the derived artifact index built from cached listings, local writes, \
+             and cached metadata. `q` uses substring matching; prefix it with `re:` for a \
+             regex. Index policy removes denied entries before indexing. Results are sorted \
              by display name and paged without collecting every match.",
         ))
         .parameter(query_param(
             "q",
             "Search text. Prefix with `re:` to use a regex.",
-            json!("flask"),
+            json!("widget"),
         ))
         .parameter(query_param(
             "type",
@@ -70,8 +64,8 @@ pub fn package_search(scoped: bool) -> OperationBuilder {
         ))
         .parameter(query_param(
             "availability",
-            "`local` returns only packages whose bytes are available from local storage now; omit or \
-             `all` returns every indexed package.",
+            "`local` returns only resources whose bytes are available from local storage now; omit or \
+             `all` returns every indexed resource.",
             json!("local"),
         ))
         .parameter(query_param("page", "One-based page number.", json!(1)))
@@ -81,20 +75,20 @@ pub fn package_search(scoped: bool) -> OperationBuilder {
             api_json_response(
                 "Search results",
                 json!({
-                    "query": "flask",
+                    "query": "widget",
                     "type": "all",
                     "availability": "all",
                     "page": 1,
                     "page_size": 25,
                     "total": 1,
                     "results": [{
-                        "display_name": "Flask",
-                        "normalized_name": "flask",
-                        "route": "root/pypi",
-                        "index": "root/pypi",
+                        "display_name": "Widget",
+                        "normalized_name": "widget",
+                        "route": "team/catalog",
+                        "index": "team/catalog",
                         "type": "cached",
                         "available": true,
-                        "summary": "A simple framework for building complex web applications.",
+                        "summary": "An indexed artifact.",
                     }],
                 }),
             ),
@@ -103,7 +97,7 @@ pub fn package_search(scoped: bool) -> OperationBuilder {
             "400",
             api_json_response(
                 "Invalid search parameters",
-                json!({"error": "invalid package source type"}),
+                json!({"error": "invalid resource source type"}),
             ),
         );
     if scoped {

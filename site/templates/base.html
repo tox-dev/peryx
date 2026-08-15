@@ -3,19 +3,19 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}{{ config.title }} — fast package and container registry{% endblock title %}</title>
+  <title>{% block title %}{{ config.title }} | artifact service{% endblock title %}</title>
   {%- if page %}
     {%- set seo_desc = page.description | default(value=config.description) %}
     {%- set seo_url = page.permalink %}
-    {%- set seo_title = page.title ~ " — " ~ config.title %}
+    {%- set seo_title = page.title ~ " | " ~ config.title %}
   {%- elif section and section.title %}
     {%- set seo_desc = section.description | default(value=config.description) %}
     {%- set seo_url = section.permalink %}
-    {%- set seo_title = section.title ~ " — " ~ config.title %}
+    {%- set seo_title = section.title ~ " | " ~ config.title %}
   {%- else %}
     {%- set seo_desc = config.description %}
     {%- set seo_url = get_url(path="@/_index.md") %}
-    {%- set seo_title = config.title ~ " — fast package and container registry" %}
+    {%- set seo_title = config.title ~ " | artifact proxy and registry" %}
   {%- endif %}
   <meta name="description" content="{{ seo_desc }}">
   <link rel="canonical" href="{{ seo_url | safe }}">
@@ -31,9 +31,7 @@
   <meta name="theme-color" content="#f74c00">
   <link rel="icon" type="image/svg+xml" href="{{ get_url(path='icon.svg') }}">
   <script>
-    // Apply a saved theme before first paint so there is no flash; OS preference stays the default.
-    // Same for the docs rails: restoring them here rather than after load keeps the grid from
-    // reflowing under the reader on every page.
+    // Restore display state before paint to avoid a flash and layout shift.
     (function () {
       var theme = localStorage.getItem("theme");
       if (theme === "light" || theme === "dark") {
@@ -49,7 +47,6 @@
   <link rel="stylesheet" href="{{ get_url(path='style.css') }}">
 </head>
 <body>
-  {# The GitHub mark, defined once for the header link and the landing-page button to reference. #}
   <svg style="display: none" aria-hidden="true">
     <symbol id="icon-github" viewBox="0 0 16 16">
       <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
@@ -151,8 +148,6 @@
       modal.addEventListener("click", function (event) {
         if (event.target === modal) modal.close();
       });
-      // Keyboard navigation over the result links: Up/Down move a highlighted selection, Enter
-      // follows it. A new query (input event) drops the selection.
       var selected = -1;
       function results() {
         return Array.prototype.slice.call(
@@ -182,10 +177,7 @@
           }
         }
       });
-      // Relabel Pagefind's "N results" message to reflect how many are currently shown versus the
-      // total, collapsing back to "N results" once "load more" has revealed them all. The regex
-      // matches both Pagefind's own text and our rewrite, so re-running on our own mutation is a
-      // no-op rather than a loop.
+      // Match Pagefind text and our rewrite so mutation handling converges.
       var searchRoot = document.getElementById("pagefind-search");
       if (searchRoot) {
         var SECTION_LABELS = { core: "Core", tutorials: "Tutorial", guides: "How-to", reference: "Reference", migration: "Migration" };
@@ -228,7 +220,6 @@
       wrap.className = "table-scroll";
       table.parentNode.insertBefore(wrap, table);
       wrap.appendChild(table);
-      // Label each cell with its column header so the table can restack into cards on phones.
       var headers = Array.prototype.map.call(table.querySelectorAll("thead th"), function (th) {
         return th.textContent.trim();
       });
@@ -240,8 +231,6 @@
         });
       }
     });
-    // Freeze offset for the peryx column: measure the label column so the sticky left matches
-    // whatever the widest row label is, in each bench table, and keep it current on resize.
     var benchTables = document.querySelectorAll(".bench-table");
     if (benchTables.length) {
       var sizeBench = function () {
@@ -253,9 +242,6 @@
       sizeBench();
       window.addEventListener("resize", sizeBench);
     }
-    // Each rail can be folded to a stub column that keeps only its toggle, so the same button both
-    // collapses and restores it. The choice is per rail and persists across pages. The button sits
-    // inside the rail's <summary>, so the click has to be stopped from reaching the disclosure.
     document.querySelectorAll(".rail-toggle").forEach(function (button) {
       var rail = button.dataset.rail;
       var label = rail === "nav" ? "documentation sidebar" : "table of contents";
@@ -330,19 +316,13 @@
       });
     });
   </script>
-  {# Mermaid diagrams are pre-rendered to dual-theme SVG at build time (site/scripts/render_diagrams.mjs
-     + inline_diagrams.py), so no diagram JavaScript ships to the built site. The block below is a dev-server
-     fallback: on `zola serve` the inlining step has not run, so the raw `<pre class="mermaid">` blocks survive
-     and this renders them client-side. On the built site none survive, so it never loads mermaid. To match prod
-     exactly it renders each diagram twice (light + dark) into the same `.mermaid-figure` structure the build
-     emits, so the existing CSS shows the SVG for the active theme and the header toggle switches it live. #}
+  {# Development builds need client-side diagram rendering. #}
   <script>
     (function () {
       var blocks = Array.prototype.slice.call(document.querySelectorAll("pre.mermaid"));
       if (!blocks.length) return;
       var sources = blocks.map(function (pre) { return pre.textContent; });
-      // The role palette the build injects (site/scripts/render_diagrams.mjs). Kept in step by hand:
-      // it exists only so a diagram looks the same on the dev server as it does in production.
+      // Keep this palette aligned with render_diagrams.mjs so development matches production.
       var roles = {
         light: {
           accent: "fill:#dbe6f5,stroke:#4a6f9f,color:#16304d",

@@ -68,8 +68,6 @@ pub trait DetailSink {
     /// The sink's own failure, surfaced through the parse as a rejected document.
     type Error: fmt::Display;
 
-    /// Accept one parsed file.
-    ///
     /// # Errors
     /// Returns the sink's error when the file cannot be accepted, which aborts the parse.
     fn file(&mut self, file: File) -> Result<(), Self::Error>;
@@ -269,8 +267,7 @@ pub struct ProjectList {
 /// Serialize a value to PEP 691 JSON.
 ///
 /// # Panics
-/// Never in practice: the model contains only string-keyed maps and plain values, which
-/// `serde_json` always serializes.
+/// Panics if serialization of the PEP 691 model fails.
 #[must_use]
 pub fn to_json<T: Serialize>(value: &T) -> String {
     serde_json::to_string(value).expect("simple-API model always serializes to JSON")

@@ -1,6 +1,3 @@
-//! The repository management API: versioned admin operations to create, inspect, list, update, and
-//! disable repositories.
-//!
 //! Each mutation authenticates an administrator, validates the whole definition, and commits one
 //! repository version. A repository is an opaque record keyed by a stable id and a unique route; the
 //! store keeps the id fixed across a rename, so a reference never re-homes. Updates and state changes
@@ -10,17 +7,19 @@
 
 use std::sync::Arc;
 
+use axum::Extension;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse as _, Response};
 use peryx_driver::authz::{Decision, ScopedDecision};
+use peryx_driver::http_services::{
+    CreateRepositoryError, HttpDomainServices, NewRepository, RepositoryFieldError, RepositoryId, RepositoryQuery,
+    RepositoryQueryError, RepositoryRecord, RepositoryState, RepositoryStateError, RepositoryUpdate,
+    UpdateRepositoryError,
+};
 use peryx_driver::state::AppState;
 use peryx_identity::{Resource, Scope, UserId, parse_basic};
-use peryx_storage::meta::{
-    CreateRepositoryError, NewRepository, RepositoryFieldError, RepositoryId, RepositoryQuery, RepositoryQueryError,
-    RepositoryRecord, RepositoryState, RepositoryStateError, RepositoryUpdate, UpdateRepositoryError,
-};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -55,8 +54,12 @@ pub struct RepositoriesQuery {
     limit: Option<usize>,
 }
 
-/// `POST /+repositories` — create a repository. Requires administrator authority.
-pub async fn create_repository(State(state): State<Arc<AppState>>, headers: HeaderMap, body: Bytes) -> Response {
+pub async fn create_repository(
+    State(state): State<Arc<AppState>>,
+    Extension(services): Extension<HttpDomainServices>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     let (actor, _) = match administrator(&state, &headers, Scope::AdministrationWrite).await {
         Ok(actor) => actor,
         Err(response) => return response,
@@ -72,7 +75,7 @@ pub async fn create_repository(State(state): State<Arc<AppState>>, headers: Head
         definition: create.definition,
         created_by: actor,
     };
-    match state.meta.create_repository(new, now(&state)) {
+    match services.repositories().create(new, now(&state)) {
         Ok(record) => created(&record),
         Err(CreateRepositoryError::DuplicateRoute { route }) => {
             conflict(&format!("a repository already serves route {route:?}"))
@@ -82,9 +85,9 @@ pub async fn create_repository(State(state): State<Arc<AppState>>, headers: Head
     }
 }
 
-/// `GET /+repositories` — list repositories, filtered and paginated. Requires administrator authority.
 pub async fn list_repositories(
     State(state): State<Arc<AppState>>,
+    Extension(services): Extension<HttpDomainServices>,
     headers: HeaderMap,
     Query(query): Query<RepositoriesQuery>,
 ) -> Response {
@@ -96,33 +99,32 @@ pub async fn list_repositories(
         cursor: query.cursor.as_deref().map(repository_id),
         limit: query.limit.unwrap_or_else(|| RepositoryQuery::default().limit),
     };
-    match state.meta.list_repositories(&repository_query) {
+    match services.repositories().list(&repository_query) {
         Ok(page) => json_no_store(StatusCode::OK, &json!(page)),
         Err(RepositoryQueryError::InvalidLimit) => problem(StatusCode::BAD_REQUEST, "limit must be between 1 and 100"),
         Err(RepositoryQueryError::Store(_)) => unavailable(),
     }
 }
 
-/// `GET /+repositories/{id}` — inspect one repository. Requires administrator authority.
 pub async fn inspect_repository(
     State(state): State<Arc<AppState>>,
+    Extension(services): Extension<HttpDomainServices>,
     headers: HeaderMap,
     Path(id): Path<RepositoryId>,
 ) -> Response {
     if let Err(response) = administrator(&state, &headers, Scope::AdministrationRead).await {
         return response;
     }
-    match state.meta.repository(&id) {
+    match services.repositories().inspect(&id) {
         Ok(Some(record)) => record_response(StatusCode::OK, &record),
         Ok(None) => not_found(),
         Err(_) => unavailable(),
     }
 }
 
-/// `PUT /+repositories/{id}` — update a repository's display name and definition. Requires an
-/// administrator and an `If-Match` version.
 pub async fn update_repository(
     State(state): State<Arc<AppState>>,
+    Extension(services): Extension<HttpDomainServices>,
     Path(id): Path<RepositoryId>,
     headers: HeaderMap,
     body: Bytes,
@@ -143,7 +145,10 @@ pub async fn update_repository(
         display_name: update.display_name,
         definition: update.definition,
     };
-    match state.meta.update_repository(&id, expected, update, &actor, now(&state)) {
+    match services
+        .repositories()
+        .update(&id, expected, update, &actor, now(&state))
+    {
         Ok(record) => record_response(StatusCode::OK, &record),
         Err(UpdateRepositoryError::NotFound) => not_found(),
         Err(UpdateRepositoryError::VersionConflict { current }) => version_conflict(current),
@@ -152,27 +157,31 @@ pub async fn update_repository(
     }
 }
 
-/// `POST /+repositories/{id}/disable` — disable a repository. Requires an administrator and an
-/// `If-Match` version.
 pub async fn disable_repository(
     State(state): State<Arc<AppState>>,
+    Extension(services): Extension<HttpDomainServices>,
     Path(id): Path<RepositoryId>,
     headers: HeaderMap,
 ) -> Response {
-    set_enabled(&state, &id, &headers, false).await
+    set_enabled(&state, &services, &id, &headers, false).await
 }
 
-/// `POST /+repositories/{id}/enable` — re-enable a disabled repository. Requires an administrator and
-/// an `If-Match` version.
 pub async fn enable_repository(
     State(state): State<Arc<AppState>>,
+    Extension(services): Extension<HttpDomainServices>,
     Path(id): Path<RepositoryId>,
     headers: HeaderMap,
 ) -> Response {
-    set_enabled(&state, &id, &headers, true).await
+    set_enabled(&state, &services, &id, &headers, true).await
 }
 
-async fn set_enabled(state: &AppState, id: &RepositoryId, headers: &HeaderMap, enabled: bool) -> Response {
+async fn set_enabled(
+    state: &AppState,
+    services: &HttpDomainServices,
+    id: &RepositoryId,
+    headers: &HeaderMap,
+    enabled: bool,
+) -> Response {
     let (actor, _) = match administrator(state, headers, Scope::AdministrationWrite).await {
         Ok(actor) => actor,
         Err(response) => return response,
@@ -181,9 +190,9 @@ async fn set_enabled(state: &AppState, id: &RepositoryId, headers: &HeaderMap, e
         Ok(version) => version,
         Err(rejection) => return rejection.into_response(),
     };
-    match state
-        .meta
-        .set_repository_enabled(id, expected, enabled, &actor, now(state))
+    match services
+        .repositories()
+        .set_enabled(id, expected, enabled, &actor, now(state))
     {
         Ok(record) => record_response(StatusCode::OK, &record),
         Err(RepositoryStateError::NotFound) => not_found(),
@@ -206,12 +215,16 @@ async fn administrator(
         .and_then(parse_basic)
         .ok_or_else(unauthorized)?;
     let actor = state
+        .serving
         .users
         .authenticate(&credentials.user, &credentials.password)
         .await
         .map_err(|_| unavailable())?
         .ok_or_else(unauthorized)?;
-    let decision = state.authorization.authorize_scoped(&actor, scope, &Resource::Operator);
+    let decision = state
+        .serving
+        .authorization
+        .authorize_scoped(&actor, scope, &Resource::Operator);
     if decision.decision() != Decision::Allow {
         return Err(not_found());
     }
@@ -359,5 +372,5 @@ fn parse_etag(value: &str) -> Option<u64> {
 }
 
 fn now(state: &AppState) -> i64 {
-    (state.clock)()
+    (state.serving.clock)()
 }

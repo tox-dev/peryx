@@ -13,10 +13,8 @@ pub fn wheel_metadata(filename: &str, bytes: &[u8]) -> Option<Vec<u8>> {
     wheel_metadata_reader(filename, Cursor::new(bytes)).ok().flatten()
 }
 
-/// The exact wheel metadata member implied by a wheel filename.
-///
 /// # Errors
-/// Returns [`ArchiveError::InvalidWheel`] when `filename` ends with `.whl` but is not a valid
+/// Returns [`ArchiveError::Invalid`] when `filename` ends with `.whl` but is not a valid
 /// wheel filename.
 pub fn wheel_metadata_member_path(filename: &str) -> Result<Option<String>, ArchiveError> {
     if !is_wheel(filename) {

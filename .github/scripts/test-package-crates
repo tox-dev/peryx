@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+mkdir -p "$scratch/bin" "$scratch/member" "$scratch/dependency" "$scratch/transitive" "$scratch/unrelated"
+cat >"$scratch/metadata.json" <<EOF
+{"packages":[
+  {"name":"member","manifest_path":"$scratch/member/Cargo.toml","publish":null,"targets":[],"dependencies":[
+    {"name":"member","path":"$scratch/member"},
+    {"name":"dependency","path":"$scratch/dependency"}
+  ]},
+  {"name":"dependency","manifest_path":"$scratch/dependency/Cargo.toml","publish":[],"targets":[],"dependencies":[
+    {"name":"transitive","path":"$scratch/transitive"}
+  ]},
+  {"name":"transitive","manifest_path":"$scratch/transitive/Cargo.toml","publish":[],"targets":[],"dependencies":[]},
+  {"name":"unrelated","manifest_path":"$scratch/unrelated/Cargo.toml","publish":[],"targets":[],"dependencies":[]}
+]}
+EOF
+cat >"$scratch/bin/cargo" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$CARGO_LOG"
+if [[ $1 == metadata ]]; then
+  cat "$CARGO_METADATA"
+fi
+EOF
+chmod +x "$scratch/bin/cargo"
+CARGO_LOG="$scratch/cargo.log" CARGO_METADATA="$scratch/metadata.json" PATH="$scratch/bin:$PATH" \
+  "$repo/.github/scripts/package-crates"
+grep -q '^package --package member --allow-dirty --locked --jobs 2 --config patch.crates-io.dependency.path=' \
+  "$scratch/cargo.log"
+grep -Fq "patch.crates-io.dependency.path='$scratch/dependency'" "$scratch/cargo.log"
+if rg -q 'patch\.crates-io\.(member|transitive|unrelated)\.path' "$scratch/cargo.log"; then
+  printf 'package received an unrelated workspace patch\n' >&2
+  exit 1
+fi
+[[ $(grep -c '^package ' "$scratch/cargo.log") == 1 ]]
+if grep -q -- '--no-verify' "$scratch/cargo.log"; then
+  printf 'package verification was disabled\n' >&2
+  exit 1
+fi
+if PERYX_PACKAGE_JOBS=0 CARGO_LOG="$scratch/cargo.log" CARGO_METADATA="$scratch/metadata.json" \
+  PATH="$scratch/bin:$PATH" "$repo/.github/scripts/package-crates" 2>"$scratch/invalid.log"; then
+  printf 'invalid package job limit was accepted\n' >&2
+  exit 1
+fi
+grep -Fq 'PERYX_PACKAGE_JOBS must be a positive integer' "$scratch/invalid.log"

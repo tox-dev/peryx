@@ -1,0 +1,206 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo=$(pwd -P)
+status=0
+manifests=()
+source_roots=()
+explicit_test_exceptions=()
+
+display_path() {
+  local path=$1
+  case "$path" in
+    "$repo"/*) printf '%s\n' "${path#"$repo"/}" ;;
+    *) printf '%s\n' "$path" ;;
+  esac
+}
+
+add_manifest() {
+  local candidate=$1
+  local manifest
+  for manifest in "${manifests[@]}"; do
+    if [[ $manifest == "$candidate" ]]; then
+      return
+    fi
+  done
+  manifests+=("$candidate")
+}
+
+while IFS= read -r manifest; do
+  add_manifest "$repo/$manifest"
+done < <(git ls-files | awk '$0 == "Cargo.toml" || $0 ~ /\/Cargo\.toml$/')
+
+for manifest in "${manifests[@]}"; do
+  source_root=$(dirname "$manifest")/src
+  if [[ -d $source_root ]]; then
+    source_roots+=("$source_root")
+  fi
+done
+
+explicit_test_is_allowed() {
+  local target=$1
+  local exception
+  for exception in "${explicit_test_exceptions[@]}"; do
+    if [[ $exception == "$target:"?* ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+reject_source_tests() {
+  local output
+  local source_files=()
+  if ((${#source_roots[@]} == 0)); then
+    return
+  fi
+  while IFS= read -r -d '' path; do
+    source_files+=("$path")
+  done < <(find "${source_roots[@]}" -type f -name '*.rs' -print0)
+  if ((${#source_files[@]} == 0)); then
+    return
+  fi
+  output=$(awk '
+    function emit_pending() {
+      if (pending) print pending_file ":" pending_line ":" pending_text
+      pending = 0
+      has_path = 0
+    }
+    FNR == 1 { emit_pending() }
+    /#\[[[:space:]]*([A-Za-z_][A-Za-z0-9_]*::)?(test|rstest)[[:space:]]*\]/ {
+      print FILENAME ":" FNR ":" $0
+    }
+    /#\[cfg_attr\(/ && /(^|[^[:alnum:]_])test([^[:alnum:]_]|$)/ {
+      print FILENAME ":" FNR ":" $0
+    }
+    pending {
+      if ($0 ~ /^[[:space:]]*$/) next
+      if ($0 ~ /^[[:space:]]*#\[path[[:space:]]*=/) {
+        has_path = 1
+        next
+      }
+      if ($0 ~ /^[[:space:]]*#\[/) next
+      if ($0 ~ /mod[[:space:]]+[A-Za-z_]/ && (index($0, ";") || index($0, "{"))) {
+        if (!has_path || $0 ~ /\{/) emit_pending()
+        else {
+          pending = 0
+          has_path = 0
+        }
+        next
+      }
+      emit_pending()
+    }
+    /#\[cfg\(/ && /(^|[^[:alnum:]_])test([^[:alnum:]_]|$)/ {
+      pending = 1
+      pending_file = FILENAME
+      pending_line = FNR
+      pending_text = $0
+      if ($0 ~ /mod[[:space:]]+[A-Za-z_]/ && (index($0, ";") || index($0, "{"))) {
+        emit_pending()
+      }
+    }
+    END { emit_pending() }
+  ' "${source_files[@]}")
+  if [[ -n $output ]]; then
+    output=${output//"$repo/"/}
+    printf '%s\n' "$output" >&2
+    status=1
+  fi
+}
+
+while IFS=$'\t' read -r manifest name; do
+  manifest=$(display_path "$manifest")
+  if explicit_test_is_allowed "$manifest:$name"; then
+    continue
+  fi
+  printf 'explicit test target is not allowlisted: %s: %s\n' "$manifest" "$name" >&2
+  status=1
+done < <(
+  awk '
+    function emit_test() {
+      if (test_target) print manifest "\t" (name == "" ? "<unnamed>" : name)
+    }
+    FNR == 1 { emit_test(); test_target = 0 }
+    /^[[:space:]]*\[\[[[:space:]]*test[[:space:]]*\]\][[:space:]]*(#.*)?$/ {
+      emit_test()
+      test_target = 1
+      manifest = FILENAME
+      name = ""
+      next
+    }
+    /^[[:space:]]*\[/ { emit_test(); test_target = 0 }
+    test_target && $0 ~ /^[[:space:]]*name[[:space:]]*=[[:space:]]*"[^"]+"/ {
+      name = $0
+      sub(/^[^=]*=[[:space:]]*"/, "", name)
+      sub(/".*$/, "", name)
+    }
+    END { emit_test() }
+  ' "${manifests[@]}"
+)
+
+for source_root in "${source_roots[@]}"; do
+  while IFS= read -r path; do
+    printf 'test file under src: %s\n' "$(display_path "$path")" >&2
+    status=1
+  done < <(
+    find "$source_root" -type f \
+      \( -name 'tests.rs' -o -name '*_tests.rs' -o -name '*-tests.rs' -o -name '*_test.rs' \) \
+      -print | sort
+  )
+done
+
+while IFS= read -r path; do
+  printf 'root test path is forbidden: %s\n' "$path" >&2
+  status=1
+done < <(git ls-files | awk '/^tests\//')
+
+while IFS= read -r path; do
+  printf 'generated frontend artifact under tests: %s\n' "$(display_path "$path")" >&2
+  status=1
+done < <(
+  git ls-files | awk '
+    /(^|\/)tests\// && $0 !~ /^\.tox\// {
+      if (match($0, /(^|\/)(\.auth|blob-report|node_modules|playwright-report|test-results)\//)) {
+        print substr($0, 1, RSTART + RLENGTH - 2)
+      } else if ($0 ~ /\/\.last-run[^\/]*$/ && $0 !~ /\/test-results\//) {
+        print
+      }
+    }
+  ' | sort -u
+)
+
+reject_source_tests
+
+while IFS=$'\t' read -r manifest path; do
+  package_root=$(cd "$(dirname "$manifest")" && pwd -P)
+  manifest=$(display_path "$manifest")
+  if [[ ! -f "$package_root/$path" ]]; then
+    printf 'test target does not exist: %s: %s\n' "$manifest" "$path" >&2
+    status=1
+    continue
+  fi
+  target=$(cd "$(dirname "$package_root/$path")" && pwd -P)/$(basename "$path")
+  case "$target" in
+    "$package_root"/*) ;;
+    *)
+      printf 'cross-crate test target: %s: %s\n' "$manifest" "$path" >&2
+      status=1
+      ;;
+  esac
+done < <(
+  awk '
+    /^[[:space:]]*\[\[[[:space:]]*test[[:space:]]*\]\][[:space:]]*(#.*)?$/ {
+      test_target = 1
+      next
+    }
+    /^[[:space:]]*\[/ { test_target = 0 }
+    test_target && $0 ~ /^[[:space:]]*path[[:space:]]*=[[:space:]]*"[^"]+"/ {
+      path = $0
+      sub(/^[^=]*=[[:space:]]*"/, "", path)
+      sub(/".*$/, "", path)
+      print FILENAME "\t" path
+    }
+  ' "${manifests[@]}"
+)
+
+exit "$status"

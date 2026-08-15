@@ -2,17 +2,21 @@
 //! it, so a serial resolver waits on the network once, not twice.
 
 use super::{
-    Arc, Bytes, CacheError, CachedIndex, Event, JSON_META_PREFLIGHT_BYTES, PageOutcome, PageSummary, PageTransformer,
-    ServingState, UpstreamPermit, VecDeque, mirror_route, persist_streamed, release_flight, spawn_metadata_backfill,
-    transform_error,
+    Arc, Bytes, CacheError, CachedIndex, JSON_META_PREFLIGHT_BYTES, Observation, PageOutcome, PageSummary,
+    PageTransformer, ServingState, UpstreamPermit, VecDeque, mirror_route, persist_streamed, release_flight,
+    spawn_metadata_backfill, transform_error,
 };
 use crate::cache::fetch::canonical_json;
 use crate::stream::{MAX_PAGE_BYTES, TransformError};
 
+#[cfg(test)]
+#[path = "../../../tests/unit/cache_coverage/live.rs"]
+mod cache_coverage_tests;
+
 pub(super) struct FreshJsonStream {
     pub(super) state: Arc<ServingState>,
     pub(super) key: String,
-    pub(super) hot_key: String,
+    pub(super) representation_key: String,
     pub(super) route: String,
     pub(super) cached_name: String,
     pub(super) project: String,
@@ -25,17 +29,13 @@ pub(super) struct FreshJsonStream {
 }
 
 impl FreshJsonStream {
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the flight guard deliberately lives until it moves into the stream or is released"
-    )]
     pub(super) async fn stream(self) -> Result<PageOutcome, CacheError> {
         use futures_util::StreamExt as _;
         if self.cached_present {
             tracing::info!(key = %self.key, "upstream page changed");
-            self.state.metrics.record(Event::Refresh {
-                route: mirror_route(&self.state, &self.cached_name),
-                project: self.project.clone(),
+            self.state.metrics.record(Observation::Refresh {
+                repository: mirror_route(&self.state, &self.cached_name),
+                resource: self.project.clone(),
                 changed: true,
             });
         }
@@ -56,11 +56,7 @@ impl FreshJsonStream {
                     return Err(err);
                 }
             };
-        // Preflight left the streaming loop without resolving the project status, either because
-        // `files` opened ahead of `meta` or because the byte cap fired before either was seen: buffer
-        // the rest of the page and transform it whole with the status seeded, then finish it on the
-        // buffered path. Otherwise a quarantined project's files would stream out before `meta` was
-        // read, since a live transformer withholds files only once `meta` marks the project.
+        // Buffer until project status is known; streaming files first could expose quarantined files.
         let preflight = match preflight {
             JsonPreflight::Streaming {
                 body, transformer, raw, ..
@@ -86,11 +82,7 @@ impl FreshJsonStream {
                     LiveStream {
                         body,
                         transformer: *transformer,
-                        flight: FlightGuard {
-                            key: self.key,
-                            _guard: self.guard,
-                        },
-                        hot_key: self.hot_key,
+                        representation_key: self.representation_key,
                         route: self.route,
                         cached: self.cached_name,
                         project: self.project,
@@ -100,8 +92,12 @@ impl FreshJsonStream {
                         fresh_secs: max_age,
                         base,
                         upstream,
-                        _permit: self.permit,
                     },
+                    FlightGuard {
+                        key: self.key,
+                        _guard: self.guard,
+                    },
+                    self.permit,
                     raw,
                     served,
                     pending,
@@ -112,13 +108,20 @@ impl FreshJsonStream {
                 let record = build_record(raw, &base, etag, last_serial, max_age, self.now);
                 let expires_at =
                     record.fetched_at_unix + crate::cache::freshness_secs(self.state.ttl_secs, record.fresh_secs);
-                #[rustfmt::skip]
-                persist_streamed(&self.state, &self.key, &self.cached_name, &self.project, &record, &summary, upstream.as_deref())?;
-                spawn_metadata_backfill(self.state.clone(), self.route.clone(), &summary.registrations);
+                persist_streamed(
+                    &self.state,
+                    &self.key,
+                    &self.cached_name,
+                    &self.project,
+                    &record,
+                    &summary,
+                    upstream.as_deref(),
+                )?;
+                spawn_metadata_backfill(&self.state, self.route.clone(), &summary.registrations);
                 let bytes = Bytes::from(served);
                 self.state
                     .cache
-                    .store_hot_versioned(self.hot_key, bytes.clone(), expires_at, last_serial);
+                    .store_hot_versioned(self.representation_key, bytes.clone(), expires_at, last_serial);
                 release_flight(&self.state, &self.key, self.guard);
                 Ok(PageOutcome::Ready(bytes, last_serial))
             }
@@ -251,8 +254,7 @@ struct FlightGuard {
 struct LiveStream {
     body: futures_util::stream::BoxStream<'static, Result<Bytes, peryx_upstream::UpstreamError>>,
     transformer: PageTransformer,
-    flight: FlightGuard,
-    hot_key: String,
+    representation_key: String,
     route: String,
     cached: String,
     project: String,
@@ -262,18 +264,13 @@ struct LiveStream {
     fresh_secs: Option<i64>,
     base: url::Url,
     upstream: Option<String>,
-    _permit: UpstreamPermit,
 }
 
-/// Stream the upstream body through the transformer to the client, teeing the raw bytes for the
-/// page cache and the transformed bytes for the hot cache; both persist when the stream completes.
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the flight guard inside LiveStream deliberately lives until the stream ends"
-)]
 fn live_stream(
     state: Arc<ServingState>,
     live: LiveStream,
+    flight: FlightGuard,
+    permit: UpstreamPermit,
     raw: Vec<u8>,
     served: Vec<u8>,
     pending: VecDeque<Bytes>,
@@ -281,11 +278,16 @@ fn live_stream(
     use futures_util::StreamExt as _;
     let started = std::time::Instant::now();
     futures_util::stream::unfold(
-        (state, Some(live), raw, served, pending),
-        move |(state, live, mut raw, mut served, mut pending)| async move {
+        (state, Some(live), Some(flight), Some(permit), raw, served, pending),
+        move |(state, live, flight, permit, mut raw, mut served, mut pending)| async move {
             let mut live = live?;
+            let flight = flight?;
+            let permit = permit?;
             if let Some(out) = pending.pop_front() {
-                return Some((Ok(out), (state, Some(live), raw, served, pending)));
+                return Some((
+                    Ok(out),
+                    (state, Some(live), Some(flight), Some(permit), raw, served, pending),
+                ));
             }
             match live.body.next().await {
                 Some(Ok(chunk)) => {
@@ -293,80 +295,101 @@ fn live_stream(
                     match live.transformer.push(&chunk) {
                         Ok(out) => {
                             served.extend_from_slice(&out);
-                            Some((Ok(Bytes::from(out)), (state, Some(live), raw, served, pending)))
+                            Some((
+                                Ok(Bytes::from(out)),
+                                (state, Some(live), Some(flight), Some(permit), raw, served, pending),
+                            ))
                         }
                         Err(err) => Some((
                             Err(std::io::Error::new(std::io::ErrorKind::InvalidData, err.to_string())),
-                            (state, None, raw, served, pending),
+                            (state, None, None, None, raw, served, pending),
                         )),
                     }
                 }
-                None => {
-                    let summary = match live.transformer.finish() {
-                        Ok(summary) => summary,
-                        Err(err) => {
-                            return Some((
-                                Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, err.to_string())),
-                                (state, None, raw, served, pending),
-                            ));
-                        }
-                    };
-                    let raw = std::mem::take(&mut raw);
-                    let body = canonical_json(&raw, &live.base).unwrap_or(raw);
-                    let record = CachedIndex {
-                        etag: live.etag.clone(),
-                        last_serial: live.last_serial,
-                        fetched_at_unix: live.fetched_at,
-                        content_type: Some("application/vnd.pypi.simple.v1+json".to_owned()),
-                        fresh_secs: live.fresh_secs,
-                        body,
-                    };
-                    let expires_at = record.fetched_at_unix + crate::cache::freshness_secs(state.ttl_secs, record.fresh_secs);
-                    // One batched transaction, awaited before the body closes: every byte has been
-                    // sent already, and a client cannot act on the page before EOF, so downloads
-                    // always find their file registrations.
-                    let raw_len = record.body.len();
-                    let registrations = summary.registrations.clone();
-                    let persist_state = state.clone();
-                    let (key, cached, project, upstream) = (
-                        live.flight.key.clone(),
-                        live.cached.clone(),
-                        live.project.clone(),
-                        live.upstream.clone(),
-                    );
-                    #[rustfmt::skip]
-                    tokio::task::spawn_blocking(move || {
-                        if let Err(err) = persist_streamed(&persist_state, &key, &cached, &project, &record, &summary, upstream.as_deref()) { tracing::error!(error = ?err, %key, "page persist failed"); }
-                    })
-                    .await
-                    .expect("page persist task never panics");
-                    spawn_metadata_backfill(state.clone(), live.route.clone(), &registrations);
-                    // The hot page goes live only after the persist lands: a concurrent client that
-                    // serves this page from the hot cache and immediately requests a file must find
-                    // that file's registration.
-                    state.cache.store_hot_versioned(
-                        live.hot_key.clone(),
-                        Bytes::from(std::mem::take(&mut served)),
-                        expires_at,
-                        live.last_serial,
-                    );
-                    let elapsed_ms = started.elapsed().as_millis();
-                    let upstream = live.upstream.as_deref().unwrap_or(&live.cached);
-                    tracing::debug!(
-                        key = %live.flight.key,
-                        upstream,
-                        bytes = raw_len,
-                        elapsed_ms,
-                        "page streamed from upstream"
-                    );
-                    None
-                }
+                None => match complete_live(state.clone(), live, flight, permit, raw, served, started).await {
+                    Ok(()) => None,
+                    Err(error) => Some((Err(error), (state, None, None, None, Vec::new(), Vec::new(), pending))),
+                },
                 Some(Err(err)) => Some((
                     Err(std::io::Error::other(err.to_string())),
-                    (state, None, raw, served, pending),
+                    (state, None, None, None, raw, served, pending),
                 )),
             }
         },
     )
     .boxed()
+}
+
+async fn complete_live(
+    state: Arc<ServingState>,
+    live: LiveStream,
+    flight: FlightGuard,
+    permit: UpstreamPermit,
+    raw: Vec<u8>,
+    mut served: Vec<u8>,
+    started: std::time::Instant,
+) -> Result<(), std::io::Error> {
+    let LiveStream {
+        body: _,
+        transformer,
+        representation_key,
+        route,
+        cached,
+        project,
+        etag,
+        last_serial,
+        fetched_at,
+        fresh_secs,
+        base,
+        upstream,
+    } = live;
+    let summary = transformer
+        .finish()
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::UnexpectedEof, error.to_string()))?;
+    let body = canonical_json(&raw, &base).unwrap_or(raw);
+    let record = CachedIndex {
+        etag,
+        last_serial,
+        fetched_at_unix: fetched_at,
+        content_type: Some("application/vnd.pypi.simple.v1+json".to_owned()),
+        fresh_secs,
+        body,
+    };
+    let expires_at = record.fetched_at_unix + crate::cache::freshness_secs(state.ttl_secs, record.fresh_secs);
+    let raw_len = record.body.len();
+    let registrations = summary.registrations.clone();
+    let persist_state = state.clone();
+    let key = flight.key.clone();
+    let persist_key = key.clone();
+    let persist_cached = cached.clone();
+    let persist_project = project.clone();
+    let persist_upstream = upstream.clone();
+    tokio::task::spawn_blocking(move || {
+        if let Err(err) = persist_streamed(
+            &persist_state,
+            &persist_key,
+            &persist_cached,
+            &persist_project,
+            &record,
+            &summary,
+            persist_upstream.as_deref(),
+        ) {
+            tracing::error!(error = ?err, key = %persist_key, "page persist failed");
+        }
+    })
+    .await
+    .expect("page persist task never panics");
+    spawn_metadata_backfill(&state, route, &registrations);
+    state.cache.store_hot_versioned(
+        representation_key,
+        Bytes::from(std::mem::take(&mut served)),
+        expires_at,
+        last_serial,
+    );
+    let elapsed_ms = started.elapsed().as_millis();
+    let upstream = upstream.unwrap_or(cached);
+    drop(permit);
+    drop(flight);
+    tracing::debug!(%key, upstream, bytes = raw_len, elapsed_ms, "page streamed from upstream");
+    Ok(())
 }

@@ -1,6 +1,3 @@
-//! Contact addresses, the value grammar of the `Author-email` and `Maintainer-email` core-metadata
-//! fields.
-//!
 //! Core Metadata gives each field the legal forms of an RFC 822 `From` header: a comma-separated
 //! list of addresses, each either bare or a display name with the address in angle brackets. Peryx
 //! splits the list and lifts the address out of a named entry with the RFC 822 mechanics

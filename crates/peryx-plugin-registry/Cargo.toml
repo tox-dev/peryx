@@ -1,0 +1,31 @@
+[package]
+name = "peryx-plugin-registry"
+autotests = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Plugin registration and capability dispatch."
+
+[dependencies]
+axum.workspace = true
+peryx-core.workspace = true
+peryx-driver.workspace = true
+peryx-storage.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+utoipa.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
+peryx-identity.workspace = true
+peryx-policy.workspace = true
+rstest.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tower = { workspace = true, features = ["util"] }
+
+[lints]
+workspace = true

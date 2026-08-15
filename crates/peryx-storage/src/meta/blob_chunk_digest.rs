@@ -1,24 +1,13 @@
-//! The per-digest chunked-digest catalog.
-//!
-//! A blob's whole-blob digest verifies it only once every byte is reassembled and hashed, so an
-//! incremental fetch of a large blob cannot trust — and cannot forward — a chunk until the whole arrives.
-//! This catalog records the [`ChunkedDigest`] of a blob when a node whole-verifies its bytes, keyed by the
-//! content digest, so a later incremental read-through verifies each chunk against its own recorded digest
-//! and stages it before the rest of the blob is drawn.
-//!
-//! The entry is content-keyed, not placement-keyed: it says nothing about where a blob lives, only what the
-//! sha256 of each of its fixed spans is. A read-through that has the entry may stream chunk-by-chunk; one
-//! that does not falls back to whole-blob staging, and records the entry from that whole-verified pull so
-//! the next fetch can stream.
+//! Whole-blob verification records chunk digests by content address so later ranged reads can verify and
+//! forward each chunk. Missing entries require whole-blob staging; entries do not identify placements.
 
 use peryx_identity::ArtifactDigest;
 
-use super::{BLOB_CHUNK_DIGEST, MetaError, MetaStore};
+use super::{BLOB_CHUNK_DIGEST, MetaError, MetaStore, open_optional_table};
 use crate::blob::ChunkedDigest;
 
 impl MetaStore {
-    /// Record the [`ChunkedDigest`] of `digest`, computed from whole-verified bytes, overwriting any prior
-    /// entry for the same content.
+    /// Replaces any prior entry; callers must supply digests computed from whole-verified bytes.
     ///
     /// # Errors
     /// Returns a store error when the value cannot be encoded or the write cannot commit.
@@ -33,13 +22,15 @@ impl MetaStore {
         Ok(())
     }
 
-    /// The recorded [`ChunkedDigest`] of `digest`, or `None` when no node has catalogued its chunks yet.
+    /// Returns `None` until a node catalogs the blob's chunks.
     ///
     /// # Errors
     /// Returns a store error when the row cannot be read or decoded.
     pub fn blob_chunk_digest(&self, digest: &ArtifactDigest) -> Result<Option<ChunkedDigest>, MetaError> {
         let txn = self.db.begin_read()?;
-        let table = txn.open_table(BLOB_CHUNK_DIGEST)?;
+        let Some(table) = open_optional_table(&txn, BLOB_CHUNK_DIGEST)? else {
+            return Ok(None);
+        };
         Ok(table
             .get(digest.canonical().as_str())?
             .map(|value| serde_json::from_slice(value.value()))
@@ -48,4 +39,5 @@ impl MetaStore {
 }
 
 #[cfg(test)]
+#[path = "../../tests/unit/meta/blob_chunk_digest/tests.rs"]
 mod tests;

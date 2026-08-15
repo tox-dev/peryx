@@ -1,11 +1,7 @@
-//! Quota status commands. Both read the local store directly and derive limits from each index's
-//! policy, the same status the HTTP surface reports.
-
 use clap::{Args, Subcommand};
 
 use super::RuntimeArgs;
 
-/// Report configured limits and committed and reserved use per repository.
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum QuotaCommand {
     /// List every repository's quota as a table.
@@ -24,14 +20,12 @@ impl QuotaCommand {
     }
 }
 
-/// Options for the repository quota table.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct QuotaListArgs {
     #[command(flatten)]
     pub runtime: RuntimeArgs,
 }
 
-/// Options for a single repository's quota.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct QuotaInspectArgs {
     #[command(flatten)]

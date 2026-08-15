@@ -1,9 +1,3 @@
-//! Multipart upload parsing: drain fields, stage the content blob, and map upload errors to responses.
-#![allow(
-    clippy::result_large_err,
-    reason = "handler helpers carry an axum Response as their error; boxing it everywhere adds noise"
-)]
-
 use axum::extract::Multipart;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -14,6 +8,7 @@ use peryx_policy::{PolicyAction, PolicyDenial};
 use crate::DistributionFilenameError;
 use crate::upload::{StagedUpload, UploadError, UploadForm};
 
+use super::HttpResult;
 use super::response::policy_denial_response;
 
 const MAX_UPLOAD_TEXT_FIELD_BYTES: usize = 64 * 1024;
@@ -31,14 +26,14 @@ pub(super) async fn collect_form(
     blobs: &peryx_storage::blob::BlobStorage,
     max_file_size: Option<u64>,
     browser: bool,
-) -> Result<(UploadForm, Option<StagedUpload>), Response> {
+) -> HttpResult<(UploadForm, Option<StagedUpload>)> {
     let mut form = UploadForm::default();
     let mut staged = None;
     while let Some(field) = multipart.next_field().await.map_err(reject)? {
         let field_name = field.name().unwrap_or_default().to_owned();
         if field_name == "content" {
             if staged.is_some() {
-                return Err(reject("duplicate content field"));
+                return Err(reject("duplicate content field").into());
             }
             form.filename = field.file_name().map(str::to_owned);
             if browser {
@@ -98,8 +93,6 @@ const fn browser_derived(field: UploadTextField) -> bool {
     )
 }
 
-/// The byte cap for a text field. The `attestations` bundle gets its own aggregate ceiling; every
-/// other field is a short metadata line.
 const fn text_field_limit(field: UploadTextField) -> usize {
     match field {
         UploadTextField::Attestations => MAX_ATTESTATIONS_FIELD_BYTES,
@@ -154,7 +147,7 @@ async fn read_text_field(
     mut field: axum::extract::multipart::Field<'_>,
     name: &str,
     limit: usize,
-) -> Result<String, Response> {
+) -> HttpResult<String> {
     let mut bytes = Vec::new();
     while let Some(chunk) = field.chunk().await.map_err(reject)? {
         if bytes.len().saturating_add(chunk.len()) > limit {
@@ -162,14 +155,15 @@ async fn read_text_field(
                 StatusCode::BAD_REQUEST,
                 format!("upload field {name:?} exceeds {limit} bytes"),
             )
-                .into_response());
+                .into_response()
+                .into());
         }
         bytes.extend_from_slice(&chunk);
     }
-    String::from_utf8(bytes).map_err(reject)
+    String::from_utf8(bytes).map_err(|error| reject(error).into())
 }
 
-async fn drain_field(mut field: axum::extract::multipart::Field<'_>) -> Result<(), Response> {
+async fn drain_field(mut field: axum::extract::multipart::Field<'_>) -> HttpResult<()> {
     while field.chunk().await.map_err(reject)?.is_some() {}
     Ok(())
 }
@@ -179,7 +173,7 @@ async fn stage_content(
     blobs: &peryx_storage::blob::BlobStorage,
     max_file_size: Option<u64>,
     form: &UploadForm,
-) -> Result<StagedUpload, Response> {
+) -> HttpResult<StagedUpload> {
     let limit = max_file_size.unwrap_or(u64::MAX);
     if let Some(size) = field
         .headers()
@@ -188,7 +182,7 @@ async fn stage_content(
         .and_then(|value| value.parse::<u64>().ok())
         && size > limit
     {
-        return Err(upload_size_reject(form, size, limit));
+        return Err(upload_size_reject(form, size, limit).into());
     }
     let mut pending = blobs.begin().await.map_err(storage_reject)?;
     let mut blake2 = Blake2bVar::new(32).expect("blake2b-256 output size is valid");
@@ -200,14 +194,14 @@ async fn stage_content(
             Err(error) => {
                 let response = reject(error);
                 pending.abort().await.map_err(storage_reject)?;
-                return Err(response);
+                return Err(response.into());
             }
         };
         size = size.saturating_add(chunk.len() as u64);
         if size > limit {
             let response = upload_size_reject(form, size, limit);
             pending.abort().await.map_err(storage_reject)?;
-            return Err(response);
+            return Err(response.into());
         }
         blake2.update(&chunk);
         pending.write_chunk(chunk).await.map_err(storage_reject)?;

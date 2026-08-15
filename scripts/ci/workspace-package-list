@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$repo"
+scope=${1:-all}
+case "$scope" in
+  all | contracts | system) ;;
+  *)
+    printf 'workspace scope must be all, contracts, or system: %s\n' "$scope" >&2
+    exit 2
+    ;;
+esac
+
+cargo metadata --no-deps --format-version 1 | jq -r --arg scope "$scope" '
+  .workspace_members as $members
+  | .packages[]
+  | select(.id as $id | $members | index($id))
+  | select(
+      $scope == "all"
+      or ($scope == "system" and .metadata["peryx-ci"].kind == "system")
+      or ($scope == "contracts" and .metadata["peryx-ci"].kind != "system")
+    )
+  | .name
+' | sort

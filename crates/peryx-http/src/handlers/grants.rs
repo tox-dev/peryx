@@ -1,12 +1,5 @@
-//! Role-grant management: grant, list, inspect, and conditionally revoke the fixed role bindings a
-//! server or repository administrator delegates.
-//!
-//! Every route resolves the caller to a server user, loads its own grants, and answers only what that
-//! caller may administer: a server administrator over any reach, a repository administrator over its
-//! own. A caller can neither widen its reach nor grant a role it could not itself administer, so the
-//! endpoint is closed to privilege escalation by construction. Revocation is conditional on an entity
-//! version, so a revoke that raced a re-assertion of the same binding fails the precondition rather than
-//! dropping the newer grant.
+//! Callers cannot grant beyond their own authority. Versioned revocation preserves a binding reasserted
+//! during a concurrent revoke.
 
 use std::sync::Arc;
 
@@ -14,13 +7,13 @@ use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, Request, StatusCode, header};
 use axum::response::{IntoResponse as _, Response};
-use peryx_driver::state::AppState;
-use peryx_events::security::{RoleGrantChange, role_grant_change};
-use peryx_identity::{GrantScope, Role, RoleGrant, UserId, can_manage_grants, parse_basic};
-use peryx_storage::meta::{
+use peryx_driver::authz::{
     DeleteGrantOutcome, RoleGrantFilter, RoleGrantQuery, RoleGrantQueryError, RoleGrantStoreError, StoredRoleGrant,
     role_grant_reach,
 };
+use peryx_driver::state::AppState;
+use peryx_events::security::{RoleGrantChange, role_grant_change};
+use peryx_identity::{GrantScope, Role, RoleGrant, UserId, can_manage_grants, parse_basic};
 
 use crate::response_security::ProtectedCachePolicy;
 
@@ -66,7 +59,7 @@ pub async fn list_grants(
     if !can_manage_grants(&grants, &reach) {
         return StatusCode::FORBIDDEN.into_response();
     }
-    match state.authorization.list_managed_grants(&RoleGrantQuery {
+    match state.serving.authorization.list_managed_grants(&RoleGrantQuery {
         filter,
         cursor: query.cursor,
         limit: query.limit.unwrap_or(DEFAULT_LIMIT),
@@ -110,8 +103,9 @@ pub async fn create_grant(State(state): State<Arc<AppState>>, request: Request<B
         return StatusCode::FORBIDDEN.into_response();
     }
     match state
+        .serving
         .authorization
-        .create_managed_grant(&target, &actor, (state.clock)())
+        .create_managed_grant(&target, &actor, (state.serving.clock)())
     {
         Ok(outcome) => {
             record(
@@ -148,7 +142,7 @@ pub async fn inspect_grant(State(state): State<Arc<AppState>>, headers: HeaderMa
     if !administers(&id, &grants) {
         return StatusCode::NOT_FOUND.into_response();
     }
-    match state.authorization.managed_grant(&id) {
+    match state.serving.authorization.managed_grant(&id) {
         Ok(Some(stored)) => grant_response(StatusCode::OK, &stored, false),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(_) => unavailable(),
@@ -175,7 +169,7 @@ pub async fn revoke_grant(State(state): State<Arc<AppState>>, headers: HeaderMap
     if !administers(&id, &grants) {
         return StatusCode::NOT_FOUND.into_response();
     }
-    match state.authorization.delete_managed_grant(&id, expected) {
+    match state.serving.authorization.delete_managed_grant(&id, expected) {
         Ok(DeleteGrantOutcome::Removed(stored)) => {
             record(&actor, RoleGrantChange::Revoke, &stored.grant, "allowed", "removed");
             StatusCode::NO_CONTENT.into_response()
@@ -205,12 +199,13 @@ async fn caller(state: &AppState, headers: &HeaderMap) -> Result<(UserId, Vec<Ro
         .and_then(parse_basic)
         .ok_or_else(unauthorized)?;
     let actor = state
+        .serving
         .users
         .authenticate(&credentials.user, &credentials.password)
         .await
         .map_err(|_| unavailable())?
         .ok_or_else(unauthorized)?;
-    let grants = state.authorization.grants(&actor).map_err(|_| unavailable())?;
+    let grants = state.serving.authorization.grants(&actor).map_err(|_| unavailable())?;
     Ok((actor, grants))
 }
 

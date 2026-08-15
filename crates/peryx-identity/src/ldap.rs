@@ -1,5 +1,4 @@
 use std::fmt;
-use std::io::Cursor;
 use std::num::NonZeroU32;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -10,6 +9,7 @@ use bb8_ldap::ldap3::{
     Ldap, LdapConnSettings, Scope, SearchEntry, SearchOptions, SearchResult, dn_escape, ldap_escape,
 };
 use rustls::{ClientConfig, RootCertStore};
+use rustls_pki_types::{CertificateDer, pem::PemObject as _};
 use url::Url;
 
 use crate::{
@@ -23,7 +23,6 @@ const MAX_ATTRIBUTE_BYTES: usize = 128;
 const MAX_DISPLAY_NAME_BYTES: usize = 1_024;
 const MAX_DN_BYTES: usize = 4_096;
 
-/// How one LDAP provider locates the directory entry that a user binds as.
 #[derive(Clone, PartialEq, Eq)]
 pub enum LdapBindMode {
     Direct {
@@ -57,7 +56,6 @@ impl fmt::Debug for LdapBindMode {
     }
 }
 
-/// Validated construction input for one LDAP provider.
 #[derive(Clone, PartialEq, Eq)]
 pub struct LdapProviderSettings {
     pub id: ProviderId,
@@ -92,7 +90,7 @@ impl fmt::Debug for LdapProviderSettings {
     }
 }
 
-/// A bounded `StartTLS` LDAP client that returns provider assertions without changing local identity state.
+/// Uses `StartTLS` and returns assertions without changing local identity state.
 #[derive(Clone)]
 pub struct LdapProvider {
     id: ProviderId,
@@ -130,7 +128,7 @@ impl fmt::Debug for LdapProvider {
 }
 
 impl LdapProvider {
-    /// Build a lazy LDAP client. Construction parses trust roots but opens no directory connection.
+    /// Parses trust roots without opening a directory connection.
     ///
     /// # Errors
     /// Returns [`LdapProviderBuildError`] for invalid URLs, DNs, attributes, trust roots, or bounds.
@@ -181,10 +179,8 @@ impl LdapProvider {
         &self.id
     }
 
-    /// Verify one username and password, returning the directory assertion on success.
-    ///
-    /// `Ok(None)` covers an unknown user, an empty credential, and a rejected bind. Directory faults
-    /// remain errors so callers can report an outage without exposing account existence.
+    /// `Ok(None)` covers an unknown user, an empty credential, and a rejected bind. Callers receive
+    /// errors for directory faults, while invalid credentials share one public response.
     ///
     /// # Errors
     /// Returns [`LdapProviderError`] when TLS, connection, search, response validation, or the request
@@ -305,7 +301,6 @@ impl LdapProvider {
     }
 }
 
-/// LDAP authentication followed by provider-neutral external identity linking.
 #[derive(Clone)]
 pub struct LdapLoginService<S> {
     provider: LdapProvider,
@@ -323,7 +318,7 @@ impl<S> fmt::Debug for LdapLoginService<S> {
     }
 }
 
-impl<S: ExternalIdentityStore + Sync> LdapLoginService<S> {
+impl<S: ExternalIdentityStore> LdapLoginService<S> {
     #[must_use]
     pub fn new(provider: LdapProvider, store: S, mappings: Vec<ExternalGroupGrant>) -> Self {
         Self {
@@ -332,13 +327,15 @@ impl<S: ExternalIdentityStore + Sync> LdapLoginService<S> {
             mappings: mappings.into(),
         }
     }
+}
 
+impl<S: ExternalIdentityStore + Sync> LdapLoginService<S> {
     #[must_use]
     pub const fn id(&self) -> &ProviderId {
         self.provider.id()
     }
 
-    /// Authenticate a directory user and commit its link and managed grants after the bind succeeds.
+    /// Commits local identity state after a successful directory bind.
     ///
     /// # Errors
     /// Returns [`LdapLoginError::Provider`] for directory failures and [`LdapLoginError::Store`] when
@@ -564,7 +561,7 @@ fn tls_config(custom_ca_pem: Option<&[u8]>) -> Result<ClientConfig, LdapProvider
     let mut roots = RootCertStore::empty();
     roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
     if let Some(pem) = custom_ca_pem {
-        let certificates = rustls_pemfile::certs(&mut Cursor::new(pem))
+        let certificates = CertificateDer::pem_slice_iter(pem)
             .collect::<Result<Vec<_>, _>>()
             .map_err(|_| LdapProviderBuildError::InvalidCa)?;
         if certificates.is_empty() {

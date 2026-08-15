@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
+scratch=$(mktemp -d)
+scratch=$(cd "$scratch" && pwd -P)
+trap 'rm -rf "$scratch"' EXIT
+mkdir -p "$scratch/bin" "$scratch/owner/fuzz/fuzz_targets" "$scratch/owner/fuzz/src" \
+  "$scratch/owner/fuzz/tests" "$scratch/owner/fuzz/corpus/target"
+printf '[package]\nname = "owner"\nversion = "0.0.0"\n' >"$scratch/owner/Cargo.toml"
+printf '[package]\nname = "owner-fuzz"\nversion = "0.0.0"\n' >"$scratch/owner/fuzz/Cargo.toml"
+printf 'pub fn adapter() {}\n' >"$scratch/owner/fuzz/src/lib.rs"
+printf '#![no_main]\nfuzz_target!(|_data: &[u8]| {});\n' >"$scratch/owner/fuzz/fuzz_targets/target.rs"
+printf '#[test]\nfn smoke() {}\n' >"$scratch/owner/fuzz/tests/smoke.rs"
+printf 'curated\n' >"$scratch/owner/fuzz/corpus/target/seed"
+jq -n --arg root "$scratch/owner" '{packages: [{
+  name: "owner", manifest_path: ($root + "/Cargo.toml"),
+  metadata: {"peryx-ci": {fuzz: {manifest: "fuzz/Cargo.toml", targets: ["target"]}}}
+}]}' >"$scratch/owner-metadata.json"
+jq -n --arg root "$scratch/owner/fuzz" '{workspace_root: $root, workspace_members: ["owner-fuzz"], packages: [{
+  id: "owner-fuzz", name: "owner-fuzz", manifest_path: ($root + "/Cargo.toml"),
+  metadata: {"cargo-fuzz": true}, targets: [
+    {src_path: ($root + "/src/lib.rs")},
+    {src_path: ($root + "/fuzz_targets/target.rs")},
+    {src_path: ($root + "/tests/smoke.rs")}
+  ]
+}]}' >"$scratch/fuzz-metadata.json"
+cat >"$scratch/bin/cargo" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$COMMAND_LOG"
+if [[ $1 == metadata && $* == *--manifest-path* ]]; then
+  cat "$FUZZ_METADATA"
+elif [[ $1 == metadata ]]; then
+  cat "$OWNER_METADATA"
+elif [[ $* == *'fuzz run'* ]]; then
+  for argument in "$@"; do
+    if [[ $argument == */corpus/target ]]; then corpus=$argument; fi
+    if [[ $argument == -artifact_prefix=* ]]; then artifacts=${argument#*=}; fi
+  done
+  printf 'generated\n' >"$corpus/generated"
+  printf 'artifact\n' >"$artifacts/generated"
+  if [[ -n ${FAIL_FUZZ:-} ]]; then exit 9; fi
+  if [[ -n ${BLOCK_FUZZ:-} ]]; then
+    tail -f /dev/null &
+    printf '%s\n' "$!" >"$BLOCK_FUZZ_CHILD"
+    read -r _blocked <"$BLOCK_FUZZ_FIFO"
+  fi
+elif [[ $* == *'fuzz coverage'* ]]; then
+  previous=
+  for argument in "$@"; do
+    if [[ $previous == --target-dir ]]; then target_dir=$argument; fi
+    if [[ $previous == --fuzz-dir ]]; then fuzz_dir=$argument; fi
+    previous=$argument
+  done
+  mkdir -p "$target_dir/triple/release" "$fuzz_dir/coverage/target"
+  printf '#!/usr/bin/env bash\n' >"$target_dir/triple/release/target"
+  chmod +x "$target_dir/triple/release/target"
+  : >"$fuzz_dir/coverage/target/coverage.profdata"
+elif [[ $* == *'llvm-cov report'* ]]; then
+  previous=
+  for argument in "$@"; do
+    if [[ $previous == --output-path ]]; then output=$argument; fi
+    previous=$argument
+  done
+  printf 'SF:%s\nFN:1,adapter\nFNDA:1,adapter\nDA:1,1\nend_of_record\n' \
+    "$FUZZ_ROOT/src/lib.rs" >"$output"
+  printf 'SF:%s\nFN:2,smoke\nFNDA:1,smoke\nDA:2,1\nend_of_record\n' \
+    "$FUZZ_ROOT/tests/smoke.rs" >>"$output"
+fi
+EOF
+cat >"$scratch/bin/rustc" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ $* == *'--print target-libdir'* ]]; then
+  printf '%s\n' "$TARGET_LIBDIR"
+else
+  printf 'host: test-triple\n'
+fi
+EOF
+write_llvm_cov() {
+  mkdir -p "$(dirname -- "$1")"
+  cat >"$1" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'llvm-cov' >>"$COMMAND_LOG"
+printf '\t%s' "$@" >>"$COMMAND_LOG"
+printf '\n' >>"$COMMAND_LOG"
+profile=
+while (($#)); do
+  if [[ $1 == --instr-profile=* ]]; then profile=${1#*=}; break; fi
+  shift
+done
+fuzz_dir=${profile%/coverage/target/coverage.profdata}
+printf 'SF:%s\nDA:2,1\nend_of_record\n' "$fuzz_dir/fuzz_targets/target.rs"
+printf 'SF:%s\nDA:2,1\nend_of_record\n' "$FUZZ_ROOT/fuzz_targets/target.rs"
+printf 'SF:/dependency/src/lib.rs\nDA:1,1\nend_of_record\n'
+EOF
+  chmod +x "$1"
+}
+chmod +x "$scratch/bin/cargo" "$scratch/bin/rustc"
+export COMMAND_LOG="$scratch/commands.log"
+export FUZZ_METADATA="$scratch/fuzz-metadata.json"
+export FUZZ_ROOT="$scratch/owner/fuzz"
+export OWNER_METADATA="$scratch/owner-metadata.json"
+export PATH="$scratch/bin:$PATH"
+export FUZZ_RUN_ROOT="$scratch/runs"
+for toolchain in \
+  "$scratch/Library/Application Support/rustup/toolchains/nightly-aarch64-apple-darwin" \
+  "$scratch/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu"; do
+  export TARGET_LIBDIR="$toolchain/lib/rustlib/test-triple/lib"
+  write_llvm_cov "$toolchain/lib/rustlib/test-triple/bin/llvm-cov"
+  output="$scratch/$(basename -- "$toolchain").lcov"
+  (cd "$repo" && scripts/ci/fuzz-package owner 1 "$output")
+  [[ -s $output ]]
+  if grep -q '^SF:/dependency/' "$output"; then
+    printf 'dependency source remained in coverage\n' >&2
+    exit 1
+  fi
+  [[ $(<"$FUZZ_ROOT/corpus/target/seed") == curated ]]
+  [[ $(find "$FUZZ_ROOT/corpus/target" -type f | wc -l) -eq 1 ]]
+  [[ ! -e $FUZZ_ROOT/coverage && ! -e $FUZZ_ROOT/artifacts ]]
+  [[ -z $(find "$FUZZ_RUN_ROOT" -mindepth 1 -print -quit) ]]
+done
+grep -Eq '^\+nightly fuzz run --fuzz-dir [^ ]+ --target test-triple --target-dir [^ ]+ target [^ ]+/corpus/target -- -artifact_prefix=[^ ]+/artifacts/target/ -max_total_time=1$' \
+  "$COMMAND_LOG"
+grep -Eq '^\+nightly fuzz build --fuzz-dir [^ ]+ --target test-triple --target-dir [^ ]+ target$' \
+  "$COMMAND_LOG"
+grep -Eq '^\+nightly fuzz coverage --fuzz-dir [^ ]+ --target test-triple --target-dir [^ ]+ target [^ ]+/corpus/target$' \
+  "$COMMAND_LOG"
+grep -Eq $'^llvm-cov\texport\t--format=lcov\t--instr-profile=[^\t]+/coverage/target/coverage.profdata\t[^\t]+/release/target$' \
+  "$COMMAND_LOG"
+export TARGET_LIBDIR="$scratch/.rustup/toolchains/nightly-missing/lib/rustlib/test-triple/lib"
+if output=$(cd "$repo" && scripts/ci/fuzz-package owner 1 "$scratch/missing.lcov" 2>&1); then
+  printf 'missing llvm-tools-preview passed\n' >&2
+  exit 1
+fi
+grep -q 'rustup component add --toolchain nightly llvm-tools-preview' <<<"$output"
+export TARGET_LIBDIR='relative/toolchain/lib/rustlib/test-triple/lib'
+if output=$(cd "$repo" && scripts/ci/fuzz-package owner 1 "$scratch/invalid.lcov" 2>&1); then
+  printf 'invalid target library directory passed\n' >&2
+  exit 1
+fi
+grep -q 'nightly rustc returned an invalid target library directory' <<<"$output"
+export TARGET_LIBDIR="$scratch/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/test-triple/lib"
+jq '.packages[0].metadata["peryx-ci"].fuzz.targets = []' "$OWNER_METADATA" \
+  >"$scratch/no-targets.json"
+if (cd "$repo" && OWNER_METADATA="$scratch/no-targets.json" \
+  scripts/ci/fuzz-package owner 1 "$scratch/empty.lcov"); then
+  printf 'package without fuzz targets passed\n' >&2
+  exit 1
+fi
+if (cd "$repo" && FAIL_FUZZ=1 scripts/ci/fuzz-package owner 1 "$scratch/failed.lcov"); then
+  printf 'failed fuzz process passed\n' >&2
+  exit 1
+fi
+[[ ! -e $scratch/failed.lcov ]]
+[[ $(<"$FUZZ_ROOT/corpus/target/seed") == curated ]]
+[[ $(find "$FUZZ_ROOT/corpus/target" -type f | wc -l) -eq 1 ]]
+[[ -z $(find "$FUZZ_RUN_ROOT" -mindepth 1 -print -quit) ]]
+mkfifo "$scratch/blocked-fuzz"
+if output=$(cd "$repo" && BLOCK_FUZZ=1 BLOCK_FUZZ_FIFO="$scratch/blocked-fuzz" \
+  BLOCK_FUZZ_CHILD="$scratch/blocked-child" \
+  FUZZ_COMMAND_TIMEOUT_SECONDS=1 FUZZ_RUN_GRACE_SECONDS=1 \
+  scripts/ci/fuzz-package owner 1 "$scratch/timeout.lcov" 2>&1); then
+  printf 'timed-out fuzz process passed\n' >&2
+  exit 1
+fi
+grep -q 'command timed out after 2 seconds' <<<"$output"
+[[ -s $scratch/blocked-child ]]
+if kill -0 "$(<"$scratch/blocked-child")" 2>/dev/null; then
+  printf 'timed-out fuzz child survived\n' >&2
+  exit 1
+fi
+[[ ! -e $scratch/timeout.lcov ]]
+[[ $(<"$FUZZ_ROOT/corpus/target/seed") == curated ]]
+[[ $(find "$FUZZ_ROOT/corpus/target" -type f | wc -l) -eq 1 ]]
+[[ -z $(find "$FUZZ_RUN_ROOT" -mindepth 1 -print -quit) ]]

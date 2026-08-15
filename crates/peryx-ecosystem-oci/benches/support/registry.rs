@@ -5,8 +5,8 @@ use axum::Router;
 use axum::body::Body;
 use http::Request;
 use http_body_util::BodyExt as _;
-use peryx_core::Ecosystem;
 use peryx_driver::AppState;
+use peryx_driver::serving::ProtocolDriver;
 use peryx_ecosystem_oci::{OCI_LEXICON, OciIndexer, OciRegistryWithHasher};
 use peryx_http::router;
 use peryx_identity::{Action, Glob, Grant, IndexAcl, NamedToken};
@@ -26,7 +26,7 @@ fn writer_acl(secret: impl Into<String>) -> IndexAcl {
             name: "uploader".to_owned(),
             secret: secret.into(),
             grants: vec![Grant {
-                projects: vec![Glob::new("*")],
+                resources: vec![Glob::new("*")],
                 actions: std::collections::BTreeSet::from([Action::Write, Action::Delete]),
             }],
             expires_at: None,
@@ -51,14 +51,15 @@ where
     let index = Index {
         name: "store".to_owned(),
         route: "store".to_owned(),
-        ecosystem: Ecosystem::Oci,
+        ecosystem: peryx_ecosystem_oci::ECOSYSTEM,
         kind: IndexKind::Hosted { volatile: true },
         policy: Policy::default(),
         acl: writer_acl(TOKEN.to_owned()),
     };
     let mut state = AppState::with_clock(meta, blobs, 60, vec![index], Arc::new(|| 1000));
-    state.register_ecosystem(Arc::new(registry), Arc::new(OciIndexer));
-    state.register_lexicon(Ecosystem::Oci, &OCI_LEXICON);
+    let mut context = state.runtime_install_context().unwrap();
+    context.register_protocol(ProtocolDriver::Absolute(Arc::new(registry)), Arc::new(OciIndexer));
+    context.register_lexicon(peryx_ecosystem_oci::ECOSYSTEM, &OCI_LEXICON);
     let blob = vec![0x7fu8; 4096];
     let blob_digest = format!("sha256:{}", Digest::of(&blob).as_str());
     let app = router(Arc::new(state));

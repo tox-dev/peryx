@@ -1,19 +1,9 @@
-//! The predicate evaluator.
-//!
-//! Evaluation is total and side-effect-free: every predicate reduces to a boolean over one row in
-//! linear time, with no loops the caller controls and no function the caller can name. An
-//! incomparable pair — a null cell, or two values of different kinds — simply does not match, so the
-//! evaluator never panics on unexpected data.
-
 use std::cmp::Ordering;
 
 use crate::ast::{CompareOp, Literal, Predicate};
 use crate::value::{Row, Value};
 
-/// Evaluate a bound predicate over one row.
-///
-/// Parameters must already be bound; an unbound [`Literal::Param`] is treated as a value that
-/// matches nothing.
+/// Unbound parameters match nothing.
 #[must_use]
 pub fn evaluate(predicate: &Predicate, row: &Row) -> bool {
     match predicate {
@@ -32,8 +22,6 @@ pub fn evaluate(predicate: &Predicate, row: &Row) -> bool {
     }
 }
 
-/// Lower a literal to its runtime value. A still-bound parameter lowers to [`Value::Null`], which
-/// matches nothing.
 #[must_use]
 pub fn literal_value(literal: &Literal) -> Value {
     match literal {

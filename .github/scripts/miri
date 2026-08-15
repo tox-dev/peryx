@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$repo"
+if (($# == 0)); then
+  printf 'pass at least one package\n' >&2
+  exit 2
+fi
+rustup toolchain install nightly --profile minimal --component miri
+cargo +nightly miri setup
+for package in "$@"; do
+  cargo +nightly miri test --package "$package" --lib --tests
+done

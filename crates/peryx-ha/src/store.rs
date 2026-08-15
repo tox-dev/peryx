@@ -1,0 +1,148 @@
+use std::num::NonZeroUsize;
+
+use peryx_identity::ArtifactDigest;
+use serde::{Deserialize, Serialize};
+
+use crate::{
+    ArtifactPlacement, ArtifactPlacementHealth, ArtifactPlacementPage, ArtifactPlacementQuery, BlobPlacementGroupPage,
+    BlobPlacementKey, BlobPlacementPage, BlobPlacementRecord, NewReconcileEntry, ReclaimGuard, ReclaimGuardArm,
+    ReclamationSnapshot, ReclamationTombstone, ReconcileEnqueue, ReconcileEntry, ReconcilePage,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompareWrite {
+    Written,
+    Conflict,
+    CapacityExceeded,
+}
+
+#[expect(clippy::missing_errors_doc, reason = "implementations define backend errors")]
+pub trait BlobPlacementStore {
+    type Error;
+
+    fn blob_placement(&self, key: &BlobPlacementKey) -> Result<Option<BlobPlacementRecord>, Self::Error>;
+    fn blob_placements(&self, digest: &ArtifactDigest) -> Result<Vec<BlobPlacementRecord>, Self::Error>;
+    fn scan_blob_placements(&self, cursor: Option<&str>, limit: NonZeroUsize)
+    -> Result<BlobPlacementPage, Self::Error>;
+    fn scan_blob_placement_groups(
+        &self,
+        cursor: Option<&str>,
+        limit: NonZeroUsize,
+    ) -> Result<BlobPlacementGroupPage, Self::Error>;
+    fn compare_and_put_blob_placement(
+        &self,
+        expected: Option<&BlobPlacementRecord>,
+        replacement: &BlobPlacementRecord,
+    ) -> Result<CompareWrite, Self::Error>;
+}
+
+#[expect(clippy::missing_errors_doc, reason = "implementations define backend errors")]
+pub trait ArtifactPlacementStore {
+    type Error;
+    type QueryError;
+
+    fn put_artifact_placement(&self, digest: &str, placement: &ArtifactPlacement) -> Result<(), Self::Error>;
+    fn get_artifact_placement(&self, digest: &str) -> Result<Option<ArtifactPlacement>, Self::Error>;
+    fn insert_artifact_placement(
+        &self,
+        digest: &str,
+        placement: &ArtifactPlacement,
+    ) -> Result<ArtifactPlacement, Self::Error>;
+    fn compare_and_put_artifact_placement(
+        &self,
+        digest: &str,
+        expected: &ArtifactPlacement,
+        replacement: &ArtifactPlacement,
+    ) -> Result<bool, Self::Error>;
+    fn delete_artifact_placement(&self, digest: &str) -> Result<bool, Self::Error>;
+    fn list_artifact_placements(
+        &self,
+        query: &ArtifactPlacementQuery,
+    ) -> Result<ArtifactPlacementPage, Self::QueryError>;
+    fn artifact_placement_health(&self) -> Result<ArtifactPlacementHealth, Self::Error>;
+}
+
+#[expect(clippy::missing_errors_doc, reason = "implementations define backend errors")]
+pub trait ReclamationStore {
+    type Error;
+
+    fn reclamation_snapshot(&self, digest: &ArtifactDigest) -> Result<ReclamationSnapshot, Self::Error>;
+    fn compare_and_put_reclamation_tombstone(
+        &self,
+        expected: &ReclamationSnapshot,
+        replacement: &ReclamationTombstone,
+    ) -> Result<bool, Self::Error>;
+    fn compare_and_remove_reclamation_tombstone(&self, expected: &ReclamationTombstone) -> Result<bool, Self::Error>;
+    fn reclamation_tombstone(&self, digest: &ArtifactDigest) -> Result<Option<ReclamationTombstone>, Self::Error>;
+    fn reclamation_tombstones(&self) -> Result<Vec<ReclamationTombstone>, Self::Error>;
+}
+
+#[expect(clippy::missing_errors_doc, reason = "implementations define backend errors")]
+pub trait ReclaimGuardStore {
+    type Error;
+
+    fn reclaim_guard_serial(&self) -> Result<u64, Self::Error>;
+    fn compare_and_arm_reclaim_guards(
+        &self,
+        digests: &[&str],
+        expected_serial: u64,
+        now: i64,
+        replacement: ReclaimGuard,
+    ) -> Result<ReclaimGuardArm, Self::Error>;
+    fn compare_and_disarm_reclaim_guard(&self, digest: &str, expected: ReclaimGuard) -> Result<bool, Self::Error>;
+    fn reclaim_guard(&self, digest: &str) -> Result<Option<ReclaimGuard>, Self::Error>;
+    fn reclaim_guards(&self) -> Result<Vec<(String, ReclaimGuard)>, Self::Error>;
+}
+
+#[expect(clippy::missing_errors_doc, reason = "implementations define backend errors")]
+pub trait ReconcileStore {
+    type Error;
+
+    fn enqueue_reconcile(&self, entry: &NewReconcileEntry<'_>, now: i64) -> Result<ReconcileEnqueue, Self::Error>;
+    fn pending_reconcile(&self, limit: usize) -> Result<Vec<(String, ReconcileEntry)>, Self::Error>;
+    fn settled_reconcile(&self, limit: usize) -> Result<Vec<(String, ReconcileEntry)>, Self::Error>;
+    fn scan_reconcile(&self, cursor: Option<&str>, limit: NonZeroUsize) -> Result<ReconcilePage, Self::Error>;
+    fn settle_reconcile(&self, key: &str, outcome: &str, now: i64) -> Result<bool, Self::Error>;
+    fn compare_and_remove_reconcile(&self, key: &str, expected: &ReconcileEntry) -> Result<bool, Self::Error>;
+    fn reconcile_entry(&self, key: &str) -> Result<Option<ReconcileEntry>, Self::Error>;
+}
+
+#[expect(clippy::missing_errors_doc, reason = "implementations define backend errors")]
+pub trait VisibilitySnapshotStore {
+    type Error;
+
+    fn load_snapshot(&self) -> Result<Option<Vec<u8>>, Self::Error>;
+    fn save_snapshot(&self, bytes: &[u8]) -> Result<(), Self::Error>;
+}
+
+impl<T: VisibilitySnapshotStore + ?Sized> VisibilitySnapshotStore for &T {
+    type Error = T::Error;
+
+    fn load_snapshot(&self) -> Result<Option<Vec<u8>>, Self::Error> {
+        (**self).load_snapshot()
+    }
+
+    fn save_snapshot(&self, bytes: &[u8]) -> Result<(), Self::Error> {
+        (**self).save_snapshot(bytes)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferAudit {
+    pub authority: String,
+    pub source: String,
+    pub target: String,
+    pub actor: String,
+    pub reason: String,
+    pub barrier: u64,
+    pub epoch: u64,
+    pub commit_index: u64,
+}
+
+#[expect(clippy::missing_errors_doc, reason = "implementations define backend errors")]
+pub trait TransferAuditStore {
+    type Error;
+
+    fn record_transfer_audit(&self, audit: &TransferAudit) -> Result<(), Self::Error>;
+    fn transfer_audits(&self, authority: &str) -> Result<Vec<TransferAudit>, Self::Error>;
+}

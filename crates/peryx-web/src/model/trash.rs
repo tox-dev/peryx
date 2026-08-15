@@ -12,8 +12,10 @@ pub struct UiTrashPage {
 pub struct UiTrashRecord {
     pub ecosystem: String,
     pub repository: String,
-    pub name: String,
-    pub reference: Option<String>,
+    #[serde(alias = "name")]
+    pub resource: String,
+    #[serde(alias = "reference")]
+    pub artifact: Option<String>,
     pub digest: Option<String>,
     pub reason: Option<String>,
     /// Present only when the role filter grants the caller actor visibility.
@@ -31,6 +33,7 @@ impl UiTrashRecord {
         match self.state.as_str() {
             "restorable" => "Restorable",
             "expired" => "Expired",
+            "other" => "Other",
             _ => "Unknown",
         }
     }
@@ -92,3 +95,7 @@ fn format_unix(value: i64) -> String {
     };
     time.format(&Rfc3339).unwrap_or_else(|_| value.to_string())
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/model/trash/tests.rs"]
+mod tests;

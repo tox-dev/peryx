@@ -18,27 +18,27 @@ pub(super) struct LoadedCredential {
     pub refresh_after: Duration,
 }
 
-/// Request behavior after a credential source cannot be refreshed.
+/// Policy for a credential-source refresh failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CredentialFailure {
-    /// Reject requests until a later refresh succeeds.
+    /// Reject requests until a refresh succeeds.
     Fail,
-    /// Retry without authentication.
+    /// Send requests without authentication.
     Anonymous,
 }
 
-/// When and how a provider reloads credentials.
+/// Credential reload policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CredentialRefresh {
-    /// Minimum time between source reads.
+    /// Minimum interval between source reads.
     pub interval: Duration,
-    /// Reload once when an upstream rejects the current generation.
+    /// Reload after an upstream rejects the current generation.
     pub on_unauthorized: bool,
-    /// Request behavior when the source read fails.
+    /// Policy for a source-read failure.
     pub failure: CredentialFailure,
 }
 
-/// A redacted credential-source failure.
+/// A credential-source failure with caller-redacted text.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{message}")]
 pub struct CredentialError {
@@ -46,7 +46,7 @@ pub struct CredentialError {
 }
 
 impl CredentialError {
-    /// Wrap a source error that contains no credential material.
+    /// The caller must remove credential material from `message`.
     #[must_use]
     pub fn new(message: impl Into<Arc<str>>) -> Self {
         Self {
@@ -67,14 +67,13 @@ pub struct CredentialIdentity {
 }
 
 impl CredentialIdentity {
-    /// The configured provider that owns this generation.
     #[must_use]
     pub const fn provider(self) -> CredentialProviderId {
         self.provider
     }
 }
 
-/// One immutable credential generation used for the lifetime of a request attempt.
+/// A credential generation held constant throughout one request attempt.
 #[derive(Debug)]
 pub struct CredentialSnapshot {
     auth: Auth,
@@ -84,19 +83,17 @@ pub struct CredentialSnapshot {
 }
 
 impl CredentialSnapshot {
-    /// The coherent credential generation for one request.
     #[must_use]
     pub const fn auth(&self) -> &Auth {
         &self.auth
     }
 
-    /// Generation number within one provider.
     #[must_use]
     pub const fn generation(&self) -> u64 {
         self.identity.generation
     }
 
-    /// Provider and generation identity for credential-bound caches.
+    /// Cache key for values derived from a credential generation.
     #[must_use]
     pub const fn identity(&self) -> CredentialIdentity {
         self.identity
@@ -133,7 +130,6 @@ impl std::fmt::Debug for CredentialProvider {
 }
 
 impl CredentialProvider {
-    /// Build a provider that never reloads its credential.
     #[must_use]
     pub fn fixed(auth: Auth) -> Self {
         let identity = CredentialIdentity {
@@ -154,7 +150,6 @@ impl CredentialProvider {
         }))
     }
 
-    /// Build a provider that reloads through `loader` under `refresh` policy.
     #[must_use]
     pub fn refreshing<F, Fut>(auth: Auth, refresh: CredentialRefresh, loader: F) -> Self
     where
@@ -203,7 +198,7 @@ impl CredentialProvider {
         }))
     }
 
-    /// Return one coherent snapshot, reloading first when its deadline has passed.
+    /// Reuses the current snapshot until its refresh deadline, then reloads it.
     ///
     /// # Errors
     /// Returns the latest source failure under [`CredentialFailure::Fail`].
@@ -220,7 +215,7 @@ impl CredentialProvider {
         self.0.snapshot.load_full()
     }
 
-    /// Reload after an upstream rejected `rejected_generation`, unless another request already did.
+    /// Reloads `rejected_generation` unless another request has replaced it.
     ///
     /// # Errors
     /// Returns the source failure under [`CredentialFailure::Fail`].
@@ -234,7 +229,7 @@ impl CredentialProvider {
         self.refresh(rejected_generation).await
     }
 
-    /// Return the last snapshot without applying its refresh deadline.
+    /// Returns the last snapshot without applying its refresh deadline.
     ///
     /// # Errors
     /// Returns the latest source failure under [`CredentialFailure::Fail`].

@@ -1,12 +1,9 @@
-//! The manifest write path: push validation, referrer recording, and delete.
-
 use axum::body::Body;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
 use std::sync::Arc;
 
 use peryx_driver::ServingState;
-use peryx_events::webhook::WebhookEventKind;
 
 use crate::error::{ErrorCode, error_response, error_response_with_status};
 use crate::registry::authority::{
@@ -16,18 +13,17 @@ use crate::store::{self, Manifest};
 
 use super::*;
 
-/// Store a manifest a client pushed, mapping the tag or verifying the digest reference.
 pub(in crate::registry) async fn put_manifest(
     state: &Arc<ServingState>,
     headers: &HeaderMap,
     body: Body,
     name: &str,
     reference: &Reference,
-    journal: bool,
+    journal: crate::outbox::Outbox,
 ) -> Result<Response, ServeError> {
     let (index, repo, identity) = match resolve_writable(state, name, headers, Action::Write) {
         Ok(target) => target,
-        Err(response) => return Ok(response),
+        Err(rejection) => return Ok(rejection.into_response()),
     };
     if policy_blocks(index, PolicyAction::Upload, &repo) {
         return Ok(error_response(ErrorCode::Denied, "image name is blocked by policy"));
@@ -95,29 +91,25 @@ pub(in crate::registry) async fn put_manifest(
     }
     if crate::quota::publish_manifest(
         &state.meta,
-        &index.name,
-        &repo,
-        &canonical,
-        &manifest,
-        reference,
-        reservation,
-        journal,
+        crate::quota::ManifestCommit {
+            index: &index.name,
+            repo: &repo,
+            canonical: &canonical,
+            manifest: &manifest,
+            reference,
+            reservation,
+            journal,
+        },
     )? {
         state.bump_search_epoch();
     }
-    // A pushed manifest publishes the repository, so its first push assigns the repository's home
-    // datacenter through the ownership group; a repeat push finds a home already set and does nothing.
     claim_repository_home(state, &repo).await;
-    // A pushed manifest is hosted content whose verified bytes are now local, so a later read resolves
-    // its placement from the index without probing the content store.
     store::record_content_placement(&state.meta, &canonical, store::OciArtifactOrigin::Pushed, true)?;
     let subject = record_referrer(state, &index.name, &repo, &canonical, &media_type, &bytes)?;
     let location = format!("/v2/{name}/manifests/{canonical}");
-    // A pushed manifest is a published image, the OCI analogue of a distribution upload; blob pushes
-    // are its layer bytes and are not counted separately.
-    state.metrics.record(Event::Upload {
-        route: index.route.clone(),
-        project: repo.clone(),
+    state.metrics.record(Observation::Write {
+        repository: index.route.clone(),
+        resource: repo.clone(),
     });
     let version = reference_tag(reference).map(str::to_owned);
     emit_webhook(
@@ -126,11 +118,11 @@ pub(in crate::registry) async fn put_manifest(
             headers,
             identity: &identity,
         },
-        WebhookEventKind::Upload,
+        crate::webhook::MANIFEST_PUSH,
         index,
         &repo,
-        version,
-        Some(canonical.clone()),
+        version.as_deref(),
+        Some(canonical.as_str()),
     );
     Ok(manifest_created(&location, &canonical, subject.as_deref()))
 }
@@ -203,18 +195,17 @@ fn record_referrer(
     store::put_referrer(&state.meta, index, repo, subject, canonical, descriptor.as_bytes())?;
     Ok(Some(subject.to_owned()))
 }
-/// Move a manifest reference into repository trash.
 pub(in crate::registry) async fn delete_manifest(
     state: &Arc<ServingState>,
     headers: &HeaderMap,
     name: &str,
     reference: &Reference,
     query: &str,
-    journal: bool,
+    journal: crate::outbox::Outbox,
 ) -> Result<Response, ServeError> {
     let (index, repo, identity) = match resolve_writable(state, name, headers, Action::Delete) {
         Ok(target) => target,
-        Err(response) => return Ok(response),
+        Err(rejection) => return Ok(rejection.into_response()),
     };
     // A delete is a metadata mutation under the repository home, so it is fenced by the committed epoch:
     // a stale home cannot trash a tag or manifest the surviving home still serves.
@@ -250,11 +241,11 @@ pub(in crate::registry) async fn delete_manifest(
                 headers,
                 identity: &identity,
             },
-            WebhookEventKind::Delete,
+            crate::webhook::MANIFEST_DELETE,
             index,
             &repo,
-            version,
-            digest,
+            version.as_deref(),
+            digest.as_deref(),
         );
         accepted()
     } else {
@@ -268,11 +259,11 @@ pub(in crate::registry) async fn restore_manifest(
     headers: &HeaderMap,
     name: &str,
     reference: &Reference,
-    journal: bool,
+    journal: crate::outbox::Outbox,
 ) -> Result<Response, ServeError> {
     let (index, repo, identity) = match resolve_writable(state, name, headers, Action::Delete) {
         Ok(target) => target,
-        Err(response) => return Ok(response),
+        Err(rejection) => return Ok(rejection.into_response()),
     };
     // Restoring re-exposes a trashed manifest or tag, so it is fenced like a publish: a stale home
     // cannot bring back a reference the surviving home has moved past.
@@ -305,11 +296,11 @@ pub(in crate::registry) async fn restore_manifest(
             headers,
             identity: &identity,
         },
-        WebhookEventKind::Restore,
+        crate::webhook::MANIFEST_RESTORE,
         index,
         &repo,
-        version,
-        Some(digest.clone()),
+        version.as_deref(),
+        Some(digest.as_str()),
     );
     let mut builder = Response::builder()
         .status(StatusCode::ACCEPTED)
@@ -322,7 +313,6 @@ pub(in crate::registry) async fn restore_manifest(
         .body(Body::empty())
         .expect("restore response builds from validated parts"))
 }
-/// A `201 Created` for a stored manifest, echoing `OCI-Subject` when the manifest declared a subject.
 fn manifest_created(location: &str, digest: &str, subject: Option<&str>) -> Response {
     let mut builder = Response::builder()
         .status(StatusCode::CREATED)
@@ -378,7 +368,7 @@ async fn missing_manifest_reference(
                 .blobs
                 .head(&storage)
                 .await
-                .map_err(super::super::blobs::blob_fault)?
+                .map_err(super::super::ServeError::from)?
                 .is_some()
         } else {
             false

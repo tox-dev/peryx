@@ -1,0 +1,57 @@
+[package]
+name = "peryx-ecosystem-oci-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+rust-version = "1.96"
+license = "MIT"
+repository = "https://github.com/tox-dev/peryx"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+axum = "0.8"
+libfuzzer-sys = "0.4"
+peryx-core = { version = "0.0.1", path = "../../peryx-core" }
+peryx-driver = { version = "0.0.1", path = "../../peryx-driver" }
+peryx-ecosystem-oci = { version = "0.0.1", path = ".." }
+peryx-identity = { version = "0.0.1", path = "../../peryx-identity" }
+peryx-index = { version = "0.0.1", path = "../../peryx-index" }
+peryx-policy = { version = "0.0.1", path = "../../peryx-policy" }
+peryx-plugin-registry = { version = "0.0.1", path = "../../peryx-plugin-registry" }
+peryx-storage = { version = "0.0.1", path = "../../peryx-storage" }
+tempfile = "3"
+tokio = { version = "1", features = ["rt"] }
+
+[[bin]]
+name = "oci_reference"
+path = "fuzz_targets/oci_reference.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "oci_manifest"
+path = "fuzz_targets/oci_manifest.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(loom)'] }
+dead_code = "deny"
+unused_variables = "warn"
+unused_imports = "warn"
+
+[lints]
+workspace = true

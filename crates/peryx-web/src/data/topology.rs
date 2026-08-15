@@ -1,23 +1,14 @@
-#![allow(
-    clippy::future_not_send,
-    reason = "browser fetch futures are single-threaded by nature; callers wrap them in SendWrapper"
-)]
-
 use crate::model::TopologySnapshot;
 
-/// The endpoint the browser subscribes to for live snapshot deltas. It carries the same role-filtered
-/// projection as the one-shot snapshot, so a subscription never widens what the page already renders.
+/// Uses the same role-filtered projection as the one-shot snapshot.
 #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
 const TOPOLOGY_STREAM_URL: &str = "/+availability/topology/stream";
 
-/// The named Server-Sent Event the stream emits, matching the server's `Event::event("topology")`. A
-/// browser dispatches a named event to a matching listener, not to the default `message` handler.
+/// Must match the server's named event rather than the default `message` event.
 #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
 const TOPOLOGY_STREAM_EVENT: &str = "topology";
 
-/// How long a dropped connection may stay live before the badge admits it is reconnecting. The browser
-/// retries within its own window, so a routine reconnect that delivers a fresh event inside this grace
-/// period never flickers the badge; only a reconnect that outlasts it surfaces as `Reconnecting`.
+/// Avoids badge flicker during the browser's normal reconnect window.
 #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
 const RECONNECT_GRACE_MS: i32 = 400;
 
@@ -36,13 +27,13 @@ pub async fn load_topology() -> Result<TopologySnapshot, String> {
     }
     #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
     {
-        send_wrapper::SendWrapper::new(async {
+        let request = async {
             let value = super::fetch_json_required("/+availability/topology")
                 .await
                 .map_err(|_| "The availability topology could not be reached.".to_owned())?;
             serde_json::from_value(value).map_err(|_| "The availability topology returned invalid data.".to_owned())
-        })
-        .await
+        };
+        send_wrapper::SendWrapper::new(request).await
     }
     #[cfg(all(not(feature = "ssr"), not(feature = "hydrate")))]
     {
@@ -56,8 +47,8 @@ pub async fn load_topology() -> Result<TopologySnapshot, String> {
 /// # Errors
 ///
 /// Returns a message when the event body does not parse as a snapshot.
-#[cfg(any(test, all(not(feature = "ssr"), feature = "hydrate")))]
-pub fn parse_topology_snapshot(data: &str) -> Result<TopologySnapshot, String> {
+#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+fn parse_topology_snapshot(data: &str) -> Result<TopologySnapshot, String> {
     serde_json::from_str(data).map_err(|_| "The availability topology stream sent invalid data.".to_owned())
 }
 
@@ -78,15 +69,10 @@ impl Drop for TopologyStream {
     }
 }
 
-/// Open the bounded topology stream and drive two callbacks: `on_snapshot` for each delta the server
-/// coalesces onto the wire, and `on_status` as the connection opens, drops, and reconnects. Returns
-/// `None` when the browser cannot open an `EventSource`, so the caller keeps the initial snapshot rather
-/// than clearing the page.
+/// Open the bounded topology stream and report snapshots and connection status.
 ///
-/// `on_status` starts the badge live only once the connection opens or a valid event arrives, never on the
-/// strength of a pending connection. A body that will not decode reports `Stale`; the browser reconnects on
-/// its own after a drop, reporting `Connecting` while it retries and `Offline` once it gives up, so a frozen
-/// render is always visible as such.
+/// Returns `None` when the browser cannot open an `EventSource`. Invalid events report `Stale`; reconnects
+/// report `Connecting` until the browser gives up and reports `Offline`.
 #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
 #[must_use]
 pub fn subscribe_topology(
@@ -136,7 +122,6 @@ pub fn subscribe_topology(
 
     let defer_connecting: std::rc::Rc<dyn Fn()> = {
         let cancel = std::rc::Rc::clone(&cancel);
-        let window = window.clone();
         let pending = std::rc::Rc::clone(&pending);
         std::rc::Rc::new(move || {
             cancel();
@@ -196,21 +181,5 @@ pub fn subscribe_topology(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::parse_topology_snapshot;
-
-    #[test]
-    fn test_parse_topology_snapshot_reads_a_streamed_event() {
-        let snapshot = parse_topology_snapshot(
-            r#"{"mode":"dc","group":"east","captured_at":7,"node_count":1,"local":{"role":"writer","liveness":"live","frontier":42},"nodes":[]}"#,
-        )
-        .unwrap();
-        assert_eq!(snapshot.captured_at, 7);
-        assert_eq!(snapshot.local.frontier, Some(42));
-    }
-
-    #[test]
-    fn test_parse_topology_snapshot_rejects_invalid_data() {
-        assert!(parse_topology_snapshot("not a snapshot").is_err());
-    }
-}
+#[path = "../../tests/unit/data/topology/tests.rs"]
+mod tests;

@@ -16,44 +16,51 @@ concurrency:
 env:
   CARGO_HTTP_MULTIPLEXING: "false"
   CARGO_NET_RETRY: "10"
-  # The opencontainers/distribution-spec commit whose conformance suite peryx is tested against.
-  DISTRIBUTION_SPEC_REF: fcfba1ec55526073f48b2f6d4e3d7eef410ddcbc
+  GIT_CONFIG_COUNT: "1"
+  GIT_CONFIG_KEY_0: init.defaultBranch
+  GIT_CONFIG_VALUE_0: main
 
 jobs:
-  # Pull requests run conformance only for OCI or shared changes. Pushes and manual runs exercise it
-  # unconditionally.
   changes:
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     outputs:
       oci: ${{ steps.filter.outputs.oci }}
       shared: ${{ steps.filter.outputs.shared }}
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4.0.1
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
           filters: |
             shared:
+              - 'crates/peryx-archive/**'
               - 'crates/peryx-core/**'
-              - 'crates/peryx-storage/**'
-              - 'crates/peryx-http/**'
               - 'crates/peryx-driver/**'
-              - 'crates/peryx-identity/**'
-              - 'crates/peryx-policy/**'
-              - 'crates/peryx-index/**'
               - 'crates/peryx-events/**'
-              - 'crates/peryx-upstream/**'
+              - 'crates/peryx-ha/**'
+              - 'crates/peryx-ha-distributed/**'
+              - 'crates/peryx-http/**'
+              - 'crates/peryx-identity/**'
+              - 'crates/peryx-index/**'
+              - 'crates/peryx-plugin-registry/**'
+              - 'crates/peryx-policy/**'
+              - 'crates/peryx-pql/**'
               - 'crates/peryx-search/**'
-              - 'crates/peryx-replication/**'
+              - 'crates/peryx-storage/**'
+              - 'crates/peryx-upstream/**'
               - 'crates/peryx/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.cargo/**'
               - 'rust-toolchain*'
               - '.github/workflows/conformance.yml'
-              - 'ci/run-oci-conformance.sh'
+              - 'scripts/ci/conformance'
+              - 'crates/peryx-ecosystem-oci/tests/conformance/**'
+              - 'justfile'
+              - 'scripts/ci/check-job-results'
             oci:
               - 'crates/peryx-ecosystem-oci/**'
 
@@ -64,27 +71,39 @@ jobs:
       needs.changes.outputs.oci == 'true' || needs.changes.outputs.shared == 'true' ||
       github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     permissions:
-      actions: write
       contents: read
     steps:
-      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1
+        env:
+          NODE_OPTIONS: --no-deprecation # https://github.com/Swatinem/rust-cache/issues/331
         with:
           cache-workspace-crates: true
-      - name: Build peryx
-        run: cargo build --bin peryx
-      - name: Build the conformance suite
-        # ubuntu-24.04 ships a recent Go; the suite builds with any 1.22+.
-        run: |
-          git clone https://github.com/opencontainers/distribution-spec "$RUNNER_TEMP/distribution-spec"
-          git -C "$RUNNER_TEMP/distribution-spec" checkout "$DISTRIBUTION_SPEC_REF"
-          cd "$RUNNER_TEMP/distribution-spec/conformance"
-          go test -c -o "$RUNNER_TEMP/conformance.test"
-      - name: Run conformance against peryx
-        run: ci/run-oci-conformance.sh ./target/debug/peryx "$RUNNER_TEMP/conformance.test"
-      - name: Cancel remaining jobs on failure
-        if: failure() && !cancelled()
-        uses: ./.github/actions/cancel-on-failure
+      - uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10
+        with:
+          tool: just
+      - run: just conformance peryx-ecosystem-oci "$RUNNER_TEMP/conformance.test"
+
+  conformance-gate:
+    if: always()
+    needs: [changes, conformance]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10
+        with:
+          tool: just
+      - name: Verify required jobs
+        env:
+          CI_CONTEXT: >-
+            {"event":"${{ github.event_name }}","oci":${{ needs.changes.outputs.oci == 'true' }},
+            "shared":${{ needs.changes.outputs.shared == 'true' }}}
+          CI_RESULTS: ${{ toJSON(needs) }}
+        run: just ci-gate conformance

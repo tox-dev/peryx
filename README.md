@@ -4,82 +4,40 @@
 [![Documentation](https://img.shields.io/readthedocs/peryx?logo=readthedocs&logoColor=white)](https://peryx.readthedocs.io/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-**Fast as the falcon, sealed as the pyx.** peryx is one artifact server for many packaging ecosystems, written in async
-Rust.
+Peryx is an async Rust artifact server. One executable links every shipped ecosystem owner and `peryx-ha-distributed`.
+Each `[[index]]` selects an owner through `peryx-plugin-registry`; `[availability].mode` selects `none`, `dc`, or `ha`.
+`none` skips availability assembly. Unselected owners install no runtime state or work.
 
-Point `pip`, `uv`, or `twine` at it for Python and `docker` or any registry client at it for containers, all from one
-process. Each index caches an upstream, hosts your own uploads, or merges the two so a package you publish shadows the
-upstream of the same name. A new ecosystem is a driver, not a rewrite.
+## Properties
 
-## Highlights
+- Each index role shares a content-addressed blob store.
+- Core crates define opaque IDs and focused traits. Owner crates implement those traits and keep protocol code and data
+  inside their crate.
+- `availability.mode = "none"` creates no distributed storage or runtime resource. It records no availability metrics;
+  neutral request metrics remain enabled.
+- `peryx-ha` defines availability contracts. `peryx-ha-distributed` owns datacenter and multi-datacenter resources and
+  worker lifecycles.
+- CI requires 100% line and function coverage from each crate and each declared system-test source root.
 
-- 🦅 One server for many ecosystems: PyPI and OCI today, with more added as drivers rather than forks.
-- ⚡ One async Rust process: zero-config on a laptop, scaling to a cluster when configured.
-- 🔀 Three roles for every ecosystem: a caching proxy, a hosted store you publish to, and a virtual index that merges
-  them.
-- 🔒 Content-addressed storage: each artifact is keyed by its SHA-256, so identical bytes are stored once, deduplicated
-  across ecosystems, and tamper-evident.
-- 🛡️ Batteries included: an allow/deny policy engine, full-text search, Prometheus metrics, and signed webhooks.
-- 🧩 Neutral by design: the server names no format, and each ecosystem plugs into one interface.
-
-## Installation
-
-Build from source and start the server:
+## Build and run
 
 ```shell
 cargo build --release
 ./target/release/peryx serve
 ```
 
-peryx runs zero-config on `127.0.0.1:4433`. Point it at real upstreams, turn on hosted uploads, and tune caching through
-its [configuration](https://peryx.readthedocs.io/).
+The process listens on `127.0.0.1:4433` by default. The
+[configuration reference](https://peryx.readthedocs.io/en/latest/core/configuration/) documents index owners and
+availability modes.
 
 ## Documentation
 
-peryx's documentation lives at [peryx.readthedocs.io](https://peryx.readthedocs.io/): tutorials, how-to guides, the
-configuration and endpoint reference, and design explanations. Run `peryx --help` for the command-line reference.
-
-## Features
-
-### Python (PyPI)
-
-Serve the [Simple repository API](https://packaging.python.org/en/latest/specifications/simple-repository-api/) as a
-caching proxy, a hosted index, or a virtual blend of both:
-
-```shell
-uv pip install --index-url http://127.0.0.1:4433/root/pypi/simple/ requests
-twine upload --repository-url http://127.0.0.1:4433/root/pypi/ dist/*
-```
-
-### Containers (OCI)
-
-Serve the [OCI distribution spec](https://github.com/opencontainers/distribution-spec) so any container client pulls and
-pushes through peryx:
-
-```shell
-docker pull 127.0.0.1:4433/dockerhub/library/alpine
-```
-
-### Three roles per index
-
-Every ecosystem gets the same three behaviors for free:
-
-- **Cached** proxies an upstream and keeps serving the last good copy for a bounded window when the upstream is
-  unreachable.
-- **Hosted** accepts your uploads and holds them durably.
-- **Virtual** merges other indexes under one route, so a package you publish shadows the upstream of the same name.
-
-### Built in
-
-A neutral allow/deny [policy](https://peryx.readthedocs.io/) engine, full-text package search, Prometheus-format
-metrics, and signed webhooks ship with the server, not as add-ons.
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the development setup and the
-[architecture overview](https://peryx.readthedocs.io/en/latest/contributing/architecture/) for how the crates fit
-together.
+- [Architecture](https://peryx.readthedocs.io/en/latest/contributing/architecture/) defines crate and lifecycle
+  ownership.
+- [Ecosystem docs](https://peryx.readthedocs.io/en/latest/ecosystems/) contain client commands, protocol settings, and
+  behavior.
+- [Contributing](CONTRIBUTING.md) lists local and CI checks.
 
 ## License
 
-peryx is licensed under the [MIT license](https://opensource.org/licenses/MIT).
+The [MIT license](https://opensource.org/licenses/MIT) covers peryx.

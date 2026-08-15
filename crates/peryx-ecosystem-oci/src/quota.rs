@@ -1,5 +1,3 @@
-//! Repository-quota enforcement for the hosted push paths.
-//!
 //! A blob upload, cross-repo mount, or manifest publication reserves capacity against the substrate
 //! before it becomes discoverable, commits that reservation atomically with the metadata write, and
 //! releases it when the write fails. An index that configures no quota keeps its original write path,
@@ -8,7 +6,7 @@
 use axum::response::Response;
 use peryx_core::Role;
 use peryx_driver::ServingState;
-use peryx_events::metrics::{Event, MetricFamily};
+use peryx_events::metrics::{MetricFamily, Observation};
 use peryx_index::Index;
 use peryx_policy::Policy;
 use peryx_storage::meta::{
@@ -16,12 +14,13 @@ use peryx_storage::meta::{
     QuotaReservationRecord,
 };
 
+use crate::upload_session::UploadStore as _;
+
 use crate::error::{ErrorCode, error_response};
 use crate::name::Reference;
 use crate::registry::ServeError;
 use crate::store::{self, Manifest};
 
-/// Account the OCI repository path as a project and an optional tag as its version.
 #[must_use]
 pub const fn quota_reservation<'a>(
     repository: &'a str,
@@ -34,8 +33,8 @@ pub const fn quota_reservation<'a>(
 ) -> NewQuotaReservation<'a> {
     NewQuotaReservation {
         repository,
-        project: Some(name),
-        version: tag,
+        resource: Some(name),
+        group: tag,
         digest,
         bytes,
         class,
@@ -50,6 +49,8 @@ const QUOTA_ADMITTED_FAMILY: MetricFamily = MetricFamily {
     help: "Hosted OCI pushes admitted against the repository quota.",
     ui_label: "Quota admitted pushes",
     roles: &[Role::Hosted],
+    json_name: None,
+    kind: peryx_events::metrics::MetricKind::Counter,
 };
 
 /// A hosted push refused by the repository quota.
@@ -59,6 +60,8 @@ const QUOTA_REJECTED_FAMILY: MetricFamily = MetricFamily {
     help: "Hosted OCI pushes refused by the repository quota.",
     ui_label: "Quota rejected pushes",
     roles: &[Role::Hosted],
+    json_name: None,
+    kind: peryx_events::metrics::MetricKind::Counter,
 };
 
 /// The quota-decision counters the OCI driver publishes.
@@ -118,10 +121,10 @@ pub fn admit_push(
 /// size limit is enforced on the byte stream itself, so it alone does not switch accounting on.
 fn quota_limits(policy: &Policy) -> Option<QuotaLimits> {
     policy.enforces_quota().then(|| QuotaLimits {
-        max_file_bytes: policy.max_file_size(),
+        max_artifact_bytes: policy.max_artifact_size(),
         max_accounted_bytes: policy.max_accounted_bytes(),
-        max_projects: policy.max_projects(),
-        max_versions_per_project: policy.max_versions_per_project(),
+        max_resources: policy.max_resources(),
+        max_groups_per_resource: policy.max_groups_per_resource(),
         audit: policy.quota_audit(),
     })
 }
@@ -146,10 +149,10 @@ fn reserve(
 }
 
 fn record_quota_metric(state: &ServingState, index: &Index, repo: &str, family: &'static str) {
-    state.metrics.record(Event::Ecosystem {
-        route: index.route.clone(),
-        project: repo.to_owned(),
-        filename: None,
+    state.metrics.record(Observation::Ecosystem {
+        repository: index.route.clone(),
+        resource: repo.to_owned(),
+        artifact: None,
         family,
     });
 }
@@ -158,10 +161,10 @@ fn describe(violations: &[QuotaLimit]) -> String {
     violations
         .iter()
         .map(|limit| match limit {
-            QuotaLimit::FileBytes => "file size",
+            QuotaLimit::ArtifactBytes => "file size",
             QuotaLimit::AccountedBytes => "repository bytes",
-            QuotaLimit::Projects => "repository projects",
-            QuotaLimit::VersionsPerProject => "project versions",
+            QuotaLimit::Resources => "repository projects",
+            QuotaLimit::GroupsPerResource => "project versions",
         })
         .collect::<Vec<_>>()
         .join(", ")
@@ -178,7 +181,7 @@ pub fn commit_blob_membership(
     digest: &str,
     reservation: Option<QuotaReservationRecord>,
     session: Option<&str>,
-    journal: bool,
+    journal: crate::outbox::Outbox,
 ) -> Result<(), ServeError> {
     finalize(meta, reservation, session, |txn| {
         txn.put(&store::blob_membership_key(index, repo, digest), &[])?;
@@ -198,8 +201,8 @@ pub fn commit_blob_membership(
 pub fn release_blob_membership(meta: &MetaStore, index: &str, repo: &str, digest: &str) -> Result<bool, ServeError> {
     let allocation = QuotaAllocation {
         repository: index,
-        project: Some(repo),
-        version: None,
+        resource: Some(repo),
+        group: None,
         digest,
     };
     meta.commit_driver_txn_release_allocation(
@@ -214,22 +217,26 @@ pub fn release_blob_membership(meta: &MetaStore, index: &str, repo: &str, digest
     )
 }
 
-/// Publish a manifest by digest and optional tag, committing a quota reservation with it when the
-/// push was metered. Reports whether the searchable tag set grew.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the manifest, its reference, its quota reservation, and its outbox entry commit in one transaction"
-)]
-pub fn publish_manifest(
-    meta: &MetaStore,
-    index: &str,
-    repo: &str,
-    canonical: &str,
-    manifest: &Manifest,
-    reference: &Reference,
-    reservation: Option<QuotaReservationRecord>,
-    journal: bool,
-) -> Result<bool, ServeError> {
+pub struct ManifestCommit<'a> {
+    pub index: &'a str,
+    pub repo: &'a str,
+    pub canonical: &'a str,
+    pub manifest: &'a Manifest,
+    pub reference: &'a Reference,
+    pub reservation: Option<QuotaReservationRecord>,
+    pub journal: crate::outbox::Outbox,
+}
+
+pub fn publish_manifest(meta: &MetaStore, commit: ManifestCommit<'_>) -> Result<bool, ServeError> {
+    let ManifestCommit {
+        index,
+        repo,
+        canonical,
+        manifest,
+        reference,
+        reservation,
+        journal,
+    } = commit;
     let body = |txn: &mut DriverTxn| -> Result<(bool, Vec<Vec<u8>>), ServeError> {
         let tag = match reference {
             Reference::Tag(tag) => Some(tag.as_str()),
@@ -285,91 +292,5 @@ pub fn manifest_already_published(
 }
 
 #[cfg(test)]
-mod tests {
-    use peryx_storage::meta::{AccountingClass, MetaStore, QuotaLimit, QuotaLimits};
-
-    use super::{ReserveOutcome, describe, finalize, quota_reservation, reserve};
-    use crate::registry::ServeError;
-
-    fn store() -> (tempfile::TempDir, MetaStore) {
-        let dir = tempfile::tempdir().unwrap();
-        let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-        (dir, meta)
-    }
-
-    #[test]
-    fn test_reserve_admits_within_the_limit() {
-        let (_dir, meta) = store();
-        let request = quota_reservation("store", "app", None, "sha256:a", 4, AccountingClass::Hosted, 1);
-        let limits = QuotaLimits {
-            max_accounted_bytes: Some(8),
-            ..QuotaLimits::default()
-        };
-        assert!(matches!(
-            reserve(&meta, request, limits).unwrap(),
-            ReserveOutcome::Admitted(_)
-        ));
-    }
-
-    #[test]
-    fn test_reserve_rejects_over_the_limit_in_enforce_mode() {
-        let (_dir, meta) = store();
-        let request = quota_reservation("store", "app", None, "sha256:a", 9, AccountingClass::Hosted, 1);
-        let limits = QuotaLimits {
-            max_accounted_bytes: Some(8),
-            ..QuotaLimits::default()
-        };
-        assert!(matches!(
-            reserve(&meta, request, limits).unwrap(),
-            ReserveOutcome::Rejected(violations) if violations == vec![QuotaLimit::AccountedBytes]
-        ));
-    }
-
-    #[test]
-    fn test_reserve_maps_a_validation_fault_to_a_serve_error() {
-        let (_dir, meta) = store();
-        // A repository key past the substrate's identity length ceiling is a hard fault, not a quota
-        // decision, so it propagates rather than reads as an admission or a rejection.
-        let long = "r".repeat(600);
-        let request = quota_reservation(&long, "app", None, "sha256:a", 1, AccountingClass::Hosted, 1);
-        assert!(reserve(&meta, request, QuotaLimits::default()).is_err());
-    }
-
-    #[test]
-    fn test_describe_names_each_crossed_counter() {
-        assert_eq!(
-            describe(&[
-                QuotaLimit::FileBytes,
-                QuotaLimit::AccountedBytes,
-                QuotaLimit::Projects,
-                QuotaLimit::VersionsPerProject,
-            ]),
-            "file size, repository bytes, repository projects, project versions"
-        );
-    }
-
-    #[test]
-    fn test_finalize_releases_the_reservation_after_a_driver_failure() {
-        let (_dir, meta) = store();
-        let request = quota_reservation("store", "app", None, "sha256:a", 4, AccountingClass::Hosted, 1);
-        let record = meta.reserve_quota(request, QuotaLimits::default()).unwrap();
-        let id = record.id;
-
-        let result = finalize(&meta, Some(record), None, |_txn| {
-            Err::<((), Vec<Vec<u8>>), _>(ServeError::Transport("driver write failed".to_owned()))
-        });
-
-        assert!(matches!(result, Err(ServeError::Transport(message)) if message == "driver write failed"));
-        let usage = meta.quota_usage("store").unwrap();
-        assert_eq!(
-            (
-                usage.accounted_bytes.committed,
-                usage.accounted_bytes.reserved,
-                usage.projects.committed,
-                usage.projects.reserved,
-                meta.quota_reservation(id).unwrap(),
-            ),
-            (0, 0, 0, 0, None)
-        );
-    }
-}
+#[path = "../tests/unit/quota/tests.rs"]
+mod tests;

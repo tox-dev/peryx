@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Identity and access for peryx: principals, per-index grants, and the tokens that carry them."
+description = "Identity and access contracts for principals, repository grants, and tokens."
 
 [dependencies]
 argon2.workspace = true
@@ -14,11 +14,11 @@ base64.workspace = true
 bb8-ldap.workspace = true
 getrandom.workspace = true
 jsonwebtoken.workspace = true
-reqwest.workspace = true
+reqwest = { workspace = true, features = ["gzip", "http2", "rustls-native-certs", "rustls-no-provider", "stream"] }
 ring.workspace = true
 rustls.workspace = true
 rustls-native-certs.workspace = true
-rustls-pemfile.workspace = true
+rustls-pki-types = "1"
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -32,12 +32,10 @@ uuid.workspace = true
 test-util = []
 
 [dev-dependencies]
-rstest.workspace = true
-wiremock.workspace = true
-
-[target.'cfg(target_os = "linux")'.dev-dependencies]
 rcgen = "0.13.2"
-testcontainers.workspace = true
+rstest.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread"] }
+wiremock.workspace = true
 
 [lints]
 workspace = true

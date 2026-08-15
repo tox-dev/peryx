@@ -1,14 +1,18 @@
 use std::sync::Arc;
 
+use axum::Extension;
 use axum::body::Body;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, Request, StatusCode, Uri, header};
 use axum::response::{IntoResponse as _, Response};
 use peryx_driver::authz::{Decision, DenyReason, ScopedDecision};
+use peryx_driver::http_services::{
+    HttpDomainServices, PolicyDecisionItem, PolicyDecisionPage, PolicyDecisionQuery, PolicyDecisionQueryError,
+    PolicyInputGeneration,
+};
 use peryx_driver::state::AppState;
 use peryx_identity::{Action, Resource, Scope, UserId, parse_basic};
 use peryx_policy::PolicyDecisionState;
-use peryx_storage::meta::{PolicyDecisionItem, PolicyDecisionPage, PolicyDecisionQuery, PolicyDecisionQueryError};
 
 use crate::response_security::{
     ClassifiedField, FieldClassification, ProtectedCachePolicy, ResponseAuthorization, filter_fields,
@@ -17,7 +21,7 @@ use crate::response_security::{
 #[derive(Debug, serde::Deserialize)]
 pub struct PolicyDecisionsQuery {
     repository: Option<String>,
-    project: Option<String>,
+    resource: Option<String>,
     state: Option<PolicyDecisionState>,
     rule: Option<String>,
     source: Option<String>,
@@ -27,14 +31,23 @@ pub struct PolicyDecisionsQuery {
     limit: Option<usize>,
 }
 
-pub async fn policy_decisions(State(state): State<Arc<AppState>>, request: Request<Body>) -> Response {
+pub async fn policy_decisions(
+    State(state): State<Arc<AppState>>,
+    Extension(services): Extension<HttpDomainServices>,
+    request: Request<Body>,
+) -> Response {
     let (request, _) = request.into_parts();
-    let mut response = policy_decisions_response(&state, &request.headers, &request.uri).await;
+    let mut response = policy_decisions_response(&state, &services, &request.headers, &request.uri).await;
     ProtectedCachePolicy::NoStore.apply(response.headers_mut());
     response
 }
 
-async fn policy_decisions_response(state: &AppState, headers: &HeaderMap, uri: &Uri) -> Response {
+async fn policy_decisions_response(
+    state: &AppState,
+    services: &HttpDomainServices,
+    headers: &HeaderMap,
+    uri: &Uri,
+) -> Response {
     let identity = match authenticate(state, headers).await {
         Ok(identity) => identity,
         Err(rejection) => return rejection.response(),
@@ -44,7 +57,7 @@ async fn policy_decisions_response(state: &AppState, headers: &HeaderMap, uri: &
     };
     let mut query = PolicyDecisionQuery {
         repository: query.repository,
-        project: query.project,
+        resource: query.resource,
         state: query.state,
         rule: query.rule,
         source: query.source,
@@ -61,7 +74,7 @@ async fn policy_decisions_response(state: &AppState, headers: &HeaderMap, uri: &
         Err(rejection) => return rejection.response(),
     };
     query.repository = authorization.repository;
-    match state.meta.query_policy_decisions(&query) {
+    match services.policy_decisions().query(&query) {
         Ok(page) => policy_decision_page(page, authorization.response),
         Err(error) => policy_decision_error_response(&error),
     }
@@ -70,7 +83,7 @@ async fn policy_decisions_response(state: &AppState, headers: &HeaderMap, uri: &
 #[derive(Debug)]
 enum PolicyDecisionIdentity {
     Local(UserId),
-    LegacyToken,
+    EcosystemCredential,
 }
 
 #[derive(Debug)]
@@ -98,11 +111,11 @@ impl PolicyDecisionRejection {
     }
 }
 
-impl From<super::LegacyDenied> for PolicyDecisionRejection {
-    fn from(denied: super::LegacyDenied) -> Self {
+impl From<super::EcosystemCredentialDenied> for PolicyDecisionRejection {
+    fn from(denied: super::EcosystemCredentialDenied) -> Self {
         match denied {
-            super::LegacyDenied::Forbidden => Self::Forbidden,
-            super::LegacyDenied::Unauthorized => Self::Unauthorized,
+            super::EcosystemCredentialDenied::Forbidden => Self::Forbidden,
+            super::EcosystemCredentialDenied::Unauthorized => Self::Unauthorized,
         }
     }
 }
@@ -111,15 +124,16 @@ async fn authenticate(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<PolicyDecisionIdentity, PolicyDecisionRejection> {
-    let credentials = headers
+    let authorization = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-        .and_then(parse_basic)
         .ok_or(PolicyDecisionRejection::Unauthorized)?;
-    if credentials.user == "__token__" {
-        return Ok(PolicyDecisionIdentity::LegacyToken);
+    if state.recognizes_index_credential(authorization) {
+        return Ok(PolicyDecisionIdentity::EcosystemCredential);
     }
+    let credentials = parse_basic(authorization).ok_or(PolicyDecisionRejection::Unauthorized)?;
     state
+        .serving
         .users
         .authenticate(&credentials.user, &credentials.password)
         .await
@@ -136,7 +150,7 @@ fn authorize_query(
 ) -> Result<PolicyDecisionAuthorization, PolicyDecisionRejection> {
     match identity {
         PolicyDecisionIdentity::Local(actor) => authorize_local_repository(state, actor, route),
-        PolicyDecisionIdentity::LegacyToken => authorize_legacy_repository(state, headers, route),
+        PolicyDecisionIdentity::EcosystemCredential => authorize_ecosystem_repository(state, headers, route),
     }
 }
 
@@ -146,9 +160,11 @@ fn authorize_local_repository(
     route: Option<&str>,
 ) -> Result<PolicyDecisionAuthorization, PolicyDecisionRejection> {
     let Some(route) = route else {
-        let authorization = state
-            .authorization
-            .authorize_scoped(actor, Scope::AdministrationRead, &Resource::Operator);
+        let authorization =
+            state
+                .serving
+                .authorization
+                .authorize_scoped(actor, Scope::AdministrationRead, &Resource::Operator);
         require_permission(authorization)?;
         return Ok(PolicyDecisionAuthorization {
             repository: None,
@@ -156,10 +172,11 @@ fn authorize_local_repository(
         });
     };
     let index = super::index_by_route(state, route).ok_or(PolicyDecisionRejection::NotFound)?;
-    let authorization =
-        state
-            .authorization
-            .authorize_scoped(actor, Scope::RepositoryRead, &Resource::Repository(index.name.clone()));
+    let authorization = state.serving.authorization.authorize_scoped(
+        actor,
+        Scope::RepositoryRead,
+        &Resource::Repository(index.name.clone()),
+    );
     require_permission(authorization)?;
     Ok(PolicyDecisionAuthorization {
         repository: Some(index.name.clone()),
@@ -167,13 +184,13 @@ fn authorize_local_repository(
     })
 }
 
-fn authorize_legacy_repository(
+fn authorize_ecosystem_repository(
     state: &AppState,
     headers: &HeaderMap,
     route: Option<&str>,
 ) -> Result<PolicyDecisionAuthorization, PolicyDecisionRejection> {
     let route = route.ok_or(PolicyDecisionRejection::Unauthorized)?;
-    let index = super::authorize_legacy_route(state, headers, route, Action::Write)?;
+    let index = super::authorize_ecosystem_credential(state, headers, route, Action::Write)?;
     Ok(PolicyDecisionAuthorization {
         repository: Some(index.name.clone()),
         response: ResponseAuthorization::Repository,
@@ -219,16 +236,16 @@ fn policy_decision_page(page: PolicyDecisionPage, authorization: ResponseAuthori
 struct PolicyDecisionResponse {
     id: String,
     repository: String,
-    project: String,
-    version: Option<String>,
-    filename: Option<String>,
+    resource: String,
+    group: Option<String>,
+    artifact: Option<String>,
     source: Option<String>,
     action: peryx_policy::PolicyAction,
     state: PolicyDecisionState,
     rule: Option<String>,
     reason: Option<String>,
     evaluated_at_unix: i64,
-    input_generation: peryx_storage::meta::PolicyInputGeneration,
+    input_generation: PolicyInputGeneration,
     next_eligible_at_unix: Option<i64>,
     fresh: bool,
 }
@@ -239,9 +256,9 @@ impl From<PolicyDecisionItem> for PolicyDecisionResponse {
         Self {
             id: record.id.to_string(),
             repository: record.repository,
-            project: record.project,
-            version: record.version,
-            filename: record.filename,
+            resource: record.resource,
+            group: record.group,
+            artifact: record.artifact,
             source: record.source,
             action: record.action,
             state: record.state,
@@ -279,7 +296,7 @@ fn invalid_query() -> Response {
         .into_response()
 }
 
-/// Keep validation failures actionable without exposing storage details.
+/// Return validation details for client errors; redact store failures.
 #[must_use]
 pub fn policy_decision_error_response(error: &PolicyDecisionQueryError) -> Response {
     let (status, message) = match error {

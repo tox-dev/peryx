@@ -1,14 +1,39 @@
-#![allow(
-    clippy::must_use_candidate,
-    reason = "the #[component] macro consumes attributes, so #[must_use] cannot reach the generated functions"
-)]
-
 use leptos::prelude::*;
 
 use crate::data::load_operations;
 use crate::model::{OperationRow, OperationsHealth, OperationsView, format_instant, operation_status_label};
 
 #[component]
+#[cfg(not(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate")))]
+pub fn PendingOperations() -> impl IntoView {
+    let (_, set_cursor) = signal(None::<String>);
+    view! {
+        <section class="page operations-page">
+            <div class="ops-title">
+                <h1>"Pending operations"</h1>
+                <span class="badge">"read-only"</span>
+                <a href="/+availability/operations"><code>"/+availability/operations"</code></a>
+            </div>
+            <p class="dim">
+                "The admitted writes this node retains: how many are still in flight, how many finalized, \
+                 how many gave up, and how many outlived their retention deadline. The counts cover the \
+                 whole ledger; the per-operation rows need administrator access and page in operation-id \
+                 order. A row names an operation without revealing what it wrote or who owns it."
+            </p>
+            <Suspense fallback=|| view! { <p class="dim" role="status" aria-live="polite">"loading"</p> }>
+                {move || Suspend::new(async move {
+                    match load_operations(None).await {
+                        Ok(view) => view! { <OperationsBody view set_cursor /> }.into_any(),
+                        Err(error) => view! { <p class="error" role="alert">{error}</p> }.into_any(),
+                    }
+                })}
+            </Suspense>
+        </section>
+    }
+}
+
+#[component]
+#[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
 pub fn PendingOperations() -> impl IntoView {
     // `None` is the first page; a cursor pages the administrator's rows in operation-id order. The
     // resource re-reads whenever the cursor moves, so a click fetches the next page without a navigation.
@@ -101,23 +126,54 @@ fn OperationsRows(
                 <tbody>{table_rows}</tbody>
             </table>
         </div>
+        <OperationsPager count next_cursor set_cursor />
+    }
+    .into_any()
+}
+
+#[component]
+#[cfg(not(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate")))]
+fn OperationsPager(
+    count: usize,
+    next_cursor: Option<String>,
+    set_cursor: WriteSignal<Option<String>>,
+) -> impl IntoView {
+    let _ = set_cursor;
+    view! {
         <div class="pager operations-pager">
             <p class="result-count" role="status" aria-live="polite">
                 {format!("Showing {count} operation rows on this page.")}
             </p>
-            <button type="button" on:click=move |_| set_cursor.set(None)>"First page"</button>
+            <button type="button">"First page"</button>
+            {next_cursor.map(|_| view! { <button type="button">"Next page"</button> })}
+        </div>
+    }
+}
+
+#[component]
+#[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
+fn OperationsPager(
+    count: usize,
+    next_cursor: Option<String>,
+    set_cursor: WriteSignal<Option<String>>,
+) -> impl IntoView {
+    view! {
+        <div class="pager operations-pager">
+            <p class="result-count" role="status" aria-live="polite">
+                {format!("Showing {count} operation rows on this page.")}
+            </p>
+            <button type="button" onclick="location.href='/admin/operations'">"First page"</button>
             {next_cursor.map(|cursor| view! {
                 <button type="button" on:click=move |_| set_cursor.set(Some(cursor.clone()))>"Next page"</button>
             })}
         </div>
     }
-    .into_any()
 }
 
 fn operation_table_row(row: OperationRow) -> AnyView {
     let status = operation_status_label(row.status);
     let updated = format_instant(row.updated_at);
-    let expires = row.expires_at.map_or_else(|| "—".to_owned(), format_instant);
+    let expires = row.expires_at.map_or_else(|| "-".to_owned(), format_instant);
     view! {
         <tr>
             <td><code>{row.operation}</code></td>
@@ -128,3 +184,7 @@ fn operation_table_row(row: OperationRow) -> AnyView {
     }
     .into_any()
 }
+
+#[cfg(all(test, feature = "ssr"))]
+#[path = "../../tests/unit/pages/operations/tests.rs"]
+mod tests;

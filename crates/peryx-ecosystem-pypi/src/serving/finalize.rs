@@ -1,10 +1,4 @@
-//! Finalize an admitted upload at its authority's home datacenter.
-//!
-//! A node admits an upload's bytes wherever they arrive, staging an [ingress
-//! intent](peryx_storage::meta::MetaStore::staged_intent). The intent's authority home is the one
-//! place that turns it into an authoritative release: it validates the intent against current state and
-//! commits the metadata, its outbox journal, the operation's terminal outcome, and the intent's advance
-//! in one transaction, so a crash never leaves a published artifact no replica receives.
+//! Finalizes admitted `PyPI` uploads at their authority home.
 //!
 //! Finalization is fenced and idempotent. A stale authority epoch, a permission the intent no longer
 //! holds, a placement the bytes never reached, or a checksum that disagrees with what was admitted each
@@ -107,13 +101,6 @@ impl From<MetaError> for FinalizeError {
     }
 }
 
-/// Finalize the upload staged under `intent_key` for the authority `descriptor` names.
-///
-/// Reads the staged intent, replays a terminal outcome for a retry, fences the finalize by the
-/// authority's committed epoch, validates the descriptor against the admitted intent and current state,
-/// and, when all hold, publishes the file's rows, its outbox journal, a `Published` outcome, and the
-/// intent's advance to [`Admitted`](peryx_storage::meta::IntentPhase::Admitted) in one transaction.
-///
 /// # Errors
 /// Returns [`FinalizeError::NotStaged`] when no intent is staged, [`FinalizeError::Rejected`] when a
 /// validation refuses publication, and [`FinalizeError::Store`] when the store fails. A refusal is
@@ -165,7 +152,7 @@ fn authorized(state: &ServingState, descriptor: &FinalizeDescriptor<'_>) -> bool
             authorize(
                 descriptor.principal,
                 &index.acl,
-                Some(descriptor.normalized),
+                peryx_identity::ResourceMatch::Pattern(descriptor.normalized),
                 Action::Write,
             )
             .is_ok()
@@ -208,7 +195,8 @@ fn publish(
     // The terminal-outcome replay is decided before publication, so this commit publishes rather than
     // replays; either way the operation ends published with the same acknowledgement.
     state.meta.commit_finalized_write(write, |txn| {
-        publish_file_in_txn::<MetaError>(txn, &file, guard).map(|(_, journal)| journal)
+        publish_file_in_txn::<MetaError>(txn, crate::replication_enabled(state), &file, guard)
+            .map(|(_, journal)| journal)
     })?;
     Ok(Finalization::Published {
         response: DURABLE_ACK.to_vec(),
@@ -216,14 +204,5 @@ fn publish(
 }
 
 #[cfg(test)]
-mod tests {
-    use peryx_storage::meta::MetaError;
-
-    use super::FinalizeError;
-
-    #[test]
-    fn test_a_store_fault_maps_to_a_finalize_store_error() {
-        let err = MetaError::Decode(serde_json::from_str::<serde_json::Value>("x").unwrap_err());
-        assert!(matches!(FinalizeError::from(err), FinalizeError::Store(_)));
-    }
-}
+#[path = "../../tests/unit/serving/finalize/tests.rs"]
+mod tests;

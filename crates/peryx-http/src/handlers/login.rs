@@ -1,8 +1,5 @@
-//! Browser login over `OpenID Connect`: start the authorization redirect, handle the provider callback,
-//! expose the current session, and log out.
-//!
 //! These routes authenticate a human to the read-only web UI by sealing the resolved user into a
-//! session cookie. They never mint a write credential: mutating registry requests stay on
+//! session cookie. They never mint a write credential: repository mutations stay on
 //! `Authorization`-header tokens, so the session cookie carries no CSRF surface. The login handoff
 //! (PKCE verifier, nonce, `state`) rides a single-use sealed pre-authentication cookie between the
 //! redirect and the callback.
@@ -27,16 +24,14 @@ const PRE_AUTH_PATH: &str = "/_/login";
 /// Where a completed or cleared login lands the browser.
 const ROOT_PATH: &str = "/";
 
-/// `GET /_/login/{provider}` — begin an OIDC login: mint the authorization request and redirect the
-/// browser to the provider, sealing the handoff into a single-use pre-authentication cookie.
 pub async fn login_start(State(state): State<Arc<AppState>>, Path(provider): Path<String>) -> Response {
-    let Some(service) = state.oidc_login(&provider) else {
+    let Some(service) = state.serving.oidc_login(&provider) else {
         return provider_not_found();
     };
-    let Some(sealer) = state.session_sealer() else {
+    let Some(sealer) = state.serving.session_sealer() else {
         return misconfigured();
     };
-    let now = (state.clock)();
+    let now = (state.serving.clock)();
     match service.authorization(now).await {
         Ok(authorization) => {
             let handoff = sealer.seal_pre_auth(&authorization.pending, now + PRE_AUTH_TTL_SECS);
@@ -49,21 +44,19 @@ pub async fn login_start(State(state): State<Arc<AppState>>, Path(provider): Pat
     }
 }
 
-/// `GET /_/login/{provider}/callback` — complete an OIDC login: reopen the sealed handoff, validate the
-/// provider response, and on success seal the linked user into a session cookie.
 pub async fn login_callback(
     State(state): State<Arc<AppState>>,
     Path(provider): Path<String>,
     Query(response): Query<CallbackResponse>,
     headers: HeaderMap,
 ) -> Response {
-    let Some(service) = state.oidc_login(&provider) else {
+    let Some(service) = state.serving.oidc_login(&provider) else {
         return provider_not_found();
     };
-    let Some(sealer) = state.session_sealer() else {
+    let Some(sealer) = state.serving.session_sealer() else {
         return misconfigured();
     };
-    let now = (state.clock)();
+    let now = (state.serving.clock)();
     let Some(pending) =
         read_cookie(&headers, PRE_AUTH_COOKIE).and_then(|value| sealer.open_pre_auth::<PendingLogin>(&value, now))
     else {
@@ -88,7 +81,7 @@ pub async fn login_callback(
     }
 }
 
-/// `GET /_/session` — the read-only UI's login state.
+/// `GET /_/session` - the read-only UI's login state.
 ///
 /// Reports the signed-in user (or null) and the OIDC providers a visitor can sign in with. The session
 /// cookie is consulted only for identity here; it authorizes nothing that mutates state.
@@ -97,24 +90,21 @@ pub async fn session(State(state): State<Arc<AppState>>, headers: HeaderMap) -> 
         .map(|user| json!({ "id": user.id.as_str(), "name": user.name.display(), "state": user.state }));
     json_no_store(
         StatusCode::OK,
-        &json!({ "user": user, "providers": state.oidc_providers() }),
+        &json!({ "user": user, "providers": state.serving.oidc_providers() }),
     )
 }
 
-/// The signed-in user a request's session cookie identifies, or `None` when there is no valid session.
+/// Returns the session principal for read-only UI routes.
 ///
-/// This is the read/UI surface's principal: the web pages and the session route consult it, and it
-/// authorizes nothing that mutates state. Mutating requests never call it — they stay on
-/// `Authorization`-header credentials.
+/// Session cookies never authorize mutations. Mutating routes require `Authorization` credentials.
 #[must_use]
 pub fn session_user(state: &AppState, headers: &HeaderMap) -> Option<ServerUser> {
-    let now = (state.clock)();
-    let sealer = state.session_sealer()?;
+    let now = (state.serving.clock)();
+    let sealer = state.serving.session_sealer()?;
     let value = read_cookie(headers, SESSION_COOKIE)?;
     sealer.open_session(&value, now)
 }
 
-/// `POST /_/logout` — end the browser session by clearing its cookie.
 pub async fn logout() -> Response {
     redirect(ROOT_PATH, &[clear_cookie(SESSION_COOKIE, ROOT_PATH)])
 }
@@ -146,7 +136,6 @@ fn login_error_response<E>(error: &OidcLoginError<E>) -> Response {
     }
 }
 
-/// Read one cookie value out of the request's `Cookie` header.
 fn read_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
     let header = headers.get(header::COOKIE)?.to_str().ok()?;
     header.split(';').find_map(|pair| {

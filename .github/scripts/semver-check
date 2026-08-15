@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$repo"
+baseline=${1:-origin/main}
+if ! git cat-file -e "$baseline^{commit}" 2>/dev/null; then
+  git fetch --no-tags --depth=1 origin "$baseline"
+fi
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+git archive "$baseline" | tar -x -C "$scratch"
+current=$(cargo metadata --no-deps --format-version 1)
+previous=$(cargo metadata --no-deps --format-version 1 --manifest-path "$scratch/Cargo.toml")
+jq -r '
+  .packages[]
+  | select(any(.targets[]; any(.kind[]; . == "lib" or . == "proc-macro")))
+  | .name
+' <<<"$current" | sort -u >"$scratch/current-libraries"
+jq -r '
+  .packages[]
+  | select(any(.targets[]; any(.kind[]; . == "lib" or . == "proc-macro")))
+  | .name
+' <<<"$previous" | sort -u >"$scratch/previous-libraries"
+if [[ ! -s $scratch/current-libraries || ! -s $scratch/previous-libraries ]]; then
+  exit 0
+fi
+set --
+while IFS= read -r package; do
+  set -- "$@" --exclude "$package"
+done < <(comm -23 "$scratch/current-libraries" "$scratch/previous-libraries")
+cargo semver-checks check-release --workspace --default-features --baseline-rev "$baseline" "$@"

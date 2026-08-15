@@ -1,6 +1,5 @@
-{%- set profile = load_data(path="data/bench/machine.toml") -%}
-{#- Rendered from `site/data/bench/machine.toml`, which `peryx-bench` regenerates on every run, so
-    the published tables always describe the machine that produced them. -#}
+{% component machine(owner) %}
+{%- set profile = load_data(path="data/ecosystems/" ~ owner ~ "/bench/machine.toml") -%}
 <div class="bench">
   <table class="bench-table machine-table">
     <caption>the host every table on this page was measured on</caption>
@@ -16,7 +15,7 @@
 
 <div class="bench">
   <table class="bench-table machine-table">
-    <caption>the volumes the run touches; only the benchmarked one ever holds benchmark data</caption>
+    <caption>storage used by the benchmark run</caption>
     <thead>
       <tr><th>mount</th><th>disk</th><th>size</th><th>role</th></tr>
     </thead>
@@ -26,7 +25,7 @@
         <td><code>{{ volume.mount }}</code></td>
         <td>{{ volume.kind }}, {{ volume.file_system }}{% if volume.removable %}, removable{% endif %}</td>
         <td>{{ volume.size }}</td>
-        <td>{{ volume.role }}{% if volume.benchmarked %} <strong>&mdash; benchmarked below</strong>{% endif %}</td>
+        <td>{{ volume.role }}{% if volume.benchmarked %} <strong>; benchmark target</strong>{% endif %}</td>
       </tr>
       {%- endfor %}
     </tbody>
@@ -53,3 +52,5 @@
     </tbody>
   </table>
 </div>
+
+{% endcomponent machine %}

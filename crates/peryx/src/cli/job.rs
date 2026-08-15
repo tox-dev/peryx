@@ -1,37 +1,34 @@
-//! The `job` command group: inspect durable job-run history.
-
 use clap::{Args, Subcommand};
 
 use super::RuntimeArgs;
 
-/// Inspect durable job-run history.
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum JobCommand {
     /// List job runs, newest first.
     List(JobListArgs),
     /// Show one job run in detail.
     Show(JobShowArgs),
-    /// Refresh a remote `PyPI` project catalog and bounded project metadata set.
+    /// Run a registered ecosystem job.
     Run {
         #[command(flatten)]
         runtime: RuntimeArgs,
-        /// Configured cached repository name.
+        /// Ecosystem-owned target.
         #[arg(long)]
-        repository: String,
-        /// Named upstream source; omit to use repository routing.
+        target: String,
+        /// Ecosystem-owned source override.
         #[arg(long)]
         source: Option<String>,
-        /// Maximum catalog projects to refresh.
-        #[arg(long, default_value_t = peryx_driver::jobs::DEFAULT_CATALOG_PROJECTS)]
-        max_projects: usize,
-        /// Maximum project-metadata requests in flight.
-        #[arg(long, default_value_t = peryx_driver::jobs::DEFAULT_CATALOG_CONCURRENCY)]
-        concurrency: usize,
+        /// Maximum items to process; omit to use the ecosystem default.
+        #[arg(long)]
+        item_limit: Option<usize>,
+        /// Maximum requests in flight; omit to use the ecosystem default.
+        #[arg(long)]
+        concurrency: Option<usize>,
         /// Overall wall-time budget in seconds.
-        #[arg(long, default_value_t = peryx_driver::jobs::DEFAULT_CATALOG_TIMEOUT.as_secs())]
-        timeout_secs: u64,
+        #[arg(long)]
+        timeout_secs: Option<u64>,
     },
-    /// Rebuild the derived package search index from authoritative metadata.
+    /// Rebuild the derived resource search index from authoritative metadata.
     Reindex {
         #[command(flatten)]
         runtime: RuntimeArgs,
@@ -60,14 +57,12 @@ impl JobCommand {
     }
 }
 
-/// Options for `peryx job list`.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct JobListArgs {
     #[command(flatten)]
     pub runtime: RuntimeArgs,
 }
 
-/// Options for `peryx job show`.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct JobShowArgs {
     #[command(flatten)]

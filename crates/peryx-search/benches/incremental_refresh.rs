@@ -1,10 +1,3 @@
-//! One mutation's refresh cost against increasing repository cardinality.
-//!
-//! A single package mutation used to invalidate the whole derived index, so the next search re-derived
-//! and rewrote every document; the cost grew with the corpus. The incremental path re-derives only the
-//! mutated project, so its cost is independent of the corpus. This bench reports both against a growing
-//! corpus so the difference is visible: `full_*` grows with `repositories`, `incremental_*` stays flat.
-
 use std::alloc::System;
 use std::hint::black_box;
 use std::sync::Arc;
@@ -14,8 +7,8 @@ use hdrhistogram::Histogram;
 use peryx_core::LexiconRegistry;
 use peryx_index::Index;
 use peryx_search::{
-    IndexerCtx, PackageDocument, PackageIndexer, PackageSearch, PackageSource, ProjectUpdate, SearchCtx, SearchError,
-    SearchParams, project_key,
+    ContentSource, IndexerCtx, ResourceUpdate, SearchCtx, SearchDocument, SearchDocumentProvider, SearchError,
+    SearchIndex, SearchParams, document_key,
 };
 use peryx_storage::blob::{BlobStorage, BlobStore};
 use peryx_storage::meta::MetaStore;
@@ -27,34 +20,33 @@ const SAMPLES: usize = 200;
 #[global_allocator]
 static ALLOCATOR: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 
-/// A corpus of `size` projects: the whole set for a full build, a single project for an incremental one.
 struct Corpus {
     size: usize,
 }
 
-impl PackageIndexer for Corpus {
-    fn documents(&self, _ctx: &IndexerCtx<'_>) -> Result<Vec<PackageDocument>, SearchError> {
+impl SearchDocumentProvider for Corpus {
+    fn documents(&self, _ctx: &IndexerCtx<'_>) -> Result<Vec<SearchDocument>, SearchError> {
         Ok((0..self.size)
             .map(|position| document(&format!("pkg{position}")))
             .collect())
     }
 
-    fn project_update(&self, _ctx: &IndexerCtx<'_>, name: &str) -> Result<ProjectUpdate, SearchError> {
-        Ok(ProjectUpdate {
-            keys: vec![project_key("root", name)],
+    fn resource_update(&self, _ctx: &IndexerCtx<'_>, name: &str) -> Result<ResourceUpdate, SearchError> {
+        Ok(ResourceUpdate {
+            keys: vec![document_key("root", name)],
             documents: vec![document(name)],
         })
     }
 }
 
-fn document(name: &str) -> PackageDocument {
-    PackageDocument {
-        display_name: name.to_owned(),
-        normalized_name: name.to_owned(),
+fn document(name: &str) -> SearchDocument {
+    SearchDocument {
+        display_label: name.to_owned(),
+        resource_key: name.to_owned(),
         route: "root".to_owned(),
         index: "root".to_owned(),
-        ecosystem: "pypi".to_owned(),
-        source: PackageSource::Cached,
+        ecosystem: "alpha".to_owned(),
+        source: ContentSource::Cached,
         available_locally: false,
         summary: None,
         text: name.to_owned(),
@@ -82,7 +74,7 @@ fn report(repository_count: usize) {
         lexicons: &lexicons,
     };
 
-    let mut search = PackageSearch::in_memory();
+    let mut search = SearchIndex::in_memory();
     search.add_indexer(Arc::new(Corpus { size: repository_count }));
     let search = search;
     let build_region = Region::new(ALLOCATOR);
@@ -94,7 +86,7 @@ fn report(repository_count: usize) {
         black_box(search.search(black_box(&ctx), SearchParams::default()).unwrap());
     });
     let incremental = latency(|| {
-        search.invalidate_project("pkg0");
+        search.invalidate_resource("pkg0");
         black_box(search.search(black_box(&ctx), SearchParams::default()).unwrap());
     });
 

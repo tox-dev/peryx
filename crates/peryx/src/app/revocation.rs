@@ -12,8 +12,6 @@ use crate::cli::RevocationCommand;
 const MAX_RESPONSE_BYTES: usize = 1_048_576;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Run one digest-revocation operation against a live server.
-///
 /// # Errors
 /// Returns an error for unsafe URLs, invalid digests, secret input, transport failures, non-success
 /// responses, oversized or invalid JSON responses, or output failures.
@@ -117,3 +115,7 @@ fn server_url(value: &str) -> anyhow::Result<Url> {
     url.set_fragment(None);
     Ok(url)
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/tests/app/revocation_tests.rs"]
+mod tests;

@@ -1,5 +1,3 @@
-//! Streaming a stored file to the client with the disk read pipelined ahead of the socket write.
-
 use std::io::{Read as _, Seek as _, SeekFrom};
 
 use axum::body::Body;
@@ -7,7 +5,6 @@ use bytes::Bytes;
 use futures_util::StreamExt as _;
 use peryx_storage::blob::{BlobRead, BlobReadBody};
 
-/// Preserve the selected backend's streaming representation in an HTTP body.
 pub fn blob_read(read: BlobRead) -> Body {
     let length = read.range.end.saturating_sub(read.range.start);
     match read.body {
@@ -16,13 +13,15 @@ pub fn blob_read(read: BlobRead) -> Body {
     }
 }
 
-/// Run `complete` with the transmitted byte count once a body delivers all of `expected` bytes.
+/// Invokes `complete` after at least `expected` bytes leave the body.
 ///
-/// `expected` is the response's own `Content-Length`. A length-framed response stops the server as
-/// soon as that many bytes leave the body, and it never polls the stream for its terminating `None`,
-/// so completion has to be recognized from the byte count rather than the end marker. If the stream
-/// errors or reaches EOF early, the callback is abandoned: a truncated transfer is not a download.
+/// Length-framed responses may stop before polling the stream's terminating `None`, so completion
+/// follows the byte count. An error or early EOF abandons the callback.
 pub fn on_body_complete(body: Body, expected: u64, complete: impl FnOnce(u64) + Send + 'static) -> Body {
+    on_body_complete_boxed(body, expected, Box::new(complete))
+}
+
+fn on_body_complete_boxed(body: Body, expected: u64, complete: Box<dyn FnOnce(u64) + Send>) -> Body {
     Body::from_stream(futures_util::stream::unfold(
         (body.into_data_stream(), Some(complete), 0u64),
         move |(mut stream, mut complete, bytes)| async move {
@@ -53,14 +52,10 @@ pub fn on_body_complete(body: Body, expected: u64, complete: impl FnOnce(u64) + 
     ))
 }
 
-/// Stream a file with the disk read running ahead of the socket write.
+/// Streams a file range through a bounded channel of owned buffers.
 ///
-/// A blocking reader fills a small channel of owned buffers while hyper drains it, so the read and the
-/// write overlap instead of alternating: a pull-driven `ReaderStream` awaits each read to complete
-/// before writing that chunk, serializing two independent I/O waits. `offset`/`length` select the byte
-/// range to serve (`0` and the file length for a whole file); the reader also stops at EOF, so a
-/// `length` past the end is harmless. A read error poisons the stream so hyper aborts the response
-/// rather than serving a silently truncated body.
+/// Blocking reads overlap with hyper writes instead of serializing both I/O waits. The reader stops at
+/// `length` or EOF. Read errors abort the response rather than serving truncated content.
 pub fn pipelined_file(file: std::fs::File, offset: u64, length: u64) -> Body {
     let (tx, rx) = tokio::sync::mpsc::channel::<std::io::Result<Bytes>>(4);
     tokio::task::spawn_blocking(move || {

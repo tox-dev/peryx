@@ -1,0 +1,32 @@
+[package]
+name = "peryx-test-support"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+license.workspace = true
+repository.workspace = true
+description = "Process harnesses shared by peryx system tests."
+autotests = false
+
+[dependencies]
+async-trait.workspace = true
+axum.workspace = true
+peryx-core.workspace = true
+peryx-driver.workspace = true
+reqwest = { workspace = true, features = ["blocking", "gzip", "http2", "json", "rustls-native-certs", "rustls-no-provider", "stream"] }
+rustls.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31", features = ["fs", "signal"] }
+
+[dev-dependencies]
+peryx-storage.workspace = true
+temp-env = "0.3"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

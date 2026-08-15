@@ -1,17 +1,49 @@
-#![allow(
-    clippy::must_use_candidate,
-    reason = "the #[component] macro consumes attributes, so #[must_use] cannot reach the generated functions"
-)]
-
 use leptos::prelude::*;
 
-use crate::data::{load_blob_placement, load_placements};
-use crate::model::{
-    BlobDatacenterPlacement, BlobPlacementView, PlacementHealth, PlacementRow, PlacementView,
-    blob_placement_status_label, byte_availability_label, file_source_label, format_instant,
-};
+#[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
+use crate::data::load_blob_placement;
+use crate::data::load_placements;
+#[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
+use crate::model::{BlobDatacenterPlacement, BlobPlacementView, blob_placement_status_label};
+use crate::model::{PlacementHealth, PlacementRow, PlacementView, format_instant};
+
+struct PlacementLabel {
+    key: &'static str,
+    text: &'static str,
+    hint: &'static str,
+}
 
 #[component]
+#[cfg(not(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate")))]
+pub fn ArtifactPlacements() -> impl IntoView {
+    let (_, set_cursor) = signal(None::<String>);
+    view! {
+        <section class="page placements-page">
+            <div class="ops-title">
+                <h1>"Artifact placement health"</h1>
+                <span class="badge">"read-only"</span>
+                <a href="/+availability/placements"><code>"/+availability/placements"</code></a>
+            </div>
+            <p class="dim">
+                "How the store's bytes are placed: how many artifacts serve locally, how many depend on an \
+                 upstream, and how many cannot be served at all. The counts cover the whole store; the \
+                 per-digest rows need administrator access and page in digest order. A digest names an \
+                 artifact without revealing where it lives or who owns it."
+            </p>
+            <Suspense fallback=|| view! { <p class="dim" role="status" aria-live="polite">"loading"</p> }>
+                {move || Suspend::new(async move {
+                    match load_placements(None).await {
+                        Ok(view) => view! { <PlacementBody view set_cursor /> }.into_any(),
+                        Err(error) => view! { <p class="error" role="alert">{error}</p> }.into_any(),
+                    }
+                })}
+            </Suspense>
+        </section>
+    }
+}
+
+#[component]
+#[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
 pub fn ArtifactPlacements() -> impl IntoView {
     // `None` is the first page; a cursor pages the administrator's rows in digest order. The resource
     // re-reads whenever the cursor moves, so a click fetches the next page without a full navigation.
@@ -99,7 +131,6 @@ fn PlacementRows(
         .into_any();
     }
     let count = rows.len();
-    // The digest a reader has drilled into, whose per-datacenter placement the detail panel shows.
     let selected = RwSignal::new(None::<String>);
     let table_rows = rows
         .into_iter()
@@ -120,35 +151,50 @@ fn PlacementRows(
             </table>
         </div>
         <BlobPlacementDetail selected />
+        <PlacementPager count next_cursor set_cursor />
+    }
+    .into_any()
+}
+
+#[component]
+#[cfg(not(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate")))]
+fn PlacementPager(count: usize, next_cursor: Option<String>, set_cursor: WriteSignal<Option<String>>) -> impl IntoView {
+    let _ = set_cursor;
+    view! {
         <div class="pager placement-pager">
             <p class="result-count" role="status" aria-live="polite">
                 {format!("Showing {count} placement rows on this page.")}
             </p>
-            <button type="button" on:click=move |_| set_cursor.set(None)>"First page"</button>
+            <button type="button">"First page"</button>
+            {next_cursor.map(|_| view! { <button type="button">"Next page"</button> })}
+        </div>
+    }
+}
+
+#[component]
+#[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
+fn PlacementPager(count: usize, next_cursor: Option<String>, set_cursor: WriteSignal<Option<String>>) -> impl IntoView {
+    view! {
+        <div class="pager placement-pager">
+            <p class="result-count" role="status" aria-live="polite">
+                {format!("Showing {count} placement rows on this page.")}
+            </p>
+            <button type="button" onclick="location.href='/admin/placements'">"First page"</button>
             {next_cursor.map(|cursor| view! {
                 <button type="button" on:click=move |_| set_cursor.set(Some(cursor.clone()))>"Next page"</button>
             })}
         </div>
     }
-    .into_any()
 }
 
 fn placement_row(row: PlacementRow, selected: RwSignal<Option<String>>) -> AnyView {
     let source = file_source_label(row.source);
     let availability = byte_availability_label(row.availability);
     let digest = row.digest;
-    let drill = digest.clone();
     view! {
         <tr>
             <td>
-                <button
-                    type="button"
-                    class="digest-drill"
-                    title="Show which datacenters hold this blob"
-                    on:click=move |_| selected.set(Some(drill.clone()))
-                >
-                    <code>{digest}</code>
-                </button>
+                <DigestDrill digest selected />
             </td>
             <td><span class=format!("badge placement-source src-{}", source.key) title=source.hint>{source.text}</span></td>
             <td>
@@ -161,11 +207,50 @@ fn placement_row(row: PlacementRow, selected: RwSignal<Option<String>>) -> AnyVi
     .into_any()
 }
 
+#[component]
+#[cfg(not(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate")))]
+fn DigestDrill(digest: String, selected: RwSignal<Option<String>>) -> impl IntoView {
+    let _ = selected;
+    view! {
+        <button type="button" class="digest-drill" title="Show which datacenters hold this blob">
+            <code>{digest}</code>
+        </button>
+    }
+}
+
+#[component]
+#[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
+fn DigestDrill(digest: String, selected: RwSignal<Option<String>>) -> impl IntoView {
+    let drill = digest.clone();
+    view! {
+        <button
+            type="button"
+            class="digest-drill"
+            title="Show which datacenters hold this blob"
+            on:click=move |_| selected.set(Some(drill.clone()))
+        >
+            <code>{digest}</code>
+        </button>
+    }
+}
+
 /// The per-datacenter placement of the digest a reader has drilled into, loaded on demand.
 ///
 /// Empty until a digest is selected; an error or an empty datacenter list reads as such rather than as
 /// convergence.
 #[component]
+#[cfg(not(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate")))]
+fn BlobPlacementDetail(selected: RwSignal<Option<String>>) -> impl IntoView {
+    let _ = selected;
+    view! {
+        <Suspense>
+            {None::<AnyView>}
+        </Suspense>
+    }
+}
+
+#[component]
+#[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
 fn BlobPlacementDetail(selected: RwSignal<Option<String>>) -> impl IntoView {
     let detail = Resource::new(
         move || selected.get(),
@@ -189,6 +274,7 @@ fn BlobPlacementDetail(selected: RwSignal<Option<String>>) -> impl IntoView {
     }
 }
 
+#[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
 fn blob_placement_detail(view: &BlobPlacementView) -> AnyView {
     if view.datacenters.is_empty() {
         return view! {
@@ -217,14 +303,59 @@ fn blob_placement_detail(view: &BlobPlacementView) -> AnyView {
     .into_any()
 }
 
+#[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
 fn datacenter_row(placement: &BlobDatacenterPlacement) -> AnyView {
     let status = blob_placement_status_label(placement.status);
     view! {
         <tr>
             <td>{placement.data_center.clone()}</td>
             <td><span class=format!("badge {}", status.class)>{status.text}</span></td>
-            <td class="num">{placement.size.map_or_else(|| "—".to_owned(), |size| size.to_string())}</td>
+            <td class="num">{placement.size.map_or_else(|| "-".to_owned(), |size| size.to_string())}</td>
         </tr>
     }
     .into_any()
 }
+
+const fn file_source_label(source: peryx_core::UiArtifactSource) -> PlacementLabel {
+    match source {
+        peryx_core::UiArtifactSource::Hosted => PlacementLabel {
+            key: "hosted",
+            text: "hosted",
+            hint: "Published into this instance",
+        },
+        peryx_core::UiArtifactSource::Proxy => PlacementLabel {
+            key: "proxy",
+            text: "proxy",
+            hint: "Cached from an upstream",
+        },
+        peryx_core::UiArtifactSource::Generated => PlacementLabel {
+            key: "generated",
+            text: "generated",
+            hint: "Generated by this instance",
+        },
+    }
+}
+
+const fn byte_availability_label(availability: peryx_core::UiByteAvailability) -> PlacementLabel {
+    match availability {
+        peryx_core::UiByteAvailability::Local => PlacementLabel {
+            key: "local",
+            text: "local",
+            hint: "Bytes are held by this instance",
+        },
+        peryx_core::UiByteAvailability::RemoteOnly => PlacementLabel {
+            key: "remote-only",
+            text: "remote only",
+            hint: "Bytes require a remote source",
+        },
+        peryx_core::UiByteAvailability::Unavailable => PlacementLabel {
+            key: "unavailable",
+            text: "unavailable",
+            hint: "No source can serve these bytes",
+        },
+    }
+}
+
+#[cfg(all(test, feature = "ssr"))]
+#[path = "../../tests/unit/pages/placement/tests.rs"]
+mod tests;

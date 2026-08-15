@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+metadata=
+index=0
+while (($#)); do
+  case $1 in
+    --metadata)
+      metadata=${2:?pass a metadata file}
+      shift 2
+      ;;
+    --index)
+      index=1
+      shift
+      ;;
+    *) break ;;
+  esac
+done
+
+scratch=
+if [[ -z $metadata ]]; then
+  scratch=$(mktemp -d)
+  trap 'rm -rf "$scratch"' EXIT
+  metadata=$scratch/metadata.json
+  cargo metadata --no-deps --format-version 1 >"$metadata"
+fi
+
+package_roots() {
+  local package=$1
+  local package_metadata package_root
+  package_metadata=$(jq -c --arg package "$package" '.packages[] | select(.name == $package)' "$metadata")
+  if [[ -z $package_metadata ]]; then
+    printf 'unknown package: %s\n' "$package" >&2
+    return 2
+  fi
+  package_root=$(cd "$(dirname "$(jq -r '.manifest_path' <<<"$package_metadata")")" && pwd -P)
+  {
+    printf '%s\n' "$package_root"
+    jq -r '.metadata["peryx-ci"]["coverage-source-roots"][]?' <<<"$package_metadata" |
+      while IFS= read -r source_root; do
+        (cd "$package_root/$source_root" && pwd -P)
+      done
+  } | sort -u
+}
+
+if ((index)); then
+  if (($#)); then
+    printf 'package arguments cannot be combined with --index\n' >&2
+    exit 2
+  fi
+  roots=$(mktemp)
+  indexed_roots=$(mktemp)
+  manifests=$(mktemp)
+  boundaries=$(mktemp)
+  trap 'rm -rf "$scratch"; rm -f "$roots" "$indexed_roots" "$manifests" "$boundaries"' EXIT
+  while IFS= read -r package; do
+    while IFS= read -r root; do
+      printf '%s\t%s\n' "$package" "$root"
+    done < <(package_roots "$package")
+  done < <(jq -r '.packages[].name' "$metadata") | sort -u >"$roots"
+  cut -f2 "$roots" | sort -u >"$indexed_roots"
+  while IFS= read -r root; do
+    find "$root" -type f -name Cargo.toml -print0
+  done <"$indexed_roots" >"$manifests"
+  while IFS= read -r -d '' manifest; do
+    manifest_root=$(cd "$(dirname -- "$manifest")" && pwd -P)
+    grep -Fxq "$manifest_root" "$indexed_roots" || printf '\t%s\n' "$manifest_root"
+  done <"$manifests" | sort -u >"$boundaries"
+  sort -u "$roots" "$boundaries"
+  exit
+fi
+
+if (($# != 1)); then
+  printf 'pass a package\n' >&2
+  exit 2
+fi
+package_roots "$1"

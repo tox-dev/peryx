@@ -1,5 +1,3 @@
-//! Retry policy: which failures are worth retrying and the jittered backoff between attempts.
-
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use reqwest::StatusCode;
@@ -17,10 +15,7 @@ pub(super) fn should_retry_status(status: StatusCode) -> bool {
     status.is_server_error() || matches!(status, StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS)
 }
 
-/// The wait a retryable response asks for through `Retry-After`, clamped to a bounded cap.
-///
-/// Honors both RFC 9110 forms: a delay in seconds or an HTTP-date. Returns `None` when the header is
-/// absent, malformed, or already in the past, which leaves the caller on its jittered backoff.
+/// Parses either RFC 9110 `Retry-After` form and caps the delay at 30 seconds.
 #[must_use]
 pub fn retry_after(headers: &HeaderMap) -> Option<Duration> {
     let value = headers.get(RETRY_AFTER)?.to_str().ok()?.trim();

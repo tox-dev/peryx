@@ -1,10 +1,3 @@
-//! The executor: scope injection, filtering, aggregation, ordering, and paging.
-//!
-//! The executor is where authorization becomes structural. It injects the caller's scope as a
-//! predicate `ANDed` below any user predicate and applies it before ordering and paging, so counts and
-//! pagination run over authorized rows only — there is no post-limit filtering that could leak a
-//! total. What it never does is write: it reads rows from a [`DataSource`] and reduces them.
-
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
@@ -18,11 +11,9 @@ use crate::scope::{QueryScope, RepoScope};
 use crate::source::DataSource;
 use crate::value::{Row, Value};
 
-/// The column every repository-scoped domain exposes and the executor injects scope on.
+/// Repository-scoped domains must expose this column.
 const SCOPE_COLUMN: &str = "repository";
 
-/// One page of results: the output columns, the rows as value tuples aligned to those columns, and
-/// an opaque cursor for the next page when one exists.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Page {
     pub outputs: Vec<OutputColumn>,
@@ -30,8 +21,6 @@ pub struct Page {
     pub next_cursor: Option<String>,
 }
 
-/// Plan and run a query over a data source, returning one page.
-///
 /// # Errors
 /// Propagates planning, cost, cursor, and backend errors. Returns [`PqlError::Unauthorized`] when the
 /// source does not serve the named domain, so existence is not disclosed.
@@ -63,14 +52,6 @@ pub fn execute(
     ))
 }
 
-/// Run one bounded, declared join between two domains on their shared keys.
-///
-/// The join is inner: an outer row appears only when the probe domain has a matching row. The cost
-/// gate bounds it before either side is read: the probe (build) side is materialized whole, so it
-/// must be a bounded domain, and the outer side must be bounded or narrowed by a cheap leading
-/// filter, which is also pushed into the outer fetch. Scope is injected on both sides before the
-/// join, and the user predicate runs over the merged row. A column present in both domains keeps the
-/// more restrictive classification.
 fn execute_join(
     ast: &Ast,
     join: &Join,
@@ -108,8 +89,6 @@ fn execute_join(
     ))
 }
 
-/// Apply the user predicate, aggregate or project, order, and page a set of candidate rows the scope
-/// predicate has already narrowed.
 fn finish(
     candidates: Vec<Row>,
     ast: &Ast,
@@ -144,33 +123,33 @@ fn scope_filter(rows: Vec<Row>, scope: &QueryScope, schema: &DomainSchema) -> Ve
 }
 
 fn validate_join(keys: &[String], outer: &DomainSchema, probe: &DomainSchema) -> Result<(), PqlError> {
-    // The text parser guarantees at least one key, but a future JSON-AST front-end reaches this without
-    // that guarantee. With no keys `join_key` hashes every row to the same empty string, turning the
-    // join into an all-rows cross product, so enforce the invariant here where every front-end passes.
-    if keys.is_empty() {
-        return Err(PqlError::Validation("a join needs at least one key".to_owned()));
-    }
     for key in keys {
-        if outer.column(key).is_none() {
+        let Some(outer_column) = outer.column(key) else {
             return Err(PqlError::Validation(format!(
                 "join key `{key}` is not a column of `{}`",
                 outer.name
             )));
+        };
+        let Some(probe_column) = probe.column(key) else {
+            return Err(PqlError::Validation(format!(
+                "join key `{key}` is not a column of `{}`",
+                probe.name
+            )));
+        };
+        if outer_column.value_type != probe_column.value_type {
+            return Err(PqlError::Validation(format!(
+                "join key `{key}` type differs: `{}` is `{}`, `{}` is `{}`",
+                outer.name,
+                outer_column.value_type.as_str(),
+                probe.name,
+                probe_column.value_type.as_str()
+            )));
         }
-        match probe.column(key) {
-            None => {
-                return Err(PqlError::Validation(format!(
-                    "join key `{key}` is not a column of `{}`",
-                    probe.name
-                )));
-            }
-            Some(column) if !column.indexability.is_cheap() => {
-                return Err(PqlError::UnboundedJoin(format!(
-                    "`{}` has no index on join key `{key}`, so the join cannot be bounded",
-                    probe.name
-                )));
-            }
-            Some(_) => {}
+        if !probe_column.indexability.is_cheap() {
+            return Err(PqlError::UnboundedJoin(format!(
+                "`{}` has no index on join key `{key}`, so the join cannot be bounded",
+                probe.name
+            )));
         }
     }
     Ok(())
@@ -231,8 +210,7 @@ fn merge_row(outer: &Row, probe: &Row, probe_only: &[&'static str]) -> Row {
     row
 }
 
-/// A collision-free key for one row over the join columns; the value's debug form distinguishes an
-/// integer from a like-looking string.
+/// Debug forms keep unlike typed values from sharing a join key.
 fn join_key(row: &Row, keys: &[String]) -> String {
     use std::fmt::Write as _;
     let mut key = String::new();
@@ -316,8 +294,7 @@ impl Accumulator {
             Self::Count(count) => *count += 1,
             Self::Sum(total) => {
                 if let Some(number) = value.as_ref().and_then(numeric) {
-                    // Download and byte totals can be large; saturate rather than wrap silently in
-                    // release, so an over-budget sum reports the ceiling, never a negative rollover.
+                    // Aggregates saturate so release builds cannot wrap into negative totals.
                     *total = total.saturating_add(number);
                 }
             }

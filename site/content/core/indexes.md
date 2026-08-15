@@ -1,122 +1,75 @@
 +++
 title = "The index model"
-description = "Cached, hosted, and virtual indexes across ecosystems: how composition works, why shadowing is the dependency-confusion fix, and what removal means."
+description = "Neutral index roles, composition rules, and lifecycle contracts shared by every ecosystem owner."
 weight = 3
 +++
 
-An index server earns its keep the day you have a package that must not come from the public internet. This page
-explains peryx's answer. An **index** is the list of packages a client installs from ([pip](https://pip.pypa.io/) and
-[uv](https://docs.astral.sh/uv/) call it an index-url); a **registry** is the same idea under a different name. peryx
-builds every index from two independent choices, a **role** (what the index does) and an **ecosystem** (which packaging
-format it speaks), and one composition rule. That rule is a security control before it is a convenience.
+An index binds a route to one registered ecosystem owner and one role. The owner controls protocol behavior and artifact
+metadata. The role controls source and composition rules.
 
-## Two axes: role and ecosystem
+## Index schema
 
-Every index peryx serves is a triple: a **role**, an **ecosystem**, and a **key** (its name). The two axes are
-independent.
+| Field          | Contract                                                                        |
+| -------------- | ------------------------------------------------------------------------------- |
+| `route`        | Unique client-facing path                                                       |
+| `ecosystem`    | Registered owner identifier                                                     |
+| `role`         | `cached`, `hosted`, or `virtual`                                                |
+| `upstream`     | Remote source for a cached index                                                |
+| `layers`       | Ordered member routes for a virtual index                                       |
+| `write_target` | Hosted layer that receives writes through a virtual index                       |
+| `policy`       | Read, write, fallback, and retention rules applied before the owner serves data |
 
-- **role** is what the index does. There are three:
-  - **cached** is a read-through cache of one upstream index. "Upstream" means the index peryx fetches from, e.g.
-    [pypi.org](https://pypi.org/). On a first request peryx fetches from upstream, stores the result, and serves it;
-    later requests come from local disk. (This was called a "mirror".)
-  - **hosted** is an authoritative store you upload to. Nothing upstream; the packages live here because you published
-    them. (This was called a "local" index.)
-  - **virtual** is an ordered aggregation of other indexes served under one URL. Its member list is called `layers`.
-    (This was called an "overlay".)
-- **ecosystem** is which packaging format the index speaks: **pypi** and **oci** today. It fixes the wire protocol (the
-  PyPI [Simple API](https://packaging.python.org/en/latest/specifications/simple-repository-api/), the
-  [OCI](https://opencontainers.org/) `/v2/` [distribution API](https://github.com/opencontainers/distribution-spec)) and
-  the artifact shapes (wheels and sdists; manifests and blobs). See [ecosystems](@/ecosystems/_index.md) and the
-  [standards](@/core/standards.md) each one implements.
+Use `<registered-ecosystem-id>` in neutral templates. Startup rejects an identifier that no linked owner registered.
+Concrete owner settings belong in the selected owner's documentation.
 
-The axes are orthogonal at creation but coupled at aggregation: a virtual index may only combine members of the **same
-ecosystem**. The roles below work the same in every ecosystem; the diagrams use a PyPI example, and each ecosystem's
-page shows the same shapes in its own protocol.
+## Roles
 
-## Prior art
+A **cached** index reads through one upstream. It stores metadata and content after a miss, then serves later reads
+while its freshness policy permits. The upstream remains authoritative.
 
-The index servers teams run in production converged on the same role shape, and peryx adopts it:
+A **hosted** index stores publisher writes. Access grants control publication and removal. The index remains
+authoritative for its records even when content storage deduplicates bytes across routes.
 
-- **[Artifactory](https://jfrog.com/artifactory/)** aggregates *local* and *remote* repositories into a *virtual*
-  repository behind one URL, with a default deployment target for writes and local-before-remote resolution.
-- **[Nexus](https://www.sonatype.com/products/nexus-repository)** groups *hosted* and *proxy* repositories the same way;
-  the member order decides who wins, and the documentation recommends hosted first.
+A **virtual** index exposes an ordered list of cached, hosted, or virtual members through one route. Its owner resolves
+member results and maps writes to the configured hosted layer.
 
-The shared pattern: a read-through cache primitive, a writable hosted primitive, and an ordered composition served at
-one URL where your own content wins over upstream. peryx names these cached, hosted, and virtual.
+## Composition rules
 
-## peryx's three roles
+A virtual index requires one ecosystem owner across its members. Startup rejects a mixed stack, unknown layer, route
+cycle, or write target that is not hosted.
 
-- A **cached** index proxies and caches one upstream, with its own credentials.
-- A **hosted** index stores uploads; a write-granting `[[index.access_token]]` gates writes and `volatile` gates
-  deletion.
-- A **virtual** index serves an ordered list of other indexes under one route. PyPI defaults to first-match per filename
-  and unioned versions; its source policy can instead select hosted candidates at project level or disable cached
-  fallback. Uploads land in the virtual index's designated hosted layer. A layer can be another virtual index.
+Member order is part of the index definition. The owner defines resource, group, and artifact candidates. It applies
+visibility and access policy before returning a merged result.
 
-A cached index rides out transient upstream failures: server errors, request timeouts, and `429` rate limits retry with
-bounded jittered backoff. When a rate-limited or overloaded upstream answers with a `Retry-After` hint, peryx waits the
-interval the server asks for, in either the delay-seconds or HTTP-date form and capped at 30 seconds, rather than its
-own backoff, so a recovering mirror is not hammered while it catches up.
+{% mermaid() %} flowchart LR req["resolve artifact"] --> virtual["virtual index"] virtual -->|"1st: hosted layer"|
+hosted\["hosted candidates<br/>selected"\] virtual -->|"2nd: cached layer"| cached\["upstream candidates<br/>shadowed"\]
+class hosted good class cached warn {% end %}
 
-{% mermaid() %}
-flowchart LR
-  req["GET simple/utils/"] --> virtual["virtual root/pypi"]
-  virtual -->|"1st: hosted layer"| hosted["your uploads<br/>utils-2.0 ✓"]
-  virtual -->|"2nd: cached layer"| cached["pypi.org cache<br/>utils-9.9 ✗ shadowed"]
-  class hosted good
-  class cached warn
-{% end %}
+## Shadowing
 
-The default filename-level mode lets you override one broken wheel of an upstream release while its sdist and other
-wheels continue to come from the cached layer. PyPI virtual indexes can instead use `private-first`, where any hosted
-candidate for the normalized project hides every cached candidate, or `no-fallback`, where the virtual index does not
-query its immediate cached members. See [`fallback_mode`](@/core/configuration.md#index-policy).
+Shadowing gives a hosted candidate precedence over an upstream candidate. The owner defines the candidate key and the
+scope of that precedence.
 
-## Why shadowing is a security control
+Put the rule at the virtual route when clients cannot enforce one source policy. A client that adds another source can
+bypass the route's decision, so access policy must restrict alternate sources when shadowing forms a security boundary.
 
-The usual way to mix private and public packages is client-side: a private index in `--extra-index-url`, pypi.org as the
-default. pip treats both indexes as equals and installs whichever offers the higher version. Anyone who registers your
-internal package's name on pypi.org with version `99.0` now wins the race. This is
-[dependency confusion](https://medium.com/@alex.birsan/dependency-confusion-4a5d60fec610), the technique that
-compromised [PyTorch's nightly channel](https://pytorch.org/blog/compromised-nightly-dependency/) and, in its original
-disclosure, three dozen major companies. Client-side mitigations exist (uv's `explicit` index pinning, for one) but must
-be repeated in every project, for every tool, forever.
+## Lifecycle contract
 
-A virtual index moves the decision server-side. Give the client one `index-url` and configure the virtual index with
-`private-first`: a name with hosted candidates then does not expose cached candidates. The rule works with Simple API
-clients such as pip and uv because it lives where the indexes meet. Use `protected_names` as well when an absent or
-deleted private project must remain blocked upstream.
+Each owner maps protocol operations onto neutral state changes:
 
-The default `fallback` mode keeps filename-level merging for compatibility and is not a project-level
-dependency-confusion boundary. `no-fallback` is stricter at the configured virtual boundary, but a nested virtual member
-uses its own mode, and a client can still bypass this policy by configuring another index or `--extra-index-url`.
+| Change  | Result                                                                         |
+| ------- | ------------------------------------------------------------------------------ |
+| Hide    | Removes a candidate from normal resolution while retaining its record          |
+| Restore | Makes a hidden candidate eligible again                                        |
+| Delete  | Removes index metadata when the hosted index permits deletion                  |
+| Reclaim | Removes unreferenced content after retention and recovery rules permit cleanup |
 
-## Removal semantics
+Deleting metadata does not imply blob deletion. Another index may reference the same digest, and a recovery window may
+retain it. Owner crates report references through shared traits. Availability code coordinates placement and reclamation
+without parsing owner metadata.
 
-peryx distinguishes hiding an artifact from destroying it, and keeps both (the PyPI names appear here; each ecosystem
-maps them to its own protocol):
+## Related documentation
 
-- **Yank** ([PEP 592](https://peps.python.org/pep-0592/)) marks a file so resolvers skip it while exact-pin installs
-  still succeed. It is reversible and is the right tool for a bad release that someone may already depend on.
-- **Delete** removes uploaded records outright and is only allowed on `volatile` hosted indexes. For a virtual index
-  this un-shadows the upstream file. The content-addressed blob stays, since another index may reference the same
-  digest.
-- **Upstream files** cannot be modified on their cached index, so yanking or deleting one through a virtual index
-  records an override (`yanked` or `hidden`) on the virtual index's hosted layer. The cached index's own route is
-  untouched, the override applies wherever that hosted layer serves, and `restore` clears a hidden marker. This is how a
-  broken upstream release is pulled from your resolvers within seconds, reversibly, without forking the cache.
-
-## The default topology
-
-Out of the box peryx runs one trio per ecosystem: a cached index of the public upstream, an empty hosted index, and a
-virtual index combining them. For PyPI that is a pypi.org cache behind `root/pypi`; for OCI, a
-[Docker Hub](https://hub.docker.com/) cache behind `root/oci`. Each virtual URL serves the whole public index for its
-ecosystem, and the day you need to host a private artifact you add a token to that ecosystem's hosted index; nothing
-about the client setup changes.
-
-## In practice
-
-- Build the topology in your ecosystem: [PyPI](@/ecosystems/pypi/_index.md), [OCI](@/ecosystems/oci/_index.md)
-- The vocabulary in one place: [glossary](@/core/glossary.md)
-- The wire formats underneath: [standards](@/core/standards.md)
+- [Ecosystem owner documentation](@/ecosystems/_index.md)
+- [Shared terminology](@/core/glossary.md)
+- [Registered wire standards](@/core/standards.md)

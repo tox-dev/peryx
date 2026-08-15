@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root=${1:?tool root is required}
+mkdir -p "$root/bin" "$root/packages"
+UV_TOOL_BIN_DIR="$root/bin" UV_TOOL_DIR="$root/packages" uv tool install 'twine>=6.2'

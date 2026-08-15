@@ -1,5 +1,3 @@
-//! Building a [`PageContext`] from the virtual-index pieces and decoding overrides.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use peryx_policy::Policy;
@@ -7,8 +5,6 @@ use peryx_policy::Policy;
 use super::PageContext;
 use crate::{File, Yanked};
 
-/// Build a [`PageContext`] from the virtual-index pieces: hosted files shadow upstream filenames, hidden
-/// overrides drop files, yank overrides mark them.
 #[must_use]
 pub fn page_context(
     route: &str,

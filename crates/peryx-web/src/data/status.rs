@@ -1,8 +1,3 @@
-#![allow(
-    clippy::future_not_send,
-    reason = "browser fetch futures are single-threaded by nature; callers wrap them in SendWrapper"
-)]
-
 use crate::model::UiSnapshot;
 
 /// The dashboard snapshot.

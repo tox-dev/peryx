@@ -4,13 +4,126 @@ set -euo pipefail
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 covered="$(mktemp)"
 uncovered="$(mktemp)"
-trap 'rm -f "$covered" "$uncovered"' EXIT
+merged="$(mktemp)"
+external="$(mktemp)"
+function_line="$(mktemp)"
+instantiations="$(mktemp)"
+compiler_duplicates="$(mktemp)"
+async_aliases="$(mktemp)"
+closure_aliases="$(mktemp)"
+same_line="$(mktemp)"
+missing_function="$(mktemp)"
+inactive_function="$(mktemp)"
+zero="$(mktemp)"
+delimiter="$PWD/.lcov-delimiter-test.rs"
+instantiation_source="$PWD/.lcov-instantiation-test.rs"
+compiler_duplicate_source="$PWD/.lcov-compiler-duplicate-test.rs"
+async_source="$PWD/.lcov-async-test.rs"
+closure_source="$PWD/.lcov-closure-test.rs"
+same_line_source="$PWD/.lcov-same-line-test.rs"
+missing_function_source="$PWD/.lcov-missing-function-test.rs"
+inactive_function_source="$PWD/.lcov-inactive-function-test.rs"
 
-printf '%s\n' SF:covered.rs DA:1,1 DA:2,1 LF:2 LH:1 end_of_record >"$covered"
-printf '%s\n' SF:uncovered.rs DA:1,1 DA:2,0 LF:2 LH:1 end_of_record >"$uncovered"
+printf '%s\n' "SF:$PWD/covered.rs" FN:1,1,covered FNDA:1,covered DA:1,1 end_of_record >"$covered"
+printf '%s\n' "SF:$PWD/uncovered.rs" FN:1,uncovered FNDA:0,uncovered DA:1,0 end_of_record >"$uncovered"
+printf '%s\n' \
+    "SF:$PWD/merged.rs" FN:1,merged FNDA:0,merged DA:1,0 end_of_record \
+    "SF:$PWD/merged.rs" FN:1,merged FNDA:1,merged DA:1,1 end_of_record >"$merged"
+printf '%s\n' SF:/rustc/library/std/src/external.rs FN:1,external FNDA:0,external DA:1,0 end_of_record >"$external"
+printf '%s\n' "SF:$PWD/function.rs" FNL:0,1 FNA:0,1,function DA:1,0 end_of_record >"$function_line"
+printf 'fn generic<T>() {}\n' >"$instantiation_source"
+printf '%s\n' \
+    "SF:$instantiation_source" 'FN:1,_RINvC4test7genericmE' 'FN:1,_RINvC4test7generictE' \
+    'FNDA:1,_RINvC4test7genericmE' 'FNDA:0,_RINvC4test7generictE' DA:1,1 end_of_record >"$instantiations"
+printf 'fn compiled_twice() {\n}\n' >"$compiler_duplicate_source"
+printf '%s\n' \
+    "SF:$compiler_duplicate_source" 'FN:1,_RNvCsaaa_7fixture14compiled_twice' \
+    'FNDA:1,_RNvCsaaa_7fixture14compiled_twice' DA:1,1 DA:2,1 end_of_record \
+    "SF:$compiler_duplicate_source" 'FN:2,_RNCNvCsbbb_7fixture14compiled_twice0B3_' \
+    'FNDA:0,_RNCNvCsbbb_7fixture14compiled_twice0B3_' DA:1,1 DA:2,1 end_of_record \
+    >"$compiler_duplicates"
+printf 'async fn asynchronous() {\n}\n' >"$async_source"
+printf '%s\n' \
+    "SF:$async_source" 'FN:1,_RNvCsaaa_7fixture12asynchronous' \
+    'FN:2,_RNCNvCsbbb_7fixture12asynchronous0B3_' \
+    'FNDA:1,_RNvCsaaa_7fixture12asynchronous' \
+    'FNDA:0,_RNCNvCsbbb_7fixture12asynchronous0B3_' DA:1,1 DA:2,1 end_of_record \
+    >"$async_aliases"
+printf 'fn enclosing() {\n    let closure = || 1;\n    let _ = closure();\n}\n' >"$closure_source"
+printf '%s\n' \
+    "SF:$closure_source" 'FN:1,_RNvCsaaa_7fixture9enclosing' \
+    'FN:2,_RNCNvCsaaa_7fixture9enclosing0B3_' \
+    'FN:3,_RNCNCNvCsbbb_7fixture9enclosing00B4_' \
+    'FNDA:1,_RNvCsaaa_7fixture9enclosing' \
+    'FNDA:1,_RNCNvCsaaa_7fixture9enclosing0B3_' \
+    'FNDA:0,_RNCNCNvCsbbb_7fixture9enclosing00B4_' DA:1,1 DA:2,1 DA:3,1 DA:4,1 end_of_record \
+    >"$closure_aliases"
+printf 'fn covered() {} fn uncovered() {}\n' >"$same_line_source"
+printf '%s\n' \
+    "SF:$same_line_source" FN:1,covered FN:1,uncovered FNDA:1,covered FNDA:0,uncovered \
+    DA:1,1 end_of_record >"$same_line"
+printf 'fn present() {}\nfn absent() { let _value = 1; }\n' >"$missing_function_source"
+printf '%s\n' \
+    "SF:$missing_function_source" FN:1,present FNDA:1,present DA:1,1 DA:2,1 end_of_record \
+    >"$missing_function"
+printf 'fn present() {}\n#[cfg(target_os = "never")]\nfn inactive() {}\n' >"$inactive_function_source"
+printf '%s\n' \
+    "SF:$inactive_function_source" FN:1,present FNDA:1,present DA:1,1 end_of_record \
+    >"$inactive_function"
+printf '}\n' >"$delimiter"
+delimiter_info="$(mktemp)"
+printf '%s\n' "SF:$delimiter" DA:1,0 end_of_record >"$delimiter_info"
+printf '%s\n' "SF:$PWD/zero.rs" end_of_record >"$zero"
+trap 'rm -f "$covered" "$uncovered" "$merged" "$external" "$function_line" "$instantiations" "$compiler_duplicates" "$async_aliases" "$closure_aliases" "$same_line" "$missing_function" "$inactive_function" "$zero" "$delimiter" "$delimiter_info" "$instantiation_source" "$compiler_duplicate_source" "$async_source" "$closure_source" "$same_line_source" "$missing_function_source" "$inactive_function_source"' EXIT
 
 "$script_dir/check-lcov-lines.awk" "$covered"
+"$script_dir/check-lcov-functions.awk" "$covered"
+"$script_dir/check-lcov-lines.awk" "$merged"
+"$script_dir/check-lcov-functions.awk" "$merged"
+"$script_dir/check-lcov-lines.awk" "$external"
+"$script_dir/check-lcov-functions.awk" "$external"
+if COVERAGE_REQUIRE_EXECUTABLE=1 "$script_dir/check-lcov-lines.awk" "$external"; then
+    echo "zero instrumented lines passed the LCOV gate" >&2
+    exit 1
+fi
+if COVERAGE_REQUIRE_EXECUTABLE=1 "$script_dir/check-lcov-functions.awk" "$external"; then
+    echo "zero source functions passed the LCOV gate" >&2
+    exit 1
+fi
+"$script_dir/check-lcov-lines.awk" "$function_line"
+"$script_dir/check-lcov-functions.awk" "$function_line"
+"$script_dir/check-lcov-functions.awk" "$instantiations"
+"$script_dir/check-lcov-functions.awk" "$compiler_duplicates"
+"$script_dir/check-lcov-functions.awk" "$async_aliases"
+"$script_dir/check-lcov-functions.awk" "$closure_aliases"
+"$script_dir/check-lcov-functions.awk" "$inactive_function"
+"$script_dir/check-lcov-lines.awk" "$zero"
+"$script_dir/check-lcov-functions.awk" "$zero"
+if COVERAGE_REQUIRE_EXECUTABLE=1 "$script_dir/check-lcov-lines.awk" "$zero"; then
+    echo "zero executable lines passed the required LCOV gate" >&2
+    exit 1
+fi
+if COVERAGE_REQUIRE_EXECUTABLE=1 "$script_dir/check-lcov-functions.awk" "$zero"; then
+    echo "zero source functions passed the required LCOV gate" >&2
+    exit 1
+fi
+if "$script_dir/check-lcov-functions.awk" "$same_line"; then
+    echo "same-line uncovered function passed the LCOV gate" >&2
+    exit 1
+fi
+if "$script_dir/check-lcov-functions.awk" "$missing_function"; then
+    echo "source declaration absent from LCOV passed the function gate" >&2
+    exit 1
+fi
+if "$script_dir/check-lcov-lines.awk" "$delimiter_info"; then
+    echo "uncovered delimiter passed the LCOV gate" >&2
+    exit 1
+fi
 if "$script_dir/check-lcov-lines.awk" "$uncovered"; then
     echo "uncovered source line passed the LCOV gate" >&2
+    exit 1
+fi
+if "$script_dir/check-lcov-functions.awk" "$uncovered"; then
+    echo "uncovered source function passed the LCOV gate" >&2
     exit 1
 fi

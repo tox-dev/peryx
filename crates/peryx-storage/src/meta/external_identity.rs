@@ -20,7 +20,6 @@ struct StoredExternalIdentityLink {
     user_id: UserId,
 }
 
-/// A rejected external identity link operation.
 #[derive(Debug, thiserror::Error)]
 pub enum ExternalIdentityStoreError {
     #[error(transparent)]
@@ -34,8 +33,7 @@ pub enum ExternalIdentityStoreError {
 }
 
 impl MetaStore {
-    /// Resolve one external identity, creating its stable local user on first login and replacing
-    /// only the grants owned by that link.
+    /// Creates a stable local user on first login and replaces only grants owned by this link.
     ///
     /// # Errors
     /// Returns an integrity error for a conflicting or dangling link, a disabled-user error when the
@@ -89,8 +87,6 @@ impl MetaStore {
         })
     }
 
-    /// Find the local user linked to a provider-scoped subject.
-    ///
     /// # Errors
     /// Returns a collision error when the indexed record holds another identity or a store error when
     /// the record cannot be read.
@@ -167,8 +163,7 @@ fn create_external_user(txn: &WriteTransaction, requested: &UserName) -> Result<
     let name = if names.get(requested.canonical())?.is_none() {
         requested.clone()
     } else {
-        UserName::new(&format!("{} ({id})", requested.display()))
-            .expect("adding a user ID preserves a non-empty display name")
+        requested.with_id_suffix(&id)
     };
     Ok(ServerUser {
         id,

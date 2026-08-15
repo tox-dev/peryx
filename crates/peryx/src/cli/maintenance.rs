@@ -1,12 +1,9 @@
-//! Bootstrap, backup, restore, import, policy, and self-management commands.
-
 use std::path::PathBuf;
 
 use clap::{ArgGroup, Args, Subcommand};
 
 use super::RuntimeArgs;
 
-/// Options for creating the first local administrator.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 #[command(group(
     ArgGroup::new("password_source")
@@ -30,7 +27,6 @@ pub struct BootstrapAdministratorArgs {
     pub password_file: Option<PathBuf>,
 }
 
-/// Digest revocation management over the administrator HTTP API.
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum RevocationCommand {
     /// Create, retry, or reopen a digest revocation.
@@ -39,7 +35,7 @@ pub enum RevocationCommand {
     Inspect(InspectRevocationArgs),
     /// List current digest revocation records.
     List(ListRevocationsArgs),
-    /// Lift one digest revocation without changing package visibility state.
+    /// Lift one digest revocation without changing resource visibility.
     Lift(LiftRevocationArgs),
 }
 
@@ -55,7 +51,6 @@ impl RevocationCommand {
     }
 }
 
-/// Authentication and server options shared by administrator HTTP commands.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 #[command(group(
     ArgGroup::new("administrator_password_source")
@@ -64,7 +59,7 @@ impl RevocationCommand {
         .args(["password_stdin", "password_file"])
 ))]
 pub struct AdministratorClientArgs {
-    /// peryx server URL. HTTP is accepted only for a loopback server.
+    /// peryx server URL. HTTP requires a loopback server.
     #[arg(long, value_name = "URL")]
     pub server: String,
 
@@ -81,7 +76,6 @@ pub struct AdministratorClientArgs {
     pub password_file: Option<PathBuf>,
 }
 
-/// Options for putting an active revocation.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct PutRevocationArgs {
     #[command(flatten)]
@@ -93,7 +87,6 @@ pub struct PutRevocationArgs {
     pub reason: String,
 }
 
-/// Options for inspecting one revocation.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct InspectRevocationArgs {
     #[command(flatten)]
@@ -102,12 +95,11 @@ pub struct InspectRevocationArgs {
     pub digest: String,
 }
 
-/// Options for listing revocations.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct ListRevocationsArgs {
     #[command(flatten)]
     pub client: AdministratorClientArgs,
-    /// Include only active or lifted records.
+    /// Filter by active or lifted status.
     #[arg(long, value_enum)]
     pub status: Option<RevocationStatusArg>,
     /// Resume after this canonical digest.
@@ -118,7 +110,6 @@ pub struct ListRevocationsArgs {
     pub limit: Option<usize>,
 }
 
-/// Options for lifting one revocation.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct LiftRevocationArgs {
     #[command(flatten)]
@@ -127,7 +118,6 @@ pub struct LiftRevocationArgs {
     pub digest: String,
 }
 
-/// A revocation lifecycle filter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 #[value(rename_all = "lowercase")]
 pub enum RevocationStatusArg {
@@ -145,7 +135,6 @@ impl RevocationStatusArg {
     }
 }
 
-/// Single-writer failover commands.
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum WriterCommand {
     /// Replace the configured writer identity after stopping the active writer.
@@ -164,7 +153,6 @@ impl WriterCommand {
     }
 }
 
-/// Options for manual writer promotion.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct WriterPromoteArgs {
     #[command(flatten)]
@@ -174,17 +162,15 @@ pub struct WriterPromoteArgs {
     pub replacement: String,
 }
 
-/// Options for seeding a replica with the writer identity it follows.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct WriterClaimArgs {
     #[command(flatten)]
     pub runtime: RuntimeArgs,
 }
 
-/// Index policy commands.
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum PolicyCommand {
-    /// Report cached projects and files the configured policy would block.
+    /// Report cached resources and artifacts the configured policy would block.
     DryRun(PolicyDryRunArgs),
 }
 
@@ -197,22 +183,20 @@ impl PolicyCommand {
     }
 }
 
-/// Options for policy dry-run output.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct PolicyDryRunArgs {
     #[command(flatten)]
     pub runtime: RuntimeArgs,
 
-    /// Only report this index name or route.
+    /// Filter by index name or route.
     #[arg(long)]
     pub index: Option<String>,
 
-    /// Only report this project.
+    /// Filter by resource.
     #[arg(long)]
-    pub project: Option<String>,
+    pub resource: Option<String>,
 }
 
-/// Actions on the peryx installation itself.
 #[cfg(feature = "self-update")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Subcommand)]
 pub enum SelfCommand {
@@ -220,7 +204,6 @@ pub enum SelfCommand {
     Update,
 }
 
-/// Offline backup commands.
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum BackupCommand {
     /// Create a full backup directory.
@@ -229,17 +212,6 @@ pub enum BackupCommand {
     Verify(BackupVerifyArgs),
 }
 
-impl BackupCommand {
-    #[must_use]
-    pub const fn runtime_args(&self) -> Option<&RuntimeArgs> {
-        match self {
-            Self::Create(args) => Some(&args.runtime),
-            Self::Verify(_) => None,
-        }
-    }
-}
-
-/// Options for backup creation.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct BackupCreateArgs {
     #[command(flatten)]
@@ -249,14 +221,12 @@ pub struct BackupCreateArgs {
     pub path: PathBuf,
 }
 
-/// Options for backup verification.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct BackupVerifyArgs {
     /// Backup directory to verify.
     pub path: PathBuf,
 }
 
-/// Options for restore.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct RestoreArgs {
     /// Backup directory to restore from.
@@ -271,7 +241,6 @@ pub struct RestoreArgs {
     pub force: bool,
 }
 
-/// Options for directory import.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct ImportDirArgs {
     #[command(flatten)]
@@ -280,6 +249,6 @@ pub struct ImportDirArgs {
     /// Hosted index name or route.
     pub index: String,
 
-    /// Directory containing wheel or sdist files.
+    /// Directory containing artifacts accepted by the index's ecosystem.
     pub dir: PathBuf,
 }

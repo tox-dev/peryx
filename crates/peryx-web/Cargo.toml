@@ -12,7 +12,6 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["ssr"]
-# The server half: axum handlers that render the app to HTML with data injected from AppState.
 ssr = [
     "leptos/ssr",
     "leptos_meta/ssr",
@@ -25,10 +24,17 @@ ssr = [
     "dep:peryx-storage",
     "dep:axum",
     "dep:tower-http",
-    "dep:tokio",
 ]
-# The browser half: compiled to wasm32 by cargo-leptos, hydrates the server-rendered page.
-hydrate = ["dep:wasm-bindgen", "dep:gloo-net", "dep:base64", "dep:console_error_panic_hook", "dep:send_wrapper", "dep:web-sys"]
+hydrate = [
+    "leptos/hydrate",
+    "dep:wasm-bindgen",
+    "dep:gloo-net",
+    "dep:base64",
+    "dep:console_error_panic_hook",
+    "dep:send_wrapper",
+    "dep:web-sys",
+]
+wasm-coverage = ["hydrate", "dep:minicov"]
 
 [dependencies]
 leptos.workspace = true
@@ -42,7 +48,6 @@ peryx-search = { workspace = true, optional = true }
 peryx-storage = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
 tower-http = { workspace = true, optional = true, features = ["fs"] }
-tokio = { workspace = true, optional = true, features = ["rt"] }
 wasm-bindgen = { workspace = true, optional = true }
 gloo-net = { workspace = true, optional = true }
 console_error_panic_hook = { workspace = true, optional = true }
@@ -63,7 +68,6 @@ web-sys = { workspace = true, optional = true, features = [
     "XmlHttpRequestUpload",
 ] }
 base64 = { workspace = true, optional = true }
-regex.workspace = true
 peryx-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -71,11 +75,19 @@ time.workspace = true
 url.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-leptos = { workspace = true, features = ["hydrate"] }
+minicov = { workspace = true, optional = true }
 
 [dev-dependencies]
+any_spawner = "0.3"
+async-trait.workspace = true
+futures-util.workspace = true
+peryx-policy.workspace = true
+peryx-events.workspace = true
+peryx-test-support.workspace = true
 rstest.workspace = true
-tokio.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tower.workspace = true
 
 [lints]
 workspace = true

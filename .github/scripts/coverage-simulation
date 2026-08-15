@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$repo"
+.github/scripts/coverage-session-guard
+if [[ "${COVERAGE_NO_CLEAN:-0}" != 1 ]]; then
+  cargo llvm-cov clean --workspace
+fi
+cargo llvm-cov nextest -p peryx --features sim-campaign --test sim_campaign \
+  --no-default-ignore-filename-regex --lcov --output-path "${1:-.tox/coverage/simulation.lcov}"

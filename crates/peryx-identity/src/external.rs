@@ -10,14 +10,12 @@ const MAX_SUBJECT_BYTES: usize = 1_024;
 const MAX_GROUP_BYTES: usize = 256;
 pub const MAX_EXTERNAL_GROUPS: usize = 256;
 
-/// A stable operator-defined name for one external identity provider.
+/// Provider IDs retain operator-defined spelling.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct ProviderId(String);
 
 impl ProviderId {
-    /// Validate a provider identifier without changing its spelling.
-    ///
     /// # Errors
     /// Returns an error when the identifier is empty, too long, or contains characters outside the
     /// ASCII letters, digits, `.`, `_`, and `-`.
@@ -63,14 +61,12 @@ impl fmt::Display for ProviderId {
     }
 }
 
-/// An opaque, case-sensitive subject that one provider asserts.
+/// Provider subjects remain opaque and case-sensitive.
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct ExternalSubject(String);
 
 impl ExternalSubject {
-    /// Preserve an opaque provider subject without case folding or Unicode normalization.
-    ///
     /// # Errors
     /// Returns an error when the subject is empty, too long, or contains a control character.
     pub fn new(value: &str) -> Result<Self, ExternalIdentityError> {
@@ -112,14 +108,12 @@ impl fmt::Debug for ExternalSubject {
     }
 }
 
-/// One opaque group name that an external provider asserts.
+/// External groups use exact matching without case folding or Unicode normalization.
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct ExternalGroup(String);
 
 impl ExternalGroup {
-    /// Preserve an external group name for exact configured matching.
-    ///
     /// # Errors
     /// Returns an error when the name is empty, too long, or contains a control character.
     pub fn new(value: &str) -> Result<Self, ExternalIdentityError> {
@@ -161,7 +155,6 @@ impl fmt::Debug for ExternalGroup {
     }
 }
 
-/// The provider-scoped key for one external identity.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ExternalIdentity {
     pub provider: ProviderId,
@@ -175,7 +168,6 @@ impl ExternalIdentity {
     }
 }
 
-/// One configured mapping from an external group to fixed local authority.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternalGroupGrant {
     pub group: ExternalGroup,
@@ -183,14 +175,13 @@ pub struct ExternalGroupGrant {
     pub scope: GrantScope,
 }
 
-/// Authority owned by one external identity link.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManagedRoleGrant {
     pub role: Role,
     pub scope: GrantScope,
 }
 
-/// A provider assertion ready for local linking after transport verification.
+/// Callers must verify the provider transport before constructing this assertion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternalLogin {
     pub identity: ExternalIdentity,
@@ -199,8 +190,6 @@ pub struct ExternalLogin {
 }
 
 impl ExternalLogin {
-    /// Build a verified assertion after the provider transport succeeds.
-    ///
     /// # Errors
     /// Returns an error when the assertion contains too many groups.
     pub fn new(
@@ -219,7 +208,6 @@ impl ExternalLogin {
     }
 }
 
-/// The storage-neutral request for one verified external login.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternalLinkRequest {
     pub identity: ExternalIdentity,
@@ -227,7 +215,6 @@ pub struct ExternalLinkRequest {
     pub grants: Vec<ManagedRoleGrant>,
 }
 
-/// The stable local result of linking or resolving one external identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternalIdentityResolution {
     pub user: ServerUser,
@@ -235,12 +222,9 @@ pub struct ExternalIdentityResolution {
     pub grants_changed: bool,
 }
 
-/// Metadata operation for the provider-neutral linking service.
 pub trait ExternalIdentityStore {
     type Error;
 
-    /// Commit one local external-identity resolution.
-    ///
     /// # Errors
     /// Returns the implementation's error when the atomic operation fails.
     fn link_or_resolve(&self, request: ExternalLinkRequest) -> Result<ExternalIdentityResolution, Self::Error>;
@@ -257,7 +241,6 @@ where
     }
 }
 
-/// Provider-neutral mapping and linking over a metadata implementation.
 #[derive(Debug, Clone)]
 pub struct ExternalIdentityLinker<S> {
     store: S,
@@ -269,8 +252,6 @@ impl<S: ExternalIdentityStore> ExternalIdentityLinker<S> {
         Self { store }
     }
 
-    /// Map exact external groups to fixed grants and resolve the stable local user.
-    ///
     /// # Errors
     /// Returns the storage implementation's error when the atomic link operation fails.
     pub fn link_or_resolve(
@@ -297,7 +278,6 @@ impl<S: ExternalIdentityStore> ExternalIdentityLinker<S> {
     }
 }
 
-/// Rejected external identity input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ExternalIdentityError {
     #[error("external provider ID cannot be empty")]

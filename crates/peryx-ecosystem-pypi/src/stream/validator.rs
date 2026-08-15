@@ -119,8 +119,6 @@ impl JsonValidator {
         }
     }
 
-    /// Whether the fed bytes form exactly one well-formed JSON object.
-    ///
     /// # Errors
     /// Returns [`TransformError::Malformed`] when the grammar was violated or the root value never
     /// closed as a single object.
@@ -228,14 +226,11 @@ impl JsonValidator {
                 b'}' => self.close(Container::Object),
                 _ => self.failed = true,
             },
-            // `Done` rejects any non-whitespace after the root; the scalar states are consumed
-            // before this method and only round out the match.
             State::Done | State::Str { .. } | State::Num(_) | State::Lit { .. } => self.failed = true,
         }
     }
 
     fn begin_value(&mut self, byte: u8) {
-        // PEP 691 project detail is an object, so the root value may only open with `{`.
         if self.stack.is_empty() && byte != b'{' {
             self.failed = true;
             return;

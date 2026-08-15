@@ -1,34 +1,20 @@
-//! The UI pages: a live dashboard and a pypi.org-style package browser.
-#![allow(
-    clippy::must_use_candidate,
-    reason = "the #[component] macro consumes attributes, so #[must_use] cannot reach the generated functions"
-)]
-#![allow(
-    clippy::missing_const_for_fn,
-    reason = "cfg-split helpers are const only without the hydrate feature; constness cannot vary by cfg"
-)]
-
+//! The UI dashboard and browser.
 use leptos::prelude::*;
 
 use crate::model::{UiCounters, UiSnapshot, UiStats};
 
 mod admin;
 mod analytics;
-mod archive;
 mod browse;
 mod dashboard;
 mod login;
-mod manifest;
 mod operations;
 mod placement;
 mod policy_decisions;
-mod project;
 mod search;
-mod shadow;
 mod stats;
 mod topology;
 mod trash;
-mod upload;
 
 pub use admin::AdminStatus;
 pub use analytics::UsageAnalytics;
@@ -39,30 +25,25 @@ pub use operations::PendingOperations;
 pub use placement::ArtifactPlacements;
 pub use policy_decisions::PolicyDecisions;
 pub use search::Search;
-pub use shadow::ShadowInspection;
 pub use stats::Stats;
 pub use topology::AvailabilityTopology;
 pub use trash::Trash;
-pub use upload::Upload;
 
 /// Refresh the dashboard counters every few seconds once hydrated. Effects never run during server
 /// rendering, so this is inert in SSR output.
+#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
 fn start_refresh(snapshot: Resource<UiSnapshot>) {
-    #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
-    {
-        use std::time::Duration;
-        Effect::new(move |_| {
-            set_interval(move || snapshot.refetch(), Duration::from_secs(5));
-        });
-    }
-    #[cfg(any(feature = "ssr", not(feature = "hydrate")))]
-    {
-        let _ = snapshot;
-    }
+    use std::time::Duration;
+    Effect::new(move |_| {
+        set_interval(move || snapshot.refetch(), Duration::from_secs(5));
+    });
 }
 
+#[cfg(any(feature = "ssr", not(feature = "hydrate")))]
+const fn start_refresh(_snapshot: Resource<UiSnapshot>) {}
+
 /// The per-ecosystem metric groups: one labelled block per ecosystem, so the reader can tell a
-/// PyPI-scoped counter (its listings, artifacts, and PEP 658 hits) from the global request count.
+/// ecosystem-scoped counter from the global request count.
 fn ecosystem_stats(data: &UiSnapshot) -> impl IntoView + use<> {
     let families = data.families.clone();
     data.ecosystems
@@ -82,8 +63,8 @@ fn ecosystem_stats(data: &UiSnapshot) -> impl IntoView + use<> {
                     <div class="metrics-label"><span class=badge>{summary.ecosystem.clone()}</span>" activity"</div>
                     <div class="stat-row">
                         <div class="stat"><strong>{summary.pages}</strong><span>"listings served"</span></div>
-                        <div class="stat"><strong>{summary.downloads}</strong><span>"artifacts served"</span></div>
-                        <div class="stat"><strong>{summary.uploads}</strong><span>"uploads"</span></div>
+                        <div class="stat"><strong>{summary.reads}</strong><span>"artifacts served"</span></div>
+                        <div class="stat"><strong>{summary.writes}</strong><span>"writes"</span></div>
                         {named}
                     </div>
                 </div>
@@ -102,34 +83,36 @@ fn optional_counters_for(usage: &UiStats, route: &str) -> Option<UiCounters> {
 
 #[component]
 fn ErrorMessage(message: String) -> impl IntoView {
-    view! { <p class="error">{message}</p> }
+    view! { <p class="error" role="alert">{message}</p> }
 }
 
+#[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
 fn copy_to_clipboard(text: &str) {
-    #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
-    {
-        if let Some(window) = web_sys::window() {
-            let _ = window.navigator().clipboard().write_text(text);
-        }
-    }
-    #[cfg(any(feature = "ssr", not(feature = "hydrate")))]
-    {
-        let _ = text;
+    if let Some(window) = web_sys::window() {
+        let _ = window.navigator().clipboard().write_text(text);
     }
 }
 
-/// Render a byte count like pypi.org: one decimal in the largest fitting unit.
+/// Render a byte count with one decimal in the largest fitting unit.
 fn human_size(bytes: u64) -> String {
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "display only; artifacts are far below 2^52 bytes"
-    )]
-    let mut value = bytes as f64;
-    for unit in ["B", "kB", "MB", "GB"] {
-        if value < 1024.0 {
-            return format!("{value:.1} {unit}");
+    let mut divisor = 1;
+    let mut unit = "B";
+    for next_unit in ["kB", "MB", "GB", "TB"] {
+        if bytes < divisor * 1024 {
+            break;
         }
-        value /= 1024.0;
+        divisor *= 1024;
+        unit = next_unit;
     }
-    format!("{value:.1} TB")
+    let mut whole = bytes / divisor;
+    let mut tenth = ((bytes % divisor) * 10 + divisor / 2) / divisor;
+    if tenth == 10 {
+        whole += 1;
+        tenth = 0;
+    }
+    format!("{whole}.{tenth} {unit}")
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/pages/tests.rs"]
+mod tests;

@@ -1,5 +1,3 @@
-//! The error type spanning tantivy, storage, and ecosystem-indexer failures.
-
 use peryx_storage::meta::MetaScanError;
 
 #[derive(Debug, thiserror::Error)]
@@ -16,19 +14,18 @@ pub enum SearchError {
     Blob(#[from] peryx_storage::blob::BlobError),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
-    /// The ecosystem indexer failed to derive a document from a stored record.
     #[error("indexing failed: {0}")]
     Indexer(String),
-    #[error("invalid package source type {0:?}")]
+    #[error("invalid resource source type {0:?}")]
     InvalidSource(String),
     #[error("invalid availability filter {0:?}")]
     InvalidAvailability(String),
+    #[error("invalid indexed ecosystem {0:?}")]
+    InvalidEcosystem(String),
 }
 
 impl SearchError {
-    /// Whether the caller's query was at fault, rather than the server. A caller maps this to a
-    /// `400`; anything else is a `500`. Deciding it here keeps the tantivy error taxonomy inside this
-    /// crate instead of leaking into whichever surface renders the failure.
+    /// Keeps Tantivy's error taxonomy out of protocol adapters.
     #[must_use]
     pub const fn is_bad_request(&self) -> bool {
         matches!(

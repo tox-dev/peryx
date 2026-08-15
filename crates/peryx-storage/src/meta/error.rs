@@ -1,7 +1,6 @@
 use std::error::Error;
 use std::fmt;
 
-/// An error from the metadata store.
 #[derive(Debug, thiserror::Error)]
 pub enum MetaError {
     #[error(transparent)]
@@ -25,15 +24,13 @@ pub enum MetaError {
 }
 
 impl MetaError {
-    /// Whether opening failed because another process already holds the database open — a live writer
-    /// excludes a read-only open, and a read-only open excludes a writer, through redb's file lock.
+    /// Detects redb's exclusive file-lock conflict between readers and writers.
     #[must_use]
     pub const fn is_database_already_open(&self) -> bool {
         matches!(self, Self::Database(redb::DatabaseError::DatabaseAlreadyOpen))
     }
 }
 
-/// A rejected writer-identity claim or promotion.
 #[derive(Debug, thiserror::Error)]
 pub enum WriterIdentityError {
     #[error(transparent)]
@@ -46,7 +43,6 @@ pub enum WriterIdentityError {
     Changed { active: Option<String>, expected: String },
 }
 
-/// A metadata scan error: either the store failed or the visitor rejected one row.
 #[derive(Debug)]
 pub enum MetaScanError<E> {
     Store(MetaError),

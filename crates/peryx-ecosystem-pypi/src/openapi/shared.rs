@@ -1,5 +1,3 @@
-//! The parameters, responses, media type and shared builders the `PyPI` operations use.
-
 pub(super) use peryx_driver::openapi::{api_json_response, route_param, text_response};
 pub(super) use serde_json::json;
 pub(super) use utoipa::openapi::content::ContentBuilder;

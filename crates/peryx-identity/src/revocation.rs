@@ -1,5 +1,3 @@
-//! Stable identities used by digest revocation storage, authorization, and serving decisions.
-
 use std::fmt;
 use std::str::FromStr;
 
@@ -8,17 +6,15 @@ use serde::{Deserialize, Deserializer, Serialize};
 const SHA256_HEX_BYTES: usize = 64;
 const MAX_REASON_BYTES: usize = 2_048;
 
-/// An immutable artifact identity, serialized as the SHA-256 member of an in-toto `DigestSet`.
+/// Serializes as the SHA-256 member of an in-toto `DigestSet`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct ArtifactDigest {
     sha256: String,
 }
 
 impl ArtifactDigest {
-    /// Parse the lowercase hexadecimal value of a SHA-256 digest.
-    ///
     /// # Errors
-    /// Returns [`ArtifactDigestError`] unless `sha256` is exactly 64 lowercase hexadecimal bytes.
+    /// Returns [`ArtifactDigestError`] unless `sha256` contains 64 lowercase hexadecimal bytes.
     pub fn from_sha256(sha256: impl Into<String>) -> Result<Self, ArtifactDigestError> {
         let sha256 = sha256.into();
         if sha256.len() != SHA256_HEX_BYTES
@@ -71,19 +67,15 @@ impl<'de> Deserialize<'de> for ArtifactDigest {
     }
 }
 
-/// A supplied artifact identity was not canonical SHA-256.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("digest must be sha256:<64 lowercase hexadecimal characters>")]
 pub struct ArtifactDigestError;
 
-/// The bounded administrator explanation persisted with a revocation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub struct RevocationReason(String);
 
 impl RevocationReason {
-    /// Validate and retain administrator-supplied text.
-    ///
     /// # Errors
     /// Returns [`RevocationReasonError`] for blank text or more than 2048 UTF-8 bytes.
     pub fn new(value: impl Into<String>) -> Result<Self, RevocationReasonError> {
@@ -112,7 +104,6 @@ impl<'de> Deserialize<'de> for RevocationReason {
     }
 }
 
-/// A rejected revocation reason.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum RevocationReasonError {
     #[error("revocation reason must not be blank")]
@@ -121,7 +112,6 @@ pub enum RevocationReasonError {
     TooLong,
 }
 
-/// Whether an artifact may pass digest revocation policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DigestDecision {
     Clear,

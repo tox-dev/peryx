@@ -23,13 +23,6 @@ fn group_by_version(detail: &ProjectDetail) -> OrderedMap<VersionKey, Vec<&File>
     groups
 }
 
-/// Serialize `GET /pypi/{project}/json` or `GET /pypi/{project}/{version}/json`.
-///
-/// Returns `None` when the requested version is not present in the resolved detail page.
-///
-/// `metadata` supplies the release's core-metadata contact fields, which the Simple API omits; `None`
-/// leaves them empty.
-///
 /// # Panics
 /// Never in practice: the model contains only string-keyed maps and plain values, which
 /// `serde_json` always serializes.

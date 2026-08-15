@@ -1,10 +1,7 @@
-//! The ecosystem-neutral tantivy index: schema, tokenizers, and query execution.
-
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tantivy::collector::{Count, TopDocs};
@@ -19,8 +16,8 @@ use crate::SEARCH_VIEW;
 use crate::access::{SearchAccess, SearchAccessPattern};
 use crate::context::{IndexerCtx, SearchCtx};
 use crate::error::SearchError;
-use crate::indexer::{CompositeIndexer, PackageDocument, PackageIndexer, default_indexer};
-use crate::params::{PackageSource, SearchParams};
+use crate::indexer::{CompositeIndexer, SearchDocument, SearchDocumentProvider, default_indexer};
+use crate::params::{ContentSource, SearchParams};
 use crate::response::{SearchResponse, SearchResult};
 
 const SUBSTRING_TOKENIZER: &str = "peryx_substring";
@@ -29,51 +26,37 @@ const MAX_NGRAM: usize = 12;
 const RAW_REGEX_BYTES: usize = 32 * 1024;
 const WRITER_MEMORY_BYTES: usize = 64 * 1024 * 1024;
 const REGEX_SPECIALS: &str = "\\.+*?()|[]{}^$";
-/// The term the `available` field carries for a locally available package; the availability filter
-/// matches on it. Absence of this exact term is what excludes a remote-only or unavailable package.
 const AVAILABLE_LOCAL: &str = "local";
 const AVAILABLE_REMOTE: &str = "remote";
 
-pub struct PackageSearch {
+pub struct SearchIndex {
     index: TantivyIndex,
     reader: IndexReader,
     fields: SearchFields,
-    indexer: Arc<dyn PackageIndexer>,
-    epoch: AtomicU64,
-    indexed_epoch: Mutex<Option<u64>>,
-    /// The projects a lazy refresh must re-derive, or `None` when the whole index must rebuild. A scoped
-    /// mutation records only its project; a blanket invalidation ([`bump_epoch`](PackageSearch::bump_epoch))
-    /// or a not-yet-populated index clears it to `None`, so the next refresh re-derives everything.
-    dirty: Mutex<Option<BTreeSet<String>>>,
+    indexer: Arc<dyn SearchDocumentProvider>,
+    state: Mutex<IndexState>,
     rebuild_lock: Mutex<()>,
-    /// The on-disk index directory, or `None` for an in-memory index. An eager rebuild uses it to
-    /// mark an in-flight rebuild so a restart that interrupts one discards the partial index.
     home: Option<PathBuf>,
 }
 
-/// How far an eager [`rebuild`](PackageSearch::rebuild) has progressed, reported once per staged chunk
-/// so a caller can surface operator progress.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RebuildProgress {
-    /// Documents staged into the candidate generation so far.
     pub indexed: u64,
-    /// Documents the rebuild will stage in total.
     pub total: u64,
 }
 
-/// How an eager [`rebuild`](PackageSearch::rebuild) ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RebuildOutcome {
-    /// The rebuilt index replaced the served one; `documents` were published by the single closing commit.
-    Published { documents: u64 },
-    /// The caller cancelled before publication; the served index kept its prior contents. `documents`
-    /// counts the chunks staged before the abort, all discarded with the rolled-back candidate generation.
-    Aborted { documents: u64 },
+    Published {
+        documents: u64,
+    },
+    /// Cancellation keeps the previously published index.
+    Aborted {
+        documents: u64,
+    },
 }
 
-impl PackageSearch {
-    /// Build an in-memory package search index.
-    ///
+impl SearchIndex {
     /// # Panics
     /// Panics only if the static schema or tokenizer constants are invalid.
     #[must_use]
@@ -88,20 +71,19 @@ impl PackageSearch {
             fields,
             None,
         )
-        .expect("in-memory package search reader opens")
+        .expect("in-memory resource search reader opens")
     }
 
-    /// Open or create the on-disk package search index.
-    ///
-    /// The index is a cache derived from the metadata store, so an index left by an earlier peryx
-    /// whose schema no longer matches is discarded and rebuilt rather than failing startup. It
-    /// repopulates as pages and tags are served.
+    /// Schema mismatches discard the derived index instead of blocking startup.
     ///
     /// # Errors
     /// Returns an error if the directory cannot be created or read, or Tantivy cannot open the index
     /// for a reason other than a schema change.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, SearchError> {
-        let path = path.as_ref();
+        Self::open_path(path.as_ref())
+    }
+
+    fn open_path(path: &Path) -> Result<Self, SearchError> {
         std::fs::create_dir_all(path)?;
         if rebuild_marker(path).exists() {
             tracing::warn!(path = %path.display(), "search index rebuild was interrupted; discarding the partial index");
@@ -130,73 +112,43 @@ impl PackageSearch {
             reader,
             fields,
             indexer: default_indexer(),
-            epoch: AtomicU64::new(0),
-            indexed_epoch: Mutex::new(None),
-            dirty: Mutex::new(None),
+            state: Mutex::new(IndexState::default()),
             rebuild_lock: Mutex::new(()),
             home,
         })
     }
 
-    /// Add another ecosystem's indexer, keeping any already installed. A second ecosystem composes its
-    /// documents with the first rather than replacing them, so a mixed deployment searches every index.
-    pub fn add_indexer(&mut self, indexer: Arc<dyn PackageIndexer>) {
+    pub fn add_indexer(&mut self, indexer: Arc<dyn SearchDocumentProvider>) {
         let current = std::mem::replace(&mut self.indexer, default_indexer());
         self.indexer = Arc::new(CompositeIndexer(vec![current, indexer]));
     }
 
-    /// Invalidate the whole derived index after a mutation whose affected projects are not known, so the
-    /// next search re-derives every document. Reserve it for that case; a mutation that names its project
-    /// should call [`invalidate_project`](PackageSearch::invalidate_project) to refresh only that one.
-    ///
     /// # Panics
-    /// Panics if the dirty-set lock was poisoned by a prior panic while holding it.
+    /// Panics if the search-state lock was poisoned by a prior panic while holding it.
     pub fn bump_epoch(&self) {
-        *self.dirty.lock().expect("search dirty lock") = None;
-        self.epoch.fetch_add(1, Ordering::Release);
+        let mut state = self.state.lock().expect("search state lock");
+        state.epoch += 1;
+        state.dirty = None;
     }
 
-    /// Invalidate one project after a mutation that changed its searchable documents, so the next search
-    /// re-derives and rewrites only that project instead of the whole corpus.
-    ///
-    /// While a blanket rebuild is already pending the project folds into it rather than being tracked
-    /// separately, since the rebuild re-derives everything regardless.
+    /// Does not narrow a pending full rebuild.
     ///
     /// # Panics
-    /// Panics if the dirty-set lock was poisoned by a prior panic while holding it.
-    pub fn invalidate_project(&self, name: &str) {
-        if let Some(dirty) = self.dirty.lock().expect("search dirty lock").as_mut() {
-            dirty.insert(name.to_owned());
+    /// Panics if the search-state lock was poisoned by a prior panic while holding it.
+    pub fn invalidate_resource(&self, name: &str) {
+        let mut state = self.state.lock().expect("search state lock");
+        state.epoch += 1;
+        let epoch = state.epoch;
+        if let Some(dirty) = state.dirty.as_mut() {
+            dirty.insert(name.to_owned(), epoch);
         }
-        self.epoch.fetch_add(1, Ordering::Release);
     }
 
-    /// Rebuild the whole index from authoritative metadata, committing in chunks and publishing the
-    /// result atomically.
-    ///
-    /// Unlike the lazy refresh a search triggers, this is an eager operator recovery path for when the
-    /// derived index falls behind: it re-derives every document and stages them into the writer in
-    /// `chunk` batches, whose flushing bounds peak writer memory, then commits once at the end and
-    /// reloads the reader. Staging never commits, so the candidate generation stays out of the live
-    /// Tantivy index until that single closing commit publishes it atomically. Concurrent searches keep
-    /// serving the prior complete index until then, and a cancellation rolls the candidate generation
-    /// back so no scoped [`update_project`](PackageSearch::update_project) can later reload its writes.
-    /// On disk, a marker records the in-flight rebuild, so a restart that interrupts one discards any
-    /// staged state and starts over rather than serving it.
-    ///
-    /// The walk over authoritative metadata that derives every document runs off the writer lock: it
-    /// reads the metadata store, not the index, so a scoped [`update_project`](PackageSearch::update_project)
-    /// or a lazy refresh no longer waits behind the whole eager rebuild. The lock is taken only for the
-    /// writer work that publishes the result. A mutation that advanced the store serial while the walk
-    /// ran could have written a scoped update the off-lock snapshot missed; re-deriving once under the
-    /// lock, where no scoped writer can interleave, keeps a stale full write from clobbering it.
-    ///
-    /// `observe` is called before each chunk with the running progress; returning
-    /// [`ControlFlow::Break`] cancels the rebuild, leaving the served index untouched.
+    /// Derivation runs outside the writer lock. A changed store serial forces one locked re-derivation
+    /// so a concurrent scoped update cannot be overwritten. Cancellation preserves the published index.
     ///
     /// # Errors
-    /// Returns a search error if the documents cannot be derived, the writer cannot commit, or the
-    /// in-flight marker cannot be written.
+    /// Returns a search error if derivation, publication, or in-flight marker maintenance fails.
     ///
     /// # Panics
     /// Panics if the rebuild lock was poisoned by a prior panic while rebuilding.
@@ -221,32 +173,30 @@ impl PackageSearch {
         for slice in snapshot.documents.chunks(chunk.get()) {
             if observe(RebuildProgress { indexed, total }).is_break() {
                 writer.rollback()?;
+                self.clear_rebuilding()?;
                 return Ok(RebuildOutcome::Aborted { documents: indexed });
             }
-            for package in slice {
-                writer.add_document(self.document(package))?;
+            for resource in slice {
+                writer.add_document(self.document(resource))?;
             }
             indexed += slice.len() as u64;
         }
         let _ = observe(RebuildProgress { indexed, total });
         writer.commit()?;
         self.reader.reload()?;
-        self.clear_rebuilding();
-        // The rebuild re-derived every project as of `snapshot.epoch`, so unless a mutation has advanced
-        // the epoch since, the scoped tracker starts empty and later mutations refresh only their project.
-        if self.epoch.load(Ordering::Acquire) == snapshot.epoch {
-            *self.dirty.lock().expect("search dirty lock") = Some(BTreeSet::new());
+        self.clear_rebuilding()?;
+        let mut state = self.state.lock().expect("search state lock");
+        if state.epoch == snapshot.epoch {
+            state.dirty = Some(BTreeMap::new());
         }
-        *self.indexed_epoch.lock().expect("search epoch lock") = Some(snapshot.epoch);
+        state.indexed_epoch = Some(snapshot.epoch);
+        drop(state);
         ctx.meta.set_view_frontier(SEARCH_VIEW, snapshot.frontier)?;
         Ok(RebuildOutcome::Published { documents: indexed })
     }
 
-    /// Derive the whole document set with the mutation epoch and store serial it reflects, off the
-    /// writer lock. The serial is read before the walk so it never names metadata the walk missed, which
-    /// lets [`rebuild`](PackageSearch::rebuild) detect a snapshot a concurrent mutation raced.
     fn snapshot(&self, ctx: &IndexerCtx<'_>) -> Result<RebuildSnapshot, SearchError> {
-        let epoch = self.epoch.load(Ordering::Relaxed);
+        let epoch = self.state.lock().expect("search state lock").epoch;
         let frontier = ctx.meta.current_serial()?;
         let documents = self.indexer.documents(ctx)?;
         Ok(RebuildSnapshot {
@@ -256,7 +206,6 @@ impl PackageSearch {
         })
     }
 
-    /// Record that an on-disk rebuild is in flight, so an interrupted rebuild is discarded on restart.
     fn mark_rebuilding(&self) -> Result<(), SearchError> {
         if let Some(home) = &self.home {
             std::fs::write(rebuild_marker(home), [])?;
@@ -264,23 +213,20 @@ impl PackageSearch {
         Ok(())
     }
 
-    /// Clear the in-flight marker after a rebuild publishes. Removal is best-effort: a marker left
-    /// behind only makes the next restart rebuild an already-complete index, never serve a partial one.
-    fn clear_rebuilding(&self) {
+    fn clear_rebuilding(&self) -> Result<(), SearchError> {
         if let Some(home) = &self.home {
-            let _ = std::fs::remove_file(rebuild_marker(home));
+            std::fs::remove_file(rebuild_marker(home))?;
         }
+        Ok(())
     }
 
-    /// Search cached package documents.
-    ///
     /// # Errors
     /// Returns an error if the derived index cannot refresh or the query is invalid.
     pub fn search(&self, ctx: &SearchCtx<'_>, params: SearchParams) -> Result<SearchResponse, SearchError> {
         self.search_with_access(ctx, params, None)
     }
 
-    /// Apply access inside the query so totals and pages contain only readable resources.
+    /// Apply access before collection so totals cannot reveal unreadable resources.
     ///
     /// # Errors
     /// Returns an error if the derived index cannot refresh or the query is invalid.
@@ -311,14 +257,15 @@ impl PackageSearch {
             .search(&*query, &top_docs)?
             .into_iter()
             .map(|(_sort, address)| {
-                searcher.doc::<TantivyDocument>(address).map(|doc| {
-                    let mut result = self.result_from_doc(&doc);
-                    let ecosystem = result.ecosystem.parse().unwrap_or_default();
-                    ctx.lexicon(ecosystem).search_noun.clone_into(&mut result.type_label);
-                    result
-                })
+                let mut result = self.result_from_doc(&searcher.doc::<TantivyDocument>(address)?);
+                let ecosystem = result
+                    .ecosystem
+                    .parse()
+                    .map_err(|_| SearchError::InvalidEcosystem(result.ecosystem.clone()))?;
+                ctx.lexicon(&ecosystem).resource_kind.clone_into(&mut result.type_label);
+                Ok(result)
             })
-            .collect::<tantivy::Result<Vec<_>>>()?;
+            .collect::<Result<Vec<_>, SearchError>>()?;
         Ok(SearchResponse {
             query: params.query,
             route: params.route,
@@ -332,49 +279,45 @@ impl PackageSearch {
     }
 
     fn ensure_current(&self, ctx: &SearchCtx<'_>) -> Result<(), SearchError> {
-        // A held lock means an eager rebuild or another refresh is running; serve the current reader
-        // rather than block or race a second writer. An eager rebuild leaves the reader on the prior
-        // complete index until it publishes, so this serves complete results, never partial ones.
+        // The published reader stays complete while another writer holds the rebuild lock.
         let Ok(_guard) = self.rebuild_lock.try_lock() else {
             return Ok(());
         };
-        let epoch = self.epoch.load(Ordering::Acquire);
-        let indexed = *self.indexed_epoch.lock().expect("search epoch lock");
+        let (epoch, indexed, scoped) = {
+            let state = self.state.lock().expect("search state lock");
+            (
+                state.epoch,
+                state.indexed_epoch,
+                match (&state.indexed_epoch, &state.dirty) {
+                    (Some(_), Some(dirty)) => Some(dirty.clone()),
+                    _ => None,
+                },
+            )
+        };
         if indexed == Some(epoch) {
             return Ok(());
         }
-        // A not-yet-populated index or a blanket invalidation (`dirty` cleared to `None`) rebuilds every
-        // document; otherwise the snapshot of dirty projects re-derives only those. The snapshot is read
-        // before the write and the applied names are retired after it, so a mutation that lands mid-write
-        // survives: it re-bumps the epoch, leaving `indexed` behind so the next search re-derives it.
-        let scoped = match (indexed, self.dirty.lock().expect("search dirty lock").as_ref()) {
-            (Some(_), Some(dirty)) => Some(dirty.clone()),
-            _ => None,
-        };
         let frontier = ctx.indexer.meta.current_serial()?;
         match &scoped {
             Some(names) => self.apply_scoped(&ctx.indexer, names)?,
             None => self.write(&self.indexer.documents(&ctx.indexer)?)?,
         }
         self.retire_applied(scoped.as_ref(), epoch);
-        *self.indexed_epoch.lock().expect("search epoch lock") = Some(epoch);
         ctx.indexer.meta.set_view_frontier(SEARCH_VIEW, frontier)?;
         Ok(())
     }
 
-    /// Re-derive and rewrite only `names`, retiring each project's prior documents and adding its fresh
-    /// ones in a single writer commit, then reloading the reader once.
-    fn apply_scoped(&self, ctx: &IndexerCtx<'_>, names: &BTreeSet<String>) -> Result<(), SearchError> {
+    fn apply_scoped(&self, ctx: &IndexerCtx<'_>, names: &BTreeMap<String, u64>) -> Result<(), SearchError> {
         let mut writer = self
             .index
             .writer_with_num_threads::<TantivyDocument>(1, WRITER_MEMORY_BYTES)?;
-        for name in names {
-            let update = self.indexer.project_update(ctx, name)?;
+        for name in names.keys() {
+            let update = self.indexer.resource_update(ctx, name)?;
             for key in &update.keys {
                 writer.delete_term(Term::from_field_text(self.fields.key, key));
             }
-            for package in &update.documents {
-                writer.add_document(self.document(package))?;
+            for resource in &update.documents {
+                writer.add_document(self.document(resource))?;
             }
         }
         writer.commit()?;
@@ -382,67 +325,51 @@ impl PackageSearch {
         Ok(())
     }
 
-    /// Clear the just-applied invalidation once its write succeeded. A scoped write drops only the names
-    /// it wrote, leaving any that arrived mid-write; a full write, when no mutation has advanced the epoch
-    /// since it started, resets the tracker to empty so later mutations refresh only their own project.
-    fn retire_applied(&self, applied: Option<&BTreeSet<String>>, epoch: u64) {
-        let mut dirty = self.dirty.lock().expect("search dirty lock");
+    fn retire_applied(&self, applied: Option<&BTreeMap<String, u64>>, epoch: u64) {
+        let mut state = self.state.lock().expect("search state lock");
         match applied {
-            Some(names) => {
-                if let Some(tracked) = dirty.as_mut() {
-                    for name in names {
-                        tracked.remove(name);
-                    }
+            Some(generations) => {
+                if let Some(dirty) = state.dirty.as_mut() {
+                    dirty.retain(|name, generation| generations.get(name).is_none_or(|applied| *generation > *applied));
                 }
             }
             None => {
-                if self.epoch.load(Ordering::Acquire) == epoch && dirty.is_none() {
-                    *dirty = Some(BTreeSet::new());
+                if state.epoch == epoch && state.dirty.is_none() {
+                    state.dirty = Some(BTreeMap::new());
                 }
             }
         }
+        state.indexed_epoch = Some(epoch);
     }
 
-    /// Replace one project's document on one index — the record keyed by [`project_key`] — with `docs`,
-    /// leaving every other project untouched.
-    ///
-    /// A replica calls this as it applies a metadata page: it retires the project's stale document by
-    /// its exact key term and re-adds the freshly derived one (or none, when the project no longer has
-    /// files), then reloads the reader. Unlike [`write`](PackageSearch::write) and
-    /// [`rebuild`](PackageSearch::rebuild) it touches neither the mutation epoch nor the view frontier,
-    /// so the caller sequences the frontier advance after every affected project is current. Delete then
-    /// add is idempotent, so re-running the same update after a crash reaches the same index.
-    ///
-    /// It shares the writer lock with an eager rebuild so the two never open a second writer over the
-    /// same directory; a search that finds the lock held serves the current reader rather than blocking.
+    /// Callers advance the frontier only after every affected resource is current.
     ///
     /// # Errors
     /// Returns a search error if the writer cannot commit or the reader cannot reload.
     ///
     /// # Panics
     /// Panics if the rebuild lock was poisoned by a prior panic while rebuilding.
-    pub fn update_project(&self, docs: &[PackageDocument], key: &str) -> Result<(), SearchError> {
+    pub fn update_resource(&self, docs: &[SearchDocument], key: &str) -> Result<(), SearchError> {
         let _guard = self.rebuild_lock.lock().expect("search rebuild lock");
         let mut writer = self
             .index
             .writer_with_num_threads::<TantivyDocument>(1, WRITER_MEMORY_BYTES)?;
         writer.delete_term(Term::from_field_text(self.fields.key, key));
-        for package in docs {
-            writer.add_document(self.document(package))?;
+        for resource in docs {
+            writer.add_document(self.document(resource))?;
         }
         writer.commit()?;
         self.reader.reload()?;
         Ok(())
     }
 
-    /// Replace the whole index with `documents`, then make them searchable.
-    fn write(&self, documents: &[PackageDocument]) -> Result<(), SearchError> {
+    fn write(&self, documents: &[SearchDocument]) -> Result<(), SearchError> {
         let mut writer = self
             .index
             .writer_with_num_threads::<TantivyDocument>(1, WRITER_MEMORY_BYTES)?;
         writer.delete_all_documents()?;
-        for package in documents {
-            writer.add_document(self.document(package))?;
+        for resource in documents {
+            writer.add_document(self.document(resource))?;
         }
         writer.commit()?;
         self.reader.reload()?;
@@ -451,7 +378,7 @@ impl PackageSearch {
 
     fn query(&self, params: &SearchParams, access: Option<&SearchAccess>) -> Result<Box<dyn Query>, SearchError> {
         let mut queries = vec![self.text_query(params.query.trim())?];
-        if let Some(source) = params.source.package_source() {
+        if let Some(source) = params.source.content_source() {
             queries.push(Box::new(TermQuery::new(
                 Term::from_field_text(self.fields.source, source.as_str()),
                 IndexRecordOption::Basic,
@@ -490,8 +417,8 @@ impl PackageSearch {
                     Term::from_field_text(self.fields.route, route),
                     IndexRecordOption::Basic,
                 )) as Box<dyn Query>;
-                RegexQuery::from_pattern(&glob_regex(glob), self.fields.normalized).map(|project_query| {
-                    Box::new(BooleanQuery::intersection(vec![route_query, Box::new(project_query)])) as Box<dyn Query>
+                RegexQuery::from_pattern(&glob_regex(glob), self.fields.normalized).map(|resource_query| {
+                    Box::new(BooleanQuery::intersection(vec![route_query, Box::new(resource_query)])) as Box<dyn Query>
                 })
             })
             .collect::<tantivy::Result<Vec<Box<dyn Query>>>>()?;
@@ -530,10 +457,7 @@ impl PackageSearch {
                 )) as Box<dyn Query>
             })
             .collect::<Vec<_>>();
-        // A query over MAX_NGRAM characters is split into overlapping grams AND-combined here, but the
-        // n-gram index enforces neither adjacency nor order, so a document can satisfy every gram in
-        // separate spans without containing the query. The grams stay a prefilter; a regex over the raw
-        // field verifies the complete substring, so totals, pages, and ordering count only true matches.
+        // N-grams do not preserve adjacency, so long queries require exact substring verification.
         if query.chars().count() > MAX_NGRAM {
             let pattern = format!(".*{}.*", escape_regex(&query));
             queries.push(Box::new(RegexQuery::from_pattern(&pattern, self.fields.raw)?));
@@ -543,66 +467,69 @@ impl PackageSearch {
 
     fn result_from_doc(&self, doc: &TantivyDocument) -> SearchResult {
         SearchResult {
-            display_name: stored_text(doc, self.fields.display),
-            normalized_name: stored_text(doc, self.fields.normalized),
+            display_label: stored_text(doc, self.fields.display),
+            resource_key: stored_text(doc, self.fields.normalized),
             route: stored_text(doc, self.fields.route),
             index: stored_text(doc, self.fields.index),
             ecosystem: stored_text(doc, self.fields.ecosystem),
             type_label: String::new(),
-            source_type: PackageSource::from_value(&stored_text(doc, self.fields.source))
-                .unwrap_or(PackageSource::Cached),
+            source_type: ContentSource::from_value(&stored_text(doc, self.fields.source))
+                .expect("indexed source type is valid"),
             available_locally: stored_text(doc, self.fields.available) == AVAILABLE_LOCAL,
             summary: non_empty_string(stored_text(doc, self.fields.summary)),
         }
     }
 
-    fn document(&self, package: &PackageDocument) -> TantivyDocument {
+    fn document(&self, resource: &SearchDocument) -> TantivyDocument {
         let sort = format!(
             "{}\u{0}{}\u{0}{}",
-            package.display_name.to_ascii_lowercase(),
-            package.route,
-            package.normalized_name
+            resource.display_label.to_ascii_lowercase(),
+            resource.route,
+            resource.resource_key
         );
         let mut doc = TantivyDocument::new();
-        doc.add_text(self.fields.key, project_key(&package.route, &package.normalized_name));
-        doc.add_text(self.fields.route, &package.route);
-        doc.add_text(self.fields.normalized, &package.normalized_name);
-        doc.add_text(self.fields.display, &package.display_name);
-        doc.add_text(self.fields.source, package.source.as_str());
+        doc.add_text(self.fields.key, document_key(&resource.route, &resource.resource_key));
+        doc.add_text(self.fields.route, &resource.route);
+        doc.add_text(self.fields.normalized, &resource.resource_key);
+        doc.add_text(self.fields.display, &resource.display_label);
+        doc.add_text(self.fields.source, resource.source.as_str());
         doc.add_text(
             self.fields.available,
-            if package.available_locally {
+            if resource.available_locally {
                 AVAILABLE_LOCAL
             } else {
                 AVAILABLE_REMOTE
             },
         );
-        doc.add_text(self.fields.index, &package.index);
-        doc.add_text(self.fields.ecosystem, &package.ecosystem);
-        doc.add_text(self.fields.summary, package.summary.as_deref().unwrap_or_default());
+        doc.add_text(self.fields.index, &resource.index);
+        doc.add_text(self.fields.ecosystem, &resource.ecosystem);
+        doc.add_text(self.fields.summary, resource.summary.as_deref().unwrap_or_default());
         doc.add_text(self.fields.sort, sort);
-        doc.add_text(self.fields.search, &package.text);
+        doc.add_text(self.fields.search, &resource.text);
         doc.add_text(
             self.fields.raw,
-            truncate_to_chars(&fold_lowercase(&package.text), RAW_REGEX_BYTES),
+            truncate_to_chars(&fold_lowercase(&resource.text), RAW_REGEX_BYTES),
         );
         doc
     }
 }
 
-/// A document set derived off the writer lock, tagged with the mutation epoch and store serial it
-/// reflects so [`rebuild`](PackageSearch::rebuild) can tell whether a concurrent mutation raced it.
 struct RebuildSnapshot {
     epoch: u64,
     frontier: u64,
-    documents: Vec<PackageDocument>,
+    documents: Vec<SearchDocument>,
+}
+
+#[derive(Default)]
+struct IndexState {
+    epoch: u64,
+    indexed_epoch: Option<u64>,
+    /// `None` distinguishes a full rebuild from an empty scoped update.
+    dirty: Option<BTreeMap<String, u64>>,
 }
 
 #[derive(Clone, Copy)]
 struct SearchFields {
-    /// The scoped-update handle: `{route}\0{normalized}`, one exact term per document so a per-project
-    /// rebuild deletes exactly that project's document on one index and re-adds the fresh one, leaving
-    /// every other project untouched.
     key: Field,
     route: Field,
     normalized: Field,
@@ -617,12 +544,9 @@ struct SearchFields {
     raw: Field,
 }
 
-/// The scoped-update key for `normalized` as served on `route`.
-///
-/// It is the exact term [`update_project`](PackageSearch::update_project) deletes and the document
-/// carries, so a caller rebuilding one project on one index names it through this and the two never drift.
+/// Indexing and scoped replacement must derive the same key.
 #[must_use]
-pub fn project_key(route: &str, normalized: &str) -> String {
+pub fn document_key(route: &str, normalized: &str) -> String {
     format!("{route}\u{0}{normalized}")
 }
 
@@ -633,15 +557,11 @@ fn open_index(path: &Path, schema: &Schema) -> Result<TantivyIndex, SearchError>
         .open_or_create(MmapDirectory::open(path)?)?)
 }
 
-/// Discard the on-disk index so a fresh one builds in its place. Drops the directory with whatever it
-/// holds, then recreates it empty.
 fn reset_dir(path: &Path) -> std::io::Result<()> {
     std::fs::remove_dir_all(path)?;
     std::fs::create_dir_all(path)
 }
 
-/// The sibling file that marks an in-flight rebuild of the index at `path`. It sits beside the index
-/// directory rather than inside it so tantivy's own file management never touches it.
 fn rebuild_marker(path: &Path) -> PathBuf {
     path.with_extension("rebuilding")
 }
@@ -691,10 +611,6 @@ fn tokenizers() -> TokenizerManager {
     manager
 }
 
-/// Fold to lowercase the way the substring index does, so an accented or non-Latin query matches the
-/// text it indexed. Tantivy's `LowerCaser` maps each character through `char::to_lowercase`; matching
-/// it needs the same per-character fold, not `to_ascii_lowercase` (which leaves non-ASCII letters
-/// uppercase) nor `str::to_lowercase` (which special-cases final sigma).
 fn fold_lowercase(value: &str) -> String {
     value.chars().flat_map(char::to_lowercase).collect()
 }

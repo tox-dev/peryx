@@ -1,10 +1,5 @@
-//! Persisted scoped API tokens: the authorized create/list/inspect/rotate/revoke lifecycle behind the
-//! management API, keyed for a one-read verification that writes nothing.
-//!
-//! A token's plaintext secret is never stored; the row keeps only its [`TokenVerifier`] digest, indexed
-//! so a presented secret resolves its token with a single lookup. Revocation removes that index entry,
-//! so a revoked token stops authenticating on the very next request while its record and lifecycle
-//! evidence remain for an administrator to inspect.
+//! Stores only token verifier digests, never plaintext secrets. Revocation removes the verifier index at
+//! once while retaining lifecycle records for audit.
 
 use std::collections::BTreeSet;
 use std::ops::Bound::{Excluded, Included, Unbounded};
@@ -17,40 +12,35 @@ use super::{MetaError, MetaStore, SCOPED_TOKEN, SCOPED_TOKEN_REACH, SCOPED_TOKEN
 
 const MAX_QUERY_LIMIT: usize = 100;
 
-/// The metadata of one scoped token, everything the management API returns. It never carries the secret
-/// or its verifier, so serializing it to a client discloses nothing usable.
+/// Safe for management API responses because it excludes the secret and verifier.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScopedTokenRecord {
     pub id: TokenId,
     pub name: TokenName,
-    /// The reach a token authenticates over: the whole server, or one named repository.
     pub reach: GrantScope,
     pub actions: BTreeSet<Action>,
     pub created_by: UserId,
     pub created_at_unix: i64,
-    /// Unix seconds after which the token stops authenticating; `None` never expires.
+    /// `None` never expires.
     pub expires_at: Option<i64>,
-    /// Unix seconds the token was revoked; `None` while it is live.
+    /// `None` while live.
     pub revoked_at: Option<i64>,
     pub revision: u64,
 }
 
 impl ScopedTokenRecord {
-    /// Whether the token may authenticate at `now`: not revoked, and not past its expiry.
     #[must_use]
     pub fn is_live(&self, now: i64) -> bool {
         self.revoked_at.is_none() && self.expires_at.is_none_or(|expiry| now < expiry)
     }
 }
 
-/// The stored row: the client-visible metadata plus the verifier the store keeps to itself.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StoredToken {
     record: ScopedTokenRecord,
     verifier: TokenVerifier,
 }
 
-/// A token to persist: its metadata plus the verifier derived from the secret shown once at mint time.
 #[derive(Debug, Clone)]
 pub struct NewScopedToken {
     pub name: TokenName,
@@ -62,7 +52,6 @@ pub struct NewScopedToken {
     pub created_at_unix: i64,
 }
 
-/// The effect of revoking a token: idempotent, so a repeat revoke reports the unchanged record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RevokeScopedTokenOutcome {
     Revoked(ScopedTokenRecord),
@@ -78,7 +67,6 @@ impl RevokeScopedTokenOutcome {
     }
 }
 
-/// A bounded, cursor-paginated query over one reach's tokens.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopedTokenQuery {
     pub reach: GrantScope,
@@ -86,14 +74,12 @@ pub struct ScopedTokenQuery {
     pub limit: usize,
 }
 
-/// One bounded page of token metadata in stable id order within a reach.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ScopedTokenPage {
     pub tokens: Vec<ScopedTokenRecord>,
     pub next_cursor: Option<String>,
 }
 
-/// A rejected token query.
 #[derive(Debug, thiserror::Error)]
 pub enum ScopedTokenQueryError {
     #[error(transparent)]
@@ -103,7 +89,7 @@ pub enum ScopedTokenQueryError {
 }
 
 impl MetaStore {
-    /// Persist a new token and index it by reach and by verifier in one transaction.
+    /// Commits the token and its reach and verifier indexes atomically.
     ///
     /// # Errors
     /// Returns a store error when the row cannot be encoded or the transaction cannot commit.
@@ -146,7 +132,7 @@ impl MetaStore {
         Ok(record)
     }
 
-    /// Read one token's metadata by its stable id, revoked or live.
+    /// Includes revoked tokens.
     ///
     /// # Errors
     /// Returns a store error when the row cannot be read or decoded.
@@ -164,10 +150,7 @@ impl MetaStore {
             .map(|stored| stored.record))
     }
 
-    /// Resolve the live token a presented secret authenticates, with one indexed read and no write.
-    ///
-    /// Returns `None` for a secret matching no token, and for one whose token is revoked (its verifier
-    /// index entry was removed) or past its expiry.
+    /// Performs one indexed read and no write. Returns `None` for unknown, revoked, or expired tokens.
     ///
     /// # Errors
     /// Returns a store error when the index or row cannot be read or decoded.
@@ -200,7 +183,7 @@ impl MetaStore {
         Ok(stored.record.is_live(now).then_some(stored.record))
     }
 
-    /// List one reach's tokens in stable id order, resuming after `cursor`.
+    /// Returns one reach's tokens in stable ID order after `cursor`.
     ///
     /// # Errors
     /// Returns [`ScopedTokenQueryError::InvalidLimit`] for an out-of-range limit, or a store error when
@@ -261,10 +244,8 @@ impl MetaStore {
         })
     }
 
-    /// Replace a live token's verifier, bumping its revision and leaving its id and reach unchanged.
-    ///
-    /// Returns `None` when no token holds `id` or the token is revoked, leaving the prior state intact so
-    /// a failed rotation never widens or clears access.
+    /// Replaces a live verifier and bumps its revision without changing ID or reach. Missing and revoked
+    /// tokens return `None` without changing access.
     ///
     /// # Errors
     /// Returns a store error when the row cannot be read, encoded, or committed.
@@ -293,8 +274,7 @@ impl MetaStore {
         Ok(Some(stored.record))
     }
 
-    /// Revoke a token, removing its verifier index so it stops authenticating at once. Idempotent: a
-    /// repeat revoke reports the unchanged record.
+    /// Removes the verifier index at once; repeated revocation returns the unchanged record.
     ///
     /// # Errors
     /// Returns a store error when the row cannot be read, encoded, or committed.
@@ -332,8 +312,7 @@ fn reach_key(reach: &GrantScope) -> String {
     }
 }
 
-/// The reach's index prefix. A NUL separates the reach from the id so no repository name is a prefix of
-/// another (`root` versus `root/pypi`), which a bare `/` boundary would allow.
+/// A NUL separator prevents repository names such as `root` and `root/child` from sharing a prefix.
 fn reach_prefix(reach: &GrantScope) -> String {
     format!("{}\0", reach_key(reach))
 }

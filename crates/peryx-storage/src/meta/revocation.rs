@@ -9,7 +9,6 @@ use super::{DIGEST_REVOCATION, DIGEST_REVOCATION_STATE, MetaError, MetaStore};
 const MAX_QUERY_LIMIT: usize = 100;
 const ACTIVE_COUNT_KEY: &str = "active_count";
 
-/// The current lifecycle of a digest revocation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "status")]
 pub enum DigestRevocationState {
@@ -27,7 +26,6 @@ impl DigestRevocationState {
     }
 }
 
-/// A lifecycle filter used by bounded list operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DigestRevocationStatus {
@@ -35,7 +33,6 @@ pub enum DigestRevocationStatus {
     Lifted,
 }
 
-/// The current revocation record for one immutable artifact.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DigestRevocation {
     pub digest: ArtifactDigest,
@@ -46,7 +43,6 @@ pub struct DigestRevocation {
     pub revision: u64,
 }
 
-/// The effect of putting an active revocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PutRevocationOutcome {
     Created(DigestRevocation),
@@ -63,7 +59,6 @@ impl PutRevocationOutcome {
     }
 }
 
-/// A rejected revocation put.
 #[derive(Debug, thiserror::Error)]
 pub enum PutRevocationError {
     #[error(transparent)]
@@ -72,7 +67,6 @@ pub enum PutRevocationError {
     ReasonConflict,
 }
 
-/// The effect of lifting a digest revocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LiftRevocationOutcome {
     Lifted(DigestRevocation),
@@ -88,7 +82,6 @@ impl LiftRevocationOutcome {
     }
 }
 
-/// A bounded stable query over current digest rows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DigestRevocationQuery {
     pub status: Option<DigestRevocationStatus>,
@@ -106,14 +99,12 @@ impl Default for DigestRevocationQuery {
     }
 }
 
-/// One bounded page in canonical digest order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DigestRevocationPage {
     pub revocations: Vec<DigestRevocation>,
     pub next_cursor: Option<String>,
 }
 
-/// A rejected digest-revocation query.
 #[derive(Debug, thiserror::Error)]
 pub enum DigestRevocationQueryError {
     #[error(transparent)]
@@ -122,14 +113,8 @@ pub enum DigestRevocationQueryError {
     InvalidLimit,
 }
 
-/// Recompute the derived active count from the records table so a store migrated from before the
-/// index existed, or one whose count drifted, reflects its rows before the first read.
-///
-/// The count is bounded by the row count, so a fresh sum cannot overflow the way an externally
-/// supplied count can.
-///
-/// A record that cannot be decoded is skipped rather than counted, so one corrupt row does not fail
-/// the store open.
+/// Rebuilds the derived count for legacy or drifted stores. Corrupt rows remain queryable as errors but
+/// do not prevent startup.
 ///
 /// # Errors
 /// Returns a store error when the tables cannot be opened, read, or written.
@@ -139,9 +124,7 @@ pub(super) fn backfill_digest_revocation_state(txn: &redb::WriteTransaction) -> 
         let mut active: u64 = 0;
         for entry in records.iter()? {
             let (_key, value) = entry?;
-            // A record that cannot be decoded cannot be classified. Skip it rather than fail the whole
-            // store open on one corrupt row; the read path surfaces the corruption when that digest is
-            // actually queried.
+            // The read path reports corrupt rows; startup can rebuild the count without classifying them.
             let Ok(record) = serde_json::from_slice::<DigestRevocation>(value.value()) else {
                 continue;
             };
@@ -159,8 +142,6 @@ pub(super) fn backfill_digest_revocation_state(txn: &redb::WriteTransaction) -> 
 }
 
 impl MetaStore {
-    /// Create, retry, or reopen the revocation for one digest in one transaction.
-    ///
     /// # Errors
     /// Returns a conflict when an active row has another reason, or a store error when the row cannot
     /// be read, encoded, or committed.
@@ -233,7 +214,7 @@ impl MetaStore {
         Ok(outcome)
     }
 
-    /// Lift an active digest revocation, retaining its creation evidence.
+    /// Retains creation evidence after lifting an active revocation.
     ///
     /// # Errors
     /// Returns a store error when the row cannot be read, encoded, or committed.
@@ -278,7 +259,7 @@ impl MetaStore {
         Ok(Some(LiftRevocationOutcome::Lifted(record)))
     }
 
-    /// Check the transactional active count without reading revocation bodies.
+    /// Uses the transactional count without decoding revocation rows.
     ///
     /// # Errors
     /// Returns a store error when the revocation index cannot be validated or read.
@@ -303,8 +284,6 @@ impl MetaStore {
         }
     }
 
-    /// Inspect one digest with a single indexed lookup.
-    ///
     /// # Errors
     /// Returns a store error when the row cannot be read or decoded.
     pub fn digest_revocation(&self, digest: &ArtifactDigest) -> Result<Option<DigestRevocation>, MetaError> {
@@ -320,7 +299,7 @@ impl MetaStore {
             .transpose()?)
     }
 
-    /// List current rows in canonical digest order with an exclusive cursor.
+    /// Returns rows in canonical digest order after an exclusive cursor.
     ///
     /// # Errors
     /// Returns a validation error for an out-of-range limit, or a store error when rows cannot be read

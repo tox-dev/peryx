@@ -4,7 +4,6 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use base64::Engine as _;
-use peryx_core::Ecosystem;
 use peryx_driver::AppState;
 use peryx_identity::{Action, Glob, Grant, IndexAcl, NamedToken};
 use peryx_index::{Index, IndexKind};
@@ -28,7 +27,7 @@ fn writer_acl(secret: impl Into<String>) -> IndexAcl {
             name: "uploader".to_owned(),
             secret: secret.into(),
             grants: vec![Grant {
-                projects: vec![Glob::new("*")],
+                resources: vec![Glob::new("*")],
                 actions: std::collections::BTreeSet::from([Action::Write, Action::Delete]),
             }],
             expires_at: None,
@@ -44,13 +43,21 @@ async fn test_blob_delete_uses_bounded_memory() {
     let index = Index {
         name: "store".to_owned(),
         route: "store".to_owned(),
-        ecosystem: Ecosystem::Oci,
+        ecosystem: peryx_ecosystem_oci::ECOSYSTEM,
         kind: IndexKind::Hosted { volatile: true },
         policy: Policy::default(),
         acl: writer_acl(TOKEN),
     };
     let mut state = AppState::with_clock(meta, blobs, 60, vec![index], Arc::new(|| 1000));
-    peryx_ecosystem_oci::install(&mut state, std::iter::empty(), false);
+    peryx_plugin_registry::PluginRegistry::new(vec![peryx_ecosystem_oci::registration()])
+        .unwrap()
+        .activate([peryx_ecosystem_oci::ECOSYSTEM])
+        .unwrap()
+        .install_drivers(
+            &mut state.runtime_install_context().unwrap(),
+            &std::collections::HashMap::new(),
+        )
+        .unwrap();
     let state = Arc::new(state);
     let app = peryx_http::router(Arc::clone(&state));
     let bytes = b"layer";
@@ -63,7 +70,7 @@ async fn test_blob_delete_uses_bounded_memory() {
         .body(Body::from(bytes.as_slice()))
         .unwrap();
     assert_eq!(app.clone().oneshot(upload).await.unwrap().status(), StatusCode::CREATED);
-    let lease = state.blobs.materialize(&digest).await.unwrap();
+    let lease = state.serving.blobs.materialize(&digest).await.unwrap();
     std::fs::OpenOptions::new()
         .write(true)
         .open(lease.path())
@@ -83,7 +90,7 @@ async fn test_blob_delete_uses_bounded_memory() {
 
     assert_eq!(response.status(), StatusCode::ACCEPTED);
     assert!(allocated < MAX_DELETE_ALLOCATION, "delete allocated {allocated} bytes");
-    assert!(state.blobs.head(&digest).await.unwrap().is_some());
+    assert!(state.serving.blobs.head(&digest).await.unwrap().is_some());
 }
 
 fn authorization() -> String {

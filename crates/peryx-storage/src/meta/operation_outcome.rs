@@ -1,12 +1,5 @@
-//! A durable ledger of admitted-write outcomes keyed by operation id, so a retry of the same operation
-//! replays its original result instead of running a second mutation.
-//!
-//! A write admitted at one node can outlive the request that opened it and be retried. Claiming the
-//! operation id records it as pending before the mutation runs; finalizing stamps the terminal result
-//! and the response bytes a retry replays. A retry re-claims the same id, finds the existing record, and
-//! replays it — pending while the first attempt is still in flight, or the finalized response once it
-//! committed — so the mutation runs once. This module owns the persistence; deriving the client-facing
-//! status and scoping the id to an authority live above it.
+//! Claiming an operation ID before mutation lets retries replay the pending or terminal record instead of
+//! mutating twice. Callers scope IDs and derive client-facing status.
 
 use std::ops::Bound::{Excluded, Unbounded};
 
@@ -15,30 +8,26 @@ use serde::{Deserialize, Serialize};
 
 use super::{MetaError, MetaStore, OPERATION_OUTCOME};
 
-/// The largest page an operation listing returns, so one query never scans the whole ledger.
+/// Bounds one operation-ledger scan.
 const MAX_QUERY_LIMIT: usize = 100;
 
-/// The lifecycle of one admitted write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OperationState {
-    /// Admitted and in flight; no terminal result yet.
     Pending,
-    /// Finalized at the home. Terminal.
+    /// Terminal success at the home.
     Published,
-    /// Gave up before finalizing. Terminal.
+    /// Terminal failure before finalization.
     Failed,
 }
 
 impl OperationState {
-    /// Whether the write reached a terminal result and will not change again.
     #[must_use]
     pub const fn is_terminal(self) -> bool {
         matches!(self, Self::Published | Self::Failed)
     }
 }
 
-/// The terminal result a caller finalizes an operation to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationResult {
     Published,
@@ -54,27 +43,24 @@ impl OperationResult {
     }
 }
 
-/// The durable record of one admitted write.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OperationOutcomeRecord {
     pub state: OperationState,
-    /// The opaque response the ecosystem finalized, replayed verbatim to a retry. Empty while pending.
+    /// Opaque replay response; empty while pending.
     pub response: Vec<u8>,
-    /// When the record may be pruned, or `None` for no retention bound.
+    /// `None` retains the record without a time bound.
     pub expiry_unix: Option<i64>,
     pub updated_at_unix: i64,
 }
 
-/// The effect of claiming an operation id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OperationClaim {
-    /// The id was free; it is now admitted as pending and this caller owns the single mutation.
+    /// This caller owns the mutation.
     Admitted,
-    /// The id was already claimed; here is its record, so a retry replays it rather than remutating.
+    /// The caller must replay this record.
     Existing(OperationOutcomeRecord),
 }
 
-/// A rejected finalize.
 #[derive(Debug, thiserror::Error)]
 pub enum OperationOutcomeError {
     #[error(transparent)]
@@ -85,24 +71,18 @@ pub enum OperationOutcomeError {
     AlreadyFinal { operation: String },
 }
 
-/// One row of an operation listing: the operation id and the durable fields a health view reads.
-///
-/// A view derives the client-facing status, age, and retention from these fields. The row carries no
-/// response bytes and no tenant coordinate, so it exposes a write's convergence without leaking what it
-/// wrote or who owns it.
+/// Excludes response bytes and tenant coordinates from health views.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct OperationOutcomeRow {
     pub operation: String,
     pub state: OperationState,
-    /// When the record may be pruned, from which an expired status is derived against a clock.
     pub expiry_unix: Option<i64>,
     pub updated_at_unix: i64,
 }
 
-/// A bounded, cursor-paginated query over operation outcomes in operation-id order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperationOutcomeQuery {
-    /// Resume after this operation id, exclusive; `None` starts at the first.
+    /// Exclusive; `None` starts at the first ID.
     pub cursor: Option<String>,
     pub limit: usize,
 }
@@ -116,18 +96,13 @@ impl Default for OperationOutcomeQuery {
     }
 }
 
-/// One bounded page of operation rows in operation-id order, with a cursor to resume.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct OperationOutcomePage {
     pub rows: Vec<OperationOutcomeRow>,
-    /// The operation id to resume after, present only when more rows remain past this page.
+    /// Present only when another page remains.
     pub next_cursor: Option<String>,
 }
 
-/// The counts an operations-health view shows, bucketed by the client-facing status a write reads.
-///
-/// The status is derived at the query's clock. Four numbers regardless of ledger size, so the summary
-/// never scales with the writes it covers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 pub struct OperationOutcomeHealth {
     pub pending: u64,
@@ -137,14 +112,12 @@ pub struct OperationOutcomeHealth {
 }
 
 impl OperationOutcomeHealth {
-    /// The total operations across the four states.
     #[must_use]
     pub const fn total(self) -> u64 {
         self.pending + self.published + self.failed + self.expired
     }
 }
 
-/// A rejected operation list.
 #[derive(Debug, thiserror::Error)]
 pub enum OperationOutcomeQueryError {
     #[error(transparent)]
@@ -154,9 +127,8 @@ pub enum OperationOutcomeQueryError {
 }
 
 impl MetaStore {
-    /// Claim `operation` as an admitted, pending write, or return its existing record when a prior
-    /// attempt already claimed it. The read and the insert share one write transaction, so two racing
-    /// attempts never both admit the same id.
+    /// Atomically admits an unclaimed ID or returns its record, preventing racing attempts from both
+    /// owning the mutation.
     ///
     /// # Errors
     /// Returns a store error when the row cannot be read, encoded, or committed.
@@ -189,8 +161,6 @@ impl MetaStore {
         Ok(OperationClaim::Admitted)
     }
 
-    /// Stamp `operation`'s terminal `result` and the `response` a retry replays.
-    ///
     /// # Errors
     /// Returns [`OperationOutcomeError::NotAdmitted`] when the id was never claimed,
     /// [`OperationOutcomeError::AlreadyFinal`] when it already holds a terminal result, or a store error
@@ -237,7 +207,7 @@ impl MetaStore {
         Ok(finalized)
     }
 
-    /// Read one operation's record, or `None` when the id was never claimed.
+    /// Returns `None` when the ID was never claimed.
     ///
     /// # Errors
     /// Returns a store error when the row cannot be read or decoded.
@@ -250,13 +220,8 @@ impl MetaStore {
             .transpose()?)
     }
 
-    /// List operation outcomes in operation-id order with an exclusive cursor, giving an operations-health
-    /// view a bounded data source of per-operation rows.
-    ///
-    /// Reads one row past `limit` to decide whether more remain: a full page carries a `next_cursor`
-    /// pointing at its last operation id, and a page that reaches the end carries none. The read span is
-    /// bounded by the validated limit, so a large ledger never turns into one unbounded scan. Rows carry
-    /// the durable fields only; the client-facing status is derived above the store against a clock.
+    /// Returns ID-ordered rows after an exclusive cursor. Reads one extra row to decide whether to return
+    /// `next_cursor`; callers derive status against their clock.
     ///
     /// # Errors
     /// Returns [`OperationOutcomeQueryError::InvalidLimit`] for a limit outside `1..=MAX_QUERY_LIMIT`, or a
@@ -297,12 +262,7 @@ impl MetaStore {
         Ok(OperationOutcomePage { rows, next_cursor })
     }
 
-    /// Bucket every operation by the client-facing status it reads at `now` in one pass, giving an
-    /// operations-health view its aggregate without paging the whole ledger itself.
-    ///
-    /// A published or failed record is terminal; a pending record whose retention deadline has passed at
-    /// `now` reads as expired, and one still within its deadline as pending. The output is four counts
-    /// regardless of ledger size, so the summary aggregates before serialization.
+    /// Counts published, failed, pending, and expired operations at `now` without serializing the ledger.
     ///
     /// # Errors
     /// Returns a store error if a row cannot be read or decoded.
@@ -325,8 +285,7 @@ impl MetaStore {
         Ok(health)
     }
 
-    /// Remove up to `limit` terminal records whose retention deadline has passed at `now`, returning how
-    /// many were pruned. A pending record is never pruned, since its write may still finalize.
+    /// Removes up to `limit` expired terminal records. Pending records remain eligible to finalize.
     ///
     /// # Errors
     /// Returns a store error when a row cannot be read or the delete cannot be committed.
@@ -357,5 +316,5 @@ impl MetaStore {
 }
 
 #[cfg(test)]
-#[path = "operation_outcome_fault_tests.rs"]
+#[path = "../../tests/unit/meta/operation_outcome_fault_tests.rs"]
 mod fault_tests;

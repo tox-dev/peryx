@@ -1,19 +1,18 @@
-//! Cache consistency checks: each ecosystem's metadata records, then the content-addressed blobs.
-
 use std::io::Write;
 
 use anyhow::Context as _;
+use peryx_driver::DriverSet;
 use peryx_storage::blob::BlobEntry;
 
 use super::CacheStores;
 
-pub(super) fn fsck_cache(stores: &CacheStores, out: &mut dyn Write) -> anyhow::Result<()> {
+pub(super) fn fsck_cache(drivers: &DriverSet, stores: &CacheStores, out: &mut dyn Write) -> anyhow::Result<()> {
     let mut problems = 0_u64;
-    for driver in crate::server::drivers().present() {
+    for driver in drivers.fsck_drivers() {
         problems += driver
             .fsck_metadata(&stores.meta, &stores.blobs, out)
             .map_err(anyhow::Error::msg)
-            .context(format!("fsck {} metadata", driver.ecosystem().as_str()))?;
+            .context("fsck ecosystem metadata")?;
     }
     stores
         .blobs
@@ -52,3 +51,7 @@ fn check_blob(stores: &CacheStores, entry: &BlobEntry, out: &mut dyn Write) -> s
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/tests/app/fsck_tests.rs"]
+mod tests;

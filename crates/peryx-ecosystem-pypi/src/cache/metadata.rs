@@ -1,15 +1,13 @@
 //! PEP 658 metadata resolution: cached sidecars, ranged wheel reads, and background backfill.
 
 use std::io::{Cursor, Read as _};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::store::PypiStore as _;
 use crate::stream::Registration;
 use bytes::Bytes;
 use peryx_driver::state::ServingState;
 use peryx_storage::blob::Digest;
-#[cfg(test)]
-use peryx_upstream::UpstreamClient;
 use peryx_upstream::{ArtifactClient, RangeError};
 
 mod central_dir;
@@ -24,7 +22,6 @@ use super::{
     upstream_permit,
 };
 
-/// Fetch a URL through its recorded upstream client, reusing that source's authentication.
 async fn fetch_from_source(
     state: &ServingState,
     source: &str,
@@ -108,7 +105,7 @@ async fn write_generated_metadata(
     state
         .meta
         .put_metadata(artifact_sha256, GENERATED_METADATA_URL, metadata_sha256, &source)?;
-    state.invalidate_project(&crate::project_of_filename(artifact_filename));
+    state.invalidate_resource(&crate::project_of_filename(artifact_filename));
     Ok(Bytes::from(bytes))
 }
 
@@ -239,7 +236,9 @@ async fn wheel_metadata_by_range(
         ZIP_COMPRESSION_STORED => Ok(RemoteMetadata::Found(compressed.to_vec())),
         ZIP_COMPRESSION_DEFLATED => {
             let mut decoder = flate2::read::DeflateDecoder::new(Cursor::new(compressed));
-            let mut metadata = Vec::with_capacity(usize::try_from(entry.uncompressed_size).unwrap_or_default());
+            let mut metadata = Vec::with_capacity(
+                usize::try_from(entry.uncompressed_size).map_err(|err| RangeError::Invalid(err.to_string()))?,
+            );
             if let Err(err) = decoder.read_to_end(&mut metadata) {
                 return Err(RangeError::Invalid(err.to_string()));
             }
@@ -265,27 +264,62 @@ async fn zip_data_start(client: &ArtifactClient, url: &str, local_header_offset:
     Ok(local_header_offset + 30 + name_len + extra_len)
 }
 
-/// Pre-warm PEP 658 metadata after a page is served so a later visit advertises it, without blocking
-/// the page response or the downloads an in-flight install is waiting on. Two guards keep the detached
-/// task from competing with live traffic: only wheels are eligible (their metadata is a cheap ranged
-/// read of the archive's `METADATA` member, whereas an sdist needs a full download plus a gunzip, so
-/// sdist metadata is generated only when a client actually requests `<sdist>.metadata`), and
-/// generation runs under [`BACKFILL_CONCURRENCY`]. On-demand `.metadata` requests bypass both.
-pub(super) fn spawn_metadata_backfill(state: Arc<ServingState>, route: String, registrations: &[Registration]) {
+/// Queue wheel metadata generation without delaying the page response.
+///
+/// Admission precedes spawning so saturated traffic cannot create waiting tasks. Sdists remain
+/// on-demand because extracting their metadata requires a full download.
+pub(super) fn spawn_metadata_backfill(state: &Arc<ServingState>, route: String, registrations: &[Registration]) {
     let candidates = metadata_backfill_candidates(registrations);
     if candidates.is_empty() {
         return;
     }
-    tokio::spawn(async move {
-        run_metadata_backfill_candidates(state, route, candidates).await;
-    });
+    state
+        .plugin_service::<MetadataBackfills>()
+        .expect("PyPI runtime installs metadata backfills")
+        .spawn(state.clone(), route, candidates);
 }
 
 const BACKFILL_CONCURRENCY: usize = 2;
 
-fn backfill_limiter() -> &'static tokio::sync::Semaphore {
-    static LIMITER: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
-    LIMITER.get_or_init(|| tokio::sync::Semaphore::new(BACKFILL_CONCURRENCY))
+pub(super) struct MetadataBackfills {
+    slots: Arc<tokio::sync::Semaphore>,
+    tasks: Mutex<tokio::task::JoinSet<()>>,
+}
+
+impl MetadataBackfills {
+    fn spawn(&self, state: Arc<ServingState>, route: String, candidates: Vec<MetadataBackfillCandidate>) {
+        let Ok(slot) = self.slots.clone().try_acquire_owned() else {
+            return;
+        };
+        let mut tasks = self.tasks.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        while let Some(result) = tasks.try_join_next() {
+            if let Err(err) = result {
+                tracing::error!(?err, "metadata backfill task failed");
+            }
+        }
+        tasks.spawn(async move {
+            run_metadata_backfill_candidates(state, route, candidates).await;
+            drop(slot);
+        });
+    }
+}
+
+impl Default for MetadataBackfills {
+    fn default() -> Self {
+        Self {
+            slots: Arc::new(tokio::sync::Semaphore::new(BACKFILL_CONCURRENCY)),
+            tasks: Mutex::new(tokio::task::JoinSet::new()),
+        }
+    }
+}
+
+impl Drop for MetadataBackfills {
+    fn drop(&mut self) {
+        self.tasks
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .abort_all();
+    }
 }
 
 fn metadata_backfill_candidates(registrations: &[Registration]) -> Vec<MetadataBackfillCandidate> {
@@ -314,10 +348,6 @@ async fn run_metadata_backfill_candidates(
         {
             continue;
         }
-        let _slot = backfill_limiter()
-            .acquire()
-            .await
-            .expect("backfill limiter is never closed");
         let Err(err) = write_generated_metadata(&state, &candidate.digest, &route, &candidate.filename).await else {
             continue;
         };
@@ -332,8 +362,6 @@ struct MetadataBackfillCandidate {
     filename: String,
 }
 
-/// The file size registered from the Simple API page for a digest, when upstream advertised one.
-///
 /// # Errors
 /// Returns [`CacheError`] when the metadata store cannot be read.
 pub fn registered_file_size(state: &ServingState, digest: &Digest) -> Result<Option<u64>, CacheError> {
@@ -345,157 +373,5 @@ fn metadata_negative_key(artifact_digest: &Digest) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use peryx_storage::blob::BlobStore;
-    use peryx_storage::meta::MetaStore;
-
-    use super::*;
-
-    #[test]
-    fn test_metadata_from_artifact_path_skips_unsupported_formats() {
-        assert!(
-            metadata_from_artifact_path("pkg-1.0.zip", std::path::Path::new("unused"))
-                .unwrap()
-                .is_none()
-        );
-    }
-
-    #[tokio::test]
-    async fn test_wheel_metadata_by_range_rejects_invalid_names_before_fetch() {
-        let client = ArtifactClient::from(UpstreamClient::new("https://pypi.org/simple/").unwrap());
-
-        assert!(matches!(
-            wheel_metadata_by_range(&client, "https://example.invalid/pkg.zip", "pkg-1.0.zip").await,
-            Ok(RemoteMetadata::Unsupported)
-        ));
-        assert!(matches!(
-            wheel_metadata_by_range(&client, "https://example.invalid/pkg.whl", "pkg.whl").await,
-            Err(RangeError::Invalid(_))
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_metadata_bytes_regenerates_missing_generated_blob() {
-        let (_dir, state) = test_state();
-        let wheel = test_wheel(b"Metadata-Version: 2.1\nName: pkg\nVersion: 1.0\n");
-        let digest = state.blobs.put_bytes(&wheel).await.unwrap();
-        state
-            .meta
-            .put_metadata(
-                digest.as_str(),
-                GENERATED_METADATA_URL,
-                &"f".repeat(64),
-                GENERATED_METADATA_URL,
-            )
-            .unwrap();
-
-        let bytes = metadata_bytes(&state, &digest, "pypi", "pkg-1.0-py3-none-any.whl.metadata")
-            .await
-            .unwrap();
-
-        assert_eq!(&bytes[..], b"Metadata-Version: 2.1\nName: pkg\nVersion: 1.0\n");
-        assert!(state.meta.get_metadata(digest.as_str()).unwrap().is_some());
-    }
-
-    #[tokio::test]
-    async fn test_metadata_backfill_candidates_skip_existing_and_successful_records() {
-        let (_dir, state) = test_state();
-        let existing = Digest::of(b"existing");
-        state
-            .meta
-            .put_metadata(
-                existing.as_str(),
-                GENERATED_METADATA_URL,
-                &"e".repeat(64),
-                GENERATED_METADATA_URL,
-            )
-            .unwrap();
-        let wheel = test_wheel(b"Metadata-Version: 2.1\nName: pkg\nVersion: 1.0\n");
-        let digest = state.blobs.put_bytes(&wheel).await.unwrap();
-
-        run_metadata_backfill_candidates(
-            state.clone(),
-            "pypi".to_owned(),
-            vec![
-                MetadataBackfillCandidate {
-                    digest: existing,
-                    filename: "pkg-1.0-py3-none-any.whl".to_owned(),
-                },
-                MetadataBackfillCandidate {
-                    digest: digest.clone(),
-                    filename: "pkg-1.0-py3-none-any.whl".to_owned(),
-                },
-            ],
-        )
-        .await;
-
-        assert!(state.meta.get_metadata(digest.as_str()).unwrap().is_some());
-    }
-
-    #[tokio::test]
-    async fn test_spawn_metadata_backfill_synthesizes_registered_wheels_and_logs_failures() {
-        let (_dir, state) = test_state();
-        let unfetchable = Digest::of(b"unfetchable");
-        let wheel = test_wheel(b"Metadata-Version: 2.1\nName: pkg\nVersion: 1.0\n");
-        let cached = state.blobs.put_bytes(&wheel).await.unwrap();
-        // The first candidate has no stored blob and no file URL, so its synthesis fails and is
-        // logged; the second reads its cached blob and registers. Both are wheels advertising no
-        // metadata, so the candidate filter keeps them. The candidates run in order, so polling the
-        // second awaits the spawned task past the first.
-        spawn_metadata_backfill(
-            state.clone(),
-            "pypi".to_owned(),
-            &[
-                Registration {
-                    filename: "broken-1.0-py3-none-any.whl".to_owned(),
-                    sha256: unfetchable.as_str().to_owned(),
-                    url: "https://example.invalid/broken.whl".to_owned(),
-                    size: None,
-                    metadata: None,
-                    provenance: None,
-                },
-                Registration {
-                    filename: "pkg-1.0-py3-none-any.whl".to_owned(),
-                    sha256: cached.as_str().to_owned(),
-                    url: "https://example.invalid/pkg.whl".to_owned(),
-                    size: None,
-                    metadata: None,
-                    provenance: None,
-                },
-            ],
-        );
-
-        let mut registered = None;
-        for _ in 0..1000 {
-            if let Some(record) = state.meta.get_metadata(cached.as_str()).unwrap() {
-                registered = Some(record);
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-        }
-        assert!(
-            registered.is_some(),
-            "the spawned backfill registers the cached wheel's metadata"
-        );
-        assert!(state.meta.get_metadata(unfetchable.as_str()).unwrap().is_none());
-    }
-
-    fn test_state() -> (tempfile::TempDir, Arc<ServingState>) {
-        let dir = tempfile::tempdir().unwrap();
-        let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-        let blobs = BlobStore::new(dir.path().join("blobs"));
-        (dir, peryx_driver::AppState::new(meta, blobs, 60, Vec::new()).serving)
-    }
-
-    fn test_wheel(metadata: &[u8]) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        {
-            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut bytes));
-            let options = zip::write::SimpleFileOptions::default();
-            zip.start_file("pkg-1.0.dist-info/METADATA", options).unwrap();
-            std::io::Write::write_all(&mut zip, metadata).unwrap();
-            zip.finish().unwrap();
-        }
-        bytes
-    }
-}
+#[path = "../../tests/unit/cache/metadata/tests.rs"]
+mod tests;

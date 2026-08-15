@@ -1,0 +1,1084 @@
+[tables.image-endpoints-mirror]
+baseline = "direct"
+label = "one warm request to each served endpoint; an empty cell is an endpoint the registry does not offer"
+
+[[tables.image-endpoints-mirror.parties]]
+name = "peryx"
+url = "https://peryx.readthedocs.io/"
+
+[[tables.image-endpoints-mirror.parties]]
+name = "direct"
+url = "https://hub.docker.com/"
+
+[[tables.image-endpoints-mirror.parties]]
+name = "distribution"
+url = "https://distribution.github.io/distribution/"
+
+[[tables.image-endpoints-mirror.parties]]
+name = "zot"
+url = "https://zotregistry.dev/"
+
+[[tables.image-endpoints-mirror.rows]]
+higher_is_better = false
+name = "version check"
+network_bound = false
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "38 µs–66 µs"
+ratio = "0.12x"
+spread = "±27%"
+text = "55 µs"
+tint = "faster"
+value = 0.000054708
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "437 µs–497 µs"
+ratio = "1.00x"
+spread = "±7%"
+text = "461 µs"
+tint = "worst"
+value = 0.00046125
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "514 µs–700 µs"
+ratio = "1.35x"
+spread = "±15%"
+text = "624 µs"
+tint = "worst"
+value = 0.000624166
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "53 µs–74 µs"
+ratio = "0.15x"
+spread = "±17%"
+text = "71 µs"
+tint = "faster"
+value = 0.000070958
+
+[[tables.image-endpoints-mirror.rows]]
+higher_is_better = false
+name = "manifest by tag"
+network_bound = false
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "49 µs–74 µs"
+ratio = "0.00x"
+spread = "±21%"
+text = "58 µs"
+tint = "faster"
+value = 0.000058
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "227 ms–238 ms"
+ratio = "1.00x"
+spread = "±2%"
+text = "231 ms"
+tint = "worst"
+value = 0.231066959
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "243 ms–263 ms"
+ratio = "1.06x"
+spread = "±4%"
+text = "245 ms"
+tint = "worst"
+value = 0.244997083
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "951 ms–967 ms"
+ratio = "4.18x"
+spread = "±1%"
+text = "967 ms"
+tint = "worst"
+value = 0.966681542
+
+[[tables.image-endpoints-mirror.rows]]
+higher_is_better = false
+name = "manifest by tag (HEAD)"
+network_bound = false
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "31 µs–65 µs"
+ratio = "0.00x"
+spread = "±34%"
+text = "53 µs"
+tint = "faster"
+value = 0.000052709
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "229 ms–242 ms"
+ratio = "1.00x"
+spread = "±3%"
+text = "236 ms"
+tint = "worst"
+value = 0.23589125
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "242 ms–254 ms"
+ratio = "1.03x"
+spread = "±3%"
+text = "243 ms"
+tint = "worst"
+value = 0.2430755
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "946 ms–957 ms"
+ratio = "4.02x"
+spread = "±1%"
+text = "948 ms"
+tint = "worst"
+value = 0.948495041
+
+[[tables.image-endpoints-mirror.rows]]
+higher_is_better = false
+name = "manifest by digest"
+network_bound = false
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "33 µs–68 µs"
+ratio = "0.05x"
+spread = "±35%"
+text = "59 µs"
+tint = "faster"
+value = 0.000058667
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "1.2 ms–1.6 ms"
+ratio = "1.00x"
+spread = "±19%"
+text = "1.2 ms"
+tint = "worst"
+value = 0.0012325
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "1.2 ms–1.9 ms"
+ratio = "1.32x"
+spread = "±23%"
+text = "1.6 ms"
+tint = "worst"
+value = 0.001630125
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "135 µs–166 µs"
+ratio = "0.12x"
+spread = "±10%"
+text = "149 µs"
+tint = "par"
+value = 0.000148833
+
+[[tables.image-endpoints-mirror.rows]]
+higher_is_better = false
+name = "blob (HEAD)"
+network_bound = false
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "60 µs–104 µs"
+ratio = "0.10x"
+spread = "±27%"
+text = "83 µs"
+tint = "faster"
+value = 0.000082875
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "724 µs–872 µs"
+ratio = "1.00x"
+spread = "±10%"
+text = "842 µs"
+tint = "worst"
+value = 0.0008425
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "872 µs–1.0 ms"
+ratio = "1.04x"
+spread = "±10%"
+text = "877 µs"
+tint = "worst"
+value = 0.000877209
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "257 µs–318 µs"
+ratio = "0.34x"
+spread = "±11%"
+text = "287 µs"
+tint = "slow"
+value = 0.000287042
+
+[[tables.image-endpoints-mirror.rows]]
+higher_is_better = false
+name = "config blob"
+network_bound = false
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "61 µs–107 µs"
+ratio = "0.10x"
+spread = "±27%"
+text = "97 µs"
+tint = "faster"
+value = 0.000097333
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "987 µs–1.1 ms"
+ratio = "1.00x"
+spread = "±8%"
+text = "988 µs"
+tint = "worst"
+value = 0.000987917
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "1.2 ms–1.2 ms"
+ratio = "1.25x"
+spread = "±2%"
+text = "1.2 ms"
+tint = "worst"
+value = 0.001237833
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "87 µs–107 µs"
+ratio = "0.10x"
+spread = "±11%"
+text = "102 µs"
+tint = "faster"
+value = 0.000102375
+
+[[tables.image-endpoints-mirror.rows]]
+higher_is_better = false
+name = "layer range (1 MiB)"
+network_bound = false
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "257 µs–381 µs"
+ratio = "0.06x"
+spread = "±20%"
+text = "368 µs"
+tint = "faster"
+value = 0.000368167
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "5.3 ms–8.1 ms"
+ratio = "1.00x"
+spread = "±21%"
+text = "6.3 ms"
+tint = "worst"
+value = 0.00629225
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "4.7 ms–5.7 ms"
+ratio = "0.85x"
+spread = "±10%"
+text = "5.4 ms"
+tint = "worst"
+value = 0.005375459
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "294 µs–509 µs"
+ratio = "0.07x"
+spread = "±27%"
+text = "461 µs"
+tint = "faster"
+value = 0.000461208
+
+[[tables.image-endpoints-mirror.rows]]
+higher_is_better = false
+name = "tag list"
+network_bound = true
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "339 ms–342 ms"
+ratio = "1.01x"
+spread = "±1%"
+text = "341 ms"
+tint = "worst"
+value = 0.341260958
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "331 ms–345 ms"
+ratio = "1.00x"
+spread = "±2%"
+text = "337 ms"
+tint = "worst"
+value = 0.337065125
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "347 ms–358 ms"
+ratio = "1.06x"
+spread = "±2%"
+text = "356 ms"
+tint = "worst"
+value = 0.355773417
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "81 µs–105 µs"
+ratio = "0.00x"
+spread = "±13%"
+text = "97 µs"
+tint = "faster"
+value = 0.000097375
+
+[[tables.image-endpoints-mirror.rows]]
+higher_is_better = false
+name = "tag list (paginated)"
+network_bound = true
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "333 ms–336 ms"
+ratio = "0.98x"
+spread = "±1%"
+text = "335 ms"
+tint = "worst"
+value = 0.334596666
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "337 ms–348 ms"
+ratio = "1.00x"
+spread = "±2%"
+text = "341 ms"
+tint = "worst"
+value = 0.340565625
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "351 ms–363 ms"
+ratio = "1.05x"
+spread = "±2%"
+text = "358 ms"
+tint = "worst"
+value = 0.357572542
+
+[[tables.image-endpoints-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "75 µs–102 µs"
+ratio = "0.00x"
+spread = "±16%"
+text = "94 µs"
+tint = "faster"
+value = 0.000094458
+
+[tables.image-throughput]
+baseline = "direct"
+label = "streaming one large cached layer (library/python:3.12-slim), alone and eight-way"
+
+[[tables.image-throughput.parties]]
+name = "peryx"
+url = "https://peryx.readthedocs.io/"
+
+[[tables.image-throughput.parties]]
+name = "direct"
+url = "https://hub.docker.com/"
+
+[[tables.image-throughput.parties]]
+name = "distribution"
+url = "https://distribution.github.io/distribution/"
+
+[[tables.image-throughput.parties]]
+name = "zot"
+url = "https://zotregistry.dev/"
+
+[[tables.image-throughput.rows]]
+higher_is_better = true
+name = "hot cache: single stream"
+network_bound = false
+
+[[tables.image-throughput.rows.cells]]
+noisy = true
+outliers = 0
+range = "6,589 MB/s–7,335 MB/s"
+ratio = "112.21x"
+spread = "±5%"
+text = "6,838 MB/s"
+tint = "faster"
+value = 6837.956679519166
+
+[[tables.image-throughput.rows.cells]]
+noisy = false
+outliers = 0
+range = "60 MB/s–62 MB/s"
+ratio = "1.00x"
+spread = "±1%"
+text = "61 MB/s"
+tint = "worst"
+value = 60.939064575773486
+
+[[tables.image-throughput.rows.cells]]
+noisy = false
+outliers = 0
+range = "97 MB/s–103 MB/s"
+ratio = "1.62x"
+spread = "±3%"
+text = "99 MB/s"
+tint = "worst"
+value = 98.70353631007823
+
+[[tables.image-throughput.rows.cells]]
+noisy = false
+outliers = 0
+range = "2,619 MB/s–2,784 MB/s"
+ratio = "45.49x"
+spread = "±3%"
+text = "2,772 MB/s"
+tint = "par"
+value = 2771.845212724291
+
+[[tables.image-throughput.rows]]
+higher_is_better = true
+name = "hot cache: 8 parallel streams"
+network_bound = false
+
+[[tables.image-throughput.rows.cells]]
+noisy = true
+outliers = 0
+range = "7,048 MB/s–8,321 MB/s"
+ratio = "77.50x"
+spread = "±9%"
+text = "8,192 MB/s"
+tint = "faster"
+value = 8192.251354155582
+
+[[tables.image-throughput.rows.cells]]
+noisy = false
+outliers = 0
+range = "101 MB/s–106 MB/s"
+ratio = "1.00x"
+spread = "±3%"
+text = "106 MB/s"
+tint = "worst"
+value = 105.70343320772007
+
+[[tables.image-throughput.rows.cells]]
+noisy = true
+outliers = 0
+range = "218 MB/s–254 MB/s"
+ratio = "2.39x"
+spread = "±9%"
+text = "253 MB/s"
+tint = "veryslow"
+value = 252.8988471353959
+
+[[tables.image-throughput.rows.cells]]
+noisy = true
+outliers = 0
+range = "5,774 MB/s–7,987 MB/s"
+ratio = "66.24x"
+spread = "±16%"
+text = "7,002 MB/s"
+tint = "faster"
+value = 7001.707749826015
+
+[tables.image-throughput-mirror]
+baseline = "direct"
+label = "streaming one large cached layer (library/python:3.12-slim), alone and eight-way"
+
+[[tables.image-throughput-mirror.parties]]
+name = "peryx"
+url = "https://peryx.readthedocs.io/"
+
+[[tables.image-throughput-mirror.parties]]
+name = "direct"
+url = "https://hub.docker.com/"
+
+[[tables.image-throughput-mirror.parties]]
+name = "distribution"
+url = "https://distribution.github.io/distribution/"
+
+[[tables.image-throughput-mirror.parties]]
+name = "zot"
+url = "https://zotregistry.dev/"
+
+[[tables.image-throughput-mirror.rows]]
+higher_is_better = true
+name = "hot cache: single stream"
+network_bound = false
+
+[[tables.image-throughput-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "6,279 MB/s–7,195 MB/s"
+ratio = "28.48x"
+spread = "±8%"
+text = "7,164 MB/s"
+tint = "faster"
+value = 7164.010983919052
+
+[[tables.image-throughput-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "220 MB/s–262 MB/s"
+ratio = "1.00x"
+spread = "±9%"
+text = "252 MB/s"
+tint = "veryslow"
+value = 251.5699449168851
+
+[[tables.image-throughput-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "84 MB/s–92 MB/s"
+ratio = "0.34x"
+spread = "±5%"
+text = "86 MB/s"
+tint = "worst"
+value = 85.71755812563076
+
+[[tables.image-throughput-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "2,698 MB/s–2,923 MB/s"
+ratio = "11.32x"
+spread = "±4%"
+text = "2,848 MB/s"
+tint = "par"
+value = 2847.919459422849
+
+[[tables.image-throughput-mirror.rows]]
+higher_is_better = true
+name = "hot cache: 8 parallel streams"
+network_bound = false
+
+[[tables.image-throughput-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "6,008 MB/s–8,790 MB/s"
+ratio = "32.29x"
+spread = "±20%"
+text = "8,747 MB/s"
+tint = "faster"
+value = 8746.765064524638
+
+[[tables.image-throughput-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "200 MB/s–282 MB/s"
+ratio = "1.00x"
+spread = "±18%"
+text = "271 MB/s"
+tint = "worst"
+value = 270.8606757932332
+
+[[tables.image-throughput-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "253 MB/s–283 MB/s"
+ratio = "0.97x"
+spread = "±6%"
+text = "261 MB/s"
+tint = "worst"
+value = 261.45671816496093
+
+[[tables.image-throughput-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "7,128 MB/s–8,822 MB/s"
+ratio = "32.10x"
+spread = "±11%"
+text = "8,694 MB/s"
+tint = "faster"
+value = 8693.902188899603
+
+[tables.parallel-pull]
+baseline = "direct"
+label = "ten clients pull library/node:22-alpine at once"
+
+[[tables.parallel-pull.parties]]
+name = "peryx"
+url = "https://peryx.readthedocs.io/"
+
+[[tables.parallel-pull.parties]]
+name = "direct"
+url = "https://hub.docker.com/"
+
+[[tables.parallel-pull.parties]]
+name = "distribution"
+url = "https://distribution.github.io/distribution/"
+
+[[tables.parallel-pull.parties]]
+name = "zot"
+url = "https://zotregistry.dev/"
+
+[[tables.parallel-pull.rows]]
+higher_is_better = false
+name = "cold cache: 10 parallel pulls"
+network_bound = true
+
+[[tables.parallel-pull.rows.cells]]
+noisy = false
+outliers = 0
+range = "2.2 s–2.2 s"
+ratio = "0.36x"
+spread = "±1%"
+text = "2.2 s"
+tint = "faster"
+value = 2.2189365205
+
+[[tables.parallel-pull.rows.cells]]
+noisy = false
+outliers = 0
+range = "6.2 s–6.3 s"
+ratio = "1.00x"
+spread = "±1%"
+text = "6.2 s"
+tint = "mild"
+value = 6.2410138125
+
+[[tables.parallel-pull.rows.cells]]
+noisy = true
+outliers = 0
+range = "11.4 s–12.7 s"
+ratio = "1.93x"
+spread = "±8%"
+text = "12.0 s"
+tint = "veryslow"
+value = 12.043807958
+
+[[tables.parallel-pull.rows.cells]]
+noisy = false
+outliers = 0
+range = "8.2 s–8.3 s"
+ratio = "1.32x"
+spread = "±1%"
+text = "8.2 s"
+tint = "slow"
+value = 8.240752604
+
+[[tables.parallel-pull.rows]]
+higher_is_better = false
+name = "warm cache: 10 parallel pulls"
+network_bound = false
+
+[[tables.parallel-pull.rows.cells]]
+noisy = true
+outliers = 0
+range = "644 ms–761 ms"
+ratio = "0.11x"
+spread = "±12%"
+text = "703 ms"
+tint = "faster"
+value = 0.702654375
+
+[[tables.parallel-pull.rows.cells]]
+noisy = false
+outliers = 0
+range = "6.4 s–6.5 s"
+ratio = "1.00x"
+spread = "±1%"
+text = "6.4 s"
+tint = "worst"
+value = 6.4282418125
+
+[[tables.parallel-pull.rows.cells]]
+noisy = true
+outliers = 0
+range = "5.0 s–7.7 s"
+ratio = "0.99x"
+spread = "±30%"
+text = "6.4 s"
+tint = "worst"
+value = 6.355608646
+
+[[tables.parallel-pull.rows.cells]]
+noisy = true
+outliers = 0
+range = "1.5 s–1.8 s"
+ratio = "0.26x"
+spread = "±10%"
+text = "1.7 s"
+tint = "mild"
+value = 1.6611034165
+
+[tables.parallel-pull-mirror]
+baseline = "direct"
+label = "ten clients pull library/node:22-alpine at once"
+
+[[tables.parallel-pull-mirror.parties]]
+name = "peryx"
+url = "https://peryx.readthedocs.io/"
+
+[[tables.parallel-pull-mirror.parties]]
+name = "direct"
+url = "https://hub.docker.com/"
+
+[[tables.parallel-pull-mirror.parties]]
+name = "distribution"
+url = "https://distribution.github.io/distribution/"
+
+[[tables.parallel-pull-mirror.parties]]
+name = "zot"
+url = "https://zotregistry.dev/"
+
+[[tables.parallel-pull-mirror.rows]]
+higher_is_better = false
+name = "cold cache: 10 parallel pulls"
+network_bound = true
+
+[[tables.parallel-pull-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "1.1 s–1.2 s"
+ratio = "0.36x"
+spread = "±6%"
+text = "1.1 s"
+tint = "faster"
+value = 1.108062708
+
+[[tables.parallel-pull-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "3.1 s–3.1 s"
+ratio = "1.00x"
+spread = "±1%"
+text = "3.1 s"
+tint = "mild"
+value = 3.101953292
+
+[[tables.parallel-pull-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "9.1 s–9.5 s"
+ratio = "2.98x"
+spread = "±2%"
+text = "9.2 s"
+tint = "worst"
+value = 9.230617125
+
+[[tables.parallel-pull-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "3.7 s–13.9 s"
+ratio = "1.23x"
+spread = "±82%"
+text = "3.8 s"
+tint = "slow"
+value = 3.802372209
+
+[[tables.parallel-pull-mirror.rows]]
+higher_is_better = false
+name = "warm cache: 10 parallel pulls"
+network_bound = false
+
+[[tables.parallel-pull-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "412 ms–575 ms"
+ratio = "0.18x"
+spread = "±18%"
+text = "561 ms"
+tint = "faster"
+value = 0.56056925
+
+[[tables.parallel-pull-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "3.1 s–3.2 s"
+ratio = "1.00x"
+spread = "±2%"
+text = "3.1 s"
+tint = "veryslow"
+value = 3.103626666
+
+[[tables.parallel-pull-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "3.0 s–3.2 s"
+ratio = "0.99x"
+spread = "±3%"
+text = "3.1 s"
+tint = "veryslow"
+value = 3.086027417
+
+[[tables.parallel-pull-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "1.5 s–1.6 s"
+ratio = "0.50x"
+spread = "±3%"
+text = "1.6 s"
+tint = "mild"
+value = 1.555872
+
+[tables.pull]
+baseline = "direct"
+label = "pull 6 images through each registry"
+
+[[tables.pull.parties]]
+name = "peryx"
+url = "https://peryx.readthedocs.io/"
+
+[[tables.pull.parties]]
+name = "direct"
+url = "https://hub.docker.com/"
+
+[[tables.pull.parties]]
+name = "distribution"
+url = "https://distribution.github.io/distribution/"
+
+[[tables.pull.parties]]
+name = "zot"
+url = "https://zotregistry.dev/"
+
+[[tables.pull.rows]]
+higher_is_better = false
+name = "cold cache"
+network_bound = true
+
+[[tables.pull.rows.cells]]
+noisy = false
+outliers = 0
+range = "6.6 s–6.8 s"
+ratio = "0.91x"
+spread = "±2%"
+text = "6.7 s"
+tint = "faster"
+value = 6.7125788335
+
+[[tables.pull.rows.cells]]
+noisy = false
+outliers = 0
+range = "7.4 s–7.4 s"
+ratio = "1.00x"
+spread = "±0%"
+text = "7.4 s"
+tint = "faster"
+value = 7.4086943125
+
+[[tables.pull.rows.cells]]
+noisy = false
+outliers = 0
+range = "13.4 s–13.6 s"
+ratio = "1.82x"
+spread = "±1%"
+text = "13.5 s"
+tint = "mild"
+value = 13.508228125
+
+[[tables.pull.rows.cells]]
+noisy = false
+outliers = 0
+range = "50.2 s–52.1 s"
+ratio = "6.91x"
+spread = "±3%"
+text = "51.2 s"
+tint = "worst"
+value = 51.188887437000005
+
+[[tables.pull.rows]]
+higher_is_better = false
+name = "warm cache"
+network_bound = false
+
+[[tables.pull.rows.cells]]
+noisy = true
+outliers = 0
+range = "624 ms–858 ms"
+ratio = "0.10x"
+spread = "±22%"
+text = "741 ms"
+tint = "faster"
+value = 0.740854958
+
+[[tables.pull.rows.cells]]
+noisy = false
+outliers = 0
+range = "7.2 s–7.5 s"
+ratio = "1.00x"
+spread = "±3%"
+text = "7.4 s"
+tint = "worst"
+value = 7.377481
+
+[[tables.pull.rows.cells]]
+noisy = false
+outliers = 0
+range = "2.6 s–2.8 s"
+ratio = "0.37x"
+spread = "±3%"
+text = "2.7 s"
+tint = "slow"
+value = 2.6971231455
+
+[[tables.pull.rows.cells]]
+noisy = false
+outliers = 0
+range = "6.4 s–6.8 s"
+ratio = "0.90x"
+spread = "±4%"
+text = "6.6 s"
+tint = "worst"
+value = 6.6133919995
+
+[tables.pull-mirror]
+baseline = "direct"
+label = "pull 6 images through each registry"
+
+[[tables.pull-mirror.parties]]
+name = "peryx"
+url = "https://peryx.readthedocs.io/"
+
+[[tables.pull-mirror.parties]]
+name = "direct"
+url = "https://hub.docker.com/"
+
+[[tables.pull-mirror.parties]]
+name = "distribution"
+url = "https://distribution.github.io/distribution/"
+
+[[tables.pull-mirror.parties]]
+name = "zot"
+url = "https://zotregistry.dev/"
+
+[[tables.pull-mirror.rows]]
+higher_is_better = false
+name = "cold cache"
+network_bound = true
+
+[[tables.pull-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "3.2 s–3.3 s"
+ratio = "1.13x"
+spread = "±2%"
+text = "3.2 s"
+tint = "faster"
+value = 3.197977458
+
+[[tables.pull-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "2.7 s–2.9 s"
+ratio = "1.00x"
+spread = "±4%"
+text = "2.8 s"
+tint = "faster"
+value = 2.832102333
+
+[[tables.pull-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "5.7 s–5.8 s"
+ratio = "2.02x"
+spread = "±1%"
+text = "5.7 s"
+tint = "mild"
+value = 5.707774041
+
+[[tables.pull-mirror.rows.cells]]
+noisy = true
+outliers = 0
+range = "15.9 s–1m 38.0s"
+ratio = "6.10x"
+spread = "±107%"
+text = "17.3 s"
+tint = "worst"
+value = 17.265230959
+
+[[tables.pull-mirror.rows]]
+higher_is_better = false
+name = "warm cache"
+network_bound = false
+
+[[tables.pull-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "552 ms–573 ms"
+ratio = "0.20x"
+spread = "±2%"
+text = "560 ms"
+tint = "faster"
+value = 0.560152416
+
+[[tables.pull-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "2.6 s–2.8 s"
+ratio = "1.00x"
+spread = "±3%"
+text = "2.8 s"
+tint = "slow"
+value = 2.752755958
+
+[[tables.pull-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "2.7 s–2.8 s"
+ratio = "1.00x"
+spread = "±1%"
+text = "2.7 s"
+tint = "slow"
+value = 2.7482714169999998
+
+[[tables.pull-mirror.rows.cells]]
+noisy = false
+outliers = 0
+range = "6.6 s–6.8 s"
+ratio = "2.43x"
+spread = "±1%"
+text = "6.7 s"
+tint = "worst"
+value = 6.691035208

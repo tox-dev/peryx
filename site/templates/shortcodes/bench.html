@@ -1,10 +1,8 @@
-{%- set report = load_data(path="data/bench/report.toml") -%}
+{% component bench(owner, file, only = "") %}
+{%- set report = load_data(path="data/ecosystems/" ~ owner ~ "/bench/report.toml") -%}
 {%- set feed = report.tables[file] -%}
-{#- optional `only`: a comma-separated list of party names to keep (e.g. "peryx,devpi"), so a
-    migration page can show just peryx against the one tool it covers instead of the whole field. -#}
-{%- set only_val = only | default(value="") -%}
-{%- set keep = only_val | split(pat=",") -%}
-{%- set filtering = only_val != "" -%}
+{%- set keep = only | split(pat=",") -%}
+{%- set filtering = only != "" -%}
 <div class="bench">
   <table class="bench-table">
     <caption>{{ feed.label }}{% if feed.baseline %} (ratios vs {{ feed.baseline }}){% endif %}<br>
@@ -37,3 +35,6 @@
     </tbody>
   </table>
 </div>
+
+
+{% endcomponent bench %}

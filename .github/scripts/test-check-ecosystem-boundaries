@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+base="$scratch/base"
+
+write() {
+  local root=$1
+  local path=$2
+  local content=$3
+  mkdir -p "$(dirname -- "$root/$path")"
+  printf '%s\n' "$content" >"$root/$path"
+}
+
+write "$base" Cargo.toml $'[workspace.dependencies]\nperyx-ecosystem-pypi = "0"\nperyx-ecosystem-oci = "0"'
+write "$base" crates/peryx/Cargo.toml $'[dependencies]\nperyx-ecosystem-pypi = "0"\nperyx-ecosystem-oci = "0"'
+write "$base" crates/peryx/src/lib.rs \
+  $'fn plugins() { peryx_ecosystem_pypi::registration(); peryx_ecosystem_oci::registration(); }'
+write "$base" crates/peryx-ecosystem-pypi/Cargo.toml \
+  $'[package]\nname = "peryx-ecosystem-pypi"\n[dev-dependencies]\nperyx-ha-distributed = "0"'
+write "$base" crates/peryx-ecosystem-pypi/src/lib.rs $'const ROUTE: &str = "/simple/";'
+write "$base" crates/peryx-ecosystem-pypi/tests/system/Cargo.toml \
+  $'[dependencies]\nperyx-ecosystem-pypi = "0"'
+write "$base" crates/peryx-ecosystem-oci/Cargo.toml \
+  $'[package]\nname = "peryx-ecosystem-oci"\n[dev-dependencies]\nperyx-ha-distributed = "0"'
+write "$base" crates/peryx-ecosystem-oci/src/lib.rs $'const ROUTE: &str = "/v2/";'
+write "$base" crates/peryx-ecosystem-example/docs/ecosystem.toml $'[[items]]\nid = "example"'
+write "$base" crates/peryx-ecosystem-example/docs/content/index.md 'Owner route: /simple/example/'
+write "$base" crates/peryx-core/src/lib.rs $'pub struct Artifact;'
+write "$base" crates/peryx-core/src/archive.rs $'fn name(path: &str) { let filename = path.rsplit(\'/\').next(); }'
+write "$base" crates/peryx-core/examples/read.rs $'const FILE: &str = "artifact.bin";'
+write "$base" crates/peryx-core/tools/read.py 'FILE = "artifact.bin"'
+write "$base" crates/peryx-core/Cargo.toml $'[package]\nname = "peryx-core"'
+write "$base" README.md 'Peryx stores artifacts.'
+write "$base" docs/architecture.md 'Artifacts have digests, metadata, and owner-defined routes.'
+write "$base" design/protocol.md 'Owners define protocol behavior.'
+write "$base" site/content/core/index.md 'See [Python packages](@/ecosystems/pypi/index.md).'
+write "$base" site/content/ecosystems/index.md 'Owner documentation defines protocol behavior.'
+write "$base" site/data/roadmap.toml 'name = "Generic"'
+write "$base" site/templates/page.html '<main>{{ page.content }}</main>'
+write "$base" site/static/example.svg '<text>artifact</text>'
+write "$base" site/diagrams/0123456789abcdef.html '<svg>artifact flow</svg>'
+write "$base" data/example.toml 'name = "artifact"'
+write "$base" templates/page.html '<main>artifact</main>'
+write "$base" assets/example.svg '<text>artifact</text>'
+write "$base" openapi.json '{"title":"Artifact API"}'
+write "$base" .github/workflows/ci.yml 'owner: crates/peryx-ecosystem-pypi'
+write "$base" scripts/release.sh 'printf artifact'
+write "$base" crates/peryx-bench/benches/read.rs 'const FILE: &str = "artifact.bin";'
+write "$base" tests/fixtures/response.txt 'artifact response'
+write "$base" crates/peryx-core/fuzz/corpus/artifact.txt 'artifact corpus'
+write "$base" crates/peryx-core/tests/schema.rs 'const FIELD: &str = "artifact";'
+write "$base" crates/peryx-ecosystem-pypi/docs/data/example.toml 'route = "/simple/"'
+write "$base" crates/peryx-ecosystem-example/docs/diagrams/0123456789abcdef.html '<svg>owner route: /simple/example/</svg>'
+write "$base" crates/peryx-ecosystem-oci/docs/static/example.svg '<text>oci-layout</text>'
+"$script_dir/check-ecosystem-boundaries" "$base"
+
+reject() {
+  local name=$1
+  local path=$2
+  local content=$3
+  local expected=$4
+  local root="$scratch/$name"
+  local output
+  cp -R "$base" "$root"
+  write "$root" "$path" "$content"
+  if output=$("$script_dir/check-ecosystem-boundaries" "$root" 2>&1); then
+    printf '%s was accepted\n' "$name" >&2
+    exit 1
+  fi
+  if ! grep -Fq "$expected" <<<"$output"; then
+    printf '%s reported the wrong failure:\n%s\n' "$name" "$output" >&2
+    exit 1
+  fi
+}
+
+reject bench-dependency crates/peryx-bench/Cargo.toml \
+  $'[dependencies]\nperyx-ecosystem-pypi = "0"' \
+  'ecosystem implementation dependency is not allowed'
+reject cross-owner-dependency crates/peryx-ecosystem-pypi/Cargo.toml \
+  $'[package]\nname = "peryx-ecosystem-pypi"\n[dependencies]\nperyx-ecosystem-oci = "0"' \
+  'ecosystem implementation dependency crosses owner crates'
+reject shared-import crates/peryx-core/src/lib.rs \
+  'use peryx_ecosystem_pypi::registration;' \
+  'ecosystem implementation import is allowed only'
+reject shared-name crates/peryx-ha/src/lib.rs \
+  'const OCI_INDEX: &str = "oci";' \
+  'named ecosystem vocabulary is not allowed'
+reject shared-stage-owner site/scripts/stage.sh \
+  "printf '%s\\n' pypi oci" \
+  'owner name or component is not allowed in shared site scripts'
+reject shared-migrator-component site/scripts/migrate_content.mjs \
+  'const COMPONENT = "trusted_publishing_config";' \
+  'owner name or component is not allowed in shared site scripts'
+
+for fixture in \
+  'root-doc:README.md:Download demo.whl.' \
+  'root-doc-simple:README.md:Protocol endpoint: /simple' \
+  'root-doc-v2:README.md:Protocol endpoint: /v2' \
+  'docs:docs/architecture.md:Use /simple/demo/.' \
+  'design:design/protocol.md:Header docker-content-digest is required.' \
+  'site:site/config.toml:route = "/v2/"' \
+  'site-data:site/data/live.toml:field = "requires_python"' \
+  'site-template:site/templates/page.html:Route /v2/ is served.' \
+  'site-asset:site/static/example.svg:<text>oci-layout</text>' \
+  'site-diagram:site/diagrams/0123456789abcdef.html:<svg>owner route: /simple/example/</svg>' \
+  'data:data/live.toml:field = "requires_python"' \
+  'template:templates/page.html:Route /v2/ is served.' \
+  'asset:assets/example.svg:<text>oci-layout</text>' \
+  'openapi:openapi.json:{"content-type":"application/vnd.pypi.simple.v1+json"}' \
+  'source:crates/peryx-core/src/protocol.rs:const ROUTE: &str = "/v2/";' \
+  'example:crates/peryx-core/examples/read.rs:const FILE: &str = "demo.whl";' \
+  'tool:crates/peryx-core/tools/read.py:FIELD = "requires_python"' \
+  'script:scripts/release.sh:curl /simple/demo/' \
+  'ci:.github/workflows/ci.yml:run: curl /simple/demo/' \
+  'bench:crates/peryx-bench/benches/read.rs:const FILE: &str = "demo.whl";' \
+  'fixture:tests/fixtures/response.txt:docker-distribution-api-version' \
+  'fuzz:crates/peryx-core/fuzz/corpus/layout.txt:oci-layout' \
+  'test:crates/peryx-core/tests/schema.rs:const FIELD: &str = "dist_info_metadata";' \
+  'test-project-key:crates/peryx-core/tests/schema.rs:const BODY: &str = r#"{"project":"demo"}"#;' \
+  'template-projects:site/templates/page.html:<code>projects = ["demo"]</code>' \
+  "docs-project-version:docs/architecture.md:Fields: \`project\`, \`version\`, and \`filename\`." \
+  "docs-project-prefix:docs/architecture.md:Use \`project-prefix\` for selection." \
+  'cargo:crates/peryx-core/Cargo.toml:route = "/v2/"'; do
+  IFS=: read -r name path content <<<"$fixture"
+  reject "$name" "$path" "$content" 'ecosystem implementation detail is not allowed outside owner trees'
+done
+
+reject owner-shortcode site/templates/shortcodes/trusted_publishing_config.html \
+  '{{ trusted_publishing_config() }}' \
+  'owner documentation artifact is not allowed in the shared site tree'
+reject generated-openapi site/static/openapi.json '{}' \
+  'generated site artifact is not allowed in the source tree'
+reject generated-public site/public/index.html '<main></main>' \
+  'generated site artifact is not allowed in the source tree'
+reject generated-benchmark site/data/bench/report.toml '[tables.example]' \
+  'generated site artifact is not allowed in the source tree'
+reject generated-owner-data site/data/ecosystems/pypi/bench/report.toml '[tables.example]' \
+  'generated site artifact is not allowed in the source tree'
+reject generated-owner-metadata site/data/ecosystem-owners.toml '[[items]]' \
+  'generated site artifact is not allowed in the source tree'
+reject undeclared-owner-doc crates/peryx-ecosystem-undeclared/docs/content/index.md \
+  'Owner route: /simple/example/' \
+  'ecosystem implementation detail is not allowed outside owner trees'
+reject undeclared-owner-diagram crates/peryx-ecosystem-undeclared/docs/diagrams/0123456789abcdef.html \
+  '<svg>owner route: /simple/example/</svg>' \
+  'ecosystem implementation detail is not allowed outside owner trees'

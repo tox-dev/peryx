@@ -1,29 +1,20 @@
-//! Assembling the HTTP server from configuration.
-
 use std::borrow::Cow;
-use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::io::Read as _;
-use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::sync::Arc;
 
 use anyhow::{Context as _, bail, ensure};
 use axum::Router;
-use peryx_core::{Ecosystem, path};
+use peryx_core::path;
 use peryx_driver::state::RuntimeOptions;
-use peryx_driver::{AppState, DriverSet, Index, IndexKind};
-use peryx_ecosystem_oci::IndexSettings;
+use peryx_driver::{AppState, Index, IndexKind};
 use peryx_events::webhook::{WebhookRuntime, WebhookTargetConfig};
 use peryx_http::router;
 use peryx_identity::{
     Action, LdapBindMode, LdapLoginService, LdapProvider, LdapProviderSettings, OidcLoginProvider, OidcLoginService,
     OidcProviderSettings, SessionSealer, Signer,
 };
-use peryx_policy::{Policy, PolicyDecisionRecorder, PolicyEvaluation};
-use peryx_replication::{
-    FrontierReply, HttpReceiptSource, HttpRemoteFrontierSource, MetadataFrontierProvider, ReceiptSource,
-    RemoteFrontierSource, frontier_router, receipt_router,
-};
+use peryx_policy::{Policy, PolicyCapabilities, PolicyDecisionRecorder, PolicyEvaluation};
 use peryx_storage::blob::{BlobStorage, S3Config};
 use peryx_storage::meta::{MetaStore, NewPolicyDecision};
 use peryx_upstream::{
@@ -32,28 +23,25 @@ use peryx_upstream::{
 };
 
 use crate::config::{
-    AuthConfig, AvailabilityConfig, AvailabilityMode, BlobStorageConfig, Config, CredentialFailureMode,
-    CredentialRefreshConfig, DcRole, IndexConfig, IndexKind as ConfigKind, LdapBindConfig, LdapProviderConfig,
-    OidcProviderConfig, ReplicationConfig, SecretSource, UpstreamTlsConfig, WebhookSecret,
+    AuthConfig, BlobStorageConfig, Config, CredentialFailureMode, CredentialRefreshConfig, IndexConfig,
+    IndexKind as ConfigKind, LdapBindConfig, LdapProviderConfig, OidcProviderConfig, SecretSource, UpstreamTlsConfig,
+    WebhookSecret,
 };
 
 /// The derived views a read must not outrun. A replica gates reads on whole-blob availability as well
 /// as the search view, so its readable frontier holds at the slower of the metadata and blob views;
 /// every other role gates on the search view alone.
 fn required_views(config: &Config) -> Arc<[&'static str]> {
-    match config.availability.replication() {
-        Some(ReplicationConfig::Replica { .. }) => {
-            Arc::from([peryx_driver::state::SEARCH_VIEW, peryx_replication::BLOB_VIEW])
-        }
-        _ => Arc::from([peryx_driver::state::SEARCH_VIEW]),
+    let mut views = vec![peryx_driver::state::SEARCH_VIEW];
+    if config.availability.is_replica_mode() {
+        views.push(peryx_ha::AVAILABILITY_BLOB_VIEW);
     }
+    views.into()
 }
 
-/// Leave S3 credential resolution with the SDK provider chain.
-///
 /// # Errors
 /// Returns an error when the S3 backend configuration is invalid.
-pub(crate) fn build_blob_storage(config: &Config) -> anyhow::Result<BlobStorage> {
+fn build_blob_storage(config: &Config) -> anyhow::Result<BlobStorage> {
     match &config.blob {
         BlobStorageConfig::Filesystem => Ok(BlobStorage::filesystem(config.data_dir.join("blobs"))),
         BlobStorageConfig::S3(s3) => {
@@ -73,25 +61,67 @@ pub(crate) fn build_blob_storage(config: &Config) -> anyhow::Result<BlobStorage>
 /// Returns an error if the data directory or stores cannot be opened, an upstream URL is invalid, or
 /// a virtual index references an unknown or non-hosted index.
 pub fn build_router(config: &Config) -> anyhow::Result<Router> {
-    let state = build_state(config)?;
-    let replication = crate::replication::ReplicationRuntime::new(config, &state)?;
-    Ok(replication.mount(router_for(state)))
+    build_router_with_plugins(config, &crate::compiled_plugins())
+}
+
+/// # Errors
+/// Returns an error if stores, indexes, upstreams, or distributed runtime configuration cannot be assembled.
+pub fn build_router_with_plugins(
+    config: &Config,
+    plugins: &peryx_plugin_registry::PluginRegistry,
+) -> anyhow::Result<Router> {
+    let state = build_state_with_plugins(config, plugins)?;
+    match config.availability {
+        crate::config::AvailabilityConfig::None => Ok(router_for(state)),
+        crate::config::AvailabilityConfig::Dc(_) | crate::config::AvailabilityConfig::Ha(_) => {
+            let runtime = crate::replication::ReplicationRuntime::new(config, &state)?;
+            Ok(runtime.mount(router_for(state)))
+        }
+    }
 }
 
 /// Validate a fully resolved configuration the way `serve` would accept it.
 ///
 /// It opens no metadata store, binds no socket, and reaches no upstream: it runs the cross-field
-/// [`Config::validate`] rules, the logging-sink check, and the full index assembly — topology,
-/// policy compilation, secret reads, and upstream-client construction — so an operator can confirm a
+/// [`Config::validate`] rules, the logging-sink check, and the full index assembly - topology,
+/// policy compilation, secret reads, and upstream-client construction - so an operator can confirm a
 /// config before a restart the way `nginx -t` confirms a server block.
 ///
 /// # Errors
 /// Returns the first configuration error the server would hit while assembling its state.
 pub fn check_config(config: &Config) -> anyhow::Result<()> {
-    config.validate().context("validate configuration")?;
+    check_config_with_plugins(config, &crate::compiled_plugins())
+}
+
+/// # Errors
+/// Returns the first validation or assembly error in the supplied configuration.
+pub fn check_config_with_plugins(
+    config: &Config,
+    plugins: &peryx_plugin_registry::PluginRegistry,
+) -> anyhow::Result<()> {
+    let plugins = activate_plugins(config, plugins)?;
+    check_config_with_active_plugins(config, &plugins)
+}
+
+pub(crate) fn activate_plugins(
+    config: &Config,
+    plugins: &peryx_plugin_registry::PluginRegistry,
+) -> anyhow::Result<peryx_plugin_registry::PluginRegistry> {
+    plugins
+        .activate(config.indexes.iter().map(|index| index.ecosystem.clone()))
+        .context("activate configured ecosystems")
+}
+
+pub(crate) fn check_config_with_active_plugins(
+    config: &Config,
+    plugins: &peryx_plugin_registry::PluginRegistry,
+) -> anyhow::Result<()> {
+    config
+        .validate_with_plugins(plugins)
+        .context("validate configuration")?;
     crate::logging::validate(&config.log).context("validate logging configuration")?;
-    build_indexes(&config.indexes, &config.auth, config.offline)?;
-    build_index_settings(&config.indexes)?;
+    build_indexes_with_plugins(&config.indexes, &config.auth, config.offline, plugins)?;
+    build_index_settings_with_plugins(&config.indexes, plugins)?;
     build_webhooks(&config.indexes)?;
     Ok(())
 }
@@ -103,26 +133,51 @@ pub fn check_config(config: &Config) -> anyhow::Result<()> {
 /// Returns an error if the data directory or stores cannot be opened, an upstream URL is invalid,
 /// or a virtual index references an unknown or non-hosted index.
 pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
-    config.validate().context("validate configuration")?;
+    build_state_with_plugins(config, &crate::compiled_plugins())
+}
+
+/// # Errors
+/// Returns an error if validation fails or the configured stores, indexes, upstreams, or webhooks cannot be built.
+pub fn build_state_with_plugins(
+    config: &Config,
+    plugins: &peryx_plugin_registry::PluginRegistry,
+) -> anyhow::Result<Arc<AppState>> {
+    let plugins = activate_plugins(config, plugins)?;
+    build_state_with_active_plugins(config, &plugins)
+}
+
+pub(crate) fn build_state_with_active_plugins(
+    config: &Config,
+    plugins: &peryx_plugin_registry::PluginRegistry,
+) -> anyhow::Result<Arc<AppState>> {
+    build_state_with_active_backend_and_plugins(config, plugins)
+}
+
+fn build_state_with_active_backend_and_plugins(
+    config: &Config,
+    plugins: &peryx_plugin_registry::PluginRegistry,
+) -> anyhow::Result<Arc<AppState>> {
+    config
+        .validate_with_plugins(plugins)
+        .context("validate configuration")?;
     std::fs::create_dir_all(&config.data_dir)
         .with_context(|| format!("create data directory {}", config.data_dir.display()))?;
     let meta_path = config.data_dir.join("peryx.redb");
-    let meta = MetaStore::open(&meta_path).with_context(|| format!("open metadata store {}", meta_path.display()))?;
-    let configured_replica = matches!(
-        config.availability.replication(),
-        Some(ReplicationConfig::Replica { .. })
-    );
+    let meta = crate::metadata::open(&meta_path, plugins)?;
+    let configured_replica = config.availability.is_replica_mode();
     let read_only = config.read_only || configured_replica;
-    if read_only {
-        let active = meta.writer_identity().context("read metadata store writer identity")?;
-        ensure!(
-            active.as_deref() == config.writer_identity.as_deref(),
-            "configured replica writer {:?} does not match metadata store writer {active:?}",
-            config.writer_identity
-        );
-    } else if let Some(identity) = &config.writer_identity {
-        meta.claim_writer_identity(identity)
-            .with_context(|| format!("claim writer identity {identity:?}"))?;
+    if config.availability.replication().is_some() {
+        if read_only {
+            let active = meta.writer_identity().context("read metadata store writer identity")?;
+            ensure!(
+                active.as_deref() == config.writer_identity.as_deref(),
+                "configured replica writer {:?} does not match metadata store writer {active:?}",
+                config.writer_identity
+            );
+        } else if let Some(identity) = &config.writer_identity {
+            meta.claim_writer_identity(identity)
+                .with_context(|| format!("claim writer identity {identity:?}"))?;
+        }
     }
     let blobs = build_blob_storage(config)?;
     let configs = replica_adjusted_configs(config, configured_replica);
@@ -137,18 +192,19 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
     let upstream_routes = if configured_replica {
         Vec::new()
     } else {
-        build_upstream_routes(&configs, &credential_providers, netrc.as_ref())?
+        build_upstream_routes(&configs, &credential_providers, netrc.as_ref(), plugins)?
     };
     let mut indexes = build_indexes_with_providers(
         &configs,
         &config.auth,
         config.offline || read_only,
         &credential_providers,
+        plugins,
     )?;
     if configured_replica {
         for index in &mut indexes {
-            if let IndexKind::Virtual { upload, .. } = &mut index.kind {
-                *upload = None;
+            if let IndexKind::Virtual { write_target, .. } = &mut index.kind {
+                *write_target = None;
             }
         }
     }
@@ -156,7 +212,7 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
     if !read_only {
         crate::config::reconcile_configured_repositories(&meta, &configs);
     }
-    let oci_settings = build_index_settings(&configs)?;
+    let ecosystem_settings = build_index_settings_with_plugins(&configs, plugins)?;
     let webhooks = build_webhooks(&configs)?;
     let search_path = config.data_dir.join("search-v1");
     let mut state = AppState::with_search_path_and_runtime(
@@ -177,296 +233,97 @@ pub fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
         },
     )
     .context(format!("open search index {}", search_path.display()))?;
-    peryx_ecosystem_pypi::install(&mut state);
-    // A `dc` or `ha` node records authoritative OCI mutations in the replication outbox; single-node
-    // `none` carries no replica to reconcile them, so it journals nothing.
-    peryx_ecosystem_oci::install(&mut state, oci_settings, config.availability.replication().is_some());
-    state.set_ldap_logins(ldap_logins(&config.auth.ldap_providers, &state.meta)?);
-    let oidc_logins = oidc_logins(&config.auth.oidc_providers, &state.meta)?;
-    state.set_oidc_logins(oidc_logins);
-    state.read_only = read_only;
-    configure_availability(&mut state, config, read_only)?;
+    configure_state(&mut state, config, &ecosystem_settings, read_only, plugins)?;
+    Ok(Arc::new(state))
+}
+
+fn configure_state(
+    state: &mut AppState,
+    config: &Config,
+    ecosystem_settings: &HashMap<String, peryx_driver::serving::CompiledEcosystemSettings>,
+    read_only: bool,
+    plugins: &peryx_plugin_registry::PluginRegistry,
+) -> anyhow::Result<()> {
+    state
+        .set_read_only(read_only)
+        .map_err(anyhow::Error::msg)
+        .context("configure read-only state")?;
+    plugins.register_activated_capabilities(&mut state.capability_install_context());
+    match config.availability {
+        crate::config::AvailabilityConfig::None => plugins.install_drivers(
+            &mut state
+                .runtime_install_context()
+                .map_err(anyhow::Error::msg)
+                .context("create local runtime install context")?,
+            ecosystem_settings,
+        ),
+        crate::config::AvailabilityConfig::Dc(_) | crate::config::AvailabilityConfig::Ha(_) => plugins
+            .install_distributed_drivers(
+                &mut state
+                    .distributed_install_context()
+                    .map_err(anyhow::Error::msg)
+                    .context("create distributed runtime install context")?,
+                ecosystem_settings,
+            ),
+    }
+    .map_err(anyhow::Error::msg)
+    .context("install ecosystem runtime services")?;
+    configure_availability(state, config, read_only)?;
+    state
+        .set_ldap_logins(ldap_logins(&config.auth.ldap_providers, &state.serving.meta)?)
+        .map_err(anyhow::Error::msg)
+        .context("install LDAP login services")?;
+    state
+        .set_oidc_logins(oidc_logins(&config.auth.oidc_providers, &state.serving.meta)?)
+        .map_err(anyhow::Error::msg)
+        .context("install OIDC login services")?;
     if let Some(source) = &config.auth.signing_key {
         let key = source.read().context("read the token realm signing key")?;
         if key.trim().is_empty() {
             bail!("token realm signing key must not be empty");
         }
-        state.set_session_sealer(SessionSealer::new(key.as_bytes()));
-        let signer = Signer::new(key.as_bytes(), peryx_ecosystem_oci::TOKEN_SERVICE);
-        if let Some(runtime) = trusted_publishing(config, signer.clone())? {
-            state.set_trusted_publishing(runtime);
-        }
-        state.set_token_realm(signer, config.auth.token_ttl_secs);
+        state
+            .set_session_sealer(SessionSealer::new(key.as_bytes()))
+            .map_err(anyhow::Error::msg)
+            .context("install session sealer")?;
+        state
+            .set_token_realm(
+                Signer::new(key.as_bytes(), peryx_identity::TOKEN_AUDIENCE),
+                config.auth.token_ttl_secs,
+            )
+            .map_err(anyhow::Error::msg)
+            .context("install token realm")?;
     }
-    state.set_openapi(crate::api::openapi_json());
-    let state = Arc::new(state);
-    crate::replication::install_read_through(config, &state)?;
-    if !state.read_only && !state.webhooks.is_empty() {
-        peryx_events::webhook::kick(state.serving.clone());
-    }
-    Ok(state)
-}
-
-/// The authority role this node holds, from its configured replication role rather than its read-only
-/// posture. A configured primary writes even when it serves read-only, and a `none` node is a lone
-/// writer, so only a configured replica reports [`Replica`](peryx_core::NodeRole::Replica). This keeps
-/// the topology snapshot's self-role aligned with the replication and control surfaces, which read the
-/// same configured role.
-const fn availability_role(config: &Config) -> peryx_core::NodeRole {
-    match config.availability.replication() {
-        Some(ReplicationConfig::Replica { .. }) => peryx_core::NodeRole::Replica,
-        Some(ReplicationConfig::Primary { .. }) | None => peryx_core::NodeRole::Writer,
-    }
-}
-
-/// Project the resolved configuration into the fixed availability topology the snapshot endpoint serves.
-///
-/// A writer knows its own roster identity, so it marks itself in the roster; a replica does not carry its
-/// identity, so it leaves the local mark unset and reports its own live status through the snapshot's
-/// dedicated local node instead.
-/// Install the resolved availability posture on the state: the authority role, the topology snapshot the
-/// process serves, and the write-ack quorum and deadline hosted writes are acknowledged against.
-fn configure_availability(state: &mut AppState, config: &Config, read_only: bool) -> anyhow::Result<()> {
-    state.set_availability_role(availability_role(config));
-    state.set_availability_topology(availability_topology(config, read_only));
-    state.set_write_ack(config.write_ack.policy, config.write_ack.deadline);
-    state.set_receipt_sources(receipt_sources(config)?);
-    state.set_remote_frontier_sources(remote_frontier_sources(config)?);
+    plugins
+        .install_auth_extensions(
+            &mut state
+                .auth_install_context()
+                .map_err(anyhow::Error::msg)
+                .context("create authentication install context")?,
+            &config.auth.extensions,
+        )
+        .map_err(anyhow::Error::msg)
+        .context("install ecosystem authentication extensions")?;
+    state.set_openapi(crate::api::openapi_json_for_with_plugins(
+        config.availability.mode().availability_resources(),
+        plugins,
+    ));
     Ok(())
 }
 
-/// How long a same-datacenter receipt query waits on one peer before it is treated as a peer that did not
-/// contribute this round. Bounded well under a typical client write deadline so the gather re-polls the
-/// remaining peers within the window.
-const RECEIPT_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// The replication bearer token a `dc` or `ha` role carries, which same-datacenter peers accept for
-/// receipt queries — the same credential their blob endpoints accept.
-const fn receipt_token(replication: &ReplicationConfig) -> &SecretSource {
-    match replication {
-        ReplicationConfig::Primary { token, .. } | ReplicationConfig::Replica { token, .. } => token,
-    }
-}
-
-/// The same-datacenter peers an ingress write gathers placement receipts from: every rostered member in
-/// the local node's datacenter other than itself, each behind the shared replication credential.
-///
-/// Yields an empty set when the node gathers from no peer — no membership, no node identity, no
-/// replication token, this node absent from the roster, or no same-datacenter peer — so a single-node or
-/// single-member-per-DC deployment proves its quorum from the local receipt alone and runs no gather.
-///
-/// The local datacenter is the one holding the roster member this node names through `node_identity`;
-/// `writer_identity` is the shared writer every node claims and is the same across the group, so it
-/// cannot single out this node's datacenter. It falls back to `writer_identity` for a single-writer
-/// group that configures no distinct node identity.
-///
-/// # Errors
-/// Returns an error when the replication token cannot be read or a peer address is not a usable base.
-pub(crate) fn receipt_sources(config: &Config) -> anyhow::Result<Vec<Arc<dyn ReceiptSource + Send + Sync>>> {
-    let (Some(membership), Some(identity), Some(replication)) = (
-        config.dc_membership.as_ref(),
-        config.node_identity.as_deref().or(config.writer_identity.as_deref()),
-        config.availability.replication(),
-    ) else {
-        return Ok(Vec::new());
+fn configure_availability(state: &mut AppState, config: &Config, read_only: bool) -> anyhow::Result<()> {
+    let Some(runtime) = crate::replication::runtime_config(config)? else {
+        return Ok(());
     };
-    let Some(local) = membership.members.iter().find(|member| member.node == identity) else {
-        return Ok(Vec::new());
-    };
-    let token = receipt_token(replication)
-        .read()
-        .context("read the replication token for same-datacenter receipt gathering")?;
-    let mut sources: Vec<Arc<dyn ReceiptSource + Send + Sync>> = Vec::new();
-    for member in &membership.members {
-        if member.dc != local.dc || member.node == identity {
-            continue;
-        }
-        let source = HttpReceiptSource::new(
-            &member.address,
-            member.node.clone(),
-            token.clone(),
-            RECEIPT_FETCH_TIMEOUT,
-        )
-        .with_context(|| format!("build receipt transport for same-datacenter peer {}", member.node))?;
-        sources.push(Arc::new(source));
-    }
-    Ok(sources)
-}
-
-/// The peer-receipt endpoint this node serves to its same-datacenter peers.
-///
-/// Returns `None` when the node runs no replication and so has no peer to answer. Rides the token-gated
-/// replication surface alongside the blob endpoint, so a peer reaches it at the same rostered address and
-/// credential.
-///
-/// # Errors
-/// Returns an error when the replication token cannot be read or the endpoint credential is empty.
-pub fn receipt_endpoint_router(config: &Config, blobs: &BlobStorage) -> anyhow::Result<Option<Router>> {
-    let Some(replication) = config.availability.replication() else {
-        return Ok(None);
-    };
-    let token = receipt_token(replication)
-        .read()
-        .context("read the replication token for the peer receipt endpoint")?;
-    let router = receipt_router(token, blobs.clone()).context("build peer receipt routes")?;
-    Ok(Some(router))
-}
-
-/// Interpret a rostered member address as an HTTP base URL, defaulting to `http` when it carries no
-/// scheme, so an internal `host:port` address still builds a usable transport rather than failing startup.
-fn member_base_url(address: &str) -> String {
-    if address.starts_with("http://") || address.starts_with("https://") {
-        address.to_owned()
-    } else {
-        format!("http://{address}")
-    }
-}
-
-/// One address per remote datacenter to query for its metadata frontier, preferring the datacenter's
-/// writer since it issues the authoritative serials. The local datacenter is never its own remote.
-pub(crate) fn remote_dc_roster(membership: &crate::config::DcMembership, local_dc: &str) -> BTreeMap<String, String> {
-    let mut roster: BTreeMap<String, String> = BTreeMap::new();
-    for member in &membership.members {
-        if member.dc == local_dc {
-            continue;
-        }
-        match roster.entry(member.dc.clone()) {
-            Entry::Vacant(slot) => {
-                slot.insert(member.address.clone());
-            }
-            Entry::Occupied(mut slot) if member.role == DcRole::Writer => {
-                slot.insert(member.address.clone());
-            }
-            Entry::Occupied(_) => {}
-        }
-    }
-    roster
-}
-
-/// The eligible remote datacenters an `ha` write gathers metadata acknowledgements from: one address per
-/// remote datacenter, writer-preferred, behind the shared replication credential.
-///
-/// Yields an empty set outside `ha` mode and whenever the node waits on no remote — no membership, no
-/// writer identity, this node absent from the roster, or a single-datacenter group — so a `none`/`dc`
-/// node and a degenerate single-DC `ha` node run no remote gather.
-///
-/// # Errors
-/// Returns an error when the replication token cannot be read or a remote address is not a usable base.
-pub(crate) fn remote_frontier_sources(
-    config: &Config,
-) -> anyhow::Result<Vec<Arc<dyn RemoteFrontierSource + Send + Sync>>> {
-    if config.availability.mode() != AvailabilityMode::Ha {
-        return Ok(Vec::new());
-    }
-    let (Some(membership), Some(identity), Some(replication)) = (
-        config.dc_membership.as_ref(),
-        config.writer_identity.as_deref(),
-        config.availability.replication(),
-    ) else {
-        return Ok(Vec::new());
-    };
-    let Some(local) = membership.members.iter().find(|member| member.node == identity) else {
-        return Ok(Vec::new());
-    };
-    let roster = remote_dc_roster(membership, &local.dc);
-    if roster.is_empty() {
-        return Ok(Vec::new());
-    }
-    if roster.len() == 1 {
-        // The sole remote datacenter holds every write's only remote durable copy, so removing it drops
-        // remote durability for the whole group; that removal must be an explicit administrator action.
-        // Named outside the macro so the lookup runs whether or not a warn-level subscriber is installed.
-        let sole = roster.keys().next().expect("one remote datacenter is present");
-        tracing::warn!(
-            datacenter = %sole,
-            "ha configured with a single remote datacenter; it is the sole remote durable copy for every write",
-        );
-    }
-    let token = receipt_token(replication)
-        .read()
-        .context("read the replication token for remote metadata-frontier gathering")?;
-    let mut sources: Vec<Arc<dyn RemoteFrontierSource + Send + Sync>> = Vec::new();
-    for (datacenter, address) in &roster {
-        let source = HttpRemoteFrontierSource::new(
-            &member_base_url(address),
-            datacenter.clone(),
-            token.clone(),
-            RECEIPT_FETCH_TIMEOUT,
-        )
-        .with_context(|| format!("build remote metadata-frontier transport for datacenter {datacenter}"))?;
-        sources.push(Arc::new(source));
-    }
-    Ok(sources)
-}
-
-/// Reports this node's metadata frontier for an authority to a remote datacenter, reading the epoch from
-/// the ownership authority and the applied frontier from the metadata journal.
-struct AppStateFrontierProvider(Arc<AppState>);
-
-#[async_trait::async_trait]
-impl MetadataFrontierProvider for AppStateFrontierProvider {
-    async fn frontier(&self, authority: &str) -> Option<FrontierReply> {
-        let applied_frontier = self.0.serving.meta.current_serial().ok()?;
-        let epoch = self.0.committed_authority_epoch(authority).await;
-        Some(FrontierReply {
-            epoch,
-            applied_frontier,
-        })
-    }
-}
-
-/// The remote-frontier endpoint an `ha` node serves to its remote datacenters, reporting how far it has
-/// durably applied an authority's metadata.
-///
-/// Returns `None` outside `ha` mode, since only a remote datacenter queries it. Rides the token-gated
-/// replication surface alongside the receipt endpoint.
-///
-/// # Errors
-/// Returns an error when the replication token cannot be read or the endpoint credential is empty.
-pub fn frontier_endpoint_router(config: &Config, state: &Arc<AppState>) -> anyhow::Result<Option<Router>> {
-    // Only an `ha` node has a remote datacenter to answer; a `none` or `dc` node serves no frontier.
-    let AvailabilityConfig::Ha(replication) = &config.availability else {
-        return Ok(None);
-    };
-    let token = receipt_token(replication)
-        .read()
-        .context("read the replication token for the remote frontier endpoint")?;
-    let provider: Arc<dyn MetadataFrontierProvider> = Arc::new(AppStateFrontierProvider(state.clone()));
-    let router = frontier_router(token, provider).context("build remote frontier routes")?;
-    Ok(Some(router))
-}
-
-fn availability_topology(config: &Config, read_only: bool) -> peryx_core::TopologyConfig {
-    let mode = match config.availability.mode() {
-        AvailabilityMode::None => peryx_core::TopologyMode::None,
-        AvailabilityMode::Dc => peryx_core::TopologyMode::Dc,
-        AvailabilityMode::Ha => peryx_core::TopologyMode::Ha,
-    };
-    let (group, members) = config.dc_membership.as_ref().map_or_else(
-        || (None, Vec::new()),
-        |membership| {
-            let members = membership
-                .members
-                .iter()
-                .map(|member| peryx_core::TopologyMember {
-                    node: member.node.clone(),
-                    dc: member.dc.clone(),
-                    address: member.address.clone(),
-                    role: match member.role {
-                        DcRole::Writer => peryx_core::NodeRole::Writer,
-                        DcRole::Replica => peryx_core::NodeRole::Replica,
-                    },
-                })
-                .collect();
-            (Some(membership.group.clone()), members)
+    peryx_ha_distributed::install_services(
+        &peryx_ha_distributed::DistributedServiceConfig {
+            runtime,
+            read_only,
+            write_ack_policy: config.write_ack.policy,
+            write_ack_deadline: config.write_ack.deadline,
         },
-    );
-    peryx_core::TopologyConfig {
-        mode,
-        group,
-        members,
-        local_node: (!read_only).then(|| config.writer_identity.clone()).flatten(),
-    }
+        state,
+    )
 }
 
 /// Close attempts interrupted by a prior process before this writer serves management traffic.
@@ -474,10 +331,10 @@ fn availability_topology(config: &Config, read_only: bool) -> peryx_core::Topolo
 /// # Errors
 /// Returns a metadata error when interrupted attempts cannot be read or updated.
 pub fn recover_job_attempts(state: &AppState) -> Result<usize, peryx_storage::meta::MetaError> {
-    if state.read_only {
+    if state.serving.read_only {
         Ok(0)
     } else {
-        state.job_attempts.recover_interrupted((state.clock)())
+        state.serving.job_attempts.recover_interrupted((state.serving.clock)())
     }
 }
 
@@ -576,39 +433,6 @@ fn read_ldap_ca(path: &std::path::Path) -> anyhow::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn trusted_publishing(config: &Config, signer: Signer) -> anyhow::Result<Option<peryx_identity::OidcRuntime>> {
-    if config.auth.trusted_publishers.is_empty() {
-        return Ok(None);
-    }
-    let repositories = config
-        .indexes
-        .iter()
-        .map(|index| (index.name.as_str(), index))
-        .collect::<HashMap<_, _>>();
-    let bindings = config
-        .auth
-        .trusted_publishers
-        .iter()
-        .map(|publisher| {
-            let repository = repositories[publisher.repository.as_str()];
-            peryx_identity::PublisherBinding {
-                id: publisher.id.clone(),
-                repository: repository.route.clone(),
-                publisher: peryx_identity::TrustedPublisher {
-                    issuer: publisher.issuer.clone(),
-                    audience: config.auth.oidc_audience.clone(),
-                    subject: peryx_identity::Glob::new(&publisher.subject),
-                    claims: publisher.claims.clone(),
-                    projects: publisher.projects.iter().map(peryx_identity::Glob::new).collect(),
-                },
-            }
-        })
-        .collect();
-    peryx_identity::OidcRuntime::new(bindings, signer, config.auth.token_ttl_secs)
-        .map(Some)
-        .context("configure trusted publishers")
-}
-
 #[derive(Debug)]
 struct StoredPolicyDecisionRecorder {
     meta: MetaStore,
@@ -619,9 +443,9 @@ impl PolicyDecisionRecorder for StoredPolicyDecisionRecorder {
     fn record(&self, evaluation: PolicyEvaluation<'_>) {
         if let Err(error) = self.meta.record_policy_decision(NewPolicyDecision {
             repository: &self.repository,
-            project: evaluation.project,
-            version: evaluation.version,
-            filename: evaluation.filename,
+            resource: evaluation.resource,
+            group: evaluation.group,
+            artifact: evaluation.artifact,
             source: evaluation.source,
             action: evaluation.action,
             state: evaluation.state,
@@ -682,33 +506,23 @@ fn make_replica_configs(configs: &mut [IndexConfig]) {
     }
 }
 
-/// The full router over prepared state. The web UI mounts first: its routes (`/`, `/browse`,
-/// `/pkg`) are all outside the index namespace, and everything else falls through to the API's
-/// catch-all.
 pub fn router_for(state: Arc<AppState>) -> Router {
     peryx_web::ssr::ui_router(state.clone()).merge(router(state))
 }
 
-/// The ecosystem drivers this build of peryx ships, named once here at the composition root. The
-/// config-build and admin paths dispatch through it by an index's ecosystem, so no neutral code
-/// names an ecosystem.
-pub(crate) fn drivers() -> &'static DriverSet {
-    static DRIVERS: OnceLock<DriverSet> = OnceLock::new();
-    DRIVERS.get_or_init(|| {
-        DriverSet::default()
-            .with(Arc::new(peryx_ecosystem_pypi::PypiServing))
-            .with(Arc::new(peryx_ecosystem_oci::OciRegistry::default()))
-    })
-}
-
 type CredentialProviders = HashMap<(String, String), CredentialProvider>;
 
-/// Resolve configured indexes into their runtime form, mapping virtual-index member names to positions,
-/// building each cached index's authenticated upstream client, and reading each index's access rules
-/// (which is where a secret kept in a file is read).
-pub(crate) fn build_indexes(configs: &[IndexConfig], auth: &AuthConfig, offline: bool) -> anyhow::Result<Vec<Index>> {
+pub(crate) fn build_indexes_with_plugins(
+    configs: &[IndexConfig],
+    auth: &AuthConfig,
+    offline: bool,
+    plugins: &peryx_plugin_registry::PluginRegistry,
+) -> anyhow::Result<Vec<Index>> {
+    let plugins = plugins
+        .activate(configs.iter().map(|config| config.ecosystem.clone()))
+        .context("activate configured ecosystems")?;
     let credential_providers = build_credential_providers(configs, None)?;
-    build_indexes_with_providers(configs, auth, offline, &credential_providers)
+    build_indexes_with_providers(configs, auth, offline, &credential_providers, &plugins)
 }
 
 fn build_indexes_with_providers(
@@ -716,11 +530,13 @@ fn build_indexes_with_providers(
     auth: &AuthConfig,
     offline: bool,
     credential_providers: &CredentialProviders,
+    plugins: &peryx_plugin_registry::PluginRegistry,
 ) -> anyhow::Result<Vec<Index>> {
+    let capabilities = plugins.drivers();
     let mut positions = HashMap::with_capacity(configs.len());
     let mut routes = HashMap::with_capacity(configs.len());
     for (pos, index) in configs.iter().enumerate() {
-        path::validate_route(&index.route).with_context(|| format!("invalid index route {}", index.route))?;
+        path::validate_route(&index.route).context(format!("invalid index route {}", index.route))?;
         if positions.insert(index.name.as_str(), pos).is_some() {
             bail!("duplicate index name {}", index.name);
         }
@@ -731,21 +547,31 @@ fn build_indexes_with_providers(
     configs
         .iter()
         .map(|index| {
-            let driver = drivers()
-                .get(index.ecosystem)
-                .expect("every configured ecosystem has a registered driver");
-            let rules = driver
-                .compile_policy(&index.ecosystem_policy)
-                .map_err(|reason| anyhow::anyhow!("compile policy for {}: {reason}", index.name))?;
+            let policy = plugins.drivers().get_policy(&index.ecosystem);
+            let rules = match policy {
+                Some(driver) => driver.compile_policy(&index.ecosystem_policy),
+                None if index.ecosystem_policy.is_empty() => Ok(PolicyCapabilities::default()),
+                None => Err(format!(
+                    "the {} ecosystem does not support artifact policy",
+                    index.ecosystem
+                )),
+            }
+            .map_err(anyhow::Error::msg)
+            .context(format!("compile policy for {}", index.name))?;
             Ok(Index {
                 name: index.name.clone(),
                 route: index.route.clone(),
-                ecosystem: index.ecosystem,
+                ecosystem: index.ecosystem.clone(),
                 kind: build_kind(index, configs, &positions, offline, credential_providers)?,
-                policy: Policy::compile(&index.policy, |name| driver.normalize_name(name)).with_rules(rules),
+                policy: Policy::compile(&index.policy, |name| {
+                    capabilities
+                        .get_name(&index.ecosystem)
+                        .map_or_else(|| name.to_owned(), |driver| driver.normalize_name(name))
+                })
+                .with_rules(rules),
                 acl: index
                     .acl(auth)
-                    .with_context(|| format!("read the access rules of index {}", index.name))?,
+                    .context(format!("read the access rules of index {}", index.name))?,
             })
         })
         .collect()
@@ -753,27 +579,21 @@ fn build_indexes_with_providers(
 
 /// Compile each index's `[index.settings]` table against the ecosystem it serves, keyed by index name.
 ///
-/// The settings vocabulary is a format's own — an OCI cache's `library_prefix` means nothing to a
-/// `PyPI` index — so the table travels raw through the neutral config and is compiled here, in the one
+/// Settings belong to their adapter, so the table travels raw through neutral config and is compiled here, in the one
 /// crate that names ecosystems. An ecosystem with no settings of its own claims no key, so a key on
 /// one of its indexes is configuration that would otherwise be silently ignored.
-pub(crate) fn build_index_settings(configs: &[IndexConfig]) -> anyhow::Result<HashMap<String, IndexSettings>> {
+fn build_index_settings_with_plugins(
+    configs: &[IndexConfig],
+    plugins: &peryx_plugin_registry::PluginRegistry,
+) -> anyhow::Result<HashMap<String, peryx_driver::serving::CompiledEcosystemSettings>> {
     let mut settings = HashMap::new();
     for index in configs {
-        match index.ecosystem {
-            Ecosystem::Oci => {
-                let compiled = IndexSettings::compile(&index.ecosystem_settings)
-                    .map_err(|reason| anyhow::anyhow!("compile settings for {}: {reason}", index.name))?;
-                settings.insert(index.name.clone(), compiled);
-            }
-            Ecosystem::Pypi => {
-                if let Some(key) = index.ecosystem_settings.keys().next() {
-                    bail!(
-                        "compile settings for {}: unknown field `{key}` in `[index.settings]`",
-                        index.name
-                    );
-                }
-            }
+        if let Some(compiled) = plugins
+            .compile_index_settings(&index.ecosystem, &index.name, &index.ecosystem_settings)
+            .map_err(anyhow::Error::msg)
+            .with_context(|| format!("compile ecosystem settings for {}", index.name))?
+        {
+            settings.insert(index.name.clone(), compiled);
         }
     }
     Ok(settings)
@@ -835,15 +655,16 @@ fn build_kind(
             })
         }
         ConfigKind::Hosted { volatile, .. } => Ok(IndexKind::Hosted { volatile: *volatile }),
-        ConfigKind::Virtual { layers, upload } => {
+        ConfigKind::Virtual { layers, write_target } => {
             let layer_positions = layers
                 .iter()
                 .map(|name| resolve_name(&index.name, name, positions))
                 .collect::<anyhow::Result<Vec<_>>>()?;
-            let upload_pos = resolve_upload(index, upload.as_deref(), &layer_positions, configs, positions)?;
+            let write_target =
+                resolve_write_target(index, write_target.as_deref(), &layer_positions, configs, positions)?;
             Ok(IndexKind::Virtual {
                 layers: layer_positions,
-                upload: upload_pos,
+                write_target,
             })
         }
     }
@@ -887,14 +708,14 @@ fn build_credential_provider(
             .provider(upstream, CredentialScope::Read)
             .context(format!("configure the credential helper of index {index}"));
     }
-    let mut auth = resolve_upstream_auth(&credentials)
-        .with_context(|| format!("read the upstream credentials of index {index}"))?;
+    let mut auth =
+        resolve_upstream_auth(&credentials).context(format!("read the upstream credentials of index {index}"))?;
     if auth == Auth::None
         && let Some(netrc) = netrc
     {
         auth = netrc
             .auth_for_str(upstream)
-            .with_context(|| format!("match netrc credentials for {}", redact_url(upstream)))?;
+            .context(format!("match netrc credentials for {}", redact_url(upstream)))?;
     }
     let Some(refresh) = credentials.refresh else {
         return Ok(CredentialProvider::fixed(auth));
@@ -915,12 +736,13 @@ fn build_credential_provider(
             let credentials = credentials.clone();
             let index = index.clone();
             async move {
+                let task_index = index.clone();
                 tokio::task::spawn_blocking(move || {
                     resolve_upstream_auth(&credentials)
-                        .map_err(|error| CredentialError::new(format!("index {index}: {error:#}")))
+                        .map_err(|error| CredentialError::new(format!("index {task_index}: {error:#}")))
                 })
                 .await
-                .expect("secret resolution has no panic path")
+                .expect("a directly awaited credential task cannot be cancelled")
             }
         },
     ))
@@ -944,6 +766,7 @@ fn build_upstream_routes(
     configs: &[IndexConfig],
     credential_providers: &CredentialProviders,
     netrc: Option<&Netrc>,
+    plugins: &peryx_plugin_registry::PluginRegistry,
 ) -> anyhow::Result<Vec<(String, UpstreamRouter)>> {
     configs
         .iter()
@@ -991,15 +814,18 @@ fn build_upstream_routes(
                     Ok(named.with_artifact_mirror(mirror, routing.fallback))
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
-            let driver = drivers()
-                .get(index.ecosystem)
-                .expect("every configured ecosystem has a registered driver");
+            let normalize = |name: &str| {
+                plugins
+                    .drivers()
+                    .get_name(&index.ecosystem)
+                    .map_or_else(|| name.to_owned(), |driver| driver.normalize_name(name))
+            };
             let mut router = UpstreamRouter::new(upstreams)?.with_fallback(routing.fallback);
-            for project in &routing.protected {
-                router = router.protect(driver.normalize_name(project))?;
+            for resource in &routing.protected {
+                router = router.protect(normalize(resource))?;
             }
-            for (project, upstream) in &routing.pins {
-                router = router.pin(driver.normalize_name(project), upstream)?;
+            for (resource, upstream) in &routing.pins {
+                router = router.pin(normalize(resource), upstream)?;
             }
             Ok((index.name.clone(), router))
         })
@@ -1046,22 +872,18 @@ fn resolve_name(virtual_route: &str, name: &str, positions: &HashMap<&str, usize
         .with_context(|| format!("virtual index {virtual_route} references unknown index {name}"))
 }
 
-/// The virtual index's upload target: the named hosted index, or (when unset) the first hosted layer.
-fn resolve_upload(
+fn resolve_write_target(
     index: &IndexConfig,
-    upload: Option<&str>,
+    write_target: Option<&str>,
     layers: &[usize],
     configs: &[IndexConfig],
     positions: &HashMap<&str, usize>,
 ) -> anyhow::Result<Option<usize>> {
-    match upload {
+    match write_target {
         Some(name) => {
             let pos = resolve_name(&index.name, name, positions)?;
             if !matches!(configs[pos].kind, ConfigKind::Hosted { .. }) {
-                bail!(
-                    "virtual index {} upload target {name} is not a hosted index",
-                    index.name
-                );
+                bail!("virtual index {} write target {name} is not a hosted index", index.name);
             }
             Ok(Some(pos))
         }
@@ -1074,7 +896,7 @@ fn resolve_upload(
 
 /// Derive upstream authentication: a bearer token takes precedence over a username/password pair;
 /// otherwise the upstream is anonymous.
-pub(crate) fn upstream_auth(token: Option<&str>, username: Option<&str>, password: Option<&str>) -> Auth {
+fn upstream_auth(token: Option<&str>, username: Option<&str>, password: Option<&str>) -> Auth {
     match (token, username, password) {
         (Some(token), _, _) => Auth::Bearer(token.to_owned()),
         (None, Some(username), Some(password)) => Auth::Basic {

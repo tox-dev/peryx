@@ -5,7 +5,6 @@ use redb::{ReadableTable as _, WriteTransaction};
 
 use super::{EXTERNAL_ROLE_GRANT, MetaError, MetaStore, ROLE_GRANT, ROLE_GRANT_BY_SCOPE, USER};
 
-/// A rejected role-grant operation.
 #[derive(Debug, thiserror::Error)]
 pub enum RoleGrantStoreError {
     #[error(transparent)]
@@ -16,24 +15,18 @@ pub enum RoleGrantStoreError {
     DisabledUser { id: UserId },
 }
 
-/// A persisted grant with the audit and concurrency metadata the management API adds.
-///
-/// The extra fields over the bare [`RoleGrant`] an authorization decision reads default when absent, so
-/// a record written by the [`RoleGrant`]-only #451 path still decodes here, and a decision that decodes
-/// this record back into a bare [`RoleGrant`] ignores them.
+/// Audit fields default for records written before managed grants existed.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StoredRoleGrant {
     #[serde(flatten)]
     pub grant: RoleGrant,
-    /// A counter that advances on every write to the binding, the opaque entity version a conditional
-    /// revocation matches against.
+    /// Advances on each write for conditional revocation.
     #[serde(default)]
     pub version: u64,
-    /// The user that last asserted the grant through the management API, or `None` for a provisioned
-    /// binding (bootstrap or a group sync).
+    /// `None` for bootstrap and group-sync bindings.
     #[serde(default)]
     pub granted_by: Option<UserId>,
-    /// When the grant was last asserted, in unix seconds, or `None` for a provisioned binding.
+    /// `None` for bootstrap and group-sync bindings.
     #[serde(default)]
     pub granted_at_unix: Option<i64>,
 }
@@ -48,61 +41,48 @@ impl StoredRoleGrant {
         }
     }
 
-    /// The stable, opaque identifier a route addresses the binding by. It encodes the primary key, so it
-    /// is a pure function of the binding and never collides across users, roles, or reaches.
+    /// Encodes the primary key into a stable identifier unique across users, roles, and reaches.
     #[must_use]
     pub fn id(&self) -> String {
         encode_grant_id(&primary_key(&self.grant))
     }
 }
 
-/// The outcome of a management-API grant: the stored record and whether it was newly created rather than
-/// an existing binding re-asserted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateGrantOutcome {
     pub record: StoredRoleGrant,
     pub created: bool,
 }
 
-/// The outcome of a conditional revocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// [`Self::Removed`] retains the final record for audit.
 pub enum DeleteGrantOutcome {
-    /// No binding is addressed by the identifier.
     NotFound,
-    /// The binding exists but at a different version than the caller's precondition named.
     PreconditionFailed { current: u64 },
-    /// The binding was removed; its final record is returned for the audit event.
     Removed(StoredRoleGrant),
 }
 
-/// Which bindings a listing selects.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoleGrantFilter {
-    /// Every managed binding.
     All,
-    /// Every binding held by one user, served from the user-ordered primary index.
     User(UserId),
-    /// Every binding over one reach, served from the reach-ordered secondary index.
     Resource(GrantScope),
 }
 
-/// A bounded, ordered listing request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoleGrantQuery {
     pub filter: RoleGrantFilter,
-    /// The exclusive key the previous page ended on; resume strictly after it.
+    /// Exclusive key from the previous page.
     pub cursor: Option<String>,
     pub limit: usize,
 }
 
-/// One ordered page of bindings and the cursor that resumes the next.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct RoleGrantPage {
     pub grants: Vec<StoredRoleGrant>,
     pub next_cursor: Option<String>,
 }
 
-/// A rejected listing.
 #[derive(Debug, thiserror::Error)]
 pub enum RoleGrantQueryError {
     #[error("limit must be between 1 and 100")]
@@ -114,8 +94,7 @@ pub enum RoleGrantQueryError {
 const MAX_LIMIT: usize = 100;
 
 impl MetaStore {
-    /// Grant a role to a user over one reach, idempotently: re-granting the same role and reach is a
-    /// no-op, so a caller need not first check whether the binding exists.
+    /// Treats an existing binding as success without changing its version or audit fields.
     ///
     /// # Errors
     /// Returns [`RoleGrantStoreError::UnknownUser`] when no server user holds `id`, or a store error
@@ -126,8 +105,7 @@ impl MetaStore {
             return Err(RoleGrantStoreError::UnknownUser { id: id.clone() });
         }
         let grant = RoleGrant::new(id.clone(), role, scope);
-        // Provisioning is a create, not an overwrite: an existing binding keeps its version and audit
-        // fields so a stale version-1 write can't move it backward and defeat optimistic concurrency.
+        // Preserving an existing version prevents stale provisioning from defeating concurrency checks.
         if read_grant(&txn, &primary_key(&grant))?.is_none() {
             write_grant(&txn, &StoredRoleGrant::provisioned(grant.clone()))?;
             txn.commit().map_err(MetaError::from)?;
@@ -135,9 +113,7 @@ impl MetaStore {
         Ok(grant)
     }
 
-    /// Grant a role through the management API, recording the granter, the time, and a fresh version.
-    /// Re-asserting an existing binding advances its version and refreshes its audit fields rather than
-    /// erroring, so a retry is safe.
+    /// Reasserting a binding advances its version and refreshes audit fields.
     ///
     /// # Errors
     /// Returns [`RoleGrantStoreError::UnknownUser`] for a missing user, [`RoleGrantStoreError::DisabledUser`]
@@ -167,8 +143,7 @@ impl MetaStore {
         Ok(CreateGrantOutcome { record, created })
     }
 
-    /// Remove a role a user held over one reach, reporting whether a binding was present. The next
-    /// [`user_role_grants`](Self::user_role_grants) read reflects the removal with no restart.
+    /// Returns whether the binding existed.
     ///
     /// # Errors
     /// Returns a store error when the transaction cannot commit.
@@ -179,8 +154,7 @@ impl MetaStore {
         Ok(removed)
     }
 
-    /// Read one managed binding by its opaque identifier. A malformed identifier and an absent binding
-    /// both read as `None`, so a route need not distinguish them before answering not-found.
+    /// Returns `None` for malformed and absent identifiers.
     ///
     /// # Errors
     /// Returns a store error when the record cannot be read or decoded.
@@ -199,9 +173,7 @@ impl MetaStore {
         }
     }
 
-    /// Conditionally revoke a managed binding: the removal takes effect only when `expected_version`
-    /// matches the stored version, so a revoke that raced a re-assertion of the same binding fails
-    /// closed rather than dropping the newer grant.
+    /// Removes the binding only at `expected_version`, so a concurrent reassertion wins safely.
     ///
     /// # Errors
     /// Returns a store error when the transaction cannot commit.
@@ -224,9 +196,7 @@ impl MetaStore {
         Ok(outcome)
     }
 
-    /// List managed bindings in stable key order, one bounded page at a time. A user filter reads the
-    /// user-ordered primary index and a resource filter the reach-ordered secondary index, so a resource
-    /// listing an operator asks for is answered without a per-record scope test.
+    /// Uses the matching ordered index for bounded user or resource listings.
     ///
     /// # Errors
     /// Returns [`RoleGrantQueryError::InvalidLimit`] when the limit is zero or above the cap, or a store
@@ -271,8 +241,7 @@ impl MetaStore {
         })
     }
 
-    /// Read every role a user holds, the authority an authorization decision runs against. An unknown
-    /// user and a user with no grants both read as empty.
+    /// Returns an empty list for unknown users and users without grants.
     ///
     /// # Errors
     /// Returns a store error when a record cannot be read or decoded.
@@ -305,10 +274,8 @@ impl MetaStore {
     }
 }
 
-/// The reach an identifier addresses, recovered structurally without a store read.
-///
-/// A route authorizes a revocation against the caller's administration authority before it touches the
-/// database. A malformed identifier reads as `None`.
+/// Recovers the reach without a store read so routes can authorize before lookup. Malformed IDs return
+/// `None`.
 #[must_use]
 pub fn role_grant_reach(id: &str) -> Option<GrantScope> {
     let key = decode_grant_id(id)?;

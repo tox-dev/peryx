@@ -1,15 +1,5 @@
-//! The scoped API token lifecycle: `POST/GET /+tokens`, `GET/DELETE /+tokens/{id}`, and
-//! `POST /+tokens/{id}/rotate`.
-//!
-//! Every operation authenticates a local server user and validates the token's reach against that
-//! caller's own grant authority, so a caller can only mint, inspect, rotate, or revoke a token whose
-//! scope their role already covers. A server-wide token needs administrator authority; a
-//! repository-scoped token needs repository write over that repository, which is exactly what stops a
-//! repository manager from issuing a server-wide or cross-repository token. Authorization denials answer
-//! `404`, never disclosing a repository or token the caller may not reach.
-//!
-//! The created and rotated responses carry the one-time secret; later reads never do. All responses set
-//! `Cache-Control: no-store`.
+//! Callers may manage only token scopes covered by their grants. Denials return `404` to hide unreachable
+//! repositories and tokens. Secrets appear only in create and rotate responses, which are never cached.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -20,9 +10,8 @@ use axum::http::{HeaderMap, Request, StatusCode, header};
 use axum::response::{IntoResponse as _, Response};
 use peryx_driver::authz::{Decision, DenyReason, ScopedDecision};
 use peryx_driver::state::AppState;
-use peryx_driver::tokens::CreateScopedToken;
+use peryx_driver::tokens::{CreateScopedToken, ScopedTokenQuery, ScopedTokenQueryError, ScopedTokenRecord};
 use peryx_identity::{Action, GrantScope, Resource, Scope, TokenId, TokenName, UserId, parse_basic};
-use peryx_storage::meta::{ScopedTokenQuery, ScopedTokenQueryError, ScopedTokenRecord};
 
 use crate::response_security::ProtectedCachePolicy;
 
@@ -64,7 +53,7 @@ pub async fn create_token(State(state): State<Arc<AppState>>, request: Request<B
         return problem(StatusCode::BAD_REQUEST, "at least one action is required");
     }
     let actions: BTreeSet<Action> = body.actions.into_iter().collect();
-    let now = (state.clock)();
+    let now = (state.serving.clock)();
     if body.expires_at.is_some_and(|expiry| expiry <= now) {
         return problem(StatusCode::BAD_REQUEST, "expiry must be in the future");
     }
@@ -75,7 +64,7 @@ pub async fn create_token(State(state): State<Arc<AppState>>, request: Request<B
     if let Err(rejection) = authorize_grant(&state, &actor, &reach, &actions) {
         return rejection.response();
     }
-    match state.tokens.create(
+    match state.serving.tokens.create(
         CreateScopedToken {
             name,
             reach,
@@ -106,7 +95,7 @@ pub async fn list_tokens(
     if let Err(rejection) = authorize_manage(&state, &actor, &reach) {
         return rejection.response();
     }
-    match state.tokens.list(&ScopedTokenQuery {
+    match state.serving.tokens.list(&ScopedTokenQuery {
         reach,
         cursor: query.cursor.map(TokenId::new),
         limit: query.limit.unwrap_or(25),
@@ -134,7 +123,7 @@ pub async fn rotate_token(State(state): State<Arc<AppState>>, headers: HeaderMap
         Ok(authorized) => authorized,
         Err(rejection) => return rejection.response(),
     };
-    match state.tokens.rotate(&id, &actor) {
+    match state.serving.tokens.rotate(&id, &actor) {
         Ok(Some((record, secret))) => minted_response(StatusCode::OK, &record, secret.expose()),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(_) => unavailable(),
@@ -147,15 +136,13 @@ pub async fn revoke_token(State(state): State<Arc<AppState>>, headers: HeaderMap
         Ok(authorized) => authorized,
         Err(rejection) => return rejection.response(),
     };
-    match state.tokens.revoke(&id, &actor, (state.clock)()) {
+    match state.serving.tokens.revoke(&id, &actor, (state.serving.clock)()) {
         Ok(Some(outcome)) => token_response(StatusCode::OK, outcome.record()),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(_) => unavailable(),
     }
 }
 
-/// Authenticate the caller and, when the token exists, confirm they may manage its reach.
-///
 /// A caller that lacks authority over an existing token's reach is refused here. An absent token is not:
 /// it resolves to `None` so the caller's operation answers `404` from its own store step, which keeps a
 /// revoked or never-created token indistinguishable from one the caller may not reach.
@@ -165,7 +152,7 @@ async fn load_and_authorize(
     id: &TokenId,
 ) -> Result<(UserId, Option<ScopedTokenRecord>), Rejection> {
     let actor = authenticate(state, headers).await?;
-    let Some(record) = state.tokens.inspect(id).map_err(|_| Rejection::Unavailable)? else {
+    let Some(record) = state.serving.tokens.inspect(id).map_err(|_| Rejection::Unavailable)? else {
         return Ok((actor, None));
     };
     authorize_manage(state, &actor, &record.reach)?;
@@ -179,6 +166,7 @@ async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<UserId, R
         .and_then(parse_basic)
         .ok_or(Rejection::Unauthorized)?;
     state
+        .serving
         .users
         .authenticate(&credentials.user, &credentials.password)
         .await
@@ -186,11 +174,10 @@ async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<UserId, R
         .ok_or(Rejection::Unauthorized)
 }
 
-/// The reach of a create or list request: the whole server when no repository is named, or a configured
-/// repository resolved by route.
 fn reach_of(state: &AppState, repository: Option<&str>) -> Result<GrantScope, Rejection> {
     repository.map_or(Ok(GrantScope::Server), |route| {
         state
+            .serving
             .indexes
             .iter()
             .find(|index| index.route == route)
@@ -201,8 +188,6 @@ fn reach_of(state: &AppState, repository: Option<&str>) -> Result<GrantScope, Re
     })
 }
 
-/// Whether the caller may grant `actions` over `reach`: a server-wide token needs administrator
-/// authority; a repository token needs the caller's own authority for each action on that repository.
 fn authorize_grant(
     state: &AppState,
     actor: &UserId,
@@ -210,7 +195,7 @@ fn authorize_grant(
     actions: &BTreeSet<Action>,
 ) -> Result<(), Rejection> {
     match reach {
-        GrantScope::Server => require_permission(state.authorization.authorize_scoped(
+        GrantScope::Server => require_permission(state.serving.authorization.authorize_scoped(
             actor,
             Scope::AdministrationWrite,
             &Resource::Operator,
@@ -218,25 +203,23 @@ fn authorize_grant(
         GrantScope::Repository { name } => {
             let resource = Resource::Repository(name.clone());
             for action in actions {
-                require_permission(
-                    state
-                        .authorization
-                        .authorize_scoped(actor, repository_scope(*action), &resource),
-                )?;
+                require_permission(state.serving.authorization.authorize_scoped(
+                    actor,
+                    repository_scope(*action),
+                    &resource,
+                ))?;
             }
             Ok(())
         }
     }
 }
 
-/// Whether the caller may manage (list, inspect, rotate, revoke) tokens over `reach`: administrator
-/// authority for the server reach, repository write for a repository reach.
 fn authorize_manage(state: &AppState, actor: &UserId, reach: &GrantScope) -> Result<(), Rejection> {
     let (scope, resource) = match reach {
         GrantScope::Server => (Scope::AdministrationWrite, Resource::Operator),
         GrantScope::Repository { name } => (Scope::RepositoryWrite, Resource::Repository(name.clone())),
     };
-    require_permission(state.authorization.authorize_scoped(actor, scope, &resource))
+    require_permission(state.serving.authorization.authorize_scoped(actor, scope, &resource))
 }
 
 const fn repository_scope(action: Action) -> Scope {

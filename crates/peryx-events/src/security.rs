@@ -1,11 +1,8 @@
-//! Structured security events for index actions and server-role decisions.
-
 use http::{HeaderMap, header};
 use peryx_identity::{Identity, Principal, Role, Scope, UserId};
 
 const UNKNOWN: &str = "unknown";
 
-/// Whether a role-grant mutation added or removed a binding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoleGrantChange {
     Grant,
@@ -21,11 +18,7 @@ impl RoleGrantChange {
     }
 }
 
-/// Record a role-grant mutation attempt with only bounded identifiers.
-///
-/// The event names the granting actor, the target user, the role, the reach, and the resolved outcome.
-/// It carries no request body and no secret, so an audit log keeps the who, what, and result of every
-/// delegation without disclosing more.
+/// Records bounded identifiers without request bodies or secrets.
 pub fn role_grant_change(
     actor: Option<&str>,
     change: RoleGrantChange,
@@ -35,18 +28,14 @@ pub fn role_grant_change(
     result: &'static str,
     reason: &'static str,
 ) {
-    let actor = text(actor);
-    let action = change.as_str();
-    let target = target.as_str();
-    let role = role.as_str();
     tracing::info!(
         target: "peryx::security",
         security_event = true,
         event = "role_grant",
-        action,
-        actor,
-        target,
-        role,
+        action = change.as_str(),
+        actor = text(actor),
+        target = target.as_str(),
+        role = role.as_str(),
         reach,
         result,
         reason,
@@ -54,7 +43,6 @@ pub fn role_grant_change(
     );
 }
 
-/// A bounded reason for denying a role-based authorization decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthorizationDenial {
     NoGrant,
@@ -70,19 +58,16 @@ impl AuthorizationDenial {
     }
 }
 
-/// Record a denied role authorization without accepting a resource path or query string.
+/// Excludes unbounded resource paths and query strings.
 pub fn authorization_denied(user: &UserId, scope: Scope, denial: AuthorizationDenial) {
-    let user = user.as_str();
-    let scope = scope.as_str();
-    let reason = denial.as_str();
     tracing::info!(
         target: "peryx::security",
         security_event = true,
         event = "authorization",
-        user,
-        scope,
+        user = user.as_str(),
+        scope = scope.as_str(),
         result = "denied",
-        reason,
+        reason = denial.as_str(),
         "role authorization denied"
     );
 }
@@ -91,14 +76,13 @@ pub struct Event<'a> {
     action: &'static str,
     result: &'static str,
     actor: Option<&'a str>,
-    publisher_id: Option<&'a str>,
     token_id: Option<&'a str>,
     index: Option<&'a str>,
     source_index: Option<&'a str>,
     hosted_index: Option<&'a str>,
-    project: Option<&'a str>,
-    version: Option<&'a str>,
-    filename: Option<&'a str>,
+    resource: Option<&'a str>,
+    group: Option<&'a str>,
+    artifact: Option<&'a str>,
     digest: Option<&'a str>,
     count: usize,
     changed: bool,
@@ -114,14 +98,13 @@ impl<'a> Event<'a> {
             action,
             result,
             actor: None,
-            publisher_id: None,
             token_id: None,
             index: None,
             source_index: None,
             hosted_index: None,
-            project: None,
-            version: None,
-            filename: None,
+            resource: None,
+            group: None,
+            artifact: None,
             digest: None,
             count: 0,
             changed: false,
@@ -134,12 +117,6 @@ impl<'a> Event<'a> {
     #[must_use]
     pub const fn actor(mut self, actor: Option<&'a str>) -> Self {
         self.actor = actor;
-        self
-    }
-
-    #[must_use]
-    pub const fn publisher_id(mut self, publisher_id: &'a str) -> Self {
-        self.publisher_id = Some(publisher_id);
         self
     }
 
@@ -168,20 +145,20 @@ impl<'a> Event<'a> {
     }
 
     #[must_use]
-    pub const fn project(mut self, project: Option<&'a str>) -> Self {
-        self.project = project;
+    pub const fn resource(mut self, resource: Option<&'a str>) -> Self {
+        self.resource = resource;
         self
     }
 
     #[must_use]
-    pub const fn version(mut self, version: Option<&'a str>) -> Self {
-        self.version = version;
+    pub const fn group(mut self, group: Option<&'a str>) -> Self {
+        self.group = group;
         self
     }
 
     #[must_use]
-    pub const fn filename(mut self, filename: Option<&'a str>) -> Self {
-        self.filename = filename;
+    pub const fn artifact(mut self, artifact: Option<&'a str>) -> Self {
+        self.artifact = artifact;
         self
     }
 
@@ -217,50 +194,32 @@ impl<'a> Event<'a> {
     }
 
     pub fn emit(&self) {
-        let actor = text(self.actor);
-        let publisher_id = text(self.publisher_id);
-        let token_id = text(self.token_id);
-        let index = text(self.index);
-        let source_index = text(self.source_index);
-        let hosted_index = text(self.hosted_index);
-        let project = text(self.project);
-        let version = text(self.version);
-        let filename = text(self.filename);
-        let digest = text(self.digest);
-        let reason = text(self.reason);
-        let request_id = text(self.request_id);
-        let user_agent = text(self.user_agent);
         tracing::info!(
             target: "peryx::security",
             security_event = true,
             event = "index_action",
             action = self.action,
             result = self.result,
-            actor,
-            publisher_id,
-            token_id,
-            index,
-            source_index,
-            hosted_index,
-            project,
-            version,
-            filename,
-            digest,
+            actor = text(self.actor),
+            token_id = text(self.token_id),
+            index = text(self.index),
+            source_index = text(self.source_index),
+            hosted_index = text(self.hosted_index),
+            resource = text(self.resource),
+            group = text(self.group),
+            artifact = text(self.artifact),
+            digest = text(self.digest),
             count = self.count,
             changed = self.changed,
-            reason,
-            request_id,
-            user_agent,
+            reason = text(self.reason),
+            request_id = text(self.request_id),
+            user_agent = text(self.user_agent),
             "index security event"
         );
     }
 }
 
-/// Who to record an action against, from the identity the index's ACL already resolved.
-///
-/// The username a Basic credential carried names the actor whether or not it authenticated, so a
-/// refused push still records who tried. A bearer credential carries no username; there the actor is
-/// the principal the token names.
+/// Preserves a presented username so failed authentication remains attributable.
 #[must_use]
 pub fn actor(identity: &Identity) -> Option<String> {
     if let Some(user) = &identity.user {
@@ -293,134 +252,5 @@ fn text(value: Option<&str>) -> &str {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::io::{Read as _, Seek as _};
-    use std::sync::Mutex;
-
-    use peryx_identity::{Identity, Principal};
-    use rstest::rstest;
-
-    use super::{AuthorizationDenial, RoleGrantChange};
-
-    #[rstest]
-    #[case::grant(RoleGrantChange::Grant, "grant")]
-    #[case::revoke(RoleGrantChange::Revoke, "revoke")]
-    fn test_role_grant_event_records_only_bounded_delegation_context(
-        #[case] change: RoleGrantChange,
-        #[case] expected_action: &str,
-    ) {
-        let mut capture = tempfile::tempfile().unwrap();
-        let subscriber = tracing_subscriber::fmt()
-            .json()
-            .without_time()
-            .with_writer(Mutex::new(capture.try_clone().unwrap()))
-            .finish();
-        let target = peryx_identity::UserId::random();
-
-        tracing::subscriber::with_default(subscriber, || {
-            super::role_grant_change(
-                Some("alice"),
-                change,
-                &target,
-                peryx_identity::Role::RepositoryReader,
-                "repository/team/api",
-                "allowed",
-                "created",
-            );
-        });
-
-        capture.rewind().unwrap();
-        let mut text = String::new();
-        capture.read_to_string(&mut text).unwrap();
-        let event: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
-        assert_eq!(
-            event["fields"],
-            serde_json::json!({
-                "message": "role grant mutation",
-                "security_event": true,
-                "event": "role_grant",
-                "action": expected_action,
-                "actor": "alice",
-                "target": target.as_str(),
-                "role": "repository_reader",
-                "reach": "repository/team/api",
-                "result": "allowed",
-                "reason": "created",
-            })
-        );
-    }
-
-    fn presenting(user: &str) -> Identity {
-        Identity {
-            principal: Principal::Anonymous,
-            user: Some(user.to_owned()),
-        }
-    }
-
-    #[test]
-    fn test_actor_uses_the_presented_username() {
-        assert_eq!(super::actor(&presenting("alice")).as_deref(), Some("alice"));
-    }
-
-    #[test]
-    fn test_actor_calls_an_empty_username_unknown() {
-        assert_eq!(super::actor(&presenting("")).as_deref(), Some("unknown"));
-    }
-
-    #[test]
-    fn test_actor_falls_back_to_the_principal_when_no_username_was_presented() {
-        let bearer = Identity {
-            principal: Principal::Named {
-                subject: "ci".to_owned(),
-            },
-            user: None,
-        };
-        assert_eq!(super::actor(&bearer).as_deref(), Some("ci"));
-    }
-
-    #[test]
-    fn test_actor_is_none_for_an_anonymous_request() {
-        let anonymous = Identity {
-            principal: Principal::Anonymous,
-            user: None,
-        };
-        assert_eq!(super::actor(&anonymous), None);
-    }
-
-    #[rstest]
-    #[case::no_grant(AuthorizationDenial::NoGrant, "no_grant")]
-    #[case::storage_unavailable(AuthorizationDenial::StorageUnavailable, "storage_unavailable")]
-    fn test_authorization_denial_event_contains_only_bounded_context(
-        #[case] denial: AuthorizationDenial,
-        #[case] expected_reason: &str,
-    ) {
-        let mut capture = tempfile::tempfile().unwrap();
-        let subscriber = tracing_subscriber::fmt()
-            .json()
-            .without_time()
-            .with_writer(Mutex::new(capture.try_clone().unwrap()))
-            .finish();
-        let user = peryx_identity::UserId::random();
-
-        tracing::subscriber::with_default(subscriber, || {
-            super::authorization_denied(&user, peryx_identity::Scope::OperatorRead, denial);
-        });
-
-        capture.rewind().unwrap();
-        let mut text = String::new();
-        capture.read_to_string(&mut text).unwrap();
-        let event: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
-        assert_eq!(
-            event["fields"],
-            serde_json::json!({
-                "message": "role authorization denied",
-                "security_event": true,
-                "event": "authorization",
-                "user": user.as_str(),
-                "scope": "operator:read",
-                "result": "denied",
-                "reason": expected_reason,
-            })
-        );
-    }
-}
+#[path = "../tests/unit/security/tests.rs"]
+mod tests;

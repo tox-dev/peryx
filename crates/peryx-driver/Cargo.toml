@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "The seam an ecosystem plugs into: the serving traits a driver implements, and the process state and helpers it builds on."
+description = "Neutral runtime contracts and process state."
 
 [dependencies]
 peryx-core.workspace = true
@@ -13,7 +13,8 @@ peryx-events.workspace = true
 peryx-identity.workspace = true
 peryx-index.workspace = true
 peryx-policy.workspace = true
-peryx-replication.workspace = true
+peryx-pql.workspace = true
+peryx-ha.workspace = true
 peryx-search.workspace = true
 peryx-storage.workspace = true
 peryx-upstream.workspace = true
@@ -42,6 +43,7 @@ rstest.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 tracing-subscriber.workspace = true
+tower.workspace = true
 
 [lints]
 workspace = true

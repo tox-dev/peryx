@@ -1,13 +1,11 @@
 use serde::{Deserialize, Serialize};
 
-/// Usage counters at one aggregation level of `/+stats`. File-level entries fill only the fields
-/// the server tracks per file (downloads, metadata, bytes); the rest stay zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct UiCounters {
     pub pages: u64,
-    pub downloads: u64,
+    pub reads: u64,
     pub metadata: u64,
-    pub uploads: u64,
+    pub writes: u64,
     pub bytes: u64,
     pub refreshes: u64,
     pub changed: u64,
@@ -17,17 +15,13 @@ pub struct UiCounters {
 }
 
 impl UiCounters {
-    /// Read the counters present in one stats JSON object; absent fields stay zero. Index and
-    /// project totals group counters by owning role (`base`/`cached`/`hosted`/`ecosystem`); file
-    /// entries carry `downloads`/`bytes` flat and their ecosystem counters under `ecosystem`, so
-    /// each field falls back to the flat location.
     #[must_use]
     pub fn from_value(value: &serde_json::Value) -> Self {
         Self {
             pages: grouped(value, "base", "pages"),
-            downloads: grouped(value, "base", "downloads"),
+            reads: grouped(value, "base", "reads"),
             metadata: grouped(value, "ecosystem", "metadata"),
-            uploads: grouped(value, "hosted", "uploads"),
+            writes: grouped(value, "hosted", "writes"),
             bytes: grouped(value, "base", "bytes"),
             refreshes: grouped(value, "cached", "refreshes"),
             changed: grouped(value, "cached", "changed"),
@@ -38,7 +32,6 @@ impl UiCounters {
     }
 }
 
-/// Read `value[group][field]`, falling back to a flat `value[field]` for file-level entries.
 fn grouped(value: &serde_json::Value, group: &str, field: &str) -> u64 {
     value
         .get(group)
@@ -48,8 +41,6 @@ fn grouped(value: &serde_json::Value, group: &str, field: &str) -> u64 {
         .unwrap_or(0)
 }
 
-/// One drill depth of `/+stats`: the aggregate at this level plus the named rows underneath
-/// (indexes, then projects, then files), busiest first.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct UiStats {
     pub totals: UiCounters,
@@ -63,7 +54,7 @@ fn sorted_rows(value: &serde_json::Value) -> Vec<(String, UiCounters)> {
         .flatten()
         .map(|(name, counters)| (name.clone(), UiCounters::from_value(counters)))
         .collect();
-    rows.sort_by(|(a_name, a), (b_name, b)| (b.downloads + b.pages, a_name).cmp(&(a.downloads + a.pages, b_name)));
+    rows.sort_by(|(a_name, a), (b_name, b)| (b.reads + b.pages, a_name).cmp(&(a.reads + a.pages, b_name)));
     rows
 }
 
@@ -74,9 +65,9 @@ pub fn stats_routes(value: &serde_json::Value) -> UiStats {
     let mut totals = UiCounters::default();
     for (_, counters) in &rows {
         totals.pages += counters.pages;
-        totals.downloads += counters.downloads;
+        totals.reads += counters.reads;
         totals.metadata += counters.metadata;
-        totals.uploads += counters.uploads;
+        totals.writes += counters.writes;
         totals.bytes += counters.bytes;
         totals.refreshes += counters.refreshes;
         totals.changed += counters.changed;
@@ -87,20 +78,18 @@ pub fn stats_routes(value: &serde_json::Value) -> UiStats {
     UiStats { totals, rows }
 }
 
-/// Parse one index's drill document: its totals plus one row per project.
 #[must_use]
 pub fn stats_index(value: &serde_json::Value) -> UiStats {
     UiStats {
         totals: UiCounters::from_value(&value["totals"]),
-        rows: sorted_rows(&value["projects"]),
+        rows: sorted_rows(&value["resources"]),
     }
 }
 
-/// Parse one project's drill document: its totals plus one row per file.
 #[must_use]
-pub fn stats_project(value: &serde_json::Value) -> UiStats {
+pub fn stats_resource(value: &serde_json::Value) -> UiStats {
     UiStats {
         totals: UiCounters::from_value(&value["totals"]),
-        rows: sorted_rows(&value["files"]),
+        rows: sorted_rows(&value["artifacts"]),
     }
 }

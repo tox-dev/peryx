@@ -1,129 +1,195 @@
 +++
 title = "Contributing"
-description = "Set up a peryx working tree, the CI gates, the test suites, the docs site, and how to cut a release."
+description = "Set up a checkout and run the repository contracts."
 sort_by = "weight"
 template = "section.html"
 weight = 20
 +++
 
-peryx lives at [github.com/tox-dev/peryx](https://github.com/tox-dev/peryx). Bug reports, feature discussions, and pull
-requests are welcome there.
+Report bugs and open pull requests at [github.com/tox-dev/peryx](https://github.com/tox-dev/peryx).
 
-## Setting up
+## Setup
 
-Two installs bootstrap a working tree:
-
-```shell
-rustup show          # picks the pinned toolchain from rust-toolchain.toml
-mise install         # zola, uv, prek, cargo-nextest, cargo-llvm-cov, twine
-prek install         # fmt, clippy, and hygiene hooks on every commit
-```
-
-[mise](https://mise.jdx.dev) pins the non-Rust tools, so nothing needs a system package manager;
-[prek](https://github.com/j178/prek) runs the hooks from `.pre-commit-config.yaml`.
-
-## The gates
-
-CI holds each pull request to the same bar; run the gates locally before pushing:
+Run setup commands from the repository root:
 
 ```shell
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo nextest run --workspace
-cargo llvm-cov nextest --workspace --ignore-filename-regex 'main\.rs' \
-  --fail-under-lines 100 --fail-under-functions 100
+rustup show
+mise install
+prek install
 ```
 
-Line and function coverage stay at 100%. CI reports region coverage without gating it, because no test on stable
-[Rust](https://www.rust-lang.org/) can reach compiler-generated branches (async expansions, drop glue).
+`rustup` reads `rust-toolchain.toml`. Mise installs the tools pinned by the repository. Prek installs the commit hooks.
 
-Run the suite with [nextest](https://nexte.st/), not `cargo test`. nextest gives each test its own process; `cargo test`
-runs a binary's tests as threads in one process. The web UI tests render Leptos pages, and Leptos drives a per-thread
-reactive graph through process-global arenas, so two page renders at once in one process deadlock on a lost wakeup —
-flaky under `cargo test`, impossible under nextest's isolation. The tests also cache the deterministic route table and
-serialize their own renders, so a stray `cargo test` no longer hangs; nextest stays the supported runner.
+Recipes keep generated state under `.tox/`. Do not put generated files in `src/` or `tests/`.
 
-On macOS hosts, nextest starts one test process at a time. Rust creates an output pipe before marking it close-on-exec
-on macOS, so concurrent starts can pass one test's descriptor to a sibling and report a false leak. Serial starts close
-that race at the cost of a longer local run; Linux and Windows keep nextest's CPU-sized parallelism. Nextest tracks the
-underlying race in [nextest#1469](https://github.com/nextest-rs/nextest/issues/1469).
+## Project structure
 
-## End-to-end tests
+- `crates/peryx-core` contains stable IDs and ecosystem-neutral values.
+- `crates/peryx-driver` defines focused runtime capabilities and serving state.
+- `crates/peryx-plugin-registry` validates linked owner registrations and activates owners selected by configuration.
+- `crates/peryx-ha` defines availability contracts. `crates/peryx-ha-distributed` implements `dc` and `ha` resources.
+- `crates/peryx-storage` persists neutral metadata and content-addressed blobs.
+- `crates/peryx-http` and `crates/peryx-web` own shared HTTP and browser boundaries.
+- `crates/peryx-ecosystem-*` own one ecosystem's settings, protocols, routes, migrations, tests, fixtures, benchmarks,
+  and documentation.
+- `crates/peryx-test-support`, `crates/peryx-bench-core`, and `crates/peryx-bench` provide neutral test and benchmark
+  infrastructure.
+- `crates/peryx` links shipped implementations and owns configuration loading, process startup, and shutdown.
 
-The e2e suite drives real pip, uv, and twine against a spawned peryx binary:
+The executable contains all shipped ecosystem and availability implementations. Startup configuration selects which
+owners and availability mode to install. An inactive owner registers no runtime capabilities.
+`availability.mode = "none"` creates no distributed resource or background task.
+
+See [architecture](@/contributing/architecture.md) and [ecosystem boundaries](@/contributing/ecosystem-boundaries.md)
+before moving code between crates.
+
+## Test ownership
+
+Each behavior test belongs to the crate that owns the behavior. A crate must build, test, and reach exact coverage
+without another crate's tests.
+
+### Unit tests
+
+Put detailed behavior tests under `crates/CRATE/tests/unit/`. When a test needs crate-private access, mount that file
+from the library or binary root with a `#[cfg(test)]`-guarded `#[path]` module. Keep the test body out of `src/`; do not
+widen production visibility for a test.
+
+Use table-driven cases for repeated inputs. Use real collaborators. Substitute only clocks, filesystems, networks, and
+subprocesses. Wait for a signal or use Tokio virtual time; use timeouts only to bound failure.
+
+### Integration tests
+
+Put public-boundary tests under `crates/CRATE/tests/integration/` or at the root of `crates/CRATE/tests/`. Cargo treats
+each file at the `tests/` root as a test target. Exercise the crate through its public API with real stores, routers,
+and services. Integration tests cover collaboration between components; they do not repeat unit cases.
+
+Cargo discovers test targets inside the owning package. Do not add `[[test]]` entries that point to another package's
+files.
+
+### System tests
+
+A system test starts the `peryx` executable or an external service and observes a public boundary. Neutral process and
+availability scenarios live in the `peryx` package. Ecosystem scenarios live in that ecosystem's system package. A
+system package declares `package.metadata.peryx-ci.kind = "system"`; CI covers it through the system lanes rather than a
+crate contract.
+
+Use system tests for process lifecycle, client compatibility, failover, and service faults. Keep parsing and state
+transition cases in unit tests.
+
+Run the test policy checks after changing test infrastructure:
 
 ```shell
-cargo test -p peryx --features e2e                    # hermetic: local fixture index, no network
-cargo test -p peryx --features e2e-live -- e2e_live   # live smoke tests against pypi.org
+just test-layout
+just test-timing
+just test-processes
 ```
 
-Each test owns an isolated server, fixture, and virtualenv on ephemeral ports, so the suite runs in parallel and
-finishes in about two seconds. New index features need a matching e2e test; a client exit code alone does not count as
-proof, so assert on peryx's own state or metrics.
+`test-layout` rejects test bodies in production source. `test-timing` rejects blind sleeps and polling. `test-processes`
+requires ownership and cleanup for spawned tasks, servers, and child processes.
 
-## The web UI
+## Local validation
 
-`cargo leptos build` compiles the UI's wasm bundle into `ui/pkg/` (mise provides
-[cargo-leptos](https://github.com/leptos-rs/cargo-leptos) and node). The [Playwright](https://playwright.dev/) suite
-drives the hydrated UI against a real peryx with an uploaded fixture package:
+`just --list` describes the public recipes. Common gates are:
+
+- `just test`: crate tests and benchmark harnesses
+- `just system-test`: client, ecosystem, availability, simulation, and browser tests
+- `just crate-contract PACKAGE .tox/crate-contracts/PACKAGE`: one crate's build, tests, targets, and exact coverage
+- `just coverage-native`: all non-system crate contracts
+- `just coverage`: complete Linux coverage and report merge
+- `just lint`: source, documentation, automation, dependency, and contract lint lanes
+- `just docs`: staged owner documentation and site build
+- `just site-links`: site build and external-link check
+- `just pre-commit`: all repository hooks
+- `just all`: lint, complete Linux coverage, docs, and CI-safe hooks
+- `just ci`: run `just all` in the Linux Compose service from macOS, Windows, or Linux
+
+Nextest provides process isolation used by several suites. Use the recipes instead of substituting raw `cargo test` for
+repository validation.
+
+## Coverage contracts
+
+Each non-system workspace crate has a coverage contract:
 
 ```shell
-cargo leptos build
-cd tests/frontend
-npm ci
-npx playwright install chromium
-npx playwright test
+just crate-contract peryx-core .tox/crate-contracts/peryx-core
 ```
 
-The UI crate sits outside the `llvm-cov` gate: wasm cannot be coverage-instrumented and event handlers only run in a
-browser, so the Playwright suite and peryx's server-side render tests are its gates instead.
-
-## The documentation site
-
-The site you are reading is [Zola](https://www.getzola.org/) under `site/`, structured by the
-[Diátaxis](https://diataxis.fr/) framework: tutorials teach, guides solve one task, reference states facts, explanation
-gives reasons. Put new pages in the quadrant that matches their job.
+The contract checks applicable library, binary, example, doctest, integration-test, and benchmark targets. It then
+requires 100% executable line and function coverage for each declared source root, including test source. Run all
+non-system contracts with:
 
 ```shell
-zola --root site serve   # live-reloading preview at 127.0.0.1:1111
+just coverage-native .tox/coverage/native.lcov
 ```
 
-[Read the Docs](https://readthedocs.org/) builds and hosts the site from `.readthedocs.yaml` on each merge; CI builds it
-on each pull request so a broken site blocks the merge.
+System, frontend, and owner fuzz packages produce separate reports. `just coverage-merge` verifies their provenance,
+ownership, input digests, and policy digests before enforcing exact workspace and package coverage. A merged total
+cannot hide a package shortfall.
 
-## Gotchas
+Test observable behavior for each executable path. A coverage exclusion requires a path that the language or target
+makes impossible to execute, with the reason beside the exclusion.
 
-Two dev-environment behaviors are non-obvious enough to have cost real debugging time.
+## CI structure
 
-### The SSR binary and the wasm bundle must come from one build
+GitHub Actions delegates checks to the same `just` recipes and repository scripts used locally. Workflow YAML owns event
+filters, runner setup, caches, matrices, artifacts, and job dependencies.
 
-`cargo leptos build` writes a matched pair: `target/debug/peryx` (the server that renders HTML) and
-`ui/pkg/peryx_web*.wasm` (the bundle that hydrates it). Both embed the same component tree, and hydration only works
-when they agree. Mix two builds and the server emits hydration markers the wasm does not expect;
-[Leptos](https://leptos.dev/) then panics in the browser (`tachys::hydration::failed_to_cast_marker_node`,
-`RuntimeError: unreachable`), never sets `body[data-hydrated]`, and every Playwright test times out at navigation with
-no hint as to why.
+- Planning classifies changed paths and balances eight crate-contract shards from recorded timings.
+- Lint jobs separate Rust source, documentation, automation, dependencies, and package contracts.
+- Platform jobs compile and test operating-system boundaries.
+- Crate-contract shards build, test, and cover the non-system packages selected by the plan.
+- System jobs cover client, storage, availability, and simulation boundaries; the frontend job covers native and Wasm
+  code plus browser behavior.
+- Owner fuzz jobs contribute coverage reports. Pull requests mutate up to 32 changed production candidates across eight
+  jobs, sampling larger sets with deterministic round-robin shards.
+- The coverage job verifies and merges lane reports. The documentation job builds the staged site.
+- The gate reads job results and rejects a missing, skipped, cancelled, or failed required lane.
 
-The Playwright harness (`tests/frontend/serve.mjs`) prefers `target/release/peryx` when it exists, and a plain
-`cargo build --release` rebuilds only the binary, leaving it paired with a stale debug wasm. After touching UI source,
-rerun `cargo leptos build`. If you keep a release binary around, build it with `cargo leptos build --release` so both
-halves match, or delete it so the harness falls back to the debug pair.
+Scheduled jobs run full mutation across eight shards, plus minimum-dependency, Miri, and sanitizer checks.
 
-When a Playwright run fails wholesale at `waitForSelector("body[data-hydrated]")`, open the page in a browser and read
-the console. A hydration panic there points at a mismatched build pair, so rebuild before you suspect the test.
+Run the recipe named by a failed job before changing workflow YAML. Change the workflow only when the fault concerns CI
+orchestration.
 
-### Off-by-default features need their own unit tests
+## Linux through Compose
 
-A subsystem that is disabled by default is an `Option<T>` that stays `None`, so it is absent from the request path
-rather than skipped on it (see the zero-overhead contract in the architecture docs). Integration tests that drive the
-default server therefore never reach its code. The rate limiter is the standard example: with it off, peryx omits the
-enforce layer entirely, so a driver method like `classify_route` runs only under a direct unit test. The 100% coverage
-gate will catch the omission, but it is faster to write the unit test up front than to chase the uncovered line.
+The repository uses one `compose.yaml`. Services bind-mount the checkout at `/workspace`; builds do not copy the source.
+Cargo state, target files, browser state, temporary files, and nested Docker data stay under `.tox/` on the host.
 
-## Conventions
+- `just linux RECIPE [ARGS]`: lightweight Linux service with an 8 GiB limit
+- `just linux-analysis RECIPE [ARGS]`: Linux analysis profile
+- `just linux-system RECIPE [ARGS]`: Linux service plus nested Docker for system tests
+- `just linux-16g RECIPE [ARGS]`: lightweight service with a 16 GiB limit
+- `just linux-system-16g RECIPE [ARGS]`: system services with a combined 16 GiB limit
 
-- Commits: imperative subject up to 50 characters, no period; a wrapped body explaining what and why for anything
-  non-obvious. Keep commits atomic.
-- Markdown wraps at 120 columns via `mdformat` (the pre-commit hook handles it).
-- Code style is whatever `cargo fmt` and the [clippy](https://github.com/rust-lang/rust-clippy) configuration in
-  `Cargo.toml` say; fix findings rather than suppressing them, and give any unavoidable suppression a reason.
+Examples:
+
+```shell
+just linux crate-contract peryx-core .tox/crate-contracts/peryx-core
+just linux-system availability
+just linux-system coverage
+```
+
+Use the 16 GiB profile after an 8 GiB run records memory pressure. `just compose-check` validates all profiles.
+`just clean` removes transient project state. `just clean-all` also removes reusable coverage, browser, fuzz, benchmark,
+and nested Docker state.
+
+## Documentation ownership
+
+Shared architecture and configuration belong under `site/content/core/`. Contributor policy belongs under
+`site/content/contributing/`. Ecosystem protocol, command, and configuration details belong under
+`crates/peryx-ecosystem-NAME/docs/`.
+
+```shell
+just site-stage
+site/scripts/dev.sh
+```
+
+Format Markdown with `prek run mdformat --all-files`, then run `just lint-docs`, `just docs`, and `just site-links`. The
+hook installs the repository's Markdown extensions, including GFM tables.
+
+## Change discipline
+
+- Use an imperative commit subject of at most 50 characters without a period.
+- Comments and commit bodies explain non-obvious decisions.
+- Fix formatter and linter errors instead of suppressing them.
+- Run `just pre-commit` before pushing.

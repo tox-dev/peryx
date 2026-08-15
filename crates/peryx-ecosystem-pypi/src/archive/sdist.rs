@@ -1,5 +1,3 @@
-//! Sdist validation and `PKG-INFO` sidecar extraction.
-
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 use std::io::{Read, Seek};
@@ -34,7 +32,7 @@ fn invalid_sdist(message: impl std::fmt::Display) -> ArchiveError {
 /// it declares but does not carry.
 ///
 /// # Errors
-/// Returns [`ArchiveError::InvalidSdist`] when required sdist structure or metadata is missing or
+/// Returns [`ArchiveError::Invalid`] when required sdist structure or metadata is missing or
 /// inconsistent, and [`ArchiveError::Read`] when the staged file or tarball cannot be read.
 pub fn validate_sdist_path(filename: &str, path: &Path) -> Result<ValidatedArchive, ArchiveError> {
     let file = std::fs::File::open(path).map_err(read_error)?;
@@ -45,7 +43,7 @@ pub fn validate_sdist_path(filename: &str, path: &Path) -> Result<ValidatedArchi
 /// declares but does not carry.
 ///
 /// # Errors
-/// Returns [`ArchiveError::InvalidSdist`] when required sdist structure or metadata is missing or
+/// Returns [`ArchiveError::Invalid`] when required sdist structure or metadata is missing or
 /// inconsistent, and [`ArchiveError::Read`] when the staged file or ZIP cannot be read.
 pub fn validate_zip_sdist_path(filename: &str, path: &Path) -> Result<ValidatedArchive, ArchiveError> {
     let file = std::fs::File::open(path).map_err(read_error)?;
@@ -55,7 +53,7 @@ pub fn validate_zip_sdist_path(filename: &str, path: &Path) -> Result<ValidatedA
 /// Extract an sdist's `PKG-INFO` document from a staged file without buffering the sdist.
 ///
 /// # Errors
-/// Returns [`ArchiveError::InvalidSdist`] for invalid `.tar.gz` sdists and [`ArchiveError::Read`]
+/// Returns [`ArchiveError::Invalid`] for invalid `.tar.gz` sdists and [`ArchiveError::Read`]
 /// when the staged file or tarball cannot be read.
 pub fn sdist_metadata_path(filename: &str, path: &Path) -> Result<Option<Vec<u8>>, ArchiveError> {
     if !is_tar_gz(filename) {
@@ -227,9 +225,7 @@ impl SdistMembers {
                 "PKG-INFO Metadata-Version {metadata_version_text} is older than the required 2.2"
             )));
         }
-        // PEP 639 declares an sdist's license files relative to its project root, so one without a
-        // member there names a file the sdist does not ship. Upload validation rejects a malformed
-        // declared path on its own, so here one merely reads as missing.
+        // PEP 639 paths are project-relative; an absent member is a missing license file.
         Ok(ValidatedArchive {
             missing_license_files: doc
                 .license_files
@@ -309,8 +305,7 @@ fn read_sdist_member_limited(
             "{path} is {size} bytes, above the upload validation limit of {limit} bytes"
         )));
     }
-    let capacity = usize::try_from(size).expect("sdist validation limit fits usize");
-    let mut bytes = Vec::with_capacity(capacity);
+    let mut bytes = Vec::with_capacity(usize::try_from(size).map_err(invalid_sdist)?);
     reader.read_to_end(&mut bytes).map_err(read_error)?;
     Ok(bytes)
 }
@@ -377,43 +372,5 @@ const fn metadata_version_at_least(actual: (u64, u64), required: (u64, u64)) -> 
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_account_sdist_expansion_sums_within_budget() {
-        assert_eq!(account_sdist_expansion(10, 5).unwrap(), 15);
-    }
-
-    #[test]
-    fn test_account_sdist_expansion_rejects_members_crossing_budget() {
-        let message = account_sdist_expansion(MAX_SDIST_EXPANDED_BYTES, 1)
-            .unwrap_err()
-            .to_string();
-        assert!(message.contains("expand to more than"), "{message}");
-    }
-
-    // A gzip tar cannot carry a member whose declared size overflows the running sum: the tar reader
-    // guards its own size arithmetic first, so the checked add is exercised at its boundary here.
-    #[test]
-    fn test_account_sdist_expansion_rejects_size_sum_overflow() {
-        let message = account_sdist_expansion(1, u64::MAX).unwrap_err().to_string();
-        assert!(message.contains("expand to more than"), "{message}");
-    }
-
-    #[test]
-    fn test_account_zip_sdist_expansion_allows_max_ratio() {
-        assert_eq!(
-            account_zip_sdist_expansion(0, "pkg-1.0/data.bin", MAX_SDIST_COMPRESSION_RATIO, 1).unwrap(),
-            MAX_SDIST_COMPRESSION_RATIO
-        );
-    }
-
-    #[test]
-    fn test_account_zip_sdist_expansion_rejects_zero_compressed_with_content() {
-        let message = account_zip_sdist_expansion(0, "pkg-1.0/bomb.bin", 1, 0)
-            .unwrap_err()
-            .to_string();
-        assert!(message.contains("expansion limit"), "{message}");
-    }
-}
+#[path = "../../tests/unit/archive/sdist/tests.rs"]
+mod tests;

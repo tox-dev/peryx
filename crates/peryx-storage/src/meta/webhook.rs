@@ -49,8 +49,6 @@ pub struct WebhookDeliveryAttempt<'a> {
 }
 
 impl MetaStore {
-    /// Insert a pending webhook delivery and return its delivery ID.
-    ///
     /// # Errors
     /// Returns a store error if the write fails or the payload cannot be encoded.
     pub fn enqueue_webhook_delivery(&self, delivery: NewWebhookDelivery<'_>) -> Result<String, MetaError> {
@@ -86,12 +84,8 @@ impl MetaStore {
         Ok(id)
     }
 
-    /// Pending webhook deliveries due at or before `now_unix`, ordered by due time, at most one record
-    /// per `(index, target)` and skipping any target in `excluded`.
-    ///
-    /// Returning a single record per target and letting the caller exclude targets it is already
-    /// delivering to lets the worker spread a batch across targets instead of draining one target's
-    /// backlog first, so a slow endpoint cannot starve healthy ones.
+    /// Returns due deliveries in due-time order, at most one per `(index, target)`, excluding active
+    /// targets so a slow endpoint cannot starve others.
     ///
     /// # Errors
     /// Returns a store error if the read fails or a record cannot be decoded.
@@ -133,8 +127,6 @@ impl MetaStore {
         Ok(records)
     }
 
-    /// The next pending webhook retry timestamp.
-    ///
     /// # Errors
     /// Returns a store error if the read fails.
     pub fn next_webhook_delivery_at(&self) -> Result<Option<i64>, MetaError> {
@@ -147,7 +139,7 @@ impl MetaStore {
         })
     }
 
-    /// Apply one delivery attempt result, returning the updated record when it still exists.
+    /// Returns the updated record or `None` when the delivery no longer exists.
     ///
     /// # Errors
     /// Returns a store error if the write fails or the record cannot be decoded or encoded.
@@ -189,8 +181,6 @@ impl MetaStore {
         Ok(Some(record))
     }
 
-    /// Fetch one webhook delivery by ID.
-    ///
     /// # Errors
     /// Returns a store error if the read fails or the record cannot be decoded.
     pub fn get_webhook_delivery(&self, id: &str) -> Result<Option<WebhookDeliveryRecord>, MetaError> {
@@ -202,7 +192,7 @@ impl MetaStore {
             .transpose()?)
     }
 
-    /// List webhook delivery records by delivery ID.
+    /// Returns deliveries in ID order.
     ///
     /// # Errors
     /// Returns a store error if the read fails or a record cannot be decoded.

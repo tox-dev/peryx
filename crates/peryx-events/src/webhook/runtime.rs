@@ -1,36 +1,35 @@
-//! Webhook target configuration and the resolved delivery runtime.
-
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use url::Url;
 
-use super::event::WebhookEventKind;
+use super::event::valid_identifier;
 
 pub struct WebhookRuntime {
     pub(super) client: reqwest::Client,
     targets: HashMap<String, Vec<WebhookTarget>>,
-    pub(super) running: AtomicBool,
+    pub(super) running: Arc<AtomicBool>,
+    pub(super) stopped: tokio::sync::watch::Sender<u64>,
     pub(super) notify: tokio::sync::Notify,
 }
 
 impl WebhookRuntime {
-    /// Runtime with no configured targets.
     #[must_use]
     pub fn disabled() -> Self {
         let _ = rustls::crypto::ring::default_provider().install_default();
+        let (stopped, _) = tokio::sync::watch::channel(0);
         Self {
             client: delivery_client(),
             targets: HashMap::new(),
-            running: AtomicBool::new(false),
+            running: Arc::new(AtomicBool::new(false)),
+            stopped,
             notify: tokio::sync::Notify::new(),
         }
     }
 
-    /// Build a runtime from resolved configuration.
-    ///
     /// # Errors
-    /// Returns an error for duplicate target names, invalid URLs, empty secrets, or unknown events.
+    /// Returns an error for duplicate target names, invalid URLs, empty secrets, or invalid event names.
     pub fn new(configs: Vec<WebhookTargetConfig>) -> Result<Self, WebhookConfigError> {
         let mut seen = HashSet::new();
         let mut targets: HashMap<String, Vec<WebhookTarget>> = HashMap::new();
@@ -68,7 +67,14 @@ impl WebhookRuntime {
         self.targets.is_empty()
     }
 
-    pub(super) fn target_names(&self, index: &str, event: WebhookEventKind) -> Vec<String> {
+    pub async fn wait_until_idle(&self) {
+        let mut stopped = self.stopped.subscribe();
+        while self.running.load(Ordering::Acquire) {
+            stopped.changed().await.unwrap_or(());
+        }
+    }
+
+    pub(super) fn target_names(&self, index: &str, event: &str) -> Vec<String> {
         self.targets.get(index).map_or_else(Vec::new, |targets| {
             targets
                 .iter()
@@ -125,7 +131,7 @@ pub(super) struct WebhookTarget {
 #[derive(Debug, Clone)]
 struct WebhookEvents {
     all: bool,
-    events: HashSet<WebhookEventKind>,
+    events: HashSet<String>,
 }
 
 impl WebhookEvents {
@@ -140,20 +146,22 @@ impl WebhookEvents {
             all: false,
             events: names
                 .into_iter()
-                .map(|name| WebhookEventKind::parse(&name).ok_or(WebhookConfigError::UnknownEvent(name)))
+                .map(|name| {
+                    valid_identifier(&name)
+                        .then_some(name.clone())
+                        .ok_or(WebhookConfigError::UnknownEvent(name))
+                })
                 .collect::<Result<_, _>>()?,
         })
     }
 
-    fn matches(&self, event: WebhookEventKind) -> bool {
-        self.all || self.events.contains(&event)
+    fn matches(&self, event: &str) -> bool {
+        self.all || self.events.contains(event)
     }
 }
 
 fn delivery_client() -> reqwest::Client {
-    // A signed delivery must reach the configured target and nowhere else. Following a 3xx would
-    // re-POST the payload and its HMAC to a Location the target picks, so delivery counts a redirect
-    // as a failed attempt. The build mirrors reqwest::Client::new, which also panics on failure.
+    // Redirects could expose the signed payload outside the configured origin.
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -175,85 +183,5 @@ fn target_url(raw: &str) -> Result<Url, WebhookConfigError> {
 }
 
 #[cfg(test)]
-mod tests {
-    use rstest::rstest;
-    use wiremock::matchers::method;
-    use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    use super::*;
-
-    type ErrorMatch = fn(&WebhookConfigError) -> bool;
-
-    fn target(name: &str, url: &str, secret: &str, events: &[&str]) -> WebhookTargetConfig {
-        WebhookTargetConfig {
-            index: "hosted".to_owned(),
-            name: name.to_owned(),
-            url: url.to_owned(),
-            secret: secret.to_owned(),
-            events: events.iter().map(|&event| event.to_owned()).collect(),
-        }
-    }
-
-    #[test]
-    fn test_runtime_matches_all_events_when_no_filter_is_set() {
-        let runtime = WebhookRuntime::new(vec![target("ci", "https://ci.example/hook", "secret", &[])]).unwrap();
-
-        assert_eq!(runtime.target_names("hosted", WebhookEventKind::Upload), ["ci"]);
-        assert_eq!(runtime.target_names("hosted", WebhookEventKind::Management), ["ci"]);
-        assert!(runtime.target_names("other", WebhookEventKind::Upload).is_empty());
-    }
-
-    #[rstest]
-    #[case::empty_name(vec![target("", "https://ci.example/hook", "secret", &[])], |err: &WebhookConfigError| matches!(err, WebhookConfigError::EmptyName { .. }))]
-    #[case::empty_secret(vec![target("ci", "https://ci.example/hook", "", &[])], |err: &WebhookConfigError| matches!(err, WebhookConfigError::EmptySecret { .. }))]
-    #[case::duplicate(
-        vec![
-            target("ci", "https://ci.example/hook", "secret", &[]),
-            target("ci", "https://ci.example/other", "secret", &[]),
-        ],
-        |err: &WebhookConfigError| matches!(err, WebhookConfigError::Duplicate { .. })
-    )]
-    #[case::invalid_url(vec![target("ci", "not a url", "secret", &[])], |err: &WebhookConfigError| matches!(err, WebhookConfigError::InvalidUrl { .. }))]
-    #[case::sensitive_url_parts(vec![target("ci", "https://ci.example/hook?token=secret", "secret", &[])], |err: &WebhookConfigError| matches!(err, WebhookConfigError::SensitiveUrlParts { .. }))]
-    fn test_runtime_rejects_invalid_target_config(
-        #[case] configs: Vec<WebhookTargetConfig>,
-        #[case] matches_error: ErrorMatch,
-    ) {
-        let Err(err) = WebhookRuntime::new(configs) else {
-            panic!("expected an invalid-config error");
-        };
-        assert!(matches_error(&err));
-    }
-
-    #[rstest]
-    #[case(301)]
-    #[case(302)]
-    #[case(307)]
-    #[case(308)]
-    #[tokio::test]
-    async fn test_delivery_client_surfaces_redirects_instead_of_following_them(#[case] status: u16) {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(status).insert_header("location", "/followed"))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let response = WebhookRuntime::disabled()
-            .client
-            .post(server.uri())
-            .send()
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), status);
-    }
-
-    #[test]
-    fn test_runtime_rejects_unknown_event() {
-        assert!(matches!(
-            WebhookRuntime::new(vec![target("ci", "https://ci.example/hook", "secret", &["bogus"])]),
-            Err(WebhookConfigError::UnknownEvent(event)) if event == "bogus"
-        ));
-    }
-}
+#[path = "../../tests/unit/webhook/runtime/tests.rs"]
+mod tests;

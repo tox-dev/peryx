@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+scratch_root="$repo/.tox/tmp/direct-minimum"
+rm -rf "$scratch_root"
+mkdir -p "$scratch_root"
+scratch="$(mktemp -d "$scratch_root/session.XXXXXX")"
+trap 'rm -rf "$scratch"' EXIT
+mkdir "$scratch/source"
+export CARGO_TARGET_DIR="$scratch/target"
+git -C "$repo" archive HEAD | tar -x -C "$scratch/source"
+cd "$scratch/source"
+cargo +nightly update -Z direct-minimal-versions
+cargo +nightly check --workspace --all-targets

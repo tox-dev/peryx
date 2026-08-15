@@ -1,0 +1,40 @@
+[package]
+name = "peryx-ecosystem-pypi-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+rust-version = "1.96"
+license = "MIT"
+repository = "https://github.com/tox-dev/peryx"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+peryx-ecosystem-pypi = { version = "0.0.1", path = ".." }
+
+[[bin]]
+name = "pypi_filename"
+path = "fuzz_targets/pypi_filename.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(loom)'] }
+dead_code = "deny"
+unused_variables = "warn"
+unused_imports = "warn"
+
+[lints]
+workspace = true

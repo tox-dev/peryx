@@ -1,8 +1,5 @@
-//! Per-upstream TLS trust and client identity.
-
 use std::path::Path;
 
-/// Parsed TLS material for one upstream and its artifact hosts.
 #[derive(Clone, Default)]
 pub struct UpstreamTls {
     roots: Vec<reqwest::Certificate>,
@@ -20,10 +17,8 @@ impl std::fmt::Debug for UpstreamTls {
 }
 
 impl UpstreamTls {
-    /// Read and parse TLS material for one upstream.
-    ///
-    /// `identity` names a PEM certificate chain and its unencrypted PEM private key. The files stay
-    /// separate to match common secret mounts.
+    /// `identity` names a PEM certificate chain and its unencrypted PEM private key. Pass them as
+    /// separate files to match secret mounts that provide one value per file.
     ///
     /// # Errors
     /// Returns [`UpstreamTlsError`] when a file cannot be read or its PEM material is invalid.
@@ -67,7 +62,7 @@ impl UpstreamTls {
     }
 }
 
-/// A redacted upstream TLS configuration error.
+/// Error messages omit TLS paths and PEM contents.
 #[derive(Debug, thiserror::Error)]
 pub enum UpstreamTlsError {
     #[error("cannot read upstream CA bundle")]

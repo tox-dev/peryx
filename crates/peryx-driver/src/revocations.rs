@@ -1,5 +1,3 @@
-//! Transactional digest-revocation operations and the bounded serving-decision cache.
-
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -7,10 +5,11 @@ use std::time::Duration;
 use moka::sync::Cache;
 use peryx_events::security::Event;
 use peryx_identity::{ArtifactDigest, DigestDecision, RevocationReason, UserId};
-use peryx_storage::meta::{
-    DigestRevocation, DigestRevocationPage, DigestRevocationQuery, DigestRevocationQueryError, DigestRevocationState,
-    LiftRevocationOutcome, MetaError, MetaStore, PutRevocationError, PutRevocationOutcome,
+pub use peryx_storage::meta::{
+    DigestRevocation, DigestRevocationQuery, DigestRevocationQueryError, DigestRevocationStatus, LiftRevocationOutcome,
+    PutRevocationError, PutRevocationOutcome,
 };
+use peryx_storage::meta::{DigestRevocationPage, DigestRevocationState, MetaError, MetaStore};
 
 const CACHE_CAPACITY: u64 = 16_384;
 const ACTIVE_UNKNOWN: u8 = 0;
@@ -42,9 +41,6 @@ impl RevocationService {
         }
     }
 
-    /// Decide whether a digest is currently clear or revoked with one indexed store read on a cache
-    /// miss. Store errors are returned rather than cached or converted to clear.
-    ///
     /// # Errors
     /// Returns a store error when the authoritative row cannot be read.
     pub fn decision(&self, digest: &ArtifactDigest) -> Result<DigestDecision, MetaError> {
@@ -69,9 +65,6 @@ impl RevocationService {
         Ok(decision)
     }
 
-    /// Create, retry, or reopen one revocation and invalidate exactly its cached decision before a
-    /// concurrent miss can publish an older read.
-    ///
     /// # Errors
     /// Returns a reason conflict or store error from the transaction.
     pub fn put(
@@ -98,9 +91,6 @@ impl RevocationService {
         Ok(outcome)
     }
 
-    /// Lift one revocation and invalidate exactly its cached decision before releasing the mutation
-    /// gate.
-    ///
     /// # Errors
     /// Returns a store error from the transaction.
     pub fn lift(
@@ -126,16 +116,12 @@ impl RevocationService {
         Ok(outcome)
     }
 
-    /// Inspect one current row.
-    ///
     /// # Errors
     /// Returns a store error when the row cannot be read.
     pub fn inspect(&self, digest: &ArtifactDigest) -> Result<Option<DigestRevocation>, MetaError> {
         self.store.digest_revocation(digest)
     }
 
-    /// Check whether any active record requires discovery filtering.
-    ///
     /// # Errors
     /// Returns a store error when the transactional active index cannot be read.
     pub fn has_active(&self) -> Result<bool, MetaError> {
@@ -152,8 +138,6 @@ impl RevocationService {
         Ok(state == ACTIVE_SOME)
     }
 
-    /// List a bounded page of current rows.
-    ///
     /// # Errors
     /// Returns a query or store error.
     pub fn list(&self, query: &DigestRevocationQuery) -> Result<DigestRevocationPage, DigestRevocationQueryError> {

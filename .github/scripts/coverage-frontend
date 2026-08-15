@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+clean_wasm_ir() {
+  local directory=$1
+  [[ ! -d $directory ]] || find "$directory" -type f -name '*.ll' -delete
+}
+
+write_wasm_ir_wrapper() {
+  local wrapper=$1
+  cat >"$wrapper" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+rustc=$1
+shift
+for argument in "$@"; do
+  if [[ $argument == wasm32-unknown-unknown ]]; then
+    exec "$rustc" "$@" --emit=dep-info,metadata,link,llvm-ir
+  fi
+done
+exec "$rustc" "$@"
+EOF
+  chmod +x "$wrapper"
+}
+
+repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$repo"
+.github/scripts/coverage-session-guard
+
+requested_native_output="${1:-.tox/coverage/frontend-native.lcov}"
+requested_wasm_output="${2:-.tox/coverage/frontend-wasm.lcov}"
+requested_merged_output="${3:-${requested_native_output%-native.lcov}.lcov}"
+native_parent=$(dirname -- "$requested_native_output")
+wasm_parent=$(dirname -- "$requested_wasm_output")
+merged_parent=$(dirname -- "$requested_merged_output")
+mkdir -p "$native_parent" "$wasm_parent" "$merged_parent"
+native_parent=$(cd "$native_parent" && pwd -P)
+wasm_parent=$(cd "$wasm_parent" && pwd -P)
+merged_parent=$(cd "$merged_parent" && pwd -P)
+native_output="$native_parent/$(basename -- "$requested_native_output")"
+wasm_output="$wasm_parent/$(basename -- "$requested_wasm_output")"
+merged_output="$merged_parent/$(basename -- "$requested_merged_output")"
+if [[ $native_output == "$wasm_output" || $native_output == "$merged_output" || $wasm_output == "$merged_output" ]]; then
+  printf 'native, Wasm, and merged coverage outputs must differ\n' >&2
+  exit 2
+fi
+rm -f "$native_output" "$wasm_output" "$merged_output"
+native_session=$(mktemp -d "$native_parent/.${native_output##*/}.session.XXXXXX")
+wasm_session=$(mktemp -d "$wasm_parent/.${wasm_output##*/}.session.XXXXXX")
+merged_session=$(mktemp -d "$merged_parent/.${merged_output##*/}.session.XXXXXX")
+native_stage="$native_session/${native_output##*/}"
+native_unit_stage="$native_session/unit.lcov"
+native_browser_stage="$native_session/browser.lcov"
+wasm_stage="$wasm_session/${wasm_output##*/}"
+merged_stage="$merged_session/${merged_output##*/}"
+scratch_root="$repo/.tox/tmp/coverage-frontend"
+rm -rf "$scratch_root"
+mkdir -p "$scratch_root"
+scratch="$(mktemp -d "$scratch_root/session.XXXXXX")"
+published=0
+cleanup() {
+  rm -rf "$scratch"
+  rm -rf "$native_session" "$wasm_session" "$merged_session"
+  if ((!published)); then
+    rm -f "$native_output" "$wasm_output" "$merged_output"
+  fi
+}
+trap cleanup EXIT
+toolchain="$(.github/scripts/coverage-toolchain wasm)"
+stable_llvm="$(rustc -vV | awk '/^LLVM version:/ { split($3, version, "."); print version[1] }')"
+nightly_llvm="$(rustc +"$toolchain" -vV | awk '/^LLVM version:/ { split($3, version, "."); print version[1] }')"
+if [[ "$stable_llvm" != "$nightly_llvm" ]]; then
+  printf 'stable LLVM %s does not match %s LLVM %s\n' "$stable_llvm" "$toolchain" "$nightly_llvm" >&2
+  exit 1
+fi
+
+sysroot="$(rustc +"$toolchain" --print sysroot)"
+host="$(rustc +"$toolchain" -vV | awk '/^host:/ { print $2 }')"
+llvm_bin="$sysroot/lib/rustlib/$host/bin"
+if [[ -n "${CLANG:-}" ]]; then
+  clang="$(command -v "$CLANG")"
+elif clang="$(command -v "clang-$nightly_llvm" 2>/dev/null)"; then
+  :
+elif command -v brew >/dev/null; then
+  clang="$(brew --prefix llvm)/bin/clang"
+else
+  printf 'clang %s is required for Wasm coverage\n' "$nightly_llvm" >&2
+  exit 1
+fi
+clang_llvm="$($clang --version | sed -E -n '1s/.*version ([0-9]+).*/\1/p')"
+if [[ "$clang_llvm" != "$nightly_llvm" ]]; then
+  printf 'clang LLVM %s does not match %s LLVM %s\n' "$clang_llvm" "$toolchain" "$nightly_llvm" >&2
+  exit 1
+fi
+browser_target="$repo/.tox/coverage-target/frontend"
+profiles="$scratch/profiles"
+objects="$scratch/objects"
+mkdir "$profiles" "$profiles/wasm" "$objects" "$scratch/bin"
+ln -s "$clang" "$scratch/bin/clang"
+export PATH="$scratch/bin:$PATH"
+export CARGO_TARGET_DIR="$browser_target"
+export CARGO_LLVM_COV_BUILD_DIR="$CARGO_TARGET_DIR"
+export CARGO_LLVM_COV_TARGET_DIR="$CARGO_TARGET_DIR"
+eval "$(cargo llvm-cov show-env --sh --no-cfg-coverage)"
+if [[ "${COVERAGE_NO_CLEAN:-0}" != 1 ]]; then
+  cargo llvm-cov clean --workspace
+fi
+cargo nextest run -p peryx-web --all-features --lib
+cargo llvm-cov report --no-default-ignore-filename-regex --lcov \
+  --output-path "$native_unit_stage"
+export LLVM_COV="$llvm_bin/llvm-cov"
+export LLVM_PROFDATA="$llvm_bin/llvm-profdata"
+export RUSTUP_TOOLCHAIN="$toolchain"
+export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS="-Zno-profiler-runtime --cfg=wasm_bindgen_unstable_test_coverage"
+unset RUSTFLAGS
+
+target="$(cargo metadata --no-deps --format-version 1 | jq -r .target_directory)"
+wasm_ir="$target/front/wasm32-unknown-unknown/debug/deps"
+clean_wasm_ir "$wasm_ir"
+wasm_ir_wrapper="$scratch/rustc-wasm-ir"
+write_wasm_ir_wrapper "$wasm_ir_wrapper"
+find "$CARGO_TARGET_DIR" -maxdepth 1 -name 'peryx-frontend-*.profraw' -delete 2>/dev/null || true
+export LLVM_PROFILE_FILE="$CARGO_TARGET_DIR/peryx-frontend-%p-%10m.profraw"
+RUSTC_WORKSPACE_WRAPPER="$wasm_ir_wrapper" cargo leptos build --lib-features wasm-coverage --wasm-debug
+PERYX_FRONTEND_BINARY="$target/debug/peryx" PERYX_WASM_PROFRAW="$profiles/wasm" just frontend-test
+cargo llvm-cov report --no-default-ignore-filename-regex --lcov \
+  --output-path "$native_browser_stage"
+.github/scripts/coverage-combine "$native_stage" "$native_unit_stage" "$native_browser_stage"
+
+object_args=()
+while IFS= read -r source; do
+  object="$objects/$(basename "${source%.ll}").o"
+  "$clang" --target=x86_64-unknown-linux-gnu "$source" -Wno-override-module -c -o "$object"
+  object_args+=(--object "$object")
+done < <(
+  for package in $(cargo metadata --no-deps --format-version 1 | jq -r '.packages[].name | gsub("-"; "_")'); do
+    for source in "$wasm_ir/$package-"*.ll; do
+      [[ -f "$source" ]] && printf '%s\n' "$source"
+    done
+  done
+  [[ -f "$wasm_ir/peryx_web.ll" ]] && printf '%s\n' "$wasm_ir/peryx_web.ll"
+)
+if ((${#object_args[@]} == 0)); then
+  printf 'no frontend LLVM IR found under %s\n' "$target/front" >&2
+  exit 1
+fi
+profile="$profiles/wasm.profdata"
+"$LLVM_PROFDATA" merge -sparse "$profiles"/wasm/*.profraw -o "$profile"
+"$LLVM_COV" export --format=lcov --instr-profile "$profile" "${object_args[@]}" >"$wasm_stage"
+for report in "$native_stage" "$wasm_stage"; do
+  if [[ ! -s $report ]] || ! grep -q '^SF:.' "$report" || ! grep -q '^end_of_record$' "$report"; then
+    printf 'coverage report has no complete source record: %s\n' "${report##*/}" >&2
+    exit 1
+  fi
+done
+.github/scripts/coverage-combine "$merged_stage" "$native_stage" "$wasm_stage"
+cargo metadata --no-deps --format-version 1 >"$scratch/metadata.json"
+.github/scripts/package-source-roots --metadata "$scratch/metadata.json" --index >"$scratch/root-index"
+.github/scripts/check-lcov-sources --metadata "$scratch/metadata.json" --root-index "$scratch/root-index" \
+  "$merged_stage" peryx-web
+web_root=$(dirname -- "$(jq -r '.packages[] | select(.name == "peryx-web") | .manifest_path' "$scratch/metadata.json")")
+env COVERAGE_ROOT="$web_root" COVERAGE_REQUIRE_EXECUTABLE=1 \
+  .github/scripts/check-lcov-functions.awk "$merged_stage"
+env COVERAGE_ROOT="$web_root" COVERAGE_REQUIRE_EXECUTABLE=1 \
+  .github/scripts/check-lcov-lines.awk "$merged_stage"
+mv "$native_stage" "$native_output"
+mv "$wasm_stage" "$wasm_output"
+mv "$merged_stage" "$merged_output"
+published=1

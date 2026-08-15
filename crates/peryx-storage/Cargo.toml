@@ -7,6 +7,23 @@ license.workspace = true
 repository.workspace = true
 description = "Content-addressed blob store and metadata storage for peryx."
 
+[package.metadata.peryx-ci.crate-contract]
+test-features = []
+
+[package.metadata.peryx-ci.coverage.storage]
+features = ["container-tests"]
+tests = ["integration"]
+
+[[bin]]
+name = "peryx-storage-s3-fixture"
+path = "tests/fixtures/s3.rs"
+test = false
+bench = false
+doc = false
+
+[features]
+container-tests = ["dep:tracing-subscriber"]
+
 [dependencies]
 atomicwrites.workspace = true
 aws-config.workspace = true
@@ -17,29 +34,30 @@ futures-util.workspace = true
 fs4.workspace = true
 hex.workspace = true
 peryx-identity.workspace = true
+peryx-core.workspace = true
+peryx-ha.workspace = true
 peryx-policy.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tempfile.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 uuid.workspace = true
 redb.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-flate2.workspace = true
-tar.workspace = true
-zip.workspace = true
 tracing.workspace = true
+tracing-subscriber = { workspace = true, optional = true }
 url.workspace = true
 
 [dev-dependencies]
 aws-smithy-http-client.workspace = true
 http.workspace = true
-mockall.workspace = true
-reqwest.workspace = true
+http-body.workspace = true
+http-body-util.workspace = true
 rstest.workspace = true
 testcontainers.workspace = true
 testcontainers-modules.workspace = true
+tracing-subscriber.workspace = true
 wiremock.workspace = true
 
 [lints]

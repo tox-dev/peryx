@@ -7,16 +7,10 @@ use std::time::Duration;
 use sha2::{Digest as _, Sha256};
 
 use super::error::{BlobError, BlobScanError};
-use super::{BlobMetadata, Digest, DurabilityCapabilities, PlacementReceipt, sync_parent, to_hex};
+use super::{BlobMetadata, Digest, DurabilityCapabilities, PlacementReceipt, sync_parent};
 
-/// Move a verified `source` into its content-addressed `dest`, guaranteeing the published file's bytes
-/// hash to `digest`. `source` was hashed into `digest` as it was written, so it is the trusted copy.
-///
-/// A no-clobber move that finds `dest` free settles the durability boundary and returns. A move that
-/// loses to an occupied `dest` proves nothing about the resident file: the digest path may hold a
-/// truncated or corrupted blob that a plain existence check would wrongly accept, blocking self-repair.
-/// The occupant is therefore verified and, when it fails, replaced from `source`. Any other move
-/// failure is a real io error.
+/// An occupied digest path may contain corrupt bytes, so a failed no-clobber move verifies the resident
+/// file before discarding the trusted source.
 fn publish(dest: &Path, source: tempfile::TempPath, digest: &Digest, len: u64) -> Result<(), BlobError> {
     match source.persist_noclobber(dest) {
         Ok(()) => {
@@ -28,12 +22,8 @@ fn publish(dest: &Path, source: tempfile::TempPath, digest: &Digest, len: u64) -
     }
 }
 
-/// Reconcile a commit whose content-addressed `dest` is already occupied. Under a per-digest lock,
-/// stream-hash the resident file: a matching size and hash means the blob is already durable, so the
-/// redundant `source` is discarded. A mismatch means a corrupt blob squats the digest path — replace it
-/// atomically with the verified `source` so a later read returns the blob rather than the damage. The
-/// lock keeps a second writer of the same digest from racing the replacement, and the correct `source`
-/// is never dropped until the resident file has been validated.
+/// Holds the digest lock until the resident file is verified or replaced, preventing concurrent repairs
+/// from discarding the trusted source.
 fn reconcile(dest: &Path, source: tempfile::TempPath, digest: &Digest, len: u64) -> Result<(), BlobError> {
     let _guard = digest_lock(digest);
     if resident_matches(dest, digest, len)? {
@@ -44,19 +34,17 @@ fn reconcile(dest: &Path, source: tempfile::TempPath, digest: &Digest, len: u64)
     Ok(())
 }
 
-/// Whether the file at `dest` is exactly the blob `digest` names: it must be `len` bytes and stream-hash
-/// to `digest`. The length check is a cheap truncation reject before the full re-hash.
+/// Rejects a truncated resident before paying for a full hash.
 fn resident_matches(dest: &Path, digest: &Digest, len: u64) -> Result<bool, BlobError> {
     let mut file = std::fs::File::open(dest)?;
     if file.metadata()?.len() != len {
         return Ok(false);
     }
-    Ok(hash_file(&mut file)? == digest.as_str())
+    Ok(hash_file(&mut file)? == *digest)
 }
 
-/// Stream `file` through SHA-256, returning its hex digest. Buffered so a large blob issues a handful of
-/// big reads instead of one syscall per block.
-fn hash_file(file: &mut std::fs::File) -> std::io::Result<String> {
+/// Large reads avoid one syscall per hash block.
+fn hash_file(file: &mut std::fs::File) -> std::io::Result<Digest> {
     let mut hasher = Sha256::new();
     let mut buffer = vec![0; 1024 * 1024].into_boxed_slice();
     loop {
@@ -66,11 +54,10 @@ fn hash_file(file: &mut std::fs::File) -> std::io::Result<String> {
         }
         hasher.update(&buffer[..read]);
     }
-    Ok(to_hex(&hasher.finalize()))
+    Ok(Digest::from_sha256(hasher.finalize().into()))
 }
 
-/// A striped lock serializing repairs of the same digest. Two writers publishing identical bytes never
-/// interleave a verify-then-replace, so a corrupt resident file is replaced once rather than in a race.
+/// Serializes verify-and-replace work for the same digest.
 fn digest_lock(digest: &Digest) -> std::sync::MutexGuard<'static, ()> {
     static LOCKS: [std::sync::Mutex<()>; 64] = [const { std::sync::Mutex::new(()) }; 64];
     let shard = digest
@@ -81,8 +68,7 @@ fn digest_lock(digest: &Digest) -> std::sync::MutexGuard<'static, ()> {
     LOCKS[shard].lock().expect("blob digest lock is never poisoned")
 }
 
-/// Name the blob a failed open was looking for. Opening already reports absence, so asking the
-/// filesystem whether the path is a file beforehand only re-walks the same directories.
+/// Avoids a separate existence check and its second directory walk.
 fn absent_or_io(err: std::io::Error, digest: &Digest) -> BlobError {
     if err.kind() == std::io::ErrorKind::NotFound {
         return BlobError::not_found(digest);
@@ -90,17 +76,18 @@ fn absent_or_io(err: std::io::Error, digest: &Digest) -> BlobError {
     err.into()
 }
 
-/// Drop an abandoned stage so a reader tailing it never faults on a half-deleted name.
-///
-/// On Windows an unlink only flags the file for deletion while any handle stays open — a follower
-/// tailing the stage, or a reader the caller just closed — and the original name lingers in a
-/// delete-pending state that answers openers with `PermissionDenied` until that handle releases.
-/// Renaming the stage aside frees its name at once (a rename tolerates open handles), so a tail sees
-/// it vanish instead; the moved file is then removed, retried briefly while a straggling handle lets
-/// go. Unix unlinks immediately, so the rename is a harmless extra step there.
+/// Renaming first frees the stage name on Windows, where open handles leave an unlinked file in a
+/// delete-pending state that rejects new readers with `PermissionDenied`.
 fn discard_stage(path: tempfile::TempPath) -> Result<(), BlobError> {
+    discard_stage_with(path, |from, to| std::fs::rename(from, to))
+}
+
+fn discard_stage_with(
+    path: tempfile::TempPath,
+    rename: impl FnOnce(&Path, &Path) -> Result<(), std::io::Error>,
+) -> Result<(), BlobError> {
     let scratch = scratch_path(&path);
-    if std::fs::rename(&path, &scratch).is_err() {
+    if rename(&path, &scratch).is_err() {
         return path.close().map_err(BlobError::from);
     }
     remove_pending(&scratch)
@@ -117,9 +104,7 @@ fn scratch_path(path: &Path) -> PathBuf {
     path.with_file_name(name)
 }
 
-/// Walk up from a removed blob's path, dropping each now-empty fan-out directory until reaching
-/// `stop_at` (the `sha256` root, left in place) or a directory another blob still occupies. A
-/// non-empty directory makes `remove_dir` fail, which ends the walk without disturbing it.
+/// A failed directory removal ends pruning because another blob may still occupy that branch.
 fn prune_empty_parents(path: &Path, stop_at: &Path) {
     let mut current = path.parent();
     while let Some(dir) = current {
@@ -131,16 +116,17 @@ fn prune_empty_parents(path: &Path, stop_at: &Path) {
 }
 
 fn remove_pending(path: &Path) -> Result<(), BlobError> {
-    remove_pending_with(path, std::thread::sleep)
+    remove_pending_with(path, |path| std::fs::remove_file(path), std::thread::sleep)
 }
 
-/// Delete a pending stage, retrying a transient `PermissionDenied` (a straggling handle on Windows)
-/// with a doubling backoff up to 64ms. `wait` receives each backoff before the retry; production
-/// sleeps, and a test records the schedule so it neither sleeps nor races a real clock.
-fn remove_pending_with(path: &Path, mut wait: impl FnMut(Duration)) -> Result<(), BlobError> {
+fn remove_pending_with(
+    path: &Path,
+    mut remove: impl FnMut(&Path) -> Result<(), std::io::Error>,
+    mut wait: impl FnMut(Duration),
+) -> Result<(), BlobError> {
     let mut backoff = Duration::from_millis(1);
     loop {
-        match std::fs::remove_file(path) {
+        match remove(path) {
             Ok(()) => return Ok(()),
             Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
             Err(error) if error.kind() == ErrorKind::PermissionDenied && backoff < Duration::from_millis(64) => {
@@ -152,7 +138,6 @@ fn remove_pending_with(path: &Path, mut wait: impl FnMut(Duration)) -> Result<()
     }
 }
 
-/// A file found while walking the content-addressed blob tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlobEntry {
     pub path: PathBuf,
@@ -160,7 +145,6 @@ pub struct BlobEntry {
     pub bytes: u64,
 }
 
-/// A content-addressed blob store rooted at a directory.
 #[derive(Debug, Clone)]
 pub struct BlobStore {
     root: PathBuf,
@@ -168,7 +152,7 @@ pub struct BlobStore {
 }
 
 impl BlobStore {
-    /// Create a store rooted at `root`. The directory is created lazily on first write.
+    /// Defers directory creation until the first write or health check.
     #[must_use]
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self {
@@ -185,11 +169,20 @@ impl BlobStore {
             .expect("the private blob worker semaphore is never closed")
     }
 
-    /// The on-disk path a digest maps to.
     #[must_use]
     pub fn path_for(&self, digest: &Digest) -> PathBuf {
+        self.parent_for(digest).join(digest.as_str())
+    }
+
+    fn parent_for(&self, digest: &Digest) -> PathBuf {
         let hex = digest.as_str();
-        self.root.join("sha256").join(&hex[0..2]).join(&hex[2..4]).join(hex)
+        self.root.join("sha256").join(&hex[0..2]).join(&hex[2..4])
+    }
+
+    fn create_path_for(&self, digest: &Digest) -> Result<PathBuf, BlobError> {
+        let parent = self.parent_for(digest);
+        std::fs::create_dir_all(&parent)?;
+        Ok(parent.join(digest.as_str()))
     }
 
     pub(crate) fn lease_dir(&self) -> PathBuf {
@@ -200,16 +193,13 @@ impl BlobStore {
         self.root.clone()
     }
 
-    /// Whether the blob is present.
     #[must_use]
     pub fn exists(&self, digest: &Digest) -> bool {
         self.path_for(digest).is_file()
     }
 
-    /// Ensure the store root exists and can be read.
-    ///
     /// # Errors
-    /// Returns [`BlobError::Io`] when the root cannot be created or opened as a directory.
+    /// Returns [`super::BlobErrorKind::Io`] when the root cannot be created or opened as a directory.
     pub fn health_check(&self) -> Result<(), BlobError> {
         std::fs::create_dir_all(&self.root)?;
         std::fs::read_dir(&self.root)?;
@@ -248,11 +238,10 @@ impl BlobStore {
         Ok(())
     }
 
-    /// Write `bytes`, returning their digest. Idempotent: an existing blob that still matches the digest
-    /// is left untouched; one that has been truncated or corrupted is repaired from `bytes`.
+    /// Leaves a matching resident untouched and repairs a corrupt resident from `bytes`.
     ///
     /// # Errors
-    /// Returns [`BlobError::Io`] if the directory cannot be created or the file cannot be written.
+    /// Returns [`super::BlobErrorKind::Io`] if the directory cannot be created or the file cannot be written.
     pub fn write(&self, bytes: &[u8]) -> Result<Digest, BlobError> {
         let digest = Digest::of(bytes);
         let hex = digest.as_str();
@@ -269,11 +258,11 @@ impl BlobStore {
         Ok(digest)
     }
 
-    /// Write `bytes` only if they match `expected` (hash-verify-before-commit).
+    /// Commits only bytes that hash to `expected`.
     ///
     /// # Errors
-    /// Returns [`BlobError::DigestMismatch`] if the bytes hash to a different digest, or
-    /// [`BlobError::Io`] on a filesystem failure.
+    /// Returns [`super::BlobErrorKind::DigestMismatch`] if the bytes hash to a different digest, or
+    /// [`super::BlobErrorKind::Io`] on a filesystem failure.
     pub fn write_verified(&self, bytes: &[u8], expected: &Digest) -> Result<(), BlobError> {
         let actual = Digest::of(bytes);
         if &actual != expected {
@@ -283,19 +272,17 @@ impl BlobStore {
         Ok(())
     }
 
-    /// Read a blob's bytes.
-    ///
     /// # Errors
-    /// Returns [`BlobError::NotFound`] if the blob is absent, or [`BlobError::Io`] on a read
+    /// Returns [`super::BlobErrorKind::NotFound`] if the blob is absent, or [`super::BlobErrorKind::Io`] on a read
     /// failure.
     pub fn read(&self, digest: &Digest) -> Result<Vec<u8>, BlobError> {
         std::fs::read(self.path_for(digest)).map_err(|err| absent_or_io(err, digest))
     }
 
-    /// Return a blob's byte length without reading its contents, or `None` when it is absent.
+    /// Returns `None` when the blob is absent without reading its contents.
     ///
     /// # Errors
-    /// Returns [`BlobError::Io`] if the path exists but its metadata cannot be read.
+    /// Returns [`super::BlobErrorKind::Io`] if the path exists but its metadata cannot be read.
     pub fn head(&self, digest: &Digest) -> Result<Option<BlobMetadata>, BlobError> {
         match std::fs::metadata(self.path_for(digest)) {
             Ok(metadata) if metadata.is_file() => Ok(Some(BlobMetadata {
@@ -308,11 +295,11 @@ impl BlobStore {
         }
     }
 
-    /// Read an end-exclusive byte range from a blob.
+    /// Reads an end-exclusive byte range.
     ///
     /// # Errors
-    /// Returns [`BlobError::NotFound`] if the blob is absent, [`BlobError::InvalidRange`] if the
-    /// range lies outside the blob, or [`BlobError::Io`] on a read failure.
+    /// Returns [`super::BlobErrorKind::NotFound`] if the blob is absent, [`super::BlobErrorKind::InvalidRange`] if the
+    /// range lies outside the blob, or [`super::BlobErrorKind::Io`] on a read failure.
     pub fn read_range(&self, digest: &Digest, range: Range<u64>) -> Result<Vec<u8>, BlobError> {
         let mut file = std::fs::File::open(self.path_for(digest)).map_err(|err| absent_or_io(err, digest))?;
         let bytes = file.metadata()?.len();
@@ -330,7 +317,7 @@ impl BlobStore {
         Ok(result)
     }
 
-    /// Visit blob files under the content-addressed tree without collecting the store.
+    /// Invokes `visit` as entries are discovered instead of collecting them.
     ///
     /// # Errors
     /// Returns a scan error if directory walking fails or the visitor returns an error.
@@ -360,34 +347,25 @@ impl BlobStore {
         Ok(())
     }
 
-    /// Stream-hash a stored blob and check that its bytes match its address.
-    ///
     /// # Errors
-    /// Returns [`BlobError::NotFound`] if the blob is absent, or [`BlobError::Io`] on a read
+    /// Returns [`super::BlobErrorKind::NotFound`] if the blob is absent, or [`super::BlobErrorKind::Io`] on a read
     /// failure.
     pub fn verify(&self, digest: &Digest) -> Result<bool, BlobError> {
         let mut file = std::fs::File::open(self.path_for(digest)).map_err(|err| absent_or_io(err, digest))?;
-        Ok(hash_file(&mut file)? == digest.as_str())
+        Ok(hash_file(&mut file)? == *digest)
     }
 
-    /// The directory holding durable per-session upload stages, one file per in-progress session.
     fn upload_dir(&self) -> PathBuf {
         self.root.join("uploads")
     }
 
-    /// Write `chunk` into `session`'s durable stage at `offset`, creating the stage if absent, returning
-    /// the new staged length. The bytes are synced before returning, so an accepted chunk survives a
-    /// restart and a resumed upload continues from this length.
+    /// Syncs `chunk` before returning. Truncating to the committed `offset` makes replay after a crash
+    /// idempotent even when the previous chunk reached disk before its offset was committed.
     ///
-    /// `offset` is the last committed length: the stage is truncated to it before writing, so a chunk
-    /// that synced to disk before its offset was committed and was then lost to a restart is dropped and
-    /// the re-sent chunk lands exactly where the client resumes. Resume is therefore idempotent — the
-    /// stage is always the committed prefix plus this chunk, never a duplicated region.
-    ///
-    /// `session` must be a single safe path component; the caller supplies a generated session id.
+    /// `session` must be a generated ID containing one safe path component.
     ///
     /// # Errors
-    /// Returns [`BlobError::Io`] if the stage directory or file cannot be created or written.
+    /// Returns [`super::BlobErrorKind::Io`] if the stage directory or file cannot be created or written.
     pub fn stage_upload_chunk(&self, session: &str, offset: u64, chunk: &[u8]) -> Result<u64, BlobError> {
         std::fs::create_dir_all(self.upload_dir())?;
         let mut file = std::fs::OpenOptions::new()
@@ -402,10 +380,10 @@ impl BlobStore {
         Ok(file.metadata()?.len())
     }
 
-    /// The bytes staged for `session` so far, or `None` when it has no stage.
+    /// Returns `None` when `session` has no stage.
     ///
     /// # Errors
-    /// Returns [`BlobError::Io`] if the stage exists but its metadata cannot be read.
+    /// Returns [`super::BlobErrorKind::Io`] if the stage exists but its metadata cannot be read.
     pub fn staged_upload_len(&self, session: &str) -> Result<Option<u64>, BlobError> {
         match std::fs::metadata(self.upload_dir().join(session)) {
             Ok(metadata) => Ok(Some(metadata.len())),
@@ -414,43 +392,36 @@ impl BlobStore {
         }
     }
 
-    /// Verify `session`'s staged bytes hash to `expected`, publish them into the content store, and
-    /// remove the stage. A staged digest already present is deduplicated and the stage removed.
+    /// Publishes only bytes that hash to `expected`; an existing verified blob deduplicates the stage.
     ///
     /// # Errors
-    /// Returns [`BlobError::DigestMismatch`] when the staged bytes hash differently,
-    /// [`BlobError::NotFound`] when no stage exists, or [`BlobError::Io`] on a filesystem failure.
+    /// Returns [`super::BlobErrorKind::DigestMismatch`] when the staged bytes hash differently,
+    /// [`super::BlobErrorKind::NotFound`] when no stage exists, or [`super::BlobErrorKind::Io`] on a filesystem failure.
     ///
-    /// # Panics
-    /// Never in practice: blob paths always sit inside the store root, so a parent exists.
     pub fn finish_upload(&self, session: &str, expected: &Digest) -> Result<(), BlobError> {
         let stage = self.upload_dir().join(session);
         let mut file = match std::fs::File::open(&stage) {
             Ok(file) => file,
-            // A finish that already published this digest and cleared its stage is idempotent: a retry
-            // whose response was lost finds the blob durably present and succeeds, the way commit_staged
-            // does, rather than reporting the missing stage as a failed upload.
+            // A retry after a lost response succeeds when the published blob outlived its stage.
             Err(err) if err.kind() == std::io::ErrorKind::NotFound && self.path_for(expected).is_file() => {
                 return Ok(());
             }
             Err(err) => return Err(absent_or_io(err, expected)),
         };
         let len = file.metadata()?.len();
-        let actual_hex = hash_file(&mut file)?;
-        if actual_hex != expected.as_str() {
-            let actual = Digest::from_hex(&actual_hex).expect("a sha-256 hex digest is valid");
+        let actual = hash_file(&mut file)?;
+        if actual != *expected {
             return Err(BlobError::digest_mismatch(expected, &actual));
         }
         drop(file);
-        let dest = self.path_for(expected);
-        std::fs::create_dir_all(dest.parent().expect("blob paths always have a parent"))?;
+        let dest = self.create_path_for(expected)?;
         publish(&dest, tempfile::TempPath::try_from_path(&stage)?, expected, len)
     }
 
-    /// Discard `session`'s durable stage, tolerating one that is already gone.
+    /// Treats an absent stage as a successful discard.
     ///
     /// # Errors
-    /// Returns [`BlobError::Io`] on a filesystem failure other than the stage being absent.
+    /// Returns [`super::BlobErrorKind::Io`] on a filesystem failure other than the stage being absent.
     pub fn discard_upload(&self, session: &str) -> Result<(), BlobError> {
         match std::fs::remove_file(self.upload_dir().join(session)) {
             Ok(()) => Ok(()),
@@ -459,15 +430,10 @@ impl BlobStore {
         }
     }
 
-    /// Remove a blob by digest, returning whether a file existed.
-    ///
-    /// After removing the file, the two fan-out directories it hung under (`sha256/ab/cd` then
-    /// `sha256/ab`) are pruned when they fall empty, so reclaiming a store's last blob under a prefix
-    /// leaves no empty skeleton behind. A directory a concurrent writer still needs stays put, since the
-    /// prune skips a non-empty directory and the write path recreates any it needs.
+    /// Prunes empty fan-out directories but leaves branches occupied by concurrent writers.
     ///
     /// # Errors
-    /// Returns [`BlobError::Io`] if the filesystem removal fails.
+    /// Returns [`super::BlobErrorKind::Io`] if the filesystem removal fails.
     pub fn remove(&self, digest: &Digest) -> Result<bool, BlobError> {
         let path = self.path_for(digest);
         match std::fs::remove_file(&path) {
@@ -514,18 +480,15 @@ impl BlobStore {
     }
 }
 
-/// An in-progress blob write: bytes stream into a temp file while the digest accumulates; on
-/// success the file moves into the store only when the hash matches.
+/// Keeps streamed bytes unpublished until their digest has been verified.
 pub struct PendingBlob {
-    /// Buffered so wheel-sized streams issue hundreds of large writes instead of one syscall per
-    /// network chunk.
+    /// Buffering avoids one syscall per network chunk.
     file: std::io::BufWriter<std::fs::File>,
     path: tempfile::TempPath,
     hasher: Sha256,
     len: u64,
 }
 
-/// A fully written temporary blob, ready to move into the content-addressed tree.
 #[derive(Debug)]
 pub struct StagedBlob {
     path: tempfile::TempPath,
@@ -534,10 +497,8 @@ pub struct StagedBlob {
 }
 
 impl BlobStore {
-    /// Begin streaming a blob into the store.
-    ///
     /// # Errors
-    /// Returns [`BlobError::Io`] if the store directory or temp file cannot be created.
+    /// Returns [`super::BlobErrorKind::Io`] if the store directory or temp file cannot be created.
     pub fn begin(&self) -> Result<PendingBlob, BlobError> {
         std::fs::create_dir_all(&self.root)?;
         let temp = tempfile::NamedTempFile::new_in(&self.root)?;
@@ -550,39 +511,28 @@ impl BlobStore {
         })
     }
 
-    /// Move a staged blob into the store, returning a [`PlacementReceipt`] proving it is durable.
-    ///
-    /// The staged file was already synced when it was finished; this crosses the rest of the durability
-    /// boundary by atomically renaming it into its content-addressed path and syncing the parent
-    /// directory. An already-present blob that still matches the digest is durable too and yields a
-    /// receipt without a rewrite; a corrupt one squatting the path is repaired from the stage.
+    /// Crosses the durability boundary by atomically publishing the synced stage and syncing its parent.
+    /// A matching resident yields a receipt without a rewrite; a corrupt resident is replaced.
     ///
     /// # Errors
-    /// Returns [`BlobError::Io`] on a filesystem failure.
+    /// Returns [`super::BlobErrorKind::Io`] on a filesystem failure.
     ///
-    /// # Panics
-    /// Never in practice: blob paths always sit inside the store root, so a parent exists.
     pub fn commit_staged(&self, staged: StagedBlob) -> Result<PlacementReceipt, BlobError> {
         let receipt = PlacementReceipt {
             digest: staged.digest.clone(),
             size: staged.len,
             durability: DurabilityCapabilities::FILESYSTEM,
         };
-        let dest = self.path_for(&staged.digest);
-        std::fs::create_dir_all(dest.parent().expect("blob paths always have a parent"))?;
+        let dest = self.create_path_for(&staged.digest)?;
         publish(&dest, staged.path, &staged.digest, staged.len)?;
         Ok(receipt)
     }
 
-    /// Finish a streamed write: verify the digest, move the blob into place, and return its
-    /// [`PlacementReceipt`].
+    /// Publishes only when the streamed bytes hash to `expected`.
     ///
     /// # Errors
-    /// Returns [`BlobError::DigestMismatch`] when the streamed bytes hash differently, or
-    /// [`BlobError::Io`] on a filesystem failure.
-    ///
-    /// # Panics
-    /// Never in practice: blob paths always sit inside the store root, so a parent exists.
+    /// Returns [`super::BlobErrorKind::DigestMismatch`] when the streamed bytes hash differently, or
+    /// [`super::BlobErrorKind::Io`] on a filesystem failure.
     pub fn commit(&self, pending: PendingBlob, expected: &Digest) -> Result<PlacementReceipt, BlobError> {
         let staged = pending.finish()?;
         if staged.digest() != expected {
@@ -603,44 +553,38 @@ impl PendingBlob {
         self.len == 0
     }
 
-    /// Append one chunk.
-    ///
     /// # Errors
-    /// Returns [`BlobError::Io`] if the write fails.
+    /// Returns [`super::BlobErrorKind::Io`] if the write fails.
     pub fn write(&mut self, chunk: &[u8]) -> Result<(), BlobError> {
-        // Hash only what was written: a failed write leaves the digest short, so commit refuses
-        // the incomplete blob instead of persisting it.
+        // Hash after the write so a partial write cannot produce a valid commit digest.
         self.file.write_all(chunk)?;
         self.hasher.update(chunk);
         self.len += chunk.len() as u64;
         Ok(())
     }
 
-    /// Push buffered bytes to the file so readers tailing the temp path see them.
+    /// Makes buffered bytes visible to readers tailing the temporary file.
     ///
     /// # Errors
-    /// Returns [`BlobError::Io`] if the flush fails.
+    /// Returns [`super::BlobErrorKind::Io`] if the flush fails.
     pub fn flush(&mut self) -> Result<(), BlobError> {
         self.file.flush()?;
         Ok(())
     }
 
-    /// Where the in-progress bytes live until [`BlobStore::commit`] moves them into place.
     #[must_use]
     pub fn path(&self) -> &std::path::Path {
         &self.path
     }
 
-    /// Finish writing and return the staged blob.
-    ///
     /// # Errors
-    /// Returns [`BlobError::Io`] if flushing or syncing the temporary file fails.
+    /// Returns [`super::BlobErrorKind::Io`] if flushing or syncing the temporary file fails.
     pub fn finish(self) -> Result<StagedBlob, BlobError> {
         let file = self.file.into_inner().map_err(std::io::IntoInnerError::into_error)?;
         file.sync_all()?;
         Ok(StagedBlob {
             path: self.path,
-            digest: Digest(to_hex(&self.hasher.finalize())),
+            digest: Digest::from_sha256(self.hasher.finalize().into()),
             len: self.len,
         })
     }
@@ -653,25 +597,21 @@ impl PendingBlob {
 }
 
 impl StagedBlob {
-    /// The staged file path.
     #[must_use]
     pub fn path(&self) -> &std::path::Path {
         &self.path
     }
 
-    /// The staged file digest.
     #[must_use]
     pub const fn digest(&self) -> &Digest {
         &self.digest
     }
 
-    /// The staged byte length.
     #[must_use]
     pub const fn len(&self) -> u64 {
         self.len
     }
 
-    /// Whether the staged file has no bytes.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.len == 0
@@ -683,57 +623,5 @@ impl StagedBlob {
 }
 
 #[cfg(test)]
-mod stage_tests {
-    #[cfg(unix)]
-    use std::time::Duration;
-
-    #[cfg(unix)]
-    use super::discard_stage;
-    use super::remove_pending;
-    #[cfg(unix)]
-    use super::remove_pending_with;
-
-    #[test]
-    fn test_remove_pending_treats_a_missing_stage_as_removed() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(remove_pending(&dir.path().join("absent")).is_ok());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn test_remove_pending_backs_off_then_reports_a_persistent_denial() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let dir = tempfile::tempdir().unwrap();
-        let locked = dir.path().join("locked");
-        std::fs::create_dir(&locked).unwrap();
-        let target = locked.join("stage");
-        std::fs::write(&target, b"x").unwrap();
-        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
-
-        // Record the backoff schedule instead of sleeping, so the retry stays deterministic and fast.
-        let mut waits = Vec::new();
-        let result = remove_pending_with(&target, |backoff| waits.push(backoff));
-
-        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert_eq!(result.unwrap_err().kind(), crate::blob::BlobErrorKind::Io);
-        assert_eq!(
-            waits,
-            [1, 2, 4, 8, 16, 32].map(Duration::from_millis),
-            "a persistent denial doubles the backoff up to the 64ms ceiling"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn test_discard_stage_falls_back_when_rename_is_denied() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let dir = tempfile::tempdir().unwrap();
-        let locked = dir.path().join("locked");
-        std::fs::create_dir(&locked).unwrap();
-        let (_file, path) = tempfile::NamedTempFile::new_in(&locked).unwrap().into_parts();
-        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
-        let result = discard_stage(path);
-        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert_eq!(result.unwrap_err().kind(), crate::blob::BlobErrorKind::Io);
-    }
-}
+#[path = "../../tests/unit/blob/store/stage_tests.rs"]
+mod stage_tests;

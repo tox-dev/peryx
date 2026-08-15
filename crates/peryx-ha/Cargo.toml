@@ -1,0 +1,24 @@
+[package]
+name = "peryx-ha"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Availability modes, lifecycle traits, and neutral distributed contracts for peryx."
+
+[dependencies]
+async-trait.workspace = true
+peryx-core.workspace = true
+peryx-identity.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+
+[dev-dependencies]
+rstest.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

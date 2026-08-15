@@ -9,7 +9,6 @@ use unicode_normalization::UnicodeNormalization as _;
 pub struct UserId(String);
 
 impl UserId {
-    /// Generate a random server-user identifier.
     #[must_use]
     pub fn random() -> Self {
         Self(format!("usr_{}", uuid::Uuid::new_v4().simple()))
@@ -19,6 +18,11 @@ impl UserId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    #[must_use]
+    pub fn from_stored(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
 }
 
 impl fmt::Display for UserId {
@@ -27,7 +31,7 @@ impl fmt::Display for UserId {
     }
 }
 
-/// A validated display name and its case-insensitive lookup key.
+/// Display names retain trimmed spelling; lookup keys use lowercase NFC.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserName {
     display: String,
@@ -35,8 +39,6 @@ pub struct UserName {
 }
 
 impl UserName {
-    /// Preserve the trimmed display spelling and derive its canonical lookup key.
-    ///
     /// # Errors
     /// Returns [`UserNameError::Empty`] when `value` contains only whitespace.
     pub fn new(value: &str) -> Result<Self, UserNameError> {
@@ -59,16 +61,23 @@ impl UserName {
     pub fn canonical(&self) -> &str {
         &self.canonical
     }
+
+    #[must_use]
+    pub fn with_id_suffix(&self, id: &UserId) -> Self {
+        let display = format!("{} ({id})", self.display);
+        Self {
+            canonical: display.to_lowercase().nfc().collect(),
+            display,
+        }
+    }
 }
 
-/// A display name that cannot identify a server user.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum UserNameError {
     #[error("user display name cannot be empty")]
     Empty,
 }
 
-/// Whether a server user may currently resolve as an identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UserState {
@@ -76,7 +85,6 @@ pub enum UserState {
     Disabled,
 }
 
-/// One persistent server user.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerUser {
     pub id: UserId,
@@ -85,7 +93,6 @@ pub struct ServerUser {
     pub revision: u64,
 }
 
-/// An actor-neutral account change.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum UserLifecycleChange {
@@ -103,7 +110,6 @@ pub enum UserLifecycleChange {
     Reactivated,
 }
 
-/// An ordered account-lifecycle record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserLifecycleEvent {
     pub user_id: UserId,

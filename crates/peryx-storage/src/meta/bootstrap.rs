@@ -6,7 +6,6 @@ use redb::ReadableTable as _;
 
 use super::{MetaError, MetaStore, ROLE_GRANT, USER, USER_EVENT, USER_NAME, USER_VERIFIER};
 
-/// A rejected first-administrator bootstrap.
 #[derive(Debug, thiserror::Error)]
 pub enum AdministratorBootstrapError {
     #[error("an administrator grant already exists")]
@@ -20,8 +19,8 @@ pub enum AdministratorBootstrapError {
 }
 
 impl MetaStore {
-    /// Create the first administrator account, verifier, server grant, and lifecycle record in one
-    /// transaction. Redb serializes metadata writers, so concurrent attempts observe one winner.
+    /// Creates the first administrator and its credentials, grant, and lifecycle record atomically.
+    /// Redb serialization gives concurrent attempts one winner.
     ///
     /// # Errors
     /// Returns [`AdministratorBootstrapError::AdministratorExists`] when any administrator grant is

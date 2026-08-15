@@ -1,11 +1,13 @@
 +++
 title = "Configuration"
-description = "Every TOML key, flag, and default. Precedence is defaults < TOML file < environment < flags."
+description = "Shared TOML keys, flags, defaults, and precedence. Owner settings remain in ecosystem documentation."
 weight = 1
 +++
 
-peryx reads one [TOML](https://toml.io/) file, passed with `--config <path>`. A few operational settings double as flags
-or `PERYX_*` environment variables, which override the file. Precedence is `defaults < TOML file < environment < flags`.
+Release binaries contain the shipped ecosystem owners and availability implementations. Configuration selects one owner
+for each index and one availability mode for the process. Peryx reads one [TOML](https://toml.io/) file passed with
+`--config <path>`. Some operational settings also have flags or `PERYX_*` environment variables. Precedence is
+`defaults < TOML file < environment < flags`.
 
 ## Top level
 
@@ -39,70 +41,55 @@ the variable. Only scalar settings are environment-configurable. The `[[index]]`
 (`s-maxage` or `max-age`) that is **shorter**, that lifetime governs the page; a longer one is clamped to
 `cache_ttl_secs`. The fallback applies when the header is absent, `no-cache`/`no-store`, or zero.
 
-The ceiling matters because `Cache-Control` is the upstream's opinion, not yours. An upstream — or any CDN in front of
-it — answering `max-age=31536000` would otherwise pin a page in your cache for a year with no revalidation. Raise
-`cache_ttl_secs` if you want to trust a long upstream lifetime; lower it to revalidate sooner than the upstream asks.
+The ceiling limits how long peryx trusts an upstream `Cache-Control` value. An upstream or CDN that answers
+`max-age=31536000` would otherwise pin a page in the cache for a year with no revalidation. Raise `cache_ttl_secs` if
+you want to trust a long upstream lifetime; lower it to revalidate sooner than the upstream asks.
 
 Artifacts never expire; they are content-addressed by sha256, so a changed upstream file is a new entry on the page
 rather than a mutation.
 
 `max_stale_secs` bounds the other direction. When the upstream is unreachable or answers `5xx`, peryx keeps serving the
-last page it fetched rather than failing a build over a blip — but only for this long past the page's freshness window.
-Beyond it the upstream failure surfaces instead, because a cache that answers with whatever it last saw, forever, has
-stopped being a cache and become a fork. Set it to `0` to serve stale without limit, which is what mirroring a knowingly
-unreliable upstream asks for; `offline = true` below is the unconditional form.
+last page it fetched, but only for this long past the page's freshness window. Beyond it the upstream failure surfaces
+instead, because a cache that answers with whatever it last saw, forever, has stopped being a cache and become a fork.
+Set it to `0` to serve stale without limit, which is what mirroring a knowingly unreliable upstream asks for;
+`offline = true` below is the unconditional form.
 
-`usage_retention_days` bounds the durable
-[daily version and source usage](@/core/monitor.md#daily-version-and-source-usage) aggregate: buckets older than this
-many days expire on the aggregator thread, off the request path. Leave it unset to keep every day. Tightening it only
-reclaims durable storage; a retained day's totals never change, and expiry never blocks request handling.
+`usage_retention_days` bounds the durable [daily group and source usage](@/core/monitor.md#daily-group-and-source-usage)
+aggregate: buckets older than this many days expire on the aggregator thread, off the request path. Leave it unset to
+keep every day. Tightening it only reclaims durable storage; a retained day's totals never change, and expiry never
+blocks request handling.
 
-`hot_cache_bytes` is the memory budget for the transformed-page cache, where a warm request is a lookup, an expiry
-check, and a memcpy. It trades memory against warm-serve speed and nothing else: every entry is re-derivable from the
-cached raw page, so a smaller budget only lowers the hit rate, and `0` turns the cache off so each warm page pays its
-transform again. Lower it on a memory-tight host; raise it when a few projects with very large index pages (`boto3` and
-`numpy` run to megabytes of JSON) carry the traffic. The PyPI driver is the only ecosystem that populates it today.
+`hot_cache_bytes` is the memory budget for transformed metadata pages. Each entry can be derived from the cached raw
+page. A smaller budget lowers the hit rate, and `0` disables this cache. Ecosystem documentation states whether an
+implementation uses the transformed-page cache.
 
-`offline = true` disables upstream network access for configured cached indexes. Whatever an ecosystem has cached serves
-from disk: PyPI project pages, [PEP 658](https://peps.python.org/pep-0658/) metadata siblings, and wheels; OCI manifests
-and blobs. A cold cached-index miss returns `503`; virtual-index routes still serve any hosted layer that can answer.
-Use `peryx mirror sync` before enabling offline mode on a machine that must run without network access.
+`offline = true` disables upstream network access for cached indexes. Stored metadata and artifacts remain available; a
+cold cached-index miss returns `503`. Virtual routes can still use a hosted layer. Run `peryx mirror sync` before
+enabling offline mode on a machine that must work without network access.
 
-`read_only = true` runs the process as a [read replica](@/core/high-availability.md). It rejects each HTTP mutation with
-`503 Service Unavailable`, disables upstream cache fills, webhook delivery, and background maintenance, and reports the
-replica role through `GET /+status`. Use this mode only with a data directory populated by backup restore or an external
-replication system. Replica mode requires the copied metadata store and configuration to contain the same nonblank
-`writer_identity`; peryx stops startup unless both values match.
+`read_only = true` rejects each HTTP mutation with `503 Service Unavailable`, disables upstream cache fills, webhook
+delivery, and background maintenance, and reports a read-only role through `GET /+status`. Under `none`, populate the
+data directory through backup restore or external replication and omit `writer_identity`.
 
-`writer_identity` enables the single-writer startup guard. A writer claims this value in the metadata store at startup;
-another configured identity cannot start against that store. Replica mode does not claim it, so a restored config
-snapshot may retain the writer's value while serving read-only. See [High availability](@/core/high-availability.md) for
-promotion.
+`writer_identity` enables the writer-claim guard for managed `dc` or `ha` replication. The configured value must match
+the claim in the metadata store. Startup rejects `writer_identity` unless `[availability.replication]` supplies the
+managed replication role. See [High availability](@/core/availability/high-availability.md) for promotion.
 
 ## Upstream credential sources
 
 An upstream `password` or `token` reads from one of three places: the value inlined in the config, a `*_file` sibling,
 or a `*_env` sibling. Set at most one per credential; naming two fails startup. The same three sources apply to every
-`[[index.upstream]]` source, and to both PyPI and OCI upstreams. A bearer `token` takes precedence over `username` plus
-`password`, and both precede any [netrc](#upstream-netrc-credentials) match, so adding a `_file` or `_env` source
-changes where the secret comes from, never which credential wins.
+`[[index.upstream]]` source. A bearer `token` takes precedence over `username` plus `password`, and both precede any
+[netrc](#upstream-netrc-credentials) match, so adding a `_file` or `_env` source changes where the secret comes from,
+never which credential wins.
 
 ```toml
 [[index]]
-name = "corp"
+name = "cache"
 [[index.upstream]]
 name = "primary"
-url = "https://packages.corp.example/simple/"
-username = "peryx"
-password_env = "PERYX_CORP_PASSWORD"          # from the environment the process manager injects
-
-[[index]]
-name = "registry"
-ecosystem = "oci"
-[[index.upstream]]
-name = "primary"
-url = "https://registry.corp.example"
-token_file = "/run/credentials/peryx.service/registry-token" # from a systemd credential
+url = "https://upstream.example/api/"
+token_file = "/run/credentials/peryx.service/upstream-token"
 credential_refresh_secs = 60
 credential_refresh_on_unauthorized = true
 credential_failure = "fail"
@@ -111,10 +98,9 @@ credential_failure = "fail"
 `password_file`/`token_file` fit secret files mounted read-only by the process manager: a
 [systemd credential](https://systemd.io/CREDENTIALS/) under `$CREDENTIALS_DIRECTORY` (`LoadCredential=` or
 `SetCredential=`), a [Kubernetes Secret](https://kubernetes.io/docs/concepts/configuration/secret/) projected under
-`/run/secrets`, or a Docker secret. peryx trims surrounding whitespace, so a file that a `kubectl create secret` mount
-or an `echo` left with a trailing newline still resolves. `password_env`/`token_env` fit a value the manager passes as
-an environment variable, including systemd's `%d`-free `Environment=`/`EnvironmentFile=` and a Kubernetes
-`secretKeyRef`.
+`/run/secrets`, or a container-runtime secret. peryx trims surrounding whitespace, so a mounted file with a trailing
+newline still resolves. `password_env`/`token_env` fit a value the manager passes as an environment variable, including
+systemd's `%d`-free `Environment=`/`EnvironmentFile=` and a Kubernetes `secretKeyRef`.
 
 By default, peryx resolves every source once when it builds the cached index and holds the value for the process
 lifetime. Set `credential_refresh_secs` on an `[[index.upstream]]` source to reload a `_file` or `_env` credential
@@ -124,8 +110,8 @@ without locking. Literal credentials and netrc entries cannot be refreshed.
 `credential_refresh_on_unauthorized` defaults to `true`. When the upstream rejects a credential, peryx reloads its
 source and replays the request once. The replay happens only when that credential generation has not already been
 replaced, so a burst of rejected requests does not repeatedly read the source. `credential_failure = "fail"` rejects
-requests until a later reload succeeds; `"anonymous"` retries without authentication. Credentials and OCI bearer tokens
-stay isolated by configured source and origin.
+requests until a later reload succeeds; `"anonymous"` retries without authentication. Credentials and derived bearer
+tokens stay isolated by configured source and origin.
 
 Projected Kubernetes Secret volumes and files replaced atomically by Vault Agent can rotate without restarting peryx.
 Kubernetes `subPath` mounts do not receive projected Secret updates. Process managers ordinarily cannot change the
@@ -149,10 +135,10 @@ An exec helper replaces `username`, `password`, `token`, and their file/env form
 
 ```toml
 [[index]]
-name = "corp"
+name = "cache"
 [[index.upstream]]
 name = "primary"
-url = "https://packages.corp.example/simple/"
+url = "https://upstream.example/api/"
 
 [index.upstream.credential_exec]
 argv = ["/usr/local/bin/peryx-credential", "--profile", "production"]
@@ -166,7 +152,7 @@ peryx starts `argv` directly, without a shell, and writes one compact JSON objec
 ```json
 {
   "version": 1,
-  "origin": "https://packages.corp.example",
+  "origin": "https://upstream.example",
   "scope": "read"
 }
 ```
@@ -202,8 +188,8 @@ upstream `401` refreshes and replays a credential generation once; concurrent re
 helper is retried after 30 seconds. `failure = "fail"` rejects requests while no valid credential is available;
 `"anonymous"` uses no authorization until a later refresh succeeds.
 
-Execution is bounded to 64 argv items and 32 KiB of argv data, 1–300 seconds, 64 inherited environment names, 64 KiB of
-standard output, and eight helpers across the process. The default timeout is 30 seconds. peryx clears the child
+Execution is bounded to 64 argv items and 32 KiB of argv data, 1 to 300 seconds, 64 inherited environment names, 64 KiB
+of standard output, and eight helpers across the process. The default timeout is 30 seconds. peryx clears the child
 environment, restores only the named variables that exist, discards standard error, and kills and reaps the process
 group on timeout or oversized output. Process arguments, output, upstream URL details, and returned credentials are not
 included in diagnostics.
@@ -225,7 +211,7 @@ from datetime import UTC, datetime, timedelta
 request = json.load(sys.stdin)
 if request != {
     "version": 1,
-    "origin": "https://packages.corp.example",
+    "origin": "https://upstream.example",
     "scope": "read",
 }:
     raise SystemExit(2)
@@ -251,29 +237,29 @@ credentials only when the `[[index.upstream]]` source has neither.
 netrc = "/run/secrets/upstream.netrc"
 
 [[index]]
-name = "corp"
+name = "cache"
 [[index.upstream]]
 name = "primary"
-url = "https://packages.example/simple/"
+url = "https://upstream.example/api/"
 ```
 
-The traditional form matches pip and uv for a host on the scheme's default port:
+The host form matches an upstream on the scheme's default port:
 
 ```text
-machine packages.example
-login __token__
-password pypi-token
+machine upstream.example
+login service
+password upstream-token
 ```
 
 Use an origin or authority machine name when the same host serves more than one credential boundary. peryx searches an
 exact origin first, then `host:port`, a bare host on a default port, and `default`.
 
 ```text
-machine https://packages.example:8443
-login release-reader
-password release-secret
+machine https://upstream.example:8443
+login artifact-reader
+password artifact-secret
 
-machine packages.example:9443
+machine upstream.example:9443
 login staging-reader
 password staging-secret
 ```
@@ -289,25 +275,15 @@ file without printing its contents. Peryx does not search `~/.netrc` unless you 
 
 ## Upstream TLS
 
-A cached PyPI index or OCI registry can extend the platform trust store with a private CA and authenticate with a client
-certificate. Configure the paths on each `[[index.upstream]]` source:
+A cached index can extend the platform trust store with a private CA and authenticate with a client certificate.
+Configure the paths on each `[[index.upstream]]` source:
 
 ```toml
 [[index]]
-name = "corp-python"
+name = "cache"
 [[index.upstream]]
 name = "primary"
-url = "https://packages.example/simple/"
-ca_file = "/run/secrets/corp-ca.pem"
-client_cert_file = "/run/secrets/peryx-client.pem"
-client_key_file = "/run/secrets/peryx-client-key.pem"
-
-[[index]]
-name = "corp-images"
-ecosystem = "oci"
-[[index.upstream]]
-name = "primary"
-url = "https://registry.example"
+url = "https://upstream.example/api/"
 ca_file = "/run/secrets/corp-ca.pem"
 client_cert_file = "/run/secrets/peryx-client.pem"
 client_key_file = "/run/secrets/peryx-client-key.pem"
@@ -339,10 +315,8 @@ contain certificate or key bytes.
 
 ## TLS
 
-peryx serves plain HTTP by default, which is the right choice for a laptop: `pip`/`uv` accept any URL, and
-`docker`/`podman` trust a loopback registry (`localhost`, `127.0.0.0/8`) over HTTP with no configuration. To serve over
-the network, where clients demand HTTPS, turn on TLS with one of two mutually exclusive tables. Neither is set by
-default, and an unconfigured server keeps the plain-HTTP path.
+peryx serves plain HTTP by default. Use it on loopback or behind a proxy that terminates TLS. To serve HTTPS from peryx,
+configure one of two mutually exclusive tables. An unconfigured server keeps the plain HTTP path.
 
 A `[tls]` table serves HTTPS from a certificate and key you provide:
 
@@ -358,10 +332,10 @@ manual certificate handling and no client-side insecure flag:
 
 ```toml
 [acme]
-domains = ["registry.example.com"]
+domains = ["artifacts.example.com"]
 contact = "admin@example.com"
-cache-dir = "/var/lib/peryx/acme"  # where issued certificates are cached; default "acme-cache"
-staging = false                    # true uses Let's Encrypt staging while testing
+cache-dir = "/var/lib/peryx/acme"   # where issued certificates are cached; default "acme-cache"
+staging = false                     # true uses Let's Encrypt staging while testing
 ```
 
 | Table    | Key         | Meaning                                                     | Default      |
@@ -382,82 +356,53 @@ and let the proxy hold the certificate.
 Each `[[index]]` table declares one index. `name` is required; exactly one of `[[index.upstream]]`, `hosted`, or
 `layers` selects the role. peryx rejects unknown keys.
 
-| Key                    | Role    | Meaning                                                              | Default            |
-| ---------------------- | ------- | -------------------------------------------------------------------- | ------------------ |
-| `name`                 | all     | Identifier other indexes reference in `layers`                       | (required)         |
-| `route`                | all     | URL prefix the index is served under                                 | same as `name`     |
-| `ecosystem`            | all     | Packaging format: `pypi` or `oci`                                    | `pypi`             |
-| `upstream`             | cached  | Ordered `[[index.upstream]]` sources to cache (see below)            |                    |
-| `fallback`             | cached  | Continue to the next source when one has no match                    | `true`             |
-| `protected`            | cached  | Project globs a later source may not shadow                          | none               |
-| `pins`                 | cached  | Map of project to the source name that serves it                     | none               |
-| `upstream_concurrency` | cached  | Cap on concurrent upstream fetches; `0` is unlimited and the default | `0`                |
-| `offline`              | cached  | Serve this cached index from disk only                               | `false`            |
-| `prefetch`             | cached  | Package and artifact selection for `peryx mirror`                    | (see below)        |
-| `hosted`               | hosted  | `true` marks this index as a hosted store                            | `false`            |
-| `volatile`             | hosted  | Allow delete and overwrite                                           | `true`             |
-| `anonymous_read`       | all     | Whether a credential-less request may read this index                | `[auth]` default   |
-| `access_token`         | all     | Named credentials the index accepts, with scoped grants              | none               |
-| `layers`               | virtual | Ordered index names to compose; first match per filename wins        |                    |
-| `upload`               | virtual | Hosted layer that receives uploads                                   | first hosted layer |
-| `policy`               | all     | Nested index policy table                                            | empty              |
-| `settings`             | all     | Nested table of the index ecosystem's own settings                   | empty              |
-| `webhook`              | all     | Signed delivery targets for upload and index-change events           | none               |
+| Key                    | Role    | Meaning                                                              | Default                             |
+| ---------------------- | ------- | -------------------------------------------------------------------- | ----------------------------------- |
+| `name`                 | all     | Identifier other indexes reference in `layers`                       | (required)                          |
+| `route`                | all     | URL prefix the index is served under                                 | same as `name`                      |
+| `ecosystem`            | all     | Owner registration ID                                                | unique lowest-priority registration |
+| `upstream`             | cached  | Ordered `[[index.upstream]]` sources to cache (see below)            |                                     |
+| `fallback`             | cached  | Continue to the next source when one has no match                    | `true`                              |
+| `protected`            | cached  | Resource globs a later source may not shadow                         | none                                |
+| `pins`                 | cached  | Map of resource to the source name that serves it                    | none                                |
+| `upstream_concurrency` | cached  | Cap on concurrent upstream fetches; `0` is unlimited and the default | `0`                                 |
+| `offline`              | cached  | Serve this cached index from disk only                               | `false`                             |
+| `prefetch`             | cached  | Resource and artifact selection for `peryx mirror`                   | (see below)                         |
+| `hosted`               | hosted  | `true` marks this index as a hosted store                            | `false`                             |
+| `volatile`             | hosted  | Allow delete and overwrite                                           | `true`                              |
+| `anonymous_read`       | all     | Whether a credential-less request may read this index                | `[auth]` default                    |
+| `access_token`         | all     | Named credentials the index accepts, with scoped grants              | none                                |
+| `layers`               | virtual | Ordered index names to compose                                       |                                     |
+| `write_target`         | virtual | Hosted layer that receives writes                                    | first hosted layer                  |
+| `policy`               | all     | Nested index policy table                                            | empty                               |
+| `settings`             | all     | Nested table of the index ecosystem's own settings                   | empty                               |
+| `webhook`              | all     | Signed delivery targets for owner-defined events                     | none                                |
 
-A hosted index accepts uploads through its `[[index.access_token]]` grants that permit writes; there is no separate
-upload-token key.
+A hosted index accepts writes through its `[[index.access_token]]` grants; there is no separate write credential key.
 
 A `route` is a raw URL path prefix. It must be one or more non-empty path segments separated by `/`; each segment may
 contain only ASCII letters, digits, `-`, `.`, `_`, and `~`. Startup rejects routes with a leading or trailing `/`, empty
 segments, percent encoding, traversal segments, control characters, spaces, and routes whose first segment is reserved
 for a Peryx endpoint: `+stats`, `+status`, `_`, `admin`, `api-docs`, `browse`, `favicon.svg`, `metrics`, `pkg`,
-`search`, `stats`, or `upload`. These are the paths peryx's own API and web UI serve (the `_` segment is the `/_/oidc/*`
-trusted-publishing namespace), so an index may not shadow one.
+`search`, `stats`, or `upload`. These are the paths peryx's own API and web UI serve. The `_` segment reserves
+authentication routes, so an index may not shadow one.
 
-Declaring any `[[index]]` replaces the default topology, which ships a trio per ecosystem: a cached upstream, a hosted
-store, and a virtual index that layers the two.
+Declaring any `[[index]]` replaces the default topology. Supported implementations document their defaults and complete
+examples:
 
-```toml
-[[index]]
-name = "pypi"
-[[index.upstream]]
-name = "primary"
-url = "https://pypi.org/simple/"
+- [Ecosystem owner documentation](@/ecosystems/_index.md)
 
-[[index]]
-name = "hosted"
-hosted = true
-
-[[index]]
-name = "root/pypi"
-layers = ["hosted", "pypi"]
-upload = "hosted"
-
-[[index]]
-name = "dockerhub"
-ecosystem = "oci"
-[[index.upstream]]
-name = "primary"
-url = "https://registry-1.docker.io"
-
-[[index]]
-name = "images"
-ecosystem = "oci"
-hosted = true
-
-[[index]]
-name = "root/oci"
-ecosystem = "oci"
-layers = ["images", "dockerhub"]
-upload = "images"
-```
+When `ecosystem` is omitted, Peryx selects the unique lowest-priority registration. It rejects duplicate priorities
+during registry construction. An explicit ID must name a shipped owner; `config check` and `serve` reject an unknown ID
+before opening storage or binding a socket. Unselected owners remain linked but register no capability, run no
+installer, mount no route, and start no work.
 
 Startup rejects duplicate names, duplicate routes, invalid routes, `layers` entries that name no index, `layers` that
-mix ecosystems, an `upload` target that is not a hosted index, and an empty `[[index.access_token]]` `secret`. An empty
+mix ecosystems, a `write_target` that is not a hosted index, and an empty `[[index.access_token]]` `secret`. An empty
 secret is a configuration error rather than a valid value: authorization compares a token secret against the Basic-auth
 password on each request, so a blank string would admit any request that presents an empty password. The empty value
 almost always comes from a config template whose environment variable never expanded, so peryx refuses it at load time
-instead of booting into that state. To grant no upload access, configure no write-granting token.
+instead of booting into that state. To grant no write access, configure no write-granting token.
 
 ### `[[index.upstream]]`
 
@@ -469,7 +414,7 @@ keys below belong on the source, never on the parent `[[index]]`.
 | Key                                  | Meaning                                                          | Default    |
 | ------------------------------------ | ---------------------------------------------------------------- | ---------- |
 | `name`                               | Identifier for the source, unique within the index               | (required) |
-| `url`                                | Upstream URL (a Simple index, or a `/v2/` registry for OCI)      | (required) |
+| `url`                                | Upstream API URL                                                 | (required) |
 | `artifact_url`                       | Origin that serves artifacts when it differs from `url`          | `url`      |
 | `username`                           | Basic-auth username for the upstream                             | (none)     |
 | `password`                           | Basic-auth password; `password_file`/`password_env` read it out  | (none)     |
@@ -486,162 +431,55 @@ keys below belong on the source, never on the parent `[[index]]`.
 
 ```toml
 [[index]]
-name = "python"
+name = "combined"
 fallback = true
-protected = ["Internal.Pkg"]
+protected = ["internal-resource"]
 
 [index.pins]
-flask = "public"
+internal-resource = "internal"
 
 [[index.upstream]]
 name = "internal"
-url = "https://packages.example/simple/"
+url = "https://internal.example/api/"
 username = "reader"
 password_file = "/run/secrets/internal-password"
 
 [[index.upstream]]
 name = "public"
-url = "https://pypi.org/simple/"
+url = "https://public.example/api/"
 ```
 
 ### `[index.policy]`
 
-Policy rules apply to the index that owns the table. A cached-index policy filters that cache; a hosted policy filters
-direct uploads and hosted-route reads; a virtual policy filters the merged index clients use. Project names are compared
-after [PEP 503](https://peps.python.org/pep-0503/) normalization.
+Policy has a common core and optional implementation rules. Core owns name allow and block lists, protected names, size
+limits, repository quotas, and audit mode. The selected owner compiles owner-specific keys. Unknown or inapplicable keys
+fail startup.
 
-```toml
-[[index]]
-name = "root/pypi"
-layers = ["hosted", "pypi"]
-upload = "hosted"
+| Common key                | Meaning                                                             |
+| ------------------------- | ------------------------------------------------------------------- |
+| `allow_resources`         | Only these normalized resource identities may be served or mirrored |
+| `block_resources`         | Denied normalized resource identities                               |
+| `protected_resources`     | Exact resources or `prefix-*` namespaces that cannot fall back      |
+| `max_artifact_size_bytes` | Largest artifact accepted or served                                 |
+| `max_resource_size_bytes` | Largest logical artifact total for one resource                     |
+| `max_accounted_bytes`     | Deduplicated bytes charged to one repository                        |
+| `max_resources`           | Distinct resources charged to one repository                        |
+| `quota_audit`             | Record a would-reject quota decision and admit the write            |
 
-[index.policy]
-fallback_mode = "private-first"
-allow_projects = ["flask", "requests"]
-block_projects = ["bad-package"]
-protected_names = ["acme-secrets", "acme-*"]
-allow_versions = ">=1,<3"
-allow_package_types = ["wheel"]
-block_package_types = ["sdist"]
-allow_wheel_pythons = ["py3", "cp313"]
-block_wheel_platforms = ["win_amd64"]
-max_file_size_bytes = 104857600
-max_project_size_bytes = 1073741824
-max_accounted_bytes = 10737418240
-max_projects = 500
-max_versions_per_project = 100
-quota_audit = false
-min_release_age_secs = 604800
-required_attestations = ["https://docs.pypi.org/attestations/publish/v1"]
-attestation_mode = "enforce"
-```
+Owner documentation lists supported policy keys and their behavior:
 
-| Key                        | Meaning                                                                       |
-| -------------------------- | ----------------------------------------------------------------------------- |
-| `fallback_mode`            | PyPI virtual source policy: `fallback`, `private-first`, or `no-fallback`     |
-| `allow_projects`           | Only these normalized projects may be served, mirrored, or uploaded           |
-| `block_projects`           | These normalized projects are denied                                          |
-| `protected_names`          | Reserved names that never fall back upstream; exact or `prefix-*` namespace   |
-| `allow_versions`           | PEP 440 specifier set accepted for parsed distribution filenames              |
-| `allow_package_types`      | Accepted parsed file types: `wheel`, `sdist`                                  |
-| `block_package_types`      | Denied parsed file types: `wheel`, `sdist`                                    |
-| `allow_wheel_pythons`      | Accepted wheel Python tags, matched against each dot-compressed tag segment   |
-| `block_wheel_pythons`      | Denied wheel Python tags                                                      |
-| `allow_wheel_platforms`    | Accepted wheel platform tags, matched against each dot-compressed tag segment |
-| `block_wheel_platforms`    | Denied wheel platform tags                                                    |
-| `max_file_size_bytes`      | Maximum file size from the Simple API `size` field or from an uploaded file   |
-| `max_project_size_bytes`   | Maximum sum of retained file sizes for one project detail page                |
-| `max_accounted_bytes`      | Repository quota: deduplicated bytes one repository may hold                  |
-| `max_projects`             | Repository quota: distinct project identities one repository may hold         |
-| `max_versions_per_project` | Repository quota: versions one project may hold                               |
-| `quota_audit`              | Record a would-reject quota decision instead of denying the write             |
-| `min_release_age_secs`     | Hide an upstream file until this many seconds past its `upload-time`          |
-| `required_attestations`    | In-toto predicate types an upload must carry a PEP 740 attestation for        |
-| `attestation_mode`         | `enforce` rejects a missing attestation; `audit` records it but publishes     |
-
-`min_release_age_secs` quarantines fresh upstream releases: a file whose Simple API
-[`upload-time`](https://packaging.python.org/en/latest/specifications/simple-repository-api/#project-detail) is younger
-than the delay is hidden from the served page, giving operators a window to catch a malicious or mistaken upload before
-it reaches clients. A common baseline is a seven-day delay (`604800`). A file with no `upload-time` is hidden while the
-delay is set, since its age cannot be established. The clock is the serving clock, so the file appears once enough time
-passes. This is PyPI-specific and applies only to a PyPI index.
-
-`required_attestations` makes a hosted upload carry a
-[PEP 740](https://packaging.python.org/en/latest/specifications/index-hosted-attestations/) attestation for every listed
-[in-toto](https://slsa.dev/spec/v1.0/provenance) predicate type. peryx evaluates the rule at the upload boundary, after
-the distribution's structure and each attestation's subject binding are validated and before the file and its provenance
-publish, so an upload missing a required predicate type publishes neither object. The check reads only the predicate
-types the bound attestations already declared: it performs no signature, certificate, or transparency-log verification,
-and asserts no publisher identity. A file uploaded with no attestations satisfies no requirement. `attestation_mode`
-chooses the outcome of an unmet requirement: `enforce` (the default) returns a `403` that names the missing predicate
-types without echoing bundle content, while `audit` records the same `required-attestation-audit` policy decision but
-lets the upload publish, so an operator can measure coverage before turning enforcement on. Both modes persist the
-decision. The rule is PyPI-specific and applies only to a PyPI index; it runs after the structural, size, and tag rules,
-so a file rejected on one of those reports that denial rather than the attestation requirement.
-
-File and project size rules require declared sizes. A file without `size` is denied by `max_file_size_bytes`; a project
-page with any retained file lacking `size` is denied by `max_project_size_bytes`. Active policies use the buffered
-Simple-page path so file lists and [PEP 691](https://peps.python.org/pep-0691/) `versions` are filtered together before
-peryx serves bytes.
-
-`max_accounted_bytes`, `max_projects`, and `max_versions_per_project` are the repository quota. An OCI index enforces
-them on hosted pushes: a blob, mount, or manifest reserves capacity before it becomes discoverable and is refused with a
-`403 DENIED` naming the crossed counter when it would exceed a limit, charging a deduplicated digest once per
-repository. `quota_audit = true` records a would-reject decision and admits the push, so an operator can observe
-projected enforcement before turning it on. Setting none of the three limits leaves accounting off. See
-[Repository quotas](@/core/quotas.md) for the accounting model. PyPI enforcement of these keys is forthcoming.
-
-`protected_names` reserves private names against dependency confusion. peryx refuses a reserved name on the upstream
-mirror path only: a hosted member still serves it and accepts uploads for it, but a request the local members cannot
-answer fails instead of reaching the public index. That closes the gap a missing, renamed, or deleted local package
-would otherwise open. An entry is an exact name or a `prefix-*` namespace rule, both normalized like the incoming name
-before the comparison.
-
-`fallback_mode` controls how a PyPI virtual index chooses project candidates from its immediate hosted and cached
-members:
-
-- `fallback` is the compatibility default. It merges every member and keeps the first record for a duplicate filename,
-  so hosted and upstream files with different names remain visible together.
-- `private-first` serves only hosted candidates when both source classes contain the normalized project. It uses the
-  cached candidates only when the hosted members contain no files, and records a structured `policy_decision` security
-  event for each collision.
-- `no-fallback` does not query an immediate cached member. A project with no hosted candidates returns a structured
-  `403` policy denial instead of an empty or upstream page.
-
-Protected names take precedence over all three modes: hosted members can serve a protected name, but cached members do
-not query it upstream. The comparison uses the same PEP 503 normalization as project routing, so
-`acme-pkg`/`acme_pkg`/`acme.pkg` select one policy decision. A nested virtual member uses its own mode; configure that
-member too when its boundary must enforce the same rule.
-
-Leaving `fallback_mode` unset preserves existing filename-level merging. An unknown value or use on an OCI index is a
-startup error. The setting governs candidates returned by this server, not indexes a client adds to its own config;
-pip's `--extra-index-url`, uv source overrides, and nested virtual indexes with their own mode remain separate trust
-boundaries. Use `protected_names` for private names that must stay blocked even while absent or renamed.
-
-`allow_projects`, `block_projects`, `protected_names`, `max_file_size_bytes`, `max_project_size_bytes`,
-`max_accounted_bytes`, `max_projects`, `max_versions_per_project`, and `quota_audit` are ecosystem-neutral and apply to
-an OCI index too, matching on image name, blob size, and repository quota: a blocked image is hidden on reads and
-refused on push, a layer or manifest over the size limit is refused, and a push over a repository quota is refused. The
-rest of the keys above cover fallback selection, version specifiers, package types, and wheel tags. These are
-Python-specific ([PEP 440](https://packaging.python.org/en/latest/specifications/version-specifiers/) versions,
-wheel/sdist types, wheel tags) and have no OCI counterpart, so they are implemented in the PyPI ecosystem crate and
-apply only to a PyPI index. Each ecosystem contributes its own matchers to the same neutral `[index.policy]` engine
-through a rule trait.
+- [Ecosystem owner documentation](@/ecosystems/_index.md)
 
 ### `[index.settings]`
 
-Settings the index's ecosystem defines for itself. The keys belong to the ecosystem, not to this layer: peryx carries
-the table to the ecosystem of the index that owns it and compiles it there, so a key that ecosystem does not know is a
-startup error.
+Core keeps this table opaque and passes it to the selected owner. That owner owns its keys, defaults, validation, and
+compiled representation. Unsupported keys fail startup.
 
-PyPI defines no settings, so `[index.settings]` on a PyPI index fails to start. OCI defines `library_prefix` on a cached
-index, which decides how that index spells a repository name when it asks its upstream for it. Its values, and what each
-one rewrites, are in [OCI index settings](@/ecosystems/oci/reference/settings.md).
+- [Ecosystem owner documentation](@/ecosystems/_index.md)
 
 ### `[[index.access_token]]`
 
-Each `[[index.access_token]]` table adds one named credential the index accepts, with a grant scoped to some projects
+Each `[[index.access_token]]` table adds one named credential the index accepts, with a grant scoped to some resources
 and actions. Put these under the hosted index that stores the writes. The [access model](@/core/authentication.md)
 covers the grammar; the keys are:
 
@@ -653,7 +491,7 @@ hosted = true
 [[index.access_token]]
 name = "ci"
 secret = "ci-secret"
-projects = ["team-*"]
+resources = ["team-*"]
 actions = ["write", "delete"]
 expires_at = "2027-01-01T00:00:00Z"
 ```
@@ -661,60 +499,24 @@ expires_at = "2027-01-01T00:00:00Z"
 | Key           | Meaning                                                                      | Default    |
 | ------------- | ---------------------------------------------------------------------------- | ---------- |
 | `name`        | Subject the token authenticates as; unique per index                         | (required) |
-| `secret`      | Password a client presents as its Basic password                             | (required) |
+| `secret`      | Shared secret the ecosystem authentication adapter verifies                  | (required) |
 | `secret_file` | Path to read `secret` from instead of inlining it                            | (none)     |
-| `projects`    | Project globs the token may act on; `*` matches any run of characters        | `["*"]`    |
+| `resources`   | Resource globs the token may act on; `*` matches any run of characters       | `["*"]`    |
 | `actions`     | Any of `read`, `write`, `delete`; at least one                               | (required) |
 | `expires_at`  | [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339) time after which it stops | never      |
 
-A token needs exactly one of `secret` and `secret_file`. Write and delete are enforced now; a `read` grant records a
-read policy that the forthcoming read challenge will enforce.
+A token needs exactly one of `secret` and `secret_file`. The selected owner maps client credentials and routes onto
+shared actions. Supported access implementations:
+
+- [Ecosystem owner documentation](@/ecosystems/_index.md)
 
 ### `[index.prefetch]`
 
-Cached indexes can declare the default selection for `peryx mirror plan`, `peryx mirror sync`, and
-`peryx mirror verify`. CLI flags add package selectors and override booleans or `mode` for one run.
+Cached indexes can declare defaults for `peryx mirror plan`, `peryx mirror sync`, and `peryx mirror verify`. Core keeps
+this table opaque and passes it to the selected owner. That owner owns its keys, defaults, validation, and CLI override
+rules. An unsupported key fails when the mirror command compiles the selection.
 
-```toml
-[[index]]
-name = "pypi"
-[[index.upstream]]
-name = "primary"
-url = "https://pypi.org/simple/"
-
-[index.prefetch]
-mode = "selected"
-packages = ["requests>=2,<3"]
-requirements = ["requirements.txt"]
-include_wheels = true
-include_sdists = true
-python_tags = ["py3", "cp312"]
-abi_tags = ["none", "abi3"]
-platform_tags = ["any", "manylinux_2_28_x86_64"]
-max_file_size_bytes = 524288000
-metadata_only = false
-```
-
-| Key                   | Values                               | Default    |
-| --------------------- | ------------------------------------ | ---------- |
-| `mode`                | `selected`, `all`, `metadata-only`   | `selected` |
-| `packages`            | package selectors such as `flask>=3` | `[]`       |
-| `requirements`        | requirements or constraints files    | `[]`       |
-| `include_wheels`      | boolean                              | `true`     |
-| `include_sdists`      | boolean                              | `true`     |
-| `python_tags`         | wheel Python tags                    | `[]`       |
-| `abi_tags`            | wheel ABI tags                       | `[]`       |
-| `platform_tags`       | wheel platform tags                  | `[]`       |
-| `max_file_size_bytes` | positive integer                     | (none)     |
-| `metadata_only`       | boolean                              | `false`    |
-
-`mode = "all"` reads the upstream root Simple project list and then visits matching projects. Artifact filters apply
-after a project page is fetched. `mode = "metadata-only"` implies `metadata_only = true`.
-
-The wheel/sdist and wheel-tag keys above are the PyPI selection set and seed `peryx mirror` for a PyPI index. For an OCI
-index, `packages` is the image list `peryx mirror` pulls (image references such as `library/alpine:3.19`), the same way
-it seeds a PyPI index's project list; `--image <ref>` on the command line adds one-off references on top. The PyPI
-wheel/sdist/wheel-tag keys do not apply to an OCI index.
+- [Ecosystem owner documentation](@/ecosystems/_index.md)
 
 ## `[rate_limit]`
 
@@ -729,10 +531,10 @@ uses `127.0.0.1` and ignores forwarding headers.
 Set `trusted_proxies` to the reverse-proxy networks from which peryx accepts forwarding headers. For a matching socket
 peer, peryx scans `X-Forwarded-For` from the nearest hop and selects the first address outside the trusted networks. If
 the header is absent, peryx accepts one `X-Real-IP` value. The same peer check gates `X-Forwarded-Host` and
-`X-Forwarded-Proto` for public API links and OCI token realms, whether or not `enabled` is true. Peryx uses the socket
-peer when the trusted client-address suffix is malformed or the chain contains trusted addresses throughout. It treats
-IPv4-mapped IPv6 addresses as their IPv4 equivalents. Leave the list empty for direct deployments. Exclude client
-networks and intermediaries that accept caller-supplied forwarding headers.
+`X-Forwarded-Proto` for public links, whether or not `enabled` is true. Peryx uses the socket peer when the trusted
+client-address suffix is malformed or the chain contains trusted addresses throughout. It treats IPv4-mapped IPv6
+addresses as their IPv4 equivalents. Leave the list empty for direct deployments. Exclude client networks and
+intermediaries that accept caller-supplied forwarding headers.
 
 Clients can change a Basic username or bearer value without changing buckets when both values resolve to the same
 principal. peryx groups rotated invalid `Authorization` values under the peer IP.
@@ -747,18 +549,16 @@ Each route class is a sub-table with `requests` and `window_secs`:
 
 | Table                   | Route class                                     | Default        |
 | ----------------------- | ----------------------------------------------- | -------------- |
-| `[rate_limit.listing]`  | Project listing and detail pages                | `600` / `60s`  |
-| `[rate_limit.metadata]` | PEP 658/714 `.metadata` siblings                | `1200` / `60s` |
-| `[rate_limit.artifact]` | Artifact downloads and archive inspection       | `300` / `60s`  |
-| `[rate_limit.upload]`   | Upload, yank, restore, and delete requests      | `60` / `60s`   |
+| `[rate_limit.listing]`  | Resource listings and detail pages              | `600` / `60s`  |
+| `[rate_limit.metadata]` | Separate metadata objects                       | `1200` / `60s` |
+| `[rate_limit.artifact]` | Artifact reads and inspection                   | `300` / `60s`  |
+| `[rate_limit.upload]`   | Mutation requests                               | `60` / `60s`   |
 | `[rate_limit.admin]`    | Status, stats, metrics, and discovery endpoints | `120` / `60s`  |
 
-A request's class follows its method and its path. `POST`, `PUT`, `PATCH`, and `DELETE` count against `upload`. `GET`,
-`HEAD`, and `OPTIONS` are reads, classed by the path they hit: a manifest or artifact `HEAD` shares the `artifact`
-budget, a project listing the `listing` budget, a `.metadata` sibling the `metadata` budget, and a status or discovery
-call the `admin` budget. That split matters for OCI, where a client sends a `HEAD` on every manifest and blob before it
-pulls; charging those reads against the strict `upload` budget would let a routine pull drain it and start drawing `429`
-rejections.
+The selected owner maps each route to one of these classes. Read methods retain the class of the resource they address;
+the method alone does not turn a read into a write. Owner documentation defines each route map:
+
+- [Ecosystem owner documentation](@/ecosystems/_index.md)
 
 Example:
 
@@ -773,11 +573,11 @@ requests = 300
 window_secs = 60
 
 [[index]]
-name = "pypi"
+name = "cache"
 upstream_concurrency = 4
 [[index.upstream]]
 name = "primary"
-url = "https://pypi.org/simple/"
+url = "https://upstream.example/api/"
 ```
 
 ## `[jobs]`
@@ -796,8 +596,8 @@ mode = "none"
 | `mode` | `local` runs maintenance on this node; `none` runs nothing | `local` |
 
 `mode = "none"` starts no scheduler, timer, or worker, which suits a node fronted by an external maintenance runner or
-one that should only serve. A [read replica](@/core/high-availability.md) runs no maintenance regardless of this
-setting.
+one that should only serve. A [read replica](@/core/availability/high-availability.md) runs no maintenance regardless of
+this setting.
 
 ### Schedules
 
@@ -809,40 +609,21 @@ rejects a non-positive interval at startup, naming the schedule's index (`jobs s
 [[jobs.schedule]]
 job = "cache_maintenance"
 interval_secs = 300
-
-[[jobs.schedule]]
-job = "catalog_sync"
-interval_secs = 21600
-repository = "pypi"
-max_projects = 10000
-concurrency = 4
-timeout_secs = 900
 ```
 
-| Key             | Meaning                                                      | Default    |
-| --------------- | ------------------------------------------------------------ | ---------- |
-| `job`           | `cache_maintenance`, `catalog_sync`, or `dc_copy`            | (required) |
-| `interval_secs` | Seconds between runs, must be positive                       | (required) |
-| `repository`    | Cached online PyPI index for `catalog_sync`                  | (required) |
-| `source`        | Named upstream to use instead of repository routing          | routing    |
-| `max_projects`  | Maximum projects refreshed per run; range `1..=100000`       | `10000`    |
-| `concurrency`   | Requests or copies in flight; range `1..=32` (`1..=64` copy) | `4` / `8`  |
-| `timeout_secs`  | Whole-run wall-time limit; range `1..=86400`                 | `900`      |
+| Key             | Meaning                                        | Default    |
+| --------------- | ---------------------------------------------- | ---------- |
+| `job`           | Registered core or ecosystem job               | (required) |
+| `interval_secs` | Seconds between runs, must be positive         | (required) |
+| `concurrency`   | Copies in flight for `dc_copy`; range `1..=64` | `8`        |
 
-`cache_maintenance` reclaims expired process resources and revalidates stale cached pages, fanning out one run per
-installed ecosystem so independent repositories sweep together while one repository never sweeps itself twice at once.
+`cache_maintenance` reclaims expired process resources and revalidates stale cached pages, with one run per active
+owner. Independent repositories can sweep together, while one repository cannot run two sweeps at once.
 
-`catalog_sync` refreshes the repository's remote root and then a canonical, bounded slice of project metadata. It does
-not download distributions. The same repository cannot run two catalog syncs at once, while different repositories may
-run within the node-local worker limits. Cancellation stops admitting project requests; completed root and project
-generations remain valid because each source document publishes atomically.
-
-`dc_copy` copies the filesystem blobs the local data center still owes from its peers, so each data center keeps its own
-verified copy of every artifact a peer serves. It reads the copy backlog from the placement ledger, pulls each owed
-digest from a verified peer over the replication transport, and records the local placement. It runs only on a
-filesystem backend in a `dc` or `ha` group whose roster names this node and at least one peer data center, and it
-accepts only `concurrency` (copies in flight, range `1..=64`, default `8`). The copy is fenced by the ownership group's
-cluster term, so a node with no live consensus term copies nothing.
+`dc_copy` copies blobs owed by the local placement domain from verified peers. It runs on a filesystem backend in a
+configured `dc` or `ha` group whose roster names this node and at least one peer. It accepts only `concurrency` (copies
+in flight, range `1..=64`, default `8`). The ownership group's cluster term fences each copy, so a node without a live
+consensus term copies nothing.
 
 One bounded timer drives every schedule, so a large set costs no per-tick scan. When a tick arrives while the same job's
 previous run is still going, peryx skips it rather than queueing it, and counts the skip in the job metrics. Pick an
@@ -852,11 +633,8 @@ contend for upstream bandwidth.
 The timer keeps no durable state. On restart it sets each schedule's next run one full interval after startup and drops
 the occurrences missed while the process was down rather than replaying them as a backlog.
 
-Run the same typed job once with `peryx job run --repository pypi`. The command accepts the schedule's `source`,
-`max-projects`, `concurrency`, and `timeout-secs` controls, prints processed and changed counts, and writes the same
-durable job history as a scheduled run. `peryx job list` and `peryx job show <id>` inspect that history. A failed run's
-error begins with a stable category such as `retryable_upstream`, `retryable_timeout`, `upstream`, `catalog_sync`, or
-`project_sync`; automation can retry only the retryable categories.
+Ecosystem documentation lists registered jobs and their schedule keys. `peryx job list` and `peryx job show <id>`
+inspect durable run history.
 
 ## `[blob]`
 
@@ -941,21 +719,20 @@ versioning or replication on the object store.
 
 ## `[availability]`
 
-The `[availability]` table picks the runtime availability contract this node promises for authoritative mutations. Its
-`mode` selects one of `none`, `dc`, or `ha`, whose acknowledgement guarantees the
-[availability contracts](@/core/availability-contracts.md) fix. An omitted table, and an explicit `mode = "none"`,
-resolve to the same single-node configuration, so a zero-config deployment carries no availability state at all. To size
-and stand up each mode's shape, see [availability deployment and sizing](@/core/availability-deployment.md).
+The shipped binary contains all availability implementations. Only `[availability].mode` selects one; command-line flags
+and alternate builds do not override it. `mode` accepts `none`, `dc`, or `ha`, with acknowledgement guarantees defined
+by the [availability contracts](@/core/availability/contracts.md). An omitted table and `mode = "none"` resolve to no
+managed availability resources.
 
 ```toml
 [availability]
 mode = "none"
 ```
 
-`none` is one writer with local durability and operator-driven [failover](@/core/high-availability.md): peryx opens no
-replication client, route, or task. `dc` and `ha` name the stronger promises later work fulfills; each needs a
-`[availability.replication]` role that carries it, so peryx rejects a `dc` or `ha` mode with no role, and rejects a
-`[availability.replication]` role under `none`, naming the `availability` field.
+`none` opens no replication client, availability route, listener, metric family, or task. It can serve writes or run
+with `read_only = true`. `dc` and `ha` select distributed coordination; each needs a `[availability.replication]` role.
+Peryx rejects an unknown mode during config resolution. It also rejects a distributed mode without that role or a
+replication role under `none`. The process exits before opening storage or binding a listener; it starts no worker.
 
 ```toml
 [availability]
@@ -986,9 +763,9 @@ mutations. peryx rejects an unknown key in either table, naming the offending fi
 | `page_size`          | replica | Changes fetched per poll, positive and within the primary limit | `100`      |
 
 A role needs exactly one of `token` or `token_file`; setting both, or neither, is rejected. Keep the credential out of
-the config file with `token_file`, the path to a mounted Docker or Kubernetes secret or a systemd credential, which
-peryx reads at startup and never logs. A configuration snapshot (`peryx backup`) preserves a `token_file` as its path
-and never resolves the secret behind it into the manifest.
+the config file with `token_file`, the path to a mounted orchestrator secret or a systemd credential, which peryx reads
+at startup and never logs. A configuration snapshot (`peryx backup`) preserves a `token_file` as its path and never
+resolves the secret behind it into the manifest.
 
 A replica commits a page's metadata as soon as it arrives and pulls the whole blobs the page references on an
 independent frontier, so a slow blob transfer never holds up the metadata behind it. A read waits on the slower of the
@@ -1014,13 +791,13 @@ token_file = "/run/secrets/replication-token"
 
 [[availability.member]]
 node = "writer-a"
-dc = "dc-east-1"
+dc = "dc-east"
 address = "https://a.internal:8443"
 role = "writer"
 
 [[availability.member]]
 node = "replica-b"
-dc = "dc-east-2"
+dc = "dc-east"
 address = "https://b.internal:8443"
 role = "replica"
 ```
@@ -1032,18 +809,18 @@ one member.
 | --------- | -------------------------------------------------------------- | ------------------------ |
 | `group`   | The group identity the roster belongs to                       | (required with a roster) |
 | `node`    | The member's stable identity, unique within the group          | (required)               |
-| `dc`      | The datacenter the member runs in, unique within the group     | (required)               |
+| `dc`      | The datacenter failure-domain label containing the member      | (required)               |
 | `address` | The address peers reach the member on, unique within the group | (required)               |
 | `role`    | `writer` or `replica`                                          | (required)               |
 
 In `ha` mode each node also sets `node_identity` to its own member's `node` value, so the ownership consensus runs under
 that node's own voter identity. This is distinct from `writer_identity`, which names the one writer every node claims
 and follows on the metadata plane and is therefore identical across the group: deriving the consensus identity from
-`writer_identity` would make every node share the writer's voter, so no genuine multi-voter group would form and a home
-failure could not transfer authority to a survivor.
+`writer_identity` would make every node share the writer's voter, so no multi-voter group would form and a home failure
+could not transfer authority to a survivor.
 
-peryx validates the group at startup and refuses to serve on any violation: a blank or duplicated `group`, `node`, `dc`,
-or `address`; a `node` that reuses the `group` identity; anything other than exactly one `writer`; or a group with no
+peryx validates the group at startup and refuses to serve on any violation: a blank or duplicated `group`, `node`, or
+`address`; a `node` that reuses the `group` identity; anything other than exactly one `writer`; or a group with no
 configured replica. It never probes a member's `address`, so an unreachable configured peer is a valid topology, not a
 configuration error. A roster requires `dc` or `ha` mode; declaring one under `none` is rejected, naming the
 `availability` field.
@@ -1058,7 +835,6 @@ a minted token, and the default each index's `anonymous_read` takes. All keys ar
 signing_key_file = "/run/secrets/peryx-signing-key"
 token_ttl_secs = 300
 default_anonymous_read = false
-oidc_audience = "https://packages.example/_/oidc"
 ```
 
 | Key                      | Meaning                                                                              | Default |
@@ -1067,14 +843,10 @@ oidc_audience = "https://packages.example/_/oidc"
 | `signing_key_file`       | Path to read `signing_key` from instead of inlining it                               | (none)  |
 | `token_ttl_secs`         | Lifetime of a minted token, in seconds; must be positive and at most 86400 (one day) | `300`   |
 | `default_anonymous_read` | What an index's `anonymous_read` defaults to when the index omits it                 | `true`  |
-| `oidc_audience`          | Audience external CI identity tokens must carry                                      | `peryx` |
 
-Set at most one of `signing_key` and `signing_key_file`. peryx reads the key at startup and uses it to mint OCI and
-trusted-publishing tokens whose maximum lifetime is `token_ttl_secs`. `default_anonymous_read = false` sets the
-anonymous-read default once instead of adding a flag to each index. Each `[[auth.trusted_publisher]]` requires `id`,
-`issuer`, `repository`, `subject`, and a non-empty `projects` list; its `claims` table is optional. The repository is a
-configured writable PyPI index name. See [publish from CI identities](@/ecosystems/pypi/guides/trusted-publishing.md)
-for the provider contract and examples.
+Set at most one of `signing_key` and `signing_key_file`. peryx reads the key at startup. Implementations that mint
+tokens cap their lifetime at `token_ttl_secs`. `default_anonymous_read = false` sets the anonymous-read default once
+instead of adding a flag to each index.
 
 Each `[[auth.ldap_provider]]` configures one named StartTLS directory and optional exact group-to-role mappings. It
 supports direct user DNs and service-account search followed by a user bind. Provider URLs, attributes, trust files,
@@ -1085,32 +857,30 @@ not add an HTTP login route or browser session.
 ## `[[index.webhook]]`
 
 Put webhook tables under the index that should emit them. A target on a virtual index receives events for requests made
-through the virtual-index route; the payload also names the hosted layer that stored the change.
+through that route. The [ecosystem owner documentation](@/ecosystems/_index.md) defines event names and payload schemas.
 
 ```toml
 [[index]]
-name = "root/pypi"
-layers = ["hosted", "pypi"]
-upload = "hosted"
+name = "combined"
+layers = ["hosted", "cache"]
+write_target = "hosted"
 
 [[index.webhook]]
 name = "ci"
 url = "https://ci.example/hooks/peryx"
 secret_env = "PERYX_WEBHOOK_SECRET"
-events = ["upload", "delete", "restore"]
 ```
 
-| Key          | Meaning                                                                                           | Default |
-| ------------ | ------------------------------------------------------------------------------------------------- | ------- |
-| `name`       | Stable target name used in delivery logs                                                          |         |
-| `url`        | HTTP or HTTPS endpoint that receives JSON payloads; credentials, query, and fragment are rejected |         |
-| `secret`     | Literal HMAC signing secret                                                                       |         |
-| `secret_env` | Environment variable that contains the HMAC signing secret                                        |         |
-| `events`     | Event names to send; omit or leave empty for all supported event names                            | all     |
+| Key          | Meaning                                                 | Default    |
+| ------------ | ------------------------------------------------------- | ---------- |
+| `name`       | Stable target name used in delivery logs                |            |
+| `url`        | HTTP or HTTPS endpoint                                  | (required) |
+| `secret`     | Literal HMAC signing secret                             | (none)     |
+| `secret_env` | Environment variable containing the HMAC signing secret | (none)     |
+| `events`     | Event names to send; empty selects all supported events | all        |
 
-Use one of `secret` or `secret_env`. Supported event names are `upload`, `yank`, `unyank`, `delete`, `restore`,
-`promote`, `project-status`, and `management`. Peryx emits `upload`, `yank`, `unyank`, `delete`, and `restore` from the
-write endpoints in this release; the other names reserve the contract for management surfaces that use this runtime.
+Use one of `secret` or `secret_env`. Event names come from the selected owner. An empty `events` list subscribes to each
+event that implementation emits.
 
 Peryx stores pending deliveries in the metadata database and sends them outside the request path. Delivery does not
 follow redirects, so a `3xx` response counts as a failed attempt rather than reposting the signed payload to a location
@@ -1122,12 +892,12 @@ not store webhook secrets.
 
 ## `[log]`
 
-| Key      | Values                                                                                                                                                      | Default  |
-| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
-| `level`  | a [`tracing` directive](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html): `error` ... `trace`, per-module filters | `info`   |
-| `format` | `pretty`, `json`                                                                                                                                            | `pretty` |
-| `sink`   | `stdout`, `file`, `journald`, `syslog`                                                                                                                      | `stdout` |
-| `file`   | path, required when `sink = "file"`                                                                                                                         | (none)   |
+| Key      | Values                                                                                                           | Default  |
+| -------- | ---------------------------------------------------------------------------------------------------------------- | -------- |
+| `level`  | [`tracing` directive](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) | `info`   |
+| `format` | `pretty`, `json`                                                                                                 | `pretty` |
+| `sink`   | `stdout`, `file`, `journald`, `syslog`                                                                           | `stdout` |
+| `file`   | Path required when `sink = "file"`                                                                               | None     |
 
 The flags `--log-level`, `--log-format`, `--log-sink`, `--log-file`, `-v`, and `-vv` override these, as do the
 `PERYX_LOG_LEVEL`, `PERYX_LOG_FORMAT`, `PERYX_LOG_SINK`, and `PERYX_LOG_FILE` variables (below the flags in precedence).

@@ -116,7 +116,10 @@ fn oci_version_check() -> OperationBuilder {
             "Confirms this is an OCI distribution-spec registry. Answers `200` with \
              `Docker-Distribution-API-Version: registry/2.0` and an empty body.",
         ))
-        .response("200", ResponseBuilder::new().description("A `/v2/` registry"))
+        .response(
+            "200",
+            ResponseBuilder::new().description("Registry API capability response"),
+        )
 }
 
 fn oci_manifest_pull() -> OperationBuilder {
@@ -129,7 +132,7 @@ fn oci_manifest_pull() -> OperationBuilder {
         ))
         .parameter(name_param())
         .parameter(reference_param())
-        .response("200", ResponseBuilder::new().description("The manifest bytes"))
+        .response("200", ResponseBuilder::new().description("Negotiated manifest body"))
         .response("404", ResponseBuilder::new().description("`MANIFEST_UNKNOWN`"))
 }
 
@@ -203,7 +206,7 @@ fn oci_blob_pull() -> OperationBuilder {
                 .description(Some("The entity tag the client's partial copy was cut from"))
                 .example(Some(json!("\"sha256:2c3e...\""))),
         )
-        .response("200", ResponseBuilder::new().description("The blob bytes"))
+        .response("200", ResponseBuilder::new().description("Blob body"))
         .response("206", ResponseBuilder::new().description("A requested byte range"))
         .response("404", ResponseBuilder::new().description("`BLOB_UNKNOWN`"))
 }
@@ -276,7 +279,7 @@ fn oci_blob_upload_status() -> OperationBuilder {
         .security(SecurityRequirement::new("uploadToken", Vec::<String>::new()))
         .parameter(name_param())
         .parameter(session_param())
-        .response("204", ResponseBuilder::new().description("The bytes received so far"))
+        .response("204", ResponseBuilder::new().description("Current upload offset"))
 }
 
 fn oci_blob_upload_chunk() -> OperationBuilder {

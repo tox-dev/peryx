@@ -1,5 +1,3 @@
-//! The raw deserialization schema: partial overlays and unclassified `[[index]]` tables.
-
 use std::collections::BTreeMap;
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
@@ -10,41 +8,21 @@ use peryx_policy::PolicyConfig;
 use serde::Deserialize;
 use toml::Table;
 
-use super::model::{
-    AvailabilityMode, CredentialFailureMode, DcRole, JobsMode, LogFormat, LogSink, PrefetchConfig, PrefetchMode,
-};
+use peryx_ha::AvailabilityMode;
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+use super::model::{CredentialFailureMode, DcRole, JobsMode, LogFormat, LogSink, PrefetchConfig};
+
+#[derive(Debug, Default, Clone, PartialEq, Deserialize)]
+#[serde(default)]
 pub struct RawPrefetchConfig {
-    pub mode: Option<PrefetchMode>,
-    pub packages: Option<Vec<String>>,
-    pub requirements: Option<Vec<PathBuf>>,
-    pub include_wheels: Option<bool>,
-    pub include_sdists: Option<bool>,
-    pub python_tags: Option<Vec<String>>,
-    pub abi_tags: Option<Vec<String>>,
-    pub platform_tags: Option<Vec<String>>,
-    pub max_file_size_bytes: Option<u64>,
-    pub metadata_only: Option<bool>,
+    #[serde(flatten)]
+    pub options: Table,
 }
 
 impl RawPrefetchConfig {
     #[must_use]
     pub fn resolve(self) -> PrefetchConfig {
-        let mode = self.mode.unwrap_or(PrefetchMode::Selected);
-        PrefetchConfig {
-            mode,
-            packages: self.packages.unwrap_or_default(),
-            requirements: self.requirements.unwrap_or_default(),
-            include_wheels: self.include_wheels.unwrap_or(true),
-            include_sdists: self.include_sdists.unwrap_or(true),
-            python_tags: self.python_tags.unwrap_or_default(),
-            abi_tags: self.abi_tags.unwrap_or_default(),
-            platform_tags: self.platform_tags.unwrap_or_default(),
-            max_file_size_bytes: self.max_file_size_bytes,
-            metadata_only: self.metadata_only.unwrap_or(matches!(mode, PrefetchMode::MetadataOnly)),
-        }
+        PrefetchConfig { options: self.options }
     }
 }
 
@@ -199,7 +177,7 @@ pub struct RawDcMember {
 }
 
 /// The `[jobs]` half of [`PartialConfig`].
-#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PartialJobsConfig {
     pub mode: Option<JobsMode>,
@@ -209,29 +187,13 @@ pub struct PartialJobsConfig {
 }
 
 /// One `[[jobs.schedule]]` table before cadence validation.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct RawJobSchedule {
-    /// The registered job kind to run.
-    pub job: RawScheduledJob,
+    pub job: String,
     /// Seconds between runs; validated positive.
     pub interval_secs: u64,
-    pub repository: Option<String>,
-    pub source: Option<String>,
-    pub max_projects: Option<usize>,
-    pub concurrency: Option<usize>,
-    pub timeout_secs: Option<u64>,
-}
-
-/// A configured job kind before its kind-specific fields are classified.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RawScheduledJob {
-    CacheMaintenance,
-    CatalogSync,
-    DcCopy,
-    PlacementReconcile,
-    Reclamation,
+    #[serde(flatten)]
+    pub settings: Table,
 }
 
 /// One process replication role before secret and numeric validation.
@@ -254,20 +216,19 @@ pub enum RawReplication {
 
 /// The raw `[auth]` table: the signing key of peryx's token realm, and the defaults every index's
 /// access rules take.
-#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[derive(Debug, Default, Clone, PartialEq, Deserialize)]
+#[serde(default)]
 pub struct PartialAuthConfig {
     pub signing_key: Option<String>,
     pub signing_key_file: Option<PathBuf>,
     pub token_ttl_secs: Option<i64>,
     pub default_anonymous_read: Option<bool>,
-    pub oidc_audience: Option<String>,
-    #[serde(rename = "trusted_publisher")]
-    pub trusted_publishers: Option<Vec<RawTrustedPublisher>>,
     #[serde(rename = "ldap_provider")]
     pub ldap_providers: Option<Vec<RawLdapProvider>>,
     #[serde(rename = "oidc_provider")]
     pub oidc_providers: Option<Vec<RawOidcProvider>>,
+    #[serde(flatten)]
+    pub extensions: Table,
 }
 
 /// The raw `[[auth.oidc_provider]]` table: one browser OIDC login provider before validation.
@@ -365,19 +326,6 @@ pub struct RawExternalGroupGrant {
     pub repository: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RawTrustedPublisher {
-    pub id: String,
-    pub issuer: String,
-    pub repository: String,
-    pub subject: String,
-    #[serde(default)]
-    pub projects: Vec<String>,
-    #[serde(default)]
-    pub claims: BTreeMap<String, String>,
-}
-
 /// The raw `[tls]` table before validation.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -431,7 +379,7 @@ impl<'de> serde::Deserialize<'de> for RawPolicy {
 }
 
 /// A raw `[[index]]` table before classification. `[[index.upstream]]`, `hosted`, or `layers` selects
-/// the kind; [`classify_index`](super::classify_index) enforces that.
+/// the kind; index classification enforces that.
 #[derive(Debug, Default, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RawIndex {
@@ -457,7 +405,7 @@ pub struct RawIndex {
     pub hosted: Option<bool>,
     pub volatile: Option<bool>,
     pub layers: Option<Vec<String>>,
-    pub upload: Option<String>,
+    pub write_target: Option<String>,
     pub anonymous_read: Option<bool>,
     /// The `[[index.access_token]]` tables: credentials clients present to peryx. The credentials peryx
     /// presents to an upstream live on each `[[index.upstream]]` source.
@@ -509,9 +457,9 @@ pub struct RawToken {
     pub name: String,
     pub secret: Option<String>,
     pub secret_file: Option<PathBuf>,
-    /// Project globs the token may act on; empty means the whole index.
+    /// Resource patterns the token may act on; empty means the whole index.
     #[serde(default)]
-    pub projects: Vec<String>,
+    pub resources: Vec<String>,
     #[serde(default)]
     pub actions: Vec<Action>,
     /// An RFC 3339 timestamp, for example `2027-01-01T00:00:00Z`.

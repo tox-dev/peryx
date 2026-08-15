@@ -5,11 +5,11 @@ use axum::body::to_bytes;
 use axum::extract::Request;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse as _, Response};
-use peryx_core::Ecosystem;
 use peryx_driver::state::ServingState;
 use peryx_identity::{Action, Denial, authorize_all};
 use peryx_index::IndexKind;
 
+use super::HttpResult;
 use crate::store::{ChangelogReadError, read_changelog_page};
 use crate::{dispatch_changelog_request, render_changelog_fault};
 
@@ -27,8 +27,8 @@ pub(super) fn is_changelog_path(path: &str, headers: &HeaderMap) -> bool {
 
 pub(super) async fn pypi_changelog(state: Arc<ServingState>, request: Request) -> Response {
     state.requests.fetch_add(1, Ordering::Relaxed);
-    if let Err(response) = authorize(&state, request.headers()) {
-        return response;
+    if let Err(error) = authorize(&state, request.headers()) {
+        return error.into_response();
     }
     let body = match to_bytes(request.into_body(), CHANGELOG_BODY_LIMIT).await {
         Ok(body) => body,
@@ -50,7 +50,7 @@ pub(super) async fn pypi_changelog(state: Arc<ServingState>, request: Request) -
     }
 }
 
-fn authorize(state: &ServingState, headers: &HeaderMap) -> Result<(), Response> {
+fn authorize(state: &ServingState, headers: &HeaderMap) -> HttpResult<()> {
     let authorization = headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok());
     let now = (state.clock)();
     let mut unauthenticated = false;
@@ -58,7 +58,7 @@ fn authorize(state: &ServingState, headers: &HeaderMap) -> Result<(), Response> 
     for index in state
         .indexes
         .iter()
-        .filter(|index| index.ecosystem == Ecosystem::Pypi && matches!(index.kind, IndexKind::Hosted { .. }))
+        .filter(|index| index.ecosystem == crate::ECOSYSTEM && matches!(index.kind, IndexKind::Hosted { .. }))
     {
         let identity = index.acl.identify(authorization, now);
         match authorize_all(&identity.principal, &index.acl, Action::Read) {
@@ -73,9 +73,10 @@ fn authorize(state: &ServingState, headers: &HeaderMap) -> Result<(), Response> 
             [(header::WWW_AUTHENTICATE, "Basic realm=\"peryx\"")],
             "unauthorized",
         )
-            .into_response())
+            .into_response()
+            .into())
     } else if forbidden {
-        Err((StatusCode::FORBIDDEN, "forbidden").into_response())
+        Err((StatusCode::FORBIDDEN, "forbidden").into_response().into())
     } else {
         Ok(())
     }

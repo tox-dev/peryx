@@ -1,37 +1,31 @@
-//! The axum router.
-
 use std::sync::Arc;
 
+use axum::Extension;
+use axum::Router;
 use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse as _, Response};
 use axum::routing::{any, delete, get, post, put};
-use axum::{Extension, Router};
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 
 use crate::handlers;
+use peryx_driver::http_services::HttpDomainServices;
 use peryx_driver::rate_limit;
 use peryx_driver::state::AppState;
 
-/// Build the peryx HTTP router.
-///
 /// All index traffic lands on a catch-all path that the handlers resolve to a configured index by
-/// longest route prefix, so routes are data, not hardcoded. Every request is traced (method, path,
-/// status) at info level, so the default log level already shows the `.metadata` fast path.
+/// longest route prefix, so routes are data, not hardcoded. Every request is traced at info level.
 pub fn router(state: Arc<AppState>) -> Router {
+    let services = HttpDomainServices::for_state(&state);
+    router_with_services(state, services)
+}
+
+pub fn router_with_services(state: Arc<AppState>, services: HttpDomainServices) -> Router {
     let mut router = service_routes();
-    if let Some(runtime) = &state.trusted_publishing {
-        router = router.merge(
-            Router::new()
-                .route("/_/oidc/audience", get(handlers::oidc_audience))
-                .route(
-                    "/_/oidc/mint-token",
-                    post(handlers::oidc_mint_token).layer(DefaultBodyLimit::max(40 * 1024)),
-                )
-                .layer(Extension(runtime.clone())),
-        );
+    for routes in state.http_routes() {
+        router = router.merge(routes.routes());
     }
-    // An absolute-mount ecosystem (OCI) owns top-level prefixes it declares; mount a catch-all under
+    // An absolute-mount ecosystem owns the top-level prefixes it declares; mount a catch-all under
     // each, bound to that driver, so the router reaches it without naming the ecosystem.
     for (prefix, driver) in state.absolute_mounts() {
         let driver = driver.clone();
@@ -56,17 +50,17 @@ pub fn router(state: Arc<AppState>) -> Router {
                 .make_span_with(DefaultMakeSpan::new().level(tracing::Level::INFO))
                 .on_response(DefaultOnResponse::new().level(tracing::Level::INFO)),
         );
-    let router = if state.rate_limits.enabled() {
+    let router = if state.serving.rate_limits.enabled() {
         router.layer(middleware::from_fn_with_state(state.clone(), rate_limit::enforce))
     } else {
         router
     };
-    let router = if state.read_only {
+    let router = if state.serving.read_only {
         router.layer(middleware::from_fn_with_state(state.clone(), reject_replica_mutation))
     } else {
         router
     };
-    router.with_state(state)
+    router.layer(Extension(services)).with_state(state)
 }
 
 fn service_routes() -> Router<Arc<AppState>> {
@@ -84,19 +78,10 @@ fn service_routes() -> Router<Arc<AppState>> {
         .route("/_/login/{provider}/callback", get(handlers::login_callback))
         .route("/_/logout", post(handlers::logout))
         .route("/_/session", get(handlers::session))
-        .route("/+availability/topology", get(handlers::availability_topology))
-        .route(
-            "/+availability/topology/stream",
-            get(handlers::availability_topology_stream),
-        )
-        .route("/+availability/operations", get(handlers::operations))
-        .route("/+availability/placements", get(handlers::placements))
-        .route("/+availability/placements/{digest}", get(handlers::blob_placements))
         .route("/+stats", get(handlers::stats))
-        .route("/+analytics/completeness", get(handlers::analytics_completeness))
-        .route("/+analytics/top-packages", get(handlers::analytics_top))
+        .route("/+analytics/top-resources", get(handlers::analytics_top))
         .route("/+analytics/unused", get(handlers::analytics_unused))
-        .route("/+analytics/versions", get(handlers::analytics_versions))
+        .route("/+analytics/groups", get(handlers::analytics_groups))
         .route("/+analytics/sources", get(handlers::analytics_sources))
         .route("/+analytics/timeline", get(handlers::analytics_timeline))
         .route("/+policy/decisions", get(handlers::policy_decisions))
@@ -118,7 +103,6 @@ fn service_routes() -> Router<Arc<AppState>> {
         )
         .route("/+repositories/{id}/disable", post(handlers::disable_repository))
         .route("/+repositories/{id}/enable", post(handlers::enable_repository))
-        .route("/+shadow/candidates", get(handlers::shadow_candidates))
         .route("/+retention/plan", post(handlers::retention_plan))
         .route("/+retention/export", post(handlers::retention_export))
         .route("/+trash", get(handlers::list_trash))
@@ -147,11 +131,6 @@ fn service_routes() -> Router<Arc<AppState>> {
         )
         .route("/+tokens/{id}/rotate", post(handlers::rotate_token))
         .route("/+jobs/{id}/cancel", post(handlers::cancel_job))
-        .route("/+ui/projects", get(handlers::ui_projects))
-        .route("/+ui/project", get(handlers::ui_project))
-        .route("/+ui/manifest", get(handlers::ui_manifest))
-        .route("/+ui/members", get(handlers::ui_members))
-        .route("/+ui/member", get(handlers::ui_member))
         .route("/metrics", get(handlers::metrics))
 }
 
@@ -177,11 +156,16 @@ async fn reject_replica_mutation(State(state): State<Arc<AppState>>, request: Re
 /// which is read-only by construction, or a driver-classified service read.
 fn is_read_only_post(state: &AppState, request: &Request) -> bool {
     let path = request.uri().path();
-    path == "/+query"
-        || path == "/_/logout"
-        || state.drivers().any(|driver| {
-            driver
-                .classify_service_post(path.trim_start_matches('/'), request.headers())
-                .is_some()
-        })
+    if path == "/+query" || path == "/_/logout" {
+        return true;
+    }
+    for (_, driver) in state.driver_set().services() {
+        if driver
+            .classify_service_post(path.trim_start_matches('/'), request.headers())
+            .is_some()
+        {
+            return true;
+        }
+    }
+    false
 }

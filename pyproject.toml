@@ -4,11 +4,11 @@ build-backend = "maturin"
 
 [project]
 name = "peryx"
-description = "A blazing-fast artifact server: caching proxy, hosted store, and virtual index — PyPI today"
+description = "Multi-ecosystem artifact cache and private registry"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.9"
-keywords = ["pypi", "index", "mirror", "cache", "packaging", "artifact-server"]
+keywords = ["artifact-registry", "cache", "mirror", "oci", "pypi", "software-distribution"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Web Environment",

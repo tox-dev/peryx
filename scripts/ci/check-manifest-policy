@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+from pathlib import Path
+from typing import Final, cast
+import tomllib
+
+
+ROOT: Final = Path(__file__).resolve().parents[2]
+PACKAGE_FIELDS: Final = ("edition", "rust-version", "license", "repository")
+
+
+def main() -> None:
+    root = load_manifest(ROOT / "Cargo.toml")
+    workspace = table(root, "workspace", ROOT / "Cargo.toml")
+    package_policy = table(workspace, "package", ROOT / "Cargo.toml")
+    lint_policy = table(workspace, "lints", ROOT / "Cargo.toml")
+    dependency_policy = table(workspace, "dependencies", ROOT / "Cargo.toml")
+
+    errors: list[str] = []
+    check_test_support(errors)
+    for manifest in sorted(ROOT.glob("crates/peryx-ecosystem-*/fuzz/Cargo.toml")):
+        check_fuzz_manifest(
+            manifest,
+            package_policy,
+            lint_policy,
+            dependency_policy,
+            errors,
+        )
+    if errors:
+        raise SystemExit("\n".join(errors))
+
+
+def check_test_support(errors: list[str]) -> None:
+    manifest = ROOT / "crates/peryx-test-support/Cargo.toml"
+    package = table(load_manifest(manifest), "package", manifest)
+    if package.get("publish") is not False:
+        errors.append(f"{manifest.relative_to(ROOT)}: package.publish must be false")
+
+
+def check_fuzz_manifest(
+    manifest: Path,
+    package_policy: dict[str, object],
+    lint_policy: dict[str, object],
+    dependency_policy: dict[str, object],
+    errors: list[str],
+) -> None:
+    document = load_manifest(manifest)
+    package = table(document, "package", manifest)
+    workspace = table(document, "workspace", manifest)
+    dependencies = table(document, "dependencies", manifest)
+    display = manifest.relative_to(ROOT)
+
+    for field in PACKAGE_FIELDS:
+        if package.get(field) != package_policy.get(field):
+            errors.append(f"{display}: package.{field} must match workspace.package.{field}")
+    if package.get("publish") is not False:
+        errors.append(f"{display}: package.publish must be false")
+    if workspace.get("lints") != lint_policy:
+        errors.append(f"{display}: workspace.lints must match the root workspace")
+    if document.get("lints") != {"workspace": True}:
+        errors.append(f"{display}: lints.workspace must be true")
+
+    for name in sorted(dependencies.keys() & dependency_policy.keys()):
+        if dependency_version(dependencies[name]) != dependency_version(dependency_policy[name]):
+            errors.append(f"{display}: dependencies.{name} version must match workspace.dependencies.{name}")
+
+
+def dependency_version(value: object) -> object:
+    return value.get("version") if isinstance(value, dict) else value
+
+
+def load_manifest(path: Path) -> dict[str, object]:
+    with path.open("rb") as file:
+        return cast(dict[str, object], tomllib.load(file))
+
+
+def table(document: dict[str, object], key: str, path: Path) -> dict[str, object]:
+    value = document.get(key)
+    if not isinstance(value, dict):
+        raise SystemExit(f"{path.relative_to(ROOT)}: {key} must be a table")
+    return cast(dict[str, object], value)
+
+
+if __name__ == "__main__":
+    main()

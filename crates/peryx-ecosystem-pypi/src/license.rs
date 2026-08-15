@@ -1,5 +1,3 @@
-//! SPDX license expressions, the value grammar of the `License-Expression` core-metadata field.
-//!
 //! PEP 639 lets an index accept only case-normalized expressions built from non-deprecated SPDX
 //! identifiers, which is what a strict SPDX parse admits, so peryx defers to the `spdx` crate's
 //! license list rather than shipping a copy of the list.

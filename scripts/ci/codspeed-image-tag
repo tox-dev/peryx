@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+image=${1:?image is required}
+printf '%s:definition-%s\n' "$image" "$(sha256sum .github/codspeed/Dockerfile | cut -d ' ' -f 1)"

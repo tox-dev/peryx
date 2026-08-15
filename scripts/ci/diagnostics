@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+output=${1:-.tox/diagnostics/local}
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
+[[ $output == /* ]] || output="$repo/$output"
+mkdir -p "$output"
+
+capture() {
+  local destination=$1
+  shift
+  local status=0
+  "$@" >"$output/$destination" 2>&1 || status=$?
+  if ((status)); then
+    printf '\ncommand exited with status %s\n' "$status" >>"$output/$destination"
+  fi
+}
+
+capture system.txt uname -a
+capture filesystem.txt df -h "$repo"
+if [[ -d $repo/.tox ]]; then
+  capture artifacts.txt du -ak "$repo/.tox"
+else
+  printf '.tox does not exist\n' >"$output/artifacts.txt"
+fi
+for tool in cargo rustc just node npm docker sccache; do
+  if command -v "$tool" >/dev/null 2>&1; then
+    capture "$tool.txt" "$tool" --version
+  fi
+done
+if command -v sccache >/dev/null 2>&1; then
+  capture sccache-stats.txt sccache --show-stats
+fi

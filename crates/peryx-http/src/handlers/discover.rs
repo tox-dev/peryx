@@ -1,5 +1,3 @@
-//! API discovery: the neutral envelope plus each index's driver-rendered entry, and the `OpenAPI` doc.
-
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -9,8 +7,6 @@ use axum::response::{IntoResponse, Response};
 
 use peryx_driver::state::AppState;
 
-/// `GET /{route}/+api`: the discovery entry for one index, rendered by its ecosystem driver and
-/// wrapped in the neutral envelope.
 pub(super) fn index_api(
     state: &AppState,
     position: usize,
@@ -19,36 +15,35 @@ pub(super) fn index_api(
     trusted_proxy: bool,
 ) -> Response {
     let base = peryx_driver::discovery::BaseUrl::from_request(headers, uri, trusted_proxy);
-    let description = peryx_driver::state::describe_index(&state.indexes, position);
+    let description = peryx_driver::state::describe_index(&state.serving.indexes, position);
     let entry = discover_index_entry(state, description, base.as_ref());
     axum::Json(peryx_driver::discovery::index_envelope(entry)).into_response()
 }
 
-/// The `/+api` entry for one index, rendered by the driver serving its ecosystem, or a minimal entry
-/// for an ecosystem no installed driver serves.
 fn discover_index_entry(
     state: &AppState,
     index: peryx_driver::state::IndexDescription,
     base: Option<&peryx_driver::discovery::BaseUrl>,
 ) -> serde_json::Value {
-    match state.driver_for_name(index.ecosystem) {
-        Some(driver) => driver.discover_index(index, base),
+    match state
+        .driver_for_name(&index.ecosystem)
+        .and_then(|driver| state.client_discovery_for(&driver.ecosystem()))
+    {
+        Some(discovery) => discovery.discover_index(index, base),
         None => peryx_driver::discovery::minimal_entry(&index),
     }
 }
 
-/// `GET /api-docs/openapi.json`: the `OpenAPI` description of this server.
 pub async fn openapi_spec(State(state): State<Arc<AppState>>) -> Response {
     ([(header::CONTENT_TYPE, "application/json")], state.openapi().to_owned()).into_response()
 }
 
-/// `GET /+api`: API discovery and copyable client configuration.
-///
 /// The envelope (version, service URLs) is neutral; each configured index's entry is rendered by its
 /// own ecosystem driver, so the document covers every ecosystem the server hosts.
 pub async fn api(State(state): State<Arc<AppState>>, OriginalUri(uri): OriginalUri, request: Request) -> Response {
     let base = peryx_driver::discovery::BaseUrl::from_request(request.headers(), &uri, trusts_proxy(&state, &request));
     let indexes = state
+        .serving
         .describe_indexes()
         .into_iter()
         .map(|index| discover_index_entry(&state, index, base.as_ref()))
@@ -60,5 +55,5 @@ pub(super) fn trusts_proxy(state: &AppState, request: &Request) -> bool {
     request
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
-        .is_some_and(|ConnectInfo(address)| state.rate_limits.trusts_proxy(address.ip()))
+        .is_some_and(|ConnectInfo(address)| state.serving.rate_limits.trusts_proxy(address.ip()))
 }

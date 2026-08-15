@@ -1,5 +1,3 @@
-//! The typed operations an authoritative OCI mutation records in the driver-transaction outbox.
-//!
 //! Every hosted (pushed) metadata change appends one [`OciMutation`] to the journal in the same
 //! [`commit_driver_txn`](peryx_storage::meta::MetaStore::commit_driver_txn) that writes its rows, so
 //! the two commit together and a replica reconciles the change exactly once, in serial order. Proxy
@@ -9,11 +7,13 @@
 
 use serde::{Deserialize, Serialize};
 
+pub type Outbox = bool;
+
 /// One authoritative OCI repository mutation, the payload of an outbox journal entry.
 ///
 /// Manifests are content-addressed and immutable, so publishing one and retargeting a tag are
 /// distinct operations: repointing a tag changes no bytes but is a mutation a replica applies in
-/// order. Deletions are soft — a delete moves the reference into repository trash — so the trash and
+/// order. Deletions are soft - a delete moves the reference into repository trash - so the trash and
 /// restore transitions are the deletion vocabulary a replica replays.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
@@ -69,8 +69,6 @@ impl OciMutation {
     }
 }
 
-/// The journal entries a mutation records: one encoded [`OciMutation`] when `journal` is set,
-/// nothing otherwise. `op` runs only when journaling, so a `none`-mode write builds no payload.
-pub fn record(journal: bool, op: impl FnOnce() -> OciMutation) -> Vec<Vec<u8>> {
-    if journal { vec![op().encode()] } else { Vec::new() }
+pub fn record(outbox: Outbox, op: impl FnOnce() -> OciMutation) -> Vec<Vec<u8>> {
+    if outbox { vec![op().encode()] } else { Vec::new() }
 }

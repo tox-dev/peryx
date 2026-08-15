@@ -1,7 +1,8 @@
 //! The pypi.org-shaped legacy JSON API.
 
-#[allow(clippy::wildcard_imports, reason = "shared is this module's OpenAPI-builder prelude")]
-use super::shared::*;
+use super::shared::{
+    OperationBuilder, ResponseBuilder, api_json_response, json, project_param, route_param, version_param,
+};
 
 pub(super) fn legacy_project_json() -> OperationBuilder {
     OperationBuilder::new()

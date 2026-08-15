@@ -37,8 +37,6 @@ pub enum ResponseAuthorization {
 }
 
 impl ResponseAuthorization {
-    /// The class a caller reads at, or `None` when authorization failed. A renderer that filters its
-    /// own view rather than a [`ClassifiedField`] set reads the audience directly.
     #[must_use]
     pub const fn field_class(self) -> Option<FieldClassification> {
         match self.classification() {
@@ -101,8 +99,6 @@ impl fmt::Display for ResponseDenied {
 
 impl std::error::Error for ResponseDenied {}
 
-/// Filter a caller-bounded field set in one pass before response serialization.
-///
 /// A route must classify every top-level field. Classify a nested object at the highest level any
 /// value inside it requires, or filter that object before adding it.
 ///
@@ -128,7 +124,6 @@ pub enum ProtectedCachePolicy {
 }
 
 impl ProtectedCachePolicy {
-    /// Set `Cache-Control` without changing other response headers.
     pub fn apply(self, headers: &mut HeaderMap) {
         headers.insert(
             header::CACHE_CONTROL,

@@ -1,9 +1,3 @@
-//! Logging setup helpers.
-//!
-//! The pure decisions (validating the sink, building the level filter) live here and are tested.
-//! Installing the global subscriber is side-effectful and platform-specific, so it lives in
-//! `main.rs`, which coverage excludes.
-
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::filter::ParseError;
 
@@ -27,8 +21,6 @@ pub const fn validate(cfg: &LogConfig) -> Result<(), LogError> {
     Ok(())
 }
 
-/// Build an [`EnvFilter`] from a level directive such as `info` or `peryx_upstream=debug`.
-///
 /// # Errors
 /// Returns the parse error when `directive` is not a valid filter.
 pub fn env_filter(directive: &str) -> Result<EnvFilter, ParseError> {

@@ -1,7 +1,7 @@
-//! Browsing inside a stored archive.
-
-#[allow(clippy::wildcard_imports, reason = "shared is this module's OpenAPI-builder prelude")]
-use super::shared::*;
+use super::shared::{
+    ContentBuilder, OperationBuilder, ParameterBuilder, ParameterIn, Required, ResponseBuilder, filename_param, json,
+    route_param, sha256_param, text_response,
+};
 
 pub(super) fn inspect_listing() -> OperationBuilder {
     OperationBuilder::new()

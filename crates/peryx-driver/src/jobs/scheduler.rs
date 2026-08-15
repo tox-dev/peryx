@@ -1,5 +1,3 @@
-//! The bounded worker pool that runs [`NodeJob`]s under global, per-kind, and per-repository limits.
-//!
 //! A submission is admitted only when a queue slot is free and no run with the same conflict key is
 //! already in flight, so two conflicting repository jobs never overlap while independent repositories
 //! run together. Admitted work spawns onto the Tokio runtime and acquires a global permit (the worker
@@ -71,7 +69,6 @@ impl JobLimits {
     }
 }
 
-/// What became of a [`submit`](JobScheduler::submit) call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Submit {
     /// Admitted; the job is queued or running.
@@ -154,7 +151,6 @@ pub struct JobScheduler {
 }
 
 impl JobScheduler {
-    /// Build a scheduler over `state`'s stores and clock with the given `limits`.
     #[must_use]
     pub fn new(state: Arc<ServingState>, limits: JobLimits) -> Self {
         let shared = Shared {
@@ -174,14 +170,11 @@ impl JobScheduler {
         }
     }
 
-    /// The lifecycle counters, to register as a process metric source.
     #[must_use]
     pub fn metrics(&self) -> Arc<JobMetrics> {
         self.shared.metrics.clone()
     }
 
-    /// Admit `job` for execution, or report why it was refused.
-    ///
     /// Refusal is a normal outcome, not an error: a duplicate is a [`Conflict`](Submit::Conflict), a
     /// saturated queue is [`QueueFull`](Submit::QueueFull), and a draining scheduler is
     /// [`ShuttingDown`](Submit::ShuttingDown). Only an admitted job spawns.
@@ -189,8 +182,6 @@ impl JobScheduler {
         self.admit(job, None)
     }
 
-    /// Admit one job and wait for its persisted result.
-    ///
     /// # Panics
     /// Panics if an admitted worker exits without sending its result, which violates the scheduler's
     /// completion invariant.
@@ -239,8 +230,6 @@ impl JobScheduler {
         Submit::Queued
     }
 
-    /// Stop accepting work, signal cooperative cancellation, and wait for running jobs to unwind,
-    /// returning once they finish or the grace period elapses, whichever comes first.
     pub async fn shutdown(&self) {
         self.shared.cancel.cancel();
         self.tracker.close();
@@ -396,8 +385,8 @@ impl RunFence {
 enum Acquired {
     /// The fence is held; the run may execute.
     Held(RunFence),
-    /// The cluster-singleton lease could not be claimed — a newer holder owns the term, or the store
-    /// could not be reached — so the run does not start and a later tick re-drives it. Carries the
+    /// The cluster-singleton lease could not be claimed - a newer holder owns the term, or the store
+    /// could not be reached - so the run does not start and a later tick re-drives it. Carries the
     /// reason for the durable run record.
     NotAcquired(String),
 }

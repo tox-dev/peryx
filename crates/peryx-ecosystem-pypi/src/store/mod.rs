@@ -1,12 +1,4 @@
-//! How the `PyPI` driver lays its metadata into the neutral [`MetaStore`] key-value table.
-//!
-//! Every record that once lived in a `PyPI`-specific redb table now serializes into the neutral
-//! `driver_kv` table under a null-delimited namespace prefix, so the store never grows a table per
-//! format and can drop the `PyPI` tables. The value encodings are byte-identical to the old typed
-//! tables: the on-disk format and the warm-read cost both depend on it, so nothing here re-serializes
-//! a record differently than the table it replaces.
-//!
-//! [`MetaStore`]: peryx_storage::meta::MetaStore
+//! Stores `PyPI` records in neutral driver key-value namespaces.
 
 mod attestations;
 mod files;
@@ -22,14 +14,14 @@ pub use files::{
     put_metadata, put_provenance, scan_file_urls, scan_metadata_records, scan_provenance_records,
 };
 pub use index::{
-    abort_project_generation, active_project_generation, begin_project_generation, get_index, get_project_status,
-    list_index_pages, list_project_files, project_meta_state, publish_project_generation, put_cached_page, put_index,
-    put_project_files, recover_project_generations, refresh_project_generation, scan_index_pages, scan_index_records,
-    touch_index_freshness,
+    CachedPageWrite, abort_project_generation, active_project_generation, begin_project_generation, get_index,
+    get_project_status, list_index_pages, list_project_files, project_meta_state, publish_project_generation,
+    put_cached_page, put_index, put_project_files, recover_project_generations, refresh_project_generation,
+    scan_index_pages, scan_index_records, touch_index_freshness,
 };
 pub(crate) use journal::{ChangelogReadError, read_changelog_page};
 pub use journal::{JournalEntry, JournalSnapshot, read_journal_entries};
-pub use peryx_driver::serving::{IndexSummary, RecentUpload};
+pub use peryx_driver::serving::{IndexSummary, RecentWrite};
 pub use projects::{
     CatalogGeneration, CatalogState, ProjectCachePurgeCounts, abort_catalog_generation, begin_catalog_generation,
     catalog_state, count_project_cache_purge, delete_project_cache, get_project, list_catalog_projects, list_projects,
@@ -42,6 +34,7 @@ pub use record::{
 };
 pub use summary::summarize_indexes;
 pub(crate) use uploads::publish_file_in_txn;
+pub(crate) use uploads::publish_file_with_commit_if;
 pub(crate) use uploads::scan_upload_policy_snapshot;
 pub use uploads::{
     Guard, MetadataSibling, PromotedRelease, ProvenanceSibling, PublishedFile, UploadMutation, delete_override,
@@ -203,7 +196,6 @@ fn override_key(index: &str, normalized: &str, filename: &str) -> String {
     format!("{OVERRIDE_PREFIX}{index}/{normalized}/{filename}")
 }
 
-/// The `artifact_source` value: URL, source index, optional size, and optional routed upstream.
 fn file_source_value(url: &str, source: &str, size: Option<u64>, upstream: Option<&str>) -> String {
     upstream.map_or_else(
         || size.map_or_else(|| format!("{url}\n{source}"), |size| format!("{url}\n{source}\n{size}")),
@@ -216,12 +208,10 @@ fn file_source_value(url: &str, source: &str, size: Option<u64>, upstream: Optio
     )
 }
 
-/// The `metadata_sidecar` value: URL, the sibling's own sha256, and the source index, newline-joined.
 fn metadata_value(url: &str, metadata_sha256: &str, source: &str) -> String {
     format!("{url}\n{metadata_sha256}\n{source}")
 }
 
-/// The provenance value: the provenance blob's own sha256 and its byte length, newline-joined.
 fn provenance_value(provenance_sha256: &str, size: u64) -> String {
     format!("{provenance_sha256}\n{size}")
 }
@@ -236,14 +226,10 @@ fn provenance_value(provenance_sha256: &str, size: u64) -> String {
 /// [`MetaStore`]: peryx_storage::meta::MetaStore
 #[cfg(feature = "serving")]
 pub trait PypiStore {
-    /// Store a cached index record under `key`.
-    ///
     /// # Errors
     /// Returns a store error if the write fails.
     fn put_index(&self, key: &str, record: &CachedIndex) -> Result<(), peryx_storage::meta::MetaError>;
 
-    /// Retire a missing upstream project's cached page and provenance locators together.
-    ///
     /// # Errors
     /// Returns a store error if the transaction fails.
     fn retire_cached_project(
@@ -265,14 +251,10 @@ pub trait PypiStore {
         fresh_secs: Option<i64>,
     ) -> Result<(), peryx_storage::meta::MetaError>;
 
-    /// Fetch a cached index record.
-    ///
     /// # Errors
     /// Returns a store error if the read fails or the stored bytes cannot be decoded.
     fn get_index(&self, key: &str) -> Result<Option<CachedIndex>, peryx_storage::meta::MetaError>;
 
-    /// Every cached page's key, fetch timestamp, and upstream freshness lifetime.
-    ///
     /// # Errors
     /// Returns a store error if the read fails or a stored record cannot be decoded.
     fn list_index_pages(&self) -> Result<Vec<(String, i64, Option<i64>)>, peryx_storage::meta::MetaError>;
@@ -286,8 +268,6 @@ pub trait PypiStore {
         visit: impl FnMut(CachedIndexPage) -> Result<(), E>,
     ) -> Result<(), peryx_storage::meta::MetaScanError<E>>;
 
-    /// Visit raw cached simple-index records, keyed by route.
-    ///
     /// # Errors
     /// Returns a scan error if the store read fails or the visitor fails.
     fn scan_index_records<E>(
@@ -295,8 +275,6 @@ pub trait PypiStore {
         visit: impl FnMut(&str, &[u8]) -> Result<(), E>,
     ) -> Result<(), peryx_storage::meta::MetaScanError<E>>;
 
-    /// Fetch one project's explicit status marker.
-    ///
     /// # Errors
     /// Returns a store error if the read fails or the stored record cannot be decoded.
     fn get_project_status(
@@ -305,44 +283,18 @@ pub trait PypiStore {
         normalized: &str,
     ) -> Result<Option<ProjectStatusRecord>, peryx_storage::meta::MetaError>;
 
-    /// Store everything a freshly fetched cached page produces in one transaction.
-    ///
     /// # Errors
     /// Returns a store error if the write fails.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one transaction needs every namespace's rows together"
-    )]
-    fn put_cached_page(
-        &self,
-        key: &str,
-        record: &CachedIndex,
-        index: &str,
-        normalized: &str,
-        display: &str,
-        source: &str,
-        upstream: Option<&str>,
-        project_status: Option<&str>,
-        project_status_reason: Option<&str>,
-        files: &[(String, String, Option<u64>)],
-        metadata: &[(String, String, String)],
-        attestations: &[(String, String, String)],
-    ) -> Result<(), peryx_storage::meta::MetaError>;
+    fn put_cached_page(&self, write: CachedPageWrite<'_>) -> Result<(), peryx_storage::meta::MetaError>;
 
-    /// Record the upstream URL a blob digest can be fetched from and its source index.
-    ///
     /// # Errors
     /// Returns a store error if the write fails.
     fn put_file_url(&self, sha256: &str, url: &str, source: &str) -> Result<(), peryx_storage::meta::MetaError>;
 
-    /// Look up the source for a blob digest.
-    ///
     /// # Errors
     /// Returns a store error if the read fails.
     fn get_file_url(&self, sha256: &str) -> Result<Option<FileSource>, peryx_storage::meta::MetaError>;
 
-    /// Visit raw file URL records, keyed by artifact digest.
-    ///
     /// # Errors
     /// Returns a scan error if the store read fails or the visitor fails.
     fn scan_file_urls<E>(
@@ -362,8 +314,6 @@ pub trait PypiStore {
         source: &str,
     ) -> Result<(), peryx_storage::meta::MetaError>;
 
-    /// Look up an artifact's metadata sibling.
-    ///
     /// # Errors
     /// Returns a store error if the read fails.
     fn get_metadata(
@@ -371,8 +321,6 @@ pub trait PypiStore {
         artifact_sha256: &str,
     ) -> Result<Option<(String, String, String)>, peryx_storage::meta::MetaError>;
 
-    /// Look up metadata sha256 values for many artifact digests.
-    ///
     /// # Errors
     /// Returns a store error if the read fails.
     fn get_metadata_digests<'a>(
@@ -400,14 +348,10 @@ pub trait PypiStore {
         size: u64,
     ) -> Result<(), peryx_storage::meta::MetaError>;
 
-    /// Look up an artifact's provenance sibling: `(provenance sha256, byte length)`.
-    ///
     /// # Errors
     /// Returns a store error if the read fails.
     fn get_provenance(&self, artifact_sha256: &str) -> Result<Option<(String, u64)>, peryx_storage::meta::MetaError>;
 
-    /// Fetch every current mutable provenance object advertised for an upstream file entry.
-    ///
     /// # Errors
     /// Returns a store or decode error when the record cannot be read.
     fn list_upstream_attestations(
@@ -417,8 +361,6 @@ pub trait PypiStore {
         filename: &str,
     ) -> Result<Vec<UpstreamAttestation>, peryx_storage::meta::MetaError>;
 
-    /// Fetch one project's mutable provenance object advertised by an upstream file entry.
-    ///
     /// # Errors
     /// Returns a store or decode error when the record cannot be read.
     fn get_upstream_attestation(
@@ -429,8 +371,6 @@ pub trait PypiStore {
         filename: &str,
     ) -> Result<Option<UpstreamAttestation>, peryx_storage::meta::MetaError>;
 
-    /// Store a mutable provenance object advertised by an upstream file entry.
-    ///
     /// # Errors
     /// Returns a store or encode error when the record cannot be written.
     fn put_upstream_attestation(
@@ -454,8 +394,6 @@ pub trait PypiStore {
         replacement: &UpstreamAttestation,
     ) -> Result<bool, peryx_storage::meta::MetaError>;
 
-    /// Visit raw provenance records, keyed by artifact digest.
-    ///
     /// # Errors
     /// Returns a scan error if the store read fails or the visitor fails.
     fn scan_provenance_records<E>(
@@ -463,26 +401,18 @@ pub trait PypiStore {
         visit: impl FnMut(&str, &str) -> Result<(), E>,
     ) -> Result<(), peryx_storage::meta::MetaScanError<E>>;
 
-    /// Record that a project's display name has been observed on `index`.
-    ///
     /// # Errors
     /// Returns a store error if the write fails.
     fn put_project(&self, index: &str, normalized: &str, display: &str) -> Result<(), peryx_storage::meta::MetaError>;
 
-    /// Fetch a project's display name on one index.
-    ///
     /// # Errors
     /// Returns a store error if the read fails.
     fn get_project(&self, index: &str, normalized: &str) -> Result<Option<String>, peryx_storage::meta::MetaError>;
 
-    /// List the display names of projects observed on `index`, sorted.
-    ///
     /// # Errors
     /// Returns a store error if the read fails.
     fn list_projects(&self, index: &str) -> Result<Vec<String>, peryx_storage::meta::MetaError>;
 
-    /// Visit raw project-display records, keyed by `{index}/{normalized}`.
-    ///
     /// # Errors
     /// Returns a scan error if the store read fails or the visitor fails.
     fn scan_project_records<E>(
@@ -490,8 +420,6 @@ pub trait PypiStore {
         visit: impl FnMut(&str, &str) -> Result<(), E>,
     ) -> Result<(), peryx_storage::meta::MetaScanError<E>>;
 
-    /// Count the rows a project-cache purge would remove.
-    ///
     /// # Errors
     /// Returns a store error if the read fails.
     fn count_project_cache_purge(
@@ -502,8 +430,6 @@ pub trait PypiStore {
         metadata_digests: &[String],
     ) -> Result<ProjectCachePurgeCounts, peryx_storage::meta::MetaError>;
 
-    /// Delete cached metadata rows for one project, reporting what was removed.
-    ///
     /// # Errors
     /// Returns a store error if the write fails.
     fn delete_project_cache(
@@ -514,19 +440,18 @@ pub trait PypiStore {
         metadata_digests: &[String],
     ) -> Result<ProjectCachePurgeCounts, peryx_storage::meta::MetaError>;
 
-    /// Publish a file — its sibling, record, project, and journal entry — only if `guard` accepts the
+    /// Publish a file - its sibling, record, project, and journal entry - only if `guard` accepts the
     /// filename's current record, checked inside the same write transaction. Returns whether it wrote.
     ///
     /// # Errors
     /// Returns the guard's error, or a store error mapped into it, if the transaction fails.
     fn publish_file_if<E: From<peryx_storage::meta::MetaError>>(
         &self,
+        outbox: bool,
         file: &PublishedFile,
         guard: impl FnOnce(Option<&[u8]>) -> Result<Guard, E>,
     ) -> Result<bool, E>;
 
-    /// Store an uploaded file's serialized record on a private index.
-    ///
     /// # Errors
     /// Returns a store error if the write fails.
     fn put_upload(
@@ -537,7 +462,7 @@ pub trait PypiStore {
         record: &[u8],
     ) -> Result<(), peryx_storage::meta::MetaError>;
 
-    /// Promote a release onto `index` — its records, project, and journal entry — admitting each
+    /// Promote a release onto `index` - its records, project, and journal entry - admitting each
     /// `(filename, token, bytes)` only when `guard` accepts the target's current record inside the
     /// write transaction. Tokens in `blob_sizes` are recorded as blob references. Returns how many
     /// files were written.
@@ -546,17 +471,16 @@ pub trait PypiStore {
     /// Returns the guard's error, or a store error mapped into it, if the transaction fails.
     fn promote_files_checked<E: From<peryx_storage::meta::MetaError>>(
         &self,
+        outbox: bool,
         release: &PromotedRelease<'_>,
         guard: impl Fn(&str, &str, Option<&[u8]>) -> Result<Guard, E>,
     ) -> Result<usize, E>;
 
-    /// Apply a per-file mutation to every uploaded record of `normalized` on `index`, journaling
-    /// `action` for each record it changes, all in one transaction. Returns how many records changed.
-    ///
     /// # Errors
     /// Returns the closure's error, or a store error mapped into it, if the transaction fails.
     fn mutate_uploads<E: From<peryx_storage::meta::MetaError>>(
         &self,
+        outbox: bool,
         index: &str,
         normalized: &str,
         action: &str,
@@ -564,8 +488,6 @@ pub trait PypiStore {
         mutate: impl FnMut(&str, &[u8]) -> Result<UploadMutation, E>,
     ) -> Result<usize, E>;
 
-    /// List the `(filename, record)` pairs uploaded for `normalized` on `index`, sorted by filename.
-    ///
     /// # Errors
     /// Returns a store error if the read fails.
     fn list_upload_entries(
@@ -574,20 +496,17 @@ pub trait PypiStore {
         normalized: &str,
     ) -> Result<Vec<(String, Vec<u8>)>, peryx_storage::meta::MetaError>;
 
-    /// Delete one uploaded file record, returning whether it existed.
-    ///
     /// # Errors
     /// Returns a store error if the write fails.
     fn delete_upload(
         &self,
+        outbox: bool,
         index: &str,
         normalized: &str,
         filename: &str,
         submitted_at_unix: i64,
     ) -> Result<bool, peryx_storage::meta::MetaError>;
 
-    /// Visit raw upload records, keyed by `{index}/{normalized}/{filename}`.
-    ///
     /// # Errors
     /// Returns a scan error if the store read fails or the visitor fails.
     fn scan_upload_records<E>(
@@ -601,6 +520,7 @@ pub trait PypiStore {
     /// Returns a store error if the write fails.
     fn put_override(
         &self,
+        outbox: bool,
         index: &str,
         normalized: &str,
         filename: &str,
@@ -608,20 +528,17 @@ pub trait PypiStore {
         submitted_at_unix: i64,
     ) -> Result<(), peryx_storage::meta::MetaError>;
 
-    /// Remove a file's override, returning whether one existed.
-    ///
     /// # Errors
     /// Returns a store error if the write fails.
     fn delete_override(
         &self,
+        outbox: bool,
         index: &str,
         normalized: &str,
         filename: &str,
         submitted_at_unix: i64,
     ) -> Result<bool, peryx_storage::meta::MetaError>;
 
-    /// List the `(filename, kind)` overrides recorded for `normalized` on `index`.
-    ///
     /// # Errors
     /// Returns a store error if the read fails.
     fn list_overrides(
@@ -630,8 +547,6 @@ pub trait PypiStore {
         normalized: &str,
     ) -> Result<Vec<(String, String)>, peryx_storage::meta::MetaError>;
 
-    /// Visit raw override records, keyed by `{index}/{normalized}/{filename}`.
-    ///
     /// # Errors
     /// Returns a scan error if the store read fails or the visitor fails.
     fn scan_override_records<E>(
@@ -639,8 +554,6 @@ pub trait PypiStore {
         visit: impl FnMut(&str, &str) -> Result<(), E>,
     ) -> Result<(), peryx_storage::meta::MetaScanError<E>>;
 
-    /// Summarize observed projects and uploads for configured indexes.
-    ///
     /// # Errors
     /// Returns a store error if the read fails.
     fn summarize_indexes(
@@ -704,40 +617,8 @@ impl PypiStore for peryx_storage::meta::MetaStore {
         index::get_project_status(self, index, normalized)
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one transaction needs every namespace's rows together"
-    )]
-    fn put_cached_page(
-        &self,
-        key: &str,
-        record: &CachedIndex,
-        index: &str,
-        normalized: &str,
-        display: &str,
-        source: &str,
-        upstream: Option<&str>,
-        project_status: Option<&str>,
-        project_status_reason: Option<&str>,
-        files: &[(String, String, Option<u64>)],
-        metadata: &[(String, String, String)],
-        attestations: &[(String, String, String)],
-    ) -> Result<(), peryx_storage::meta::MetaError> {
-        index::put_cached_page(
-            self,
-            key,
-            record,
-            index,
-            normalized,
-            display,
-            source,
-            upstream,
-            project_status,
-            project_status_reason,
-            files,
-            metadata,
-            attestations,
-        )
+    fn put_cached_page(&self, write: CachedPageWrite<'_>) -> Result<(), peryx_storage::meta::MetaError> {
+        index::put_cached_page(self, write)
     }
 
     fn put_file_url(&self, sha256: &str, url: &str, source: &str) -> Result<(), peryx_storage::meta::MetaError> {
@@ -932,10 +813,11 @@ impl PypiStore for peryx_storage::meta::MetaStore {
 
     fn publish_file_if<E: From<peryx_storage::meta::MetaError>>(
         &self,
+        outbox: bool,
         file: &PublishedFile,
         guard: impl FnOnce(Option<&[u8]>) -> Result<Guard, E>,
     ) -> Result<bool, E> {
-        uploads::publish_file_if(self, file, guard)
+        uploads::publish_file_if(self, outbox, file, guard)
     }
 
     fn put_upload(
@@ -950,21 +832,23 @@ impl PypiStore for peryx_storage::meta::MetaStore {
 
     fn promote_files_checked<E: From<peryx_storage::meta::MetaError>>(
         &self,
+        outbox: bool,
         release: &PromotedRelease<'_>,
         guard: impl Fn(&str, &str, Option<&[u8]>) -> Result<Guard, E>,
     ) -> Result<usize, E> {
-        uploads::promote_files_checked(self, release, guard)
+        uploads::promote_files_checked(self, outbox, release, guard)
     }
 
     fn mutate_uploads<E: From<peryx_storage::meta::MetaError>>(
         &self,
+        outbox: bool,
         index: &str,
         normalized: &str,
         action: &str,
         submitted_at_unix: i64,
         mutate: impl FnMut(&str, &[u8]) -> Result<UploadMutation, E>,
     ) -> Result<usize, E> {
-        uploads::mutate_uploads(self, index, normalized, action, submitted_at_unix, mutate)
+        uploads::mutate_uploads(self, outbox, index, normalized, action, submitted_at_unix, mutate)
     }
 
     fn list_upload_entries(
@@ -977,12 +861,13 @@ impl PypiStore for peryx_storage::meta::MetaStore {
 
     fn delete_upload(
         &self,
+        outbox: bool,
         index: &str,
         normalized: &str,
         filename: &str,
         submitted_at_unix: i64,
     ) -> Result<bool, peryx_storage::meta::MetaError> {
-        uploads::delete_upload(self, index, normalized, filename, submitted_at_unix)
+        uploads::delete_upload(self, outbox, index, normalized, filename, submitted_at_unix)
     }
 
     fn scan_upload_records<E>(
@@ -994,23 +879,25 @@ impl PypiStore for peryx_storage::meta::MetaStore {
 
     fn put_override(
         &self,
+        outbox: bool,
         index: &str,
         normalized: &str,
         filename: &str,
         kind: &str,
         submitted_at_unix: i64,
     ) -> Result<(), peryx_storage::meta::MetaError> {
-        uploads::put_override(self, index, normalized, filename, kind, submitted_at_unix)
+        uploads::put_override(self, outbox, index, normalized, filename, kind, submitted_at_unix)
     }
 
     fn delete_override(
         &self,
+        outbox: bool,
         index: &str,
         normalized: &str,
         filename: &str,
         submitted_at_unix: i64,
     ) -> Result<bool, peryx_storage::meta::MetaError> {
-        uploads::delete_override(self, index, normalized, filename, submitted_at_unix)
+        uploads::delete_override(self, outbox, index, normalized, filename, submitted_at_unix)
     }
 
     fn list_overrides(
@@ -1038,23 +925,5 @@ impl PypiStore for peryx_storage::meta::MetaStore {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::project_of_key;
-    use rstest::rstest;
-
-    #[rstest]
-    #[case::project_marker("pypi\u{0}p\u{0}hosted/flask", Some(("hosted", "flask")))]
-    #[case::upload("pypi\u{0}u\u{0}hosted/flask/flask-1.0-py3-none-any.whl", Some(("hosted", "flask")))]
-    #[case::override_marker("pypi\u{0}o\u{0}hosted/flask/flask-1.0.tar.gz", Some(("hosted", "flask")))]
-    #[case::slashed_index("pypi\u{0}p\u{0}team/dev/flask", Some(("team/dev", "flask")))]
-    #[case::slashed_index_upload("pypi\u{0}u\u{0}team/dev/flask/flask-1.0.whl", Some(("team/dev", "flask")))]
-    #[case::file_digest("pypi\u{0}f\u{0}deadbeef", None)]
-    #[case::metadata_digest("pypi\u{0}d\u{0}deadbeef", None)]
-    #[case::foreign_prefix("oci\u{0}m\u{0}store/app", None)]
-    fn test_project_of_key_maps_project_upload_and_override_keys(
-        #[case] key: &str,
-        #[case] expected: Option<(&str, &str)>,
-    ) {
-        assert_eq!(project_of_key(key), expected);
-    }
-}
+#[path = "../../tests/unit/store/tests.rs"]
+mod tests;

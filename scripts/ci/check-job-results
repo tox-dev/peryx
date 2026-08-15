@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+policy=${1:?policy is required}
+results=${2:?results are required}
+context=${3:?context is required}
+
+case "$policy" in
+    main)
+        expected=$(jq -c --argjson results "$results" '
+          (.event == "push" or .event == "schedule" or .event == "workflow_dispatch") as $common
+          | (.event == "schedule" or .event == "workflow_dispatch") as $scheduled
+          | . as $context
+          | {
+              "changes": true,
+              "coverage": (.rust or $common),
+              "crate-contracts": (.rust or $common),
+              "docs": (.docs or $common),
+              "frontend": (.rust or .frontend_tests or $common),
+              "lint-automation": (.automation or $common),
+              "lint-contracts": (.rust or .automation or $common),
+              "lint-deps": (.rust or .automation or $common),
+              "lint-docs": (.rust or .docs or $common),
+              "lint-source": (.rust or $common),
+              "mutation-diff": (.event == "pull_request" and .rust),
+              "platform-test": (.rust or $common),
+              "scheduled-mutation": $scheduled,
+              "scheduled-nightly": $scheduled,
+              "system": (.rust or $common)
+            }
+          | reduce ($results | keys[] | select(startswith("fuzz-"))) as $job
+              (.;
+                .[$job] = (($context[$job | ltrimstr("fuzz-")] // false) or $context.shared or $common))
+        ' <<<"$context")
+        ;;
+    codspeed)
+        expected=$(jq -c '{
+          "baseline": (.event == "pull_request" and .benchmarks),
+          "changes": true,
+          "codspeed-image": .benchmarks,
+          "operations": (.benchmarks and .image_available)
+        }' <<<"$context")
+        ;;
+    conformance)
+        expected=$(jq -c '
+          (.event == "push" or .event == "workflow_dispatch") as $common
+          | ([to_entries[] | select(.key != "event" and .key != "shared") | .value] | any) as $owner
+          | {
+              "changes": true,
+              "conformance": ($owner or .shared or $common)
+            }
+        ' <<<"$context")
+        ;;
+    *)
+        printf 'unknown policy: %s\n' "$policy" >&2
+        exit 2
+        ;;
+esac
+
+issues=$(jq -cn --argjson results "$results" --argjson expected "$expected" '
+  [($expected | to_entries[]) as $job
+    | ($results[$job.key].result // "missing") as $result
+    | select(
+        ($job.value and $result != "success")
+        or ($job.value == false and $result != "success" and $result != "skipped")
+      )
+    | "\($job.key)=\($result)"]
+  + [(($results | keys) - ($expected | keys))[] | "\(.)=unexpected"]
+')
+if [[ "$issues" != '[]' ]]; then
+    jq -r '.[]' <<<"$issues" >&2
+    exit 1
+fi
+printf 'required jobs passed\n'

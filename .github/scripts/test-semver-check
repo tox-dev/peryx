@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+mkdir -p "$scratch/bin"
+cat >"$scratch/bin/cargo" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$CARGO_LOG"
+if [[ $1 != metadata ]]; then
+  exit 0
+fi
+if [[ " $* " == *" --manifest-path "* ]]; then
+  cat "$BASELINE_METADATA"
+else
+  cat "$CURRENT_METADATA"
+fi
+EOF
+cat >"$scratch/bin/git" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$GIT_LOG"
+case $1 in
+  archive)
+    printf 'archive'
+    ;;
+  cat-file)
+    [[ ! -e $FETCH_REQUIRED ]]
+    ;;
+  fetch)
+    rm -f "$FETCH_REQUIRED"
+    ;;
+esac
+EOF
+cat >"$scratch/bin/tar" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+cat >/dev/null
+while (($#)); do
+  if [[ $1 == -C ]]; then
+    printf '%s\n' "$2" >"$EXTRACTED_TO"
+    exit 0
+  fi
+  shift
+done
+exit 1
+EOF
+chmod +x "$scratch/bin/cargo" "$scratch/bin/git" "$scratch/bin/tar"
+cat >"$scratch/current.json" <<'EOF'
+{"packages":[
+  {"name":"existing","targets":[{"kind":["lib"]}]},
+  {"name":"new-library","targets":[{"kind":["lib"]}]},
+  {"name":"tool","targets":[{"kind":["bin"]}]},
+  {"name":"macro","targets":[{"kind":["proc-macro"]}]}
+]}
+EOF
+cat >"$scratch/baseline.json" <<'EOF'
+{"packages":[
+  {"name":"existing","targets":[{"kind":["lib"]}]},
+  {"name":"new-library","targets":[{"kind":["bin"]}]},
+  {"name":"tool","targets":[{"kind":["bin"]}]},
+  {"name":"macro","targets":[{"kind":["proc-macro"]}]}
+]}
+EOF
+run_check() {
+  : >"$scratch/cargo.log"
+  : >"$scratch/git.log"
+  : >"$scratch/extracted-to"
+  CURRENT_METADATA="$scratch/current.json" BASELINE_METADATA="$scratch/baseline.json" \
+    CARGO_LOG="$scratch/cargo.log" GIT_LOG="$scratch/git.log" EXTRACTED_TO="$scratch/extracted-to" \
+    FETCH_REQUIRED="$scratch/fetch-required" PATH="$scratch/bin:$PATH" \
+    "$repo/.github/scripts/semver-check" baseline
+  [[ ! -e "$(cat "$scratch/extracted-to")" ]]
+}
+
+touch "$scratch/fetch-required"
+run_check
+grep -Fxq 'fetch --no-tags --depth=1 origin baseline' "$scratch/git.log"
+grep -Fxq \
+  'semver-checks check-release --workspace --default-features --baseline-rev baseline --exclude new-library' \
+  "$scratch/cargo.log"
+
+jq '(.packages[] | select(.name == "new-library") | .targets[0].kind) = ["lib"]' \
+  "$scratch/baseline.json" >"$scratch/baseline-with-library.json"
+mv "$scratch/baseline-with-library.json" "$scratch/baseline.json"
+run_check
+grep -Fxq 'semver-checks check-release --workspace --default-features --baseline-rev baseline' "$scratch/cargo.log"

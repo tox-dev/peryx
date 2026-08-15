@@ -1,5 +1,3 @@
-//! `PyPI` API discovery and client-configuration snippets.
-
 use std::fmt::Write as _;
 
 use peryx_core::url_encoding::push_path;
@@ -15,7 +13,7 @@ const TOKEN_PLACEHOLDER: &str = "<upload-token>";
 struct IndexDiscovery {
     name: String,
     route: String,
-    ecosystem: &'static str,
+    ecosystem: String,
     kind: &'static str,
     layers: Vec<String>,
     uploads: bool,
@@ -63,9 +61,6 @@ pub enum SnippetKind {
     Pypirc,
 }
 
-/// The `GET /+api` entry for one `PyPI` index: its Simple-API endpoints, capabilities, and the
-/// `pip`/`uv`/`twine` client configuration.
-///
 /// # Panics
 /// Never in practice: the entry is a fixed struct of strings and booleans that always serializes.
 #[must_use]
@@ -190,25 +185,5 @@ fn route_root(route: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{BaseUrl, SnippetKind, snippet_text};
-
-    #[test]
-    fn test_relative_links_are_used_without_base_url() {
-        let urls = super::IndexUrls::new(None, "root/pypi", true);
-        assert_eq!(urls.api, "/root/pypi/+api");
-        assert_eq!(urls.simple, "/root/pypi/simple/");
-        assert_eq!(urls.upload, Some("/root/pypi/".to_owned()));
-        assert_eq!(urls.web, "/browse?index=root%2Fpypi");
-    }
-
-    #[test]
-    fn test_snippets_use_absolute_urls_and_redact_token() {
-        let base = BaseUrl::parse("https://packages.example/cache/").unwrap();
-        let text = snippet_text(&base, "root/pypi", true, SnippetKind::Pypirc).unwrap();
-        assert_eq!(
-            text,
-            "[distutils]\nindex-servers =\n    peryx\n\n[peryx]\nrepository = https://packages.example/cache/root/pypi/\nusername = __token__\npassword = <upload-token>\n"
-        );
-    }
-}
+#[path = "../tests/unit/discovery/tests.rs"]
+mod tests;

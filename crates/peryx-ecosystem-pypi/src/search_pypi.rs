@@ -1,9 +1,4 @@
-//! The `PyPI` search-document mapping: how cached/hosted/virtual `PyPI` project metadata becomes the
-//! neutral [`PackageDocument`]s the search index stores.
-//!
-//! The tantivy index, its schema, and querying are ecosystem-neutral and live in `peryx-search`; only
-//! the walk from an index's stored records to a project's searchable text is PyPI-shaped, so it sits
-//! behind the [`PackageIndexer`] seam here. A future ecosystem supplies its own indexer.
+//! Maps `PyPI` records into neutral search documents.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -16,19 +11,19 @@ use peryx_storage::blob::Digest;
 use peryx_storage::meta::ArtifactSource;
 
 use crate::upload::Uploaded;
-use peryx_core::path::local_file_url;
+use peryx_core::path::local_artifact_url;
 use peryx_index::{Index, IndexKind};
 use peryx_search::{
-    INDEXED_TEXT_BYTES, IndexerCtx, PackageDocument, PackageIndexer, PackageSource, ProjectUpdate, SearchError,
-    project_key as document_key, truncate_to_chars,
+    ContentSource, INDEXED_TEXT_BYTES, IndexerCtx, ResourceUpdate, SearchDocument, SearchDocumentProvider, SearchError,
+    document_key, truncate_to_chars,
 };
 
 /// Produces `PyPI` search documents for the neutral search index.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PypiIndexer;
 
-impl PackageIndexer for PypiIndexer {
-    fn documents(&self, ctx: &IndexerCtx<'_>) -> Result<Vec<PackageDocument>, SearchError> {
+impl SearchDocumentProvider for PypiIndexer {
+    fn documents(&self, ctx: &IndexerCtx<'_>) -> Result<Vec<SearchDocument>, SearchError> {
         let mut documents = Vec::new();
         for index in ctx.indexes {
             let mut projects = BTreeSet::new();
@@ -49,8 +44,8 @@ impl PackageIndexer for PypiIndexer {
     /// full walk finds nothing there.
     ///
     /// [`documents`]: PypiIndexer::documents
-    fn project_update(&self, ctx: &IndexerCtx<'_>, name: &str) -> Result<ProjectUpdate, SearchError> {
-        let mut update = ProjectUpdate::default();
+    fn resource_update(&self, ctx: &IndexerCtx<'_>, name: &str) -> Result<ResourceUpdate, SearchError> {
+        let mut update = ResourceUpdate::default();
         for index in ctx.indexes {
             update.keys.push(document_key(&index.route, name));
             if let Some(package) = package_document(ctx, index, name)? {
@@ -65,7 +60,7 @@ fn collect_projects(ctx: &IndexerCtx<'_>, index: &Index, projects: &mut BTreeSet
     match &index.kind {
         IndexKind::Cached { .. } => {
             ctx.meta.scan_index_records(|key, _value| {
-                if let Some(project) = project_key(key, &index.name) {
+                if let Some(project) = project_record_key(key, &index.name) {
                     projects.insert(project.to_owned());
                 }
                 Ok(())
@@ -92,15 +87,15 @@ pub(crate) fn package_document(
     ctx: &IndexerCtx<'_>,
     index: &Index,
     normalized: &str,
-) -> Result<Option<PackageDocument>, SearchError> {
+) -> Result<Option<SearchDocument>, SearchError> {
     let detail = cached_detail(ctx, index, normalized, &index.route)?;
     if detail.files.is_empty() {
         return Ok(None);
     }
-    let source = package_source(ctx, index, normalized)?;
+    let source = content_source(ctx, index, normalized)?;
     let available_locally = available_locally(ctx, index, normalized, &detail)?;
     let metadata = metadata_doc(ctx, &detail)?;
-    let display_name = metadata
+    let display_label = metadata
         .as_ref()
         .map(|doc| doc.name.as_str())
         .filter(|name| !name.is_empty())
@@ -111,10 +106,10 @@ pub(crate) fn package_document(
         })
         .to_owned();
     let summary = metadata.as_ref().and_then(|doc| doc.summary.clone());
-    Ok(Some(PackageDocument {
-        text: search_text(&display_name, normalized, &detail, metadata.as_ref()),
-        display_name,
-        normalized_name: normalized.to_owned(),
+    Ok(Some(SearchDocument {
+        text: search_text(&display_label, normalized, &detail, metadata.as_ref()),
+        display_label,
+        resource_key: normalized.to_owned(),
         route: index.route.clone(),
         index: index.name.clone(),
         ecosystem: index.ecosystem.as_str().to_owned(),
@@ -198,7 +193,9 @@ fn cached_detail(
     let detail = match &index.kind {
         IndexKind::Cached { .. } => mirror_detail(ctx, index, normalized, serve_route),
         IndexKind::Hosted { .. } => local_detail(ctx, &index.name, normalized, serve_route),
-        IndexKind::Virtual { layers, upload } => virtual_detail(ctx, layers, *upload, normalized, serve_route),
+        IndexKind::Virtual { layers, write_target } => {
+            virtual_detail(ctx, layers, *write_target, normalized, serve_route)
+        }
     }?;
     Ok(index
         .policy
@@ -240,7 +237,7 @@ fn present_file(mut file: File, route: &str) -> File {
         file.clear_metadata();
     }
     if !file.url.starts_with('/') {
-        file.url = local_file_url(route, &sha256, &file.filename);
+        file.url = local_artifact_url(route, &sha256, &file.filename);
     }
     file
 }
@@ -266,7 +263,7 @@ fn local_detail(
         }
         versions.insert(uploaded.version);
         if let Some(sha256) = uploaded.file.hashes.get("sha256") {
-            uploaded.file.url = local_file_url(serve_route, sha256, &uploaded.file.filename);
+            uploaded.file.url = local_artifact_url(serve_route, sha256, &uploaded.file.filename);
         }
         files.push(uploaded.file);
     }
@@ -296,10 +293,7 @@ fn virtual_detail(
     let mut meta = Meta::default();
     for position in peryx_index::shadow_order(ctx.indexes, layers) {
         let detail = cached_detail(ctx, ctx.index_at(position), normalized, serve_route)?;
-        // A quarantining member has already withheld its own files by here, so its status must merge before
-        // the empty-file skip below; otherwise a benign member's files outlive the quarantine and get served.
-        // Mirror the most-restrictive rule the served page applies (see cache::resolve): the virtual index
-        // inherits its highest-severity member, so any quarantining member withholds files whatever its order.
+        // Merge status before skipping empty members; quarantine must dominate member order.
         if detail.meta.status().severity() > meta.status().severity() {
             meta.project_status = detail.meta.project_status;
             meta.project_status_reason = detail.meta.project_status_reason;
@@ -368,21 +362,21 @@ fn apply_project_status(detail: &mut ProjectDetail) {
     }
 }
 
-fn package_source(ctx: &IndexerCtx<'_>, index: &Index, normalized: &str) -> Result<PackageSource, SearchError> {
+fn content_source(ctx: &IndexerCtx<'_>, index: &Index, normalized: &str) -> Result<ContentSource, SearchError> {
     Ok(match &index.kind {
-        IndexKind::Hosted { .. } => PackageSource::Uploaded,
-        IndexKind::Cached { .. } => PackageSource::Cached,
-        IndexKind::Virtual { upload, .. } => {
-            let Some(upload) = upload else {
-                return Ok(PackageSource::Cached);
+        IndexKind::Hosted { .. } => ContentSource::Uploaded,
+        IndexKind::Cached { .. } => ContentSource::Cached,
+        IndexKind::Virtual { write_target, .. } => {
+            let Some(write_target) = write_target else {
+                return Ok(ContentSource::Cached);
             };
-            let upload = ctx.index_at(*upload);
+            let upload = ctx.index_at(*write_target);
             if !ctx.meta.list_upload_entries(&upload.name, normalized)?.is_empty()
                 || !ctx.meta.list_overrides(&upload.name, normalized)?.is_empty()
             {
-                PackageSource::Override
+                ContentSource::Override
             } else {
-                PackageSource::Cached
+                ContentSource::Cached
             }
         }
     })
@@ -419,13 +413,13 @@ fn metadata_doc(ctx: &IndexerCtx<'_>, detail: &ProjectDetail) -> Result<Option<C
 }
 
 fn search_text(
-    display_name: &str,
+    display_label: &str,
     normalized: &str,
     detail: &ProjectDetail,
     metadata: Option<&CoreMetadataDoc>,
 ) -> String {
     let mut text = String::with_capacity(512);
-    push_text(&mut text, display_name);
+    push_text(&mut text, display_label);
     push_text(&mut text, normalized);
     push_text(&mut text, &detail.name);
     for version in &detail.versions {
@@ -496,7 +490,7 @@ fn push_text(out: &mut String, value: &str) {
     out.push_str(truncate_to_chars(value, available));
 }
 
-fn project_key<'key>(key: &'key str, index: &str) -> Option<&'key str> {
+fn project_record_key<'key>(key: &'key str, index: &str) -> Option<&'key str> {
     let project = key.strip_prefix(index)?.strip_prefix('/')?;
     (!project.is_empty() && !project.contains('/')).then_some(project)
 }

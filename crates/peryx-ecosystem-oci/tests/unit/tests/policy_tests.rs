@@ -1,0 +1,478 @@
+use std::sync::Arc;
+
+use axum::body::Body;
+use axum::http::{Method, Request, StatusCode};
+use peryx_driver::AppState;
+use peryx_http::router;
+use peryx_index::{Index, IndexKind};
+use peryx_policy::{Policy, PolicyConfig};
+use peryx_storage::blob::BlobStore;
+use peryx_storage::meta::MetaStore;
+use tower::ServiceExt as _;
+
+use super::{app_with_indexes, auth, body_has_code, oci_digest, send, send_body, send_with, writable_index};
+use crate::store::{self, Manifest};
+
+const TOKEN: &str = "s3cret";
+const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
+
+fn store_blocking(dir: &tempfile::TempDir) -> (Arc<AppState>, axum::Router) {
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let policy = Policy::compile(
+        &PolicyConfig {
+            block_resources: vec!["blocked/app".to_owned()],
+            ..PolicyConfig::default()
+        },
+        str::to_owned,
+    );
+    let mut state = AppState::with_clock(
+        meta,
+        blobs,
+        60,
+        vec![Index {
+            name: "store".to_owned(),
+            route: "store".to_owned(),
+            ecosystem: crate::ECOSYSTEM,
+            kind: IndexKind::Hosted { volatile: true },
+            policy,
+            acl: crate::tests::writer_acl(TOKEN.to_owned()),
+        }],
+        Arc::new(|| 1000),
+    );
+    crate::tests::install_oci(&mut state, std::collections::HashMap::new(), false);
+    let state = Arc::new(state);
+    (state.clone(), router(state))
+}
+
+#[tokio::test]
+async fn test_policy_hides_a_blocked_manifest_on_serve() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = store_blocking(&dir);
+    let bytes = br#"{"schemaVersion":2}"#;
+    let digest = oci_digest(bytes);
+    let manifest = Manifest {
+        media_type: MANIFEST_TYPE.to_owned(),
+        bytes: bytes.to_vec(),
+    };
+    for repo in ["blocked/app", "public/app"] {
+        store::record_manifest(&state.serving.meta, "store", repo, &digest, &manifest).unwrap();
+        store::put_tag(&state.serving.meta, "store", repo, "1.0", &digest).unwrap();
+    }
+
+    let (status, _, _) = send(&app, Method::GET, "/v2/store/blocked/app/manifests/1.0").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, _) = send(&app, Method::GET, "/v2/store/public/app/manifests/1.0").await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_policy_refuses_a_blocked_push() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = store_blocking(&dir);
+    let manifest = br#"{"schemaVersion":2}"#;
+    let headers = [
+        ("authorization", auth(TOKEN)),
+        ("content-type", MANIFEST_TYPE.to_owned()),
+    ];
+    let refs: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
+
+    let (status, _, body) = send_body(
+        &app,
+        Method::PUT,
+        "/v2/store/blocked/app/manifests/1.0",
+        &refs,
+        manifest.to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(String::from_utf8_lossy(&body).contains("DENIED"));
+
+    let (status, _, _) = send_body(
+        &app,
+        Method::PUT,
+        "/v2/store/public/app/manifests/1.0",
+        &refs,
+        manifest.to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn test_policy_hides_a_blocked_blob_on_serve() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = store_blocking(&dir);
+    let blob = b"a-shared-layer";
+    let digest = oci_digest(blob);
+    let (status, _, _) = send_body(
+        &app,
+        Method::POST,
+        &format!("/v2/store/public/app/blobs/uploads/?digest={digest}"),
+        &[("authorization", &auth(TOKEN))],
+        blob.to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _, _) = send(&app, Method::GET, &format!("/v2/store/blocked/app/blobs/{digest}")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, got) = send(&app, Method::GET, &format!("/v2/store/public/app/blobs/{digest}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(got, &blob[..]);
+
+    let (status, _, _) = send(
+        &app,
+        Method::GET,
+        &format!("/v2/store/blocked/app/blobs/{digest}/contents"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_policy_refuses_a_blocked_cross_repo_mount() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = store_blocking(&dir);
+    let blob = b"a-shared-layer";
+    let digest = oci_digest(blob);
+    let (status, _, _) = send_body(
+        &app,
+        Method::POST,
+        &format!("/v2/store/public/app/blobs/uploads/?digest={digest}"),
+        &[("authorization", &auth(TOKEN))],
+        blob.to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _, body) = send_body(
+        &app,
+        Method::POST,
+        &format!("/v2/store/blocked/app/blobs/uploads/?mount={digest}&from=store/public/app"),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(String::from_utf8_lossy(&body).contains("DENIED"));
+}
+
+#[tokio::test]
+async fn test_policy_hides_a_blocked_repository_from_tags_referrers_and_catalog() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = store_blocking(&dir);
+    let bytes = br#"{"schemaVersion":2}"#;
+    let digest = oci_digest(bytes);
+    let manifest = Manifest {
+        media_type: MANIFEST_TYPE.to_owned(),
+        bytes: bytes.to_vec(),
+    };
+    for repo in ["blocked/app", "public/app"] {
+        store::record_manifest(&state.serving.meta, "store", repo, &digest, &manifest).unwrap();
+        store::put_tag(&state.serving.meta, "store", repo, "1.0", &digest).unwrap();
+        store::put_referrer(
+            &state.serving.meta,
+            "store",
+            repo,
+            &digest,
+            &digest,
+            br#"{"digest":"x"}"#,
+        )
+        .unwrap();
+    }
+
+    let (status, _, _) = send(&app, Method::GET, "/v2/store/blocked/app/tags/list").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, _) = send(&app, Method::GET, &format!("/v2/store/blocked/app/referrers/{digest}")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _, body) = send(&app, Method::GET, "/v2/store/public/app/tags/list").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(String::from_utf8_lossy(&body).contains("1.0"));
+
+    let (status, _, body) = send(&app, Method::GET, "/v2/_catalog").await;
+    assert_eq!(status, StatusCode::OK);
+    let catalog = String::from_utf8_lossy(&body);
+    assert!(catalog.contains("store/public/app"), "{catalog}");
+    assert!(!catalog.contains("store/blocked/app"), "{catalog}");
+}
+
+fn store_size_limited(dir: &tempfile::TempDir, limit: u64) -> (Arc<AppState>, axum::Router) {
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let policy = Policy::compile(
+        &PolicyConfig {
+            max_artifact_size_bytes: Some(limit),
+            ..PolicyConfig::default()
+        },
+        str::to_owned,
+    );
+    let mut state = AppState::with_clock(
+        meta,
+        blobs,
+        60,
+        vec![Index {
+            name: "store".to_owned(),
+            route: "store".to_owned(),
+            ecosystem: crate::ECOSYSTEM,
+            kind: IndexKind::Hosted { volatile: true },
+            policy,
+            acl: crate::tests::writer_acl(TOKEN.to_owned()),
+        }],
+        Arc::new(|| 1000),
+    );
+    crate::tests::install_oci(&mut state, std::collections::HashMap::new(), false);
+    let state = Arc::new(state);
+    (state.clone(), router(state))
+}
+
+#[tokio::test]
+async fn test_policy_refuses_a_monolithic_blob_over_the_size_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = store_size_limited(&dir, 4);
+
+    let big = b"toobig";
+    let big_digest = oci_digest(big);
+    let (status, _, body) = send_body(
+        &app,
+        Method::POST,
+        &format!("/v2/store/app/blobs/uploads/?digest={big_digest}"),
+        &[("authorization", &auth(TOKEN))],
+        big.to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(String::from_utf8_lossy(&body).contains("DENIED"));
+
+    let small = b"ok";
+    let small_digest = oci_digest(small);
+    let (status, _, _) = send_body(
+        &app,
+        Method::POST,
+        &format!("/v2/store/app/blobs/uploads/?digest={small_digest}"),
+        &[("authorization", &auth(TOKEN))],
+        small.to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+}
+
+#[rstest::rstest]
+#[case::at_limit(19, StatusCode::CREATED, None)]
+#[case::over_limit(18, StatusCode::FORBIDDEN, Some("DENIED"))]
+#[tokio::test]
+async fn test_policy_applies_the_size_limit_to_manifests(
+    #[case] limit: u64,
+    #[case] expected_status: StatusCode,
+    #[case] expected_error: Option<&str>,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = store_size_limited(&dir, limit);
+    let (status, _, body) = send_body(
+        &app,
+        Method::PUT,
+        "/v2/store/app/manifests/v1",
+        &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
+        br#"{"schemaVersion":2}"#.to_vec(),
+    )
+    .await;
+
+    assert_eq!(
+        (status, expected_error.map(|code| body_has_code(&body, code))),
+        (expected_status, expected_error.map(|_| true)),
+        "{body:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_policy_applies_the_size_limit_to_cross_repo_mounts_in_quota_audit_mode() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut limited = writable_index("limited", "limited", true, TOKEN);
+    limited.policy = Policy::compile(
+        &PolicyConfig {
+            max_artifact_size_bytes: Some(4),
+            max_accounted_bytes: Some(u64::MAX),
+            quota_audit: true,
+            ..PolicyConfig::default()
+        },
+        str::to_owned,
+    );
+    let (_state, app) = app_with_indexes(&dir, vec![writable_index("source", "source", true, TOKEN), limited]);
+    let blob = b"five!";
+    let digest = oci_digest(blob);
+    assert_eq!(
+        send_body(
+            &app,
+            Method::POST,
+            &format!("/v2/source/app/blobs/uploads/?digest={digest}"),
+            &[("authorization", &auth(TOKEN))],
+            blob.to_vec(),
+        )
+        .await
+        .0,
+        StatusCode::CREATED
+    );
+
+    let (status, _, body) = send_body(
+        &app,
+        Method::POST,
+        &format!("/v2/limited/app/blobs/uploads/?mount={digest}&from=source/app"),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!((status, body_has_code(&body, "DENIED")), (StatusCode::FORBIDDEN, true));
+}
+
+#[tokio::test]
+async fn test_policy_stops_a_monolithic_upload_at_the_size_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = store_size_limited(&dir, 4);
+    let digest = oci_digest(b"12345");
+
+    assert_eq!(
+        send_stream_with_late_error(
+            &app,
+            Method::POST,
+            &format!("/v2/store/app/blobs/uploads/?digest={digest}"),
+            b"12345",
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+}
+
+#[tokio::test]
+async fn test_policy_refuses_a_chunked_blob_over_the_size_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = store_size_limited(&dir, 4);
+
+    let (status, headers, _) = send_body(
+        &app,
+        Method::POST,
+        "/v2/store/app/blobs/uploads/",
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let location = headers["location"].to_str().unwrap().to_owned();
+    let big = b"way too big";
+    let digest = oci_digest(big);
+    let (status, _, body) = send_body(
+        &app,
+        Method::PUT,
+        &format!("{location}?digest={digest}"),
+        &[("authorization", &auth(TOKEN))],
+        big.to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(String::from_utf8_lossy(&body).contains("DENIED"));
+}
+
+#[rstest::rstest]
+#[case::patch(Method::PATCH)]
+#[case::finish(Method::PUT)]
+#[tokio::test]
+async fn test_policy_overflow_drops_a_chunked_upload_session(#[case] method: Method) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = store_size_limited(&dir, 4);
+    let (_, headers, _) = send_body(
+        &app,
+        Method::POST,
+        "/v2/store/app/blobs/uploads/",
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    let location = headers["location"].to_str().unwrap().to_owned();
+    assert_eq!(
+        send_body(
+            &app,
+            Method::PATCH,
+            &location,
+            &[("authorization", &auth(TOKEN))],
+            b"abc".to_vec(),
+        )
+        .await
+        .0,
+        StatusCode::ACCEPTED
+    );
+    let uri = if method == Method::PUT {
+        format!("{location}?digest={}", oci_digest(b"abcde"))
+    } else {
+        location.clone()
+    };
+
+    assert_eq!(
+        send_stream_with_late_error(&app, method, &uri, b"de").await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        send_with(&app, Method::GET, &location, &[("authorization", &auth(TOKEN))])
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn test_finish_over_the_size_limit_drops_the_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = store_size_limited(&dir, 4);
+    let (_, headers, _) = send_body(
+        &app,
+        Method::POST,
+        "/v2/store/app/blobs/uploads/",
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    let location = headers["location"].to_str().unwrap().to_owned();
+    let (status, _, _) = send_body(
+        &app,
+        Method::PATCH,
+        &location,
+        &[("authorization", &auth(TOKEN))],
+        b"abcd".to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+
+    let (status, _, _) = send_body(
+        &app,
+        Method::PUT,
+        &format!("{location}?digest={}", oci_digest(b"abcde")),
+        &[("authorization", &auth(TOKEN))],
+        b"e".to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _, _) = send_with(&app, Method::GET, &location, &[("authorization", &auth(TOKEN))]).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+async fn send_stream_with_late_error(
+    app: &axum::Router,
+    method: Method,
+    uri: &str,
+    chunk: &'static [u8],
+) -> StatusCode {
+    let body = futures_util::stream::iter([
+        Ok::<_, std::io::Error>(bytes::Bytes::from_static(chunk)),
+        Err(std::io::Error::other("body must not be polled")),
+    ]);
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("authorization", auth(TOKEN))
+                .body(Body::from_stream(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+}

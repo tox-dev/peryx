@@ -1,8 +1,5 @@
-//! The `OpenAPI` description of peryx's HTTP surface.
-//!
 //! Built programmatically so it lives next to the handlers and is exercised by tests. Served at
-//! `/api-docs/openapi.json` and rendered by the documentation site; regenerate the site copy with
-//! `peryx openapi > site/static/openapi.json`.
+//! `/api-docs/openapi.json` and rendered from the documentation site's staged copy.
 
 mod service;
 mod shadow;
@@ -14,34 +11,68 @@ use utoipa::openapi::{
     ServerBuilder,
 };
 
-/// The document as pretty JSON, shared by the HTTP endpoint and the `peryx openapi` subcommand.
-///
 /// # Panics
-/// Never in practice: the document is a static structure that always serializes.
+/// Panics if serialization of the fixed schema fails.
 #[must_use]
 pub fn openapi_json() -> String {
-    let mut document = serde_json::to_value(openapi()).expect("OpenAPI document always serializes");
+    openapi_json_with_plugins(&crate::compiled_plugins())
+}
+
+#[must_use]
+pub fn openapi_json_with_plugins(plugins: &peryx_plugin_registry::PluginRegistry) -> String {
+    openapi_json_for_with_plugins(peryx_ha::AvailabilityResources::Distributed, plugins)
+}
+
+#[must_use]
+pub fn openapi_json_for(resources: peryx_ha::AvailabilityResources) -> String {
+    openapi_json_for_with_plugins(resources, &crate::compiled_plugins())
+}
+
+/// # Panics
+/// Panics if the generated document cannot be represented or formatted as JSON.
+#[must_use]
+pub fn openapi_json_for_with_plugins(
+    resources: peryx_ha::AvailabilityResources,
+    plugins: &peryx_plugin_registry::PluginRegistry,
+) -> String {
+    let mut document =
+        serde_json::to_value(openapi_for_with_plugins(resources, plugins)).expect("OpenAPI document always serializes");
     document.sort_all_objects();
     let mut json = serde_json::to_string_pretty(&document).expect("OpenAPI document always serializes");
     json.push('\n');
     json
 }
 
-/// Build the `OpenAPI` 3.1 document for the peryx HTTP API.
 #[must_use]
 pub fn openapi() -> OpenApi {
+    openapi_with_plugins(&crate::compiled_plugins())
+}
+
+#[must_use]
+pub fn openapi_with_plugins(plugins: &peryx_plugin_registry::PluginRegistry) -> OpenApi {
+    openapi_for_with_plugins(peryx_ha::AvailabilityResources::Distributed, plugins)
+}
+
+#[must_use]
+pub fn openapi_for(resources: peryx_ha::AvailabilityResources) -> OpenApi {
+    openapi_for_with_plugins(resources, &crate::compiled_plugins())
+}
+
+#[must_use]
+pub fn openapi_for_with_plugins(
+    resources: peryx_ha::AvailabilityResources,
+    plugins: &peryx_plugin_registry::PluginRegistry,
+) -> OpenApi {
     OpenApiBuilder::new()
         .info(
             InfoBuilder::new()
                 .title("peryx")
                 .version(env!("CARGO_PKG_VERSION"))
                 .description(Some(
-                    "Read-through cache and private index for multiple ecosystems. A PyPI index serves \
-                     the Simple API under `/{route}/`, where `{route}` is the index's route (for example \
-                     `root/pypi`); an OCI index serves the distribution-spec registry under `/v2/`. Write \
-                     operations authenticate with HTTP Basic where the password is the target hosted \
-                     index's upload token and the username is ignored. Server administration uses a \
-                     local user's display name and password with role authorization.",
+                    "Read-through cache and private artifact service. Ecosystem adapters contribute their \
+                     protocol paths. Write operations authenticate with a token accepted by the target \
+                     hosted index. Server administration uses a local user's display name and password \
+                     with role authorization.",
                 ))
                 .contact(Some(
                     ContactBuilder::new()
@@ -56,18 +87,26 @@ pub fn openapi() -> OpenApi {
             .url("http://127.0.0.1:4433")
             .description(Some("A local peryx with the default configuration"))
             .build()]))
-        .paths(paths())
+        .paths(paths(resources.has_routes(), plugins))
         .components(Some(
             ComponentsBuilder::new()
+                .security_scheme(
+                    "writeToken",
+                    SecurityScheme::Http(
+                        HttpBuilder::new()
+                            .scheme(HttpAuthScheme::Basic)
+                            .description(Some(
+                                "The password is a write-granting access token of the hosted index.",
+                            ))
+                            .build(),
+                    ),
+                )
                 .security_scheme(
                     "uploadToken",
                     SecurityScheme::Http(
                         HttpBuilder::new()
                             .scheme(HttpAuthScheme::Basic)
-                            .description(Some(
-                                "Any username; the password is a write-granting access token of the \
-                                 hosted index (the pypi.org `__token__` convention)",
-                            ))
+                            .description(Some("Deprecated alias for `writeToken`."))
                             .build(),
                     ),
                 )
@@ -87,12 +126,13 @@ pub fn openapi() -> OpenApi {
         .build()
 }
 
-/// Fold every ecosystem's wire-protocol paths into peryx's own service paths.
-///
-/// Each ecosystem crate describes the protocol it serves; naming them here is the composition root's
-/// job, the same place their drivers are installed.
-fn paths() -> PathsBuilder {
-    let ecosystems =
-        peryx_ecosystem_oci::openapi::openapi_paths(peryx_ecosystem_pypi::openapi::openapi_paths(PathsBuilder::new()));
-    shadow::shadow_paths(trash::trash_paths(service::service_paths(ecosystems)))
+fn paths(distributed: bool, plugins: &peryx_plugin_registry::PluginRegistry) -> PathsBuilder {
+    let ecosystems = plugins.openapi_paths(PathsBuilder::new());
+    let services = service::service_paths(ecosystems);
+    let services = if distributed {
+        peryx_ha_distributed::availability_paths(services)
+    } else {
+        services
+    };
+    shadow::shadow_paths(trash::trash_paths(services))
 }

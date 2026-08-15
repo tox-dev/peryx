@@ -1,16 +1,3 @@
-"""Inline pre-rendered mermaid SVGs into the built HTML.
-
-Zola emits each diagram as ``<pre class="mermaid">SOURCE</pre>``. This replaces every such block
-with the committed dual-theme SVG partial that ``render_diagrams.mjs`` produced, keyed by a hash of
-the diagram source. It touches no network and needs no browser, so it runs in the Read the Docs
-build (which has Python but no headless Chrome).
-
-A missing partial is a hard error: it means the committed diagrams are stale and CI's regeneration
-step should have caught it.
-
-Usage: python site/scripts/inline_diagrams.py <built-html-dir>
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -23,12 +10,14 @@ from typing import Final
 BLOCK: Final = re.compile(r'<pre class="mermaid">(.*?)</pre>', re.DOTALL)
 
 
-def diagram_key(pre_content: str) -> str:
-    source = html.unescape(pre_content).strip()
-    return hashlib.sha256(source.encode("utf-8")).hexdigest()[:16]
+def main() -> None:
+    if len(sys.argv) != 2:
+        raise SystemExit("usage: inline_diagrams.py <built-html-dir>")
+    partials = diagram_partials(Path(__file__).resolve())
+    sum(inline_file(path, partials) for path in Path(sys.argv[1]).rglob("*.html"))
 
 
-def inline_file(path: Path, partials: Path) -> int:
+def inline_file(path: Path, partials: dict[str, Path]) -> int:
     text = path.read_text(encoding="utf-8")
     if 'class="mermaid"' not in text:
         return 0
@@ -36,10 +25,9 @@ def inline_file(path: Path, partials: Path) -> int:
 
     def replace(match: re.Match[str]) -> str:
         nonlocal count
-        partial = partials / f"{diagram_key(match.group(1))}.html"
-        if not partial.is_file():
-            msg = f"{path}: no rendered diagram {partial.name}; run `npm --prefix site run render`"
-            raise SystemExit(msg)
+        key = diagram_key(match.group(1))
+        if (partial := partials.get(key)) is None:
+            raise SystemExit(f"{path}: no rendered diagram {key}.html; run `just docs`")
         count += 1
         return partial.read_text(encoding="utf-8").strip()
 
@@ -49,14 +37,31 @@ def inline_file(path: Path, partials: Path) -> int:
     return count
 
 
-def main() -> None:
-    if len(sys.argv) != 2:
-        usage = "usage: inline_diagrams.py <built-html-dir>"
-        raise SystemExit(usage)
-    root = Path(sys.argv[1])
-    partials = Path(__file__).resolve().parent.parent / "diagrams"
-    total = sum(inline_file(path, partials) for path in root.rglob("*.html"))
-    print(f"inlined {total} diagram(s) under {root}")
+def diagram_partials(script: Path) -> dict[str, Path]:
+    site = script.parent.parent
+    directories = [site / "diagrams"]
+    if (repository := repository_root(site)) is not None:
+        directories.extend(
+            declaration.parent / "diagrams"
+            for declaration in sorted((repository / "crates").glob("*/docs/ecosystem.toml"))
+        )
+    partials: dict[str, Path] = {}
+    for directory in directories:
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.glob("*.html")):
+            if (previous := partials.get(path.stem)) is not None:
+                raise SystemExit(f"duplicate rendered diagram {path.stem}: {previous} and {path}")
+            partials[path.stem] = path
+    return partials
+
+
+def repository_root(site: Path) -> Path | None:
+    return next((parent for parent in site.parents if (parent / "crates").is_dir()), None)
+
+
+def diagram_key(pre_content: str) -> str:
+    return hashlib.sha256(html.unescape(pre_content).strip().encode()).hexdigest()[:16]
 
 
 if __name__ == "__main__":

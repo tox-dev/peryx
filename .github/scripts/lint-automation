@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$repo"
+scripts=()
+while IFS= read -r -d '' script; do
+  scripts+=("$script")
+done < <(rg -0 -l '^#!(/usr/bin/env )?(ba|z)?sh$' .github/scripts scripts/ci ci)
+if ((${#scripts[@]})); then
+  bash -n "${scripts[@]}"
+  shellcheck "${scripts[@]}"
+fi
+.github/scripts/test-check-lcov-lines
+.github/scripts/test-check-ecosystem-boundaries
+.github/scripts/test-site-stage
+.github/scripts/test-source-inventory
+.github/scripts/tests/test-layout.bash
+.github/scripts/tests/timing-policy.bash
+.github/scripts/check-test-timing
+.github/scripts/tests/source-inventory.bash
+.github/scripts/tests/crate-contracts.bash
+.github/scripts/tests/codspeed-matrix.bash
+.github/scripts/tests/conformance.bash
+.github/scripts/tests/run-codspeed.bash
+.github/scripts/tests/ci-design.bash
+.github/scripts/tests/mutation.bash
+.github/scripts/tests/coverage-frontend.bash
+.github/scripts/tests/coverage-linux.bash
+.github/scripts/tests/owner-tools.bash
+.github/scripts/tests/platform-contract.bash
+scripts/ci/test-fuzz-package

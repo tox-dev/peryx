@@ -1,0 +1,207 @@
+use std::io::{Read, Seek, SeekFrom, Write as _};
+use std::path::{Path, PathBuf};
+
+use super::model::ArchiveError;
+use super::{
+    ArchiveFormat, ArchiveProfile, MAX_CONTAINER_DEPTH, MAX_DECOMPRESSED_INSPECT_BYTES, MAX_NESTED_ARCHIVE_SIZE,
+};
+use super::{read_error, safe_member_name};
+
+pub struct ResolvedArchive {
+    pub format: ArchiveFormat,
+    pub source: ArchiveSource,
+    _temps: Vec<tempfile::TempPath>,
+}
+
+pub fn resolve_container_stack(
+    profile: &dyn ArchiveProfile,
+    filename: &str,
+    path: &Path,
+    containers: &[String],
+) -> Result<ResolvedArchive, ArchiveError> {
+    if containers.len() > MAX_CONTAINER_DEPTH {
+        return Err(ArchiveError::NestingTooDeep {
+            depth: containers.len(),
+            limit: MAX_CONTAINER_DEPTH,
+        });
+    }
+    let mut source = ArchiveSource::new(path.to_path_buf());
+    let mut format = profile.format(filename).ok_or(ArchiveError::Unsupported)?;
+    let mut temps = Vec::new();
+    for container in containers {
+        let container = safe_member_name(container)?;
+        let nested_format = profile
+            .format(&container)
+            .ok_or_else(|| ArchiveError::UnsupportedNestedArchive(container.clone()))?;
+        source = nested_archive_source(format, &source, &container, &mut temps)?;
+        format = nested_format;
+    }
+    Ok(ResolvedArchive {
+        format,
+        source,
+        _temps: temps,
+    })
+}
+
+fn nested_archive_source(
+    format: ArchiveFormat,
+    source: &ArchiveSource,
+    member: &str,
+    temps: &mut Vec<tempfile::TempPath>,
+) -> Result<ArchiveSource, ArchiveError> {
+    match format {
+        ArchiveFormat::Zip => nested_zip_source(source, member, temps),
+        ArchiveFormat::Tar => nested_tar_source(source.open()?, member, temps),
+        ArchiveFormat::TarGz => nested_tar_source(flate2::read::GzDecoder::new(source.open()?), member, temps),
+    }
+}
+
+fn nested_zip_source(
+    source: &ArchiveSource,
+    member: &str,
+    temps: &mut Vec<tempfile::TempPath>,
+) -> Result<ArchiveSource, ArchiveError> {
+    let mut archive = zip::ZipArchive::new(source.open()?).map_err(read_error)?;
+    let Ok(entry) = archive.by_name(member) else {
+        return Err(ArchiveError::MemberNotFound);
+    };
+    if !entry.is_file() {
+        return Err(ArchiveError::MemberNotFound);
+    }
+    safe_member_name(entry.name())?;
+    reject_large_nested_archive(member, entry.size())?;
+    if entry.compression() == zip::CompressionMethod::Stored
+        && !entry.encrypted()
+        && entry.compressed_size() == entry.size()
+        && let Some(start) = entry.data_start()
+    {
+        return Ok(source.slice(start, entry.compressed_size()));
+    }
+    copy_nested_archive(entry, temps)
+}
+
+fn nested_tar_source(
+    reader: impl Read,
+    member: &str,
+    temps: &mut Vec<tempfile::TempPath>,
+) -> Result<ArchiveSource, ArchiveError> {
+    // The cap prevents small gzip inputs from consuming unbounded decompression work.
+    let mut archive = tar::Archive::new(reader.take(MAX_DECOMPRESSED_INSPECT_BYTES));
+    for entry in archive.entries().map_err(read_error)? {
+        let entry = entry.map_err(read_error)?;
+        if entry.header().entry_type().is_file() {
+            let path = entry.path().map_err(read_error)?.to_string_lossy().into_owned();
+            let path = safe_member_name(&path)?;
+            if path == member {
+                reject_large_nested_archive(member, entry.size())?;
+                return copy_nested_archive(entry, temps);
+            }
+        }
+    }
+    Err(ArchiveError::MemberNotFound)
+}
+
+fn copy_nested_archive(reader: impl Read, temps: &mut Vec<tempfile::TempPath>) -> Result<ArchiveSource, ArchiveError> {
+    let mut temp = tempfile::NamedTempFile::new().map_err(read_error)?;
+    std::io::copy(&mut reader.take(MAX_NESTED_ARCHIVE_SIZE), temp.as_file_mut()).map_err(read_error)?;
+    temp.as_file_mut().flush().map_err(read_error)?;
+    let path = temp.path().to_path_buf();
+    temps.push(temp.into_temp_path());
+    Ok(ArchiveSource::new(path))
+}
+
+fn reject_large_nested_archive(member: &str, size: u64) -> Result<(), ArchiveError> {
+    if size > MAX_NESTED_ARCHIVE_SIZE {
+        Err(ArchiveError::NestedArchiveTooLarge {
+            member: member.to_owned(),
+            size,
+            limit: MAX_NESTED_ARCHIVE_SIZE,
+        })
+    } else {
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ArchiveSource {
+    path: PathBuf,
+    start: u64,
+    len: Option<u64>,
+}
+
+impl ArchiveSource {
+    pub const fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            start: 0,
+            len: None,
+        }
+    }
+
+    fn slice(&self, start: u64, len: u64) -> Self {
+        Self {
+            path: self.path.clone(),
+            start: self.start.saturating_add(start),
+            len: Some(len),
+        }
+    }
+
+    pub fn open(&self) -> Result<FileRangeReader, ArchiveError> {
+        FileRangeReader::new(self.path.clone(), self.start, self.len()?)
+    }
+
+    fn len(&self) -> Result<u64, ArchiveError> {
+        match self.len {
+            Some(len) => Ok(len),
+            None => Ok(std::fs::metadata(&self.path)
+                .map_err(read_error)?
+                .len()
+                .saturating_sub(self.start)),
+        }
+    }
+}
+
+pub struct FileRangeReader {
+    file: std::fs::File,
+    start: u64,
+    len: u64,
+    position: u64,
+}
+
+impl FileRangeReader {
+    fn new(path: PathBuf, start: u64, len: u64) -> Result<Self, ArchiveError> {
+        let mut file = std::fs::File::open(path).map_err(read_error)?;
+        file.seek(SeekFrom::Start(start)).map_err(read_error)?;
+        Ok(Self {
+            file,
+            start,
+            len,
+            position: 0,
+        })
+    }
+}
+
+impl Read for FileRangeReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let available = usize::try_from((self.len - self.position).min(u64::try_from(buf.len()).unwrap_or(u64::MAX)))
+            .unwrap_or(buf.len());
+        let read = self.file.read(&mut buf[..available])?;
+        self.position += u64::try_from(read).unwrap_or_default();
+        Ok(read)
+    }
+}
+
+impl Seek for FileRangeReader {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        let position = match pos {
+            SeekFrom::Start(offset) => offset.min(self.len),
+            SeekFrom::Current(offset) if offset < 0 => self.position.saturating_sub(offset.unsigned_abs()),
+            SeekFrom::Current(offset) => self.position.saturating_add(offset.unsigned_abs()).min(self.len),
+            SeekFrom::End(offset) if offset < 0 => self.len.saturating_sub(offset.unsigned_abs()),
+            SeekFrom::End(_) => self.len,
+        };
+        self.file.seek(SeekFrom::Start(self.start + position))?;
+        self.position = position;
+        Ok(position)
+    }
+}

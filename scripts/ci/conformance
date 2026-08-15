@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+package=${1:?package is required}
+output=${2:?output is required}
+binary=${3:?binary is required}
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
+metadata=$(cargo metadata --manifest-path "$repo/Cargo.toml" --no-deps --format-version 1)
+config=$(jq -ec --arg package "$package" '
+  .packages[] | select(.name == $package) | {
+    root: (.manifest_path | sub("/Cargo.toml$"; "")),
+    conformance: .metadata["peryx-ci"].conformance
+  }
+' <<<"$metadata")
+repository=$(jq -er '.conformance.repository' <<<"$config")
+revision=$(jq -er '.conformance.revision' <<<"$config")
+directory=$(jq -er '.conformance.directory' <<<"$config")
+runner=$(jq -er '.root + "/" + .conformance.runner' <<<"$config")
+mapfile -t command < <(jq -r '.conformance.command[]' <<<"$config")
+mkdir -p "$(dirname -- "$output")"
+output=$(cd "$(dirname -- "$output")" && pwd -P)/$(basename -- "$output")
+scratch_root="$repo/.tox/tmp/conformance"
+rm -rf "$scratch_root"
+mkdir -p "$scratch_root"
+scratch=$(mktemp -d "$scratch_root/session.XXXXXX")
+mkdir "$scratch/tmp" "$scratch/go-build" "$scratch/go-mod"
+export TMPDIR="$scratch/tmp"
+export TMP="$TMPDIR"
+export TEMP="$TMPDIR"
+export GOCACHE="$scratch/go-build"
+export GOMODCACHE="$scratch/go-mod"
+cleanup() {
+  status=$?
+  trap - EXIT
+  set +e
+  go clean -modcache
+  clean_status=$?
+  rm -rf "$scratch"
+  remove_status=$?
+  if ((status == 0)); then
+    ((clean_status == 0)) || status=$clean_status
+    ((remove_status == 0)) || status=$remove_status
+  fi
+  exit "$status"
+}
+trap cleanup EXIT
+checkout="$scratch/checkout"
+git clone --quiet "$repository" "$checkout"
+git -C "$checkout" checkout --quiet "$revision"
+for index in "${!command[@]}"; do
+  command[index]=${command[index]//\{output\}/$output}
+done
+(cd "$checkout/$directory" && "${command[@]}")
+"$runner" "$binary" "$output"

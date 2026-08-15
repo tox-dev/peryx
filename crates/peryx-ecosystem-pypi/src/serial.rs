@@ -53,11 +53,6 @@ pub const fn validate_upstream_serial(
     }
 }
 
-/// Compose serial watermarks for every layer that contributed to one response.
-///
-/// The function returns the lowest watermark for a shared domain. Clients can treat that value as
-/// the newest serial present in every contributing layer. Missing stamps, mixed domains, and an
-/// empty response have no safe scalar serial.
 #[must_use]
 pub fn compose_serial_watermarks(stamps: impl IntoIterator<Item = Option<SerialStamp>>) -> Option<SerialStamp> {
     let mut stamps = stamps.into_iter();
@@ -163,8 +158,6 @@ impl ChangelogPage {
         &self.entries
     }
 
-    /// The next exclusive cursor: the last returned entry, or the greater of the request cursor and
-    /// snapshot serial for an empty page.
     #[must_use]
     pub fn resume_serial(&self) -> u64 {
         self.entries.last().map_or_else(

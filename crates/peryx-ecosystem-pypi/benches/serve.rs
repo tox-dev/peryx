@@ -43,7 +43,7 @@ fn writer_acl(secret: impl Into<String>) -> IndexAcl {
             name: "uploader".to_owned(),
             secret: secret.into(),
             grants: vec![Grant {
-                projects: vec![Glob::new("*")],
+                resources: vec![Glob::new("*")],
                 actions: std::collections::BTreeSet::from([Action::Write, Action::Delete]),
             }],
             expires_at: None,
@@ -51,12 +51,7 @@ fn writer_acl(secret: impl Into<String>) -> IndexAcl {
     }
 }
 
-/// Serving cost with rate limiting off. The limiter's per-request cost is measured on its own by
-/// [`bench_rate_limit`]: driving it through this async router instead let scheduling jitter under the
-/// instrumented runtime dominate the reading, so the `enabled` variant swung by double digits between
-/// otherwise identical runs.
-///
-/// Rebuilding the production-style router per iteration would hide serving cost.
+// Router timing excludes the limiter because runtime jitter obscures its smaller cost.
 fn bench_serve(criterion: &mut Criterion) {
     let runtime = runtime();
     let mut group = criterion.benchmark_group("serve");
@@ -82,14 +77,12 @@ fn bench_serve(criterion: &mut Criterion) {
     group.finish();
 }
 
-/// Charged on every served request, so the limiter's steady-state decision is what it adds to the hot
-/// path. Measured synchronously on a warm bucket, the instruction count is deterministic; a batch
-/// amortizes moka's periodic housekeeping so a stray maintenance pass stays in the noise.
+// A warm batch amortizes moka maintenance and isolates steady-state limiter cost.
 fn bench_rate_limit(criterion: &mut Criterion) {
     const BATCH: usize = 1024;
     let limiter = RateLimiter::new(enabled_limits());
     let client = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
-    // Warm the bucket so every measured decision is a cache hit, not the one-time insert.
+    // Exclude the one-time bucket insertion.
     let _ = limiter.check_client(RouteClass::Listing, client);
     criterion.bench_function("rate_limit_decision", |bencher| {
         bencher.iter(|| {
@@ -131,7 +124,7 @@ fn cached(rate_limit: RateLimitConfig, detail: &ProjectDetail) -> (tempfile::Tem
         vec![Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
-            ecosystem: peryx_core::Ecosystem::Pypi,
+            ecosystem: peryx_ecosystem_pypi::ECOSYSTEM,
             kind: IndexKind::Cached {
                 client: upstream,
                 offline: false,
@@ -143,7 +136,15 @@ fn cached(rate_limit: RateLimitConfig, detail: &ProjectDetail) -> (tempfile::Tem
         rate_limit,
         [("pypi".to_owned(), 0)],
     );
-    peryx_ecosystem_pypi::install(&mut state);
+    peryx_plugin_registry::PluginRegistry::new(vec![peryx_ecosystem_pypi::registration()])
+        .unwrap()
+        .activate([peryx_ecosystem_pypi::ECOSYSTEM])
+        .unwrap()
+        .install_drivers(
+            &mut state.runtime_install_context().unwrap(),
+            &std::collections::HashMap::new(),
+        )
+        .unwrap();
     (dir, Arc::new(state))
 }
 

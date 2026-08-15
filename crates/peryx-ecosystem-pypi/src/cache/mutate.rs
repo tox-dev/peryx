@@ -1,5 +1,3 @@
-//! Hosted-store mutations: uploads, promotion, yank/hide overrides, and project status.
-
 use std::collections::{BTreeMap, HashSet};
 
 use crate::quota::PendingQuota;
@@ -7,7 +5,7 @@ use crate::store::PypiStore as _;
 use crate::store::{Guard, PromotedRelease, UploadMutation, upload_key};
 use crate::upload::{self, PreparedUpload, TrashInfo, Uploaded};
 use crate::{ProjectStatus, Yanked, file_matches_version, parse_distribution_filename, to_json, versions_match};
-use peryx_core::path::local_file_url;
+use peryx_core::path::local_artifact_url;
 use peryx_driver::state::ServingState;
 use peryx_index::{Index, IndexKind};
 
@@ -46,25 +44,33 @@ async fn admit_control(state: &ServingState, authority: &str, fence: u64) -> Res
 /// # Errors
 /// Returns [`CacheError::AuthoritySuperseded`] when a home transfer superseded the epoch mid-store, or
 /// another [`CacheError`] if a blob write, store write, or encode fails.
+pub struct StoredUpload {
+    pub stored: bool,
+    pub commit: Option<peryx_storage::meta::JournalCommit>,
+}
+
 pub async fn store_upload(
     state: &ServingState,
     name: &str,
     prepared: PreparedUpload,
     quota: Option<PendingQuota>,
-) -> Result<bool, CacheError> {
+) -> Result<StoredUpload, CacheError> {
     let project = prepared.normalized.clone();
     let fence = control_epoch(state, &project).await;
     let publish = upload::stage_publish(&state.blobs, prepared).await?;
     admit_control(state, &project, fence).await?;
-    let published = upload::commit_publish(&state.meta, name, publish, quota)?;
+    let published = upload::commit_publish(&state.meta, name, publish, quota, crate::replication_enabled(state))?;
     for (digest, size) in &published.placements {
         state.record_home_placement(digest.as_str(), *size, fence);
     }
-    state.record_operation_trace(peryx_driver::state::OperationKind::Upload, fence);
+    state.record_operation_trace(peryx_driver::state::OperationKind::Publish, fence);
     if published.stored {
-        state.invalidate_project(&project);
+        state.invalidate_resource(&project);
     }
-    Ok(published.stored)
+    Ok(StoredUpload {
+        stored: published.stored,
+        commit: published.commit,
+    })
 }
 
 /// Whether the hosted target already owns a filename, which makes the immutable upload an
@@ -112,7 +118,7 @@ pub async fn promote_release(
         if let Some(size) = uploaded.file.size {
             blob_sizes.insert(digest.clone(), size);
         }
-        uploaded.file.url = local_file_url(target_route, &digest, &filename);
+        uploaded.file.url = local_artifact_url(target_route, &digest, &filename);
         records.push((filename, digest, to_json(&uploaded).into_bytes()));
     }
     if !matched {
@@ -135,16 +141,18 @@ pub async fn promote_release(
         blob_sizes: &blob_sizes,
         submitted_at_unix: (state.clock)(),
     };
-    let promoted = state.meta.promote_files_checked(&release, promote_conflict)?;
+    let promoted = state
+        .meta
+        .promote_files_checked(crate::replication_enabled(state), &release, promote_conflict)?;
     if promoted > 0 {
-        state.invalidate_project(normalized);
+        state.invalidate_resource(normalized);
     }
     Ok(promoted)
 }
 
 /// The promotion precondition for one target filename, evaluated inside the write transaction: a
 /// free target is copied, an identical one left as it is, and a target holding different bytes is a
-/// conflict — so a concurrent upload to the target cannot be silently overwritten.
+/// conflict - so a concurrent upload to the target cannot be silently overwritten.
 fn promote_conflict(filename: &str, digest: &str, existing: Option<&[u8]>) -> Result<Guard, CacheError> {
     let Some(existing) = existing else {
         return Ok(Guard::Commit);
@@ -188,19 +196,27 @@ pub async fn set_yanked(
             continue;
         }
         if let Some(value) = yank_override_value(&yanked)? {
-            state
-                .meta
-                .put_override(hosted, normalized, &filename, &value, submitted_at_unix)?;
+            state.meta.put_override(
+                crate::replication_enabled(state),
+                hosted,
+                normalized,
+                &filename,
+                &value,
+                submitted_at_unix,
+            )?;
             changed += 1;
-        } else if state
-            .meta
-            .delete_override(hosted, normalized, &filename, submitted_at_unix)?
-        {
+        } else if state.meta.delete_override(
+            crate::replication_enabled(state),
+            hosted,
+            normalized,
+            &filename,
+            submitted_at_unix,
+        )? {
             changed += 1;
         }
     }
     if changed > 0 {
-        state.invalidate_project(normalized);
+        state.invalidate_resource(normalized);
     }
     Ok(changed)
 }
@@ -252,13 +268,18 @@ pub async fn remove_files(
         if uploaded.contains(&filename) {
             continue;
         }
-        state
-            .meta
-            .put_override(hosted, normalized, &filename, HIDDEN, trash.deleted_at_unix)?;
+        state.meta.put_override(
+            crate::replication_enabled(state),
+            hosted,
+            normalized,
+            &filename,
+            HIDDEN,
+            trash.deleted_at_unix,
+        )?;
         affected += 1;
     }
     if affected > 0 {
-        state.invalidate_project(normalized);
+        state.invalidate_resource(normalized);
     }
     Ok(affected)
 }
@@ -285,21 +306,22 @@ pub async fn restore_files(
         if version.is_some_and(|version| !file_matches_version(&filename, version)) {
             continue;
         }
-        if state
-            .meta
-            .delete_override(hosted, normalized, &filename, submitted_at_unix)?
-        {
+        if state.meta.delete_override(
+            crate::replication_enabled(state),
+            hosted,
+            normalized,
+            &filename,
+            submitted_at_unix,
+        )? {
             restored += 1;
         }
     }
     if restored > 0 {
-        state.invalidate_project(normalized);
+        state.invalidate_resource(normalized);
     }
     Ok(restored)
 }
 
-/// Resolve the effective project status for upload policy checks. A missing project is active.
-///
 /// # Errors
 /// Returns [`CacheError`] on a store, parse, or upstream failure.
 pub async fn project_status(
@@ -399,6 +421,7 @@ fn trash_uploads(
     trash: TrashContext<'_>,
 ) -> Result<usize, CacheError> {
     state.meta.mutate_uploads(
+        crate::replication_enabled(state),
         name,
         normalized,
         "delete-file",
@@ -431,9 +454,13 @@ fn untrash_uploads(
     version: Option<&str>,
     submitted_at_unix: i64,
 ) -> Result<usize, CacheError> {
-    state
-        .meta
-        .mutate_uploads(name, normalized, "restore", submitted_at_unix, |_filename, bytes| {
+    state.meta.mutate_uploads(
+        crate::replication_enabled(state),
+        name,
+        normalized,
+        "restore",
+        submitted_at_unix,
+        |_filename, bytes| {
             let mut uploaded: Uploaded = serde_json::from_slice(bytes)?;
             if uploaded.trashed.is_none() || version.is_some_and(|version| !versions_match(&uploaded.version, version))
             {
@@ -441,11 +468,10 @@ fn untrash_uploads(
             }
             uploaded.trashed = None;
             Ok(UploadMutation::Replace(to_json(&uploaded).into_bytes()))
-        })
+        },
+    )
 }
 
-/// Set the yank state of uploaded files, optionally limited to one version. Returns how many
-/// changed.
 fn yank_uploads(
     state: &ServingState,
     name: &str,
@@ -454,10 +480,18 @@ fn yank_uploads(
     yanked: &Yanked,
     submitted_at_unix: i64,
 ) -> Result<usize, CacheError> {
-    let action = if matches!(yanked, Yanked::No) { "unyank" } else { "yank" };
-    state
-        .meta
-        .mutate_uploads(name, normalized, action, submitted_at_unix, |_filename, bytes| {
+    let action = if matches!(yanked, Yanked::No) {
+        "unyank"
+    } else {
+        "withdraw"
+    };
+    state.meta.mutate_uploads(
+        crate::replication_enabled(state),
+        name,
+        normalized,
+        action,
+        submitted_at_unix,
+        |_filename, bytes| {
             let mut uploaded: Uploaded = serde_json::from_slice(bytes)?;
             if version.is_some_and(|version| !versions_match(&uploaded.version, version))
                 || uploaded.file.yanked == *yanked
@@ -466,5 +500,6 @@ fn yank_uploads(
             }
             uploaded.file.yanked = yanked.clone();
             Ok(UploadMutation::Replace(to_json(&uploaded).into_bytes()))
-        })
+        },
+    )
 }

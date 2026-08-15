@@ -1,132 +1,76 @@
 +++
-title = "Package search"
-description = "Query the derived package index over /+search: substring and regex matching, source and local-availability filters, and ACL-scoped results."
+title = "Search API"
+description = "Search the derived entity index with route, source, availability, and access filters."
 weight = 8
 +++
 
-Peryx keeps a search index over every project and repository it has served, and answers queries against it at
-`/+search`. The index is ecosystem-neutral: a PyPI project and an OCI repository are the same kind of searchable record,
-and each result names the ecosystem it came from so a client can label it in that ecosystem's own words (a `package` for
-PyPI, an `image` for OCI).
+peryx maintains a derived search index for entities observed by active ecosystem owners. Search reads metadata and never
+reads artifact bytes. The authoritative metadata store can rebuild the index after a schema change or restore.
 
-The index is a cache derived from the metadata store, not the store itself. A query is an in-memory lookup that never
-touches a blob, and each request runs on a blocking worker so a burst of searches cannot stall concurrent serving. The
-index lives under `<data_dir>/search-v1` and repopulates itself as pages and tags are served; a mutation that changes
-what a project would match marks the index stale, and the next query rebuilds it before answering. Nothing has to be
-configured to turn search on.
+## Record schema
+
+Each implementation maps its entities to this record:
+
+| Field             | Meaning                                               |
+| ----------------- | ----------------------------------------------------- |
+| `display_name`    | Name shown to the caller                              |
+| `normalized_name` | Stable name used for matching and ordering            |
+| `route`           | Repository route                                      |
+| `index`           | Index name                                            |
+| `ecosystem`       | Registered ecosystem identifier                       |
+| `type_label`      | Implementation term for the entity                    |
+| `type`            | `uploaded`, `cached`, or `override`                   |
+| `available`       | Whether this instance can serve at least one artifact |
+| `summary`         | Optional implementation-provided summary              |
+
+The `type_label` field lets a mixed result page use the implementation's terminology. Clients should identify the
+implementation through `ecosystem`, not by matching `type_label` text.
 
 ## Endpoints
 
-Two routes answer searches, both returning the same JSON document and taking the same query parameters:
+- `GET /+search` searches readable records across configured indexes.
+- `GET /{route}/+search` searches one route and ignores a conflicting `route` query value.
 
-- `GET /+search` searches across every configured index.
-- `GET /{route}/+search` searches one index, filling `route` from the path so a caller cannot widen the scope.
+Both endpoints return one response schema and accept the same query fields.
 
-The [PyPI endpoint reference](@/ecosystems/pypi/reference/endpoints.md) lists these alongside the ecosystem routes.
+## Query fields
 
-## Query parameters
+| Field          | Values                                  | Default | Contract                                     |
+| -------------- | --------------------------------------- | ------- | -------------------------------------------- |
+| `q`            | Text or `re:<expression>`               | Empty   | Matches normalized and display names         |
+| `route`        | Configured route                        | Any     | Restricts a global query                     |
+| `type`         | `all`, `uploaded`, `cached`, `override` | `all`   | Restricts record source                      |
+| `availability` | `all`, `local`                          | `all`   | Restricts records by local byte availability |
+| `page`         | Positive integer                        | `1`     | Selects a result page                        |
+| `page_size`    | `25`, `50`, or `100`                    | `25`    | Sets the result count                        |
 
-- `q`: the search text. An empty or missing `q` matches every readable record, so `/+search` with no query is a paged
-  listing.
-- `route`: restrict a global search to one index route. The per-index endpoint sets it for you and ignores a `route` a
-  caller passes.
-- `type`: the source filter, one of `all` (the default), `uploaded`, `cached`, or `override`.
-- `availability`: the local-availability filter, either `all` (the default) or `local`. `local` returns only records
-  whose bytes this instance can serve now. An unknown value returns `400 Bad Request`.
-- `page`: the 1-based page number. A value below `1`, or one that does not parse, falls back to `1`.
-- `page_size`: results per page, one of `25` (the default), `50`, or `100`. Any other value falls back to `25`.
+Plain text uses case-insensitive substring matching. The `re:` prefix selects the search engine's regular-expression
+dialect. An invalid expression or availability value returns `400 Bad Request`.
 
-## Matching
+## Response schema
 
-`q` matches a name by substring, ignoring case: `lask` finds `Flask`, and `django-rest` finds `djangorestframework` only
-if that run of characters appears in the name. Matching covers the display and normalized names, not descriptions.
-
-A query that begins with `re:` is a regular expression instead, evaluated over the whole name and ignoring case.
-`re:^flask` anchors to names that start with `flask`; `re:client$` to names that end with `client`. An empty pattern
-after `re:` matches everything, the same as an empty `q`. The expression is
-[Tantivy](https://github.com/quickwit-oss/tantivy)'s regex dialect, and an unparseable one returns `400 Bad Request`
-rather than an empty page.
-
-## Source filter
-
-Every result carries the class of the record it matched, and `type` narrows a search to one class:
-
-- `uploaded`: a project on a hosted index, published to this instance.
-- `cached`: a name mirrored from an upstream, served through a cached index.
-- `override`: on a virtual index, a name the index's own upload target serves, shadowing the upstream of the same route.
-  This is the [dependency-confusion](@/core/indexes.md) case made visible: a search can show which names a private
-  upload is answering in place of a public one.
-
-## Availability filter
-
-A cached index knows a name from its upstream catalog before it holds any of the distribution's bytes, and a hosted
-file's bytes can be evicted after the fact, so a searchable record and a locally servable one diverge. Each result
-carries an `available` flag, and `availability=local` keeps only the records it is true for.
-
-The flag reuses the [placement projection](@/core/artifact-source.md) the index already maintains, so the filter stays
-an indexed lookup rather than a per-result probe of the content store. Peryx computes it when it indexes a project and
-applies it before paging, so `total` and the cursors reflect the filtered set. A record counts as locally available when
-at least one of its artifacts holds verified bytes here, whether a hosted upload or a mirrored file already fetched. A
-name a cached index only learned from an upstream catalog, and never fetched, is remote-only and drops out under
-`local`. The filter changes neither policy visibility nor the source classes above; a blocked, hidden, trashed, or
-revoked artifact stays excluded either way.
-
-## Response
-
-The response is a JSON object echoing the query and paging back, with the matched records:
-
-```json
-{
-  "query": "flask",
-  "route": "root/pypi",
-  "type": "all",
-  "availability": "all",
-  "page": 1,
-  "page_size": 25,
-  "total": 3,
-  "results": [
-    {
-      "display_name": "Flask",
-      "normalized_name": "flask",
-      "route": "root/pypi",
-      "index": "pypi",
-      "ecosystem": "pypi",
-      "type_label": "package",
-      "type": "cached",
-      "available": true,
-      "summary": "A simple framework for building complex web applications."
-    }
-  ]
-}
-```
-
-`total` is the count of every readable match, not the size of the returned page, so a client pages through it with
-`page` and `page_size`. `type` and `availability` echo the active source and local-availability filters. `type_label` is
-the ecosystem's own word for a searchable record, filled in on the server so a browser renders it without an ecosystem
-lookup of its own. `available` is true when this instance can serve the record's bytes now. `route` is omitted when the
-search was not scoped to one, and `summary` is absent when the record carries none. Results follow a fixed order:
-display name, then route, then normalized name. Repeating a query returns the same page in the same order, and search
-does not rank by relevance.
+The response echoes `query`, `route`, `type`, `availability`, `page`, and `page_size`. It adds `total` and a `results`
+array of the records above. `total` counts all readable matches after policy and availability filters. Results sort by
+display name, route, then normalized name. Search does not rank by relevance.
 
 ## Access control
 
-Search never leaks a private name through a count. When a searched index requires authentication to read, peryx compiles
-the caller's read grants into the query itself, so `total` and every page contain only the resources that caller may
-read. An unreadable project never appears in the results and never counts toward the total, so a count cannot betray a
-name a client may not see. A caller carries its grants the same way as on any other request; see
-[authentication and access control](@/core/authentication.md). When every searched index grants anonymous reads, no such
-filter applies and the search runs unauthenticated.
+The query includes the caller's read grants before counting and paging. An unreadable name contributes no row and does
+not change `total`. Policy-hidden, trashed, and revoked artifacts do not make a record visible.
 
-## Rebuilding the index
+## Availability
 
-Because the index is derived, peryx can rebuild it from authoritative metadata at any time without data loss. It does
-this on its own when the on-disk index came from a version whose schema no longer matches: it discards the stale index
-and rebuilds it rather than failing to start. To force a full rebuild, for example after restoring metadata from a
-backup, run the reindex job:
+An implementation computes `available` from the artifact placement projection. A record is local when at least one
+eligible artifact has verified bytes on this instance. Catalog-only metadata without local bytes remains searchable
+unless the caller selects `availability=local`.
 
-```console
-$ peryx job reindex
-```
+## Rebuilds
 
-It rebuilds the index from the metadata store in committed chunks. Ordinary operation needs no manual reindex; the index
-keeps itself current as projects change.
+Startup discards an incompatible derived index and rebuilds it from metadata. Repository mutations mark affected search
+records stale. The next query refreshes them before returning a page. Each implementation documents its manual reindex
+command with its client workflows.
+
+## Implementations
+
+- [Ecosystem owner documentation](@/ecosystems/_index.md)
+- [Artifact source and availability](@/core/artifact-source.md)

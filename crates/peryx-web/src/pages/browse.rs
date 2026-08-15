@@ -1,139 +1,331 @@
-#![allow(
-    clippy::must_use_candidate,
-    reason = "the #[component] macro consumes attributes, so #[must_use] cannot reach the generated functions"
-)]
-
 use leptos::prelude::*;
-use leptos_router::hooks::use_query_map;
+use leptos_router::hooks::use_location;
+#[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
+use peryx_core::UiActionMethod;
+use peryx_core::{BrowseBadge, BrowseCell, BrowseLink, BrowsePage, BrowseProperty, BrowseRow, BrowseSection, UiAction};
 
-use super::ErrorMessage;
-use super::archive::{ArchiveView, split_legacy_archive_file};
-use super::manifest::{LayerView, ManifestView};
-use super::project::ProjectView;
-use crate::data::load_projects;
-use crate::url::browse_project_url;
+#[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
+use super::copy_to_clipboard;
+use super::{ErrorMessage, human_size};
+use crate::data::load_browse;
+use crate::markdown::external_link_rel;
 
-/// The browse page: a searchable project list, one project's detail, a manifest, or an archive's or
-/// layer's contents, selected by query parameters.
-///
-/// The dispatch is ecosystem-neutral: a `project` renders as whatever [`ProjectView`] gets back from
-/// the index's driver (a file listing or a reference list), and the `ref`/`layer` parameters — which
-/// only a registry's own URLs carry — select the manifest and layer views. No branch names a format.
 #[component]
 pub fn Browse() -> impl IntoView {
-    let query = use_query_map();
-    let route = Memo::new(move |_| query.read().get("index").unwrap_or_default());
-    let project = Memo::new(move |_| query.read().get("project").filter(|name| !name.is_empty()));
-    let reference = Memo::new(move |_| query.read().get("ref").filter(|name| !name.is_empty()));
-    let file = Memo::new(move |_| query.read().get("file").filter(|name| !name.is_empty()));
-    let sha256 = Memo::new(move |_| query.read().get("sha256").filter(|digest| !digest.is_empty()));
-    let layer = Memo::new(move |_| query.read().get("layer").filter(|digest| !digest.is_empty()));
-    let member = Memo::new(move |_| query.read().get("member").filter(|name| !name.is_empty()));
-    let containers = Memo::new(move |_| {
-        query
-            .read()
-            .get_all("container")
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|name| !name.is_empty())
-            .collect::<Vec<_>>()
-    });
-    let offset = Memo::new(move |_| {
-        query
-            .read()
-            .get("offset")
-            .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or_default()
-    });
+    let location = use_location();
+    let page = Resource::new(move || location.search.get(), load_browse);
     view! {
-        <section class="page">
-            {move || {
-                let route = route.get();
-                let project = project.get();
-                let reference = reference.get();
-                let sha256 = sha256.get();
-                let layer = layer.get();
-                let file = file.get();
-                let member = member.get();
-                let containers = containers.get();
-                let offset = offset.get();
-                match (project, sha256, file, reference) {
-                    (Some(name), Some(sha256), Some(file), _) => {
-                        view! {
-                            <ArchiveView route project=name sha256 filename=file containers member offset />
-                        }.into_any()
+        <section class="page browse-page">
+            <Suspense fallback=|| view! { <p class="dim">"loading"</p> }>
+                {move || Suspend::new(async move {
+                    match page.await {
+                        Ok(Some(document)) => view! { <BrowseDocument document refresh=page /> }.into_any(),
+                        Ok(None) => view! { <p class="dim">"Nothing matched this browse query."</p> }.into_any(),
+                        Err(message) => view! { <ErrorMessage message /> }.into_any(),
                     }
-                    (Some(name), None, Some(file), _) => {
-                        let (sha256, filename) = split_legacy_archive_file(&file);
-                        view! {
-                            <ArchiveView route project=name sha256 filename containers member offset />
-                        }.into_any()
-                    }
-                    (Some(repo), _, None, Some(reference)) if layer.is_some() => {
-                        let digest = layer.unwrap_or_default();
-                        view! { <LayerView route repo reference digest member offset /> }.into_any()
-                    }
-                    (Some(repo), _, None, Some(reference)) => {
-                        view! { <ManifestView route repo reference /> }.into_any()
-                    }
-                    (Some(name), _, None, _) => view! { <ProjectView route project=name /> }.into_any(),
-                    (None, _, _, _) => view! { <IndexView route /> }.into_any(),
-                }
-            }}
+                })}
+            </Suspense>
         </section>
     }
 }
 
 #[component]
-fn IndexView(route: String) -> impl IntoView {
-    let projects = Resource::new(
-        {
-            let route = route.clone();
-            move || route.clone()
-        },
-        load_projects,
-    );
-    let (filter, set_filter) = signal(String::new());
-    let heading = route.clone();
+fn BrowseDocument(document: BrowsePage, refresh: Resource<Result<Option<BrowsePage>, String>>) -> impl IntoView {
+    let (user, set_user) = signal(String::new());
+    let (password, set_password) = signal(String::new());
+    #[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
+    let (outcome, set_outcome) = signal(String::new());
+    #[cfg(not(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate")))]
+    let (_, set_outcome) = signal(String::new());
+    #[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
+    let outcome_view = move || (!outcome.get().is_empty()).then(|| view! { <p class="outcome">{outcome.get()}</p> });
+    #[cfg(not(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate")))]
+    let outcome_view = ();
     view! {
-        <h1><code>{heading}</code></h1>
-        <input
-            class="search"
-            type="search"
-            placeholder="Filter projects…"
-            on:input:target=move |event| set_filter.set(event.target().value())
-        />
-        <Suspense fallback=|| view! { <p class="dim">"loading"</p> }>
-            {move || {
-                let route = route.clone();
-                Suspend::new(async move {
-                    match projects.await {
-                        Ok(names) => view! { <ProjectList route names filter /> }.into_any(),
-                        Err(message) => view! { <ErrorMessage message /> }.into_any(),
-                    }
-                })
-            }}
-        </Suspense>
+        <BrowseBreadcrumbs links=document.breadcrumbs />
+        <header class="browse-head">
+            <h1>{document.title}</h1>
+            {document.subtitle.map(|subtitle| view! { <p class="browse-subtitle">{subtitle}</p> })}
+            {document.summary.map(|summary| view! { <p class="summary">{summary}</p> })}
+            <BrowseBadges badges=document.badges />
+        </header>
+        {document.command.map(|command| {
+            let copied = command.clone();
+            view! {
+                <div class="install">
+                    <code>{command}</code>
+                    <CopyButton command=copied />
+                </div>
+            }
+        })}
+        {document.sections.into_iter().map(|section| view! { <BrowseSectionView section /> }).collect_view()}
+        <BrowseActions actions=document.actions user set_user password set_password set_outcome refresh />
+        {outcome_view}
     }
 }
 
 #[component]
-fn ProjectList(route: String, names: Vec<String>, filter: ReadSignal<String>) -> impl IntoView {
-    let empty = names.is_empty();
+#[cfg(not(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate")))]
+fn CopyButton(command: String) -> impl IntoView {
+    let _ = command;
+    view! { <button class="copy">"copy"</button> }
+}
+
+#[component]
+#[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
+fn CopyButton(command: String) -> impl IntoView {
+    view! { <button class="copy" on:click=move |_| copy_to_clipboard(&command)>"copy"</button> }
+}
+
+#[component]
+fn BrowseBreadcrumbs(links: Vec<BrowseLink>) -> impl IntoView {
+    (!links.is_empty()).then(|| {
+        view! {
+            <nav class="breadcrumb">
+                {links.into_iter().enumerate().map(|(position, link)| view! {
+                    {(position > 0).then_some(" / ")}
+                <a href=link.href.clone() rel=external_link_rel(&link.href)>{link.label}</a>
+                }).collect_view()}
+            </nav>
+        }
+    })
+}
+
+#[component]
+fn BrowseBadges(badges: Vec<BrowseBadge>) -> impl IntoView {
     view! {
-        <ul class="project-list">
-            {move || {
-                let needle = filter.get().to_lowercase();
-                names
-                    .iter()
-                    .filter(|name| needle.is_empty() || name.to_lowercase().contains(&needle))
-                    .map(|name| {
-                        let href = browse_project_url(&route, name);
-                        view! { <li><a href=href>{name.clone()}</a></li> }
-                    })
-                    .collect_view()
-            }}
-        </ul>
-        {empty.then(|| view! { <p class="dim">"No projects observed on this index yet."</p> })}
+        <div class="browse-badges">
+            {badges.into_iter().map(|badge| {
+                let class = format!("badge {}", badge.class);
+                view! { <span class=class title=badge.hint>{badge.label}</span> }
+            }).collect_view()}
+        </div>
     }
 }
+
+#[component]
+fn BrowseSectionView(section: BrowseSection) -> impl IntoView {
+    match section {
+        BrowseSection::Markup { heading, html, notice } => view! {
+            <section class="browse-section">
+                <h2>{heading}</h2>
+                {notice.map(|message| view! { <p class="dim">{message}</p> })}
+                <div class="description" inner_html=html></div>
+            </section>
+        }
+        .into_any(),
+        BrowseSection::Properties { heading, entries } => view! {
+            <section class="browse-section">
+                <h2>{heading}</h2>
+                <dl class="browse-properties">
+                    {entries.into_iter().map(|entry| view! { <BrowsePropertyView entry /> }).collect_view()}
+                </dl>
+            </section>
+        }
+        .into_any(),
+        BrowseSection::Links {
+            heading,
+            entries,
+            empty,
+        } => view! {
+            <section class="browse-section">
+                <h2>{heading}</h2>
+                <BrowseLinks links=entries empty />
+            </section>
+        }
+        .into_any(),
+        BrowseSection::Table {
+            heading,
+            columns,
+            rows,
+            empty,
+        } => view! {
+            <section class="browse-section">
+                <h2>{heading}</h2>
+                <BrowseTable columns rows empty />
+            </section>
+        }
+        .into_any(),
+        BrowseSection::Content {
+            heading,
+            text,
+            size,
+            offset,
+            next,
+        } => view! {
+            <section class="browse-section">
+                <h2>{heading}</h2>
+                {size.map(|size| view! { <p class="dim">{format!("{} at byte {offset}", human_size(size))}</p> })}
+                <pre class="browse-content"><code>{text}</code></pre>
+                {next.map(|link| view! { <a class="page-link" href=link.href>{link.label}</a> })}
+            </section>
+        }
+        .into_any(),
+    }
+}
+
+#[component]
+fn BrowsePropertyView(entry: BrowseProperty) -> impl IntoView {
+    view! {
+        <dt>{entry.label}</dt>
+        <dd>{match entry.href {
+            Some(href) => view! { <a href=href.clone() rel=external_link_rel(&href)>{entry.value}</a> }.into_any(),
+            None => view! { <span>{entry.value}</span> }.into_any(),
+        }}</dd>
+    }
+}
+
+#[component]
+fn BrowseLinks(links: Vec<BrowseLink>, empty: String) -> impl IntoView {
+    if links.is_empty() {
+        return view! { <p class="dim">{empty}</p> }.into_any();
+    }
+    view! {
+        <ul class="links-list">
+            {links.into_iter().map(|link| view! {
+                <li><a href=link.href.clone() rel=external_link_rel(&link.href)>{link.label}</a></li>
+            }).collect_view()}
+        </ul>
+    }
+    .into_any()
+}
+
+#[component]
+fn BrowseTable(columns: Vec<String>, rows: Vec<BrowseRow>, empty: String) -> impl IntoView {
+    if rows.is_empty() {
+        return view! { <p class="dim">{empty}</p> }.into_any();
+    }
+    view! {
+        <div class="table-scroll">
+            <table class="browse-table">
+                <thead><tr>{columns.into_iter().map(|column| view! { <th>{column}</th> }).collect_view()}</tr></thead>
+                <tbody>{rows.into_iter().map(|row| view! { <BrowseRowView row /> }).collect_view()}</tbody>
+            </table>
+        </div>
+    }
+    .into_any()
+}
+
+#[component]
+fn BrowseRowView(row: BrowseRow) -> impl IntoView {
+    view! {
+        <tr>
+            {row.cells.into_iter().map(|cell| view! { <BrowseCellView cell /> }).collect_view()}
+            {(!row.badges.is_empty()).then(|| view! { <td><BrowseBadges badges=row.badges /></td> })}
+            {(!row.actions.is_empty()).then(|| view! { <td>{row.actions.into_iter().map(|action| action.label).collect_view()}</td> })}
+        </tr>
+    }
+}
+
+#[component]
+fn BrowseCellView(cell: BrowseCell) -> impl IntoView {
+    let content = if cell.code {
+        view! { <code>{cell.text}</code> }.into_any()
+    } else {
+        view! { <span>{cell.text}</span> }.into_any()
+    };
+    view! { <td>{match cell.href {
+        Some(href) => view! { <a href=href.clone() rel=external_link_rel(&href)>{content}</a> }.into_any(),
+        None => content,
+    }}</td> }
+}
+
+#[component]
+#[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
+fn BrowseActions(
+    actions: Vec<UiAction>,
+    user: ReadSignal<String>,
+    set_user: WriteSignal<String>,
+    password: ReadSignal<String>,
+    set_password: WriteSignal<String>,
+    set_outcome: WriteSignal<String>,
+    refresh: Resource<Result<Option<BrowsePage>, String>>,
+) -> impl IntoView {
+    if actions.is_empty() {
+        return ().into_any();
+    }
+    view! {
+        <details class="admin">
+            <summary>"Manage"</summary>
+            <input
+                autocomplete="username"
+                placeholder="Username"
+                on:input:target=move |event| set_user.set(event.target().value())
+            />
+            <input
+                class="token"
+                type="password"
+                placeholder="Password"
+                on:input:target=move |event| set_password.set(event.target().value())
+            />
+            {actions.into_iter().map(|action| {
+                let class = if action.destructive { "danger" } else { "" };
+                view! {
+                    <button class=class on:click=move |_| {
+                        run_action(
+                            action.method,
+                            action.endpoint.clone(),
+                            user.get_untracked(),
+                            password.get_untracked(),
+                            set_outcome,
+                            refresh,
+                        );
+                    }>{action.label}</button>
+                }
+            }).collect_view()}
+        </details>
+    }
+    .into_any()
+}
+
+#[component]
+#[cfg(not(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate")))]
+fn BrowseActions(
+    actions: Vec<UiAction>,
+    user: ReadSignal<String>,
+    set_user: WriteSignal<String>,
+    password: ReadSignal<String>,
+    set_password: WriteSignal<String>,
+    set_outcome: WriteSignal<String>,
+    refresh: Resource<Result<Option<BrowsePage>, String>>,
+) -> impl IntoView {
+    let _ = (user, set_user, password, set_password, set_outcome, refresh);
+    if actions.is_empty() {
+        return ().into_any();
+    }
+    view! {
+        <details class="admin">
+            <summary>"Manage"</summary>
+            <input autocomplete="username" placeholder="Username" />
+            <input type="password" placeholder="Password" class="token" />
+            {actions.into_iter().map(|action| {
+                let class = if action.destructive { "danger" } else { "" };
+                view! { <button class=class>{action.label}</button> }
+            }).collect_view()}
+        </details>
+    }
+    .into_any()
+}
+
+#[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
+fn run_action(
+    method: UiActionMethod,
+    endpoint: String,
+    user: String,
+    password: String,
+    outcome: WriteSignal<String>,
+    refresh: Resource<Result<Option<BrowsePage>, String>>,
+) {
+    outcome.set(String::new());
+    #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+    leptos::task::spawn_local(async move {
+        outcome.set(crate::data::admin_request(method, &endpoint, &user, &password).await);
+        refresh.refetch();
+    });
+    #[cfg(any(feature = "ssr", not(feature = "hydrate")))]
+    drop((method, endpoint, user, password, refresh));
+}
+
+#[cfg(all(test, feature = "ssr"))]
+#[path = "../../tests/unit/pages/browse/tests.rs"]
+mod tests;

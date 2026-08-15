@@ -33,25 +33,39 @@ const PROJECT_FILE_DELETE_BATCH: usize = 10_000;
 ///
 /// # Errors
 /// Returns a store error if the write fails.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one transaction needs every namespace's rows together"
-)]
-pub fn put_cached_page(
-    meta: &MetaStore,
-    key: &str,
-    record: &CachedIndex,
-    index: &str,
-    normalized: &str,
-    display: &str,
-    source: &str,
-    upstream: Option<&str>,
-    project_status: Option<&str>,
-    project_status_reason: Option<&str>,
-    files: &[(String, String, Option<u64>)],
-    metadata: &[(String, String, String)],
-    attestations: &[(String, String, String)],
-) -> Result<(), MetaError> {
+#[derive(Clone, Copy)]
+pub struct CachedPageWrite<'a> {
+    pub key: &'a str,
+    pub record: &'a CachedIndex,
+    pub index: &'a str,
+    pub normalized: &'a str,
+    pub display: &'a str,
+    pub source: &'a str,
+    pub upstream: Option<&'a str>,
+    pub project_status: Option<&'a str>,
+    pub project_status_reason: Option<&'a str>,
+    pub files: &'a [(String, String, Option<u64>)],
+    pub metadata: &'a [(String, String, String)],
+    pub attestations: &'a [(String, String, String)],
+}
+
+/// # Errors
+/// Returns a store error if the transaction fails.
+pub fn put_cached_page(meta: &MetaStore, write: CachedPageWrite<'_>) -> Result<(), MetaError> {
+    let CachedPageWrite {
+        key,
+        record,
+        index,
+        normalized,
+        display,
+        source,
+        upstream,
+        project_status,
+        project_status_reason,
+        files,
+        metadata,
+        attestations,
+    } = write;
     meta.commit_driver_cache_txn(|txn| {
         txn.put_local(&index_key(key), &record.encode())
             .and_then(|()| txn.remove(&freshness_key(key)).map(|_| ()))
@@ -83,8 +97,6 @@ pub fn put_cached_page(
     })
 }
 
-/// Fetch one project's explicit status marker, if a cached upstream page provided one.
-///
 /// # Errors
 /// Returns a store error if the read fails or the stored record cannot be decoded.
 pub fn get_project_status(
@@ -145,9 +157,6 @@ pub fn touch_index_freshness(
     meta.commit_driver_batch(&batch, false)
 }
 
-/// Fetch a cached index record, with any freshness a later `304` advanced folded in over the body
-/// row's own timestamp.
-///
 /// # Errors
 /// Returns a store error if the read fails or the stored bytes cannot be decoded.
 pub fn get_index(meta: &MetaStore, key: &str) -> Result<Option<CachedIndex>, MetaError> {
@@ -162,7 +171,6 @@ pub fn get_index(meta: &MetaStore, key: &str) -> Result<Option<CachedIndex>, Met
     Ok(Some(record))
 }
 
-/// The freshness overlay a `304` left for `key`, if any.
 fn read_overlay(meta: &MetaStore, key: &str) -> Result<Option<FreshnessOverlay>, MetaError> {
     Ok(meta
         .get_driver_value(&freshness_key(key))?
@@ -177,21 +185,26 @@ fn read_overlay(meta: &MetaStore, key: &str) -> Result<Option<FreshnessOverlay>,
 /// # Errors
 /// Returns a store error if the read fails or a stored record cannot be decoded.
 ///
-/// # Panics
-/// Never in practice: a key the prefix scan just returned still has its value.
 pub fn list_index_pages(meta: &MetaStore) -> Result<Vec<(String, i64, Option<i64>)>, MetaError> {
     let mut pages = Vec::new();
-    for key in meta.driver_prefix_keys(INDEX_PREFIX)? {
+    let mut error = None;
+    meta.visit_driver_prefix(INDEX_PREFIX, |key, raw| {
+        if error.is_some() {
+            return;
+        }
         let route = &key[INDEX_PREFIX.len()..];
-        let (fetched_at, fresh_secs) = if let Some(overlay) = read_overlay(meta, route)? {
-            (overlay.fetched_at_unix, overlay.fresh_secs)
-        } else {
-            let raw = meta
-                .get_driver_value(&key)?
-                .expect("a key from the prefix scan still has its value");
-            CachedIndex::decode_freshness(&raw)?
-        };
-        pages.push((route.to_owned(), fetched_at, fresh_secs));
+        match read_overlay(meta, route).and_then(|overlay| {
+            overlay.map_or_else(
+                || CachedIndex::decode_freshness(raw).map_err(MetaError::from),
+                |overlay| Ok((overlay.fetched_at_unix, overlay.fresh_secs)),
+            )
+        }) {
+            Ok((fetched_at, fresh_secs)) => pages.push((route.to_owned(), fetched_at, fresh_secs)),
+            Err(err) => error = Some(err),
+        }
+    })?;
+    if let Some(err) = error {
+        return Err(err);
     }
     Ok(pages)
 }
@@ -202,46 +215,50 @@ pub fn list_index_pages(meta: &MetaStore) -> Result<Vec<(String, i64, Option<i64
 /// Returns a scan error if the store read fails, a record cannot be decoded, or the visitor
 /// returns an error.
 ///
-/// # Panics
-/// Never in practice: a key the prefix scan just returned still has its value.
 pub fn scan_index_pages<E>(
     meta: &MetaStore,
     mut visit: impl FnMut(CachedIndexPage) -> Result<(), E>,
 ) -> Result<(), MetaScanError<E>> {
-    for key in meta.driver_prefix_keys(INDEX_PREFIX)? {
-        let raw = meta
-            .get_driver_value(&key)?
-            .expect("a key from the prefix scan still has its value");
-        let mut summary = CachedIndex::summary(&raw).map_err(MetaError::from)?;
-        if let Some(overlay) = read_overlay(meta, &key[INDEX_PREFIX.len()..])? {
-            summary.fetched_at_unix = overlay.fetched_at_unix;
-            summary.fresh_secs = overlay.fresh_secs;
+    let mut error = None;
+    meta.visit_driver_prefix(INDEX_PREFIX, |key, raw| {
+        if error.is_some() {
+            return;
         }
-        visit(CachedIndexPage {
-            key: key[INDEX_PREFIX.len()..].to_owned(),
-            summary,
-        })
-        .map_err(MetaScanError::Visit)?;
+        error = (|| -> Result<(), MetaScanError<E>> {
+            let mut summary = CachedIndex::summary(raw).map_err(MetaError::from)?;
+            if let Some(overlay) = read_overlay(meta, &key[INDEX_PREFIX.len()..])? {
+                summary.fetched_at_unix = overlay.fetched_at_unix;
+                summary.fresh_secs = overlay.fresh_secs;
+            }
+            visit(CachedIndexPage {
+                key: key[INDEX_PREFIX.len()..].to_owned(),
+                summary,
+            })
+            .map_err(MetaScanError::Visit)
+        })()
+        .err();
+    })?;
+    if let Some(err) = error {
+        return Err(err);
     }
     Ok(())
 }
 
-/// Visit raw cached simple-index records, keyed by route.
-///
 /// # Errors
 /// Returns a scan error if the store read fails or the visitor returns an error.
 ///
-/// # Panics
-/// Never in practice: a key the prefix scan just returned still has its value.
 pub fn scan_index_records<E>(
     meta: &MetaStore,
     mut visit: impl FnMut(&str, &[u8]) -> Result<(), E>,
 ) -> Result<(), MetaScanError<E>> {
-    for key in meta.driver_prefix_keys(INDEX_PREFIX)? {
-        let raw = meta
-            .get_driver_value(&key)?
-            .expect("a key from the prefix scan still has its value");
-        visit(&key[INDEX_PREFIX.len()..], &raw).map_err(MetaScanError::Visit)?;
+    let mut error = None;
+    meta.visit_driver_prefix(INDEX_PREFIX, |key, raw| {
+        if error.is_none() {
+            error = visit(&key[INDEX_PREFIX.len()..], raw).err();
+        }
+    })?;
+    if let Some(err) = error {
+        return Err(MetaScanError::Visit(err));
     }
     Ok(())
 }
@@ -253,16 +270,12 @@ fn decode_project_meta_state(raw: Option<Vec<u8>>) -> Result<ProjectMetaState, M
     )
 }
 
-/// Read one project's remote file-metadata publication state.
-///
 /// # Errors
 /// Returns a store error if the read or decode fails.
 pub fn project_meta_state(meta: &MetaStore, index: &str, normalized: &str) -> Result<ProjectMetaState, MetaError> {
     decode_project_meta_state(meta.get_driver_value(&project_meta_key(index, normalized))?)
 }
 
-/// The active (reader-visible) remote file-metadata generation for one project, if published.
-///
 /// # Errors
 /// Returns a store error if the read or decode fails.
 pub fn active_project_generation(
@@ -396,7 +409,6 @@ pub fn put_project_files(
     })
 }
 
-/// Register the digest-keyed download source and metadata sibling a served file resolves through.
 fn register_file_rows(
     txn: &mut DriverTxn<'_>,
     index: &str,
@@ -508,727 +520,31 @@ pub fn refresh_project_generation(
     })
 }
 
-/// List one project's parsed remote files from its active generation, sorted by filename.
-///
 /// # Errors
 /// Returns a store error if a read fails or a stored file row cannot be decoded.
 ///
-/// # Panics
-/// Never in practice: a key the prefix scan just returned still has its value.
 pub fn list_project_files(meta: &MetaStore, index: &str, normalized: &str) -> Result<Vec<File>, MetaError> {
     let Some(active) = active_project_generation(meta, index, normalized)? else {
         return Ok(Vec::new());
     };
     let prefix = project_generation_prefix(index, normalized, active.generation);
     let mut files = Vec::new();
-    for key in meta.driver_prefix_keys(&prefix)? {
-        let raw = meta
-            .get_driver_value(&key)?
-            .expect("a key from the prefix scan still has its value");
-        files.push(serde_json::from_slice::<File>(&raw)?);
+    let mut error = None;
+    meta.visit_driver_prefix(&prefix, |_key, raw| {
+        if error.is_some() {
+            return;
+        }
+        match serde_json::from_slice(raw) {
+            Ok(file) => files.push(file),
+            Err(err) => error = Some(MetaError::from(err)),
+        }
+    })?;
+    if let Some(err) = error {
+        return Err(err);
     }
     Ok(files)
 }
 
 #[cfg(test)]
-mod tests {
-    use std::error::Error as _;
-
-    use super::{CachedIndex, MetaStore, index_key};
-    use crate::store::PypiStore as _;
-
-    fn store() -> (tempfile::TempDir, MetaStore) {
-        let dir = tempfile::tempdir().unwrap();
-        let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-        (dir, meta)
-    }
-
-    fn record() -> CachedIndex {
-        CachedIndex {
-            etag: Some("\"abc\"".to_owned()),
-            last_serial: Some(42),
-            fetched_at_unix: 1_700_000_000,
-            content_type: None,
-            fresh_secs: None,
-            body: b"<html></html>".to_vec(),
-        }
-    }
-
-    #[test]
-    fn test_put_and_get_index_roundtrip() {
-        let (_dir, meta) = store();
-        assert_eq!(meta.get_index("root/pypi/flask").unwrap(), None);
-        meta.put_index("root/pypi/flask", &record()).unwrap();
-        assert_eq!(meta.get_index("root/pypi/flask").unwrap(), Some(record()));
-    }
-
-    #[test]
-    fn test_put_index_overwrites() {
-        let (_dir, meta) = store();
-        meta.put_index("k", &record()).unwrap();
-        let mut updated = record();
-        updated.last_serial = Some(99);
-        meta.put_index("k", &updated).unwrap();
-        assert_eq!(meta.get_index("k").unwrap().unwrap().last_serial, Some(99));
-    }
-
-    #[test]
-    fn test_touch_index_freshness_advances_without_rewriting_the_body_row() {
-        let (_dir, meta) = store();
-        meta.put_index("pypi/flask", &record()).unwrap();
-        let body_row = meta.get_driver_value(&index_key("pypi/flask")).unwrap().unwrap();
-
-        meta.touch_index_freshness("pypi/flask", 1_800_000_000, Some(900))
-            .unwrap();
-
-        assert_eq!(
-            meta.get_driver_value(&index_key("pypi/flask")).unwrap().unwrap(),
-            body_row,
-            "a 304 rewrites the freshness overlay, not the page body row"
-        );
-        let refreshed = meta.get_index("pypi/flask").unwrap().unwrap();
-        assert_eq!(refreshed.fetched_at_unix, 1_800_000_000);
-        assert_eq!(refreshed.fresh_secs, Some(900));
-        assert_eq!(refreshed.body, record().body, "the served body is unchanged");
-        assert_eq!(refreshed.etag, record().etag);
-    }
-
-    #[test]
-    fn test_put_index_clears_a_stale_freshness_overlay() {
-        let (_dir, meta) = store();
-        meta.put_index("k", &record()).unwrap();
-        meta.touch_index_freshness("k", 9_999, Some(1)).unwrap();
-
-        let mut replaced = record();
-        replaced.fetched_at_unix = 2_000_000_000;
-        replaced.body = b"<html>new</html>".to_vec();
-        meta.put_index("k", &replaced).unwrap();
-
-        assert_eq!(
-            meta.get_index("k").unwrap().unwrap(),
-            replaced,
-            "a 200 replaces the body and its freshness; the overlay must not shadow it"
-        );
-    }
-
-    #[test]
-    fn test_list_index_pages_reflects_a_freshness_overlay() {
-        let (_dir, meta) = store();
-        meta.put_index("pypi/flask", &record()).unwrap();
-        meta.touch_index_freshness("pypi/flask", 1_900_000_000, Some(120))
-            .unwrap();
-        assert_eq!(
-            meta.list_index_pages().unwrap(),
-            vec![("pypi/flask".to_owned(), 1_900_000_000, Some(120))]
-        );
-    }
-
-    #[test]
-    fn test_scan_index_pages_reflects_a_freshness_overlay() {
-        let (_dir, meta) = store();
-        meta.put_index("pypi/flask", &record()).unwrap();
-        meta.touch_index_freshness("pypi/flask", 1_900_000_000, Some(120))
-            .unwrap();
-        let mut pages = Vec::new();
-        meta.scan_index_pages(|page| {
-            pages.push((
-                page.key,
-                page.summary.fetched_at_unix,
-                page.summary.fresh_secs,
-                page.summary.body_bytes,
-            ));
-            Ok::<(), std::io::Error>(())
-        })
-        .unwrap();
-        assert_eq!(pages, vec![("pypi/flask".to_owned(), 1_900_000_000, Some(120), 13)]);
-    }
-
-    #[test]
-    fn test_put_cached_page_records_file_url_size_and_status() {
-        let (_dir, meta) = store();
-        meta.put_cached_page(
-            "pypi/pkg",
-            &record(),
-            "pypi",
-            "pkg",
-            "Pkg",
-            "pypi",
-            Some("mirror"),
-            Some("archived"),
-            Some("read only"),
-            &[(
-                "feedface".to_owned(),
-                "https://files.example/pkg-1.0.whl".to_owned(),
-                Some(42),
-            )],
-            &[(
-                "feedface".to_owned(),
-                "https://files.example/pkg-1.0.whl.metadata".to_owned(),
-                "decafbad".to_owned(),
-            )],
-            &[],
-        )
-        .unwrap();
-
-        let source = meta.get_file_url("feedface").unwrap().unwrap();
-        assert_eq!(source.size, Some(42), "the file's size line round-trips");
-        assert_eq!(source.upstream.as_deref(), Some("mirror"));
-        assert_eq!(
-            meta.get_metadata("feedface").unwrap(),
-            Some((
-                "https://files.example/pkg-1.0.whl.metadata".to_owned(),
-                "decafbad".to_owned(),
-                "pypi".to_owned(),
-            ))
-        );
-        assert_eq!(
-            meta.get_project_status("pypi", "pkg")
-                .unwrap()
-                .unwrap()
-                .status
-                .as_deref(),
-            Some("archived")
-        );
-    }
-
-    #[test]
-    fn test_put_cached_page_clears_status_when_none() {
-        let (_dir, meta) = store();
-        meta.put_cached_page(
-            "pypi/pkg",
-            &record(),
-            "pypi",
-            "pkg",
-            "Pkg",
-            "pypi",
-            None,
-            None,
-            None,
-            &[],
-            &[],
-            &[],
-        )
-        .unwrap();
-        assert!(meta.get_project_status("pypi", "pkg").unwrap().is_none());
-    }
-
-    #[test]
-    fn test_late_page_registration_preserves_or_resets_a_cached_attestation_by_url() {
-        let (_dir, meta) = store();
-        let filename = "pkg-1.0.whl";
-        let first_url = "https://example.test/pkg-1.0.whl.provenance";
-        let mut cached = crate::store::UpstreamAttestation::remote(first_url, "pypi", "pkg", Some("primary"));
-        cached.media_type = Some("application/json".to_owned());
-        cached.etag = Some("\"v1\"".to_owned());
-        cached.fetched_at_unix = Some(10);
-        cached.availability = crate::store::AttestationAvailability::Cached;
-        cached.body = Some("body".to_owned());
-        meta.put_upstream_attestation("pypi", "abc", filename, &cached).unwrap();
-
-        meta.put_cached_page(
-            "pypi/pkg",
-            &record(),
-            "pypi",
-            "pkg",
-            "Pkg",
-            "pypi",
-            Some("primary"),
-            None,
-            None,
-            &[],
-            &[],
-            &[("abc".to_owned(), filename.to_owned(), first_url.to_owned())],
-        )
-        .unwrap();
-
-        assert_eq!(
-            meta.get_upstream_attestation("pypi", "pkg", "abc", filename).unwrap(),
-            Some(cached)
-        );
-
-        let second_url = "https://example.test/pkg-1.0.whl.provenance?v=2";
-        meta.put_cached_page(
-            "pypi/pkg",
-            &record(),
-            "pypi",
-            "pkg",
-            "Pkg",
-            "pypi",
-            Some("primary"),
-            None,
-            None,
-            &[],
-            &[],
-            &[("abc".to_owned(), filename.to_owned(), second_url.to_owned())],
-        )
-        .unwrap();
-
-        assert_eq!(
-            meta.get_upstream_attestation("pypi", "pkg", "abc", filename).unwrap(),
-            Some(crate::store::UpstreamAttestation::remote(
-                second_url,
-                "pypi",
-                "pkg",
-                Some("primary"),
-            ))
-        );
-    }
-
-    #[test]
-    fn test_attestation_compare_exchange_rejects_a_source_identity_change() {
-        let (_dir, meta) = store();
-        let expected = crate::store::UpstreamAttestation::remote(
-            "https://example.test/pkg-1.0.whl.provenance",
-            "pypi",
-            "pkg",
-            Some("primary"),
-        );
-        meta.put_upstream_attestation("pypi", "abc", "pkg-1.0.whl", &expected)
-            .unwrap();
-        let mut replacement = expected.clone();
-        replacement.source = "other".to_owned();
-
-        let error = meta
-            .compare_exchange_upstream_attestation("pypi", "abc", "pkg-1.0.whl", &expected, &replacement)
-            .unwrap_err();
-
-        assert_eq!(
-            error.to_string(),
-            "driver precondition failed: attestation cache replacement changed its source identity"
-        );
-        assert_eq!(
-            meta.get_upstream_attestation("pypi", "pkg", "abc", "pkg-1.0.whl")
-                .unwrap(),
-            Some(expected)
-        );
-    }
-
-    #[test]
-    fn test_list_index_pages_reports_freshness() {
-        let (_dir, meta) = store();
-        meta.put_index("pypi/flask", &record()).unwrap();
-        meta.put_index(
-            "pypi/numpy",
-            &CachedIndex {
-                fetched_at_unix: 1_800_000_000,
-                fresh_secs: Some(600),
-                ..record()
-            },
-        )
-        .unwrap();
-        let mut pages = meta.list_index_pages().unwrap();
-        pages.sort();
-        assert_eq!(
-            pages,
-            vec![
-                ("pypi/flask".to_owned(), 1_700_000_000, None),
-                ("pypi/numpy".to_owned(), 1_800_000_000, Some(600)),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_list_index_pages_reads_a_legacy_plain_json_record() {
-        let (_dir, meta) = store();
-        // A record written by a version that stored the whole struct as plain JSON, not the framed form.
-        let legacy = serde_json::to_vec(&record()).unwrap();
-        meta.put_driver_value(&index_key("pypi/old"), &legacy).unwrap();
-        assert_eq!(
-            meta.list_index_pages().unwrap(),
-            vec![("pypi/old".to_owned(), 1_700_000_000, None)]
-        );
-    }
-
-    #[test]
-    fn test_scan_index_pages_visits_records_without_collecting() {
-        let (_dir, meta) = store();
-        meta.put_index("pypi/flask", &record()).unwrap();
-        let mut pages = Vec::new();
-        meta.scan_index_pages(|page| {
-            pages.push((page.key, page.summary.body_bytes));
-            Ok::<(), std::io::Error>(())
-        })
-        .unwrap();
-        assert_eq!(pages, vec![("pypi/flask".to_owned(), 13)]);
-    }
-
-    #[test]
-    fn test_scan_index_pages_reports_the_visitor_error_source() {
-        let (_dir, meta) = store();
-        meta.put_index("pypi/flask", &record()).unwrap();
-        let err = meta
-            .scan_index_pages(|_page| Err(std::io::Error::other("stop")))
-            .unwrap_err();
-        assert_eq!(err.to_string(), "stop");
-        assert!(err.source().is_some());
-    }
-
-    #[test]
-    fn test_scan_index_records_visits_raw_bytes() {
-        let (_dir, meta) = store();
-        meta.put_index("pypi/flask", &record()).unwrap();
-        let mut keys = Vec::new();
-        meta.scan_index_records(|key, raw| {
-            keys.push((key.to_owned(), raw.starts_with(b"peryx1\n")));
-            Ok::<(), std::io::Error>(())
-        })
-        .unwrap();
-        assert_eq!(keys, vec![("pypi/flask".to_owned(), true)]);
-    }
-
-    mod generation {
-        use std::collections::BTreeMap;
-
-        use super::super::{
-            abort_project_generation, active_project_generation, begin_project_generation, list_project_files,
-            project_generation_prefix, project_meta_state, publish_project_generation, put_project_files,
-            recover_project_generations, refresh_project_generation,
-        };
-        use super::MetaStore;
-        use crate::simple::{CoreMetadata, File, Provenance, Yanked};
-        use crate::store::{ProjectGeneration, PypiStore as _};
-
-        fn store() -> (tempfile::TempDir, MetaStore) {
-            let dir = tempfile::tempdir().unwrap();
-            let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-            (dir, meta)
-        }
-
-        fn file(filename: &str, sha256: Option<&str>) -> File {
-            File {
-                filename: filename.to_owned(),
-                url: format!("https://files.example/{filename}"),
-                hashes: sha256
-                    .map(|digest| BTreeMap::from([("sha256".to_owned(), digest.to_owned())]))
-                    .unwrap_or_default(),
-                requires_python: None,
-                size: Some(10),
-                upload_time: Some("2024-01-01T00:00:00Z".to_owned()),
-                yanked: Yanked::No,
-                core_metadata: CoreMetadata::Absent,
-                dist_info_metadata: CoreMetadata::Absent,
-                gpg_sig: None,
-                provenance: crate::simple::Provenance::Absent,
-            }
-        }
-
-        fn attested_file(filename: &str, sha256: &str) -> File {
-            let mut file = file(filename, Some(sha256));
-            file.provenance = Provenance::Url(format!("https://files.example/{filename}.provenance"));
-            file
-        }
-
-        fn generation(id: u64, etag: Option<&str>, files: u64) -> ProjectGeneration {
-            ProjectGeneration {
-                generation: id,
-                source: "pypi".to_owned(),
-                url: "https://pypi.org/simple/flask/".to_owned(),
-                format: "json".to_owned(),
-                etag: etag.map(str::to_owned),
-                last_modified: None,
-                last_serial: Some(3),
-                fetched_at_unix: 1,
-                bytes: 100,
-                files,
-                versions: vec!["1.0".to_owned()],
-                project_status: None,
-                project_status_reason: None,
-            }
-        }
-
-        fn publish(meta: &MetaStore, index: &str, project: &str, files: &[File]) -> u64 {
-            let (id, expected) = begin_project_generation(meta, index, project).unwrap();
-            let admitted = put_project_files(meta, index, project, id, "pypi", None, files).unwrap();
-            publish_project_generation(meta, index, project, expected, generation(id, Some("etag"), admitted)).unwrap();
-            id
-        }
-
-        #[test]
-        fn test_publish_lists_files_and_registers_download_rows() {
-            let (_dir, meta) = store();
-            let mut wheel = file("flask-1.0-py3-none-any.whl", Some(&"a".repeat(64)));
-            wheel.set_metadata(CoreMetadata::Hashes(BTreeMap::from([(
-                "sha256".to_owned(),
-                "b".repeat(64),
-            )])));
-
-            publish(
-                &meta,
-                "pypi",
-                "flask",
-                &[wheel.clone(), file("flask-1.0.tar.gz", Some(&"c".repeat(64)))],
-            );
-
-            let listed = list_project_files(&meta, "pypi", "flask").unwrap();
-            assert_eq!(listed.len(), 2);
-            assert_eq!(listed[0].filename, "flask-1.0-py3-none-any.whl");
-            let source = meta.get_file_url(&"a".repeat(64)).unwrap().unwrap();
-            assert_eq!(source.url, "https://files.example/flask-1.0-py3-none-any.whl");
-            assert_eq!(source.size, Some(10));
-            let (_url, digest, _source) = meta.get_metadata(&"a".repeat(64)).unwrap().unwrap();
-            assert_eq!(digest, "b".repeat(64));
-        }
-
-        #[test]
-        fn test_active_generation_records_counts_and_validators() {
-            let (_dir, meta) = store();
-            let id = publish(
-                &meta,
-                "pypi",
-                "flask",
-                &[file("flask-1.0.tar.gz", Some(&"a".repeat(64)))],
-            );
-            let active = active_project_generation(&meta, "pypi", "flask").unwrap().unwrap();
-            assert_eq!(active.generation, id);
-            assert_eq!(active.files, 1);
-            assert_eq!(active.etag.as_deref(), Some("etag"));
-        }
-
-        #[test]
-        fn test_put_project_files_is_first_wins_and_counts_new_filenames() {
-            let (_dir, meta) = store();
-            let (id, _) = begin_project_generation(&meta, "pypi", "flask").unwrap();
-            let first = file("flask-1.0.tar.gz", Some(&"a".repeat(64)));
-            let again = file("flask-1.0.tar.gz", Some(&"d".repeat(64)));
-            assert_eq!(
-                put_project_files(&meta, "pypi", "flask", id, "pypi", None, &[first, again]).unwrap(),
-                1
-            );
-            // A second filename that shares no key inserts; a repeat of the first does not.
-            assert_eq!(
-                put_project_files(
-                    &meta,
-                    "pypi",
-                    "flask",
-                    id,
-                    "pypi",
-                    None,
-                    &[file("flask-2.0.tar.gz", Some(&"e".repeat(64)))]
-                )
-                .unwrap(),
-                1
-            );
-        }
-
-        #[test]
-        fn test_put_project_files_stores_a_file_without_a_hash_but_registers_no_source() {
-            let (_dir, meta) = store();
-            let (id, expected) = begin_project_generation(&meta, "pypi", "flask").unwrap();
-            put_project_files(
-                &meta,
-                "pypi",
-                "flask",
-                id,
-                "pypi",
-                None,
-                &[file("flask-1.0.tar.gz", None)],
-            )
-            .unwrap();
-            publish_project_generation(&meta, "pypi", "flask", expected, generation(id, None, 1)).unwrap();
-            assert_eq!(list_project_files(&meta, "pypi", "flask").unwrap().len(), 1);
-        }
-
-        #[test]
-        fn test_put_project_files_requires_its_staging_generation() {
-            let (_dir, meta) = store();
-            let error = put_project_files(
-                &meta,
-                "pypi",
-                "flask",
-                7,
-                "pypi",
-                None,
-                &[file("f.tar.gz", Some(&"a".repeat(64)))],
-            )
-            .unwrap_err();
-            assert!(matches!(error, peryx_storage::meta::MetaError::DriverPrecondition(_)));
-        }
-
-        #[test]
-        fn test_publish_lost_reservation_is_rejected() {
-            let (_dir, meta) = store();
-            let (first, expected) = begin_project_generation(&meta, "pypi", "flask").unwrap();
-            begin_project_generation(&meta, "pypi", "flask").unwrap();
-            assert!(publish_project_generation(&meta, "pypi", "flask", expected, generation(first, None, 0)).is_err());
-        }
-
-        #[test]
-        fn test_list_files_is_empty_without_an_active_generation() {
-            let (_dir, meta) = store();
-            assert!(list_project_files(&meta, "pypi", "flask").unwrap().is_empty());
-            assert!(active_project_generation(&meta, "pypi", "flask").unwrap().is_none());
-        }
-
-        #[test]
-        fn test_list_files_reports_a_malformed_row() {
-            let (_dir, meta) = store();
-            let id = publish(
-                &meta,
-                "pypi",
-                "flask",
-                &[file("flask-1.0.tar.gz", Some(&"a".repeat(64)))],
-            );
-            meta.put_driver_value(
-                &super::super::project_file_key("pypi", "flask", id, "flask-1.0.tar.gz"),
-                b"not a file record",
-            )
-            .unwrap();
-            assert!(list_project_files(&meta, "pypi", "flask").is_err());
-        }
-
-        #[test]
-        fn test_abort_removes_only_its_generation_rows() {
-            let (_dir, meta) = store();
-            let published = publish(
-                &meta,
-                "pypi",
-                "flask",
-                &[file("flask-1.0.tar.gz", Some(&"a".repeat(64)))],
-            );
-            let (staging, _) = begin_project_generation(&meta, "pypi", "flask").unwrap();
-            put_project_files(
-                &meta,
-                "pypi",
-                "flask",
-                staging,
-                "pypi",
-                None,
-                &[file("flask-2.0.tar.gz", Some(&"b".repeat(64)))],
-            )
-            .unwrap();
-
-            abort_project_generation(&meta, "pypi", "flask", staging).unwrap();
-
-            let state = project_meta_state(&meta, "pypi", "flask").unwrap();
-            assert_eq!(state.active.unwrap().generation, published);
-            assert!(state.staging.is_none());
-            assert!(
-                meta.driver_prefix_keys(&project_generation_prefix("pypi", "flask", staging))
-                    .unwrap()
-                    .is_empty()
-            );
-        }
-
-        #[test]
-        fn test_staged_attestation_is_invisible_and_abort_removes_it() {
-            let (_dir, meta) = store();
-            let digest = "b".repeat(64);
-            let filename = "flask-2.0.tar.gz";
-            let (staging, _) = begin_project_generation(&meta, "pypi", "flask").unwrap();
-            put_project_files(
-                &meta,
-                "pypi",
-                "flask",
-                staging,
-                "pypi",
-                None,
-                &[attested_file(filename, &digest)],
-            )
-            .unwrap();
-
-            assert!(
-                meta.list_upstream_attestations("pypi", &digest, filename)
-                    .unwrap()
-                    .is_empty()
-            );
-
-            abort_project_generation(&meta, "pypi", "flask", staging).unwrap();
-
-            assert!(
-                meta.list_upstream_attestations("pypi", &digest, filename)
-                    .unwrap()
-                    .is_empty()
-            );
-        }
-
-        #[test]
-        fn test_new_generation_retires_removed_attestation_locator() {
-            let (_dir, meta) = store();
-            let digest = "b".repeat(64);
-            let filename = "flask-1.0.tar.gz";
-            publish(&meta, "pypi", "flask", &[attested_file(filename, &digest)]);
-            assert_eq!(
-                meta.list_upstream_attestations("pypi", &digest, filename)
-                    .unwrap()
-                    .len(),
-                1
-            );
-
-            publish(&meta, "pypi", "flask", &[file(filename, Some(&digest))]);
-
-            assert!(
-                meta.list_upstream_attestations("pypi", &digest, filename)
-                    .unwrap()
-                    .is_empty()
-            );
-            assert!(
-                meta.get_upstream_attestation("pypi", "flask", &digest, filename)
-                    .unwrap()
-                    .is_none()
-            );
-        }
-
-        #[test]
-        fn test_abort_leaves_a_newer_staging_reservation() {
-            let (_dir, meta) = store();
-            let (first, _) = begin_project_generation(&meta, "pypi", "flask").unwrap();
-            let (second, _) = begin_project_generation(&meta, "pypi", "flask").unwrap();
-            abort_project_generation(&meta, "pypi", "flask", first).unwrap();
-            assert_eq!(
-                project_meta_state(&meta, "pypi", "flask").unwrap().staging,
-                Some(second)
-            );
-        }
-
-        #[test]
-        fn test_refresh_merges_present_validators_and_advances_time() {
-            let (_dir, meta) = store();
-            let id = publish(
-                &meta,
-                "pypi",
-                "flask",
-                &[file("flask-1.0.tar.gz", Some(&"a".repeat(64)))],
-            );
-            refresh_project_generation(&meta, "pypi", "flask", id, None, Some("mon".to_owned()), 99).unwrap();
-            assert!(refresh_project_generation(&meta, "pypi", "flask", id + 1, None, None, 100).is_err());
-            let active = active_project_generation(&meta, "pypi", "flask").unwrap().unwrap();
-            assert_eq!(active.etag.as_deref(), Some("etag"));
-            assert_eq!(active.last_modified.as_deref(), Some("mon"));
-            assert_eq!(active.fetched_at_unix, 99);
-        }
-
-        #[test]
-        fn test_recover_preserves_active_and_sweeps_pending_generations() {
-            let (_dir, meta) = store();
-            let active = publish(
-                &meta,
-                "pypi",
-                "flask",
-                &[file("flask-1.0.tar.gz", Some(&"a".repeat(64)))],
-            );
-            let (staging, _) = begin_project_generation(&meta, "pypi", "flask").unwrap();
-            put_project_files(
-                &meta,
-                "pypi",
-                "flask",
-                staging,
-                "pypi",
-                None,
-                &[file("flask-2.0.tar.gz", Some(&"b".repeat(64)))],
-            )
-            .unwrap();
-
-            recover_project_generations(&meta, "pypi", "flask").unwrap();
-
-            let state = project_meta_state(&meta, "pypi", "flask").unwrap();
-            assert_eq!(state.active.unwrap().generation, active);
-            assert!(state.staging.is_none());
-            assert!(state.retired.is_none());
-            assert!(
-                meta.driver_prefix_keys(&project_generation_prefix("pypi", "flask", staging))
-                    .unwrap()
-                    .is_empty()
-            );
-        }
-    }
-}
+#[path = "../../tests/unit/store/index/tests.rs"]
+mod tests;

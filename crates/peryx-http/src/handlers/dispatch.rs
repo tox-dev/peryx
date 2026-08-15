@@ -1,21 +1,21 @@
-//! Method dispatch: resolve the index by longest route prefix and hand off to its ecosystem driver.
-
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use axum::Extension;
 use axum::extract::{FromRequest as _, Multipart, OriginalUri, Path, Request, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 
 use super::discover::{index_api, trusts_proxy};
 use super::query::index_search;
-use peryx_driver::serving::EcosystemDriver;
+use peryx_driver::http_services::HttpDomainServices;
+use peryx_driver::serving::IndexedProtocolDriver;
 use peryx_driver::state::AppState;
 
 /// Why a request reached no driver.
 enum NoDriver {
     /// No index owns the path, or the index's ecosystem serves under its own top-level prefix
-    /// (`OCI`'s `/v2/`) and so is not reachable through its per-index route.
+    /// and so is not reachable through its per-index route.
     Unroutable,
     /// Nothing was wired in at all. That is a build fault, not a missing index, so it says so.
     Unconfigured,
@@ -30,49 +30,47 @@ impl NoDriver {
     }
 }
 
-/// The driver for the index already resolved to `position`.
-fn driver_at(state: &AppState, position: usize) -> Result<&Arc<dyn EcosystemDriver>, NoDriver> {
-    state.driver_for(state.index_at(position).ecosystem).ok_or_else(|| {
-        if state.has_any_driver() {
-            NoDriver::Unroutable
-        } else {
-            NoDriver::Unconfigured
-        }
-    })
+fn driver_at(state: &AppState, position: usize) -> Result<&Arc<dyn IndexedProtocolDriver>, NoDriver> {
+    state
+        .indexed_driver_for(&state.serving.index_at(position).ecosystem)
+        .ok_or_else(|| {
+            if state.has_any_driver() {
+                NoDriver::Unroutable
+            } else {
+                NoDriver::Unconfigured
+            }
+        })
 }
 
 /// The driver serving the index `path` resolves to. Used by the write methods, which have not already
 /// resolved the route; `GET` resolves once and calls [`driver_at`] instead.
-fn driver_for<'a>(state: &'a AppState, path: &str) -> Result<&'a Arc<dyn EcosystemDriver>, NoDriver> {
-    let Some((position, _)) = state.resolve_position(path) else {
+fn driver_for<'a>(state: &'a AppState, path: &str) -> Result<&'a Arc<dyn IndexedProtocolDriver>, NoDriver> {
+    let Some((position, _)) = state.serving.resolve_position(path) else {
         return Err(NoDriver::Unroutable);
     };
     driver_at(state, position)
 }
 
-/// `GET /{route}/...`: resolve the index's ecosystem driver and let it serve the request.
-///
-/// `/{route}/+api` (per-index discovery) and `/{route}/+search` (cached-package search) are peryx's
-/// own endpoints, not an ecosystem's wire protocol, so they are served here for every ecosystem. The
-/// index is resolved once and its position handed to the driver, so a wire-protocol request pays for a
-/// single route lookup.
+/// `/{route}/+api` and `/{route}/+search` are protocol-neutral routes. Other paths go to the owner
+/// selected for the resolved repository, with one route lookup.
 ///
 /// axum routes a `HEAD` to the `GET` handler and strips the body from what comes back, so the method
 /// travels to the driver: only the driver can answer a `HEAD` without first producing bytes nobody reads.
 pub async fn dispatch_get(
     State(state): State<Arc<AppState>>,
+    Extension(services): Extension<HttpDomainServices>,
     OriginalUri(uri): OriginalUri,
     request: Request,
 ) -> Response {
-    state.requests.fetch_add(1, Ordering::Relaxed);
-    let Some((position, rest)) = state.resolve_position(uri.path().trim_start_matches('/')) else {
+    state.serving.requests.fetch_add(1, Ordering::Relaxed);
+    let Some((position, rest)) = state.serving.resolve_position(uri.path().trim_start_matches('/')) else {
         return not_found();
     };
     let trusted_proxy = trusts_proxy(&state, &request);
     let (parts, _) = request.into_parts();
     match rest {
         "+api" | "+api/" => index_api(&state, position, &uri, &parts.headers, trusted_proxy),
-        "+search" | "+search/" => index_search(state, position, &uri, &parts.headers).await,
+        "+search" | "+search/" => index_search(state, services, position, &uri, &parts.headers).await,
         _ => {
             let serving = match driver_at(&state, position) {
                 Ok(serving) => serving.clone(),
@@ -86,11 +84,11 @@ pub async fn dispatch_get(
     }
 }
 
-/// `POST /{*path}`: serve a driver's non-multipart compatibility route or dispatch an index upload.
 pub async fn dispatch_post(State(state): State<Arc<AppState>>, Path(path): Path<String>, request: Request) -> Response {
     if let Some(serving) = state
-        .drivers()
-        .find(|driver| driver.classify_service_post(&path, request.headers()).is_some())
+        .driver_set()
+        .services()
+        .find_map(|(_, serving)| serving.classify_service_post(&path, request.headers()).map(|_| serving))
     {
         return serving.service_post(state.serving.clone(), request).await;
     }
@@ -106,7 +104,6 @@ pub async fn dispatch_post(State(state): State<Arc<AppState>>, Path(path): Path<
     serving.post(state.serving.clone(), path, headers, multipart).await
 }
 
-/// `PUT /{route}/...`: hand the mutation to the index's ecosystem driver.
 pub async fn dispatch_put(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
@@ -119,7 +116,6 @@ pub async fn dispatch_put(
     serving.put(state.serving.clone(), uri, headers).await
 }
 
-/// `DELETE /{route}/...`: hand the mutation to the index's ecosystem driver.
 pub async fn dispatch_delete(
     State(state): State<Arc<AppState>>,
     OriginalUri(uri): OriginalUri,
@@ -132,7 +128,6 @@ pub async fn dispatch_delete(
     serving.delete(state.serving.clone(), uri, headers).await
 }
 
-/// A `404 Not Found` with a plain body.
 #[must_use]
 pub fn not_found() -> Response {
     (StatusCode::NOT_FOUND, "not found").into_response()

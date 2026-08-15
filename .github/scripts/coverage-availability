@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$repo"
+.github/scripts/coverage-session-guard
+if [[ "${COVERAGE_NO_CLEAN:-0}" != 1 ]]; then
+  cargo llvm-cov clean --workspace
+fi
+cargo llvm-cov nextest -p peryx --features availability-e2e \
+  --test availability --test cluster --test observability --no-report
+COVERAGE_NO_CLEAN=1 COVERAGE_NO_REPORT=1 scripts/ci/coverage-system-suite \
+  availability "${1:-.tox/coverage/availability.lcov}"
+cargo llvm-cov report --no-default-ignore-filename-regex \
+  --lcov --output-path "${1:-.tox/coverage/availability.lcov}"

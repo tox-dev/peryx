@@ -1,5 +1,3 @@
-//! Read-path composition: resolve a project's detail and project list across an index's layers.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::policy::PypiPolicy as _;
@@ -7,15 +5,16 @@ use crate::store::CachedIndex;
 use crate::store::PypiStore as _;
 use crate::upload::Uploaded;
 use crate::{CoreMetadata, File, Meta, ProjectDetail, ProjectList, ProjectListEntry, parse_detail};
-use peryx_core::path::{is_local_file_url, local_file_url};
+use peryx_core::path::{is_local_artifact_url, local_artifact_url};
 use peryx_driver::state::ServingState;
 use peryx_identity::{ArtifactDigest, DigestDecision};
 use peryx_index::{Index, IndexKind};
-use peryx_policy::{FallbackMode, PolicyAction, PolicyDenial, RemoteMetadataMode};
+use peryx_policy::{PolicyAction, PolicyDenial};
 use peryx_upstream::UpstreamClient;
 
 use super::fetch::fetch_and_store;
 use super::{CacheError, flight_gate, fresh_cached, project_negative_key, supports_generated_metadata};
+use crate::policy::{FallbackMode, RemoteMetadataMode};
 
 /// A resolved project page and the source serial that produced it, when the index has one serial stream.
 pub struct DetailPage {
@@ -26,9 +25,6 @@ pub struct DetailPage {
     pub(crate) revoked_files_removed: bool,
 }
 
-/// Resolve one project's detail across a virtual index's layers, first-match, returning `None` when
-/// no layer has the project.
-///
 /// # Errors
 /// Returns [`CacheError`] on a store, parse, or (with no cached fallback) upstream error.
 pub async fn resolve_detail(
@@ -58,8 +54,6 @@ pub(super) async fn resolve_detail_optional(
     Ok(page.map(|page| page.detail))
 }
 
-/// Resolve a project's detail with the serial represented by that page.
-///
 /// # Errors
 /// Returns [`CacheError`] on policy denial, store failure, invalid cached data, or an upstream error without fallback.
 pub async fn resolve_detail_page(
@@ -83,7 +77,7 @@ async fn resolve_detail_page_with(
     serve_route: &str,
     deny_no_fallback_miss: bool,
 ) -> Result<Option<DetailPage>, CacheError> {
-    index.policy.check_project(PolicyAction::Serve, project)?;
+    index.policy.check_resource(PolicyAction::Serve, project)?;
     let page = match &index.kind {
         IndexKind::Cached { client, offline } => {
             let Some(mut page) = cached_detail(state, &index.name, &index.route, client, *offline, project).await?
@@ -104,11 +98,11 @@ async fn resolve_detail_page_with(
                 revoked_files_removed: false,
             })
         }
-        IndexKind::Virtual { layers, upload } => virtual_detail(
+        IndexKind::Virtual { layers, write_target } => virtual_detail(
             state,
             index,
             layers,
-            *upload,
+            *write_target,
             project,
             serve_route,
             deny_no_fallback_miss,
@@ -142,7 +136,7 @@ async fn virtual_detail(
     deny_no_fallback_miss: bool,
 ) -> Result<Option<ProjectDetail>, CacheError> {
     let mode = index.policy.fallback_mode();
-    let cached_denial = index.policy.check_project(PolicyAction::Cached, project).err();
+    let cached_denial = index.policy.check_resource(PolicyAction::Cached, project).err();
     let consult_cached = mode != FallbackMode::NoFallback && cached_denial.is_none();
     let ordered: Vec<_> = peryx_index::shadow_order(&state.indexes, layers)
         .into_iter()
@@ -257,7 +251,7 @@ fn record_collision(state: &ServingState, index: &Index, layers: &[usize], proje
         action = "serve",
         result = "shadowed",
         index = %index.name,
-        project,
+        resource = project,
         fallback_mode = %FallbackMode::PrivateFirst,
         hosted_members,
         cached_members,
@@ -283,7 +277,6 @@ fn no_fallback_denial(state: &ServingState, index: &Index, layers: &[usize], pro
     )
 }
 
-/// Apply the `hidden`/`yanked` overrides stored on `hosted` to a merged file list.
 fn apply_overrides(state: &ServingState, hosted: &str, project: &str, files: &mut Vec<File>) -> Result<(), CacheError> {
     let overrides: BTreeMap<String, String> = state.meta.list_overrides(hosted, project)?.into_iter().collect();
     if overrides.is_empty() {
@@ -384,8 +377,6 @@ fn filter_revoked_files(state: &ServingState, detail: &mut ProjectDetail) -> Res
     Ok(removed)
 }
 
-/// Turn a raw cached page into the detail served on `route`: parse, drop unverifiable metadata
-/// claims, and point content-addressable files at peryx's own file route.
 pub fn raw_to_detail(state: &ServingState, route: &str, record: &CachedIndex) -> Result<ProjectDetail, CacheError> {
     let parsed = parse_detail(&record.body)?;
     let known_metadata = known_metadata(state, &parsed.files)?;
@@ -429,8 +420,8 @@ fn present_file(mut file: File, route: &str, known_metadata: &BTreeMap<String, S
             metadata.clone(),
         )])));
     }
-    if !is_local_file_url(route, &file.url) {
-        file.url = local_file_url(route, &sha256, &file.filename);
+    if !is_local_artifact_url(route, &file.url) {
+        file.url = local_artifact_url(route, &sha256, &file.filename);
     }
     // The URL now points at peryx's route, which serves the blob but never the detached `.asc`
     // sibling, so drop any inherited gpg-sig rather than advertise a signature peryx cannot serve.
@@ -481,11 +472,10 @@ pub(super) fn local_detail(
     Ok(Some(detail))
 }
 
-/// Point every content-addressable file at peryx's own file route on `route`.
 pub(super) fn rewrite_urls(detail: &mut ProjectDetail, route: &str) {
     for file in &mut detail.files {
         if let Some(sha256) = file.hashes.get("sha256") {
-            file.url = local_file_url(route, sha256, &file.filename);
+            file.url = local_artifact_url(route, sha256, &file.filename);
         }
     }
 }
@@ -499,14 +489,15 @@ fn rewrite_attestation_urls(detail: &mut ProjectDetail, route: &str, mode: Remot
             continue;
         };
         if file.provenance.secure_url().is_some() {
-            file.provenance =
-                crate::Provenance::Url(local_file_url(route, &sha256, &format!("{}.provenance", file.filename)));
+            file.provenance = crate::Provenance::Url(local_artifact_url(
+                route,
+                &sha256,
+                &format!("{}.provenance", file.filename),
+            ));
         }
     }
 }
 
-/// The project names peryx has observed on `index`, unioned across a virtual index's layers.
-///
 /// # Errors
 /// Returns [`CacheError`] if a store read fails.
 pub fn resolve_list(state: &ServingState, index: &Index) -> Result<ProjectList, CacheError> {
@@ -518,8 +509,6 @@ pub fn resolve_list(state: &ServingState, index: &Index) -> Result<ProjectList, 
     }))
 }
 
-/// Return the stable serial for a project list, omitting indexes whose layers have no combined serial model.
-///
 /// # Errors
 /// Returns [`CacheError`] when the local serial cannot be read.
 pub fn list_serial(state: &ServingState, index: &Index) -> Result<Option<u64>, CacheError> {
@@ -544,105 +533,5 @@ fn collect_projects(state: &ServingState, index: &Index, names: &mut BTreeSet<St
 }
 
 #[cfg(test)]
-mod tests {
-    use std::collections::BTreeMap;
-
-    use crate::{Provenance, Yanked};
-
-    use super::*;
-
-    #[test]
-    fn test_present_file_advertises_cached_generated_metadata() {
-        let artifact = "a".repeat(64);
-        let metadata = "b".repeat(64);
-        let file = File {
-            filename: "pkg-1.0-py3-none-any.whl".to_owned(),
-            url: "https://files.example/pkg-1.0-py3-none-any.whl".to_owned(),
-            hashes: BTreeMap::from([("sha256".to_owned(), artifact.clone())]),
-            requires_python: None,
-            size: None,
-            upload_time: None,
-            yanked: Yanked::No,
-            core_metadata: CoreMetadata::Absent,
-            dist_info_metadata: CoreMetadata::Absent,
-            gpg_sig: None,
-            provenance: Provenance::default(),
-        };
-
-        let file = present_file(file, "pypi", &BTreeMap::from([(artifact.clone(), metadata.clone())]));
-
-        assert_eq!(file.url, local_file_url("pypi", &artifact, "pkg-1.0-py3-none-any.whl"));
-        assert!(matches!(file.metadata(), CoreMetadata::Hashes(hashes) if hashes["sha256"] == metadata));
-    }
-
-    #[test]
-    fn test_present_file_content_addresses_when_sha256_accompanies_other_hashes() {
-        let sha256 = "a".repeat(64);
-        let file = File {
-            filename: "pkg-1.0-py3-none-any.whl".to_owned(),
-            url: "https://files.example/pkg-1.0-py3-none-any.whl".to_owned(),
-            hashes: BTreeMap::from([
-                ("md5".to_owned(), "deadbeef".to_owned()),
-                ("sha256".to_owned(), sha256.clone()),
-            ]),
-            requires_python: None,
-            size: None,
-            upload_time: None,
-            yanked: Yanked::No,
-            core_metadata: CoreMetadata::Absent,
-            dist_info_metadata: CoreMetadata::Absent,
-            gpg_sig: None,
-            provenance: Provenance::default(),
-        };
-
-        let file = present_file(file, "pypi", &BTreeMap::new());
-
-        assert_eq!(file.url, local_file_url("pypi", &sha256, "pkg-1.0-py3-none-any.whl"));
-        assert_eq!(file.hashes.get("md5").map(String::as_str), Some("deadbeef"));
-    }
-
-    #[test]
-    fn test_present_file_drops_gpg_sig_once_url_points_at_peryx() {
-        let sha256 = "a".repeat(64);
-        let file = File {
-            filename: "pkg-1.0-py3-none-any.whl".to_owned(),
-            url: "https://files.example/pkg-1.0-py3-none-any.whl".to_owned(),
-            hashes: BTreeMap::from([("sha256".to_owned(), sha256.clone())]),
-            requires_python: None,
-            size: None,
-            upload_time: None,
-            yanked: Yanked::No,
-            core_metadata: CoreMetadata::Absent,
-            dist_info_metadata: CoreMetadata::Absent,
-            gpg_sig: Some(true),
-            provenance: Provenance::default(),
-        };
-
-        let file = present_file(file, "pypi", &BTreeMap::new());
-
-        assert_eq!(file.url, local_file_url("pypi", &sha256, "pkg-1.0-py3-none-any.whl"));
-        assert_eq!(file.gpg_sig, None);
-    }
-
-    #[test]
-    fn test_present_file_keeps_gpg_sig_when_url_stays_upstream() {
-        let file = File {
-            filename: "pkg-1.0.tar.gz".to_owned(),
-            url: "https://files.example/pkg-1.0.tar.gz".to_owned(),
-            hashes: BTreeMap::from([("md5".to_owned(), "deadbeef".to_owned())]),
-            requires_python: None,
-            size: None,
-            upload_time: None,
-            yanked: Yanked::No,
-            core_metadata: CoreMetadata::Absent,
-            dist_info_metadata: CoreMetadata::Absent,
-            gpg_sig: Some(true),
-            provenance: Provenance::default(),
-        };
-
-        let file = present_file(file, "pypi", &BTreeMap::new());
-
-        assert_eq!(file.url, "https://files.example/pkg-1.0.tar.gz");
-        assert_eq!(file.gpg_sig, Some(true));
-    }
-}
+#[path = "../../tests/unit/cache/resolve/tests.rs"]
+mod tests;

@@ -1,0 +1,8 @@
+sha256="sha256:"
+schema="schemaVersion"
+media="mediaType"
+digest="digest"
+size="size"
+config="config"
+layers="layers"
+manifests="manifests"

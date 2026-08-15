@@ -1,5 +1,3 @@
-//! Local abuse controls for one peryx process.
-
 use std::collections::HashMap;
 use std::collections::hash_map::{DefaultHasher, RandomState};
 use std::hash::{BuildHasher as _, BuildHasherDefault};
@@ -20,15 +18,10 @@ use crate::state::AppState;
 
 /// Concurrent upstream fetches allowed per cached index; `0` (the default) means unlimited.
 ///
-/// Like every other peryx control, the upstream limiter is off until configured. A `uv`/`pip`
-/// install issues a burst of cold requests, so a default cap would throttle every zero-config install
-/// for no reason. Operators fronting a fragile upstream can set a cap, and then excess requests wait
-/// for a slot (see [`UpstreamLimits::acquire`]) rather than fail.
+/// The limiter remains off until configured so cold request bursts are not throttled by default.
 pub const DEFAULT_UPSTREAM_CONCURRENCY: usize = 0;
 
-/// How long a request waits for an upstream slot before giving up. A cold burst drains in far less;
-/// exceeding it means the upstream is genuinely stalled, so the request returns a retryable error
-/// instead of holding the client forever.
+/// Bounds upstream queueing so a stalled fetch returns a retryable error.
 const UPSTREAM_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub type UpstreamPermit = Option<OwnedSemaphorePermit>;
@@ -312,17 +305,13 @@ struct Limited {
     retry_after: u64,
 }
 
-/// The outcome of reading a trusted proxy's forwarded headers.
 enum ForwardedClient {
-    /// An untrusted client address to bucket the request on.
     Resolved(IpAddr),
-    /// Every hop was a trusted proxy, so the peer address is the closest identity we have.
     TrustedChain,
-    /// A forwarded value couldn't be parsed into a client, so there is no identity to bucket on.
     Malformed,
 }
 
-/// A trusted proxy sent a forwarded header we can't resolve to a client identity.
+#[derive(Debug)]
 struct MalformedForwarded;
 
 #[derive(Default)]
@@ -356,15 +345,13 @@ impl UpstreamLimits {
         }
     }
 
-    /// Acquire one upstream slot for a cached index, waiting for a slot when the cap is reached.
-    ///
-    /// Back-pressure, not fast failure: a burst of cold requests (a `uv` install) queues at the
-    /// concurrency cap and every request still succeeds, just serialized. Only a stall longer than
-    /// [`UPSTREAM_WAIT_TIMEOUT`] gives up, and it does so with a retryable error rather than serving
-    /// an empty page.
+    /// Queue cold request bursts at the concurrency cap instead of failing immediately.
     ///
     /// # Errors
-    /// Returns [`UpstreamLimited`] only when no slot frees within [`UPSTREAM_WAIT_TIMEOUT`].
+    /// Returns [`UpstreamLimited`] only when no slot frees within `UPSTREAM_WAIT_TIMEOUT`.
+    ///
+    /// # Panics
+    /// Panics if the private semaphore is closed. [`UpstreamLimits`] never closes it.
     pub async fn acquire(&self, name: &str) -> Result<UpstreamPermit, UpstreamLimited> {
         let Some(limit) = self.entries.get(name) else {
             return Ok(None);
@@ -372,14 +359,9 @@ impl UpstreamLimits {
         let Some(semaphore) = &limit.semaphore else {
             return Ok(None);
         };
-        // The semaphore is never closed, so an inner acquire error is unreachable; reaching the `else`
-        // means the deadline elapsed with no free slot.
-        if let Ok(Ok(permit)) = tokio::time::timeout(UPSTREAM_WAIT_TIMEOUT, semaphore.clone().acquire_owned()).await {
-            Ok(Some(permit))
-        } else {
+        let Ok(permit) = tokio::time::timeout(UPSTREAM_WAIT_TIMEOUT, semaphore.clone().acquire_owned()).await else {
             limit.denied.fetch_add(1, Ordering::Relaxed);
-            // Retry after the full wait horizon we just spent, not a flat second: a client that retries
-            // immediately only re-saturates a limiter that is already at its cap.
+            // The full horizon prevents immediate retries from re-saturating the limiter.
             let retry_after = UPSTREAM_WAIT_TIMEOUT.as_secs();
             tracing::info!(
                 target: "peryx::security",
@@ -391,8 +373,9 @@ impl UpstreamLimits {
                 retry_after,
                 "upstream concurrency wait timed out"
             );
-            Err(UpstreamLimited { retry_after })
-        }
+            return Err(UpstreamLimited { retry_after });
+        };
+        Ok(Some(permit.expect("upstream semaphore stays open")))
     }
 
     #[must_use]
@@ -416,7 +399,6 @@ impl UpstreamLimits {
         snapshots
     }
 
-    /// Process-wide upstream concurrency totals for bounded-cardinality metrics.
     #[must_use]
     pub fn totals(&self) -> UpstreamLimitTotals {
         self.entries
@@ -454,13 +436,15 @@ pub async fn enforce(State(state): State<Arc<AppState>>, request: axum::extract:
     if matches!(path, "/+health" | "/+ready") {
         return next.run(request).await;
     }
-    let service_post_class = if *request.method() == Method::POST {
-        state
-            .drivers()
-            .find_map(|driver| driver.classify_service_post(path.trim_start_matches('/'), request.headers()))
-    } else {
-        None
-    };
+    let mut service_post_class = None;
+    if *request.method() == Method::POST {
+        for (_, service) in state.driver_set().services() {
+            if let Some(class) = service.classify_service_post(path.trim_start_matches('/'), request.headers()) {
+                service_post_class = Some(class);
+                break;
+            }
+        }
+    }
     let class = service_post_class.or_else(|| service_route_class(request.method(), path));
     let has_authorization = request.headers().contains_key(header::AUTHORIZATION);
     // Avoid a second route lookup when credential validation and read classification both need the driver.
@@ -469,17 +453,23 @@ pub async fn enforce(State(state): State<Arc<AppState>>, request: axum::extract:
     } else {
         None
     };
-    let class =
-        class.unwrap_or_else(|| resolved_driver.map_or(RouteClass::Listing, |(driver, _)| driver.classify_route(path)));
-    let principal = if has_authorization && let Some((driver, position)) = resolved_driver {
-        driver.rate_limit_principal(&state, position, request.headers())
+    let class = match (class, resolved_driver) {
+        (Some(class), _) => class,
+        (None, Some((driver, _))) => state
+            .protocol_for(&driver.ecosystem())
+            .map_or(RouteClass::Listing, |protocol| protocol.classify_route(path)),
+        (None, None) => RouteClass::Listing,
+    };
+    let principal = if has_authorization
+        && let Some((driver, position)) = resolved_driver
+        && let Some(principal) = state.rate_limit_principal_for(&driver.ecosystem())
+    {
+        principal.resolve(&state.serving, position, request.headers())
     } else {
         peryx_identity::Principal::Anonymous
     };
-    // A trusted proxy handed us a forwarded header we can't parse into a client identity. Folding those
-    // requests under the shared peer bucket would merge distinct clients into one throttle, so fail
-    // closed instead of collapsing them.
-    let Ok(actor) = state.rate_limits.actor_key(principal, &request) else {
+    // Reject malformed forwarded identities because peer bucketing would merge distinct clients.
+    let Ok(actor) = state.serving.rate_limits.actor_key(principal, &request) else {
         tracing::info!(
             target: "peryx::security",
             security_event = true,
@@ -491,7 +481,7 @@ pub async fn enforce(State(state): State<Arc<AppState>>, request: axum::extract:
         );
         return malformed_forwarded_response();
     };
-    match state.rate_limits.check(class, actor) {
+    match state.serving.rate_limits.check(class, actor) {
         Ok(()) => next.run(request).await,
         Err(limited) => {
             // Compute the log fields before the macro: as macro arguments they would evaluate only when
@@ -514,22 +504,17 @@ pub async fn enforce(State(state): State<Arc<AppState>>, request: axum::extract:
     }
 }
 
-/// Classify the ecosystem-neutral part of a request: writes and peryx's own service endpoints.
+/// Classifies core routes and returns `None` for reads inside an ecosystem namespace.
 ///
-/// Returns `None` for a GET inside an index's namespace (a project listing, metadata sibling, or
-/// artifact), whose class depends on the ecosystem's URL scheme and so is decided by the owning
-/// driver's `classify_route`: an indexed-mount driver's `classify_route`
-/// for a per-index ecosystem, [`EcosystemDriver`](crate::serving::EcosystemDriver::classify_route)
-/// for one that owns a top-level namespace.
+/// The owning driver's `classify_route` handles ecosystem URL semantics, including top-level and
+/// per-index namespaces.
 #[must_use]
 pub fn service_route_class(method: &Method, path: &str) -> Option<RouteClass> {
     let path = path.trim_start_matches('/');
     if path == "+revocations" || path.starts_with("+revocations/") {
         return Some(RouteClass::Admin);
     }
-    // HEAD and OPTIONS are reads (an OCI client HEADs every manifest and blob before a pull); only a
-    // body-bearing write method is an upload. Classifying them here as reads lets the owning driver's
-    // `classify_route` bucket them with GET instead of spending the strict upload budget.
+    // HEAD and OPTIONS share read budgets because they do not mutate state.
     if matches!(*method, Method::POST | Method::PUT | Method::PATCH | Method::DELETE) {
         return Some(RouteClass::Upload);
     }
@@ -559,12 +544,15 @@ pub fn service_route_class(method: &Method, path: &str) -> Option<RouteClass> {
 fn route_driver<'a>(
     state: &'a AppState,
     path: &str,
-) -> Option<(&'a Arc<dyn crate::serving::EcosystemDriver>, Option<usize>)> {
+) -> Option<(&'a dyn crate::serving::EcosystemDriver, Option<usize>)> {
     if let Some(driver) = state.absolute_driver_for_path(path) {
-        return Some((driver, None));
+        return Some((driver.as_ref(), None));
     }
-    let (position, _) = state.resolve_position(path.trim_start_matches('/'))?;
-    Some((state.driver_for(state.index_at(position).ecosystem)?, Some(position)))
+    let (position, _) = state.serving.resolve_position(path.trim_start_matches('/'))?;
+    Some((
+        state.driver_for(&state.serving.index_at(position).ecosystem)?.as_ref(),
+        Some(position),
+    ))
 }
 
 impl RateLimiter {
@@ -583,12 +571,7 @@ impl RateLimiter {
         }
     }
 
-    /// Resolve the address that identifies an anonymous client's throttle bucket.
-    ///
-    /// `Ok(None)` means the request carried no connection info at all, which only happens off the real
-    /// server path; the caller folds it into the loopback bucket. `Err` means a trusted proxy sent a
-    /// forwarded header we can't turn into a client identity: distinct clients would otherwise collapse
-    /// into the single peer bucket, so the request is rejected rather than bucketed.
+    /// Rejects malformed forwarded identities instead of merging clients into the peer bucket.
     fn client_ip(&self, request: &axum::extract::Request) -> Result<Option<IpAddr>, MalformedForwarded> {
         let Some(peer) = request.extensions().get::<ConnectInfo<SocketAddr>>() else {
             return Ok(None);
@@ -614,7 +597,7 @@ impl RateLimiter {
         // becomes the client, a malformed token discards any client found so far (a proxy closer to us
         // than the last usable hop lied), and a trusted address leaves the verdict untouched. The final
         // state reflects the rightmost hop that mattered: a resolved client, a fully trusted chain, or a
-        // malformed suffix we must not fold under the peer bucket.
+        // malformed suffix that cannot share the peer bucket.
         let mut client = ForwardedClient::TrustedChain;
         for forwarded_value in forwarded_values {
             let Ok(forwarded_value) = forwarded_value.to_str() else {
@@ -640,8 +623,7 @@ fn real_ip(headers: &HeaderMap) -> ForwardedClient {
     let Some(real_value) = real_values.next() else {
         return ForwardedClient::TrustedChain;
     };
-    // A second X-Real-IP or a non-address value is ambiguous, not a client we can bucket on; reject
-    // rather than collapse to the peer.
+    // Reject ambiguous identities because peer bucketing would merge distinct clients.
     if real_values.next().is_some() {
         return ForwardedClient::Malformed;
     }
@@ -670,110 +652,5 @@ fn limited_response(retry_after: u64) -> Response {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::net::{IpAddr, Ipv4Addr};
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::time::Duration;
-
-    use axum::http::Method;
-
-    use super::{RateLimitConfig, RateLimiter, RouteClass, RouteLimit, service_route_class};
-
-    #[test]
-    fn test_check_client_allows_within_limit_then_denies_per_client() {
-        let limiter = RateLimiter::new(RateLimitConfig {
-            listing: RouteLimit::new(2, 60),
-            ..RateLimitConfig::enabled_defaults()
-        });
-        let client = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7));
-        assert!(limiter.check_client(RouteClass::Listing, client));
-        assert!(limiter.check_client(RouteClass::Listing, client));
-        assert!(!limiter.check_client(RouteClass::Listing, client));
-        // A separate client keeps its own budget rather than inheriting the exhausted one.
-        assert!(limiter.check_client(RouteClass::Listing, IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9))));
-    }
-
-    #[test]
-    fn test_the_window_resets_and_readmits_once_time_advances_past_it() {
-        let millis = Arc::new(AtomicU64::new(0));
-        let handle = Arc::clone(&millis);
-        let limiter = RateLimiter::with_clock(
-            RateLimitConfig {
-                listing: RouteLimit::new(1, 1),
-                ..RateLimitConfig::enabled_defaults()
-            },
-            Arc::new(move || Duration::from_millis(handle.load(Ordering::SeqCst))),
-        );
-        let client = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7));
-        assert!(
-            limiter.check_client(RouteClass::Listing, client),
-            "the first request in the window is admitted"
-        );
-        assert!(
-            !limiter.check_client(RouteClass::Listing, client),
-            "the second exhausts the one-per-window budget"
-        );
-
-        // Advance past the one-second window with the injected clock, no wall-clock sleep: the bucket
-        // resets and admits a fresh request.
-        millis.store(1_001, Ordering::SeqCst);
-        assert!(
-            limiter.check_client(RouteClass::Listing, client),
-            "a window whose reset time has passed readmits the client"
-        );
-    }
-
-    #[test]
-    fn test_service_route_class_handles_writes_and_service_routes() {
-        assert_eq!(
-            service_route_class(&Method::POST, "/pypi/simple/"),
-            Some(RouteClass::Upload)
-        );
-        assert_eq!(service_route_class(&Method::GET, "/+status"), Some(RouteClass::Admin));
-        assert_eq!(service_route_class(&Method::GET, "/+acl"), Some(RouteClass::Admin));
-        assert_eq!(
-            service_route_class(&Method::GET, "/+revocations"),
-            Some(RouteClass::Admin)
-        );
-        assert_eq!(
-            service_route_class(&Method::PUT, "/+revocations/sha256:digest"),
-            Some(RouteClass::Admin)
-        );
-        assert_eq!(
-            service_route_class(&Method::POST, "/+revocations/sha256:digest/lift"),
-            Some(RouteClass::Admin)
-        );
-        assert_eq!(
-            service_route_class(&Method::GET, "/pypi/hosted/+api"),
-            Some(RouteClass::Admin)
-        );
-        assert_eq!(
-            service_route_class(&Method::GET, "/pypi/files/abc/x.whl.metadata"),
-            None
-        );
-    }
-
-    #[test]
-    fn test_service_route_class_treats_head_and_options_as_reads() {
-        // An OCI client HEADs every manifest and blob before a pull; classing HEAD/OPTIONS as reads
-        // defers to the driver's own route class instead of spending the strict upload budget.
-        assert_eq!(
-            service_route_class(&Method::HEAD, "/v2/hub/library/nginx/manifests/latest"),
-            None
-        );
-        assert_eq!(service_route_class(&Method::OPTIONS, "/pypi/simple/flask/"), None);
-        assert_eq!(service_route_class(&Method::HEAD, "/+status"), Some(RouteClass::Admin));
-        for method in [Method::PUT, Method::PATCH, Method::DELETE] {
-            assert_eq!(
-                service_route_class(&method, "/v2/hub/app/blobs/uploads/1"),
-                Some(RouteClass::Upload)
-            );
-        }
-        // Any other method keeps the original strict-budget default rather than deferring to the driver.
-        assert_eq!(
-            service_route_class(&Method::TRACE, "/pypi/simple/"),
-            Some(RouteClass::Upload)
-        );
-    }
-}
+#[path = "../tests/unit/rate_limit/tests.rs"]
+mod tests;

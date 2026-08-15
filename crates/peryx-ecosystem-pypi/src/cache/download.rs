@@ -1,5 +1,3 @@
-//! File-download streaming: cached blobs, single-flight upstream transfers, and live tailing.
-
 use std::sync::Arc;
 
 use crate::project_of_filename;
@@ -7,16 +5,19 @@ use crate::store::PypiStore as _;
 use bytes::Bytes;
 use peryx_driver::download::{DownloadHandle, DownloadProducer};
 use peryx_driver::rate_limit::UpstreamPermit;
-use peryx_driver::read_through::fill_from_remote_placement;
 use peryx_driver::state::ServingState;
-use peryx_events::metrics::Event;
+use peryx_events::metrics::Observation;
+use peryx_ha::{ArtifactPlacement, ArtifactPlacementStore, ArtifactSource};
 use peryx_storage::blob::{BlobLease, BlobMetadata, BlobWrite, Digest};
-use peryx_storage::meta::{ArtifactSource, PlacementEvent};
 
 use super::{
     CacheError, ensure_digest_clear, flight_gate, release_flight, source_artifact_client, source_client,
     upstream_permit,
 };
+
+#[cfg(test)]
+#[path = "../../tests/unit/cache_coverage/download.rs"]
+mod cache_coverage_tests;
 
 /// Resolve a file to a hosted blob path. A cache miss is fetched through the same streaming path as
 /// downloads, so the archive inspector never buffers the whole artifact in memory.
@@ -25,10 +26,6 @@ use super::{
 /// Returns [`CacheError::FileNotFound`] if the digest has no known source, or another error on a
 /// store or upstream failure.
 ///
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the connect gate stays held across start_download so racing inspectors attach instead of double-fetching"
-)]
 pub async fn file_path(
     state: Arc<ServingState>,
     digest: Digest,
@@ -39,27 +36,29 @@ pub async fn file_path(
     if state.blobs.head(&digest).await?.is_some() {
         return Ok(state.blobs.materialize(&digest).await?);
     }
-    let gate = flight_gate(&state, digest.as_str());
-    let guard = gate.lock_owned().await;
-    if state.blobs.head(&digest).await?.is_some() {
+    let mut handle = {
+        let gate = flight_gate(&state, digest.as_str());
+        let guard = gate.lock_owned().await;
+        if state.blobs.head(&digest).await?.is_some() {
+            release_flight(&state, digest.as_str(), guard);
+            return Ok(state.blobs.materialize(&digest).await?);
+        }
+        if fill_remote(&state, &digest).await.is_some() {
+            release_flight(&state, digest.as_str(), guard);
+            return Ok(state.blobs.materialize(&digest).await?);
+        }
+        let handle = if let Some(running) = existing_download(&state, &digest) {
+            running
+        } else {
+            start_download(&state, &digest, route, filename).await?
+        };
         release_flight(&state, digest.as_str(), guard);
-        return Ok(state.blobs.materialize(&digest).await?);
-    }
-    if fill_remote(&state, &digest).await.is_some() {
-        release_flight(&state, digest.as_str(), guard);
-        return Ok(state.blobs.materialize(&digest).await?);
-    }
-    let mut handle = if let Some(running) = existing_download(&state, &digest) {
-        running
-    } else {
-        start_download(&state, &digest, route, filename).await?
+        handle
     };
-    release_flight(&state, digest.as_str(), guard);
     wait_for_download(&mut handle).await?;
     Ok(state.blobs.materialize(&digest).await?)
 }
 
-/// What a file is, told without reading a byte of it.
 pub enum FileProbe {
     /// The blob is on disk, this long, written at this time when the store can say.
     Cached(u64, Option<std::time::SystemTime>),
@@ -96,7 +95,6 @@ pub async fn probe_file(state: &ServingState, digest: &Digest) -> Result<FilePro
     Ok(FileProbe::Upstream(source.size))
 }
 
-/// How a file download gets its bytes.
 pub enum FileOutcome {
     /// Metadata for a stored blob; the caller opens the selected range after evaluating conditions.
     Cached(BlobMetadata),
@@ -115,10 +113,6 @@ pub enum FileOutcome {
 /// Returns [`CacheError::FileNotFound`] if the digest has no known source, or another error on a
 /// store or upstream failure.
 ///
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the connect gate stays held across start_download so racing clients attach instead of double-fetching"
-)]
 pub async fn stream_file(
     state: Arc<ServingState>,
     digest: Digest,
@@ -131,22 +125,25 @@ pub async fn stream_file(
     }
     // The gate serializes only the connect phase, so an upstream refusal stays a clean HTTP error
     // for every racing client instead of a mid-body abort on a started stream.
-    let gate = flight_gate(&state, digest.as_str());
-    let guard = gate.lock_owned().await;
-    if let Some(metadata) = state.blobs.head(&digest).await? {
+    let handle = {
+        let gate = flight_gate(&state, digest.as_str());
+        let guard = gate.lock_owned().await;
+        if let Some(metadata) = state.blobs.head(&digest).await? {
+            release_flight(&state, digest.as_str(), guard);
+            return Ok(FileOutcome::Cached(metadata));
+        }
+        if let Some(metadata) = fill_remote(&state, &digest).await {
+            release_flight(&state, digest.as_str(), guard);
+            return Ok(FileOutcome::Cached(metadata));
+        }
+        let handle = if let Some(running) = existing_download(&state, &digest) {
+            running
+        } else {
+            start_download(&state, &digest, route.clone(), filename.clone()).await?
+        };
         release_flight(&state, digest.as_str(), guard);
-        return Ok(FileOutcome::Cached(metadata));
-    }
-    if let Some(metadata) = fill_remote(&state, &digest).await {
-        release_flight(&state, digest.as_str(), guard);
-        return Ok(FileOutcome::Cached(metadata));
-    }
-    let handle = if let Some(running) = existing_download(&state, &digest) {
-        running
-    } else {
-        start_download(&state, &digest, route.clone(), filename.clone()).await?
+        handle
     };
-    release_flight(&state, digest.as_str(), guard);
     Ok(FileOutcome::Live(tail_download(state, digest, handle, route, filename)))
 }
 
@@ -154,10 +151,15 @@ pub async fn stream_file(
 /// the stored metadata when a peer served the file. A single-node process has no read-through installed,
 /// so this is a no-op there.
 async fn fill_remote(state: &ServingState, digest: &Digest) -> Option<BlobMetadata> {
-    fill_from_remote_placement(state.read_through(), &state.meta, &state.blobs, digest).await
+    match state.ensure_blob_local(digest).await {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            tracing::warn!(digest = digest.as_str(), %error, "remote placement read-through failed");
+            None
+        }
+    }
 }
 
-/// Connect upstream and spawn the detached pump feeding a new blob transfer.
 async fn start_download(
     state: &Arc<ServingState>,
     digest: &Digest,
@@ -196,7 +198,6 @@ async fn start_download(
     Ok(handle)
 }
 
-/// The in-flight download for `digest`, if one is pumping right now.
 fn existing_download(state: &ServingState, digest: &Digest) -> Option<DownloadHandle> {
     state.downloads.get(digest.as_str())
 }
@@ -253,26 +254,23 @@ async fn pump_download(
     let elapsed_ms = started.elapsed().as_millis();
     let (route, filename, upstream) = served_as;
     let upstream = upstream.as_deref().unwrap_or("");
-    #[rustfmt::skip]
-    tracing::debug!(digest = digest.as_str(), upstream, bytes, elapsed_ms, "blob transfer ended");
-    // Reproject byte availability off the request path. A verified persist makes the proxied artifact
-    // local; a rejected one preserves whatever was verified before rather than fabricating a local
-    // state from a partial transfer. A store error here is left for the next repair pass to reconcile.
-    let _ = if outcome.is_ok() {
-        state
-            .meta
-            .record_artifact_placement(digest.as_str(), ArtifactSource::Proxy, true)
-            .map(drop)
-    } else {
-        state
-            .meta
-            .apply_placement_event(digest.as_str(), PlacementEvent::WriteFailed)
-            .map(drop)
-    };
+    let digest = digest.as_str();
+    tracing::debug!(digest, upstream, bytes, elapsed_ms, "blob transfer ended");
+    // A failed write must preserve the last verified placement.
+    if outcome.is_ok() {
+        let _ = ArtifactPlacementStore::put_artifact_placement(
+            &state.meta,
+            digest,
+            &ArtifactPlacement::record(ArtifactSource::Proxy, true),
+        );
+    }
     if outcome.is_err() {
-        tracing::warn!(digest = digest.as_str(), "blob persist rejected");
+        tracing::warn!(digest, "blob persist rejected");
         let project = project_of_filename(&filename);
-        state.metrics.record(Event::BlobRejected { route, project });
+        state.metrics.record(Observation::BlobRejected {
+            repository: route,
+            resource: project,
+        });
     }
     producer.finish(outcome);
 }
@@ -316,7 +314,6 @@ struct Tail {
     alive: bool,
 }
 
-/// Stream a live download to one client by tailing the temp file as the pump flushes it.
 pub fn tail_download(
     state: Arc<ServingState>,
     digest: Digest,
@@ -377,11 +374,11 @@ pub fn tail_download(
             match progress.done {
                 Some(Ok(())) => {
                     let (version, source) = download_dimensions(&tail.state, &tail.digest, &tail.filename);
-                    tail.state.metrics.record(Event::Download {
-                        route: tail.route.clone(),
-                        project: project_of_filename(&tail.filename),
-                        filename: tail.filename.clone(),
-                        version,
+                    tail.state.metrics.record(Observation::Read {
+                        repository: tail.route.clone(),
+                        resource: project_of_filename(&tail.filename),
+                        artifact: tail.filename.clone(),
+                        group: version,
                         source,
                         bytes: tail.sent,
                     });
@@ -441,11 +438,11 @@ fn committed_download(
                 |(mut stream, state, digest, route, filename, bytes)| async move {
                     let Some(chunk) = stream.next().await.transpose()? else {
                         let (version, source) = download_dimensions(&state, &digest, &filename);
-                        state.metrics.record(Event::Download {
-                            route,
-                            project: project_of_filename(&filename),
-                            filename,
-                            version,
+                        state.metrics.record(Observation::Read {
+                            repository: route,
+                            resource: project_of_filename(&filename),
+                            artifact: filename,
+                            group: version,
                             source,
                             bytes,
                         });
@@ -491,9 +488,7 @@ async fn tail_file(
             }
             Some(Err(message)) => return Err(std::io::Error::other(message)),
             None => {
-                if handle.progress().changed().await.is_err() {
-                    return Err(missing);
-                }
+                handle.progress().changed().await.map_err(|_| missing)?;
             }
         }
     }

@@ -1,10 +1,9 @@
-//! Full offline backup creation.
-
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use anyhow::{Context as _, bail};
+use peryx_plugin_registry::PluginRegistry;
 use peryx_storage::blob::{BlobStorage, Digest};
 use peryx_storage::meta::MetaStore;
 
@@ -16,17 +15,28 @@ use super::{
 };
 use crate::config::Config;
 
-/// Create a full offline backup of a data directory.
-///
 /// # Errors
 /// Returns an error if the repository uses an object-store blob backend, the source metadata store
 /// is open by a running node, the backup target is not empty, metadata cannot be read, or a
 /// referenced blob is missing or mismatched while it is copied.
 pub fn backup_create(config: &Config, path: &Path, out: &mut dyn Write) -> anyhow::Result<()> {
+    backup_create_with_plugins(config, &crate::compiled_plugins(), path, out)
+}
+
+/// # Errors
+/// Returns an error when the source cannot be quiesced or copied into a complete backup.
+pub fn backup_create_with_plugins(
+    config: &Config,
+    plugins: &PluginRegistry,
+    path: &Path,
+    out: &mut dyn Write,
+) -> anyhow::Result<()> {
     crate::app::reject_object_store_blob(config, "creating an offline backup")?;
+    let distributed = config.availability.mode().is_distributed();
     let source_metadata = config.data_dir.join("peryx.redb");
     let _quiesced = quiesce_source(&source_metadata)?;
     prepare_new_backup_dir(path)?;
+    let plugins = crate::server::activate_plugins(config, plugins)?;
     let config_info = write_hashed(
         &path.join("config.toml"),
         config_snapshot(config)?.as_bytes(),
@@ -44,13 +54,18 @@ pub fn backup_create(config: &Config, path: &Path, out: &mut dyn Write) -> anyho
 
     let source_blobs = BlobStorage::filesystem(config.data_dir.join("blobs"));
     let (blob_count, blob_bytes, metadata_frontier, placements, writer_identity) = {
-        let meta = MetaStore::open_existing(path.join("metadata/peryx.redb")).context("open copied metadata store")?;
+        let meta = crate::metadata::open_existing(&path.join("metadata/peryx.redb"), &plugins)?;
         let mut index = BufWriter::new(File::create(path.join("blobs.tsv")).context("create blobs.tsv")?);
         writeln!(index, "{BLOB_INDEX_HEADER}")?;
-        let (blob_count, blob_bytes) = copy_referenced_blobs(&meta, &source_blobs, path, &mut index)?;
+        let (blob_count, blob_bytes) =
+            copy_referenced_blobs(plugins.drivers(), &meta, &source_blobs, path, &mut index)?;
         index.into_inner()?.sync_all()?;
         let metadata_frontier = meta.current_serial().context("read metadata frontier")?;
-        let placements = meta.count_artifact_placements().context("count artifact placements")?;
+        let placements = if distributed {
+            meta.count_artifact_placements().context("count artifact placements")?
+        } else {
+            0
+        };
         let writer_identity = meta.writer_identity().context("read metadata writer identity")?;
         (blob_count, blob_bytes, metadata_frontier, placements, writer_identity)
     };
@@ -124,6 +139,7 @@ fn quiesce_source(source: &Path) -> anyhow::Result<MetaStore> {
 /// returning the count and total bytes. Blobs are content-addressed artifacts, so they carry the
 /// platform-default mode under the owner-only backup root rather than a private one.
 fn copy_referenced_blobs(
+    drivers: &peryx_driver::DriverSet,
     meta: &MetaStore,
     source_blobs: &BlobStorage,
     path: &Path,
@@ -131,12 +147,14 @@ fn copy_referenced_blobs(
 ) -> anyhow::Result<(u64, u64)> {
     let mut blob_count = 0_u64;
     let mut blob_bytes = 0_u64;
-    for digest in crate::app::referenced_blob_digests(meta).context("scan metadata blob references")? {
+    for digest in
+        crate::app::referenced_blob_digests_with_drivers(drivers, meta).context("scan metadata blob references")?
+    {
         let digest = Digest::from_hex(&digest).context("metadata scan returned an invalid digest")?;
         let source = source_blobs
             .blocking()
             .materialize(&digest)
-            .with_context(|| format!("referenced blob {} is missing", digest.as_str()))?;
+            .context(format!("referenced blob {} is missing", digest.as_str()))?;
         let relpath = backup_blob_relpath(&digest);
         let copied = copy_hashed(
             source.path(),

@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
+cd "$repo"
+output=${1:-.tox/coverage/system-distributed.lcov}
+exec .github/scripts/coverage-session-guard --output "$output" -- \
+  scripts/ci/coverage-system-distributed "$output"

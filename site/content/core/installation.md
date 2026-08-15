@@ -1,28 +1,22 @@
 +++
 title = "Installation"
-description = "The install channels, the platforms each covers, and how each one updates."
-weight = 0
+description = "Install the peryx binary from a release or source checkout."
+weight = 2
 +++
 
-Every channel ships the same single static binary; pick by how you manage tools.
+Each channel installs the same executable with the shipped ecosystem owners and availability implementations.
+Configuration selects index owners and the process availability mode after installation.
 
-| Channel                    | Command                                                                                                    | Updates with              |
-| -------------------------- | ---------------------------------------------------------------------------------------------------------- | ------------------------- |
-| Installer script (Unix)    | `curl -LsSf https://github.com/tox-dev/peryx/releases/latest/download/peryx-installer.sh \| sh`            | `peryx self update`       |
-| Installer script (Windows) | `powershell -c "irm https://github.com/tox-dev/peryx/releases/latest/download/peryx-installer.ps1 \| iex"` | `peryx self update`       |
-| PyPI wheel                 | `uv tool install peryx` or `pip install peryx`                                                             | `uv tool upgrade` / `pip` |
-| From source                | `cargo build --release` in a checkout                                                                      | `git pull` and rebuild    |
+| Channel                     | Install                                                                                                    | Update              |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------- | ------------------- |
+| Installer script on Unix    | `curl -LsSf https://github.com/tox-dev/peryx/releases/latest/download/peryx-installer.sh \| sh`            | `peryx self update` |
+| Installer script on Windows | `powershell -c "irm https://github.com/tox-dev/peryx/releases/latest/download/peryx-installer.ps1 \| iex"` | `peryx self update` |
+| Source checkout             | `cargo build --release`                                                                                    | Pull and rebuild    |
 
-## Platforms
+GitHub releases provide checksummed binaries for the supported macOS, Linux, and Windows targets.
 
-GitHub releases carry binaries for macOS (Apple Silicon and Intel), Linux glibc (x86_64 and aarch64), and Windows x64,
-each with a sha256 checksum. [PyPI](https://pypi.org/)
-[wheels](https://packaging.python.org/en/latest/specifications/binary-distribution-format/) additionally cover musl
-Linux ([Alpine](https://alpinelinux.org/)) on both architectures and Windows arm64; the wheel embeds the same binary as
-a console script, so no Python ABI is involved and one wheel per platform serves every interpreter.
+## Self-update ownership
 
-## Self-update
-
-`peryx self update` replaces the binary with the newest GitHub release. It works only for copies placed by the installer
-scripts: those write an install receipt the updater reads. A pip- or cargo-installed peryx has no receipt and is refused
-with a pointer back to its own package manager, so two tools never fight over one file.
+`peryx self update` works for copies placed by an installer script because the installer writes an update receipt. A
+binary installed by another tool has no receipt; update it with the tool that owns that file. Peryx refuses the
+self-update rather than replacing a file managed elsewhere.

@@ -1,10 +1,6 @@
-//! Link safety for project pages.
-//!
-//! Package authors control the URLs on a project page, so links are kept only when their scheme is one
-//! a browser can follow safely, and outbound ones carry a hardened relationship. The long description
-//! itself is rendered to HTML by the ecosystem driver on the server, not here.
+//! Link classification for rendered owner content.
 
-use url::{ParseError, Url};
+use url::Url;
 
 pub(crate) const EXTERNAL_LINK_REL: &str = "external nofollow noopener noreferrer";
 
@@ -21,23 +17,4 @@ pub(crate) fn external_link_rel(target: &str) -> Option<&'static str> {
 /// passes as a same-origin route.
 fn is_network_path_reference(target: &str) -> bool {
     target.starts_with("//")
-}
-
-pub(crate) fn is_safe_link(target: &str) -> bool {
-    is_safe_url(target, |scheme| matches!(scheme, "http" | "https" | "mailto"))
-}
-
-pub(crate) fn is_safe_artifact_link(target: &str) -> bool {
-    is_safe_url(target, |scheme| matches!(scheme, "http" | "https"))
-}
-
-fn is_safe_url(target: &str, allowed_scheme: impl FnOnce(&str) -> bool) -> bool {
-    if is_network_path_reference(target) {
-        return allowed_scheme("https");
-    }
-    match Url::parse(target) {
-        Ok(url) => allowed_scheme(url.scheme()),
-        Err(ParseError::RelativeUrlWithoutBase) => true,
-        Err(_) => false,
-    }
 }

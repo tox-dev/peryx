@@ -8,7 +8,6 @@ use peryx_driver::AppState;
 
 use crate::{App, shell};
 
-/// The router state: leptos options plus the peryx application state.
 #[derive(Clone)]
 pub struct UiState {
     pub options: LeptosOptions,
@@ -21,20 +20,11 @@ impl FromRef<UiState> for LeptosOptions {
     }
 }
 
-/// The route table leptos derives by walking `App`. It never varies, and deriving it runs the
-/// component, which the tests do from many threads at once while building throwaway routers, so
-/// derive it once behind a lock and hand back clones. A running server builds one router, so this
-/// costs it nothing.
 fn route_list() -> Vec<leptos_axum::AxumRouteListing> {
     static ROUTES: std::sync::OnceLock<Vec<leptos_axum::AxumRouteListing>> = std::sync::OnceLock::new();
     ROUTES.get_or_init(|| generate_route_list(App)).clone()
 }
 
-/// Build the UI router.
-///
-/// The leptos routes (server-rendered, hydration-ready) plus the `/pkg` asset directory holding
-/// the wasm bundle. Without the bundle on disk the pages still render; they are just not
-/// interactive.
 pub fn ui_router(app: Arc<AppState>) -> Router {
     let options = leptos_options();
     let site_root = options.site_root.to_string();
@@ -53,8 +43,7 @@ pub fn ui_router(app: Arc<AppState>) -> Router {
                 move || shell(options.clone())
             },
         )
-        // leptos appends `_bg` to the wasm name when the server was not compiled by cargo-leptos
-        // (a compile-time env probe), while cargo-leptos writes the file without it; alias the two.
+        // cargo-leptos and direct server builds emit different Wasm names.
         .route_service(
             "/pkg/peryx_web_bg.wasm",
             tower_http::services::ServeFile::new(format!("{site_root}/pkg/peryx_web.wasm")),
@@ -64,9 +53,6 @@ pub fn ui_router(app: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-/// The browser-tab icon: the peryx layered-stack mark (no wordmark) on the app's dark tile, with a
-/// green node. The documentation site uses the same mark with a blue node (`site/static/icon.svg`),
-/// so a tab pinned to a running instance is distinguishable at a glance from a docs tab.
 const FAVICON: &str = concat!(
     r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="peryx">"#,
     r#"<defs><linearGradient id="r" x1="0" y1="0" x2="1" y2="1">"#,
@@ -83,8 +69,6 @@ async fn favicon() -> impl axum::response::IntoResponse {
     ([(axum::http::header::CONTENT_TYPE, "image/svg+xml")], FAVICON)
 }
 
-/// The leptos configuration: asset names must match what cargo-leptos produces (`Cargo.toml`
-/// workspace metadata), and the site root is where its output lands at runtime.
 fn leptos_options() -> LeptosOptions {
     LeptosOptions::builder()
         .output_name("peryx_web")
@@ -92,3 +76,7 @@ fn leptos_options() -> LeptosOptions {
         .site_pkg_dir("pkg")
         .build()
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/ssr/router/tests.rs"]
+mod tests;

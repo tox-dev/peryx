@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$repo"
+base=${1:-}
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+cargo metadata --no-deps --format-version 1 >"$scratch/metadata.json"
+
+jq -r '.packages[] | select(.metadata["peryx-ci"].snapshots != null) | .name' \
+  "$scratch/metadata.json" | sort | while IFS= read -r package; do
+  manifest=$(jq -r --arg package "$package" '.packages[] | select(.name == $package) | .manifest_path' \
+    "$scratch/metadata.json")
+  package_root=$(dirname "$manifest")
+  mapfile -t roots < <(jq -r --arg package "$package" '
+    .packages[] | select(.name == $package) | .metadata["peryx-ci"].snapshots.roots[]
+  ' "$scratch/metadata.json")
+  if ((${#roots[@]} == 0)); then
+    printf 'snapshot package has no declared roots: %s\n' "$package" >&2
+    exit 2
+  fi
+  paths=(Cargo.lock Cargo.toml "$manifest" "$package_root/src")
+  for root in "${roots[@]}"; do
+    paths+=("$package_root/$root")
+    if find "$package_root/$root" -type f -name '*.snap.new' -print -quit | grep -q .; then
+      printf 'unreviewed snapshot found in %s\n' "$package" >&2
+      exit 1
+    fi
+  done
+  if [[ -n $base ]] && base_revision=$(git rev-parse --verify "$base^{commit}" 2>/dev/null) &&
+    [[ $base_revision != "$(git rev-parse HEAD)" ]] && git diff --quiet "$base_revision" -- "${paths[@]}"; then
+    continue
+  fi
+  mapfile -t cargo_args < <(jq -r --arg package "$package" '
+    .packages[] | select(.name == $package) | .metadata["peryx-ci"].snapshots["cargo-args"][]?
+  ' "$scratch/metadata.json")
+  cargo insta test --package "$package" --all-features "${cargo_args[@]}" \
+    --unreferenced=reject --test-runner=nextest
+done

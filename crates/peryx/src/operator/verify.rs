@@ -1,26 +1,35 @@
-//! Backup verification: manifest, blob index, and metadata reference checks.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{BufRead as _, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, bail};
+use peryx_plugin_registry::PluginRegistry;
 use peryx_storage::blob::Digest;
 use peryx_storage::meta::MetaStore;
 
 use super::{
     BLOB_INDEX_HEADER, BackupCheck, BackupManifest, BlobIndexEntry, HashedFile, ManifestAvailability, ManifestFile,
-    backup_blob_relpath, hash_existing_file, read_manifest,
+    backup_blob_relpath, backup_config_with_plugins, backup_plugins, hash_existing_file, read_manifest,
 };
 
-/// Verify a backup directory.
-///
 /// # Errors
 /// Returns an error if verification finds a problem or the manifest cannot be read.
 pub fn backup_verify(path: &Path, out: &mut dyn Write) -> anyhow::Result<()> {
+    backup_verify_with_plugins(path, &crate::compiled_plugins(), out)
+}
+
+/// # Errors
+/// Returns an error when the backup is unreadable or inconsistent.
+pub fn backup_verify_with_plugins(path: &Path, plugins: &PluginRegistry, out: &mut dyn Write) -> anyhow::Result<()> {
     let manifest = read_manifest(path)?;
-    let check = check_backup(path, &manifest, out)?;
+    let mut problems = 0;
+    let config = verify_manifest_file(path, &manifest.config, "config", out, &mut problems)?;
+    let plugins = match config {
+        ManifestFileCheck::Match => backup_plugins(&backup_config_with_plugins(path, &manifest, plugins)?, plugins)?,
+        ManifestFileCheck::Mismatch | ManifestFileCheck::Unscannable => plugins.activate([])?,
+    };
+    let check = check_backup_contents(path, &manifest, &plugins, out, problems)?;
     if check.problems == 0 {
         writeln!(out, "ok")?;
         Ok(())
@@ -30,9 +39,31 @@ pub fn backup_verify(path: &Path, out: &mut dyn Write) -> anyhow::Result<()> {
     }
 }
 
-pub(super) fn check_backup(path: &Path, manifest: &BackupManifest, out: &mut dyn Write) -> anyhow::Result<BackupCheck> {
+pub(super) fn is_missing_file(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .any(|error| error.kind() == std::io::ErrorKind::NotFound)
+}
+
+pub(super) fn check_backup_with_plugins(
+    path: &Path,
+    manifest: &BackupManifest,
+    plugins: &PluginRegistry,
+    out: &mut dyn Write,
+) -> anyhow::Result<BackupCheck> {
     let mut problems = 0;
     verify_manifest_file(path, &manifest.config, "config", out, &mut problems)?;
+    check_backup_contents(path, manifest, plugins, out, problems)
+}
+
+fn check_backup_contents(
+    path: &Path,
+    manifest: &BackupManifest,
+    plugins: &PluginRegistry,
+    out: &mut dyn Write,
+    mut problems: u64,
+) -> anyhow::Result<BackupCheck> {
     let mut blobs = BTreeMap::new();
     if matches!(
         verify_manifest_file(path, &manifest.blob_index.file, "blob-index", out, &mut problems)?,
@@ -57,9 +88,9 @@ pub(super) fn check_backup(path: &Path, manifest: &BackupManifest, out: &mut dyn
         }
     }
     if verify_metadata_file(path, &manifest.metadata, out, &mut problems)? == ManifestFileCheck::Match {
-        match MetaStore::open_existing_read_only(path.join(&manifest.metadata.path)) {
+        match crate::metadata::open_existing_copy(&path.join(&manifest.metadata.path), plugins) {
             Ok(meta) => {
-                check_metadata_references(&blobs, &meta, out, &mut problems)?;
+                check_metadata_references(plugins.drivers(), &blobs, &meta, out, &mut problems)?;
                 check_availability_state(&manifest.availability, &meta, out, &mut problems)?;
             }
             Err(err) => {
@@ -89,9 +120,12 @@ fn check_availability_state(
             "problem\tavailability\tfrontier\texpected {expected}, found {frontier}"
         )?;
     }
-    let placements = meta
-        .count_artifact_placements()
-        .context("count backup artifact placements")?;
+    let placements = if availability.mode == peryx_ha::AvailabilityMode::None.as_str() {
+        0
+    } else {
+        meta.count_artifact_placements()
+            .context("count backup artifact placements")?
+    };
     if availability.placements != placements {
         *problems += 1;
         let expected = availability.placements;
@@ -120,6 +154,10 @@ fn check_membership(
     out: &mut dyn Write,
     problems: &mut u64,
 ) -> anyhow::Result<()> {
+    if !matches!(availability.mode.as_str(), "none" | "dc" | "ha") {
+        *problems += 1;
+        writeln!(out, "problem\tavailability\tmode\tunsupported {}", availability.mode)?;
+    }
     let Some(membership) = &availability.membership else {
         return Ok(());
     };
@@ -149,8 +187,13 @@ fn check_membership(
             let address = &member.address;
             writeln!(out, "problem\tavailability\tmembership\tduplicate address {address}")?;
         }
-        if member.role == "writer" {
-            writers += 1;
+        match member.role.as_str() {
+            "writer" => writers += 1,
+            "replica" => {}
+            role => {
+                *problems += 1;
+                writeln!(out, "problem\tavailability\tmembership\tinvalid role {role}")?;
+            }
         }
     }
     if !membership.members.is_empty() && writers != 1 {
@@ -252,12 +295,15 @@ enum ManifestFileCheck {
 }
 
 fn check_metadata_references(
+    drivers: &peryx_driver::DriverSet,
     entries: &BTreeMap<String, BlobIndexEntry>,
     meta: &MetaStore,
     out: &mut dyn Write,
     problems: &mut u64,
 ) -> anyhow::Result<()> {
-    for digest in crate::app::referenced_blob_digests(meta).context("scan backup metadata blob references")? {
+    for digest in crate::app::referenced_blob_digests_with_drivers(drivers, meta)
+        .context("scan backup metadata blob references")?
+    {
         if !entries.contains_key(&digest) {
             *problems += 1;
             writeln!(out, "problem\tblob-index\t{digest}\tmissing referenced digest")?;
@@ -301,7 +347,8 @@ fn read_blob_index(
             writeln!(out, "problem\tblob-index\t{}\tinvalid size", digest.as_str())?;
             continue;
         };
-        if *blob_path != backup_blob_relpath(&digest) {
+        let expected_path = backup_blob_relpath(&digest);
+        if *blob_path != expected_path {
             *problems += 1;
             writeln!(out, "problem\tblob-index\t{}\tinvalid path", digest.as_str())?;
         }
@@ -310,7 +357,7 @@ fn read_blob_index(
                 digest.as_str().to_owned(),
                 BlobIndexEntry {
                     size_bytes,
-                    path: (*blob_path).to_owned(),
+                    path: expected_path,
                 },
             )
             .is_some()

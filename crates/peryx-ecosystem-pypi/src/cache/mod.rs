@@ -1,13 +1,10 @@
-//! The read-through cache and index composition: serve a project's simple page and file bytes across
-//! an index's layers, fetching and caching from upstream on a miss.
-//!
-//! The work is split into cohesive submodules; this spine holds the shared error type, the
-//! single-flight/permit/freshness primitives every path shares, and the module wiring.
+use std::sync::Arc;
 
 use crate::store::CachedIndex;
 use crate::store::PypiStore as _;
 use crate::upload;
 use peryx_driver::rate_limit::UpstreamPermit;
+use peryx_driver::serving::RuntimeInstallContext;
 use peryx_driver::state::ServingState;
 use peryx_identity::{ArtifactDigest, DigestDecision};
 use peryx_index::{Index, IndexKind};
@@ -35,17 +32,14 @@ pub use mutate::{
     TrashContext, download_status, project_status, promote_release, remove_files, restore_files, set_yanked,
 };
 pub(crate) use mutate::{store_upload, upload_exists};
-#[cfg(test)]
-pub(crate) use page_stream::settle_revalidations;
 pub use page_stream::{PageOutcome, materialize_detail, stream_detail};
 pub use provenance::{ProvenanceBody, provenance_bytes};
 pub use resolve::{DetailPage, list_serial, resolve_detail, resolve_detail_page, resolve_list};
 pub use shadow::shadowed_candidates;
 
-#[cfg(test)]
-pub(crate) use download::tail_download;
-#[cfg(test)]
-pub(crate) use fetch::persist_page;
+pub(crate) fn install_runtime_services(context: &mut RuntimeInstallContext<'_>) {
+    context.register_service(Arc::new(metadata::MetadataBackfills::default()));
+}
 
 const NEGATIVE_TTL_SECS: i64 = 30;
 
@@ -161,7 +155,7 @@ impl CacheError {
             }
             Self::Stream(err) => format!("file stream failed: {err}"),
             Self::RateLimited { retry_after } => format!("rate limit exceeded; retry after {retry_after} seconds"),
-            Self::Policy(err) => err.reason.to_string(),
+            Self::Policy(err) => crate::serving::response::pypi_reason(&err.reason),
             Self::Quota(err) => format!("quota accounting error: {err}"),
         }
     }
@@ -179,21 +173,12 @@ pub(crate) fn has_active_revocations(state: &ServingState) -> Result<bool, Cache
     Ok(state.revocations.has_active()?)
 }
 
-/// The per-page lock concurrent cache misses share.
 pub(crate) fn flight_gate(state: &ServingState, key: &str) -> peryx_index::serving::FlightGate {
     peryx_index::serving::flight_gate(&state.cache.inflight, key)
 }
 
-/// Release a single-flight hold.
 fn release_flight(state: &ServingState, key: &str, guard: peryx_index::serving::FlightGuard) {
     peryx_index::serving::release_flight(&state.cache.inflight, key, guard);
-}
-
-/// How many callers are registered on `key`'s flight gate, so a test can wait for a racing request to
-/// reach the gate deterministically instead of sleeping.
-#[cfg(test)]
-pub(crate) fn flight_users(state: &ServingState, key: &str) -> usize {
-    state.cache.inflight.active(key)
 }
 
 /// The stored cached record for `key`, or `None` when there is none or when its bytes no longer decode.
@@ -227,12 +212,11 @@ pub(crate) fn fresh_cached(state: &ServingState, key: &str) -> Result<Option<Cac
 ///
 /// Reached only after [`fresh_cached`] has returned `None`, so a present record is already stale and
 /// the bound is all that is left to check. `None` when nothing is cached, its bytes no longer decode,
-/// or the copy has aged past `max_stale_secs` — a miss hard enough to fetch synchronously instead.
+/// or the copy has aged past `max_stale_secs` - a miss hard enough to fetch synchronously instead.
 pub(crate) fn stale_servable(state: &ServingState, key: &str) -> Result<Option<CachedIndex>, CacheError> {
     Ok(cached_record(state, key)?.filter(|record| servable_stale(state, record)))
 }
 
-/// A record's freshness lifetime in seconds.
 const fn freshness(state: &ServingState, record: &CachedIndex) -> i64 {
     freshness_secs(state.ttl_secs, record.fresh_secs)
 }
@@ -277,7 +261,7 @@ pub(crate) fn servable_stale(state: &ServingState, record: &CachedIndex) -> bool
 
 /// How long a page stays fresh: the lifetime upstream granted, never longer than the configured one.
 ///
-/// `Cache-Control` is the upstream's opinion, and an upstream — or any CDN that fronts it — answering
+/// `Cache-Control` is the upstream's opinion, and an upstream - or any CDN that fronts it - answering
 /// `max-age=31536000` would otherwise pin a page for a year with no revalidation. `ttl_secs` is both
 /// the fallback when no lifetime is granted and the ceiling when too much is: a shorter upstream
 /// lifetime is honoured, a longer one is not.
@@ -290,7 +274,6 @@ pub(crate) const fn freshness_secs(ttl_secs: i64, fresh_secs: Option<i64>) -> i6
     }
 }
 
-/// The route a cached index's pages are attributed to in metrics.
 fn mirror_route(state: &ServingState, name: &str) -> String {
     state
         .indexes
@@ -390,35 +373,5 @@ fn source_artifact_client(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_cache_error_converts_to_its_user_message_string() {
-        assert_eq!(
-            String::from(CacheError::Unavailable),
-            "upstream is unavailable and no cached page exists"
-        );
-    }
-
-    #[test]
-    fn test_cache_error_archive_message_is_user_visible() {
-        assert_eq!(
-            CacheError::Archive(crate::archive::ArchiveError::Unsupported).user_message(),
-            "unsupported archive type; accepted formats are .whl, .zip, .egg, .tar, .tar.gz, and .tgz"
-        );
-    }
-
-    #[test]
-    fn test_cache_error_maps_upload_store_errors() {
-        let err = upload::UploadStoreError::Meta(peryx_storage::meta::MetaError::Decode(
-            serde_json::from_str::<serde_json::Value>("{").unwrap_err(),
-        ));
-        assert!(matches!(CacheError::from(err), CacheError::Meta(_)));
-
-        let err = upload::UploadStoreError::Blob(peryx_storage::blob::BlobError::not_found(
-            &peryx_storage::blob::Digest::of(b"missing"),
-        ));
-        assert!(matches!(CacheError::from(err), CacheError::Blob(_)));
-    }
-}
+#[path = "../../tests/unit/cache/tests.rs"]
+mod tests;

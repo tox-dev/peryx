@@ -1,43 +1,30 @@
-//! Ecosystem-neutral artifact lifecycle records.
-
 use core::fmt;
 use core::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-use crate::Ecosystem;
+use crate::{ArtifactKey, Ecosystem, RepositoryKey, ResourceKey};
 
-/// How long a soft-deleted artifact stays restorable before a retention sweep may reclaim it.
-///
-/// Peryx keeps trashed content for this window so an operator can inspect and undo a deletion; past it
-/// a record reads as expired and restore is no longer guaranteed.
+/// Retention sweeps cannot reclaim artifacts during this recovery window.
 pub const TRASH_GRACE_SECS: i64 = 30 * 24 * 60 * 60;
 
-/// Provenance retained when an artifact is soft-deleted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrashInfo {
-    /// When the artifact was trashed, as a Unix timestamp.
     pub deleted_at_unix: i64,
-    /// The token or actor that deleted it, when the request carried an identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actor: Option<String>,
-    /// The operator's stated reason, when the delete request supplied one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
 
-/// Whether a trashed artifact can still be restored, or its recovery window has closed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TrashState {
-    /// The content and the live slot a restore reclaims are available, within the recovery window.
     Restorable,
-    /// The recovery window closed, or the content or slot a restore needs is gone.
     Expired,
 }
 
 impl TrashState {
-    /// The stable lowercase identifier used in the API and the UI filter.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -53,7 +40,6 @@ impl fmt::Display for TrashState {
     }
 }
 
-/// A string did not name a known [`TrashState`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnknownTrashState(pub String);
 
@@ -77,49 +63,31 @@ impl FromStr for TrashState {
     }
 }
 
-/// One soft-deleted artifact in ecosystem-neutral form, produced by each ecosystem's trash scan.
-///
-/// The scans merge into one inspection view. Restorability is derived, not stored:
-/// [`retained`](Self::retained) is the driver's read of whether the content and the live slot a restore
-/// reclaims are still there, and the recovery deadline follows [`deleted_at_unix`](Self::deleted_at_unix)
-/// plus [`TRASH_GRACE_SECS`], so a query computes the same answer everywhere without a second store call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrashRecord {
-    /// The ecosystem that owns the deleted artifact.
     pub ecosystem: Ecosystem,
-    /// The peryx index the artifact was deleted from.
-    pub repository: String,
-    /// The artifact's project (`PyPI`) or repository path (OCI).
-    pub name: String,
-    /// The distribution filename (`PyPI`) or tag (OCI); absent for an untagged trashed manifest.
-    pub reference: Option<String>,
-    /// The content digest, when the ecosystem addresses the artifact by one.
+    pub repository: RepositoryKey,
+    pub resource: ResourceKey,
+    pub artifact: Option<ArtifactKey>,
     pub digest: Option<String>,
-    /// The operator's stated deletion reason, when one was supplied.
     pub reason: Option<String>,
-    /// The actor that deleted it, when the request carried an identity. Role-filtered in responses.
     pub actor: Option<String>,
-    /// When the artifact was trashed, as Unix seconds.
     pub deleted_at_unix: i64,
-    /// Whether the retained content and the live slot a restore reclaims are both still present.
+    /// False when restore cannot recover both content and its live slot.
     pub retained: bool,
 }
 
 impl TrashRecord {
-    /// When the recovery window closes and a retention sweep may reclaim this record.
     #[must_use]
     pub const fn deadline_unix(&self) -> i64 {
         self.deleted_at_unix.saturating_add(TRASH_GRACE_SECS)
     }
 
-    /// Whether the artifact can still be restored at `now_unix`: its content and slot are retained and
-    /// the recovery window is still open.
     #[must_use]
     pub const fn restorable(&self, now_unix: i64) -> bool {
         self.retained && now_unix < self.deadline_unix()
     }
 
-    /// The record's derived recovery state at `now_unix`.
     #[must_use]
     pub const fn state(&self, now_unix: i64) -> TrashState {
         if self.restorable(now_unix) {
@@ -129,9 +97,7 @@ impl TrashRecord {
         }
     }
 
-    /// A total-order pagination key: newest deletion first, then a stable identity tiebreak, so a page
-    /// boundary holds even as another artifact enters trash. A cursor is one record's key; the next
-    /// page returns records whose key sorts strictly after it.
+    /// Uses identity as the tiebreak for equal deletion times.
     #[must_use]
     pub fn cursor(&self) -> String {
         format!(
@@ -139,103 +105,13 @@ impl TrashRecord {
             i64::MAX - self.deleted_at_unix,
             self.ecosystem.as_str(),
             self.repository,
-            self.name,
-            self.reference.as_deref().unwrap_or_default(),
+            self.resource,
+            self.artifact.as_ref().map_or("", ArtifactKey::as_str),
             self.digest.as_deref().unwrap_or_default(),
         )
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{TRASH_GRACE_SECS, TrashRecord, TrashState, UnknownTrashState};
-    use crate::Ecosystem;
-
-    fn record() -> TrashRecord {
-        TrashRecord {
-            ecosystem: Ecosystem::Pypi,
-            repository: "hosted".to_owned(),
-            name: "flask".to_owned(),
-            reference: Some("flask-1.0.whl".to_owned()),
-            digest: Some("sha256:abc".to_owned()),
-            reason: Some("bad build".to_owned()),
-            actor: Some("alice".to_owned()),
-            deleted_at_unix: 1_000,
-            retained: true,
-        }
-    }
-
-    #[test]
-    fn test_trash_state_string_forms_and_parsing() {
-        assert_eq!(TrashState::Restorable.as_str(), "restorable");
-        assert_eq!(TrashState::Expired.to_string(), "expired");
-        assert_eq!("restorable".parse::<TrashState>().unwrap(), TrashState::Restorable);
-        assert_eq!("expired".parse::<TrashState>().unwrap(), TrashState::Expired);
-    }
-
-    #[test]
-    fn test_trash_state_rejects_an_unknown_value() {
-        let err = "gone".parse::<TrashState>().unwrap_err();
-        assert_eq!(err, UnknownTrashState("gone".to_owned()));
-        assert_eq!(err.to_string(), "unknown trash state: gone");
-    }
-
-    #[test]
-    fn test_deadline_follows_the_grace_window() {
-        assert_eq!(record().deadline_unix(), 1_000 + TRASH_GRACE_SECS);
-    }
-
-    #[test]
-    fn test_restorable_within_the_window_with_retained_content() {
-        let record = record();
-        assert!(record.restorable(1_000));
-        assert_eq!(record.state(1_000), TrashState::Restorable);
-    }
-
-    #[test]
-    fn test_expired_after_the_window_even_when_retained() {
-        let record = record();
-        let past = record.deadline_unix() + 1;
-        assert!(!record.restorable(past));
-        assert_eq!(record.state(past), TrashState::Expired);
-    }
-
-    #[test]
-    fn test_expired_when_content_is_not_retained() {
-        let record = TrashRecord {
-            retained: false,
-            ..record()
-        };
-        assert!(!record.restorable(1_000));
-        assert_eq!(record.state(1_000), TrashState::Expired);
-    }
-
-    #[test]
-    fn test_cursor_orders_newest_first_then_by_identity() {
-        let newest = TrashRecord {
-            deleted_at_unix: 2_000,
-            ..record()
-        };
-        let older = record();
-        assert!(newest.cursor() < older.cursor(), "a later deletion sorts first");
-
-        let other_repo = TrashRecord {
-            repository: "other".to_owned(),
-            ..record()
-        };
-        assert!(older.cursor() < other_repo.cursor(), "same time breaks by repository");
-    }
-
-    #[test]
-    fn test_cursor_handles_absent_reference_and_digest() {
-        let record = TrashRecord {
-            reference: None,
-            digest: None,
-            ..record()
-        };
-        assert!(
-            record.cursor().ends_with('\u{1f}'),
-            "empty identity fields still serialize"
-        );
-    }
-}
+#[path = "../tests/unit/lifecycle/tests.rs"]
+mod tests;

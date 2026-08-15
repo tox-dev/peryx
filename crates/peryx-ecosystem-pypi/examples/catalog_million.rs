@@ -14,9 +14,13 @@ const PROJECTS: usize = 1_000_000;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut body = String::with_capacity(PROJECTS * 28);
+    run(std::env::var("PERYX_CATALOG_PROJECTS").map_or(Ok(PROJECTS), |projects| projects.parse())?).await
+}
+
+async fn run(project_count: usize) -> Result<(), Box<dyn std::error::Error>> {
+    let mut body = String::with_capacity(project_count * 28);
     body.push_str(r#"{"meta":{"api-version":"1.4"},"projects":["#);
-    for position in 0..PROJECTS {
+    for position in 0..project_count {
         if position != 0 {
             body.push(',');
         }
@@ -43,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let started = Instant::now();
     let sync_client = client.clone();
     let sync_meta = meta.clone();
-    let sync = tokio::spawn(async move {
+    let mut sync = tokio::spawn(async move {
         sync_catalog(
             &sync_client,
             &Inflight::default(),
@@ -54,26 +58,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await
     });
     let mut foreground = Vec::new();
-    while !sync.is_finished() {
+    let outcome = loop {
         let read_started = Instant::now();
         black_box(meta.get_driver_value("benchmark\0foreground")?);
         foreground.push(read_started.elapsed());
-        tokio::task::yield_now().await;
-    }
-    let outcome = sync.await??;
+        tokio::select! {
+            biased;
+            result = &mut sync => break result??,
+            () = tokio::task::yield_now() => {}
+        }
+    };
     let elapsed = started.elapsed();
     foreground.sort_unstable();
     let p99 = foreground[(foreground.len() - 1) * 99 / 100];
-    let requests = server.received_requests().await.unwrap_or_default().len();
+    let requests = server
+        .received_requests()
+        .await
+        .expect("request recording enabled")
+        .len();
     let projects = catalog_state(&meta, "benchmark")?.active.unwrap().projects;
 
     assert_eq!(
         outcome,
         CatalogSyncOutcome::Published {
-            projects: PROJECTS as u64
+            projects: project_count as u64
         }
     );
     assert_eq!(requests, 1);
+    assert_eq!(projects, project_count as u64);
     println!("projects={projects}");
     println!("requests={requests}");
     println!("wall_ms={}", elapsed.as_millis());
@@ -81,3 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("foreground_p99_us={}", p99.as_micros());
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/bench/catalog_million.rs"]
+mod tests;

@@ -1,33 +1,17 @@
-//! Identity and access for peryx.
+//! Protocols reduce credentials and resources to [`Principal`], [`Action`], and ACL values before
+//! calling [`authorize`], keeping access rules independent of wire protocols.
 //!
-//! A request arrives with a credential, or with none; an index declares who may do what. This crate
-//! holds both halves and the one decision between them: [`IndexAcl::identify`] turns a credential into
-//! a [`Principal`], and [`authorize`] says whether that principal may take an [`Action`] on a project
-//! in an index. Every ecosystem calls the same entry point, so the access rules live in one place
-//! instead of once per wire protocol.
+//! [`Signer`] owns the token realm's signing key. Token endpoints supply approved grants without
+//! handling the key.
 //!
-//! The model is neutral by construction. It knows a principal, an index ACL, a project name and an
-//! action, and nothing about how a client presented itself: an OCI scope string, a `PyPI` Basic header
-//! and a bearer token all reduce to those four before they reach [`authorize`]. A grant carries project
-//! globs (`team/*`), which match `PyPI` project names and OCI repository names alike.
-//!
-//! [`Signer`] mints and verifies the audience-bound JWTs a token realm hands out. It lives here because
-//! the signing key is identity state, not protocol state: an ecosystem's token endpoint calls `mint`
-//! with the grants [`authorize`] approved and never sees the key.
-//!
-//! [`authorize_publish`] is the other way grants are approved: a CI job presents an OIDC identity token
-//! instead of a secret, and a configured [`TrustedPublisher`] turns its verified claims into the same
-//! grants `mint` signs — trusted publishing without a long-lived credential to rotate.
-//!
-//! [`grants_permit`] is the second access model, for persistent users rather than per-index tokens: a
-//! [`UserId`] holds one of the fixed [`Role`]s over a [`GrantScope`], and a decision asks whether that
-//! user's [`RoleGrant`]s permit a [`Scope`] on a [`Resource`]. It is deny-by-default and independent of
-//! the token ACL, whose named-token grants resolve through [`authorize`].
+//! Persistent users use the separate, deny-by-default [`grants_permit`] model. Fixed [`Role`] values
+//! bind a [`UserId`] to a [`GrantScope`]; per-index named tokens continue to use [`authorize`].
 
 mod acl;
 mod external;
 mod ldap;
 mod oidc;
+mod oidc_http;
 mod oidc_login;
 mod password;
 mod revocation;
@@ -35,15 +19,14 @@ mod roles;
 mod scoped_token;
 mod session;
 mod token;
-mod trusted_publisher;
 mod user;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 
 pub use acl::{
-    Action, Denial, Glob, Grant, Identity, IndexAcl, NamedToken, Principal, authorize, authorize_all,
-    authorize_exact_grants, authorize_grants,
+    Action, Denial, Glob, Grant, Identity, IndexAcl, NamedToken, Principal, ResourceMatch, authorize, authorize_all,
+    authorize_grants,
 };
 pub use external::{
     ExternalGroup, ExternalGroupGrant, ExternalIdentity, ExternalIdentityError, ExternalIdentityLinker,
@@ -54,7 +37,8 @@ pub use ldap::{
     LdapBindMode, LdapLoginError, LdapLoginService, LdapProvider, LdapProviderBuildError, LdapProviderError,
     LdapProviderSettings,
 };
-pub use oidc::{ExchangeError, ExchangedToken, IdentityExchange, OidcRuntime, PublisherBinding};
+pub use oidc::{OidcTokenVerifier, OidcVerificationError, OidcVerifier, VerifiedOidcIdentity};
+pub use oidc_http::OidcHttpTransport;
 pub use oidc_login::{
     Authorization, CallbackResponse, OidcLoginError, OidcLoginProvider, OidcLoginService, OidcProviderBuildError,
     OidcProviderError, OidcProviderSettings, PendingLogin,
@@ -64,19 +48,19 @@ pub use revocation::{ArtifactDigest, ArtifactDigestError, DigestDecision, Revoca
 pub use roles::{GrantScope, Resource, Role, RoleGrant, Scope, can_manage_grants, grants_permit};
 pub use scoped_token::{TokenId, TokenName, TokenNameError, TokenSecret, TokenVerifier};
 pub use session::{PRE_AUTH_COOKIE, SESSION_COOKIE, SessionSealer};
-pub use token::{Signer, TokenError, VerifiedToken};
-pub use trusted_publisher::{PublishClaims, PublishDenial, TrustedPublisher, authorize_publish};
+pub use token::{Signer, TokenError, TokenScope, VerifiedToken};
 pub use user::{ServerUser, UserId, UserLifecycleChange, UserLifecycleEvent, UserName, UserNameError, UserState};
 
-/// The user and password carried by an HTTP Basic `Authorization` header.
+pub const TOKEN_AUDIENCE: &str = "peryx";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BasicCredentials {
     pub user: String,
     pub password: String,
 }
 
-/// Parse an `Authorization` header value as HTTP Basic credentials, or `None` if it is absent, not
-/// Basic, not valid base64/UTF-8, or has no `user:password` separator.
+/// Returns `None` unless the value contains a Basic scheme, valid base64 UTF-8, and a
+/// `user:password` separator.
 #[must_use]
 pub fn parse_basic(header_value: &str) -> Option<BasicCredentials> {
     let encoded = strip_auth_scheme(header_value, "Basic")?;
@@ -97,10 +81,8 @@ pub fn strip_auth_scheme<'a>(header_value: &'a str, scheme: &str) -> Option<&'a 
     presented.eq_ignore_ascii_case(scheme).then_some(credential)
 }
 
-/// Compare a presented secret to a configured one without an early-out on the first differing byte, so
-/// the server does not leak how much of the secret a guess got right through its response time. The
-/// length is not secret, so a length mismatch may short-circuit. `black_box` keeps the optimizer from
-/// reintroducing the short-circuit.
+/// Compares equal-length secrets without exposing the matching-prefix length through response time.
+/// Secret length is public; `black_box` prevents the optimizer from restoring an early exit.
 fn secrets_match(presented: &str, expected: &str) -> bool {
     let (presented, expected) = (presented.as_bytes(), expected.as_bytes());
     if presented.len() != expected.len() {
@@ -114,4 +96,5 @@ fn secrets_match(presented: &str, expected: &str) -> bool {
 }
 
 #[cfg(test)]
+#[path = "../tests/unit/tests/mod.rs"]
 mod tests;

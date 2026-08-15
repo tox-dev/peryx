@@ -12,8 +12,8 @@ and restore it into an empty data directory to rebuild the node.
 
 Reach for this when you move a node between hosts, seed a staging environment from production state, or hold a
 point-in-time image before a risky migration. It is not continuous replication: for a hot standby that follows the
-writer, run a [read replica](@/core/high-availability.md). A backup is the cold copy you keep, verify, and restore on
-your own schedule.
+writer, run a [read replica](@/core/availability/high-availability.md). A backup is the cold copy you keep, verify, and
+restore on your own schedule.
 
 ## What a backup contains
 
@@ -28,12 +28,12 @@ your own schedule.
 - `blobs.tsv` and `blobs/sha256/…`: a tab-separated index of `sha256`, `size_bytes`, and path, plus one file per blob
   laid out by digest.
 
-The backup copies only referenced blobs. It scans the metadata store for the digests every installed ecosystem names and
-copies exactly those, so an unreferenced blob left behind by an interrupted upload never enters the backup. A backup is
+The backup copies only referenced blobs. It scans the metadata store for digests named by active owners and copies
+exactly those, so an unreferenced blob left behind by an interrupted write does not enter the backup. A backup is
 therefore a compaction that carries the live working set, not the on-disk residue. `backup create` rehashes each blob as
 it copies it; a blob whose bytes no longer hash to its digest aborts the backup rather than sealing corruption into it.
 
-The configuration snapshot never contains a secret. It records S3 credentials, upload tokens read from files, and
+The configuration snapshot does not contain secret values. It records S3 credentials, index tokens read from files, and
 webhook secrets sourced from the environment as references (the path or environment variable name), not values. Even so,
 the snapshot names your indexes, upstreams, and routes, and the metadata store carries security-sensitive records, so
 treat a backup directory as sensitive and store it with the same care as the node.
@@ -49,11 +49,11 @@ down. Other platforms carry no Unix mode bits, so protect the directory with the
 A backup is one coherent recovery point, and the manifest names which one. `metadata_frontier` records the metadata
 store's control-plane serial at the instant the copy was taken: the store advances it on every committed write, so the
 number is the recovery point's identity. `placements` records how many artifacts the store projects a local or remote
-availability for, sizing the availability state the metadata carries. `writer_identity` records the node the recovery
-point belongs to, when the store has claimed one, so a restore can tell one node's state from another's. `mode` records
-whether the node ran in `none`, `dc`, or `ha`, and when a static datacenter roster is configured, `membership` records
-its group and every member's node, datacenter, address, and role. The configuration snapshot omits that roster, so the
-manifest is the backup's only durable record of the topology the recovery point belongs to.
+availability for, sizing the availability state the metadata carries. For `dc` and `ha`, `writer_identity` records the
+writer claim associated with the recovery point. `mode` records whether the node ran in `none`, `dc`, or `ha`, and when
+a static datacenter roster is configured, `membership` records its group and every member's node, datacenter, address,
+and role. The configuration snapshot omits that roster, so the manifest is the backup's only durable record of the
+topology the recovery point belongs to.
 
 `backup create` reads the frontier and placement count from the copied metadata store, not the live one, so both
 describe exactly the bytes the backup holds rather than a moving target. That is what makes the recovery point coherent:
@@ -67,7 +67,7 @@ the same way; the availability block is present in every format-2 manifest, empt
 
 The recovery point objective is the frontier: a restore rebuilds the node as of that serial and loses any write that
 landed after the copy, so size the backup interval to how much recent state you can afford to replay from upstream or
-re-publish. Because the copy is offline, take it against a quiescent writer or a `read_only` node as
+recreate from its source. Because the copy is offline, take it against a quiescent writer or a `read_only` node as
 [above](#create-a-backup), so the frontier the manifest records matches a metadata file that is not still moving under
 it.
 
@@ -87,9 +87,9 @@ path never merges two backups.
 
 Take the copy against a quiescent writer. `backup create` copies the metadata file directly rather than opening the live
 database, so an image captured while the writer commits can be inconsistent. Stop the node first, or run the backup
-against one you have switched to `read_only`. A [read replica](@/core/high-availability.md) rejects mutations and runs
-no background maintenance, so its metadata holds still while you copy it. Blobs need no such care: they are
-content-addressed and immutable once written, so copying them alongside a live reader is safe.
+against one you have switched to `read_only`. A [read replica](@/core/availability/high-availability.md) rejects
+mutations and runs no background maintenance, so its metadata holds still while you copy it. Blobs need no such care:
+they are content-addressed and immutable once written, so copying them alongside a live reader is safe.
 
 ## Verify a backup
 
@@ -113,7 +113,7 @@ problem	blob	sha256:1f3a…	sha256 expected sha256:1f3a…, found sha256:9c02…
 problems	1
 ```
 
-Verify on the machine that holds the backup, not only the one that wrote it. A backup that passed at creation but fails
+Verify on the machine that holds the backup and on the machine that wrote it. A backup that passed at creation but fails
 after a copy across hosts or a spell on cold storage has caught bit rot or a truncated transfer before a restore depends
 on it. Cheap and read-only, `backup verify` belongs on a schedule against every backup you intend to keep.
 
@@ -167,7 +167,7 @@ recovery passes without either check.
 
 ## Recovery paths
 
-For a single-node deployment, restore rebuilds the whole node: restore the backup into an empty data directory and start
+For a `none` deployment, restore rebuilds the whole process: restore the backup into an empty data directory and start
 `serve` against it. The restored node resumes at the backup's frontier.
 
 For a datacenter group, restore the **writer's** backup, since the writer's metadata store is the authority the replicas

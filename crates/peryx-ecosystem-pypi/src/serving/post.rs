@@ -1,9 +1,3 @@
-//! The multipart upload handler: authorization, policy and status checks, and storage.
-#![allow(
-    clippy::result_large_err,
-    reason = "handler helpers carry an axum Response as their error; boxing it everywhere adds noise"
-)]
-
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -12,18 +6,18 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use peryx_driver::not_found;
 use peryx_driver::state::ServingState;
-use peryx_events::metrics::Event;
-use peryx_events::webhook::{WebhookEvent, WebhookEventKind};
+use peryx_events::metrics::Observation;
+use peryx_ha::{AuthorityEpoch, CommittedBlob};
 use peryx_identity::Action;
 use peryx_index::Index;
 use peryx_policy::{PolicyAction, PolicyDenial};
-use peryx_replication::AckDecision;
 use peryx_storage::meta::{IntentPhase, OperationClaim, OperationResult, OperationState};
 
 use crate::cache::{self, CacheError};
 use crate::policy::{PypiPolicy, REQUIRED_ATTESTATION_AUDIT_RULE};
 use crate::quota::{self, Admission, PendingQuota};
 use crate::upload::{self, UploadError};
+use crate::webhook::{self, PypiWebhook};
 use crate::{PackageName, ProjectStatus, normalize_name};
 
 use super::{acknowledge, admission};
@@ -33,7 +27,7 @@ use super::{acknowledge, admission};
 const OPERATION_RETENTION_SECS: i64 = 24 * 3600;
 use super::response::{CacheContext, cache_error_response, policy_denial_response};
 use super::upload_form::{collect_form, upload_error_message, upload_error_response};
-use super::{authorize, identify, request_id, upload_target};
+use super::{HttpResult, authorize, identify, request_id, upload_target};
 
 /// `POST /{route}/`, the legacy multipart upload API, used unchanged by twine and `uv publish`.
 pub async fn pypi_dispatch_post(
@@ -45,7 +39,7 @@ pub async fn pypi_dispatch_post(
     state.requests.fetch_add(1, Ordering::Relaxed);
     let browser = match browser_upload(&headers) {
         Ok(browser) => browser,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
     let Some((index, rest)) = state.resolve(&path) else {
         return not_found();
@@ -64,8 +58,8 @@ pub async fn pypi_dispatch_post(
             .emit();
         return (StatusCode::METHOD_NOT_ALLOWED, "index does not accept uploads").into_response();
     };
-    if let Err(response) = authorize(&index.route, hosted, &identity, None, Action::Write, &headers) {
-        return response;
+    if let Err(error) = authorize(&index.route, hosted, &identity, None, Action::Write, &headers) {
+        return error.into_response();
     }
     let response = accept_upload(
         UploadContext {
@@ -89,7 +83,7 @@ pub async fn pypi_dispatch_post(
 
 const BROWSER_CSRF_HEADER: &str = "x-peryx-csrf";
 
-fn browser_upload(headers: &HeaderMap) -> Result<bool, Response> {
+fn browser_upload(headers: &HeaderMap) -> HttpResult<bool> {
     let origin = headers.get(header::ORIGIN);
     let csrf = headers.get(BROWSER_CSRF_HEADER);
     if origin.is_none() && csrf.is_none() {
@@ -103,7 +97,9 @@ fn browser_upload(headers: &HeaderMap) -> Result<bool, Response> {
     if valid {
         Ok(true)
     } else {
-        Err((StatusCode::FORBIDDEN, "browser upload rejected").into_response())
+        Err((StatusCode::FORBIDDEN, "browser upload rejected")
+            .into_response()
+            .into())
     }
 }
 
@@ -148,25 +144,25 @@ async fn accept_upload(context: UploadContext<'_>, multipart: Multipart) -> Resp
         actor,
         browser,
     } = context;
-    let max_file_size = [index.policy.max_file_size(), hosted.policy.max_file_size()]
+    let max_file_size = [index.policy.max_artifact_size(), hosted.policy.max_artifact_size()]
         .into_iter()
         .flatten()
         .min();
     let (form, staged) = match collect_form(multipart, &state.blobs, max_file_size, browser).await {
         Ok(form) => form,
-        Err(response) => {
+        Err(error) => {
             security_upload_event(headers, actor, &index.route, Some(&hosted.name), "failure")
                 .reason(Some("multipart body rejected"))
                 .emit();
-            return response;
+            return error.into_response();
         }
     };
     let Some(staged) = staged else {
         let err = UploadError::Missing("content");
         let (_, reason) = upload_error_message(&err);
         security_upload_event(headers, actor, &index.route, Some(&hosted.name), "denied")
-            .project(form.name.as_deref().map(normalize_name).as_deref())
-            .version(form.version.as_deref())
+            .resource(form.name.as_deref().map(normalize_name).as_deref())
+            .group(form.version.as_deref())
             .reason(Some(&reason))
             .emit();
         return upload_error_response(&err);
@@ -180,17 +176,17 @@ async fn accept_upload(context: UploadContext<'_>, multipart: Multipart) -> Resp
         Err(err) => {
             let (_, reason) = upload_error_message(&err);
             security_upload_event(headers, actor, &index.route, Some(&hosted.name), "denied")
-                .project(form_project.as_deref())
-                .version(form_version.as_deref())
-                .filename(form_filename.as_deref())
+                .resource(form_project.as_deref())
+                .group(form_version.as_deref())
+                .artifact(form_filename.as_deref())
                 .reason(Some(&reason))
                 .emit();
             return upload_error_response(&err);
         }
     };
     let project = prepared.normalized.clone();
-    if let Err(response) = authorize(&index.route, hosted, identity, Some(&project), Action::Write, headers) {
-        return response;
+    if let Err(error) = authorize(&index.route, hosted, identity, Some(&project), Action::Write, headers) {
+        return error.into_response();
     }
     let version = prepared.record.version.clone();
     let filename = prepared.filename.clone();
@@ -274,7 +270,7 @@ async fn admit_and_store(
         admission::Admission::Admitted(intent) => intent,
         admission::Admission::Reject(response) => {
             emit_admission_rejection(audit);
-            return response;
+            return *response;
         }
     };
     // Claim the operation before mutating: a retry of a write that already published replays its stored
@@ -293,10 +289,10 @@ async fn admit_and_store(
     };
     // The first stored file publishes the project, so it assigns the project's home datacenter through
     // the ownership group; a later file finds a home already set and only reads it. The project routes
-    // through its canonical authority key — its PEP 503 normalized name — so every name variant homes
+    // through its canonical authority key - its PEP 503 normalized name - so every name variant homes
     // under one authority.
     let authority = crate::name::authority_key(project);
-    if stored {
+    if stored.stored {
         state.claim_first_publish_home(&authority).await;
     }
     // The bytes are durable whether this stored fresh content or deduplicated an identical resend, so the
@@ -304,44 +300,19 @@ async fn admit_and_store(
     let _ = state
         .meta
         .advance_intent(&intent.intent_key, IntentPhase::Admitted, (state.clock)());
-    emit_store_side_effects(state, audit, stored);
-    let ack = acknowledge::local_ack(
-        state.write_ack_policy(),
-        acknowledge::same_dc_members(state.availability_topology()),
-        acknowledge::local_node_id(state.availability_topology()),
-        digest.clone(),
+    emit_store_side_effects(state, audit, stored.stored);
+    let response = acknowledge::ack_response(
+        state
+            .confirm_blob_write(CommittedBlob::new(
+                &digest,
+                &authority,
+                AuthorityEpoch(state.committed_authority_epoch(&authority).await),
+                stored.commit,
+                state.blobs.durability().domain,
+            ))
+            .await,
+        &intent.operation,
     );
-    let remote_sources = state.remote_frontier_sources();
-    let metadata = if remote_sources.is_empty() {
-        // No remote datacenter is configured to wait on: a `none`/`dc` write, or an `ha` group that spans
-        // a single datacenter. The local journal commit is then the whole metadata dimension and the write
-        // acknowledges locally. This is distinct from a remote that is configured but unreachable, which
-        // the gather in the other arm waits out and reports retry-safe rather than acknowledging.
-        acknowledge::MetadataDimension::Local(AckDecision::Acknowledged)
-    } else {
-        // An `ha` write waits for an eligible remote datacenter to commit the exact operation: the
-        // authority epoch it committed under and the metadata serial that covers it. A serial that cannot
-        // be read fails closed to a frontier no remote covers, so the write reports retry-safe rather than
-        // falsely durable.
-        acknowledge::MetadataDimension::Remote {
-            sources: remote_sources,
-            authority: &authority,
-            operation: peryx_replication::MetadataOperation {
-                epoch: state.committed_authority_epoch(&authority).await,
-                frontier: state.meta.current_serial().unwrap_or(u64::MAX),
-            },
-        }
-    };
-    let outcome = acknowledge::resolve_dc_ack(
-        ack,
-        metadata,
-        &digest,
-        state.receipt_sources(),
-        state.write_ack_deadline(),
-        &state.dc_durability,
-    )
-    .await;
-    let response = acknowledge::ack_response(outcome, &intent.operation);
     if response.finalize {
         // A finalize fault leaves the operation pending, which a retry re-drives and re-finalizes over the
         // idempotent store, so the terminal result is recorded then rather than failing this proven write.
@@ -384,9 +355,9 @@ fn emit_admission_rejection(audit: &UploadAudit<'_>) {
         Some(audit.hosted),
         "denied",
     )
-    .project(Some(audit.project))
-    .version(Some(audit.version))
-    .filename(Some(audit.filename))
+    .resource(Some(audit.project))
+    .group(Some(audit.version))
+    .artifact(Some(audit.filename))
     .digest(Some(audit.digest))
     .reason(Some("ingress admission rejected"))
     .emit();
@@ -399,7 +370,7 @@ fn project_quota_reservation(
     prepared: &upload::PreparedUpload,
     project: &str,
     filename: &str,
-) -> Result<Option<PendingQuota>, UploadStatusBlock> {
+) -> Result<Option<PendingQuota>, Box<UploadStatusBlock>> {
     let Some((limit, audit)) = effective_project_quota(index, hosted) else {
         return Ok(None);
     };
@@ -431,16 +402,16 @@ fn project_quota_reservation(
         }
         Admission::Rejected { total } => {
             quota::record_decision(state, hosted, project, true);
-            Err(upload_quota_denial(limit, project, filename, total))
+            Err(Box::new(upload_quota_denial(limit, project, filename, total)))
         }
     }
 }
 
 fn effective_project_quota(index: &Index, hosted: &Index) -> Option<(u64, bool)> {
     match (
-        index.policy.max_project_size(),
+        index.policy.max_resource_size(),
         (hosted.name != index.name)
-            .then(|| hosted.policy.max_project_size())
+            .then(|| hosted.policy.max_resource_size())
             .flatten(),
     ) {
         (Some(index_limit), Some(hosted_limit)) => Some((
@@ -476,9 +447,9 @@ fn upload_policy_response(
         Some(audit.hosted),
         if audit_only { "audit" } else { "denied" },
     )
-    .project(Some(audit.project))
-    .version(Some(audit.version))
-    .filename(Some(audit.filename))
+    .resource(Some(audit.project))
+    .group(Some(audit.version))
+    .artifact(Some(audit.filename))
     .digest(Some(audit.digest))
     .reason(Some(&denial.reason))
     .emit();
@@ -504,25 +475,25 @@ struct UploadAudit<'a> {
 /// reports the security event. The client response is decided separately from the durability acknowledgement.
 fn emit_store_side_effects(state: &Arc<ServingState>, audit: &UploadAudit<'_>, stored: bool) {
     if stored {
-        state.metrics.record(Event::Upload {
-            route: audit.route.to_owned(),
-            project: audit.project.to_owned(),
+        state.metrics.record(Observation::Write {
+            repository: audit.route.to_owned(),
+            resource: audit.project.to_owned(),
         });
-        peryx_events::webhook::emit(
-            state.clone(),
-            &WebhookEvent {
-                kind: WebhookEventKind::Upload,
+        webhook::emit(
+            state,
+            PypiWebhook {
+                event: webhook::UPLOAD,
                 created_at_unix: audit.created_at_unix,
-                index: audit.index.to_owned(),
-                route: audit.route.to_owned(),
-                hosted_index: audit.hosted.to_owned(),
-                project: audit.project.to_owned(),
-                version: Some(audit.version.to_owned()),
-                filename: Some(audit.filename.to_owned()),
-                digest: Some(audit.digest.to_owned()),
+                index: audit.index,
+                route: audit.route,
+                hosted_index: audit.hosted,
+                project: audit.project,
+                version: Some(audit.version),
+                filename: Some(audit.filename),
+                digest: Some(audit.digest),
                 count: 1,
-                actor: audit.actor.clone(),
-                request_id: audit.request_id.clone(),
+                actor: audit.actor.as_deref(),
+                request_id: audit.request_id.as_deref(),
             },
         );
     }
@@ -533,9 +504,9 @@ fn emit_store_side_effects(state: &Arc<ServingState>, audit: &UploadAudit<'_>, s
         Some(audit.hosted),
         if stored { "success" } else { "noop" },
     )
-    .project(Some(audit.project))
-    .version(Some(audit.version))
-    .filename(Some(audit.filename))
+    .resource(Some(audit.project))
+    .group(Some(audit.version))
+    .artifact(Some(audit.filename))
     .digest(Some(audit.digest))
     .count(usize::from(stored))
     .reason((!stored).then_some("same content already stored"))
@@ -554,9 +525,9 @@ fn upload_store_error_response(audit: &UploadAudit<'_>, err: CacheError) -> Resp
                 Some(audit.hosted),
                 "denied",
             )
-            .project(Some(audit.project))
-            .version(Some(audit.version))
-            .filename(Some(&filename))
+            .resource(Some(audit.project))
+            .group(Some(audit.version))
+            .artifact(Some(&filename))
             .digest(Some(audit.digest))
             .reason(Some("file exists with different content"))
             .emit();
@@ -575,9 +546,9 @@ fn upload_store_error_response(audit: &UploadAudit<'_>, err: CacheError) -> Resp
                 Some(audit.hosted),
                 "failure",
             )
-            .project(Some(audit.project))
-            .version(Some(audit.version))
-            .filename(Some(audit.filename))
+            .resource(Some(audit.project))
+            .group(Some(audit.version))
+            .artifact(Some(audit.filename))
             .digest(Some(audit.digest))
             .reason(Some(&reason))
             .emit();
@@ -595,9 +566,9 @@ fn emit_upload_status_event(audit: &UploadAudit<'_>, block: &UploadStatusBlock) 
         Some(audit.hosted),
         block.result,
     )
-    .project(Some(audit.project))
-    .version(Some(audit.version))
-    .filename(Some(audit.filename))
+    .resource(Some(audit.project))
+    .group(Some(audit.version))
+    .artifact(Some(audit.filename))
     .digest(Some(audit.digest))
     .reason(Some(&block.reason))
     .emit();
@@ -640,8 +611,8 @@ fn upload_quota_result<T, E: Into<CacheError>>(
     result: Result<T, E>,
     route: &str,
     project: &str,
-) -> Result<T, UploadStatusBlock> {
-    result.map_err(|err| upload_quota_failure(&err.into(), route, project))
+) -> Result<T, Box<UploadStatusBlock>> {
+    result.map_err(|err| Box::new(upload_quota_failure(&err.into(), route, project)))
 }
 
 pub(super) fn upload_status_response(
@@ -689,109 +660,5 @@ fn security_upload_event<'a>(
 }
 
 #[cfg(test)]
-mod tests {
-    use peryx_storage::meta::MetaError;
-
-    use super::*;
-
-    #[test]
-    fn test_upload_status_response_maps_policy_and_store_errors() {
-        assert!(upload_status_response(Ok(ProjectStatus::Active), "root/pypi", "flask").is_none());
-        let archived = upload_status_response(Ok(ProjectStatus::Archived), "root/pypi", "flask").unwrap();
-        assert_eq!(archived.response.status(), StatusCode::FORBIDDEN);
-        assert_eq!(archived.result, "denied");
-        assert_eq!(archived.reason, "project \"flask\" is archived; uploads are disabled");
-
-        let failure = upload_status_response(Err(CacheError::Meta(meta_error())), "root/pypi", "flask").unwrap();
-        assert_eq!(failure.response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(failure.result, "failure");
-        assert!(failure.reason.contains("metadata store error"));
-    }
-
-    #[test]
-    fn test_upload_quota_failure_preserves_the_storage_fault() {
-        let failure =
-            upload_quota_result::<(), _>(Err(CacheError::Meta(meta_error())), "root/pypi", "flask").unwrap_err();
-
-        assert_eq!(failure.response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(failure.result, "failure");
-        assert!(failure.reason.contains("metadata store error"));
-    }
-
-    #[test]
-    fn test_upload_quota_failure_describes_the_accounting_fault() {
-        let failure = upload_quota_result::<(), _>(
-            Err(peryx_storage::meta::QuotaError::Empty { field: "project" }),
-            "root/pypi",
-            "flask",
-        )
-        .unwrap_err();
-
-        assert_eq!(failure.response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(failure.result, "failure");
-        assert_eq!(failure.reason, "quota accounting error: project must not be empty");
-    }
-
-    fn meta_error() -> MetaError {
-        MetaError::Decode(serde_json::from_str::<serde_json::Value>("not json").unwrap_err())
-    }
-
-    fn record(state: OperationState) -> peryx_storage::meta::OperationOutcomeRecord {
-        peryx_storage::meta::OperationOutcomeRecord {
-            state,
-            response: b"upload accepted".to_vec(),
-            expiry_unix: None,
-            updated_at_unix: 0,
-        }
-    }
-
-    #[test]
-    fn test_claim_short_circuit_replays_a_published_operation() {
-        let response = claim_short_circuit(Ok(OperationClaim::Existing(record(OperationState::Published))))
-            .expect("a published operation replays");
-        assert_eq!(response.status(), StatusCode::OK);
-    }
-
-    #[test]
-    fn test_claim_short_circuit_proceeds_for_a_fresh_or_still_running_claim() {
-        assert!(claim_short_circuit(Ok(OperationClaim::Admitted)).is_none());
-        assert!(claim_short_circuit(Ok(OperationClaim::Existing(record(OperationState::Pending)))).is_none());
-    }
-
-    #[test]
-    fn test_claim_short_circuit_fails_closed_when_the_claim_cannot_be_read() {
-        let response = claim_short_circuit(Err(meta_error())).expect("an unreadable claim fails closed");
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    }
-
-    fn audit(headers: &HeaderMap) -> UploadAudit<'_> {
-        UploadAudit {
-            headers,
-            actor: None,
-            request_id: None,
-            created_at_unix: 0,
-            index: "root/pypi",
-            route: "root/pypi",
-            hosted: "hosted",
-            project: "flask",
-            version: "1.0",
-            filename: "flask-1.0-py3-none-any.whl",
-            digest: "aa",
-        }
-    }
-
-    #[test]
-    fn test_upload_store_error_response_reports_a_content_collision_as_bad_request() {
-        let headers = HeaderMap::new();
-        let response =
-            upload_store_error_response(&audit(&headers), CacheError::FileExists("flask-1.0.whl".to_owned()));
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    }
-
-    #[test]
-    fn test_upload_store_error_response_reports_a_store_fault_as_internal_error() {
-        let headers = HeaderMap::new();
-        let response = upload_store_error_response(&audit(&headers), CacheError::Meta(meta_error()));
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    }
-}
+#[path = "../../tests/unit/serving/post/tests.rs"]
+mod tests;

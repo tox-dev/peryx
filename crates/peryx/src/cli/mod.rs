@@ -1,5 +1,3 @@
-//! Command-line interface.
-
 mod cache;
 mod config;
 mod index;
@@ -13,10 +11,10 @@ mod snippet;
 use std::path::PathBuf;
 
 use clap::builder::styling::{AnsiColor, Effects, Styles};
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand};
 
 pub use cache::{
-    CacheCommand, CacheListArgs, CachePurgeCommand, CachePurgeOrphanedBlobsArgs, CachePurgeProjectArgs,
+    CacheCommand, CacheListArgs, CachePurgeCommand, CachePurgeOrphanedBlobsArgs, CachePurgeResourceArgs,
     CacheRuntimeArgs,
 };
 pub use config::{ConfigCheckArgs, ConfigCommand};
@@ -32,7 +30,7 @@ pub use maintenance::{
 pub use mirror::{PrefetchCommand, PrefetchOptions, PrefetchPlanArgs, PrefetchSyncArgs, PrefetchVerifyArgs};
 pub use quota::{QuotaCommand, QuotaInspectArgs, QuotaListArgs};
 pub use retention::{RetentionCommand, RetentionDryRunArgs, RetentionExportArgs};
-pub use snippet::{ConfigSnippetArgs, SnippetFormat};
+pub use snippet::ConfigSnippetArgs;
 
 use crate::config::{
     LogFormat, LogSink, PartialAuthConfig, PartialConfig, PartialJobsConfig, PartialLogConfig, PartialRateLimitConfig,
@@ -45,26 +43,34 @@ const STYLES: Styles = Styles::styled()
     .literal(AnsiColor::Cyan.on_default().effects(Effects::BOLD))
     .placeholder(AnsiColor::Cyan.on_default());
 
-/// peryx: one blazing-fast vault for a wide range of ecosystems — caching proxy, hosted store, and virtual index.
+/// Cache, host, and combine artifact indexes across ecosystems.
 #[derive(Debug, Parser)]
 #[command(
     name = "peryx",
     version,
     about,
     styles = STYLES,
-    after_help = "Examples:\n  peryx serve\n  peryx serve --port 8080 --data-dir /var/lib/peryx\n  peryx serve --config peryx.toml -v\n\nDocumentation: https://peryx.readthedocs.io/"
+    after_help = concat!(
+        "Examples:\n  peryx serve\n",
+        "  peryx serve --port 8080 --data-dir /var/lib/peryx\n",
+        "  peryx serve --config peryx.toml -v\n\n",
+        "Documentation: https://peryx.readthedocs.io/",
+    )
 )]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
 }
 
-/// A peryx subcommand.
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum Command {
     /// Run the server.
     #[command(
-        after_help = "Examples:\n  peryx serve\n  peryx serve --host 0.0.0.0 --port 4433\n  peryx serve --config peryx.toml --log-format json --log-sink file --log-file peryx.log"
+        after_help = concat!(
+            "Examples:\n  peryx serve\n",
+            "  peryx serve --host 0.0.0.0 --port 4433\n",
+            "  peryx serve --config peryx.toml --log-format json --log-sink file --log-file peryx.log",
+        )
     )]
     Serve(RuntimeArgs),
     /// Initialize a data directory.
@@ -78,9 +84,6 @@ pub enum Command {
     #[command(subcommand)]
     Revocation(RevocationCommand),
     /// Print client configuration for one index.
-    #[command(
-        after_help = "Examples:\n  peryx config-snippet --base-url https://packages.example --index root/pypi pip.conf\n  peryx config-snippet --base-url https://packages.example --index root/pypi uv.toml\n  peryx config-snippet --base-url https://packages.example --index root/pypi .pypirc"
-    )]
     ConfigSnippet(ConfigSnippetArgs),
     /// List and inspect the configured indexes.
     #[command(subcommand)]
@@ -96,7 +99,7 @@ pub enum Command {
     Backup(BackupCommand),
     /// Restore an offline backup into a data directory.
     Restore(RestoreArgs),
-    /// Import local wheels and sdists into a hosted index.
+    /// Import local artifacts into a hosted index.
     ImportDir(ImportDirArgs),
     /// Preview index policy decisions against cached records.
     #[command(subcommand)]
@@ -121,24 +124,6 @@ pub enum Command {
     SelfManage(SelfCommand),
 }
 
-/// The ecosystem a command targets. One variant today; the axis is reserved so `OCI`, npm, and more
-/// slot in without reshaping the CLI.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-#[value(rename_all = "lowercase")]
-pub enum EcosystemArg {
-    Pypi,
-}
-
-impl EcosystemArg {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Pypi => "pypi",
-        }
-    }
-}
-
-/// Configuration flags shared by the commands that read the runtime configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Args)]
 pub struct RuntimeArgs {
     /// Path to a TOML config file.
@@ -165,7 +150,7 @@ pub struct RuntimeArgs {
     #[arg(long)]
     pub node_identity: Option<String>,
 
-    /// Serve configured cached indexes from cache only.
+    /// Serve configured cached indexes without upstream access.
     #[arg(long)]
     pub offline: bool,
 
@@ -195,7 +180,6 @@ pub struct RuntimeArgs {
 }
 
 impl RuntimeArgs {
-    /// Project the flags into a [`PartialConfig`] overlay, the highest-precedence source.
     #[must_use]
     pub fn overlay(&self) -> PartialConfig {
         let level = self.log_level.clone().or_else(|| match self.verbose {

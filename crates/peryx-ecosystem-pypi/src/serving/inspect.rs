@@ -1,9 +1,3 @@
-//! Archive inspection: list a cached distribution's members or read one text member chunk.
-#![allow(
-    clippy::result_large_err,
-    reason = "handler helpers carry an axum Response as their error; boxing it everywhere adds noise"
-)]
-
 use std::sync::Arc;
 
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -16,7 +10,7 @@ use peryx_storage::blob::BlobLease;
 use crate::cache::{self};
 
 use super::response::{CacheContext, file_response};
-use super::{path_error_response, safe_filename};
+use super::{HttpResult, path_error_response, safe_filename};
 
 const MEMBER_SIZE_HEADER: &str = "x-peryx-member-size";
 
@@ -24,8 +18,6 @@ const MEMBER_OFFSET_HEADER: &str = "x-peryx-member-offset";
 
 const MEMBER_NEXT_OFFSET_HEADER: &str = "x-peryx-next-offset";
 
-/// `GET /{route}/inspect/{sha256}/{filename}` lists a cached archive's members, or reads one text
-/// member inline. Repeated `container` query parameters select nested archives.
 pub(super) async fn inspect_route(
     state: Arc<ServingState>,
     route: String,
@@ -41,7 +33,7 @@ pub(super) async fn inspect_route(
     };
     let archive_query = match archive_query(query) {
         Ok(query) => query,
-        Err(response) => return response,
+        Err(error) => return error.into_response(),
     };
     let (raw_filename, member) = match archive_query.member {
         Some(member) => (rest, Some(member)),
@@ -87,7 +79,7 @@ struct ArchiveQuery {
     limit: u64,
 }
 
-fn archive_query(query: Option<&str>) -> Result<ArchiveQuery, Response> {
+fn archive_query(query: Option<&str>) -> HttpResult<ArchiveQuery> {
     let mut parsed = ArchiveQuery {
         member: None,
         containers: Vec::new(),
@@ -119,7 +111,8 @@ fn archive_query(query: Option<&str>) -> Result<ArchiveQuery, Response> {
                         StatusCode::BAD_REQUEST,
                         format!("limit must be between 1 and {} bytes", crate::archive::MAX_MEMBER_CHUNK),
                     )
-                        .into_response());
+                        .into_response()
+                        .into());
                 }
                 parsed.limit = limit;
             }
@@ -129,7 +122,6 @@ fn archive_query(query: Option<&str>) -> Result<ArchiveQuery, Response> {
     Ok(parsed)
 }
 
-/// Render an archive's member list as JSON.
 async fn archive_listing(filename: &str, lease: BlobLease, containers: Vec<String>) -> Response {
     let filename = filename.to_owned();
     let task = tokio::task::spawn_blocking({
@@ -143,7 +135,6 @@ async fn archive_listing(filename: &str, lease: BlobLease, containers: Vec<Strin
     .await
 }
 
-/// Serve one text archive member chunk.
 async fn archive_member(
     filename: &str,
     lease: BlobLease,
@@ -230,8 +221,6 @@ fn archive_error(err: &crate::archive::ArchiveError, filename: &str, member: Opt
     (status, format!("{}: {err}", archive_target(filename, member))).into_response()
 }
 
-/// One-line description of the inspected archive, naming the nested member when the request targeted
-/// one, shared by the archive-error and task-panic responses.
 fn archive_target(filename: &str, member: Option<&str>) -> String {
     member.map_or_else(
         || format!("archive {filename:?}"),
@@ -240,49 +229,5 @@ fn archive_target(filename: &str, member: Option<&str>) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use axum::body::to_bytes;
-
-    use super::*;
-
-    async fn body_text(response: Response) -> String {
-        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-        String::from_utf8(bytes.to_vec()).unwrap()
-    }
-
-    fn ready_body(value: u64) -> Response {
-        (StatusCode::OK, value.to_string()).into_response()
-    }
-
-    #[tokio::test]
-    async fn test_inspect_response_shapes_a_ready_value() {
-        let task = tokio::task::spawn_blocking(|| 42_u64);
-        let response = inspect_response(task, "pkg.whl", None, ready_body).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(body_text(response).await, "42");
-    }
-
-    #[tokio::test]
-    async fn test_inspect_response_maps_an_archive_panic_to_500() {
-        let task = tokio::task::spawn_blocking(|| -> u64 { panic!("archive worker blew up") });
-        let response = inspect_response(task, "pkg.whl", None, ready_body).await;
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        assert!(
-            body_text(response)
-                .await
-                .contains("archive \"pkg.whl\": inspection failed")
-        );
-    }
-
-    #[tokio::test]
-    async fn test_inspect_response_names_the_member_on_a_panic() {
-        let task = tokio::task::spawn_blocking(|| -> u64 { panic!("member worker blew up") });
-        let response = inspect_response(task, "pkg.whl", Some("README.md"), ready_body).await;
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        assert!(
-            body_text(response)
-                .await
-                .contains("member \"README.md\" in archive \"pkg.whl\": inspection failed")
-        );
-    }
-}
+#[path = "../../tests/unit/serving/inspect/tests.rs"]
+mod tests;

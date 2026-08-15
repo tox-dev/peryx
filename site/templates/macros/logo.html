@@ -1,14 +1,12 @@
-{# A third-party mark may not be recoloured to follow `currentColor`, so one whose colours only work
-   on a single background declares a counterpart at the same position in `extra.logos_dark`; the pair
-   is then swapped by theme rather than tinted. #}
-{% macro imgs(item, size=18, class="") %}
-{%- set darks = item.extra.logos_dark | default(value=[]) %}
+{# Swap third-party marks by theme because tinting changes their brand colors. #}
+{% component logo.imgs(item, size = 18, css_class = "") %}
+{%- set darks = item.extra?.logos_dark or [] %}
 {%- for logo in item.extra.logos %}
 {%- if darks | length > loop.index0 %}
-<img class="{{ class }} logo-light" src="{{ get_url(path=logo) }}" alt="" width="{{ size }}" height="{{ size }}">
-<img class="{{ class }} logo-dark" src="{{ get_url(path=darks[loop.index0]) }}" alt="" width="{{ size }}" height="{{ size }}">
+<img class="{{ css_class }} logo-light" src="{{ get_url(path=logo) }}" alt="" width="{{ size }}" height="{{ size }}">
+<img class="{{ css_class }} logo-dark" src="{{ get_url(path=darks[loop.index0]) }}" alt="" width="{{ size }}" height="{{ size }}">
 {%- else %}
-<img class="{{ class }}" src="{{ get_url(path=logo) }}" alt="" width="{{ size }}" height="{{ size }}">
+<img class="{{ css_class }}" src="{{ get_url(path=logo) }}" alt="" width="{{ size }}" height="{{ size }}">
 {%- endif %}
 {%- endfor %}
-{% endmacro %}
+{% endcomponent logo.imgs %}

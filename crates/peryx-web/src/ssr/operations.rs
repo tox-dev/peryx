@@ -5,15 +5,12 @@ use leptos::prelude::*;
 use peryx_core::{OperationRow, OperationsHealth, OperationsView, UiOperationStatus};
 use peryx_driver::AppState;
 use peryx_http::response_security::FieldClassification;
-use peryx_storage::meta::{OperationOutcomeQuery, OperationOutcomeRow, OperationState};
+use peryx_storage::meta::{
+    OperationOutcomeHealth, OperationOutcomePage, OperationOutcomeQuery, OperationOutcomeRow, OperationState,
+};
 
-/// The rows the first server render lists, matching the API's default page so a hydrated paginator
-/// resumes from the same point.
 const DEFAULT_OPERATION_LIMIT: usize = 25;
 
-/// The pending-operations-health view, projected to the caller's class exactly as
-/// `GET /+availability/operations` would, so a rendered page never carries a field the API withholds.
-///
 /// # Errors
 ///
 /// Returns a message when the caller lacks operator access or the store cannot be read.
@@ -29,23 +26,41 @@ pub async fn operations() -> Result<OperationsView, String> {
     ) {
         return Err("You do not have access to operation health.".to_owned());
     }
-    let now = (app.clock)();
-    let health = app
-        .meta
-        .operation_outcome_health(now)
-        .map_err(|_| "Operation health could not be read.".to_owned())?;
-    let (rows, next_cursor) = if class == Some(FieldClassification::Administrator) {
-        let page = app
-            .meta
-            .list_operation_outcomes(&OperationOutcomeQuery {
-                cursor: None,
-                limit: DEFAULT_OPERATION_LIMIT,
-            })
-            .map_err(|_| "Operation rows could not be read.".to_owned())?;
-        (
-            Some(page.rows.into_iter().map(|row| operation_row(row, now)).collect()),
-            page.next_cursor,
+    let now = (app.serving.clock)();
+    let health = app.serving.meta.operation_outcome_health(now).map_err(|_| ());
+    let rows = if class == Some(FieldClassification::Administrator) {
+        Some(
+            app.serving
+                .meta
+                .list_operation_outcomes(&OperationOutcomeQuery {
+                    cursor: None,
+                    limit: DEFAULT_OPERATION_LIMIT,
+                })
+                .map_err(|_| ()),
         )
+    } else {
+        None
+    };
+    operations_for_class(now, health, rows)
+}
+
+fn operations_for_class(
+    now: i64,
+    health: Result<OperationOutcomeHealth, ()>,
+    rows: Option<Result<OperationOutcomePage, ()>>,
+) -> Result<OperationsView, String> {
+    let Ok(health) = health else {
+        return Err("Operation health could not be read.".to_owned());
+    };
+    let (rows, next_cursor) = if let Some(rows) = rows {
+        let Ok(page) = rows else {
+            return Err("Operation rows could not be read.".to_owned());
+        };
+        let mut projected = Vec::with_capacity(page.rows.len());
+        for row in page.rows {
+            projected.push(operation_row(row, now));
+        }
+        (Some(projected), page.next_cursor)
     } else {
         (None, None)
     };
@@ -76,3 +91,7 @@ fn operation_row(row: OperationOutcomeRow, now: i64) -> OperationRow {
         expires_at: row.expiry_unix,
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/ssr/operations/tests.rs"]
+mod tests;

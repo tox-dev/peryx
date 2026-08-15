@@ -5,11 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Peryx Query Language: a small, read-only, non-Turing-complete structured query language over typed peryx domains."
+description = "Read-only structured queries over typed Peryx domains."
 
 [dependencies]
-peryx-core.workspace = true
-peryx-identity.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
@@ -18,7 +16,7 @@ sha2.workspace = true
 time.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
+rstest.workspace = true
 
 [lints]
 workspace = true

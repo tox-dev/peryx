@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+shard_count=${1:-8}
+scope=${2:-contracts}
+timings=${3:-}
+if [[ ! "$shard_count" =~ ^[1-9][0-9]*$ ]]; then
+  printf 'shard count must be a positive integer: %s\n' "$shard_count" >&2
+  exit 2
+fi
+case "$scope" in
+  all | contracts | system) ;;
+  *)
+    printf 'workspace scope must be all, contracts, or system: %s\n' "$scope" >&2
+    exit 2
+    ;;
+esac
+
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+cargo metadata --no-deps --format-version 1 >"$scratch/metadata.json"
+scripts/ci/workspace-package-list "$scope" | while IFS= read -r package; do
+  package_root=$(jq -r --arg package "$package" '
+    .packages[]
+    | select(.name == $package)
+    | .manifest_path | sub("/Cargo.toml$"; "")
+  ' "$scratch/metadata.json")
+  jq -r --arg root "$package_root/" '
+    .workspace_members as $members
+    | .packages[]
+    | select(.id as $id | $members | index($id))
+    | .manifest_path | sub("/Cargo.toml$"; "")
+    | select(startswith($root))
+  ' "$scratch/metadata.json" >"$scratch/nested-roots"
+  weight=$(
+    find "$package_root" -type f \( -name '*.rs' -o -name Cargo.toml \) -print0 |
+      while IFS= read -r -d '' source; do
+        nested=0
+        while IFS= read -r nested_root; do
+          case "$source" in
+            "$nested_root"/*) nested=1; break ;;
+          esac
+        done <"$scratch/nested-roots"
+        ((nested)) || wc -c <"$source"
+      done |
+      awk '{ total += $1 } END { print total + 1 }'
+  )
+  measured=
+  if [[ -s $timings ]]; then
+    measured=$(jq -rs --arg package "$package" '
+      map(select(.package == $package and .status == "passed") | .seconds)
+      | if length == 0 then empty else add end
+    ' "$timings")
+  fi
+  printf '%s\t%s\t%s\n' "$package" "$weight" "$measured"
+done >"$scratch/raw-packages.tsv"
+
+awk -F '\t' '
+  NF == 3 && length($3) { ratio_sum += $3 / $2; measured++; }
+  { rows[NR] = $0 }
+  END {
+    ratio = measured ? ratio_sum / measured : 1
+    for (row = 1; row <= NR; row++) {
+      split(rows[row], fields, "\t")
+      print fields[1] "\t" (length(fields[3]) ? fields[3] : fields[2] * ratio)
+    }
+  }
+' "$scratch/raw-packages.tsv" >"$scratch/packages.tsv"
+
+jq -Rsc --argjson requested "$shard_count" '
+  split("\n")
+  | map(select(length > 0) | split("\t") | {package: .[0], weight: (.[1] | tonumber)})
+  | sort_by(-.weight, .package) as $packages
+  | ([$requested, ($packages | length)] | min) as $count
+  | reduce range(0; $count) as $index ([]; . + [{shard: ($index + 1), packages: [], weight: 0}])
+  | reduce $packages[] as $package (.;
+      (to_entries | min_by(.value.weight) | .key) as $index
+      | .[$index].packages += [$package.package]
+      | .[$index].weight += $package.weight)
+  | {include: map({shard, packages: (.packages | join(" ")), weight})}
+' "$scratch/packages.tsv"

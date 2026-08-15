@@ -1,13 +1,8 @@
-#![allow(
-    clippy::must_use_candidate,
-    reason = "the #[component] macro consumes attributes, so #[must_use] cannot reach the generated functions"
-)]
-
 use leptos::prelude::*;
 
 use super::{ecosystem_stats, human_size, optional_counters_for, start_refresh};
 use crate::data::{load_admin_snapshot, load_stats};
-use crate::model::{UiCounters, UiIndex, UiRecentUpload, UiSnapshot, UiStats};
+use crate::model::{UiCounters, UiIndex, UiRecentWrite, UiSnapshot, UiStats};
 use crate::url::{browse_index_url, stats_index_url};
 
 #[component]
@@ -33,8 +28,8 @@ fn AdminStatusBody(data: UiSnapshot, usage: UiStats) -> impl IntoView {
     let has_usage = usage.totals != UiCounters::default();
     let indexes = data.indexes.clone();
     let empty = indexes.is_empty();
-    let project_count: u64 = indexes.iter().map(|index| index.project_count).sum();
-    let upload_count: u64 = indexes.iter().map(|index| index.upload_count).sum();
+    let resource_count: u64 = indexes.iter().map(|index| index.resource_count).sum();
+    let write_count: u64 = indexes.iter().map(|index| index.write_count).sum();
     view! {
         <div class="ops-title">
             <h1>"Admin status"</h1>
@@ -51,16 +46,16 @@ fn AdminStatusBody(data: UiSnapshot, usage: UiStats) -> impl IntoView {
                 <div class="stat"><strong>{data.requests}</strong><span>"requests served"</span></div>
                 <div class="stat"><strong>{indexes.len()}</strong><span>"indexes"</span></div>
                 <div class="stat"><strong>{kind_count(&indexes, "virtual")}</strong><span>"virtual"</span></div>
-                <div class="stat"><strong>{project_count}</strong><span>"observed projects"</span></div>
-                <div class="stat"><strong>{upload_count}</strong><span>"uploaded files"</span></div>
+                <div class="stat"><strong>{resource_count}</strong><span>"observed resources"</span></div>
+                <div class="stat"><strong>{write_count}</strong><span>"artifact writes"</span></div>
             </div>
         </div>
         {ecosystem_stats(&data)}
         <h2>"Indexes"</h2>
         <AdminIndexTable indexes=indexes.clone() all=indexes.clone() />
         {empty.then(|| view! { <p class="dim">"No indexes configured."</p> })}
-        <h2>"Recent uploads"</h2>
-        <AdminRecentUploads indexes=indexes.clone() />
+        <h2>"Recent writes"</h2>
+        <AdminRecentWrites indexes=indexes.clone() />
         <h2>"Usage and health"</h2>
         <AdminUsageTable indexes usage />
         {(!has_usage).then(|| view! { <p class="dim">"No usage recorded yet."</p> })}
@@ -75,17 +70,17 @@ fn kind_count(indexes: &[UiIndex], kind: &str) -> usize {
 fn AdminIndexTable(indexes: Vec<UiIndex>, all: Vec<UiIndex>) -> impl IntoView {
     view! {
         <div class="table-scroll">
-            <table class="files ops-table">
+            <table class="artifacts ops-table">
                 <thead>
                     <tr>
                         <th>"Name"</th>
                         <th>"Route"</th>
                         <th>"Type"</th>
                         <th>"Endpoint"</th>
-                        <th>"Projects"</th>
-                        <th>"Files"</th>
+                        <th>"Resources"</th>
+                        <th>"Artifacts"</th>
                         <th>"Topology"</th>
-                        <th>"Uploads"</th>
+                        <th>"Writes"</th>
                         <th>"Status"</th>
                     </tr>
                 </thead>
@@ -105,9 +100,9 @@ fn AdminIndexTable(indexes: Vec<UiIndex>, all: Vec<UiIndex>) -> impl IntoView {
                                         <span class=format!("badge ecosystem-{}", index.ecosystem)>{index.ecosystem.clone()}</span>
                                         <span class=format!("badge kind-{}", index.kind)>{index.kind.clone()}</span>
                                     </td>
-                                    <td><a class="ops-simple" href=endpoint_href title=endpoint_title>{endpoint}</a></td>
-                                    <td>{index.project_count}</td>
-                                    <td>{index.upload_count}</td>
+                                    <td><a class="ops-endpoint" href=endpoint_href title=endpoint_title>{endpoint}</a></td>
+                                    <td>{index.resource_count}</td>
+                                    <td>{index.write_count}</td>
                                     <td><TopologyCell index=index.clone() all=all.clone() /></td>
                                     <td><UploadCell index=index.clone() /></td>
                                     <td><StatusCell index /></td>
@@ -192,7 +187,7 @@ fn StatusCell(index: UiIndex) -> impl IntoView {
         let token = if hosted.token_configured {
             "token configured"
         } else {
-            "no upload token"
+            "no write token"
         };
         return view! {
             <p class="ops-detail">
@@ -215,30 +210,30 @@ fn auth_label(kind: &str) -> &'static str {
 }
 
 #[component]
-fn AdminRecentUploads(indexes: Vec<UiIndex>) -> impl IntoView {
+fn AdminRecentWrites(indexes: Vec<UiIndex>) -> impl IntoView {
     let rows = indexes
         .into_iter()
         .flat_map(|index| {
             let name = index.name;
             index
-                .recent_uploads
+                .recent_writes
                 .into_iter()
-                .map(move |upload| recent_upload_row(name.clone(), upload))
+                .map(move |write| recent_write_row(name.clone(), write))
         })
         .collect::<Vec<_>>();
     if rows.is_empty() {
-        return view! { <p class="dim">"No uploads recorded yet."</p> }.into_any();
+        return view! { <p class="dim">"No writes recorded yet."</p> }.into_any();
     }
     view! {
         <div class="table-scroll">
-            <table class="files ops-table">
+            <table class="artifacts ops-table">
                 <thead>
                     <tr>
                         <th>"Index"</th>
-                        <th>"Project"</th>
-                        <th>"File"</th>
-                        <th>"Version"</th>
-                        <th>"Uploaded"</th>
+                        <th>"Resource"</th>
+                        <th>"Artifact"</th>
+                        <th>"Group"</th>
+                        <th>"Written"</th>
                         <th>"Size"</th>
                     </tr>
                 </thead>
@@ -249,15 +244,15 @@ fn AdminRecentUploads(indexes: Vec<UiIndex>) -> impl IntoView {
     .into_any()
 }
 
-fn recent_upload_row(index: String, upload: UiRecentUpload) -> AnyView {
+fn recent_write_row(index: String, write: UiRecentWrite) -> AnyView {
     view! {
         <tr>
             <td>{index}</td>
-            <td><code>{upload.project}</code></td>
-            <td><code>{upload.filename}</code></td>
-            <td>{upload.version}</td>
-            <td>{upload.uploaded_at.map_or_else(|| "n/a".to_owned(), |time| time.chars().take(10).collect())}</td>
-            <td>{upload.size.map_or_else(|| "n/a".to_owned(), human_size)}</td>
+            <td><code>{write.resource}</code></td>
+            <td><code>{write.artifact}</code></td>
+            <td>{write.group}</td>
+            <td>{write.written_at.map_or_else(|| "n/a".to_owned(), |time| time.chars().take(10).collect())}</td>
+            <td>{write.size.map_or_else(|| "n/a".to_owned(), human_size)}</td>
         </tr>
     }
     .into_any()
@@ -267,15 +262,15 @@ fn recent_upload_row(index: String, upload: UiRecentUpload) -> AnyView {
 fn AdminUsageTable(indexes: Vec<UiIndex>, usage: UiStats) -> impl IntoView {
     view! {
         <div class="table-scroll">
-            <table class="files ops-table">
+            <table class="artifacts ops-table">
                 <thead>
                     <tr>
                         <th>"Index"</th>
-                        <th>"Pages"</th>
-                        <th>"Downloads"</th>
+                        <th>"Listings"</th>
+                        <th>"Reads"</th>
                         <th>"Served"</th>
                         <th>"Metadata"</th>
-                        <th>"Uploads"</th>
+                        <th>"Writes"</th>
                         <th>"Refreshes"</th>
                         <th>"Changed"</th>
                         <th>"Stale"</th>
@@ -293,10 +288,10 @@ fn AdminUsageTable(indexes: Vec<UiIndex>, usage: UiStats) -> impl IntoView {
                                 <tr>
                                     <td><a href=stats>{index.route}</a></td>
                                     <td>{counters.pages}</td>
-                                    <td>{counters.downloads}</td>
+                                    <td>{counters.reads}</td>
                                     <td>{human_size(counters.bytes)}</td>
                                     <td>{counters.metadata}</td>
-                                    <td>{counters.uploads}</td>
+                                    <td>{counters.writes}</td>
                                     <td>{counters.refreshes}</td>
                                     <td>{counters.changed}</td>
                                     <td>{counters.stale_served}</td>
@@ -315,3 +310,7 @@ fn AdminUsageTable(indexes: Vec<UiIndex>, usage: UiStats) -> impl IntoView {
 fn counters_for(usage: &UiStats, route: &str) -> UiCounters {
     optional_counters_for(usage, route).unwrap_or_default()
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/pages/admin/tests.rs"]
+mod tests;

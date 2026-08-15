@@ -1,5 +1,3 @@
-//! Resolving a `/v2/` request to a configured OCI index and serving the pull path.
-//!
 //! `<name>` in `/v2/<name>/...` carries the peryx index route as a prefix, so the longest OCI index
 //! route that segment-aligns with `<name>` selects the index and the remainder is the upstream
 //! repository, the same longest-prefix rule peryx resolves any index by. A proxy pulls through and caches;
@@ -11,14 +9,10 @@
 //!
 //! Store and blob-io faults propagate through [`ServeError`] so the serving methods read as the happy
 //! path, and a single conversion turns a fault into a `502`.
-#![allow(
-    clippy::result_large_err,
-    reason = "write helpers carry an axum Response as their error; boxing it everywhere adds noise"
-)]
-
 use crate::error::{ErrorCode, error_response, gateway_error};
 use crate::name::{OciRoute, classify};
 use crate::settings::IndexSettings;
+use crate::upload_session::UploadStore as _;
 use crate::upstream::{Upstream, UpstreamError};
 use async_trait::async_trait;
 use axum::body::Body;
@@ -27,10 +21,11 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header}
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt as _;
 use parking_lot::RwLock;
-use peryx_core::Ecosystem;
 use peryx_driver::ServingState;
-use peryx_driver::serving::{EcosystemDriver, RouteMount};
-use peryx_events::webhook::{WebhookEvent, WebhookEventKind};
+use peryx_driver::serving::{
+    AbsoluteProtocolDriver, BlobReferenceDriver, BrowseDriver, EcosystemDriver, IdleReclaimer, MetricsDriver,
+    PolicyDriver, TrashDriver,
+};
 use peryx_identity::{Action, ArtifactDigest, Denial, DigestDecision, Identity};
 use peryx_index::{Index, IndexKind};
 use peryx_policy::PolicyAction;
@@ -53,6 +48,10 @@ mod uploads;
 pub use blobs::download_blob;
 use discovery::serve_catalog;
 use manifests::{delete_manifest, put_manifest, restore_manifest};
+
+pub fn rate_limit_principal(state: &ServingState, headers: &HeaderMap) -> peryx_identity::Principal {
+    auth::rate_limit_principal(state, headers)
+}
 /// The header a registry returns the canonical content digest in.
 const DOCKER_CONTENT_DIGEST: HeaderName = HeaderName::from_static("docker-content-digest");
 /// The header carrying an upload session's id.
@@ -81,6 +80,21 @@ pub enum ServeError {
     Io(std::io::Error),
     Transport(String),
 }
+
+#[derive(Debug)]
+struct RequestRejection(Box<Response>);
+
+impl RequestRejection {
+    fn into_response(self) -> Response {
+        *self.0
+    }
+}
+
+impl From<Response> for RequestRejection {
+    fn from(response: Response) -> Self {
+        Self(Box::new(response))
+    }
+}
 impl From<MetaError> for ServeError {
     fn from(err: MetaError) -> Self {
         Self::Store(err)
@@ -89,6 +103,11 @@ impl From<MetaError> for ServeError {
 impl From<std::io::Error> for ServeError {
     fn from(err: std::io::Error) -> Self {
         Self::Io(err)
+    }
+}
+impl From<peryx_storage::blob::BlobError> for ServeError {
+    fn from(error: peryx_storage::blob::BlobError) -> Self {
+        Self::Transport(error.to_string())
     }
 }
 impl From<reqwest::Error> for ServeError {
@@ -112,7 +131,6 @@ impl ServeError {
         }
     }
 
-    /// Every internal fault is a gateway error to the client; the specifics go to the log context.
     fn into_response(self) -> Response {
         match self {
             Self::Store(err) => gateway_error(&format!("metadata store error: {err}")),
@@ -145,10 +163,8 @@ pub struct OciRegistryWithHasher<S> {
     /// Serializes the read-modify-write of one upload session's durable stage, so two concurrent chunk
     /// writes to the same session cannot interleave on disk. Different sessions never contend.
     session_gate: SessionGate,
-    /// Whether an authoritative hosted mutation records a typed operation in the driver-transaction
-    /// outbox. Set from the availability mode: `false` under single-node `none`, so its write path is
-    /// byte-for-byte the pre-outbox behavior.
-    journal_outbox: bool,
+    /// Present only when distributed availability needs mutation replay.
+    journal_outbox: crate::outbox::Outbox,
 }
 
 /// A per-session async lock registry. A session's lock is created on first use and dropped once no
@@ -159,7 +175,6 @@ struct SessionGate {
 }
 
 impl SessionGate {
-    /// The lock guarding `session`, shared with any concurrent writer of the same session.
     fn lock(&self, session: &str) -> Arc<tokio::sync::Mutex<()>> {
         let mut locks = self.locks.lock().expect("session gate is never poisoned");
         Arc::clone(locks.entry(session.to_owned()).or_default())
@@ -214,10 +229,11 @@ const UPLOAD_SESSION_TTL_SECS: i64 = 3600;
 /// The most idle sessions one reclamation pass removes, bounding its scan.
 const UPLOAD_RECLAIM_BATCH: usize = 256;
 impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> {
-    /// Build the driver with its shared upstream client and each OCI index's settings, keyed by index
-    /// name. `journal_outbox` records authoritative hosted mutations for replication.
     #[must_use]
-    pub fn new(settings: impl IntoIterator<Item = (String, IndexSettings)>, journal_outbox: bool) -> Self {
+    pub fn new(
+        settings: impl IntoIterator<Item = (String, IndexSettings)>,
+        journal_outbox: crate::outbox::Outbox,
+    ) -> Self {
         Self {
             settings: settings.into_iter().collect(),
             journal_outbox,
@@ -245,18 +261,38 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         Ok(session)
     }
 }
-#[async_trait]
 impl<S: BuildHasher + Default + Send + Sync + 'static> EcosystemDriver for OciRegistryWithHasher<S> {
     fn ecosystem(&self) -> peryx_core::Ecosystem {
-        peryx_core::Ecosystem::Oci
+        crate::ECOSYSTEM
+    }
+}
+
+impl<S: BuildHasher + Default + Send + Sync + 'static> PolicyDriver for OciRegistryWithHasher<S> {
+    fn compile_policy(&self, policy: &toml::Table) -> Result<peryx_policy::PolicyCapabilities, String> {
+        for key in policy.keys() {
+            if !crate::policy::OciPolicyConfig::KEYS.contains(&key.as_str()) {
+                return Err(format!("unknown field `{key}` in `[index.policy]`"));
+            }
+        }
+        toml::Value::Table(policy.clone())
+            .try_into()
+            .map(|config| crate::policy::compile_capabilities(&config))
+            .map_err(|error| error.to_string())
+    }
+}
+
+#[async_trait]
+impl<S: BuildHasher + Default + Send + Sync + 'static> AbsoluteProtocolDriver for OciRegistryWithHasher<S> {
+    fn prefixes(&self) -> &'static [&'static str] {
+        &["/v2/"]
     }
 
-    fn metric_families(&self) -> &'static [peryx_events::metrics::MetricFamily] {
-        crate::quota::QUOTA_FAMILIES
-    }
-
-    fn mount(&self) -> RouteMount {
-        RouteMount::Absolute(&["/v2/"])
+    fn classify_route(&self, path: &str) -> peryx_driver::rate_limit::RouteClass {
+        use peryx_driver::rate_limit::RouteClass;
+        match classify(path) {
+            Some(OciRoute::Blob { .. }) => RouteClass::Artifact,
+            _ => RouteClass::Listing,
+        }
     }
 
     async fn serve(&self, state: Arc<ServingState>, mut request: Request) -> Response {
@@ -276,41 +312,24 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> EcosystemDriver for OciRe
         }
         self.serve_request(state, request).await
     }
+}
 
-    fn classify_route(&self, path: &str) -> peryx_driver::rate_limit::RouteClass {
-        use peryx_driver::rate_limit::RouteClass;
-        // A blob GET streams layer bytes, an artifact download; manifests, tags, referrers, and the
-        // layer browser are listings. The version check and writes never reach here.
-        match classify(path) {
-            Some(OciRoute::Blob { .. }) => RouteClass::Artifact,
-            _ => RouteClass::Listing,
-        }
+impl<S: BuildHasher + Default + Send + Sync + 'static> MetricsDriver for OciRegistryWithHasher<S> {
+    fn metric_families(&self) -> &'static [peryx_events::metrics::MetricFamily] {
+        crate::quota::QUOTA_FAMILIES
     }
+}
 
-    fn rate_limit_principal(
-        &self,
-        state: &ServingState,
-        _position: Option<usize>,
-        headers: &HeaderMap,
-    ) -> peryx_identity::Principal {
-        auth::rate_limit_principal(state, headers)
-    }
-
-    fn discover_index(
-        &self,
-        index: peryx_driver::state::IndexDescription,
-        base: Option<&peryx_driver::discovery::BaseUrl>,
-    ) -> serde_json::Value {
-        crate::discovery::index_entry(index, base)
-    }
-
+impl<S: BuildHasher + Default + Send + Sync + 'static> BlobReferenceDriver for OciRegistryWithHasher<S> {
     fn referenced_blob_digests(
         &self,
         meta: &peryx_storage::meta::MetaStore,
     ) -> Result<std::collections::BTreeSet<String>, String> {
         Ok(crate::referenced_blob_digests(meta).map_err(ServeError::from)?)
     }
+}
 
+impl<S: BuildHasher + Default + Send + Sync + 'static> TrashDriver for OciRegistryWithHasher<S> {
     fn trash_records(
         &self,
         meta: &peryx_storage::meta::MetaStore,
@@ -322,96 +341,72 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> EcosystemDriver for OciRe
         }
         Ok(records)
     }
+}
 
-    fn client_endpoint(&self, route: &str) -> String {
-        let mut url = "/v2/".to_owned();
-        peryx_core::url_encoding::push_path(&mut url, route);
-        url.push('/');
-        url
-    }
-
-    fn project_names(&self, state: &ServingState, position: usize) -> Result<Vec<String>, String> {
-        Ok(repositories(state, state.index_at(position)).map_err(ServeError::from)?)
-    }
-
-    async fn browse_project(
+#[async_trait]
+impl<S: BuildHasher + Default + Send + Sync + 'static> BrowseDriver for OciRegistryWithHasher<S> {
+    async fn browse(
         &self,
         state: Arc<ServingState>,
         position: usize,
-        project: String,
-    ) -> Result<Option<peryx_core::UiProjectView>, String> {
-        let index = state.index_at(position);
-        let names = self.repository_tags(&state, index, &project).await?;
-        Ok(Some(peryx_core::UiProjectView::References { names }))
-    }
-
-    async fn manifest_view(
-        &self,
-        state: Arc<ServingState>,
-        position: usize,
-        project: String,
-        reference: String,
-    ) -> Result<Option<peryx_core::UiManifest>, String> {
-        let name = full_name(&state.index_at(position).route, &project);
-        let Some(reference) = crate::name::parse_reference(&reference) else {
-            return Ok(None);
+        raw_query: String,
+    ) -> Result<Option<peryx_core::BrowsePage>, String> {
+        let route = state.index_at(position).route.clone();
+        let query = BrowseQuery::parse(&raw_query)?;
+        let Some(repository) = query.project else {
+            return Ok(Some(crate::web::index_page(
+                &route,
+                repositories(&state, state.index_at(position)).map_err(ServeError::from)?,
+            )));
         };
-        // The browse view renders the index document itself, so it opts out of the legacy Accept
-        // rewrite that would swap an index for its child.
-        let response = self.serve_manifest(&state, &name, &reference, false, None).await?;
-        if response.status() != StatusCode::OK {
-            return Ok(None);
-        }
-        let bytes = read_body(response.into_body(), MAX_MANIFEST_BYTES).await?;
-        crate::web::manifest_from_bytes(&bytes).map(Some)
+        let Some(reference) = query.reference else {
+            return Ok(Some(crate::web::repository_page(
+                &route,
+                &repository,
+                self.repository_tags(&state, state.index_at(position), &repository)
+                    .await?,
+            )));
+        };
+        let Some(digest) = query.layer else {
+            return Ok(self
+                .manifest_content(state, position, repository.clone(), reference.clone())
+                .await?
+                .map(|manifest| crate::web::manifest_page(&route, &repository, &reference, manifest)));
+        };
+        let Some(member) = query.member else {
+            return Ok(Some(crate::web::members_page(
+                &route,
+                &repository,
+                &reference,
+                &digest,
+                self.layer_members(state, position, repository.clone(), digest.clone())
+                    .await?,
+            )));
+        };
+        Ok(Some(crate::web::member_page(
+            &route,
+            &repository,
+            &reference,
+            &digest,
+            &member,
+            self.layer_member_chunk(
+                state,
+                position,
+                repository.clone(),
+                digest.clone(),
+                member.clone(),
+                query.offset,
+            )
+            .await?,
+        )))
     }
+}
+#[cfg(test)]
+#[path = "../../tests/unit/registry/maintenance_contract_tests.rs"]
+mod maintenance_contract_tests;
 
-    async fn artifact_members(
-        &self,
-        state: Arc<ServingState>,
-        position: usize,
-        project: String,
-        digest: String,
-    ) -> Result<Vec<peryx_core::UiMember>, String> {
-        let name = full_name(&state.index_at(position).route, &project);
-        let response = self.serve_layer_contents(&state, &name, &digest, "").await?;
-        if !response.status().is_success() {
-            return Err(layer_error_message(&name, &digest, response).await);
-        }
-        let bytes = read_body(response.into_body(), 8 << 20).await?;
-        crate::web::members_from_bytes(&bytes)
-    }
-
-    async fn artifact_member_chunk(
-        &self,
-        state: Arc<ServingState>,
-        position: usize,
-        project: String,
-        digest: String,
-        member: String,
-        offset: u64,
-    ) -> Result<peryx_core::UiMemberChunk, String> {
-        let name = full_name(&state.index_at(position).route, &project);
-        let query = url::form_urlencoded::Serializer::new(String::new())
-            .append_pair("member", &member)
-            .append_pair("offset", &offset.to_string())
-            .finish();
-        let response = self.serve_layer_contents(&state, &name, &digest, &query).await?;
-        if !response.status().is_success() {
-            return Err(layer_error_message(&name, &digest, response).await);
-        }
-        let size = crate::web::header_u64(response.headers(), "x-peryx-member-size");
-        let chunk_offset = crate::web::header_u64(response.headers(), "x-peryx-member-offset").unwrap_or_default();
-        let next_offset = crate::web::header_u64(response.headers(), "x-peryx-next-offset");
-        let bytes = read_body(response.into_body(), 4 << 20).await?;
-        Ok(peryx_core::UiMemberChunk {
-            text: decode_member_text(&bytes, &member, &name, &digest)?,
-            size,
-            offset: chunk_offset,
-            next_offset,
-        })
-    }
-
+#[async_trait]
+impl<S: BuildHasher + Default + Send + Sync + 'static> IdleReclaimer for OciRegistryWithHasher<S> {
     async fn reclaim_idle(&self, state: Arc<ServingState>) -> usize {
         let cutoff = (state.clock)().saturating_sub(UPLOAD_SESSION_TTL_SECS);
         let expired = state
@@ -447,12 +442,12 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
                     | OciRoute::Referrers { .. }
             );
         if read
-            && let Err(response) = match &route {
+            && let Err(rejection) = match &route {
                 OciRoute::Catalog => auth::authorize_catalog(&state, &parts.headers),
                 route => read_name(route).map_or(Ok(()), |name| auth::authorize_read(&state, &parts.headers, name)),
             }
         {
-            let mut response = response;
+            let mut response = rejection.into_response();
             if governed_read {
                 apply_revocation_cache_policy(&mut response, parts.headers.contains_key(header::AUTHORIZATION));
             }
@@ -511,9 +506,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         response
     }
 
-    /// Every tag of `repo` on `index`, unioned across a virtual index's members and each proxy
-    /// member's upstream, sorted and distinct — the same union [`Self::serve_tags`] paginates.
-    async fn repository_tags(
+    pub(crate) async fn repository_tags(
         &self,
         state: &ServingState,
         index: &Index,
@@ -531,6 +524,101 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
             .await?
             .into_iter()
             .collect())
+    }
+
+    pub(crate) async fn manifest_content(
+        &self,
+        state: Arc<ServingState>,
+        position: usize,
+        repository: String,
+        reference: String,
+    ) -> Result<Option<crate::web::ManifestContent>, String> {
+        let name = full_name(&state.index_at(position).route, &repository);
+        let Some(parsed) = crate::name::parse_reference(&reference) else {
+            return Ok(None);
+        };
+        let response = self.serve_manifest(&state, &name, &parsed, false, None).await?;
+        if response.status() != StatusCode::OK {
+            return Ok(None);
+        }
+        let bytes = read_body(response.into_body(), MAX_MANIFEST_BYTES).await?;
+        let mut manifest = crate::web::manifest_content_from_bytes(&bytes)?;
+        manifest.client_command = Some(crate::web::pull_command(&name, &parsed));
+        Ok(Some(manifest))
+    }
+
+    pub(crate) async fn layer_members(
+        &self,
+        state: Arc<ServingState>,
+        position: usize,
+        repository: String,
+        digest: String,
+    ) -> Result<Vec<crate::web::Member>, String> {
+        let name = full_name(&state.index_at(position).route, &repository);
+        let response = self.serve_layer_contents(&state, &name, &digest, "").await?;
+        if !response.status().is_success() {
+            return Err(layer_error_message(&name, &digest, response).await);
+        }
+        crate::web::members_from_bytes(&read_body(response.into_body(), 8 << 20).await?)
+    }
+
+    pub(crate) async fn layer_member_chunk(
+        &self,
+        state: Arc<ServingState>,
+        position: usize,
+        repository: String,
+        digest: String,
+        member: String,
+        offset: u64,
+    ) -> Result<crate::web::MemberChunk, String> {
+        let name = full_name(&state.index_at(position).route, &repository);
+        let query = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("member", &member)
+            .append_pair("offset", &offset.to_string())
+            .finish();
+        let response = self.serve_layer_contents(&state, &name, &digest, &query).await?;
+        if !response.status().is_success() {
+            return Err(layer_error_message(&name, &digest, response).await);
+        }
+        let chunk = crate::web::MemberChunk {
+            size: crate::web::header_u64(response.headers(), "x-peryx-member-size"),
+            offset: crate::web::header_u64(response.headers(), "x-peryx-member-offset").unwrap_or_default(),
+            next_offset: crate::web::header_u64(response.headers(), "x-peryx-next-offset"),
+            text: String::from_utf8(read_body(response.into_body(), 4 << 20).await?.to_vec())
+                .expect("successful member previews are UTF-8"),
+        };
+        Ok(chunk)
+    }
+}
+
+#[derive(Default)]
+pub struct BrowseQuery {
+    pub project: Option<String>,
+    pub reference: Option<String>,
+    pub layer: Option<String>,
+    pub member: Option<String>,
+    pub offset: u64,
+}
+
+impl BrowseQuery {
+    pub fn parse(raw_query: &str) -> Result<Self, String> {
+        let mut values = query_params(raw_query);
+        let offset = values
+            .remove("offset")
+            .map(|value| {
+                value
+                    .parse()
+                    .map_err(|error| format!("invalid offset {value:?}: {error}"))
+            })
+            .transpose()?
+            .unwrap_or_default();
+        Ok(Self {
+            project: values.remove("project"),
+            reference: values.remove("ref"),
+            layer: values.remove("layer").or_else(|| values.remove("digest")),
+            member: values.remove("member"),
+            offset,
+        })
     }
 }
 
@@ -560,9 +648,7 @@ fn apply_revocation_cache_policy(response: &mut Response, authenticated: bool) {
     );
 }
 
-/// The repositories `index` serves for the web index listing: a cached or hosted index reads its own
-/// store; a virtual index unions its members'.
-fn repositories(state: &ServingState, index: &Index) -> Result<Vec<String>, MetaError> {
+pub fn repositories(state: &ServingState, index: &Index) -> Result<Vec<String>, MetaError> {
     let mut repos = std::collections::BTreeSet::new();
     collect_repositories(state, index, &mut repos)?;
     Ok(repos.into_iter().collect())
@@ -596,7 +682,6 @@ fn full_name(route: &str, repo: &str) -> String {
     }
 }
 
-/// A user-visible message for a non-success layer-browser response, reading its status and body.
 async fn layer_error_message(name: &str, digest: &str, response: Response) -> String {
     let status = response.status();
     match axum::body::to_bytes(response.into_body(), 1 << 20).await {
@@ -615,14 +700,6 @@ async fn layer_error_message(name: &str, digest: &str, response: Response) -> St
 async fn read_body(body: Body, cap: usize) -> Result<bytes::Bytes, String> {
     axum::body::to_bytes(body, cap).await.map_err(|err| err.to_string())
 }
-/// Decode a previewed layer member's bytes as UTF-8 text, naming the member and layer on failure.
-///
-/// # Errors
-/// Returns a message when the bytes are not valid UTF-8.
-fn decode_member_text(bytes: &[u8], member: &str, name: &str, digest: &str) -> Result<String, String> {
-    String::from_utf8(bytes.to_vec())
-        .map_err(|err| format!("layer member {member:?} on {name:?} for {digest} is not valid UTF-8: {err}"))
-}
 /// Resolve the writable hosted index behind `name` and authorize `action` on the repository it names,
 /// or return a ready error response (unknown name, read-only index, uploads disabled, or a credential
 /// the ACL refuses). A virtual index routes the write to its upload-target member.
@@ -631,30 +708,28 @@ fn resolve_writable<'a>(
     name: &str,
     headers: &HeaderMap,
     action: Action,
-) -> Result<(&'a Index, String, Identity), Response> {
+) -> Result<(&'a Index, String, Identity), RequestRejection> {
     let Some((index, repo)) = resolve(&state.indexes, name) else {
-        return Err(error_response(ErrorCode::NameUnknown, "repository name unknown"));
+        return Err(error_response(ErrorCode::NameUnknown, "repository name unknown").into());
     };
     let target = match &index.kind {
         IndexKind::Hosted { .. } => index,
-        IndexKind::Virtual { upload: Some(pos), .. } => state.index_at(*pos),
-        _ => return Err(error_response(ErrorCode::Denied, "index is read-only")),
+        IndexKind::Virtual {
+            write_target: Some(pos),
+            ..
+        } => state.index_at(*pos),
+        _ => return Err(error_response(ErrorCode::Denied, "index is read-only").into()),
     };
     if !matches!(target.kind, IndexKind::Hosted { .. }) {
-        return Err(error_response(ErrorCode::Denied, "index is read-only"));
+        return Err(error_response(ErrorCode::Denied, "index is read-only").into());
     }
     let presented = auth::identify(state, &target.acl, headers);
     match presented.authorize(&target.acl, repo, name, action) {
         Ok(()) => Ok((target, repo.to_owned(), presented.into_identity())),
-        Err(Denial::Unavailable) => Err(error_response(ErrorCode::Denied, "uploads are disabled")),
-        Err(denial) => Err(auth::resource_challenge(
-            state,
-            headers,
-            name,
-            action,
-            denial,
-            presented.bad_token(),
-        )),
+        Err(Denial::Unavailable) => Err(error_response(ErrorCode::Denied, "uploads are disabled").into()),
+        Err(denial) => {
+            Err(auth::resource_challenge(state, headers, name, action, denial, presented.bad_token()).into())
+        }
     }
 }
 
@@ -672,13 +747,11 @@ fn read_name(route: &OciRoute) -> Option<&str> {
 }
 /// Whether the index's policy blocks this repository name. A blocked image is hidden on reads (served
 /// as absent, like any policy-denied artifact) and refused on writes. The image name is the neutral
-/// [`check_project`](peryx_policy::Policy::check_project) input, so an OCI index reuses the neutral
-/// allow/block-list machinery every ecosystem shares.
+/// [`check_resource`](peryx_policy::Policy::check_resource) input.
 fn policy_blocks(index: &Index, action: PolicyAction, repo: &str) -> bool {
-    index.policy.check_project(action, repo).is_err()
+    index.policy.check_resource(action, repo).is_err()
 }
-/// Refuse a blob whose repository is blocked or whose size exceeds the index's `max_file_size_bytes`,
-/// the neutral upload rules an OCI index shares with every ecosystem. `None` lets the write proceed.
+/// Refuse a blob whose repository is blocked or whose size exceeds `max_artifact_size_bytes`.
 fn policy_size_denial(index: &Index, repo: &str, size: u64) -> Option<Response> {
     index
         .policy
@@ -686,9 +759,6 @@ fn policy_size_denial(index: &Index, repo: &str, size: u64) -> Option<Response> 
         .err()
         .map(|denial| error_response(ErrorCode::Denied, &denial.to_string()))
 }
-/// The members a request serves from, in shadowing order; any non-virtual index is its own single
-/// member. The order comes from the neutral role engine, so an OCI image shadows upstream by the same
-/// rule a `PyPI` wheel does.
 pub fn serving_members<'a>(state: &'a ServingState, index: &'a Index) -> Vec<&'a Index> {
     let IndexKind::Virtual { layers, .. } = &index.kind else {
         return vec![index];
@@ -700,8 +770,8 @@ pub fn serving_members<'a>(state: &'a ServingState, index: &'a Index) -> Vec<&'a
 }
 /// A hosted index's own page serial: the whole-store serial the readable frontier governs. A proxied
 /// index reports upstream state the frontier does not govern, and a virtual index carries no serial of
-/// its own — [`holds_below_readable_frontier`] derives its effective serial from its hosted members — so
-/// both report none here. Mirrors the `PyPI` hosted-page rule.
+/// its own - [`holds_below_readable_frontier`] derives its effective serial from its hosted members - so
+/// both report none here.
 fn hosted_last_serial(state: &ServingState, index: &Index) -> Result<Option<u64>, ServeError> {
     Ok(match index.kind {
         IndexKind::Hosted { .. } => Some(state.meta.current_serial()?),
@@ -714,7 +784,7 @@ fn hosted_last_serial(state: &ServingState, index: &Index) -> Result<Option<u64>
 /// never held. A virtual index has no serial of its own but may surface a hosted member's manifest, so
 /// it inherits its hosted members' serials: the gate holds it until every hosted member it layers is
 /// readable. A serial past an unreadable frontier (which reads as zero), and a member whose serial
-/// cannot be read, are both held, so a replica fails closed. Mirrors the `PyPI` hosted-page gate exactly.
+/// cannot be read, are both held, so a replica fails closed.
 fn holds_below_readable_frontier(state: &ServingState, index: &Index, last_serial: Option<u64>) -> bool {
     if !state.read_only {
         return false;
@@ -723,18 +793,13 @@ fn holds_below_readable_frontier(state: &ServingState, index: &Index, last_seria
     match &index.kind {
         IndexKind::Hosted { .. } => last_serial.is_some_and(|serial| serial > frontier),
         IndexKind::Cached { .. } => false,
-        // A virtual index is readable only up to the least-readable of its members, so it holds until
-        // every hosted member it layers is readable: the max over its hosted members' serials past the
-        // frontier. Hosted members share the local journal, so that max is the store's current serial,
-        // which a member whose read fails counts as past the frontier, failing closed.
+        // A virtual index cannot outrun its least-readable hosted member.
         IndexKind::Virtual { layers, .. } => {
             peryx_index::layers_include_hosted(&state.indexes, layers)
                 && state.meta.current_serial().map_or(true, |serial| serial > frontier)
         }
     }
 }
-/// Whether the first member with repository state for a digest has hidden it. A lower tombstone does
-/// not override a live digest in a higher member.
 fn manifest_trashed_in(state: &ServingState, members: &[&Index], repo: &str, digest: &str) -> Result<bool, ServeError> {
     for member in members {
         if crate::store::manifest_is_trashed(&state.meta, &member.name, repo, digest)? {
@@ -746,31 +811,23 @@ fn manifest_trashed_in(state: &ServingState, members: &[&Index], repo: &str, dig
     }
     Ok(false)
 }
-/// Enqueue a webhook for an OCI mutation on a hosted index. `version` is the tag when a tagged
-/// reference was affected; `digest` is the manifest or blob digest. The webhook subsystem is neutral,
-/// so a hosted OCI index delivers push and delete events like any hosted index.
 fn emit_webhook(
     state: &Arc<ServingState>,
     request: &Requester<'_>,
-    kind: WebhookEventKind,
+    event: &'static str,
     index: &Index,
     repo: &str,
-    version: Option<String>,
-    digest: Option<String>,
+    version: Option<&str>,
+    digest: Option<&str>,
 ) {
-    peryx_events::webhook::emit(
-        Arc::clone(state),
-        &WebhookEvent {
-            kind,
-            created_at_unix: (state.clock)(),
-            index: index.name.clone(),
-            route: index.route.clone(),
-            hosted_index: index.name.clone(),
-            project: repo.to_owned(),
-            version,
-            filename: digest.clone(),
+    crate::webhook::emit(
+        state,
+        &crate::webhook::OciWebhook {
+            event,
+            index,
+            repository: repo,
+            reference: version,
             digest,
-            count: 1,
             actor: peryx_events::security::actor(request.identity),
             request_id: request_id(request.headers),
         },
@@ -782,14 +839,12 @@ struct Requester<'a> {
     headers: &'a HeaderMap,
     identity: &'a Identity,
 }
-/// The client-supplied request id, echoed into webhook deliveries for correlation.
 fn request_id(headers: &HeaderMap) -> Option<String> {
     headers
         .get("x-request-id")
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned)
 }
-/// The API version check's success answer: `200` with the distribution API-version header.
 fn version_ok() -> Response {
     (
         [(
@@ -805,12 +860,10 @@ fn version_ok() -> Response {
 fn flight_gate(state: &ServingState, key: &str) -> peryx_index::serving::FlightGate {
     peryx_index::serving::flight_gate(&state.cache.inflight, key)
 }
-/// Find the OCI index whose route is the longest segment-aligned prefix of `name`, and the upstream
-/// repository (the remainder). An empty route matches at the root, losing every tie to a real prefix.
 fn resolve<'a, 'b>(indexes: &'a [Index], name: &'b str) -> Option<(&'a Index, &'b str)> {
     let mut best: Option<(&'a Index, &'b str)> = None;
     for index in indexes {
-        if index.ecosystem != Ecosystem::Oci {
+        if index.ecosystem != crate::ECOSYSTEM {
             continue;
         }
         let repo = if index.route.is_empty() {
@@ -834,7 +887,6 @@ fn query_params(query: &str) -> std::collections::HashMap<String, String> {
         .map(|(key, value)| (key.into_owned(), value.into_owned()))
         .collect()
 }
-/// A bare `202 Accepted` for a completed delete.
 fn accepted() -> Response {
     (StatusCode::ACCEPTED, Body::empty()).into_response()
 }
@@ -852,8 +904,8 @@ fn combined_accept(headers: &HeaderMap) -> Option<String> {
 }
 /// Whether something fetched at `fetched_at` may still answer while the upstream cannot confirm it.
 ///
-/// The same bound a stale `PyPI` page gets: serve past the freshness window while an upstream is
-/// down, but not without end. `0` removes the bound.
+/// Serve past the freshness window while an upstream is unavailable, bounded by `max_stale_secs`.
+/// `0` removes the bound.
 fn within_stale_bound(state: &ServingState, fetched_at: i64) -> bool {
     peryx_index::serving::within_stale_bound((state.clock)(), state.max_stale_secs, fetched_at, state.ttl_secs)
 }
@@ -905,115 +957,5 @@ fn absent_upstream(status: StatusCode) -> bool {
     matches!(status, StatusCode::NOT_FOUND | StatusCode::FORBIDDEN)
 }
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_serve_error_maps_every_fault_to_a_gateway_error() {
-        let decode = serde_json::from_str::<u8>("nope").unwrap_err();
-        assert_eq!(
-            ServeError::from(MetaError::Decode(decode)).into_response().status(),
-            StatusCode::BAD_GATEWAY
-        );
-        assert_eq!(
-            ServeError::from(std::io::Error::other("disk")).into_response().status(),
-            StatusCode::BAD_GATEWAY
-        );
-        assert_eq!(
-            ServeError::Transport("reset".to_owned()).into_response().status(),
-            StatusCode::BAD_GATEWAY
-        );
-    }
-
-    #[test]
-    fn test_serve_error_message_describes_every_fault() {
-        let decode = serde_json::from_str::<u8>("nope").unwrap_err();
-        assert!(
-            ServeError::from(MetaError::Decode(decode))
-                .message()
-                .contains("metadata store error")
-        );
-        assert!(
-            ServeError::Io(std::io::Error::other("disk"))
-                .message()
-                .contains("blob io error")
-        );
-        assert!(
-            ServeError::Transport("reset".to_owned())
-                .message()
-                .contains("upstream transfer failed")
-        );
-    }
-
-    #[tokio::test]
-    async fn test_serve_error_wraps_a_transport_failure() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let err = reqwest::Client::new()
-            .get("http://127.0.0.1:1/")
-            .send()
-            .await
-            .unwrap_err();
-        assert_eq!(ServeError::from(err).into_response().status(), StatusCode::BAD_GATEWAY);
-    }
-
-    #[test]
-    fn test_classify_route_buckets_blob_pulls_as_artifacts() {
-        use peryx_driver::rate_limit::RouteClass;
-        use peryx_driver::serving::EcosystemDriver as _;
-        let registry = OciRegistry::default();
-        let digest = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
-        assert_eq!(
-            registry.classify_route(&format!("/v2/store/app/blobs/{digest}")),
-            RouteClass::Artifact
-        );
-        assert_eq!(
-            registry.classify_route("/v2/store/app/manifests/1.0"),
-            RouteClass::Listing
-        );
-        assert_eq!(registry.classify_route("/v2/store/app/tags/list"), RouteClass::Listing);
-        assert_eq!(
-            registry.classify_route(&format!("/v2/store/app/blobs/{digest}/contents")),
-            RouteClass::Listing
-        );
-    }
-
-    #[test]
-    fn test_serve_error_converts_to_its_message_string() {
-        assert_eq!(
-            String::from(ServeError::Io(std::io::Error::other("disk"))),
-            "blob io error: disk"
-        );
-        assert_eq!(
-            String::from(ServeError::Transport("reset".to_owned())),
-            "upstream transfer failed: reset"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_read_body_returns_bytes_within_the_cap_and_rejects_an_over_cap_body() {
-        assert_eq!(
-            read_body(Body::from(b"hello".to_vec()), 1 << 20).await.unwrap(),
-            "hello"
-        );
-        // A body larger than the cap is refused rather than buffered.
-        assert!(read_body(Body::from(vec![0u8; 2 << 20]), 1 << 20).await.is_err());
-    }
-
-    #[test]
-    fn test_decode_member_text_accepts_utf8_and_names_a_non_utf8_member() {
-        assert_eq!(
-            decode_member_text(b"name = \"peryx\"", "app/config.toml", "store/app", "sha256:x").unwrap(),
-            "name = \"peryx\""
-        );
-        let err = decode_member_text(&[0xff, 0xfe], "app/logo.bin", "store/app", "sha256:x").unwrap_err();
-        assert!(err.contains("app/logo.bin") && err.contains("not valid UTF-8"), "{err}");
-    }
-
-    #[tokio::test]
-    async fn test_layer_error_message_reports_an_unreadable_error_body() {
-        // An error response whose body exceeds the read cap still yields a message carrying the status.
-        let response = (StatusCode::BAD_GATEWAY, Body::from(vec![0u8; 2 << 20])).into_response();
-        let message = layer_error_message("store/app", "sha256:x", response).await;
-        assert!(message.contains("502"), "{message}");
-    }
-}
+#[path = "../../tests/unit/registry/tests.rs"]
+mod tests;

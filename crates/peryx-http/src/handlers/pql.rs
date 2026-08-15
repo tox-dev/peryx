@@ -1,50 +1,39 @@
-//! `POST /+query`: the Peryx Query Language endpoint.
-//!
-//! One typed, read-only query surface over the operational domains. This handler resolves the caller
-//! into a single scope, hands the query to `peryx-pql` for parsing, cost-bounded planning, structural
-//! scope injection, and evaluation, then filters the result columns through the same
-//! [`FieldClassification`] primitive every other endpoint uses, so a replica and the primary answer
-//! identically. Operator-classified results are never cached.
-//!
-//! The endpoint is read-only. `peryx-pql` has no write surface, and this handler adds none: a query
-//! can select, filter, order, aggregate, and page, and nothing else.
+//! Structural scope injection and shared field classification keep primary and replica results equal.
+//! Operator-classified results are never cached; the query surface has no mutation operations.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use axum::Extension;
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::{HeaderMap, Request, StatusCode, header};
 use axum::response::{IntoResponse as _, Response};
 use peryx_driver::authz::{Decision, DenyReason, ScopedDecision};
+use peryx_driver::http_services::HttpDomainServices;
 use peryx_driver::state::{AppState, Index};
-use peryx_events::metrics::{Metrics, PackageUsage};
-use peryx_identity::{Action, Denial, Resource, Scope, UserId, authorize_all, parse_basic};
+use peryx_identity::{Action, Denial, Resource, Scope, UserId, parse_basic};
 use peryx_pql::ast::{CompareOp, Literal, Predicate};
-use peryx_pql::catalog::{Column, DomainAuth, DomainSchema, FieldClass, Indexability};
-use peryx_pql::{
-    DataSource, FetchFilter, OutputColumn, Page, PqlError, QueryScope, RepoScope, Row, StatusClass, Value as PqlValue,
-    ValueType, bind, execute, parse,
-};
-use peryx_storage::meta::{MetaStore, PolicyDecisionItem, PolicyDecisionQuery};
+use peryx_pql::catalog::FieldClass;
+use peryx_pql::{OutputColumn, Page, PqlError, QueryScope, RepoScope, StatusClass, Value as PqlValue, bind, parse};
 
 use crate::response_security::{
     ClassifiedField, FieldClassification, ProtectedCachePolicy, ResponseAuthorization, filter_fields,
 };
 
-const POLICY_DOMAIN: &str = "policy.decisions";
-const USAGE_DOMAIN: &str = "usage.downloads";
 const MAX_BODY_BYTES: usize = 8 * 1024;
-const STORE_PAGE: usize = 100;
 
-/// `POST /+query`: run one PQL query and return typed rows.
-pub async fn pql_query(State(state): State<Arc<AppState>>, request: Request<Body>) -> Response {
+pub async fn pql_query(
+    State(state): State<Arc<AppState>>,
+    Extension(services): Extension<HttpDomainServices>,
+    request: Request<Body>,
+) -> Response {
     let (parts, body) = request.into_parts();
-    let response = query_response(&state, &parts.headers, body).await;
+    let response = query_response(&state, &services, &parts.headers, body).await;
     apply_cache_policy(response)
 }
 
-async fn query_response(state: &AppState, headers: &HeaderMap, body: Body) -> Response {
+async fn query_response(state: &AppState, services: &HttpDomainServices, headers: &HeaderMap, body: Body) -> Response {
     if !is_json(headers) {
         return problem(StatusCode::UNSUPPORTED_MEDIA_TYPE, "request body must be JSON");
     }
@@ -69,8 +58,10 @@ async fn query_response(state: &AppState, headers: &HeaderMap, body: Body) -> Re
         Ok(authorization) => authorization,
         Err(rejection) => return rejection.response(),
     };
-    let source = NeutralSource::new(state.meta.clone(), state.metrics.clone());
-    match execute(&ast, &authorization.scope, body.cursor.as_deref(), &source) {
+    match services
+        .pql()
+        .execute(&ast, &authorization.scope, body.cursor.as_deref())
+    {
         Ok(page) => render(&page, authorization.response),
         Err(error) => pql_error(&error),
     }
@@ -83,7 +74,7 @@ struct Authorization {
 
 enum Identity {
     Local(UserId),
-    LegacyToken,
+    EcosystemCredential,
 }
 
 #[derive(Clone, Copy)]
@@ -110,15 +101,16 @@ impl Rejection {
 }
 
 async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<Identity, Rejection> {
-    let credentials = headers
+    let authorization = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-        .and_then(parse_basic)
         .ok_or(Rejection::Unauthorized)?;
-    if credentials.user == "__token__" {
-        return Ok(Identity::LegacyToken);
+    if state.recognizes_index_credential(authorization) {
+        return Ok(Identity::EcosystemCredential);
     }
+    let credentials = parse_basic(authorization).ok_or(Rejection::Unauthorized)?;
     state
+        .serving
         .users
         .authenticate(&credentials.user, &credentials.password)
         .await
@@ -135,15 +127,17 @@ fn authorize(
 ) -> Result<Authorization, Rejection> {
     match identity {
         Identity::Local(actor) => authorize_local(state, actor, named),
-        Identity::LegacyToken => authorize_legacy(state, headers, named),
+        Identity::EcosystemCredential => authorize_ecosystem(state, headers, named),
     }
 }
 
 fn authorize_local(state: &AppState, actor: &UserId, named: Option<String>) -> Result<Authorization, Rejection> {
     let Some(repository) = named else {
-        let decision = state
-            .authorization
-            .authorize_scoped(actor, Scope::AdministrationRead, &Resource::Operator);
+        let decision =
+            state
+                .serving
+                .authorization
+                .authorize_scoped(actor, Scope::AdministrationRead, &Resource::Operator);
         require_grant(decision)?;
         return Ok(Authorization {
             scope: QueryScope::new(
@@ -154,10 +148,11 @@ fn authorize_local(state: &AppState, actor: &UserId, named: Option<String>) -> R
         });
     };
     let index = index_by_name(state, &repository)?;
-    let decision =
-        state
-            .authorization
-            .authorize_scoped(actor, Scope::RepositoryRead, &Resource::Repository(index.name.clone()));
+    let decision = state.serving.authorization.authorize_scoped(
+        actor,
+        Scope::RepositoryRead,
+        &Resource::Repository(index.name.clone()),
+    );
     require_grant(decision)?;
     Ok(Authorization {
         scope: repository_scope(&index.name, ResponseAuthorization::Scoped(decision)),
@@ -165,16 +160,20 @@ fn authorize_local(state: &AppState, actor: &UserId, named: Option<String>) -> R
     })
 }
 
-fn authorize_legacy(state: &AppState, headers: &HeaderMap, named: Option<String>) -> Result<Authorization, Rejection> {
+fn authorize_ecosystem(
+    state: &AppState,
+    headers: &HeaderMap,
+    named: Option<String>,
+) -> Result<Authorization, Rejection> {
     let repository = named.ok_or(Rejection::Unauthorized)?;
     let index = state
+        .serving
         .indexes
         .iter()
         .find(|index| index.name == repository)
         .ok_or(Rejection::Unauthorized)?;
     let authorization = headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok());
-    let principal = index.acl.identify(authorization, (state.clock)()).principal;
-    match authorize_all(&principal, &index.acl, Action::Read) {
+    match state.authorize_index_credential(index, authorization, Action::Read) {
         Ok(()) => Ok(Authorization {
             scope: repository_scope(&index.name, ResponseAuthorization::Repository),
             response: ResponseAuthorization::Repository,
@@ -192,13 +191,12 @@ const fn require_grant(decision: ScopedDecision) -> Result<(), Rejection> {
     }
 }
 
-/// Resolve the repository the query named to its configured index by the stable repository name.
-///
-/// PQL's `repository` column is the stored repository name — the value grants and decision records
-/// carry — not the URL route, which may differ. Matching on the name keeps the injected scope, the
+/// PQL's `repository` column is the stored repository name - the value grants and decision records
+/// carry - not the URL route, which may differ. Matching on the name keeps the injected scope, the
 /// caller's `repository ==` filter, and the stored rows all speaking the same identifier.
 fn index_by_name<'state>(state: &'state AppState, repository: &str) -> Result<&'state Index, Rejection> {
     state
+        .serving
         .indexes
         .iter()
         .find(|index| index.name == repository)
@@ -303,270 +301,6 @@ const fn classification_of(class: FieldClass) -> FieldClassification {
     }
 }
 
-/// The read-only data source backing the neutral domains: `policy.decisions` over the decision
-/// history store and `usage.downloads` over the durable usage tree. Both are ecosystem-agnostic, so
-/// this source carries no per-ecosystem branch.
-struct NeutralSource {
-    meta: MetaStore,
-    metrics: Metrics,
-    policy: DomainSchema,
-    usage: DomainSchema,
-}
-
-impl NeutralSource {
-    fn new(meta: MetaStore, metrics: Metrics) -> Self {
-        Self {
-            meta,
-            metrics,
-            policy: policy_schema(),
-            usage: usage_schema(),
-        }
-    }
-
-    fn fetch_policy(&self, scope: &QueryScope, filter: Option<&FetchFilter>) -> Result<Vec<Row>, PqlError> {
-        let repository = single_repository(scope);
-        let project = indexed_project(filter);
-        let mut cursor = None;
-        let mut rows = Vec::new();
-        loop {
-            let query = PolicyDecisionQuery {
-                repository: repository.clone(),
-                project: project.clone(),
-                cursor: cursor.take(),
-                limit: STORE_PAGE,
-                ..PolicyDecisionQuery::default()
-            };
-            let page = self
-                .meta
-                .query_policy_decisions(&query)
-                .map_err(|error| PqlError::Backend(error.to_string()))?;
-            rows.extend(page.decisions.iter().map(row_of));
-            match page.next_cursor {
-                Some(next) => cursor = Some(next),
-                None => break,
-            }
-        }
-        Ok(rows)
-    }
-
-    fn fetch_usage(&self, scope: &QueryScope) -> Vec<Row> {
-        self.metrics
-            .usage_totals(single_repository(scope).as_deref())
-            .into_iter()
-            .map(usage_row_of)
-            .collect()
-    }
-}
-
-impl DataSource for NeutralSource {
-    fn schema(&self, domain: &str) -> Option<&DomainSchema> {
-        match domain {
-            POLICY_DOMAIN => Some(&self.policy),
-            USAGE_DOMAIN => Some(&self.usage),
-            _ => None,
-        }
-    }
-
-    fn fetch(&self, domain: &str, scope: &QueryScope, filter: Option<&FetchFilter>) -> Result<Vec<Row>, PqlError> {
-        match domain {
-            USAGE_DOMAIN => Ok(self.fetch_usage(scope)),
-            _ => self.fetch_policy(scope, filter),
-        }
-    }
-}
-
-fn usage_row_of(usage: PackageUsage) -> Row {
-    Row::new()
-        .with("repository", PqlValue::Str(usage.repository))
-        .with("project", PqlValue::Str(usage.project))
-        .with("downloads", PqlValue::Int(clamp_i64(usage.downloads)))
-        .with("bytes", PqlValue::Int(clamp_i64(usage.bytes)))
-}
-
-fn clamp_i64(value: u64) -> i64 {
-    i64::try_from(value).unwrap_or(i64::MAX)
-}
-
-fn single_repository(scope: &QueryScope) -> Option<String> {
-    match scope.repositories() {
-        RepoScope::Only(set) if set.len() == 1 => set.iter().next().cloned(),
-        RepoScope::All | RepoScope::Only(_) => None,
-    }
-}
-
-/// Narrow the store read through the `project` index when the cost gate's leading filter is a single
-/// project equality, so an indexed-equality predicate reaches redb as an indexed lookup instead of a
-/// full page-through of the domain (constraint 6). Any other leading filter falls back to the
-/// executor's in-memory predicate.
-fn indexed_project(filter: Option<&FetchFilter>) -> Option<String> {
-    let filter = filter?;
-    match (filter.column, filter.values.as_slice()) {
-        ("project", [PqlValue::Str(value)]) => Some(value.clone()),
-        _ => None,
-    }
-}
-
-fn row_of(item: &PolicyDecisionItem) -> Row {
-    let record = &item.record;
-    Row::new()
-        .with("repository", PqlValue::Str(record.repository.clone()))
-        .with("project", PqlValue::Str(record.project.clone()))
-        .with("version", optional(record.version.as_deref()))
-        .with("filename", optional(record.filename.as_deref()))
-        .with("source", optional(record.source.as_deref()))
-        .with("action", enum_value(&record.action))
-        .with("state", enum_value(&record.state))
-        .with("rule", optional(record.rule.as_deref()))
-        .with("reason", optional(record.reason.as_deref()))
-        .with("evaluated_at", PqlValue::Timestamp(record.evaluated_at_unix))
-        .with("fresh", PqlValue::Bool(item.fresh))
-}
-
-fn optional(value: Option<&str>) -> PqlValue {
-    value.map_or(PqlValue::Null, |text| PqlValue::Str(text.to_owned()))
-}
-
-fn enum_value<T: serde::Serialize>(value: &T) -> PqlValue {
-    match serde_json::to_value(value) {
-        Ok(serde_json::Value::String(text)) => PqlValue::Str(text),
-        _ => PqlValue::Null,
-    }
-}
-
-const POLICY_COLUMNS: &[(&str, ValueType, FieldClass, Indexability, bool)] = &[
-    (
-        "repository",
-        ValueType::Str,
-        FieldClass::Repository,
-        Indexability::Indexed,
-        false,
-    ),
-    (
-        "project",
-        ValueType::Str,
-        FieldClass::Repository,
-        Indexability::Indexed,
-        false,
-    ),
-    (
-        "version",
-        ValueType::Str,
-        FieldClass::Repository,
-        Indexability::Scan,
-        false,
-    ),
-    (
-        "filename",
-        ValueType::Str,
-        FieldClass::Repository,
-        Indexability::Scan,
-        false,
-    ),
-    (
-        "source",
-        ValueType::Str,
-        FieldClass::Operator,
-        Indexability::Scan,
-        false,
-    ),
-    (
-        "action",
-        ValueType::Str,
-        FieldClass::Repository,
-        Indexability::Scan,
-        false,
-    ),
-    (
-        "state",
-        ValueType::Str,
-        FieldClass::Repository,
-        Indexability::Scan,
-        false,
-    ),
-    ("rule", ValueType::Str, FieldClass::Operator, Indexability::Scan, false),
-    (
-        "reason",
-        ValueType::Str,
-        FieldClass::Operator,
-        Indexability::Scan,
-        false,
-    ),
-    (
-        "evaluated_at",
-        ValueType::Timestamp,
-        FieldClass::Repository,
-        Indexability::KeyOrdered,
-        true,
-    ),
-    (
-        "fresh",
-        ValueType::Bool,
-        FieldClass::Repository,
-        Indexability::Scan,
-        false,
-    ),
-];
-
-const USAGE_COLUMNS: &[(&str, ValueType, FieldClass, Indexability, bool)] = &[
-    (
-        "repository",
-        ValueType::Str,
-        FieldClass::Repository,
-        Indexability::Indexed,
-        false,
-    ),
-    (
-        "project",
-        ValueType::Str,
-        FieldClass::Repository,
-        Indexability::Indexed,
-        false,
-    ),
-    (
-        "downloads",
-        ValueType::Int,
-        FieldClass::Repository,
-        Indexability::Scan,
-        true,
-    ),
-    ("bytes", ValueType::Int, FieldClass::Operator, Indexability::Scan, true),
-];
-
-fn columns_of(declared: &[(&'static str, ValueType, FieldClass, Indexability, bool)]) -> Vec<Column> {
-    declared
-        .iter()
-        .map(|(name, value_type, class, indexability, numeric)| {
-            Column::new(name, *value_type, *class, *indexability, *numeric)
-        })
-        .collect()
-}
-
-fn policy_schema() -> DomainSchema {
-    DomainSchema {
-        name: POLICY_DOMAIN,
-        columns: columns_of(POLICY_COLUMNS),
-        auth: DomainAuth::RepositoryOrOperator,
-        natural_order: "evaluated_at",
-        bounded: true,
-        // `fetch_policy` narrows the store read only on `project` (`indexed_project`); `repository` is
-        // scoped by auth, not the predicate, and `evaluated_at` has no store-side seek.
-        pushdown: &["project"],
-    }
-}
-
-fn usage_schema() -> DomainSchema {
-    DomainSchema {
-        name: USAGE_DOMAIN,
-        columns: columns_of(USAGE_COLUMNS),
-        auth: DomainAuth::RepositoryOrOperator,
-        natural_order: "downloads",
-        bounded: true,
-        // `fetch_usage` reads pre-aggregated totals and ignores the leading filter, so it narrows on
-        // nothing.
-        pushdown: &[],
-    }
-}
-
 #[derive(Clone, Copy)]
 struct CachePolicy(ProtectedCachePolicy);
 
@@ -655,65 +389,5 @@ fn problem(status: StatusCode, message: impl Into<String>) -> Response {
 }
 
 #[cfg(test)]
-mod pure_tests {
-    //! Direct coverage for the private mappers and the denied-render guard, which the router flow
-    //! cannot reach: the handler only ever hands render an allowed audience, only classifies the
-    //! repository and operator field classes it actually emits, and only serializes enums that render
-    //! as strings.
-    use peryx_driver::authz::AuthorizationService;
-    use peryx_identity::{Resource, Scope, UserId};
-    use peryx_storage::meta::MetaStore;
-
-    use super::{FieldClass, FieldClassification, PqlValue, ResponseAuthorization, StatusCode};
-    use super::{Page, classification_name, classification_of, enum_value, render};
-
-    #[test]
-    fn test_classification_name_covers_every_class() {
-        for (class, expected) in [
-            (FieldClassification::Public, "public"),
-            (FieldClassification::Repository, "repository"),
-            (FieldClassification::Operator, "operator"),
-            (FieldClassification::Administrator, "administrator"),
-        ] {
-            assert_eq!(classification_name(class), expected);
-        }
-    }
-
-    #[test]
-    fn test_classification_of_maps_every_field_class() {
-        for (class, expected) in [
-            (FieldClass::Public, FieldClassification::Public),
-            (FieldClass::Repository, FieldClassification::Repository),
-            (FieldClass::Operator, FieldClassification::Operator),
-            (FieldClass::Administrator, FieldClassification::Administrator),
-        ] {
-            assert_eq!(classification_of(class), expected);
-        }
-    }
-
-    #[test]
-    fn test_enum_value_falls_back_to_null_for_non_string() {
-        // A serializable value that is not a JSON string has no scalar column form, so it becomes null.
-        assert_eq!(enum_value(&42_i64), PqlValue::Null);
-    }
-
-    #[test]
-    fn test_render_denied_audience_is_not_found() {
-        // A denied decision cannot classify any field, so render answers 404 rather than an empty body.
-        let dir = tempfile::tempdir().unwrap();
-        let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-        let decision = AuthorizationService::new(meta).authorize_scoped(
-            &UserId::random(),
-            Scope::AdministrationRead,
-            &Resource::Operator,
-        );
-        assert!(!decision.decision().is_allowed());
-        let page = Page {
-            outputs: Vec::new(),
-            rows: Vec::new(),
-            next_cursor: None,
-        };
-        let response = render(&page, ResponseAuthorization::Scoped(decision));
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    }
-}
+#[path = "../../tests/unit/handlers/pql/pure_tests.rs"]
+mod pure_tests;

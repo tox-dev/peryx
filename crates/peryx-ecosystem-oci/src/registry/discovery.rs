@@ -1,12 +1,9 @@
-//! Tag listing, `_catalog`, and the referrers API, aggregated across virtual members.
-
 use super::*;
 use crate::error::{ErrorCode, error_response};
 use crate::store::{self};
 use axum::body::Body;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use peryx_core::Ecosystem;
 use peryx_driver::ServingState;
 use peryx_upstream::UpstreamClient;
 
@@ -100,8 +97,8 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
     ///
     /// A tag list is mutable upstream, so it is trusted for `ttl_secs` and revalidated after. Passing
     /// every request through made a `tags/list` cost an upstream round trip rather than the registry,
-    /// and made a burst of them cost the upstream once per client. When revalidation fails the last
-    /// list still answers, bounded exactly as a stale tag or a stale `PyPI` page is.
+    /// and made a burst of them cost the upstream once per client. When revalidation fails, the last
+    /// tag list remains available until its stale-cache limit.
     async fn proxy_tags(
         &self,
         state: &ServingState,
@@ -404,7 +401,6 @@ pub(super) fn stored_tag_names(
     Ok(names)
 }
 
-/// Read an upstream referrers document, from the API or the fallback tag, into its `manifests` array.
 async fn referrer_manifests(response: reqwest::Response) -> Vec<serde_json::Value> {
     bounded_body(response, MAX_MANIFEST_BYTES)
         .await
@@ -477,8 +473,6 @@ fn paginate(items: &std::collections::BTreeSet<String>, query: &str) -> (Vec<Str
     (page, next)
 }
 
-/// Build a `tags/list` response over a sorted tag set, applying `n`/`last` pagination and a `Link`
-/// header to the next page when the set is truncated.
 fn tag_list_response(name: &str, tags: &std::collections::BTreeSet<String>, query: &str) -> Response {
     let (page, next) = paginate(tags, query);
     let mut builder = Response::builder()
@@ -497,12 +491,10 @@ fn tag_list_response(name: &str, tags: &std::collections::BTreeSet<String>, quer
         .expect("tag list response builds from validated parts")
 }
 
-/// Serve `GET /v2/_catalog`: the union of every OCI index's repositories as clients address them (the
-/// index route prefixes the upstream repository), with `n`/`last` pagination.
 pub(super) fn serve_catalog(state: &ServingState, query: &str) -> Result<Response, ServeError> {
     let mut repositories = std::collections::BTreeSet::new();
     for index in &state.indexes {
-        if index.ecosystem != Ecosystem::Oci {
+        if index.ecosystem != crate::ECOSYSTEM {
             continue;
         }
         for repo in store::list_repositories(&state.meta, &index.name)? {
@@ -587,7 +579,6 @@ fn rewrite_tag_page_name(name: &str, body: &[u8]) -> Result<Vec<u8>, ServeError>
         .into_bytes())
 }
 
-/// `next_page_query`, reading an already-parsed header value.
 fn next_page_query_of(value: &HeaderValue) -> Option<String> {
     next_page_query(value.to_str().ok()?)
 }

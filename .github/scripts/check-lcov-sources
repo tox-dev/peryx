@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+metadata=
+root_index=
+while (($#)); do
+  case $1 in
+    --metadata)
+      metadata=${2:?pass a metadata file}
+      shift 2
+      ;;
+    --root-index)
+      root_index=${2:?pass a source-root index}
+      shift 2
+      ;;
+    *) break ;;
+  esac
+done
+
+report=${1:?pass an LCOV report}
+shift
+if [[ ! -s $report ]] || ! awk '
+  function fail(message) {
+    print message ": " FILENAME > "/dev/stderr"
+    failed = 1
+  }
+  /^SF:/ {
+    if (active) {
+      fail("LCOV source record is missing end_of_record")
+    }
+    source = substr($0, 4)
+    if (!length(source)) {
+      fail("LCOV source record has an empty SF path")
+    }
+    active = 1
+    records++
+    next
+  }
+  /^end_of_record$/ {
+    if (!active) {
+      fail("LCOV report has end_of_record without SF")
+      next
+    }
+    active = 0
+  }
+  END {
+    if (active) {
+      fail("LCOV source record is missing end_of_record: " source)
+    }
+    if (!records) {
+      fail("LCOV report has no source records")
+    }
+    exit failed
+  }
+' "$report"; then
+  printf 'LCOV report has invalid source records: %s\n' "$report" >&2
+  exit 1
+fi
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+if [[ -z $metadata ]]; then
+  metadata=$scratch/metadata.json
+  cargo metadata --no-deps --format-version 1 >"$metadata"
+fi
+if [[ -z $root_index ]]; then
+  root_index=$scratch/root-index
+  .github/scripts/package-source-roots --metadata "$metadata" --index >"$root_index"
+fi
+if (($#)); then
+  printf '%s\n' "$@" >"$scratch/packages"
+else
+  scripts/ci/workspace-package-list all >"$scratch/packages"
+fi
+
+: >"$scratch/selected-roots"
+while IFS= read -r package; do
+  if ! jq -e --arg package "$package" '.packages[] | select(.name == $package)' "$metadata" >/dev/null; then
+    printf 'unknown package: %s\n' "$package" >&2
+    exit 2
+  fi
+  awk -F '\t' -v package="$package" '$1 == package { print $2 }' "$root_index" \
+    >>"$scratch/selected-roots"
+done <"$scratch/packages"
+cut -f2 "$root_index" | sort -u >"$scratch/source-boundaries"
+sort -u -o "$scratch/selected-roots" "$scratch/selected-roots"
+
+: >"$scratch/compiler-inputs"
+while IFS= read -r package; do
+  jq -r --arg package "$package" '.packages[] | select(.name == $package) | .targets[]?.src_path' "$metadata"
+done <"$scratch/packages" | while IFS= read -r source; do
+  [[ -f $source ]] || continue
+  printf '%s/%s\n' "$(cd "$(dirname "$source")" && pwd -P)" "$(basename "$source")"
+done | sort -u >"$scratch/compiler-inputs"
+
+: >"$scratch/expected"
+while IFS= read -r source; do
+  if awk '
+    /(^|[[:space:]])fn[[:space:]]+[[:alnum:]_]+/ { signature = 1 }
+    signature && /\{/ { found = 1; exit }
+    signature && /;/ { signature = 0 }
+    /(^|[^[:alnum:]_])[[:alpha:]_][[:alnum:]_:]*!/ { found = 1; exit }
+    END { exit !found }
+  ' "$source"; then
+    printf '%s\n' "$source"
+  fi
+done <"$scratch/compiler-inputs" >>"$scratch/expected"
+while IFS= read -r package_root; do
+  find "$package_root" -type f -name '*.rs' -not -path '*/target/*' -print0 |
+    while IFS= read -r -d '' source; do
+      while IFS= read -r other_root; do
+        case $other_root in
+          "$package_root"/*)
+            case $source in
+              "$other_root"/*) continue 2 ;;
+            esac
+            ;;
+        esac
+      done <"$scratch/source-boundaries"
+      if awk '
+        /(^|[[:space:]])fn[[:space:]]+[[:alnum:]_]+/ { signature = 1 }
+        signature && /\{/ { found = 1; exit }
+        signature && /;/ { signature = 0 }
+        END { exit !found }
+      ' "$source"; then
+        printf '%s\n' "$source"
+      fi
+    done
+done <"$scratch/selected-roots" >>"$scratch/expected"
+sort -u -o "$scratch/expected" "$scratch/expected"
+
+while IFS= read -r source; do
+  [[ $source == /* ]] || source=$repo/$source
+  [[ -e $source ]] || continue
+  printf '%s/%s\n' "$(cd "$(dirname "$source")" && pwd -P)" "$(basename "$source")"
+done < <(awk '/^SF:/ { print substr($0, 4) }' "$report") | sort -u >"$scratch/covered"
+
+missing=$(comm -23 "$scratch/expected" "$scratch/covered")
+if [[ -n $missing ]]; then
+  printf '%s\n' "$missing" >&2
+  printf 'package Rust sources missing from coverage: %s\n' "$(wc -l <<<"$missing" | tr -d ' ')" >&2
+  exit 1
+fi
+printf '%s Rust sources present in coverage\n' "$(wc -l <"$scratch/expected" | tr -d ' ')"

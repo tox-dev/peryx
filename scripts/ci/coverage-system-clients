@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+output=${1:-.tox/coverage/system-clients.lcov}
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
+if [[ -z ${PERYX_COVERAGE_RUN_DIR:-} ]]; then
+  exec "$repo/.github/scripts/coverage-session-guard" --output "$output" -- \
+    "$repo/scripts/ci/coverage-system-clients" "$output"
+fi
+mkdir -p "$(dirname -- "$output")"
+metadata=$(cargo metadata --no-deps --format-version 1)
+while IFS= read -r package; do
+  scripts/ci/package-tools "$package"
+done < <(jq -r '
+  .packages[]
+  | select(.metadata["peryx-ci"].coverage.clients != null and .metadata["peryx-ci"].tools != null)
+  | .name
+' <<<"$metadata")
+export PATH="$repo/.tox/tools/bin:$PATH"
+scripts/ci/coverage-system-suite clients "$output"

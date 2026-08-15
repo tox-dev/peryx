@@ -1,6 +1,3 @@
-//! Assembling an `AppState`: the runtime knobs, their defaults, and the constructors the binary and
-//! the tests build one through.
-
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
@@ -15,7 +12,7 @@ use peryx_index::{Index, IndexKind};
 use crate::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig, RateLimiter, UpstreamLimits};
 use peryx_events::metrics::Metrics;
 use peryx_events::webhook::WebhookRuntime;
-use peryx_search::{PackageSearch, SearchError};
+use peryx_search::{SearchError, SearchIndex};
 
 struct StateParts {
     meta: MetaStore,
@@ -39,46 +36,35 @@ pub struct RuntimeOptions<I> {
     /// unreachable. `0` means without limit: a mirror in front of a flaky upstream can be told to
     /// keep serving whatever it last saw, but that is an operator's explicit choice, not a default.
     pub max_stale_secs: i64,
-    /// How many days of daily version-and-source usage buckets to retain; `None` keeps them without
+    /// How many days of daily group-and-source usage buckets to retain; `None` keeps them without
     /// limit. Older buckets expire on the aggregator thread, never on the request path.
     pub usage_retention_days: Option<u32>,
-    /// The derived views a read must not outrun, seeding [`ServingState::required_views`]. The default is
-    /// search only; a dual-plane replica adds its blob-availability view so a metadata serial stays
-    /// hidden until its blobs are local. This crate never names those views: the caller supplies the set,
-    /// so a blob-plane view name stays out of the neutral driver.
+    /// Views that must reach a serial before reads expose it.
     pub required_views: std::sync::Arc<[&'static str]>,
 }
 
-/// How long an outage may be papered over with a stale page, when an operator configures no bound.
-///
-/// One further freshness window: long enough to ride out an upstream blip or a redeploy, short enough
-/// that a lasting outage surfaces as an error rather than as quietly ancient data.
+/// Keeps transient outages readable while surfacing prolonged stale data.
 pub const DEFAULT_MAX_STALE_SECS: i64 = 300;
 
 /// How long a realm token lives when an operator configures no `[auth] token_ttl_secs`.
 ///
-/// One freshness window: long enough for a `docker pull`/`push` to run against it, short enough that a
+/// One freshness window: long enough for a client transfer, short enough that a
 /// revoked ACL takes hold soon after the token that was minted under it expires.
 pub const DEFAULT_TOKEN_TTL_SECS: i64 = 300;
 
 /// The transformed-page cache budget when an operator configures none.
 ///
-/// Sized for the working set of a busy `PyPI` index, whose transformed pages are the large ones
-/// (`boto3` and `numpy` run to megabytes of JSON). Today the `PyPI` driver is the only ecosystem that
-/// populates this cache; when a second one does, this becomes a budget per ecosystem, keyed like the
-/// lexicon and serving registries already are.
+/// Sized for several transformed index pages at the measured multi-megabyte upper bound.
 pub const DEFAULT_HOT_CACHE_BYTES: u64 = 256 * 1024 * 1024;
 
 use super::app::{AppState, Clock};
 
 impl AppState {
-    /// Build the state with a system clock.
     #[must_use]
     pub fn new(meta: MetaStore, blobs: impl Into<BlobStorage>, ttl_secs: i64, indexes: Vec<Index>) -> Self {
         Self::with_clock(meta, blobs, ttl_secs, indexes, Arc::new(system_now))
     }
 
-    /// Build the state with system time plus hosted abuse-control settings.
     #[must_use]
     pub fn with_rate_limits(
         meta: MetaStore,
@@ -99,7 +85,6 @@ impl AppState {
         )
     }
 
-    /// Build the state with an injected clock.
     #[must_use]
     pub fn with_clock(
         meta: MetaStore,
@@ -119,8 +104,6 @@ impl AppState {
         )
     }
 
-    /// Build the state with an on-disk search index.
-    ///
     /// # Errors
     /// Returns an error if the search index cannot be opened.
     pub fn with_search_path(
@@ -141,8 +124,6 @@ impl AppState {
         )
     }
 
-    /// Build the state with an on-disk search index and hosted abuse-control settings.
-    ///
     /// # Errors
     /// Returns an error if the search index cannot be opened.
     pub fn with_search_path_and_rate_limits(
@@ -173,8 +154,6 @@ impl AppState {
         )
     }
 
-    /// Build the state with an on-disk search index and runtime controls.
-    ///
     /// # Errors
     /// Returns an error if the search index cannot be opened.
     pub fn with_search_path_and_runtime<I>(
@@ -196,12 +175,11 @@ impl AppState {
                 indexes,
                 clock: Arc::new(system_now),
             },
-            PackageSearch::open(search_path)?,
+            SearchIndex::open(search_path)?,
             runtime,
         ))
     }
 
-    /// Build the state with an injected clock plus hosted abuse-control settings.
     #[must_use]
     pub fn with_limits(
         meta: MetaStore,
@@ -220,7 +198,7 @@ impl AppState {
                 indexes,
                 clock,
             },
-            PackageSearch::in_memory(),
+            SearchIndex::in_memory(),
             RuntimeOptions {
                 rate_limit,
                 upstream_concurrency,
@@ -234,7 +212,6 @@ impl AppState {
         )
     }
 
-    /// Build the state with an injected clock and webhook runtime.
     #[must_use]
     pub fn with_clock_and_webhooks(
         meta: MetaStore,
@@ -252,7 +229,7 @@ impl AppState {
                 indexes,
                 clock,
             },
-            PackageSearch::in_memory(),
+            SearchIndex::in_memory(),
             RuntimeOptions {
                 rate_limit: RateLimitConfig::default(),
                 upstream_concurrency: std::iter::empty(),
@@ -266,7 +243,7 @@ impl AppState {
         )
     }
 
-    fn with_limits_and_search<I>(parts: StateParts, search: PackageSearch, runtime: RuntimeOptions<I>) -> Self
+    fn with_limits_and_search<I>(parts: StateParts, search: SearchIndex, runtime: RuntimeOptions<I>) -> Self
     where
         I: IntoIterator<Item = (String, usize)>,
     {
@@ -301,7 +278,7 @@ impl AppState {
                 IndexKind::Hosted { .. } | IndexKind::Virtual { .. } => None,
             })
             .collect::<Vec<_>>();
-        let metrics = Metrics::start_durable(meta.analytics(), usage_retention_days, clock.clone());
+        let metrics = Metrics::start_durable_or_degraded(meta.analytics(), usage_retention_days, clock.clone());
         let users = crate::users::UserService::new(meta.clone());
         let authorization = crate::authz::AuthorizationService::new(meta.clone());
         let revocations = crate::revocations::RevocationService::new(meta.clone());
@@ -320,14 +297,8 @@ impl AppState {
                 max_stale_secs,
                 clock,
                 requests: AtomicU64::new(0),
-                dc_durability: std::sync::Arc::new(super::DcDurabilityMetrics::default()),
                 read_only: false,
-                availability_role: peryx_core::NodeRole::Writer,
-                availability_topology: peryx_core::TopologyConfig::default(),
-                write_ack_policy: peryx_replication::DurabilityPolicy::Local,
-                write_ack_deadline: std::time::Duration::from_secs(5),
-                receipt_sources: Vec::new(),
-                remote_frontier_sources: Vec::new(),
+                availability: super::app::AvailabilityState { distributed: None },
                 route_resolver: peryx_index::RouteResolver::new(&indexes),
                 indexes,
                 cache: peryx_index::ServingCache::new(hot_cache_bytes, ttl_secs),
@@ -342,23 +313,26 @@ impl AppState {
                 webhooks,
                 signer: None,
                 token_ttl_secs: DEFAULT_TOKEN_TTL_SECS,
-                trusted_publishing: None,
+                plugin_services: HashMap::new(),
                 ldap_logins: HashMap::new(),
                 retention_gates: crate::retention::RetentionGates::new(RETENTION_PLANS_PER_REPOSITORY),
                 oidc_logins: HashMap::new(),
                 session_sealer: None,
-                ownership: std::sync::OnceLock::new(),
-                control: std::sync::OnceLock::new(),
-                cross_dc_copier: std::sync::OnceLock::new(),
-                blob_reclaimer: std::sync::OnceLock::new(),
-                read_through: std::sync::OnceLock::new(),
-                placement_reconciler: std::sync::OnceLock::new(),
             }),
-            drivers: std::array::from_fn(|_| None),
+            drivers: crate::DriverSet::default(),
+            protocols: HashMap::new(),
+            idle_reclaimers: HashMap::new(),
+            intent_finalizers: HashMap::new(),
+            cache_refreshers: HashMap::new(),
+            replicated_apply_drivers: HashMap::new(),
+            mirror_drivers: HashMap::new(),
+            rate_limit_principals: HashMap::new(),
+            client_discovery: HashMap::new(),
             absolute_prefixes: Vec::new(),
             lexicons: LexiconRegistry::default(),
             openapi: std::sync::Arc::from(STUB_OPENAPI),
             prometheus: Mutex::new(Vec::new()),
+            http_routes: Vec::new(),
         }
     }
 }
@@ -377,3 +351,7 @@ const RETENTION_PLANS_PER_REPOSITORY: usize = 2;
 /// The minimal `OpenAPI` document a state serves until the binary installs the assembled one. It names
 /// no ecosystem; the real per-ecosystem paths are merged in by the binary at startup.
 const STUB_OPENAPI: &str = r#"{"openapi":"3.1.0","info":{"title":"peryx","version":"0"},"paths":{}}"#;
+
+#[cfg(test)]
+#[path = "../../tests/unit/state/build/tests.rs"]
+mod tests;

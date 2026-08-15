@@ -1,19 +1,17 @@
-//! The `POST`/`PATCH`/`PUT` blob-upload session lifecycle.
-
 use super::blobs::{
-    authority_moved, blob_created, blob_fault, commit_blob, commit_staged_upload, epoch_admits, release_reservation,
-    upload_epoch,
+    BlobCommitContext, authority_moved, blob_created, commit_blob, commit_staged_upload, epoch_admits,
+    release_reservation, upload_epoch,
 };
 use super::*;
 use crate::error::{ErrorCode, error_response};
 use crate::store::{self};
+use crate::upload_session::UploadRecord;
 use axum::body::Body;
 use axum::http::response::Builder;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
 use http_body::Body as _;
 use peryx_driver::ServingState;
-use peryx_storage::meta::UploadRecord;
 
 impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> {
     /// Begin a blob upload: cross-repo mount when the blob is already stored, a monolithic write when
@@ -28,19 +26,19 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
     ) -> Result<Response, ServeError> {
         let (index, repo, _) = match resolve_writable(state, name, headers, Action::Write) {
             Ok(target) => target,
-            Err(response) => return Ok(response),
+            Err(rejection) => return Ok(rejection.into_response()),
         };
         let journal = self.journal_outbox;
         let params = query_params(query);
         if let (Some(mount), Some(source)) = (params.get("mount"), params.get("from"))
             && let Some(storage) = store::blob_digest(mount)
         {
-            if let Err(response) = auth::authorize_read(state, headers, source) {
-                return Ok(response);
+            if let Err(rejection) = auth::authorize_read(state, headers, source) {
+                return Ok(rejection.into_response());
             }
             if let Some((source_index, source_repo)) = resolve(&state.indexes, source)
                 && !policy_blocks(source_index, PolicyAction::Serve, source_repo)
-                && let Some(metadata) = state.blobs.head(&storage).await.map_err(blob_fault)?
+                && let Some(metadata) = state.blobs.head(&storage).await.map_err(ServeError::from)?
                 && self.blob_authorized(state, source_index, source_repo, mount)?
             {
                 if policy_blocks(index, PolicyAction::Upload, &repo) {
@@ -80,12 +78,24 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
             }
         }
         if let Some(digest) = params.get("digest") {
-            let mut pending = state.blobs.begin().await.map_err(blob_fault)?;
+            let mut pending = state.blobs.begin().await.map_err(ServeError::from)?;
             let mut size = 0;
             if let Err(err) = append_body(&mut pending, &mut size, body, index, &repo).await {
                 return err.into_response();
             }
-            return commit_blob(state, pending, index, &repo, name, digest, size, journal).await;
+            return commit_blob(
+                BlobCommitContext {
+                    state,
+                    index,
+                    repo: &repo,
+                    name,
+                    digest,
+                    bytes: size,
+                    journal,
+                },
+                pending,
+            )
+            .await;
         }
         let now = (state.clock)();
         let session = Self::random_session()?;
@@ -97,7 +107,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
             .blobs
             .stage_upload_chunk(&session, 0, b"")
             .await
-            .map_err(blob_fault)?;
+            .map_err(ServeError::from)?;
         Ok(upload_accepted(name, &session, 0))
     }
 
@@ -112,12 +122,12 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
     ) -> Result<Response, ServeError> {
         let (index, _, _) = match resolve_writable(state, name, headers, Action::Write) {
             Ok(target) => target,
-            Err(response) => return Ok(response),
+            Err(rejection) => return Ok(rejection.into_response()),
         };
         let Some(_record) = session_record(state, &index.name, name, session)? else {
             return Ok(error_response(ErrorCode::BlobUploadUnknown, "upload unknown"));
         };
-        state.blobs.discard_upload(session).await.map_err(blob_fault)?;
+        state.blobs.discard_upload(session).await.map_err(ServeError::from)?;
         state.meta.remove_upload(session)?;
         Ok(StatusCode::NO_CONTENT.into_response())
     }
@@ -131,7 +141,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
     ) -> Result<Response, ServeError> {
         let (index, _, _) = match resolve_writable(state, name, headers, Action::Write) {
             Ok(target) => target,
-            Err(response) => return Ok(response),
+            Err(rejection) => return Ok(rejection.into_response()),
         };
         let Some(record) = session_record(state, &index.name, name, session)? else {
             return Ok(error_response(ErrorCode::BlobUploadUnknown, "upload unknown"));
@@ -141,7 +151,6 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         Ok(upload_status_response(name, session, record.offset))
     }
 
-    /// Append a chunk to an open upload session.
     pub(super) async fn patch_upload(
         &self,
         state: &ServingState,
@@ -152,7 +161,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
     ) -> Result<Response, ServeError> {
         let (index, repo, _) = match resolve_writable(state, name, headers, Action::Write) {
             Ok(target) => target,
-            Err(response) => return Ok(response),
+            Err(rejection) => return Ok(rejection.into_response()),
         };
         // Serialize this session's read-modify-write so a concurrent chunk cannot read the same offset
         // and interleave its bytes into the stage.
@@ -165,7 +174,6 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         outcome
     }
 
-    /// Finish an upload: append any trailing bytes, then verify and commit under the given `digest`.
     pub(super) async fn finish_upload(
         &self,
         state: &ServingState,
@@ -177,22 +185,22 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
     ) -> Result<Response, ServeError> {
         let (index, repo, _) = match resolve_writable(state, name, headers, Action::Write) {
             Ok(target) => target,
-            Err(response) => return Ok(response),
+            Err(rejection) => return Ok(rejection.into_response()),
         };
         let lock = self.session_gate.lock(session);
         let outcome = {
             let _guard = lock.lock_owned().await;
-            finish_locked(
+            finish_locked(FinishUpload {
                 state,
                 index,
-                &repo,
+                repo: &repo,
                 name,
                 session,
                 query,
                 headers,
                 body,
-                self.journal_outbox,
-            )
+                journal: self.journal_outbox,
+            })
             .await
         };
         self.session_gate.release(session);
@@ -200,7 +208,6 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
     }
 }
 
-/// Append a chunk under the session lock and answer `202`. Run inside the per-session guard.
 async fn patch_locked(
     state: &ServingState,
     index: &Index,
@@ -212,7 +219,7 @@ async fn patch_locked(
 ) -> Result<Response, ServeError> {
     match append_session_chunk(state, index, repo, name, session, headers, body).await? {
         Ok(offset) => Ok(upload_accepted(name, session, offset)),
-        Err(response) => Ok(response),
+        Err(rejection) => Ok(rejection.into_response()),
     }
 }
 
@@ -224,24 +231,33 @@ async fn patch_locked(
 /// body is read: a closing `PUT` that omits it or names an algorithm the store cannot key on is rejected
 /// with the stage, offset, and activity timestamp untouched, so a client that fixes the URL and resends
 /// the same final chunk does not append those bytes twice.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the final PUT threads the request, session, and commit context"
-)]
-async fn finish_locked(
-    state: &ServingState,
-    index: &Index,
-    repo: &str,
-    name: &str,
-    session: &str,
-    query: &str,
-    headers: &HeaderMap,
+struct FinishUpload<'a> {
+    state: &'a ServingState,
+    index: &'a Index,
+    repo: &'a str,
+    name: &'a str,
+    session: &'a str,
+    query: &'a str,
+    headers: &'a HeaderMap,
     body: Body,
-    journal_outbox: bool,
-) -> Result<Response, ServeError> {
+    journal: crate::outbox::Outbox,
+}
+
+async fn finish_locked(request: FinishUpload<'_>) -> Result<Response, ServeError> {
+    let FinishUpload {
+        state,
+        index,
+        repo,
+        name,
+        session,
+        query,
+        headers,
+        body,
+        journal,
+    } = request;
     let record = match check_session_chunk(state, index, name, session, headers, body.size_hint().exact())? {
         Ok(record) => record,
-        Err(response) => return Ok(response),
+        Err(rejection) => return Ok(rejection.into_response()),
     };
     // A `PUT` without a digest cannot commit, but the staged bytes are still good: keep the session so
     // the client can retry with the digest rather than re-upload everything.
@@ -259,18 +275,20 @@ async fn finish_locked(
     };
     let offset = match append_checked_chunk(state, session, record.offset, body, index, repo).await? {
         Ok(offset) => offset,
-        Err(response) => return Ok(response),
+        Err(rejection) => return Ok(rejection.into_response()),
     };
     commit_staged_upload(
-        state,
+        BlobCommitContext {
+            state,
+            index,
+            repo,
+            name,
+            digest: &digest,
+            bytes: offset,
+            journal,
+        },
         session,
-        index,
-        repo,
-        name,
-        &digest,
         storage,
-        offset,
-        journal_outbox,
     )
     .await
 }
@@ -286,7 +304,7 @@ async fn append_session_chunk(
     session: &str,
     headers: &HeaderMap,
     body: Body,
-) -> Result<Result<u64, Response>, ServeError> {
+) -> Result<Result<u64, RequestRejection>, ServeError> {
     let record = match check_session_chunk(state, index, name, session, headers, body.size_hint().exact())? {
         Ok(record) => record,
         Err(response) => return Ok(Err(response)),
@@ -306,13 +324,15 @@ fn check_session_chunk(
     session: &str,
     headers: &HeaderMap,
     body_size: Option<u64>,
-) -> Result<Result<UploadRecord, Response>, ServeError> {
+) -> Result<Result<UploadRecord, RequestRejection>, ServeError> {
     let Some(record) = session_record(state, &index.name, name, session)? else {
-        return Ok(Err(error_response(ErrorCode::BlobUploadUnknown, "upload unknown")));
+        return Ok(Err(
+            error_response(ErrorCode::BlobUploadUnknown, "upload unknown").into()
+        ));
     };
     if !chunk_range(headers).admits(record.offset, body_size) {
         state.meta.advance_upload(session, record.offset, (state.clock)())?;
-        return Ok(Err(range_not_satisfiable(name, session, record.offset)));
+        return Ok(Err(range_not_satisfiable(name, session, record.offset).into()));
     }
     Ok(Ok(record))
 }
@@ -325,9 +345,9 @@ async fn append_checked_chunk(
     body: Body,
     index: &Index,
     repo: &str,
-) -> Result<Result<u64, Response>, ServeError> {
+) -> Result<Result<u64, RequestRejection>, ServeError> {
     if let Err(err) = append_to_stage(state, session, &mut offset, body, index, repo).await {
-        return Ok(Err(append_error_response(state, session, err).await?));
+        return Ok(Err(append_error_response(state, session, err).await?.into()));
     }
     Ok(Ok(offset))
 }
@@ -358,7 +378,7 @@ async fn append_to_stage(
     repo: &str,
 ) -> Result<(), UploadBodyError> {
     let mut stream = body.into_data_stream();
-    let limit = index.policy.max_file_size();
+    let limit = index.policy.max_artifact_size();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|err| UploadBodyError::Fault(ServeError::Transport(err.to_string())))?;
         let size = *offset + chunk.len() as u64;
@@ -371,7 +391,7 @@ async fn append_to_stage(
             .blobs
             .stage_upload_chunk(session, *offset, &chunk)
             .await
-            .map_err(blob_fault)
+            .map_err(ServeError::from)
             .map_err(UploadBodyError::Fault)?;
         *offset = staged;
         state
@@ -406,7 +426,7 @@ async fn append_error_response(
     err: UploadBodyError,
 ) -> Result<Response, ServeError> {
     if matches!(err, UploadBodyError::Denied(_)) {
-        state.blobs.discard_upload(session).await.map_err(blob_fault)?;
+        state.blobs.discard_upload(session).await.map_err(ServeError::from)?;
         state.meta.remove_upload(session)?;
     }
     err.into_response()
@@ -420,7 +440,7 @@ async fn append_body(
     repo: &str,
 ) -> Result<(), UploadBodyError> {
     let mut stream = body.into_data_stream();
-    let limit = index.policy.max_file_size();
+    let limit = index.policy.max_artifact_size();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|err| UploadBodyError::Fault(ServeError::Transport(err.to_string())))?;
         let size = *offset + chunk.len() as u64;
@@ -432,7 +452,7 @@ async fn append_body(
         pending
             .write_chunk(chunk)
             .await
-            .map_err(blob_fault)
+            .map_err(ServeError::from)
             .map_err(UploadBodyError::Fault)?;
         *offset = size;
     }
@@ -447,7 +467,6 @@ fn received_range(builder: Builder, offset: u64) -> Builder {
     builder.header(header::RANGE, format!("0-{}", offset.saturating_sub(1)))
 }
 
-/// A `201 Created` carrying a `Location` and the canonical `Docker-Content-Digest`.
 pub(super) fn created(location: &str, digest: &str) -> Response {
     Response::builder()
         .status(StatusCode::CREATED)
@@ -457,7 +476,6 @@ pub(super) fn created(location: &str, digest: &str) -> Response {
         .expect("created response builds from validated parts")
 }
 
-/// `204 No Content` reporting an open upload session's progress.
 fn upload_status_response(name: &str, session: &str, offset: u64) -> Response {
     received_range(
         Response::builder()
@@ -483,7 +501,6 @@ fn upload_accepted(name: &str, session: &str, offset: u64) -> Response {
     .expect("upload response builds from validated parts")
 }
 
-/// What a chunk's `Content-Range` claims about the bytes it carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChunkRange {
     /// No `Content-Range`, so the client makes no claim and the chunk appends where the last ended.
@@ -556,94 +573,5 @@ fn range_not_satisfiable(name: &str, session: &str, offset: u64) -> Response {
 }
 
 #[cfg(test)]
-mod tests {
-    use axum::http::HeaderValue;
-
-    use super::{ChunkRange, chunk_range};
-
-    fn headers(value: HeaderValue) -> axum::http::HeaderMap {
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert(axum::http::header::CONTENT_RANGE, value);
-        headers
-    }
-
-    fn range(spec: &'static str) -> ChunkRange {
-        chunk_range(&headers(HeaderValue::from_static(spec)))
-    }
-
-    #[test]
-    fn test_chunk_range_reads_both_bounds_with_or_without_the_bytes_prefix() {
-        assert_eq!(range("5-9"), ChunkRange::Bytes { start: 5, len: 5 });
-        assert_eq!(range("bytes 5-9"), ChunkRange::Bytes { start: 5, len: 5 });
-    }
-
-    #[test]
-    fn test_chunk_range_reads_a_single_byte_range() {
-        assert_eq!(range("0-0"), ChunkRange::Bytes { start: 0, len: 1 });
-    }
-
-    #[test]
-    fn test_chunk_range_rejects_bytes_that_are_not_text() {
-        // A `Content-Range` whose bytes are not text at all: the client made a claim nothing can read.
-        let opaque = HeaderValue::from_bytes(&[0xff, 0xfe]).expect("bytes are a valid header value");
-        assert_eq!(chunk_range(&headers(opaque)), ChunkRange::Malformed);
-    }
-
-    #[test]
-    fn test_chunk_range_rejects_a_header_without_a_dash() {
-        assert_eq!(range("nowhere"), ChunkRange::Malformed);
-    }
-
-    #[test]
-    fn test_chunk_range_rejects_a_nonnumeric_bound() {
-        assert_eq!(range("0-x"), ChunkRange::Malformed);
-        assert_eq!(range("x-9"), ChunkRange::Malformed);
-    }
-
-    #[test]
-    fn test_chunk_range_rejects_an_end_before_its_start() {
-        assert_eq!(range("9-5"), ChunkRange::Malformed);
-    }
-
-    #[test]
-    fn test_chunk_range_rejects_a_span_that_overflows() {
-        // `end - start + 1` overflows `u64`: the width cannot be represented, so it is no valid length.
-        assert_eq!(range("0-18446744073709551615"), ChunkRange::Malformed);
-    }
-
-    #[test]
-    fn test_chunk_range_is_absent_without_the_header() {
-        assert_eq!(chunk_range(&axum::http::HeaderMap::new()), ChunkRange::Absent);
-    }
-
-    #[test]
-    fn test_absent_range_admits_any_body_at_any_offset() {
-        assert!(ChunkRange::Absent.admits(7, Some(3)));
-        assert!(ChunkRange::Absent.admits(0, None));
-    }
-
-    #[test]
-    fn test_malformed_range_is_never_admitted() {
-        assert!(!ChunkRange::Malformed.admits(0, Some(5)));
-    }
-
-    #[test]
-    fn test_range_admits_a_contiguous_chunk_whose_length_matches() {
-        assert!(ChunkRange::Bytes { start: 5, len: 5 }.admits(5, Some(5)));
-    }
-
-    #[test]
-    fn test_range_refuses_a_chunk_that_does_not_continue_the_session() {
-        assert!(!ChunkRange::Bytes { start: 5, len: 5 }.admits(0, Some(5)));
-    }
-
-    #[test]
-    fn test_range_refuses_a_length_the_body_does_not_carry() {
-        // The `Content-Range: 0-999` one-byte `PATCH`: the declared width dwarfs the body it ships.
-        assert!(!ChunkRange::Bytes { start: 0, len: 1000 }.admits(0, Some(1)));
-        // An empty body carries no bytes for the inclusive range it claims.
-        assert!(!ChunkRange::Bytes { start: 0, len: 5 }.admits(0, Some(0)));
-        // A streamed body of unknown length cannot be checked against the claim.
-        assert!(!ChunkRange::Bytes { start: 0, len: 5 }.admits(0, None));
-    }
-}
+#[path = "../../tests/unit/registry/uploads/tests.rs"]
+mod tests;

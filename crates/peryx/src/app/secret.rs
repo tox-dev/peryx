@@ -29,3 +29,7 @@ fn read_bounded(input: &mut dyn Read, name: &str) -> anyhow::Result<String> {
     }
     String::from_utf8(bytes).with_context(|| format!("{name} input must be UTF-8"))
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/tests/app/secret_tests.rs"]
+mod tests;

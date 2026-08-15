@@ -4,17 +4,17 @@ description = "Move content-addressed blobs to an S3-compatible bucket so severa
 weight = 11
 +++
 
-By default peryx writes blobs to the local filesystem under `data_dir/blobs`, which suits a single node where one
-process owns one disk. Point the `[blob]` table at an S3-compatible bucket when the filesystem stops fitting the
+By default peryx writes blobs to the local filesystem under `data_dir/blobs`, which suits a one-node deployment where
+one process owns one disk. Point the `[blob]` table at an S3-compatible bucket when the filesystem stops fitting the
 deployment. Metadata never moves; the redb store stays local on every node. Only the content-addressed blob bytes
 relocate to the bucket.
 
 Reach for object storage when one of these holds:
 
-- Several nodes must serve the same artifacts. A [high-availability](@/core/high-availability.md) deployment runs one
-  writer and read replicas, and peryx copies neither blobs nor metadata between them. Because blob keys are the content
-  digest, every node configured against the same bucket reads the same immutable objects, so you replicate only the
-  metadata store and leave the blob bytes in one shared place.
+- Several nodes must serve the same artifacts. A [high-availability](@/core/availability/high-availability.md)
+  deployment runs one writer and read replicas, and peryx copies neither blobs nor metadata between them. Because blob
+  keys are the content digest, every node configured against the same bucket reads the same immutable objects, so you
+  replicate only the metadata store and leave the blob bytes in one shared place.
 - You want the object store to own durability. Bucket-level versioning, cross-region replication, and lifecycle rules
   are the object store's job, not peryx's.
 - The cache outgrows one volume. A bucket scales past the disk a single host can attach.
@@ -57,7 +57,7 @@ checksum_writes = false
 ```
 
 That declaration is per instance and restricts the node to the `none`
-[availability contract](@/core/availability-contracts.md): the `dc` and `ha` modes require both guarantees, and startup
+[availability contract](@/core/availability/contracts.md): the `dc` and `ha` modes require both guarantees, and startup
 refuses one of those modes on a backend that declares either as `false`.
 
 ## Point a node at AWS S3
@@ -138,7 +138,7 @@ A few behaviors differ from the filesystem default and catch operators out:
   lean on the object store's own tooling to audit S3 objects.
 - Pick the backend before you host content. Changing `backend` does not move existing blobs, and the filesystem layout
   (`sha256/<ab>/<cd>/<digest>`) does not match the flat S3 key (`<prefix>/sha256/<digest>`), so copying the tree by hand
-  will not line the keys up. Cached content re-populates from upstream on demand; re-upload hosted content yourself.
+  will not line the keys up. Cached content repopulates from upstream on demand; ingest hosted content again.
 - `part_size_bytes` must fall between 5 MiB and 5 GiB, the multipart bounds S3 enforces. Startup rejects a value outside
   that range.
 - Backups omit the objects. `peryx backup` snapshots the `[blob]` selection without credentials so a restore points at

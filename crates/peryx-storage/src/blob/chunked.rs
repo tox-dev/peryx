@@ -1,14 +1,6 @@
-//! A chunked content digest: the sha256 of each fixed-size span of a blob.
-//!
-//! The whole-blob digest verifies a blob only once every byte is reassembled and hashed, so a ranged
-//! fetch of a large blob cannot be trusted — and so cannot be forwarded to a client — until the whole
-//! arrives. A chunked digest records the sha256 of each fixed span, computed when the blob was staged and
-//! whole-verified, so a later incremental fetch verifies each chunk against its own digest and forwards it
-//! before the rest of the blob arrives.
-//!
-//! The per-chunk digests are trusted because they are recorded from a whole-blob-verified stage: the same
-//! bytes that hashed to the blob's identity produced them. A consumer that has them may stream a blob
-//! chunk-by-chunk; one that does not falls back to whole-blob staging.
+//! Chunk digests let ranged reads verify and forward each span before the full blob arrives. Staging
+//! records them only after verifying the whole blob, so they derive from the bytes that produced the
+//! content address.
 
 use std::num::NonZeroU64;
 use std::ops::Range;
@@ -18,24 +10,19 @@ use sha2::{Digest as _, Sha256};
 
 use super::{Digest, to_hex};
 
-/// The default span each content chunk covers, aligned with the ranged-pull chunk so one ranged fetch maps
-/// to one verifiable chunk.
+/// Matches the ranged-pull size so one fetch produces one verifiable chunk.
 pub const CHUNK_BYTES: NonZeroU64 = NonZeroU64::new(8 * 1024 * 1024).expect("8 MiB is non-zero");
 
-/// The per-chunk digests of a blob under a fixed chunk size, in offset order.
-///
-/// Recorded when a blob is staged and whole-verified; consulted by an incremental read-through to verify
-/// each fetched chunk against its own digest before forwarding it.
+/// SHA-256 digests in byte-offset order for a whole-blob-verified stage.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChunkedDigest {
-    /// The byte span each chunk covers. Every chunk but the last is exactly this long.
+    /// Every chunk except the last has this byte length.
     pub chunk_size: u64,
-    /// The lowercase-hex sha256 of each chunk, in offset order.
+    /// Lowercase hexadecimal SHA-256 digests in offset order.
     pub digests: Vec<String>,
 }
 
 impl ChunkedDigest {
-    /// Compute the chunked digest of `bytes` whole, under `chunk_size`.
     #[must_use]
     pub fn of(bytes: &[u8], chunk_size: NonZeroU64) -> Self {
         let span = usize::try_from(chunk_size.get()).unwrap_or(usize::MAX);
@@ -49,19 +36,17 @@ impl ChunkedDigest {
         }
     }
 
-    /// How many chunks the blob divides into.
     #[must_use]
     pub const fn len(&self) -> usize {
         self.digests.len()
     }
 
-    /// Whether the blob divides into no chunks, the empty blob.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.digests.is_empty()
     }
 
-    /// The byte range chunk `index` covers within a blob of `total` bytes, or `None` past the last chunk.
+    /// Returns `None` when `index` lies past the last digest.
     #[must_use]
     pub fn range(&self, index: usize, total: u64) -> Option<Range<u64>> {
         if index >= self.digests.len() {
@@ -71,7 +56,6 @@ impl ChunkedDigest {
         Some(start..start.saturating_add(self.chunk_size).min(total))
     }
 
-    /// Whether `bytes` are the content of chunk `index`, hashing to its recorded digest.
     #[must_use]
     pub fn verify_chunk(&self, index: usize, bytes: &[u8]) -> bool {
         self.digests
@@ -80,11 +64,7 @@ impl ChunkedDigest {
     }
 }
 
-/// Accumulates a [`ChunkedDigest`] from bytes streamed in arbitrary pieces, closing each chunk digest as
-/// its boundary passes.
-///
-/// Mirrors how the content store streams a blob into its whole-blob hasher, so a stage computes the
-/// per-chunk digests in the same pass it computes the whole one, without a second read of the bytes.
+/// Builds chunk digests during whole-blob hashing to avoid reading staged bytes twice.
 pub struct ChunkedDigestBuilder {
     chunk_size: u64,
     filled: u64,
@@ -93,7 +73,6 @@ pub struct ChunkedDigestBuilder {
 }
 
 impl ChunkedDigestBuilder {
-    /// Begin accumulating under `chunk_size`.
     #[must_use]
     pub fn new(chunk_size: NonZeroU64) -> Self {
         Self {
@@ -104,7 +83,6 @@ impl ChunkedDigestBuilder {
         }
     }
 
-    /// Feed `bytes`, closing and recording each chunk digest as its boundary passes.
     pub fn update(&mut self, mut bytes: &[u8]) {
         while !bytes.is_empty() {
             let remaining = self.chunk_size - self.filled;
@@ -124,7 +102,7 @@ impl ChunkedDigestBuilder {
         self.filled = 0;
     }
 
-    /// Finalize, recording the trailing partial chunk when any bytes remain in it.
+    /// Includes a non-empty trailing partial chunk.
     #[must_use]
     pub fn finish(mut self) -> ChunkedDigest {
         if self.filled > 0 {
@@ -138,4 +116,5 @@ impl ChunkedDigestBuilder {
 }
 
 #[cfg(test)]
+#[path = "../../tests/unit/blob/chunked/tests.rs"]
 mod tests;

@@ -127,11 +127,6 @@ struct Mirror<'a> {
     mode: MirrorMode,
 }
 
-/// Mirror every reference in `refs` through `index` in `mode`, under that index's `settings`.
-///
-/// `index` is a cached index, or a virtual index with a cached member. Returns one report row per
-/// manifest, per blob, and a trailing summary.
-///
 /// # Errors
 /// Returns an error only on a store fault (metadata or blob io); a missing image, unreachable
 /// upstream, or bad blob is a reported row, not an error, so one bad reference never aborts the run.
@@ -236,7 +231,6 @@ impl Mirror<'_> {
         upstream_repo(self.settings.library_prefix, &self.base, repo)
     }
 
-    /// Mirror one image reference: its manifest, any per-platform child manifests, and every blob.
     async fn one_ref(&self, image: &ImageRef, rows: &mut Vec<MirrorRow>) -> anyhow::Result<()> {
         let tag = (!image.by_digest).then_some(image.reference.as_str());
         if let Some(manifest) = self.manifest_of(&image.repo, &image.reference, tag, rows).await? {
@@ -245,7 +239,6 @@ impl Mirror<'_> {
         Ok(())
     }
 
-    /// Fetch or read one manifest, recording its row, and hand back its stored bytes for walking.
     async fn manifest_of(
         &self,
         repo: &str,
@@ -315,7 +308,6 @@ impl Mirror<'_> {
         Ok(Some(manifest))
     }
 
-    /// Read a mirrored manifest from the store for verification, resolving a tag through its mapping.
     fn verify_manifest(
         &self,
         repo: &str,
@@ -385,7 +377,6 @@ impl Mirror<'_> {
         Ok(())
     }
 
-    /// Sync or verify one blob by digest.
     async fn blob(&self, repo: &str, digest: &str, rows: &mut Vec<MirrorRow>) {
         let Some(storage) = store::blob_digest(digest) else {
             rows.push(MirrorRow::error(

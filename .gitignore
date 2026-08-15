@@ -1,24 +1,20 @@
 /target
-# trunk output for the web UI
+/.tox/
+node_modules/
+playwright-report/
+test-results/
+.ruff_cache/
+.idea/
+.claude/settings.local.json
+.DS_Store
 crates/peryx-web/dist/
-# coverage artifacts
 /lcov.info
 *.profraw
 site/public/
-# cargo-leptos output (the web UI bundle)
 /ui/
-# frontend test artifacts
-tests/frontend/node_modules/
-tests/frontend/test-results/
-tests/frontend/playwright-report/
 /peryx-data/
 __pycache__/
-
-# Pagefind search index (generated at build time)
 /site/static/pagefind/
-
-# stray local venv
 /magic/
-/site/node_modules/
 /results/
 build.log

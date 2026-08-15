@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+run_with_timeout() {
+  local seconds=$1
+  shift
+  local status=0
+  perl -MPOSIX -e '
+    my $seconds = shift;
+    my $pid = fork;
+    die "fork: $!\n" unless defined $pid;
+    if ($pid == 0) {
+      POSIX::setpgid(0, 0) == 0 or die "setpgid: $!\n";
+      exec @ARGV or die "exec: $!\n";
+    }
+    my $timed_out = 0;
+    $SIG{ALRM} = sub {
+      $timed_out = 1;
+      kill "TERM", -$pid;
+      select undef, undef, undef, 0.25;
+      kill "KILL", -$pid;
+    };
+    alarm $seconds;
+    waitpid $pid, 0;
+    my $status = $?;
+    alarm 0;
+    exit 142 if $timed_out;
+    exit($status & 127 ? 128 + ($status & 127) : $status >> 8);
+  ' "$seconds" "$@" || status=$?
+  if ((status == 142)); then
+    printf 'command timed out after %s seconds: %s\n' "$seconds" "$*" >&2
+    return 124
+  fi
+  return "$status"
+}
+
+find_llvm_cov() {
+  local target_libdir
+  if ! target_libdir=$(rustc +nightly --print target-libdir); then
+    printf 'failed to query the nightly target library directory\n' >&2
+    return 1
+  fi
+  if [[ -z $target_libdir || $target_libdir == *$'\n'* || $target_libdir != /* ]]; then
+    printf 'nightly rustc returned an invalid target library directory: %q\n' \
+      "$target_libdir" >&2
+    return 1
+  fi
+  local llvm_cov
+  llvm_cov="$(dirname -- "$target_libdir")/bin/llvm-cov"
+  if [[ ! -x $llvm_cov ]]; then
+    printf '%s\n' \
+      'nightly llvm-cov was not found; run: rustup component add --toolchain nightly llvm-tools-preview' >&2
+    return 1
+  fi
+  printf '%s\n' "$llvm_cov"
+}
+
+package=${1:?package is required}
+seconds=${2:-60}
+output=${3:-".tox/fuzz/$package.lcov"}
+command_timeout=${FUZZ_COMMAND_TIMEOUT_SECONDS:-840}
+build_timeout=${FUZZ_BUILD_TIMEOUT_SECONDS:-1800}
+run_grace=${FUZZ_RUN_GRACE_SECONDS:-30}
+if [[ ! $seconds =~ ^[1-9][0-9]*$ || ! $command_timeout =~ ^[1-9][0-9]*$ ||
+  ! $build_timeout =~ ^[1-9][0-9]*$ || ! $run_grace =~ ^[1-9][0-9]*$ ]]; then
+  printf 'fuzz durations must be positive integers\n' >&2
+  exit 2
+fi
+metadata=$(cargo metadata --no-deps --format-version 1)
+manifest=$(jq -er --arg package "$package" '
+  .packages[] | select(.name == $package) | .metadata["peryx-ci"].fuzz.manifest
+' <<<"$metadata")
+mapfile -t targets < <(jq -r --arg package "$package" '
+  .packages[] | select(.name == $package) | .metadata["peryx-ci"].fuzz.targets[]
+' <<<"$metadata")
+if ((${#targets[@]} == 0)); then
+  printf 'package has no fuzz targets: %s\n' "$package" >&2
+  exit 2
+fi
+package_root=$(dirname -- "$(jq -er --arg package "$package" '
+  .packages[] | select(.name == $package) | .manifest_path
+' <<<"$metadata")")
+fuzz_manifest="$package_root/$manifest"
+fuzz_root=$(dirname -- "$fuzz_manifest")
+target_triple=$(rustc +nightly -vV | awk '/^host:/ { print $2 }')
+llvm_cov=$(find_llvm_cov)
+repo=$(pwd -P)
+target_dir=${FUZZ_TARGET_DIR:-"$repo/.tox/fuzz-target/$package"}
+[[ $target_dir == /* ]] || target_dir="$repo/$target_dir"
+unit_target_dir="$target_dir/unit"
+run_root=${FUZZ_RUN_ROOT:-"$repo/.tox/fuzz-runs"}
+[[ $run_root == /* ]] || run_root="$repo/$run_root"
+mkdir -p "$run_root"
+scratch=$(mktemp -d "$run_root/$package.XXXXXX")
+trap 'rm -rf "$scratch"' EXIT
+isolated_fuzz_root="$scratch/fuzz"
+mkdir -p "$isolated_fuzz_root" "$scratch/artifacts" "$scratch/corpus"
+FUZZ_SOURCE_ROOT="$fuzz_root" perl -MCwd=abs_path -pe '
+  s{(\bpath\s*=\s*")([^"]+)(")}{
+    my $path = abs_path("$ENV{FUZZ_SOURCE_ROOT}/$2");
+    die "fuzz dependency path does not exist: $2\n" unless defined $path;
+    "$1$path$3";
+  }ge
+' "$fuzz_manifest" >"$isolated_fuzz_root/Cargo.toml"
+for source in src fuzz_targets tests; do
+  if [[ -e $fuzz_root/$source ]]; then
+    ln -s "$fuzz_root/$source" "$isolated_fuzz_root/$source"
+  fi
+done
+for target in "${targets[@]}"; do
+  corpus="$scratch/corpus/$target"
+  artifacts="$scratch/artifacts/$target"
+  mkdir -p "$corpus" "$artifacts"
+  if [[ -d $fuzz_root/corpus/$target ]]; then
+    cp -R "$fuzz_root/corpus/$target/." "$corpus/"
+  fi
+  RUSTC_WRAPPER='' run_with_timeout "$build_timeout" \
+    cargo +nightly fuzz build --fuzz-dir "$isolated_fuzz_root" --target "$target_triple" \
+    --target-dir "$target_dir" "$target"
+  RUSTC_WRAPPER='' run_with_timeout "$((run_grace + seconds))" \
+    cargo +nightly fuzz run --fuzz-dir "$isolated_fuzz_root" --target "$target_triple" \
+    --target-dir "$target_dir" "$target" "$corpus" -- \
+    -artifact_prefix="$artifacts/" -max_total_time="$seconds"
+  RUSTC_WRAPPER='' run_with_timeout "$command_timeout" \
+    cargo +nightly fuzz coverage --fuzz-dir "$isolated_fuzz_root" --target "$target_triple" \
+    --target-dir "$target_dir" "$target" "$corpus"
+  binary=$(find "$target_dir" -type f -path "*/release/$target" -perm -u+x -print -quit)
+  if [[ -z $binary ]]; then
+    printf 'coverage binary not found for fuzz target: %s\n' "$target" >&2
+    exit 1
+  fi
+  run_with_timeout "$command_timeout" "$llvm_cov" export --format=lcov \
+    --instr-profile="$isolated_fuzz_root/coverage/$target/coverage.profdata" "$binary" | \
+    awk -v from="$isolated_fuzz_root/" -v to="$fuzz_root/" '
+      /^SF:/ {
+        isolated = index($0, "SF:" from) == 1
+        keep = isolated || index($0, "SF:" to) == 1
+        if (isolated) $0 = "SF:" to substr($0, length("SF:" from) + 1)
+      }
+      keep { print }
+    ' >"$scratch/$target.lcov"
+done
+RUSTC_WRAPPER='' CARGO_TARGET_DIR="$unit_target_dir" run_with_timeout "$command_timeout" \
+  cargo +nightly llvm-cov clean --manifest-path "$fuzz_manifest"
+RUSTC_WRAPPER='' CARGO_TARGET_DIR="$unit_target_dir" run_with_timeout "$command_timeout" \
+  cargo +nightly llvm-cov nextest --manifest-path "$fuzz_manifest" --all-features \
+  --lib --tests --no-report
+RUSTC_WRAPPER='' CARGO_TARGET_DIR="$unit_target_dir" run_with_timeout "$command_timeout" \
+  cargo +nightly llvm-cov report --manifest-path "$fuzz_manifest" \
+  --no-default-ignore-filename-regex --lcov --output-path "$scratch/tests.lcov"
+cat "$scratch"/*.lcov >"$scratch/combined.lcov"
+cargo metadata --manifest-path "$fuzz_manifest" --no-deps --format-version 1 >"$scratch/metadata.json"
+.github/scripts/package-source-roots --metadata "$scratch/metadata.json" --index >"$scratch/roots"
+fuzz_package=$(jq -r '.packages[] | select(.metadata["cargo-fuzz"] == true) | .name' \
+  "$scratch/metadata.json")
+.github/scripts/check-lcov-sources --metadata "$scratch/metadata.json" --root-index "$scratch/roots" \
+  "$scratch/combined.lcov" "$fuzz_package"
+while IFS= read -r source_root; do
+  COVERAGE_ROOT="$source_root" COVERAGE_REQUIRE_EXECUTABLE=1 \
+    .github/scripts/check-lcov-functions.awk "$scratch/combined.lcov"
+  COVERAGE_ROOT="$source_root" COVERAGE_REQUIRE_EXECUTABLE=1 \
+    .github/scripts/check-lcov-lines.awk "$scratch/combined.lcov"
+done < <(awk -F '\t' -v package="$fuzz_package" '$1 == package { print $2 }' "$scratch/roots")
+mkdir -p "$(dirname -- "$output")"
+cp "$scratch/combined.lcov" "$output"

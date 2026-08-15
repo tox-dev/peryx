@@ -23,7 +23,7 @@ fn main() {
 
 fn report(repository_count: usize) {
     let indexes = indexes(repository_count);
-    let path = format!("tenant-{}/pypi/simple/project", repository_count - 1);
+    let path = format!("tenant-{}/alpha/items/artifact", repository_count - 1);
     let build_region = Region::new(ALLOCATOR);
     let resolver = RouteResolver::new(&indexes);
     let build = build_region.change();
@@ -56,8 +56,12 @@ fn indexes(count: usize) -> Vec<Index> {
     (0..count)
         .map(|position| Index {
             name: format!("repository-{position}"),
-            route: format!("tenant-{position}/pypi"),
-            ecosystem: Ecosystem::Pypi,
+            route: if position == 0 && count > 1 {
+                format!("tenant-{}", count - 1)
+            } else {
+                format!("tenant-{position}/alpha")
+            },
+            ecosystem: Ecosystem::new("example"),
             kind: IndexKind::Hosted { volatile: false },
             policy: Policy::default(),
             acl: IndexAcl::default(),

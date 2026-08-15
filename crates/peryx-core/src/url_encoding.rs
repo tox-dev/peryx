@@ -25,24 +25,5 @@ fn push_percent(out: &mut String, byte: u8) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{push_component, push_path};
-
-    #[test]
-    fn test_push_component_escapes_url_delimiters() {
-        let mut out = String::new();
-        push_component(&mut out, "pkg/data #1?.py");
-        assert_eq!(out, "pkg%2Fdata%20%231%3F.py");
-    }
-
-    #[test]
-    fn test_push_path_keeps_segment_separators() {
-        let mut out = String::new();
-        push_path(&mut out, "root/pypi");
-        assert_eq!(out, "root/pypi");
-
-        let mut out = String::new();
-        push_path(&mut out, "root/pypi mirror");
-        assert_eq!(out, "root/pypi%20mirror");
-    }
-}
+#[path = "../tests/unit/url_encoding/tests.rs"]
+mod tests;

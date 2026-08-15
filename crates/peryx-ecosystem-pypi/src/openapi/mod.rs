@@ -4,25 +4,25 @@
 use utoipa::openapi::PathsBuilder;
 use utoipa::openapi::path::{HttpMethod, PathItemBuilder};
 
-use peryx_driver::openapi::package_search;
-
 mod discovery;
 mod files;
 mod inspect;
 mod legacy;
 mod publish;
+mod search;
 mod shared;
 mod simple;
+mod trusted_publishing;
 
 use discovery::index_discovery;
 use files::{file_download, metadata_download};
 use inspect::{inspect_listing, inspect_member};
 use legacy::{legacy_project_json, legacy_release_json};
 use publish::{delete_project, delete_version, promote, restore, unyank, upload, yank};
+use search::package_search;
 use simple::{project_detail, project_list};
+use trusted_publishing::{oidc_audience, oidc_mint_token};
 
-/// Every path a `PyPI` index serves, mounted under its route. The composition root folds each
-/// ecosystem's paths into one document.
 #[must_use]
 pub fn openapi_paths(paths: PathsBuilder) -> PathsBuilder {
     let paths = paths
@@ -40,6 +40,18 @@ pub fn openapi_paths(paths: PathsBuilder) -> PathsBuilder {
         );
     let paths = legacy_json_paths(paths);
     paths
+        .path(
+            "/_/oidc/audience",
+            PathItemBuilder::new()
+                .operation(HttpMethod::Get, oidc_audience())
+                .build(),
+        )
+        .path(
+            "/_/oidc/mint-token",
+            PathItemBuilder::new()
+                .operation(HttpMethod::Post, oidc_mint_token())
+                .build(),
+        )
         .path(
             "/{route}/files/{sha256}/{filename}",
             PathItemBuilder::new()
@@ -65,7 +77,7 @@ pub fn openapi_paths(paths: PathsBuilder) -> PathsBuilder {
         .path(
             "/{route}/+search",
             PathItemBuilder::new()
-                .operation(HttpMethod::Get, package_search(true))
+                .operation(HttpMethod::Get, package_search())
                 .build(),
         )
         .path(

@@ -1,68 +1,46 @@
-//! Durable, epoch-fenced ownership of a cluster background job.
-//!
-//! The job-run ledger in [`job`](super::job) records what a background task did; it says nothing about
-//! who is allowed to run it. In a cluster a job like a reclamation sweep or a search rebuild must run
-//! on one node at a time, and a node that a newer authority term has superseded must stop before its
-//! writes collide with its successor's. This module records one durable lease per job identity and
-//! enforces that with a fencing epoch: a claim at an epoch at or above the recorded one wins and names
-//! its holder, and a claim from a superseded epoch is rejected without touching the lease.
-//!
-//! The epoch is supplied by the caller. The cluster authority that mints it — the ownership state
-//! machine and its leadership term — lives above this layer and is still being built, so this module
-//! stays a pure decision core over a `u64`, indifferent to whether that authority ends up Raft-based
-//! or bespoke. It reads no clock and opens no socket: every time bound arrives as a parameter, so a
-//! test drives the whole lifecycle deterministically. The scheduler that decides which jobs to claim
-//! and how often to renew composes above.
+//! Epoch-fenced leases prevent superseded workers from running cluster jobs. Callers supply epochs and
+//! timestamps; storage does not choose leaders or read a clock.
 
 use redb::ReadableTable as _;
 use serde::{Deserialize, Serialize};
 
 use super::{JOB_LEASE, MetaError, MetaStore};
 
-/// Whether a lease is currently held or was given up by its holder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "state")]
 pub enum LeaseState {
-    /// A holder owns the job under [`epoch`](JobLease::epoch).
     Held,
-    /// The last holder released the job; a claim at or above the recorded epoch may take it.
+    /// A claim at or above the recorded epoch may acquire the job.
     Released,
 }
 
-/// A durable lease naming the current owner of one background job.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JobLease {
     pub job: String,
-    /// The worker identity that holds, or last held, the job. Opaque to the store.
+    /// Opaque worker identity.
     pub holder: String,
-    /// The authority epoch the lease was written under; a lower epoch is a superseded worker and is
-    /// fenced out without changing the lease.
+    /// Lower epochs cannot change the lease.
     pub epoch: u64,
     pub state: LeaseState,
     pub claimed_at_unix: i64,
     pub renewed_at_unix: i64,
-    /// When the lease lapses absent a renewal, so a scheduler can flag a holder that stopped renewing.
-    /// The fencing decision never consults it; a superseding epoch reclaims a lease whether or not it
-    /// has lapsed.
+    /// Used for scheduler liveness only; fencing ignores expiry.
     pub expires_at_unix: i64,
 }
 
 impl JobLease {
-    /// Whether the lease has lapsed as of `now`, the signal a scheduler uses to notice a holder that
-    /// stopped renewing. A lapsed lease is still owned until a claim supersedes it.
+    /// Expiry does not release ownership; a later claim must supersede the lease.
     #[must_use]
     pub const fn is_expired(&self, now: i64) -> bool {
         matches!(self.state, LeaseState::Held) && now >= self.expires_at_unix
     }
 }
 
-/// The effect of claiming a job lease.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClaimOutcome {
-    /// The lease was acquired: a first claim, a takeover of a released lease, or a supersede by a newer
-    /// epoch or a different holder.
+    /// A first claim, released lease, newer epoch, or different holder acquired the lease.
     Granted(JobLease),
-    /// The current holder re-claimed its own lease at its own epoch and extended the deadline.
+    /// The current holder extended its deadline at the same epoch.
     Renewed(JobLease),
 }
 
@@ -75,7 +53,6 @@ impl ClaimOutcome {
     }
 }
 
-/// A rejected lease operation.
 #[derive(Debug, thiserror::Error)]
 pub enum JobLeaseError {
     #[error(transparent)]
@@ -87,14 +64,8 @@ pub enum JobLeaseError {
 }
 
 impl MetaStore {
-    /// Claim the lease for `job` under a fencing epoch, acquiring or renewing it.
-    ///
-    /// An epoch at or above the recorded one wins: a first claim, a claim on a released lease, a claim
-    /// by a newer epoch, or a claim by a different holder at the same epoch all acquire the lease and
-    /// return [`Granted`](ClaimOutcome::Granted), reclaiming it from a superseded holder in the process.
-    /// The current holder re-claiming at its own epoch returns [`Renewed`](ClaimOutcome::Renewed) with a
-    /// deadline extended to `now + lease_secs` and its original claim time preserved. A claim from an
-    /// epoch below the recorded one is a superseded worker and is rejected without change.
+    /// Grants claims at or above the stored epoch. The current holder at the same epoch renews its
+    /// deadline without changing the original claim time; lower epochs cannot change the lease.
     ///
     /// # Errors
     /// Returns [`JobLeaseError::StaleFence`] when `epoch` is below the recorded one, or a store error
@@ -136,12 +107,8 @@ impl MetaStore {
         })
     }
 
-    /// Release the lease for `job`, so the next claim at or above the current epoch may take it.
-    ///
-    /// Only the current holder may release, and only from an epoch at or above the recorded one. A
-    /// release of a missing or already-released lease is a no-op that reports `false`. Releasing marks
-    /// the lease [`Released`](LeaseState::Released) and stamps the releasing epoch, so a later stale
-    /// claim still loses the fence.
+    /// Only the current holder at or above the stored epoch may release. Missing and released leases
+    /// return `false`; a release records its epoch to preserve the fence.
     ///
     /// # Errors
     /// Returns [`JobLeaseError::StaleFence`] when `epoch` is below the recorded one,
@@ -171,8 +138,6 @@ impl MetaStore {
         Ok(released)
     }
 
-    /// Read the lease for one job.
-    ///
     /// # Errors
     /// Returns a store error when the row cannot be read or decoded.
     pub fn job_lease(&self, job: &str) -> Result<Option<JobLease>, MetaError> {
@@ -184,7 +149,7 @@ impl MetaStore {
             .transpose()?)
     }
 
-    /// List every job lease in job-identity order.
+    /// Returns leases in job-identity order.
     ///
     /// # Errors
     /// Returns a store error when a row cannot be read or decoded.
@@ -228,5 +193,5 @@ fn write_lease(txn: &redb::WriteTransaction, lease: &JobLease) -> Result<(), Met
 }
 
 #[cfg(test)]
-#[path = "job_lease_fault_tests.rs"]
+#[path = "../../tests/unit/meta/job_lease_fault_tests.rs"]
 mod fault_tests;

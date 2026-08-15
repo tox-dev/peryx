@@ -1,5 +1,6 @@
-{%- set ECO = load_data(path="data/ecosystems.toml") -%}
-<title>Peryx — Brand Book</title>
+{%- set OWNERS = load_data(path="data/ecosystem-owners.toml") -%}
+{%- set ROADMAP = load_data(path="data/ecosystem-roadmap.toml") -%}
+<title>Peryx | Brand Book</title>
 <style>
   :root{
     --bg:#f7f4ef;--bg-panel:#fffdf9;--bg-sink:#efeae1;
@@ -330,37 +331,37 @@
     <div class="cover">
       <p class="eyebrow">Identity &amp; usage</p>
       <div class="lock"><span class="mk" data-mk></span><h1>peryx</h1></div>
-      <p class="lede">Fast as the falcon, sealed as the pyx.</p>
-      <p class="sub">One blazing-fast, open-source vault for a wide range of ecosystems. The identity is built on a mark traced from a photo of a diving peregrine.</p>
+      <p class="lede">Artifact storage across ecosystems.</p>
+      <p class="sub">An open-source artifact service marked by a diving peregrine.</p>
     </div>
 
     <section class="sec" id="s1">
       <div class="head"><span class="num">01</span><h2>The name</h2></div>
-      <p class="lead">Two real roots make one coined word. Between them they cover the three traits: open, fast, wide ecosystem support. Say it <span class="mono">PERR-iks</span>.</p>
+      <p class="lead">Two roots form the name. Say it <span class="mono">PERR-iks</span>.</p>
       <div class="etym">
-        <div class="card"><div class="k">per· · the peregrine</div><div class="h">Speed, and every land.</div><p>The fastest animal alive, over 380&nbsp;km/h in a dive. Its Latin root <em>peregrinus</em> means &ldquo;from every land,&rdquo; which stands for the wide-ecosystem axis: one vault, artifacts from many ecosystems.</p></div>
-        <div class="card"><div class="k">·yx · the pyx</div><div class="h">A sealed, assayed vault.</div><p>A <em>pyx</em> is a sealed box for safekeeping. In the <em>Trial of the Pyx</em>, sample coins are locked away, then assayed to prove they are genuine. That is the upload pipeline.</p></div>
+        <div class="card"><div class="k">per· · the peregrine</div><div class="h">The diving falcon.</div><p>The peregrine reaches over 380&nbsp;km/h in a dive. Its Latin root <em>peregrinus</em> means &ldquo;from every land.&rdquo;</p></div>
+        <div class="card"><div class="k">·yx · the pyx</div><div class="h">A sealed, assayed vault.</div><p>A <em>pyx</em> is a sealed box for safekeeping. In the <em>Trial of the Pyx</em>, sample coins are locked away, then assayed to prove they are genuine. Artifact verification follows that model.</p></div>
       </div>
     </section>
 
     <section class="sec" id="s2">
       <div class="head"><span class="num">02</span><h2>What Peryx is</h2></div>
-      <p class="lead">A caching proxy of upstream indexes, a hosted store you publish to, and a virtual index that merges the two so local packages override upstream. One async Rust process. Zero-config on a laptop, clustered when you configure it.</p>
+      <p class="lead">peryx caches upstream artifacts, stores published artifacts, and composes both through virtual indexes. Configuration selects availability behavior.</p>
       <div class="cards3">
         <div class="card"><div class="k">Trait 01</div><div class="h">Open source</div><p>Free, inspectable, self-hosted. No seat tax to run your own registry.</p></div>
-        <div class="card"><div class="k">Trait 02</div><div class="h">Blazing fast</div><p>Features you do not enable cost nothing: no CPU, RAM, or latency for anything switched off.</p></div>
-        <div class="card"><div class="k">Trait 03</div><div class="h">Wide ecosystem support</div><p>PyPI and OCI today; npm, Maven, and Cargo next. Each is a driver behind one model.</p></div>
+        <div class="card"><div class="k">Trait 02</div><div class="h">Config-selected</div><p>Disabled features start no tasks and allocate no feature state.</p></div>
+        <div class="card"><div class="k">Trait 03</div><div class="h">Owner contracts</div><p>Ecosystem owner crates implement shared traits.</p></div>
       </div>
     </section>
 
     <section class="sec" id="s3">
       <div class="head"><span class="num">03</span><h2>Voice &amp; taglines</h2></div>
-      <p class="lead">Concise, technical, plain. Describe what it does and let the numbers carry the boast.</p>
+      <p class="lead">Use concise, technical language. State behavior directly.</p>
       <div class="tls">
-        <div class="tl primary"><span class="role">Lead</span><span class="t">Fast as the falcon, sealed as the pyx.</span></div>
-        <div class="tl"><span class="role">Sub</span><span class="t">One blazing-fast vault for a wide range of ecosystems.</span></div>
-        <div class="tl"><span class="role">Dev</span><span class="t">Catch every package and prove every artifact, at falcon speed.</span></div>
-        <div class="tl"><span class="role">Security</span><span class="t">Held under seal. Proven on push. Served at falcon speed.</span></div>
+        <div class="tl primary"><span class="role">Lead</span><span class="t">Artifact storage across ecosystems.</span></div>
+        <div class="tl"><span class="role">Sub</span><span class="t">Cache upstream artifacts and host private artifacts.</span></div>
+        <div class="tl"><span class="role">Dev</span><span class="t">One binary with protocol behavior in ecosystem owner crates.</span></div>
+        <div class="tl"><span class="role">Security</span><span class="t">Verify artifact digests before storage and service.</span></div>
       </div>
       <div class="voice">
         <div class="is"><b>Voice is</b><p>Plain about packaging concepts. Active voice. A control says what happens. Numbers over adjectives.</p></div>
@@ -448,8 +449,8 @@
       <div class="themes2">
         <div class="themepanel force-light">
           <div class="row1"><span class="mk" data-mk></span><span class="wm">peryx</span></div>
-          <p>One blazing-fast vault for a wide range of ecosystems.</p>
-          <div class="tbtns"><button class="tbtn p">Publish</button><button class="tbtn">Details</button><span class="ec-chip"><span class="dt" style="background:#3775A9"></span>PyPI</span></div>
+          <p>Cache and host artifacts across ecosystems.</p>
+          <div class="tbtns"><button class="tbtn p">Publish</button><button class="tbtn">Details</button><span class="ec-chip"><span class="dt" style="background:#3775A9"></span>Owner</span></div>
           <div class="tlabel">light theme</div>
           <div class="tspec">
             <div><span class="sw" style="background:#f7f4ef"></span><b>bg</b>#f7f4ef</div>
@@ -460,8 +461,8 @@
         </div>
         <div class="themepanel force-dark">
           <div class="row1"><span class="mk" data-mk></span><span class="wm">peryx</span></div>
-          <p>One blazing-fast vault for a wide range of ecosystems.</p>
-          <div class="tbtns"><button class="tbtn p">Publish</button><button class="tbtn">Details</button><span class="ec-chip"><span class="dt" style="background:#4f9be0"></span>OCI</span></div>
+          <p>Cache and host artifacts across ecosystems.</p>
+          <div class="tbtns"><button class="tbtn p">Publish</button><button class="tbtn">Details</button><span class="ec-chip"><span class="dt" style="background:#4f9be0"></span>Owner</span></div>
           <div class="tlabel">dark theme</div>
           <div class="tspec">
             <div><span class="sw" style="background:#131110"></span><b>bg</b>#131110</div>
@@ -475,11 +476,11 @@
 
     <section class="sec" id="s8">
       <div class="head"><span class="num">08</span><h2>Ecosystems</h2></div>
-      <p class="lead">A coloured device carries the ecosystem, kept off the mark. It maps across the package types Artifactory supports, each in that project&rsquo;s own brand colour. <span style="color:var(--ok)">&#9679;</span> marks the ones live in Peryx today.</p>
+      <p class="lead">A coloured device identifies an ecosystem without changing the mark. Use the owner&rsquo;s brand colour. <span style="color:var(--ok)">&#9679;</span> marks owners compiled into peryx.</p>
       <div class="device">
         <div class="dev"><span class="k">Device · underline</span>
           <div style="margin-top:.5rem"><span class="wmini">peryx</span></div>
-          <div class="u-item" style="width:6rem"><div class="bar" style="background:#3775A9"></div><span class="cap">PyPI</span></div>
+          <div class="u-item" style="width:6rem"><div class="bar" style="background:#3775A9"></div><span class="cap">Owner</span></div>
         </div>
         <div class="dev"><span class="k">Device · chip</span>
           <div class="chiprow" id="chiprow"></div>
@@ -492,10 +493,10 @@
     <section class="sec" id="s9">
       <div class="head"><span class="num">09</span><h2>Typography</h2></div>
       <p class="lead">System stacks: a mono for labels, data, and the CLI the tool lives in, and a sans for UI and prose. No web fonts.</p>
-      <div class="typerow"><div class="m">Display / wordmark — sans 800, −2% tracking</div><div class="t-display" style="background:linear-gradient(115deg,var(--brand-a),var(--brand-b));-webkit-background-clip:text;background-clip:text;color:transparent">peryx</div></div>
-      <div class="typerow"><div class="m">Heading — sans 700</div><div class="t-h">Serve a wide range of ecosystems from one vault.</div></div>
-      <div class="typerow"><div class="m">Body — sans 400</div><div class="t-body">A caching proxy, a hosted store, and a virtual index that merges the two so local packages override upstream.</div></div>
-      <div class="typerow"><div class="m">Mono — labels, code, CLI</div><div class="t-mono">$ peryx mirror sync --ecosystem pypi &nbsp;<span style="color:var(--text-faint)"># 1,284 files · 0.6s</span></div></div>
+      <div class="typerow"><div class="m">Display / wordmark: sans 800, −2% tracking</div><div class="t-display" style="background:linear-gradient(115deg,var(--brand-a),var(--brand-b));-webkit-background-clip:text;background-clip:text;color:transparent">peryx</div></div>
+      <div class="typerow"><div class="m">Heading: sans 700</div><div class="t-h">Cache and host artifacts across ecosystems.</div></div>
+      <div class="typerow"><div class="m">Body: sans 400</div><div class="t-body">A virtual index composes cached and hosted resources under one route.</div></div>
+      <div class="typerow"><div class="m">Mono: labels, code, CLI</div><div class="t-mono">$ peryx serve &nbsp;<span style="color:var(--text-faint)"># listening on 127.0.0.1:4433</span></div></div>
     </section>
 
     <section class="sec" id="s10">
@@ -534,7 +535,7 @@
     <section class="sec" id="s11">
       <div class="head"><span class="num">11</span><h2>Startup banner</h2></div>
       <p class="lead">The startup logo prints when the service boots. Two separate builds for two eras of terminal. Pick one at runtime; keep both off for non-TTY output and CI.</p>
-      <h3 class="sub">Modern terminals — truecolor &amp; Unicode blocks</h3>
+      <h3 class="sub">Modern terminals: truecolor and Unicode blocks</h3>
       <div class="terminal"><div class="bar"><span></span><span></span><span></span></div><pre><span class="banner-grad" aria-hidden="true">  ██████  ███████ ██████  ██   ██ ██   ██
   ██   ██ ██      ██   ██  ██ ██   ██ ██
   ██████  █████   ██████    ███     ███
@@ -542,11 +543,11 @@
   ██      ███████ ██   ██    ██   ██   ██</span>
    <span class="dim">the artifact vault · v0.1.0</span>
 
-   <span class="g">→</span> proxy   <span class="dim">pypi.org, ghcr.io</span>
-   <span class="g">→</span> hosted  <span class="dim">2,481 packages · 6.2 GB</span>
-   <span class="g">→</span> virtual <span class="dim">/simple, /v2</span>
+   <span class="g">→</span> proxy   <span class="dim">upstream.example</span>
+   <span class="g">→</span> hosted  <span class="dim">2,481 resources · 6.2 GB</span>
+   <span class="g">→</span> virtual <span class="dim">/cache, /hosted</span>
    <span class="ok">✓</span> ready in <span class="ok">0.42s</span> on <span class="ok">:8080</span></pre></div>
-      <h3 class="sub">Old terminals — ASCII only, 16-colour or mono</h3>
+      <h3 class="sub">Old terminals: ASCII only, 16-colour or mono</h3>
       <div class="terminal"><div class="bar"><span></span><span></span><span></span></div><pre><span class="banner" aria-hidden="true">   _ __   ___ _ __ _   ___  __
   | '_ \ / _ \ '__| | | \ \/ /
   | |_) |  __/ |  | |_| |&gt;  &lt;
@@ -554,9 +555,9 @@
   |_|              |___/</span>
   the artifact vault   v0.1.0
   ------------------------------------
-  <span class="g">-&gt;</span> proxy    pypi.org, ghcr.io
-  <span class="g">-&gt;</span> hosted   2481 packages, 6.2 GB
-  <span class="g">-&gt;</span> virtual  /simple, /v2
+  <span class="g">-&gt;</span> proxy    upstream.example
+  <span class="g">-&gt;</span> hosted   2481 resources, 6.2 GB
+  <span class="g">-&gt;</span> virtual  /cache, /hosted
   [<span class="ok">ok</span>] ready in 0.42s on :8080</pre></div>
       <p class="capt" style="text-align:left;margin-top:.7rem">Pick at runtime: truecolor plus UTF-8 selects the modern build; an older <span class="mono">TERM</span>, <span class="mono">NO_COLOR</span>, or a non-TTY pipe drops to the ASCII build in the terminal&rsquo;s own foreground.</p>
     </section>
@@ -637,11 +638,9 @@
   document.getElementById('swatches').innerHTML=PALETTE.map(([n,h,t])=>`<div class="swx" data-copy="${h}" data-copy-label="${n}"><div class="c" style="background:${h}"></div><div class="m"><div class="n">${n}</div><div class="h">${h}</div><div class="rgb">${rgb(h)}</div><div class="t">${t}</div></div></div>`).join('');
   document.getElementById('semantic').innerHTML=SEM.map(([n,h])=>`<div class="swx" data-copy="${h}" data-copy-label="${n}"><div class="c" style="background:${h}"></div><div class="m"><div class="n">${n}</div><div class="h">${h}</div><div class="rgb">${rgb(h)}</div></div></div>`).join('');
 
-  {#- The ecosystem palette renders from site/data/ecosystems.toml, the same file the brand page
-      reads, so the two documents cannot drift apart. -#}
-  const CATS=[{% for group in ECO.groups %}[{{ group.name | json_encode | safe }},[{% for item in group.items %}[{{ item.name | json_encode | safe }},{{ item.subtitle | json_encode | safe }},{{ item.color | json_encode | safe }},{% if item.live %}1{% else %}0{% endif %}]{% if not loop.last %},{% endif %}{% endfor %}]]{% if not loop.last %},{% endif %}{% endfor %}];
+  const CATS=[["Supported",[{% for item in OWNERS.items %}[{{ item.name | json_encode | safe }},{{ item.subtitle | json_encode | safe }},{{ item.color | json_encode | safe }},1]{% if not loop.last %},{% endif %}{% endfor %}]],{% for group in ROADMAP.groups %}[{{ group.name | json_encode | safe }},[{% for item in group.items %}[{{ item.name | json_encode | safe }},{{ item.subtitle | json_encode | safe }},{{ item.color | json_encode | safe }},0]{% if not loop.last %},{% endif %}{% endfor %}]]{% if not loop.last %},{% endif %}{% endfor %}];
   document.getElementById('cats').innerHTML=CATS.map(([t,items])=>`<div class="ecohead"><h4>${t}</h4><span class="c">${items.length}</span></div><div class="chips">${items.map(([n,s,h,l])=>`<div class="eco" data-copy="${h}" data-copy-label="${n}"><span class="d ${l?'live':''}" style="background:${h}"></span><span style="min-width:0"><span class="nm">${n}</span><span class="su">${s}</span></span><span class="hx">${h.toUpperCase()}</span></div>`).join('')}</div>`).join('');
-  const chipHTML=[{% for group in ECO.groups %}{% for item in group.items %}{% if item.chip %}[{{ item.name | json_encode | safe }},{{ item.color | json_encode | safe }}],{% endif %}{% endfor %}{% endfor %}].map(([n,h])=>`<span class="ec-chip"><span class="dt" style="background:${h}"></span>${n}</span>`).join('');
+  const chipHTML=[{% for item in OWNERS.items %}{% if item.chip %}[{{ item.name | json_encode | safe }},{{ item.color | json_encode | safe }}],{% endif %}{% endfor %}{% for group in ROADMAP.groups %}{% for item in group.items %}{% if item.chip %}[{{ item.name | json_encode | safe }},{{ item.color | json_encode | safe }}],{% endif %}{% endfor %}{% endfor %}].map(([n,h])=>`<span class="ec-chip"><span class="dt" style="background:${h}"></span>${n}</span>`).join('');
   document.getElementById('chiprow').innerHTML=chipHTML;
   document.getElementById('chiprow2').innerHTML=chipHTML;
 
@@ -655,7 +654,6 @@
   mo.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();play();}});
   addEventListener('DOMContentLoaded',()=>setTimeout(play,300)); play();
 
-  // copy-to-clipboard + toast
   const _toast=document.getElementById('toast'); let _tt;
   const MARK_SVG=`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><defs><linearGradient id="peryx" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f74c00"/><stop offset="1" stop-color="#ffb600"/></linearGradient></defs><path fill="url(#peryx)" d="${FAL}"/></svg>`;
   function showCopy(text,label){ try{navigator.clipboard&&navigator.clipboard.writeText(text);}catch(e){} const disp=text.length>40?(label||'Copied'):((label?label+' · ':'')+text); _toast.textContent=disp+'  ✓ copied'; _toast.classList.add('show'); clearTimeout(_tt); _tt=setTimeout(()=>_toast.classList.remove('show'),1500); }

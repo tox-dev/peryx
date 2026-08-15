@@ -1,14 +1,5 @@
-//! Local password authentication over the server-user store.
-//!
-//! A password is never stored: [`PasswordPolicy::hash`] derives a memory-hard Argon2id verifier and the
-//! caller keeps only that. [`PasswordVerifier::check`] answers whether a presented password derives the
-//! stored verifier, and whether the verifier's parameters have fallen behind the current policy so the
-//! caller can re-enroll it under the same identity. The verifier is a secret: its [`Debug`] is redacted
-//! and it never surfaces in a serialized account view.
-//!
-//! Defaults follow the [OWASP Password Storage guidance] for Argon2id — 19 MiB of memory, two
-//! iterations, one lane — over the algorithm [RFC 9106] standardizes. A deployment that wants the
-//! RFC's higher-memory profile raises them through [`PasswordPolicy::new`].
+//! Argon2id defaults follow [OWASP Password Storage guidance]. [`PasswordPolicy::new`] supports the
+//! higher-memory profiles in [RFC 9106].
 //!
 //! [OWASP Password Storage guidance]: https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html
 //! [RFC 9106]: https://www.rfc-editor.org/rfc/rfc9106
@@ -20,7 +11,6 @@ use argon2::password_hash::{PasswordHash, PasswordHasher as _, PasswordVerifier 
 use argon2::{Algorithm, Argon2, Params, Version};
 use serde::{Deserialize, Serialize};
 
-/// The Argon2id cost parameters a deployment enrolls and verifies passwords under.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PasswordPolicy {
     memory_kib: u32,
@@ -28,7 +18,7 @@ pub struct PasswordPolicy {
     lanes: u32,
 }
 
-/// A rejected password operation. Neither variant carries the password or the verifier.
+/// Errors omit the password and verifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum PasswordError {
     #[error("argon2 cost parameters are out of range")]
@@ -48,11 +38,11 @@ impl PasswordPolicy {
         }
     }
 
-    /// Build a policy from explicit Argon2id costs, in kibibytes of memory, passes, and lanes.
+    /// `memory_kib` uses kibibytes; `iterations` and `lanes` are counts.
     ///
     /// # Errors
-    /// Returns [`PasswordError::Params`] when the costs fall outside Argon2's accepted range (notably
-    /// `memory_kib` below `8 * lanes`).
+    /// Returns [`PasswordError::Params`] when the costs fall outside Argon2's accepted range, including
+    /// `memory_kib` below `8 * lanes`.
     pub fn new(memory_kib: u32, iterations: u32, lanes: u32) -> Result<Self, PasswordError> {
         Params::new(memory_kib, iterations, lanes, None).map_err(|_| PasswordError::Params)?;
         Ok(Self {
@@ -62,8 +52,6 @@ impl PasswordPolicy {
         })
     }
 
-    /// Derive a memory-hard verifier for `password` under a fresh random salt.
-    ///
     /// # Errors
     /// Returns [`PasswordError::Hash`] when salt generation or the Argon2id derivation fails.
     pub fn hash(&self, password: &str) -> Result<PasswordVerifier, PasswordError> {
@@ -78,14 +66,15 @@ impl PasswordPolicy {
         Ok(PasswordVerifier(encoded))
     }
 
-    /// Spend one verification's worth of work without a stored verifier, so an unknown or passwordless
-    /// account fails in the same time a real mismatch does and reveals nothing by how long it took.
+    /// Spends one verification for unknown and passwordless accounts to mask account existence.
+    ///
+    /// # Panics
+    /// Panics if Argon2 rejects a 16-byte salt, which its salt encoding contract accepts.
     pub fn spend_decoy(&self, password: &str) {
         let mut salt = [0u8; 16];
         let _ = getrandom::fill(&mut salt);
-        if let Ok(salt) = SaltString::encode_b64(&salt) {
-            let _ = black_box(self.argon2().hash_password(black_box(password).as_bytes(), &salt));
-        }
+        let salt = SaltString::encode_b64(&salt).expect("16-byte salts are valid");
+        let _ = black_box(self.argon2().hash_password(black_box(password).as_bytes(), &salt));
     }
 
     fn argon2(&self) -> Argon2<'static> {
@@ -95,30 +84,20 @@ impl PasswordPolicy {
     }
 }
 
-/// A stored Argon2id verifier.
-///
-/// It holds the PHC-encoded salt, parameters, and tag that a presented password must reproduce. It is a
-/// credential secret, so its [`Debug`] redacts and it is never placed in an account view a client can
-/// read.
+/// Debug output redacts the stored Argon2id verifier.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct PasswordVerifier(String);
 
-/// The outcome of checking a password against a stored verifier.
+/// `Accepted { stale: true }` requests re-enrollment under the current policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PasswordCheck {
-    /// The password reproduced the verifier. `stale` is set when the verifier's parameters no longer
-    /// match the policy, so the caller should re-enroll it under the same identity.
     Accepted { stale: bool },
-    /// The password did not reproduce the verifier.
     Rejected,
 }
 
 impl PasswordVerifier {
-    /// Whether `password` reproduces this verifier, and whether its parameters trail `policy`.
-    ///
-    /// A malformed stored verifier rejects rather than erroring: an account whose credential cannot be
-    /// parsed cannot authenticate, and that is the same public outcome as a wrong password.
+    /// Malformed stored verifiers reject like wrong passwords to avoid exposing credential state.
     #[must_use]
     pub fn check(&self, password: &str, policy: &PasswordPolicy) -> PasswordCheck {
         let Ok(parsed) = PasswordHash::new(&self.0) else {
@@ -133,10 +112,7 @@ impl PasswordVerifier {
     }
 }
 
-/// A verified verifier trails the policy when any Argon2id cost no longer matches, so a tightened policy
-/// re-enrolls the credential and a loosened one is normalized back up on the next successful login. A
-/// verifier only reaches here after [`argon2::Argon2::verify_password`] accepted it, so its parameters
-/// parse.
+/// Re-enroll when any cost differs so tightened and loosened policies converge after login.
 fn params_trail(hash: &PasswordHash<'_>, policy: &PasswordPolicy) -> bool {
     let params = Params::try_from(hash).expect("a verified argon2 hash carries valid parameters");
     params.m_cost() != policy.memory_kib || params.t_cost() != policy.iterations || params.p_cost() != policy.lanes

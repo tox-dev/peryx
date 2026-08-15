@@ -1,12 +1,6 @@
-//! Ecosystem-neutral index policy engine.
-//!
-//! The engine enforces the rules every ecosystem shares (project-name allow/block lists and byte-size
-//! limits) and runs any format-specific rules a driver supplies as [`ArtifactRule`] trait objects. A
-//! matcher that understands a package format (a `PyPI` version specifier, a wheel tag) is implemented
-//! in that ecosystem's crate and attached through [`Policy::with_rules`], so this crate names no
-//! package format and depends on no format library.
+//! Owner capabilities keep ecosystem rules outside shared policy code.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -19,66 +13,46 @@ pub use retention::{
     RetentionPolicy, RetentionSelector, RetentionSummary, RetentionVisibility,
 };
 
-/// The ecosystem-neutral policy keys. A driver parses its own format-specific keys separately and
-/// compiles them into [`ArtifactRule`]s.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct PolicyConfig {
-    pub allow_projects: Vec<String>,
-    pub block_projects: Vec<String>,
-    pub protected_names: Vec<String>,
-    pub max_file_size_bytes: Option<u64>,
-    pub max_project_size_bytes: Option<u64>,
-    /// Deduplicated bytes a repository may hold, enforced through the quota accounting substrate.
+    pub allow_resources: Vec<String>,
+    pub block_resources: Vec<String>,
+    pub protected_resources: Vec<String>,
+    pub max_artifact_size_bytes: Option<u64>,
+    pub max_resource_size_bytes: Option<u64>,
     pub max_accounted_bytes: Option<u64>,
-    /// Distinct project identities a repository may hold.
-    pub max_projects: Option<u64>,
-    /// Versions a single project may hold.
-    pub max_versions_per_project: Option<u64>,
-    /// Record a would-reject quota decision instead of denying the write.
+    pub max_resources: Option<u64>,
+    /// Records quota denials without rejecting writes.
     pub quota_audit: bool,
 }
 
 impl PolicyConfig {
-    /// The TOML keys this neutral config claims, for a caller that splits one policy table across the
-    /// neutral engine and an ecosystem's own keys and rejects the rest.
     pub const KEYS: &'static [&'static str] = &[
-        "allow_projects",
-        "block_projects",
-        "protected_names",
-        "max_file_size_bytes",
-        "max_project_size_bytes",
+        "allow_resources",
+        "block_resources",
+        "protected_resources",
+        "max_artifact_size_bytes",
+        "max_resource_size_bytes",
         "max_accounted_bytes",
-        "max_projects",
-        "max_versions_per_project",
+        "max_resources",
         "quota_audit",
     ];
 }
 
-/// One artifact's neutral facts, filled by ecosystem code and matched by [`Policy`] and its rules.
-///
-/// The core fields (project, size) drive the neutral rules; `source` identifies the routed input when
-/// known, `version` is a plain string a rule may parse in its own format, and `attributes` carries any
-/// extra format-specific values as named strings so the engine never sees a format type.
 #[derive(Debug, Clone, Default)]
 pub struct ArtifactFacts {
-    pub project: String,
-    pub filename: Option<String>,
-    pub version: Option<String>,
+    pub resource: String,
+    pub artifact: Option<String>,
+    pub group: Option<String>,
     pub source: Option<String>,
     pub size: Option<u64>,
-    /// The artifact's upstream publish time as a Unix timestamp, when the source declares one. A rule
-    /// that ages a release (a supply-chain quarantine) reads it; `None` means the source gave no time.
     pub upload_time: Option<i64>,
-    /// The evaluation clock as a Unix timestamp, supplied by a time-aware serve path. A rule that needs
-    /// wall-clock time reads it; `None` means this path does not evaluate against a clock, so such a
-    /// rule passes rather than guess.
     pub now: Option<i64>,
     pub attributes: Vec<(&'static str, String)>,
 }
 
 impl ArtifactFacts {
-    /// The value of a named format-specific attribute, if the fact carries it.
     #[must_use]
     pub fn attribute(&self, key: &str) -> Option<&str> {
         self.attributes
@@ -86,8 +60,6 @@ impl ArtifactFacts {
             .find_map(|(name, value)| (*name == key).then_some(value.as_str()))
     }
 
-    /// Build a denial carrying this artifact's project, filename, and version context. Ecosystem rules
-    /// use it so their denials read like the engine's own.
     #[must_use]
     pub fn denial(
         &self,
@@ -98,9 +70,9 @@ impl ArtifactFacts {
     ) -> PolicyDenial {
         PolicyDenial::new(
             action,
-            &self.project,
-            self.filename.as_deref(),
-            self.version.clone(),
+            &self.resource,
+            self.artifact.as_deref(),
+            self.group.clone(),
             rule,
             field,
             reason,
@@ -108,77 +80,105 @@ impl ArtifactFacts {
     }
 }
 
-/// A format-specific policy rule an ecosystem crate implements and attaches to a [`Policy`].
 pub trait ArtifactRule: Send + Sync + fmt::Debug {
-    /// Check one artifact's facts, returning a denial when they violate this rule.
-    ///
     /// # Errors
-    /// Returns a [`PolicyDenial`] when the facts match this rule's block criteria or miss its allow
-    /// criteria.
+    ///
+    /// Returns a [`PolicyDenial`] when the artifact violates the rule.
     fn check(&self, action: PolicyAction, facts: &ArtifactFacts) -> Result<(), PolicyDenial>;
-
-    /// Whether this rule can filter a project or artifact.
-    fn filters_artifacts(&self) -> bool {
-        true
-    }
-
-    /// A virtual repository's source policy, when this rule defines one. Most artifact rules do not
-    /// affect repository composition and keep the default `None`.
-    fn fallback_mode(&self) -> Option<FallbackMode> {
-        None
-    }
-
-    /// How a repository exposes mutable metadata held by its upstream, when this rule defines one.
-    fn remote_metadata_mode(&self) -> Option<RemoteMetadataMode> {
-        None
-    }
 }
 
-/// How a virtual repository combines hosted and cached project candidates.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum FallbackMode {
-    /// Preserve filename-level merging: hosted files shadow identical cached files, while the cached
-    /// project supplies every other candidate.
-    #[default]
-    Fallback,
-    /// Serve only hosted candidates when the normalized project exists in both source classes.
-    PrivateFirst,
-    /// Never consult this virtual repository's immediate cached members.
-    NoFallback,
+pub trait ResourceRule: Send + Sync + fmt::Debug {
+    /// # Errors
+    ///
+    /// Returns a denial when the resource is not eligible for the action.
+    fn check(&self, action: PolicyAction, resource: &str) -> Result<(), PolicyDenial>;
 }
 
-/// How a repository exposes mutable metadata advertised by an upstream artifact index.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum RemoteMetadataMode {
-    /// Keep the upstream URL in the repository response.
-    #[default]
-    Direct,
-    /// Route each body request through this repository without retaining the body.
-    Proxy,
-    /// Route body requests through this repository and retain validated responses.
-    Cache,
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct PolicyLimits {
+    pub max_artifact_bytes: Option<u64>,
+    pub max_resource_bytes: Option<u64>,
+    pub max_accounted_bytes: Option<u64>,
+    pub max_resources: Option<u64>,
+    pub max_groups_per_resource: Option<u64>,
 }
 
-impl FallbackMode {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Fallback => "fallback",
-            Self::PrivateFirst => "private-first",
-            Self::NoFallback => "no-fallback",
+impl PolicyLimits {
+    const fn merge(self, other: Self) -> Self {
+        Self {
+            max_artifact_bytes: minimum(self.max_artifact_bytes, other.max_artifact_bytes),
+            max_resource_bytes: minimum(self.max_resource_bytes, other.max_resource_bytes),
+            max_accounted_bytes: minimum(self.max_accounted_bytes, other.max_accounted_bytes),
+            max_resources: minimum(self.max_resources, other.max_resources),
+            max_groups_per_resource: minimum(self.max_groups_per_resource, other.max_groups_per_resource),
         }
     }
 }
 
-impl fmt::Display for FallbackMode {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.as_str())
+#[derive(Debug, Clone, Default)]
+pub struct PolicyCapabilities {
+    artifact_rules: Vec<Arc<dyn ArtifactRule>>,
+    resource_rules: Vec<Arc<dyn ResourceRule>>,
+    limits: PolicyLimits,
+    owner_settings: BTreeMap<String, String>,
+    active: bool,
+}
+
+impl PolicyCapabilities {
+    #[must_use]
+    pub fn with_artifact_rules(mut self, rules: Vec<Arc<dyn ArtifactRule>>) -> Self {
+        self.artifact_rules = rules;
+        self
+    }
+
+    #[must_use]
+    pub fn with_resource_rules(mut self, rules: Vec<Arc<dyn ResourceRule>>) -> Self {
+        self.resource_rules = rules;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_limits(mut self, limits: PolicyLimits) -> Self {
+        self.limits = self.limits.merge(limits);
+        self
+    }
+
+    #[must_use]
+    pub fn with_owner_setting(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.owner_settings.insert(key.into(), value.into());
+        self
+    }
+
+    #[must_use]
+    pub const fn with_policy_activation(mut self) -> Self {
+        self.active = true;
+        self
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.artifact_rules.is_empty()
+            && self.resource_rules.is_empty()
+            && self.limits == PolicyLimits::default()
+            && self.owner_settings.is_empty()
+            && !self.active
     }
 }
 
-/// The result retained for one policy subject and action.
+impl From<Vec<Arc<dyn ArtifactRule>>> for PolicyCapabilities {
+    fn from(rules: Vec<Arc<dyn ArtifactRule>>) -> Self {
+        Self::default().with_artifact_rules(rules)
+    }
+}
+
+const fn minimum(left: Option<u64>, right: Option<u64>) -> Option<u64> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(if left < right { left } else { right }),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PolicyDecisionState {
@@ -187,13 +187,12 @@ pub enum PolicyDecisionState {
     Wait,
 }
 
-/// One completed policy evaluation, borrowed for the duration of a recorder call.
 #[derive(Debug, Clone, Copy)]
 pub struct PolicyEvaluation<'a> {
     pub action: PolicyAction,
-    pub project: &'a str,
-    pub filename: Option<&'a str>,
-    pub version: Option<&'a str>,
+    pub resource: &'a str,
+    pub artifact: Option<&'a str>,
+    pub group: Option<&'a str>,
     pub source: Option<&'a str>,
     pub state: PolicyDecisionState,
     pub rule: Option<&'static str>,
@@ -201,27 +200,17 @@ pub struct PolicyEvaluation<'a> {
     pub next_eligible_at_unix: Option<i64>,
 }
 
-/// A synchronous audit sink attached by the runtime after it opens metadata storage.
 pub trait PolicyDecisionRecorder: Send + Sync + fmt::Debug {
     fn record(&self, evaluation: PolicyEvaluation<'_>);
 }
 
-/// Names an operator reserves so a request for them never falls back to an upstream mirror. This is
-/// the dependency-confusion defense phrased as policy: a private project name resolves only from a
-/// hosted member, never from the public index that a typo, a deletion, or a rename would otherwise
-/// let answer it.
-///
-/// An entry is an exact normalized name (`acme-secrets`) or a namespace prefix ending in `*`
-/// (`acme-*`), so one rule can reserve a whole naming convention. Both are normalized through the
-/// ecosystem's own function, so `-`, `_`, and `.` spellings collapse the same way the incoming name
-/// does before it is compared.
 #[derive(Clone, Default, Debug)]
-struct ProtectedNames {
+struct ProtectedResources {
     exact: BTreeSet<String>,
     prefixes: BTreeSet<String>,
 }
 
-impl ProtectedNames {
+impl ProtectedResources {
     fn compile(names: &[String], normalize: &impl Fn(&str) -> String) -> Self {
         let mut exact = BTreeSet::new();
         let mut prefixes = BTreeSet::new();
@@ -241,57 +230,53 @@ impl ProtectedNames {
         self.exact.is_empty() && self.prefixes.is_empty()
     }
 
-    /// The rule that reserves `project`, formatted for a denial, or `None` when the name is free to
-    /// fall back upstream.
-    fn matched(&self, project: &str) -> Option<String> {
-        if self.exact.contains(project) {
-            return Some(project.to_owned());
+    fn matched(&self, resource: &str) -> Option<String> {
+        if self.exact.contains(resource) {
+            return Some(resource.to_owned());
         }
         self.prefixes
             .iter()
-            .find(|prefix| project.starts_with(prefix.as_str()))
+            .find(|prefix| resource.starts_with(prefix.as_str()))
             .map(|prefix| format!("{prefix}*"))
     }
 }
 
 #[derive(Clone, Default, Debug)]
 pub struct Policy {
-    allow_projects: HashSet<String>,
-    block_projects: HashSet<String>,
-    protected_names: ProtectedNames,
-    max_file_size_bytes: Option<u64>,
-    max_project_size_bytes: Option<u64>,
-    max_accounted_bytes: Option<u64>,
-    max_projects: Option<u64>,
-    max_versions_per_project: Option<u64>,
+    allow_resources: HashSet<String>,
+    block_resources: HashSet<String>,
+    protected_resources: ProtectedResources,
+    limits: PolicyLimits,
     quota_audit: bool,
-    rules: Vec<Arc<dyn ArtifactRule>>,
+    artifact_rules: Vec<Arc<dyn ArtifactRule>>,
+    resource_rules: Vec<Arc<dyn ResourceRule>>,
+    owner_settings: BTreeMap<String, String>,
+    owner_active: bool,
     recorder: Option<Arc<dyn PolicyDecisionRecorder>>,
     active: bool,
 }
 
 impl Policy {
-    /// Compile the neutral operator configuration once at startup. Format-specific rules are attached
-    /// afterward with [`Policy::with_rules`].
-    ///
-    /// `normalize` folds a configured project key into the form the ecosystem checks against. `PyPI`
-    /// applies [PEP 503](https://peps.python.org/pep-0503/) normalization; `OCI` leaves a repository
-    /// name untouched. The same function must key the incoming name at check time, so the engine holds
-    /// no format assumption of its own. Pass the identity closure for a case-sensitive match.
+    /// `normalize` must match the owner lookup normalization.
     #[must_use]
     pub fn compile(config: &PolicyConfig, normalize: impl Fn(&str) -> String) -> Self {
         let normalize_all = |names: &[String]| names.iter().map(|name| normalize(name)).collect();
         let policy = Self {
-            allow_projects: normalize_all(&config.allow_projects),
-            block_projects: normalize_all(&config.block_projects),
-            protected_names: ProtectedNames::compile(&config.protected_names, &normalize),
-            max_file_size_bytes: config.max_file_size_bytes,
-            max_project_size_bytes: config.max_project_size_bytes,
-            max_accounted_bytes: config.max_accounted_bytes,
-            max_projects: config.max_projects,
-            max_versions_per_project: config.max_versions_per_project,
+            allow_resources: normalize_all(&config.allow_resources),
+            block_resources: normalize_all(&config.block_resources),
+            protected_resources: ProtectedResources::compile(&config.protected_resources, &normalize),
+            limits: PolicyLimits {
+                max_artifact_bytes: config.max_artifact_size_bytes,
+                max_resource_bytes: config.max_resource_size_bytes,
+                max_accounted_bytes: config.max_accounted_bytes,
+                max_resources: config.max_resources,
+                max_groups_per_resource: None,
+            },
             quota_audit: config.quota_audit,
-            rules: Vec::new(),
+            artifact_rules: Vec::new(),
+            resource_rules: Vec::new(),
+            owner_settings: BTreeMap::new(),
+            owner_active: false,
             recorder: None,
             active: false,
         };
@@ -301,96 +286,85 @@ impl Policy {
         }
     }
 
-    /// Attach an ecosystem's compiled format-specific rules.
     #[must_use]
-    pub fn with_rules(mut self, rules: Vec<Arc<dyn ArtifactRule>>) -> Self {
-        self.rules = rules;
+    pub fn with_rules(self, capabilities: impl Into<PolicyCapabilities>) -> Self {
+        self.with_capabilities(capabilities.into())
+    }
+
+    #[must_use]
+    pub fn with_capabilities(mut self, capabilities: PolicyCapabilities) -> Self {
+        self.artifact_rules.extend(capabilities.artifact_rules);
+        self.resource_rules.extend(capabilities.resource_rules);
+        self.limits = self.limits.merge(capabilities.limits);
+        self.owner_settings.extend(capabilities.owner_settings);
+        self.owner_active |= capabilities.active;
         self.active = self.compute_active();
         self
     }
 
-    /// Attach the runtime's durable decision recorder.
     #[must_use]
     pub fn with_decision_recorder(mut self, recorder: Arc<dyn PolicyDecisionRecorder>) -> Self {
         self.recorder = Some(recorder);
         self
     }
 
-    /// The configured per-file size limit, if any.
     #[must_use]
-    pub const fn max_file_size(&self) -> Option<u64> {
-        self.max_file_size_bytes
+    pub const fn max_artifact_size(&self) -> Option<u64> {
+        self.limits.max_artifact_bytes
     }
 
     #[must_use]
-    pub const fn has_project_size_limit(&self) -> bool {
-        self.max_project_size_bytes.is_some()
+    pub const fn has_resource_size_limit(&self) -> bool {
+        self.max_resource_size().is_some()
     }
 
-    /// The configured per-project size limit, if any.
     #[must_use]
-    pub const fn max_project_size(&self) -> Option<u64> {
-        self.max_project_size_bytes
+    pub const fn max_resource_size(&self) -> Option<u64> {
+        self.limits.max_resource_bytes
     }
 
-    /// The deduplicated repository byte quota, if any.
     #[must_use]
     pub const fn max_accounted_bytes(&self) -> Option<u64> {
-        self.max_accounted_bytes
+        self.limits.max_accounted_bytes
     }
 
-    /// The distinct-project quota, if any.
     #[must_use]
-    pub const fn max_projects(&self) -> Option<u64> {
-        self.max_projects
+    pub const fn max_resources(&self) -> Option<u64> {
+        self.limits.max_resources
     }
 
-    /// The per-project version quota, if any.
     #[must_use]
-    pub const fn max_versions_per_project(&self) -> Option<u64> {
-        self.max_versions_per_project
+    pub const fn max_groups_per_resource(&self) -> Option<u64> {
+        self.limits.max_groups_per_resource
     }
 
-    /// Whether quota decisions record a violation instead of denying the write.
     #[must_use]
     pub const fn quota_audit(&self) -> bool {
         self.quota_audit
     }
 
-    /// Whether a write path must account against a configured repository quota. Per-file limits use
-    /// the policy engine, and audit mode has no decision to observe without a repository limit.
     #[must_use]
     pub const fn enforces_quota(&self) -> bool {
-        self.max_accounted_bytes.is_some() || self.max_projects.is_some() || self.max_versions_per_project.is_some()
+        self.limits.max_accounted_bytes.is_some()
+            || self.limits.max_resources.is_some()
+            || self.limits.max_groups_per_resource.is_some()
     }
 
-    /// The source policy contributed by this ecosystem, or the compatibility-preserving fallback
-    /// mode when it contributes none.
     #[must_use]
-    pub fn fallback_mode(&self) -> FallbackMode {
-        self.rules
-            .iter()
-            .find_map(|rule| rule.fallback_mode())
-            .unwrap_or_default()
-    }
-
-    /// The mutable remote-metadata policy contributed by this ecosystem.
-    #[must_use]
-    pub fn remote_metadata_mode(&self) -> RemoteMetadataMode {
-        self.rules
-            .iter()
-            .find_map(|rule| rule.remote_metadata_mode())
-            .unwrap_or_default()
+    pub fn owner_setting(&self, key: &str) -> Option<&str> {
+        self.owner_settings.get(key).map(String::as_str)
     }
 
     fn compute_active(&self) -> bool {
-        !self.allow_projects.is_empty()
-            || !self.block_projects.is_empty()
-            || !self.protected_names.is_empty()
-            || self.max_file_size_bytes.is_some()
-            || self.max_project_size_bytes.is_some()
+        !self.allow_resources.is_empty()
+            || !self.block_resources.is_empty()
+            || !self.protected_resources.is_empty()
+            || self.limits.max_artifact_bytes.is_some()
+            || self.limits.max_resource_bytes.is_some()
             || self.enforces_quota()
-            || self.rules.iter().any(|rule| rule.filters_artifacts())
+            || !self.artifact_rules.is_empty()
+            || !self.resource_rules.is_empty()
+            || self.owner_active
     }
 
     #[must_use]
@@ -398,110 +372,104 @@ impl Policy {
         self.active
     }
 
-    /// Check whether a project name is allowed.
-    ///
-    /// A [protected name](ProtectedNames) is denied only for [`PolicyAction::Cached`], the upstream
-    /// mirror path: a hosted member may still serve and accept uploads for it, but a request the local
-    /// members cannot satisfy is refused rather than answered from the public index.
-    ///
     /// # Errors
-    /// Returns a denial when the project misses an allow list, matches a block list, or is protected
-    /// from upstream fallback.
-    pub fn check_project(&self, action: PolicyAction, project: &str) -> Result<(), PolicyDenial> {
-        let result = self.evaluate_project(action, project);
-        self.record(action, project, None, None, None, &result);
+    ///
+    /// Returns a denial when the resource violates shared or owner rules.
+    pub fn check_resource(&self, action: PolicyAction, resource: &str) -> Result<(), PolicyDenial> {
+        let result = self.evaluate_resource(action, resource);
+        self.record(action, resource, None, None, None, &result);
         result
     }
 
-    fn evaluate_project(&self, action: PolicyAction, project: &str) -> Result<(), PolicyDenial> {
+    fn evaluate_resource(&self, action: PolicyAction, resource: &str) -> Result<(), PolicyDenial> {
         if action == PolicyAction::Cached
-            && let Some(rule) = self.protected_names.matched(project)
+            && let Some(rule) = self.protected_resources.matched(resource)
         {
             return Err(PolicyDenial::new(
                 action,
-                project,
+                resource,
                 None,
                 None,
                 "protected-name",
-                "project",
-                format!("project {project:?} is protected from upstream fallback by rule {rule:?}"),
+                "resource",
+                format!("resource {resource:?} is protected from upstream fallback by rule {rule:?}"),
             ));
         }
-        if self.allow_projects.is_empty() || self.allow_projects.contains(project) {
-            if !self.block_projects.contains(project) {
-                return Ok(());
-            }
+        if !self.allow_resources.is_empty() && !self.allow_resources.contains(resource) {
             return Err(PolicyDenial::new(
                 action,
-                project,
+                resource,
                 None,
                 None,
-                "project-block-list",
-                "project",
-                format!("project {project:?} is blocked"),
+                "resource-allow-list",
+                "resource",
+                format!("resource {resource:?} is not in the allow list"),
             ));
         }
-        Err(PolicyDenial::new(
-            action,
-            project,
-            None,
-            None,
-            "project-allow-list",
-            "project",
-            format!("project {project:?} is not in the allow list"),
-        ))
+        if self.block_resources.contains(resource) {
+            return Err(PolicyDenial::new(
+                action,
+                resource,
+                None,
+                None,
+                "resource-block-list",
+                "resource",
+                format!("resource {resource:?} is blocked"),
+            ));
+        }
+        for rule in &self.resource_rules {
+            rule.check(action, resource)?;
+        }
+        Ok(())
     }
 
-    /// Check an artifact's project, byte size, and every attached format-specific rule.
-    ///
     /// # Errors
+    ///
     /// Returns a denial when the facts match a configured policy rule.
     pub fn check_facts(&self, action: PolicyAction, facts: &ArtifactFacts) -> Result<(), PolicyDenial> {
         let result = self.evaluate_facts(action, facts);
         self.record(
             action,
-            &facts.project,
-            facts.filename.as_deref(),
-            facts.version.as_deref(),
+            &facts.resource,
+            facts.artifact.as_deref(),
+            facts.group.as_deref(),
             facts.source.as_deref(),
             &result,
         );
         result
     }
 
-    /// Check an upload's project name and byte size: the neutral rules an ecosystem with no
-    /// format-specific facts (an OCI blob or manifest) enforces without building full facts.
-    ///
     /// # Errors
-    /// Returns a denial when the project is disallowed or the size exceeds `max_file_size_bytes`.
-    pub fn check_size(&self, action: PolicyAction, project: &str, size: u64) -> Result<(), PolicyDenial> {
-        let result = self.evaluate_size(action, project, size);
-        self.record(action, project, None, None, None, &result);
+    ///
+    /// Returns a denial when the resource or size violates policy.
+    pub fn check_size(&self, action: PolicyAction, resource: &str, size: u64) -> Result<(), PolicyDenial> {
+        let result = self.evaluate_size(action, resource, size);
+        self.record(action, resource, None, None, None, &result);
         result
     }
 
     fn evaluate_facts(&self, action: PolicyAction, facts: &ArtifactFacts) -> Result<(), PolicyDenial> {
-        self.evaluate_project(action, &facts.project)?;
-        self.check_file_size(action, facts)?;
-        for rule in &self.rules {
+        self.evaluate_resource(action, &facts.resource)?;
+        self.check_artifact_size(action, facts)?;
+        for rule in &self.artifact_rules {
             rule.check(action, facts)?;
         }
         Ok(())
     }
 
-    fn evaluate_size(&self, action: PolicyAction, project: &str, size: u64) -> Result<(), PolicyDenial> {
-        self.evaluate_project(action, project)?;
-        if let Some(limit) = self.max_file_size_bytes
+    fn evaluate_size(&self, action: PolicyAction, resource: &str, size: u64) -> Result<(), PolicyDenial> {
+        self.evaluate_resource(action, resource)?;
+        if let Some(limit) = self.max_artifact_size()
             && size > limit
         {
             return Err(PolicyDenial::new(
                 action,
-                project,
+                resource,
                 None,
                 None,
-                "max-file-size",
+                "max-artifact-size",
                 "size",
-                format!("file size {size} exceeds limit {limit}"),
+                format!("artifact size {size} exceeds limit {limit}"),
             ));
         }
         Ok(())
@@ -510,9 +478,9 @@ impl Policy {
     fn record(
         &self,
         action: PolicyAction,
-        project: &str,
-        filename: Option<&str>,
-        version: Option<&str>,
+        resource: &str,
+        artifact: Option<&str>,
+        group: Option<&str>,
         source: Option<&str>,
         result: &Result<(), PolicyDenial>,
     ) {
@@ -529,9 +497,9 @@ impl Policy {
         };
         recorder.record(PolicyEvaluation {
             action,
-            project,
-            filename,
-            version,
+            resource,
+            artifact,
+            group,
             source,
             state,
             rule,
@@ -540,17 +508,22 @@ impl Policy {
         });
     }
 
-    fn check_file_size(&self, action: PolicyAction, facts: &ArtifactFacts) -> Result<(), PolicyDenial> {
-        if let Some(limit) = self.max_file_size_bytes {
+    fn check_artifact_size(&self, action: PolicyAction, facts: &ArtifactFacts) -> Result<(), PolicyDenial> {
+        if let Some(limit) = self.max_artifact_size() {
             let Some(size) = facts.size else {
-                return Err(facts.denial(action, "max-file-size", "size", "file size is unknown".to_owned()));
+                return Err(facts.denial(
+                    action,
+                    "max-artifact-size",
+                    "size",
+                    "artifact size is unknown".to_owned(),
+                ));
             };
             if size > limit {
                 return Err(facts.denial(
                     action,
-                    "max-file-size",
+                    "max-artifact-size",
                     "size",
-                    format!("file size {size} exceeds limit {limit}"),
+                    format!("artifact size {size} exceeds limit {limit}"),
                 ));
             }
         }
@@ -579,33 +552,32 @@ impl fmt::Display for PolicyAction {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PolicyDenial {
     pub action: PolicyAction,
-    pub project: Box<str>,
+    pub resource: Box<str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub filename: Option<Box<str>>,
+    pub artifact: Option<Box<str>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub version: Option<Box<str>>,
+    pub group: Option<Box<str>>,
     pub rule: &'static str,
     pub field: &'static str,
     pub reason: Box<str>,
 }
 
 impl PolicyDenial {
-    /// Build a denial. Ecosystem rules and mappers construct these when a check fails.
     #[must_use]
     pub fn new(
         action: PolicyAction,
-        project: &str,
-        filename: Option<&str>,
-        version: Option<String>,
+        resource: &str,
+        artifact: Option<&str>,
+        group: Option<String>,
         rule: &'static str,
         field: &'static str,
         reason: String,
     ) -> Self {
         Self {
             action,
-            project: Box::from(project),
-            filename: filename.map(Box::from),
-            version: version.map(String::into_boxed_str),
+            resource: Box::from(resource),
+            artifact: artifact.map(Box::from),
+            group: group.map(String::into_boxed_str),
             rule,
             field,
             reason: reason.into_boxed_str(),
@@ -621,19 +593,6 @@ impl fmt::Display for PolicyDenial {
 
 impl std::error::Error for PolicyDenial {}
 
-/// Retain from `versions` only those present in `keep`, appending any missing ones.
-///
-/// This keeps a project's version list matching the files that survived filtering; `keep` is the set
-/// of versions whose files remain. Exposed for ecosystem mappers that filter a detail response.
-pub fn retain_versions(versions: &mut Vec<String>, keep: BTreeSet<String>) {
-    if keep.is_empty() {
-        versions.clear();
-        return;
-    }
-    versions.retain(|version| keep.contains(version));
-    for version in keep {
-        if !versions.contains(&version) {
-            versions.push(version);
-        }
-    }
-}
+#[cfg(test)]
+#[path = "../tests/unit/tests.rs"]
+mod tests;

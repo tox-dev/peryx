@@ -1,7 +1,3 @@
-//! Importing local wheel and sdist files into a hosted `PyPI` index, the ecosystem half of
-//! `peryx import-dir`. The neutral binary resolves the upload target from the index topology; this
-//! walks the directory, validates each distribution, and stores it through the upload pipeline.
-
 use std::fs::File;
 use std::io::{BufReader, Write};
 use std::path::Path;
@@ -20,9 +16,6 @@ use crate::{
 
 const BUFFER_BYTES: usize = 1024 * 1024;
 
-/// Import every wheel and sdist under `dir` into the hosted index `target_name` (reached at
-/// `target_route`), writing one tab-separated line per file and a summary to `out`.
-///
 /// # Errors
 /// Returns a message when the directory or a staged file cannot be read.
 pub fn import_dir(
@@ -92,7 +85,13 @@ fn import_file(
     counts: &mut ImportCounts,
     out: &mut dyn Write,
 ) -> std::io::Result<()> {
-    let display = path.strip_prefix(root).unwrap_or(path).display().to_string();
+    let display = path
+        .strip_prefix(root)
+        .unwrap_or(path)
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/");
     let filename = path
         .file_name()
         .expect("directory walk only visits named entries")
@@ -262,20 +261,5 @@ fn unix_now() -> i64 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::upload_error_reason;
-    use crate::upload::UploadError;
-
-    #[test]
-    fn test_upload_error_reason_formats_metadata_field_and_fallback() {
-        assert_eq!(
-            upload_error_reason(&UploadError::MetadataFieldMismatch {
-                field: "Project-URL",
-                metadata: "Homepage, https://example.test".to_owned(),
-                form: "Source, https://example.test/src".to_owned(),
-            }),
-            "metadata field Project-URL is \"Homepage, https://example.test\", expected \"Source, https://example.test/src\""
-        );
-        assert_eq!(upload_error_reason(&UploadError::NotFileUpload), "NotFileUpload");
-    }
-}
+#[path = "../tests/unit/import/tests.rs"]
+mod tests;

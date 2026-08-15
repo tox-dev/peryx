@@ -1,6 +1,4 @@
-//! Command actions that do not touch global state.
-
-use anyhow::{Context as _, bail};
+use anyhow::bail;
 use peryx_storage::blob::BlobStorage;
 use peryx_storage::meta::MetaStore;
 
@@ -19,15 +17,17 @@ mod retention;
 mod revocation;
 mod secret;
 
-pub use bootstrap::bootstrap_administrator;
-pub use cache::cache;
-pub use config::config_check;
-pub use indexes::{config_snippet, index, init, init_data_dir};
-pub use jobs::job;
-pub use policy::policy;
-pub(crate) use purge::referenced_blob_digests;
-pub use quota::quota;
-pub use retention::retention;
+pub use bootstrap::{bootstrap_administrator, bootstrap_administrator_with_plugins};
+pub use cache::{cache, cache_with_plugins};
+pub(crate) use config::config_check_with_active_plugins;
+pub use config::{config_check, config_check_with_plugins};
+pub use indexes::{config_snippet, config_snippet_with_plugins, index, index_with_plugins, init, init_data_dir};
+pub(crate) use jobs::job_with_active_plugins;
+pub use jobs::{job, job_with_plugins};
+pub use policy::{policy, policy_with_plugins};
+pub(crate) use purge::referenced_blob_digests_with_drivers;
+pub use quota::{quota, quota_with_plugins};
+pub use retention::{retention, retention_with_plugins};
 pub use revocation::revocation;
 
 /// Reject an offline command that reads or writes the local filesystem blob store when the
@@ -52,10 +52,14 @@ struct CacheStores {
 }
 
 impl CacheStores {
-    fn open(config: &Config) -> anyhow::Result<Self> {
+    fn open(config: &Config, plugins: &peryx_plugin_registry::PluginRegistry, writable: bool) -> anyhow::Result<Self> {
+        let path = config.data_dir.join("peryx.redb");
         Ok(Self {
-            meta: MetaStore::open_existing(config.data_dir.join("peryx.redb"))
-                .with_context(|| format!("open metadata store {}", config.data_dir.join("peryx.redb").display()))?,
+            meta: if writable {
+                crate::metadata::open_existing(&path, plugins)?
+            } else {
+                crate::metadata::open_existing_read_only(&path, plugins)?
+            },
             blobs: BlobStorage::filesystem(config.data_dir.join("blobs")),
         })
     }
@@ -70,3 +74,7 @@ fn index_names(config: &Config) -> Vec<&str> {
     names.sort_by_key(|name| std::cmp::Reverse(name.len()));
     names
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/tests/app/mod_tests.rs"]
+mod tests;

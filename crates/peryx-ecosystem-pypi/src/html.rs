@@ -11,8 +11,6 @@ use super::simple::{
     CoreMetadata, File, Meta, ParsedDetail, ProjectList, ProjectListEntry, Provenance, SimpleError, Yanked,
 };
 
-/// Parse the HTML detail page for `project`, resolving relative file links against `base`.
-///
 /// # Errors
 /// Returns an error when the HTML page advertises an unsupported Simple API major version.
 pub fn parse_detail_html(project: &str, html: &str, base: &Url) -> Result<ParsedDetail, SimpleError> {
@@ -120,7 +118,6 @@ fn anchor_to_project(tag: &HTMLTag, base: &Url, parser: &tl::Parser<'_>) -> Opti
     })
 }
 
-/// Decode the last non-empty path segment as a Simple project name.
 #[must_use]
 pub fn project_from_url(url: &Url) -> Option<String> {
     url.path()
@@ -301,44 +298,69 @@ fn decode_entities(text: &str, context: Context) -> Cow<'_, str> {
 fn decode_reference(text: &str, context: Context) -> Option<([char; 2], usize, usize)> {
     let body = &text[1..];
     let (chars, count, consumed) = match body.as_bytes().first()? {
-        b'#' => decode_numeric(body)?,
-        byte if byte.is_ascii_alphanumeric() => decode_named(body, context)?,
+        b'#' => {
+            let digits = &body[1..];
+            let (radix, prefix) = if digits.starts_with(['x', 'X']) {
+                (16, 2)
+            } else {
+                (10, 1)
+            };
+            let digits = &digits[prefix - 1..];
+            let mut num: u32 = 0;
+            let mut too_big = false;
+            let mut span = 0;
+            for character in digits.chars() {
+                let Some(value) = character.to_digit(radix) else {
+                    break;
+                };
+                num = num.wrapping_mul(radix);
+                too_big |= num > 0x10_FFFF;
+                num = num.wrapping_add(value);
+                span += 1;
+            }
+            if span == 0 {
+                return None;
+            }
+            let mut consumed = prefix + span;
+            if body[consumed..].starts_with(';') {
+                consumed += 1;
+            }
+            ([numeric_char(num, too_big), '\0'], 1, consumed)
+        }
+        byte if byte.is_ascii_alphanumeric() => {
+            let mut best: Option<(u32, u32)> = None;
+            let mut best_len = 0;
+            let mut span = 0;
+            for character in body.chars() {
+                span += character.len_utf8();
+                match web_atoms::NAMED_ENTITIES.get(&body[..span]) {
+                    Some(&(first, second)) if first != 0 => {
+                        best = Some((first, second));
+                        best_len = span;
+                    }
+                    Some(_) => {}
+                    None => break,
+                }
+            }
+            let (first, second) = best?;
+            let next = body[best_len..].chars().next();
+            let ambiguous = matches!(context, Context::Attribute)
+                && !body[..best_len].ends_with(';')
+                && matches!(next, Some(character) if character == '=' || character.is_ascii_alphanumeric());
+            if ambiguous {
+                return None;
+            }
+            let chars = [
+                char::from_u32(first).expect("named reference code point is a valid scalar"),
+                char::from_u32(second).unwrap_or('\0'),
+            ];
+            (chars, if second == 0 { 1 } else { 2 }, best_len)
+        }
         _ => return None,
     };
     Some((chars, count, consumed + 1))
 }
 
-/// Decode a numeric reference body (the text after `&`, starting with `#`), spanning the digits and an
-/// optional trailing `;`. `None` means no digit followed `#`, so it is not a reference.
-fn decode_numeric(body: &str) -> Option<([char; 2], usize, usize)> {
-    let digits = &body[1..];
-    let (radix, digits, prefix) = digits
-        .strip_prefix(['x', 'X'])
-        .map_or((10, digits, 1), |hex| (16, hex, 2));
-    let mut num: u32 = 0;
-    let mut too_big = false;
-    let mut span = 0;
-    for character in digits.chars() {
-        let Some(value) = character.to_digit(radix) else {
-            break;
-        };
-        num = num.wrapping_mul(radix);
-        too_big |= num > 0x10_FFFF;
-        num = num.wrapping_add(value);
-        span += 1;
-    }
-    if span == 0 {
-        return None;
-    }
-    let mut consumed = prefix + span;
-    if body[consumed..].starts_with(';') {
-        consumed += 1;
-    }
-    Some(([numeric_char(num, too_big), '\0'], 1, consumed))
-}
-
-/// Map a numeric reference value to a character with the tokenizer's replacements: out-of-range,
-/// surrogate, and null values become U+FFFD, and the C1 controls map to their Windows-1252 glyphs.
 fn numeric_char(num: u32, too_big: bool) -> char {
     match num {
         _ if too_big || num > 0x10_FFFF => '\u{FFFD}',
@@ -347,40 +369,6 @@ fn numeric_char(num: u32, too_big: bool) -> char {
             .unwrap_or_else(|| char::from_u32(num).expect("C1 code point is a valid scalar")),
         _ => char::from_u32(num).expect("non-surrogate scalar value in range"),
     }
-}
-
-/// Decode a named reference body (the text after `&`, starting alphanumeric) by the longest match in
-/// the HTML5 table. `None` means no name matched, so the whole `&name` is literal.
-fn decode_named(body: &str, context: Context) -> Option<([char; 2], usize, usize)> {
-    let mut best: Option<(u32, u32)> = None;
-    let mut best_len = 0;
-    let mut span = 0;
-    for character in body.chars() {
-        span += character.len_utf8();
-        match web_atoms::NAMED_ENTITIES.get(&body[..span]) {
-            Some(&(first, second)) if first != 0 => {
-                best = Some((first, second));
-                best_len = span;
-            }
-            Some(_) => {}
-            None => break,
-        }
-    }
-    let (first, second) = best?;
-    let ambiguous = matches!(context, Context::Attribute)
-        && !body[..best_len].ends_with(';')
-        && body[best_len..]
-            .chars()
-            .next()
-            .is_some_and(|character| character == '=' || character.is_ascii_alphanumeric());
-    if ambiguous {
-        return None;
-    }
-    let chars = [
-        char::from_u32(first).expect("named reference code point is a valid scalar"),
-        char::from_u32(second).unwrap_or('\0'),
-    ];
-    Some((chars, if second == 0 { 1 } else { 2 }, best_len))
 }
 
 fn percent_decode(text: &str) -> String {

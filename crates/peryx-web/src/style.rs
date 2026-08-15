@@ -99,7 +99,7 @@ main { max-width: 70rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
 .ops-table td { vertical-align: top; }
 .ops-table .badge { font-size: 0.78rem; padding: 0.05rem 0.4rem; }
 .ops-type { display: flex; gap: 0.3rem; flex-wrap: wrap; align-items: center; }
-.ops-simple { white-space: nowrap; }
+.ops-endpoint { white-space: nowrap; }
 .ops-stack { list-style: none; margin: 0; padding: 0; }
 .ops-stack li { display: flex; align-items: center; gap: 0.4rem; min-height: 1.6rem; }
 .ops-stack li + li { margin-top: 0.2rem; }
@@ -134,21 +134,7 @@ main { max-width: 70rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
   border: 1px solid var(--border); color: var(--text-soft);
 }
 .badge.kind-cached { color: #2f81f7; border-color: #2f81f7; }
-/* Ecosystem device: the pyx seal drawn in the ecosystem's own colour, holding that ecosystem's mark.
-   The two identities merge into one glyph, so the chip stays neutral and never leans on colour alone.
-   One `--eco-seal` per ecosystem, inlined so the UI serves no image requests. For a mark that dies on
-   a dark background (OCI's navy), `--eco-seal-dark` holds the variant the two dark selectors alias. */
-.badge.ecosystem-pypi { --eco-seal: url('data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20viewBox=%220%200%20100%20100%22%3E%3Cpath%20d=%22M50%206%20L88%2028%20L88%2072%20L50%2094%20L12%2072%20L12%2028%20Z%22%20fill=%22none%22%20stroke=%22%233775a9%22%20stroke-width=%226%22%20stroke-linejoin=%22round%22/%3E%3Cg%20transform=%22translate%2827.0,27.0%29%20scale%281.91667%29%22%20fill=%22%233775A9%22%3E%3Cpath%20d=%22M23.922%2013.58v3.912L20.55%2018.72l-.078.055.052.037%203.45-1.256.026-.036v-3.997l-.053-.036-.025.092z%20M23.621%205.618l-3.04%201.107v3.912l3.339-1.215V5.509zM23.92%2013.457V9.544l-3.336%201.215v3.913zM20.47%2014.71V10.8L17.17%2012v3.913zM17.034%2019.996v-3.912l-3.313%201.206v3.912zM17.17%2016.057v3.868l3.314-1.206V14.85l-3.314%201.206zm2.093%201.882c-.367.134-.663-.074-.663-.463s.296-.814.663-.947c.365-.133.662.075.662.464s-.297.814-.662.946z%20M13.225%209.315l.365-.132-3.285-1.197-3.323%201.21.102.037%203.184%201.16zM20.507%2010.664V6.751L17.17%207.965v3.913zM17.058%2011.918V8.005l-3.302%201.202v3.912zM13.643%209.246l-3.336%201.215v3.913l3.336-1.215zM6.907%2013.165l3.322%201.209v-3.913L6.907%209.252z%20M10.34%207.873l3.281%201.193V5.198l-3.28-1.193zM20.507%202.715L17.19%203.922v3.913l3.317-1.207zM16.95%203.903L13.724%202.73l-3.269%201.19%203.225%201.174zM15.365%204.606l-1.624.592v3.868l3.317-1.207V3.991l-1.693.615zm-.391%202.778c-.367.134-.662-.074-.662-.464s.295-.813.662-.946c.366-.133.663.074.663.464s-.297.813-.663.946z%20M10.229%2018.41v-3.914l-3.322-1.209V17.2zM13.678%2017.182v-3.913l-3.371%201.227v3.913z%20M13.756%2017.154l3.3-1.2V12.04l-3.3%201.2zM13.678%2021.217l-3.371%201.227v-3.912h-.078v3.912l-3.322-1.209v-3.913l-.053-.058-.025-.06-3.336-1.21v-3.948l.034.013%203.287%201.196.015-.078-3.261-1.187%203.26-1.187v-.109L3.876%209.62l-.307-.112%203.26-1.188v.877l.079-.055V6.769l3.257%201.185.058-.061L7.084%206.75l-.102-.037%203.24-1.179v-.083L6.854%206.677v.018l-.025.018v1.523L3.44%209.47v.02l-.025.017v4.007l-3.39%201.233v.019L0%2014.784v3.995l.025.037%203.4%201.237.008-.006.007.01%203.4%201.238.008-.006.006.01%203.4%201.237.014-.009.012.01%203.45-1.256.026-.037-.078-.027zM3.493%209.563l3.257%201.185-3.257%201.187V9.562zM3.4%2019.96L.078%2018.752v-3.913l2.361.86.96.349v3.913zm.015-3.99L.335%2014.85l-.182-.066%203.262-1.187v2.374zm3.399%205.231l-3.321-1.209v-3.912l3.321%201.209v3.912zM23.791%205.434l-3.21-1.17v2.338zM20.387%202.643l-3.24-1.18-3.27%201.19%203.247%201.182z%22/%3E%3C/g%3E%3C/svg%3E'); }
-.badge.ecosystem-oci { --eco-seal: url('data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20viewBox=%220%200%20100%20100%22%3E%3Cpath%20d=%22M50%206%20L88%2028%20L88%2072%20L50%2094%20L12%2072%20L12%2028%20Z%22%20fill=%22none%22%20stroke=%22%232496ed%22%20stroke-width=%226%22%20stroke-linejoin=%22round%22/%3E%3Cg%20transform=%22translate%2827.0,27.0%29%20scale%280.0798611%29%22%3E%3Cpolygon%20fill=%22%23808184%22%20points=%22326.6,212.6%20326.6,132.6%20128.6,132.6%20128.6,444.6%20326.6,444.6%20326.6,364.6%20208.6,364.6%20208.6,212.6%22/%3E%20%3Crect%20fill=%22%23262261%22%20x=%22366.5%22%20y=%22132.6%22%20width=%2279.9%22%20height=%2279.9%22/%3E%20%3Crect%20fill=%22%23262261%22%20x=%22366.5%22%20y=%22252.6%22%20width=%2279.9%22%20height=%22192%22/%3E%20%3Cpath%20fill=%22%23262261%22%20d=%22M8.5,9.5v558.2h558.2V9.5H8.5z%20M486.4,484.7H88.7V92.6h397.8V484.7z%22/%3E%3C/g%3E%3C/svg%3E'); --eco-seal-dark: url('data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20viewBox=%220%200%20100%20100%22%3E%3Cpath%20d=%22M50%206%20L88%2028%20L88%2072%20L50%2094%20L12%2072%20L12%2028%20Z%22%20fill=%22none%22%20stroke=%22%232496ed%22%20stroke-width=%226%22%20stroke-linejoin=%22round%22/%3E%3Cg%20transform=%22translate%2827.0,27.0%29%20scale%280.0798611%29%22%3E%3Cpolygon%20fill=%22%23ffffff%22%20points=%22326.6,212.6%20326.6,132.6%20128.6,132.6%20128.6,444.6%20326.6,444.6%20326.6,364.6%20208.6,364.6%20208.6,212.6%22/%3E%20%3Crect%20fill=%22%23ffffff%22%20x=%22366.5%22%20y=%22132.6%22%20width=%2279.9%22%20height=%2279.9%22/%3E%20%3Crect%20fill=%22%23ffffff%22%20x=%22366.5%22%20y=%22252.6%22%20width=%2279.9%22%20height=%22192%22/%3E%20%3Cpath%20fill=%22%23ffffff%22%20d=%22M8.5,9.5v558.2h558.2V9.5H8.5z%20M486.4,484.7H88.7V92.6h397.8V484.7z%22/%3E%3C/g%3E%3C/svg%3E'); }
 .badge[class*='ecosystem-'] { color: var(--text-soft); border-color: var(--border); }
-.badge[class*='ecosystem-']::before {
-  content: ''; display: inline-block; width: 1.25rem; height: 1.25rem;
-  background: var(--eco-seal) center/contain no-repeat; margin-right: 0.35rem;
-}
-:root[data-theme='dark'] .badge.ecosystem-oci { --eco-seal: var(--eco-seal-dark); }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) .badge.ecosystem-oci { --eco-seal: var(--eco-seal-dark); }
-}
 .badge.kind-hosted { color: var(--ok); border-color: var(--ok); }
 .badge.kind-virtual { color: var(--accent); border-color: var(--accent); }
 .badge.source-uploaded { color: var(--ok); border-color: var(--ok); }
@@ -157,19 +143,6 @@ main { max-width: 70rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
 .badge.available-local { color: var(--ok); border-color: var(--ok); }
 .badge.available-remote { color: var(--text-soft); border-color: var(--border); }
 .badge.uploads { background: linear-gradient(115deg, var(--brand-a), var(--brand-b)); color: #fff; border: none; }
-.badge.yanked-badge { color: var(--bad); border-color: var(--bad); }
-.badge.meta-badge { color: var(--ok); border-color: var(--ok); }
-/* #441 placement chips: source (where the bytes came from) and byte availability (whether this
-   instance can serve them now). Colour only reinforces the word each chip already spells out. */
-.badge.src-hosted { color: var(--ok); border-color: var(--ok); }
-.badge.src-proxy { color: #2f81f7; border-color: #2f81f7; }
-.badge.src-generated { color: var(--text-soft); border-color: var(--border-strong); }
-.badge.avail-local { color: var(--ok); border-color: var(--ok); }
-.badge.avail-remote-only { color: var(--warn); border-color: var(--warn); }
-.badge.avail-unavailable { color: var(--bad); border-color: var(--bad); }
-.badge.status-archived { color: var(--text-soft); border-color: var(--border-strong); }
-.badge.status-quarantined { color: var(--bad); border-color: var(--bad); }
-.badge.status-deprecated { color: var(--warn); border-color: var(--warn); }
 /* #550 availability topology: role and node-health chips. Colour only reinforces the word each chip
    already spells out, so an unknown or restricted peer never reads as healthy on colour alone. */
 .badge.role-writer { color: var(--accent); border-color: var(--accent); }
@@ -188,78 +161,7 @@ main { max-width: 70rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
 .digest-drill { background: none; border: none; padding: 0; margin: 0; font: inherit; color: inherit; cursor: pointer; text-align: left; }
 .digest-drill:hover code, .digest-drill:focus-visible code { text-decoration: underline; }
 .placement-detail { margin-top: 0.6rem; }
-.yank-reason { color: var(--text-soft); font-size: 0.85rem; margin-left: 0.35rem; }
-.project-head .badge { margin-left: 0.5rem; vertical-align: middle; }
-.status-reason { color: var(--text-soft); font-size: 0.9rem; margin-left: 0.4rem; }
-/* PEP 740 provenance panel: a keyboard-operable disclosure per file. Colour reinforces the word each
-   chip already spells out, so the states stay distinguishable without it. */
-.provenance-panel { margin-top: 0.35rem; font-size: 0.85rem; }
-.provenance-panel > summary { cursor: pointer; }
-.provenance-tag { color: var(--text-soft); margin-right: 0.35rem; }
-.provenance-body { margin: 0.4rem 0 0.2rem 0.9rem; }
-.badge.src-mirrored { color: #2f81f7; border-color: #2f81f7; }
-.badge.val-verified-binding { color: var(--ok); border-color: var(--ok); }
-.badge.val-unverified { color: var(--warn); border-color: var(--warn); }
-.badge.val-unreadable { color: var(--bad); border-color: var(--bad); }
-.attestations { list-style: none; margin: 0.3rem 0; padding: 0; }
-.attestation { display: flex; align-items: center; gap: 0.5rem; margin: 0.2rem 0; }
-.attestation .predicate-type { font-size: 0.8rem; word-break: break-all; }
-.badge.subject-matched { color: var(--ok); border-color: var(--ok); }
-.badge.subject-mismatched { color: var(--bad); border-color: var(--bad); }
-.badge.subject-unknown { color: var(--text-soft); border-color: var(--border-strong); }
-.provenance-doc { display: inline-block; margin-top: 0.25rem; }
-.layers code { margin-right: 0.3rem; }
 .virtual-card { grid-column: span 2; }
-.layer-stack {
-  list-style: none;
-  margin: 0.6rem 0 0.2rem;
-  padding: 0;
-}
-.layer {
-  display: flex;
-  align-items: center;
-  gap: 0.55rem;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  background: var(--bg);
-  padding: 0.45rem 0.7rem;
-}
-.layer + .layer {
-  margin-top: -1px;
-  border-top-left-radius: 0;
-  border-top-right-radius: 0;
-  margin-left: 0.9rem;
-  opacity: 0.92;
-}
-.layer:first-child:not(:only-child) {
-  border-bottom-left-radius: 0;
-  border-bottom-right-radius: 0;
-  border-left: 3px solid var(--accent);
-}
-.layer-order {
-  font-size: 0.72rem;
-  font-weight: 700;
-  color: var(--text-soft);
-  border: 1px solid var(--border);
-  border-radius: 50%;
-  width: 1.25rem;
-  height: 1.25rem;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: none;
-}
-.layer-name { font-weight: 600; }
-.layer-route {
-  margin-left: auto;
-  font-size: 0.78rem;
-  color: var(--text-soft);
-}
-.layer-hint {
-  font-size: 0.78rem;
-  color: var(--text-soft);
-  margin: 0.35rem 0 0;
-}
 .card-usage { display: flex; gap: 0.8rem; font-size: 0.85rem; color: var(--text-soft); margin-top: 0.5rem; }
 .card-usage a { margin-left: auto; }
 .stats-table td { font-variant-numeric: tabular-nums; }
@@ -344,10 +246,18 @@ main { max-width: 70rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
 }
 .page-link:hover { border-color: var(--accent); text-decoration: none; }
 .page-link.disabled { color: var(--text-soft); background: var(--bg-soft); }
-.project-list { list-style: none; padding: 0; columns: 3 14rem; }
-.project-list li { padding: 0.2rem 0; break-inside: avoid; }
 .breadcrumb { color: var(--text-soft); font-size: 0.9rem; }
-.project-head .version { color: var(--text-soft); font-weight: 400; font-size: 1.2rem; margin-left: 0.5rem; }
+.browse-head { margin-bottom: 1rem; }
+.browse-subtitle { color: var(--text-soft); margin-top: -0.7rem; }
+.browse-badges { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.browse-section { margin-top: 1.5rem; }
+.browse-properties { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0.35rem 1rem; }
+.browse-properties dt { color: var(--text-soft); font-weight: 600; }
+.browse-properties dd { margin: 0; }
+.browse-table { border-collapse: collapse; width: 100%; }
+.browse-table th, .browse-table td { border: 1px solid var(--border); padding: 0.45rem 0.7rem; text-align: left; }
+.browse-table th { background: var(--bg-soft); }
+.browse-content { background: var(--terminal-bg); color: var(--terminal-text); padding: 1rem; overflow-x: auto; }
 .summary { color: var(--text-soft); font-size: 1.05rem; margin-top: -0.4rem; }
 .install {
   display: flex; align-items: center; gap: 0.6rem; background: var(--terminal-bg); color: var(--terminal-text);
@@ -359,9 +269,6 @@ main { max-width: 70rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
   border-radius: 7px; padding: 0.25rem 0.7rem; cursor: pointer; font-size: 0.8rem;
 }
 .copy:hover { border-color: var(--brand-b); }
-.project-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 2.5rem; }
-.project-main { min-width: 0; }
-@media (max-width: 52rem) { .project-grid { grid-template-columns: 1fr; } }
 @media (max-width: 52rem) {
   .site-header nav { flex-wrap: wrap; }
   .header-search { order: 3; flex-basis: 100%; max-width: none; }
@@ -380,46 +287,7 @@ main { max-width: 70rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
 .description pre code { background: none; color: inherit; padding: 0; }
 .description img { max-width: 100%; }
 .description-plain { white-space: pre-wrap; }
-.file-filter { display: flex; align-items: center; gap: 0.7rem; flex-wrap: wrap; margin: 0 0 0.8rem; }
-.file-search { flex: 1 1 18rem; margin: 0; }
-.file-filter-mode { display: inline-flex; align-items: center; gap: 0.35rem; white-space: nowrap; }
-.file-filter-count { color: var(--text-soft); font-size: 0.9rem; margin-left: auto; }
-.release-files { min-width: 0; margin: 1.25rem 0 1.75rem; }
-.release-files h3 { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.55rem; }
-.release-files .table-scroll { max-width: 100%; }
-.release-files table.files { min-width: 44rem; }
-.release-note, .release-empty { margin: 0.35rem 0 0.75rem; }
-table.files, table.admin-table { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
-table.files th, table.files td, table.admin-table td {
-  border: 1px solid var(--border); padding: 0.45rem 0.7rem; text-align: left;
-}
-table.files th { background: var(--bg-soft); }
-table.files td.empty { color: var(--text-soft); text-align: center; }
-tr.yanked td a { text-decoration: line-through; color: var(--text-soft); }
-.project-side h3 { margin-bottom: 0.3rem; border-bottom: 1px solid var(--border); padding-bottom: 0.2rem; }
 .chips code { margin: 0 0.3rem 0.3rem 0; display: inline-block; }
-.releases { list-style: none; padding: 0; margin: 0 0 0.6rem; }
-.releases li { margin-bottom: 0.3rem; }
-.release-link { display: inline-block; border-radius: 4px; padding: 0.08rem 0.2rem; }
-.release-link[aria-current='page'] { font-weight: 700; text-decoration: underline 2px; text-underline-offset: 0.2rem; }
-.release-link:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
-.releases li.yanked code { text-decoration: line-through; color: var(--text-soft); }
-.yank-reasons { list-style: none; padding: 0; margin: 0.15rem 0 0; color: var(--text-soft); font-size: 0.85rem; }
-.classifiers { list-style: none; padding: 0; margin: 0 0 0.6rem; color: var(--text-soft); font-size: 0.85rem; }
-.classifier-group { margin: 0.5rem 0 0.1rem; font-weight: 600; font-size: 0.85rem; }
-.member-content {
-  background: var(--terminal-bg); color: var(--terminal-text); border-radius: 10px; padding: 1rem 1.2rem;
-  overflow-x: auto; font-size: 0.85rem;
-}
-.archive-tree, .archive-tree ul { list-style: none; margin: 0; padding-left: 1.1rem; }
-.archive-tree { padding-left: 0; font-size: 0.92rem; }
-.archive-tree li { min-height: 1.75rem; line-height: 1.75rem; }
-.archive-tree summary { cursor: pointer; }
-.archive-name { font-family: ui-monospace, Menlo, monospace; }
-.archive-name.folder { color: var(--text); font-weight: 600; }
-.archive-name.kind-archive { font-weight: 600; }
-.archive-name.kind-binary, .archive-name.kind-unknown { color: var(--text-soft); }
-.archive-meta { color: var(--text-soft); margin-left: 0.55rem; font-size: 0.82rem; }
 .button-link {
   display: inline-block; border: 1px solid var(--border); border-radius: 7px; padding: 0.3rem 0.75rem;
   background: var(--bg); color: var(--accent);

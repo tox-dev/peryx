@@ -1,41 +1,193 @@
-//! A standalone registry of ecosystem drivers, for the composition root's build and admin paths.
-
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use peryx_core::Ecosystem;
 
-use crate::serving::EcosystemDriver;
+use crate::serving::{
+    BlobReferenceDriver, BrowseDriver, CacheDriver, CapabilityRegistrar, EcosystemDriver, FsckDriver, ImportDriver,
+    IndexCredentialDriver, IndexSummaryDriver, JobDriver, MetricsDriver, NameDriver, PolicyDriver, PolicyDryRunDriver,
+    RetentionDriver, ServiceDriver, TrashDriver,
+};
 
-/// The installed ecosystem drivers keyed by [`Ecosystem`], without any of the running server's state.
-///
-/// The router reaches drivers through [`AppState`](crate::AppState). The binary's config-build and
-/// admin commands never construct an `AppState` — they open the stores directly — and reach the
-/// drivers through this instead. The composition root builds one, naming its ecosystems in a single
-/// place, and neutral build and admin code dispatches through it by an index's ecosystem without
-/// naming any.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct DriverSet {
-    drivers: [Option<Arc<dyn EcosystemDriver>>; Ecosystem::COUNT],
+    drivers: Vec<Arc<dyn EcosystemDriver>>,
+    jobs: HashMap<Ecosystem, Arc<dyn JobDriver>>,
+    metrics: HashMap<Ecosystem, Arc<dyn MetricsDriver>>,
+    names: HashMap<Ecosystem, Arc<dyn NameDriver>>,
+    policies: HashMap<Ecosystem, Arc<dyn PolicyDriver>>,
+    policy_dry_runs: HashMap<Ecosystem, Arc<dyn PolicyDryRunDriver>>,
+    blob_references: HashMap<Ecosystem, Arc<dyn BlobReferenceDriver>>,
+    fsck: HashMap<Ecosystem, Arc<dyn FsckDriver>>,
+    retention: HashMap<Ecosystem, Arc<dyn RetentionDriver>>,
+    cache: HashMap<Ecosystem, Arc<dyn CacheDriver>>,
+    index_summaries: HashMap<Ecosystem, Arc<dyn IndexSummaryDriver>>,
+    trash: HashMap<Ecosystem, Arc<dyn TrashDriver>>,
+    imports: HashMap<Ecosystem, Arc<dyn ImportDriver>>,
+    services: HashMap<Ecosystem, Arc<dyn ServiceDriver>>,
+    browse: HashMap<Ecosystem, Arc<dyn BrowseDriver>>,
+    index_credentials: HashMap<Ecosystem, Arc<dyn IndexCredentialDriver>>,
 }
 
 impl DriverSet {
-    /// Register `driver` under the ecosystem it serves, consuming and returning `self` so a set is
-    /// built in one expression.
     #[must_use]
     pub fn with(mut self, driver: Arc<dyn EcosystemDriver>) -> Self {
-        let slot = driver.ecosystem().slot();
-        self.drivers[slot] = Some(driver);
+        self.insert(driver);
         self
     }
 
-    /// The driver for `ecosystem`, or `None` when none is registered.
-    #[must_use]
-    pub fn get(&self, ecosystem: Ecosystem) -> Option<&Arc<dyn EcosystemDriver>> {
-        self.drivers[ecosystem.slot()].as_ref()
+    pub(crate) fn insert(&mut self, driver: Arc<dyn EcosystemDriver>) {
+        let ecosystem = driver.ecosystem();
+        if let Some(existing) = self
+            .drivers
+            .iter_mut()
+            .find(|existing| existing.ecosystem() == ecosystem)
+        {
+            *existing = driver;
+        } else {
+            self.drivers.push(driver);
+        }
     }
 
-    /// Every registered driver, in ecosystem declaration order.
+    #[must_use]
+    pub fn get(&self, ecosystem: &Ecosystem) -> Option<&Arc<dyn EcosystemDriver>> {
+        self.drivers.iter().find(|driver| driver.ecosystem() == *ecosystem)
+    }
+
     pub fn present(&self) -> impl Iterator<Item = &Arc<dyn EcosystemDriver>> {
-        self.drivers.iter().flatten()
+        self.drivers.iter()
+    }
+
+    pub(crate) const fn is_empty(&self) -> bool {
+        self.drivers.is_empty()
+    }
+
+    pub fn jobs(&self) -> impl Iterator<Item = (&Ecosystem, &Arc<dyn JobDriver>)> {
+        self.jobs.iter()
+    }
+
+    pub fn metrics(&self) -> impl Iterator<Item = (&Ecosystem, &Arc<dyn MetricsDriver>)> {
+        self.metrics.iter()
+    }
+
+    pub fn services(&self) -> impl Iterator<Item = (&Ecosystem, &Arc<dyn ServiceDriver>)> {
+        self.services.iter()
+    }
+
+    pub fn index_credentials(&self) -> impl Iterator<Item = &Arc<dyn IndexCredentialDriver>> {
+        self.index_credentials.values()
+    }
+
+    pub fn blob_reference_drivers(&self) -> impl Iterator<Item = &Arc<dyn BlobReferenceDriver>> {
+        self.blob_references.values()
+    }
+
+    pub fn trash_drivers(&self) -> impl Iterator<Item = (&Ecosystem, &Arc<dyn TrashDriver>)> {
+        self.trash.iter()
+    }
+
+    pub fn cache_drivers(&self) -> impl Iterator<Item = &Arc<dyn CacheDriver>> {
+        self.cache.values()
+    }
+
+    pub fn fsck_drivers(&self) -> impl Iterator<Item = &Arc<dyn FsckDriver>> {
+        self.fsck.values()
+    }
+
+    #[must_use]
+    pub fn get_job(&self, ecosystem: &Ecosystem) -> Option<&Arc<dyn JobDriver>> {
+        self.jobs.get(ecosystem)
+    }
+    #[must_use]
+    pub fn get_metrics(&self, ecosystem: &Ecosystem) -> Option<&Arc<dyn MetricsDriver>> {
+        self.metrics.get(ecosystem)
+    }
+    #[must_use]
+    pub fn get_name(&self, ecosystem: &Ecosystem) -> Option<&Arc<dyn NameDriver>> {
+        self.names.get(ecosystem)
+    }
+    #[must_use]
+    pub fn get_policy(&self, ecosystem: &Ecosystem) -> Option<&Arc<dyn PolicyDriver>> {
+        self.policies.get(ecosystem)
+    }
+    #[must_use]
+    pub fn get_policy_dry_run(&self, ecosystem: &Ecosystem) -> Option<&Arc<dyn PolicyDryRunDriver>> {
+        self.policy_dry_runs.get(ecosystem)
+    }
+    #[must_use]
+    pub fn get_cache(&self, ecosystem: &Ecosystem) -> Option<&Arc<dyn CacheDriver>> {
+        self.cache.get(ecosystem)
+    }
+    #[must_use]
+    pub fn get_retention(&self, ecosystem: &Ecosystem) -> Option<&Arc<dyn RetentionDriver>> {
+        self.retention.get(ecosystem)
+    }
+    #[must_use]
+    pub fn get_index_summary(&self, ecosystem: &Ecosystem) -> Option<&Arc<dyn IndexSummaryDriver>> {
+        self.index_summaries.get(ecosystem)
+    }
+    #[must_use]
+    pub fn get_trash(&self, ecosystem: &Ecosystem) -> Option<&Arc<dyn TrashDriver>> {
+        self.trash.get(ecosystem)
+    }
+    #[must_use]
+    pub fn get_import(&self, ecosystem: &Ecosystem) -> Option<&Arc<dyn ImportDriver>> {
+        self.imports.get(ecosystem)
+    }
+    #[must_use]
+    pub fn get_browse(&self, ecosystem: &Ecosystem) -> Option<&Arc<dyn BrowseDriver>> {
+        self.browse.get(ecosystem)
+    }
+    #[must_use]
+    pub fn get_index_credentials(&self, ecosystem: &Ecosystem) -> Option<&Arc<dyn IndexCredentialDriver>> {
+        self.index_credentials.get(ecosystem)
+    }
+}
+
+impl CapabilityRegistrar for DriverSet {
+    fn register_job(&mut self, ecosystem: Ecosystem, driver: Arc<dyn JobDriver>) {
+        self.jobs.insert(ecosystem, driver);
+    }
+    fn register_metrics(&mut self, ecosystem: Ecosystem, driver: Arc<dyn MetricsDriver>) {
+        self.metrics.insert(ecosystem, driver);
+    }
+    fn register_name(&mut self, ecosystem: Ecosystem, driver: Arc<dyn NameDriver>) {
+        self.names.insert(ecosystem, driver);
+    }
+    fn register_policy(&mut self, ecosystem: Ecosystem, driver: Arc<dyn PolicyDriver>) {
+        self.policies.insert(ecosystem, driver);
+    }
+    fn register_policy_dry_run(&mut self, ecosystem: Ecosystem, driver: Arc<dyn PolicyDryRunDriver>) {
+        self.policy_dry_runs.insert(ecosystem, driver);
+    }
+    fn register_blob_references(&mut self, ecosystem: Ecosystem, driver: Arc<dyn BlobReferenceDriver>) {
+        self.blob_references.insert(ecosystem, driver);
+    }
+    fn register_fsck(&mut self, ecosystem: Ecosystem, driver: Arc<dyn FsckDriver>) {
+        self.fsck.insert(ecosystem, driver);
+    }
+    fn register_retention(&mut self, ecosystem: Ecosystem, driver: Arc<dyn RetentionDriver>) {
+        self.retention.insert(ecosystem, driver);
+    }
+    fn register_cache(&mut self, ecosystem: Ecosystem, driver: Arc<dyn CacheDriver>) {
+        self.cache.insert(ecosystem, driver);
+    }
+    fn register_index_summary(&mut self, ecosystem: Ecosystem, driver: Arc<dyn IndexSummaryDriver>) {
+        self.index_summaries.insert(ecosystem, driver);
+    }
+    fn register_trash(&mut self, ecosystem: Ecosystem, driver: Arc<dyn TrashDriver>) {
+        self.trash.insert(ecosystem, driver);
+    }
+    fn register_import(&mut self, ecosystem: Ecosystem, driver: Arc<dyn ImportDriver>) {
+        self.imports.insert(ecosystem, driver);
+    }
+    fn register_service(&mut self, ecosystem: Ecosystem, driver: Arc<dyn ServiceDriver>) {
+        self.services.insert(ecosystem, driver);
+    }
+    fn register_browse(&mut self, ecosystem: Ecosystem, driver: Arc<dyn BrowseDriver>) {
+        self.browse.insert(ecosystem, driver);
+    }
+    fn register_index_credentials(&mut self, ecosystem: Ecosystem, driver: Arc<dyn IndexCredentialDriver>) {
+        self.index_credentials.insert(ecosystem, driver);
     }
 }

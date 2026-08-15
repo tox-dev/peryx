@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+package=${1:?package is required}
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
+metadata=$(cargo metadata --manifest-path "$repo/Cargo.toml" --no-deps --format-version 1)
+manifest=$(jq -er --arg package "$package" '
+  .packages[] | select(.name == $package) | .manifest_path
+' <<<"$metadata")
+installer=$(jq -er --arg package "$package" '
+  .packages[] | select(.name == $package) | .metadata["peryx-ci"].tools.install
+' <<<"$metadata")
+"$(dirname -- "$manifest")/$installer" "$repo/.tox/tools"

@@ -3,7 +3,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
-use command_group::AsyncCommandGroup as _;
+use command_group::{AsyncCommandGroup as _, AsyncGroupChild};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -24,18 +24,17 @@ const MIN_TIMEOUT: Duration = Duration::from_millis(1);
 const MAX_TIMEOUT: Duration = Duration::from_mins(5);
 const REFRESH_MARGIN: Duration = Duration::from_secs(30);
 const FAILURE_RETRY: Duration = Duration::from_secs(30);
-const PROCESS_POLL: Duration = Duration::from_millis(5);
 static EXECUTIONS: Semaphore = Semaphore::const_new(8);
 
-/// The authorization purpose sent to a credential helper.
+/// Credential-helper authorization purpose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialScope {
-    /// Fetch or inspect upstream package metadata and artifacts.
+    /// Permits fetching and inspecting upstream resources.
     Read,
 }
 
-/// A bounded argv credential helper. Debug output reports limits and counts without exposing argv.
+/// Bounds helper resources and omits argv from debug output.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ExecCredentialConfig(Arc<ExecCredentialSettings>);
 
@@ -60,10 +59,10 @@ impl std::fmt::Debug for ExecCredentialConfig {
 }
 
 impl ExecCredentialConfig {
-    /// Validate one non-shell command and its inherited environment names.
+    /// Accepts one absolute executable and bypasses shell interpretation of arguments.
     ///
     /// # Errors
-    /// Returns a limit or shape error without including an argument or environment value.
+    /// Returns a limit or shape error without exposing arguments or environment values.
     pub fn new(
         argv: Vec<String>,
         timeout: Duration,
@@ -102,10 +101,10 @@ impl ExecCredentialConfig {
         })))
     }
 
-    /// Build a lazy provider bound to one upstream origin and scope.
+    /// Binds a lazy provider to one upstream origin and authorization scope.
     ///
     /// # Errors
-    /// Returns an origin error without echoing the configured URL.
+    /// Returns an origin error without exposing the configured URL.
     ///
     /// # Panics
     /// Panics if serde cannot encode the fixed request schema.
@@ -141,25 +140,21 @@ impl ExecCredentialConfig {
         ))
     }
 
-    /// The executable and fixed arguments passed directly to the operating system.
     #[must_use]
     pub fn argv(&self) -> &[String] {
         &self.0.argv
     }
 
-    /// The longest one helper invocation may run.
     #[must_use]
     pub fn timeout(&self) -> Duration {
         self.0.timeout
     }
 
-    /// The names inherited from the parent after clearing the helper environment.
     #[must_use]
     pub fn environment(&self) -> &[String] {
         &self.0.environment
     }
 
-    /// The behavior used while no valid cached credential is available.
     #[must_use]
     pub fn failure(&self) -> CredentialFailure {
         self.0.failure
@@ -188,82 +183,156 @@ impl ExecCredentialConfig {
     }
 
     async fn execute(&self, request: &[u8]) -> Result<Vec<u8>, CredentialError> {
-        let mut command = Command::new(&self.0.argv[0]);
-        command
-            .args(&self.0.argv[1..])
-            .env_clear()
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        for name in self.0.environment.iter() {
-            if let Some(value) = std::env::var_os(name) {
-                command.env(name, value);
-            }
-        }
-        let mut child = command
-            .group()
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|_| CredentialError::new("credential helper failed to start"))?;
-        let mut stdin = child.inner().stdin.take().expect("credential helper stdin is piped");
-        let stdout = child.inner().stdout.take().expect("credential helper stdout is piped");
+        let mut command = helper_command(&self.0);
+        let mut process = ProcessGroup::new(
+            command
+                .group()
+                .kill_on_drop(true)
+                .spawn()
+                .map_err(|_| CredentialError::new("credential helper failed to start"))?,
+        );
+        let mut stdin = process
+            .child_mut()
+            .inner()
+            .stdin
+            .take()
+            .expect("credential helper stdin is piped");
+        let stdout = process
+            .child_mut()
+            .inner()
+            .stdout
+            .take()
+            .expect("credential helper stdout is piped");
         let input = request.to_vec();
-        let input_task = tokio::spawn(async move {
+        let mut input_task = Some(tokio::spawn(async move {
             stdin.write_all(&input).await?;
             stdin.shutdown().await
-        });
+        }));
         let mut output_task = Some(tokio::spawn(async move {
             let mut output = Vec::new();
             stdout
                 .take(u64::try_from(MAX_OUTPUT_BYTES + 1).expect("output limit fits u64"))
                 .read_to_end(&mut output)
-                .await?;
-            Ok::<_, std::io::Error>(output)
+                .await
+                .expect("owned child stdout remains readable");
+            output
         }));
         let deadline = tokio::time::Instant::now() + self.0.timeout;
+        let mut status = None;
         let mut output = None;
-        let output = loop {
-            if output_task.as_ref().is_some_and(tokio::task::JoinHandle::is_finished) {
-                let bytes = output_task
-                    .take()
-                    .expect("unfinished output keeps its task")
-                    .await
-                    .expect("credential helper output task does not panic");
-                let output_error = CredentialError::new("credential helper output failed");
-                let bytes = bytes.or(Err(output_error))?;
-                if let Err(error) = validate_output(&bytes) {
-                    terminate(&mut child).await;
-                    input_task.abort();
-                    return Err(error);
+        let mut direct_reaped = false;
+        let outcome = {
+            let wait = process.child_mut().inner().wait();
+            tokio::pin!(wait);
+            loop {
+                let error = tokio::select! {
+                bytes = async { output_task.as_mut().expect("output task is pending").await }, if output_task.is_some() => {
+                    drop(output_task.take());
+                    let bytes = bytes.expect("credential helper output task does not panic");
+                    match validate_output(&bytes) {
+                        Ok(()) => {
+                            output = Some(bytes);
+                            None
+                        }
+                        Err(error) => Some(error),
+                    }
                 }
-                output = Some(bytes);
-            }
-            let wait_error = CredentialError::new("credential helper wait failed");
-            let status = child.try_wait().or(Err(wait_error))?;
-            if let Some(status) = status {
-                let bytes = if let Some(bytes) = output {
-                    bytes
-                } else {
-                    let bytes = output_task
-                        .take()
-                        .expect("unfinished output keeps its task")
-                        .await
-                        .expect("credential helper output task does not panic");
-                    let output_error = CredentialError::new("credential helper output failed");
-                    bytes.or(Err(output_error))?
+                result = &mut wait, if status.is_none() => {
+                    direct_reaped = true;
+                    status = Some(result.expect("owned child is waited once"));
+                    None
+                }
+                () = tokio::time::sleep_until(deadline) => {
+                    Some(CredentialError::new("credential helper timed out"))
+                }
                 };
-                break finish(status, input_task, bytes).await;
+                if let Some(error) = error {
+                    break Err(error);
+                }
+                if status.is_some() && output.is_some() {
+                    break Ok((
+                        status.take().expect("status is complete"),
+                        output.take().expect("output is complete"),
+                    ));
+                }
             }
-            if tokio::time::Instant::now() >= deadline {
-                terminate(&mut child).await;
-                input_task.abort();
-                output_task.iter().for_each(tokio::task::JoinHandle::abort);
-                return Err(CredentialError::new("credential helper timed out"));
+        };
+        if direct_reaped {
+            process.mark_direct_reaped();
+        }
+        process.terminate().await;
+
+        match outcome {
+            Ok((status, output)) => finish(status, input_task.take().expect("input task is pending"), output).await,
+            Err(error) => {
+                cleanup(&mut input_task, &mut output_task).await;
+                Err(error)
             }
-            tokio::time::sleep(PROCESS_POLL).await;
-        }?;
-        Ok(output)
+        }
     }
+}
+
+fn helper_command(settings: &ExecCredentialSettings) -> Command {
+    let mut command = Command::new(&settings.argv[0]);
+    command
+        .args(&settings.argv[1..])
+        .env_clear()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .envs(
+            settings
+                .environment
+                .iter()
+                .filter_map(|name| std::env::var_os(name).map(|value| (name, value))),
+        );
+    command
+}
+
+struct ProcessGroup {
+    child: Option<AsyncGroupChild>,
+    direct_reaped: bool,
+}
+
+impl ProcessGroup {
+    const fn new(child: AsyncGroupChild) -> Self {
+        Self {
+            child: Some(child),
+            direct_reaped: false,
+        }
+    }
+
+    const fn child_mut(&mut self) -> &mut AsyncGroupChild {
+        self.child.as_mut().expect("process group is active")
+    }
+
+    const fn mark_direct_reaped(&mut self) {
+        self.direct_reaped = true;
+    }
+
+    async fn terminate(&mut self) {
+        if self.direct_reaped {
+            let _ = self.child_mut().start_kill();
+        } else {
+            terminate(self.child_mut()).await;
+        }
+        drop(self.child.take());
+    }
+}
+
+impl Drop for ProcessGroup {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.start_kill();
+            drop(reap(child));
+        }
+    }
+}
+
+fn reap(mut child: AsyncGroupChild) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let _ = child.wait().await;
+    })
 }
 
 async fn finish(
@@ -281,6 +350,19 @@ async fn finish(
     Ok(output)
 }
 
+async fn cleanup(
+    input_task: &mut Option<tokio::task::JoinHandle<std::io::Result<()>>>,
+    output_task: &mut Option<tokio::task::JoinHandle<Vec<u8>>>,
+) {
+    if let Some(input_task) = input_task.take() {
+        input_task.abort();
+    }
+    if let Some(output_task) = output_task.take() {
+        output_task.abort();
+        let _ = output_task.await;
+    }
+}
+
 fn validate_output(output: &[u8]) -> Result<(), CredentialError> {
     if output.len() > MAX_OUTPUT_BYTES {
         return Err(CredentialError::new("credential helper output exceeded its limit"));
@@ -296,36 +378,26 @@ async fn terminate(child: &mut command_group::AsyncGroupChild) {
     let _ = child.wait().await;
 }
 
-/// Invalid helper command configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ExecCredentialConfigError {
-    /// No executable was configured.
     #[error("credential helper argv must not be empty")]
     EmptyArgv,
-    /// The executable path is relative.
     #[error("credential helper executable must use an absolute path")]
     RelativeExecutable,
-    /// An argument contains a null byte rejected by process creation.
     #[error("credential helper argv contains a null byte")]
     ArgumentNul,
-    /// The command exceeds the item or aggregate byte limit.
     #[error("credential helper argv exceeds its limit")]
     ArgvLimit,
-    /// Too many environment names were configured.
     #[error("credential helper environment exceeds its limit")]
     EnvironmentLimit,
-    /// An environment name is empty or contains an invalid byte.
     #[error("credential helper environment contains an invalid name")]
     EnvironmentName,
-    /// The timeout is zero or exceeds five minutes.
     #[error("credential helper timeout must be between 1 millisecond and 300 seconds")]
     Timeout,
 }
 
-/// An error binding a helper to one upstream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ExecCredentialProviderError {
-    /// The upstream URL has no bounded network origin.
     #[error("credential helper upstream origin is invalid or exceeds its limit")]
     Origin,
 }
@@ -380,80 +452,5 @@ impl HelperResponse {
 }
 
 #[cfg(all(test, unix))]
-mod tests {
-    use std::process::Stdio;
-    use std::time::Duration;
-
-    use command_group::AsyncCommandGroup as _;
-    use tokio::process::Command;
-
-    use super::{CredentialFailure, ExecCredentialConfig, MAX_OUTPUT_BYTES, terminate};
-
-    fn spawn(script: &str) -> command_group::AsyncGroupChild {
-        Command::new("/bin/sh")
-            .args(["-c", script])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .group()
-            .spawn()
-            .expect("test helper child spawns")
-    }
-
-    // Reaping the child before terminate runs pins try_wait to the cached status, so the early
-    // return is taken on every run rather than only when the helper happens to have exited in time.
-    #[tokio::test]
-    async fn test_terminate_returns_promptly_when_the_child_already_exited() {
-        let mut child = spawn("exit 0");
-        assert!(child.wait().await.expect("child is reaped").success());
-
-        tokio::time::timeout(Duration::from_secs(5), terminate(&mut child))
-            .await
-            .expect("terminate returns without waiting on an already-exited child");
-
-        assert_eq!(
-            child
-                .try_wait()
-                .expect("status stays available")
-                .map(|status| status.success()),
-            Some(true)
-        );
-    }
-
-    // The helper writes one byte past the output limit and then stays alive, so the reader fills and
-    // finishes while the child is still running. That drives the loop's over-limit branch deterministically
-    // on every run, rather than only when the helper happens to have exited in time. PATH is inherited so
-    // the shell resolves its commands after `execute` clears the environment.
-    #[tokio::test]
-    async fn test_execute_rejects_output_over_the_limit() {
-        let script = format!("head -c {} /dev/zero; sleep 30", MAX_OUTPUT_BYTES + 1);
-        let config = ExecCredentialConfig::new(
-            vec!["/bin/sh".to_owned(), "-c".to_owned(), script],
-            Duration::from_secs(10),
-            vec!["PATH".to_owned()],
-            CredentialFailure::Fail,
-        )
-        .expect("the helper config is valid");
-
-        let error = config
-            .execute(b"request")
-            .await
-            .expect_err("output past the limit is rejected");
-
-        assert!(error.to_string().contains("exceeded its limit"), "{error}");
-    }
-
-    #[tokio::test]
-    async fn test_terminate_kills_a_running_child() {
-        let mut child = spawn("sleep 300");
-        assert!(child.try_wait().expect("child is still running").is_none());
-
-        tokio::time::timeout(Duration::from_secs(5), terminate(&mut child))
-            .await
-            .expect("terminate kills and reaps the running child");
-
-        assert!(
-            matches!(child.try_wait().expect("status is available after terminate"), Some(status) if !status.success())
-        );
-    }
-}
+#[path = "../../tests/unit/client/exec/tests.rs"]
+mod tests;

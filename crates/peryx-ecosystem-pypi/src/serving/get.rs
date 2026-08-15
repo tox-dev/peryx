@@ -1,9 +1,3 @@
-//! `PyPI` GET routing: project list, project detail, release files, and archive inspection dispatch.
-#![allow(
-    clippy::result_large_err,
-    reason = "handler helpers carry an axum Response as their error; boxing it everywhere adds noise"
-)]
-
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -14,7 +8,7 @@ use peryx_driver::conditional::{applicable_range, http_date, if_modified_since, 
 use peryx_driver::not_found;
 use peryx_driver::range::unsatisfiable_range;
 use peryx_driver::state::ServingState;
-use peryx_events::metrics::Event;
+use peryx_events::metrics::Observation;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::PolicyAction;
 use peryx_storage::blob::{Digest, RangeRequest, parse_range};
@@ -28,11 +22,11 @@ use super::response::{
     CacheContext, cache_error_response, detail_response, file_response, html_bytes_response, index_response,
     json_bytes_response, legacy_bytes_response, legacy_json_response, policy_denial_response, provenance_response,
 };
-use super::{Format, METADATA_FAMILY, PROVENANCE_FAMILY, negotiate, path_error_response, safe_filename};
+use super::{Format, HttpResult, METADATA_FAMILY, PROVENANCE_FAMILY, negotiate, path_error_response, safe_filename};
 use crate::attestation;
 
 /// On a replica, whether serving content at `last_serial` would expose metadata past the readable
-/// frontier — a serial a required derived view (the search or blob view) has not caught up to yet. A
+/// frontier - a serial a required derived view (the search or blob view) has not caught up to yet. A
 /// replica holds such a read and serves the older contiguous view (a surviving cached page) or a
 /// not-found instead, so a search that misses the new metadata and a page that shows it never disagree,
 /// and a listed file's blob is present before its page serves. The primary is never read-only, so its
@@ -116,9 +110,9 @@ async fn pypi_get(
     }
     if let Some(project) = rest.strip_prefix("simple/").and_then(|rest| rest.strip_suffix('/')) {
         let normalized = normalize_name(project);
-        state.metrics.record(Event::Page {
-            route: index.route.clone(),
-            project: normalized.clone(),
+        state.metrics.record(Observation::Page {
+            repository: index.route.clone(),
+            resource: normalized.clone(),
         });
         if matches!(negotiate(headers), Format::Json) {
             match Box::pin(cache::stream_detail(state.clone(), position, normalized.clone())).await {
@@ -143,8 +137,8 @@ async fn pypi_get(
         let index = state.index_at(position);
         let format = negotiate(headers);
         if matches!(format, Format::Html) {
-            let hot_key = state.hot_key(&index.route, &normalized, cache::SIMPLE_HTML);
-            let hot = match revocation_safe_hot_page(state, &hot_key) {
+            let representation_key = state.representation_key(&index.route, &normalized, cache::SIMPLE_HTML);
+            let hot = match revocation_safe_hot_page(state, &representation_key) {
                 Ok(hot) => hot,
                 Err(err) => return cache_error_response(&err, CacheContext::project(&index.route, &normalized)),
             };
@@ -191,18 +185,18 @@ async fn legacy_json_route(state: &Arc<ServingState>, index: &Index, rest: &str)
     let target = match legacy_json_target(rest) {
         Ok(Some(target)) => target,
         Ok(None) => return None,
-        Err(response) => return Some(response),
+        Err(error) => return Some(error.into_response()),
     };
-    state.metrics.record(Event::Page {
-        route: index.route.clone(),
-        project: target.project.clone(),
+    state.metrics.record(Observation::Page {
+        repository: index.route.clone(),
+        resource: target.project.clone(),
     });
     let variant = target.version.as_deref().map_or_else(
         || cache::LEGACY_JSON.to_owned(),
         |version| format!("{}/{version}", cache::LEGACY_JSON),
     );
-    let hot_key = state.hot_key(&index.route, &target.project, &variant);
-    let hot = match revocation_safe_hot_page(state, &hot_key) {
+    let representation_key = state.representation_key(&index.route, &target.project, &variant);
+    let hot = match revocation_safe_hot_page(state, &representation_key) {
         Ok(hot) => hot,
         Err(err) => {
             return Some(cache_error_response(
@@ -308,10 +302,10 @@ async fn file_route(state: &Arc<ServingState>, index: &Index, file: &str, header
         }
     }
     if filename.ends_with(".metadata") {
-        state.metrics.record(Event::Ecosystem {
-            route: route.clone(),
-            project: crate::project_of_filename(&filename),
-            filename: Some(filename.clone()),
+        state.metrics.record(Observation::Ecosystem {
+            repository: route.clone(),
+            resource: crate::project_of_filename(&filename),
+            artifact: Some(filename.clone()),
             family: METADATA_FAMILY.key,
         });
         return file_response(
@@ -323,10 +317,10 @@ async fn file_route(state: &Arc<ServingState>, index: &Index, file: &str, header
         let artifact_filename = filename
             .strip_suffix(attestation::PROVENANCE_SUFFIX)
             .expect("suffix was checked");
-        state.metrics.record(Event::Ecosystem {
-            route: route.clone(),
-            project: crate::project_of_filename(&filename),
-            filename: Some(filename.clone()),
+        state.metrics.record(Observation::Ecosystem {
+            repository: route.clone(),
+            resource: crate::project_of_filename(&filename),
+            artifact: Some(filename.clone()),
             family: PROVENANCE_FAMILY.key,
         });
         return provenance_response(
@@ -356,11 +350,9 @@ async fn file_route(state: &Arc<ServingState>, index: &Index, file: &str, header
 
 const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 
-/// The `304` a client holding these bytes earns, or nothing when it holds other bytes.
+/// Evaluates `If-None-Match` before method and range conditions, as required by RFC 9110 section 13.1.2.
 ///
-/// RFC 9110 s13.1.2 puts this condition ahead of the method and of `Range`, and the access and
-/// download-policy checks have run by now, so a match answers the request before anything opens the
-/// blob or fetches it from upstream.
+/// Access and download-policy checks run first, so a match can return before opening or fetching the blob.
 ///
 /// A digest this index has never cached matches all the same: the URL names the bytes, so a client
 /// holding them holds the current representation whether or not the store does.
@@ -444,7 +436,7 @@ struct LegacyJsonTarget {
     version: Option<String>,
 }
 
-fn legacy_json_target(rest: &str) -> Result<Option<LegacyJsonTarget>, Response> {
+fn legacy_json_target(rest: &str) -> HttpResult<Option<LegacyJsonTarget>> {
     // The Simple API and the file/inspect routes own their namespaces; a project normalized to `json`
     // must reach `GET .../simple/json/`, not be claimed here as the legacy JSON view of `simple`.
     if ["simple/", "files/", "inspect/"]
@@ -475,20 +467,10 @@ fn legacy_json_target(rest: &str) -> Result<Option<LegacyJsonTarget>, Response> 
     }))
 }
 
-/// What every representation of an artifact carries, whatever the method and whatever the store holds.
-const fn blob_headers(etag: &str) -> [(header::HeaderName, &str); 4] {
-    [
-        (header::CONTENT_TYPE, "application/octet-stream"),
-        (header::CACHE_CONTROL, IMMUTABLE),
-        (header::ACCEPT_RANGES, "bytes"),
-        (header::ETAG, etag),
-    ]
-}
-
 /// Answer a file `HEAD` with the headers of the `GET` it stands for and no body.
 ///
 /// Nothing here opens the artifact or asks upstream for it, which is the point: a probe of an uncached
-/// wheel used to start the whole download — hashed, written, and paid for in bandwidth — for a client
+/// wheel used to start the whole download - hashed, written, and paid for in bandwidth - for a client
 /// that cannot receive a byte of it.
 ///
 /// A cached blob answers a `Range` the way the matching `GET` does. An uncached one has no seekable
@@ -532,7 +514,12 @@ async fn head_blob(
         cache::FileProbe::Upstream(size) => (StatusCode::OK, size, None, None),
     };
     let mut builder = Response::builder().status(status);
-    for (name, value) in blob_headers(etag) {
+    for (name, value) in [
+        (header::CONTENT_TYPE, "application/octet-stream"),
+        (header::CACHE_CONTROL, IMMUTABLE),
+        (header::ACCEPT_RANGES, "bytes"),
+        (header::ETAG, etag),
+    ] {
         builder = builder.header(name, value);
     }
     if let Some(modified) = modified {
@@ -564,8 +551,8 @@ async fn head_blob(
 ///
 /// The cached blob also carries the date the store wrote it, which is the one modification date peryx
 /// can stand behind: the digest fixes the bytes, so the only thing that can change under this URL is
-/// which side of the cache serves them. A blob still arriving from upstream has no such date — the
-/// write it would name has not happened — so it goes out with the tag alone, as it did before.
+/// which side of the cache serves them. A blob still arriving from upstream has no such date - the
+/// write it would name has not happened - so it goes out with the tag alone, as it did before.
 async fn serve_blob(
     state: &Arc<ServingState>,
     route: String,
@@ -576,7 +563,12 @@ async fn serve_blob(
     since: Option<&str>,
 ) -> Response {
     let digest_hex = digest.as_str().to_owned();
-    let blob_headers = blob_headers(etag);
+    let blob_headers = [
+        (header::CONTENT_TYPE, "application/octet-stream"),
+        (header::CACHE_CONTROL, IMMUTABLE),
+        (header::ACCEPT_RANGES, "bytes"),
+        (header::ETAG, etag),
+    ];
     match cache::stream_file(state.clone(), digest.clone(), route.clone(), filename.to_owned()).await {
         Ok(cache::FileOutcome::Cached(metadata)) => {
             let size = metadata.bytes;
@@ -627,11 +619,11 @@ async fn serve_blob(
             let filename = filename.to_owned();
             let body =
                 peryx_driver::body::on_body_complete(peryx_driver::body::blob_read(read), length, move |bytes| {
-                    metrics.record(Event::Download {
-                        project,
-                        route,
-                        filename,
-                        version,
+                    metrics.record(Observation::Read {
+                        resource: project,
+                        repository: route,
+                        artifact: filename,
+                        group: version,
                         source,
                         bytes,
                     });
@@ -671,7 +663,7 @@ fn remember_rendered(
         return;
     }
     if let Ok(Some(expires_at)) = cache::rendered_expiry(state, index, project) {
-        let key = state.hot_key(&index.route, project, variant);
+        let key = state.representation_key(&index.route, project, variant);
         state
             .cache
             .store_hot_versioned(key, body.clone(), expires_at, last_serial);

@@ -1,8 +1,3 @@
-#![allow(
-    clippy::must_use_candidate,
-    reason = "the #[component] macro consumes attributes, so #[must_use] cannot reach the generated functions"
-)]
-
 use leptos::prelude::*;
 
 use super::{ecosystem_stats, human_size, optional_counters_for, start_refresh};
@@ -148,7 +143,7 @@ fn DashboardBody(data: UiSnapshot, usage: UiStats) -> impl IntoView {
 fn OverlayCard(index: UiIndex, all: Vec<UiIndex>, counters: Option<UiCounters>) -> impl IntoView {
     let browse = browse_index_url(&index.route);
     let stats_href = stats_index_url(&index.route);
-    let simple = index.endpoint.clone();
+    let endpoint = index.endpoint.clone();
     let upload_to = index.upload_to.clone();
     let layers = index
         .layers
@@ -165,7 +160,7 @@ fn OverlayCard(index: UiIndex, all: Vec<UiIndex>, counters: Option<UiCounters>) 
                     <span class="layer-name">{name.clone()}</span>
                     <span class=format!("badge kind-{kind}")>{kind.clone()}</span>
                     {is_upload_target
-                        .then(|| view! { <span class="badge uploads">"uploads land here"</span> })}
+                        .then(|| view! { <span class="badge uploads">"writes land here"</span> })}
                     {route.map(|route| view! { <code class="layer-route">{route}</code> })}
                 </li>
             }
@@ -174,8 +169,8 @@ fn OverlayCard(index: UiIndex, all: Vec<UiIndex>, counters: Option<UiCounters>) 
     let usage = counters.map(|c| {
         view! {
             <p class="card-usage">
-                <span>{c.pages}" pages"</span>
-                <span>{c.downloads}" downloads"</span>
+                <span>{c.pages}" listings"</span>
+                <span>{c.reads}" reads"</span>
                 <span>{human_size(c.bytes)}" served"</span>
                 <a href=stats_href.clone()>"usage"</a>
             </p>
@@ -187,9 +182,9 @@ fn OverlayCard(index: UiIndex, all: Vec<UiIndex>, counters: Option<UiCounters>) 
                 <a href=browse class="card-title">{index.name.clone()}</a>
                 <span class=format!("badge ecosystem-{}", index.ecosystem)>{index.ecosystem.clone()}</span>
                 <span class="badge kind-virtual">"virtual"</span>
-                {index.uploads.then(|| view! { <span class="badge uploads">"uploads"</span> })}
+                {index.uploads.then(|| view! { <span class="badge uploads">"writes"</span> })}
             </div>
-            <p class="dim"><code>{simple}</code></p>
+            <p class="dim"><code>{endpoint}</code></p>
             <ol class="layer-stack">{layers}</ol>
             <p class="layer-hint">"resolves top to bottom; first file match wins"</p>
             {usage}
@@ -201,20 +196,12 @@ fn OverlayCard(index: UiIndex, all: Vec<UiIndex>, counters: Option<UiCounters>) 
 fn IndexCard(index: UiIndex, counters: Option<UiCounters>) -> impl IntoView {
     let browse = browse_index_url(&index.route);
     let stats_href = stats_index_url(&index.route);
-    let simple = index.endpoint.clone();
-    let layers = (!index.layers.is_empty()).then(|| {
-        view! {
-            <p class="layers">
-                "layers: "
-                {index.layers.iter().map(|layer| view! { <code>{layer.clone()}</code> }).collect_view()}
-            </p>
-        }
-    });
+    let endpoint = index.endpoint.clone();
     let usage = counters.map(|c| {
         view! {
             <p class="card-usage">
-                <span>{c.pages}" pages"</span>
-                <span>{c.downloads}" downloads"</span>
+                <span>{c.pages}" listings"</span>
+                <span>{c.reads}" reads"</span>
                 <span>{human_size(c.bytes)}" served"</span>
                 <a href=stats_href.clone()>"usage"</a>
             </p>
@@ -226,11 +213,14 @@ fn IndexCard(index: UiIndex, counters: Option<UiCounters>) -> impl IntoView {
                 <a href=browse class="card-title">{index.name.clone()}</a>
                 <span class=format!("badge ecosystem-{}", index.ecosystem)>{index.ecosystem.clone()}</span>
                 <span class=format!("badge kind-{}", index.kind)>{index.kind.clone()}</span>
-                {index.uploads.then(|| view! { <span class="badge uploads">"uploads"</span> })}
+                {index.uploads.then(|| view! { <span class="badge uploads">"writes"</span> })}
             </div>
-            <p class="dim"><code>{simple}</code></p>
-            {layers}
+            <p class="dim"><code>{endpoint}</code></p>
             {usage}
         </div>
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/pages/dashboard/tests.rs"]
+mod tests;

@@ -4,8 +4,6 @@ use serde::{Deserialize, Serialize};
 
 use super::{string_at, u64_at};
 
-/// The dashboard snapshot: identity, the global request count, per-ecosystem activity, the driver's
-/// counter-family labels, and the configured indexes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct UiSnapshot {
     pub version: String,
@@ -16,19 +14,17 @@ pub struct UiSnapshot {
     pub indexes: Vec<UiIndex>,
 }
 
-/// One ecosystem's activity rolled up across its indexes; mirrors peryx's `/+status` summary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct UiEcosystemSummary {
     pub ecosystem: String,
     pub pages: u64,
-    pub downloads: u64,
+    pub reads: u64,
     pub bytes: u64,
     pub rejected: u64,
-    pub uploads: u64,
+    pub writes: u64,
     pub families: BTreeMap<String, u64>,
 }
 
-/// A counter family the ecosystem driver publishes: its storage key and human label.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct UiMetricFamily {
     pub key: String,
@@ -36,12 +32,11 @@ pub struct UiMetricFamily {
     pub roles: Vec<String>,
 }
 
-/// One configured index as the dashboard shows it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UiIndex {
     pub name: String,
     pub route: String,
-    /// The package ecosystem, for example `pypi`.
+    /// The ecosystem identifier.
     pub ecosystem: String,
     /// The client-facing API endpoint this index is served at, produced by its ecosystem driver.
     pub endpoint: String,
@@ -55,9 +50,9 @@ pub struct UiIndex {
     pub upload_to: Option<String>,
     pub upstream: Option<UiUpstream>,
     pub hosted: Option<UiHosted>,
-    pub project_count: u64,
-    pub upload_count: u64,
-    pub recent_uploads: Vec<UiRecentUpload>,
+    pub resource_count: u64,
+    pub write_count: u64,
+    pub recent_writes: Vec<UiRecentWrite>,
 }
 
 /// A cached index's upstream status, with credential material redacted by the server.
@@ -77,18 +72,16 @@ pub struct UiHosted {
     pub token_redacted: Option<String>,
 }
 
-/// One recent upload summary from `/+status`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UiRecentUpload {
-    pub project: String,
-    pub filename: String,
-    pub version: String,
-    pub uploaded_at: Option<String>,
+pub struct UiRecentWrite {
+    pub resource: String,
+    pub artifact: String,
+    pub group: String,
+    pub written_at: Option<String>,
     pub size: Option<u64>,
 }
 
 impl UiSnapshot {
-    /// Rebuild the snapshot from the `/+status` JSON document.
     #[must_use]
     pub fn from_status(value: &serde_json::Value) -> Self {
         let indexes = value["indexes"]
@@ -111,18 +104,18 @@ impl UiSnapshot {
                 upload_to: index["upload_to"].as_str().map(str::to_owned),
                 upstream: upstream_from_status(index),
                 hosted: hosted_from_status(index),
-                project_count: u64_at(index, "project_count"),
-                upload_count: u64_at(index, "upload_count"),
-                recent_uploads: index["recent_uploads"]
+                resource_count: u64_at(index, "resource_count"),
+                write_count: u64_at(index, "write_count"),
+                recent_writes: index["recent_writes"]
                     .as_array()
                     .into_iter()
                     .flatten()
-                    .map(|upload| UiRecentUpload {
-                        project: string_at(upload, "project"),
-                        filename: string_at(upload, "filename"),
-                        version: string_at(upload, "version"),
-                        uploaded_at: upload["uploaded_at"].as_str().map(str::to_owned),
-                        size: upload["size"].as_u64(),
+                    .map(|write| UiRecentWrite {
+                        resource: string_at(write, "resource"),
+                        artifact: string_at(write, "artifact"),
+                        group: string_at(write, "group"),
+                        written_at: write["written_at"].as_str().map(str::to_owned),
+                        size: write["size"].as_u64(),
                     })
                     .collect(),
             })
@@ -156,3 +149,7 @@ fn hosted_from_status(index: &serde_json::Value) -> Option<UiHosted> {
         token_redacted: hosted["upload_token"]["redacted"].as_str().map(str::to_owned),
     })
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/model/snapshot/tests.rs"]
+mod tests;

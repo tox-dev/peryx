@@ -1,31 +1,55 @@
-//! Restoring a verified backup into a data directory.
-
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{Context as _, bail};
 use peryx_storage::blob::Digest;
-use peryx_storage::meta::MetaStore;
 
-use super::verify::check_backup;
-use super::{Access, BackupCheck, BackupManifest, backup_blob_path, copy_hashed, is_empty_dir, read_manifest};
-use crate::config::{self, Config};
+use super::verify::{check_backup_with_plugins, is_missing_file};
+use super::{
+    Access, BackupCheck, BackupManifest, backup_blob_path, backup_config_with_plugins, backup_plugins, copy_hashed,
+    is_empty_dir, read_manifest,
+};
+use crate::config::Config;
 
 #[cfg(test)]
-#[path = "restore_publish_tests.rs"]
+#[path = "../../tests/unit/tests/operator/restore_publish_tests.rs"]
 mod restore_publish_tests;
 
-/// Restore a backup into a data directory.
-///
 /// # Errors
 /// Returns an error if the backup fails verification, the target is unsafe, or files cannot be
 /// copied.
 pub fn restore(backup: &Path, data_dir: &Path, force: bool, out: &mut dyn Write) -> anyhow::Result<()> {
+    restore_with_plugins(backup, data_dir, force, &crate::compiled_plugins(), out)
+}
+
+/// # Errors
+/// Returns an error if verification, snapshot parsing, target guards, or publication fails.
+pub fn restore_with_plugins(
+    backup: &Path,
+    data_dir: &Path,
+    force: bool,
+    plugins: &peryx_plugin_registry::PluginRegistry,
+    out: &mut dyn Write,
+) -> anyhow::Result<()> {
     let started = Instant::now();
     let manifest = read_manifest(backup)?;
+    let backup_config = match backup_config_with_plugins(backup, &manifest, plugins) {
+        Ok(config) => config,
+        Err(error) if is_missing_file(&error) => {
+            let mut verification = Vec::new();
+            let check = check_backup_with_plugins(backup, &manifest, &plugins.activate([])?, &mut verification)?;
+            bail!(
+                "backup verification failed with {problems} problem(s): {}",
+                String::from_utf8_lossy(&verification),
+                problems = check.problems,
+            );
+        }
+        Err(error) => return Err(error),
+    };
+    let plugins = backup_plugins(&backup_config, plugins)?;
     let mut verification = Vec::new();
-    let check = check_backup(backup, &manifest, &mut verification)?;
+    let check = check_backup_with_plugins(backup, &manifest, &plugins, &mut verification)?;
     if check.problems != 0 {
         bail!(
             "backup verification failed with {problems} problem(s): {}",
@@ -33,13 +57,19 @@ pub fn restore(backup: &Path, data_dir: &Path, force: bool, out: &mut dyn Write)
             problems = check.problems,
         );
     }
-    warn_config_mismatch(backup, &manifest, data_dir, out)?;
-    guard_target_identity(&manifest, data_dir, out)?;
+    warn_config_mismatch(&backup_config, data_dir, out)?;
+    guard_target_identity(&manifest, data_dir, &plugins, out)?;
     guard_target(backup, data_dir, force)?;
     let staging = staging_path(data_dir)?;
-    if let Err(err) = stage_backup(backup, &manifest, check, &staging).and_then(|()| publish(&staging, data_dir)) {
-        let _ = remove_any(&staging);
-        return Err(err);
+    let result = match stage_backup(backup, &manifest, check, &staging) {
+        Ok(()) => crate::metadata::open_existing(&staging.join("peryx.redb"), &plugins).and_then(|store| {
+            drop(store);
+            publish(&staging, data_dir)
+        }),
+        Err(error) => Err(error),
+    };
+    if let Err(error) = result {
+        return Err(cleanup_restore_failure(&staging, error));
     }
     writeln!(out, "restored\t{}", data_dir.display())?;
     let count = manifest.blob_index.count;
@@ -52,8 +82,6 @@ pub fn restore(backup: &Path, data_dir: &Path, force: bool, out: &mut dyn Write)
     Ok(())
 }
 
-/// The total bytes a restore reads from the backup: the metadata snapshot, the config snapshot, the blob
-/// index, and every referenced blob. An operator reads it against the elapsed time to size the recovery.
 const fn restored_bytes(manifest: &BackupManifest) -> u64 {
     manifest
         .metadata
@@ -76,14 +104,17 @@ const fn restored_bytes(manifest: &BackupManifest) -> u64 {
 /// # Errors
 /// Returns an error when the target belongs to a different node, or its identity or serial cannot be
 /// read.
-fn guard_target_identity(manifest: &BackupManifest, data_dir: &Path, out: &mut dyn Write) -> anyhow::Result<()> {
+fn guard_target_identity(
+    manifest: &BackupManifest,
+    data_dir: &Path,
+    plugins: &peryx_plugin_registry::PluginRegistry,
+    out: &mut dyn Write,
+) -> anyhow::Result<()> {
     let target = data_dir.join("peryx.redb");
     if !target.is_file() {
         return Ok(());
     }
-    let Ok(meta) = MetaStore::open_existing_read_only(&target) else {
-        return Ok(());
-    };
+    let meta = crate::metadata::open_existing_read_only(&target, plugins)?;
     let existing = meta.writer_identity().context("read restore target writer identity")?;
     if let (Some(backup), Some(existing)) = (manifest.availability.writer_identity.as_deref(), existing.as_deref())
         && backup != existing
@@ -104,17 +135,7 @@ fn guard_target_identity(manifest: &BackupManifest, data_dir: &Path, out: &mut d
     Ok(())
 }
 
-fn warn_config_mismatch(
-    backup: &Path,
-    manifest: &BackupManifest,
-    data_dir: &Path,
-    out: &mut dyn Write,
-) -> anyhow::Result<()> {
-    let text = std::fs::read_to_string(backup.join(&manifest.config.path))
-        .context(format!("read backup config {}", manifest.config.path))?;
-    let backup_config = Config::default()
-        .apply(config::from_toml(PathBuf::from(&manifest.config.path), &text)?)
-        .context("parse backup config snapshot")?;
+fn warn_config_mismatch(backup_config: &Config, data_dir: &Path, out: &mut dyn Write) -> anyhow::Result<()> {
     if backup_config.data_dir == data_dir {
         return Ok(());
     }
@@ -125,16 +146,26 @@ fn warn_config_mismatch(
     Ok(())
 }
 
-/// Refuse a restore whose backup aliases the target, and enforce the empty-target rule without
-/// `--force`. A restore never touches the target directly: it stages a full copy in a sibling directory
-/// and swaps it in, so the removal the forced path used to do up front is gone.
+/// Refuse overlap between the backup, target, and restore work paths. Without `--force`, the target
+/// must be absent or an empty directory.
 ///
 /// # Errors
 /// Returns an error when the backup path is the target, or the non-forced target exists and is not an
 /// empty directory.
 fn guard_target(backup: &Path, data_dir: &Path, force: bool) -> anyhow::Result<()> {
-    if paths_alias(backup, data_dir) {
+    let backup = resolve_path(backup)?;
+    let target = resolve_path(data_dir)?;
+    let staging = resolve_path(&staging_path(data_dir)?)?;
+    let aside = resolve_path(&aside_path(data_dir)?)?;
+    if backup == target {
         bail!("refusing to restore backup {} onto itself", data_dir.display());
+    }
+    if paths_overlap(&backup, &target) || paths_overlap(&backup, &staging) || paths_overlap(&backup, &aside) {
+        bail!(
+            "refusing to restore from backup {} because it overlaps restore target {} or its work paths",
+            backup.display(),
+            data_dir.display()
+        );
     }
     if !data_dir.exists() {
         return Ok(());
@@ -158,11 +189,29 @@ fn guard_target(backup: &Path, data_dir: &Path, force: bool) -> anyhow::Result<(
     Ok(())
 }
 
-/// Whether two paths name the same location. Both are canonicalized so a symlink, `.`, or `..` cannot
-/// smuggle the backup in as the target; a path that does not yet exist keeps its literal form.
-fn paths_alias(left: &Path, right: &Path) -> bool {
-    let resolve = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    resolve(left) == resolve(right)
+fn paths_overlap(left: &Path, right: &Path) -> bool {
+    left.starts_with(right) || right.starts_with(left)
+}
+
+/// Resolve symlinks in the existing prefix while retaining missing path components.
+fn resolve_path(path: &Path) -> anyhow::Result<PathBuf> {
+    let absolute = std::path::absolute(path).context(format!("make path {} absolute", path.display()))?;
+    let mut existing = absolute.as_path();
+    let mut missing = Vec::new();
+    while !existing.exists() {
+        let name = existing
+            .file_name()
+            .context(format!("path {} has no existing ancestor", path.display()))?;
+        missing.push(name.to_owned());
+        existing = existing
+            .parent()
+            .context(format!("path {} has no existing ancestor", path.display()))?;
+    }
+    let mut resolved = std::fs::canonicalize(existing).context(format!("resolve path {}", path.display()))?;
+    for component in missing.into_iter().rev() {
+        resolved.push(component);
+    }
+    Ok(resolved)
 }
 
 /// Copy the verified backup into a clean staging directory and make its contents durable, so publication
@@ -172,31 +221,51 @@ fn paths_alias(left: &Path, right: &Path) -> bool {
 /// Returns an error if the staging directory cannot be reset or any file cannot be copied.
 fn stage_backup(backup: &Path, manifest: &BackupManifest, check: BackupCheck, staging: &Path) -> anyhow::Result<()> {
     reset_staging(staging)?;
-    copy_hashed(
+    let metadata = copy_hashed(
         &backup.join(&manifest.metadata.path),
         &staging.join("peryx.redb"),
         "peryx.redb",
         Access::Private,
     )
     .context("restore metadata store")?;
-    copy_hashed(
+    ensure_copy_matches(&metadata, &manifest.metadata, "metadata")?;
+    let config = copy_hashed(
         &backup.join(&manifest.config.path),
         &staging.join("config.toml"),
         "config.toml",
         Access::Private,
     )
     .context("restore config snapshot")?;
+    ensure_copy_matches(&config, &manifest.config, "config")?;
     for (digest, entry) in check.blobs {
         let digest = Digest::from_hex(&digest).context("backup blob index contained an invalid digest")?;
-        copy_hashed(
+        let copied = copy_hashed(
             &backup.join(&entry.path),
             &backup_blob_path(staging, &digest),
             &entry.path,
             Access::Shared,
         )
         .context(format!("restore blob {}", digest.as_str()))?;
+        ensure_blob_copy_matches(&copied, &digest, entry.size_bytes)?;
     }
-    sync_tree(staging);
+    sync_tree(staging)?;
+    Ok(())
+}
+
+fn ensure_copy_matches(actual: &super::ManifestFile, expected: &super::ManifestFile, kind: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        actual.sha256 == expected.sha256 && actual.size_bytes == expected.size_bytes,
+        "backup {kind} changed after verification"
+    );
+    Ok(())
+}
+
+fn ensure_blob_copy_matches(actual: &super::ManifestFile, digest: &Digest, size_bytes: u64) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        actual.sha256 == digest.as_str() && actual.size_bytes == size_bytes,
+        "backup blob {} changed after verification",
+        digest.as_str()
+    );
     Ok(())
 }
 
@@ -214,7 +283,7 @@ fn reset_staging(staging: &Path) -> anyhow::Result<()> {
 fn publish(staging: &Path, data_dir: &Path) -> anyhow::Result<()> {
     if !data_dir.exists() {
         std::fs::rename(staging, data_dir).context(format!("publish restored data to {}", data_dir.display()))?;
-        sync_parent(data_dir);
+        sync_parent(data_dir)?;
         return Ok(());
     }
     let aside = aside_path(data_dir)?;
@@ -222,14 +291,24 @@ fn publish(staging: &Path, data_dir: &Path) -> anyhow::Result<()> {
     std::fs::rename(data_dir, &aside).context(format!("move existing restore target {} aside", data_dir.display()))?;
     match std::fs::rename(staging, data_dir) {
         Ok(()) => {
-            sync_parent(data_dir);
-            let _ = remove_any(&aside);
+            sync_parent(data_dir)?;
+            remove_any(&aside)?;
             Ok(())
         }
         Err(err) => {
-            let _ = std::fs::rename(&aside, data_dir);
-            Err(err).context(format!("publish restored data to {}", data_dir.display()))
+            let publish = anyhow::Error::new(err).context(format!("publish restored data to {}", data_dir.display()));
+            Err(rollback_publish(&aside, data_dir, publish))
         }
+    }
+}
+
+fn rollback_publish(aside: &Path, data_dir: &Path, publish: anyhow::Error) -> anyhow::Error {
+    match std::fs::rename(aside, data_dir) {
+        Ok(()) => publish,
+        Err(rollback) => publish.context(format!(
+            "restore original target {} after publish failure: {rollback}",
+            data_dir.display()
+        )),
     }
 }
 
@@ -249,7 +328,10 @@ fn aside_path(data_dir: &Path) -> anyhow::Result<PathBuf> {
 fn sibling_path(data_dir: &Path, suffix: &str) -> anyhow::Result<PathBuf> {
     let mut name = data_dir
         .file_name()
-        .with_context(|| format!("restore target {} has no final path component", data_dir.display()))?
+        .context(format!(
+            "restore target {} has no final path component",
+            data_dir.display()
+        ))?
         .to_owned();
     name.push(suffix);
     Ok(data_dir.with_file_name(name))
@@ -265,33 +347,45 @@ fn remove_any(path: &Path) -> anyhow::Result<()> {
     }
 }
 
-/// Flush a directory subtree so the file names a later rename publishes survive a crash. Durability is a
-/// best-effort hint: the all-or-nothing guarantee comes from the rename ordering, not from the flush, so
-/// a sync error never fails an otherwise complete restore.
-fn sync_tree(path: &Path) {
-    if let Ok(entries) = std::fs::read_dir(path) {
-        for entry in entries.flatten() {
-            let child = entry.path();
-            if child.is_dir() {
-                sync_tree(&child);
-            }
-        }
+fn cleanup_restore_failure(staging: &Path, error: anyhow::Error) -> anyhow::Error {
+    match remove_any(staging) {
+        Ok(()) => error,
+        Err(cleanup) => error.context(format!(
+            "clean restore staging {} after failure: {cleanup}",
+            staging.display()
+        )),
     }
-    sync_dir(path);
 }
 
-fn sync_parent(path: &Path) {
-    if let Some(parent) = path.parent() {
-        sync_dir(parent);
+/// Flush the staged directory tree before publication.
+fn sync_tree(path: &Path) -> anyhow::Result<()> {
+    for entry in std::fs::read_dir(path).context(format!("read restored directory {}", path.display()))? {
+        let child = entry
+            .context(format!("read restored directory entry in {}", path.display()))?
+            .path();
+        if child.is_dir() {
+            sync_tree(&child)?;
+        }
     }
+    sync_dir(path)
+}
+
+fn sync_parent(path: &Path) -> anyhow::Result<()> {
+    let parent = path
+        .parent()
+        .context(format!("restored target {} has no parent", path.display()))?;
+    sync_dir(parent)
 }
 
 #[cfg(unix)]
-fn sync_dir(path: &Path) {
-    if let Ok(dir) = std::fs::File::open(path) {
-        let _ = dir.sync_all();
-    }
+fn sync_dir(path: &Path) -> anyhow::Result<()> {
+    std::fs::File::open(path)
+        .context(format!("open directory {} for sync", path.display()))?
+        .sync_all()
+        .context(format!("sync directory {}", path.display()))
 }
 
 #[cfg(not(unix))]
-fn sync_dir(_path: &Path) {}
+fn sync_dir(_path: &Path) -> anyhow::Result<()> {
+    Ok(())
+}

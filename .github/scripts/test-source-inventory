@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
+cd "$repo"
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+cargo metadata --no-deps --format-version 1 >"$scratch/metadata.json"
+
+scripts/ci/workspace-package-list all >"$scratch/packages"
+jq -r '
+  .workspace_members as $members
+  | .packages[]
+  | select(.id as $id | $members | index($id))
+  | .name
+' "$scratch/metadata.json" | sort >"$scratch/metadata-packages"
+cmp "$scratch/packages" "$scratch/metadata-packages"
+
+if ! jq -e '
+  all(.packages[];
+    (.manifest_path | sub("/Cargo.toml$"; "") + "/") as $root
+    | all(.targets[]; .src_path | startswith($root)))
+' "$scratch/metadata.json" >/dev/null; then
+  printf 'Cargo target source escapes its package root\n' >&2
+  exit 1
+fi
+
+scripts/ci/workspace-package-list system >"$scratch/system-packages"
+mapfile -t system_packages <"$scratch/system-packages"
+.github/scripts/package-source-roots --metadata "$scratch/metadata.json" --index >"$scratch/roots"
+awk -F '\t' 'NR == FNR { packages[$1] = 1; next } packages[$1] { print $2 }' \
+  "$scratch/system-packages" "$scratch/roots" | sort -u >"$scratch/system-roots"
+
+while IFS= read -r root; do
+  find "$root" -type f -name '*.rs' -not -path '*/target/*' -print0
+done <"$scratch/system-roots" | while IFS= read -r -d '' source; do
+  name=$(basename "$source" .rs)
+  printf 'SF:%s/%s\nFN:1,%s\nFNDA:1,%s\nDA:1,1\nend_of_record\n' \
+    "$(cd "$(dirname "$source")" && pwd -P)" "$(basename "$source")" "$name" "$name"
+done >"$scratch/system.lcov"
+.github/scripts/check-lcov-sources --metadata "$scratch/metadata.json" \
+  --root-index "$scratch/roots" "$scratch/system.lcov" "${system_packages[@]}" >/dev/null
+
+while IFS= read -r package; do
+  missing=$(jq -r --arg package "$package" '.packages[] | select(.name == $package) | .targets[0].src_path' \
+    "$scratch/metadata.json")
+  awk -v missing="SF:$missing" '
+    /^SF:/ { emit = $0 != missing }
+    emit { print }
+  ' "$scratch/system.lcov" >"$scratch/missing.lcov"
+  if output=$(
+    .github/scripts/check-lcov-sources --metadata "$scratch/metadata.json" \
+      --root-index "$scratch/roots" "$scratch/missing.lcov" "$package" 2>&1
+  ); then
+    printf 'missing system source passed inventory: %s\n' "$package" >&2
+    exit 1
+  fi
+  if ! grep -Fq "$missing" <<<"$output"; then
+    printf 'missing system source was not reported: %s\n' "$package" >&2
+    exit 1
+  fi
+done <"$scratch/system-packages"

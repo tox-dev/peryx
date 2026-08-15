@@ -1,5 +1,3 @@
-//! The fully resolved configuration types and their defaults.
-
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
 use std::net::SocketAddr;
@@ -10,12 +8,12 @@ use std::time::Duration;
 use peryx_core::Ecosystem;
 use peryx_driver::jobs::{MAINTENANCE_INTERVAL, Schedule, ScheduledJob};
 use peryx_driver::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig};
-use peryx_driver::read_through::ReadThroughLimits;
+use peryx_ha::{AvailabilityMode, DurabilityPolicy};
+use peryx_ha_distributed::read_through::ReadThroughLimits;
 use peryx_http::{DEFAULT_HOT_CACHE_BYTES, DEFAULT_MAX_STALE_SECS};
 use peryx_identity::{Action, ExternalGroupGrant, Glob, Grant, IndexAcl, NamedToken, ProviderId};
 use peryx_policy::PolicyConfig;
-use peryx_replication::DurabilityPolicy;
-use peryx_storage::blob::{DurabilityCapabilities, DurabilityRequirement};
+use peryx_storage::blob::DurabilityCapabilities;
 use peryx_upstream::ExecCredentialConfig;
 use serde::Deserialize;
 use toml::Table;
@@ -39,7 +37,7 @@ pub struct Config {
     pub offline: bool,
     /// Reject client mutations and disable upstream cache fills on a read replica.
     pub read_only: bool,
-    /// Fallback freshness for cached simple pages, in seconds. Upstream `Cache-Control` lifetimes
+    /// Fallback freshness for cached metadata documents, in seconds. Upstream `Cache-Control` lifetimes
     /// take precedence; this applies only when the server granted none.
     pub cache_ttl_secs: i64,
     /// Byte budget for the transformed-page cache: memory traded against warm-serve speed. Pages in
@@ -56,7 +54,7 @@ pub struct Config {
     /// The configured indexes: caches, hosted stores, and virtual indexes that compose them.
     pub indexes: Vec<IndexConfig>,
     /// How the server terminates TLS, or `None` for plain HTTP (the zero-config default, which
-    /// docker/podman accept over loopback). Serving it costs nothing until set.
+    /// clients accept over loopback). Serving it costs nothing until set.
     pub tls: Option<TlsConfig>,
     pub log: LogConfig,
     pub rate_limit: RateLimitConfig,
@@ -89,7 +87,6 @@ pub enum BlobStorageConfig {
 }
 
 impl BlobStorageConfig {
-    /// The durability guarantees the selected backend proves for a completed write.
     #[must_use]
     pub const fn durability(&self) -> DurabilityCapabilities {
         match self {
@@ -178,6 +175,24 @@ impl Default for JobsConfig {
     }
 }
 
+impl JobsConfig {
+    pub(super) fn validate_availability(&self, mode: AvailabilityMode) -> Result<(), ConfigError> {
+        if mode == AvailabilityMode::None
+            && let Some((index, _)) = self
+                .schedules
+                .iter()
+                .enumerate()
+                .find(|(_, schedule)| peryx_ha_distributed::is_scheduled_job_kind(schedule.job.as_str()))
+        {
+            return Err(ConfigError::Jobs {
+                index,
+                reason: "`none` availability cannot schedule distributed jobs",
+            });
+        }
+        Ok(())
+    }
+}
+
 /// Whether a node runs its own background maintenance jobs.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -192,46 +207,6 @@ pub enum JobsMode {
 pub const DEFAULT_REPLICA_PAGE_SIZE: usize = 100;
 pub const DEFAULT_REPLICA_POLL_INTERVAL_SECS: u64 = 1;
 
-/// The runtime availability contract a node promises for authoritative mutations.
-///
-/// The `[availability]` table's `mode` chooses one; each fixes what an acknowledgement guarantees is
-/// durable, as the [availability contracts](@/core/availability-contracts.md) page states normatively.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum AvailabilityMode {
-    /// Single writer, local durability, operator-driven failover: the zero-config default.
-    #[default]
-    None,
-    /// A configured writer and explicit read replicas within one datacenter.
-    Dc,
-    /// Metadata durability in a remote datacenter.
-    Ha,
-}
-
-impl AvailabilityMode {
-    /// The `mode` value that selects this variant.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::Dc => "dc",
-            Self::Ha => "ha",
-        }
-    }
-
-    /// What this mode requires of the blob backend before a write may be acknowledged as durable.
-    ///
-    /// `none` acknowledges from local durability alone; `dc` and `ha` replicate their acknowledgement,
-    /// so they accept only race-safe, integrity-checked writes rather than a bare storage success.
-    #[must_use]
-    pub const fn durability_requirement(self) -> DurabilityRequirement {
-        match self {
-            Self::None => DurabilityRequirement::LOCAL,
-            Self::Dc | Self::Ha => DurabilityRequirement::REPLICATED,
-        }
-    }
-}
-
 /// The resolved `[availability]` table: the selected mode and its topology.
 ///
 /// `dc` and `ha` carry the replication role that fulfills them; `none` holds nothing, so a single-node
@@ -244,7 +219,6 @@ pub enum AvailabilityConfig {
 }
 
 impl AvailabilityConfig {
-    /// The selected mode, independent of any topology a stronger mode carries.
     #[must_use]
     pub const fn mode(&self) -> AvailabilityMode {
         match self {
@@ -254,7 +228,11 @@ impl AvailabilityConfig {
         }
     }
 
-    /// The replication role a `dc` or `ha` node drives, or `None` under single-node `none`.
+    #[must_use]
+    pub const fn is_replica_mode(&self) -> bool {
+        matches!(self.replication(), Some(ReplicationConfig::Replica { .. }))
+    }
+
     #[must_use]
     pub const fn replication(&self) -> Option<&ReplicationConfig> {
         match self {
@@ -316,7 +294,7 @@ pub enum DcRole {
 pub struct DcMember {
     /// The member's stable identity, unique within the group.
     pub node: String,
-    /// The datacenter the member runs in, unique within the group.
+    /// The datacenter the member runs in. Multiple members may share it.
     pub dc: String,
     /// The address peers reach this member on, unique within the group.
     pub address: String,
@@ -338,9 +316,9 @@ pub struct DcMembership {
 
 /// The private control listener a `dc` or `ha` node exposes for availability administration.
 ///
-/// Availability controls never share the public package routes: this listener carries the
+/// Availability controls never share public artifact routes: this listener carries the
 /// administrator-scoped surface on its own socket, private-bound by default so the control plane is not
-/// reachable from the package network unless an operator deliberately widens the bind and grants it.
+/// reachable from public traffic unless an operator deliberately widens the bind and grants it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AvailabilityListenerConfig {
     /// The socket the listener binds. Defaults to a loopback address; a non-loopback bind is refused
@@ -363,39 +341,41 @@ pub struct AvailabilityListenerTls {
 }
 
 impl Config {
-    /// Validate settings that depend on the fully resolved configuration.
-    ///
     /// # Errors
-    /// Returns [`ConfigError::WriterIdentity`] when an identity is blank or replica mode has no
-    /// identity to use during promotion.
+    /// Returns [`ConfigError::WriterIdentity`] when an identity is blank, configured without replication,
+    /// or absent from a replication role that needs one during promotion.
     pub fn validate(&self) -> Result<(), ConfigError> {
-        if !self.auth.trusted_publishers.is_empty() && self.auth.signing_key.is_none() {
-            return Err(ConfigError::Auth {
-                reason: "`signing_key` is required when trusted publishers are configured",
-            });
-        }
-        let mut publisher_ids = HashSet::new();
-        for publisher in &self.auth.trusted_publishers {
-            if !publisher_ids.insert(&publisher.id) {
-                return Err(ConfigError::TrustedPublisher {
-                    id: publisher.id.clone(),
-                    reason: "publisher IDs must be unique",
-                });
-            }
-            let repository = self.indexes.iter().find(|index| index.name == publisher.repository);
-            if !repository.is_some_and(|index| {
-                index.ecosystem == Ecosystem::Pypi
-                    && matches!(
-                        index.kind,
-                        IndexKind::Hosted { .. } | IndexKind::Virtual { upload: Some(_), .. }
-                    )
-            }) {
-                return Err(ConfigError::TrustedPublisher {
-                    id: publisher.id.clone(),
-                    reason: "repository must name a writable PyPI index",
-                });
-            }
-        }
+        self.validate_with_plugins(&crate::compiled_plugins())
+    }
+
+    /// # Errors
+    /// Returns an error when plugin authentication, identity providers, jobs, durability, or writer
+    /// identity conflict with the resolved configuration.
+    pub fn validate_with_plugins(&self, plugins: &peryx_plugin_registry::PluginRegistry) -> Result<(), ConfigError> {
+        let plugin_indexes = self
+            .indexes
+            .iter()
+            .map(|index| peryx_driver::serving::PluginIndexConfig {
+                name: index.name.as_str(),
+                ecosystem: index.ecosystem.clone(),
+                writable: matches!(
+                    index.kind,
+                    IndexKind::Hosted { .. }
+                        | IndexKind::Virtual {
+                            write_target: Some(_),
+                            ..
+                        }
+                ),
+            })
+            .collect::<Vec<_>>();
+        plugins
+            .validate_auth_extensions(
+                &self.auth.extensions,
+                self.auth.signing_key.is_some(),
+                self.auth.token_ttl_secs,
+                &plugin_indexes,
+            )
+            .map_err(ConfigError::Plugin)?;
         let mut provider_ids = HashSet::new();
         for provider in &self.auth.ldap_providers {
             if !provider_ids.insert(&provider.id) {
@@ -444,35 +424,47 @@ impl Config {
             }
         }
         let mode = self.availability.mode();
+        self.jobs.validate_availability(mode)?;
         if let Err(shortfall) = self.blob.durability().check(mode.durability_requirement()) {
             return Err(ConfigError::Durability {
                 mode: mode.as_str(),
                 shortfall: shortfall.as_str(),
             });
         }
+        self.validate_identities(mode)
+    }
+
+    fn validate_identities(&self, mode: AvailabilityMode) -> Result<(), ConfigError> {
         match self.writer_identity.as_deref() {
             Some(identity) if identity.trim().is_empty() => Err(ConfigError::WriterIdentity {
                 reason: "must not be blank",
             }),
-            None if self.read_only
-                || matches!(self.availability.replication(), Some(ReplicationConfig::Replica { .. })) =>
+            Some(_) if self.availability.replication().is_none() => Err(ConfigError::WriterIdentity {
+                reason: "requires `dc` or `ha` availability",
+            }),
+            None if self.availability.is_replica_mode()
+                || (self.read_only && self.availability.replication().is_some()) =>
             {
                 Err(ConfigError::WriterIdentity {
                     reason: "required in read replica mode",
                 })
             }
             _ => Ok(()),
+        }?;
+        if self.node_identity.is_some() && mode != AvailabilityMode::Ha {
+            return Err(ConfigError::Availability {
+                reason: "`node_identity` requires `ha` mode",
+            });
         }
+        Ok(())
     }
 }
 
-/// The largest `token_ttl_secs` an operator may configure: one day. Realm and trusted-publishing
-/// tokens are short-lived credentials, so a longer lifetime is a misconfiguration. Bounding it here
-/// also keeps `iat + ttl` far from the `i64` overflow that would wrap a token's expiry into the past.
+/// One day keeps realm token expiry arithmetic within the configured credential lifetime.
 pub const MAX_TOKEN_TTL_SECS: i64 = 86_400;
 
 /// The `[auth]` table: the settings every index's access rules share.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AuthConfig {
     /// The key peryx signs its own tokens with. Unset leaves the token realm without a key.
     pub signing_key: Option<SecretSource>,
@@ -481,11 +473,9 @@ pub struct AuthConfig {
     /// What an index's `anonymous_read` defaults to. Set it to `false` to close a whole server's reads
     /// with one key instead of one per index.
     pub default_anonymous_read: bool,
-    /// Audience CI providers must mint identities for.
-    pub oidc_audience: String,
-    pub trusted_publishers: Vec<TrustedPublisherConfig>,
     pub ldap_providers: Vec<LdapProviderConfig>,
     pub oidc_providers: Vec<OidcProviderConfig>,
+    pub extensions: Table,
 }
 
 impl Default for AuthConfig {
@@ -494,10 +484,9 @@ impl Default for AuthConfig {
             signing_key: None,
             token_ttl_secs: 300,
             default_anonymous_read: true,
-            oidc_audience: "peryx".to_owned(),
-            trusted_publishers: Vec::new(),
             ldap_providers: Vec::new(),
             oidc_providers: Vec::new(),
+            extensions: Table::new(),
         }
     }
 }
@@ -589,16 +578,6 @@ impl std::fmt::Debug for LdapBindConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TrustedPublisherConfig {
-    pub id: String,
-    pub issuer: String,
-    pub repository: String,
-    pub subject: String,
-    pub projects: Vec<String>,
-    pub claims: BTreeMap<String, String>,
-}
-
 /// A secret file above this size is a misconfiguration, not a credential: a systemd credential or a
 /// Kubernetes secret holds a token, never a megabyte. Capping the read keeps a wrong path (a log, a
 /// device) from being slurped into memory before it fails.
@@ -606,7 +585,7 @@ const MAX_SECRET_FILE_BYTES: u64 = 1 << 20;
 
 /// Where a secret's value comes from.
 ///
-/// A `*_file` sibling keeps the value out of the config file, so a mounted Docker or Kubernetes secret,
+/// A `*_file` sibling keeps the value out of the config file, so a mounted container secret,
 /// a systemd credential, or a Vault-rendered file can hold it; an `*_env` sibling reads it from an
 /// environment variable the process manager injects.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -650,7 +629,7 @@ impl SecretSource {
     ///
     /// # Errors
     /// Returns [`ConfigError::Read`] when a file cannot be read, [`ConfigError::OversizeSecret`] when it
-    /// exceeds [`MAX_SECRET_FILE_BYTES`], [`ConfigError::EmptySecret`] when a file holds only whitespace,
+    /// exceeds 1 MiB, [`ConfigError::EmptySecret`] when a file holds only whitespace,
     /// and [`ConfigError::EnvSecret`] when the variable is unset, empty, or not valid UTF-8.
     pub fn read(&self) -> Result<String, ConfigError> {
         match self {
@@ -697,8 +676,8 @@ impl SecretSource {
 pub struct TokenConfig {
     pub name: String,
     pub secret: SecretSource,
-    /// The project globs the token may act on; `*` covers the index.
-    pub projects: Vec<String>,
+    /// Resource patterns the token may act on; `*` covers the index.
+    pub resources: Vec<String>,
     pub actions: BTreeSet<Action>,
     /// Unix seconds after which the token stops authenticating.
     pub expires_at: Option<i64>,
@@ -709,9 +688,9 @@ pub struct TokenConfig {
 pub struct IndexConfig {
     /// Identifier other indexes reference in their `layers`.
     pub name: String,
-    /// URL prefix the index is served under, for example `root/pypi`.
+    /// URL prefix the index is served under, for example `root/artifacts`.
     pub route: String,
-    /// The package ecosystem this index serves. Immutable once created.
+    /// The artifact ecosystem this index serves. Immutable once created.
     pub ecosystem: Ecosystem,
     pub kind: IndexKind,
     /// Whether a request with no credential may read here. `None` takes the value of
@@ -723,17 +702,12 @@ pub struct IndexConfig {
     /// The `[policy]` keys the neutral engine did not claim, left raw for this index's ecosystem
     /// driver to compile into artifact rules. Empty when an operator set no ecosystem-specific policy.
     pub ecosystem_policy: Table,
-    /// The `[index.settings]` table: this index's ecosystem-specific settings (an OCI cache's
-    /// `library_prefix`), left raw for the composition root to compile against its ecosystem. Empty
-    /// when an operator set none.
+    /// The opaque `[index.settings]` table compiled by this index's ecosystem adapter.
     pub ecosystem_settings: Table,
     pub webhooks: Vec<WebhookConfig>,
 }
 
 impl IndexConfig {
-    /// The index's access rules, with every secret read from wherever it lives: each `[[index.token]]`
-    /// becomes one named credential with its own grant.
-    ///
     /// # Errors
     /// Returns [`ConfigError::Read`] when a secret file cannot be read and [`ConfigError::EmptySecret`]
     /// when one holds nothing: an empty secret would authenticate an empty password.
@@ -746,7 +720,7 @@ impl IndexConfig {
                     name: token.name.clone(),
                     secret: token.secret.read()?,
                     grants: vec![Grant {
-                        projects: token.projects.iter().cloned().map(Glob::new).collect(),
+                        resources: token.resources.iter().cloned().map(Glob::new).collect(),
                         actions: token.actions.clone(),
                     }],
                     expires_at: token.expires_at,
@@ -762,9 +736,9 @@ impl IndexConfig {
 
 /// The three composable index roles: a read-through cache, a writable hosted store, or a virtual
 /// index that aggregates other indexes under one route.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum IndexKind {
-    /// Cache an upstream simple index, fetching on demand.
+    /// Cache an upstream repository, fetching on demand.
     Cached {
         /// The ordered `[[index.upstream]]` sources and their fallback controls, each carrying its own
         /// URL, credentials, and TLS; a single source is the one-element case.
@@ -773,17 +747,16 @@ pub enum IndexKind {
         upstream_concurrency: usize,
         /// Serve only cached data for this index.
         offline: bool,
-        /// Optional package set and artifact filters for `peryx prefetch`.
+        /// Optional resource and artifact filters for `peryx prefetch`.
         prefetch: Box<PrefetchConfig>,
     },
-    /// A hosted store that accepts uploads. Uploads are enabled by the `[[index.token]]` grants that
-    /// permit writes; `volatile` allows delete and overwrite.
+    /// A hosted store that accepts writes. `[[index.access_token]]` grants enable writes; `volatile`
+    /// allows delete and overwrite.
     Hosted { volatile: bool },
     /// An ordered aggregation of other indexes (its members, by name, in `layers`). Resolution merges
-    /// members first-match; a file in an earlier member shadows a later one. Uploads target `upload`.
     Virtual {
         layers: Vec<String>,
-        upload: Option<String>,
+        write_target: Option<String>,
     },
 }
 
@@ -830,44 +803,9 @@ pub struct UpstreamRoutingConfig {
 }
 
 /// Prefetch behavior configured under `[index.prefetch]`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct PrefetchConfig {
-    pub mode: PrefetchMode,
-    pub packages: Vec<String>,
-    pub requirements: Vec<PathBuf>,
-    pub include_wheels: bool,
-    pub include_sdists: bool,
-    pub python_tags: Vec<String>,
-    pub abi_tags: Vec<String>,
-    pub platform_tags: Vec<String>,
-    pub max_file_size_bytes: Option<u64>,
-    pub metadata_only: bool,
-}
-
-impl Default for PrefetchConfig {
-    fn default() -> Self {
-        Self {
-            mode: PrefetchMode::Selected,
-            packages: Vec::new(),
-            requirements: Vec::new(),
-            include_wheels: true,
-            include_sdists: true,
-            python_tags: Vec::new(),
-            abi_tags: Vec::new(),
-            platform_tags: Vec::new(),
-            max_file_size_bytes: None,
-            metadata_only: false,
-        }
-    }
-}
-
-/// Which projects `peryx prefetch` selects before artifact filters apply.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, clap::ValueEnum)]
-#[serde(rename_all = "kebab-case")]
-pub enum PrefetchMode {
-    All,
-    Selected,
-    MetadataOnly,
+    pub options: toml::Table,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -886,6 +824,13 @@ pub enum WebhookSecret {
 
 impl Default for Config {
     fn default() -> Self {
+        Self::with_plugins(&crate::compiled_plugins())
+    }
+}
+
+impl Config {
+    #[must_use]
+    pub fn with_plugins(plugins: &peryx_plugin_registry::PluginRegistry) -> Self {
         Self {
             host: "127.0.0.1".to_owned(),
             port: 4433,
@@ -899,7 +844,7 @@ impl Default for Config {
             netrc: None,
             max_stale_secs: DEFAULT_MAX_STALE_SECS,
             usage_retention_days: None,
-            indexes: default_indexes(),
+            indexes: default_indexes(plugins),
             tls: None,
             log: LogConfig::default(),
             rate_limit: RateLimitConfig::default(),
@@ -938,53 +883,55 @@ pub struct AcmeConfig {
     pub staging: bool,
 }
 
-/// The out-of-the-box topology: one trio per ecosystem. For pypi, a pypi.org cache and a hosted
-/// store combined by a virtual index at `root/pypi`; for oci, a Docker Hub cache and a hosted store
-/// combined by a virtual index at `root/oci`. Uploads to a virtual index land in its hosted layer
-/// once a token is set.
-fn default_indexes() -> Vec<IndexConfig> {
-    let cache = |upstream: &str| IndexKind::Cached {
-        routing: UpstreamRoutingConfig {
-            upstreams: vec![UpstreamConfig {
-                name: "primary".to_owned(),
-                url: upstream.to_owned(),
-                artifact_url: None,
-                username: None,
-                password: None,
-                token: None,
-                credential_exec: None,
-                credential_refresh: None,
-                tls: UpstreamTlsConfig::default(),
-            }],
-            fallback: true,
-            protected: Vec::new(),
-            pins: BTreeMap::new(),
-        },
-        upstream_concurrency: DEFAULT_UPSTREAM_CONCURRENCY,
-        offline: false,
-        prefetch: Box::default(),
-    };
-    let store = || IndexKind::Hosted { volatile: true };
-    let overlay = |hosted: &str, cached: &str| IndexKind::Virtual {
-        layers: vec![hosted.to_owned(), cached.to_owned()],
-        upload: Some(hosted.to_owned()),
-    };
-    vec![
-        default_index("pypi", Ecosystem::Pypi, cache("https://pypi.org/simple/")),
-        default_index("hosted", Ecosystem::Pypi, store()),
-        default_index("root/pypi", Ecosystem::Pypi, overlay("hosted", "pypi")),
-        default_index("dockerhub", Ecosystem::Oci, cache("https://registry-1.docker.io")),
-        default_index("images", Ecosystem::Oci, store()),
-        default_index("root/oci", Ecosystem::Oci, overlay("images", "dockerhub")),
-    ]
+fn default_indexes(plugins: &peryx_plugin_registry::PluginRegistry) -> Vec<IndexConfig> {
+    plugins
+        .default_indexes()
+        .map(|index| {
+            default_index(
+                index.name,
+                index.route,
+                index.ecosystem.clone(),
+                default_index_kind(index.kind),
+            )
+        })
+        .collect()
 }
 
-/// One default index: served at its own name, with no policy, no webhooks, and no access rules beyond
-/// the open reads every index starts with.
-fn default_index(name: &str, ecosystem: Ecosystem, kind: IndexKind) -> IndexConfig {
+fn default_index_kind(kind: peryx_core::DefaultIndexKind) -> IndexKind {
+    match kind {
+        peryx_core::DefaultIndexKind::Cached { upstream } => IndexKind::Cached {
+            routing: UpstreamRoutingConfig {
+                upstreams: vec![UpstreamConfig {
+                    name: "primary".to_owned(),
+                    url: upstream.to_owned(),
+                    artifact_url: None,
+                    username: None,
+                    password: None,
+                    token: None,
+                    credential_exec: None,
+                    credential_refresh: None,
+                    tls: UpstreamTlsConfig::default(),
+                }],
+                fallback: true,
+                protected: Vec::new(),
+                pins: BTreeMap::new(),
+            },
+            upstream_concurrency: DEFAULT_UPSTREAM_CONCURRENCY,
+            offline: false,
+            prefetch: Box::default(),
+        },
+        peryx_core::DefaultIndexKind::Hosted => IndexKind::Hosted { volatile: true },
+        peryx_core::DefaultIndexKind::Virtual { layers, write_target } => IndexKind::Virtual {
+            layers: layers.iter().map(|layer| (*layer).to_owned()).collect(),
+            write_target: Some(write_target.to_owned()),
+        },
+    }
+}
+
+fn default_index(name: &str, route: &str, ecosystem: Ecosystem, kind: IndexKind) -> IndexConfig {
     IndexConfig {
         name: name.to_owned(),
-        route: name.to_owned(),
+        route: route.to_owned(),
         ecosystem,
         anonymous_read: None,
         tokens: Vec::new(),
@@ -1018,7 +965,6 @@ impl Default for LogConfig {
     }
 }
 
-/// How log lines are rendered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum LogFormat {

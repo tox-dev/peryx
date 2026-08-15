@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+requested_output=${1:?pass an output path}
+shift
+output_parent=$(dirname -- "$requested_output")
+mkdir -p "$output_parent"
+output_parent=$(cd "$output_parent" && pwd -P)
+output="$output_parent/$(basename -- "$requested_output")"
+rm -f "$output"
+session=$(mktemp -d "$output_parent/.${output##*/}.session.XXXXXX")
+staged_output="$session/${output##*/}"
+published=0
+cleanup() {
+  rm -rf "$session"
+  ((published)) || rm -f "$output"
+}
+trap cleanup EXIT
+if (($# == 0)); then
+  printf 'pass at least one LCOV input\n' >&2
+  exit 1
+fi
+args=()
+for input in "$@"; do
+  if [[ ! -s "$input" ]]; then
+    printf 'LCOV input is missing or empty: %s\n' "$input" >&2
+    exit 1
+  fi
+  if ! grep -q '^SF:.' "$input" || ! grep -q '^end_of_record$' "$input"; then
+    printf 'LCOV input has no complete source record: %s\n' "$input" >&2
+    exit 1
+  fi
+  args+=(--add-tracefile "$input")
+done
+lcov "${args[@]}" --output-file "$staged_output"
+if [[ ! -s "$staged_output" ]] || ! grep -q '^SF:.' "$staged_output" || ! grep -q '^end_of_record$' "$staged_output"; then
+  printf 'merged LCOV report has no complete source record: %s\n' "$output" >&2
+  exit 1
+fi
+mv "$staged_output" "$output"
+published=1

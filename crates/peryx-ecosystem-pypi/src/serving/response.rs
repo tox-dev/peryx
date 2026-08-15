@@ -1,9 +1,3 @@
-//! Response mapping: negotiated list/detail/file responses and cache-error status and body.
-#![allow(
-    clippy::result_large_err,
-    reason = "handler helpers carry an axum Response as their error; boxing it everywhere adds noise"
-)]
-
 use std::fmt::Write as _;
 
 use axum::http::{HeaderValue, StatusCode, header};
@@ -16,7 +10,7 @@ use crate::{ProjectList, render_index_html, to_json};
 
 use super::{Format, MIME_HTML, MIME_JSON, MIME_LEGACY_JSON};
 
-/// Map a project-list result to a negotiated response. Sync so every arm is directly testable.
+/// Negotiated project-list response.
 pub fn index_response(result: Result<(ProjectList, Option<u64>), CacheError>, format: Format, index: &str) -> Response {
     let (list, last_serial) = match result {
         Ok(page) => page,
@@ -67,12 +61,9 @@ pub fn detail_response(result: Result<Option<DetailPage>, CacheError>, index: &s
             )
                 .into_response();
         }
-        Err(CacheError::Upstream(
-            err @ (peryx_upstream::UpstreamError::MissingContentType { .. }
-            | peryx_upstream::UpstreamError::UnsupportedContentType { .. }),
-        )) => {
+        Err(CacheError::Upstream(err @ peryx_upstream::UpstreamError::InvalidResponse { .. })) => {
             tracing::warn!(error = ?err, "unsupported upstream simple api content type");
-            return (StatusCode::BAD_GATEWAY, err.to_string()).into_response();
+            return (StatusCode::BAD_GATEWAY, err.user_message()).into_response();
         }
         Err(err) => {
             tracing::error!(error = ?err, "project detail failed");
@@ -108,12 +99,9 @@ pub(super) fn legacy_json_response(
             format!("project {project:?} was not found on index {index:?}"),
         )
             .into_response(),
-        Err(CacheError::Upstream(
-            err @ (peryx_upstream::UpstreamError::MissingContentType { .. }
-            | peryx_upstream::UpstreamError::UnsupportedContentType { .. }),
-        )) => {
+        Err(CacheError::Upstream(err @ peryx_upstream::UpstreamError::InvalidResponse { .. })) => {
             tracing::warn!(error = ?err, "unsupported upstream simple api content type");
-            (StatusCode::BAD_GATEWAY, err.to_string()).into_response()
+            (StatusCode::BAD_GATEWAY, err.user_message()).into_response()
         }
         Err(err) => {
             tracing::error!(error = ?err, "legacy project json failed");
@@ -132,7 +120,7 @@ fn with_last_serial(mut response: Response, last_serial: Option<u64>) -> Respons
     response
 }
 
-/// Map a file-bytes result to a response. Sync so every arm is directly unit-testable.
+/// Artifact response.
 pub fn file_response(result: Result<bytes::Bytes, CacheError>, context: CacheContext<'_>) -> Response {
     match result {
         Ok(body) => (
@@ -281,9 +269,58 @@ pub(super) fn policy_denial_response(denial: &PolicyDenial) -> Response {
     (
         StatusCode::FORBIDDEN,
         [(header::CONTENT_TYPE, "application/json")],
-        serde_json::to_vec(denial).expect("policy denial always serializes"),
+        serde_json::to_vec(&PypiPolicyDenial::from(denial)).expect("policy denial always serializes"),
     )
         .into_response()
+}
+
+#[derive(serde::Serialize)]
+struct PypiPolicyDenial<'a> {
+    action: &'a peryx_policy::PolicyAction,
+    project: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    filename: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<&'a str>,
+    rule: &'a str,
+    field: &'a str,
+    reason: String,
+}
+
+impl<'a> From<&'a PolicyDenial> for PypiPolicyDenial<'a> {
+    fn from(denial: &'a PolicyDenial) -> Self {
+        Self {
+            action: &denial.action,
+            project: &denial.resource,
+            filename: denial.artifact.as_deref(),
+            version: denial.group.as_deref(),
+            rule: pypi_rule(denial.rule),
+            field: pypi_field(denial.field),
+            reason: pypi_reason(&denial.reason),
+        }
+    }
+}
+
+fn pypi_rule(rule: &str) -> &str {
+    match rule {
+        "resource-allow-list" => "project-allow-list",
+        "resource-block-list" => "project-block-list",
+        "max-artifact-size" => "max-file-size",
+        _ => rule,
+    }
+}
+
+fn pypi_field(field: &str) -> &str {
+    match field {
+        "resource" => "project",
+        "artifact" => "filename",
+        "group" => "version",
+        _ => field,
+    }
+}
+
+pub fn pypi_reason(reason: &str) -> String {
+    reason.replace("resource ", "project ").replace("artifact ", "file ")
 }
 
 fn cache_error_status(err: &CacheError, context: &CacheContext<'_>) -> StatusCode {
@@ -331,67 +368,5 @@ fn cache_error_message(err: &CacheError, context: CacheContext<'_>) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use peryx_storage::blob::{BlobError, Digest};
-    use peryx_storage::meta::MetaError;
-
-    use super::*;
-
-    #[test]
-    fn test_provenance_response_tags_the_integrity_media_type_and_maps_errors() {
-        let served = provenance_response(
-            Ok(ProvenanceBody {
-                bytes: bytes::Bytes::from_static(br#"{"version":1}"#),
-                media_type: crate::attestation::PROVENANCE_MEDIA_TYPE.to_owned(),
-                source: "hosted".to_owned(),
-                immutable: true,
-                availability: AttestationAvailability::Cached,
-            }),
-            CacheContext::provenance("root/pypi", "abc", "pkg-1.0-py3-none-any.whl.provenance"),
-        );
-        assert_eq!(served.status(), StatusCode::OK);
-        assert_eq!(
-            served.headers().get(header::CONTENT_TYPE).unwrap(),
-            "application/vnd.pypi.integrity.v1+json"
-        );
-        assert_eq!(served.headers().get("x-peryx-provenance-source").unwrap(), "hosted");
-        assert_eq!(
-            served.headers().get("x-peryx-provenance-availability").unwrap(),
-            "cached"
-        );
-
-        let missing = provenance_response(
-            Err(CacheError::FileNotFound),
-            CacheContext::provenance("root/pypi", "abc", "pkg-1.0-py3-none-any.whl.provenance"),
-        );
-        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
-    }
-
-    #[test]
-    fn test_cache_error_status_maps_store_and_policy_errors() {
-        let context = CacheContext::mutation("file removal");
-        assert_eq!(
-            cache_error_status(&CacheError::Meta(meta_error()), &context),
-            StatusCode::INTERNAL_SERVER_ERROR
-        );
-        assert_eq!(
-            cache_error_status(
-                &CacheError::Blob(BlobError::not_found(&Digest::of(b"missing"))),
-                &context
-            ),
-            StatusCode::INTERNAL_SERVER_ERROR
-        );
-        assert_eq!(
-            cache_error_status(&CacheError::FileExists("pkg-1.0.whl".to_owned()), &context),
-            StatusCode::CONFLICT
-        );
-        assert_eq!(
-            cache_error_status(&CacheError::NotVolatile, &context),
-            StatusCode::FORBIDDEN
-        );
-    }
-
-    fn meta_error() -> MetaError {
-        MetaError::Decode(serde_json::from_str::<serde_json::Value>("not json").unwrap_err())
-    }
-}
+#[path = "../../tests/unit/serving/response/tests.rs"]
+mod tests;

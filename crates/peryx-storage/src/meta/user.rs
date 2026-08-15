@@ -5,7 +5,6 @@ use redb::{ReadableTable as _, WriteTransaction};
 
 use super::{MetaError, MetaStore, USER, USER_EVENT, USER_NAME, USER_VERIFIER};
 
-/// A rejected server-user operation.
 #[derive(Debug, thiserror::Error)]
 pub enum UserStoreError {
     #[error(transparent)]
@@ -19,8 +18,6 @@ pub enum UserStoreError {
 }
 
 impl MetaStore {
-    /// Create an active server user.
-    ///
     /// # Errors
     /// Returns a name error for an empty display name, a conflict for a canonical name already in
     /// use, or a store error when the transaction cannot commit.
@@ -66,7 +63,7 @@ impl MetaStore {
         Ok(user)
     }
 
-    /// Fetch a server user by its stable ID, including a disabled user.
+    /// Includes disabled users.
     ///
     /// # Errors
     /// Returns a store error when the record cannot be read or decoded.
@@ -83,7 +80,7 @@ impl MetaStore {
             .transpose()?)
     }
 
-    /// Fetch a server user through its canonical display-name index, including a disabled user.
+    /// Uses the canonical name index and includes disabled users.
     ///
     /// # Errors
     /// Returns a name error for an empty lookup or a store error when the index or record cannot be
@@ -116,8 +113,6 @@ impl MetaStore {
             .map_err(MetaError::from)?)
     }
 
-    /// Change a user's display name while preserving its ID.
-    ///
     /// # Errors
     /// Returns a name error for an empty display name, a conflict when the new canonical name is in
     /// use, [`UserStoreError::NotFound`] for an unknown ID, or a store error when the transaction
@@ -162,8 +157,6 @@ impl MetaStore {
         Ok(user)
     }
 
-    /// Change whether a user may resolve as an identity.
-    ///
     /// # Errors
     /// Returns [`UserStoreError::NotFound`] for an unknown ID or a store error when the transaction
     /// cannot commit.
@@ -193,7 +186,7 @@ impl MetaStore {
         Ok(user)
     }
 
-    /// Store or replace a user's password verifier, discarding any prior one.
+    /// Replaces any prior verifier.
     ///
     /// # Errors
     /// Returns [`UserStoreError::NotFound`] for an unknown ID or a store error when the transaction
@@ -212,7 +205,7 @@ impl MetaStore {
         Ok(())
     }
 
-    /// Fetch a user's password verifier, or `None` when the user has none enrolled.
+    /// Returns `None` when the user has no password enrolled.
     ///
     /// # Errors
     /// Returns a store error when the record cannot be read or decoded.
@@ -229,7 +222,7 @@ impl MetaStore {
             .transpose()?)
     }
 
-    /// Remove a user's password verifier, leaving the account unable to authenticate by password.
+    /// Disables password authentication for the user.
     ///
     /// # Errors
     /// Returns [`UserStoreError::NotFound`] for an unknown ID or a store error when the transaction
@@ -247,7 +240,7 @@ impl MetaStore {
         Ok(())
     }
 
-    /// Return one user's lifecycle events in commit order.
+    /// Returns lifecycle events in commit order.
     ///
     /// # Errors
     /// Returns a store error when the records cannot be read or decoded.

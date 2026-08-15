@@ -1,16 +1,3 @@
-// Pre-render every mermaid diagram in the content tree to a committed dual-theme SVG partial.
-//
-// The docs used to ship mermaid.js from a CDN and render in the browser, which cost a cold
-// multi-chunk fetch and a client-side render on first load of every diagram page. Instead we render
-// each diagram to static SVG once, here, in both the light and dark palettes; `inline_diagrams.py`
-// injects the partial into the built HTML, so the site ships zero diagram JavaScript.
-//
-// Diagrams are keyed by a hash of their source, so `inline_diagrams.py` can match a `<pre
-// class="mermaid">` block to its partial without threading an id through the shortcode. Run this
-// whenever a diagram changes; CI regenerates and fails if the committed partials are stale.
-//
-// Usage: node site/scripts/render_diagrams.mjs
-
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -18,23 +5,21 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const here = dirname(fileURLToPath(import.meta.url));
-const site = join(here, "..");
-const contentDir = join(site, "content");
-const outDir = join(site, "diagrams");
-const light = join(here, "mermaid-light.json");
-const dark = join(here, "mermaid-dark.json");
-const mmdc = existsSync(join(site, "node_modules", ".bin", "mmdc"))
-  ? join(site, "node_modules", ".bin", "mmdc")
-  : "mmdc";
+const scriptDirectory = dirname(fileURLToPath(import.meta.url));
+const siteDirectory = join(scriptDirectory, "..");
+const lightConfig = join(scriptDirectory, "mermaid-light.json");
+const darkConfig = join(scriptDirectory, "mermaid-dark.json");
+const puppeteerConfig = join(scriptDirectory, "mermaid-puppeteer.json");
+const check = process.argv.includes("--check");
+const force = process.argv.includes("--force");
+const mmdc = process.env.PERYX_MMDC || (existsSync(join(siteDirectory, "node_modules", ".bin", "mmdc"))
+  ? join(siteDirectory, "node_modules", ".bin", "mmdc")
+  : "mmdc");
+const hostedLinux = process.platform === "linux" && (process.env.CI || process.env.READTHEDOCS);
 
-const BLOCK = /\{%\s*mermaid\(\)\s*%\}\n([\s\S]*?)\n\{%\s*end\s*%\}/g;
+const BLOCK = /\{%\s*(?:<mermaid>|mermaid\(\))\s*%\}\s*([\s\S]*?)\s*\{%\s*(?:<\/mermaid>|end)\s*%\}/g;
 
-// A diagram names a role — `class cache accent` — and the palette for that role lives here, once per
-// theme, rather than as a `classDef` line repeated in every diagram. One palette baked into the
-// source cannot suit both pages: a fill that reads on cream glares on the dark page. So each role is
-// a tinted chip of its hue on the page's own surface, with the hue itself only on the border and the
-// text — legible without the saturated block fills mermaid reaches for by default.
+// Theme-specific fills keep labels legible on both page surfaces.
 const ROLES = {
   light: {
     accent: "fill:#dbe6f5,stroke:#4a6f9f,color:#16304d",
@@ -49,35 +34,78 @@ const ROLES = {
 };
 
 const ROLE_USE = /^\s*class\s+[\w,]+\s+(\w+)\s*$/gm;
+const QUOTED = /"(?:\\.|[^"\\])*"/gs;
 
-// mermaid rejects a classDef for a role the diagram never uses, and sequence diagrams take none at
-// all, so only the roles a diagram actually names are appended.
+// Mermaid rejects unused class definitions.
 function withRoles(source, theme) {
   const used = new Set(Array.from(source.matchAll(ROLE_USE), (match) => match[1]));
   const defs = [...used].filter((role) => ROLES[theme][role]).map((role) => `classDef ${role} ${ROLES[theme][role]}`);
   return defs.length ? `${source}\n${defs.join("\n")}` : source;
 }
 
+function normalizeSource(source) {
+  const normalized = source.replace(/\\([\[\]])/g, "$1").replace(QUOTED, (quoted) => quoted.replace(/\s*\n\s*/g, " "));
+  if (/^sequenceDiagram[^\S\r\n]+\S/.test(normalized)) {
+    return normalized
+      .replace(/\s+/g, " ")
+      .replace(/^sequenceDiagram\s+/, "sequenceDiagram\n")
+      .replace(/\s+(?=participant\s)/g, "\n")
+      .replace(/\s+(?=[A-Za-z_][\w-]*\s*(?:->>|-->>))/g, "\n");
+  }
+  if (/^stateDiagram-v2[^\S\r\n]+\S/.test(normalized)) {
+    return normalized
+      .replace(/\s+/g, " ")
+      .replace(/^stateDiagram-v2\s+/, "stateDiagram-v2\n")
+      .replace(/\s+(?=(?:\[\*\]|[A-Za-z_][\w-]*)\s+-->)/g, "\n");
+  }
+  if (!/^(flowchart|graph)\s/.test(normalized)) return normalized;
+  if ((normalized.replace(QUOTED, "").match(/;/g) || []).length > 1) {
+    return normalized.replace(/\s*\n\s*/g, " ").replace(/^((?:flowchart|graph)\s+\w+)\s*;?\s*/, "$1;\n");
+  }
+  if (!/^(?:flowchart|graph)\s+\w+[^\S\r\n]+\S/.test(normalized)) return normalized;
+  return normalized
+    .replace(/\s+/g, " ")
+    .replace(/^((?:flowchart|graph)\s+\w+)\s+/, "$1\n")
+    .replace(/([}\]])\s+(?=[A-Za-z_][\w-]*\s+(?:-->|---|-.->|==>))/g, "$1\n")
+    .replace(/\s+(?=class\s)/g, "\n");
+}
+
 function markdownFiles(dir) {
-  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+  return readdirSync(dir, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name)).flatMap((entry) => {
     const path = join(dir, entry.name);
     if (entry.isDirectory()) return markdownFiles(path);
     return entry.name.endsWith(".md") ? [path] : [];
   });
 }
 
+function contentOwners() {
+  const owners = [{
+    content: join(siteDirectory, "content"),
+    diagrams: join(siteDirectory, "diagrams"),
+    name: "core",
+  }];
+  const cratesDirectory = join(siteDirectory, "..", "crates");
+  if (!existsSync(cratesDirectory)) return owners;
+  for (const entry of readdirSync(cratesDirectory, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name))) {
+    if (!entry.isDirectory()) continue;
+    const docsDirectory = join(cratesDirectory, entry.name, "docs");
+    const content = join(docsDirectory, "content");
+    if (existsSync(join(docsDirectory, "ecosystem.toml")) && existsSync(content)) {
+      owners.push({ content, diagrams: join(docsDirectory, "diagrams"), name: entry.name });
+    }
+  }
+  return owners;
+}
+
 function svgBody(path) {
-  // mmdc writes an XML prolog; keep only the <svg> element so it inlines cleanly.
+  // XML prologs cannot be nested in an HTML document.
   const text = readFileSync(path, "utf8");
   return text.slice(text.indexOf("<svg"));
 }
 
 const VIEWBOX = /viewBox="[-\d.]+ [-\d.]+ ([\d.]+) ([\d.]+)"/;
 
-// mmdc sizes the root as `width="100%" style="max-width: Npx; background-color: white"`. A percentage
-// width leaves the SVG with no intrinsic width inside the centering container, so it collapses to the
-// 300px CSS default for replaced elements, and the baked-in white survives into the dark variant.
-// Carry the viewBox dimensions on the element instead and let the stylesheet cap it at the column.
+// Intrinsic dimensions prevent browser fallback sizing and a white dark-theme background.
 function normalizeRoot(svg) {
   const end = svg.indexOf(">") + 1;
   const [, width, height] = VIEWBOX.exec(svg.slice(0, end));
@@ -90,48 +118,94 @@ function normalizeRoot(svg) {
 
 function render(source, hash, tmp) {
   const input = join(tmp, "diagram.mmd");
-  // Both variants sit in the DOM at once, so they cannot share mermaid's default `my-svg` id: an
-  // SVG `<style>` applies document-wide even under `display: none`, so the later block would repaint
-  // the visible variant in the other palette, and every `url(#…)` marker reference would resolve to
-  // whichever copy came first.
+  // Unique IDs prevent hidden theme variants from repainting visible diagrams.
   const variant = (config, name) => {
     const out = join(tmp, `${name}.svg`);
     const id = `peryx-${hash}-${name}`;
     writeFileSync(input, withRoles(source, name));
-    execFileSync(mmdc, ["--input", input, "--output", out, "--configFile", config, "--svgId", id, "--quiet"], {
+    // A stuck browser must fail the docs lane instead of occupying it indefinitely.
+    const puppeteerArgs = hostedLinux ? ["--puppeteerConfigFile", puppeteerConfig] : [];
+    execFileSync(mmdc, [
+      "--input", input,
+      "--output", out,
+      "--configFile", config,
+      ...puppeteerArgs,
+      "--svgId", id,
+      "--quiet",
+    ], {
       stdio: ["ignore", "ignore", "inherit"],
+      timeout: 60_000,
+      killSignal: "SIGKILL",
     });
     return normalizeRoot(svgBody(out));
   };
-  return { light: variant(light, "light"), dark: variant(dark, "dark") };
+  return { light: variant(lightConfig, "light"), dark: variant(darkConfig, "dark") };
+}
+
+function validatePartial(path, hash) {
+  const partial = readFileSync(path, "utf8");
+  for (const marker of [
+    '<figure class="mermaid-figure">',
+    '<div class="mermaid-svg mermaid-light">',
+    '<div class="mermaid-svg mermaid-dark">',
+    `id="peryx-${hash}-light"`,
+    `id="peryx-${hash}-dark"`,
+  ]) {
+    if (!partial.includes(marker)) throw new Error(`${path} is missing ${marker}`);
+  }
 }
 
 function main() {
-  mkdirSync(outDir, { recursive: true });
-  const tmp = mkdtempSync(join(tmpdir(), "peryx-diagrams-"));
-  const kept = new Set();
+  const owners = contentOwners();
+  for (const owner of owners) mkdirSync(owner.diagrams, { recursive: true });
+  const tmp = check ? null : mkdtempSync(join(tmpdir(), "peryx-diagrams-"));
+  const sources = new Map();
+  const kept = new Map(owners.map((owner) => [owner.diagrams, new Set()]));
   let count = 0;
-  for (const file of markdownFiles(contentDir)) {
-    const text = readFileSync(file, "utf8");
-    for (const [, raw] of text.matchAll(BLOCK)) {
-      const source = raw.trim();
-      const hash = createHash("sha256").update(source).digest("hex").slice(0, 16);
-      kept.add(`${hash}.html`);
-      const { light: l, dark: d } = render(source, hash, tmp);
-      const partial =
-        `<figure class="mermaid-figure">` +
-        `<div class="mermaid-svg mermaid-light">${l}</div>` +
-        `<div class="mermaid-svg mermaid-dark">${d}</div>` +
-        `</figure>\n`;
-      writeFileSync(join(outDir, `${hash}.html`), partial);
-      count += 1;
+  try {
+    for (const owner of owners) {
+      for (const file of markdownFiles(owner.content)) {
+        const text = readFileSync(file, "utf8");
+        let block = 0;
+        for (const [, raw] of text.matchAll(BLOCK)) {
+          block += 1;
+          const source = raw.trim();
+          const hash = createHash("sha256").update(source).digest("hex").slice(0, 16);
+          const location = `${file}#${block}`;
+          if (sources.has(hash)) throw new Error(`duplicate diagram ${hash}: ${sources.get(hash)} and ${location}`);
+          sources.set(hash, location);
+          const name = `${hash}.html`;
+          const output = join(owner.diagrams, name);
+          kept.get(owner.diagrams).add(name);
+          if (existsSync(output) && !force) {
+            validatePartial(output, hash);
+            count += 1;
+            continue;
+          }
+          if (check) throw new Error(`${file} requires ${output}`);
+          const { light: lightSvg, dark: darkSvg } = render(normalizeSource(source), hash, tmp);
+          const partial =
+            `<figure class="mermaid-figure">` +
+            `<div class="mermaid-svg mermaid-light">${lightSvg}</div>` +
+            `<div class="mermaid-svg mermaid-dark">${darkSvg}</div>` +
+            `</figure>\n`;
+          writeFileSync(output, partial);
+          count += 1;
+        }
+      }
     }
+    for (const owner of owners) {
+      for (const name of readdirSync(owner.diagrams)) {
+        if (kept.get(owner.diagrams).has(name)) continue;
+        const orphan = join(owner.diagrams, name);
+        if (check) throw new Error(`${orphan} has no source`);
+        rmSync(orphan, { recursive: true, force: true });
+      }
+    }
+  } finally {
+    if (tmp !== null) rmSync(tmp, { recursive: true, force: true });
   }
-  for (const name of readdirSync(outDir)) {
-    if (name.endsWith(".html") && !kept.has(name)) rmSync(join(outDir, name));
-  }
-  rmSync(tmp, { recursive: true, force: true });
-  console.log(`rendered ${count} diagram(s) to ${outDir}`);
+  console.log(`${check ? "checked" : "rendered"} ${count} diagram(s) across ${owners.length} owner(s)`);
 }
 
 main();

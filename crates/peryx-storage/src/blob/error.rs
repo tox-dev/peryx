@@ -1,7 +1,6 @@
 use std::error::Error;
 use std::fmt;
 
-/// A backend operation that failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlobOperation {
     Health,
@@ -31,7 +30,6 @@ impl fmt::Display for BlobOperation {
     }
 }
 
-/// Backend-neutral context attached without changing the semantic error kind.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlobErrorContext {
     pub backend: &'static str,
@@ -49,7 +47,6 @@ impl fmt::Display for BlobErrorContext {
     }
 }
 
-/// The stable semantic category of a blob failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlobErrorKind {
     Io,
@@ -60,7 +57,6 @@ pub enum BlobErrorKind {
     Unsupported,
 }
 
-/// An error from a blob backend.
 #[derive(Debug)]
 pub struct BlobError {
     context: Option<BlobErrorContext>,
@@ -184,6 +180,12 @@ impl From<std::io::Error> for BlobError {
     }
 }
 
+impl From<tokio::task::JoinError> for BlobError {
+    fn from(error: tokio::task::JoinError) -> Self {
+        Self::io(std::io::Error::other(error))
+    }
+}
+
 impl fmt::Display for BlobError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(context) = &self.context {
@@ -215,7 +217,6 @@ impl Error for BlobError {
     }
 }
 
-/// A blob scan error: either the store failed or the visitor rejected one row.
 #[derive(Debug)]
 pub enum BlobScanError<E> {
     Store(BlobError),
