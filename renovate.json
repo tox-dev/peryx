@@ -7,10 +7,10 @@
   ],
   "timezone": "America/Los_Angeles",
   "minimumReleaseAge": "3 days",
-  "schedule": ["before 6am on Monday"],
+  "schedule": ["before 6am on Tuesday"],
   "lockFileMaintenance": {
     "enabled": true,
-    "schedule": ["before 6am on Monday"]
+    "schedule": ["before 6am on Tuesday"]
   },
   "packageRules": [
     {
