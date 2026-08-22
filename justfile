@@ -37,9 +37,9 @@ test-processes: _project-temp
 clippy: _project-temp
     cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-# Reject unused public Rust items.
+# Reject unused public Rust items. The toolchain must match the rustc cargo-hawk was built with.
 dead-public: _project-temp
-    cargo +1.97.1 hawk check --manifest-path Cargo.toml --target-dir "{{hawk_root}}/target" --graph-dir "{{hawk_root}}/graph" --only dead-public --deny hawk::dead_public --output-format json
+    cargo +1.98.0 hawk check --manifest-path Cargo.toml --target-dir "{{hawk_root}}/target" --graph-dir "{{hawk_root}}/graph" --only dead-public --deny hawk::dead_public --output-format json
 
 # Check Rust source without running tests.
 lint-source: _project-temp format-check clippy dead-public
