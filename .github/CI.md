@@ -34,8 +34,8 @@ The nightly workflow runs work that is too expensive or specialized for every pu
 - every feature combination
 - direct dependency lower bounds
 - Miri and Loom
-- AddressSanitizer and ThreadSanitizer
-- eight cargo-mutants shards
+- AddressSanitizer and ThreadSanitizer, each split evenly with Nextest
+- one passing mutation baseline followed by cargo-mutants shards of at most 256 mutants
 - each cargo-fuzz target
 - the live PyPI client boundary
 

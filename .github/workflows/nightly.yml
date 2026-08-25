@@ -36,11 +36,12 @@ jobs:
           RECIPE: ${{ matrix.recipe }}
 
   sanitizer:
-    name: ${{ matrix.recipe }}
+    name: ${{ matrix.recipe }} (${{ matrix.partition }}/8)
     strategy:
       fail-fast: false
       matrix:
         recipe: [sanitizer-address, sanitizer-thread]
+        partition: [1, 2, 3, 4, 5, 6, 7, 8]
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -50,21 +51,47 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           toolchain: nightly
-          targets: x86_64-unknown-linux-gnuasan,x86_64-unknown-linux-gnutsan
+          targets: ${{ matrix.recipe == 'sanitizer-address' && 'x86_64-unknown-linux-gnuasan' || 'x86_64-unknown-linux-gnutsan' }}
           tools: >-
             just uv cargo:cargo-nextest github:Shopify/toxiproxy
-      - run: just "$RECIPE"
+      - run: just "$RECIPE" "slice:$PARTITION/8"
         env:
+          PARTITION: ${{ matrix.partition }}
           RECIPE: ${{ matrix.recipe }}
 
+  mutation-baseline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      shard_count: ${{ steps.shards.outputs.count }}
+      shards: ${{ steps.shards.outputs.indices }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          tools: >-
+            just jq uv cargo:cargo-mutants cargo:cargo-nextest
+            github:Shopify/toxiproxy
+      - run: just test
+      - id: shards
+        run: |
+          mutants=$(cargo mutants --list --workspace --all-features | wc -l)
+          shards=$(( (mutants + 255) / 256 ))
+          echo "Planning $mutants mutants across $shards shards"
+          echo "count=$shards" >> "$GITHUB_OUTPUT"
+          echo "indices=$(jq --null-input --compact-output --argjson count "$shards" '[range(0; $count)]')" >> "$GITHUB_OUTPUT"
+
   mutation:
-    name: mutation (${{ matrix.shard }}/8)
+    name: mutation (${{ matrix.shard }}/${{ needs.mutation-baseline.outputs.shard_count }})
+    needs: mutation-baseline
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+        shard: ${{ fromJSON(needs.mutation-baseline.outputs.shards) }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 360
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -74,13 +101,14 @@ jobs:
           tools: >-
             just uv cargo:cargo-mutants cargo:cargo-nextest
             github:Shopify/toxiproxy
-      - run: just mutation "$SHARD/8" true
+      - run: just mutation "$SHARD/$SHARD_COUNT" true 2 skip 500
         env:
           SHARD: ${{ matrix.shard }}
+          SHARD_COUNT: ${{ needs.mutation-baseline.outputs.shard_count }}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
-          name: mutation-${{ matrix.shard }}
+          name: mutation-${{ matrix.shard }}-${{ needs.mutation-baseline.outputs.shard_count }}
           path: .tox/mutants
           if-no-files-found: error
 

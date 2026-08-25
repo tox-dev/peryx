@@ -129,25 +129,27 @@ miri: _project-temp
 loom: _project-temp
     RUSTFLAGS="--cfg peryx_loom" cargo test --package peryx-ha-distributed --lib runtime_worker::loom_tests
 
-sanitizer-address: test-deps
+sanitizer-address partition="slice:1/1": test-deps
     ASAN_OPTIONS=allow_addr2line=1 PATH="{{ tools_root }}/bin:$PATH" cargo +nightly nextest run --workspace \
       --target x86_64-unknown-linux-gnuasan --profile ci --build-jobs 1 \
-      --test-threads 1 -E 'not(test(e2e_live))'
+      --test-threads 1 --partition "{{ partition }}" -E 'not(test(e2e_live))'
 
-sanitizer-thread: test-deps
+sanitizer-thread partition="slice:1/1": test-deps
     TSAN_OPTIONS=allow_addr2line=1:halt_on_error=1 PATH="{{ tools_root }}/bin:$PATH" \
       cargo +nightly nextest run --workspace \
       --target x86_64-unknown-linux-gnutsan --profile ci --build-jobs 1 \
-      --test-threads 1 -E 'not(test(e2e_live))'
+      --test-threads 1 --partition "{{ partition }}" -E 'not(test(e2e_live))'
 
 fuzz package target seconds="60": _project-temp
     cd "crates/{{ package }}/fuzz" && cargo +nightly fuzz run \
       --target "$(rustc +nightly --print host-tuple)" "{{ target }}" -- -max_total_time="{{ seconds }}"
 
-mutation shard="0/1" in_place="false" jobs="2": test-deps
+mutation shard="0/1" in_place="false" jobs="2" baseline="run" timeout="500": test-deps
     PATH="{{ tools_root }}/bin:$PATH" cargo mutants --workspace --all-features --test-tool nextest \
-      --shard "{{ shard }}" --output .tox/mutants \
-      {{ if in_place == "true" { "--in-place" } else { "--jobs " + jobs + " --jobserver-tasks " + jobs } }} \
+      --no-shuffle --shard "{{ shard }}" --output .tox/mutants \
+      {{ if in_place == "true" { "--in-place" } else { "--jobs " + jobs } }} \
+      --jobserver-tasks "{{ jobs }}" --baseline "{{ baseline }}" \
+      --timeout "{{ timeout }}" --build-timeout "{{ timeout }}" \
       -- -E 'not(test(e2e_live))'
 
 # Install browser-test dependencies for the shared and owner suites.
