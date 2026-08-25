@@ -165,6 +165,7 @@ jobs:
     needs: [mutation-baseline-build, mutation-baseline]
     strategy:
       fail-fast: false
+      max-parallel: 8
       matrix:
         shard: ${{ fromJSON(needs.mutation-baseline-build.outputs.shards) }}
     runs-on: ubuntu-24.04
