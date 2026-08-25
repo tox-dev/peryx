@@ -23,9 +23,10 @@ its merged native and Wasm report.
 The `ci-gate` job gives branch protection one stable check name. It only evaluates GitHub job results; test policy
 remains in `just` recipes and standard tool configuration.
 
-CodSpeed runs both ecosystem benchmark packages in parallel on its stable bare-metal runners. Each leg builds through
-`just codspeed-build` and uses CodSpeed's official action in walltime mode. `just codspeed` provides the equivalent
-local command and accepts the measurement mode as its second argument.
+CodSpeed runs both ecosystem benchmark packages in parallel on standard GitHub-hosted runners. Each leg builds through
+`just codspeed-build` and uses the official action's [recommended simulation mode][codspeed-simulation]. `just codspeed`
+provides the equivalent local command and accepts the measurement mode as its second argument. The workflow does not
+consume quota-limited Macro Runners.
 
 ## Test synchronization
 
@@ -97,6 +98,7 @@ just e2e-live
 Generated files stay under `.tox/`. `just coverage-clean`, `just clean`, and `just clean-all` remove progressively more
 local state.
 
+[codspeed-simulation]: https://github.com/CodSpeedHQ/codspeed#cpu-simulation
 [nextest-archives]: https://nexte.st/docs/ci-features/archiving/
 [nextest-sanitizer-target]: https://github.com/nextest-rs/nextest/blob/cargo-nextest-0.9.143/nextest-runner/src/cargo_config/target_triple.rs#L32-L44
 [nextest-timeouts]: https://nexte.st/docs/features/slow-tests/#terminating-tests-after-a-timeout
