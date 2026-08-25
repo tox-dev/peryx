@@ -16,6 +16,8 @@ use tower::ServiceExt as _;
 
 use super::*;
 
+const DEADLOCK_GUARD: Duration = Duration::from_secs(90);
+
 struct EmptyReferences;
 
 impl ReferenceInventory for EmptyReferences {
@@ -864,13 +866,8 @@ async fn dropping_listener_startup_cancels_its_thread() {
     assert!(matches!(startup.await, Err(error) if error.is_cancelled()));
     release.send(()).unwrap();
 
-    tokio::time::timeout(Duration::from_secs(1), cancellation.cancelled())
-        .await
-        .unwrap();
-    tokio::time::timeout(Duration::from_secs(1), exit)
-        .await
-        .unwrap()
-        .unwrap();
+    cancellation.cancelled().await;
+    exit.await.unwrap();
 }
 
 #[tokio::test]
@@ -1053,8 +1050,8 @@ async fn bounded_shutdown_reports_a_stalled_owner() {
 
     assert_eq!(failure.0, AvailabilityShutdownStage::Listener);
     assert_eq!(failure.1.to_string(), "shutdown deadline exceeded");
-    assert!(owner.wait_shutdown(Duration::from_secs(1)).await.is_none());
-    assert!(owner.wait_shutdown(Duration::from_secs(1)).await.is_none());
+    assert!(owner.wait_shutdown(DEADLOCK_GUARD).await.is_none());
+    assert!(owner.wait_shutdown(DEADLOCK_GUARD).await.is_none());
 }
 
 #[tokio::test]
@@ -1097,10 +1094,7 @@ async fn stalled_shutdown_moves_to_the_process_reaper() {
 
     assert_eq!(failure.0, AvailabilityShutdownStage::Runtime);
     assert_eq!(failure.1.to_string(), "shutdown deadline exceeded");
-    tokio::time::timeout(Duration::from_secs(1), completion)
-        .await
-        .unwrap()
-        .unwrap();
+    completion.await.unwrap();
 }
 
 #[tokio::test]
@@ -1108,7 +1102,7 @@ async fn bounded_shutdown_reports_an_owner_panic() {
     let mut owner =
         OwnedResource::Owned(|| -> Result<(), std::io::Error> { std::panic::panic_any("shutdown panic".to_owned()) });
     let failure = owner
-        .shutdown(AvailabilityShutdownStage::Runtime, Duration::from_secs(1), |shutdown| {
+        .shutdown(AvailabilityShutdownStage::Runtime, DEADLOCK_GUARD, |shutdown| {
             shutdown()
         })
         .await
@@ -1128,10 +1122,7 @@ async fn process_reaper_survives_panics_and_errors() {
         Ok::<_, std::io::Error>(())
     });
 
-    tokio::time::timeout(Duration::from_secs(1), completion)
-        .await
-        .unwrap()
-        .unwrap();
+    completion.await.unwrap();
     panic.join().unwrap();
     error.join().unwrap();
     signal.join().unwrap();

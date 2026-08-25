@@ -4,6 +4,7 @@ use std::sync::Mutex;
 use peryx_test_support::{HarnessError, ProcessHarness, Topology, Toxiproxy, spawn_on_port, spawn_with_config};
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
+const CARGO_LAYOUT_PROBE: &str = "PERYX_CARGO_LAYOUT_PROBE";
 
 #[test]
 fn process_fixture_rejects_missing_arguments() {
@@ -13,6 +14,27 @@ fn process_fixture_rejects_missing_arguments() {
 
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("expected serve command"));
+}
+
+#[test]
+fn cargo_binary_falls_back_to_the_cargo_target_layout() {
+    if std::env::var_os(CARGO_LAYOUT_PROBE).is_some() {
+        let output = std::process::Command::new(peryx_test_support::cargo_binary("peryx-test-fixture"))
+            .output()
+            .expect("run process fixture from the Cargo target directory");
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("expected serve command"));
+        return;
+    }
+
+    let output = std::process::Command::new(std::env::current_exe().expect("current integration test"))
+        .args(["--exact", "cargo_binary_falls_back_to_the_cargo_target_layout"])
+        .env(CARGO_LAYOUT_PROBE, "1")
+        .env_remove("NEXTEST_BIN_EXE_peryx_test_fixture")
+        .env_remove("CARGO_BIN_EXE_peryx-test-fixture")
+        .output()
+        .expect("run Cargo layout probe");
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
 }
 
 #[test]

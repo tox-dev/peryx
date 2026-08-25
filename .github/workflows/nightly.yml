@@ -43,15 +43,7 @@ jobs:
           RECIPE: ${{ matrix.recipe }}
 
   sanitizer-build:
-    name: ${{ matrix.recipe }} build
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - recipe: sanitizer-address
-            sanitizer: address
-          - recipe: sanitizer-thread
-            sanitizer: thread
+    name: sanitizer-address build
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -63,25 +55,21 @@ jobs:
           toolchain: nightly
           components: rust-src
           tools: just cargo:cargo-nextest
-      - run: just sanitizer-archive "$SANITIZER" ".tox/$RECIPE.tar.zst"
-        env:
-          RECIPE: ${{ matrix.recipe }}
-          SANITIZER: ${{ matrix.sanitizer }}
+      - run: just sanitizer-archive .tox/sanitizer-address.tar.zst
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: ${{ matrix.recipe }}
-          path: .tox/${{ matrix.recipe }}.tar.zst
+          name: sanitizer-address
+          path: .tox/sanitizer-address.tar.zst
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
 
   sanitizer:
-    name: ${{ matrix.recipe }} (${{ matrix.partition }}/8)
+    name: sanitizer-address (${{ matrix.partition }}/8)
     needs: sanitizer-build
     strategy:
       fail-fast: false
       matrix:
-        recipe: [sanitizer-address, sanitizer-thread]
         partition: [1, 2, 3, 4, 5, 6, 7, 8]
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -96,12 +84,11 @@ jobs:
             just uv cargo:cargo-nextest github:Shopify/toxiproxy
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
-          name: ${{ matrix.recipe }}
+          name: sanitizer-address
           path: .tox/sanitizer
-      - run: just sanitizer-run ".tox/sanitizer/$RECIPE.tar.zst" "slice:$PARTITION/8"
+      - run: just sanitizer-run .tox/sanitizer/sanitizer-address.tar.zst "slice:$PARTITION/8"
         env:
           PARTITION: ${{ matrix.partition }}
-          RECIPE: ${{ matrix.recipe }}
 
   mutation-baseline-build:
     runs-on: ubuntu-24.04

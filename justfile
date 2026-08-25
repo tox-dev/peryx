@@ -130,28 +130,20 @@ miri: _project-temp
 loom: _project-temp
     RUSTFLAGS="--cfg peryx_loom" cargo test --package peryx-ha-distributed --lib runtime_worker::loom_tests
 
-sanitizer-address partition="slice:1/1":
-    just sanitizer address "{{ partition }}"
-
-sanitizer-thread partition="slice:1/1":
-    just sanitizer thread "{{ partition }}"
-
-# TSan needs the standard library's synchronization operations instrumented.
-# https://doc.rust-lang.org/beta/unstable-book/compiler-flags/sanitizer.html#threadsanitizer
-sanitizer sanitizer partition="slice:1/1": test-deps
-    ASAN_OPTIONS=allow_addr2line=1 TSAN_OPTIONS=allow_addr2line=1:halt_on_error=1:io_sync=2 \
-      RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Zsanitizer={{ sanitizer }}" PATH="{{ tools_root }}/bin:$PATH" \
+sanitizer-address partition="slice:1/1": test-deps
+    ASAN_OPTIONS=allow_addr2line=1 RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Zsanitizer=address" \
+      PATH="{{ tools_root }}/bin:$PATH" \
       cargo +nightly nextest run -Z build-std --workspace --target x86_64-unknown-linux-gnu \
       --profile ci --build-jobs 1 --test-threads 1 --partition "{{ partition }}" -E 'not(test(e2e_live))'
 
-sanitizer-archive sanitizer archive: _project-temp
-    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Zsanitizer={{ sanitizer }}" PATH="{{ tools_root }}/bin:$PATH" \
+sanitizer-archive archive: _project-temp
+    RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Zsanitizer=address" PATH="{{ tools_root }}/bin:$PATH" \
       cargo +nightly nextest archive -Z build-std --workspace --target x86_64-unknown-linux-gnu \
       --profile ci --build-jobs 1 --archive-file "{{ archive }}"
 
 sanitizer-run archive partition="slice:1/1": test-deps
-    ASAN_OPTIONS=allow_addr2line=1 TSAN_OPTIONS=allow_addr2line=1:halt_on_error=1:io_sync=2 \
-      PATH="{{ tools_root }}/bin:$PATH" cargo +nightly nextest run --archive-file "{{ archive }}" \
+    ASAN_OPTIONS=allow_addr2line=1 PATH="{{ tools_root }}/bin:$PATH" \
+      cargo +nightly nextest run --archive-file "{{ archive }}" \
       --workspace-remap "{{ justfile_directory() }}" --profile ci --test-threads 1 \
       --partition "{{ partition }}" -E 'not(test(e2e_live))'
 

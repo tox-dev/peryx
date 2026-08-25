@@ -895,7 +895,7 @@ impl FixtureEnvironment {
     fn new() -> Self {
         let dir = TempDir::new().expect("create fixture directory");
         let fixture = Self { dir };
-        fs::copy(fixture_binary(), fixture.peryx()).expect("install process fixture");
+        fs::copy(crate::cargo_binary("peryx-test-fixture"), fixture.peryx()).expect("install process fixture");
         fs::copy(fixture.peryx(), fixture.toxiproxy()).expect("install toxiproxy fixture");
         fs::write(fixture.state(), "leader:dc-a").expect("write state");
         fs::write(fixture.toxi_state(), "ok").expect("write toxiproxy state");
@@ -965,16 +965,6 @@ impl FixtureEnvironment {
     fn start_toxiproxy(&self) -> Toxiproxy {
         Toxiproxy::start_with(self.toxiproxy(), Duration::from_secs(10)).expect("start toxiproxy")
     }
-}
-
-fn fixture_binary() -> PathBuf {
-    std::env::current_exe()
-        .expect("current test executable")
-        .parent()
-        .expect("Cargo dependency directory")
-        .parent()
-        .expect("Cargo profile directory")
-        .join(format!("peryx-test-fixture{}", std::env::consts::EXE_SUFFIX))
 }
 
 fn with_fixture(test: impl FnOnce(&FixtureEnvironment)) {

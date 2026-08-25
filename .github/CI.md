@@ -42,7 +42,7 @@ The nightly workflow runs work that is too expensive or specialized for every pu
 - every feature combination
 - direct dependency lower bounds
 - Miri and Loom
-- AddressSanitizer and ThreadSanitizer, each built once and split evenly with Nextest
+- AddressSanitizer, built once and split evenly with Nextest
 - one mutation baseline built once and split evenly with Nextest, followed by shards of at most 256 mutants
 - each cargo-fuzz target
 - the live PyPI client boundary
@@ -51,12 +51,12 @@ Each matrix leg invokes a public `just` recipe. Nextest runs each test once, and
 status. Sanitizer builds use [Nextest archives][nextest-archives], so partition jobs transfer the instrumented test
 binaries instead of rebuilding them. We build on the standard Linux target with
 [Rust's documented `-Zsanitizer` and `-Zbuild-std` invocation][rust-sanitizers]. During archive restore, Nextest 0.9.143
-[classifies Rust's `gnuasan` and `gnutsan` targets as custom targets][nextest-sanitizer-target] and requires custom
-target JSON. Rust does not provide custom JSON for these built-in targets.
+[classifies Rust's `gnuasan` target as a custom target][nextest-sanitizer-target] and requires custom target JSON. Rust
+does not provide custom JSON for this built-in target.
 
-ThreadSanitizer uses its [documented global I/O synchronization model][tsan-io] because Tokio registers sources and
-consumes epoll events through different descriptors. Reports still halt the affected test; no test or function is
-suppressed.
+The full async suite does not run under ThreadSanitizer. [Tokio's TSan issue][tokio-tsan] records internal false
+positives and identifies Miri and Loom as its race-analysis tools. Nightly runs both tools and does not suppress or
+filter sanitizer reports.
 
 ## Local commands
 
@@ -84,8 +84,7 @@ just direct-minimum
 just miri
 just loom
 just sanitizer-address
-just sanitizer-thread
-just sanitizer-archive address .tox/address.tar.zst
+just sanitizer-archive .tox/address.tar.zst
 just sanitizer-run .tox/address.tar.zst slice:1/8
 just mutation-baseline
 just mutation-baseline-archive .tox/mutation-baseline.tar.zst
@@ -104,4 +103,4 @@ local state.
 [rust-sanitizers]: https://doc.rust-lang.org/beta/unstable-book/compiler-flags/sanitizer.html
 [tokio-notify]: https://docs.rs/tokio/latest/tokio/sync/struct.Notify.html
 [tokio-testing]: https://tokio.rs/tokio/topics/testing#pausing-and-resuming-time-in-tests
-[tsan-io]: https://github.com/google/sanitizers/wiki/ThreadSanitizerFlags#runtime-flags
+[tokio-tsan]: https://github.com/tokio-rs/tokio/issues/7299

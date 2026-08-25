@@ -49,9 +49,19 @@ pub const ADMIN_PASSWORD: &str = "harness-admin-secret";
 /// Resolves a package binary for the current Cargo or Nextest integration test.
 ///
 /// # Panics
-/// Panics when the test runner did not provide the binary path.
+/// Panics when no runner path exists and the current executable is outside a Cargo target directory.
 pub fn cargo_binary(name: &str) -> PathBuf {
-    PathBuf::from(std::env::var_os(format!("CARGO_BIN_EXE_{name}")).expect("Cargo test binary"))
+    let nextest = format!("NEXTEST_BIN_EXE_{}", name.replace('-', "_"));
+    if let Some(path) = std::env::var_os(nextest).or_else(|| std::env::var_os(format!("CARGO_BIN_EXE_{name}"))) {
+        return PathBuf::from(path);
+    }
+    let executable = std::env::current_exe().expect("current test executable");
+    let directory = executable
+        .parent()
+        .expect("Cargo dependency directory")
+        .parent()
+        .expect("Cargo profile directory");
+    directory.join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
 }
 
 /// Process settings for spawned `peryx` nodes.
