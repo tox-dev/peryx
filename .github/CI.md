@@ -5,11 +5,12 @@ live in the `justfile`, so the same commands run locally and in CI.
 
 ## Pull requests
 
-The required workflow runs seven independent jobs:
+The required workflow runs eight independent job groups:
 
 - `source`: formatting, `cargo check`, Clippy, and dependency policy
 - `automation`: repository hooks and workflow validation
-- `contracts`: snapshots, public API compatibility, and the release plan
+- `contracts`: snapshots, the release plan, and Cargo discovery of publishable packages
+- `semver`: public API compatibility for each publishable package, parallelized by GitHub's matrix
 - `platform`: platform-boundary tests on macOS and Windows
 - `coverage`: the complete native workspace suite with all features
 - `frontend`: native and Wasm browser coverage
