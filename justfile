@@ -251,7 +251,7 @@ conformance suite binary="": _project-temp
     git -C "$scratch/checkout" remote add origin https://github.com/opencontainers/distribution-spec
     git -C "$scratch/checkout" fetch --quiet --depth=1 origin fcfba1ec55526073f48b2f6d4e3d7eef410ddcbc
     git -C "$scratch/checkout" checkout --quiet --detach FETCH_HEAD
-    go -C "$scratch/checkout/conformance" test -c -o "$suite"
+    go -C "$scratch/checkout/conformance" build -o "$suite" .
     cat >"$scratch/peryx.toml" <<EOF
     host = "127.0.0.1"
     port = 0
