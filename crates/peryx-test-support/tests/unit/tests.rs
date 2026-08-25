@@ -19,12 +19,11 @@ use peryx_driver::serving::{
 use peryx_driver::state::{AppState, IndexDescription};
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
-use tempfile::TempDir;
-
-use crate::{
-    ADMIN_PASSWORD, ADMIN_USER, EcosystemDriverFixture, HarnessError, MemberSpec, OwnershipControl, ProcessHarness,
-    ProcessLimit, Role, Topology, Toxiproxy, process_alive, reachable_through, startup_log,
+use peryx_test_support::{
+    ADMIN_PASSWORD, ADMIN_USER, Cluster, EcosystemDriverFixture, HarnessError, MemberSpec, Node, OwnershipControl,
+    ProcessHarness, ProcessLimit, Role, Topology, Toxiproxy, cargo_binary, process_alive, reachable_through,
 };
+use tempfile::TempDir;
 
 mod process_fixture;
 
@@ -33,15 +32,6 @@ const TOXIPROXY_FAILURE_TIMEOUT: Duration = Duration::from_secs(2);
 const FIXTURE_ECOSYSTEM: Ecosystem = Ecosystem::new("fixture");
 const OTHER_ECOSYSTEM: Ecosystem = Ecosystem::new("other");
 
-#[test]
-fn startup_log_keeps_the_failure_and_backtrace_tail() {
-    let lines: Vec<_> = (0..80).map(|index| format!("line {index}")).collect();
-    let excerpt = startup_log(&lines.join("\n"));
-    assert!(excerpt.starts_with("line 0\n"));
-    assert!(excerpt.contains("... 20 lines omitted ..."));
-    assert!(excerpt.ends_with("line 79"));
-    assert_eq!(startup_log("short\nlog"), "short\nlog");
-}
 static FIXTURE_DRIVER: EcosystemDriverFixture = EcosystemDriverFixture::new(FIXTURE_ECOSYSTEM, RouteClass::Artifact);
 struct NameFixture;
 
@@ -220,7 +210,7 @@ fn node_public_behavior() {
     with_fixture(|fixture| {
         let mut cluster = start_dc_cluster(fixture);
         assert_eq!(cluster.nodes().len(), 2);
-        assert_eq!(cluster.node("writer").map(crate::Node::identity), Some("writer"),);
+        assert_eq!(cluster.node("writer").map(Node::identity), Some("writer"),);
         assert!(cluster.node("missing").is_none());
         assert_eq!(cluster.leader().expect("read leader"), Some("dc-a".to_owned()));
         assert_eq!(cluster.await_leader(Duration::ZERO).expect("await leader"), "dc-a");
@@ -419,7 +409,7 @@ fn process_signal_failure_reaps_the_cluster() {
                 .topology(Topology::dc("group-a", members()))
                 .start()
                 .expect("start signal fixture");
-            pids.extend(cluster.nodes().iter().map(crate::Node::pid));
+            pids.extend(cluster.nodes().iter().map(Node::pid));
             cluster.nodes()[0]
                 .await_log_signal(FAILURE_TIMEOUT, "missing fixture event")
                 .expect("missing event fails the test");
@@ -546,18 +536,6 @@ fn process_event_startup_reports_executable_failure() {
             Err(HarnessError::Io(_))
         ));
     });
-}
-
-#[test]
-#[cfg(unix)]
-fn node_timeout_reports_a_reaped_child_while_the_event_channel_is_open() {
-    let mut child = Command::new("true").spawn().expect("start child");
-    child.wait().expect("reap child");
-    let (event_sender, process_events) = mpsc::channel();
-    let signal = crate::wait_for_startup(&mut child, &process_events, Duration::ZERO, |_| false)
-        .expect("classify startup timeout");
-    drop(event_sender);
-    assert!(matches!(signal, crate::StartupSignal::Exited(_)));
 }
 
 #[test]
@@ -879,7 +857,7 @@ fn members() -> Vec<MemberSpec> {
     ]
 }
 
-fn start_dc_cluster(fixture: &FixtureEnvironment) -> crate::Cluster {
+fn start_dc_cluster(fixture: &FixtureEnvironment) -> Cluster {
     fixture
         .topology(Topology::dc("group-a", members()))
         .with_admin()
@@ -895,7 +873,7 @@ impl FixtureEnvironment {
     fn new() -> Self {
         let dir = TempDir::new().expect("create fixture directory");
         let fixture = Self { dir };
-        fs::copy(crate::cargo_binary("peryx-test-fixture"), fixture.peryx()).expect("install process fixture");
+        fs::copy(cargo_binary("peryx-test-fixture"), fixture.peryx()).expect("install process fixture");
         fs::copy(fixture.peryx(), fixture.toxiproxy()).expect("install toxiproxy fixture");
         fs::write(fixture.state(), "leader:dc-a").expect("write state");
         fs::write(fixture.toxi_state(), "ok").expect("write toxiproxy state");

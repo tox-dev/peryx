@@ -20,6 +20,10 @@ doc = false
 name = "fixture"
 path = "tests/fixture.rs"
 
+[[test]]
+name = "support"
+path = "tests/unit/tests.rs"
+
 [dependencies]
 async-trait.workspace = true
 axum.workspace = true

@@ -1,6 +1,6 @@
 include!("../fixtures/process.rs");
 
-pub(super) fn assert_main_rejects_test_arguments() {
+pub fn assert_main_rejects_test_arguments() {
     assert_eq!(main(), std::process::ExitCode::FAILURE);
 }
 

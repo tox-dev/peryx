@@ -17,6 +17,14 @@ fn process_fixture_rejects_missing_arguments() {
 }
 
 #[test]
+fn cargo_binary_uses_nextest_metadata() {
+    assert_eq!(
+        std::env::var_os("NEXTEST").map(|_| peryx_test_support::cargo_binary("peryx-test-fixture")),
+        std::env::var_os("NEXTEST_BIN_EXE_peryx_test_fixture").map(PathBuf::from),
+    );
+}
+
+#[test]
 fn cargo_binary_falls_back_to_the_cargo_target_layout() {
     if std::env::var_os(CARGO_LAYOUT_PROBE).is_some() {
         let output = std::process::Command::new(peryx_test_support::cargo_binary("peryx-test-fixture"))
