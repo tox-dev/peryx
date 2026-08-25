@@ -120,7 +120,10 @@ jobs:
       - id: shards
         run: |
           mutants=$(just mutation-count)
+          # cargo-mutants recommends 8 to 32 shards to bound clean-build and CI-capacity costs.
+          # https://mutants.rs/shards.html#choosing-a-number-of-shards
           shards=$(( (mutants + 255) / 256 ))
+          shards=$(( shards < 32 ? shards : 32 ))
           echo "Planning $mutants mutants across $shards shards"
           echo "count=$shards" >> "$GITHUB_OUTPUT"
           echo "indices=$(jq --null-input --compact-output --argjson count "$shards" '[range(0; $count)]')" >> "$GITHUB_OUTPUT"
