@@ -60,9 +60,7 @@ jobs:
             just jq uv cargo:cargo-dist cargo:cargo-insta cargo:cargo-nextest
       - run: just snapshots
       - id: packages
-        run: >-
-          echo "value=$(cargo metadata --no-deps --format-version 1 |
-          jq -c '[.packages[] | select(.publish != []) | .name]')" >> "$GITHUB_OUTPUT"
+        run: echo "value=$(just publishable-packages)" >> "$GITHUB_OUTPUT"
       - run: just release-plan
 
   semver:

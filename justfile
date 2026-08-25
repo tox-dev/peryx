@@ -43,6 +43,9 @@ snapshots: _project-temp
     cargo insta test --package peryx-ecosystem-pypi --lib --all-features \
       --unreferenced reject --test-runner nextest --nextest-profile ci
 
+publishable-packages: _project-temp
+    cargo metadata --no-deps --format-version 1 | jq -c '[.packages[] | select(.publish != []) | .name]'
+
 semver base="origin/main": _project-temp
     cargo semver-checks check-release --workspace --default-features --baseline-rev "{{ base }}"
 
@@ -87,8 +90,9 @@ platform-test: _project-temp
 e2e: _project-temp
     cargo nextest run -p peryx-pypi-system-tests --features e2e --test e2e -E 'not(test(e2e_live))'
 
-e2e-live: _project-temp
-    cargo nextest run -p peryx-pypi-system-tests --features e2e-live --test e2e -E 'test(e2e_live)'
+e2e-live: test-deps
+    PATH="{{ tools_root }}/bin:$PATH" cargo nextest run -p peryx-pypi-system-tests \
+      --features e2e-live --test e2e -E 'test(e2e_live)'
 
 pypi-system: _project-temp
     cargo nextest run -p peryx-pypi-system-tests --tests \
@@ -169,6 +173,9 @@ mutation shard="0/1" in_place="false" jobs="2" baseline="run" timeout="500": tes
 mutation-baseline: test-deps
     INSTA_UPDATE=no INSTA_FORCE_PASS=0 PATH="{{ tools_root }}/bin:$PATH" cargo nextest run --verbose \
       --workspace --all-features -E 'not(test(e2e_live))'
+
+mutation-count: _project-temp
+    cargo mutants --list --workspace --all-features | wc -l
 
 # Install browser-test dependencies for the shared and owner suites.
 frontend-deps: _project-temp

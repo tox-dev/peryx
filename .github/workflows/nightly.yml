@@ -114,7 +114,7 @@ jobs:
       - run: just mutation-baseline
       - id: shards
         run: |
-          mutants=$(cargo mutants --list --workspace --all-features | wc -l)
+          mutants=$(just mutation-count)
           shards=$(( (mutants + 255) / 256 ))
           echo "Planning $mutants mutants across $shards shards"
           echo "count=$shards" >> "$GITHUB_OUTPUT"
@@ -186,5 +186,4 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           tools: just uv cargo:cargo-nextest
-      - run: just test-deps
-      - run: PATH="$PWD/.tox/tools/bin:$PATH" just e2e-live
+      - run: just e2e-live
