@@ -1,6 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet};
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -118,25 +116,18 @@ fn routed(metadata: &str, artifact: Option<&str>) -> IndexConfig {
 
 #[cfg(unix)]
 fn exec_credential_helper(dir: &tempfile::TempDir) -> (ExecCredentialConfig, PathBuf, PathBuf) {
-    let executable = dir.path().join("credential-helper");
     let executions = dir.path().join("credential-executions");
     let requests = dir.path().join("credential-requests");
-    let quote = |path: &Path| format!("'{}'", path.display().to_string().replace('\'', "'\\''"));
-    std::fs::write(
-        &executable,
-        format!(
-            "#!/bin/sh\nset -u\nrequest=$(cat)\nprintf '%s' \"$request\" > {}\nprintf x >> {}\nprintf '%s' \
-             '{{\"version\":1,\"expires_at\":\"2099-01-01T00:00:00Z\",\"type\":\"bearer\",\"token\":\"exec-token\"}}'\n",
-            quote(&requests),
-            quote(&executions),
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
     (
         ExecCredentialConfig::new(
-            vec![executable.display().to_string()],
-            Duration::from_secs(5),
+            vec![
+                peryx_test_support::cargo_binary("peryx-pypi-credential-fixture")
+                    .display()
+                    .to_string(),
+                requests.display().to_string(),
+                executions.display().to_string(),
+            ],
+            Duration::from_mins(1),
             Vec::new(),
             CredentialFailure::Fail,
         )

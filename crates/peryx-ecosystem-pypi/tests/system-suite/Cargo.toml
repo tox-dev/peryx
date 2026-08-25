@@ -21,6 +21,13 @@ test = false
 bench = false
 doc = false
 
+[[bin]]
+name = "peryx-pypi-credential-fixture"
+path = "tests/fixtures/credential.rs"
+test = false
+bench = false
+doc = false
+
 [features]
 default = []
 e2e = []
