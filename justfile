@@ -257,6 +257,9 @@ conformance suite binary="": _project-temp
     port = 0
     data_dir = "$scratch/data"
 
+    [log]
+    format = "json"
+
     [[index]]
     name = "store"
     route = "store"
@@ -272,7 +275,8 @@ conformance suite binary="": _project-temp
     server_pid=$!
     port=
     for _ in {1..150}; do
-      port=$(sed -n 's/.*addr=127\.0\.0\.1:\([0-9][0-9]*\).*/\1/p' "$scratch/server.log" | head -1)
+      port=$(jq -r 'select(.fields.message == "peryx listening") | .fields.addr |
+        capture(":(?<port>[0-9]+)$").port' "$scratch/server.log" 2>/dev/null | head -1)
       if [[ -n $port ]]; then
         break
       fi
