@@ -124,7 +124,7 @@
         };
         script.onerror = function () {
           document.getElementById("pagefind-search").innerHTML =
-            '<p class="search-unavailable">Search runs against the built site. On the dev server, run <code>site/scripts/dev.sh</code> (build + Pagefind) instead of <code>zola serve</code>.</p>';
+            '<p class="search-unavailable">Search runs against the built site. On the dev server, run <code>just site-dev</code> instead of <code>zola serve</code>.</p>';
         };
         document.body.appendChild(script);
       }
@@ -292,7 +292,7 @@
       heads.forEach(function (head) { observer.observe(head); });
     })();
     document.querySelectorAll("main pre").forEach(function (pre) {
-      if (pre.classList.contains("mermaid") || pre.closest(".brand-terminal")) return;
+      if (pre.closest(".brand-terminal")) return;
       var button = document.createElement("button");
       button.className = "copy-snippet";
       button.type = "button";
@@ -315,60 +315,6 @@
         });
       });
     });
-  </script>
-  {# Development builds need client-side diagram rendering. #}
-  <script>
-    (function () {
-      var blocks = Array.prototype.slice.call(document.querySelectorAll("pre.mermaid"));
-      if (!blocks.length) return;
-      var sources = blocks.map(function (pre) { return pre.textContent; });
-      // Keep this palette aligned with render_diagrams.mjs so development matches production.
-      var roles = {
-        light: {
-          accent: "fill:#dbe6f5,stroke:#4a6f9f,color:#16304d",
-          good: "fill:#d8ebe1,stroke:#3f8467,color:#14402f",
-          warn: "fill:#f6e2d0,stroke:#b06f36,color:#5a3212"
-        },
-        dark: {
-          accent: "fill:#1e2b3a,stroke:#6d9fd6,color:#cfe0f5",
-          good: "fill:#182d25,stroke:#5aa98a,color:#cfe8dc",
-          warn: "fill:#33241a,stroke:#c9843f,color:#f0d6bb"
-        }
-      };
-      var loader = document.createElement("script");
-      loader.type = "module";
-      loader.textContent =
-        'import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";' +
-        'const sources = ' + JSON.stringify(sources) + ';' +
-        'const roles = ' + JSON.stringify(roles) + ';' +
-        'function withRoles(source, palette) {' +
-        '  const used = new Set(Array.from(source.matchAll(/^\\s*class\\s+[\\w,]+\\s+(\\w+)\\s*$/gm), (m) => m[1]));' +
-        '  const defs = [...used].filter((r) => palette[r]).map((r) => `classDef ${r} ${palette[r]}`);' +
-        '  return defs.length ? source + "\\n" + defs.join("\\n") : source;' +
-        '}' +
-        'async function renderAll(theme, palette) {' +
-        '  mermaid.initialize({ startOnLoad: false, securityLevel: "loose", theme });' +
-        '  const out = [];' +
-        '  for (let i = 0; i < sources.length; i++) {' +
-        '    const { svg } = await mermaid.render("mmd-" + theme + "-" + i, withRoles(sources[i], palette));' +
-        '    out.push(svg);' +
-        '  }' +
-        '  return out;' +
-        '}' +
-        '(async () => {' +
-        '  const light = await renderAll("default", roles.light);' +
-        '  const dark = await renderAll("dark", roles.dark);' +
-        '  const blocks = document.querySelectorAll("pre.mermaid");' +
-        '  blocks.forEach((pre, i) => {' +
-        '    const fig = document.createElement("figure");' +
-        '    fig.className = "mermaid-figure";' +
-        '    fig.innerHTML = \'<div class="mermaid-svg mermaid-light">\' + light[i] + \'</div>\' +' +
-        '      \'<div class="mermaid-svg mermaid-dark">\' + dark[i] + \'</div>\';' +
-        '    pre.replaceWith(fig);' +
-        '  });' +
-        '})();';
-      document.body.appendChild(loader);
-    })();
   </script>
 </body>
 </html>

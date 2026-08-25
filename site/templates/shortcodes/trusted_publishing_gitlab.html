@@ -1,0 +1,5 @@
+{% component trustedPublishingGitlab() %}
+{%- set source = load_data(path="data/ecosystems/pypi/snippets/trusted-publishing-gitlab.yml", format="plain") -%}
+{%- set block = "```yaml\n" ~ source ~ "```" -%}
+{{ block | markdown | safe }}
+{% endcomponent trustedPublishingGitlab %}

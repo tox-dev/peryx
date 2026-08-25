@@ -88,11 +88,11 @@ cleanup for every spawned task, listener, and child process.
 - `just coverage-frontend`: native and Wasm browser coverage
 - `just coverage`: complete native and frontend coverage
 - `just lint`: source, documentation, automation, dependency, and contract lint lanes
-- `just docs`: staged owner documentation and site build
-- `just site-links`: site build and external-link check
+- `just docs`: documentation build and search index
+- `just site-links`: external-link check
 - `just pre-commit`: all repository hooks
 - `just all`: lint, complete Linux coverage, docs, and CI-safe hooks
-- `just ci`: run `just all` in the Linux Compose service from macOS, Windows, or Linux
+- `just ci`: run the same complete gate as `just all`
 
 Nextest provides process isolation used by several suites. Use the recipes instead of substituting raw `cargo test` for
 repository validation.
@@ -106,8 +106,8 @@ benchmark harnesses, and checks the report with cargo-llvm-cov:
 just coverage-native .tox/coverage/native.lcov
 ```
 
-The command requires 100% line, per-file line, function, and region coverage. Browser coverage combines native and Wasm
-reports and requires 100% line and function coverage.
+The command rejects every uncovered workspace source line. Browser coverage combines native and Wasm reports and
+requires 100% line coverage.
 
 Test observable behavior for each executable path. A coverage exclusion requires a path that the language or target
 makes impossible to execute, with the reason beside the exclusion.
@@ -122,37 +122,23 @@ fuzzing, and the live client boundary.
 Run the recipe named by a failed job before changing workflow YAML. Change the workflow only when the fault concerns CI
 orchestration.
 
-## Linux through Compose
+## Docker-backed tests
 
-The repository uses one `compose.yaml`. Services bind-mount the checkout at `/workspace`; builds do not copy the source.
-Cargo state, target files, browser state, temporary files, and nested Docker data stay under `.tox/` on the host.
+Storage and service-fault tests use testcontainers against the host's Docker daemon. Start Docker before running recipes
+that declare a Docker dependency, such as `just storage-s3` or `just coverage-native`. The same recipes run directly on
+developer machines and GitHub-hosted runners.
 
-- `just linux RECIPE [ARGS]`: lightweight Linux service with an 8 GiB limit
-- `just linux-analysis RECIPE [ARGS]`: Linux analysis profile
-- `just linux-system RECIPE [ARGS]`: Linux service plus nested Docker for system tests
-- `just linux-16g RECIPE [ARGS]`: lightweight service with a 16 GiB limit
-- `just linux-system-16g RECIPE [ARGS]`: system services with a combined 16 GiB limit
-
-Examples:
-
-```shell
-just linux-system availability
-just linux-system coverage
-```
-
-Use the 16 GiB profile after an 8 GiB run records memory pressure. `just compose-check` validates all profiles.
-`just clean` removes transient project state. `just clean-all` also removes reusable coverage, browser, fuzz, benchmark,
-and nested Docker state.
+`just clean` removes transient project state. `just clean-all` also removes reusable coverage, browser, fuzz, and
+benchmark state.
 
 ## Documentation ownership
 
 End-user docs cover product behavior and operation, including failures. Put shared guidance under `site/content/core/`
-and ecosystem-specific protocols or configuration under the owner's `docs/content/` tree. Contributor docs own
-source-level concepts such as crate boundaries, Rust APIs, test structure, and internal ownership.
+and ecosystem-specific protocols or configuration under `site/content/ecosystems/`. Contributor docs own source-level
+concepts such as crate boundaries, Rust APIs, test structure, and internal ownership.
 
 ```shell
-just site-stage
-site/scripts/dev.sh
+just site-dev
 ```
 
 Format Markdown with `prek run mdformat --all-files`, then run `just lint-docs`, `just docs`, and `just site-links`. The

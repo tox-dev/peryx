@@ -1,5 +1,10 @@
 {%- set OWNERS = load_data(path="data/ecosystem-owners.toml") -%}
 {%- set ROADMAP = load_data(path="data/ecosystem-roadmap.toml") -%}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Peryx | Brand Book</title>
 <style>
   :root{
@@ -314,6 +319,8 @@
   .crtable .pass{color:var(--ok);font-weight:600}
   footer{max-width:76rem;margin:0 auto;padding:2rem 1.6rem 4rem;color:var(--text-faint);font-size:.82rem}
 </style>
+</head>
+<body>
 
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
   <linearGradient id="gW" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f74c00"/><stop offset="1" stop-color="#ffb600"/></linearGradient>
@@ -606,12 +613,12 @@
       <div class="scroll"><table class="mtable">
         <thead><tr><th>File</th><th>Form</th><th>Notes</th></tr></thead>
         <tbody>
-          <tr><td><code>assets/icon.svg</code></td><td>Pyx seal on dark chip</td><td>App / installer icon, 512², 22% radius.</td></tr>
+          <tr><td><code>site/static/icon.svg</code></td><td>Pyx seal on dark chip</td><td>App / installer icon, 512², 22% radius.</td></tr>
           <tr><td><code>site/static/mark.svg</code></td><td>Falcon, gradient</td><td>Primary web mark.</td></tr>
           <tr><td><code>site/static/mark-mono.svg</code></td><td>Falcon, mono</td><td>Single-colour via <span class="mono">currentColor</span>.</td></tr>
           <tr><td><code>site/static/lockup.svg</code></td><td>Falcon + wordmark</td><td>Horizontal; nav and README.</td></tr>
           <tr><td><code>site/static/lockup-stacked.svg</code></td><td>Falcon + wordmark</td><td>Vertical; square placements.</td></tr>
-          <tr><td><code>assets/seal.svg</code> <span style="color:var(--ok)">new</span></td><td>Pyx seal, colour + mono</td><td>Verified-artifact / signing badge.</td></tr>
+          <tr><td><code>site/static/seal.svg</code> <span style="color:var(--ok)">new</span></td><td>Pyx seal, colour + mono</td><td>Verified-artifact / signing badge.</td></tr>
           <tr><td><code>Startup banner</code> <span style="color:var(--ok)">new</span></td><td>ASCII banner + start line</td><td>Amber via ANSI; off for non-TTY.</td></tr>
           <tr><td><code>BRAND.md</code> <span style="color:var(--ok)">new</span></td><td>&mdash;</td><td>The rules from §04–§12.</td></tr>
         </tbody>
@@ -660,3 +667,5 @@
   document.addEventListener('click',e=>{const el=e.target.closest('[data-copy]'); if(el) showCopy(el.getAttribute('data-copy'), el.getAttribute('data-copy-label')||'');});
   const cm=document.getElementById('copyMark'); if(cm) cm.addEventListener('click',()=>showCopy(MARK_SVG,'Mark SVG'));
 </script>
+</body>
+</html>

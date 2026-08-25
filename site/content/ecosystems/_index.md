@@ -11,6 +11,7 @@ combines indexes from one ecosystem.
 
 Use the owner pages for setup and protocol reference:
 
-{{ ecosystem_owner_links() }}
+- [OCI](/ecosystems/oci/): Docker
+- [PyPI](/ecosystems/pypi/): Python
 
 The [activation contract](@/ecosystems/capabilities.md) defines selection, startup behavior, and unsupported features.

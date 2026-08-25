@@ -8,19 +8,23 @@ live in the `justfile`, so the same commands run locally and in CI.
 The required workflow runs seven independent jobs:
 
 - `source`: formatting, `cargo check`, Clippy, and dependency policy
-- `automation`: repository hooks, workflow validation, ShellCheck, and Compose validation
+- `automation`: repository hooks and workflow validation
 - `contracts`: snapshots, public API compatibility, and the release plan
 - `platform`: platform-boundary tests on macOS and Windows
 - `coverage`: the complete native workspace suite with all features
 - `frontend`: native and Wasm browser coverage
-- `docs`: rustdoc, Markdown, diagrams, and the assembled site
+- `docs`: rustdoc, Markdown, and the assembled site
 
-`coverage` replaces a separate Linux test job. It runs the tests once under `cargo llvm-cov` and requires 100% line,
-per-file line, function, and region coverage. The frontend job follows wasm-bindgen's LLVM coverage procedure and
-requires 100% line and function coverage across its native and Wasm reports.
+`coverage` replaces a separate Linux test job. It runs the tests once under `cargo llvm-cov` and rejects any uncovered
+source line. The frontend job follows wasm-bindgen's LLVM coverage procedure and applies the same line requirement to
+its merged native and Wasm report.
 
-The `required` job gives branch protection one stable check name. It only evaluates GitHub job results; test policy
+The `ci-gate` job gives branch protection one stable check name. It only evaluates GitHub job results; test policy
 remains in `just` recipes and standard tool configuration.
+
+CodSpeed runs both ecosystem benchmark packages in parallel. Each leg builds through `just codspeed-build` and uses
+CodSpeed's official action to run and upload the result. `just codspeed` provides the equivalent local command on a
+supported Linux host.
 
 ## Nightly analysis
 

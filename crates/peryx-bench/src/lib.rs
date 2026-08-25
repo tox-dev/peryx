@@ -158,7 +158,7 @@ struct MachineProfile {
 impl MachineProfile {
     fn system(root: &Path) -> Self {
         Self {
-            path: root.join("site/data/bench/machine.toml"),
+            path: root.join("site/data/benchmark-machine.toml"),
             scratch: root.join(".tox/bench/scratch"),
             settings: machine::ProfileSettings::default(),
         }

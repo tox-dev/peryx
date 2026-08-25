@@ -41,10 +41,7 @@ write the old home had in flight under the previous epoch is stale, and the new 
 returns cannot finalize a write against an authority it no longer owns. A datacenter in a control-plane minority cannot
 commit the move. It forwards to the leader, so a partition cannot produce two homes.
 
-{% mermaid() %} flowchart TB; alive["home Alive or Suspect"] -->|"within tolerance"| hold["hold: authority stays"];
-dead["home confirmed Dead"] --> pick{"an Alive candidate?"}; pick -->|"no"| none["hold: writes stay retained"]; pick
--->|"yes"| commit["control quorum commits the move, mints the fencing epoch"]; commit --> drain\["drain the old home's
-retained intents at the new home"\]; class hold,none warn; class commit,drain good; {% end %}
+{{<diagram file="86ac6de4ae6ad836" />}}
 
 ## Draining the retained writes
 

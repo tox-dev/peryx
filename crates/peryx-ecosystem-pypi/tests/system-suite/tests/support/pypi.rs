@@ -3,7 +3,7 @@ use peryx_storage::blob::Digest;
 use crate::harness::Node;
 
 pub const UPLOAD_TOKEN: &str = "harness-upload-secret";
-pub const WHEEL: &[u8] = include_bytes!("../fixtures/veloxdemo-1.0.0-py3-none-any.whl");
+pub const WHEEL: &[u8] = include_bytes!("../../../fixtures/veloxdemo-1.0.0-py3-none-any.whl");
 pub const WHEEL_FILENAME: &str = "veloxdemo-1.0.0-py3-none-any.whl";
 
 pub const fn config() -> &'static str {

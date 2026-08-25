@@ -17,7 +17,7 @@ use tower::ServiceExt as _;
 
 const BUCKET: &str = "peryx-tests";
 const FILENAME: &str = "veloxdemo-1.0.0-py3-none-any.whl";
-const WHEEL: &[u8] = include_bytes!("veloxdemo-1.0.0-py3-none-any.whl");
+const WHEEL: &[u8] = include_bytes!("../../../fixtures/veloxdemo-1.0.0-py3-none-any.whl");
 
 #[derive(Parser)]
 struct Args {

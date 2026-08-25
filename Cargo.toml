@@ -143,6 +143,9 @@ proc-macro-error2 = { git = "https://github.com/fgardt/proc-macro-error-2", rev 
 strip = true
 lto = "fat"
 
+[profile.bench]
+lto = false
+
 [profile.dist]
 inherits = "release"
 lto = "thin"

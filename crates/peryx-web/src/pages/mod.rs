@@ -3,6 +3,16 @@ use leptos::prelude::*;
 
 use crate::model::{UiCounters, UiSnapshot, UiStats};
 
+#[cfg(feature = "ssr")]
+fn reactive_value<S: GetUntracked>(signal: &S) -> S::Value {
+    signal.get_untracked()
+}
+
+#[cfg(not(feature = "ssr"))]
+fn reactive_value<S: Get>(signal: &S) -> S::Value {
+    signal.get()
+}
+
 mod admin;
 mod analytics;
 mod browse;

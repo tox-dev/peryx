@@ -1,0 +1,5 @@
+{% component trustedPublishingGithub() %}
+{%- set source = load_data(path="data/ecosystems/pypi/snippets/trusted-publishing-github.yml", format="plain") -%}
+{%- set block = "```yaml\n" ~ source ~ "```" -%}
+{{ block | markdown | safe }}
+{% endcomponent trustedPublishingGithub %}

@@ -32,10 +32,7 @@ single pass reads the whole ledger:
 
 A placement carries an evidence-based state, and reconciliation only ever moves it along one of two paths:
 
-{% mermaid() %} flowchart LR; verified["Verified (served)"] -->|"bytes rotted or file gone"| failed\["Failed: digest
-mismatch"\]; failed -->|"copy backlog re-copies from a peer"| pending["Pending (in flight)"]; pending -->|"peer bytes
-verified"| verified; verified -->|"out of policy"| revoked["Revoked (retired)"]; class verified,pending good; class
-failed,revoked warn; {% end %}
+{{<diagram file="c50ea5fb70c1fcfe" />}}
 
 The demotion and the retirement are both fenced by the ownership group's cluster-level term, the same monotonic epoch
 the copier fences on: a node running no ownership group reads term zero and reconciles nothing, and a placement write

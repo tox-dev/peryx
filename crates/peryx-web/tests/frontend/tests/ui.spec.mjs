@@ -372,8 +372,7 @@ test("every page sets the app favicon", async ({ page }) => {
   expect(response.headers()["content-type"]).toContain("image/svg+xml");
   const svg = await response.text();
   expect(svg).toContain("512 512");
-  expect(svg).toContain("#22C55E");
-  expect(svg).not.toContain("#4F9BE0");
+  expect(svg).toContain("Peryx app icon");
 });
 
 test("theme toggle switches and survives a reload", async ({ page }) => {

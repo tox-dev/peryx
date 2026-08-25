@@ -22,7 +22,7 @@ just availability
 Use the Linux system profile when the host cannot run the dependencies:
 
 ```shell
-just linux-system availability
+just availability
 ```
 
 ## Lifecycle ownership

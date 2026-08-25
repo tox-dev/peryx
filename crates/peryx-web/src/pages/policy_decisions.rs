@@ -1,6 +1,7 @@
 use leptos::either::Either;
 use leptos::prelude::*;
 
+use super::reactive_value;
 use crate::model::PolicyDecisionFilters;
 use crate::model::{UiPolicyDecision, UiPolicyDecisionPage};
 
@@ -25,7 +26,7 @@ pub fn PolicyDecisions() -> impl IntoView {
                 <PolicyDecisionFilterFields set_user set_password set_filters loading />
             </form>
             <div class="policy-results">
-                {move || policy_decision_results(loading.get(), result.get())}
+                {move || policy_decision_results(reactive_value(&loading), reactive_value(&result))}
             </div>
             <div class="pagination">
                 <button type="button" disabled=move || true>"Previous"</button>
@@ -77,7 +78,7 @@ pub fn PolicyDecisions() -> impl IntoView {
                 <PolicyDecisionFilterFields set_user set_password set_filters loading />
             </form>
             <div class="policy-results">
-                {move || policy_decision_results(state.loading.get(), state.result.get())}
+                {move || policy_decision_results(reactive_value(&state.loading), reactive_value(&state.result))}
             </div>
             <div class="pagination">
                 <button type="button" disabled=previous_disabled_view(state) on:click=previous_page_action(state)>"Previous"</button>
@@ -131,7 +132,7 @@ fn PolicyDecisionFilterFields(
             <option value="50">"50"</option>
             <option value="100">"100"</option>
         </select>
-        <button type="submit" disabled=move || loading.get()>"Search"</button>
+        <button type="submit" disabled=move || reactive_value(&loading)>"Search"</button>
     }
     .into_any()
 }
@@ -211,7 +212,7 @@ fn PolicyDecisionFilterFields(
             <option value="50">"50"</option>
             <option value="100">"100"</option>
         </select>
-        <button type="submit" disabled=move || loading.get()>"Search"</button>
+        <button type="submit" disabled=move || reactive_value(&loading)>"Search"</button>
     }
 }
 
@@ -262,7 +263,7 @@ fn submit_query(state: PolicyDecisionState) {
 
 #[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
 fn previous_disabled(state: PolicyDecisionState) -> bool {
-    state.previous.get().is_empty() || state.loading.get()
+    reactive_value(&state.previous).is_empty() || reactive_value(&state.loading)
 }
 
 #[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
@@ -293,7 +294,7 @@ fn previous_page_action<Event>(state: PolicyDecisionState) -> impl FnMut(Event) 
 
 #[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
 fn next_disabled(state: PolicyDecisionState) -> bool {
-    state.loading.get() || next_cursor(state.result.get()).is_none()
+    reactive_value(&state.loading) || next_cursor(reactive_value(&state.result)).is_none()
 }
 
 #[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]

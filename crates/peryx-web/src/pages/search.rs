@@ -2,7 +2,7 @@ use leptos::either::Either;
 use leptos::prelude::*;
 use leptos_router::hooks::use_query_map;
 
-use super::ErrorMessage;
+use super::{ErrorMessage, reactive_value};
 use crate::data::load_search;
 use crate::model::{UiSearchPage, UiSearchResult};
 use crate::url::{browse_index_url, search_page_url};
@@ -44,11 +44,11 @@ pub fn Search() -> impl IntoView {
     let results = Resource::new(
         move || {
             (
-                query.get(),
-                source_type.get(),
-                availability.get(),
-                page.get(),
-                page_size.get(),
+                reactive_value(&query),
+                reactive_value(&source_type),
+                reactive_value(&availability),
+                reactive_value(&page),
+                reactive_value(&page_size),
             )
         },
         |(query, source_type, availability, page, page_size)| {
@@ -59,16 +59,16 @@ pub fn Search() -> impl IntoView {
         <section class="page search-page">
             <h1>"Search"</h1>
             <SearchForm
-                query=query.get()
-                source_type=source_type.get()
-                availability=availability.get()
-                page_size=page_size.get()
+                query=reactive_value(&query)
+                source_type=reactive_value(&source_type)
+                availability=reactive_value(&availability)
+                page_size=reactive_value(&page_size)
             />
             <Suspense fallback=|| view! { <p class="dim">"loading"</p> }>
                 {move || {
-                    let query = query.get();
-                    let source_type = source_type.get();
-                    let availability = availability.get();
+                    let query = reactive_value(&query);
+                    let source_type = reactive_value(&source_type);
+                    let availability = reactive_value(&availability);
                     Suspend::new(async move {
                         match results.await {
                             Ok(page) => {

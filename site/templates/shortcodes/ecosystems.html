@@ -1,3 +1,4 @@
+{% component ecosystems() %}
 {%- set owners = load_data(path="data/ecosystem-owners.toml") -%}
 {%- set roadmap = load_data(path="data/ecosystem-roadmap.toml") -%}
 <div class="eco-groups">
@@ -28,7 +29,4 @@
   </div>
   {%- endfor %}
 </div>
-{% component ecosystems() %}
-
-
 {% endcomponent ecosystems %}

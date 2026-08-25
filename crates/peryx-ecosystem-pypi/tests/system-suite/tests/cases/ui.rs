@@ -129,7 +129,7 @@ fn private_pypi_ui_config(dir: &tempfile::TempDir) -> Config {
 }
 
 async fn upload_private_fixture(router: &axum::Router) -> String {
-    let wheel = include_bytes!("../fixtures/veloxdemo-1.0.0-py3-none-any.whl");
+    let wheel = include_bytes!("../../../fixtures/veloxdemo-1.0.0-py3-none-any.whl");
     let boundary = "peryxuitest";
     let sha256 = Digest::of(wheel);
     let mut body = Vec::new();
@@ -202,7 +202,7 @@ fn rendered_files(body: &str) -> &str {
 }
 
 async fn upload_fixture(router: &axum::Router) {
-    let wheel = include_bytes!("../fixtures/veloxdemo-1.0.0-py3-none-any.whl");
+    let wheel = include_bytes!("../../../fixtures/veloxdemo-1.0.0-py3-none-any.whl");
     upload_file(router, "veloxdemo-1.0.0-py3-none-any.whl", wheel).await;
 }
 

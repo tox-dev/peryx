@@ -32,11 +32,7 @@ Confirm these conditions before an incident:
 
 ## Classify the failure
 
-{% mermaid() %} flowchart TB; sym["node not serving correctly"] --> disk{"is the durable disk intact?"}; disk -->|"yes,
-process is down or wedged"| proc["process loss"]; disk -->|"no, disk or bucket state is gone"| store["storage loss"];
-sym --> link{"nodes healthy but cannot reach each other?"}; link -->|"replica cannot follow the writer"| part\["network
-partition"\]; sym --> quorum{"a dc or ha mutation refuses with 503?"}; quorum -->|"required failure domain unreachable"|
-cq["control-quorum loss"]; class proc,part good; class store,cq warn {% end %}
+{{<diagram file="ca5de35ab407da89" />}}
 
 The four failure categories are distinct because the contract distinguishes
 [crash from storage loss](@/core/availability/contracts.md#crash-versus-storage-loss) and a

@@ -1,7 +1,7 @@
 use leptos::either::{Either, EitherOf5};
 use leptos::prelude::*;
 
-use super::human_size;
+use super::{human_size, reactive_value};
 use crate::model::AnalyticsFilters;
 use crate::model::{
     UiGroupRow, UiInterval, UiResourceRow, UiSourceRow, UiTimelineRow, UiUnusedRow, UiUsagePage, UiUsageRows,
@@ -30,7 +30,7 @@ pub fn UsageAnalytics() -> impl IntoView {
             <form class="policy-filters analytics-filters">
                 <AnalyticsFilterFields set_user set_password set_filters loading />
             </form>
-            <div class="analytics-results">{move || analytics_results(loading.get(), result.get())}</div>
+            <div class="analytics-results">{move || analytics_results(reactive_value(&loading), reactive_value(&result))}</div>
             <div class="pagination">
                 <button type="button" disabled=move || true>"Previous"</button>
                 <button type="button" disabled=move || true>"Next"</button>
@@ -83,7 +83,7 @@ pub fn UsageAnalytics() -> impl IntoView {
                 <AnalyticsFilterFields set_user set_password set_filters loading />
             </form>
             <div class="analytics-results">
-                {move || analytics_results(state.loading.get(), state.result.get())}
+                {move || analytics_results(reactive_value(&state.loading), reactive_value(&state.result))}
             </div>
             <div class="pagination">
                 <button type="button" disabled=previous_disabled_view(state) on:click=previous_page_action(state)>
@@ -131,7 +131,7 @@ fn AnalyticsFilterFields(
             <option value="50">"50"</option>
             <option value="100">"100"</option>
         </select>
-        <button type="submit" disabled=move || loading.get()>"Search"</button>
+        <button type="submit" disabled=move || reactive_value(&loading)>"Search"</button>
     }
     .into_any()
 }
@@ -200,7 +200,7 @@ fn AnalyticsFilterFields(
             <option value="50">"50"</option>
             <option value="100">"100"</option>
         </select>
-        <button type="submit" disabled=move || loading.get()>"Search"</button>
+        <button type="submit" disabled=move || reactive_value(&loading)>"Search"</button>
     }
 }
 
@@ -262,7 +262,7 @@ fn analytics_results(loading: bool, result: Option<Result<UiUsagePage, String>>)
 
 #[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
 fn previous_disabled(state: AnalyticsState) -> bool {
-    state.previous.get().is_empty() || state.loading.get()
+    reactive_value(&state.previous).is_empty() || reactive_value(&state.loading)
 }
 
 #[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
@@ -293,7 +293,7 @@ fn previous_page_action<Event>(state: AnalyticsState) -> impl FnMut(Event) {
 
 #[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
 fn next_disabled(state: AnalyticsState) -> bool {
-    state.loading.get() || next_cursor(state.result.get()).is_none()
+    reactive_value(&state.loading) || next_cursor(reactive_value(&state.result)).is_none()
 }
 
 #[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]

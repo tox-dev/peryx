@@ -310,7 +310,7 @@ main { max-width: 70rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
 .hero-brand { display: flex; align-items: center; gap: 1.1rem; margin: 0 0 1.75rem; }
 .hero-brand .stoop-stage { position: relative; width: 4.5rem; height: 4.5rem; flex: none; display: grid; place-items: center; }
 .hero-brand .stoop { width: 4.5rem; height: 4.5rem; display: block; }
-.hero-brand .stoop .falcon { transform-box: fill-box; transform-origin: 50% 60%; animation: stoop-dive 0.7s both; }
+.hero-brand .stoop.falcon { transform-origin: 50% 60%; animation: stoop-dive 0.7s both; }
 .hero-brand .streaks { position: absolute; inset: 0; pointer-events: none; }
 .hero-brand .streaks span {
   position: absolute; top: 6%; width: 2px; border-radius: 2px; opacity: 0;
@@ -343,7 +343,7 @@ main { max-width: 70rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
 /* Loading state: the same stoop, looped. */
 .stoop-loader { display: flex; flex-direction: column; align-items: center; gap: 0.7rem; padding: 3.5rem 0; color: var(--text-soft); }
 .stoop-loader .stoop { width: 3rem; height: 3rem; display: block; }
-.stoop-loader .stoop .falcon { transform-box: fill-box; transform-origin: 50% 50%; animation: stoop-loop 1.15s linear infinite; }
+.stoop-loader .stoop.falcon { transform-origin: 50% 50%; animation: stoop-loop 1.15s linear infinite; }
 .stoop-loader .cap { font-family: ui-monospace, Menlo, monospace; font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; }
 @keyframes stoop-loop {
   0% { opacity: 0; transform: translateY(-150%) scale(0.7); }
@@ -353,7 +353,7 @@ main { max-width: 70rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
   100% { opacity: 0; transform: translateY(150%) scale(0.9); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .hero-brand .stoop .falcon, .stoop-loader .stoop .falcon { animation: none; opacity: 1; transform: none; }
+  .hero-brand .stoop.falcon, .stoop-loader .stoop.falcon { animation: none; opacity: 1; transform: none; }
   .hero-brand .streaks { display: none; }
 }
 ";

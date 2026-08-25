@@ -28,9 +28,7 @@ committed cluster because it accepted the request. Assignment needs no separate 
 The control quorum applies a compare-and-set command to an unassigned authority. The first committed command records the
 home and epoch. A later command for the same authority returns the committed assignment without replacing it.
 
-{% mermaid() %} flowchart TB; p1["DC east: first publish"] --> cas{"authority homed?"}; p2["DC west: first publish"] -->
-cas; p3["DC north: first publish"] --> cas; cas -->|"no: first to commit"| win["assign home, mint epoch one"]; cas
--->|"yes: already homed"| lose["reject: keep the committed home"]; class win good; class lose warn; {% end %}
+{{<diagram file="87fdb0f328746e51" />}}
 
 The winning command records its cause, leader term, log index, and minted epoch. Ownership snapshots retain that audit
 record. Rejected commands do not replace it.

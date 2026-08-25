@@ -1,5 +1,5 @@
-{% component machine(owner) %}
-{%- set profile = load_data(path="data/ecosystems/" ~ owner ~ "/bench/machine.toml") -%}
+{% component machine() %}
+{%- set profile = load_data(path="data/benchmark-machine.toml") -%}
 <div class="bench">
   <table class="bench-table machine-table">
     <caption>the host every table on this page was measured on</caption>

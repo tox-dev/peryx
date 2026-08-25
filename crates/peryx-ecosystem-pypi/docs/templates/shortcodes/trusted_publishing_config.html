@@ -1,7 +1,0 @@
-{%- set source = load_data(path="data/ecosystems/pypi/snippets/trusted-publishing.toml", format="plain") -%}
-{%- set block = "```toml\n" ~ source ~ "```" -%}
-{{ block | markdown | safe }}
-{% component trusted_publishing_config() %}
-
-
-{% endcomponent trusted_publishing_config %}

@@ -1,0 +1,3 @@
+{% component diagram(file) %}
+{{ load_data(path="data/diagrams/" ~ file ~ ".html", format="plain") | safe }}
+{% endcomponent diagram %}

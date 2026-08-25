@@ -60,12 +60,10 @@ fn render(
     set_filter: WriteSignal<RoleFilter>,
     status: RwSignal<StreamStatus>,
     streaming: RwSignal<bool>,
-) -> Memo<String> {
-    Memo::new(move |_| {
-        topology_view(live, filter, set_filter, status, streaming)
-            .to_html()
-            .replace("<!>", "")
-    })
+) -> String {
+    topology_view(live, filter, set_filter, status, streaming)
+        .to_html()
+        .replace("<!>", "")
 }
 
 #[test]
@@ -73,15 +71,10 @@ fn test_topology_page_follows_a_streamed_snapshot() {
     Owner::new().with(|| {
         let live = RwSignal::new(writer_only());
         let (filter, set_filter) = signal(RoleFilter::All);
-        let html = render(
-            live,
-            filter,
-            set_filter,
-            RwSignal::new(StreamStatus::Live),
-            RwSignal::new(false),
-        );
+        let status = RwSignal::new(StreamStatus::Live);
+        let streaming = RwSignal::new(false);
+        let first = render(live, filter, set_filter, status, streaming);
 
-        let first = html.get();
         assert!(first.contains("Single node"));
         assert!(first.contains("alpha"));
         assert!(first.contains("of 1 roster nodes."));
@@ -94,7 +87,7 @@ fn test_topology_page_follows_a_streamed_snapshot() {
 
         live.set(capped_ha_replicas());
 
-        let second = html.get();
+        let second = render(live, filter, set_filter, status, streaming);
         assert!(second.contains("High availability"));
         assert!(second.contains("beta"));
         assert!(second.contains("of 5 roster nodes."));
@@ -114,19 +107,26 @@ fn test_topology_roster_filters_to_the_selected_role() {
     Owner::new().with(|| {
         let live = RwSignal::new(capped_ha_replicas());
         let (filter, set_filter) = signal(RoleFilter::All);
-        let html = render(
+        assert!(
+            render(
+                live,
+                filter,
+                set_filter,
+                RwSignal::new(StreamStatus::Live),
+                RwSignal::new(false),
+            )
+            .contains("replica-b<")
+        );
+
+        set_filter.set(RoleFilter::Writer);
+
+        let filtered = render(
             live,
             filter,
             set_filter,
             RwSignal::new(StreamStatus::Live),
             RwSignal::new(false),
         );
-
-        assert!(html.get().contains("replica-b<"));
-
-        set_filter.set(RoleFilter::Writer);
-
-        let filtered = html.get();
         assert!(!filtered.contains("replica-b<"));
         assert!(filtered.contains("Showing 0 of 5 roster nodes."));
     });
@@ -154,8 +154,7 @@ fn test_topology_page_reports_a_standalone_node() {
             set_filter,
             RwSignal::new(StreamStatus::Live),
             RwSignal::new(false),
-        )
-        .get();
+        );
 
         assert!(html.contains("runs standalone"));
         assert!(html.contains("Single node"));
@@ -182,14 +181,13 @@ fn test_topology_stream_badge_follows_the_feed_status() {
         let live = RwSignal::new(writer_only());
         let (filter, set_filter) = signal(RoleFilter::All);
         let status = RwSignal::new(StreamStatus::Live);
-        let html = render(live, filter, set_filter, status, RwSignal::new(true));
-
-        let live_html = html.get();
+        let streaming = RwSignal::new(true);
+        let live_html = render(live, filter, set_filter, status, streaming);
         assert!(live_html.contains("feed: Live"));
 
         status.set(StreamStatus::Offline);
 
-        let offline_html = html.get();
+        let offline_html = render(live, filter, set_filter, status, streaming);
         assert!(offline_html.contains("feed: Offline"));
         assert!(!offline_html.contains("feed: Live"));
     });

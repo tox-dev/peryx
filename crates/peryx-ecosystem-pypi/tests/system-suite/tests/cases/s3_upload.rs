@@ -23,7 +23,7 @@ use tokio::task::JoinHandle;
 
 const BUCKET: &str = "peryx-tests";
 const FILENAME: &str = "veloxdemo-1.0.0-py3-none-any.whl";
-const WHEEL: &[u8] = include_bytes!("../fixtures/veloxdemo-1.0.0-py3-none-any.whl");
+const WHEEL: &[u8] = include_bytes!("../../../fixtures/veloxdemo-1.0.0-py3-none-any.whl");
 
 struct S3Server {
     endpoint: String,

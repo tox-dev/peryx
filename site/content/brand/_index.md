@@ -8,7 +8,7 @@ weight = 50
 logos = [ "mark.svg"]
 +++
 
-{{ brand_defs() }}
+{{<brandDefs />}}
 
 peryx is an open-source artifact service for multiple ecosystems. Its mark is traced from a diving peregrine.
 
@@ -45,12 +45,12 @@ The mark shows a peregrine head-on in a full stoop with raised wings. We traced 
 and reduced it to one gradient silhouette.
 
 <div class="brand-logo-hero">
-  <div><div class="brand-tile brand-tile-dark">{{ falcon(label="peryx mark") }}</div><p class="brand-capt">gradient · dark</p></div>
-  <div><div class="brand-tile brand-tile-light">{{ falcon(label="peryx mark") }}</div><p class="brand-capt">gradient · light</p></div>
+  <div><div class="brand-tile brand-tile-dark">{{<falcon label="peryx mark" />}}</div><p class="brand-capt">gradient · dark</p></div>
+  <div><div class="brand-tile brand-tile-light">{{<falcon label="peryx mark" />}}</div><p class="brand-capt">gradient · light</p></div>
 </div>
 
 <div class="brand-origin">
-  <span class="brand-frame">{{ falcon(label="the mark") }}</span>
+  <span class="brand-frame">{{<falcon label="the mark" />}}</span>
   <span class="brand-arrow">→</span>
   <span class="brand-frame"><img src="../seal.svg" alt="the pyx seal" width="56" height="56"></span>
 </div>
@@ -60,7 +60,7 @@ The enclosure survives OS icon masks that clip the bare mark.
 
 ### Clear space & minimum size
 
-<div class="brand-clearbox"><div class="brand-cs"><span class="brand-guide"></span>{{ falcon(label="peryx mark with clear space") }}</div></div>
+<div class="brand-clearbox"><div class="brand-cs"><span class="brand-guide"></span>{{<falcon label="peryx mark with clear space" />}}</div></div>
 
 Keep clear space of half the mark's height on all sides. Minimum size 16 px, where it still reads as the falcon.
 
@@ -83,10 +83,10 @@ navigation. Keep the wordmark outside the pyx.
 
 <div class="brand-expr">
   <div class="brand-ex"><span class="brand-appicon"><img src="../seal.svg" alt="" width="44" height="44"></span><span class="brand-capt">app icon · seal</span></div>
-  <div class="brand-ex"><span class="brand-appicon">{{ falcon() }}</span><span class="brand-capt">avatar · mark</span></div>
-  <div class="brand-ex"><span class="brand-fav brand-fav-32">{{ falcon() }}</span><span class="brand-capt">32px</span></div>
-  <div class="brand-ex"><span class="brand-fav brand-fav-16">{{ falcon() }}</span><span class="brand-capt">16px</span></div>
-  <div class="brand-ex"><span class="brand-monocell">{{ falcon(mono=true) }}</span><span class="brand-capt">mono</span></div>
+  <div class="brand-ex"><span class="brand-appicon">{{<falcon />}}</span><span class="brand-capt">avatar · mark</span></div>
+  <div class="brand-ex"><span class="brand-fav brand-fav-32">{{<falcon />}}</span><span class="brand-capt">32px</span></div>
+  <div class="brand-ex"><span class="brand-fav brand-fav-16">{{<falcon />}}</span><span class="brand-capt">16px</span></div>
+  <div class="brand-ex"><span class="brand-monocell">{{<falcon mono={true} />}}</span><span class="brand-capt">mono</span></div>
 </div>
 
 ## Motion
@@ -94,7 +94,7 @@ navigation. Keep the wordmark outside the pyx.
 The mark uses one motion, the stoop. It folds in from above, accelerates, emits speed streaks, and settles in about 0.7
 s. Click to replay. Keep the seal static.
 
-{{ brand_motion() }}
+{{<brandMotion />}}
 
 Animate transform and opacity. With `prefers-reduced-motion`, paint the mark in its settled position, hold the loop, and
 show progress-bar values without animation.
@@ -129,7 +129,7 @@ Semantic colours signal **state**. Keep the gradient for brand elements, and pai
 Use a coloured device for each ecosystem and keep it **off the mark**. Use the ecosystem's brand colour so owner
 identities remain distinct from the peryx gradient. A green dot marks owners compiled into peryx.
 
-{{ ecosystems() }}
+{{<ecosystems />}}
 
 ## Typography
 
@@ -158,7 +158,7 @@ Buttons, badges, and status use the gradient and neutral palette.
   <div class="brand-compcard">
     <div class="brand-k">Badges &amp; status</div>
     <div class="brand-badges">
-      <span class="brand-badge brand-badge-verified"><span class="brand-badge-mk">{{ falcon(mono=true) }}</span>Verified</span>
+      <span class="brand-badge brand-badge-verified"><span class="brand-badge-mk">{{<falcon mono={true} />}}</span>Verified</span>
       <span class="brand-badge brand-badge-ok"><span class="brand-badge-dot"></span>Healthy</span>
       <span class="brand-badge">cached</span>
       <span class="brand-badge">overridden</span>
@@ -169,7 +169,7 @@ Buttons, badges, and status use the gradient and neutral palette.
 <div class="brand-comp">
   <div class="brand-compcard">
     <div class="brand-k">Ecosystem tags</div>
-    {{ ecosystem_chips() }}
+    {{<ecosystemChips />}}
   </div>
   <div class="brand-compcard">
     <div class="brand-k">Progress</div>
@@ -183,7 +183,7 @@ Buttons, badges, and status use the gradient and neutral palette.
 <div class="brand-wild">
   <div class="brand-wcard">
     <div class="brand-wnav">
-      <span class="brand-wbrand">{{ falcon() }}<span class="brand-wtitle">peryx</span></span>
+      <span class="brand-wbrand">{{<falcon />}}<span class="brand-wtitle">peryx</span></span>
       <span class="brand-wlinks"><span>Docs</span><span>Ecosystems</span><span>Pricing</span></span>
       <span class="brand-wcta">Get started</span>
     </div>
@@ -192,7 +192,7 @@ Buttons, badges, and status use the gradient and neutral palette.
   <div class="brand-wcard">
     <div class="brand-wrow">
       <span class="brand-wavatar brand-wavatar-sq"><img src="../seal.svg" alt="" width="34" height="34"></span>
-      <span class="brand-wavatar">{{ falcon() }}</span>
+      <span class="brand-wavatar">{{<falcon />}}</span>
       <span class="brand-wbadge"><span class="brand-wbadge-k">peryx</span><span class="brand-wbadge-v">verified</span></span>
     </div>
     <div class="brand-capt">app icon · social avatar · README badge</div>
@@ -256,8 +256,8 @@ Use a 16 px minimum for the mark and body text, and 32 px for the seal. Write in
 Apply these examples to keep the identity consistent.
 
 <div class="brand-dd">
-  <div class="brand-ddc brand-good"><div class="brand-stage">{{ falcon() }}</div><div class="brand-capt"><span class="brand-mark-good">✓</span> Gradient mark on a clean, contrasting ground.</div></div>
-  <div class="brand-ddc brand-bad"><div class="brand-stage" style="background:#7a4b2a">{{ falcon() }}</div><div class="brand-capt"><span class="brand-mark-bad">×</span> Gradient on a busy or low-contrast field.</div></div>
+  <div class="brand-ddc brand-good"><div class="brand-stage">{{<falcon />}}</div><div class="brand-capt"><span class="brand-mark-good">✓</span> Gradient mark on a clean, contrasting ground.</div></div>
+  <div class="brand-ddc brand-bad"><div class="brand-stage" style="background:#7a4b2a">{{<falcon />}}</div><div class="brand-capt"><span class="brand-mark-bad">×</span> Gradient on a busy or low-contrast field.</div></div>
   <div class="brand-ddc brand-good"><div class="brand-stage"><img src="../seal.svg" alt="" width="56" height="56"></div><div class="brand-capt"><span class="brand-mark-good">✓</span> Pyx seal for app tiles, badges, anything masked.</div></div>
-  <div class="brand-ddc brand-bad"><div class="brand-stage"><span class="brand-skewed">{{ falcon() }}</span></div><div class="brand-capt"><span class="brand-mark-bad">×</span> Do not rotate, skew, or recolour the mark.</div></div>
+  <div class="brand-ddc brand-bad"><div class="brand-stage"><span class="brand-skewed">{{<falcon />}}</span></div><div class="brand-capt"><span class="brand-mark-bad">×</span> Do not rotate, skew, or recolour the mark.</div></div>
 </div>

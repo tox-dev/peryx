@@ -26,6 +26,10 @@ provenance = "github-attestations"
 version = "0.7.5"
 backend = "cargo:cargo-auditable"
 
+[[tools."cargo:cargo-codspeed"]]
+version = "5.0.1"
+backend = "cargo:cargo-codspeed"
+
 [[tools."cargo:cargo-cyclonedx"]]
 version = "0.5.9"
 backend = "cargo:cargo-cyclonedx"

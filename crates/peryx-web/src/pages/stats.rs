@@ -1,7 +1,7 @@
 use leptos::prelude::*;
 use leptos_router::hooks::use_query_map;
 
-use super::human_size;
+use super::{human_size, reactive_value};
 use crate::data::load_stats;
 use crate::model::{UiCounters, UiStats};
 use crate::url::{stats_index_url, stats_resource_url};
@@ -16,7 +16,7 @@ pub fn Stats() -> impl IntoView {
         view! {
             <section class="page">
                 {move || {
-                    let key = (route.get(), resource.get());
+                    let key = (reactive_value(&route), reactive_value(&resource));
                     view! { <StatsView route=key.0 resource=key.1 /> }
                 }}
             </section>
@@ -24,7 +24,7 @@ pub fn Stats() -> impl IntoView {
     }
     #[cfg(not(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate")))]
     {
-        let query = query.read();
+        let query = reactive_value(&query);
         let route = match query.get("index") {
             Some(name) if !name.is_empty() => Some(name),
             _ => None,

@@ -3,8 +3,16 @@ version: 2
 build:
   os: ubuntu-24.04
   tools:
-    nodejs: "22"
-    python: "3.12"
+    nodejs: "22.23.2"
     rust: "1.96"
   commands:
-    - site/scripts/readthedocs.sh
+    - cargo install --locked --version 1.58.0 just
+    - mkdir -p .tox/readthedocs-tools
+    - >-
+      curl --fail --location --output .tox/zola.tar.gz
+      https://github.com/getzola/zola/releases/download/v0.23.4/zola-v0.23.4-x86_64-unknown-linux-gnu.tar.gz
+    - >-
+      echo "54d1a347781b2f32330914fcc02def81c7e3ddb6111b36d1cc89c06557aed1de  .tox/zola.tar.gz"
+      | sha256sum --check
+    - tar -xzf .tox/zola.tar.gz -C .tox/readthedocs-tools
+    - PATH="$PWD/.tox/readthedocs-tools:$PATH" just site-readthedocs

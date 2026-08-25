@@ -41,9 +41,7 @@ cycle, or write target that is not hosted.
 Member order is part of the index definition. The owner defines resource, group, and artifact candidates. It applies
 visibility and access policy before returning a merged result.
 
-{% mermaid() %} flowchart LR req["resolve artifact"] --> virtual["virtual index"] virtual -->|"1st: hosted layer"|
-hosted\["hosted candidates<br/>selected"\] virtual -->|"2nd: cached layer"| cached\["upstream candidates<br/>shadowed"\]
-class hosted good class cached warn {% end %}
+{{<diagram file="9ea9c803121f35d3" />}}
 
 ## Shadowing
 

@@ -1,7 +1,7 @@
 ci:
   autoupdate_schedule: monthly
-  # GitHub Actions runs hooks that need Rust or Node.
-  skip: [cargo-fmt, cargo-clippy, render-diagrams]
+  # GitHub Actions runs the Rust hooks with the repository toolchain.
+  skip: [cargo-fmt, cargo-clippy]
 
 repos:
   - repo: local
@@ -18,16 +18,6 @@ repos:
         entry: cargo clippy --target-dir .tox/pre-commit-target --workspace --all-targets --all-features -- -D warnings
         types: [rust]
         pass_filenames: false
-      - id: render-diagrams
-        name: check mermaid diagrams
-        language: system
-        entry: node site/scripts/render_diagrams.mjs --check
-        files: ^(site/content|crates/peryx-ecosystem-(pypi|oci)/docs/content)/.*\.md$
-        pass_filenames: false
-  - repo: https://github.com/shellcheck-py/shellcheck-py
-    rev: v0.11.0.1
-    hooks:
-      - id: shellcheck
   - repo: https://github.com/hukkin/mdformat
     rev: 1.0.0
     hooks:
@@ -55,10 +45,10 @@ repos:
     rev: v2.4.3
     hooks:
       - id: codespell
-        exclude: ^site/diagrams/
+        exclude: ^site/data/diagrams/
         args:
-          - --ignore-words-list=ser,unparseable,atleast,wronly
-          - --ignore-words=crates/peryx-ecosystem-pypi/docs/.codespell-ignore-words.txt
+          - --ignore-words-list=ser,unparseable,atleast,wronly,fpr
+          - --ignore-words=site/.codespell-ignore-words.txt
   - repo: https://github.com/zizmorcore/zizmor-pre-commit
     rev: v1.29.0
     hooks:

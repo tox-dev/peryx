@@ -59,13 +59,13 @@ fail before runtime installation.
 ## Add an owner
 
 1. Create `peryx-ecosystem-NAME` and define its stable ID in that crate.
-1. Keep settings, protocols, metadata, migrations, routes, fixtures, tests, benchmarks, and docs in its tree.
+1. Keep settings, protocols, metadata, migrations, routes, fixtures, tests, and benchmarks in its tree.
 1. Implement required neutral contracts and each supported optional capability.
 1. Install behavior through the narrowest bounded context.
 1. Export one `PluginRegistration` with a unique ID and priority.
 1. Link the registration from the `peryx` composition root.
 1. Put process and external-service tests in the owner's system package.
-1. Declare documentation staging in `docs/ecosystem.toml`.
+1. Add end-user documentation under `site/content/ecosystems/NAME/`.
 
 Run the workspace checks:
 
@@ -83,8 +83,8 @@ just coverage-native
 - Installation uses a bounded context and cannot mutate unrelated process state.
 - Resolved configuration controls activation.
 - Inactive owners allocate no runtime or persistence resources.
-- Owner routes, fixtures, tests, client assertions, benchmarks, and docs stay in the owner tree.
+- Owner routes, fixtures, tests, client assertions, and benchmarks stay in the owner tree.
 - Shared prose contains no owner protocol or schema terms.
 
-Owner documentation lives under `crates/peryx-ecosystem-*/docs/`. Shared pages describe contracts and link to staged
-owner pages for protocol details.
+Owner documentation lives under `site/content/ecosystems/`. Shared pages describe contracts and link to owner pages for
+protocol details.

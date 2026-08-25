@@ -205,7 +205,25 @@ async fn router_contract_serves_favicon() {
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(headers[header::CONTENT_TYPE], "image/svg+xml");
-    assert!(body.contains("aria-label=\"peryx\""), "{body}");
+    assert_eq!(body, include_str!("../../../../site/static/icon.svg"));
+}
+
+#[tokio::test]
+async fn router_contract_serves_brand_mark() {
+    let (_directory, app) = state(Vec::new());
+    let (status, headers, body) = render(Arc::new(app), "/mark.svg", &[]).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers[header::CONTENT_TYPE], "image/svg+xml");
+    assert_eq!(body, include_str!("../../../../site/static/mark.svg"));
+}
+
+#[tokio::test]
+async fn router_contract_rejects_unknown_paths() {
+    let (_directory, app) = state(Vec::new());
+    let (status, _, _) = render(Arc::new(app), "/missing", &[]).await;
+
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

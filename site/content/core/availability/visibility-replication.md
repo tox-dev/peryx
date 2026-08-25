@@ -30,10 +30,7 @@ the operation's own serial, wrapped in the replication envelope tagged as a visi
 visibility envelope to its visibility projection and applies every other kind as before, so the transition inherits the
 feed's ordering, back-pressure, and recovery rather than reinventing them.
 
-{% mermaid() %} flowchart LR auth["home authority"] -->|mint epoch and serial| feed["change feed"] feed -->|visibility
-envelope| proj["replica projection"] proj -->|apply then persist| snap["visibility snapshot"] proj -->|only then
-advertise| front["operation frontier"] front -->|gates| view["served protocol view"] class auth,feed accent class
-proj,snap good class front,view warn {% end %}
+{{<diagram file="2f2a5788b956ea73" />}}
 
 ## Why ordering is safe
 

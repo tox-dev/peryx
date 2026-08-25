@@ -1,5 +1,6 @@
 use leptos::prelude::*;
 
+use super::reactive_value;
 use crate::model::TrashFilters;
 use crate::model::{UiTrashPage, UiTrashRecord};
 
@@ -23,7 +24,7 @@ pub fn Trash() -> impl IntoView {
             <form class="policy-filters">
                 <TrashFilterFields set_user set_password set_filters loading />
             </form>
-            <div class="policy-results">{move || trash_results(loading.get(), result.get())}</div>
+            <div class="policy-results">{move || trash_results(reactive_value(&loading), reactive_value(&result))}</div>
             <div class="pagination">
                 <button type="button" disabled=move || true>"Previous"</button>
                 <button type="button" disabled=move || true>"Next"</button>
@@ -125,7 +126,7 @@ fn TrashFilterFields(
             <option value="50">"50"</option>
             <option value="100">"100"</option>
         </select>
-        <button type="submit" disabled=move || loading.get()>"Search"</button>
+        <button type="submit" disabled=move || reactive_value(&loading)>"Search"</button>
     }
 }
 
@@ -185,7 +186,7 @@ fn TrashFilterFields(
             <option value="50">"50"</option>
             <option value="100">"100"</option>
         </select>
-        <button type="submit" disabled=move || loading.get()>"Search"</button>
+        <button type="submit" disabled=move || reactive_value(&loading)>"Search"</button>
     }
 }
 
@@ -236,12 +237,12 @@ fn submit_query(state: TrashState) {
 
 #[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
 fn trash_results_view(state: TrashState) -> impl Fn() -> AnyView {
-    move || trash_results(state.loading.get(), state.result.get())
+    move || trash_results(reactive_value(&state.loading), reactive_value(&state.result))
 }
 
 #[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
 fn previous_disabled(state: TrashState) -> bool {
-    state.previous.get().is_empty() || state.loading.get()
+    reactive_value(&state.previous).is_empty() || reactive_value(&state.loading)
 }
 
 #[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
@@ -272,7 +273,7 @@ fn previous_page_action<Event>(state: TrashState) -> impl FnMut(Event) {
 
 #[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]
 fn next_disabled(state: TrashState) -> bool {
-    state.loading.get() || next_cursor(state.result.get()).is_none()
+    reactive_value(&state.loading) || next_cursor(reactive_value(&state.result)).is_none()
 }
 
 #[cfg(all(target_arch = "wasm32", not(feature = "ssr"), feature = "hydrate"))]

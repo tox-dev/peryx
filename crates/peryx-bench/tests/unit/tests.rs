@@ -365,7 +365,7 @@ fn system_runner_uses_the_repository_paths() {
         (runner.core.root, runner.core.machine.path, runner.core.machine.scratch,),
         (
             report::repo_root(),
-            report::repo_root().join("site/data/bench/machine.toml"),
+            report::repo_root().join("site/data/benchmark-machine.toml"),
             report::repo_root().join(".tox/bench/scratch"),
         )
     );

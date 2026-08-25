@@ -55,9 +55,7 @@ A transfer moves through one lifecycle to a single outcome. It waits at `Awaitin
 barrier, stands `Ready`, and commits once. An administrator can cancel it while it waits, and a cancel is refused once
 it has committed, so a cancel that races the commit resolves to exactly one of the two.
 
-{% mermaid() %} stateDiagram-v2 \[*\] --> AwaitingCatchUp AwaitingCatchUp --> Ready: target reaches the barrier Ready
---> Committed: commit mints the epoch and records the audit AwaitingCatchUp --> Cancelled: operator cancels Ready -->
-Cancelled: operator cancels Committed --> \[*\] Cancelled --> [\*] {% end %}
+{{<diagram file="64d7f6a34fd52e06" />}}
 
 Cancel a waiting transfer with a `DELETE` keyed by the authority:
 

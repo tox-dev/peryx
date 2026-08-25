@@ -7,20 +7,6 @@ license.workspace = true
 repository.workspace = true
 description = "The OCI/Docker registry driver for peryx: the distribution-spec /v2/ API over the content-addressed blob store."
 
-[package.metadata.peryx-ci.codspeed]
-label = "OCI"
-change-key = "oci"
-order = 0
-cargo-jobs = 4
-benches = ["manifest_by_digest", "tags_list", "version_check"]
-
-[package.metadata.peryx-ci.conformance]
-repository = "https://github.com/opencontainers/distribution-spec"
-revision = "fcfba1ec55526073f48b2f6d4e3d7eef410ddcbc"
-directory = "conformance"
-command = ["go", "test", "-c", "-o", "{output}"]
-runner = "tests/conformance/run.sh"
-
 [features]
 default = []
 bench = [

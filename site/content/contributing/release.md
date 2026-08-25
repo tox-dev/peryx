@@ -26,7 +26,7 @@ Do not rerun crate contracts as a separate release step.
 Use Compose when the host cannot run the Linux coverage or system dependencies:
 
 ```shell
-just linux-system all
+just all
 ```
 
 Build the Python artifacts from the checkout when changing Python packaging:

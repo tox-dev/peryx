@@ -1,9 +1,7 @@
+{% component falcon(group = "", mono = false, label = "") %}
 <svg class="brand-falcon" viewBox="0 0 100 100"{% if label %} role="img" aria-label="{{ label }}"{% else %} aria-hidden="true" focusable="false"{% endif %}>
   <g{% if group %} class="{{ group }}"{% endif %}>
     <use href="#peryx-falcon-path" fill="{% if mono %}currentColor{% else %}url(#peryx-grad){% endif %}"/>
   </g>
 </svg>
-{% component falcon(group = "", mono = false, label = "") %}
-
-
 {% endcomponent falcon %}

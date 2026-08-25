@@ -1,3 +1,4 @@
+{% component ecosystemChips() %}
 {%- set owners = load_data(path="data/ecosystem-owners.toml") -%}
 {%- set roadmap = load_data(path="data/ecosystem-roadmap.toml") -%}
 <div class="brand-chiprow">
@@ -14,7 +15,4 @@
   {%- endfor %}
   {%- endfor %}
 </div>
-{% component ecosystem_chips() %}
-
-
-{% endcomponent ecosystem_chips %}
+{% endcomponent ecosystemChips %}

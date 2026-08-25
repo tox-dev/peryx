@@ -28,7 +28,8 @@ the listener closed.
 
 The ecosystem documentation lists valid IDs, configuration, client commands, and failure responses:
 
-{{ ecosystem_owner_links() }}
+- [OCI](/ecosystems/oci/): Docker
+- [PyPI](/ecosystems/pypi/): Python
 
 Use [configuration](@/core/operations/configuration.md) to select indexes and
 [troubleshooting](@/core/operations/troubleshooting.md) when startup rejects a selection.

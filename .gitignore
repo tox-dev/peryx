@@ -1,4 +1,6 @@
 /target
+/crates/*/fuzz/Cargo.lock
+/crates/*/fuzz/target/
 /.tox/
 node_modules/
 playwright-report/
@@ -10,11 +12,5 @@ test-results/
 crates/peryx-web/dist/
 /lcov.info
 *.profraw
-site/public/
-/ui/
 /peryx-data/
 __pycache__/
-/site/static/pagefind/
-/magic/
-/results/
-build.log

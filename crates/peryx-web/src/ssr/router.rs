@@ -61,23 +61,20 @@ pub fn ui_router(app: Arc<AppState>) -> Router {
         )
         .nest_service("/pkg", tower_http::services::ServeDir::new(format!("{site_root}/pkg")))
         .route("/favicon.svg", axum::routing::get(favicon))
+        .route("/mark.svg", axum::routing::get(mark))
         .with_state(state)
 }
 
-const FAVICON: &str = concat!(
-    r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="peryx">"#,
-    r#"<defs><linearGradient id="r" x1="0" y1="0" x2="1" y2="1">"#,
-    r##"<stop offset="0" stop-color="#F74C00"/><stop offset="1" stop-color="#FFB600"/></linearGradient></defs>"##,
-    r##"<rect width="512" height="512" rx="116" fill="#1E2226"/>"##,
-    r#"<g transform="translate(96,132)">"#,
-    r##"<rect x="0" y="176" width="300" height="116" rx="28" fill="#4B5058"/>"##,
-    r##"<rect x="46" y="104" width="300" height="116" rx="28" fill="#6A7079"/>"##,
-    r##"<rect x="92" y="32" width="300" height="116" rx="28" fill="url(#r)"/>"##,
-    r##"<circle cx="300" cy="90" r="30" fill="#22C55E"/></g></svg>"##,
-);
-
 async fn favicon() -> impl axum::response::IntoResponse {
-    ([(axum::http::header::CONTENT_TYPE, "image/svg+xml")], FAVICON)
+    svg(include_str!("../../../../site/static/icon.svg"))
+}
+
+async fn mark() -> impl axum::response::IntoResponse {
+    svg(include_str!("../../../../site/static/mark.svg"))
+}
+
+fn svg(body: &'static str) -> impl axum::response::IntoResponse {
+    ([(axum::http::header::CONTENT_TYPE, "image/svg+xml")], body)
 }
 
 fn leptos_options() -> LeptosOptions {

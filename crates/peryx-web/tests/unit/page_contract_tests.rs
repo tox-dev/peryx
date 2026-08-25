@@ -1,20 +1,18 @@
 use std::sync::Arc;
 
+use axum::body::{Body, to_bytes};
+use axum::http::Request;
 use futures_util::StreamExt as _;
 use leptos::prelude::*;
 use leptos_router::location::RequestUrl;
+use tower::ServiceExt as _;
 
-use crate::{App, shell};
+use crate::App;
+use crate::ssr::ui_router;
 use peryx_driver::AppState;
 use peryx_search::{ContentSource, IndexerCtx, SearchDocument, SearchDocumentProvider, SearchError};
 use peryx_storage::blob::BlobStorage;
 use peryx_storage::meta::MetaStore;
-
-#[derive(Clone, Copy)]
-enum Document {
-    App,
-    Shell,
-}
 
 struct Documents;
 
@@ -50,19 +48,18 @@ async fn public_pages_render_their_contracts() {
         ("/stats", r#"class="breadcrumb""#),
         ("/stats?index=root%2Fcache&resource=artifact", "<span>artifact</span>"),
         ("/login", "<h1>Sign in</h1>"),
-        ("/missing", r#"<p class="dim">not found</p>"#),
     ] {
-        let html = render(path, Document::App).await;
+        let html = render(path).await;
         assert!(html.contains(landmark), "{path}: {html}");
     }
 
-    let html = render("/", Document::App).await;
+    let html = render("/").await;
     for fragment in [
         r"<main>",
         r#"placeholder="Search indexes""#,
         r#"method="get" action="/search""#,
         r#"name="page_size" value="25""#,
-        r#"role="img" aria-label="peryx logo""#,
+        r#"src="/mark.svg" width="24" height="24" alt="peryx logo""#,
         r#"type="button" aria-label="Switch color theme""#,
         r#"href="/admin/topology""#,
         r#"href="https://peryx.readthedocs.io/""#,
@@ -72,7 +69,7 @@ async fn public_pages_render_their_contracts() {
     }
     assert!(!html.contains("All results"), "{html}");
 
-    let html = render("/search?q=artifact&page_size=25", Document::App).await;
+    let html = render("/search?q=artifact&page_size=25").await;
     for fragment in [
         r#"value="artifact""#,
         r#"href="/search?q=artifact&amp;page_size=25""#,
@@ -81,7 +78,7 @@ async fn public_pages_render_their_contracts() {
         assert!(html.contains(fragment), "{fragment}: {html}");
     }
 
-    let html = render("/", Document::Shell).await;
+    let html = render("/").await;
     for fragment in [
         "<!DOCTYPE html>",
         r#"<meta charset="utf-8">"#,
@@ -101,19 +98,39 @@ async fn header_search_renders_indexed_suggestions() {
     assert!(html.contains(r#"class="badge source-cached">Cached</span>"#), "{html}");
 }
 
-async fn render(path: &str, document: Document) -> String {
-    render_document(path, document, false).await
+#[tokio::test]
+async fn client_router_renders_unknown_paths() {
+    let _ = any_spawner::Executor::init_tokio();
+    let owner = Owner::new();
+    owner.set();
+    let (_directory, app) = state(false);
+    provide_context(app);
+    provide_context(RequestUrl::new("/missing"));
+
+    let html = App().to_html_stream_in_order().collect::<String>().await;
+
+    assert!(html.contains(r#"<p class="dim">not found</p>"#), "{html}");
+}
+
+async fn render(path: &str) -> String {
+    render_document(path, false).await
 }
 
 async fn render_with_documents(path: &str) -> String {
-    render_document(path, Document::App, true).await
+    render_document(path, true).await
 }
 
-async fn render_document(path: &str, document: Document, documents: bool) -> String {
-    let _ = any_spawner::Executor::init_tokio();
+async fn render_document(path: &str, documents: bool) -> String {
+    let (_directory, app) = state(documents);
+    let response = ui_router(app)
+        .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    String::from_utf8(to_bytes(response.into_body(), usize::MAX).await.unwrap().to_vec()).unwrap()
+}
+
+fn state(documents: bool) -> (tempfile::TempDir, Arc<AppState>) {
     let directory = tempfile::tempdir().unwrap();
-    let owner = Owner::new();
-    owner.set();
     let mut app = AppState::new(
         MetaStore::open(directory.path().join("peryx.redb")).unwrap(),
         BlobStorage::filesystem(directory.path().join("blobs")),
@@ -126,20 +143,5 @@ async fn render_document(path: &str, document: Document, documents: bool) -> Str
             .search
             .add_indexer(Arc::new(Documents));
     }
-    provide_context(Arc::new(app));
-    provide_context(RequestUrl::new(path));
-    match document {
-        Document::App => App().into_any(),
-        Document::Shell => shell(
-            LeptosOptions::builder()
-                .output_name("peryx_web")
-                .site_root("ui")
-                .site_pkg_dir("pkg")
-                .build(),
-        )
-        .into_any(),
-    }
-    .to_html_stream_in_order()
-    .collect::<String>()
-    .await
+    (directory, Arc::new(app))
 }

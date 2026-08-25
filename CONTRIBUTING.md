@@ -54,9 +54,8 @@ matrices; every check runs through a local `just` recipe. Pull requests run the 
 of repeating it in crate and system lanes. Nightly CI runs feature powersets, Miri, Loom, sanitizers, mutation, fuzzing,
 and the live client boundary without retries or accepted failures.
 
-`compose.yaml` bind-mounts the checkout. `just linux COMMAND` runs a recipe in the 8 GiB Linux test service, while
-`just linux-system COMMAND` adds Docker-backed services. Use a 16 GiB wrapper only after the 8 GiB run reports memory
-pressure.
+Docker-backed tests use the local Docker daemon through Testcontainers. This is the same boundary used by GitHub
+Actions; there is no separate CI container or CI-only command path.
 
 Cargo-dist generates `.github/workflows/release.yml`. Change `dist-workspace.toml` and run `just release-plan` instead
 of editing that workflow.

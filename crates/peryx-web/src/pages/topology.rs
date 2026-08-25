@@ -1,5 +1,6 @@
 use leptos::prelude::*;
 
+use super::reactive_value;
 use crate::data::load_topology;
 use crate::model::{
     HealthLabel, LocalNode, RoleFilter, StreamStatus, TopologyNode, TopologySnapshot, format_instant, liveness_health,
@@ -65,12 +66,12 @@ fn topology_view(
     status: RwSignal<StreamStatus>,
     streaming: RwSignal<bool>,
 ) -> impl IntoView {
-    let summary = move || TopologySummary::derive(&live.get());
+    let summary = move || TopologySummary::derive(&reactive_value(&live));
     view! {
         <div class="ops-title">
             <h1>"Availability topology"</h1>
             <span class="badge">"read-only"</span>
-            {move || streaming.get().then(|| view! { <StreamBadge status /> })}
+            {move || reactive_value(&streaming).then(|| view! { <StreamBadge status /> })}
             <a href="/+availability/topology"><code>"/+availability/topology"</code></a>
         </div>
         <p class="dim">
@@ -87,7 +88,7 @@ fn topology_view(
             </div>
             <div class="stat"><strong>{move || summary().node_count}</strong><span>"roster nodes"</span></div>
             <div class="stat">
-                <strong>{move || format_instant(live.get().captured_at)}</strong>
+                <strong>{move || format_instant(reactive_value(&live).captured_at)}</strong>
                 <span>"snapshot taken (UTC)"</span>
             </div>
         </div>
@@ -105,7 +106,7 @@ fn topology_view(
         }}
         <h2>"This node"</h2>
         {move || {
-            let snapshot = live.get();
+            let snapshot = reactive_value(&live);
             let captured = format_instant(snapshot.captured_at);
             view! { <LocalNodePanel local=snapshot.local captured /> }
         }}
@@ -120,11 +121,11 @@ fn topology_roster(
     set_filter: WriteSignal<RoleFilter>,
 ) -> impl IntoView {
     // Preserve the selected filter while streamed snapshots replace a non-empty roster.
-    let has_roster = Memo::new(move |_| live.get().node_count > 0);
+    let has_roster = Memo::new(move |_| reactive_value(&live).node_count > 0);
     let rows = move || {
-        let snapshot = live.get();
+        let snapshot = reactive_value(&live);
         let show_address = snapshot.nodes.iter().any(|node| node.address.is_some());
-        let current = filter.get();
+        let current = reactive_value(&filter);
         snapshot
             .nodes
             .iter()
@@ -133,8 +134,8 @@ fn topology_roster(
             .collect_view()
     };
     let visible = move || {
-        let current = filter.get();
-        live.get()
+        let current = reactive_value(&filter);
+        reactive_value(&live)
             .nodes
             .iter()
             .filter(|node| current.matches(node.role))
@@ -142,11 +143,11 @@ fn topology_roster(
     };
     view! {
         {move || {
-            if has_roster.get() {
+            if reactive_value(&has_roster) {
                 view! {
                     <TopologyRoleFilter set_filter />
                     <p class="result-count" role="status" aria-live="polite">
-                        {move || format!("Showing {} of {} roster nodes.", visible(), live.get().node_count)}
+                        {move || format!("Showing {} of {} roster nodes.", visible(), reactive_value(&live).node_count)}
                     </p>
                     <div class="table-scroll">
                         <table class="files ops-table topology-table">
@@ -159,7 +160,7 @@ fn topology_roster(
                                     <th scope="col">"Health"</th>
                                     <th scope="col" class="num">"Frontier"</th>
                                     {move || {
-                                        live.get()
+                                        reactive_value(&live)
                                             .nodes
                                             .iter()
                                             .any(|node| node.address.is_some())
@@ -291,7 +292,7 @@ fn HealthBadge(health: HealthLabel) -> impl IntoView {
 fn StreamBadge(status: RwSignal<StreamStatus>) -> impl IntoView {
     view! {
         {move || {
-            let label = stream_status_label(status.get());
+            let label = stream_status_label(reactive_value(&status));
             view! {
                 <span class=format!("badge {}", label.class) role="status" aria-live="polite">
                     "feed: "{label.text}

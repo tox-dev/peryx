@@ -116,15 +116,17 @@ jobs:
             github:leptos-rs/cargo-leptos
       - run: just frontend-deps
       - run: just frontend-browser-deps --with-deps
-      - name: Install matching LLVM
+      - name: Install LLVM 22
         run: |
-          llvm_major="$(rustc -vV | awk '/^LLVM version:/ { split($3, version, "."); print version[1] }')"
-          curl --fail --location --output llvm.sh https://apt.llvm.org/llvm.sh
-          chmod +x llvm.sh
+          curl --fail --location --output "$RUNNER_TEMP/llvm.asc" https://apt.llvm.org/llvm-snapshot.gpg.key
+          fingerprint=$(gpg --show-keys --with-colons "$RUNNER_TEMP/llvm.asc" | awk -F: '$1 == "fpr" { print $10; exit }')
+          test "$fingerprint" = 6084F3CF814B57C1CF12EFD515CF4D18AF4F7421
+          sudo install -m 644 "$RUNNER_TEMP/llvm.asc" /etc/apt/keyrings/llvm.asc
+          repository='https://apt.llvm.org/noble/ llvm-toolchain-noble-22 main'
+          echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] $repository" | sudo tee /etc/apt/sources.list.d/llvm.list
           sudo apt-get update
-          sudo apt-get install --yes lcov
-          sudo ./llvm.sh "$llvm_major"
-          echo "CLANG=clang-$llvm_major" >> "$GITHUB_ENV"
+          sudo apt-get install --yes clang-22 lcov
+          echo "CLANG=clang-22" >> "$GITHUB_ENV"
       - run: just coverage-frontend
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()

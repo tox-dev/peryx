@@ -1,13 +1,9 @@
 {
-  "name": "peryx-docs-diagrams",
+  "name": "peryx-docs",
   "version": "0.0.0",
   "private": true,
-  "description": "Build-time mermaid diagram pre-rendering for the peryx documentation site.",
-  "scripts": {
-    "render": "scripts/render-diagrams.sh"
-  },
-  "dependencies": {
-    "@mermaid-js/mermaid-cli": "11.16.0",
-    "puppeteer": "25.5.0"
+  "description": "Documentation search dependencies.",
+  "devDependencies": {
+    "pagefind": "1.5.2"
   }
 }

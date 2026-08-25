@@ -7,14 +7,6 @@ license.workspace = true
 repository.workspace = true
 description = "The PyPI ecosystem driver for peryx: names, versions, the simple repository API, and its serving layer."
 
-[package.metadata.peryx-ci.codspeed]
-label = "PyPI"
-change-key = "pypi"
-order = 1
-cargo-jobs = 4
-runner-fallback = true
-benches = []
-
 [features]
 # `serving` keeps format parsing usable without HTTP and storage dependencies.
 default = ["serving"]
