@@ -168,11 +168,11 @@ mutation shard="0/1" in_place="false" jobs="2" baseline="run" timeout="500": tes
       {{ if in_place == "true" { "--in-place" } else { "--jobs " + jobs } }} \
       --jobserver-tasks "{{ jobs }}" --baseline "{{ baseline }}" \
       --timeout "{{ timeout }}" --build-timeout "{{ timeout }}" \
-      -- -E 'not(test(e2e_live))'
+      -- --profile ci -E 'not(test(e2e_live))'
 
 mutation-baseline: test-deps
     INSTA_UPDATE=no INSTA_FORCE_PASS=0 PATH="{{ tools_root }}/bin:$PATH" cargo nextest run --verbose \
-      --workspace --all-features -E 'not(test(e2e_live))'
+      --workspace --all-features --profile ci -E 'not(test(e2e_live))'
 
 mutation-count: _project-temp
     cargo mutants --list --workspace --all-features | wc -l
