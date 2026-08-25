@@ -140,36 +140,32 @@ fn valid_route_segment(segment: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~'))
 }
 
-fn hex_byte(hex: &[u8]) -> Option<u8> {
-    Some(hex_nibble(hex[0])? << 4 | hex_nibble(hex[1])?)
-}
-
 /// Borrow unescaped input to avoid an allocation on the common path.
 fn decode_percent(input: &str) -> Result<Cow<'_, str>, PathSafetyError> {
     if !input.contains('%') {
         return Ok(Cow::Borrowed(input));
     }
+    let invalid_encoding = || PathSafetyError::InvalidEncoding(input.to_owned());
     let mut out = Vec::with_capacity(input.len());
-    let bytes = input.as_bytes();
-    let mut position = 0;
-    while position < bytes.len() {
-        if bytes[position] == b'%' {
-            let Some(hex) = bytes.get(position + 1..position + 3) else {
-                return Err(PathSafetyError::InvalidEncoding(input.to_owned()));
-            };
-            let Some(byte) = hex_byte(hex) else {
-                return Err(PathSafetyError::InvalidEncoding(input.to_owned()));
-            };
+    let mut bytes = input.bytes();
+    while let Some(byte) = bytes.next() {
+        if byte != b'%' {
             out.push(byte);
-            position += 3;
-        } else {
-            out.push(bytes[position]);
-            position += 1;
+            continue;
         }
+        let (Some(high), Some(low)) = (bytes.next(), bytes.next()) else {
+            return Err(invalid_encoding());
+        };
+        let Some(byte) = hex_byte(high, low) else {
+            return Err(invalid_encoding());
+        };
+        out.push(byte);
     }
-    String::from_utf8(out)
-        .map(Cow::Owned)
-        .map_err(|_| PathSafetyError::InvalidEncoding(input.to_owned()))
+    String::from_utf8(out).map(Cow::Owned).map_err(|_| invalid_encoding())
+}
+
+fn hex_byte(high: u8, low: u8) -> Option<u8> {
+    Some(hex_nibble(high)? << 4 | hex_nibble(low)?)
 }
 
 const fn hex_nibble(byte: u8) -> Option<u8> {
