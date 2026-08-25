@@ -32,6 +32,19 @@ fn process_harness_uses_the_configured_temporary_root() {
 }
 
 #[test]
+fn process_harness_uses_the_default_temporary_root() {
+    let fixture = Fixture::new();
+    let _lock = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+
+    temp_env::with_var("PERYX_TEST_TMPDIR", None::<&Path>, || {
+        let node = ProcessHarness::new(fixture.peryx())
+            .spawn_with_config("default-root", "")
+            .expect("start fixture node");
+        assert_eq!(node.identity(), "default-root");
+    });
+}
+
+#[test]
 fn process_harness_resolves_the_configured_binary() {
     let fixture = Fixture::new();
     let _lock = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);

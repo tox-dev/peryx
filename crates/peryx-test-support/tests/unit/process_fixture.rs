@@ -206,7 +206,6 @@ fn fixture_servers_follow_protocol_events() {
         ));
         assert!(std::panic::catch_unwind(|| fixture_listener_from_descriptor(Some("invalid".into()), port)).is_err());
     }
-    shutdown_server(std::net::SocketAddr::from(([127, 0, 0, 1], 0)));
 }
 
 #[test]

@@ -27,6 +27,14 @@ CodSpeed runs both ecosystem benchmark packages in parallel on its stable bare-m
 `just codspeed-build` and uses CodSpeed's official action in walltime mode. `just codspeed` provides the equivalent
 local command and accepts the measurement mode as its second argument.
 
+## Test synchronization
+
+Tests wait for observable state changes rather than sleeping for a machine-dependent interval. Child-process cases use
+`ProcessHarness::spawn_until_event`, `Node::await_event`, or the topology event stream. In-process async cases use
+channels or [`tokio::sync::Notify`][tokio-notify]. Code whose behavior depends on elapsed time runs with
+[Tokio's paused clock][tokio-testing]. Explicit durations belong only to behavior that tests a deadline or to a deadlock
+guard; the CI profile provides the final [per-test termination guard][nextest-timeouts].
+
 ## Nightly analysis
 
 The nightly workflow runs work that is too expensive or specialized for every pull request:
@@ -92,5 +100,8 @@ local state.
 
 [nextest-archives]: https://nexte.st/docs/ci-features/archiving/
 [nextest-sanitizer-target]: https://github.com/nextest-rs/nextest/blob/cargo-nextest-0.9.143/nextest-runner/src/cargo_config/target_triple.rs#L32-L44
+[nextest-timeouts]: https://nexte.st/docs/features/slow-tests/#terminating-tests-after-a-timeout
 [rust-sanitizers]: https://doc.rust-lang.org/beta/unstable-book/compiler-flags/sanitizer.html
+[tokio-notify]: https://docs.rs/tokio/latest/tokio/sync/struct.Notify.html
+[tokio-testing]: https://tokio.rs/tokio/topics/testing#pausing-and-resuming-time-in-tests
 [tsan-io]: https://github.com/google/sanitizers/wiki/ThreadSanitizerFlags#runtime-flags

@@ -23,6 +23,7 @@ pub use driver::EcosystemDriverFixture;
 pub use toxiproxy::{Proxy, Toxiproxy};
 
 const READY_TIMEOUT: Duration = Duration::from_secs(20);
+const EVENT_TIMEOUT: Duration = Duration::from_secs(90);
 const TEST_TMPDIR_ENV: &str = "PERYX_TEST_TMPDIR";
 #[cfg(unix)]
 const PUBLIC_LISTENER_FD_ENV: &str = "PERYX_INHERITED_PUBLIC_LISTENER_FD";
@@ -118,6 +119,21 @@ impl ProcessHarness {
             config_toml.to_owned(),
             self,
         )
+    }
+
+    /// Start a process and return after its log emits `event`, without requiring readiness.
+    ///
+    /// # Errors
+    /// Returns the process startup or event failure.
+    pub fn spawn_until_event(&self, identity: &str, config_toml: &str, event: &str) -> Result<Node, HarnessError> {
+        let node = Node::launch_raw(
+            identity,
+            ListenerReservation::ephemeral()?,
+            config_toml.to_owned(),
+            self,
+        )?;
+        node.await_event(event)?;
+        Ok(node)
     }
 }
 
@@ -593,6 +609,17 @@ impl Cluster {
     /// Wait for `observe` to accept state after a topology stream event.
     ///
     /// # Errors
+    /// Returns a signal error when no live node can provide an event before the deadlock guard.
+    pub fn await_topology_event<T>(
+        &self,
+        observe: impl FnMut(&Self) -> (Option<T>, String),
+    ) -> Result<T, HarnessError> {
+        self.await_topology_signal(EVENT_TIMEOUT, observe)
+    }
+
+    /// Wait for `observe` to accept state after a topology stream event.
+    ///
+    /// # Errors
     /// Returns a signal error when no live node can provide an event before `within`.
     pub fn await_topology_signal<T>(
         &self,
@@ -787,6 +814,17 @@ impl Node {
         config_toml: String,
         harness: &ProcessHarness,
     ) -> Result<Self, HarnessError> {
+        let mut node = Self::launch_raw(identity, public_listener, config_toml, harness)?;
+        node.await_ready()?;
+        Ok(node)
+    }
+
+    fn launch_raw(
+        identity: &str,
+        public_listener: ListenerReservation,
+        config_toml: String,
+        harness: &ProcessHarness,
+    ) -> Result<Self, HarnessError> {
         let port = public_listener.port;
         let data = node_temp_dir()?;
         let config = data.path().join("peryx.toml");
@@ -800,7 +838,7 @@ impl Node {
             &harness.binary,
             NodeListeners::public(public_listener),
         )?;
-        let mut node = Self {
+        Ok(Self {
             identity: identity.to_owned(),
             child,
             port,
@@ -814,9 +852,7 @@ impl Node {
             process_events,
             ready: false,
             _process_permit: process_permit,
-        };
-        node.await_ready()?;
-        Ok(node)
+        })
     }
 
     #[must_use]
@@ -901,6 +937,17 @@ impl Node {
     pub fn request(&self, method: reqwest::Method, path: &str) -> reqwest::blocking::RequestBuilder {
         self.http
             .request(method, format!("http://127.0.0.1:{}{path}", self.port))
+    }
+
+    /// Wait for `observe` to accept state after a topology stream event.
+    ///
+    /// # Errors
+    /// Returns a signal error when the stream closes or misses the deadlock guard.
+    pub fn await_topology_event<T>(
+        &self,
+        observe: impl FnMut(&Self) -> (Option<T>, String),
+    ) -> Result<T, HarnessError> {
+        self.await_topology_signal(EVENT_TIMEOUT, observe)
     }
 
     /// Wait for `observe` to accept state after a topology stream event.
@@ -1031,7 +1078,18 @@ impl Node {
     ///
     /// # Errors
     /// Returns a signal error when the child exits or misses the deadline.
+    pub fn await_event(&self, expected: &str) -> Result<(), HarnessError> {
+        self.await_log_signal(EVENT_TIMEOUT, expected)
+    }
+
+    /// Wait for a child log event containing `expected`, including an event already persisted.
+    ///
+    /// # Errors
+    /// Returns a signal error when the child exits or misses `within`.
     pub fn await_log_signal(&self, within: Duration, expected: &str) -> Result<(), HarnessError> {
+        if self.log().contains(expected) {
+            return Ok(());
+        }
         let last = || format!("expected log event {expected:?}\n{}", self.log_tail());
         match wait_for_line(&self.process_events, within, |line| line.contains(expected)) {
             ProcessSignal::Matched => Ok(()),

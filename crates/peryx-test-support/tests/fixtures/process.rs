@@ -95,6 +95,8 @@ fn run_peryx(executable: &Path, args: &[String], public_listener: Option<TcpList
     std::io::stdout().flush().expect("flush startup signal");
     if serve_mode == "signal-only" {
         fs::write(sibling(executable, "state"), "status-broken").expect("reject readiness request");
+        println!(r#"{{"message":"fixture signal-only"}}"#);
+        std::io::stdout().flush().expect("flush signal-only event");
     }
     serve_peryx(&public, &sibling(executable, "state"), false);
     if let Some((address, server)) = control_server {
@@ -107,9 +109,7 @@ fn run_peryx(executable: &Path, args: &[String], public_listener: Option<TcpList
 }
 
 fn shutdown_server(address: std::net::SocketAddr) {
-    let Ok(mut stream) = TcpStream::connect(address) else {
-        return;
-    };
+    let mut stream = TcpStream::connect(address).expect("connect to control server");
     stream
         .write_all(b"GET /__fixture/shutdown HTTP/1.1\r\nHost: fixture\r\nConnection: close\r\n\r\n")
         .expect("request control shutdown");

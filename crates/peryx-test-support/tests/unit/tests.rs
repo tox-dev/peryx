@@ -350,9 +350,9 @@ fn topology_signal_reports_observable_outcomes() {
         ));
         fs::write(fixture.state(), "leader:dc-a").expect("restore ready response");
         let node = &cluster.nodes()[0];
-        node.await_log_signal(Duration::ZERO, "fixture event")
+        node.await_event("fixture event")
             .expect("receive a queued process event");
-        node.await_log_signal(Duration::ZERO, "fixture event")
+        node.await_event("fixture event")
             .expect("observe a persisted process event");
         assert!(matches!(
             node.await_log_signal(FAILURE_TIMEOUT, "missing fixture event"),
@@ -365,7 +365,7 @@ fn topology_signal_reports_observable_outcomes() {
         );
         let observations = Cell::new(0);
         assert_eq!(
-            node.await_topology_signal(Duration::from_secs(1), |_| {
+            node.await_topology_event(|_| {
                 observations.set(observations.get() + 1);
                 (
                     (observations.get() == 2).then_some("event"),
@@ -530,12 +530,21 @@ fn process_released_port_reports_readiness_and_timeout() {
 fn process_reports_failure_after_startup_signal() {
     with_fixture(|fixture| {
         fs::write(fixture.serve_mode(), "signal-only").expect("set startup mode");
-        let error = fixture
+        let node = fixture
             .harness()
-            .with_ready_timeout(FAILURE_TIMEOUT)
-            .spawn_with_config("signal-only", "")
-            .expect_err("startup must fail");
-        assert!(error.to_string().contains("did not become ready"), "{error}");
+            .spawn_until_event("signal-only", "", "fixture signal-only")
+            .expect("observe signal-only startup");
+        assert!(!node.is_ready());
+    });
+}
+
+#[test]
+fn process_event_startup_reports_executable_failure() {
+    with_fixture(|fixture| {
+        assert!(matches!(
+            ProcessHarness::new(fixture.missing()).spawn_until_event("missing", "", "unreachable"),
+            Err(HarnessError::Io(_))
+        ));
     });
 }
 

@@ -128,7 +128,7 @@ fn exec_credential_helper(dir: &tempfile::TempDir) -> (ExecCredentialConfig, Pat
                 executions.display().to_string(),
             ],
             Duration::from_mins(1),
-            Vec::new(),
+            vec!["LLVM_PROFILE_FILE".to_owned()],
             CredentialFailure::Fail,
         )
         .unwrap(),

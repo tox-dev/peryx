@@ -1,6 +1,6 @@
 use std::path::Path;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use peryx_events::metrics::{Metrics, Observation};
 use peryx_storage::meta::MetaStore;
@@ -8,7 +8,6 @@ use serde_json::Value;
 
 use super::harness::{ADMIN_PASSWORD, ADMIN_USER, MemberSpec, Node, ProcessHarness, Role, Topology, cargo_binary};
 
-const CONVERGE_TIMEOUT: Duration = Duration::from_secs(30);
 const TOKEN: &str = "analytics-replication-token";
 const PRODUCER: &str = "producer";
 const REPLICA: &str = "replica";
@@ -61,7 +60,7 @@ fn test_analytics_batches_replicate_and_survive_a_replica_restart() {
         accepted_day: Some(sealed_day),
     };
     cluster.nodes()[replica]
-        .await_log_signal(CONVERGE_TIMEOUT, "analytics batches applied")
+        .await_event("analytics batches applied")
         .expect("the replica persists an analytics batch");
     assert_eq!(completeness(&cluster.nodes()[replica]), Some(expected));
 
