@@ -46,7 +46,9 @@ jobs:
 
   contracts:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 15
+    outputs:
+      packages: ${{ steps.packages.outputs.value }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -55,10 +57,35 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           tools: >-
-            just uv cargo:cargo-dist cargo:cargo-insta cargo:cargo-nextest
-            cargo:cargo-semver-checks
-      - run: just lint-contracts "$BASE_REV"
+            just jq uv cargo:cargo-dist cargo:cargo-insta cargo:cargo-nextest
+      - run: just snapshots
+      - id: packages
+        run: >-
+          echo "value=$(cargo metadata --no-deps --format-version 1 |
+          jq -c '[.packages[] | select(.publish != []) | .name]')" >> "$GITHUB_OUTPUT"
+      - run: just release-plan
+
+  semver:
+    name: semver (${{ matrix.package }})
+    needs: contracts
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJSON(needs.contracts.outputs.packages) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          cache-targets: false
+          tools: just cargo:cargo-semver-checks
+      - run: just semver-package "$PACKAGE" "$BASE_REV"
         env:
+          PACKAGE: ${{ matrix.package }}
           BASE_REV: ${{ github.event.pull_request.base.sha || github.event.before || 'origin/main' }}
 
   platform:
@@ -154,7 +181,7 @@ jobs:
 
   ci-gate:
     if: always()
-    needs: [automation, contracts, coverage, docs, frontend, platform, source]
+    needs: [automation, contracts, coverage, docs, frontend, platform, semver, source]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -162,5 +189,5 @@ jobs:
           needs.automation.result != 'success' || needs.contracts.result != 'success' ||
           needs.coverage.result != 'success' || needs.docs.result != 'success' ||
           needs.frontend.result != 'success' || needs.platform.result != 'success' ||
-          needs.source.result != 'success'
+          needs.semver.result != 'success' || needs.source.result != 'success'
         run: exit 1

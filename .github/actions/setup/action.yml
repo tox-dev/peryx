@@ -16,6 +16,10 @@ inputs:
     description: Additional Rust targets
     required: false
     default: ""
+  cache-targets:
+    description: Cache Cargo target directories
+    required: false
+    default: "true"
 runs:
   using: composite
   steps:
@@ -32,4 +36,5 @@ runs:
       env:
         NODE_OPTIONS: --no-deprecation # https://github.com/Swatinem/rust-cache/issues/331
       with:
+        cache-targets: ${{ inputs.cache-targets }}
         save-if: ${{ github.ref == 'refs/heads/main' }}

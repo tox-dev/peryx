@@ -46,6 +46,10 @@ snapshots: _project-temp
 semver base="origin/main": _project-temp
     cargo semver-checks check-release --workspace --default-features --baseline-rev "{{ base }}"
 
+semver-package package base="origin/main": _project-temp
+    cargo semver-checks check-release --package "{{ package }}" \
+      --default-features --baseline-rev "{{ base }}"
+
 lint-contracts base="origin/main": snapshots
     just semver "{{ base }}"
     just release-plan
