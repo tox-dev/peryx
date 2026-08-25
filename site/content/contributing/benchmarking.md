@@ -62,14 +62,14 @@ CARGO_TARGET_DIR=.tox/target-catalog cargo build --release \
 
 ## CodSpeed
 
-CodSpeed runs owner-selected compute benchmarks in the repository container:
+CodSpeed runs owner-selected benchmarks on its stable bare-metal runners:
 
 ```shell
-just codspeed PACKAGE
+just codspeed PACKAGE MODE
 ```
 
 Package metadata declares the selected targets, job count, label, and change key. Add selection there instead of adding
 package branches to workflow YAML.
 
-Use CodSpeed for in-process compute paths. Use a named benchmark on one quiet host for filesystem, socket, subprocess,
-or upstream measurements, then compare revisions under the same host conditions.
+Use `simulation` for in-process compute paths and `walltime` for filesystem or socket paths. Compare walltime revisions
+under the same host conditions; CI uses CodSpeed's bare-metal runners for that reason.

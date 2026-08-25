@@ -298,17 +298,17 @@ conformance suite binary="": _project-temp
       OCI_PASSWORD=conformance OCI_DATA_SHA512=false "$suite")
 
 # Build one package's CodSpeed benchmarks.
-codspeed-build package: _project-temp
-    cargo codspeed build --locked -m simulation --package "{{ package }}"
+codspeed-build package mode="simulation": _project-temp
+    cargo codspeed build --locked -m "{{ mode }}" --package "{{ package }}"
 
 # Run one package's built CodSpeed benchmarks.
 codspeed-run package: _project-temp
     cargo codspeed run --package "{{ package }}"
 
 # Build and run one package's CodSpeed benchmarks locally.
-codspeed package: _project-temp
-    just codspeed-build "{{ package }}"
-    codspeed run --mode simulation -- just codspeed-run "{{ package }}"
+codspeed package mode="simulation": _project-temp
+    just codspeed-build "{{ package }}" "{{ mode }}"
+    codspeed run --mode "{{ mode }}" -- just codspeed-run "{{ package }}"
 
 # Build a local Python wheel.
 package-wheel +args: _project-temp

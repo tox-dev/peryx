@@ -23,9 +23,9 @@ its merged native and Wasm report.
 The `ci-gate` job gives branch protection one stable check name. It only evaluates GitHub job results; test policy
 remains in `just` recipes and standard tool configuration.
 
-CodSpeed runs both ecosystem benchmark packages in parallel. Each leg builds through `just codspeed-build` and uses
-CodSpeed's official action to run and upload the result. `just codspeed` provides the equivalent local command on a
-supported Linux host.
+CodSpeed runs both ecosystem benchmark packages in parallel on its stable bare-metal runners. Each leg builds through
+`just codspeed-build` and uses CodSpeed's official action in walltime mode. `just codspeed` provides the equivalent
+local command and accepts the measurement mode as its second argument.
 
 ## Nightly analysis
 
