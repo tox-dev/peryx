@@ -74,7 +74,7 @@ jobs:
           tools: >-
             just jq uv cargo:cargo-mutants cargo:cargo-nextest
             github:Shopify/toxiproxy
-      - run: just test
+      - run: just mutation-baseline
       - id: shards
         run: |
           mutants=$(cargo mutants --list --workspace --all-features | wc -l)

@@ -154,6 +154,10 @@ mutation shard="0/1" in_place="false" jobs="2" baseline="run" timeout="500": tes
       --timeout "{{ timeout }}" --build-timeout "{{ timeout }}" \
       -- -E 'not(test(e2e_live))'
 
+mutation-baseline: test-deps
+    INSTA_UPDATE=no INSTA_FORCE_PASS=0 PATH="{{ tools_root }}/bin:$PATH" cargo nextest run --verbose \
+      --workspace --all-features -E 'not(test(e2e_live))'
+
 # Install browser-test dependencies for the shared and owner suites.
 frontend-deps: _project-temp
     npm --prefix crates/peryx-web/tests/frontend ci
