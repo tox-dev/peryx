@@ -35,13 +35,16 @@ jobs:
         env:
           RECIPE: ${{ matrix.recipe }}
 
-  sanitizer:
-    name: ${{ matrix.recipe }} (${{ matrix.partition }}/8)
+  sanitizer-build:
+    name: ${{ matrix.recipe }} build
     strategy:
       fail-fast: false
       matrix:
-        recipe: [sanitizer-address, sanitizer-thread]
-        partition: [1, 2, 3, 4, 5, 6, 7, 8]
+        include:
+          - recipe: sanitizer-address
+            target: x86_64-unknown-linux-gnuasan
+          - recipe: sanitizer-thread
+            target: x86_64-unknown-linux-gnutsan
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
@@ -51,10 +54,44 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           toolchain: nightly
-          targets: ${{ matrix.recipe == 'sanitizer-address' && 'x86_64-unknown-linux-gnuasan' || 'x86_64-unknown-linux-gnutsan' }}
+          targets: ${{ matrix.target }}
+          tools: just cargo:cargo-nextest
+      - run: just sanitizer-archive "$TARGET" ".tox/$RECIPE.tar.zst"
+        env:
+          RECIPE: ${{ matrix.recipe }}
+          TARGET: ${{ matrix.target }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ matrix.recipe }}
+          path: .tox/${{ matrix.recipe }}.tar.zst
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  sanitizer:
+    name: ${{ matrix.recipe }} (${{ matrix.partition }}/8)
+    needs: sanitizer-build
+    strategy:
+      fail-fast: false
+      matrix:
+        recipe: [sanitizer-address, sanitizer-thread]
+        partition: [1, 2, 3, 4, 5, 6, 7, 8]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          toolchain: nightly
           tools: >-
             just uv cargo:cargo-nextest github:Shopify/toxiproxy
-      - run: just "$RECIPE" "slice:$PARTITION/8"
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: ${{ matrix.recipe }}
+          path: .tox/sanitizer
+      - run: just sanitizer-run ".tox/sanitizer/$RECIPE.tar.zst" "slice:$PARTITION/8"
         env:
           PARTITION: ${{ matrix.partition }}
           RECIPE: ${{ matrix.recipe }}

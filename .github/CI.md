@@ -34,14 +34,15 @@ The nightly workflow runs work that is too expensive or specialized for every pu
 - every feature combination
 - direct dependency lower bounds
 - Miri and Loom
-- AddressSanitizer and ThreadSanitizer, each split evenly with Nextest
+- AddressSanitizer and ThreadSanitizer, each built once and split evenly with Nextest
 - one mutation baseline with the same workspace, features, runner, and test filter as cargo-mutants, followed by shards
   of at most 256 mutants
 - each cargo-fuzz target
 - the live PyPI client boundary
 
 Each matrix leg invokes a public `just` recipe. Nextest runs each test once, and each command propagates its exit
-status.
+status. Sanitizer builds use [Nextest archives][nextest-archives], so partition jobs transfer the instrumented test
+binaries instead of rebuilding them.
 
 ThreadSanitizer uses its [documented global I/O synchronization model][tsan-io] because Tokio registers sources and
 consumes epoll events through different descriptors. Reports still halt the affected test; no test or function is
@@ -74,6 +75,8 @@ just miri
 just loom
 just sanitizer-address
 just sanitizer-thread
+just sanitizer-archive x86_64-unknown-linux-gnuasan .tox/address.tar.zst
+just sanitizer-run .tox/address.tar.zst slice:1/8
 just mutation 1/8
 just fuzz peryx-ecosystem-oci oci_reference 60
 just e2e-live
@@ -82,4 +85,5 @@ just e2e-live
 Generated files stay under `.tox/`. `just coverage-clean`, `just clean`, and `just clean-all` remove progressively more
 local state.
 
+[nextest-archives]: https://nexte.st/docs/ci-features/archiving/
 [tsan-io]: https://github.com/google/sanitizers/wiki/ThreadSanitizerFlags#runtime-flags

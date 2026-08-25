@@ -142,6 +142,16 @@ sanitizer-thread partition="slice:1/1": test-deps
       --target x86_64-unknown-linux-gnutsan --profile ci --build-jobs 1 \
       --test-threads 1 --partition "{{ partition }}" -E 'not(test(e2e_live))'
 
+sanitizer-archive target archive: _project-temp
+    PATH="{{ tools_root }}/bin:$PATH" cargo +nightly nextest archive --workspace --target "{{ target }}" \
+      --profile ci --build-jobs 1 --archive-file "{{ archive }}"
+
+sanitizer-run archive partition="slice:1/1": test-deps
+    ASAN_OPTIONS=allow_addr2line=1 TSAN_OPTIONS=allow_addr2line=1:halt_on_error=1:io_sync=2 \
+      PATH="{{ tools_root }}/bin:$PATH" cargo +nightly nextest run --archive-file "{{ archive }}" \
+      --workspace-remap "{{ justfile_directory() }}" --profile ci --test-threads 1 \
+      --partition "{{ partition }}" -E 'not(test(e2e_live))'
+
 fuzz package target seconds="60": _project-temp
     cd "crates/{{ package }}/fuzz" && cargo +nightly fuzz run \
       --target "$(rustc +nightly --print host-tuple)" "{{ target }}" -- -max_total_time="{{ seconds }}"
