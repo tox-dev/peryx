@@ -3,9 +3,6 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 project_tmp := justfile_directory() + "/.tox/tmp"
 frontend_root := justfile_directory() + "/.tox/frontend"
 tools_root := justfile_directory() + "/.tox/tools"
-export TMPDIR := project_tmp
-export TMP := project_tmp
-export TEMP := project_tmp
 export PERYX_TEST_TMPDIR := project_tmp
 export PLAYWRIGHT_BROWSERS_PATH := frontend_root + "/browsers"
 
@@ -173,6 +170,14 @@ mutation shard="0/1" in_place="false" jobs="2" baseline="run" timeout="500": tes
 mutation-baseline: test-deps
     INSTA_UPDATE=no INSTA_FORCE_PASS=0 PATH="{{ tools_root }}/bin:$PATH" cargo nextest run --verbose \
       --workspace --all-features --profile ci -E 'not(test(e2e_live))'
+
+mutation-baseline-archive archive: _project-temp
+    cargo nextest archive --workspace --all-features --profile ci --archive-file "{{ archive }}"
+
+mutation-baseline-run archive partition="slice:1/1": test-deps
+    INSTA_UPDATE=no INSTA_FORCE_PASS=0 PATH="{{ tools_root }}/bin:$PATH" \
+      cargo nextest run --archive-file "{{ archive }}" --workspace-remap "{{ justfile_directory() }}" \
+      --profile ci --partition "{{ partition }}" -E 'not(test(e2e_live))'
 
 mutation-count: _project-temp
     cargo mutants --list --workspace --all-features | wc -l

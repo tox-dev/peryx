@@ -35,7 +35,7 @@ The nightly workflow runs work that is too expensive or specialized for every pu
 - direct dependency lower bounds
 - Miri and Loom
 - AddressSanitizer and ThreadSanitizer, each built once and split evenly with Nextest
-- one mutation baseline on the same runner with cargo-mutants' test command, followed by shards of at most 256 mutants
+- one mutation baseline built once and split evenly with Nextest, followed by shards of at most 256 mutants
 - each cargo-fuzz target
 - the live PyPI client boundary
 
@@ -79,6 +79,9 @@ just sanitizer-address
 just sanitizer-thread
 just sanitizer-archive address .tox/address.tar.zst
 just sanitizer-run .tox/address.tar.zst slice:1/8
+just mutation-baseline
+just mutation-baseline-archive .tox/mutation-baseline.tar.zst
+just mutation-baseline-run .tox/mutation-baseline.tar.zst slice:1/8
 just mutation 1/8
 just fuzz peryx-ecosystem-oci oci_reference 60
 just e2e-live
