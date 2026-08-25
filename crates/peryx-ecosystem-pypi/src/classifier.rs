@@ -1,7 +1,5 @@
-//! Core Metadata defers to the list `PyPI` publishes, and that list grows - a new Python release
-//! adds a classifier that yesterday's peryx would have rejected. Validation has to answer offline,
-//! so the list is vendored by `tools/vendor-classifiers.py` rather than fetched, and staying current
-//! is a generator run.
+//! Core Metadata defers to the list `PyPI` publishes, and validation has to answer offline. The
+//! canonical `pypa/trove-classifiers` data is therefore vendored in this module.
 
 mod data;
 
