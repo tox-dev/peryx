@@ -44,6 +44,15 @@ pub(crate) fn http_client(timeout: Duration) -> reqwest::blocking::Client {
 pub const ADMIN_USER: &str = "harness-admin";
 pub const ADMIN_PASSWORD: &str = "harness-admin-secret";
 
+#[must_use]
+/// Resolves a package binary for the current Cargo or Nextest integration test.
+///
+/// # Panics
+/// Panics when the test runner did not provide the binary path.
+pub fn cargo_binary(name: &str) -> PathBuf {
+    PathBuf::from(std::env::var_os(format!("CARGO_BIN_EXE_{name}")).expect("Cargo test binary"))
+}
+
 /// Process settings for spawned `peryx` nodes.
 #[derive(Debug, Clone)]
 pub struct ProcessHarness {

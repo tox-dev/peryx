@@ -671,7 +671,7 @@ async fn toxiproxy(minio: &Minio) -> Toxiproxy {
 }
 
 fn child_command(endpoint: &str, staging: &Path, scenario: &str, access_key: &str, secret_key: &str) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_peryx-storage-s3-fixture"));
+    let mut command = Command::new(s3_fixture());
     command
         .arg("integration")
         .arg(scenario)
@@ -1539,7 +1539,7 @@ async fn test_wait_for_signal_skips_other_events() {
 fn test_s3_fixture_rejects_a_non_utf8_command() {
     use std::os::unix::ffi::OsStringExt as _;
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_peryx-storage-s3-fixture"))
+    let output = std::process::Command::new(s3_fixture())
         .arg(std::ffi::OsString::from_vec(vec![0xff]))
         .output()
         .unwrap();
@@ -1550,7 +1550,7 @@ fn test_s3_fixture_rejects_a_non_utf8_command() {
 
 #[test]
 fn test_s3_fixture_rejects_an_incomplete_unit_scenario() {
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_peryx-storage-s3-fixture"))
+    let output = std::process::Command::new(s3_fixture())
         .arg("unit")
         .arg("scenario")
         .output()
@@ -1565,9 +1565,7 @@ fn test_s3_fixture_rejects_an_incomplete_unit_scenario() {
 
 #[test]
 fn test_s3_fixture_requires_a_command() {
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_peryx-storage-s3-fixture"))
-        .output()
-        .unwrap();
+    let output = std::process::Command::new(s3_fixture()).output().unwrap();
 
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("missing command"));
@@ -1575,7 +1573,7 @@ fn test_s3_fixture_requires_a_command() {
 
 #[test]
 fn test_s3_fixture_rejects_an_invalid_unit_config() {
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_peryx-storage-s3-fixture"))
+    let output = std::process::Command::new(s3_fixture())
         .args(["unit", "health", "not a url"])
         .arg(std::env::temp_dir())
         .output()
@@ -1588,7 +1586,7 @@ fn test_s3_fixture_rejects_an_invalid_unit_config() {
 #[cfg(feature = "container-tests")]
 #[test]
 fn test_s3_fixture_rejects_an_invalid_integration_config() {
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_peryx-storage-s3-fixture"))
+    let output = std::process::Command::new(s3_fixture())
         .args(["integration", "cancel", "not a url"])
         .arg(std::env::temp_dir())
         .output()
@@ -2073,7 +2071,9 @@ async fn test_wait_for_signal_reports_eof() {
     assert_eq!(error.to_string(), "child exited before signaling PERYX_STREAM_OPENED");
 }
 
-const S3_FIXTURE: &str = env!("CARGO_BIN_EXE_peryx-storage-s3-fixture");
+fn s3_fixture() -> PathBuf {
+    PathBuf::from(std::env::var_os("CARGO_BIN_EXE_peryx-storage-s3-fixture").expect("Cargo S3 fixture binary"))
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PublicScenario {
@@ -2347,7 +2347,7 @@ async fn test_s3_public_surface_in_fixture() {
         };
         let output = tokio::time::timeout(
             Duration::from_secs(30),
-            Command::new(S3_FIXTURE)
+            Command::new(s3_fixture())
                 .arg("unit")
                 .arg(scenario.name())
                 .arg(server.uri())
@@ -2375,7 +2375,7 @@ async fn test_s3_public_surface_in_fixture() {
 
 #[tokio::test]
 async fn test_s3_fixture_rejects_unknown_commands() {
-    let output = Command::new(S3_FIXTURE).arg("unknown").output().await.unwrap();
+    let output = Command::new(s3_fixture()).arg("unknown").output().await.unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("unknown S3 fixture command: unknown"));
 }
@@ -2383,7 +2383,7 @@ async fn test_s3_fixture_rejects_unknown_commands() {
 #[tokio::test]
 async fn test_s3_fixture_rejects_unknown_unit_scenarios() {
     let staging = tempfile::tempdir().unwrap();
-    let output = Command::new(S3_FIXTURE)
+    let output = Command::new(s3_fixture())
         .args(["unit", "unknown", "http://127.0.0.1:1"])
         .arg(staging.path())
         .output()

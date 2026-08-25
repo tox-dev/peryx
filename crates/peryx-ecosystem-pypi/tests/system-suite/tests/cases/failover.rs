@@ -27,7 +27,9 @@ fn home_dc_group() -> Cluster {
     .with_admin()
     .with_index_config(&pypi_config())
     .with_write_ack_deadline(1)
-    .with_process_harness(ProcessHarness::new(env!("CARGO_BIN_EXE_peryx-pypi-system-server")))
+    .with_process_harness(ProcessHarness::new(peryx_test_support::cargo_binary(
+        "peryx-pypi-system-server",
+    )))
     .start()
     .expect("the ha group starts")
 }
@@ -60,7 +62,9 @@ fn writer_serial(node: &Node) -> Option<u64> {
 fn test_upload_is_retry_safe_and_survives_a_writer_restart() {
     let mut cluster = Topology::single()
         .with_index_config(&pypi_config())
-        .with_process_harness(ProcessHarness::new(env!("CARGO_BIN_EXE_peryx-pypi-system-server")))
+        .with_process_harness(ProcessHarness::new(peryx_test_support::cargo_binary(
+            "peryx-pypi-system-server",
+        )))
         .start()
         .expect("the writer starts");
     let writer = cluster.node("node-a").expect("the writer is present");

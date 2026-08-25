@@ -130,7 +130,12 @@ fn fail_when(mode: &Path, message: &str) -> Result<(), String> {
 
 #[cfg(unix)]
 fn fixture_listener(variable: &str, port: u16) -> TcpListener {
-    let Some(descriptor) = std::env::var_os(variable) else {
+    fixture_listener_from_descriptor(std::env::var_os(variable), port)
+}
+
+#[cfg(unix)]
+fn fixture_listener_from_descriptor(descriptor: Option<OsString>, port: u16) -> TcpListener {
+    let Some(descriptor) = descriptor else {
         return TcpListener::bind(("127.0.0.1", port)).expect("bind fixture listener");
     };
     let descriptor = descriptor

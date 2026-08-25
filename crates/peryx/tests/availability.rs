@@ -5,10 +5,12 @@ mod harness;
 
 use std::time::Duration;
 
-use harness::{HarnessError, MemberSpec, Node, OwnershipControl, ProcessHarness, Role, Topology, Toxiproxy};
+use harness::{
+    HarnessError, MemberSpec, Node, OwnershipControl, ProcessHarness, Role, Topology, Toxiproxy, cargo_binary,
+};
 
 fn process_harness() -> ProcessHarness {
-    ProcessHarness::new(env!("CARGO_BIN_EXE_peryx"))
+    ProcessHarness::new(cargo_binary("peryx"))
 }
 
 #[test]

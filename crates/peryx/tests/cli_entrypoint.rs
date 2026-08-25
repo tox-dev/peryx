@@ -59,7 +59,7 @@ token = "replication-token"
 }
 
 fn peryx() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_peryx"))
+    Command::new(peryx_test_support::cargo_binary("peryx"))
 }
 
 fn run(args: impl IntoIterator<Item = impl AsRef<OsStr>>) -> Output {

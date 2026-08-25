@@ -28,5 +28,5 @@ fn benchmark_cli_rejects_unknown_options() {
 }
 
 fn benchmark_command() -> std::process::Command {
-    std::process::Command::new(env!("CARGO_BIN_EXE_peryx-bench-oci"))
+    std::process::Command::new(peryx_test_support::cargo_binary("peryx-bench-oci"))
 }

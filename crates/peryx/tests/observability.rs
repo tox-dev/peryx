@@ -2,10 +2,10 @@
 
 mod harness;
 
-use harness::{ADMIN_PASSWORD, ADMIN_USER, MemberSpec, ProcessHarness, Role, Topology};
+use harness::{ADMIN_PASSWORD, ADMIN_USER, MemberSpec, ProcessHarness, Role, Topology, cargo_binary};
 
 fn process_harness() -> ProcessHarness {
-    ProcessHarness::new(env!("CARGO_BIN_EXE_peryx"))
+    ProcessHarness::new(cargo_binary("peryx"))
 }
 
 const GENERAL_SERIES: &str = "peryx_pages_served_total";

@@ -189,7 +189,7 @@ fn fixture_servers_follow_protocol_events() {
         .expect("close topology request");
     write_topology_stream(&mut server, "stream-silent");
 
-    drop(fixture_listener(PUBLIC_LISTENER_FD_ENV, 0));
+    drop(fixture_listener_from_descriptor(None, 0));
     #[cfg(unix)]
     {
         use std::os::fd::{AsFd as _, IntoRawFd as _};
@@ -200,16 +200,11 @@ fn fixture_servers_follow_protocol_events() {
             .as_fd()
             .try_clone_to_owned()
             .expect("duplicate inherited test listener");
-        let descriptor = descriptor.into_raw_fd().to_string();
-        let _lock = super::TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        temp_env::with_var(PUBLIC_LISTENER_FD_ENV, Some(descriptor), || {
-            drop(fixture_listener(PUBLIC_LISTENER_FD_ENV, port));
-        });
-        temp_env::with_var(AVAILABILITY_LISTENER_FD_ENV, Some("invalid"), || {
-            assert!(std::panic::catch_unwind(|| fixture_listener(AVAILABILITY_LISTENER_FD_ENV, port)).is_err());
-        });
+        drop(fixture_listener_from_descriptor(
+            Some(descriptor.into_raw_fd().to_string().into()),
+            port,
+        ));
+        assert!(std::panic::catch_unwind(|| fixture_listener_from_descriptor(Some("invalid".into()), port)).is_err());
     }
     shutdown_server(std::net::SocketAddr::from(([127, 0, 0, 1], 0)));
 }

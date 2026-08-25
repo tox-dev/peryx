@@ -5,7 +5,7 @@ mod harness;
 use std::collections::HashMap;
 use std::time::Duration;
 
-use harness::{ADMIN_PASSWORD, ADMIN_USER, Cluster, MemberSpec, ProcessHarness, Role, Topology};
+use harness::{ADMIN_PASSWORD, ADMIN_USER, Cluster, MemberSpec, ProcessHarness, Role, Topology, cargo_binary};
 use serde_json::Value;
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -49,7 +49,7 @@ fn test_a_three_node_ha_cluster_forms_and_reports_its_leader() {
             MemberSpec::new("node-c", "south", Role::Replica),
         ],
     )
-    .with_process_harness(ProcessHarness::new(env!("CARGO_BIN_EXE_peryx")))
+    .with_process_harness(ProcessHarness::new(cargo_binary("peryx")))
     .with_admin()
     .start()
     .expect("the three-node ha cluster starts");
@@ -72,7 +72,7 @@ fn test_killing_the_home_leader_fails_authority_over_to_a_survivor() {
             MemberSpec::new("node-c", "south", Role::Replica),
         ],
     )
-    .with_process_harness(ProcessHarness::new(env!("CARGO_BIN_EXE_peryx")))
+    .with_process_harness(ProcessHarness::new(cargo_binary("peryx")))
     .with_admin()
     .start()
     .expect("the three-node ha cluster starts");

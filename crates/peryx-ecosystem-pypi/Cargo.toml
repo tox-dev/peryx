@@ -127,6 +127,7 @@ regex = { workspace = true, optional = true }
 
 [dev-dependencies]
 peryx-events = { workspace = true, features = ["test-util"] }
+peryx-test-support.workspace = true
 httpdate.workspace = true
 rstest.workspace = true
 rustls.workspace = true

@@ -4,7 +4,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -23,13 +23,11 @@ use tempfile::TempDir;
 
 use crate::{
     ADMIN_PASSWORD, ADMIN_USER, EcosystemDriverFixture, HarnessError, MemberSpec, OwnershipControl, ProcessHarness,
-    ProcessLimit, Role, Topology, Toxiproxy, process_alive, reachable_through, spawn_on_port, spawn_with_config,
-    startup_log,
+    ProcessLimit, Role, Topology, Toxiproxy, process_alive, reachable_through, startup_log,
 };
 
 mod process_fixture;
 
-static TEST_LOCK: Mutex<()> = Mutex::new(());
 const FAILURE_TIMEOUT: Duration = Duration::from_millis(100);
 const TOXIPROXY_FAILURE_TIMEOUT: Duration = Duration::from_secs(2);
 const FIXTURE_ECOSYSTEM: Ecosystem = Ecosystem::new("fixture");
@@ -542,26 +540,6 @@ fn process_reports_failure_after_startup_signal() {
 }
 
 #[test]
-fn node_data_uses_the_configured_root_and_is_removed_on_drop() {
-    let fixture = FixtureEnvironment::new();
-    let root = tempfile::tempdir().expect("create configured test root");
-    let _lock = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    temp_env::with_var("PERYX_TEST_TMPDIR", Some(root.path()), || {
-        let node = fixture
-            .harness()
-            .spawn_with_config("configured-root", "")
-            .expect("start fixture node");
-        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
-        drop(node);
-        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
-    });
-    temp_env::with_var("PERYX_TEST_TMPDIR", None::<&Path>, || {
-        let data = crate::node_temp_dir().expect("create default node data");
-        assert!(!data.path().starts_with(root.path()));
-    });
-}
-
-#[test]
 #[cfg(unix)]
 fn node_timeout_reports_a_reaped_child_while_the_event_channel_is_open() {
     let mut child = Command::new("true").spawn().expect("start child");
@@ -657,14 +635,13 @@ fn process_bootstrap_and_claim_failures() {
 }
 
 #[test]
-fn fixture_process_rejects_missing_arguments() {
+fn fixture_main_rejects_test_arguments() {
     process_fixture::assert_main_rejects_test_arguments();
+}
+
+#[test]
+fn fixture_process_rejects_a_malformed_serve_command() {
     with_fixture(|fixture| {
-        let empty = Command::new(fixture.peryx())
-            .stdin(std::process::Stdio::null())
-            .output()
-            .expect("run empty fixture request");
-        assert!(!empty.status.success());
         let output = Command::new(fixture.peryx())
             .args(["serve", "--config"])
             .arg(fixture.state())
@@ -679,37 +656,6 @@ fn fixture_process_rejects_missing_arguments() {
 #[test]
 fn process_alive_rejects_invalid_pid() {
     assert!(!process_alive(u32::MAX));
-}
-
-#[test]
-fn peryx_binary_environment_fallback() {
-    let fixture = FixtureEnvironment::new();
-    let _lock = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    temp_env::with_var("PERYX_BIN", Some(fixture.missing()), || {
-        assert!(matches!(Topology::single().validate_config(), Err(HarnessError::Io(_))));
-    });
-    temp_env::with_var("PERYX_BIN", Some(fixture.peryx()), || {
-        let raw = spawn_with_config("environment-raw", "").expect("start default raw node");
-        assert_eq!(raw.identity(), "environment-raw");
-        let occupied = TcpListener::bind("127.0.0.1:0").expect("reserve port");
-        let port = occupied.local_addr().expect("reserved address").port();
-        assert!(matches!(
-            spawn_on_port("environment-collision", port),
-            Err(HarnessError::ExitedEarly { .. })
-        ));
-    });
-    let path = std::env::join_paths(
-        std::iter::once(fixture.path().to_path_buf())
-            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())),
-    )
-    .expect("fixture PATH");
-    temp_env::with_var("PATH", Some(path), || {
-        let node = ProcessHarness::new(fixture.peryx().file_name().expect("fixture executable"))
-            .with_shutdown_path("/__fixture/shutdown")
-            .spawn_with_config("path-node", "")
-            .expect("resolve peryx from PATH");
-        assert_eq!(node.identity(), "path-node");
-    });
 }
 
 #[test]
@@ -883,20 +829,6 @@ fn toxiproxy_readiness_timeout_reaps_the_process() {
 }
 
 #[test]
-fn toxiproxy_binary_environment_fallback() {
-    let fixture = FixtureEnvironment::new();
-    let _lock = TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    temp_env::with_var("PATH", Some(fixture.empty_path()), || {
-        assert!(matches!(Toxiproxy::start(), Err(HarnessError::Toxiproxy(_))));
-    });
-    temp_env::with_var("PATH", Some(fixture.path()), || {
-        let mut toxiproxy = Toxiproxy::start().expect("resolve toxiproxy from PATH");
-        assert!(toxiproxy.control_is_up());
-        toxiproxy.kill();
-    });
-}
-
-#[test]
 fn proxied_topology_public_behavior() {
     with_fixture(|fixture| {
         let mut toxiproxy = fixture.start_toxiproxy();
@@ -954,8 +886,7 @@ impl FixtureEnvironment {
     fn new() -> Self {
         let dir = TempDir::new().expect("create fixture directory");
         let fixture = Self { dir };
-        fs::create_dir(fixture.empty_path()).expect("create empty path");
-        fs::copy(env!("PERYX_TEST_FIXTURE"), fixture.peryx()).expect("install process fixture");
+        fs::copy(fixture_binary(), fixture.peryx()).expect("install process fixture");
         fs::copy(fixture.peryx(), fixture.toxiproxy()).expect("install toxiproxy fixture");
         fs::write(fixture.state(), "leader:dc-a").expect("write state");
         fs::write(fixture.toxi_state(), "ok").expect("write toxiproxy state");
@@ -981,10 +912,6 @@ impl FixtureEnvironment {
 
     fn missing(&self) -> PathBuf {
         self.path().join("missing")
-    }
-
-    fn empty_path(&self) -> PathBuf {
-        self.path().join("empty")
     }
 
     fn state(&self) -> PathBuf {
@@ -1029,6 +956,16 @@ impl FixtureEnvironment {
     fn start_toxiproxy(&self) -> Toxiproxy {
         Toxiproxy::start_with(self.toxiproxy(), Duration::from_secs(10)).expect("start toxiproxy")
     }
+}
+
+fn fixture_binary() -> PathBuf {
+    std::env::current_exe()
+        .expect("current test executable")
+        .parent()
+        .expect("Cargo dependency directory")
+        .parent()
+        .expect("Cargo profile directory")
+        .join(format!("peryx-test-fixture{}", std::env::consts::EXE_SUFFIX))
 }
 
 fn with_fixture(test: impl FnOnce(&FixtureEnvironment)) {

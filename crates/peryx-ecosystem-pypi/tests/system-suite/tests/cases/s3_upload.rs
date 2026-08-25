@@ -158,7 +158,7 @@ async fn head_object(State(objects): State<Arc<Mutex<Vec<StoredObject>>>>, uri: 
 async fn child(endpoint: &str, data_dir: &Path) -> Output {
     tokio::time::timeout(
         Duration::from_secs(30),
-        Command::new(env!("CARGO_BIN_EXE_peryx-pypi-s3-upload-fixture"))
+        Command::new(peryx_test_support::cargo_binary("peryx-pypi-s3-upload-fixture"))
             .arg("upload-orphan")
             .arg(endpoint)
             .arg(data_dir)

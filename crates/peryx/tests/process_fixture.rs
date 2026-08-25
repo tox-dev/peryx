@@ -6,8 +6,6 @@ use std::{
     process::{Command, Output},
 };
 
-const FIXTURE: &str = env!("CARGO_BIN_EXE_peryx-process-fixture");
-
 #[cfg(unix)]
 use std::{
     ffi::OsString,
@@ -106,7 +104,7 @@ fn assert_descriptor_adoption(descriptor: u8) {
     let mut command = Command::new("sh");
     command
         .args(["-c", &format!("exec {descriptor}<&0 0</dev/null; exec \"$0\" \"$@\"")])
-        .arg(FIXTURE)
+        .arg(peryx_test_support::cargo_binary("peryx-process-fixture"))
         .arg("serve")
         .args([
             "--host",
@@ -159,7 +157,7 @@ fn self_update_output(config_home: &Path) -> Output {
 }
 
 fn fixture_command(command: impl AsRef<OsStr>) -> Command {
-    let mut fixture = Command::new(FIXTURE);
+    let mut fixture = Command::new(peryx_test_support::cargo_binary("peryx-process-fixture"));
     fixture.arg(command);
     fixture
 }

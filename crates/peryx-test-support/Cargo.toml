@@ -9,6 +9,17 @@ repository.workspace = true
 description = "Process harnesses shared by peryx system tests."
 autotests = false
 
+[[bin]]
+name = "peryx-test-fixture"
+path = "tests/fixtures/process.rs"
+test = false
+bench = false
+doc = false
+
+[[test]]
+name = "fixture"
+path = "tests/fixture.rs"
+
 [dependencies]
 async-trait.workspace = true
 axum.workspace = true
