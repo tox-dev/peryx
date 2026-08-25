@@ -42,6 +42,10 @@ The nightly workflow runs work that is too expensive or specialized for every pu
 Each matrix leg invokes a public `just` recipe. Nextest runs each test once, and each command propagates its exit
 status.
 
+ThreadSanitizer uses its [documented global I/O synchronization model][tsan-io] because Tokio registers sources and
+consumes epoll events through different descriptors. Reports still halt the affected test; no test or function is
+suppressed.
+
 ## Local commands
 
 Install the versions declared in `mise.toml`, then run the same entry points used by GitHub Actions:
@@ -76,3 +80,5 @@ just e2e-live
 
 Generated files stay under `.tox/`. `just coverage-clean`, `just clean`, and `just clean-all` remove progressively more
 local state.
+
+[tsan-io]: https://github.com/google/sanitizers/wiki/ThreadSanitizerFlags#runtime-flags

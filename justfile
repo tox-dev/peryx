@@ -134,8 +134,10 @@ sanitizer-address partition="slice:1/1": test-deps
       --target x86_64-unknown-linux-gnuasan --profile ci --build-jobs 1 \
       --test-threads 1 --partition "{{ partition }}" -E 'not(test(e2e_live))'
 
+# Tokio registers sources and consumes epoll events on different descriptors, which needs TSan's global I/O model.
+# https://github.com/google/sanitizers/wiki/ThreadSanitizerFlags#runtime-flags
 sanitizer-thread partition="slice:1/1": test-deps
-    TSAN_OPTIONS=allow_addr2line=1:halt_on_error=1 PATH="{{ tools_root }}/bin:$PATH" \
+    TSAN_OPTIONS=allow_addr2line=1:halt_on_error=1:io_sync=2 PATH="{{ tools_root }}/bin:$PATH" \
       cargo +nightly nextest run --workspace \
       --target x86_64-unknown-linux-gnutsan --profile ci --build-jobs 1 \
       --test-threads 1 --partition "{{ partition }}" -E 'not(test(e2e_live))'
