@@ -9,6 +9,13 @@ on:
 permissions:
   contents: read
 
+env:
+  # mise-action hashes the sorted tool arguments into its cache key.
+  # https://github.com/jdx/mise-action/blob/3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518/src/index.ts#L1079-L1127
+  MUTATION_TOOLS: >-
+    just jq uv cargo:cargo-mutants cargo:cargo-nextest
+    github:Shopify/toxiproxy
+
 concurrency:
   group: nightly
   cancel-in-progress: false
@@ -108,7 +115,7 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup
         with:
-          tools: just jq cargo:cargo-mutants cargo:cargo-nextest
+          tools: ${{ env.MUTATION_TOOLS }}
       - run: just mutation-baseline-archive .tox/mutation-baseline.tar.zst
       - id: shards
         run: |
@@ -165,9 +172,7 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup
         with:
-          tools: >-
-            just uv cargo:cargo-mutants cargo:cargo-nextest
-            github:Shopify/toxiproxy
+          tools: ${{ env.MUTATION_TOOLS }}
       - run: just mutation "$SHARD/$SHARD_COUNT" true 2 skip 500
         env:
           SHARD: ${{ matrix.shard }}
