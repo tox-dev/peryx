@@ -189,11 +189,11 @@ fn fixture_servers_follow_protocol_events() {
         .expect("close topology request");
     write_topology_stream(&mut server, "stream-silent");
 
-    drop(fixture_listener_from_descriptor(None, 0));
     #[cfg(unix)]
     {
         use std::os::fd::{AsFd as _, IntoRawFd as _};
 
+        drop(fixture_listener_from_descriptor(None, 0));
         let inherited = TcpListener::bind("127.0.0.1:0").expect("bind inherited listener");
         let port = inherited.local_addr().expect("inherited listener address").port();
         let descriptor = inherited
