@@ -376,11 +376,17 @@ async fn test_webhook_delivery_records_removed_target() {
 
     assert!(webhook::kick(h.state.serving.clone()).is_none());
 
-    let pending = wait_for_delivery(&h, WebhookDeliveryStatus::Pending, 1).await;
-    assert_eq!(pending.id, id);
-    assert_eq!(pending.response_status, None);
-    assert_eq!(pending.next_attempt_at_unix, Some(1005));
-    assert_eq!(pending.last_error.as_deref(), Some("webhook target is not configured"));
+    let failed = wait_for_delivery(&h, WebhookDeliveryStatus::Failed, 1).await;
+    assert_eq!(
+        (
+            failed.id.as_str(),
+            failed.response_status,
+            failed.next_attempt_at_unix,
+            failed.last_error.as_deref(),
+        ),
+        (id.as_str(), None, None, Some("webhook target is not configured"))
+    );
+    assert_eq!(h.state.serving.meta.next_webhook_delivery_at().unwrap(), None);
     assert!(server.received_requests().await.unwrap().is_empty());
 }
 

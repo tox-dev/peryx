@@ -583,24 +583,6 @@ async fn test_scheduled_wait_resumes_early_on_notification() {
         .unwrap();
 }
 
-#[tokio::test]
-async fn test_delivery_retries_when_its_target_was_removed() {
-    let dir = tempfile::tempdir().unwrap();
-    let host = Arc::new(TestHost {
-        webhooks: WebhookRuntime::disabled(),
-        meta: MetaStore::open(dir.path().join("peryx.redb")).unwrap(),
-        now: 100,
-    });
-    let id = enqueue(host.meta(), "removed", 10);
-
-    deliver_due(&host).await.unwrap();
-
-    let delivery = host.meta().get_webhook_delivery(&id).unwrap().unwrap();
-    assert_eq!(delivery.status, WebhookDeliveryStatus::Pending);
-    assert_eq!(delivery.attempts, 1);
-    assert_eq!(delivery.last_error.as_deref(), Some("webhook target is not configured"));
-}
-
 #[rstest]
 #[case::redirect(
     302,

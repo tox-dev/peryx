@@ -218,7 +218,7 @@ async fn deliver_one<H: WebhookHost>(host: &Arc<H>, delivery: WebhookDeliveryRec
             now,
             None,
             "webhook target is not configured",
-            true,
+            false,
         );
         return;
     };
