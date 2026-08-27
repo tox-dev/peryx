@@ -100,7 +100,7 @@ async fn test_shadow_contract_openapi_matches_the_public_handler() {
             &user.id,
             Role::RepositoryReader,
             GrantScope::Repository {
-                name: "root/pypi".to_owned(),
+                name: "root-pypi".to_owned(),
             },
         )
         .unwrap();
