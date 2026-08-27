@@ -7,7 +7,8 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 
 use super::{
-    HarnessError, ProcessSignal, free_port, http_client, kill_group, spawn_in_group, spawn_with_events, wait_for_line,
+    EVENT_TIMEOUT, HarnessError, StartupSignal, free_port, http_client, kill_group, spawn_in_group, spawn_with_events,
+    wait_for_line, wait_for_startup,
 };
 
 const CONTROL_HOST: &str = "127.0.0.1";
@@ -24,27 +25,37 @@ pub struct Toxiproxy {
 
 impl Toxiproxy {
     /// Spawn `toxiproxy-server` on a free control port and wait until its API answers.
+    /// Process scheduling uses the shared event deadlock guard; the start deadline begins at the first child event.
     ///
     /// # Errors
     /// Returns [`HarnessError::Toxiproxy`] when the binary is absent or its API does not come up within
     /// the start deadline.
     pub fn start() -> Result<Self, HarnessError> {
-        Self::spawn(Path::new("toxiproxy-server"), START_TIMEOUT, false)
+        Self::spawn(Path::new("toxiproxy-server"), START_TIMEOUT, EVENT_TIMEOUT, false)
     }
 
     /// # Errors
-    /// Returns [`HarnessError::Toxiproxy`] when the binary is absent or its API misses the deadline.
-    pub fn start_with(binary: impl AsRef<Path>, timeout: Duration) -> Result<Self, HarnessError> {
-        if timeout.is_zero() {
+    /// Returns [`HarnessError::Toxiproxy`] when the binary is absent, misses `deadlock_guard` before its first event, or
+    /// misses `behavior_timeout` after that event.
+    pub fn start_with(
+        binary: impl AsRef<Path>,
+        behavior_timeout: Duration,
+        deadlock_guard: Duration,
+    ) -> Result<Self, HarnessError> {
+        if behavior_timeout.is_zero() {
             return Err(HarnessError::Toxiproxy(
                 "control API did not start within 0ns; process was not spawned".to_owned(),
             ));
         }
-        Self::spawn(binary.as_ref(), timeout, true)
+        Self::spawn(binary.as_ref(), behavior_timeout, deadlock_guard, true)
     }
 
-    fn spawn(binary: &Path, timeout: Duration, graceful_shutdown: bool) -> Result<Self, HarnessError> {
-        let deadline = Instant::now() + timeout;
+    fn spawn(
+        binary: &Path,
+        behavior_timeout: Duration,
+        deadlock_guard: Duration,
+        graceful_shutdown: bool,
+    ) -> Result<Self, HarnessError> {
         let control_port = free_port();
         let control = format!("http://{CONTROL_HOST}:{control_port}");
         let mut command = Command::new(binary);
@@ -61,30 +72,32 @@ impl Toxiproxy {
             next: 0,
             graceful_shutdown,
         };
-        match wait_for_line(&events, deadline.saturating_duration_since(Instant::now()), |line| {
-            line.contains("Starting Toxiproxy HTTP server")
-        }) {
-            ProcessSignal::Matched => {}
-            ProcessSignal::Closed => {
-                let status = toxiproxy.server.wait().expect("reap toxiproxy child");
-                return Err(HarnessError::Toxiproxy(format!(
-                    "control process exited before its startup signal; process status: {status}"
-                )));
-            }
-            ProcessSignal::TimedOut => {
-                return Err(HarnessError::Toxiproxy(format!(
-                    "control API did not start within {timeout:?}; process status: {:?}",
-                    toxiproxy.server.try_wait().expect("read toxiproxy child status")
-                )));
-            }
+        let mut first_event_is_startup = false;
+        Self::require_event(
+            wait_for_startup(&mut toxiproxy.server, &events, deadlock_guard, |event| {
+                first_event_is_startup = event.contains("Starting Toxiproxy HTTP server");
+                true
+            }),
+            deadlock_guard,
+            "an event",
+        )?;
+        if !first_event_is_startup {
+            Self::require_event(
+                wait_for_startup(&mut toxiproxy.server, &events, behavior_timeout, |line| {
+                    line.contains("Starting Toxiproxy HTTP server")
+                }),
+                behavior_timeout,
+                "its startup signal",
+            )?;
         }
         // Toxiproxy logs startup before binding the socket.
+        let deadline = Instant::now() + behavior_timeout;
         let mut last_failure = "startup signal arrived before the control API".to_owned();
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return Err(HarnessError::Toxiproxy(format!(
-                    "control API did not accept requests within {timeout:?}: {last_failure}"
+                    "control API did not accept requests within {behavior_timeout:?}: {last_failure}"
                 )));
             }
             match toxiproxy
@@ -117,6 +130,22 @@ impl Toxiproxy {
                     "control process exited before accepting requests; process status: {status}"
                 )));
             }
+        }
+    }
+
+    fn require_event(
+        signal: std::io::Result<StartupSignal>,
+        within: Duration,
+        expected: &str,
+    ) -> Result<(), HarnessError> {
+        match signal.map_err(|error| HarnessError::Toxiproxy(format!("read control process event: {error}")))? {
+            StartupSignal::Matched => Ok(()),
+            StartupSignal::Exited(status) => Err(HarnessError::Toxiproxy(format!(
+                "control process exited before its startup signal; process status: {status}"
+            ))),
+            StartupSignal::TimedOut => Err(HarnessError::Toxiproxy(format!(
+                "control process did not emit {expected} within {within:?}; process status: None"
+            ))),
         }
     }
 

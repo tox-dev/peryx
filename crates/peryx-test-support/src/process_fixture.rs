@@ -264,6 +264,11 @@ fn peryx_response(path: &str, control: bool, state: &str) -> (u16, Vec<u8>, usiz
 fn run_toxiproxy(executable: &Path, args: &[String], control_listener: Option<TcpListener>) -> Result<(), String> {
     fs::write(sibling(executable, "toxi-pid"), std::process::id().to_string()).expect("write toxiproxy pid");
     let mode = fs::read_to_string(sibling(executable, "toxi-mode")).expect("read toxiproxy mode");
+    let mode = mode.strip_prefix("event-").map_or(mode.as_str(), |mode| {
+        println!(r#"{{"message":"fixture process started"}}"#);
+        std::io::stdout().flush().expect("flush process start event");
+        mode
+    });
     if mode == "exit" {
         return Ok(());
     }

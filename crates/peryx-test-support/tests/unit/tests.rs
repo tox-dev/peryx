@@ -2,6 +2,8 @@ use std::cell::Cell;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, mpsc};
@@ -27,6 +29,7 @@ use tempfile::TempDir;
 
 const FAILURE_TIMEOUT: Duration = Duration::from_millis(100);
 const TOXIPROXY_FAILURE_TIMEOUT: Duration = Duration::from_secs(2);
+const FIXTURE_DEADLOCK_GUARD: Duration = Duration::from_secs(90);
 const FIXTURE_ECOSYSTEM: Ecosystem = Ecosystem::new("fixture");
 const OTHER_ECOSYSTEM: Ecosystem = Ecosystem::new("other");
 
@@ -754,7 +757,8 @@ fn toxiproxy_public_behavior() {
 fn toxiproxy_startup_reports_process_exit() {
     with_fixture(|fixture| {
         fs::write(fixture.toxi_mode(), "exit").expect("exit during startup");
-        let error = Toxiproxy::start_with(fixture.toxiproxy(), TOXIPROXY_FAILURE_TIMEOUT)
+        let error = fixture
+            .start_toxiproxy_with_timeout(TOXIPROXY_FAILURE_TIMEOUT)
             .err()
             .expect("startup must fail");
         assert!(error.to_string().contains("process status:"), "{error}");
@@ -781,8 +785,10 @@ fn toxiproxy_startup_waits_for_the_version_endpoint() {
 #[test]
 fn toxiproxy_startup_waits_through_a_not_found_version_route() {
     with_fixture(|fixture| {
+        fs::write(fixture.toxi_mode(), "event-ready").expect("emit a process event before startup");
         fs::write(fixture.toxi_state(), "startup-not-found").expect("delay version route");
-        let mut toxiproxy = Toxiproxy::start_with(fixture.toxiproxy(), TOXIPROXY_FAILURE_TIMEOUT)
+        let mut toxiproxy = fixture
+            .start_toxiproxy_with_timeout(TOXIPROXY_FAILURE_TIMEOUT)
             .expect("start after the version route is mounted");
         assert!(toxiproxy.control_is_up());
         toxiproxy.kill();
@@ -793,7 +799,8 @@ fn toxiproxy_startup_waits_through_a_not_found_version_route() {
 fn toxiproxy_startup_reports_exit_after_the_signal() {
     with_fixture(|fixture| {
         fs::write(fixture.toxi_mode(), "signal-exit").expect("exit after startup signal");
-        let error = Toxiproxy::start_with(fixture.toxiproxy(), TOXIPROXY_FAILURE_TIMEOUT)
+        let error = fixture
+            .start_toxiproxy_with_timeout(TOXIPROXY_FAILURE_TIMEOUT)
             .err()
             .expect("startup must fail");
         assert!(
@@ -808,7 +815,8 @@ fn toxiproxy_startup_reports_exit_after_the_signal() {
 fn toxiproxy_startup_reports_control_failure() {
     with_fixture(|fixture| {
         fs::write(fixture.toxi_state(), "startup-error").expect("reject startup check");
-        let error = Toxiproxy::start_with(fixture.toxiproxy(), TOXIPROXY_FAILURE_TIMEOUT)
+        let error = fixture
+            .start_toxiproxy_with_timeout(TOXIPROXY_FAILURE_TIMEOUT)
             .err()
             .expect("control failure must fail startup");
         assert!(error.to_string().contains("500 Internal Server Error"), "{error}");
@@ -819,7 +827,8 @@ fn toxiproxy_startup_reports_control_failure() {
 #[test]
 fn toxiproxy_startup_reports_timeout() {
     with_fixture(|fixture| {
-        let error = Toxiproxy::start_with(fixture.toxiproxy(), Duration::ZERO)
+        let error = fixture
+            .start_toxiproxy_with_timeout(Duration::ZERO)
             .err()
             .expect("startup must time out");
         assert_eq!(
@@ -827,6 +836,25 @@ fn toxiproxy_startup_reports_timeout() {
             "toxiproxy: control API did not start within 0ns; process was not spawned"
         );
         assert!(!fixture.path().join("toxi-pid").exists());
+    });
+}
+
+#[test]
+#[cfg(unix)]
+fn toxiproxy_startup_event_guard_reports_a_silent_process() {
+    with_fixture(|fixture| {
+        fs::write(fixture.toxiproxy(), "#!/bin/sh\nread _request\n").expect("install silent process fixture");
+        fs::set_permissions(fixture.toxiproxy(), fs::Permissions::from_mode(0o700))
+            .expect("make silent process fixture executable");
+
+        let error = Toxiproxy::start_with(fixture.toxiproxy(), TOXIPROXY_FAILURE_TIMEOUT, Duration::ZERO)
+            .err()
+            .expect("process event must time out");
+
+        assert_eq!(
+            error.to_string(),
+            "toxiproxy: control process did not emit an event within 0ns; process status: None"
+        );
     });
 }
 
@@ -843,7 +871,7 @@ fn toxiproxy_startup_signal_timeout_reaps_the_process() {
         startup.join().expect("join startup thread");
         assert_eq!(
             error.to_string(),
-            "toxiproxy: control API did not start within 2s; process status: None"
+            "toxiproxy: control process did not emit its startup signal within 2s; process status: None"
         );
         assert!(!process_alive(fixture.toxiproxy_pid()));
     });
@@ -1001,7 +1029,12 @@ impl FixtureEnvironment {
     }
 
     fn start_toxiproxy(&self) -> Toxiproxy {
-        Toxiproxy::start_with(self.toxiproxy(), Duration::from_secs(10)).expect("start toxiproxy")
+        self.start_toxiproxy_with_timeout(Duration::from_secs(10))
+            .expect("start toxiproxy")
+    }
+
+    fn start_toxiproxy_with_timeout(&self, timeout: Duration) -> Result<Toxiproxy, HarnessError> {
+        Toxiproxy::start_with(self.toxiproxy(), timeout, FIXTURE_DEADLOCK_GUARD)
     }
 }
 
@@ -1027,7 +1060,7 @@ fn silent_toxiproxy_start(
     mpsc::Receiver<Result<Toxiproxy, HarnessError>>,
     TcpStream,
 ) {
-    toxiproxy_start_at_gate(fixture, "silent-gate")
+    toxiproxy_start_at_gate(fixture, "event-silent-gate")
 }
 
 fn toxiproxy_start_at_gate(
@@ -1048,10 +1081,14 @@ fn toxiproxy_start_at_gate(
     let (sender, receiver) = mpsc::sync_channel(1);
     let startup = thread::spawn(move || {
         sender
-            .send(Toxiproxy::start_with(binary, TOXIPROXY_FAILURE_TIMEOUT))
+            .send(Toxiproxy::start_with(
+                binary,
+                TOXIPROXY_FAILURE_TIMEOUT,
+                FIXTURE_DEADLOCK_GUARD,
+            ))
             .expect("return startup result");
     });
-    let connection = accept_within(&gate, TOXIPROXY_FAILURE_TIMEOUT, "toxiproxy startup gate");
+    let connection = accept_within(&gate, FIXTURE_DEADLOCK_GUARD, "toxiproxy startup gate");
     (startup, receiver, connection)
 }
 
