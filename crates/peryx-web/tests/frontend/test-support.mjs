@@ -65,7 +65,7 @@ export async function goto(page, url) {
   page.on("pageerror", (error) =>
     console.error(`browser error: ${error.stack || error.message || String(error)}`),
   );
-  await page.goto(url);
+  await page.goto(url, { waitUntil: "commit" });
   await page.waitForSelector("body[data-hydrated]");
 }
 

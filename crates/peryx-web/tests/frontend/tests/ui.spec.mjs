@@ -11,6 +11,30 @@ const ADMIN_AUTH = `Basic ${Buffer.from("administrator:browser-admin-secret").to
 
 collectWasmCoverage(test);
 
+test("navigation completes when the application hydrates", async ({ page }) => {
+  const assetRequested = Promise.withResolvers();
+  const releaseAsset = Promise.withResolvers();
+  await page.route("**/mark.svg", async (route) => {
+    assetRequested.resolve();
+    await releaseAsset.promise;
+    await route.continue();
+  });
+  let completed = false;
+  const navigation = goto(page, "/").then(() => {
+    completed = true;
+  });
+  try {
+    await assetRequested.promise;
+    await page.waitForSelector("body[data-hydrated]");
+    await Promise.resolve();
+    expect(completed).toBe(true);
+  } finally {
+    releaseAsset.resolve();
+    await navigation;
+    await page.unrouteAll({ behavior: "wait" });
+  }
+});
+
 function isPolicyResponse(response) {
   return new URL(response.url()).pathname.endsWith("/+policy/decisions");
 }
