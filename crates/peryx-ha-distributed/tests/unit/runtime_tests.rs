@@ -47,12 +47,14 @@ struct ConsensusOrderListener {
 }
 
 struct ConsensusOrderSignal {
+    listener: Option<tokio::net::TcpListener>,
     log_path: std::path::PathBuf,
     stopped: Option<std::sync::mpsc::Sender<bool>>,
 }
 
 impl Drop for ConsensusOrderSignal {
     fn drop(&mut self) {
+        drop(self.listener.take());
         let consensus_running = crate::raft::persistence::RaftLogStore::open(&self.log_path).is_err();
         let _ = self.stopped.take().unwrap().send(consensus_running);
     }
@@ -74,11 +76,11 @@ impl crate::PreparedAvailabilityListener for ConsensusOrderListener {
         let listener = tokio::net::TcpListener::from_std(self.listener)
             .map_err(|error| crate::AvailabilityListenerError::Setup(error.to_string()))?;
         let stopped = ConsensusOrderSignal {
+            listener: Some(listener),
             log_path: self.log_path,
             stopped: Some(self.stopped),
         };
         Ok(Box::pin(async move {
-            let _listener = listener;
             let _stopped = stopped;
             shutdown.cancelled_owned().await;
             Ok(())
@@ -114,11 +116,15 @@ impl crate::PreparedAvailabilityListener for PanickingAddressListener {
     }
 }
 
-struct DropSignal(Option<tokio::sync::oneshot::Sender<()>>);
+struct DropSignal {
+    listener: Option<tokio::net::TcpListener>,
+    stopped: Option<tokio::sync::oneshot::Sender<()>>,
+}
 
 impl Drop for DropSignal {
     fn drop(&mut self) {
-        if let Some(stopped) = self.0.take() {
+        drop(self.listener.take());
+        if let Some(stopped) = self.stopped.take() {
             let _ = stopped.send(());
         }
     }
@@ -154,9 +160,11 @@ impl crate::PreparedAvailabilityListener for ControlledListener {
             .map_err(|error| crate::AvailabilityListenerError::Setup(error.to_string()))?;
         let listener = tokio::net::TcpListener::from_std(listener)
             .map_err(|error| crate::AvailabilityListenerError::Setup(error.to_string()))?;
-        let stopped = DropSignal(Some(stopped));
+        let stopped = DropSignal {
+            listener: Some(listener),
+            stopped: Some(stopped),
+        };
         Ok(Box::pin(async move {
-            let _listener = listener;
             let _stopped = stopped;
             if let Some(entered) = entered {
                 let _ = entered.send(());
