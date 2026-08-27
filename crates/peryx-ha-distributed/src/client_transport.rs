@@ -85,6 +85,10 @@ impl HttpClientTransport {
         self.client.get(url).bearer_auth(&self.token)
     }
 
+    pub(super) fn head(&self, url: Url) -> RequestBuilder {
+        self.client.head(url).bearer_auth(&self.token)
+    }
+
     pub(super) fn post(&self, url: Url) -> RequestBuilder {
         self.client.post(url).bearer_auth(&self.token)
     }

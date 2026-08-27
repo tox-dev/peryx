@@ -120,6 +120,25 @@ async fn test_fetch_reports_a_missing_blob() {
 }
 
 #[tokio::test]
+async fn test_loopback_reports_blob_availability_without_fetching() {
+    let digest = Digest::of(b"data");
+    let source = source(&digest, b"data", 1024);
+
+    assert_eq!(source.blob_size(&digest).await.unwrap(), Some(4));
+    assert_eq!(source.blob_size(&Digest::of(b"absent")).await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn test_transport_without_an_availability_signal_proves_nothing() {
+    let source = BlockingBlob {
+        started: Arc::new(Notify::new()),
+        release: Arc::new(Notify::new()),
+    };
+
+    assert_eq!(source.blob_size(&Digest::of(b"data")).await.unwrap(), None);
+}
+
+#[tokio::test]
 async fn test_capacity_limited_delegates_when_a_permit_is_free() {
     let digest = Digest::of(b"data");
     let limited = CapacityLimited::new(source(&digest, b"data", 1024), NonZeroUsize::new(2).unwrap());
@@ -127,6 +146,14 @@ async fn test_capacity_limited_delegates_when_a_permit_is_free() {
     let bytes = limited.fetch_blob(whole(&digest)).await.unwrap();
 
     assert_eq!(bytes, b"data");
+}
+
+#[tokio::test]
+async fn test_capacity_limited_delegates_blob_availability() {
+    let digest = Digest::of(b"data");
+    let limited = CapacityLimited::new(source(&digest, b"data", 1024), NonZeroUsize::new(2).unwrap());
+
+    assert_eq!(limited.blob_size(&digest).await.unwrap(), Some(4));
 }
 
 struct BlockingBlob {

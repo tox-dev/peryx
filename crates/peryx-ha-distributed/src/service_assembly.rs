@@ -1311,7 +1311,7 @@ fn source_roster(membership: &crate::RuntimeMembership, local_dc: &str) -> HashM
     datacenter_roster(membership, Some(local_dc))
 }
 
-fn datacenter_roster(membership: &crate::RuntimeMembership, excluded_dc: Option<&str>) -> HashMap<String, String> {
+pub fn datacenter_roster(membership: &crate::RuntimeMembership, excluded_dc: Option<&str>) -> HashMap<String, String> {
     let mut roster = HashMap::new();
     for member in &membership.members {
         if excluded_dc.is_some_and(|excluded| member.datacenter == excluded) {

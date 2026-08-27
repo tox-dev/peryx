@@ -116,7 +116,8 @@ pub use blob_http::{HttpBlobError, HttpBlobTransport};
 pub use blob_piece::{PieceError, blob_piece};
 pub use blob_placement::{FetchPlan, plan_blob_fetch};
 pub use blob_plane::{
-    BLOB_VIEW, BlobPlaneReport, BlobSources, advance_blob_frontier, pull_outstanding, pull_referenced,
+    BLOB_VIEW, BlobPlaneReport, BlobSources, PeerBlobEvidence, advance_blob_frontier,
+    advance_blob_frontier_with_evidence, pull_outstanding, pull_outstanding_with_evidence, pull_referenced,
 };
 pub use blob_pull::{
     ChunkFailure, ChunkUnavailable, PullError, chunk_ranges, pull_chunk_verified, pull_ranged, pull_ranged_blob,

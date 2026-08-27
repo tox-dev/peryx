@@ -29,6 +29,14 @@ pub struct BlobRequest {
 /// Whole-blob results are digest-verified; ranged results require verification after reassembly.
 #[async_trait]
 pub trait BlobTransport: Sync {
+    /// Returns the peer's byte length only when it confirms the digest is serveable.
+    ///
+    /// # Errors
+    /// Returns the peer transport error without treating an unsupported signal as evidence.
+    async fn blob_size(&self, _digest: &Digest) -> Result<Option<u64>, TransportError> {
+        Ok(None)
+    }
+
     /// # Errors
     /// [`TransportError::FrameTooLarge`] if the stream passes the byte cap before it ends,
     /// [`TransportError::DigestMismatch`] if a whole-blob fetch does not hash to its digest,
@@ -75,6 +83,13 @@ impl<T> CapacityLimited<T> {
 
 #[async_trait]
 impl<T: BlobTransport + Send> BlobTransport for CapacityLimited<T> {
+    async fn blob_size(&self, digest: &Digest) -> Result<Option<u64>, TransportError> {
+        let _permit = Arc::clone(&self.permits)
+            .try_acquire_owned()
+            .map_err(|_| TransportError::AtCapacity)?;
+        self.inner.blob_size(digest).await
+    }
+
     async fn fetch_blob(&self, request: BlobRequest) -> Result<Vec<u8>, TransportError> {
         let _permit = Arc::clone(&self.permits)
             .try_acquire_owned()
@@ -98,6 +113,10 @@ impl LoopbackBlobSource {
 
 #[async_trait]
 impl BlobTransport for LoopbackBlobSource {
+    async fn blob_size(&self, digest: &Digest) -> Result<Option<u64>, TransportError> {
+        Ok(self.blobs.get(digest).map(|content| content.len() as u64))
+    }
+
     async fn fetch_blob(&self, request: BlobRequest) -> Result<Vec<u8>, TransportError> {
         let content = self
             .blobs

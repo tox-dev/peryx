@@ -418,13 +418,38 @@ async fn test_primary_router_streams_a_digest_addressed_blob() {
         .unwrap();
     let status = response.status();
     let content_type = response.headers()[header::CONTENT_TYPE].clone();
+    let content_length = response.headers()[header::CONTENT_LENGTH].clone();
     let etag = response.headers()[header::ETAG].clone();
     let body = response.into_body().collect().await.unwrap().to_bytes();
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(content_type, "application/octet-stream");
+    assert_eq!(content_length, "14");
     assert_eq!(etag, format!("\"sha256:{}\"", digest.as_str()));
     assert_eq!(body, "artifact bytes");
+}
+
+#[tokio::test]
+async fn test_primary_router_proves_blob_availability_without_a_body() {
+    let stores = TestStores::new();
+    let digest = stores.blobs.put_bytes(b"artifact bytes").await.unwrap();
+    let response = stores
+        .router()
+        .oneshot(
+            Request::head(format!("/+replication/v1/blobs/sha256/{}", digest.as_str()))
+                .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let content_length = response.headers()[header::CONTENT_LENGTH].clone();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(content_length, "14");
+    assert!(body.is_empty());
 }
 
 #[tokio::test]
@@ -455,6 +480,7 @@ async fn test_primary_router_reports_a_missing_blob() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response.headers()["x-peryx-blob-result"], "not-found");
 }
 
 #[cfg(unix)]

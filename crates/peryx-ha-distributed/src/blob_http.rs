@@ -9,7 +9,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use peryx_storage::blob::Digest;
 use reqwest::Url;
-use reqwest::header::{ACCEPT_ENCODING, RANGE};
+use reqwest::header::{ACCEPT_ENCODING, CONTENT_LENGTH, RANGE};
 
 use crate::blob::{BlobRequest, BlobTransport, ByteRange};
 use crate::client_transport::{
@@ -19,6 +19,8 @@ use crate::client_transport::{
 use crate::peer::{TransferLimits, TransportError};
 
 const BLOBS_PATH: &str = "+replication/v1/blobs/sha256/";
+pub const BLOB_MISS_HEADER: &str = "x-peryx-blob-result";
+pub const BLOB_MISS_VALUE: &str = "not-found";
 
 #[derive(Debug, thiserror::Error)]
 pub enum HttpBlobError {
@@ -76,6 +78,37 @@ fn range_header(range: ByteRange) -> String {
 
 #[async_trait]
 impl BlobTransport for HttpBlobTransport {
+    async fn blob_size(&self, digest: &Digest) -> Result<Option<u64>, TransportError> {
+        let url = format!("{}{}", self.blobs_url, digest.as_str());
+        let response = self
+            .http
+            .send(
+                self.http
+                    .head(Url::parse(&url).expect("a digest extends a valid blob URL")),
+            )
+            .await
+            .map_err(replication_error)?;
+        if classify_status(response.status()) == ReplicationStatus::NotFound {
+            return if response
+                .headers()
+                .get(BLOB_MISS_HEADER)
+                .is_some_and(|value| value == BLOB_MISS_VALUE)
+            {
+                Ok(None)
+            } else {
+                Err(TransportError::BadStatus { status: 404 })
+            };
+        }
+        require_replication_success(response.status())?;
+        response
+            .headers()
+            .get(CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse().ok())
+            .map(Some)
+            .ok_or(TransportError::Malformed)
+    }
+
     async fn fetch_blob(&self, request: BlobRequest) -> Result<Vec<u8>, TransportError> {
         let url = format!("{}{}", self.blobs_url, request.digest.as_str());
         let mut builder = self
@@ -87,9 +120,17 @@ impl BlobTransport for HttpBlobTransport {
         }
         let response = self.http.send(builder).await.map_err(replication_error)?;
         if classify_status(response.status()) == ReplicationStatus::NotFound {
-            return Err(TransportError::BlobNotFound {
-                digest: request.digest.as_str().to_owned(),
-            });
+            return if response
+                .headers()
+                .get(BLOB_MISS_HEADER)
+                .is_some_and(|value| value == BLOB_MISS_VALUE)
+            {
+                Err(TransportError::BlobNotFound {
+                    digest: request.digest.as_str().to_owned(),
+                })
+            } else {
+                Err(TransportError::BadStatus { status: 404 })
+            };
         }
         require_replication_success(response.status())?;
         let cap = self.limits.max_encoded_bytes.get();

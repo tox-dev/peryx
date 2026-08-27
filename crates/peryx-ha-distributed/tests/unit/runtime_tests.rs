@@ -575,7 +575,8 @@ async fn remote_blob_availability_requires_a_valid_remote_peer() {
             state.serving.blobs.clone(),
             state.serving.clock.clone(),
         )
-        .is_err()
+        .unwrap()
+        .is_none()
     );
     config.membership.as_mut().unwrap().members[1].address = "http://west.internal:4460".to_owned();
     config.read_through = Some(DEFAULT_READ_THROUGH_LIMITS);
@@ -586,7 +587,7 @@ async fn remote_blob_availability_requires_a_valid_remote_peer() {
         state.serving.clock.clone(),
     )
     .unwrap();
-    assert!(availability.is_some());
+    assert!(availability.is_none());
     let topology = peryx_core::TopologyConfig {
         mode: peryx_core::TopologyMode::Dc,
         group: Some("ownership".to_owned()),
@@ -622,6 +623,48 @@ async fn remote_blob_availability_requires_a_valid_remote_peer() {
             .await
             .unwrap()
             .is_none()
+    );
+}
+
+#[rstest::rstest]
+#[case::writer_first(false)]
+#[case::writer_last(true)]
+fn remote_blob_availability_prefers_the_writer_in_roster_order(#[case] writer_last: bool) {
+    let (dir, state) = state();
+    let writer = member(
+        "remote-writer",
+        "west",
+        "http://writer.internal:4460",
+        RuntimeMemberRole::Writer,
+    );
+    let replica = member("remote-replica", "west", "not a url", RuntimeMemberRole::Replica);
+    let mut remote = if writer_last {
+        vec![replica, writer]
+    } else {
+        vec![writer, replica]
+    };
+    remote.insert(
+        0,
+        member(
+            "local",
+            "east",
+            "http://local.internal:4460",
+            RuntimeMemberRole::Replica,
+        ),
+    );
+    let mut config = replica_config(&dir, "http://primary.internal:4460");
+    config.node_identity = Some("local".to_owned());
+    config.membership = Some(membership(remote));
+
+    assert!(
+        remote_blob_availability(
+            &config,
+            state.serving.meta.clone(),
+            state.serving.blobs.clone(),
+            state.serving.clock.clone(),
+        )
+        .unwrap()
+        .is_some()
     );
 }
 

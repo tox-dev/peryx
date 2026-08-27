@@ -1,7 +1,13 @@
 use std::collections::{BTreeSet, HashMap};
 use std::num::{NonZeroU64, NonZeroUsize};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use async_trait::async_trait;
+use axum::extract::Request;
+use axum::http::Method;
+use axum::middleware::{Next, from_fn};
 use bytes::Bytes;
 use peryx_ha::{ArtifactSource, BackendId, BackendLocation, BlobPlacementKey, BlobPlacementTransition, DataCenterId};
 use peryx_identity::ArtifactDigest;
@@ -9,11 +15,16 @@ use peryx_storage::blob::{BlobStorage, Digest};
 use peryx_storage::meta::{DriverBlobReference, JournalEntry, MetaStore};
 
 use crate::blob::{BlobRequest, BlobTransport, LoopbackBlobSource};
+use crate::blob_http::HttpBlobTransport;
 use crate::blob_plane::{
     BLOB_VIEW, BlobPlaneReport, BlobSources, advance_blob_frontier, pull_outstanding, pull_referenced,
 };
 use crate::error::SyncError;
 use crate::peer::{TransferLimits, TransportError};
+use crate::support::TestServer;
+use crate::{advance_blob_frontier_with_evidence, pull_outstanding_with_evidence};
+
+const TOKEN: &str = "secret";
 
 fn stores() -> (tempfile::TempDir, MetaStore, BlobStorage) {
     let dir = tempfile::tempdir().unwrap();
@@ -81,6 +92,10 @@ struct Faulty(TransportError);
 
 #[async_trait]
 impl BlobTransport for Faulty {
+    async fn blob_size(&self, _digest: &Digest) -> Result<Option<u64>, TransportError> {
+        Err(self.0.clone())
+    }
+
     async fn fetch_blob(&self, _request: BlobRequest) -> Result<Vec<u8>, TransportError> {
         Err(self.0.clone())
     }
@@ -561,7 +576,7 @@ async fn test_pull_outstanding_takes_the_whole_blob_path_for_a_single_placement(
 }
 
 #[tokio::test]
-async fn test_pull_outstanding_defers_a_peer_only_blob_to_read_through() {
+async fn test_pull_outstanding_reports_a_peer_that_does_not_serve_the_blob() {
     let (_dir, meta, blobs) = stores();
     let bytes = b"peer-held";
     let digest = Digest::of(bytes);
@@ -575,9 +590,161 @@ async fn test_pull_outstanding_defers_a_peer_only_blob_to_read_through() {
         local_dc: "dc-a",
     };
 
+    let error = pull_outstanding(&sources, &meta, &blobs, nz(10), nz(2))
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        SyncError::BlobFetchFailed {
+            reason: "blob_not_found",
+            ..
+        }
+    ));
+    assert!(blobs.head(&digest).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn test_pull_outstanding_defers_only_after_the_peer_serves_bytes() {
+    let (_dir, meta, blobs) = stores();
+    let bytes = b"peer-held";
+    let digest = Digest::of(bytes);
+    seed_serial(&meta, 0, &[(digest.as_str(), bytes.len() as u64)]);
+    seed_verified_placement(&meta, &digest, "dc-b", bytes.len() as u64);
+    let simple = loopback(&digest, bytes);
+    let delegates = HashMap::from([("dc-b".to_owned(), loopback(&digest, bytes))]);
+    let sources = BlobSources {
+        simple: &simple,
+        delegates: &delegates,
+        local_dc: "dc-a",
+    };
+
     let report = pull_outstanding(&sources, &meta, &blobs, nz(10), nz(2)).await.unwrap();
 
     assert_eq!(report, BlobPlaneReport { fetched: 0, pending: 0 });
+    assert!(blobs.head(&digest).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn test_pull_outstanding_probes_once_without_downloading_the_deferred_blob() {
+    let (_dir, meta, blobs) = stores();
+    let bytes = b"peer-held";
+    let digest = Digest::of(bytes);
+    seed_serial(&meta, 0, &[(digest.as_str(), bytes.len() as u64)]);
+    seed_verified_placement(&meta, &digest, "dc-b", bytes.len() as u64);
+    let remote_dir = tempfile::tempdir().unwrap();
+    let remote_blobs = BlobStorage::filesystem(remote_dir.path().join("blobs"));
+    remote_blobs.put_bytes(bytes).await.unwrap();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let counted_requests = Arc::clone(&requests);
+    let router = crate::primary_router(
+        "remote",
+        TOKEN,
+        crate::support::distributed_meta(remote_dir.path().join("peryx.redb")),
+        remote_blobs,
+    )
+    .unwrap()
+    .layer(from_fn(move |request: Request, next: Next| {
+        let requests = Arc::clone(&counted_requests);
+        async move {
+            assert_eq!(request.method(), Method::HEAD);
+            requests.fetch_add(1, Ordering::Relaxed);
+            next.run(request).await
+        }
+    }));
+    let server = TestServer::start(router).await;
+    let transport = HttpBlobTransport::new(&server.url, TOKEN, limits(), Duration::from_secs(5)).unwrap();
+    let simple = transport.clone();
+    let delegates = HashMap::from([("dc-b".to_owned(), transport)]);
+    let sources = BlobSources {
+        simple: &simple,
+        delegates: &delegates,
+        local_dc: "dc-a",
+    };
+
+    let report = pull_outstanding(&sources, &meta, &blobs, nz(10), nz(2)).await.unwrap();
+
+    assert_eq!(report, BlobPlaneReport { fetched: 0, pending: 0 });
+    assert_eq!(requests.load(Ordering::Relaxed), 1);
+    assert!(blobs.head(&digest).await.unwrap().is_none());
+}
+
+#[rstest::rstest]
+#[case::missing_route(TransportError::BadStatus { status: 404 }, "blob_route_unavailable")]
+#[case::unauthenticated(TransportError::Unauthenticated, "unauthenticated")]
+#[tokio::test]
+async fn test_pull_outstanding_surfaces_a_terminal_peer_failure(
+    #[case] failure: TransportError,
+    #[case] reason: &'static str,
+) {
+    let (_dir, meta, blobs) = stores();
+    let bytes = b"peer-held";
+    let digest = Digest::of(bytes);
+    seed_serial(&meta, 0, &[(digest.as_str(), bytes.len() as u64)]);
+    seed_verified_placement(&meta, &digest, "dc-b", bytes.len() as u64);
+    let simple = Faulty(failure.clone());
+    let delegates = HashMap::from([("dc-b".to_owned(), Faulty(failure))]);
+    let sources = BlobSources {
+        simple: &simple,
+        delegates: &delegates,
+        local_dc: "dc-a",
+    };
+
+    let error = pull_outstanding(&sources, &meta, &blobs, nz(10), nz(2))
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        SyncError::BlobFetchFailed { reason: actual, .. } if actual == reason
+    ));
+}
+
+#[tokio::test]
+async fn test_pull_outstanding_leaves_a_retryable_peer_probe_pending() {
+    let (_dir, meta, blobs) = stores();
+    let digest = Digest::of(b"peer-held");
+    seed_serial(&meta, 0, &[(digest.as_str(), 9)]);
+    seed_verified_placement(&meta, &digest, "dc-b", 9);
+    let simple = Faulty(TransportError::AtCapacity);
+    let delegates = HashMap::from([("dc-b".to_owned(), Faulty(TransportError::AtCapacity))]);
+    let sources = BlobSources {
+        simple: &simple,
+        delegates: &delegates,
+        local_dc: "dc-a",
+    };
+
+    let report = pull_outstanding(&sources, &meta, &blobs, nz(10), nz(2)).await.unwrap();
+
+    assert_eq!(report, BlobPlaneReport { fetched: 0, pending: 1 });
+    assert!(blobs.head(&digest).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn test_pull_outstanding_rejects_peer_evidence_with_the_wrong_size() {
+    let (_dir, meta, blobs) = stores();
+    let digest = Digest::of(b"peer-held");
+    seed_serial(&meta, 0, &[(digest.as_str(), 9)]);
+    seed_verified_placement(&meta, &digest, "dc-b", 9);
+    let simple = mislabeled(&digest, b"short");
+    let delegates = HashMap::from([("dc-b".to_owned(), mislabeled(&digest, b"short"))]);
+    let sources = BlobSources {
+        simple: &simple,
+        delegates: &delegates,
+        local_dc: "dc-a",
+    };
+
+    let error = pull_outstanding(&sources, &meta, &blobs, nz(10), nz(2))
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        SyncError::BlobFetchFailed {
+            reason: "blob_size_mismatch",
+            ..
+        }
+    ));
     assert!(blobs.head(&digest).await.unwrap().is_none());
 }
 
@@ -625,7 +792,7 @@ async fn test_pull_outstanding_pulls_a_peer_blob_also_placed_locally() {
 }
 
 #[tokio::test]
-async fn test_advance_lets_a_deferred_blob_through() {
+async fn test_advance_holds_a_peer_blob_without_positive_evidence() {
     let (_dir, meta, blobs) = stores();
     let digest = Digest::of(b"peer-held");
     seed_serial(&meta, 0, &[(digest.as_str(), 9)]);
@@ -634,6 +801,34 @@ async fn test_advance_lets_a_deferred_blob_through() {
 
     assert_eq!(
         advance_blob_frontier(&meta, &blobs, nz(10), "dc-a", &reachable)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(meta.view_frontier(BLOB_VIEW).unwrap(), None);
+    assert!(blobs.head(&digest).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn test_advance_accepts_positive_peer_evidence_for_the_digest() {
+    let (_dir, meta, blobs) = stores();
+    let bytes = b"peer-held";
+    let digest = Digest::of(bytes);
+    seed_serial(&meta, 0, &[(digest.as_str(), bytes.len() as u64)]);
+    seed_verified_placement(&meta, &digest, "dc-b", bytes.len() as u64);
+    let simple = loopback(&digest, bytes);
+    let delegates = HashMap::from([("dc-b".to_owned(), loopback(&digest, bytes))]);
+    let sources = BlobSources {
+        simple: &simple,
+        delegates: &delegates,
+        local_dc: "dc-a",
+    };
+    let (_, served_by_peer) = pull_outstanding_with_evidence(&sources, &meta, &blobs, nz(10), nz(2))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        advance_blob_frontier_with_evidence(&meta, &blobs, nz(10), &served_by_peer)
             .await
             .unwrap(),
         1

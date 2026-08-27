@@ -18,7 +18,7 @@ use crate::blob_placement::{FetchPlan, plan_blob_fetch};
 use crate::blob_pull::{PullError, pull_ranged_blob};
 use crate::error::SyncError;
 use crate::protocol::{PlacementAvailability, PlacementDescriptor};
-use crate::{apply_placement_event, record_artifact_placement};
+use crate::{TransportError, apply_placement_event, record_artifact_placement};
 
 /// The readable frontier gates metadata visibility on this blob-availability view.
 pub const BLOB_VIEW: &str = peryx_ha::AVAILABILITY_BLOB_VIEW;
@@ -90,8 +90,12 @@ pub struct BlobSources<'a, T> {
     pub local_dc: &'a str,
 }
 
+/// Byte-serving evidence gathered during one blob pull pass.
+#[derive(Debug, Default)]
+pub struct PeerBlobEvidence(BTreeSet<String>);
+
 enum BlobDisposition {
-    Defer,
+    Defer(Vec<String>),
     Ranged(Vec<String>),
     Whole,
 }
@@ -110,16 +114,12 @@ fn classify_blob(descriptors: &[PlacementDescriptor], local_dc: &str, reachable:
         }
     }
     if !has_local && !sources.is_empty() {
-        BlobDisposition::Defer
+        BlobDisposition::Defer(sources)
     } else if sources.len() >= 2 {
         BlobDisposition::Ranged(sources)
     } else {
         BlobDisposition::Whole
     }
-}
-
-fn deferred_to_peer(descriptors: &[PlacementDescriptor], local_dc: &str, reachable: &BTreeSet<String>) -> bool {
-    matches!(classify_blob(descriptors, local_dc, reachable), BlobDisposition::Defer)
 }
 
 /// Journal digests are canonical lowercase SHA-256, as required by [`ArtifactDigest::from_sha256`].
@@ -143,10 +143,27 @@ pub async fn pull_outstanding<T: BlobTransport>(
     batch: NonZeroUsize,
     concurrency: NonZeroUsize,
 ) -> Result<BlobPlaneReport, SyncError> {
+    Ok(pull_outstanding_with_evidence(sources, meta, blobs, batch, concurrency)
+        .await?
+        .0)
+}
+
+/// Pulls outstanding blobs and returns evidence for blobs served by a peer.
+///
+/// # Errors
+/// Returns a store, transport, placement, or blob verification error.
+pub async fn pull_outstanding_with_evidence<T: BlobTransport>(
+    sources: &BlobSources<'_, T>,
+    meta: &MetaStore,
+    blobs: &BlobStorage,
+    batch: NonZeroUsize,
+    concurrency: NonZeroUsize,
+) -> Result<(BlobPlaneReport, PeerBlobEvidence), SyncError> {
     let reachable: BTreeSet<String> = sources.delegates.keys().cloned().collect();
     let referenced = referenced_over_tail(meta, batch)?;
     let mut simple = Vec::new();
     let mut ranged = Vec::new();
+    let mut deferred = Vec::new();
     for (digest, size) in &referenced {
         if blobs.head(digest).await?.is_some() {
             repair_local_placement(meta, digest)?;
@@ -154,7 +171,7 @@ pub async fn pull_outstanding<T: BlobTransport>(
         }
         let descriptors = placement_descriptors(meta, digest)?;
         match classify_blob(&descriptors, sources.local_dc, &reachable) {
-            BlobDisposition::Defer => {}
+            BlobDisposition::Defer(dcs) => deferred.push((digest.clone(), *size, dcs)),
             BlobDisposition::Ranged(dcs) => ranged.push((digest.clone(), *size, dcs)),
             BlobDisposition::Whole => simple.push((digest.clone(), *size)),
         }
@@ -167,7 +184,43 @@ pub async fn pull_outstanding<T: BlobTransport>(
             .boxed()
             .await?;
     }
-    Ok(report)
+    let mut served_by_peer = BTreeSet::new();
+    for (digest, size, dcs) in deferred {
+        if probe_deferred_blob(sources, &digest, size, &dcs).await? {
+            served_by_peer.insert(digest.as_str().to_owned());
+        } else {
+            report.pending += 1;
+        }
+    }
+    Ok((report, PeerBlobEvidence(served_by_peer)))
+}
+
+async fn probe_deferred_blob<T: BlobTransport>(
+    sources: &BlobSources<'_, T>,
+    digest: &Digest,
+    size: u64,
+    dcs: &[String],
+) -> Result<bool, SyncError> {
+    let mut terminal = None;
+    let mut retryable = false;
+    for dc in dcs {
+        match sources.delegates[dc].blob_size(digest).await {
+            Ok(Some(actual)) if actual == size => return Ok(true),
+            Ok(Some(_)) => terminal = Some("blob_size_mismatch"),
+            Ok(None) => terminal = Some("blob_not_found"),
+            Err(error) if error.is_retryable() => retryable = true,
+            Err(TransportError::BadStatus { status: 404 }) => terminal = Some("blob_route_unavailable"),
+            Err(error) => terminal = error.terminal_reason(),
+        }
+    }
+    if retryable {
+        Ok(false)
+    } else {
+        Err(SyncError::BlobFetchFailed {
+            reason: terminal.unwrap_or("blob_not_found"),
+            digest: digest.as_str().to_owned(),
+        })
+    }
 }
 
 /// Source exhaustion leaves the blob pending; length and verification failures fail closed.
@@ -217,19 +270,31 @@ fn referenced_over_tail(meta: &MetaStore, batch: NonZeroUsize) -> Result<Vec<(Di
     Ok(referenced)
 }
 
-/// Recomputes [`BLOB_VIEW`] from a bounded journal scan and current blob availability.
+/// Recomputes [`BLOB_VIEW`] from a bounded journal scan and local blob availability.
 ///
-/// A reachable read-through peer satisfies a local miss.
+/// Configured peer reachability is not proof that a peer serves a locally absent blob.
 ///
 /// # Errors
-/// Returns a store error reading the journal, probing blob presence, reading a blob's placements, or
-/// writing the frontier.
+/// Returns a store error reading the journal, probing blob presence, or writing the frontier.
 pub async fn advance_blob_frontier(
     meta: &MetaStore,
     blobs: &BlobStorage,
     batch: NonZeroUsize,
-    local_dc: &str,
-    reachable: &BTreeSet<String>,
+    _local_dc: &str,
+    _reachable: &BTreeSet<String>,
+) -> Result<u64, SyncError> {
+    advance_blob_frontier_with_evidence(meta, blobs, batch, &PeerBlobEvidence::default()).await
+}
+
+/// Recomputes [`BLOB_VIEW`] using byte-serving evidence from the current pull pass.
+///
+/// # Errors
+/// Returns a store error reading the journal, probing blob presence, or writing the frontier.
+pub async fn advance_blob_frontier_with_evidence(
+    meta: &MetaStore,
+    blobs: &BlobStorage,
+    batch: NonZeroUsize,
+    served_by_peer: &PeerBlobEvidence,
 ) -> Result<u64, SyncError> {
     let frontier = meta.view_frontier(BLOB_VIEW)?.unwrap_or(0);
     let (_authority, records) = meta.journal_page_after(frontier, batch.get())?;
@@ -240,10 +305,7 @@ pub async fn advance_blob_frontier(
         for blob in &record.blobs {
             let (present_locally, served_by_peer) = match Digest::from_hex(&blob.sha256) {
                 Some(digest) if blobs.head(&digest).await?.is_some() => (true, false),
-                Some(digest) => (
-                    false,
-                    deferred_to_peer(&placement_descriptors(meta, &digest)?, local_dc, reachable),
-                ),
+                Some(digest) => (false, served_by_peer.0.contains(digest.as_str())),
                 // An unparseable digest cannot be served and holds the frontier closed.
                 None => (false, false),
             };

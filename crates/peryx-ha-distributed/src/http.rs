@@ -19,6 +19,7 @@ use tokio::io::AsyncReadExt as _;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::io::ReaderStream;
 
+use crate::blob_http::{BLOB_MISS_HEADER, BLOB_MISS_VALUE};
 use crate::protocol::{Change, ChangePage, PROTOCOL_VERSION, Primary};
 use crate::replica::Replica;
 
@@ -331,7 +332,7 @@ async fn serve_blob(
         Some(range) => {
             let size = match state.blobs.head(&digest).await {
                 Ok(Some(metadata)) => metadata.bytes,
-                Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+                Ok(None) => return blob_not_found(),
                 Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
             };
             match parse_range(Some(range), size) {
@@ -344,31 +345,33 @@ async fn serve_blob(
     let partial = requested.is_some();
     let read = match state.blobs.open(&digest, requested).await {
         Ok(read) => read,
-        Err(error) if error.kind() == BlobErrorKind::NotFound => return StatusCode::NOT_FOUND.into_response(),
+        Err(error) if error.kind() == BlobErrorKind::NotFound => return blob_not_found(),
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     blob_content_response(read, partial, &digest, permit)
 }
 
+fn blob_not_found() -> Response {
+    (StatusCode::NOT_FOUND, [(BLOB_MISS_HEADER, BLOB_MISS_VALUE)]).into_response()
+}
+
 fn blob_content_response(read: BlobRead, partial: bool, digest: &Digest, permit: OwnedSemaphorePermit) -> Response {
     let mut builder = Response::builder()
         .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header(header::CONTENT_LENGTH, read.range.end - read.range.start)
         .header(header::CACHE_CONTROL, "private, no-store")
         .header(header::ACCEPT_RANGES, "bytes")
         .header(header::ETAG, format!("\"sha256:{}\"", digest.as_str()));
     if partial {
-        builder = builder
-            .status(StatusCode::PARTIAL_CONTENT)
-            .header(header::CONTENT_LENGTH, read.range.end - read.range.start)
-            .header(
-                header::CONTENT_RANGE,
-                format!(
-                    "bytes {}-{}/{}",
-                    read.range.start,
-                    read.range.end - 1,
-                    read.metadata.bytes
-                ),
-            );
+        builder = builder.status(StatusCode::PARTIAL_CONTENT).header(
+            header::CONTENT_RANGE,
+            format!(
+                "bytes {}-{}/{}",
+                read.range.start,
+                read.range.end - 1,
+                read.metadata.bytes
+            ),
+        );
     }
     builder
         .body(blob_body(read, permit))

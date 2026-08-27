@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -315,6 +315,7 @@ pub fn remote_blob_availability(
     let Some(local_dc) = local_datacenter(config, membership) else {
         return Ok(None);
     };
+    let dc = DataCenterId::new(local_dc.clone()).with_context(|| format!("local datacenter identity {local_dc}"))?;
     let limits = config.read_through.unwrap_or(DEFAULT_READ_THROUGH_LIMITS);
     let built = peer_blob_delegates(membership, &local_dc, config.role.token(), limits)?;
     if built.is_empty() {
@@ -324,7 +325,6 @@ pub fn remote_blob_availability(
         .into_iter()
         .map(|(dc, transport)| (dc, Arc::new(transport) as DcTransport))
         .collect();
-    let dc = DataCenterId::new(local_dc.clone()).with_context(|| format!("local datacenter identity {local_dc}"))?;
     Ok(Some(Arc::new(RemotePlacementReader::new(
         meta, blobs, dc, delegates, limits, clock,
     ))))
@@ -342,23 +342,21 @@ fn peer_blob_delegates(
         max_operations: TransferLimits::default().max_operations,
         max_encoded_bytes: limits.per_fetch_bytes,
     };
+    let writers: HashSet<&str> = membership
+        .members
+        .iter()
+        .filter(|member| member.role == RuntimeMemberRole::Writer)
+        .map(|member| member.datacenter.as_str())
+        .collect();
     let mut delegates = HashMap::new();
-    for member in &membership.members {
-        if member.datacenter == local_dc {
+    for (datacenter, address) in crate::service_assembly::datacenter_roster(membership, Some(local_dc)) {
+        if !writers.contains(datacenter.as_str()) {
             continue;
         }
-        let base = peer_blob_base(&member.address);
-        let transport =
-            HttpBlobTransport::new(&base, token.to_owned(), transfer, BLOB_FETCH_TIMEOUT).with_context(|| {
-                format!(
-                    "build a read-through blob transport for datacenter {}",
-                    member.datacenter
-                )
-            })?;
-        delegates.insert(
-            member.datacenter.clone(),
-            CapacityLimited::new(transport, limits.concurrency),
-        );
+        let base = peer_blob_base(&address);
+        let transport = HttpBlobTransport::new(&base, token.to_owned(), transfer, BLOB_FETCH_TIMEOUT)
+            .with_context(|| format!("build a read-through blob transport for datacenter {datacenter}"))?;
+        delegates.insert(datacenter, CapacityLimited::new(transport, limits.concurrency));
     }
     Ok(delegates)
 }

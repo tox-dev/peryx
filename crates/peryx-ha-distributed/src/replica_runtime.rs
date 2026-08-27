@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -9,7 +9,7 @@ use peryx_storage::meta::MetaStore;
 use crate::{
     AvailabilityMetrics, BlobPlaneReport, BlobSources, CapacityLimited, ChangePage, HttpBlobTransport,
     HttpPeerTransport, PROTOCOL_VERSION, PeerSet, ReconnectPolicy, Replica, ReplicaMonitor, Retry, SyncError,
-    SyncOutcome, TransportError, advance_blob_frontier, pull_outstanding, pull_round,
+    SyncOutcome, TransportError, advance_blob_frontier_with_evidence, pull_outstanding_with_evidence, pull_round,
 };
 
 pub const REPLICA_BLOB_FETCH_CONCURRENCY: std::num::NonZeroUsize =
@@ -178,15 +178,12 @@ impl ReplicaLoop {
     }
 
     async fn pull_blobs(&self) -> Result<BlobPlaneReport, SyncError> {
-        // Read-through serves blobs placed on reachable peers; the replica pulls local or unreachable
-        // placements in full. An unresolved data center makes the replica pull every blob.
-        let reachable: BTreeSet<String> = self.delegates.keys().cloned().collect();
         let sources = BlobSources {
             simple: &self.transport,
             delegates: &self.delegates,
             local_dc: &self.local_dc,
         };
-        let report = pull_outstanding(
+        let (report, served_by_peer) = pull_outstanding_with_evidence(
             &sources,
             &self.meta,
             &self.blobs,
@@ -194,7 +191,7 @@ impl ReplicaLoop {
             REPLICA_BLOB_FETCH_CONCURRENCY,
         )
         .await?;
-        advance_blob_frontier(&self.meta, &self.blobs, self.page_size, &self.local_dc, &reachable).await?;
+        advance_blob_frontier_with_evidence(&self.meta, &self.blobs, self.page_size, &served_by_peer).await?;
         Ok(report)
     }
 }

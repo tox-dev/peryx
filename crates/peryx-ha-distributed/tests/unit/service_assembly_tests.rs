@@ -216,12 +216,12 @@ fn service_installation_propagates_remote_transport_errors() {
         },
     );
     runtime.read_through = Some(crate::read_through::DEFAULT_READ_THROUGH_LIMITS);
-    runtime.membership.as_mut().unwrap().members.push(member(
-        "remote",
-        "west",
-        "not a url",
-        RuntimeMemberRole::Replica,
-    ));
+    runtime
+        .membership
+        .as_mut()
+        .unwrap()
+        .members
+        .push(member("remote", "west", "not a url", RuntimeMemberRole::Writer));
     let mut state = AppState::new(
         MetaStore::open(dir.path().join("peryx.redb")).unwrap(),
         BlobStorage::filesystem(dir.path().join("blobs")),
