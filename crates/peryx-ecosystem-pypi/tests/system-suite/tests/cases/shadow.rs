@@ -62,7 +62,7 @@ fn hosted() -> IndexConfig {
 
 fn virtual_root() -> IndexConfig {
     IndexConfig {
-        name: "root/pypi".to_owned(),
+        name: "root-pypi".to_owned(),
         route: "root/pypi".to_owned(),
         policy: peryx_policy::PolicyConfig::default(),
         ecosystem_policy: toml::Table::new(),
@@ -197,7 +197,7 @@ fn record_decision(
         .serving
         .meta
         .record_policy_decision(NewPolicyDecision {
-            repository: "root/pypi",
+            repository: "root-pypi",
             resource: "acme-pkg",
             group: None,
             artifact: filename,

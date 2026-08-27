@@ -21,7 +21,7 @@ pub(super) fn index_discovery() -> OperationBuilder {
                 json!({
                     "version": "0.0.1",
                     "index": {
-                        "name": "root/pypi",
+                        "name": "root-pypi",
                         "route": "root/pypi",
                         "kind": "virtual",
                         "layers": ["hosted", "pypi"],

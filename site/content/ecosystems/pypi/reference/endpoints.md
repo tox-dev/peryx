@@ -149,7 +149,7 @@ An upload through the default virtual route produces this format-specific body:
 {
   "event": "upload",
   "created_at": 1750000000,
-  "index": "root/pypi",
+  "index": "root-pypi",
   "route": "root/pypi",
   "hosted_index": "hosted",
   "project": "example",

@@ -69,9 +69,9 @@ async fn shadow_routes_serve_the_admin_page() {
 
 #[tokio::test]
 async fn shadow_candidates_return_decisions_and_paginate_without_overlap() {
-    let (_directory, state) = seeded_state("root/pypi", "root/pypi", IndexAcl::default());
+    let (_directory, state) = seeded_state("root-pypi", "root/pypi", IndexAcl::default());
     record_decisions(&state);
-    let authorization = local_reader(&state, "root/pypi").await;
+    let authorization = local_reader(&state, "root-pypi").await;
 
     let (status, headers, body) = request(
         &state,
@@ -147,8 +147,8 @@ async fn shadow_candidates_return_decisions_and_paginate_without_overlap() {
 
 #[tokio::test]
 async fn shadow_candidates_skip_decision_reads_for_empty_pages() {
-    let (_directory, state) = seeded_state("root/pypi", "root/pypi", IndexAcl::default());
-    let authorization = local_reader(&state, "root/pypi").await;
+    let (_directory, state) = seeded_state("root-pypi", "root/pypi", IndexAcl::default());
+    let authorization = local_reader(&state, "root-pypi").await;
 
     let (status, _, body) = request(
         &state,
@@ -179,8 +179,8 @@ async fn shadow_candidates_skip_decision_reads_for_empty_pages() {
 )]
 #[tokio::test]
 async fn shadow_candidates_report_validation_errors(#[case] uri: String, #[case] expected: &str) {
-    let (_directory, state) = seeded_state("root/pypi", "root/pypi", IndexAcl::default());
-    let authorization = local_reader(&state, "root/pypi").await;
+    let (_directory, state) = seeded_state("root-pypi", "root/pypi", IndexAcl::default());
+    let authorization = local_reader(&state, "root-pypi").await;
 
     let (status, headers, body) = request(&state, &uri, Some(HeaderValue::from_str(&authorization).unwrap())).await;
 
@@ -194,8 +194,8 @@ async fn shadow_candidates_report_validation_errors(#[case] uri: String, #[case]
 
 #[tokio::test]
 async fn shadow_contract_reports_malformed_parameters() {
-    let (_directory, state) = seeded_state("root/pypi", "root/pypi", IndexAcl::default());
-    let authorization = local_reader(&state, "root/pypi").await;
+    let (_directory, state) = seeded_state("root-pypi", "root/pypi", IndexAcl::default());
+    let authorization = local_reader(&state, "root-pypi").await;
 
     for (uri, expected) in [
         (
@@ -259,7 +259,7 @@ async fn shadow_candidates_hide_decision_store_errors() {
 #[case::wrong_scheme(Some(HeaderValue::from_static("Bearer token")))]
 #[tokio::test]
 async fn shadow_candidates_require_basic_authentication(#[case] authorization: Option<HeaderValue>) {
-    let (_directory, state) = seeded_state("root/pypi", "root/pypi", IndexAcl::default());
+    let (_directory, state) = seeded_state("root-pypi", "root/pypi", IndexAcl::default());
 
     let (status, headers, body) = request(
         &state,
@@ -275,8 +275,8 @@ async fn shadow_candidates_require_basic_authentication(#[case] authorization: O
 
 #[tokio::test]
 async fn shadow_candidates_hide_unknown_repositories_from_local_users() {
-    let (_directory, state) = seeded_state("root/pypi", "root/pypi", IndexAcl::default());
-    let authorization = local_reader(&state, "root/pypi").await;
+    let (_directory, state) = seeded_state("root-pypi", "root/pypi", IndexAcl::default());
+    let authorization = local_reader(&state, "root-pypi").await;
 
     let (status, _, body) = request(
         &state,
@@ -291,7 +291,7 @@ async fn shadow_candidates_hide_unknown_repositories_from_local_users() {
 
 #[tokio::test]
 async fn shadow_candidates_hide_repositories_without_a_reader_grant() {
-    let (_directory, state) = seeded_state("root/pypi", "root/pypi", IndexAcl::default());
+    let (_directory, state) = seeded_state("root-pypi", "root/pypi", IndexAcl::default());
     let authorization = local_user(&state).await;
 
     let (status, _, body) = request(
@@ -344,7 +344,7 @@ async fn shadow_candidates_report_authorization_store_failures() {
 
 #[tokio::test]
 async fn shadow_candidates_accept_a_write_index_credential() {
-    let (_directory, state) = seeded_state("root/pypi", "root/pypi", token_acl(Action::Write));
+    let (_directory, state) = seeded_state("root-pypi", "root/pypi", token_acl(Action::Write));
 
     let (status, _, body) = request(
         &state,
@@ -362,7 +362,7 @@ async fn shadow_candidates_accept_a_write_index_credential() {
 
 #[tokio::test]
 async fn shadow_candidates_forbid_an_index_credential_without_write_access() {
-    let (_directory, state) = seeded_state("root/pypi", "root/pypi", token_acl(Action::Read));
+    let (_directory, state) = seeded_state("root-pypi", "root/pypi", token_acl(Action::Read));
 
     let (status, _, body) = request(
         &state,
@@ -380,7 +380,7 @@ async fn shadow_candidates_forbid_an_index_credential_without_write_access() {
 #[case::wrong_secret("root/pypi", "wrong")]
 #[tokio::test]
 async fn shadow_candidates_reject_unusable_index_credentials(#[case] repository: &str, #[case] secret: &str) {
-    let (_directory, state) = seeded_state("root/pypi", "root/pypi", token_acl(Action::Write));
+    let (_directory, state) = seeded_state("root-pypi", "root/pypi", token_acl(Action::Write));
 
     let (status, headers, body) = request(
         &state,
@@ -513,7 +513,7 @@ fn decision(
     next_eligible_at_unix: Option<i64>,
 ) -> NewPolicyDecision<'static> {
     NewPolicyDecision {
-        repository: "root/pypi",
+        repository: "root-pypi",
         resource: PROJECT,
         group: None,
         artifact,
@@ -584,7 +584,7 @@ fn state_with_corrupt_table(table: &'static str) -> (tempfile::TempDir, Arc<AppS
     transaction.commit().unwrap();
     drop(database);
     let indexes = vec![Index {
-        name: "root/pypi".to_owned(),
+        name: "root-pypi".to_owned(),
         route: "root/pypi".to_owned(),
         ecosystem: crate::ECOSYSTEM,
         kind: IndexKind::Virtual {

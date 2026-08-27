@@ -232,7 +232,7 @@ impl Peryx {
              [[index.upstream]]\nname = \"primary\"\nurl = \"{upstream_url}\"\n\
              [[index]]\nname = \"hosted\"\nhosted = true\n\
              [[index.access_token]]\nname = \"uploader\"\nsecret = \"{UPLOAD_TOKEN}\"\nactions = [\"write\", \"delete\"]\n\
-             [[index]]\nname = \"root/pypi\"\nroute = \"root/pypi\"\nlayers = [\"hosted\", \"upstream\"]\nwrite_target = \"hosted\"\n\
+             [[index]]\nname = \"root-pypi\"\nroute = \"root/pypi\"\nlayers = [\"hosted\", \"upstream\"]\nwrite_target = \"hosted\"\n\
              [index.policy]\n{policy_toml}"
         );
         let node = ProcessHarness::new(cargo_binary("peryx-pypi-system-server"))

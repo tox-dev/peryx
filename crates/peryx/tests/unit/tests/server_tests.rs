@@ -1056,6 +1056,38 @@ fn test_check_config_reports_duplicate_names_and_routes() {
     );
 }
 
+#[rstest]
+#[case::pypi("root-pypi", "root/pypi")]
+#[case::oci("root-oci", "root/oci")]
+fn test_default_virtual_indexes_separate_names_from_routes(#[case] name: &str, #[case] route: &str) {
+    let config = Config::default();
+
+    assert!(
+        config
+            .indexes
+            .iter()
+            .any(|index| index.name == name && index.route == route)
+    );
+}
+
+#[rstest]
+#[case::startup(start_config)]
+#[case::check_config(check_config)]
+fn test_configuration_boundaries_reject_a_nested_index_name(#[case] validate: fn(&Config) -> anyhow::Result<()>) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = parsed_config(&dir, "[[index]]\nname = \"hosted\"\nhosted = true\n");
+    config.indexes[0].name = "root/pypi".to_owned();
+
+    assert_eq!(
+        validate(&config).unwrap_err().to_string(),
+        "invalid index name \"root/pypi\": path parameters must be non-empty segments without separators, traversal, or control characters"
+    );
+}
+
+fn start_config(config: &Config) -> anyhow::Result<()> {
+    build_state(config).map(drop)
+}
+
 #[test]
 fn test_check_config_uses_compiled_plugins() {
     let mut config = neutral_config();

@@ -41,7 +41,7 @@ pub const DEFAULT_INDEXES: &[peryx_core::DefaultIndex] = &[
         kind: peryx_core::DefaultIndexKind::Hosted,
     },
     peryx_core::DefaultIndex {
-        name: "root/pypi",
+        name: "root-pypi",
         route: "root/pypi",
         ecosystem: ECOSYSTEM,
         kind: peryx_core::DefaultIndexKind::Virtual {

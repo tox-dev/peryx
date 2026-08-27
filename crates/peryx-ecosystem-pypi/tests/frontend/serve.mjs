@@ -165,7 +165,8 @@ secret = "playwright-secret"
 actions = ["write", "delete"]
 
 [[index]]
-name = "root/pypi"
+name = "root-pypi"
+route = "root/pypi"
 ecosystem = "pypi"
 layers = ["hosted", "pypi"]
 write_target = "hosted"

@@ -47,7 +47,7 @@ pub const DEFAULT_INDEXES: &[peryx_core::DefaultIndex] = &[
         kind: peryx_core::DefaultIndexKind::Hosted,
     },
     peryx_core::DefaultIndex {
-        name: "root/oci",
+        name: "root-oci",
         route: "root/oci",
         ecosystem: ECOSYSTEM,
         kind: peryx_core::DefaultIndexKind::Virtual {

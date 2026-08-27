@@ -31,7 +31,8 @@ actions = ["write", "delete"]
 
 [[index]]
 ecosystem = "pypi"
-name = "root/pypi"
+name = "root-pypi"
+route = "root/pypi"
 layers = ["hosted", "pypi"]
 write_target = "hosted"
 ```

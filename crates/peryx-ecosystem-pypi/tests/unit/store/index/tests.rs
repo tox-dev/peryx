@@ -25,9 +25,9 @@ fn record() -> CachedIndex {
 #[test]
 fn test_put_and_get_index_roundtrip() {
     let (_dir, meta) = store();
-    assert_eq!(meta.get_index("root/pypi/flask").unwrap(), None);
-    meta.put_index("root/pypi/flask", &record()).unwrap();
-    assert_eq!(meta.get_index("root/pypi/flask").unwrap(), Some(record()));
+    assert_eq!(meta.get_index("root-pypi/flask").unwrap(), None);
+    meta.put_index("root-pypi/flask", &record()).unwrap();
+    assert_eq!(meta.get_index("root-pypi/flask").unwrap(), Some(record()));
 }
 
 #[test]

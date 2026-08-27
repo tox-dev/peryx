@@ -44,7 +44,8 @@ actions = ["write", "delete"]
 
 [[index]] # virtual: uploads shadow upstream behind one URL
 ecosystem = "pypi"
-name = "root/pypi"
+name = "root-pypi"
+route = "root/pypi"
 layers = ["hosted", "pypi"]
 write_target = "hosted"
 ```

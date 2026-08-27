@@ -484,7 +484,7 @@ fn state_with_broken_journal() -> (tempfile::TempDir, Arc<AppState>) {
             acl: crate::tests::writer_acl("s3cret"),
         },
         Index {
-            name: "root/pypi".to_owned(),
+            name: "root-pypi".to_owned(),
             route: "root/pypi".to_owned(),
             ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Virtual {

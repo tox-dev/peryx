@@ -124,7 +124,7 @@ async fn harness_with_options(
             kind: IndexKind::Hosted { volatile },
         },
         Index {
-            name: "root/pypi".to_owned(),
+            name: "root-pypi".to_owned(),
             route: "root/pypi".to_owned(),
             policy: overlay_policy,
             acl: IndexAcl::default(),

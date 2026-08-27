@@ -36,6 +36,27 @@ fn test_reconcile_assigns_stable_ids_idempotently_across_boots() {
 }
 
 #[test]
+fn test_reconcile_renames_default_virtual_indexes_without_changing_ids() {
+    let mut old = Config::default();
+    old.indexes
+        .iter_mut()
+        .find(|index| index.route == "root/pypi")
+        .unwrap()
+        .name = "root/pypi".to_owned();
+    let dir = tempfile::tempdir().unwrap();
+    let store = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    reconcile_configured_repositories(&store, &old.indexes);
+    let previous = store.repository_by_route("root/pypi").unwrap().unwrap();
+
+    reconcile_configured_repositories(&store, &Config::default().indexes);
+    let current = store.repository_by_route("root/pypi").unwrap().unwrap();
+
+    assert_eq!(current.id, previous.id);
+    assert_eq!(current.display_name, "root-pypi");
+    assert_eq!(current.version, previous.version + 1);
+}
+
+#[test]
 fn test_reconcile_writes_nothing_when_a_route_cannot_be_a_repository() {
     let mut config = Config::default();
     config.indexes[0].route = "r".repeat(513);

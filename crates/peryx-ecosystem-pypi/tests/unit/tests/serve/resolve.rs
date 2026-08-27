@@ -274,7 +274,7 @@ async fn test_overlay_offline_cold_mirror_is_unavailable() {
                 acl: IndexAcl::default(),
             },
             Index {
-                name: "root/pypi".to_owned(),
+                name: "root-pypi".to_owned(),
                 route: "root/pypi".to_owned(),
                 ecosystem: crate::ECOSYSTEM,
                 kind: IndexKind::Virtual {

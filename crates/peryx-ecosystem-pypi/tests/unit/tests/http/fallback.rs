@@ -90,7 +90,7 @@ async fn test_private_first_records_and_hides_an_upstream_collision() {
         .find(|event| field(event, "event") == Some("policy_decision"))
         .unwrap();
     assert_eq!(field(&event, "result"), Some("shadowed"));
-    assert_eq!(field(&event, "index"), Some("root/pypi"));
+    assert_eq!(field(&event, "index"), Some("root-pypi"));
     assert_eq!(field(&event, "resource"), Some("acme-pkg"));
     assert_eq!(field(&event, "fallback_mode"), Some("private-first"));
     assert_eq!(field(&event, "hosted_members"), Some("hosted"));

@@ -110,7 +110,7 @@ pub fn get_project_status(
         .transpose()?)
 }
 
-/// Store a cached index record under `key` (for example `root/pypi/flask`), clearing any freshness
+/// Store a cached index record under `key` (for example `root-pypi/flask`), clearing any freshness
 /// overlay a prior `304` left: a fresh body carries its own fetch time, which the overlay must not
 /// shadow.
 ///

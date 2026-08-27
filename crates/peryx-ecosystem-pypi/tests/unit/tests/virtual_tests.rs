@@ -61,7 +61,7 @@ fn cached_first_indexes(upstream: UpstreamClient, cached_policy: Policy) -> Vec<
             acl: crate::tests::writer_acl("s3cret".to_owned()),
         },
         Index {
-            name: "root/pypi".to_owned(),
+            name: "root-pypi".to_owned(),
             route: "root/pypi".to_owned(),
             ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Virtual {
@@ -167,7 +167,7 @@ fn two_cached_indexes(archived: UpstreamClient, quarantined: UpstreamClient, lay
         cached("archived", archived),
         cached("quarantined", quarantined),
         Index {
-            name: "root/pypi".to_owned(),
+            name: "root-pypi".to_owned(),
             route: "root/pypi".to_owned(),
             ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Virtual {

@@ -58,7 +58,7 @@ async fn test_overlay_tolerates_unavailable_layer() {
             kind: IndexKind::Hosted { volatile: true },
         },
         Index {
-            name: "root/pypi".to_owned(),
+            name: "root-pypi".to_owned(),
             route: "root/pypi".to_owned(),
             policy: Policy::default(),
             acl: IndexAcl::default(),

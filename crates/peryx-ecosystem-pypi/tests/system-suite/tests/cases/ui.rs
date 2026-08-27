@@ -70,7 +70,7 @@ fn ui_config(dir: &tempfile::TempDir, cached_offline: bool) -> Config {
                 kind: IndexKind::Hosted { volatile: true },
             },
             IndexConfig {
-                name: "root/pypi".to_owned(),
+                name: "root-pypi".to_owned(),
                 route: "root/pypi".to_owned(),
                 policy: peryx_policy::PolicyConfig::default(),
                 ecosystem_policy: toml::Table::new(),

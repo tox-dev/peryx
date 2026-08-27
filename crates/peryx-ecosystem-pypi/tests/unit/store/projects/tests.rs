@@ -49,14 +49,14 @@ fn test_list_catalog_projects_is_bounded_and_canonical() {
 #[test]
 fn test_put_and_list_projects_are_sorted_and_deduplicated() {
     let (_dir, meta) = store();
-    assert!(meta.list_projects("root/pypi").unwrap().is_empty());
-    meta.put_project("root/pypi", "flask", "Flask").unwrap();
-    meta.put_project("root/pypi", "django", "Django").unwrap();
-    meta.put_project("other/index", "x", "X").unwrap();
-    meta.put_project("root/pypi", "flask", "Flask").unwrap();
-    assert_eq!(meta.list_projects("root/pypi").unwrap(), vec!["Django", "Flask"]);
+    assert!(meta.list_projects("root-pypi").unwrap().is_empty());
+    meta.put_project("root-pypi", "flask", "Flask").unwrap();
+    meta.put_project("root-pypi", "django", "Django").unwrap();
+    meta.put_project("other", "x", "X").unwrap();
+    meta.put_project("root-pypi", "flask", "Flask").unwrap();
+    assert_eq!(meta.list_projects("root-pypi").unwrap(), vec!["Django", "Flask"]);
     assert_eq!(
-        meta.get_project("root/pypi", "flask").unwrap().as_deref(),
+        meta.get_project("root-pypi", "flask").unwrap().as_deref(),
         Some("Flask")
     );
 }

@@ -45,15 +45,15 @@ secret = "team-secret"
 actions = ["write", "delete"]
 
 [[index]] # virtual: team images shadow the upstream, uploads land in team
-name = "root/oci"
+name = "root-oci"
 route = "root/oci"
 ecosystem = "oci"
 layers = ["team", "dockerhub"]
 upload = "team"
 ```
 
-`root/oci` is a virtual index that serves the hosted `team` store before the `dockerhub` cache. Its `upload` key sends
-pushes to `team`. Clients read and write the virtual route.
+`root-oci` is a virtual index served at `root/oci`. It serves the hosted `team` store before the `dockerhub` cache. Its
+`upload` key sends pushes to `team`. Clients read and write the virtual route.
 
 ## Start peryx
 
@@ -67,7 +67,7 @@ configuration, so on the same host the commands below work as written. Over the 
 engine runs in a VM), a client demands HTTPS: give peryx a certificate ([serve HTTPS](@/core/operations/serve-https.md))
 or set the client's insecure-registry option. `crane` and `podman` take a per-command flag; the snippets show it.
 
-The dashboard at [http://127.0.0.1:4433/](http://127.0.0.1:4433/) shows one virtual-index card, `root/oci`, showing its
+The dashboard at [http://127.0.0.1:4433/](http://127.0.0.1:4433/) shows one virtual-index card, `root-oci`, showing its
 layer stack in resolution order with `team` on top of `dockerhub` and the upload target marked.
 
 ## Team push

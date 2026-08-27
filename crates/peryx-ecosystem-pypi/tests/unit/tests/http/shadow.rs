@@ -61,17 +61,20 @@ async fn candidates(harness: &Harness, repository: &str) -> (StatusCode, serde_j
         .set_password(&user.id, "shadow-password")
         .await
         .unwrap();
+    let name = harness
+        .state
+        .serving
+        .indexes
+        .iter()
+        .find(|index| index.route == repository)
+        .unwrap()
+        .name
+        .clone();
     harness
         .state
         .serving
         .authorization
-        .grant(
-            &user.id,
-            Role::RepositoryReader,
-            GrantScope::Repository {
-                name: repository.to_owned(),
-            },
-        )
+        .grant(&user.id, Role::RepositoryReader, GrantScope::Repository { name })
         .unwrap();
     let authorization = format!("Basic {}", STANDARD.encode("shadow-reader:shadow-password"));
     let (status, body) = request_response(

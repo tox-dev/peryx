@@ -151,9 +151,8 @@ fn project_key(index: &str, normalized: &str) -> String {
 /// page and search document rather than leaving them stale. File, metadata, and journal keys carry no
 /// project.
 ///
-/// A project name and a filename never contain a slash, while an index name may. A project-marker key is
-/// `{index}/{normalized}`, so the index is everything before the final segment; an upload or override key
-/// is `{index}/{normalized}/{filename}`, so dropping the filename leaves the same shape.
+/// Configuration validation makes index and project names single path segments. A project-marker key is
+/// `{index}/{normalized}`; an upload or override key is `{index}/{normalized}/{filename}`.
 pub(crate) fn project_of_key(key: &str) -> Option<(&str, &str)> {
     if let Some(rest) = key.strip_prefix(PROJECTS_PREFIX) {
         return split_index_project(rest);

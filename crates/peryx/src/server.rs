@@ -573,6 +573,7 @@ fn build_indexes_with_providers(
     let mut positions = HashMap::with_capacity(configs.len());
     let mut routes = HashMap::with_capacity(configs.len());
     for (pos, index) in configs.iter().enumerate() {
+        path::validate_path_segment("index name", &index.name)?;
         path::validate_route(&index.route).context(format!("invalid index route {}", index.route))?;
         if positions.insert(index.name.as_str(), pos).is_some() {
             bail!("duplicate index name {}", index.name);

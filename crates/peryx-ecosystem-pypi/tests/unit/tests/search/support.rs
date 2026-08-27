@@ -183,7 +183,7 @@ pub(super) fn overlay_state_without_upload() -> (tempfile::TempDir, Arc<AppState
             acl: IndexAcl::default(),
         },
         Index {
-            name: "root/pypi".to_owned(),
+            name: "root-pypi".to_owned(),
             route: "root/pypi".to_owned(),
             policy: Policy::default(),
             acl: IndexAcl::default(),
@@ -216,7 +216,7 @@ pub(super) fn two_cached_virtual_state(layers: Vec<usize>) -> (tempfile::TempDir
         cached("archived"),
         cached("quarantined"),
         Index {
-            name: "root/pypi".to_owned(),
+            name: "root-pypi".to_owned(),
             route: "root/pypi".to_owned(),
             policy: Policy::default(),
             acl: IndexAcl::default(),

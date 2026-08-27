@@ -172,7 +172,7 @@ fn plugin_exposes_the_default_oci_stack() {
                 kind: DefaultIndexKind::Hosted,
             },
             DefaultIndex {
-                name: "root/oci",
+                name: "root-oci",
                 route: "root/oci",
                 ecosystem: ECOSYSTEM,
                 kind: DefaultIndexKind::Virtual {

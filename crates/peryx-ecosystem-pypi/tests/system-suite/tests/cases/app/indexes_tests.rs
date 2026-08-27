@@ -20,7 +20,7 @@ fn test_index_list_prints_every_configured_index() {
     assert!(text.starts_with("name\troute\tecosystem\tkind\tuploads\n"));
     assert!(text.contains("pypi\tpypi\tpypi\tcached\tfalse"));
     assert!(text.contains("hosted\thosted\tpypi\thosted\tfalse"));
-    assert!(text.contains("root/pypi\troot/pypi\tpypi\tvirtual\tfalse"));
+    assert!(text.contains("root-pypi\troot/pypi\tpypi\tvirtual\tfalse"));
 }
 
 #[test]
@@ -45,6 +45,8 @@ fn test_index_show_prints_virtual_detail() {
     let mut out = Vec::new();
     app::index(&Config::default(), &command, &mut out).unwrap();
     let text = String::from_utf8(out).unwrap();
+    assert!(text.contains("name\troot-pypi"));
+    assert!(text.contains("route\troot/pypi"));
     assert!(text.contains("kind\tvirtual"));
     assert!(text.contains("layers\thosted, pypi"));
     assert!(text.contains("upload_to\thosted"));

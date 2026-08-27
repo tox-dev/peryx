@@ -399,7 +399,8 @@ secret = "webhook-secret"
 events = ["upload"]
 
 [[index]]
-name = "root/oci"
+name = "root-oci"
+route = "root/oci"
 ecosystem = "oci"
 layers = ["images", "hub"]
 write_target = "images"

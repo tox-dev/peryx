@@ -77,7 +77,7 @@ fn audit(headers: &HeaderMap) -> UploadAudit<'_> {
         actor: None,
         request_id: None,
         created_at_unix: 0,
-        index: "root/pypi",
+        index: "root-pypi",
         route: "root/pypi",
         hosted: "hosted",
         project: "flask",
