@@ -200,6 +200,7 @@ pub struct UsageInterval {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FamilyDescriptor {
+    pub ecosystem: String,
     pub key: String,
     pub label: String,
     pub roles: Vec<String>,

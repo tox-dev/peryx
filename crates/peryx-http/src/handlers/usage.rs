@@ -59,19 +59,21 @@ pub fn ecosystem_summaries(state: &AppState) -> Vec<peryx_events::metrics::Ecosy
 #[must_use]
 pub fn family_descriptors(state: &AppState) -> Vec<peryx_events::metrics::FamilyDescriptor> {
     let mut descriptors = Vec::new();
-    for (_, driver) in state.driver_set().metrics() {
+    for (ecosystem, driver) in state.driver_set().metrics() {
         for family in driver.metric_families() {
-            let mut roles = Vec::with_capacity(family.roles.len());
-            for role in family.roles {
-                roles.push(role.as_str().to_owned());
-            }
             descriptors.push(peryx_events::metrics::FamilyDescriptor {
+                ecosystem: ecosystem.as_str().to_owned(),
                 key: family.key.to_owned(),
                 label: family.ui_label.to_owned(),
-                roles,
+                roles: family.roles.iter().map(|role| role.as_str().to_owned()).collect(),
             });
         }
     }
+    descriptors.sort_unstable_by(|left, right| {
+        left.ecosystem
+            .cmp(&right.ecosystem)
+            .then_with(|| left.key.cmp(&right.key))
+    });
     descriptors
 }
 

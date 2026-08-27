@@ -63,6 +63,7 @@ fn ecosystem_stats(data: &UiSnapshot) -> impl IntoView + use<> {
             let badge = format!("badge ecosystem-{}", summary.ecosystem);
             let named = families
                 .iter()
+                .filter(|family| family.ecosystem == summary.ecosystem)
                 .map(|family| {
                     let total = summary.families.get(&family.key).copied().unwrap_or(0);
                     view! { <div class="stat"><strong>{total}</strong><span>{family.label.clone()}</span></div> }

@@ -27,6 +27,7 @@ pub struct UiEcosystemSummary {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct UiMetricFamily {
+    pub ecosystem: String,
     pub key: String,
     pub label: String,
     pub roles: Vec<String>,

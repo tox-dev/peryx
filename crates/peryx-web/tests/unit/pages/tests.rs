@@ -17,11 +17,13 @@ fn ecosystem_stats_render_declared_and_missing_families() {
         }],
         families: vec![
             UiMetricFamily {
+                ecosystem: "example".to_owned(),
                 key: "metadata".to_owned(),
                 label: "metadata hits".to_owned(),
                 roles: Vec::new(),
             },
             UiMetricFamily {
+                ecosystem: "example".to_owned(),
                 key: "missing".to_owned(),
                 label: "missing hits".to_owned(),
                 roles: Vec::new(),

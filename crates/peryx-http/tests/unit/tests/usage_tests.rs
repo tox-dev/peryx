@@ -126,13 +126,15 @@ async fn app() -> (tempfile::TempDir, Arc<AppState>) {
     );
     Arc::get_mut(&mut state.serving).unwrap().users = users;
     let driver = Arc::new(Driver { ecosystem: "example" });
+    let bare_driver = Arc::new(Driver { ecosystem: "bare" });
     state.register_capabilities(|registrar| {
         registrar.register_metrics(Ecosystem::new("example"), driver.clone());
+        registrar.register_metrics(Ecosystem::new("bare"), bare_driver.clone());
     });
     state
         .register_protocol(ProtocolDriver::Absolute(driver), Arc::new(peryx_search::EmptyIndexer))
         .unwrap();
-    state.register_driver(Arc::new(Driver { ecosystem: "bare" }));
+    state.register_driver(bare_driver);
     state.register_prometheus(Arc::new(ProcessMetrics));
     state.register_http_routes(Arc::new(OwnerRoutes));
     state.serving.metrics.increment("hosted-a", &EXTENSION, 3);
@@ -238,12 +240,33 @@ async fn test_registered_absolute_driver_serves_its_prefix() {
 async fn test_status_renders_ecosystem_summaries_and_metric_families() {
     let (_dir, state) = app().await;
     let (status, body) = get(&state, "/+status", true).await;
+    let body: serde_json::Value = serde_json::from_str(&body).unwrap();
 
     assert_eq!(status, StatusCode::OK);
-    assert!(body.contains(r#""ecosystem":"example""#), "{body}");
-    assert!(body.contains(r#""ecosystem":5"#), "{body}");
-    assert!(body.contains(r#""key":"extension""#), "{body}");
-    assert!(body.contains(r#""roles":["hosted","cached"]"#), "{body}");
+    assert_eq!(body["metric_families"], expected_metric_families());
+    assert_eq!(body["by_ecosystem"][1]["families"]["ecosystem"], 5);
+}
+
+#[tokio::test]
+async fn test_family_descriptors_are_stable_and_ordered_by_owner_and_key() {
+    let (_dir, state) = app().await;
+
+    assert_eq!(
+        (
+            serde_json::json!(crate::handlers::family_descriptors(&state)),
+            serde_json::json!(crate::handlers::family_descriptors(&state)),
+        ),
+        (expected_metric_families(), expected_metric_families())
+    );
+}
+
+fn expected_metric_families() -> serde_json::Value {
+    serde_json::json!([
+        {"ecosystem": "bare", "key": "ecosystem", "label": "Ecosystem events", "roles": ["hosted"]},
+        {"ecosystem": "bare", "key": "extension", "label": "Extension events", "roles": ["hosted", "cached"]},
+        {"ecosystem": "example", "key": "ecosystem", "label": "Ecosystem events", "roles": ["hosted"]},
+        {"ecosystem": "example", "key": "extension", "label": "Extension events", "roles": ["hosted", "cached"]},
+    ])
 }
 
 #[tokio::test]

@@ -75,6 +75,7 @@ fn families(app: &AppState) -> Vec<UiMetricFamily> {
     peryx_http::handlers::family_descriptors(app)
         .into_iter()
         .map(|family| UiMetricFamily {
+            ecosystem: family.ecosystem,
             key: family.key,
             label: family.label,
             roles: family.roles,

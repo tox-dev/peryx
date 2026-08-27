@@ -3,8 +3,12 @@ use axum::http::{Request, StatusCode, header};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use http_body_util::BodyExt as _;
+use peryx_core::Ecosystem;
+use peryx_driver::{AppState, Index, IndexKind};
+use peryx_events::metrics::Observation;
 use peryx_ha::{ArtifactPlacement, ArtifactPlacementStore, ArtifactSource};
-use peryx_identity::{GrantScope, Role};
+use peryx_identity::{GrantScope, IndexAcl, Role};
+use peryx_policy::Policy;
 use tower::ServiceExt as _;
 
 use crate::config::{AvailabilityConfig, Config, DcMember, DcMembership, DcRole, ReplicationConfig, SecretSource};
@@ -164,6 +168,72 @@ async fn test_ui_admin_status_empty_state() {
     assert!(body.contains("No indexes configured."));
     assert!(body.contains("No usage recorded yet."));
     assert!(body.contains("No writes recorded yet."));
+}
+
+#[tokio::test]
+async fn test_ui_scopes_same_key_metric_tiles_to_their_ecosystem() {
+    let (_dir, router, authorization) = ecosystem_metrics_router().await;
+    let (status, body) = get_authorized(&router, "/", &authorization).await;
+    let dashboard = body.split_once("</main>").unwrap().0;
+
+    assert_eq!(
+        (
+            status,
+            dashboard.matches("Quota admitted uploads").count(),
+            dashboard.matches("Quota admitted pushes").count(),
+            dashboard.contains("<strong>2</strong><span>Quota admitted uploads</span>"),
+            dashboard.contains("<strong>3</strong><span>Quota admitted pushes</span>"),
+            dashboard.find("badge ecosystem-oci").unwrap() < dashboard.find("badge ecosystem-pypi").unwrap(),
+        ),
+        (StatusCode::OK, 1, 1, true, true, true),
+        "{dashboard}"
+    );
+}
+
+async fn ecosystem_metrics_router() -> (tempfile::TempDir, axum::Router, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = AppState::new(
+        peryx_storage::meta::MetaStore::open(dir.path().join("peryx.redb")).unwrap(),
+        peryx_storage::blob::BlobStore::new(dir.path().join("blobs")),
+        60,
+        vec![ecosystem_index("pypi"), ecosystem_index("oci")],
+    );
+    crate::compiled_plugins()
+        .activate([Ecosystem::new("pypi"), Ecosystem::new("oci")])
+        .unwrap()
+        .register_activated_capabilities(&mut state.capability_install_context());
+    for (repository, count) in [("pypi", 2), ("oci", 3)] {
+        let family = state
+            .driver_set()
+            .get_metrics(&Ecosystem::new(repository))
+            .unwrap()
+            .metric_families()
+            .iter()
+            .find(|family| family.key == "quota_admitted")
+            .unwrap();
+        for _ in 0..count {
+            state.serving.metrics.record(Observation::Ecosystem {
+                repository: repository.to_owned(),
+                resource: "package".to_owned(),
+                artifact: None,
+                family: family.key,
+            });
+        }
+    }
+    state.serving.metrics.flush().unwrap();
+    let authorization = seed_administrator(&state).await;
+    (dir, router_for(std::sync::Arc::new(state)), authorization)
+}
+
+fn ecosystem_index(ecosystem: &'static str) -> Index {
+    Index {
+        name: ecosystem.to_owned(),
+        route: ecosystem.to_owned(),
+        ecosystem: Ecosystem::new(ecosystem),
+        kind: IndexKind::Hosted { volatile: false },
+        policy: Policy::default(),
+        acl: IndexAcl::default(),
+    }
 }
 
 #[tokio::test]
