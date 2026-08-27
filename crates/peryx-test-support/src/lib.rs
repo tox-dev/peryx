@@ -68,6 +68,7 @@ pub fn cargo_binary(name: &str) -> PathBuf {
 pub struct ProcessHarness {
     binary: PathBuf,
     ready_timeout: Duration,
+    deadlock_guard: Duration,
     shutdown_path: Option<String>,
     process_limit: Option<ProcessLimit>,
 }
@@ -77,6 +78,7 @@ impl Default for ProcessHarness {
         Self {
             binary: peryx_binary(),
             ready_timeout: READY_TIMEOUT,
+            deadlock_guard: EVENT_TIMEOUT,
             shutdown_path: None,
             process_limit: None,
         }
@@ -90,6 +92,7 @@ impl ProcessHarness {
         Self {
             binary: binary.into(),
             ready_timeout: READY_TIMEOUT,
+            deadlock_guard: EVENT_TIMEOUT,
             shutdown_path: None,
             process_limit: None,
         }
@@ -98,6 +101,12 @@ impl ProcessHarness {
     #[must_use]
     pub const fn with_ready_timeout(mut self, timeout: Duration) -> Self {
         self.ready_timeout = timeout;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_deadlock_guard(mut self, timeout: Duration) -> Self {
+        self.deadlock_guard = timeout;
         self
     }
 
@@ -703,6 +712,7 @@ pub struct Node {
     http: reqwest::blocking::Client,
     binary: PathBuf,
     ready_timeout: Duration,
+    deadlock_guard: Duration,
     shutdown_path: Option<String>,
     process_events: Receiver<String>,
     ready: bool,
@@ -751,6 +761,7 @@ impl Node {
             http,
             binary: topology.harness.binary.clone(),
             ready_timeout: topology.harness.ready_timeout,
+            deadlock_guard: topology.harness.deadlock_guard,
             shutdown_path: topology.harness.shutdown_path.clone(),
             process_events,
             ready: false,
@@ -766,17 +777,31 @@ impl Node {
         if self.ready {
             return self.ready_observation();
         }
-        match wait_for_startup(&mut self.child, &self.process_events, self.ready_timeout, |line| {
-            line.contains("peryx listening")
+        let mut first_event_is_startup = false;
+        match wait_for_startup(&mut self.child, &self.process_events, self.deadlock_guard, |line| {
+            first_event_is_startup = line.contains("peryx listening");
+            true
         })? {
-            StartupSignal::Matched => {
-                let observation = self.ready_observation();
-                self.ready = observation.is_ok();
-                observation
+            StartupSignal::Matched => {}
+            StartupSignal::Exited(status) => return Err(self.exited_early(status)),
+            StartupSignal::TimedOut => {
+                return Err(self.not_ready(self.deadlock_guard, Err("process event missing".to_owned())));
             }
-            StartupSignal::Exited(status) => Err(self.exited_early(status)),
-            StartupSignal::TimedOut => Err(self.not_ready(Err("startup signal missing".to_owned()))),
         }
+        if !first_event_is_startup {
+            match wait_for_startup(&mut self.child, &self.process_events, self.ready_timeout, |line| {
+                line.contains("peryx listening")
+            })? {
+                StartupSignal::Matched => {}
+                StartupSignal::Exited(status) => return Err(self.exited_early(status)),
+                StartupSignal::TimedOut => {
+                    return Err(self.not_ready(self.ready_timeout, Err("startup signal missing".to_owned())));
+                }
+            }
+        }
+        let observation = self.ready_observation();
+        self.ready = observation.is_ok();
+        observation
     }
 
     fn ready_observation(&self) -> Result<(), HarnessError> {
@@ -784,7 +809,7 @@ impl Node {
         if matches!(&observation, Ok((200, body)) if body.contains("\"version\"")) {
             return Ok(());
         }
-        Err(self.not_ready(observation))
+        Err(self.not_ready(self.ready_timeout, observation))
     }
 
     fn observe_status(&self, timeout: Duration) -> Result<(u16, String), String> {
@@ -805,10 +830,10 @@ impl Node {
         }
     }
 
-    fn not_ready(&self, observation: Result<(u16, String), String>) -> HarnessError {
+    fn not_ready(&self, timeout: Duration, observation: Result<(u16, String), String>) -> HarnessError {
         HarnessError::NotReady {
             node: self.identity.clone(),
-            timeout: self.ready_timeout,
+            timeout,
             log: format!(
                 "last observation: {}\nprocess: running (pid {})\n{}",
                 observation.map_or_else(|error| error, |(code, body)| format!("HTTP {code}: {body}")),
@@ -858,6 +883,7 @@ impl Node {
             http,
             binary: harness.binary.clone(),
             ready_timeout: harness.ready_timeout,
+            deadlock_guard: harness.deadlock_guard,
             shutdown_path: harness.shutdown_path.clone(),
             process_events,
             ready: false,
@@ -1443,7 +1469,7 @@ pub(crate) fn wait_for_startup(
     child: &mut Child,
     events: &Receiver<String>,
     timeout: Duration,
-    accept: impl Fn(&str) -> bool,
+    accept: impl FnMut(&str) -> bool,
 ) -> std::io::Result<StartupSignal> {
     match wait_for_line(events, timeout, accept) {
         ProcessSignal::Matched => Ok(StartupSignal::Matched),
@@ -1455,7 +1481,7 @@ pub(crate) fn wait_for_startup(
 pub(crate) fn wait_for_line(
     events: &Receiver<String>,
     timeout: Duration,
-    accept: impl Fn(&str) -> bool,
+    mut accept: impl FnMut(&str) -> bool,
 ) -> ProcessSignal {
     let deadline = Instant::now() + timeout;
     loop {

@@ -60,6 +60,10 @@ fn run_peryx(executable: &Path, args: &[String], public_listener: Option<TcpList
     let port = argument(args, "--port").parse::<u16>().expect("public port");
     let serve_mode = fs::read_to_string(sibling(executable, "serve-mode")).expect("read serve mode");
     if serve_mode == "hang" {
+        println!(r#"{{"message":"fixture process started"}}"#);
+        std::io::stdout().flush().expect("flush process start event");
+    }
+    if matches!(serve_mode.as_str(), "hang" | "silent-hang") {
         let listener = public_listener.unwrap_or_else(|| fixture_listener(PUBLIC_LISTENER_FD_ENV, port));
         let (mut stream, _) = listener.accept().expect("accept shutdown request");
         assert_eq!(request_path(&read_request(&mut stream)), "/__fixture/shutdown");
@@ -87,7 +91,9 @@ fn run_peryx(executable: &Path, args: &[String], public_listener: Option<TcpList
             let state = sibling(executable, "state");
             (address, thread::spawn(move || serve_peryx(&control, &state, true)))
         });
-    println!(r#"{{"message":"fixture booting"}}"#);
+    if serve_mode != "direct-startup" {
+        println!(r#"{{"message":"fixture booting"}}"#);
+    }
     println!(r#"{{"message":"peryx listening"}}"#);
     println!(r#"{{"message":"fixture event"}}"#);
     std::io::stdout().flush().expect("flush startup signal");
