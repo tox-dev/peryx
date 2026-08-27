@@ -41,6 +41,7 @@ pub fn job_with_active_plugins(
         JobCommand::List(_) => job_list(&open_store(config, plugins)?, out),
         JobCommand::Show(args) => job_show(&open_store(config, plugins)?, &args.id, out),
         JobCommand::Run {
+            command,
             target,
             source,
             item_limit,
@@ -50,6 +51,7 @@ pub fn job_with_active_plugins(
         } => run_registered_job(
             config,
             plugins,
+            command.as_deref(),
             peryx_plugin_registry::OperatorJobRequest {
                 target,
                 source: source.as_deref(),
@@ -72,11 +74,16 @@ fn open_store(config: &Config, plugins: &peryx_plugin_registry::PluginRegistry) 
 fn run_registered_job(
     config: &Config,
     plugins: &peryx_plugin_registry::PluginRegistry,
+    command: Option<&str>,
     request: peryx_plugin_registry::OperatorJobRequest<'_>,
     out: &mut dyn Write,
 ) -> anyhow::Result<()> {
+    let jobs = plugins.operator_job_commands().collect::<Vec<_>>();
+    let command = command
+        .filter(|command| jobs.iter().any(|(registered, _)| registered == command))
+        .ok_or_else(|| operator_job_selection_error(command, &jobs))?;
     let configured = plugins
-        .compile_operator_job("run", request)
+        .compile_operator_job(command, request)
         .map_err(anyhow::Error::msg)?;
     run_node_job(
         config,
@@ -84,6 +91,30 @@ fn run_registered_job(
         move |state| scheduled_job(state, &ScheduledJob::Plugin(configured)),
         out,
     )
+}
+
+fn operator_job_selection_error(
+    command: Option<&str>,
+    jobs: &[(&str, peryx_plugin_registry::OperatorJobDefaults)],
+) -> anyhow::Error {
+    let reason = command.map_or_else(
+        || "operator job command is required".to_owned(),
+        |command| format!("unknown operator job command {command:?}"),
+    );
+    if jobs.is_empty() {
+        return anyhow::anyhow!("{reason}\nno operator job commands are registered");
+    }
+    let jobs = jobs
+        .iter()
+        .map(|(command, defaults)| {
+            format!(
+                "  {command} (item-limit={}, concurrency={}, timeout-secs={})",
+                defaults.item_limit, defaults.concurrency, defaults.timeout_secs
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    anyhow::anyhow!("{reason}\nregistered operator job commands:\n{jobs}")
 }
 
 fn run_search_rebuild(

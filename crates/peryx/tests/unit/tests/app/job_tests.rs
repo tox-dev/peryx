@@ -234,6 +234,39 @@ fn test_job_run_records_the_registered_job() {
 }
 
 #[test]
+fn test_job_run_dispatches_the_registered_command() {
+    let plugins = plugins();
+    let (_directory, meta, config) = store_and_config(&plugins);
+    drop(meta);
+    let mut output = Vec::new();
+
+    job_with_plugins(&config, &plugins, &run_command_for(Some("sync")), &mut output).unwrap();
+
+    let output = String::from_utf8(output).unwrap();
+    let expected = "processed\t6\nchanged\t5\nquota_released\t0\nquota_remaining\t0\n";
+    assert_eq!(output, expected);
+}
+
+#[rstest]
+#[case::missing(None, "operator job command is required")]
+#[case::unknown(Some("missing"), "unknown operator job command \"missing\"")]
+fn test_job_run_lists_registered_commands(#[case] command: Option<&str>, #[case] expected_reason: &str) {
+    let plugins = plugins();
+    let directory = tempfile::tempdir().unwrap();
+    let config = config_at(&directory, &plugins);
+
+    let error = job_with_plugins(&config, &plugins, &run_command_for(command), &mut Vec::new()).unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "{expected_reason}\nregistered operator job commands:\n  run (item-limit=4, concurrency=3, \
+             timeout-secs=30)\n  sync (item-limit=6, concurrency=5, timeout-secs=60)"
+        )
+    );
+}
+
+#[test]
 fn test_job_run_does_not_select_an_inactive_owner() {
     let plugins = plugins_with_inactive_job();
     let directory = tempfile::tempdir().unwrap();
@@ -241,7 +274,10 @@ fn test_job_run_does_not_select_an_inactive_owner() {
 
     let error = job_with_plugins(&config, &plugins, &run_command(), &mut Vec::new()).unwrap_err();
 
-    assert_eq!(error.to_string(), "unknown operator job command \"run\"");
+    assert_eq!(
+        error.to_string(),
+        "unknown operator job command \"run\"\nno operator job commands are registered"
+    );
 }
 
 #[test]
@@ -471,11 +507,24 @@ fn show_command(id: &str) -> JobCommand {
 fn run_command() -> JobCommand {
     JobCommand::Run {
         runtime: RuntimeArgs::default(),
+        command: Some("run".to_owned()),
         target: "main".to_owned(),
         source: None,
         item_limit: Some(2),
         concurrency: Some(1),
         timeout_secs: Some(30),
+    }
+}
+
+fn run_command_for(command: Option<&str>) -> JobCommand {
+    JobCommand::Run {
+        runtime: RuntimeArgs::default(),
+        command: command.map(str::to_owned),
+        target: "main".to_owned(),
+        source: None,
+        item_limit: None,
+        concurrency: None,
+        timeout_secs: None,
     }
 }
 
@@ -579,8 +628,23 @@ static ECOSYSTEM_CONFIG: EcosystemConfigImpl = EcosystemConfigImpl;
 static RUNTIME: Runtime = Runtime;
 static REJECTING_RUNTIME: RejectingRuntime = RejectingRuntime;
 static OPEN_API: OpenApi = OpenApi;
-static OPERATOR_JOB: RunOperatorJob = RunOperatorJob;
-static OPERATOR_JOBS: [&dyn OperatorJob; 1] = [&OPERATOR_JOB];
+static OPERATOR_JOB: FixtureOperatorJob = FixtureOperatorJob {
+    command: "run",
+    defaults: OperatorJobDefaults {
+        item_limit: 4,
+        concurrency: 3,
+        timeout_secs: 30,
+    },
+};
+static SYNC_OPERATOR_JOB: FixtureOperatorJob = FixtureOperatorJob {
+    command: "sync",
+    defaults: OperatorJobDefaults {
+        item_limit: 6,
+        concurrency: 5,
+        timeout_secs: 60,
+    },
+};
+static OPERATOR_JOBS: [&dyn OperatorJob; 2] = [&OPERATOR_JOB, &SYNC_OPERATOR_JOB];
 
 struct Registration {
     ecosystem: Ecosystem,
@@ -671,19 +735,18 @@ impl EcosystemOpenApi for OpenApi {
     }
 }
 
-struct RunOperatorJob;
+struct FixtureOperatorJob {
+    command: &'static str,
+    defaults: OperatorJobDefaults,
+}
 
-impl OperatorJob for RunOperatorJob {
+impl OperatorJob for FixtureOperatorJob {
     fn command(&self) -> &'static str {
-        "run"
+        self.command
     }
 
     fn defaults(&self) -> OperatorJobDefaults {
-        OperatorJobDefaults {
-            item_limit: 4,
-            concurrency: 3,
-            timeout_secs: 30,
-        }
+        self.defaults
     }
 
     fn compile(&self, options: OperatorJobOptions<'_>) -> Result<PluginScheduledJob, String> {

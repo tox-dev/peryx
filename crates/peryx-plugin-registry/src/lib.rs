@@ -404,6 +404,11 @@ impl PluginRegistry {
         Ok(self.operator_job(command)?.defaults())
     }
 
+    /// Returns active commands and defaults in plugin priority order.
+    pub fn operator_job_commands(&self) -> impl Iterator<Item = (&'static str, OperatorJobDefaults)> + '_ {
+        self.operator_jobs.iter().map(|job| (job.command(), job.defaults()))
+    }
+
     /// # Errors
     /// Returns an error when no operator job owns `command` or compilation fails.
     pub fn compile_operator_job(

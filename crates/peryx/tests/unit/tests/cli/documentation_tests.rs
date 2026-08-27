@@ -27,12 +27,13 @@ fn test_documented_job_run_commands_parse() {
 #[test]
 fn test_documented_job_run_commands_support_shell_syntax() {
     let documented = documented_job_runs(
-        "peryx job runner --target ignored\n$ peryx job run \\\n         --target 'private mirror'",
+        "peryx job runner --target ignored\n$ peryx job run sync \\\n         --target 'private mirror'",
     );
     let parsed = Cli::try_parse_from(shlex::split(&documented[0].1).unwrap()).unwrap();
     assert!(matches!(
         (&documented[..], parsed.command),
-        ([(2, _)], Command::Job(JobCommand::Run { target, .. })) if target == "private mirror"
+        ([(2, _)], Command::Job(JobCommand::Run { command: Some(command), target, .. }))
+            if command == "sync" && target == "private mirror"
     ));
 }
 

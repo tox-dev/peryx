@@ -12,6 +12,8 @@ pub enum JobCommand {
     Run {
         #[command(flatten)]
         runtime: RuntimeArgs,
+        /// Registered ecosystem job command.
+        command: Option<String>,
         /// Ecosystem-owned target.
         #[arg(long)]
         target: String,

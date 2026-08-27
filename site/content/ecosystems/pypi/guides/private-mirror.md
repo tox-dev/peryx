@@ -216,7 +216,7 @@ timeout_secs = 900
 Run the identical job once while validating an upstream or warming a new node:
 
 ```shell
-peryx job run --config peryx.toml --target corp --item-limit 10000 --concurrency 4 --timeout-secs 900
+peryx job run run --config peryx.toml --target corp --item-limit 10000 --concurrency 4 --timeout-secs 900
 ```
 
 peryx publishes the root before project work begins. Cancellation or timeout stops new project requests and drops

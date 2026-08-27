@@ -8,7 +8,7 @@ use crate::cli::{Command, JobCommand, JobShowArgs, RuntimeArgs};
 #[rstest]
 #[case::list(&["peryx", "job", "list", "--data-dir", "/list"], "/list")]
 #[case::show(&["peryx", "job", "show", "run-id", "--data-dir", "/show"], "/show")]
-#[case::run(&["peryx", "job", "run", "--target", "target", "--data-dir", "/run"], "/run")]
+#[case::run(&["peryx", "job", "run", "run", "--target", "target", "--data-dir", "/run"], "/run")]
 #[case::reindex(&["peryx", "job", "reindex", "--data-dir", "/reindex"], "/reindex")]
 #[case::drain(
     &["peryx", "job", "drain", "--authority", "authority", "--data-dir", "/drain"],
@@ -43,11 +43,28 @@ fn test_parse_job_reindex_chunk_size(#[case] argv: &[&str], #[case] expected: us
 }
 
 #[test]
-fn test_parse_job_run_defaults() {
+fn test_parse_job_run_without_command() {
     assert_eq!(
         parse(&["peryx", "job", "run", "--target", "packages"]).command,
         Command::Job(JobCommand::Run {
             runtime: RuntimeArgs::default(),
+            command: None,
+            target: "packages".to_owned(),
+            source: None,
+            item_limit: None,
+            concurrency: None,
+            timeout_secs: None,
+        })
+    );
+}
+
+#[test]
+fn test_parse_job_run_accepts_registered_command_name() {
+    assert_eq!(
+        parse(&["peryx", "job", "run", "sync", "--target", "packages"]).command,
+        Command::Job(JobCommand::Run {
+            runtime: RuntimeArgs::default(),
+            command: Some("sync".to_owned()),
             target: "packages".to_owned(),
             source: None,
             item_limit: None,
@@ -64,6 +81,7 @@ fn test_parse_job_run_options() {
             "peryx",
             "job",
             "run",
+            "run",
             "--target",
             "target",
             "--source",
@@ -78,6 +96,7 @@ fn test_parse_job_run_options() {
         .command,
         Command::Job(JobCommand::Run {
             runtime: RuntimeArgs::default(),
+            command: Some("run".to_owned()),
             target: "target".to_owned(),
             source: Some("source".to_owned()),
             item_limit: Some(10),

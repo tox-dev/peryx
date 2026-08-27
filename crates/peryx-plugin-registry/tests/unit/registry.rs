@@ -673,6 +673,31 @@ fn operator_job_exposes_owner_defaults() {
 }
 
 #[test]
+fn operator_jobs_expose_registered_commands_and_defaults() {
+    assert_eq!(
+        registry().operator_job_commands().collect::<Vec<_>>(),
+        [
+            (
+                "sync",
+                OperatorJobDefaults {
+                    item_limit: 20,
+                    concurrency: 4,
+                    timeout_secs: 60,
+                },
+            ),
+            (
+                "run",
+                OperatorJobDefaults {
+                    item_limit: 10,
+                    concurrency: 2,
+                    timeout_secs: 30,
+                },
+            ),
+        ]
+    );
+}
+
+#[test]
 fn operator_job_compilation_uses_owner_defaults() {
     let job = registry()
         .compile_operator_job(

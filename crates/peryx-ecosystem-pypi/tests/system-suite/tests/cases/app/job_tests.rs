@@ -13,6 +13,7 @@ fn list_command() -> JobCommand {
 fn run_command(repository: &str) -> JobCommand {
     JobCommand::Run {
         runtime: RuntimeArgs::default(),
+        command: Some("run".to_owned()),
         target: repository.to_owned(),
         source: None,
         item_limit: Some(1),
