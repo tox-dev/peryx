@@ -350,12 +350,12 @@ fn peer_blob_delegates(
         .collect();
     let mut delegates = HashMap::new();
     for (datacenter, address) in crate::service_assembly::datacenter_roster(membership, Some(local_dc)) {
-        if !writers.contains(datacenter.as_str()) {
-            continue;
-        }
         let base = peer_blob_base(&address);
         let transport = HttpBlobTransport::new(&base, token.to_owned(), transfer, BLOB_FETCH_TIMEOUT)
             .with_context(|| format!("build a read-through blob transport for datacenter {datacenter}"))?;
+        if !writers.contains(datacenter.as_str()) {
+            continue;
+        }
         delegates.insert(datacenter, CapacityLimited::new(transport, limits.concurrency));
     }
     Ok(delegates)

@@ -575,8 +575,7 @@ async fn remote_blob_availability_requires_a_valid_remote_peer() {
             state.serving.blobs.clone(),
             state.serving.clock.clone(),
         )
-        .unwrap()
-        .is_none()
+        .is_err()
     );
     config.membership.as_mut().unwrap().members[1].address = "http://west.internal:4460".to_owned();
     config.read_through = Some(DEFAULT_READ_THROUGH_LIMITS);
