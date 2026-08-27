@@ -184,6 +184,24 @@ fn test_write_ack_defaults_to_a_majority_quorum_under_dc() {
 }
 
 #[rstest]
+#[case::default("")]
+#[case::everywhere("[availability.write_ack]\npolicy = \"everywhere\"\n")]
+fn test_distributed_strong_write_ack_requires_a_roster(#[case] write_ack: &str) {
+    let config = toml_config(&format!("{DC_PRIMARY}{write_ack}"));
+    assert_eq!(
+        config.validate().unwrap_err().to_string(),
+        "availability: `write_ack.policy` stronger than `local` requires `[[availability.member]]`"
+    );
+}
+
+#[test]
+fn test_distributed_local_write_ack_accepts_an_absent_roster() {
+    toml_config(&format!("{DC_PRIMARY}[availability.write_ack]\npolicy = \"local\"\n"))
+        .validate()
+        .unwrap();
+}
+
+#[rstest]
 #[case::local("local", peryx_ha_distributed::DurabilityPolicy::Local)]
 #[case::majority("majority", peryx_ha_distributed::DurabilityPolicy::Majority)]
 #[case::everywhere("everywhere", peryx_ha_distributed::DurabilityPolicy::Everywhere)]

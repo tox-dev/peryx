@@ -1590,7 +1590,7 @@ fn test_build_state_rejects_an_invalid_member_transport(
 }
 
 #[test]
-fn test_member_transports_fall_back_to_the_rostered_writer() {
+fn test_member_transports_fall_back_to_the_rostered_writer_without_a_node_identity() {
     let dc_dir = tempfile::tempdir().unwrap();
     let ha_dir = tempfile::tempdir().unwrap();
     let replication = ReplicationConfig::Primary {
@@ -1612,7 +1612,6 @@ fn test_member_transports_fall_back_to_the_rostered_writer() {
         data_dir: ha_dir.path().to_path_buf(),
         availability: AvailabilityConfig::Ha(replication),
         dc_membership: membership,
-        node_identity: Some("missing".to_owned()),
         writer_identity: Some("writer".to_owned()),
         ..neutral_config()
     };

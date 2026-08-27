@@ -132,6 +132,7 @@ fn test_no_reader_when_the_roster_has_no_remote_peer() {
 #[test]
 fn test_the_reader_resolves_the_local_datacenter_from_the_node_identity() {
     let membership = roster(vec![
+        member("node-a", "dc-1", "10.0.0.1:8080", DcRole::Writer),
         member("node-b", "dc-2", "10.0.0.2:8080", DcRole::Replica),
         member("node-c", "dc-3", "10.0.0.3:8080", DcRole::Replica),
     ]);

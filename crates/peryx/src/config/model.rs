@@ -431,10 +431,15 @@ impl Config {
                 shortfall: shortfall.as_str(),
             });
         }
-        self.validate_identities(mode)
+        self.validate_topology(mode)
     }
 
-    fn validate_identities(&self, mode: AvailabilityMode) -> Result<(), ConfigError> {
+    fn validate_topology(&self, mode: AvailabilityMode) -> Result<(), ConfigError> {
+        if mode.is_distributed() && self.write_ack.policy != DurabilityPolicy::Local && self.dc_membership.is_none() {
+            return Err(ConfigError::Availability {
+                reason: "`write_ack.policy` stronger than `local` requires `[[availability.member]]`",
+            });
+        }
         match self.writer_identity.as_deref() {
             Some(identity) if identity.trim().is_empty() => Err(ConfigError::WriterIdentity {
                 reason: "must not be blank",
@@ -451,12 +456,32 @@ impl Config {
             }
             _ => Ok(()),
         }?;
-        if self.node_identity.is_some() && mode != AvailabilityMode::Ha {
-            return Err(ConfigError::Availability {
-                reason: "`node_identity` requires `ha` mode",
+        if let Some(identity) = self.writer_identity.as_deref()
+            && !self.identity_is_configured(identity)
+        {
+            return Err(ConfigError::WriterIdentity {
+                reason: "`writer_identity` must name a configured `[[availability.member]]`",
             });
         }
+        if let Some(identity) = self.node_identity.as_deref() {
+            if mode != AvailabilityMode::Ha {
+                return Err(ConfigError::Availability {
+                    reason: "`node_identity` requires `ha` mode",
+                });
+            }
+            if !self.identity_is_configured(identity) {
+                return Err(ConfigError::Availability {
+                    reason: "`node_identity` must name a configured `[[availability.member]]`",
+                });
+            }
+        }
         Ok(())
+    }
+
+    fn identity_is_configured(&self, identity: &str) -> bool {
+        self.dc_membership
+            .as_ref()
+            .is_none_or(|membership| membership.members.iter().any(|member| member.node == identity))
     }
 }
 

@@ -52,16 +52,19 @@ impl DistributedBlobDurability {
             .unwrap_or_else(|| STANDALONE_NODE.to_owned())
     }
 
-    fn local_members(&self) -> BTreeSet<String> {
-        let Some(datacenter) = self.topology.local_datacenter() else {
-            return BTreeSet::from([self.local_node()]);
-        };
-        self.topology
-            .members
-            .iter()
-            .filter(|member| member.dc == datacenter)
-            .map(|member| member.node.clone())
-            .collect()
+    fn local_members(&self) -> Option<BTreeSet<String>> {
+        if self.policy == DurabilityPolicy::Local {
+            return Some(BTreeSet::from([self.local_node()]));
+        }
+        let datacenter = self.topology.local_datacenter()?;
+        Some(
+            self.topology
+                .members
+                .iter()
+                .filter(|member| member.dc == datacenter)
+                .map(|member| member.node.clone())
+                .collect(),
+        )
     }
 
     async fn metadata_decision(&self, authority: &str, operation: MetadataOperation) -> (AckDecision, Deadline) {
@@ -91,7 +94,10 @@ impl DistributedBlobDurability {
 #[async_trait]
 impl BlobWriteDurability for DistributedBlobDurability {
     async fn confirm(&self, write: CommittedBlob<'_>) -> WriteDurability {
-        let mut filesystem = FilesystemAck::new(write.digest().clone(), self.local_members(), self.policy);
+        let Some(local_members) = self.local_members() else {
+            return WriteDurability::Unavailable;
+        };
+        let mut filesystem = FilesystemAck::new(write.digest().clone(), local_members, self.policy);
         filesystem.record(ReceiptAck {
             node: self.local_node(),
             digest: write.digest().clone(),

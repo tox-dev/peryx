@@ -51,6 +51,9 @@ mode = "dc"
 role = "primary"
 source = "writer"
 token = "replication-token"
+
+[availability.write_ack]
+policy = "local"
 "#,
         )
         .unwrap();
@@ -405,6 +408,9 @@ mode = "dc"
 role = "primary"
 source = "writer"
 token = "replication-token"
+
+[availability.write_ack]
+policy = "local"
 "#,
             dir.path().join("data")
         ),

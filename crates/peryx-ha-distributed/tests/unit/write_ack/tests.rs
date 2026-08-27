@@ -115,8 +115,11 @@ async fn unjournaled_local_write_needs_no_metadata_acknowledgement() {
     );
 }
 
+#[rstest::rstest]
+#[case::majority(DurabilityPolicy::Majority)]
+#[case::everywhere(DurabilityPolicy::Everywhere)]
 #[tokio::test]
-async fn local_peer_receipt_satisfies_majority() {
+async fn local_peer_receipt_satisfies_two_member_quorum(#[case] policy: DurabilityPolicy) {
     let digest = digest();
     let durability = DistributedBlobDurability::new(
         TopologyConfig {
@@ -124,7 +127,7 @@ async fn local_peer_receipt_satisfies_majority() {
             local_node: Some("node-a".to_owned()),
             ..TopologyConfig::default()
         },
-        DurabilityPolicy::Majority,
+        policy,
         vec![Arc::new(LoopbackReceiptSource::holding("node-b", digest.clone(), 1))],
         Vec::new(),
         Duration::from_millis(10),
@@ -140,7 +143,32 @@ async fn local_peer_receipt_satisfies_majority() {
 }
 
 #[tokio::test]
-async fn elapsed_byte_quorum_is_unknown() {
+async fn unresolved_topology_is_unavailable() {
+    let observer = Arc::new(Observer::default());
+    let durability = DistributedBlobDurability::new(
+        TopologyConfig::default(),
+        DurabilityPolicy::Majority,
+        Vec::new(),
+        Vec::new(),
+        Duration::ZERO,
+        observer.clone(),
+    );
+
+    assert_eq!(durability.confirm(write(&digest())).await, WriteDurability::Unavailable);
+    assert!(
+        observer
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty()
+    );
+}
+
+#[rstest::rstest]
+#[case::majority(DurabilityPolicy::Majority)]
+#[case::everywhere(DurabilityPolicy::Everywhere)]
+#[tokio::test]
+async fn elapsed_two_member_quorum_is_unknown(#[case] policy: DurabilityPolicy) {
     let digest = digest();
     let observer = Arc::new(Observer::default());
     let durability = DistributedBlobDurability::new(
@@ -149,7 +177,7 @@ async fn elapsed_byte_quorum_is_unknown() {
             local_node: Some("node-a".to_owned()),
             ..TopologyConfig::default()
         },
-        DurabilityPolicy::Everywhere,
+        policy,
         vec![Arc::new(LoopbackReceiptSource::absent("node-b"))],
         Vec::new(),
         Duration::ZERO,

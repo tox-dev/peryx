@@ -1,6 +1,6 @@
 use rstest::rstest;
 
-use crate::config::{self, Config, ConfigError, DcMember, DcMembership, DcRole};
+use crate::config::{self, AvailabilityConfig, AvailabilityMode, Config, ConfigError, DcMember, DcMembership, DcRole};
 
 /// Keeps legacy replication roles covered during roster migration.
 fn dc_config(members: &str) -> Result<Config, ConfigError> {
@@ -74,6 +74,34 @@ fn test_ha_mode_also_accepts_a_roster() {
         membership.members.iter().filter(|m| m.role == DcRole::Writer).count(),
         1
     );
+}
+
+#[rstest]
+#[case::writer(
+    AvailabilityMode::Dc,
+    Some("unknown"),
+    None,
+    "writer identity: `writer_identity` must name a configured `[[availability.member]]`"
+)]
+#[case::ha_node(
+    AvailabilityMode::Ha,
+    Some("node-a"),
+    Some("unknown"),
+    "availability: `node_identity` must name a configured `[[availability.member]]`"
+)]
+fn test_config_rejects_an_identity_outside_the_roster(
+    #[case] mode: AvailabilityMode,
+    #[case] writer_identity: Option<&str>,
+    #[case] node_identity: Option<&str>,
+    #[case] expected: &str,
+) {
+    let mut config = dc_config(&writer_and_replica()).unwrap();
+    if mode == AvailabilityMode::Ha {
+        config.availability = AvailabilityConfig::Ha(config.availability.replication().unwrap().clone());
+    }
+    config.writer_identity = writer_identity.map(str::to_owned);
+    config.node_identity = node_identity.map(str::to_owned);
+    assert_eq!(config.validate().unwrap_err().to_string(), expected);
 }
 
 #[rstest]
