@@ -52,8 +52,8 @@ layers = ["team", "dockerhub"]
 upload = "team"
 ```
 
-`root-oci` is a virtual index served at `root/oci`. It serves the hosted `team` store before the `dockerhub` cache. Its
-`upload` key sends pushes to `team`. Clients read and write the virtual route.
+`root-oci` names the virtual index at route `root/oci`. It resolves the hosted `team` store before the `dockerhub`
+cache. Its `upload` key sends pushes to `team`. Clients read and write the virtual route.
 
 ## Start peryx
 
