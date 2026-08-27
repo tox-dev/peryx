@@ -96,7 +96,7 @@ name = "manifest_by_digest"
 harness = false
 
 [[bench]]
-name = "blob_serve"
+name = "blob_store_read"
 harness = false
 
 [[bench]]
