@@ -1,20 +1,243 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use peryx_driver::AppState;
 use peryx_http::router;
 use peryx_index::{Index, IndexKind};
-use peryx_policy::{Policy, PolicyConfig};
+use peryx_policy::{Policy, PolicyAction, PolicyConfig, PolicyDecisionRecorder, PolicyDecisionState, PolicyEvaluation};
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
 use tower::ServiceExt as _;
 
-use super::{app_with_indexes, auth, body_has_code, oci_digest, send, send_body, send_with, writable_index};
+use super::{app_with_indexes, auth, body_has_code, oci_digest, oci_index, send, send_body, send_with, writable_index};
 use crate::store::{self, Manifest};
 
 const TOKEN: &str = "s3cret";
 const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RecordedPolicyDecision {
+    action: PolicyAction,
+    resource: String,
+    artifact: Option<String>,
+    group: Option<String>,
+    source: Option<String>,
+    state: PolicyDecisionState,
+    rule: Option<&'static str>,
+    reason: Option<String>,
+    next_eligible_at_unix: Option<i64>,
+}
+
+#[derive(Debug, Default)]
+struct PolicyRecorder(Mutex<Vec<RecordedPolicyDecision>>);
+
+impl PolicyRecorder {
+    fn decisions(&self) -> Vec<RecordedPolicyDecision> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+impl PolicyDecisionRecorder for PolicyRecorder {
+    fn record(&self, evaluation: PolicyEvaluation<'_>) {
+        self.0.lock().unwrap().push(RecordedPolicyDecision {
+            action: evaluation.action,
+            resource: evaluation.resource.to_owned(),
+            artifact: evaluation.artifact.map(str::to_owned),
+            group: evaluation.group.map(str::to_owned),
+            source: evaluation.source.map(str::to_owned),
+            state: evaluation.state,
+            rule: evaluation.rule,
+            reason: evaluation.reason.map(str::to_owned),
+            next_eligible_at_unix: evaluation.next_eligible_at_unix,
+        });
+    }
+}
+
+fn protected_virtual(
+    dir: &tempfile::TempDir,
+    upstream: &str,
+    protected: bool,
+) -> (Arc<AppState>, axum::Router, Arc<PolicyRecorder>) {
+    let recorder = Arc::new(PolicyRecorder::default());
+    let client = peryx_upstream::UpstreamClient::new(upstream).unwrap();
+    let mut virtual_index = oci_index(
+        "reg",
+        "reg",
+        IndexKind::Virtual {
+            layers: vec![0, 1],
+            write_target: Some(0),
+        },
+    );
+    virtual_index.policy = Policy::compile(
+        &PolicyConfig {
+            protected_resources: protected.then(|| "team/*".to_owned()).into_iter().collect(),
+            ..PolicyConfig::default()
+        },
+        str::to_owned,
+    )
+    .with_decision_recorder(Arc::clone(&recorder) as _);
+    let (state, app) = app_with_indexes(
+        dir,
+        vec![
+            writable_index("images", "images", true, TOKEN),
+            oci_index("hub", "hub", IndexKind::Cached { client, offline: false }),
+            virtual_index,
+        ],
+    );
+    (state, app, recorder)
+}
+
+fn expected_policy_decisions(
+    resource: &str,
+    cached: Result<(), (&'static str, String)>,
+) -> Vec<RecordedPolicyDecision> {
+    let decision = |action, state, rule, reason| RecordedPolicyDecision {
+        action,
+        resource: resource.to_owned(),
+        artifact: None,
+        group: None,
+        source: None,
+        state,
+        rule,
+        reason,
+        next_eligible_at_unix: None,
+    };
+    let (state, rule, reason) = match cached {
+        Ok(()) => (PolicyDecisionState::Allow, None, None),
+        Err((rule, reason)) => (PolicyDecisionState::Deny, Some(rule), Some(reason)),
+    };
+    vec![
+        decision(PolicyAction::Serve, PolicyDecisionState::Allow, None, None),
+        decision(PolicyAction::Cached, state, rule, reason),
+    ]
+}
+
+fn protected_decisions() -> Vec<RecordedPolicyDecision> {
+    expected_policy_decisions(
+        "team/app",
+        Err((
+            "protected-name",
+            "resource \"team/app\" is protected from upstream fallback by rule \"team/*\"".to_owned(),
+        )),
+    )
+}
+
+#[rstest::rstest]
+#[case::manifest_tag(Method::GET, "manifests/latest", StatusCode::NOT_FOUND, Some("MANIFEST_UNKNOWN"))]
+#[case::manifest_digest(
+    Method::GET,
+    concat!("manifests/sha256:", "1111111111111111111111111111111111111111111111111111111111111111"),
+    StatusCode::NOT_FOUND,
+    Some("MANIFEST_UNKNOWN")
+)]
+#[case::blob_get(
+    Method::GET,
+    concat!("blobs/sha256:", "2222222222222222222222222222222222222222222222222222222222222222"),
+    StatusCode::NOT_FOUND,
+    Some("BLOB_UNKNOWN")
+)]
+#[case::blob_head(
+    Method::HEAD,
+    concat!("blobs/sha256:", "3333333333333333333333333333333333333333333333333333333333333333"),
+    StatusCode::NOT_FOUND,
+    None
+)]
+#[case::tags(Method::GET, "tags/list", StatusCode::OK, None)]
+#[case::referrers(
+    Method::GET,
+    concat!("referrers/sha256:", "4444444444444444444444444444444444444444444444444444444444444444"),
+    StatusCode::OK,
+    None
+)]
+#[tokio::test]
+async fn test_protected_virtual_miss_does_not_reach_upstream(
+    #[case] method: Method,
+    #[case] suffix: &str,
+    #[case] expected_status: StatusCode,
+    #[case] error_code: Option<&str>,
+) {
+    let server = wiremock::MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app, recorder) = protected_virtual(&dir, &format!("{}/", server.uri()), true);
+
+    let (status, _, body) = send(&app, method, &format!("/v2/reg/team/app/{suffix}")).await;
+
+    assert_eq!(status, expected_status, "{body:?}");
+    if let Some(error_code) = error_code {
+        assert!(body_has_code(&body, error_code), "{body:?}");
+    }
+    assert!(server.received_requests().await.unwrap().is_empty());
+    assert_eq!(recorder.decisions(), protected_decisions());
+}
+
+#[rstest::rstest]
+#[case::manifest(Method::GET, "manifests/latest", br#"{"schemaVersion":2}"#.as_slice())]
+#[case::blob(Method::GET, "blobs", b"hosted layer".as_slice())]
+#[case::blob_head(Method::HEAD, "blobs", &[])]
+#[tokio::test]
+async fn test_protected_virtual_serves_hosted_artifacts(
+    #[case] method: Method,
+    #[case] suffix: &str,
+    #[case] expected_body: &[u8],
+) {
+    let server = wiremock::MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app, recorder) = protected_virtual(&dir, &format!("{}/", server.uri()), true);
+    let manifest = br#"{"schemaVersion":2}"#;
+    let manifest_digest = oci_digest(manifest);
+    store::record_manifest(
+        &state.serving.meta,
+        "images",
+        "team/app",
+        &manifest_digest,
+        &Manifest {
+            media_type: MANIFEST_TYPE.to_owned(),
+            bytes: manifest.to_vec(),
+        },
+    )
+    .unwrap();
+    store::put_tag(&state.serving.meta, "images", "team/app", "latest", &manifest_digest).unwrap();
+    let blob = b"hosted layer";
+    let blob_digest = state.serving.blobs.put_bytes(blob).await.unwrap();
+    store::record_blob_membership(
+        &state.serving.meta,
+        "images",
+        "team/app",
+        &format!("sha256:{}", blob_digest.as_str()),
+    )
+    .unwrap();
+    let suffix = if suffix == "blobs" {
+        format!("blobs/sha256:{}", blob_digest.as_str())
+    } else {
+        suffix.to_owned()
+    };
+
+    let (status, _, body) = send(&app, method, &format!("/v2/reg/team/app/{suffix}")).await;
+
+    assert_eq!((status, body.as_ref()), (StatusCode::OK, expected_body));
+    assert!(server.received_requests().await.unwrap().is_empty());
+    assert_eq!(recorder.decisions(), protected_decisions());
+}
+
+#[tokio::test]
+async fn test_unprotected_virtual_manifest_still_uses_the_proxy() {
+    let server = wiremock::MockServer::start().await;
+    let manifest = br#"{"schemaVersion":2}"#;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/v2/team/app/manifests/latest"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_raw(manifest.to_vec(), MANIFEST_TYPE))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app, recorder) = protected_virtual(&dir, &format!("{}/", server.uri()), false);
+
+    let (status, _, body) = send(&app, Method::GET, "/v2/reg/team/app/manifests/latest").await;
+
+    assert_eq!((status, body.as_ref()), (StatusCode::OK, manifest.as_slice()));
+    assert_eq!(recorder.decisions(), expected_policy_decisions("team/app", Ok(())));
+}
 
 fn store_blocking(dir: &tempfile::TempDir) -> (Arc<AppState>, axum::Router) {
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();

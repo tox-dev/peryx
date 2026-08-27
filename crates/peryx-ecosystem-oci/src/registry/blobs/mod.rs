@@ -40,6 +40,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         if policy_blocks(index, PolicyAction::Serve, repo) {
             return Ok(error_response(ErrorCode::BlobUnknown, "blob unknown"));
         }
+        let members = policy_serving_members(state, index, repo);
         let Some(storage) = store::blob_digest(digest) else {
             return Ok(error_response(
                 ErrorCode::DigestInvalid,
@@ -59,9 +60,9 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
             head,
         };
         if head {
-            return self.head_blob(state, index, repo, digest, &storage, &asked).await;
+            return self.head_blob(state, &members, repo, digest, &storage, &asked).await;
         }
-        let mut response = match self.ensure_blob(state, index, repo, digest, &storage).await? {
+        let mut response = match self.ensure_blob(state, &members, repo, digest, &storage).await? {
             BlobFetch::Stored(metadata) => {
                 serve_stored_blob(&state.blobs, &storage, digest, metadata.bytes, &asked).await?
             }
@@ -101,18 +102,18 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
     async fn head_blob(
         &self,
         state: &ServingState,
-        index: &Index,
+        members: &[&Index],
         repo: &str,
         digest: &str,
         storage: &Digest,
         asked: &BlobRequest<'_>,
     ) -> Result<Response, ServeError> {
         if let Some(metadata) = state.blobs.head(storage).await.map_err(ServeError::from)?
-            && self.blob_authorized(state, index, repo, digest)?
+            && self.blob_authorized_in(state, members, repo, digest)?
         {
             return serve_stored_blob(&state.blobs, storage, digest, metadata.bytes, asked).await;
         }
-        for member in serving_members(state, index) {
+        for member in members {
             let Some(client) = member.proxy_client() else {
                 continue;
             };
@@ -140,13 +141,13 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
     async fn ensure_blob(
         &self,
         state: &ServingState,
-        index: &Index,
+        members: &[&Index],
         repo: &str,
         digest: &str,
         storage: &Digest,
     ) -> Result<BlobFetch, ServeError> {
         if let Some(metadata) = state.blobs.head(storage).await.map_err(ServeError::from)?
-            && self.blob_authorized(state, index, repo, digest)?
+            && self.blob_authorized_in(state, members, repo, digest)?
         {
             return Ok(BlobFetch::Stored(metadata));
         }
@@ -154,20 +155,19 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         let gate = flight_gate(state, &gate_key);
         let _guard = gate.lock().await;
         if let Some(metadata) = state.blobs.head(storage).await.map_err(ServeError::from)?
-            && self.blob_authorized(state, index, repo, digest)?
+            && self.blob_authorized_in(state, members, repo, digest)?
         {
             return Ok(BlobFetch::Stored(metadata));
         }
         // A blob this repository already authorizes but whose bytes are not local yet can come from a
         // peer that holds a verified placement, before falling back to an upstream member.
-        if self.blob_authorized(state, index, repo, digest)?
+        if self.blob_authorized_in(state, members, repo, digest)?
             && let Some(metadata) = fill_remote(state, storage).await
         {
             state.cache.forget_flight(&gate_key);
             return Ok(BlobFetch::Stored(metadata));
         }
-        let members = serving_members(state, index);
-        let fetched = self.fetch_blob(state, &members, repo, digest, storage).await;
+        let fetched = self.fetch_blob(state, members, repo, digest, storage).await;
         state.cache.forget_flight(&gate_key);
         fetched
     }
@@ -189,6 +189,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         if policy_blocks(index, PolicyAction::Serve, repo) {
             return Ok(error_response(ErrorCode::BlobUnknown, "blob unknown"));
         }
+        let members = policy_serving_members(state, index, repo);
         let Some(storage) = store::blob_digest(digest) else {
             return Ok(error_response(
                 ErrorCode::DigestInvalid,
@@ -198,7 +199,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         if digest_decision(state, digest)? == DigestDecision::Revoked {
             return Ok(error_response(ErrorCode::BlobUnknown, "blob unknown"));
         }
-        match self.ensure_blob(state, index, repo, digest, &storage).await? {
+        match self.ensure_blob(state, &members, repo, digest, &storage).await? {
             BlobFetch::Stored(_) => {}
             BlobFetch::Absent => return Ok(error_response(ErrorCode::BlobUnknown, "blob unknown")),
             BlobFetch::Gateway(response) => return Ok(response),
@@ -323,10 +324,17 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         repo: &str,
         digest: &str,
     ) -> Result<bool, ServeError> {
-        if !matches!(index.kind, IndexKind::Virtual { .. }) {
-            return self.blob_is_member(state, &index.name, repo, digest);
-        }
-        for member in serving_members(state, index) {
+        self.blob_authorized_in(state, &serving_members(state, index), repo, digest)
+    }
+
+    fn blob_authorized_in(
+        &self,
+        state: &ServingState,
+        members: &[&Index],
+        repo: &str,
+        digest: &str,
+    ) -> Result<bool, ServeError> {
+        for member in members {
             if self.blob_is_member(state, &member.name, repo, digest)? {
                 return Ok(true);
             }

@@ -33,13 +33,13 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         if policy_blocks(index, PolicyAction::Serve, repo) {
             return Ok(error_response(ErrorCode::ManifestUnknown, "manifest unknown"));
         }
+        let members = policy_serving_members(state, index, repo);
         let response = match reference {
             Reference::Digest(digest) => {
                 if digest_decision(state, digest)? == DigestDecision::Revoked {
                     return Ok(error_response(ErrorCode::ManifestUnknown, "manifest unknown"));
                 }
                 let mut served = None;
-                let members = serving_members(state, index);
                 let mut checked = members.len();
                 for (position, member) in members.iter().enumerate() {
                     if store::manifest_is_trashed(&state.meta, &member.name, repo, digest)? {
@@ -76,7 +76,6 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
                     return Ok(error_response(ErrorCode::ManifestUnknown, "manifest unknown"));
                 }
                 let mut served = None;
-                let members = serving_members(state, index);
                 let mut checked = members.len();
                 for (position, member) in members.iter().enumerate() {
                     if store::tag_is_trashed(&state.meta, &member.name, repo, tag)? {
@@ -106,7 +105,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
             }
         };
         let mut response = self
-            .negotiate_manifest(state, index, repo, accept, response, head)
+            .negotiate_manifest(state, &members, repo, accept, response, head)
             .await?;
         if response.status() == StatusCode::OK {
             // The same tag can hand back the index or its child depending on Accept, so a shared cache
@@ -133,7 +132,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
     async fn negotiate_manifest(
         &self,
         state: &ServingState,
-        index: &Index,
+        members: &[&Index],
         repo: &str,
         accept: Option<&str>,
         response: Response,
@@ -166,13 +165,13 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         if digest_decision(state, &child)? == DigestDecision::Revoked {
             return Ok(error_response(ErrorCode::ManifestUnknown, "manifest unknown"));
         }
-        if manifest_trashed_in(state, &serving_members(state, index), repo, &child)? {
+        if manifest_trashed_in(state, members, repo, &child)? {
             return Ok(error_response(ErrorCode::ManifestUnknown, "manifest unknown"));
         }
         if let Some(manifest) = store::get_manifest(&state.meta, &child)? {
             return Ok(manifest_response(manifest, &child, head));
         }
-        for member in serving_members(state, index) {
+        for member in members {
             if let Some(client) = member.proxy_client()
                 && let Some(served) = self
                     .pull_manifest_by_digest(state, client, &member.name, repo, &child, head)

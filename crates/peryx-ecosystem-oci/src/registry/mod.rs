@@ -521,7 +521,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         repo: &str,
     ) -> Result<Vec<String>, ServeError> {
         let active = state.revocations.has_active()?;
-        let members = serving_members(state, index);
+        let members = policy_serving_members(state, index, repo);
         let name = if index.route.is_empty() {
             repo.to_owned()
         } else {
@@ -795,6 +795,15 @@ pub fn serving_members<'a>(state: &'a ServingState, index: &'a Index) -> Vec<&'a
         .into_iter()
         .map(|position| state.index_at(position))
         .collect()
+}
+
+fn policy_serving_members<'a>(state: &'a ServingState, index: &'a Index, repo: &str) -> Vec<&'a Index> {
+    let mut members = serving_members(state, index);
+    if members.iter().any(|member| member.proxy_client().is_some()) && policy_blocks(index, PolicyAction::Cached, repo)
+    {
+        members.retain(|member| member.proxy_client().is_none());
+    }
+    members
 }
 /// A hosted index's own page serial: the whole-store serial the readable frontier governs. A proxied
 /// index reports upstream state the frontier does not govern, and a virtual index carries no serial of

@@ -30,7 +30,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
             return Ok(error_response(ErrorCode::NameUnknown, "repository name unknown"));
         }
         let active = state.revocations.has_active()?;
-        let members = serving_members(state, index);
+        let members = policy_serving_members(state, index, repo);
         if let [member] = members.as_slice()
             && let Some(client) = member.proxy_client()
         {
@@ -355,7 +355,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         if active && digest_decision(state, digest)? == DigestDecision::Revoked {
             return Ok(referrers_response(&[], filter.as_deref()));
         }
-        let members = serving_members(state, index);
+        let members = policy_serving_members(state, index, repo);
         if manifest_trashed_in(state, &members, repo, digest)? {
             return Ok(referrers_response(&[], filter.as_deref()));
         }
