@@ -434,6 +434,7 @@ fn plugin_openapi_contains_every_pypi_surface() {
     let expected = BTreeSet::from([
         "/_/oidc/audience",
         "/_/oidc/mint-token",
+        "/+shadow/candidates",
         "/{route}/",
         "/{route}/+api",
         "/{route}/+search",

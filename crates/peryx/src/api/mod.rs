@@ -2,7 +2,6 @@
 //! `/api-docs/openapi.json` and rendered from the documentation site's staged copy.
 
 mod service;
-mod shadow;
 mod trash;
 
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
@@ -134,5 +133,5 @@ fn paths(distributed: bool, plugins: &peryx_plugin_registry::PluginRegistry) -> 
     } else {
         services
     };
-    shadow::shadow_paths(trash::trash_paths(services))
+    trash::trash_paths(services)
 }

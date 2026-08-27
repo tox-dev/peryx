@@ -9,7 +9,15 @@ use peryx_identity::{GrantScope, Role};
 use tower::ServiceExt as _;
 use utoipa::openapi::PathsBuilder;
 
-use crate::api::{openapi, openapi_for, openapi_json, openapi_json_for};
+use crate::api::{openapi, openapi_for, openapi_json, openapi_json_for, openapi_with_plugins};
+
+#[test]
+fn test_oci_only_openapi_omits_the_pypi_shadow_path() {
+    let plugins = peryx_plugin_registry::PluginRegistry::new(vec![peryx_ecosystem_oci::registration()]).unwrap();
+    let spec = serde_json::to_value(openapi_with_plugins(&plugins)).unwrap();
+
+    assert!(spec["paths"].get("/+shadow/candidates").is_none());
+}
 
 // Sorted entries reduce merge conflicts between endpoint additions.
 #[test]
@@ -54,7 +62,6 @@ fn test_openapi_document_covers_every_endpoint() {
             "/+revocations/{digest}",
             "/+revocations/{digest}/lift",
             "/+search",
-            "/+shadow/candidates",
             "/+stats",
             "/+status",
             "/+tokens",

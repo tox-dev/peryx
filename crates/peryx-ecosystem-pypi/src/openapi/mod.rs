@@ -10,6 +10,7 @@ mod inspect;
 mod legacy;
 mod publish;
 mod search;
+mod shadow;
 mod shared;
 mod simple;
 mod trusted_publishing;
@@ -20,6 +21,7 @@ use inspect::{inspect_listing, inspect_member};
 use legacy::{legacy_project_json, legacy_release_json};
 use publish::{delete_project, delete_version, promote, restore, unyank, upload, yank};
 use search::package_search;
+use shadow::shadow_candidates;
 use simple::{project_detail, project_list};
 use trusted_publishing::{oidc_audience, oidc_mint_token};
 
@@ -78,6 +80,12 @@ pub fn openapi_paths(paths: PathsBuilder) -> PathsBuilder {
             "/{route}/+search",
             PathItemBuilder::new()
                 .operation(HttpMethod::Get, package_search())
+                .build(),
+        )
+        .path(
+            "/+shadow/candidates",
+            PathItemBuilder::new()
+                .operation(HttpMethod::Get, shadow_candidates())
                 .build(),
         )
         .path(

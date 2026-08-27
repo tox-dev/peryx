@@ -1,17 +1,8 @@
 use serde_json::json;
-use utoipa::openapi::path::{HttpMethod, OperationBuilder, ParameterIn, PathItemBuilder};
-use utoipa::openapi::{PathsBuilder, Required, ResponseBuilder, SecurityRequirement};
+use utoipa::openapi::path::{OperationBuilder, ParameterIn};
+use utoipa::openapi::{Required, ResponseBuilder, SecurityRequirement};
 
 use peryx_driver::openapi::{api_json_response, bounded_integer_parameter, parameter};
-
-pub(super) fn shadow_paths(paths: PathsBuilder) -> PathsBuilder {
-    paths.path(
-        "/+shadow/candidates",
-        PathItemBuilder::new()
-            .operation(HttpMethod::Get, shadow_candidates())
-            .build(),
-    )
-}
 
 fn shadow_example() -> serde_json::Value {
     json!({
@@ -80,7 +71,7 @@ fn shadow_parameters(mut operation: OperationBuilder) -> OperationBuilder {
     ))
 }
 
-fn shadow_candidates() -> OperationBuilder {
+pub(super) fn shadow_candidates() -> OperationBuilder {
     shadow_parameters(
         OperationBuilder::new()
             .tag("operations")
