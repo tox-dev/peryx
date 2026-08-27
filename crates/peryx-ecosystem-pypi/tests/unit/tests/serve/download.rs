@@ -178,12 +178,27 @@ async fn test_file_path_returns_blob_cached_while_waiting_for_gate() {
         "flask.whl".to_owned(),
     );
     tokio::pin!(task);
-    assert!(futures_util::poll!(task.as_mut()).is_pending());
+    let wake = Arc::new(WakeSignal::default());
+    let waker = futures_util::task::waker(wake.clone());
+    let mut context = std::task::Context::from_waker(&waker);
+    assert!(std::future::Future::poll(task.as_mut(), &mut context).is_pending());
+    wake.0.notified().await;
+    assert!(std::future::Future::poll(task.as_mut(), &mut context).is_pending());
     h.state.serving.blobs.put_bytes_as(b"wheel", &digest).await.unwrap();
     drop(guard);
     let lease = task.await.unwrap();
     assert_eq!(std::fs::read(lease.path()).unwrap(), b"wheel");
 }
+
+#[derive(Default)]
+struct WakeSignal(tokio::sync::Notify);
+
+impl futures_util::task::ArcWake for WakeSignal {
+    fn wake_by_ref(wake: &Arc<Self>) {
+        wake.0.notify_one();
+    }
+}
+
 #[tokio::test]
 async fn test_cancelled_download_wakes_waiters_and_leaves_no_entry() {
     let h = harness().await;
