@@ -204,8 +204,25 @@ fn service_installation_applies_the_distributed_contract() {
     assert!(state.serving.authority_drainer().is_some());
 }
 
-#[test]
-fn service_installation_propagates_remote_transport_errors() {
+#[rstest::rstest]
+#[case::remote_transport(
+    "west",
+    "not a url",
+    RuntimeMemberRole::Writer,
+    "build a read-through blob transport for datacenter west"
+)]
+#[case::worker_datacenter(
+    "",
+    "http://west.internal:4460",
+    RuntimeMemberRole::Replica,
+    "datacenter \"\" is not a valid placement component"
+)]
+fn service_installation_propagates_configuration_errors(
+    #[case] datacenter: &str,
+    #[case] address: &str,
+    #[case] role: RuntimeMemberRole,
+    #[case] message: &str,
+) {
     let dir = tempfile::tempdir().unwrap();
     let mut runtime = runtime_config(
         &dir,
@@ -221,7 +238,7 @@ fn service_installation_propagates_remote_transport_errors() {
         .as_mut()
         .unwrap()
         .members
-        .push(member("remote", "west", "not a url", RuntimeMemberRole::Writer));
+        .push(member("remote", datacenter, address, role));
     let mut state = AppState::new(
         MetaStore::open(dir.path().join("peryx.redb")).unwrap(),
         BlobStorage::filesystem(dir.path().join("blobs")),
@@ -229,18 +246,18 @@ fn service_installation_propagates_remote_transport_errors() {
         Vec::new(),
     );
 
-    assert!(
-        install_services(
-            &DistributedServiceConfig {
-                runtime,
-                read_only: false,
-                write_ack_policy: peryx_ha::DurabilityPolicy::Local,
-                write_ack_deadline: Duration::ZERO,
-            },
-            &mut state,
-        )
-        .is_err()
-    );
+    let error = install_services(
+        &DistributedServiceConfig {
+            runtime,
+            read_only: false,
+            write_ack_policy: peryx_ha::DurabilityPolicy::Local,
+            write_ack_deadline: Duration::ZERO,
+        },
+        &mut state,
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains(message), "{error:#}");
 }
 
 #[tokio::test]
