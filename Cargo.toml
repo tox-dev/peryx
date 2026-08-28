@@ -158,6 +158,7 @@ codegen-units = 1
 name = "peryx"
 bin-package = "peryx"
 bin-target = "peryx"
+bin-default-features = true
 lib-package = "peryx-web"
 lib-features = ["hydrate"]
 lib-default-features = false
