@@ -167,8 +167,11 @@ and answering `204`. An unknown session (including one already committed or canc
 `400 DIGEST_INVALID`; a missing `digest` query is also `400 DIGEST_INVALID`.
 
 `GET /v2/<name>/blobs/uploads/<session>` reports progress: `204` with `Location`, `Docker-Upload-UUID`, and
-`Range: 0-<n>`. An unknown session (including one already committed) is `404 BLOB_UPLOAD_UNKNOWN`. Sessions are
-in-memory and process-local; they do not survive a restart.
+`Range: 0-<n>`. An unknown session (including one already committed) is `404 BLOB_UPLOAD_UNKNOWN`. The metadata store
+contains the session record, and the filesystem contains its staged bytes. After a restart, peryx reads both, and the
+client continues with `GET`, `PATCH`, or `PUT` from the recorded offset. An unfinished session remains until `DELETE`, a
+size rejection, or the idle reclamation pass removes it after one hour without a status `GET` or `PATCH` attempt. By
+default, a local worker runs that pass once per minute.
 
 ## Tags
 

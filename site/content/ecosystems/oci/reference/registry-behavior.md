@@ -78,8 +78,9 @@ target.
 
 The opening request records its complete `<name>` in the upload session. peryx encodes a 128-bit random id as 32
 lowercase hexadecimal characters. For a continuation request, peryx checks write access for the requested repository and
-then compares both stored scope values. A credential with write access may continue when the repository matches. Since
-peryx holds sessions in memory, a restart drops open sessions and later requests receive `404`.
+then compares both stored scope values. A credential with write access may continue when the repository matches. The
+metadata store contains the session record, and the filesystem contains its staged bytes. After a restart, peryx reads
+both, and the client resumes from the recorded offset.
 
 ### Cancel an upload session
 
@@ -92,14 +93,16 @@ peryx holds sessions in memory, a restart drops open sessions and later requests
 | Credential lacks write access to the requested repository     | `401 UNAUTHORIZED`        |
 | Index configuration disallows uploads                         | `403 DENIED`              |
 
-A `204` drops the session and unlinks its staged temp file. peryx expires an unfinished session after one hour without a
-status `GET` or `PATCH` attempt. The once-per-minute sweep removes expired sessions within the next minute; starting
-another session runs the same expiry pass. When a client changes the name, peryx keeps the original session and staged
-bytes unchanged.
+A `204` drops the session and unlinks its staged temp file. An unfinished session remains until `DELETE`, a size
+rejection, or idle reclamation. peryx marks it eligible for reclamation after one hour without a status `GET` or `PATCH`
+attempt. By default, a local worker runs the pass once per minute; operators can set another interval with an
+[explicit schedule](@/core/operations/configuration.md#schedules). peryx does not reclaim old sessions when a client
+starts one. When a client changes the name, peryx keeps the original session and staged bytes unchanged.
 
-The hosted index's `max_file_size_bytes` applies while a monolithic `POST`, chunk `PATCH`, or final `PUT` streams. peryx
-checks the cumulative byte count before writing each chunk. An over-limit request returns `403 DENIED`; for a chunked
-upload, it also removes the session and its staged file, so later requests for that id return `404 BLOB_UPLOAD_UNKNOWN`.
+The hosted index's `max_artifact_size_bytes` applies while a monolithic `POST`, chunk `PATCH`, or final `PUT` streams.
+peryx checks the cumulative byte count before writing each chunk. An over-limit request returns `403 DENIED`; for a
+chunked upload, it also removes the session and its staged file, so later requests for that id return
+`404 BLOB_UPLOAD_UNKNOWN`.
 
 ### 416 resume response
 

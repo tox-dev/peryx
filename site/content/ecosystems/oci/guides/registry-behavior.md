@@ -114,8 +114,10 @@ peryx answer `416`. Both cleanups act on an
 [upload session](@/ecosystems/oci/reference/registry-behavior.md#upload-sessions), so both need the hosted index's
 access-token secret as the Basic-auth password (`-u _:<token>`).
 
-An open session holds a staged temp file on the server. After one hour without a status request or `PATCH` attempt,
-peryx removes that file during the next maintenance pass; the pass runs once per minute. To release it before the
+The metadata store contains each open session record, and the filesystem contains its staged bytes. After a restart,
+peryx reads both. Send a status `GET`, then resume at the offset in its `Range` header. An unfinished session remains
+until `DELETE`, a size rejection, or idle reclamation. peryx marks it eligible after one hour without a status request
+or `PATCH` attempt. By default, a local worker runs the pass once per minute. To release the staged bytes before the
 timeout, `DELETE` the session URL, the `Location` peryx returned when the session opened:
 
 ```shell
@@ -133,14 +135,14 @@ curl -sS -i -u _:<token> -X DELETE \
 # 404 Not Found
 ```
 
-A `403 DENIED` caused by `max_file_size_bytes` also removes the session. Do not send `DELETE` or resume from the last
-range; reduce the blob or raise the index limit, then start another upload.
+A `403 DENIED` caused by `max_artifact_size_bytes` also removes the session. Do not send `DELETE` or resume from the
+last range; reduce the blob or raise the index limit, then start another upload.
 
 Send follow-up requests to the exact `Location` from the opening response. peryx returns `404 BLOB_UPLOAD_UNKNOWN` when
 the repository path differs, including when the caller can write both repositories.
 
-Because sessions live in the peryx process, a restart drops open sessions, so a later `DELETE` answers `404`. Cancel a
-session when a CI job aborts or a script abandons an upload to release its staged bytes before expiry.
+peryx does not discard an open session on restart. Cancel it when a CI job aborts or a script abandons an upload to
+release its staged bytes before expiry.
 
 ## Resume a push that got a 416
 

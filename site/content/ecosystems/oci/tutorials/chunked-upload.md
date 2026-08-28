@@ -65,11 +65,13 @@ echo "$loc"   # /v2/images/blob-demo/blobs/uploads/<session>
 
 Read `Docker-Upload-UUID: <session>` and `Range: 0-0` from the response. `Range` shows the byte span received so far and
 starts empty. peryx creates an opaque random id and records the complete `images/blob-demo` repository name. Keep the
-returned `Location` unchanged. A restart discards this process-local state. After one hour without a status check or
-`PATCH` attempt, peryx removes the session during the next process-wide maintenance pass. The pass runs once per minute,
-so the staged file can remain for up to one minute beyond that deadline.
+returned `Location` unchanged. The metadata store contains the session record, and the filesystem contains its staged
+bytes. After a restart, peryx reads both. Query the returned `Location`, then resume from the recorded `Range` offset.
+An unfinished session remains until `DELETE`, a size rejection, or idle reclamation. peryx marks it eligible after one
+hour without a status check or `PATCH` attempt. By default, a local worker runs the pass once per minute, so the staged
+file can remain for up to one minute beyond that deadline.
 
-If the hosted index sets `max_file_size_bytes`, the first `PATCH` or final `PUT` that would cross the limit returns
+If the hosted index sets `max_artifact_size_bytes`, the first `PATCH` or final `PUT` that would cross the limit returns
 `403 DENIED` and removes the session. Start a new session with a smaller blob; the rejected bytes never reach the staged
 file.
 

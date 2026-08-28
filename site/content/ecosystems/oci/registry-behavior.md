@@ -23,13 +23,14 @@ The referrers route validates its subject with the OCI digest grammar before loo
 
 ## Upload sessions
 
-A random session identifier locates process-local staged bytes. The opening repository stays bound to the session, and
-each follow-up request repeats authorization. A client may query the current offset, append the next range, finish with
-a matching sha256 digest, or cancel with `DELETE`.
+A random session identifier locates a record in the metadata store and staged bytes on the filesystem. The opening
+repository stays bound to the session, and each follow-up request repeats authorization. After a restart, peryx reads
+both parts, and a client may query the recorded offset, append the next range, finish with a matching sha256 digest, or
+cancel with `DELETE`.
 
-Peryx expires a session after one hour without activity. Cancellation, a digest mismatch, and a file-size policy denial
-remove its staged bytes. A range mismatch returns `416` with the committed offset so the client can resume without
-restarting.
+An unfinished session remains until `DELETE`, a size rejection, or idle reclamation after one hour without activity. The
+local maintenance worker checks once per minute by default. Digest and range mismatches keep the session and staged
+bytes; a client can retry from the recorded offset.
 
 ## Write fencing
 
