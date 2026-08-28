@@ -56,7 +56,7 @@ pub(super) async fn selection(
         PrefetchMode::Selected | PrefetchMode::MetadataOnly => {
             if rules.is_empty() {
                 bail!(
-                    "cached index {} has no selected packages; add [index.prefetch].packages or --package",
+                    "cached index {} has no selected packages; add [index.prefetch].packages or --option 'packages=[\"requests\"]'",
                     target.index
                 );
             }

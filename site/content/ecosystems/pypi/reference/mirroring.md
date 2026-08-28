@@ -44,5 +44,7 @@ peryx mirror sync pypi --option 'mode="all"' --option 'python_tags=["py3"]' --op
 peryx mirror verify pypi --option 'mode="all"'
 ```
 
-Use `--no-wheels`, `--no-sdists`, `--metadata-only`, or `--max-file-size-bytes` to narrow one run. Repeating a tag
-option adds accepted tags.
+Operators can narrow one run with `--option 'no_wheels=true'`, `--option 'no_sdists=true'`,
+`--option 'metadata_only=true'`, or `--option 'max_file_size_bytes=524288000'`. They use `packages` or `requirements` to
+add selectors to configured lists, and each `*_tags` override adds wheel tags. `mode` and `max_file_size_bytes` replace
+their configured values. Setting the three boolean examples to `true` narrows the selection.

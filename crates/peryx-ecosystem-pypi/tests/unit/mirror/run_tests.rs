@@ -695,3 +695,29 @@ async fn mirror_driver_validates_configuration_for_each_action() {
         assert!(output.is_empty());
     }
 }
+
+#[tokio::test]
+async fn mirror_driver_reports_a_valid_empty_selection_override() {
+    let fixture = test_support::state(vec![cached_index("https://example.invalid/simple/", true)]);
+    let table = toml::Table::new();
+    let mut output = Vec::new();
+
+    assert_eq!(
+        crate::PypiServing
+            .mirror(
+                fixture.state,
+                MirrorRequest {
+                    action: MirrorAction::Plan,
+                    index: "pypi",
+                    settings: &table,
+                    configured: &table,
+                    overrides: &table,
+                },
+                &mut output,
+            )
+            .await
+            .unwrap_err(),
+        "cached index pypi has no selected packages; add [index.prefetch].packages or --option 'packages=[\"requests\"]'"
+    );
+    assert!(output.is_empty());
+}
