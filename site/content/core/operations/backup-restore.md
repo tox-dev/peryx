@@ -1,14 +1,14 @@
 +++
 title = "Back up and restore"
-description = "Capture a self-contained, verifiable backup of a data directory and restore it into a fresh node."
+description = "Capture a self-contained, verifiable backup of a filesystem-backed data directory and restore it into a fresh node."
 weight = 11
 +++
 
-A backup is a self-contained directory that reproduces a peryx node's durable state: its effective configuration, its
-metadata store, and every blob that metadata references. It is offline by construction. `peryx backup create` reads a
-stopped or quiescent data directory and writes files with hash checks; nothing about it talks to a running server, an
-upstream, or an object store's control plane. That makes a backup portable. Copy it to another host, verify it there,
-and restore it into an empty data directory to rebuild the node.
+A filesystem-backed backup is a self-contained directory that reproduces a peryx node's durable state: its effective
+configuration, its metadata store, and every blob that metadata references. It is offline by construction.
+`peryx backup create` reads a stopped or quiescent data directory and writes files with hash checks; nothing about it
+talks to a running server or an upstream. That makes a backup portable. Copy it to another host, verify it there, and
+restore it into an empty data directory to rebuild the node.
 
 Reach for this when you move a node between hosts, seed a staging environment from production state, or hold a
 point-in-time image before a risky migration. It is not continuous replication: for a hot standby that follows the
@@ -189,12 +189,19 @@ restored configuration so the snapshot and the on-disk layout agree.
 
 ## Object storage backends
 
-`backup create` copies referenced blob bytes from the node's local filesystem blob store under `<data_dir>/blobs`. When
-the node stores blobs in an [S3-compatible bucket](@/core/operations/configuration.md#blob) instead, those bytes live in
-the bucket, not on local disk. The configuration snapshot records the S3 backend and restores it, but the blob bytes are
-not the backup's to carry. Back the bucket up with the object store's own tooling (versioning, replication, or a
-lifecycle-managed copy), and rely on `backup create` for the metadata and configuration that address it. A restore then
-pairs the metadata image with a bucket that already holds the referenced objects.
+`backup create` supports only the local filesystem blob store under `<data_dir>/blobs`. Peryx rejects an
+[S3-backed configuration](@/core/operations/configuration.md#blob) before creating the target:
+
+```text
+creating an offline backup is only supported on the filesystem blob backend, but this repository is configured for S3; run it against a filesystem-backed repository
+```
+
+Peryx writes no manifest, configuration snapshot, or metadata copy after this error. Run `backup create` only on a node
+that uses the filesystem backend.
+
+Protect an S3 bucket with the object store's versioning, replication, or backup tooling. That protects blob bytes, but
+it does not capture the local Peryx metadata store. Peryx creates no metadata recovery point for an S3-backed node, so
+an S3 recovery plan needs an independent metadata backup.
 
 ## Operational notes
 

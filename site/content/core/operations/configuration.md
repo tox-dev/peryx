@@ -713,9 +713,10 @@ mode.
 ### Backup and failure recovery
 
 Because the object write commits the blob before its metadata row, a crash between the two leaves an orphan object. A
-later write of the same content observes the existing digest key. `peryx backup` snapshots the `[blob]` selection
-without credentials so a restore points at the same bucket; the archive omits object contents. Configure bucket-level
-versioning or replication on the object store.
+later write of the same content observes the existing digest key. Configure bucket-level versioning, replication, or
+backups for the object bytes, and keep an independent recovery point for Peryx's local metadata store.
+`peryx backup create` rejects an S3-backed configuration before writing a backup; it does not snapshot the `[blob]`
+selection or the metadata that refers to those objects.
 
 ## `[availability]`
 

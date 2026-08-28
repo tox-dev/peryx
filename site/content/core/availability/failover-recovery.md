@@ -17,10 +17,12 @@ Use [high availability](@/core/availability/high-availability.md) for the writer
 
 Confirm these conditions before an incident:
 
-- A verified backup exists and is recent enough. `peryx backup create` writes an offline image; `peryx backup verify`
-  reproves it. Keep [verify](@/core/operations/backup-restore.md#verify-a-backup) on a timer against every backup you
-  intend to keep, on the host that holds it, so a copy that rotted on cold storage is caught before a restore depends on
-  it. Your worst-case data loss is everything committed after the last backup you can still verify.
+- For a filesystem-backed node, a verified backup exists and is recent enough. `peryx backup create` writes an offline
+  image; `peryx backup verify` reproves it. Keep [verify](@/core/operations/backup-restore.md#verify-a-backup) on a
+  timer against every backup you intend to keep, on the host that holds it, so a copy that rotted on cold storage is
+  caught before a restore depends on it. Your worst-case data loss is everything committed after the last backup you can
+  still verify. For an S3-backed node, maintain separate recovery points for the bucket and the local metadata store
+  because `backup create` rejects that configuration.
 - For `dc` and `ha`, record the configured `writer_identity`. Promotion and restore check it against the store claim.
 - The probes are reachable. `GET /+health`, `GET /+ready`, and, on a `dc` or `ha` node, `GET /+replication/v1/ready` are
   how you tell a recovered node from a lying one. Their fields and the access levels that may read each are on the
@@ -72,7 +74,7 @@ everything committed after the last backup's serial is lost, and recovery restor
 First protect against a second writer. If the failed node was the writer, keep it stopped and fenced so it cannot accept
 another mutation, and do not start the replacement as a writer until the steps below complete.
 
-Restore the metadata and referenced local blobs from a verified backup:
+For a filesystem-backed node, restore the metadata and referenced local blobs from a verified backup:
 
 ```console
 $ peryx backup verify /backups/peryx-2026-08-01
@@ -85,14 +87,12 @@ restored	/var/lib/peryx
 directory with damaged state. It refuses a target that already holds files unless you pass `--force`, which replaces the
 directory wholesale; the guard prevents a restore from colliding with a live node.
 
-Blob bytes recover by backend:
+The backup carries the referenced blobs, so the restore above rebuilds them under the data directory.
 
-- **Local filesystem.** The backup carries the referenced blobs, so the restore above rebuilds them under the data
-  directory. Nothing more is needed.
-- **S3-compatible bucket.** The backup carries the metadata and the configuration that address the bucket, not the
-  object bytes. Recover the bucket with the object store's own tooling, versioning, replication, or a lifecycle-managed
-  copy, and pair the restored metadata with a bucket that already holds the referenced objects. See
-  [object storage backends](@/core/operations/backup-restore.md#object-storage-backends).
+An S3-backed node cannot use this restore path because `backup create` rejects its configuration before writing
+metadata. Recovering the bucket restores blob bytes only; it does not recreate the local metadata store that names them.
+Use the independent metadata recovery point from the S3 node's recovery plan, then pair it with the recovered bucket.
+See [object storage backends](@/core/operations/backup-restore.md#object-storage-backends).
 
 If the restored node is a replacement writer, promote it as in the [failover](#writer-failover) procedure below. If it
 is a replica, start it in replica mode and let it resync.

@@ -141,10 +141,10 @@ A few behaviors differ from the filesystem default and catch operators out:
   will not line the keys up. Cached content repopulates from upstream on demand; ingest hosted content again.
 - `part_size_bytes` must fall between 5 MiB and 5 GiB, the multipart bounds S3 enforces. Startup rejects a value outside
   that range.
-- Backups omit the objects. `peryx backup` snapshots the `[blob]` selection without credentials so a restore points at
-  the same bucket, but it never copies object contents into the archive. Configure versioning or replication on the
-  bucket for blob-level recovery, and see [backup and restore](@/core/operations/backup-restore.md) for the metadata
-  half.
+- `peryx backup create` rejects an S3-backed configuration before writing its target, so it captures neither metadata
+  nor objects. Configure versioning, replication, or backups on the bucket for blob recovery, and maintain a separate
+  recovery point for Peryx's local metadata store. The [backup and restore](@/core/operations/backup-restore.md) command
+  applies only to filesystem-backed nodes.
 
 The [`[blob]` reference](@/core/operations/configuration.md#blob) lists every key, its default, and the full durability
 model.
