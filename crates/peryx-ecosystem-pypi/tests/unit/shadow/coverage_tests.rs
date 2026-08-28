@@ -146,6 +146,78 @@ async fn shadow_candidates_return_decisions_and_paginate_without_overlap() {
 }
 
 #[tokio::test]
+async fn shadow_candidates_find_stale_decisions_behind_unrelated_records() {
+    let (_directory, state) = seeded_state("root-pypi", "root/pypi", IndexAcl::default());
+    state
+        .serving
+        .meta
+        .record_policy_decision(decision(
+            Some(SECOND_FILE),
+            PolicyAction::Serve,
+            PolicyDecisionState::Deny,
+            "blocked",
+            10,
+            None,
+        ))
+        .unwrap();
+    for index in 0..101 {
+        let artifact = format!("unrelated-{index}.whl");
+        state
+            .serving
+            .meta
+            .record_policy_decision(decision(
+                Some(&artifact),
+                PolicyAction::Serve,
+                PolicyDecisionState::Allow,
+                "unrelated",
+                20 + index,
+                None,
+            ))
+            .unwrap();
+    }
+    state
+        .serving
+        .meta
+        .record_policy_decision(decision(
+            Some(SECOND_FILE),
+            PolicyAction::Upload,
+            PolicyDecisionState::Allow,
+            "upload",
+            200,
+            None,
+        ))
+        .unwrap();
+    state.serving.meta.next_serial().unwrap();
+    let authorization = local_reader(&state, "root-pypi").await;
+
+    let (status, _, body) = request(
+        &state,
+        "/+shadow/candidates?repository=root/pypi&project=acme-pkg",
+        Some(HeaderValue::from_str(&authorization).unwrap()),
+    )
+    .await;
+    let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let candidate = body["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|candidate| candidate["filename"] == SECOND_FILE)
+        .unwrap();
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        candidate["decision"],
+        serde_json::json!({
+            "evaluated_at_unix": 10,
+            "fresh": false,
+            "reason": "policy note",
+            "rule": "blocked",
+            "state": "deny",
+        })
+    );
+}
+
+#[tokio::test]
 async fn shadow_candidates_skip_decision_reads_for_empty_pages() {
     let (_directory, state) = seeded_state("root-pypi", "root/pypi", IndexAcl::default());
     let authorization = local_reader(&state, "root-pypi").await;
@@ -504,14 +576,14 @@ fn record_decisions(state: &AppState) {
     }
 }
 
-fn decision(
-    artifact: Option<&'static str>,
+fn decision<'a>(
+    artifact: Option<&'a str>,
     action: PolicyAction,
     state: PolicyDecisionState,
-    rule: &'static str,
+    rule: &'a str,
     evaluated_at_unix: i64,
     next_eligible_at_unix: Option<i64>,
-) -> NewPolicyDecision<'static> {
+) -> NewPolicyDecision<'a> {
     NewPolicyDecision {
         repository: "root-pypi",
         resource: PROJECT,

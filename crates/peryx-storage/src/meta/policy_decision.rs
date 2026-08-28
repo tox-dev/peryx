@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use redb::{ReadableTable as _, ReadableTableMetadata as _};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -125,7 +127,7 @@ pub struct PolicyDecisionPage {
     pub next_cursor: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct PolicyDecisionSubject<'a> {
     repository: &'a str,
     resource: &'a str,
@@ -141,6 +143,8 @@ pub enum PolicyDecisionStoreError {
     Store(#[from] MetaError),
     #[error("{field} exceeds {max} bytes")]
     FieldTooLong { field: &'static str, max: usize },
+    #[error("artifact set exceeds {max} entries")]
+    TooManyArtifacts { max: usize },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -326,6 +330,87 @@ impl MetaStore {
         Ok((record.input_generation == generation).then_some(record))
     }
 
+    /// Returns the newest current serve or cache decision for each requested artifact.
+    ///
+    /// # Errors
+    /// Returns a validation error for an oversized request or subject, or a store error if a record
+    /// cannot be read or decoded.
+    ///
+    /// # Panics
+    /// Panics if a current pointer has no matching history record; both tables change in one
+    /// transaction.
+    pub fn current_policy_decisions_for_artifacts(
+        &self,
+        repository: &str,
+        resource: &str,
+        artifacts: &[&str],
+    ) -> Result<HashMap<String, PolicyDecisionItem>, PolicyDecisionStoreError> {
+        if artifacts.len() > MAX_QUERY_LIMIT {
+            return Err(PolicyDecisionStoreError::TooManyArtifacts { max: MAX_QUERY_LIMIT });
+        }
+        validate_field("repository", repository)?;
+        validate_field("resource", resource)?;
+        let mut wanted = HashSet::with_capacity(artifacts.len());
+        for artifact in artifacts {
+            validate_field("artifact", artifact)?;
+            wanted.insert(*artifact);
+        }
+        if wanted.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let txn = self.db.begin_read().map_err(MetaError::from)?;
+        let current = txn.open_table(POLICY_DECISION_CURRENT_ID).map_err(MetaError::from)?;
+        let history = txn.open_table(POLICY_DECISION).map_err(MetaError::from)?;
+        let generations = txn.open_table(POLICY_INPUT_GENERATION).map_err(MetaError::from)?;
+        let mut generation = generations
+            .get(repository)
+            .map_err(MetaError::from)?
+            .map(|value| serde_json::from_slice::<PolicyInputGeneration>(value.value()))
+            .transpose()
+            .map_err(MetaError::from)?
+            .unwrap_or_default();
+        generation.repository = txn
+            .open_table(SERIAL)
+            .map_err(MetaError::from)?
+            .get(SERIAL_KEY)
+            .map_err(MetaError::from)?
+            .map_or(0, |value| value.value());
+        let mut decisions = HashMap::with_capacity(wanted.len());
+        for entry in current.iter().map_err(MetaError::from)?.rev() {
+            let (id, subject) = entry.map_err(MetaError::from)?;
+            let subject: PolicyDecisionSubject<'_> = serde_json::from_str(subject.value()).map_err(MetaError::from)?;
+            if subject.repository != repository
+                || subject.resource != resource
+                || !matches!(subject.action, PolicyAction::Serve | PolicyAction::Cached)
+            {
+                continue;
+            }
+            let Some(artifact) = subject.artifact else {
+                continue;
+            };
+            if !wanted.contains(artifact) || decisions.contains_key(artifact) {
+                continue;
+            }
+            let record = history
+                .get(id.value())
+                .map_err(MetaError::from)?
+                .expect("current policy decision must have history");
+            let record = decode_policy_decision(record.value()).map_err(MetaError::from)?;
+            decisions.insert(
+                artifact.to_owned(),
+                PolicyDecisionItem {
+                    fresh: record.input_generation == generation,
+                    record,
+                },
+            );
+            if decisions.len() == wanted.len() {
+                break;
+            }
+        }
+        Ok(decisions)
+    }
+
     /// Returns decision history newest first after an exclusive stable cursor.
     ///
     /// # Errors
@@ -404,12 +489,19 @@ fn validate_subject(decision: &NewPolicyDecision<'_>) -> Result<(), PolicyDecisi
         ("artifact", decision.artifact),
         ("source", decision.source),
     ] {
-        if value.is_some_and(|value| value.len() > MAX_SUBJECT_BYTES) {
-            return Err(PolicyDecisionStoreError::FieldTooLong {
-                field,
-                max: MAX_SUBJECT_BYTES,
-            });
+        if let Some(value) = value {
+            validate_field(field, value)?;
         }
+    }
+    Ok(())
+}
+
+const fn validate_field(field: &'static str, value: &str) -> Result<(), PolicyDecisionStoreError> {
+    if value.len() > MAX_SUBJECT_BYTES {
+        return Err(PolicyDecisionStoreError::FieldTooLong {
+            field,
+            max: MAX_SUBJECT_BYTES,
+        });
     }
     Ok(())
 }

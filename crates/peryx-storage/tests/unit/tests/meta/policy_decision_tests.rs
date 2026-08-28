@@ -1,7 +1,11 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::meta::{NewPolicyDecision, PolicyDecisionQuery, PolicyDecisionQueryError, PolicyDecisionStoreError};
+use crate::meta::{
+    NewPolicyDecision, PolicyDecisionItem, PolicyDecisionQuery, PolicyDecisionQueryError, PolicyDecisionStoreError,
+};
 use peryx_policy::{PolicyAction, PolicyDecisionState};
+use rstest::rstest;
 
 use super::store;
 
@@ -283,6 +287,105 @@ fn test_policy_decision_query_scopes_to_one_resource() {
             ("alpha", PolicyDecisionState::Allow),
             ("alpha", PolicyDecisionState::Deny)
         ]
+    );
+}
+
+#[test]
+fn test_policy_decision_artifact_batch_uses_current_records() {
+    let (_dir, meta) = store();
+    let mut wanted = decision("project", PolicyDecisionState::Deny, 10);
+    wanted.artifact = Some("wanted.whl");
+    meta.record_policy_decision(wanted).unwrap();
+    let mut cached = decision("project", PolicyDecisionState::Allow, 11);
+    cached.artifact = Some("wanted.whl");
+    cached.action = PolicyAction::Cached;
+    let expected = meta.record_policy_decision(cached).unwrap();
+    for index in 0..101 {
+        let artifact = format!("unrelated-{index}.whl");
+        let mut unrelated = decision("project", PolicyDecisionState::Allow, 20 + index);
+        unrelated.artifact = Some(&artifact);
+        meta.record_policy_decision(unrelated).unwrap();
+    }
+    let mut upload = decision("project", PolicyDecisionState::Allow, 200);
+    upload.artifact = Some("upload-only.whl");
+    upload.action = PolicyAction::Upload;
+    meta.record_policy_decision(upload).unwrap();
+
+    assert_eq!(
+        meta.current_policy_decisions_for_artifacts(
+            "private",
+            "project",
+            &["wanted.whl", "upload-only.whl", "missing.whl"],
+        )
+        .unwrap(),
+        HashMap::from([(
+            "wanted.whl".to_owned(),
+            PolicyDecisionItem {
+                record: expected,
+                fresh: true,
+            },
+        )])
+    );
+}
+
+#[test]
+fn test_policy_decision_artifact_batch_keeps_stale_records() {
+    let (_dir, meta) = store();
+    let mut candidate = decision("project", PolicyDecisionState::Allow, 10);
+    candidate.artifact = Some("stale.whl");
+    let expected = meta.record_policy_decision(candidate).unwrap();
+    meta.next_serial().unwrap();
+
+    assert_eq!(
+        meta.current_policy_decisions_for_artifacts("private", "project", &["stale.whl"])
+            .unwrap(),
+        HashMap::from([(
+            "stale.whl".to_owned(),
+            PolicyDecisionItem {
+                record: expected,
+                fresh: false,
+            },
+        )])
+    );
+}
+
+#[rstest]
+#[case::repository("x".repeat(513), "project".to_owned(), vec!["artifact.whl".to_owned()], "repository")]
+#[case::resource("private".to_owned(), "x".repeat(513), vec!["artifact.whl".to_owned()], "resource")]
+#[case::artifact("private".to_owned(), "project".to_owned(), vec!["x".repeat(513)], "artifact")]
+fn test_policy_decision_artifact_batch_bounds_subjects(
+    #[case] repository: String,
+    #[case] resource: String,
+    #[case] artifacts: Vec<String>,
+    #[case] field: &str,
+) {
+    let (_dir, meta) = store();
+    let artifacts = artifacts.iter().map(String::as_str).collect::<Vec<_>>();
+
+    assert!(matches!(
+        meta.current_policy_decisions_for_artifacts(&repository, &resource, &artifacts),
+        Err(PolicyDecisionStoreError::FieldTooLong { field: actual, max: 512 }) if actual == field
+    ));
+}
+
+#[test]
+fn test_policy_decision_artifact_batch_bounds_count() {
+    let (_dir, meta) = store();
+
+    assert!(matches!(
+        meta.current_policy_decisions_for_artifacts("private", "project", &["artifact.whl"; 101]),
+        Err(PolicyDecisionStoreError::TooManyArtifacts { max: 100 })
+    ));
+}
+
+#[test]
+fn test_policy_decision_artifact_batch_accepts_an_empty_set() {
+    let (_dir, meta) = store();
+
+    assert_eq!(
+        meta.current_policy_decisions_for_artifacts("private", "project", &[])
+            .unwrap(),
+        HashMap::new()
     );
 }
 

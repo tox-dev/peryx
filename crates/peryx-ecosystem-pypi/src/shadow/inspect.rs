@@ -1,23 +1,18 @@
 //! [`query_shadowed`](super::query_shadowed) explains a virtual repository's resolution: which
 //! member won each filename and which lost. Operators also need to know whether policy would let a
 //! caller have a candidate at all, so this layers the recorded allow, deny, or wait outcome on top of
-//! that page. The decisions come from one bounded read of the policy-decision store keyed by
-//! repository and project, never a lookup per candidate, and the join keeps the shadow page's order
-//! and cursor untouched. Only serve and cache-fill decisions join a candidate; an upload-time outcome
-//! governs publishing, not what a virtual repository resolves.
+//! that page. The decisions come from one bounded read of the current policy-decision index, never a
+//! lookup per candidate, and the join keeps the shadow page's order and cursor untouched. Only serve
+//! and cache-fill decisions join a candidate; an upload-time outcome governs publishing, not what a
+//! virtual repository resolves.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use peryx_driver::state::{AppState, ServingState};
-use peryx_policy::{PolicyAction, PolicyDecisionState};
-use peryx_storage::meta::PolicyDecisionQuery;
+use peryx_policy::PolicyDecisionState;
 
 use super::model::ShadowCandidate;
 use super::query::{ShadowPage, ShadowQuery, ShadowQueryError, query_shadowed};
-
-/// One bounded read covers the decisions for a page's filenames; a project with more current serve
-/// decisions than this shows the join for the ones the read returns.
-const DECISION_READ_LIMIT: usize = 100;
 
 /// The recorded policy outcome that governs one candidate's filename in its repository.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,47 +72,33 @@ fn filename_decisions(
     project: &str,
     page: &ShadowPage,
 ) -> Result<HashMap<String, CandidateDecision>, ShadowQueryError> {
-    let wanted: HashSet<&str> = page
+    let artifacts: Vec<&str> = page
         .candidates
         .iter()
         .map(|candidate| candidate.filename.as_str())
         .collect();
-    if wanted.is_empty() {
+    if artifacts.is_empty() {
         return Ok(HashMap::new());
     }
-    let query = PolicyDecisionQuery {
-        repository: Some(repository.to_owned()),
-        resource: Some(project.to_owned()),
-        limit: DECISION_READ_LIMIT,
-        ..PolicyDecisionQuery::default()
-    };
-    let found = match state.meta.query_policy_decisions(&query) {
-        Ok(found) => found,
-        Err(error) => return Err(ShadowQueryError::Store(error.to_string())),
-    };
-    let mut decisions: HashMap<String, CandidateDecision> = HashMap::new();
-    for item in found.decisions {
-        let record = item.record;
-        if !matches!(record.action, PolicyAction::Serve | PolicyAction::Cached) {
-            continue;
-        }
-        let Some(artifact) = record.artifact.clone() else {
-            continue;
-        };
-        if !wanted.contains(artifact.as_str()) || decisions.contains_key(&artifact) {
-            continue;
-        }
-        decisions.insert(
-            artifact,
-            CandidateDecision {
-                state: record.state,
-                rule: record.rule,
-                reason: record.reason,
-                evaluated_at_unix: record.evaluated_at_unix,
-                next_eligible_at_unix: record.next_eligible_at_unix,
-                fresh: item.fresh,
-            },
-        );
-    }
-    Ok(decisions)
+    let found = state
+        .meta
+        .current_policy_decisions_for_artifacts(repository, project, &artifacts)
+        .map_err(|error| ShadowQueryError::Store(error.to_string()))?;
+    Ok(found
+        .into_iter()
+        .map(|(artifact, item)| {
+            let record = item.record;
+            (
+                artifact,
+                CandidateDecision {
+                    state: record.state,
+                    rule: record.rule,
+                    reason: record.reason,
+                    evaluated_at_unix: record.evaluated_at_unix,
+                    next_eligible_at_unix: record.next_eligible_at_unix,
+                    fresh: item.fresh,
+                },
+            )
+        })
+        .collect())
 }
