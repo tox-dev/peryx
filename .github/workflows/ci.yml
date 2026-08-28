@@ -50,7 +50,6 @@ jobs:
     timeout-minutes: 15
     outputs:
       baseline: ${{ steps.baseline.outputs.sha }}
-      packages: ${{ steps.packages.outputs.value }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -69,21 +68,17 @@ jobs:
           test -n "$sha"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
       - run: just snapshots
-      - id: packages
-        run: echo "value=$(just publishable-packages)" >> "$GITHUB_OUTPUT"
       - run: just release-plan
 
   semver:
-    name: semver (${{ matrix.package }})
+    name: semver (shard ${{ matrix.shard }} of 7)
     needs: contracts
-    env:
-      CARGO_HTTP_MULTIPLEXING: "false"
     strategy:
       fail-fast: false
       matrix:
-        package: ${{ fromJSON(needs.contracts.outputs.packages) }}
+        shard: [0, 1, 2, 3, 4, 5, 6]
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -92,10 +87,10 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           cache-targets: false
-          tools: just cargo:cargo-semver-checks
-      - run: just semver-package "$PACKAGE" "$BASE_REV"
+          tools: just jq cargo:cargo-semver-checks
+      - run: just semver-shard "$SHARD" 7 "$BASE_REV"
         env:
-          PACKAGE: ${{ matrix.package }}
+          SHARD: ${{ matrix.shard }}
           BASE_REV: ${{ needs.contracts.outputs.baseline }}
 
   platform:

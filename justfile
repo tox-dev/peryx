@@ -51,18 +51,16 @@ snapshots: _project-temp
     cargo insta test --package peryx-ecosystem-pypi --lib --all-features \
       --unreferenced reject --test-runner nextest --nextest-profile ci
 
-# List packages included in releases.
-publishable-packages: _project-temp
-    cargo metadata --no-deps --format-version 1 | jq -c '[.packages[] | select(.publish != []) | .name]'
-
 # Check workspace public API compatibility.
 semver base="origin/main": _project-temp
     cargo semver-checks check-release --workspace --default-features --baseline-rev "{{ base }}"
 
-# Check one package's public API compatibility.
-semver-package package base="origin/main": _project-temp
-    cargo semver-checks check-release --package "{{ package }}" \
-      --default-features --baseline-rev "{{ base }}"
+# Check one deterministic shard of workspace public APIs.
+semver-shard shard shards base="origin/main": _project-temp
+    cargo metadata --no-deps --format-version 1 \
+      | jq -r --argjson shard "{{ shard }}" --argjson shards "{{ shards }}" \
+        '[.packages[] | select(.publish != []) | .name] | to_entries[] | select(.key % $shards == $shard) | .value' \
+      | xargs -n 1 cargo semver-checks check-release --default-features --baseline-rev "{{ base }}" --package
 
 # Check snapshots, public APIs, and the release plan.
 lint-contracts base="origin/main": snapshots
