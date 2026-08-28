@@ -336,7 +336,7 @@ fn retention_decision() -> RetentionDecision {
 async fn retention_service_owns_store_access_gating_and_export() {
     let fixture = Fixture::new(Vec::new());
     let services = HttpDomainServices::for_state(&fixture.state);
-    let policy = RetentionPolicy::compile(&RetentionConfig::default());
+    let policy = RetentionPolicy::compile(&RetentionConfig::default(), str::to_owned);
     let summary = services.retention().summary("source", &policy).unwrap();
     let permit = services.retention().try_enter("source").unwrap();
     let page = services

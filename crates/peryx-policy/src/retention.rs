@@ -101,11 +101,15 @@ pub struct RetentionPolicy {
 
 impl RetentionPolicy {
     #[must_use]
-    pub fn compile(config: &RetentionConfig) -> Self {
+    pub fn compile(config: &RetentionConfig, normalize: impl Fn(&str) -> String) -> Self {
+        let config = RetentionConfig {
+            keep: normalize_selectors(&config.keep, &normalize),
+            expire: normalize_selectors(&config.expire, &normalize),
+        };
         Self {
-            version: policy_version(config),
-            keep: config.keep.clone(),
-            expire: config.expire.clone(),
+            version: policy_version(&config),
+            keep: config.keep,
+            expire: config.expire,
         }
     }
 
@@ -167,6 +171,18 @@ impl RetentionPolicy {
         }
         (RetentionOutcome::Retain, None)
     }
+}
+
+fn normalize_selectors(selectors: &[RetentionSelector], normalize: &impl Fn(&str) -> String) -> Vec<RetentionSelector> {
+    selectors
+        .iter()
+        .map(|selector| match selector {
+            RetentionSelector::ResourcePrefix { prefix } => RetentionSelector::ResourcePrefix {
+                prefix: normalize(prefix),
+            },
+            selector => selector.clone(),
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

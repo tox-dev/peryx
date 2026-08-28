@@ -6,6 +6,7 @@ use peryx_policy::{
     RetentionSelector, RetentionVisibility,
 };
 use peryx_storage::meta::{MetaError, MetaStore};
+use rstest::rstest;
 
 use super::{RETENTION_PROJECT_BUDGET_BYTES, evaluate_retention};
 use crate::store::PypiStore as _;
@@ -54,10 +55,13 @@ fn plan(meta: &MetaStore, index: &str, policy: &RetentionPolicy) -> (Vec<Retenti
 }
 
 fn expire_all_but_latest(count: u64) -> RetentionPolicy {
-    RetentionPolicy::compile(&RetentionConfig {
-        keep: vec![RetentionSelector::KeepLatestGroups { count }],
-        expire: vec![RetentionSelector::ResourcePrefix { prefix: String::new() }],
-    })
+    RetentionPolicy::compile(
+        &RetentionConfig {
+            keep: vec![RetentionSelector::KeepLatestGroups { count }],
+            expire: vec![RetentionSelector::ResourcePrefix { prefix: String::new() }],
+        },
+        crate::normalize_name,
+    )
 }
 
 fn reject_decision(_: RetentionDecision) -> Result<(), String> {
@@ -88,6 +92,46 @@ fn test_evaluate_retention_orders_versions_by_pep440_and_keeps_the_newest() {
             ("not-a-version", RetentionOutcome::Remove),
         ]
     );
+}
+
+#[rstest]
+#[case::underscore_and_case("Acme_Tools", "acme-tools-extra")]
+#[case::dot("acme.tools", "acme-tools-extra")]
+#[case::canonical("acme-tools", "acme-tools-extra")]
+#[case::partial("scratch-", "scratch-package")]
+#[case::empty("", "any-project")]
+fn test_evaluate_retention_normalizes_resource_prefixes(#[case] prefix: &str, #[case] project: &str) {
+    let (_dir, meta) = store();
+    seed(&meta, "pypi", project, "1.0", Yanked::No, None);
+    let policy = RetentionPolicy::compile(
+        &RetentionConfig {
+            keep: Vec::new(),
+            expire: vec![RetentionSelector::ResourcePrefix {
+                prefix: prefix.to_owned(),
+            }],
+        },
+        crate::normalize_name,
+    );
+
+    assert_eq!(plan(&meta, "pypi", &policy).0[0].outcome, RetentionOutcome::Remove);
+}
+
+#[test]
+fn test_equivalent_resource_prefixes_share_a_policy_version() {
+    let versions = ["Acme_Tools", "acme.tools", "acme-tools"].map(|prefix| {
+        RetentionPolicy::compile(
+            &RetentionConfig {
+                keep: Vec::new(),
+                expire: vec![RetentionSelector::ResourcePrefix {
+                    prefix: prefix.to_owned(),
+                }],
+            },
+            crate::normalize_name,
+        )
+        .version()
+    });
+
+    assert_eq!(versions, [versions[0]; 3]);
 }
 
 #[test]
@@ -122,10 +166,13 @@ fn test_evaluate_retention_marks_a_trashed_record_and_records_its_class() {
         }),
     );
 
-    let policy = RetentionPolicy::compile(&RetentionConfig {
-        keep: Vec::new(),
-        expire: vec![RetentionSelector::Trash],
-    });
+    let policy = RetentionPolicy::compile(
+        &RetentionConfig {
+            keep: Vec::new(),
+            expire: vec![RetentionSelector::Trash],
+        },
+        crate::normalize_name,
+    );
     let (decisions, _) = plan(&meta, "pypi", &policy);
 
     assert_eq!(decisions[0].outcome, RetentionOutcome::Remove);
@@ -140,7 +187,11 @@ fn test_evaluate_retention_records_yanked_visibility() {
     let (_dir, meta) = store();
     seed(&meta, "pypi", "demo", "1.0", Yanked::Reason("bad".to_owned()), None);
 
-    let (decisions, _) = plan(&meta, "pypi", &RetentionPolicy::compile(&RetentionConfig::default()));
+    let (decisions, _) = plan(
+        &meta,
+        "pypi",
+        &RetentionPolicy::compile(&RetentionConfig::default(), crate::normalize_name),
+    );
 
     assert_eq!(decisions[0].visibility, RetentionVisibility::Withdrawn);
     assert_eq!(decisions[0].class, RetentionClass::Hosted);

@@ -182,10 +182,18 @@ impl Prepared {
             }
             None => (0, None, Some((state.serving.clock)())),
         };
-        let policy = RetentionPolicy::compile(&RetentionConfig {
-            keep: request.keep,
-            expire: request.expire,
-        });
+        let policy = RetentionPolicy::compile(
+            &RetentionConfig {
+                keep: request.keep,
+                expire: request.expire,
+            },
+            |name| {
+                state
+                    .driver_set()
+                    .get_name(&index.ecosystem)
+                    .map_or_else(|| name.to_owned(), |driver| driver.normalize_name(name))
+            },
+        );
         Ok(Self {
             driver,
             repository: index.name.clone(),

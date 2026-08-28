@@ -9,7 +9,7 @@ use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use http_body_util::BodyExt as _;
 use peryx_core::Ecosystem;
 use peryx_driver::authz::AuthorizationService;
-use peryx_driver::serving::RetentionDriver;
+use peryx_driver::serving::{NameDriver, RetentionDriver};
 use peryx_driver::state::{AppState, Clock, Index, IndexKind, ServingState};
 use peryx_driver::users::UserService;
 use peryx_identity::{GrantScope, IndexAcl, PasswordPolicy, Role};
@@ -78,6 +78,12 @@ impl RetentionDriver for TimestampDriver {
     }
 }
 
+impl NameDriver for StubDriver {
+    fn normalize_name(&self, name: &str) -> String {
+        name.to_ascii_lowercase().replace(['.', '_'], "-")
+    }
+}
+
 #[test]
 fn test_stub_driver_implements_required_contracts() {
     let description = peryx_driver::state::IndexDescription {
@@ -142,19 +148,43 @@ struct Fixture {
 
 impl Fixture {
     async fn new(driver: StubDriver) -> Self {
-        Self::with_fault(driver, StoreFault::None).await
+        Self::with_capabilities(driver, StoreFault::None, true).await
+    }
+
+    async fn without_name(driver: StubDriver) -> Self {
+        Self::with_capabilities(driver, StoreFault::None, false).await
     }
 
     async fn with_fault(driver: StubDriver, fault: StoreFault) -> Self {
-        let driver = (!driver.unsupported).then(|| Arc::new(driver) as Arc<dyn RetentionDriver>);
-        Self::build(driver, fault, None).await
+        Self::with_capabilities(driver, fault, true).await
     }
 
     async fn with_driver(driver: Arc<dyn RetentionDriver>, clock: Clock) -> Self {
-        Self::build(Some(driver), StoreFault::None, Some(clock)).await
+        Self::build(Some(driver), None, StoreFault::None, Some(clock)).await
     }
 
-    async fn build(driver: Option<Arc<dyn RetentionDriver>>, fault: StoreFault, clock: Option<Clock>) -> Self {
+    async fn with_capabilities(driver: StubDriver, fault: StoreFault, names: bool) -> Self {
+        let driver = (!driver.unsupported).then(|| Arc::new(driver));
+        let name_driver = if names {
+            driver.clone().map(|driver| driver as Arc<dyn NameDriver>)
+        } else {
+            None
+        };
+        Self::build(
+            driver.map(|driver| driver as Arc<dyn RetentionDriver>),
+            name_driver,
+            fault,
+            None,
+        )
+        .await
+    }
+
+    async fn build(
+        driver: Option<Arc<dyn RetentionDriver>>,
+        name_driver: Option<Arc<dyn NameDriver>>,
+        fault: StoreFault,
+        clock: Option<Clock>,
+    ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("peryx.redb");
         let meta = MetaStore::open(&path).unwrap();
@@ -189,11 +219,14 @@ impl Fixture {
         if let Some(clock) = clock {
             serving.clock = clock;
         }
-        if let Some(driver) = driver {
-            state.register_capabilities(|registrar| {
+        state.register_capabilities(|registrar| {
+            if let Some(driver) = driver {
                 registrar.register_retention(Ecosystem::new("example"), driver);
-            });
-        }
+            }
+            if let Some(driver) = name_driver {
+                registrar.register_name(Ecosystem::new("example"), driver);
+            }
+        });
         let serving = state.serving.clone();
         let state = Arc::new(state);
         Self {
@@ -287,6 +320,53 @@ async fn test_plan_returns_ordered_candidates_and_identity_for_an_administrator(
     assert_eq!(body["candidates"][0]["artifact"], "a");
     assert!(body["summary"]["policy_version"].is_number());
     assert!(body["next_cursor"].is_null());
+}
+
+#[tokio::test]
+async fn test_plan_normalizes_prefixes_with_the_repository_name_driver() {
+    let fixture = Fixture::new(StubDriver {
+        decisions: Vec::new(),
+        unsupported: false,
+        fail: None,
+    })
+    .await;
+    let mut versions = Vec::new();
+    for prefix in ["Acme_Tools", "acme.tools", "acme-tools"] {
+        let (status, body) = fixture
+            .plan(serde_json::json!({
+                "repository": "hosted",
+                "expire": [{"selector": "resource-prefix", "prefix": prefix}],
+            }))
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        versions.push(body["summary"]["policy_version"].clone());
+    }
+
+    assert_eq!(versions, vec![versions[0].clone(); 3]);
+}
+
+#[tokio::test]
+async fn test_plan_keeps_prefixes_unchanged_without_a_name_driver() {
+    let fixture = Fixture::without_name(StubDriver {
+        decisions: Vec::new(),
+        unsupported: false,
+        fail: None,
+    })
+    .await;
+    let (_, upper) = fixture
+        .plan(serde_json::json!({
+            "repository": "hosted",
+            "expire": [{"selector": "resource-prefix", "prefix": "Demo"}],
+        }))
+        .await;
+    let (_, lower) = fixture
+        .plan(serde_json::json!({
+            "repository": "hosted",
+            "expire": [{"selector": "resource-prefix", "prefix": "demo"}],
+        }))
+        .await;
+
+    assert_ne!(upper["summary"]["policy_version"], lower["summary"]["policy_version"]);
 }
 
 #[tokio::test]

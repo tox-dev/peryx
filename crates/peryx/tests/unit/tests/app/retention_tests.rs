@@ -75,7 +75,7 @@ fn test_retention_dry_run_applies_a_rules_file() {
     let rules = dir.path().join("rules.toml");
     std::fs::write(
         &rules,
-        "[[expire]]\nselector = \"resource-prefix\"\nprefix = \"item\"\n",
+        "[[expire]]\nselector = \"resource-prefix\"\nprefix = \"ITEM\"\n",
     )
     .unwrap();
     let mut args = dry_run_args("main");

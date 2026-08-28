@@ -60,7 +60,7 @@ fn store() -> (tempfile::TempDir, MetaStore) {
 }
 
 fn empty_policy() -> RetentionPolicy {
-    RetentionPolicy::compile(&RetentionConfig::default())
+    RetentionPolicy::compile(&RetentionConfig::default(), str::to_owned)
 }
 
 #[test]

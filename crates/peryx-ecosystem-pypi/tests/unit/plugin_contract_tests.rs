@@ -370,10 +370,13 @@ fn plugin_retention_capability_plans_hosted_uploads() {
             )
             .unwrap();
     }
-    let policy = RetentionPolicy::compile(&RetentionConfig {
-        keep: vec![RetentionSelector::KeepLatestGroups { count: 1 }],
-        expire: vec![RetentionSelector::ResourcePrefix { prefix: String::new() }],
-    });
+    let policy = RetentionPolicy::compile(
+        &RetentionConfig {
+            keep: vec![RetentionSelector::KeepLatestGroups { count: 1 }],
+            expire: vec![RetentionSelector::ResourcePrefix { prefix: String::new() }],
+        },
+        crate::normalize_name,
+    );
     let registry = peryx_plugin_registry::PluginRegistry::new(vec![registration()])
         .unwrap()
         .activate([ECOSYSTEM])

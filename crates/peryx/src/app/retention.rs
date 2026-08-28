@@ -16,7 +16,7 @@ use peryx_policy::{RetentionConfig, RetentionDecision, RetentionPolicy, Retentio
 
 use super::CacheStores;
 use crate::cli::{RetentionCommand, RetentionDryRunArgs, RetentionExportArgs};
-use crate::config::Config;
+use crate::config::{Config, IndexConfig};
 
 /// # Errors
 /// Returns an error if the store cannot be opened, the index is unknown or has no retention-planning
@@ -48,16 +48,18 @@ fn dry_run(
     args: &RetentionDryRunArgs,
     out: &mut dyn Write,
 ) -> anyhow::Result<()> {
-    let (driver, ecosystem) = resolve_driver(config, drivers, &args.index)?;
-    let policy = load_rules(args.rules.as_deref())?;
-    let (after, expect, evaluated_at) = resume(args.cursor.as_deref(), &args.index, &ecosystem)?;
+    let index = resolve_index(config, &args.index)?;
+    let driver = resolve_driver(drivers, index)?;
+    let policy = load_rules(args.rules.as_deref(), |name| normalize_name(drivers, index, name))?;
+    let ecosystem = index.ecosystem.as_str();
+    let (after, expect, evaluated_at) = resume(args.cursor.as_deref(), &args.index, ecosystem)?;
     writeln!(
         out,
         "action\tresource\tgroup\tartifact\tdigest\tclass\tvisibility\tbytes\trule"
     )?;
     let query = RetentionQuery {
         index: &args.index,
-        ecosystem: &ecosystem,
+        ecosystem,
         policy: &policy,
         now: evaluated_at,
         after,
@@ -82,9 +84,11 @@ fn export(
     args: &RetentionExportArgs,
     out: &mut dyn Write,
 ) -> anyhow::Result<()> {
-    let (driver, ecosystem) = resolve_driver(config, drivers, &args.index)?;
-    let policy = load_rules(args.rules.as_deref())?;
-    let (after, expect, evaluated_at) = resume(args.cursor.as_deref(), &args.index, &ecosystem)?;
+    let index = resolve_index(config, &args.index)?;
+    let driver = resolve_driver(drivers, index)?;
+    let policy = load_rules(args.rules.as_deref(), |name| normalize_name(drivers, index, name))?;
+    let ecosystem = index.ecosystem.as_str();
+    let (after, expect, evaluated_at) = resume(args.cursor.as_deref(), &args.index, ecosystem)?;
     let summary = summary(&stores.meta, &args.index, &policy).map_err(anyhow::Error::msg)?;
     // Refuse a resume the repository has outgrown before writing a header the reader would trust.
     if expect.is_some_and(|expected| expected != summary) {
@@ -97,7 +101,7 @@ fn export(
     )?;
     let query = RetentionQuery {
         index: &args.index,
-        ecosystem: &ecosystem,
+        ecosystem,
         policy: &policy,
         now: evaluated_at,
         after,
@@ -111,26 +115,28 @@ fn export(
     Ok(())
 }
 
-fn resolve_driver(
-    config: &Config,
-    drivers: &DriverSet,
-    index: &str,
-) -> anyhow::Result<(Arc<dyn RetentionDriver>, String)> {
-    let ecosystem = config
+fn resolve_index<'a>(config: &'a Config, index: &str) -> anyhow::Result<&'a IndexConfig> {
+    config
         .indexes
         .iter()
         .find(|configured| configured.name == index)
-        .context(format!("unknown index {index:?}"))?
-        .ecosystem
-        .clone();
-    let driver = drivers
-        .get_retention(&ecosystem)
-        .cloned()
-        .context("the ecosystem does not support retention planning")?;
-    Ok((driver, ecosystem.as_str().to_owned()))
+        .context(format!("unknown index {index:?}"))
 }
 
-fn load_rules(path: Option<&Path>) -> anyhow::Result<RetentionPolicy> {
+fn resolve_driver(drivers: &DriverSet, index: &IndexConfig) -> anyhow::Result<Arc<dyn RetentionDriver>> {
+    drivers
+        .get_retention(&index.ecosystem)
+        .cloned()
+        .context("the ecosystem does not support retention planning")
+}
+
+fn normalize_name(drivers: &DriverSet, index: &IndexConfig, name: &str) -> String {
+    drivers
+        .get_name(&index.ecosystem)
+        .map_or_else(|| name.to_owned(), |driver| driver.normalize_name(name))
+}
+
+fn load_rules(path: Option<&Path>, normalize: impl Fn(&str) -> String) -> anyhow::Result<RetentionPolicy> {
     let config = match path {
         Some(path) => {
             let text = std::fs::read_to_string(path).with_context(|| format!("read rules file {}", path.display()))?;
@@ -138,7 +144,7 @@ fn load_rules(path: Option<&Path>) -> anyhow::Result<RetentionPolicy> {
         }
         None => RetentionConfig::default(),
     };
-    Ok(RetentionPolicy::compile(&config))
+    Ok(RetentionPolicy::compile(&config, normalize))
 }
 
 fn resume(

@@ -6,7 +6,7 @@ use rstest::rstest;
 
 #[test]
 fn an_empty_policy_retains_every_candidate_with_no_rule() {
-    let policy = RetentionPolicy::compile(&RetentionConfig::default());
+    let policy = RetentionPolicy::compile(&RetentionConfig::default(), str::to_owned);
     assert!(policy.is_empty());
 
     let decisions = policy.plan_resource(None, vec![candidate("resource", "group-a", 0)]);
@@ -46,10 +46,13 @@ fn each_selector_reports_its_stable_rule_name(#[case] selector: RetentionSelecto
 
 #[test]
 fn keep_latest_protects_the_newest_groups_and_expires_the_rest() {
-    let policy = RetentionPolicy::compile(&RetentionConfig {
-        keep: vec![RetentionSelector::KeepLatestGroups { count: 2 }],
-        expire: vec![RetentionSelector::ResourcePrefix { prefix: String::new() }],
-    });
+    let policy = RetentionPolicy::compile(
+        &RetentionConfig {
+            keep: vec![RetentionSelector::KeepLatestGroups { count: 2 }],
+            expire: vec![RetentionSelector::ResourcePrefix { prefix: String::new() }],
+        },
+        str::to_owned,
+    );
 
     let decisions = policy.plan_resource(
         None,
@@ -90,10 +93,13 @@ fn keep_latest_protects_the_newest_groups_and_expires_the_rest() {
 
 #[test]
 fn a_keep_rule_wins_over_a_matching_expire_rule() {
-    let policy = RetentionPolicy::compile(&RetentionConfig {
-        keep: vec![RetentionSelector::KeepLatestGroups { count: 1 }],
-        expire: vec![RetentionSelector::Cached],
-    });
+    let policy = RetentionPolicy::compile(
+        &RetentionConfig {
+            keep: vec![RetentionSelector::KeepLatestGroups { count: 1 }],
+            expire: vec![RetentionSelector::Cached],
+        },
+        str::to_owned,
+    );
     let mut cached = candidate("resource", "group-a", 0);
     cached.class = RetentionClass::Cached;
 
@@ -363,12 +369,15 @@ fn a_visibility_rule_matches_only_candidates_in_the_named_state() {
 
 #[test]
 fn a_visibility_keep_rule_protects_hidden_candidates_from_an_expire_sweep() {
-    let policy = RetentionPolicy::compile(&RetentionConfig {
-        keep: vec![RetentionSelector::Visibility {
-            state: RetentionVisibility::Hidden,
-        }],
-        expire: vec![RetentionSelector::ResourcePrefix { prefix: String::new() }],
-    });
+    let policy = RetentionPolicy::compile(
+        &RetentionConfig {
+            keep: vec![RetentionSelector::Visibility {
+                state: RetentionVisibility::Hidden,
+            }],
+            expire: vec![RetentionSelector::ResourcePrefix { prefix: String::new() }],
+        },
+        str::to_owned,
+    );
     let mut hidden = candidate("resource", "group-a", 0);
     hidden.visibility = RetentionVisibility::Hidden;
 
@@ -403,7 +412,7 @@ fn a_cached_keep_rule_protects_cached_candidates() {
 
 #[test]
 fn decisions_order_by_rank_then_artifact_then_digest() {
-    let policy = RetentionPolicy::compile(&RetentionConfig::default());
+    let policy = RetentionPolicy::compile(&RetentionConfig::default(), str::to_owned);
     let mut tie_a = candidate("resource", "group-a", 0);
     tie_a.artifact = "resource:group-a:variant".to_owned();
     tie_a.digest = "sha256:aaa".to_owned();
@@ -487,7 +496,7 @@ fn a_removal_decision_serializes_every_recorded_field() {
 
 #[test]
 fn a_hidden_generated_candidate_serializes_its_class_and_visibility() {
-    let policy = RetentionPolicy::compile(&RetentionConfig::default());
+    let policy = RetentionPolicy::compile(&RetentionConfig::default(), str::to_owned);
     let mut generated = candidate("resource", "group-a", 0);
     generated.class = RetentionClass::Generated;
     generated.visibility = RetentionVisibility::Hidden;
@@ -532,12 +541,12 @@ fn equal_rules_compile_to_one_version_and_distinct_rules_diverge() {
     };
 
     assert_eq!(
-        RetentionPolicy::compile(&all).version(),
-        RetentionPolicy::compile(&all).version()
+        RetentionPolicy::compile(&all, str::to_owned).version(),
+        RetentionPolicy::compile(&all, str::to_owned).version()
     );
     assert_ne!(
-        RetentionPolicy::compile(&all).version(),
-        RetentionPolicy::compile(&RetentionConfig::default()).version()
+        RetentionPolicy::compile(&all, str::to_owned).version(),
+        RetentionPolicy::compile(&RetentionConfig::default(), str::to_owned).version()
     );
     assert_ne!(
         keeping(RetentionSelector::Orphan).version(),
@@ -558,14 +567,29 @@ fn equal_rules_compile_to_one_version_and_distinct_rules_diverge() {
             name: "a|source:b".to_owned(),
         })
         .version(),
-        RetentionPolicy::compile(&RetentionConfig {
-            keep: vec![
-                RetentionSelector::Source { name: "a".to_owned() },
-                RetentionSelector::Source { name: "b".to_owned() },
-            ],
-            expire: Vec::new(),
-        })
+        RetentionPolicy::compile(
+            &RetentionConfig {
+                keep: vec![
+                    RetentionSelector::Source { name: "a".to_owned() },
+                    RetentionSelector::Source { name: "b".to_owned() },
+                ],
+                expire: Vec::new(),
+            },
+            str::to_owned
+        )
         .version()
+    );
+}
+
+#[test]
+fn identity_normalization_preserves_case_sensitive_prefixes() {
+    let policy = expiring(RetentionSelector::ResourcePrefix {
+        prefix: "Acme".to_owned(),
+    });
+
+    assert_eq!(
+        policy.plan_resource(None, vec![candidate("acme-tools", "1.0", 0)])[0].outcome,
+        RetentionOutcome::Retain
     );
 }
 
@@ -702,15 +726,21 @@ fn decision(
 }
 
 fn keeping(selector: RetentionSelector) -> RetentionPolicy {
-    RetentionPolicy::compile(&RetentionConfig {
-        keep: vec![selector],
-        expire: Vec::new(),
-    })
+    RetentionPolicy::compile(
+        &RetentionConfig {
+            keep: vec![selector],
+            expire: Vec::new(),
+        },
+        str::to_owned,
+    )
 }
 
 fn expiring(selector: RetentionSelector) -> RetentionPolicy {
-    RetentionPolicy::compile(&RetentionConfig {
-        keep: Vec::new(),
-        expire: vec![selector],
-    })
+    RetentionPolicy::compile(
+        &RetentionConfig {
+            keep: Vec::new(),
+            expire: vec![selector],
+        },
+        str::to_owned,
+    )
 }

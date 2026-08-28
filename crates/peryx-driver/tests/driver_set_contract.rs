@@ -222,7 +222,7 @@ fn driver_set_registers_and_dispatches_independent_capabilities() {
     let result = set.get_retention(&ecosystem).unwrap().plan_retention(
         &meta,
         "catalog",
-        &peryx_policy::RetentionPolicy::compile(&peryx_policy::RetentionConfig::default()),
+        &peryx_policy::RetentionPolicy::compile(&peryx_policy::RetentionConfig::default(), str::to_owned),
         None,
         &mut |decision| {
             decisions.push(decision);
