@@ -38,12 +38,20 @@ impl Keyword {
 /// The escape-decoding position inside a string literal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Escape {
-    /// Reading literal string bytes.
     None,
-    /// Saw a backslash; the next byte selects the escape.
     Backslash,
-    /// Inside a `\uXXXX` sequence, holding the count of hex digits already accepted.
-    Unicode(u8),
+    Unicode {
+        value: u16,
+        digits: u8,
+        low_surrogate: bool,
+    },
+    SurrogateBackslash,
+    SurrogateU,
+    Utf8 {
+        value: u32,
+        remaining: u8,
+        min: u32,
+    },
 }
 
 /// The number DFA position. Accepting states may end the number; the rest still need input.
@@ -294,55 +302,142 @@ impl JsonValidator {
 
     const fn feed_string(&mut self, byte: u8, escape: Escape, key: bool) {
         match escape {
-            Escape::None => match byte {
-                b'"' => {
-                    if key {
-                        self.state = State::Colon;
-                    } else {
-                        self.finish_value();
-                    }
-                }
-                b'\\' => {
+            Escape::None => self.feed_unescaped_string(byte, key),
+            Escape::Backslash => self.feed_escaped_string(byte, key),
+            Escape::Unicode {
+                value,
+                digits,
+                low_surrogate,
+            } => self.feed_unicode_escape(byte, value, digits, low_surrogate, key),
+            Escape::SurrogateBackslash => {
+                if byte == b'\\' {
                     self.state = State::Str {
-                        escape: Escape::Backslash,
-                        key,
-                    }
-                }
-                // RFC 8259 forbids unescaped control characters inside a string.
-                0x00..=0x1F => self.failed = true,
-                _ => {}
-            },
-            Escape::Backslash => match byte {
-                b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => {
-                    self.state = State::Str {
-                        escape: Escape::None,
-                        key,
-                    };
-                }
-                b'u' => {
-                    self.state = State::Str {
-                        escape: Escape::Unicode(0),
-                        key,
-                    }
-                }
-                _ => self.failed = true,
-            },
-            Escape::Unicode(seen) => {
-                if !byte.is_ascii_hexdigit() {
-                    self.failed = true;
-                } else if seen + 1 == 4 {
-                    self.state = State::Str {
-                        escape: Escape::None,
+                        escape: Escape::SurrogateU,
                         key,
                     };
                 } else {
-                    self.state = State::Str {
-                        escape: Escape::Unicode(seen + 1),
-                        key,
-                    };
+                    self.failed = true;
                 }
             }
+            Escape::SurrogateU => {
+                if byte == b'u' {
+                    self.state = State::Str {
+                        escape: Escape::Unicode {
+                            value: 0,
+                            digits: 0,
+                            low_surrogate: true,
+                        },
+                        key,
+                    };
+                } else {
+                    self.failed = true;
+                }
+            }
+            Escape::Utf8 { value, remaining, min } => self.feed_utf8(byte, value, remaining, min, key),
         }
+    }
+
+    const fn feed_unescaped_string(&mut self, byte: u8, key: bool) {
+        match byte {
+            b'"' => {
+                if key {
+                    self.state = State::Colon;
+                } else {
+                    self.finish_value();
+                }
+            }
+            b'\\' => {
+                self.state = State::Str {
+                    escape: Escape::Backslash,
+                    key,
+                }
+            }
+            0x20..=0x7F => {}
+            0xC2..=0xDF => self.start_utf8(key, (byte & 0x1F) as u32, 1, 0x80),
+            0xE0..=0xEF => self.start_utf8(key, (byte & 0x0F) as u32, 2, 0x800),
+            0xF0..=0xF4 => self.start_utf8(key, (byte & 0x07) as u32, 3, 0x10000),
+            _ => self.failed = true,
+        }
+    }
+
+    const fn feed_escaped_string(&mut self, byte: u8, key: bool) {
+        let escape = match byte {
+            b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => Escape::None,
+            b'u' => Escape::Unicode {
+                value: 0,
+                digits: 0,
+                low_surrogate: false,
+            },
+            _ => {
+                self.failed = true;
+                return;
+            }
+        };
+        self.state = State::Str { escape, key };
+    }
+
+    const fn feed_unicode_escape(&mut self, byte: u8, value: u16, digits: u8, low_surrogate: bool, key: bool) {
+        let Some(digit) = hex_digit(byte) else {
+            self.failed = true;
+            return;
+        };
+        let value = (value << 4) | digit;
+        if digits + 1 < 4 {
+            self.state = State::Str {
+                escape: Escape::Unicode {
+                    value,
+                    digits: digits + 1,
+                    low_surrogate,
+                },
+                key,
+            };
+        } else if low_surrogate {
+            if value >= 0xDC00 && value <= 0xDFFF {
+                self.state = State::Str {
+                    escape: Escape::None,
+                    key,
+                };
+            } else {
+                self.failed = true;
+            }
+        } else if value >= 0xD800 && value <= 0xDBFF {
+            self.state = State::Str {
+                escape: Escape::SurrogateBackslash,
+                key,
+            };
+        } else if value >= 0xDC00 && value <= 0xDFFF {
+            self.failed = true;
+        } else {
+            self.state = State::Str {
+                escape: Escape::None,
+                key,
+            };
+        }
+    }
+
+    const fn feed_utf8(&mut self, byte: u8, value: u32, remaining: u8, min: u32, key: bool) {
+        if byte < 0x80 || byte > 0xBF {
+            self.failed = true;
+            return;
+        }
+        let value = (value << 6) | (byte & 0x3F) as u32;
+        if remaining > 1 {
+            self.start_utf8(key, value, remaining - 1, min);
+        } else if value < min || value > 0x0010_FFFF || value >= 0xD800 && value <= 0xDFFF {
+            self.failed = true;
+        } else {
+            self.state = State::Str {
+                escape: Escape::None,
+                key,
+            };
+        }
+    }
+
+    const fn start_utf8(&mut self, key: bool, value: u32, remaining: u8, min: u32) {
+        self.state = State::Str {
+            escape: Escape::Utf8 { value, remaining, min },
+            key,
+        };
     }
 
     fn feed_literal(&mut self, byte: u8, keyword: Keyword, index: u8) {
@@ -357,6 +452,15 @@ impl JsonValidator {
                 index: index + 1,
             };
         }
+    }
+}
+
+const fn hex_digit(byte: u8) -> Option<u16> {
+    match byte {
+        b'0'..=b'9' => Some((byte - b'0') as u16),
+        b'a'..=b'f' => Some((byte - b'a' + 10) as u16),
+        b'A'..=b'F' => Some((byte - b'A' + 10) as u16),
+        _ => None,
     }
 }
 

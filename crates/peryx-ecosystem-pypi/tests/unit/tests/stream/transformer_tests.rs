@@ -334,7 +334,7 @@ fn test_escaped_keys_dispatch_like_plain_spellings() {
 
 #[test]
 fn test_escaped_keys_that_cannot_spell_a_member_pass_through() {
-    for key in [r"fi\tles", r"m\u00e9ta", r"fi\uD800les"] {
+    for key in [r"fi\tles", r"m\u00e9ta", r"fi\uD83D\uDE00les"] {
         let page = format!(r#"{{"name":"demo","{key}":1,"files":[]}}"#);
         for chunk in [1, page.len()] {
             let (out, _) = transform_summary(&page, plain_context(), chunk);
@@ -869,10 +869,11 @@ fn test_rejects_a_page_past_the_byte_limit() {
     assert!(matches!(err, TransformError::TooLarge));
 }
 
-fn stream_result(page: &str, chunk: usize) -> Result<PageSummary, TransformError> {
+fn stream_result(page: impl AsRef<[u8]>, chunk: usize) -> Result<PageSummary, TransformError> {
+    let page = page.as_ref();
     let mut transformer = PageTransformer::new(plain_context());
     let mut out = Vec::new();
-    for piece in page.as_bytes().chunks(chunk) {
+    for piece in page.chunks(chunk) {
         transformer.push_into(piece, &mut out)?;
     }
     transformer.finish()
@@ -936,6 +937,55 @@ fn test_non_hex_unicode_escape_in_a_key_is_rejected() {
     for chunk in [1, page.len()] {
         assert!(
             matches!(stream_result(page, chunk), Err(TransformError::Malformed)),
+            "chunk {chunk}"
+        );
+    }
+}
+
+#[rstest]
+#[case::valid_pair(br#""demo\uD83D\uDE00""#, true)]
+#[case::lone_high(br#""demo\uD800""#, false)]
+#[case::lone_low(br#""demo\uDC00""#, false)]
+#[case::missing_low_escape(br#""demo\uD800\x""#, false)]
+#[case::non_low_pair(br#""demo\uD800\u0041""#, false)]
+fn test_streaming_and_buffered_parsers_agree_on_surrogate_validity(#[case] name: &[u8], #[case] accepted: bool) {
+    let page = [
+        br#"{"meta":{"api-version":"1.4"},"name":"#,
+        name,
+        br#", "versions":[],"files":[]}"#,
+    ]
+    .concat();
+    assert_streaming_matches_buffered(&page, accepted);
+}
+
+#[rstest]
+#[case::valid_two_byte(b"\"\xC2\x80\"", true)]
+#[case::valid_three_byte_lower(b"\"\xE0\xA0\x80\"", true)]
+#[case::valid_three_byte(b"\"\xE2\x82\xAC\"", true)]
+#[case::valid_four_byte_lower(b"\"\xF0\x90\x80\x80\"", true)]
+#[case::valid_four_byte(b"\"\xF1\x80\x80\x80\"", true)]
+#[case::valid_four_byte_upper(b"\"\xF4\x8F\xBF\xBF\"", true)]
+#[case::invalid_lead(b"\"demo\xFF\"", false)]
+#[case::invalid_continuation(b"\"demo\xC2A\"", false)]
+#[case::overlong(b"\"demo\xC0\xAF\"", false)]
+#[case::raw_surrogate(b"\"demo\xED\xA0\x80\"", false)]
+fn test_streaming_validator_accepts_only_valid_utf8(#[case] value: &[u8], #[case] accepted: bool) {
+    let page = [
+        br#"{"meta":{"api-version":"1.4"},"name":"demo","versions":[],"extra":"#,
+        value,
+        br#", "files":[]}"#,
+    ]
+    .concat();
+    for chunk in [1, page.len()] {
+        assert_eq!(stream_result(&page, chunk).is_ok(), accepted, "chunk {chunk}");
+    }
+}
+
+fn assert_streaming_matches_buffered(page: &[u8], accepted: bool) {
+    for chunk in [1, page.len()] {
+        assert_eq!(
+            (stream_result(page, chunk).is_ok(), parse_detail(page).is_ok()),
+            (accepted, accepted),
             "chunk {chunk}"
         );
     }
