@@ -194,18 +194,73 @@ async fn test_absent_cache_control_is_none() {
 
 #[test]
 fn test_cache_control_combines_repeated_header_fields() {
-    let mut headers = HeaderMap::new();
-    headers.append(CACHE_CONTROL, HeaderValue::from_static("max-age=60"));
-    headers.append(CACHE_CONTROL, HeaderValue::from_static("no-store"));
-
     assert_eq!(
-        response_cache_policy(&headers),
+        cache_policy(&["max-age=60", "no-store"]),
         ResponseCachePolicy {
             fresh_secs: Some(0),
             must_revalidate: Some(true),
             storable: false,
         }
     );
+}
+
+#[rstest]
+#[case::max_age_zero_first("max-age=0, max-age=86400")]
+#[case::max_age_zero_last("max-age=86400, max-age=0")]
+#[case::shared_max_age("s-maxage=0, s-maxage=86400")]
+#[case::invalid_first("max-age=invalid, max-age=86400")]
+#[case::invalid_last("max-age=86400, max-age=invalid")]
+#[test]
+fn test_cache_control_duplicate_freshness_is_stale(#[case] value: &str) {
+    assert_eq!(cache_policy(&[value]).fresh_secs, Some(0));
+}
+
+#[test]
+fn test_cache_control_duplicate_freshness_across_fields_is_stale() {
+    assert_eq!(cache_policy(&["max-age=0", "max-age=86400"]).fresh_secs, Some(0));
+}
+
+#[rstest]
+#[case::empty("max-age=")]
+#[case::negative("max-age=-1")]
+#[case::trailing_text("max-age=60x")]
+#[case::empty_quotes("max-age=\"\"")]
+#[case::unmatched_quote("max-age=\"60")]
+#[case::trailing_quoted_text("max-age=\"60\"x")]
+#[case::escaped_comma("max-age=\"6\\,0\"")]
+#[case::space_before_equals("max-age =60")]
+#[test]
+fn test_cache_control_invalid_freshness_is_stale(#[case] value: &str) {
+    assert_eq!(cache_policy(&[value]).fresh_secs, Some(0));
+}
+
+#[test]
+fn test_cache_control_decodes_quoted_pairs() {
+    assert_eq!(cache_policy(&[r#"max-age="\6\0""#]).fresh_secs, Some(60));
+}
+
+#[test]
+fn test_cache_control_ignores_commas_inside_extension_quotes() {
+    assert_eq!(
+        cache_policy(&[r#"extension="x,max-age=86400", max-age=60"#]).fresh_secs,
+        Some(60)
+    );
+}
+
+#[rstest]
+#[case::overflow("max-age=9223372036854775808", i64::MAX)]
+#[case::no_cache("no-cache, max-age=9223372036854775808", 0)]
+#[test]
+fn test_cache_control_saturates_freshness(#[case] value: &str, #[case] expected: i64) {
+    assert_eq!(cache_policy(&[value]).fresh_secs, Some(expected));
+}
+
+#[test]
+fn test_cache_control_non_text_value_is_stale() {
+    let mut headers = HeaderMap::new();
+    headers.insert(CACHE_CONTROL, HeaderValue::from_bytes(b"max-age=\xff").unwrap());
+
+    assert_eq!(response_cache_policy(&headers).fresh_secs, Some(0));
 }
 
 #[rstest]
@@ -234,8 +289,13 @@ fn test_response_cache_policy_applies_shared_cache_directives(
     #[case] value: &str,
     #[case] expected: ResponseCachePolicy,
 ) {
-    let mut headers = HeaderMap::new();
-    headers.insert(CACHE_CONTROL, HeaderValue::from_str(value).unwrap());
+    assert_eq!(cache_policy(&[value]), expected);
+}
 
-    assert_eq!(response_cache_policy(&headers), expected);
+fn cache_policy(values: &[&str]) -> ResponseCachePolicy {
+    let mut headers = HeaderMap::new();
+    for value in values {
+        headers.append(CACHE_CONTROL, HeaderValue::from_str(value).unwrap());
+    }
+    response_cache_policy(&headers)
 }

@@ -35,8 +35,8 @@ pub struct SimpleResponse {
     pub etag: Option<String>,
     pub last_modified: Option<String>,
     pub last_serial: Option<u64>,
-    /// The freshness lifetime upstream granted via `Cache-Control`; `None` when absent or invalid,
-    /// and zero when the response requires immediate revalidation.
+    /// The freshness lifetime upstream granted via `Cache-Control`; `None` when absent and zero when
+    /// the response is stale or requires immediate revalidation.
     pub max_age: Option<i64>,
     pub body: Bytes,
 }
@@ -54,8 +54,8 @@ pub struct SimpleHead {
     pub last_modified: Option<String>,
     pub content_length: Option<u64>,
     pub last_serial: Option<u64>,
-    /// The freshness lifetime upstream granted via `Cache-Control`; `None` when absent or invalid,
-    /// and zero when the response requires immediate revalidation.
+    /// The freshness lifetime upstream granted via `Cache-Control`; `None` when absent and zero when
+    /// the response is stale or requires immediate revalidation.
     pub max_age: Option<i64>,
     response: reqwest::Response,
 }
@@ -410,50 +410,142 @@ pub fn response_cache_policy(headers: &HeaderMap) -> ResponseCachePolicy {
             storable: true,
         };
     };
-    let mut max_age = None;
-    let mut s_maxage = None;
+    let mut max_age = DeltaSeconds::Absent;
+    let mut s_maxage = DeltaSeconds::Absent;
+    let mut invalid = false;
     let mut validate_before_reuse = false;
     let mut revalidate_when_stale = false;
     let mut storable = true;
-    for value in std::iter::once(first)
-        .chain(values)
-        .filter_map(|value| value.to_str().ok())
-    {
-        for directive in value.split(',') {
-            let directive = directive.trim().to_ascii_lowercase();
+    for value in std::iter::once(first).chain(values) {
+        let Ok(value) = value.to_str() else {
+            invalid = true;
+            continue;
+        };
+        invalid |= !visit_cache_directives(value, |directive| {
+            let directive = directive.trim();
             let (name, value) = directive
                 .split_once('=')
-                .map_or((directive.as_str(), None), |(name, value)| (name, Some(value)));
-            match name {
-                "no-cache" => validate_before_reuse = true,
-                "must-revalidate" | "proxy-revalidate" => revalidate_when_stale = true,
-                "no-store" => {
-                    validate_before_reuse = true;
-                    storable = false;
-                }
-                "private" => storable = false,
-                "max-age" => max_age = value.and_then(delta_seconds),
-                "s-maxage" => {
-                    s_maxage = value.and_then(delta_seconds);
-                    revalidate_when_stale = true;
-                }
-                _ => {}
+                .map_or((directive, None), |(name, value)| (name, Some(value)));
+            let normalized = name.trim();
+            if normalized.eq_ignore_ascii_case("no-cache") {
+                validate_before_reuse = true;
+            } else if normalized.eq_ignore_ascii_case("must-revalidate")
+                || normalized.eq_ignore_ascii_case("proxy-revalidate")
+            {
+                revalidate_when_stale = true;
+            } else if normalized.eq_ignore_ascii_case("no-store") {
+                validate_before_reuse = true;
+                storable = false;
+            } else if normalized.eq_ignore_ascii_case("private") {
+                storable = false;
+            } else if normalized.eq_ignore_ascii_case("max-age") {
+                max_age.add(value, name == normalized);
+            } else if normalized.eq_ignore_ascii_case("s-maxage") {
+                s_maxage.add(value, name == normalized);
+                revalidate_when_stale = true;
             }
-        }
+        });
     }
     ResponseCachePolicy {
-        fresh_secs: if validate_before_reuse {
+        fresh_secs: if validate_before_reuse || invalid || max_age.is_invalid() || s_maxage.is_invalid() {
             Some(0)
         } else {
-            s_maxage.or(max_age).map(|seconds| seconds.max(0))
+            s_maxage.value().or_else(|| max_age.value())
         },
         must_revalidate: Some(validate_before_reuse || revalidate_when_stale),
         storable,
     }
 }
 
+enum DeltaSeconds {
+    Absent,
+    Value(i64),
+    Invalid,
+}
+
+impl DeltaSeconds {
+    fn add(&mut self, value: Option<&str>, valid_separator: bool) {
+        *self = if matches!(self, Self::Absent) && valid_separator {
+            value.and_then(delta_seconds).map_or(Self::Invalid, Self::Value)
+        } else {
+            Self::Invalid
+        };
+    }
+
+    const fn value(&self) -> Option<i64> {
+        match self {
+            Self::Value(value) => Some(*value),
+            Self::Absent | Self::Invalid => None,
+        }
+    }
+
+    const fn is_invalid(&self) -> bool {
+        matches!(self, Self::Invalid)
+    }
+}
+
+fn visit_cache_directives(value: &str, mut visit: impl FnMut(&str)) -> bool {
+    let mut start = 0;
+    let mut quoted = false;
+    let mut escaped = false;
+    for (index, byte) in value.bytes().enumerate() {
+        if escaped {
+            escaped = false;
+        } else if quoted && byte == b'\\' {
+            escaped = true;
+        } else if byte == b'"' {
+            quoted = !quoted;
+        } else if byte == b',' && !quoted {
+            visit(&value[start..index]);
+            start = index + 1;
+        }
+    }
+    if quoted {
+        return false;
+    }
+    visit(&value[start..]);
+    true
+}
+
 fn delta_seconds(value: &str) -> Option<i64> {
-    value.trim_matches('"').parse().ok()
+    let bytes = value.as_bytes();
+    if let Some(quoted) = bytes.strip_prefix(b"\"") {
+        return quoted.strip_suffix(b"\"").and_then(quoted_delta_seconds);
+    }
+    decimal_delta_seconds(bytes)
+}
+
+fn quoted_delta_seconds(value: &[u8]) -> Option<i64> {
+    if value.is_empty() {
+        return None;
+    }
+    let mut seconds = 0_i64;
+    let mut index = 0;
+    while index < value.len() {
+        if value[index] == b'\\' {
+            index += 1;
+        }
+        append_delta_digit(&mut seconds, value[index])?;
+        index += 1;
+    }
+    Some(seconds)
+}
+
+fn decimal_delta_seconds(value: &[u8]) -> Option<i64> {
+    if value.is_empty() {
+        return None;
+    }
+    let mut seconds = 0_i64;
+    for &byte in value {
+        append_delta_digit(&mut seconds, byte)?;
+    }
+    Some(seconds)
+}
+
+fn append_delta_digit(seconds: &mut i64, byte: u8) -> Option<()> {
+    let digit = byte.checked_sub(b'0').filter(|digit| *digit < 10)?;
+    *seconds = seconds.saturating_mul(10).saturating_add(i64::from(digit));
+    Some(())
 }
 
 /// The upstream fetch protocol a proxy index speaks.
