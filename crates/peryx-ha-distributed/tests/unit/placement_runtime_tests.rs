@@ -421,7 +421,7 @@ fn test_verify_pass_surfaces_a_withdrawal_read_error() {
         }
         txn.commit().unwrap();
     }
-    let meta = MetaStore::open(&path).unwrap();
+    let meta = MetaStore::open_existing(path).unwrap();
 
     let error = reconciler("home", store, &["home", "east"])
         .verify_local_placements(&meta, &clock(), 5, batch(100), &|| false)
