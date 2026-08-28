@@ -58,11 +58,15 @@ impl FlightGate {
 
 impl Drop for FlightGate {
     fn drop(&mut self) {
-        let previous = self.gate.users.fetch_sub(1, Ordering::AcqRel);
-        if previous == 1 {
-            self.inflight.gates.remove_if(&self.key, |_, gate| {
-                Arc::ptr_eq(gate, &self.gate) && gate.users.load(Ordering::Acquire) == 0
-            });
+        match self.inflight.gates.entry(self.key.clone()) {
+            Entry::Occupied(entry) if Arc::ptr_eq(entry.get(), &self.gate) => {
+                if self.gate.users.fetch_sub(1, Ordering::AcqRel) == 1 {
+                    entry.remove();
+                }
+            }
+            _ => {
+                self.gate.users.fetch_sub(1, Ordering::AcqRel);
+            }
         }
     }
 }

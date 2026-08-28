@@ -1,34 +1,16 @@
 use std::future::Future;
-use std::sync::atomic::Ordering;
 use std::task::{Context, Poll, Waker};
 
 use bytes::Bytes;
 use rstest::rstest;
 
-use super::{FlightGate, Inflight, ServingCache, flight_gate, release_flight, within_stale_bound};
-
-#[derive(Default)]
-struct FlightObserver {
-    inflight: Inflight,
-}
-
-impl FlightObserver {
-    fn gate(&self, key: &str) -> FlightGate {
-        flight_gate(&self.inflight, key)
-    }
-
-    fn users(&self, key: &str) -> usize {
-        self.inflight
-            .gates
-            .get(key)
-            .map_or(0, |gate| gate.users.load(Ordering::Acquire))
-    }
-}
+use super::{Inflight, ServingCache, flight_gate, release_flight, within_stale_bound};
 
 #[tokio::test]
 async fn test_same_key_waiters_share_one_gate() {
     let inflight = Inflight::default();
     let first = flight_gate(&inflight, "digest").lock_owned().await;
+    assert!(flight_gate(&inflight, "digest").try_lock_owned().is_err());
     assert!(flight_gate(&inflight, "digest").try_lock_owned().is_err());
 
     drop(first);
@@ -46,57 +28,44 @@ async fn test_distinct_keys_lock_independently() {
 
 #[tokio::test]
 async fn test_cancelled_waiter_retires_its_registration() {
-    let observer = FlightObserver::default();
-    let producer = observer.gate("digest").lock_owned().await;
+    let inflight = Inflight::default();
+    let producer = flight_gate(&inflight, "digest").lock_owned().await;
     {
-        let mut waiting = std::pin::pin!(observer.gate("digest").lock_owned());
+        let mut waiting = std::pin::pin!(flight_gate(&inflight, "digest").lock_owned());
         assert!(matches!(
             waiting.as_mut().poll(&mut Context::from_waker(Waker::noop())),
             Poll::Pending
         ));
-        assert_eq!(observer.users("digest"), 2);
     }
-    assert_eq!(observer.users("digest"), 1);
+    assert!(flight_gate(&inflight, "digest").try_lock_owned().is_err());
 
     drop(producer);
-    assert_eq!(observer.users("digest"), 0);
-    drop(observer.gate("digest").try_lock_owned().unwrap());
-}
-
-#[tokio::test]
-async fn test_activity_signals_registered_caller_changes() {
-    let observer = FlightObserver::default();
-    let first = observer.gate("digest");
-    assert_eq!(observer.users("digest"), 1);
-
-    let second = observer.gate("digest");
-    assert_eq!(observer.users("digest"), 2);
-    drop(second);
-    assert_eq!(observer.users("digest"), 1);
-    drop(first);
-    assert_eq!(observer.users("digest"), 0);
+    drop(flight_gate(&inflight, "digest").try_lock_owned().unwrap());
 }
 
 #[tokio::test]
 async fn test_release_flight_retires_the_gate() {
-    let observer = FlightObserver::default();
-    let flight = observer.gate("digest");
+    let inflight = Inflight::default();
+    let flight = flight_gate(&inflight, "digest");
 
-    release_flight(&observer.inflight, "digest", flight.try_lock_owned().unwrap());
+    release_flight(&inflight, "digest", flight.try_lock_owned().unwrap());
 
-    assert_eq!(observer.users("digest"), 0);
+    drop(flight_gate(&inflight, "digest").try_lock_owned().unwrap());
 }
 
 #[test]
 fn test_forget_flight_retires_an_uncontended_gate() {
     let cache = ServingCache::new(1024, 60);
-    let guard = flight_gate(&cache.inflight, "digest").try_lock_owned().unwrap();
+    drop(flight_gate(&cache.inflight, "digest"));
+    let stale = flight_gate(&cache.inflight, "digest").try_lock_owned().unwrap();
 
     cache.forget_flight("digest");
 
     let replacement = flight_gate(&cache.inflight, "digest").try_lock_owned().unwrap();
-    drop(guard);
+    drop(stale);
+    assert!(flight_gate(&cache.inflight, "digest").try_lock_owned().is_err());
     drop(replacement);
+    drop(flight_gate(&cache.inflight, "digest").try_lock_owned().unwrap());
 }
 
 #[test]
