@@ -115,6 +115,65 @@ fn a_keep_rule_wins_over_a_matching_expire_rule() {
 }
 
 #[test]
+fn a_removed_artifact_reports_its_retained_sibling_group() {
+    let policy = expiring(RetentionSelector::Trash);
+    let retained = candidate("resource", "group-a", 0);
+    let mut removed = candidate("resource", "group-a", 0);
+    removed.artifact = "resource:group-a:source".to_owned();
+    removed.digest = "sha256:source".to_owned();
+    removed.class = RetentionClass::Trash;
+
+    let decisions = policy.plan_resource(None, vec![removed, retained]);
+
+    assert_eq!(
+        decisions
+            .iter()
+            .find(|decision| decision.outcome == RetentionOutcome::Remove)
+            .unwrap()
+            .retained_groups,
+        ["group-a"]
+    );
+}
+
+#[test]
+fn a_group_is_absent_when_every_artifact_is_removed() {
+    let policy = expiring(RetentionSelector::Trash);
+    let mut wheel = candidate("resource", "group-a", 0);
+    wheel.class = RetentionClass::Trash;
+    let mut source = candidate("resource", "group-a", 0);
+    source.artifact = "resource:group-a:source".to_owned();
+    source.digest = "sha256:source".to_owned();
+    source.class = RetentionClass::Trash;
+
+    let decisions = policy.plan_resource(None, vec![wheel, source]);
+
+    assert!(decisions.iter().all(|decision| decision.retained_groups.is_empty()));
+}
+
+#[test]
+fn retained_groups_are_deduplicated_and_ordered() {
+    let policy = expiring(RetentionSelector::Trash);
+    let retained = candidate("resource", "group-z", 0);
+    let mut sibling = candidate("resource", "group-z", 0);
+    sibling.artifact = "resource:group-z:source".to_owned();
+    sibling.digest = "sha256:source".to_owned();
+    let other = candidate("resource", "group-a", 0);
+    let mut removed = candidate("resource", "group-m", 0);
+    removed.class = RetentionClass::Trash;
+
+    let decisions = policy.plan_resource(None, vec![retained, sibling, other, removed]);
+
+    assert_eq!(
+        decisions
+            .iter()
+            .find(|decision| decision.outcome == RetentionOutcome::Remove)
+            .unwrap()
+            .retained_groups,
+        ["group-a", "group-z"]
+    );
+}
+
+#[test]
 fn an_age_rule_expires_only_candidates_older_than_its_bound() {
     let policy = expiring(RetentionSelector::Age {
         older_than_seconds: 100,
@@ -227,7 +286,7 @@ fn a_resource_prefix_rule_matches_by_name() {
                 "group-a",
                 RetentionOutcome::Remove,
                 Some("resource-prefix"),
-                &[],
+                &["group-a"],
             ),
         ]
     );

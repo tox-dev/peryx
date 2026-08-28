@@ -152,11 +152,7 @@ impl RetentionPolicy {
             .collect();
         for decision in &mut decisions {
             if decision.outcome == RetentionOutcome::Remove {
-                decision.retained_groups = retained
-                    .iter()
-                    .filter(|group| Some(group.as_str()) != decision.group.as_deref())
-                    .cloned()
-                    .collect();
+                decision.retained_groups = retained.iter().cloned().collect();
             }
         }
         decisions
