@@ -297,10 +297,11 @@ fn run_toxiproxy(executable: &Path, args: &[String], control_listener: Option<Tc
                         .to_be_bytes(),
                 )
                 .expect("publish control port");
+                gate.read_to_end(&mut Vec::new()).expect("wait for readiness cleanup");
             } else {
                 gate.write_all(&[1]).expect("identify readiness gate");
+                gate.read_exact(&mut [0]).expect("wait for readiness release");
             }
-            gate.read_exact(&mut [0]).expect("wait for readiness release");
             gate
         });
     let listener = control_listener.unwrap_or_else(|| {

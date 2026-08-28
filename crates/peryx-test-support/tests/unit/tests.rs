@@ -910,7 +910,6 @@ fn toxiproxy_rejects_a_foreign_control_api() {
         let mut port = [0; 2];
         child.read_exact(&mut port).expect("read selected control port");
         let foreign = TcpListener::bind(("127.0.0.1", u16::from_be_bytes(port))).expect("bind foreign control API");
-        child.write_all(&[1]).expect("release child startup");
         let control = foreign.local_addr().expect("foreign control address");
         let server = thread::spawn(move || {
             let mut requests = Vec::new();
@@ -1008,6 +1007,7 @@ fn toxiproxy_kills_its_child_after_shutdown_is_rejected() {
         )
         .expect("reject graceful shutdown");
         let mut toxiproxy = fixture.start_toxiproxy();
+        let pid = fixture.toxiproxy_pid();
         let (sender, receiver) = mpsc::sync_channel(1);
 
         thread::scope(|scope| {
@@ -1017,13 +1017,14 @@ fn toxiproxy_kills_its_child_after_shutdown_is_rejected() {
             });
             let mut child = accept_within(&gate, FIXTURE_DEADLOCK_GUARD, "shutdown request event");
             child.read_exact(&mut [0]).expect("identify shutdown request");
-            assert_eq!(
-                child.read(&mut [0]).expect("observe fixture child exit"),
-                0,
-                "fixture child remained alive after rejected shutdown",
-            );
+            receiver
+                .recv_timeout(FIXTURE_DEADLOCK_GUARD)
+                .expect("receive shutdown completion");
             stop.join().expect("join toxiproxy shutdown");
-            receiver.recv().expect("receive shutdown completion");
+            assert!(
+                !process_alive(pid),
+                "fixture child remained alive after rejected shutdown"
+            );
         });
     });
 }
