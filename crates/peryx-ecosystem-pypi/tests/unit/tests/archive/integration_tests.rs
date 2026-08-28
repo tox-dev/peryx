@@ -704,7 +704,7 @@ fn test_read_compressed_zip_member_caps_offset_at_inspect_limit() {
     let cap: u64 = 512 * 1024 * 1024;
     assert!(matches!(
         read_member_chunk("pkg-1.0-py3-none-any.whl", &archive, "pkg/mod.py", cap + 1, DEFAULT_MEMBER_CHUNK),
-        Err(ArchiveError::InvalidRange { offset, size }) if offset == cap + 1 && size == cap
+        Err(ArchiveError::InspectionLimitExceeded { limit }) if limit == cap
     ));
 }
 

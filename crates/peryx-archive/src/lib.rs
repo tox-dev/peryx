@@ -173,6 +173,16 @@ pub fn read_error(err: impl std::fmt::Display) -> ArchiveError {
     ArchiveError::Read(err.to_string())
 }
 
+const fn ensure_inspection_range(start: u64, offset: u64, count: u64) -> Result<(), ArchiveError> {
+    if start.saturating_add(offset).saturating_add(count) > MAX_DECOMPRESSED_INSPECT_BYTES {
+        Err(ArchiveError::InspectionLimitExceeded {
+            limit: MAX_DECOMPRESSED_INSPECT_BYTES,
+        })
+    } else {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 #[path = "../tests/unit/tests.rs"]
 mod tests;

@@ -128,6 +128,52 @@ async fn test_inspect_corrupt_archive_is_unprocessable() {
     let (status, ..) = get(&h.state, &uri, None).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 }
+
+#[tokio::test]
+async fn test_inspect_truncated_member_is_unprocessable() {
+    let h = harness().await;
+    let mut header = tar::Header::new_gnu();
+    header.set_path("file.txt").unwrap();
+    header.set_mode(0o644);
+    header.set_size(5);
+    header.set_cksum();
+    let mut archive = header.as_bytes().to_vec();
+    archive.extend_from_slice(b"abc");
+    let digest = put_local_file(&h.state, "peryxpkg-1.0.tar", &archive, "1.0");
+    let uri = format!("/hosted/inspect/{}/peryxpkg-1.0.tar/file.txt?limit=5", digest.as_str());
+
+    let (status, _, body) = get(&h.state, &uri, None).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(body.contains("ended after 3 bytes but declares 5 bytes"));
+}
+
+#[tokio::test]
+async fn test_inspect_decompression_limit_is_payload_too_large() {
+    let h = harness().await;
+    let mut archive = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut archive));
+        zip.start_file(
+            "file.txt",
+            zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated),
+        )
+        .unwrap();
+        zip.write_all(b"x").unwrap();
+        zip.finish().unwrap();
+    }
+    let central = archive.windows(4).position(|window| window == b"PK\x01\x02").unwrap();
+    archive[central + 24..central + 28].copy_from_slice(&0x6000_0000_u32.to_le_bytes());
+    let digest = put_local_file(&h.state, "peryxpkg-1.0-py3-none-any.whl", &archive, "1.0");
+    let uri = format!(
+        "/hosted/inspect/{}/peryxpkg-1.0-py3-none-any.whl/file.txt?offset=536870913&limit=1",
+        digest.as_str()
+    );
+
+    let (status, _, body) = get(&h.state, &uri, None).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert!(body.contains("decompressed byte limit of 536870912"));
+}
+
 #[tokio::test]
 async fn test_inspect_tarball_and_size_limit() {
     let h = harness().await;

@@ -4,9 +4,10 @@ use flate2::{Compression, write::GzEncoder};
 use rstest::rstest;
 
 use crate::{
-    ArchiveError, ArchiveFormat, ArchiveProfile, Member, MemberKind, generic_format, generic_member_kind, list_members,
-    list_members_nested_path, list_members_path, read_error, read_member, read_member_chunk, read_member_chunk_path,
-    read_text_member_chunk_nested_path, safe_member_name, strip_ascii_suffix_ignore_case,
+    ArchiveError, ArchiveFormat, ArchiveProfile, MAX_DECOMPRESSED_INSPECT_BYTES, Member, MemberKind, generic_format,
+    generic_member_kind, list_members, list_members_nested_path, list_members_path, read_error, read_member,
+    read_member_chunk, read_member_chunk_path, read_text_member_chunk_nested_path, safe_member_name,
+    strip_ascii_suffix_ignore_case,
 };
 
 const BODY: &[u8] = b"body\n";
@@ -97,6 +98,17 @@ fn tar_with_directory_entry(path: &str, body: &[u8]) -> Vec<u8> {
 
 fn tar_with_directory() -> Vec<u8> {
     tar_with_directory_entry("file.txt", BODY)
+}
+
+fn truncated_tar(path: &str, size: u64, body: &[u8]) -> Vec<u8> {
+    let mut header = tar::Header::new_gnu();
+    header.set_path(path).unwrap();
+    header.set_mode(0o644);
+    header.set_size(size);
+    header.set_cksum();
+    let mut bytes = header.as_bytes().to_vec();
+    bytes.extend_from_slice(body);
+    bytes
 }
 
 fn oversized_nested_tar() -> Vec<u8> {
@@ -453,10 +465,51 @@ fn test_archive_readers_report_invalid_inputs() {
             (512 << 20) + 1,
             1,
         ),
-        Err(ArchiveError::InvalidRange {
-            offset: 536_870_913,
-            size: 536_870_912,
-        })
+        Err(ArchiveError::InspectionLimitExceeded { limit: 536_870_912 })
+    ));
+}
+
+#[test]
+fn test_tar_member_read_rejects_the_inspection_boundary() {
+    let mut header = tar::Header::new_gnu();
+    header.set_path("file.txt").unwrap();
+    header.set_mode(0o644);
+    header.set_size(MAX_DECOMPRESSED_INSPECT_BYTES);
+    header.set_cksum();
+    let mut archive = tempfile::NamedTempFile::new().unwrap();
+    archive.write_all(header.as_bytes()).unwrap();
+    archive
+        .as_file_mut()
+        .set_len(512 + MAX_DECOMPRESSED_INSPECT_BYTES + 1024)
+        .unwrap();
+    archive.flush().unwrap();
+    assert!(matches!(
+        read_member_chunk_path(
+            &PROFILE,
+            "bundle.tar",
+            archive.path(),
+            "file.txt",
+            MAX_DECOMPRESSED_INSPECT_BYTES - 512,
+            1,
+        ),
+        Err(ArchiveError::InspectionLimitExceeded { limit }) if limit == MAX_DECOMPRESSED_INSPECT_BYTES
+    ));
+}
+
+#[rstest]
+#[case::short_read(0, 5)]
+#[case::short_skip(4, 1)]
+fn test_tar_member_read_rejects_truncation(#[case] offset: u64, #[case] limit: u64) {
+    assert!(matches!(
+        read_member_chunk(
+            &PROFILE,
+            "bundle.tar",
+            &truncated_tar("file.txt", 5, b"abc"),
+            "file.txt",
+            offset,
+            limit,
+        ),
+        Err(ArchiveError::TruncatedMember { expected: 5, actual: 3 })
     ));
 }
 
@@ -533,5 +586,16 @@ fn test_nested_archive_reader_rejects_unsafe_and_excessive_paths() {
     assert!(matches!(
         list_members_nested_path(&PROFILE, "outer.tar", &path, &["inner.zip".to_owned()]),
         Err(ArchiveError::NestedArchiveTooLarge { size, .. }) if size == (128 << 20) + 1
+    ));
+}
+
+#[test]
+fn test_nested_archive_reader_rejects_a_truncated_container() {
+    let inner = zip_with("text.txt");
+    let (_dir, path) = write_archive(&truncated_tar("inner.zip", inner.len() as u64 + 1, &inner));
+    assert!(matches!(
+        list_members_nested_path(&PROFILE, "outer.tar", &path, &["inner.zip".to_owned()]),
+        Err(ArchiveError::TruncatedMember { expected, actual })
+            if expected == inner.len() as u64 + 1 && actual == inner.len() as u64
     ));
 }

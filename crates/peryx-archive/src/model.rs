@@ -59,6 +59,10 @@ pub enum ArchiveError {
     MemberNotFound,
     #[error("archive member offset {offset} is beyond member size {size}")]
     InvalidRange { offset: u64, size: u64 },
+    #[error("archive inspection exceeds the decompressed byte limit of {limit}")]
+    InspectionLimitExceeded { limit: u64 },
+    #[error("archive member ended after {actual} bytes but declares {expected} bytes")]
+    TruncatedMember { expected: u64, actual: u64 },
     #[error("archive member path {0:?} is not a safe relative path")]
     UnsafeMember(String),
     #[error("archive nesting depth {depth} exceeds the configured limit of {limit}")]

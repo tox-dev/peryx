@@ -5,7 +5,7 @@ use super::model::ArchiveError;
 use super::{
     ArchiveFormat, ArchiveProfile, MAX_CONTAINER_DEPTH, MAX_DECOMPRESSED_INSPECT_BYTES, MAX_NESTED_ARCHIVE_SIZE,
 };
-use super::{read_error, safe_member_name, zip_member_position};
+use super::{ensure_inspection_range, read_error, safe_member_name, zip_member_position};
 
 pub struct ResolvedArchive {
     pub format: ArchiveFormat,
@@ -64,7 +64,8 @@ fn nested_zip_source(
     let mut archive = zip::ZipArchive::new(source.open()?).map_err(read_error)?;
     let position = zip_member_position(&mut archive, member)?.ok_or(ArchiveError::MemberNotFound)?;
     let entry = archive.by_index(position).map_err(read_error)?;
-    reject_large_nested_archive(member, entry.size())?;
+    let size = entry.size();
+    reject_large_nested_archive(member, size)?;
     if entry.compression() == zip::CompressionMethod::Stored
         && !entry.encrypted()
         && entry.compressed_size() == entry.size()
@@ -72,7 +73,7 @@ fn nested_zip_source(
     {
         return Ok(source.slice(start, entry.compressed_size()));
     }
-    copy_nested_archive(entry, temps)
+    copy_nested_archive(entry, size, temps)
 }
 
 fn nested_tar_source(
@@ -87,17 +88,26 @@ fn nested_tar_source(
         if entry.header().entry_type().is_file() {
             let path = entry.path().map_err(read_error)?.to_string_lossy().into_owned();
             if safe_member_name(&path).is_ok_and(|path| path == member) {
-                reject_large_nested_archive(member, entry.size())?;
-                return copy_nested_archive(entry, temps);
+                let size = entry.size();
+                reject_large_nested_archive(member, size)?;
+                ensure_inspection_range(entry.raw_file_position(), 0, size)?;
+                return copy_nested_archive(entry, size, temps);
             }
         }
     }
     Err(ArchiveError::MemberNotFound)
 }
 
-fn copy_nested_archive(reader: impl Read, temps: &mut Vec<tempfile::TempPath>) -> Result<ArchiveSource, ArchiveError> {
+fn copy_nested_archive(
+    reader: impl Read,
+    expected: u64,
+    temps: &mut Vec<tempfile::TempPath>,
+) -> Result<ArchiveSource, ArchiveError> {
     let mut temp = tempfile::NamedTempFile::new().map_err(read_error)?;
-    std::io::copy(&mut reader.take(MAX_NESTED_ARCHIVE_SIZE), temp.as_file_mut()).map_err(read_error)?;
+    let actual = std::io::copy(&mut reader.take(expected), temp.as_file_mut()).map_err(read_error)?;
+    if actual != expected {
+        return Err(ArchiveError::TruncatedMember { expected, actual });
+    }
     temp.as_file_mut().flush().map_err(read_error)?;
     let path = temp.path().to_path_buf();
     temps.push(temp.into_temp_path());

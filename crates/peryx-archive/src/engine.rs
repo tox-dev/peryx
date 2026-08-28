@@ -5,7 +5,10 @@ use zip::read::HasZipMetadata;
 
 use super::model::{ArchiveError, ArchiveFormat, ArchiveProfile, Member, MemberChunk, MemberKind};
 use super::source::{ArchiveSource, resolve_container_stack};
-use super::{MAX_DECOMPRESSED_INSPECT_BYTES, MAX_LISTED_ENTRIES, read_error, safe_member_name, zip_member_position};
+use super::{
+    MAX_DECOMPRESSED_INSPECT_BYTES, MAX_LISTED_ENTRIES, ensure_inspection_range, read_error, safe_member_name,
+    zip_member_position,
+};
 
 /// # Errors
 /// Returns [`ArchiveError::Unsupported`] for other filename extensions and
@@ -209,15 +212,7 @@ fn read_zip_member(
     }
     let entry = archive.by_index(position).map_err(read_error)?;
     let size = entry.size();
-    // Capping the reachable range prevents compressed members from forcing unbounded decompression.
-    let inspectable = size.min(MAX_DECOMPRESSED_INSPECT_BYTES);
-    if offset > inspectable {
-        return Err(ArchiveError::InvalidRange {
-            offset,
-            size: inspectable,
-        });
-    }
-    read_slice(entry, size, offset, limit)
+    read_slice(entry, size, offset, limit, 0)
 }
 
 fn list_tar(profile: &dyn ArchiveProfile, reader: impl Read) -> Result<Vec<Member>, ArchiveError> {
@@ -245,7 +240,8 @@ fn read_tar_member(reader: impl Read, member: &str, offset: u64, limit: u64) -> 
             let path = entry.path().map_err(read_error)?.to_string_lossy().into_owned();
             if safe_member_name(&path).is_ok_and(|path| path == member) {
                 let size = entry.size();
-                return read_slice(entry, size, offset, limit);
+                let inspection_start = entry.raw_file_position();
+                return read_slice(entry, size, offset, limit, inspection_start);
             }
         }
     }
@@ -271,11 +267,25 @@ fn push_member(
     Ok(())
 }
 
-fn read_slice(mut reader: impl Read, size: u64, offset: u64, limit: u64) -> Result<MemberChunk, ArchiveError> {
+fn read_slice(
+    mut reader: impl Read,
+    size: u64,
+    offset: u64,
+    limit: u64,
+    inspection_start: u64,
+) -> Result<MemberChunk, ArchiveError> {
     if offset > size {
         return Err(ArchiveError::InvalidRange { offset, size });
     }
-    std::io::copy(&mut reader.by_ref().take(offset), &mut std::io::sink()).map_err(read_error)?;
+    let count = (size - offset).min(limit);
+    ensure_inspection_range(inspection_start, offset, count)?;
+    let skipped = std::io::copy(&mut reader.by_ref().take(offset), &mut std::io::sink()).map_err(read_error)?;
+    if skipped != offset {
+        return Err(ArchiveError::TruncatedMember {
+            expected: size,
+            actual: skipped,
+        });
+    }
     read_from_current(reader, size, offset, limit)
 }
 
@@ -284,6 +294,12 @@ fn read_from_current(reader: impl Read, size: u64, offset: u64, limit: u64) -> R
     let mut bytes = Vec::with_capacity(usize::try_from(count).unwrap_or_default());
     reader.take(count).read_to_end(&mut bytes).map_err(read_error)?;
     let next = offset + bytes.len() as u64;
+    if next != offset + count {
+        return Err(ArchiveError::TruncatedMember {
+            expected: size,
+            actual: next,
+        });
+    }
     Ok(MemberChunk {
         bytes,
         size,
