@@ -370,6 +370,21 @@ fn runtime_command_rejects_an_invalid_host(#[case] command: &[&str]) {
     assert_failure(&output, "`host` \"not a host\"");
 }
 
+#[rstest]
+#[case::serve_freshness(&["serve"], "PERYX_CACHE_TTL_SECS", "cache_ttl_secs")]
+#[case::serve_stale_bound(&["serve"], "PERYX_MAX_STALE_SECS", "max_stale_secs")]
+#[case::check_freshness(&["config", "check"], "PERYX_CACHE_TTL_SECS", "cache_ttl_secs")]
+#[case::check_stale_bound(&["config", "check"], "PERYX_MAX_STALE_SECS", "max_stale_secs")]
+fn runtime_commands_reject_negative_cache_timing(
+    #[case] command: &[&str],
+    #[case] variable: &str,
+    #[case] field: &str,
+) {
+    let output = peryx().args(command).env(variable, "-1").output().unwrap();
+
+    assert_failure(&output, &format!("`{field}` must be non-negative, got -1"));
+}
+
 #[test]
 fn runtime_arguments_override_environment_and_selected_config() {
     let dir = tempfile::tempdir().unwrap();

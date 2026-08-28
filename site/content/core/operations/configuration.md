@@ -47,7 +47,8 @@ selected socket address. `serve` passes its selected address to the listener wit
 
 The ceiling limits how long peryx trusts an upstream `Cache-Control` value. An upstream or CDN that answers
 `max-age=31536000` would otherwise pin a page in the cache for a year with no revalidation. Raise `cache_ttl_secs` if
-you want to trust a long upstream lifetime; lower it to revalidate sooner than the upstream asks.
+you want to trust a long upstream lifetime; lower it to revalidate sooner than the upstream asks. Set it to `0` to
+revalidate every request. `cache_ttl_secs` must be non-negative.
 
 Artifacts never expire; they are content-addressed by sha256, so a changed upstream file is a new entry on the page
 rather than a mutation.
@@ -56,7 +57,7 @@ rather than a mutation.
 last page it fetched, but only for this long past the page's freshness window. Beyond it the upstream failure surfaces
 instead, because a cache that answers with whatever it last saw, forever, has stopped being a cache and become a fork.
 Set it to `0` to serve stale without limit, which is what mirroring a knowingly unreliable upstream asks for;
-`offline = true` below is the unconditional form.
+`offline = true` below is the unconditional form. `max_stale_secs` must be non-negative.
 
 `usage_retention_days` bounds the durable
 [daily group and source usage](@/core/operations/monitor.md#daily-group-and-source-usage) aggregate: buckets older than

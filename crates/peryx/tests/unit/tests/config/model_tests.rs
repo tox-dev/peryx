@@ -89,6 +89,36 @@ fn test_default_config() {
 }
 
 #[rstest::rstest]
+#[case::freshness(-1, 0, "`cache_ttl_secs` must be non-negative, got -1")]
+#[case::stale_bound(0, -2, "`max_stale_secs` must be non-negative, got -2")]
+fn test_config_rejects_negative_cache_timing(
+    #[case] cache_ttl_secs: i64,
+    #[case] max_stale_secs: i64,
+    #[case] expected: &str,
+) {
+    let config = Config {
+        cache_ttl_secs,
+        max_stale_secs,
+        ..Config::default()
+    };
+
+    assert_eq!(config.validate().unwrap_err().to_string(), expected);
+}
+
+#[rstest::rstest]
+#[case::zero(0)]
+#[case::positive(1)]
+fn test_config_accepts_non_negative_cache_timing(#[case] value: i64) {
+    Config {
+        cache_ttl_secs: value,
+        max_stale_secs: value,
+        ..Config::default()
+    }
+    .validate()
+    .unwrap();
+}
+
+#[rstest::rstest]
 #[case::ipv4("127.0.0.1", "127.0.0.1:4433")]
 #[case::ipv6_wildcard("::", "[::]:4433")]
 #[case::ipv6_loopback("::1", "[::1]:4433")]

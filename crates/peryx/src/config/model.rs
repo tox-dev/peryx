@@ -365,9 +365,17 @@ impl Config {
     }
 
     /// # Errors
-    /// Returns an error when plugin authentication, identity providers, jobs, durability, or writer
-    /// identity conflict with the resolved configuration.
+    /// Returns an error when cache timing, plugin authentication, identity providers, jobs,
+    /// durability, or writer identity conflict with the resolved configuration.
     pub fn validate_with_plugins(&self, plugins: &peryx_plugin_registry::PluginRegistry) -> Result<(), ConfigError> {
+        for (field, value) in [
+            ("cache_ttl_secs", self.cache_ttl_secs),
+            ("max_stale_secs", self.max_stale_secs),
+        ] {
+            if value < 0 {
+                return Err(ConfigError::CacheTiming { field, value });
+            }
+        }
         let plugin_indexes = self
             .indexes
             .iter()

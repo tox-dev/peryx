@@ -92,4 +92,6 @@ pub enum ConfigError {
     Tls { reason: &'static str },
     #[error("invalid environment variable {var}: {reason}")]
     Env { var: &'static str, reason: String },
+    #[error("`{field}` must be non-negative, got {value}")]
+    CacheTiming { field: &'static str, value: i64 },
 }
