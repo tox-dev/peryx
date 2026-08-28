@@ -439,11 +439,8 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         let (parts, body) = request.into_parts();
         let path = parts.uri.path();
         let read = matches!(method, Method::GET | Method::HEAD);
-        if method == Method::GET
-            && (path == "/v2/token" || path == "/v2/token/")
-            && let Some(signer) = &state.signer
-        {
-            return auth::issue_token(&state, signer, &parts.headers, parts.uri.query().unwrap_or_default());
+        if method == Method::GET && (path == "/v2/token" || path == "/v2/token/") {
+            return auth::issue_token(&state, &parts.headers, parts.uri.query().unwrap_or_default());
         }
         let Some(route) = classify(path) else {
             return error_response(ErrorCode::NameUnknown, "repository name unknown");

@@ -611,6 +611,41 @@ async fn test_token_endpoint_rejects_an_invalid_service(#[case] query: &str) {
 }
 
 #[rstest]
+#[case::anonymous(true, "service=peryx", None, StatusCode::OK)]
+#[case::basic(true, "service=peryx", Some(SECRET), StatusCode::OK)]
+#[case::invalid_basic(true, "service=peryx", Some("wrong"), StatusCode::UNAUTHORIZED)]
+#[case::invalid_service(true, "service=other", None, StatusCode::FORBIDDEN)]
+#[case::disabled_signer(false, "service=peryx", None, StatusCode::NOT_FOUND)]
+#[tokio::test]
+async fn test_token_endpoint_responses_prevent_caching(
+    #[case] signer_enabled: bool,
+    #[case] query: &str,
+    #[case] password: Option<&str>,
+    #[case] expected_status: StatusCode,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let app = if signer_enabled {
+        team_registry(&dir)
+    } else {
+        hosted_writable(&dir, SECRET).1
+    };
+    let authorization = password.map(auth);
+    let request_headers = authorization
+        .as_deref()
+        .map(|value| vec![("authorization", value)])
+        .unwrap_or_default();
+    let (status, headers, _) = send_with(&app, Method::GET, &format!("/v2/token?{query}"), &request_headers).await;
+    assert_eq!(
+        (
+            status,
+            headers[header::CACHE_CONTROL].to_str().unwrap(),
+            headers[header::PRAGMA].to_str().unwrap(),
+        ),
+        (expected_status, "no-store", "no-cache")
+    );
+}
+
+#[rstest]
 #[case::unresolvable("repository:ghost/app:pull")]
 #[case::malformed("invalid")]
 #[tokio::test]

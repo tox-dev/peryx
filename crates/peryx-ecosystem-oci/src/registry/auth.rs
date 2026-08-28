@@ -6,12 +6,12 @@
 //! [`peryx_identity`] knows only a principal, an index ACL, a project, and an action.
 
 use axum::body::Body;
-use axum::http::{HeaderMap, StatusCode, Uri, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use peryx_driver::ServingState;
 use peryx_driver::discovery::BaseUrl;
 use peryx_identity::{
-    Action, Denial, Glob, Grant, Identity, IndexAcl, Principal, ResourceMatch, Signer, authorize, authorize_all,
+    Action, Denial, Glob, Grant, Identity, IndexAcl, Principal, ResourceMatch, authorize, authorize_all,
     authorize_grants, strip_auth_scheme,
 };
 use serde_json::json;
@@ -67,7 +67,21 @@ fn verified_principal(state: &ServingState, headers: &HeaderMap) -> Option<Princ
 /// Answer `GET /v2/token`: a request for this realm's service gets a JWT whose grants are the
 /// intersection of the requested scope with what the caller may do. A missing or different service is
 /// denied, and a Basic credential matching no live token is a login failure.
-pub(super) fn issue_token(state: &ServingState, signer: &Signer, headers: &HeaderMap, query: &str) -> Response {
+pub(super) fn issue_token(state: &ServingState, headers: &HeaderMap, query: &str) -> Response {
+    let mut response = build_token_response(state, headers, query);
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+        .headers_mut()
+        .insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+    response
+}
+
+fn build_token_response(state: &ServingState, headers: &HeaderMap, query: &str) -> Response {
+    let Some(signer) = &state.signer else {
+        return error_response(ErrorCode::NameUnknown, "repository name unknown");
+    };
     let Some(scopes) = parse_token_request(query, signer.audience()) else {
         return error_response(ErrorCode::Denied, "requested service is not available");
     };
