@@ -5179,6 +5179,7 @@ dependencies = [
  "aws-smithy-http-client",
  "base64 0.23.1",
  "bytes",
+ "codspeed-criterion-compat",
  "fs4 1.1.0",
  "futures-util",
  "hex",

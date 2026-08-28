@@ -390,9 +390,61 @@ fn test_listing_paginates_every_managed_grant_in_key_order() {
 
 #[test]
 fn test_a_user_filter_scans_only_that_users_grants() {
+    let before = UserId::from_stored("usr_00000000000000000000000000000000");
+    let selected = UserId::from_stored("usr_50000000000000000000000000000000");
+    let after = UserId::from_stored("usr_99999999999999999999999999999999");
+    let (_dir, store) = raw_store(|txn| {
+        for id in [&before, &selected, &after] {
+            persist_user(txn, id);
+        }
+    });
+    for id in [&before, &after] {
+        store
+            .create_managed_grant(
+                &RoleGrant::new(id.clone(), Role::RepositoryReader, repository("unrelated")),
+                &selected,
+                0,
+            )
+            .unwrap();
+    }
+    let expected = ["team/a", "team/b", "team/c"].map(|name| {
+        store
+            .create_managed_grant(
+                &RoleGrant::new(selected.clone(), Role::RepositoryReader, repository(name)),
+                &selected,
+                0,
+            )
+            .unwrap()
+            .record
+    });
+
+    let first = store
+        .list_managed_grants(&RoleGrantQuery {
+            filter: RoleGrantFilter::User(selected.clone()),
+            cursor: None,
+            limit: 2,
+        })
+        .unwrap();
+    assert_eq!(first.grants, expected[..2]);
+    assert!(first.next_cursor.is_some());
+
+    let second = store
+        .list_managed_grants(&RoleGrantQuery {
+            filter: RoleGrantFilter::User(selected),
+            cursor: first.next_cursor,
+            limit: 2,
+        })
+        .unwrap();
+    assert_eq!(second.grants, expected[2..]);
+    assert_eq!(second.next_cursor, None);
+}
+
+#[rstest]
+#[case::before("", 1)]
+#[case::after("\u{10ffff}", 0)]
+fn test_a_user_filter_clamps_a_cursor_outside_its_range(#[case] cursor: &str, #[case] expected: usize) {
     let (_dir, store) = store();
     let alice = store.create_user("Alice").unwrap().id;
-    let bob = store.create_user("Bob").unwrap().id;
     store
         .create_managed_grant(
             &RoleGrant::new(alice.clone(), Role::Operator, GrantScope::Server),
@@ -400,48 +452,70 @@ fn test_a_user_filter_scans_only_that_users_grants() {
             0,
         )
         .unwrap();
-    store
-        .create_managed_grant(
-            &RoleGrant::new(bob.clone(), Role::Operator, GrantScope::Server),
-            &bob,
-            0,
-        )
-        .unwrap();
 
     let page = store
         .list_managed_grants(&RoleGrantQuery {
-            filter: RoleGrantFilter::User(alice.clone()),
-            cursor: None,
+            filter: RoleGrantFilter::User(alice),
+            cursor: Some(cursor.to_owned()),
             limit: 10,
         })
         .unwrap();
-    assert_eq!(page.grants.len(), 1);
-    assert_eq!(page.grants[0].grant.user, alice);
+
+    assert_eq!(page.grants.len(), expected);
+    assert_eq!(page.next_cursor, None);
 }
 
 #[test]
 fn test_a_resource_filter_uses_the_scope_index_without_leaking_a_prefix_sibling() {
-    let (_dir, store) = store();
-    let alice = store.create_user("Alice").unwrap().id;
-    for name in ["team", "team/api"] {
+    let users = [
+        UserId::from_stored("usr_10000000000000000000000000000000"),
+        UserId::from_stored("usr_50000000000000000000000000000000"),
+        UserId::from_stored("usr_90000000000000000000000000000000"),
+    ];
+    let (_dir, store) = raw_store(|txn| {
+        for id in &users {
+            persist_user(txn, id);
+        }
+    });
+    for name in ["alpha", "zulu"] {
         store
             .create_managed_grant(
-                &RoleGrant::new(alice.clone(), Role::RepositoryReader, repository(name)),
-                &alice,
+                &RoleGrant::new(users[0].clone(), Role::RepositoryReader, repository(name)),
+                &users[0],
                 0,
             )
             .unwrap();
     }
+    let expected = users.clone().map(|user| {
+        store
+            .create_managed_grant(
+                &RoleGrant::new(user, Role::RepositoryReader, repository("team")),
+                &users[0],
+                0,
+            )
+            .unwrap()
+            .record
+    });
 
-    let page = store
+    let first = store
         .list_managed_grants(&RoleGrantQuery {
             filter: RoleGrantFilter::Resource(repository("team")),
             cursor: None,
-            limit: 10,
+            limit: 2,
         })
         .unwrap();
-    assert_eq!(page.grants.len(), 1);
-    assert_eq!(page.grants[0].grant.scope, repository("team"));
+    assert_eq!(first.grants, expected[..2]);
+    assert!(first.next_cursor.is_some());
+
+    let second = store
+        .list_managed_grants(&RoleGrantQuery {
+            filter: RoleGrantFilter::Resource(repository("team")),
+            cursor: first.next_cursor,
+            limit: 2,
+        })
+        .unwrap();
+    assert_eq!(second.grants, expected[2..]);
+    assert_eq!(second.next_cursor, None);
 }
 
 #[test]

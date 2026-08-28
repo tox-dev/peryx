@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::ops::Bound;
 
 use peryx_identity::{GrantScope, Role, RoleGrant, ServerUser, UserId, UserState};
 use redb::{ReadableTable as _, WriteTransaction};
@@ -206,26 +207,45 @@ impl MetaStore {
             return Err(RoleGrantQueryError::InvalidLimit);
         }
         let txn = self.db.begin_read().map_err(MetaError::from)?;
-        let (table, prefix) = match &query.filter {
-            RoleGrantFilter::All => (ROLE_GRANT, None),
-            RoleGrantFilter::User(id) => (ROLE_GRANT, Some(format!("{id}/"))),
-            RoleGrantFilter::Resource(scope) => (ROLE_GRANT_BY_SCOPE, Some(format!("{}\u{0}", reach_of(scope)))),
+        let (table, prefix, prefix_end) = match &query.filter {
+            RoleGrantFilter::All => (ROLE_GRANT, None, None),
+            RoleGrantFilter::User(id) => (ROLE_GRANT, Some(format!("{id}/")), Some(format!("{id}0"))),
+            RoleGrantFilter::Resource(scope) => {
+                let reach = reach_of(scope);
+                (
+                    ROLE_GRANT_BY_SCOPE,
+                    Some(format!("{reach}\u{0}")),
+                    Some(format!("{reach}\u{1}")),
+                )
+            }
         };
+        if query
+            .cursor
+            .as_deref()
+            .zip(prefix_end.as_deref())
+            .is_some_and(|(cursor, prefix_end)| cursor >= prefix_end)
+        {
+            return Ok(RoleGrantPage {
+                grants: Vec::new(),
+                next_cursor: None,
+            });
+        }
+        let start: Bound<&str> = match (query.cursor.as_deref(), prefix.as_deref()) {
+            (Some(cursor), Some(prefix)) if cursor < prefix => Bound::Included(prefix),
+            (Some(cursor), _) => Bound::Excluded(cursor),
+            (None, Some(prefix)) => Bound::Included(prefix),
+            (None, None) => Bound::Unbounded,
+        };
+        let end: Bound<&str> = prefix_end.as_deref().map_or(Bound::Unbounded, Bound::Excluded);
         let mut page = Vec::new();
-        let mut overflow = None;
+        let mut has_overflow = false;
         match txn.open_table(table) {
             Ok(table) => {
-                for entry in table.iter().map_err(MetaError::from)? {
+                for entry in table.range::<&str>((start, end)).map_err(MetaError::from)? {
                     let (key, value) = entry.map_err(MetaError::from)?;
                     let key = key.value().to_owned();
-                    if prefix.as_ref().is_some_and(|prefix| !key.starts_with(prefix)) {
-                        continue;
-                    }
-                    if query.cursor.as_deref().is_some_and(|cursor| key.as_str() <= cursor) {
-                        continue;
-                    }
                     if page.len() == query.limit {
-                        overflow = Some(key);
+                        has_overflow = true;
                         break;
                     }
                     page.push((key, serde_json::from_slice(value.value()).map_err(MetaError::from)?));
@@ -234,7 +254,11 @@ impl MetaStore {
             Err(redb::TableError::TableDoesNotExist(_)) => {}
             Err(error) => return Err(MetaError::from(error).into()),
         }
-        let next_cursor = overflow.and_then(|_| page.last().map(|(key, _)| key.clone()));
+        let next_cursor = if has_overflow {
+            page.last().map(|(key, _)| key.clone())
+        } else {
+            None
+        };
         Ok(RoleGrantPage {
             grants: page.into_iter().map(|(_, grant)| grant).collect(),
             next_cursor,
