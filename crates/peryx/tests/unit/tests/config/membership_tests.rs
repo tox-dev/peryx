@@ -11,6 +11,15 @@ fn dc_config(members: &str) -> Result<Config, ConfigError> {
     config::from_toml("x.toml".into(), &text).and_then(|partial| Config::default().apply(partial))
 }
 
+fn ha_config(members: &str) -> Result<Config, ConfigError> {
+    let text = format!(
+        "[availability]\nmode = \"ha\"\ngroup = \"east\"\n\
+         [availability.replication]\nrole = \"primary\"\nsource = \"a\"\ntoken = \"t\"\n\
+         [availability.listener]\n{members}"
+    );
+    config::from_toml("x.toml".into(), &text).and_then(|partial| Config::default().apply(partial))
+}
+
 fn member(node: &str, dc: &str, address: &str, role: &str) -> String {
     format!("[[availability.member]]\nnode = \"{node}\"\ndc = \"{dc}\"\naddress = \"{address}\"\nrole = \"{role}\"\n")
 }
@@ -58,21 +67,22 @@ fn test_group_accepts_multiple_members_in_one_datacenter() {
 }
 
 #[test]
-fn test_ha_mode_also_accepts_a_roster() {
-    let text = format!(
-        "[availability]\nmode = \"ha\"\ngroup = \"east\"\n\
-         [availability.replication]\nrole = \"primary\"\nsource = \"a\"\ntoken = \"t\"\n\
-         [availability.listener]\n{}",
-        writer_and_replica()
-    );
-    let membership = config::from_toml("x.toml".into(), &text)
-        .and_then(|partial| Config::default().apply(partial))
-        .unwrap()
-        .dc_membership
-        .unwrap();
+fn test_ha_mode_accepts_a_roster_with_distinct_datacenters() {
+    let membership = ha_config(&writer_and_replica()).unwrap().dc_membership.unwrap();
     assert_eq!(
         membership.members.iter().filter(|m| m.role == DcRole::Writer).count(),
         1
+    );
+}
+
+#[test]
+fn test_ha_mode_rejects_multiple_members_in_one_datacenter() {
+    let roster = member("writer", "dc-east", "https://writer:1", "writer")
+        + &member("replica", "dc-east", "https://replica:1", "replica");
+    assert_eq!(
+        ha_config(&roster).unwrap_err().to_string(),
+        "datacenter membership: duplicate datacenter \"dc-east\" for node identities \"writer\" and \"replica\" in \
+         `ha` mode"
     );
 }
 

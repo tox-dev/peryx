@@ -12,7 +12,7 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use url::Url;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::ConfigError;
 use super::model::{
@@ -402,7 +402,7 @@ fn classify_membership(
         "group",
     )?;
     Ok(Some(DcMembership {
-        members: resolve_members(&group, members)?,
+        members: resolve_members(mode, &group, members)?,
         group,
     }))
 }
@@ -503,7 +503,7 @@ fn classify_listener_tls(raw: RawTls) -> Result<AvailabilityListenerTls, ConfigE
     }
 }
 
-fn resolve_members(group: &str, raw: Vec<RawDcMember>) -> Result<Vec<DcMember>, ConfigError> {
+fn resolve_members(mode: AvailabilityMode, group: &str, raw: Vec<RawDcMember>) -> Result<Vec<DcMember>, ConfigError> {
     let mut members = Vec::with_capacity(raw.len());
     let (mut writers, mut replicas) = (0usize, 0usize);
     for member in raw {
@@ -529,6 +529,9 @@ fn resolve_members(group: &str, raw: Vec<RawDcMember>) -> Result<Vec<DcMember>, 
         members.iter().map(|member| member.address.as_str()),
         "advertised address",
     )?;
+    if mode == AvailabilityMode::Ha {
+        reject_duplicate_datacenter(&members)?;
+    }
     if writers == 0 {
         return Err(membership_error("a datacenter group needs exactly one writer"));
     }
@@ -541,6 +544,19 @@ fn resolve_members(group: &str, raw: Vec<RawDcMember>) -> Result<Vec<DcMember>, 
         ));
     }
     Ok(members)
+}
+
+fn reject_duplicate_datacenter(members: &[DcMember]) -> Result<(), ConfigError> {
+    let mut nodes_by_datacenter = HashMap::new();
+    for member in members {
+        if let Some(first_node) = nodes_by_datacenter.insert(member.dc.as_str(), member.node.as_str()) {
+            return Err(membership_error(format!(
+                "duplicate datacenter {:?} for node identities {first_node:?} and {:?} in `ha` mode",
+                member.dc, member.node
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn reject_duplicate<'a>(values: impl Iterator<Item = &'a str>, kind: &str) -> Result<(), ConfigError> {
