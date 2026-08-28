@@ -13,7 +13,7 @@ use peryx_identity::IndexAcl;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::Policy;
 use peryx_search::{
-    ContentSource, EmptyIndexer, IndexerCtx, SearchDocument, SearchDocumentProvider, SearchError, SearchParams,
+    ContentSource, IndexerCtx, SearchDocument, SearchDocumentProvider, SearchError, SearchParams, default_indexer,
 };
 use peryx_storage::blob::{BlobDurability, BlobStore};
 use peryx_storage::meta::MetaStore;
@@ -347,7 +347,7 @@ fn test_registry_installs_neutral_driver_capabilities() {
     state.register_lexicon(ecosystem.clone(), &Lexicon::NEUTRAL);
     register_driver_capabilities(&mut state);
     state
-        .register_protocol(ProtocolDriver::Absolute(driver.clone()), Arc::new(EmptyIndexer))
+        .register_protocol(ProtocolDriver::Absolute(driver.clone()), default_indexer())
         .unwrap();
     state.register_replicated_apply_driver(ecosystem.clone(), driver.clone());
     state.register_mirror_driver(ecosystem.clone(), driver);
@@ -415,7 +415,7 @@ async fn test_registered_capabilities_delegate_behavior() {
 
     register_driver_capabilities(&mut state);
     state
-        .register_protocol(ProtocolDriver::Absolute(driver.clone()), Arc::new(EmptyIndexer))
+        .register_protocol(ProtocolDriver::Absolute(driver.clone()), default_indexer())
         .unwrap();
     state.register_replicated_apply_driver(ecosystem, driver);
     state.register_http_routes(Arc::new(Routes));
@@ -553,7 +553,7 @@ async fn test_registry_returns_typed_indexed_driver() {
     let ecosystem = Ecosystem::new("indexed");
 
     state
-        .register_protocol(ProtocolDriver::Indexed(Arc::new(IndexedDriver)), Arc::new(EmptyIndexer))
+        .register_protocol(ProtocolDriver::Indexed(Arc::new(IndexedDriver)), default_indexer())
         .unwrap();
 
     let driver = state.indexed_driver_for(&ecosystem).unwrap();
@@ -613,13 +613,10 @@ async fn test_protocol_replacement_removes_stale_absolute_mounts() {
     let (_dir, mut state) = state();
 
     state
-        .register_protocol(ProtocolDriver::Absolute(Arc::new(Driver)), Arc::new(EmptyIndexer))
+        .register_protocol(ProtocolDriver::Absolute(Arc::new(Driver)), default_indexer())
         .unwrap();
     state
-        .register_protocol(
-            ProtocolDriver::Absolute(Arc::new(ReplacementDriver)),
-            Arc::new(EmptyIndexer),
-        )
+        .register_protocol(ProtocolDriver::Absolute(Arc::new(ReplacementDriver)), default_indexer())
         .unwrap();
 
     assert!(state.absolute_driver_for_path("/artifacts/item").is_none());
@@ -866,11 +863,8 @@ async fn test_install_contexts_publish_registered_behavior() {
         let mut context = state.runtime_install_context().unwrap();
         assert!(!context.has_ecosystem(&ecosystem));
         context.register_service(Arc::new("runtime".to_owned()));
-        context.register_protocol(
-            ProtocolDriver::Absolute(Arc::new(ReplacementDriver)),
-            Arc::new(EmptyIndexer),
-        );
-        context.register_protocol(ProtocolDriver::Indexed(Arc::new(IndexedDriver)), Arc::new(EmptyIndexer));
+        context.register_protocol(ProtocolDriver::Absolute(Arc::new(ReplacementDriver)), default_indexer());
+        context.register_protocol(ProtocolDriver::Indexed(Arc::new(IndexedDriver)), default_indexer());
         context.register_idle_reclaimer(ecosystem.clone(), Arc::new(RuntimeCapability));
         context.register_intent_finalizer(ecosystem.clone(), Arc::new(RuntimeCapability));
         context.register_cache_refresher(ecosystem.clone(), Arc::new(RuntimeCapability));

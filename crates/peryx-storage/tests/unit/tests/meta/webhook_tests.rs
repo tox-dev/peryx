@@ -172,6 +172,28 @@ fn test_webhook_delivery_ignores_empty_limit_and_missing_updates() {
     );
 }
 
+#[test]
+fn test_webhook_queue_ignores_a_stale_schedule_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peryx.redb");
+    let store = MetaStore::open(&path).unwrap();
+    let id = enqueue(&store, "hosted", "ci", 20);
+    drop(store);
+    let database = redb::Database::open(&path).unwrap();
+    let txn = database.begin_write().unwrap();
+    txn.open_table(redb::TableDefinition::<&str, &str>::new("webhook_due"))
+        .unwrap()
+        .insert("09223372036854775818/stale", id.as_str())
+        .unwrap();
+    txn.commit().unwrap();
+    drop(database);
+    let store = MetaStore::open_existing(path).unwrap();
+
+    assert_eq!(store.next_webhook_delivery_at().unwrap(), Some(20));
+    assert!(store.list_due_webhook_deliveries(10, 10, &none()).unwrap().is_empty());
+    assert_eq!(store.next_webhook_delivery_at().unwrap(), Some(20));
+}
+
 #[derive(Clone, Copy)]
 enum QueueDamage {
     MalformedTimestamp,

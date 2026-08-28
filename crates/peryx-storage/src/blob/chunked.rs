@@ -11,7 +11,7 @@ use sha2::{Digest as _, Sha256};
 use super::{Digest, to_hex};
 
 /// Matches the ranged-pull size so one fetch produces one verifiable chunk.
-pub const CHUNK_BYTES: NonZeroU64 = NonZeroU64::new(8 * 1024 * 1024).expect("8 MiB is non-zero");
+pub const CHUNK_BYTES: NonZeroU64 = NonZeroU64::new(8_388_608).expect("8 MiB is non-zero");
 
 /// SHA-256 digests in byte-offset order for a whole-blob-verified stage.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

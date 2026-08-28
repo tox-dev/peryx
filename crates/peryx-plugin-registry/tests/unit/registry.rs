@@ -1269,6 +1269,10 @@ impl MetadataMigration for TestMigration {
         &[MetadataRecordSet::QuotaUsage]
     }
 
+    fn legacy_sources(&self) -> &[peryx_storage::meta::LegacyMetadataSource] {
+        &[]
+    }
+
     fn rewrite(&self, _: MetadataRecordSet, record: &MetadataRecord) -> Result<Option<MetadataRecord>, String> {
         self.calls.lock().unwrap().push(self.name);
         match self.result {

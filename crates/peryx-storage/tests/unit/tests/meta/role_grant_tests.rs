@@ -500,7 +500,7 @@ fn test_listing_rejects_an_out_of_range_limit(#[case] limit: usize) {
 #[test]
 fn test_listing_reads_empty_before_any_grant_exists() {
     let (_dir, store) = store();
-    let page = store.list_managed_grants(&all(10)).unwrap();
+    let page = store.list_managed_grants(&all(100)).unwrap();
     assert_eq!(page.grants, Vec::new());
     assert_eq!(page.next_cursor, None);
 }

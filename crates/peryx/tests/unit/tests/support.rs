@@ -20,7 +20,7 @@ use peryx_plugin_registry::{PluginRegistration, PluginRegistry};
 use peryx_policy::{
     RetentionCandidate, RetentionClass, RetentionDecision, RetentionPolicy, RetentionSummary, RetentionVisibility,
 };
-use peryx_search::EmptyIndexer;
+use peryx_search::default_indexer;
 use peryx_storage::blob::Digest;
 use peryx_storage::meta::MetaStore;
 use peryx_test_support::EcosystemDriverFixture;
@@ -296,7 +296,7 @@ impl Runtime {
     fn register_drivers(&self, context: &mut RuntimeInstallContext<'_>) {
         context.register_protocol(
             ProtocolDriver::Absolute(Arc::new((*self.driver).clone())),
-            Arc::new(EmptyIndexer),
+            default_indexer(),
         );
         if self.driver.has(Capability::Mirroring) {
             context.register_mirror(CORE, Arc::new((*self.driver).clone()));
@@ -331,7 +331,7 @@ impl DistributedRuntime for PlainRuntime {
 fn register_plain_driver(context: &mut RuntimeInstallContext<'_>) {
     context.register_protocol(
         ProtocolDriver::Absolute(Arc::new(PLAIN_DRIVER.clone())),
-        Arc::new(EmptyIndexer),
+        default_indexer(),
     );
 }
 

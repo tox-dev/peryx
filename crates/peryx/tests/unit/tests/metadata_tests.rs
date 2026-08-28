@@ -176,6 +176,10 @@ impl MetadataMigration for TestMigration {
         &[MetadataRecordSet::QuotaUsage]
     }
 
+    fn legacy_sources(&self) -> &[peryx_storage::meta::LegacyMetadataSource] {
+        &[]
+    }
+
     fn rewrite(&self, _: MetadataRecordSet, record: &MetadataRecord) -> Result<Option<MetadataRecord>, String> {
         if let Some(gate) = &self.gate {
             gate.entered.send(()).unwrap();

@@ -13,7 +13,7 @@ pub const SEARCH_VIEW: &str = "search";
 pub use context::{IndexerCtx, SearchCtx};
 pub use engine::{RebuildOutcome, RebuildProgress, SearchIndex, document_key, truncate_to_chars};
 pub use error::SearchError;
-pub use indexer::{EmptyIndexer, INDEXED_TEXT_BYTES, ResourceUpdate, SearchDocument, SearchDocumentProvider};
+pub use indexer::{INDEXED_TEXT_BYTES, ResourceUpdate, SearchDocument, SearchDocumentProvider, default_indexer};
 pub use params::{AvailabilityFilter, ContentSource, SearchParams, SourceFilter};
 pub use response::{SearchResponse, SearchResult};
 

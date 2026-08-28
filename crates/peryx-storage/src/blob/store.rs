@@ -17,8 +17,7 @@ fn publish(dest: &Path, source: tempfile::TempPath, digest: &Digest, len: u64) -
             sync_parent(dest);
             Ok(())
         }
-        Err(err) if dest.is_file() => reconcile(dest, err.path, digest, len),
-        Err(err) => Err(err.error.into()),
+        Err(err) => reconcile(dest, err.path, digest, len),
     }
 }
 
@@ -312,13 +311,13 @@ impl BlobStore {
         let mut file = std::fs::File::open(self.path_for(digest)).map_err(|err| absent_or_io(err, digest))?;
         let bytes = file.metadata()?.len();
         let invalid = || BlobError::invalid_range(range.start, range.end, bytes);
-        if range.start > range.end || range.end > bytes {
+        let Some(range_len_u64) = range.end.checked_sub(range.start).filter(|_| range.end <= bytes) else {
             return Err(invalid());
-        }
+        };
         #[cfg(target_pointer_width = "64")]
-        let range_len = usize::try_from(range.end - range.start).unwrap_or(usize::MAX);
+        let range_len = usize::try_from(range_len_u64).unwrap_or(usize::MAX);
         #[cfg(not(target_pointer_width = "64"))]
-        let range_len = usize::try_from(range.end - range.start).map_err(|_| invalid())?;
+        let range_len = usize::try_from(range_len_u64).map_err(|_| invalid())?;
         file.seek(std::io::SeekFrom::Start(range.start))?;
         let mut result = vec![0; range_len];
         file.take(range_len as u64).read_exact(&mut result)?;
@@ -460,36 +459,21 @@ impl BlobStore {
     }
 
     fn digest_from_path(&self, path: &Path) -> Option<Digest> {
-        let mut components = path.strip_prefix(&self.root).ok()?.components();
-        let (
-            Some(Component::Normal(algorithm)),
-            Some(Component::Normal(first)),
-            Some(Component::Normal(second)),
-            Some(Component::Normal(filename)),
-            None,
-        ) = (
+        let mut components = path.strip_prefix(self.root.join("sha256")).ok()?.components();
+        let (Some(Component::Normal(first)), Some(Component::Normal(second)), Some(Component::Normal(filename)), None) = (
             components.next(),
             components.next(),
             components.next(),
             components.next(),
-            components.next(),
-        )
-        else {
+        ) else {
             return None;
         };
-        let first = first.as_encoded_bytes();
-        let second = second.as_encoded_bytes();
-        let filename_bytes = filename.as_encoded_bytes();
-        if algorithm != std::ffi::OsStr::new("sha256")
-            || first.len() != 2
-            || second.len() != 2
-            || filename_bytes.len() < 4
-            || &filename_bytes[..2] != first
-            || &filename_bytes[2..4] != second
-        {
+        let digest = Digest::from_hex(filename.to_str()?)?;
+        let bytes = digest.as_str().as_bytes();
+        if first.as_encoded_bytes() != &bytes[..2] || second.as_encoded_bytes() != &bytes[2..4] {
             return None;
         }
-        Digest::from_hex(filename.to_str()?)
+        Some(digest)
     }
 }
 

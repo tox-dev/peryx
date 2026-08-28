@@ -197,6 +197,7 @@ fn test_list_paginates_within_a_reach() {
         .map(|name| seed_token(&store, name, repo("hosted")))
         .collect();
     expected.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+    assert_eq!(token_page(&store, None, 3).unwrap().next_cursor, None);
     let first = token_page(&store, None, 2).unwrap();
     let second = token_page(&store, first.next_cursor.clone(), 2).unwrap();
     assert_eq!(

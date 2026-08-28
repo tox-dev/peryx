@@ -84,6 +84,17 @@ fn test_content_source_values_round_trip() {
 }
 
 #[test]
+fn test_availability_filter_values_round_trip() {
+    for (value, filter) in [("all", AvailabilityFilter::All), ("local", AvailabilityFilter::Local)] {
+        assert_eq!(
+            (AvailabilityFilter::from_value(value), filter.as_str()),
+            (Some(filter), value)
+        );
+    }
+    assert_eq!(AvailabilityFilter::from_value("blocked"), None);
+}
+
+#[test]
 fn test_truncate_to_chars_preserves_utf8_boundaries() {
     assert_eq!(truncate_to_chars("éx", 3), "éx");
     assert_eq!(truncate_to_chars("éx", 2), "é");

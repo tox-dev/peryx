@@ -13,7 +13,7 @@ use peryx_core::Ecosystem;
 use peryx_identity::IndexAcl;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::Policy;
-use peryx_search::EmptyIndexer;
+use peryx_search::default_indexer;
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
 use tower::ServiceExt as _;
@@ -590,7 +590,7 @@ async fn test_enforce_uses_the_indexed_drivers_route_class() {
     );
     state.register_rate_limit_principal(Ecosystem::new("example"), &IndexedDriver);
     state
-        .register_protocol(ProtocolDriver::Indexed(Arc::new(IndexedDriver)), Arc::new(EmptyIndexer))
+        .register_protocol(ProtocolDriver::Indexed(Arc::new(IndexedDriver)), default_indexer())
         .unwrap();
     let router = router(state);
 
@@ -641,10 +641,7 @@ async fn test_enforce_uses_an_absolute_drivers_route_class() {
     };
     let (_dir, mut state) = app(config);
     state
-        .register_protocol(
-            ProtocolDriver::Absolute(Arc::new(AbsoluteDriver)),
-            Arc::new(EmptyIndexer),
-        )
+        .register_protocol(ProtocolDriver::Absolute(Arc::new(AbsoluteDriver)), default_indexer())
         .unwrap();
     let router = router(state);
     let request = || Request::get("/artifacts/item").body(Body::empty()).unwrap();

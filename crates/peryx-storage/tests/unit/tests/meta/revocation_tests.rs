@@ -131,6 +131,15 @@ fn test_digest_revocation_query_filters_and_paginates_stably() {
     }
     store.lift_digest_revocation(&digest(2), &actor, 10).unwrap();
 
+    let exact = store
+        .query_digest_revocations(&DigestRevocationQuery {
+            status: Some(DigestRevocationStatus::Active),
+            cursor: None,
+            limit: 3,
+        })
+        .unwrap();
+    assert_eq!((exact.revocations.len(), exact.next_cursor), (3, None));
+
     let first = store
         .query_digest_revocations(&DigestRevocationQuery {
             status: Some(DigestRevocationStatus::Active),

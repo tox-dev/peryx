@@ -83,6 +83,20 @@ fn test_release_frees_the_lease_for_the_next_claim() {
 }
 
 #[test]
+fn test_release_records_a_newer_epoch() {
+    let (_dir, store) = store();
+    store.claim_job_lease(JOB, "node-a", 1, 100, TTL).unwrap();
+
+    assert!(store.release_job_lease(JOB, "node-a", 3).unwrap());
+
+    assert_eq!(store.job_lease(JOB).unwrap().unwrap().epoch, 3);
+    assert!(matches!(
+        store.claim_job_lease(JOB, "node-b", 2, 110, TTL),
+        Err(JobLeaseError::StaleFence { current: 3, applied: 2 })
+    ));
+}
+
+#[test]
 fn test_release_of_an_absent_lease_reports_false() {
     let (_dir, store) = store();
     assert!(!store.release_job_lease(JOB, "node-a", 1).unwrap());

@@ -132,7 +132,7 @@ async fn app() -> (tempfile::TempDir, Arc<AppState>) {
         registrar.register_metrics(Ecosystem::new("bare"), bare_driver.clone());
     });
     state
-        .register_protocol(ProtocolDriver::Absolute(driver), Arc::new(peryx_search::EmptyIndexer))
+        .register_protocol(ProtocolDriver::Absolute(driver), peryx_search::default_indexer())
         .unwrap();
     state.register_driver(bare_driver);
     state.register_prometheus(Arc::new(ProcessMetrics));

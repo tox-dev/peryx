@@ -9,8 +9,7 @@ use http_body_util::BodyExt as _;
 use peryx_identity::{Action, ProviderId};
 use peryx_policy::PolicyAction;
 use peryx_storage::meta::{
-    AccountingClass, JobKind, JobState, MetaStore, MetadataMigration, MetadataRecord, MetadataRecordSet, NewJobRun,
-    NewQuotaReservation, PolicyDecisionQuery, QuotaLimits,
+    AccountingClass, JobKind, JobState, MetaStore, NewJobRun, NewQuotaReservation, PolicyDecisionQuery, QuotaLimits,
 };
 use peryx_upstream::Auth;
 use rstest::rstest;
@@ -26,26 +25,7 @@ use crate::server::{
 };
 use crate::tests::support::{plugins, plugins_with_inactive_owner, plugins_without_retention};
 
-static INACTIVE_MIGRATION_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-static INACTIVE_MIGRATION: InactiveMigration = InactiveMigration;
 const TOKEN_REALM_SIGNING_KEY: &str = "test-token-realm-signing-key-32-bytes";
-
-struct InactiveMigration;
-
-impl MetadataMigration for InactiveMigration {
-    fn name(&self) -> &'static str {
-        "inactive"
-    }
-
-    fn record_sets(&self) -> &[MetadataRecordSet] {
-        INACTIVE_MIGRATION_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        &[MetadataRecordSet::QuotaUsage]
-    }
-
-    fn rewrite(&self, _: MetadataRecordSet, _: &MetadataRecord) -> Result<Option<MetadataRecord>, String> {
-        Err("inactive migration ran".to_owned())
-    }
-}
 
 fn s3_blob_config(dir: &tempfile::TempDir) -> Config {
     Config {
@@ -166,22 +146,7 @@ fn empty_index_configuration_installs_no_owner_runtime() {
 
 #[test]
 fn inactive_owner_migrations_and_ha_references_do_not_run() {
-    assert_eq!(INACTIVE_MIGRATION.name(), "inactive");
-    assert_eq!(INACTIVE_MIGRATION.record_sets(), &[MetadataRecordSet::QuotaUsage]);
-    assert_eq!(
-        INACTIVE_MIGRATION
-            .rewrite(
-                MetadataRecordSet::QuotaUsage,
-                &MetadataRecord {
-                    key: "key".to_owned(),
-                    value: Vec::new(),
-                },
-            )
-            .unwrap_err(),
-        "inactive migration ran"
-    );
-    INACTIVE_MIGRATION_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
-    let plugins = plugins_with_inactive_owner(Some(Arc::new(InactiveMigration)));
+    let plugins = plugins_with_inactive_owner(Some(Arc::new(peryx_ecosystem_pypi::PypiPlugin)));
     let directory = tempfile::tempdir().unwrap();
     let config = Config {
         data_dir: directory.path().to_path_buf(),
@@ -191,6 +156,7 @@ fn inactive_owner_migrations_and_ha_references_do_not_run() {
     let active = plugins
         .activate(config.indexes.iter().map(|index| index.ecosystem.clone()))
         .unwrap();
+    assert!(!active.has_metadata_migrations());
     let references = peryx_ha_distributed::reference_inventory(
         active.drivers().clone(),
         state.serving.meta.clone(),
@@ -198,8 +164,6 @@ fn inactive_owner_migrations_and_ha_references_do_not_run() {
     );
 
     references.referenced().unwrap();
-
-    assert_eq!(INACTIVE_MIGRATION_CALLS.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
 
 #[test]

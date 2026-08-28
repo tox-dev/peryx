@@ -620,8 +620,9 @@ fn query_terms(query: &str) -> Vec<String> {
     match chars.len() {
         0 | 1 => Vec::new(),
         len if len <= MAX_NGRAM => vec![query.to_owned()],
-        len => (0..=len - MAX_NGRAM)
-            .map(|start| chars[start..start + MAX_NGRAM].iter().collect::<String>())
+        _ => chars
+            .windows(MAX_NGRAM)
+            .map(|term| term.iter().collect::<String>())
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect(),

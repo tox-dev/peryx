@@ -631,7 +631,7 @@ fn register_indexed(state: &mut AppState, driver: impl IndexedProtocolDriver + '
     state
         .register_protocol(
             ProtocolDriver::Indexed(std::sync::Arc::new(driver)),
-            std::sync::Arc::new(peryx_search::EmptyIndexer),
+            peryx_search::default_indexer(),
         )
         .unwrap();
 }
@@ -640,7 +640,7 @@ fn register_absolute(state: &mut AppState, driver: impl AbsoluteProtocolDriver +
     state
         .register_protocol(
             ProtocolDriver::Absolute(std::sync::Arc::new(driver)),
-            std::sync::Arc::new(peryx_search::EmptyIndexer),
+            peryx_search::default_indexer(),
         )
         .unwrap();
 }

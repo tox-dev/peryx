@@ -1,8 +1,8 @@
 use futures_util::StreamExt as _;
 
 use crate::blob::{
-    BlobErrorKind, BlobMetadata, BlobOperation, BlobRead, BlobReadBody, BlobScanError, BlobStorage, Digest,
-    DurabilityCapabilities, PlacementReceipt, S3Config, S3Settings,
+    BlobBackend, BlobErrorKind, BlobMetadata, BlobOperation, BlobRead, BlobReadBody, BlobScanError, BlobStorage,
+    Digest, DurabilityCapabilities, PlacementReceipt, S3Config, S3Settings,
 };
 
 #[test]
@@ -39,6 +39,17 @@ fn test_filesystem_backend_exposes_its_store_and_s3_does_not() {
     let s3 = dummy_s3(dir.path());
     assert!(s3.filesystem_store().is_none());
     assert_eq!(s3.name(), "s3");
+}
+
+#[tokio::test]
+async fn test_backend_health_reports_an_invalid_filesystem_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("file");
+    std::fs::write(&root, b"not a directory").unwrap();
+
+    let error = BlobBackend::health(&BlobStorage::filesystem(root)).await.unwrap_err();
+
+    assert_eq!(error.kind(), BlobErrorKind::Io);
 }
 
 #[tokio::test]
@@ -233,4 +244,33 @@ async fn test_filesystem_write_abort_reports_stage_removal_failure() {
 
     let error = write.abort().await.unwrap_err();
     assert_eq!(error.context().unwrap().operation, BlobOperation::Write);
+}
+
+#[tokio::test]
+async fn test_filesystem_staged_abort_reports_stage_removal_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let staged = BlobStorage::filesystem(dir.path())
+        .stage_bytes(b"staged")
+        .await
+        .unwrap();
+    let path = staged.with_materialized(std::path::Path::to_owned);
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+
+    let error = staged.abort().await.unwrap_err();
+
+    assert_eq!(error.context().unwrap().operation, BlobOperation::Write);
+}
+
+#[tokio::test]
+async fn test_filesystem_write_starts_at_the_batch_boundary() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut write = BlobStorage::filesystem(dir.path()).begin().await.unwrap();
+    let tail = write.tail().unwrap();
+    write.write_chunk(bytes::Bytes::from(vec![0; 1_048_576])).await.unwrap();
+    write.write_chunk(bytes::Bytes::from_static(b"x")).await.unwrap();
+
+    assert_eq!(tail.open().unwrap().metadata().unwrap().len(), 1_048_576);
+
+    write.abort().await.unwrap();
 }

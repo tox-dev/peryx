@@ -90,4 +90,5 @@ fn test_the_default_chunk_size_rides_on_the_computed_digest() {
     let chunked = ChunkedDigest::of(&body(3), CHUNK_BYTES);
     assert_eq!(chunked.chunk_size, CHUNK_BYTES.get());
     assert_eq!(chunked.len(), 1);
+    assert!(!chunked.is_empty());
 }

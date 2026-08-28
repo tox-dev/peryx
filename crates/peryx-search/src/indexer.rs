@@ -5,7 +5,7 @@ use crate::engine::document_key;
 use crate::error::SearchError;
 use crate::params::ContentSource;
 
-pub const INDEXED_TEXT_BYTES: usize = 64 * 1024;
+pub const INDEXED_TEXT_BYTES: usize = 65_536;
 
 #[derive(Default)]
 pub struct ResourceUpdate {
@@ -38,15 +38,6 @@ pub trait SearchDocumentProvider: Send + Sync {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub struct EmptyIndexer;
-
-impl SearchDocumentProvider for EmptyIndexer {
-    fn documents(&self, _ctx: &IndexerCtx<'_>) -> Result<Vec<SearchDocument>, SearchError> {
-        Ok(Vec::new())
-    }
-}
-
 pub struct CompositeIndexer(pub(super) Vec<Arc<dyn SearchDocumentProvider>>);
 
 impl SearchDocumentProvider for CompositeIndexer {
@@ -69,8 +60,9 @@ impl SearchDocumentProvider for CompositeIndexer {
     }
 }
 
+#[must_use]
 pub fn default_indexer() -> Arc<dyn SearchDocumentProvider> {
-    Arc::new(EmptyIndexer)
+    Arc::new(CompositeIndexer(Vec::new()))
 }
 
 pub struct SearchDocument {

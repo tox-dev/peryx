@@ -70,6 +70,16 @@ fn test_open_omits_distributed_domain_tables() {
 }
 
 #[test]
+fn test_initialize_distributed_state_rejects_a_read_only_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peryx.redb");
+    drop(MetaStore::open(&path).unwrap());
+    let store = MetaStore::open_existing_read_only(path).unwrap();
+
+    assert!(store.initialize_distributed_state().is_err());
+}
+
+#[test]
 fn test_artifact_placement_first_write_creates_only_its_table() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("peryx.redb");

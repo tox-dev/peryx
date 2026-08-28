@@ -448,6 +448,61 @@ fn hits(search: &SearchIndex, stores: &Stores, lexicons: &LexiconRegistry, query
 }
 
 #[test]
+fn test_default_resource_update_selects_only_the_named_document() {
+    let dir = tempfile::tempdir().unwrap();
+    let stores = Stores::open(&dir);
+    let provider = NamedDocs(Arc::new(Mutex::new(vec!["alpha".to_owned(), "beta".to_owned()])));
+
+    let update = provider.resource_update(&stores.indexer_ctx(), "alpha").unwrap();
+
+    assert_eq!(
+        (
+            update.keys,
+            update
+                .documents
+                .into_iter()
+                .map(|document| document.resource_key)
+                .collect::<Vec<_>>(),
+        ),
+        (vec![crate::document_key("root", "alpha")], vec!["alpha".to_owned()])
+    );
+}
+
+#[test]
+fn test_search_preserves_a_nonempty_summary() {
+    let dir = tempfile::tempdir().unwrap();
+    let stores = Stores::open(&dir);
+    let lexicons = LexiconRegistry::default();
+    let search = SearchIndex::in_memory();
+    assert_eq!(total(&search, &stores, &lexicons), 0);
+    let mut document = artifact_doc("alpha", "alpha");
+    document.summary = Some("Alpha package".to_owned());
+    search
+        .update_resource(&[document], &crate::document_key("root", "alpha"))
+        .unwrap();
+
+    let response = search.search(&stores.ctx(&lexicons), SearchParams::default()).unwrap();
+
+    assert_eq!(response.results[0].summary.as_deref(), Some("Alpha package"));
+}
+
+#[test]
+fn test_maximum_ngram_matches_beyond_the_regex_prefix() {
+    let dir = tempfile::tempdir().unwrap();
+    let stores = Stores::open(&dir);
+    let lexicons = LexiconRegistry::default();
+    let search = SearchIndex::in_memory();
+    assert_eq!(total(&search, &stores, &lexicons), 0);
+    let mut document = artifact_doc("alpha", "alpha");
+    document.text = format!("{}abcdefghijkl", "x".repeat(33 * 1024));
+    search
+        .update_resource(&[document], &crate::document_key("root", "alpha"))
+        .unwrap();
+
+    assert_eq!(hits(&search, &stores, &lexicons, "abcdefghijkl"), 1);
+}
+
+#[test]
 fn test_update_resource_replaces_only_the_named_resource() {
     let dir = tempfile::tempdir().unwrap();
     let stores = Stores::open(&dir);

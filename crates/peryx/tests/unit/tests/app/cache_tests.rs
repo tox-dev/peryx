@@ -15,7 +15,7 @@ use peryx_driver::serving::{
 };
 use peryx_driver::state::{AppState, IndexDescription, ServingState};
 use peryx_plugin_registry::{PluginRegistration, PluginRegistry};
-use peryx_search::EmptyIndexer;
+use peryx_search::default_indexer;
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
 use utoipa::openapi::PathsBuilder;
@@ -484,7 +484,7 @@ impl EcosystemRuntime for CachePlugin {
         context: &mut RuntimeInstallContext<'_>,
         _: &[(&str, &CompiledEcosystemSettings)],
     ) -> Result<(), String> {
-        context.register_protocol(self.driver(), Arc::new(EmptyIndexer));
+        context.register_protocol(self.driver(), default_indexer());
         Ok(())
     }
 }
@@ -495,9 +495,7 @@ impl peryx_driver::serving::DistributedRuntime for CachePlugin {
         context: &mut DistributedInstallContext<'_>,
         _: &[(&str, &CompiledEcosystemSettings)],
     ) -> Result<(), String> {
-        context
-            .runtime()
-            .register_protocol(self.driver(), Arc::new(EmptyIndexer));
+        context.runtime().register_protocol(self.driver(), default_indexer());
         Ok(())
     }
 }

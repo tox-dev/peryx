@@ -184,16 +184,20 @@ fn test_scan_empty_store_reports_no_entries() {
 #[test]
 fn test_scan_marks_invalid_blob_paths() {
     let (dir, store) = store();
+    let digest = Digest::of(b"payload");
+    let hex = digest.as_str();
     for path in [
-        dir.path().join("sha256/zz"),
+        dir.path().join("sha256/short"),
         dir.path().join("sha256/aa/bb/not-a-digest"),
+        dir.path().join(format!("sha256/zz/{}/{}", &hex[2..4], hex)),
+        dir.path().join(format!("sha256/{}/zz/{}", &hex[..2], hex)),
     ] {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, b"x").unwrap();
     }
     let mut entries = collect_entries(&store);
     entries.sort_by_key(|(_, bytes)| *bytes);
-    assert_eq!(entries, vec![(None, 1), (None, 1)]);
+    assert_eq!(entries, vec![(None, 1); 4]);
 }
 
 #[cfg(unix)]

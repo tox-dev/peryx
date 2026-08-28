@@ -206,7 +206,7 @@ struct FilesystemWrite {
     tail: BlobTail,
 }
 
-const WRITE_BATCH_BYTES: usize = 1024 * 1024;
+const WRITE_BATCH_BYTES: usize = 1_048_576;
 
 #[derive(Debug)]
 pub struct BlobStaged {
@@ -395,21 +395,6 @@ impl FilesystemWrite {
     }
 }
 
-impl Drop for FilesystemWrite {
-    fn drop(&mut self) {
-        let pending = self.pending.take();
-        let task = self.task.take();
-        let handle = tokio::runtime::Handle::try_current().ok();
-        spawn_blocking_or_run(move || {
-            // Windows cannot unlink the stage until the worker releases its file handle.
-            let pending = pending.or_else(move || handle?.block_on(task?).ok()?.ok());
-            if let Some(pending) = pending {
-                let _ = pending.abort();
-            }
-        });
-    }
-}
-
 impl BlobStaged {
     pub(crate) const fn filesystem(store: BlobStore, staged: StagedBlob) -> Self {
         Self {
@@ -571,24 +556,6 @@ impl BlobStaged {
             // Dropping the local stage removes it; an uncommitted write created no remote object.
             BlobStagedBackend::S3(_) => Ok(()),
         }
-    }
-}
-
-impl Drop for BlobStaged {
-    fn drop(&mut self) {
-        if let Some(backend) = self.backend.take() {
-            spawn_blocking_or_run(move || {
-                let _ = Self::abort_backend(backend);
-            });
-        }
-    }
-}
-
-fn spawn_blocking_or_run(action: impl FnOnce() + Send + 'static) {
-    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-        drop(runtime.spawn_blocking(action));
-    } else {
-        action();
     }
 }
 

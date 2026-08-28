@@ -24,15 +24,19 @@ struct Migration<'a> {
     rewrite: Rewrite,
 }
 
-struct DefaultSourcesMigration;
+struct CurrentOnlyMigration;
 
-impl MetadataMigration for DefaultSourcesMigration {
+impl MetadataMigration for CurrentOnlyMigration {
     fn name(&self) -> &'static str {
-        "default-sources"
+        "current-only"
     }
 
     fn record_sets(&self) -> &[MetadataRecordSet] {
         &[MetadataRecordSet::QuotaUsage]
+    }
+
+    fn legacy_sources(&self) -> &[LegacyMetadataSource] {
+        &[]
     }
 
     fn rewrite(
@@ -92,9 +96,16 @@ impl MetadataMigration for Migration<'_> {
 #[test]
 fn test_metadata_migration_empty_sources_change_nothing() {
     let (directory, store) = store();
+    drop(store);
+    write_bytes(
+        &database_path(&directory),
+        "quota_usage",
+        &[("preserved".to_owned(), b"value".to_vec())],
+    );
+    let store = MetaStore::open_existing(database_path(&directory)).unwrap();
     let report = store
         .migrate_metadata(&Migration {
-            record_sets: &[MetadataRecordSet::QuotaUsage],
+            record_sets: &[],
             legacy_sources: &[LegacyMetadataSource {
                 table: "absent_source",
                 value_kind: MetadataValueKind::Bytes,
@@ -107,10 +118,62 @@ fn test_metadata_migration_empty_sources_change_nothing() {
 
     assert_eq!(report, MetadataMigrationReport::default());
     assert!(!table_names(&database_path(&directory)).contains(&"absent_source".to_owned()));
+    assert_eq!(
+        read_bytes(&database_path(&directory), "quota_usage")["preserved"],
+        b"value"
+    );
 }
 
 #[test]
-fn test_metadata_migration_uses_the_default_empty_legacy_sources() {
+fn test_metadata_migration_reads_the_only_database_table() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = database_path(&directory);
+    drop(redb::Database::create(&path).unwrap());
+    write_bytes(&path, "retired_bytes", &[("key".to_owned(), b"old".to_vec())]);
+    let store = MetaStore::open_existing(&path).unwrap();
+
+    store
+        .migrate_metadata(&Migration {
+            record_sets: &[],
+            legacy_sources: &[LegacyMetadataSource {
+                table: "retired_bytes",
+                value_kind: MetadataValueKind::Bytes,
+                target: MetadataRecordSet::QuotaResource,
+            }],
+            rewrite: Rewrite::Append,
+        })
+        .unwrap();
+    drop(store);
+
+    assert_eq!(read_bytes(&path, "quota_resource")["key"], b"old!");
+}
+
+#[test]
+fn test_metadata_migration_deletes_an_empty_legacy_table() {
+    let (directory, store) = store();
+    let path = database_path(&directory);
+    drop(store);
+    write_bytes(&path, "retired_bytes", &[]);
+    let store = MetaStore::open_existing(&path).unwrap();
+
+    store
+        .migrate_metadata(&Migration {
+            record_sets: &[],
+            legacy_sources: &[LegacyMetadataSource {
+                table: "retired_bytes",
+                value_kind: MetadataValueKind::Bytes,
+                target: MetadataRecordSet::QuotaResource,
+            }],
+            rewrite: Rewrite::Append,
+        })
+        .unwrap();
+    drop(store);
+
+    assert!(!table_names(&path).contains(&"retired_bytes".to_owned()));
+}
+
+#[test]
+fn test_metadata_migration_accepts_an_explicit_empty_legacy_source_set() {
     let (directory, store) = store();
     drop(store);
     write_bytes(
@@ -121,7 +184,7 @@ fn test_metadata_migration_uses_the_default_empty_legacy_sources() {
     let store = MetaStore::open_existing(database_path(&directory)).unwrap();
 
     assert_eq!(
-        store.migrate_metadata(&DefaultSourcesMigration).unwrap(),
+        store.migrate_metadata(&CurrentOnlyMigration).unwrap(),
         MetadataMigrationReport {
             scanned: 1,
             rewritten: 1,

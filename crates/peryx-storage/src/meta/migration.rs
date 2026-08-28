@@ -45,9 +45,7 @@ pub trait MetadataMigration: Send + Sync {
     fn name(&self) -> &'static str;
     fn record_sets(&self) -> &[MetadataRecordSet];
 
-    fn legacy_sources(&self) -> &[LegacyMetadataSource] {
-        &[]
-    }
+    fn legacy_sources(&self) -> &[LegacyMetadataSource];
 
     /// # Errors
     /// Implementations return a stable owner error when they cannot migrate a record.
@@ -243,9 +241,6 @@ fn migrate_current(
         created_keys.extend(batch_created_keys);
         report.scanned += batch_len;
         report.rewritten += rewritten;
-        if batch_len < BATCH_SIZE {
-            return Ok(());
-        }
     }
 }
 
@@ -258,12 +253,18 @@ fn migrate_legacy(
     if source.table == target_name(source.target) {
         return migrate_current(store, migration, source.target, report);
     }
+    let txn = store.db.begin_read().map_err(MetaError::from)?;
+    if !txn
+        .list_tables()
+        .map_err(MetaError::from)?
+        .any(|table| table.name() == source.table)
+    {
+        return Ok(());
+    }
+    drop(txn);
     let mut cursor = None;
     loop {
         let txn = store.db.begin_write().map_err(MetaError::from)?;
-        if !table_exists(&txn, source.table)? {
-            return Ok(());
-        }
         let records = collect_legacy(&txn, source, cursor.as_deref())?;
         if records.is_empty() {
             if legacy_table_empty(&txn, source)? {
@@ -275,13 +276,14 @@ fn migrate_legacy(
         let batch_len = records.len();
         cursor = records.last().map(|record| record.key.clone());
         let rewritten = rewrite_legacy_batch(&txn, migration, source, records)?;
-        if batch_len < BATCH_SIZE && legacy_table_empty(&txn, source)? {
+        let finished = legacy_table_empty(&txn, source)?;
+        if finished {
             delete_legacy_table(&txn, source)?;
         }
         txn.commit().map_err(MetaError::from)?;
         report.scanned += batch_len;
         report.rewritten += rewritten;
-        if batch_len < BATCH_SIZE {
+        if finished {
             return Ok(());
         }
     }
@@ -604,10 +606,6 @@ fn delete_legacy_table(txn: &redb::WriteTransaction, source: LegacyMetadataSourc
         }
     }
     Ok(())
-}
-
-fn table_exists(txn: &redb::WriteTransaction, name: &str) -> Result<bool, MetaError> {
-    Ok(txn.list_tables()?.any(|table| table.name() == name))
 }
 
 const fn target_name(record_set: MetadataRecordSet) -> &'static str {
