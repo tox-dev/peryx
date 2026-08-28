@@ -98,16 +98,18 @@ fn finish(
     scope: &QueryScope,
     offset: u64,
 ) -> Page {
-    let filtered: Vec<Row> = candidates
+    let mut filtered: Vec<Row> = candidates
         .into_iter()
         .filter(|row| ast.predicate.as_ref().is_none_or(|predicate| evaluate(predicate, row)))
         .collect();
-    let mut tuples = if let Some(aggregate) = &ast.aggregate {
-        aggregate_rows(&filtered, aggregate, &plan.outputs)
+    let tuples = if let Some(aggregate) = &ast.aggregate {
+        let mut tuples = aggregate_rows(&filtered, aggregate, &plan.outputs);
+        order_rows(&mut tuples, &plan.order_by, &plan.outputs);
+        tuples
     } else {
+        order_source_rows(&mut filtered, &resolved_order(&plan, natural_order));
         project_rows(&filtered, &plan.outputs)
     };
-    order_rows(&mut tuples, &resolved_order(&plan, natural_order), &plan.outputs);
     paginate(tuples, plan, cursor_domain, scope, offset)
 }
 
@@ -334,13 +336,28 @@ fn resolved_order(plan: &Plan, natural_order: &str) -> Vec<OrderKey> {
     if !plan.order_by.is_empty() {
         return plan.order_by.clone();
     }
-    if plan.outputs.iter().any(|output| output.name == natural_order) {
-        return vec![OrderKey {
-            field: natural_order.to_owned(),
-            descending: true,
-        }];
+    vec![OrderKey {
+        field: natural_order.to_owned(),
+        descending: true,
+    }]
+}
+
+fn order_source_rows(rows: &mut [Row], order_by: &[OrderKey]) {
+    rows.sort_by(|left, right| compare_source_rows(left, right, order_by));
+}
+
+fn compare_source_rows(left: &Row, right: &Row, order_by: &[OrderKey]) -> Ordering {
+    for key in order_by {
+        let order = left
+            .get(&key.field)
+            .compare(&right.get(&key.field))
+            .unwrap_or(Ordering::Equal);
+        let order = if key.descending { order.reverse() } else { order };
+        if order != Ordering::Equal {
+            return order;
+        }
     }
-    Vec::new()
+    Ordering::Equal
 }
 
 fn order_rows(rows: &mut [Vec<Value>], order_by: &[OrderKey], outputs: &[OutputColumn]) {

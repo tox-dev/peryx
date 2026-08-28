@@ -179,7 +179,7 @@ fn test_execute_explicit_order() {
 }
 
 #[test]
-fn test_execute_subset_without_natural_order_keeps_source_order() {
+fn test_execute_subset_without_natural_order_preserves_default_order() {
     let page = query(
         "from policy.decisions select resource",
         &repository_scope("alpha"),
@@ -188,7 +188,7 @@ fn test_execute_subset_without_natural_order_keeps_source_order() {
     .expect("runs");
     assert_eq!(
         page,
-        resource_page(&["resource-a", "resource-b", "resource-c", "resource-e"], None)
+        resource_page(&["resource-a", "resource-b", "resource-e", "resource-c"], None)
     );
 }
 
@@ -292,6 +292,29 @@ fn test_execute_count_and_sum_aggregate() {
             next_cursor: None,
         }
     );
+}
+
+#[rstest]
+#[case::tied_groups(
+    "from policy.decisions aggregate count() as n by state, source order by state asc",
+    &[
+        ("allowed", "origin", 1),
+        ("allowed", "cache", 1),
+        ("blocked", "cache", 2),
+        ("blocked", "origin", 1),
+    ]
+)]
+#[case::later_tie_breaker(
+    "from policy.decisions aggregate count() as n by state, source order by state asc, source desc",
+    &[
+        ("allowed", "origin", 1),
+        ("allowed", "cache", 1),
+        ("blocked", "origin", 1),
+        ("blocked", "cache", 2),
+    ]
+)]
+fn test_execute_aggregate_order(#[case] text: &str, #[case] rows: &[(&str, &str, i64)]) {
+    assert_eq!(query(text, &operator_scope(), None), Ok(state_source_count_page(rows)));
 }
 
 #[test]
@@ -664,7 +687,7 @@ fn test_execute_join_cursor_is_distinct_and_scope_bound() {
             Some(&cursor),
         ),
         Ok(resource_page(
-            &["resource-b"],
+            &["resource-d"],
             Some(cursor::encode("policy.decisions\u{1}usage", &scope, 2)),
         ))
     );
@@ -825,5 +848,26 @@ fn resource_time_page(rows: &[(&str, i64)], next_cursor: Option<String>) -> Page
             .map(|(resource, timestamp)| vec![Value::Str((*resource).to_owned()), Value::Timestamp(*timestamp)])
             .collect(),
         next_cursor,
+    }
+}
+
+fn state_source_count_page(rows: &[(&str, &str, i64)]) -> Page {
+    Page {
+        outputs: vec![
+            output("state", FieldClass::Repository, ValueType::Str),
+            output("source", FieldClass::Operator, ValueType::Str),
+            output("n", FieldClass::Public, ValueType::Int),
+        ],
+        rows: rows
+            .iter()
+            .map(|(state, source, count)| {
+                vec![
+                    Value::Str((*state).to_owned()),
+                    Value::Str((*source).to_owned()),
+                    Value::Int(*count),
+                ]
+            })
+            .collect(),
+        next_cursor: None,
     }
 }
