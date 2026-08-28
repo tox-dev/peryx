@@ -64,9 +64,6 @@ fn test_parse_distribution_filename_accepts_upload_formats() {
             "python-dateutil",
             "2.8.2",
         ),
-        ("Flask-1.0-PY3-NONE-ANY.WHL", DistributionKind::Wheel, "Flask", "1.0"),
-        ("Flask-1.0.TAR.GZ", DistributionKind::SdistTarGz, "Flask", "1.0"),
-        ("Flask-1.0.ZIP", DistributionKind::SdistZip, "Flask", "1.0"),
     ] {
         let parsed = parse_distribution_filename(filename).unwrap();
         assert_eq!(parsed.kind, kind);
@@ -81,6 +78,20 @@ fn test_parse_distribution_filename_accepts_upload_formats() {
         assert_eq!(parsed.normalized_name, crate::normalize_name(name));
         assert_eq!(parsed.version.to_string(), version);
     }
+}
+
+#[rstest::rstest]
+#[case::uppercase_wheel("Flask-1.0-PY3-NONE-ANY.WHL")]
+#[case::mixed_case_wheel("Flask-1.0-py3-none-any.WhL")]
+#[case::uppercase_tar_gz("Flask-1.0.TAR.GZ")]
+#[case::mixed_case_tar_gz("Flask-1.0.Tar.Gz")]
+#[case::uppercase_zip("Flask-1.0.ZIP")]
+#[case::mixed_case_zip("Flask-1.0.Zip")]
+fn test_parse_distribution_filename_rejects_noncanonical_suffixes(#[case] filename: &str) {
+    assert_eq!(
+        parse_distribution_filename(filename),
+        Err(DistributionFilenameError::UnsupportedExtension)
+    );
 }
 
 #[test]

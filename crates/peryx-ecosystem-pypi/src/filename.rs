@@ -47,13 +47,13 @@ pub fn parse_distribution_filename(filename: &str) -> Result<DistributionFilenam
     if strip_ascii_suffix_ignore_case(filename, ".egg").is_some() {
         return Err(DistributionFilenameError::LegacyEgg);
     }
-    if let Some(stem) = strip_ascii_suffix_ignore_case(filename, ".whl") {
+    if let Some(stem) = filename.strip_suffix(".whl") {
         return parse_wheel_filename(stem);
     }
-    if let Some(stem) = strip_ascii_suffix_ignore_case(filename, ".tar.gz") {
+    if let Some(stem) = filename.strip_suffix(".tar.gz") {
         return parse_sdist_filename(stem, DistributionKind::SdistTarGz);
     }
-    if let Some(stem) = strip_ascii_suffix_ignore_case(filename, ".zip") {
+    if let Some(stem) = filename.strip_suffix(".zip") {
         return parse_sdist_filename(stem, DistributionKind::SdistZip);
     }
     Err(DistributionFilenameError::UnsupportedExtension)

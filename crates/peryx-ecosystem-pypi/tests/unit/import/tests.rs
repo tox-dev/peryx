@@ -3,6 +3,7 @@ use std::io::Write as _;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use peryx_driver::serving::ImportDriver as _;
 use peryx_storage::blob::BlobStorage;
 use peryx_storage::meta::MetaStore;
 use sha2::{Digest as _, Sha256};
@@ -127,6 +128,31 @@ fn import_dir_reports_imported_skipped_rejected_and_existing_files() {
     let mut second = Vec::new();
     import_dir(&meta, &blobs, "hosted", "root/hosted", &input, &mut second).unwrap();
     assert!(String::from_utf8(second).unwrap().contains("already present"));
+}
+
+#[rstest::rstest]
+#[case::uppercase_wheel("demo-1.0-py3-none-any.WHL")]
+#[case::mixed_case_tar_gz("demo-1.0.Tar.Gz")]
+#[case::uppercase_zip("demo-1.0.ZIP")]
+fn import_driver_skips_noncanonical_distribution_suffixes(#[case] filename: &str) {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("input");
+    std::fs::create_dir(&input).unwrap();
+    std::fs::write(input.join(filename), b"not read").unwrap();
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
+    let mut output = Vec::new();
+
+    crate::serving::PypiServing
+        .import_dir(&meta, &blobs, "hosted", "root/hosted", &input, &mut output)
+        .unwrap();
+
+    assert_eq!(
+        String::from_utf8(output).unwrap(),
+        format!(
+            "status\tfilename\tproject\tversion\treason\nskipped\t{filename}\t\t\tunsupported file type\nsummary\t\t\t\timported=0 skipped=1 rejected=0\n"
+        )
+    );
 }
 
 #[test]

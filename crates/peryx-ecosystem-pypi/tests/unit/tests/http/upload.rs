@@ -831,6 +831,18 @@ async fn test_upload_invalid_distribution_filename_is_bad_request() {
             "invalid distribution filename \"peryxpkg-1.0.tar.bz2\": accepted upload formats are .whl, .tar.gz, and .zip",
         ),
         (
+            "peryxpkg-1.0-py3-none-any.WHL",
+            "invalid distribution filename \"peryxpkg-1.0-py3-none-any.WHL\": accepted upload formats are .whl, .tar.gz, and .zip",
+        ),
+        (
+            "peryxpkg-1.0.Tar.Gz",
+            "invalid distribution filename \"peryxpkg-1.0.Tar.Gz\": accepted upload formats are .whl, .tar.gz, and .zip",
+        ),
+        (
+            "peryxpkg-1.0.ZIP",
+            "invalid distribution filename \"peryxpkg-1.0.ZIP\": accepted upload formats are .whl, .tar.gz, and .zip",
+        ),
+        (
             "peryxpkg-1.0.egg",
             "invalid distribution filename \"peryxpkg-1.0.egg\": legacy .egg uploads are not accepted; upload a wheel or .tar.gz sdist",
         ),
