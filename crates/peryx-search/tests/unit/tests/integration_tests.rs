@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use peryx_core::{Ecosystem, LexiconRegistry};
+use rstest::rstest;
 
 use super::{ALT_WORDS, Stores};
 use crate::{
@@ -174,6 +175,48 @@ fn test_search_rejects_invalid_regex_queries() {
     assert!(error.is_bad_request());
 }
 
+#[rstest]
+#[case::non_digit(r"re:\D+", &["alpha", "release 123", "xreleasey"])]
+#[case::digit(r"re:\d+", &["release 123"])]
+#[case::non_whitespace(r"re:\S+", &["alpha", "release 123", "xreleasey"])]
+#[case::whitespace(r"re:\s+", &["release 123"])]
+#[case::uppercase_literal("re:RELEASE", &["release 123", "xreleasey"])]
+#[case::grouped_alternation("re:alpha|release", &["alpha", "release 123", "xreleasey"])]
+fn test_search_preserves_regex_source(#[case] query: &str, #[case] expected: &[&str]) {
+    let dir = tempfile::tempdir().unwrap();
+    let stores = Stores::open(&dir);
+    let lexicons = LexiconRegistry::default();
+    let mut search = SearchIndex::in_memory();
+    for name in ["alpha", "release 123", "xreleasey"] {
+        search.add_indexer(Arc::new(OneDoc {
+            name,
+            ecosystem: "alpha",
+        }));
+    }
+
+    let response = search
+        .search(
+            &stores.ctx(&lexicons),
+            SearchParams {
+                query: query.to_owned(),
+                ..SearchParams::default()
+            },
+        )
+        .unwrap();
+
+    assert_eq!(
+        (
+            response.total,
+            response
+                .results
+                .iter()
+                .map(|result| result.display_label.as_str())
+                .collect::<Vec<_>>()
+        ),
+        (expected.len(), expected.to_vec())
+    );
+}
+
 #[test]
 fn test_search_folds_case_for_non_ascii_text() {
     let dir = tempfile::tempdir().unwrap();
@@ -188,6 +231,7 @@ fn test_search_folds_case_for_non_ascii_text() {
     for (case, query) in [
         ("uppercase accented substring term", "ZÜRICH"),
         ("lowercase accented substring term", "zürich"),
+        ("uppercase accented regex over the raw field", "re:ZÜRICH"),
         ("accented regex over the raw field", "re:zürich"),
     ] {
         let response = search

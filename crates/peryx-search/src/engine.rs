@@ -438,7 +438,7 @@ impl SearchIndex {
                 return Ok(Box::new(AllQuery));
             }
             return Ok(Box::new(RegexQuery::from_pattern(
-                &format!(".*{}.*", fold_lowercase(pattern)),
+                &format!("(?i:.*(?:{pattern}).*)"),
                 self.fields.raw,
             )?));
         }
