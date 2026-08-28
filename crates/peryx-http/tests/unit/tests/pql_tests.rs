@@ -404,6 +404,25 @@ async fn test_query_rejects_conflicting_parameter_contexts() {
 }
 
 #[tokio::test]
+async fn test_query_rejects_a_non_string_repository_parameter() {
+    let (_dir, meta, app) = app(false).await;
+    seed(&meta);
+    let (status, _headers, document) = post(
+        &app,
+        json!({
+            "query": "from policy.decisions where repository == :repository",
+            "params": {"repository": true}
+        }),
+        Some(("Alice", PASSWORD)),
+    )
+    .await;
+    assert_eq!(
+        (status, document["error"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("the query is not valid"))
+    );
+}
+
+#[tokio::test]
 async fn test_query_rejects_a_missing_parameter() {
     let (_dir, meta, app) = app(false).await;
     seed(&meta);

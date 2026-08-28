@@ -122,12 +122,6 @@ fn resolve_predicate(
         }
         Predicate::StartsWith { field, prefix } => {
             let column = require_column(&field, schema)?;
-            if column.value_type != ValueType::Str {
-                return Err(PqlError::Validation(format!(
-                    "`starts_with` needs a string column, but `{field}` is {}",
-                    column.value_type.as_str()
-                )));
-            }
             Ok(Predicate::StartsWith {
                 field,
                 prefix: resolve_literal(prefix, column, expected)?,

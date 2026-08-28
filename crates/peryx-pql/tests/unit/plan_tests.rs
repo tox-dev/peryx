@@ -4,7 +4,7 @@ use crate::ast::OrderKey;
 use crate::catalog::FieldClass;
 use crate::error::PqlError;
 use crate::parse::{bind, parse};
-use crate::plan::{DEFAULT_LIMIT, MAX_LIMIT, OutputColumn, Plan, leading_filter, plan};
+use crate::plan::{DEFAULT_LIMIT, MAX_LIMIT, OutputColumn, Plan, leading_filter, plan, validate};
 use crate::source::FetchFilter;
 use crate::value::{Value, ValueType};
 use rstest::rstest;
@@ -129,6 +129,33 @@ fn test_plan_rejects_an_invalid_bound_timestamp(#[case] value: &str) {
         plan(&ast, &schema()),
         Err(PqlError::Validation(
             "parameter `:cutoff` is not an RFC 3339 timestamp".to_owned()
+        ))
+    );
+}
+
+#[test]
+fn test_validate_accepts_a_bound_timestamp_value() {
+    let ast = bind(
+        parse("from policy.decisions where evaluated_at >= :cutoff").expect("parses"),
+        &BTreeMap::from([("cutoff".to_owned(), Value::Timestamp(1_780_272_000))]),
+    )
+    .expect("binds");
+
+    assert_eq!(validate(&ast, &schema()), Ok(decision_plan(DEFAULT_LIMIT, Vec::new())));
+}
+
+#[test]
+fn test_plan_rejects_a_wrong_typed_bound_value() {
+    let ast = bind(
+        parse("from policy.decisions where reads == :reads").expect("parses"),
+        &BTreeMap::from([("reads".to_owned(), Value::Bool(true))]),
+    )
+    .expect("binds");
+
+    assert_eq!(
+        plan(&ast, &schema()),
+        Err(PqlError::Validation(
+            "the literal does not match the int column `reads`".to_owned()
         ))
     );
 }
