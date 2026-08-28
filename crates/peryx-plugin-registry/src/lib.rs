@@ -304,6 +304,27 @@ impl PluginRegistry {
         })
     }
 
+    pub fn route_prefixes(&self) -> impl Iterator<Item = (Ecosystem, &'static str)> + '_ {
+        self.registrations.iter().flat_map(|registration| {
+            let ecosystem = registration.registration.ecosystem();
+            let absolute_ecosystem = ecosystem.clone();
+            registration
+                .browse
+                .into_iter()
+                .flat_map(EcosystemBrowse::paths)
+                .copied()
+                .map(move |prefix| (ecosystem.clone(), prefix))
+                .chain(
+                    registration
+                        .registration
+                        .absolute_prefixes()
+                        .iter()
+                        .copied()
+                        .map(move |prefix| (absolute_ecosystem.clone(), prefix)),
+                )
+        })
+    }
+
     /// # Errors
     /// Returns an error when the ecosystem is absent or has no browse capability.
     pub async fn dispatch_browse(

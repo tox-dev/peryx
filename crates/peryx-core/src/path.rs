@@ -15,27 +15,18 @@ pub enum PathSafetyError {
     InvalidPathSegment { kind: &'static str, value: String },
     #[error("invalid route {0:?}: routes must be non-empty unreserved path segments separated by '/'")]
     InvalidRoute(String),
-    #[error("invalid route {0:?}: the first route segment is reserved by peryx")]
-    ReservedRoute(String),
+    #[error("invalid route {route:?}: prefix {prefix:?} is reserved by {owner}")]
+    ReservedRoute {
+        route: String,
+        prefix: String,
+        owner: String,
+    },
     #[error("invalid percent-encoded path segment {0:?}")]
     InvalidEncoding(String),
 }
 
-/// Reserved prefixes prevent index routes from shadowing core or plugin endpoints.
-const RESERVED_ROUTE_PREFIXES: &[&str] = &[
-    "+stats",
-    "+status",
-    "_",
-    "admin",
-    "api-docs",
-    "browse",
-    "favicon.svg",
-    "metrics",
-    "pkg",
-    "search",
-    "stats",
-    "upload",
-];
+/// Reserved prefixes prevent index routes from shadowing Peryx endpoints.
+pub const CORE_ROUTE_PREFIXES: &[&str] = &["_", "api-docs", "favicon.svg", "metrics", "pkg"];
 
 #[must_use]
 pub fn local_artifact_url(route: &str, sha256: &str, artifact: &str) -> String {
@@ -71,16 +62,26 @@ pub fn decode_path(path: &str) -> Result<Cow<'_, str>, PathSafetyError> {
 
 /// # Errors
 /// Returns [`PathSafetyError::InvalidRoute`] for empty, traversal, encoded, or control-containing
-/// routes, and [`PathSafetyError::ReservedRoute`] for prefixes owned by Peryx itself.
-pub fn validate_route(route: &str) -> Result<(), PathSafetyError> {
+/// routes, and [`PathSafetyError::ReservedRoute`] for supplied reserved prefixes.
+pub fn validate_route<'a>(
+    route: &str,
+    reserved: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Result<(), PathSafetyError> {
     if route.is_empty() || route.starts_with('/') || route.ends_with('/') || route.contains("//") {
         return Err(PathSafetyError::InvalidRoute(route.to_owned()));
     }
     let (first, rest) = route
         .split_once('/')
         .map_or((route, None), |(first, rest)| (first, Some(rest)));
-    if RESERVED_ROUTE_PREFIXES.contains(&first) {
-        return Err(PathSafetyError::ReservedRoute(route.to_owned()));
+    if let Some((prefix, owner)) = reserved
+        .into_iter()
+        .find(|(prefix, _)| prefix.trim_matches('/').split('/').next() == Some(first))
+    {
+        return Err(PathSafetyError::ReservedRoute {
+            route: route.to_owned(),
+            prefix: prefix.to_owned(),
+            owner: owner.to_owned(),
+        });
     }
     if !valid_route_segment(first)
         || rest.is_some_and(|rest| rest.split('/').any(|segment| !valid_route_segment(segment)))

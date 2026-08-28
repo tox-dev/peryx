@@ -34,6 +34,14 @@ macro_rules! app_routes {
     };
 }
 
+macro_rules! route_paths {
+    ($(($path:literal, $matcher:expr, $view:ident, $mode:ident)),+ $(,)?) => {
+        pub const ROUTE_PATHS: &[&str] = &[$($path),+];
+    };
+}
+
+app_routes!(route_paths);
+
 #[cfg(feature = "ssr")]
 pub(crate) use app_routes;
 

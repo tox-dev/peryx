@@ -570,11 +570,28 @@ fn build_indexes_with_providers(
     plugins: &peryx_plugin_registry::PluginRegistry,
 ) -> anyhow::Result<Vec<Index>> {
     let capabilities = plugins.drivers();
+    let plugin_prefixes = plugins
+        .route_prefixes()
+        .map(|(ecosystem, prefix)| (prefix, ecosystem.to_string()))
+        .collect::<Vec<_>>();
+    let reserved_prefixes = || {
+        path::CORE_ROUTE_PREFIXES
+            .iter()
+            .map(|prefix| (*prefix, "peryx core"))
+            .chain(peryx_web::ROUTE_PATHS.iter().map(|prefix| (*prefix, "peryx UI")))
+            .chain(plugin_prefixes.iter().map(|(prefix, owner)| (*prefix, owner.as_str())))
+    };
     let mut positions = HashMap::with_capacity(configs.len());
     let mut routes = HashMap::with_capacity(configs.len());
     for (pos, index) in configs.iter().enumerate() {
         path::validate_path_segment("index name", &index.name)?;
-        path::validate_route(&index.route).context(format!("invalid index route {}", index.route))?;
+        match path::validate_route(&index.route, reserved_prefixes()) {
+            Ok(()) => {}
+            Err(error @ path::PathSafetyError::ReservedRoute { .. }) => {
+                bail!("invalid index route {}: {error}", index.route);
+            }
+            Err(error) => return Err(error).context(format!("invalid index route {}", index.route)),
+        }
         if positions.insert(index.name.as_str(), pos).is_some() {
             bail!("duplicate index name {}", index.name);
         }

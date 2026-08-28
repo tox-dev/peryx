@@ -1099,6 +1099,42 @@ fn test_check_config_uses_compiled_plugins() {
     );
 }
 
+#[rstest]
+#[case::startup(start_config)]
+#[case::check_config(check_config)]
+fn test_configuration_boundaries_reject_ui_routes(#[case] validate: fn(&Config) -> anyhow::Result<()>) {
+    let mut config = neutral_config();
+    config.indexes[0].route = "login".to_owned();
+
+    assert_eq!(
+        validate(&config).unwrap_err().to_string(),
+        "invalid index route login: invalid route \"login\": prefix \"/login\" is reserved by peryx UI"
+    );
+}
+
+#[test]
+fn test_registry_without_pypi_accepts_upload_route() {
+    let mut config = neutral_config();
+    config.indexes[0].route = "upload".to_owned();
+
+    build_indexes_with_plugins(&config.indexes, &config.auth, false, &plugins()).unwrap();
+}
+
+#[rstest]
+#[case::pypi("pypi", "upload", "/upload")]
+#[case::oci("oci", "v2", "/v2/")]
+fn test_compiled_plugins_reject_owned_routes(#[case] ecosystem: &str, #[case] route: &str, #[case] prefix: &str) {
+    let plugins = crate::compiled_plugins();
+    let mut config = Config::with_plugins(&plugins);
+    config.indexes.retain(|index| index.ecosystem.as_str() == ecosystem);
+    config.indexes[0].route = route.to_owned();
+
+    assert_eq!(
+        check_config_with_plugins(&config, &plugins).unwrap_err().to_string(),
+        format!("invalid index route {route}: invalid route {route:?}: prefix {prefix:?} is reserved by {ecosystem}")
+    );
+}
+
 #[test]
 fn test_check_config_reports_route_acl_and_upstream_secret_errors() {
     let dir = tempfile::tempdir().unwrap();
