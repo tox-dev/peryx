@@ -95,12 +95,14 @@ when to override it.
 ## Push your own images
 
 Pushing needs a write-granting `[[index.access_token]]` on the hosted index; peryx accepts any username, and the token's
-secret is the Basic-auth password. Peryx streams blobs into the content-addressed store and verifies them on commit:
+secret is the Basic-auth password. Mount the token at `/run/secrets/peryx-token`; [Docker][docker-login],
+[Podman][podman-login], and [Crane][crane-login] read it from standard input instead of exposing it in the process
+arguments. Peryx streams blobs into the content-addressed store and verifies them on commit:
 
 {% <tabs names="docker, podman, crane"> %}
 
 ```shell
-docker login 127.0.0.1:4433 -u _ -p <token>
+docker login 127.0.0.1:4433 -u _ --password-stdin < /run/secrets/peryx-token
 docker tag my-app 127.0.0.1:4433/images/my-app:1.0
 docker push 127.0.0.1:4433/images/my-app:1.0
 ```
@@ -108,14 +110,14 @@ docker push 127.0.0.1:4433/images/my-app:1.0
 %%%
 
 ```shell
-podman login --tls-verify=false 127.0.0.1:4433 -u _ -p <token>
+podman login --tls-verify=false 127.0.0.1:4433 -u _ --password-stdin < /run/secrets/peryx-token
 podman push --tls-verify=false my-app 127.0.0.1:4433/images/my-app:1.0
 ```
 
 %%%
 
 ```shell
-crane auth login 127.0.0.1:4433 -u _ -p <token>
+crane auth login 127.0.0.1:4433 -u _ --password-stdin < /run/secrets/peryx-token
 crane push --insecure my-app.tar 127.0.0.1:4433/images/my-app:1.0
 ```
 
@@ -155,3 +157,7 @@ crane delete --insecure 127.0.0.1:4433/images/my-app@sha256:<digest>
 - What ships per ecosystem: [capability matrix](@/ecosystems/capabilities.md)
 - Why Hub needs the `library/` namespace, and what an upstream `401` means:
   [Docker Hub names and upstream auth](@/ecosystems/oci/hub-names-and-auth.md)
+
+[crane-login]: https://github.com/google/go-containerregistry/blob/main/cmd/crane/doc/crane_auth_login.md
+[docker-login]: https://docs.docker.com/reference/cli/docker/login/
+[podman-login]: https://docs.podman.io/en/latest/markdown/podman-login.1.html#password-stdin

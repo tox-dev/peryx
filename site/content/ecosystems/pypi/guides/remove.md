@@ -119,10 +119,11 @@ The trailing slash on the project-level delete is what keeps the name from readi
 
 ### Publish, yank, restore, and delete it
 
-Upload the package as you would any other; the name needs no escaping.
+Inject the token as `UV_PUBLISH_TOKEN` through your secret environment, then upload the package as you would any other;
+the name needs no escaping.
 
 ```shell
-uv publish --publish-url http://127.0.0.1:4433/root/pypi/ -u __token__ -p <secret> dist/*
+uv publish --publish-url http://127.0.0.1:4433/root/pypi/ dist/*
 ```
 
 ```shell

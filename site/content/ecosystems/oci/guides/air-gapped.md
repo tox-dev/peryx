@@ -101,10 +101,10 @@ secret = "team-secret"
 actions = ["write", "delete"]
 ```
 
-Push and pull it on the air-gapped side:
+Mount `team-secret` at `/run/secrets/peryx-token`, then push and pull it on the air-gapped side:
 
 ```shell
-docker login 127.0.0.1:4433 -u _ -p team-secret
+docker login 127.0.0.1:4433 -u _ --password-stdin < /run/secrets/peryx-token
 docker tag my-app 127.0.0.1:4433/team/my-app:1.0
 docker push 127.0.0.1:4433/team/my-app:1.0
 docker pull 127.0.0.1:4433/team/my-app:1.0

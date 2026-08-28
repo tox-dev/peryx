@@ -38,12 +38,13 @@ write_target = "hosted"
 ```
 
 Publish to the virtual index's route. peryx accepts any username; the token is the password, matching the pypi.org
-`__token__` convention:
+`__token__` convention. Inject the token as [`TWINE_PASSWORD`][twine-env] with `TWINE_USERNAME=__token__`, or as
+[`UV_PUBLISH_TOKEN`][uv-env], through your secret environment before publishing:
 
 ```shell
-twine upload --repository-url http://127.0.0.1:4433/root/pypi/ -u __token__ -p <secret> dist/*
+twine upload --repository-url http://127.0.0.1:4433/root/pypi/ dist/*
 # or
-uv publish --publish-url http://127.0.0.1:4433/root/pypi/ -u __token__ -p <secret> dist/*
+uv publish --publish-url http://127.0.0.1:4433/root/pypi/ dist/*
 ```
 
 peryx accepts wheels and both source-distribution forms [PEP 527](https://peps.python.org/pep-0527/) defines: a
@@ -89,7 +90,7 @@ Most build backends emit a `.tar.gz` sdist. Some produce a zip through `python s
 configuration. Upload a `.zip` with the same command as other artifacts; `dist/*` needs no extra flag:
 
 ```shell
-twine upload --repository-url http://127.0.0.1:4433/root/pypi/ -u __token__ -p <secret> dist/example_pkg-1.0.zip
+twine upload --repository-url http://127.0.0.1:4433/root/pypi/ dist/example_pkg-1.0.zip
 ```
 
 peryx applies the sdist rules above to the zip, including `{name}-{version}/PKG-INFO`, `pyproject.toml`, the
@@ -110,8 +111,7 @@ pip and pypi.org.
 Upload the wheel with the standard command:
 
 ```shell
-twine upload --repository-url http://127.0.0.1:4433/root/pypi/ \
-    -u __token__ -p <secret> dist/Flask-0.12-py2.py3-none-any.whl
+twine upload --repository-url http://127.0.0.1:4433/root/pypi/ dist/Flask-0.12-py2.py3-none-any.whl
 ```
 
 peryx reads the `.dist-info` directory from the archive, splits its stem into name and version at the last hyphen, and
@@ -305,3 +305,6 @@ Validation failures return `400` with the field or archive check that failed. Co
 - Accepted upload formats and validation: [upload behavior](@/ecosystems/pypi/uploads.md)
 - Walk a legacy wheel and an MD5-only upload end to end:
   [publish and manage a release](@/ecosystems/pypi/tutorials/publish-and-manage.md)
+
+[twine-env]: https://twine.readthedocs.io/en/stable/index.html#environment-variables
+[uv-env]: https://docs.astral.sh/uv/configuration/environment/

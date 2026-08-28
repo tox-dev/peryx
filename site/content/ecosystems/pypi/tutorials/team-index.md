@@ -89,11 +89,11 @@ The cached layer fetched httpx from pypi.org and serves the `web` route from the
 
 ## Publish a private package
 
-Build any small package (or reuse the one from [getting started](@/core/start/getting-started.md)) and upload it to the
-`data` route:
+Build any small package (or reuse the one from [getting started](@/core/start/getting-started.md)). Inject `data-secret`
+as `TWINE_PASSWORD` with `TWINE_USERNAME=__token__` through your secret environment, then upload it to the `data` route:
 
 ```shell
-twine upload --repository-url http://127.0.0.1:4433/data/ -u __token__ -p data-secret dist/*
+twine upload --repository-url http://127.0.0.1:4433/data/ dist/*
 ```
 
 The upload landed in `data-hosted` because that virtual index lists it as its first hosted layer. The `web` route cannot

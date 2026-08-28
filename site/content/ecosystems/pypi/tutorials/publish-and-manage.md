@@ -74,11 +74,11 @@ unzip -l dist/Flask-0.12-py2.py3-none-any.whl | grep dist-info
 
 The directory is `Flask-0.12.dist-info`, mixed case. The filename normalizes to `flask`, so the directory name and the
 normalized filename are not byte-for-byte equal. pip installs this wheel every day; the question is whether peryx will
-take it on upload. Publish it:
+take it on upload. Inject `demo-secret` as `TWINE_PASSWORD` with `TWINE_USERNAME=__token__` through your secret
+environment, then publish it:
 
 ```shell
-twine upload --repository-url http://127.0.0.1:4433/root/pypi/ \
-    -u __token__ -p demo-secret dist/Flask-0.12-py2.py3-none-any.whl
+twine upload --repository-url http://127.0.0.1:4433/root/pypi/ dist/Flask-0.12-py2.py3-none-any.whl
 ```
 
 twine reports the upload succeeded. peryx matched `Flask-0.12.dist-info` to the `flask-0.12` filename by normalizing the
@@ -186,8 +186,7 @@ The build writes `dist/demo_pkg-1.0.tar.gz` and `dist/demo_pkg-1.0-py3-none-any.
 in the metadata twine records, is `1.0`. Publish it and confirm the release is live and not yet yanked:
 
 ```shell
-twine upload --repository-url http://127.0.0.1:4433/root/pypi/ \
-    -u __token__ -p demo-secret dist/*
+twine upload --repository-url http://127.0.0.1:4433/root/pypi/ dist/*
 
 curl -s -H "Accept: application/vnd.pypi.simple.v1+json" \
     http://127.0.0.1:4433/root/pypi/simple/demo-pkg/ | python3 -m json.tool | grep -A2 filename
@@ -234,10 +233,11 @@ mkdir -p src/yank && touch src/yank/__init__.py
 uv build
 ```
 
-`dist/` now holds `yank-1.0-py3-none-any.whl` and its sdist. Publish it and confirm it resolves:
+`dist/` now holds `yank-1.0-py3-none-any.whl` and its sdist. Inject `demo-secret` as `UV_PUBLISH_TOKEN` through your
+secret environment, then publish it and confirm it resolves:
 
 ```shell
-uv publish --publish-url http://127.0.0.1:4433/root/pypi/ -u __token__ -p demo-secret dist/*
+uv publish --publish-url http://127.0.0.1:4433/root/pypi/ dist/*
 curl -s http://127.0.0.1:4433/root/pypi/simple/yank/ | grep yank
 ```
 

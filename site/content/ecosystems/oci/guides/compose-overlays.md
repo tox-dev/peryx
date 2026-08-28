@@ -102,12 +102,12 @@ crane pull --insecure 127.0.0.1:4433/reg/my-app:1.0 my-app.tar
 
 A push to `reg` lands in the layer named by `upload` (here `images`), so one route reads and writes. peryx accepts any
 username; the token is the Basic-auth password. Peryx streams blobs into the content-addressed store and verifies them
-on commit:
+on commit. Mount the token at `/run/secrets/peryx-token`; each client reads it from standard input:
 
 {% <tabs names="docker, podman, crane"> %}
 
 ```shell
-docker login 127.0.0.1:4433 -u _ -p <token>
+docker login 127.0.0.1:4433 -u _ --password-stdin < /run/secrets/peryx-token
 docker tag my-app 127.0.0.1:4433/reg/my-app:1.0
 docker push 127.0.0.1:4433/reg/my-app:1.0
 ```
@@ -115,14 +115,14 @@ docker push 127.0.0.1:4433/reg/my-app:1.0
 %%%
 
 ```shell
-podman login --tls-verify=false 127.0.0.1:4433 -u _ -p <token>
+podman login --tls-verify=false 127.0.0.1:4433 -u _ --password-stdin < /run/secrets/peryx-token
 podman push --tls-verify=false my-app 127.0.0.1:4433/reg/my-app:1.0
 ```
 
 %%%
 
 ```shell
-crane auth login 127.0.0.1:4433 -u _ -p <token>
+crane auth login 127.0.0.1:4433 -u _ --password-stdin < /run/secrets/peryx-token
 crane push --insecure my-app.tar 127.0.0.1:4433/reg/my-app:1.0
 ```
 

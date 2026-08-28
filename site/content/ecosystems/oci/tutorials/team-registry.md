@@ -76,12 +76,12 @@ Pushing needs a write-granting `[[index.access_token]]` on the hosted store; per
 secret is the Basic-auth password. A teammate logs in, tags an image for the `root/oci` route, and pushes it. peryx
 streams blobs into the content-addressed store and verifies each digest on commit. When the client finds the same layer
 in another repository, it can mount the layer instead of uploading its bytes; peryx checks source pull access before it
-links the target:
+links the target. Mount `team-secret` at `/run/secrets/peryx-token` so the login command reads it from standard input:
 
 {% <tabs names="docker, podman, crane"> %}
 
 ```shell
-docker login 127.0.0.1:4433 -u _ -p team-secret
+docker login 127.0.0.1:4433 -u _ --password-stdin < /run/secrets/peryx-token
 docker tag alpine 127.0.0.1:4433/root/oci/app:1.0
 docker push 127.0.0.1:4433/root/oci/app:1.0
 ```
@@ -89,7 +89,7 @@ docker push 127.0.0.1:4433/root/oci/app:1.0
 %%%
 
 ```shell
-podman login --tls-verify=false 127.0.0.1:4433 -u _ -p team-secret
+podman login --tls-verify=false 127.0.0.1:4433 -u _ --password-stdin < /run/secrets/peryx-token
 podman tag alpine 127.0.0.1:4433/root/oci/app:1.0
 podman push --tls-verify=false 127.0.0.1:4433/root/oci/app:1.0
 ```
@@ -97,7 +97,7 @@ podman push --tls-verify=false 127.0.0.1:4433/root/oci/app:1.0
 %%%
 
 ```shell
-crane auth login 127.0.0.1:4433 -u _ -p team-secret
+crane auth login 127.0.0.1:4433 -u _ --password-stdin < /run/secrets/peryx-token
 crane push --insecure app.tar 127.0.0.1:4433/root/oci/app:1.0
 ```
 

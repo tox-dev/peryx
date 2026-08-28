@@ -18,6 +18,11 @@ repos:
         entry: cargo clippy --target-dir .tox/pre-commit-target --workspace --all-targets --all-features -- -D warnings
         types: [rust]
         pass_filenames: false
+      - id: docs-no-credential-argv
+        name: documentation credentials stay out of argv
+        language: pygrep
+        entry: '(?m)^(?:\s*(?:\$\s*)?(?:(?:docker|podman)\s+login|crane\s+auth\s+login|twine\s+upload|uv\s+(?:auth\s+login|publish))\b[^\n]*[ \t](?:-p|--password)(?:[= \t]|$)|\s+(?:-u|--username)(?:[= \t])\S+[ \t]+(?:-p|--password)(?:[= \t]|$))'
+        types: [markdown]
   - repo: https://github.com/hukkin/mdformat
     rev: 1.0.0
     hooks:

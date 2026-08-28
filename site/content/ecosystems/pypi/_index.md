@@ -113,16 +113,19 @@ Publishing can use a [hosted layer with an upload token](@/ecosystems/pypi/guide
 [GitHub Actions or GitLab CI identity](@/ecosystems/pypi/guides/trusted-publishing.md) for a short-lived token. The CI
 flow scopes that token to one repository route and the configured project globs.
 
+Inject the token as `TWINE_PASSWORD` with `TWINE_USERNAME=__token__`, or as `UV_PUBLISH_TOKEN`, through your secret
+environment before publishing.
+
 #### Twine
 
 ```shell
-twine upload --repository-url http://127.0.0.1:4433/root/pypi/ -u __token__ -p <token> dist/*
+twine upload --repository-url http://127.0.0.1:4433/root/pypi/ dist/*
 ```
 
 #### uv
 
 ```shell
-uv publish --publish-url http://127.0.0.1:4433/root/pypi/ -u __token__ -p <token> dist/*
+uv publish --publish-url http://127.0.0.1:4433/root/pypi/ dist/*
 ```
 
 #### .pypirc

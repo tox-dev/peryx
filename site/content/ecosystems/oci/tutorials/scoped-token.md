@@ -49,19 +49,20 @@ $ peryx serve --config peryx.toml
 
 ## Log in
 
-Point `docker login` at the registry. The username is ignored; the password is the token secret.
+Point `docker login` at the registry. The username is ignored; the password is the token secret. Mount `ci-secret` at
+`/run/secrets/peryx-token` so the login command reads it from standard input.
 
 ```console
-$ docker login localhost:4433 --username ci --password ci-secret
+$ docker login localhost:4433 --username ci --password-stdin < /run/secrets/peryx-token
 Login Succeeded
 ```
 
 Docker probes `GET /v2/`, reads the `WWW-Authenticate: Bearer` challenge, requests a token from `/v2/token` with your
-credentials, and retries the probe with the token. A wrong password stops at the token request with a `401`, so the
-login fails during token exchange:
+credentials, and retries the probe with the token. A wrong password in `/run/secrets/wrong-token` stops at the token
+request with a `401`, so the login fails during token exchange:
 
 ```console
-$ docker login localhost:4433 --username ci --password wrong
+$ docker login localhost:4433 --username ci --password-stdin < /run/secrets/wrong-token
 Error response from daemon: login attempt ... failed with status: 401 Unauthorized
 ```
 

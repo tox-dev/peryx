@@ -64,10 +64,11 @@ peryx serve --config peryx.toml
 
 Build a small package named `team-widgets` (reuse the steps from [getting started](@/core/start/getting-started.md),
 changing the project name), then publish it to the virtual index's route. peryx accepts any username; the token is the
-password, matching the `__token__` convention:
+password, matching the `__token__` convention. Inject `ci-secret` as `TWINE_PASSWORD` with `TWINE_USERNAME=__token__`
+through your secret environment before publishing:
 
 ```shell
-twine upload --repository-url http://127.0.0.1:4433/root/pypi/ -u __token__ -p ci-secret dist/*
+twine upload --repository-url http://127.0.0.1:4433/root/pypi/ dist/*
 ```
 
 The upload succeeds. peryx matched the password against the `ci` token, saw the normalized project name `team-widgets`
@@ -78,7 +79,7 @@ against the token's `team-*` glob, and stored the file in the `hosted` layer.
 Now build a package named `other-widgets` and try the same command:
 
 ```shell
-twine upload --repository-url http://127.0.0.1:4433/root/pypi/ -u __token__ -p ci-secret dist/*
+twine upload --repository-url http://127.0.0.1:4433/root/pypi/ dist/*
 ```
 
 This request returns `403` with `token does not grant this action`. The credential is valid, so peryx does not request

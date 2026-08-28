@@ -118,10 +118,11 @@ write_target = "hosted"
 peryx serve --config peryx.toml
 ```
 
-Now publish a wheel with [twine](https://twine.readthedocs.io/) or uv (any username; the token is the password):
+Inject `demo-secret` as `UV_PUBLISH_TOKEN` through your secret environment. Now publish a wheel with
+[twine](https://twine.readthedocs.io/) or uv (any username; the token is the password):
 
 ```shell
-uv publish --publish-url http://127.0.0.1:4433/root/pypi/ -u __token__ -p demo-secret dist/*
+uv publish --publish-url http://127.0.0.1:4433/root/pypi/ dist/*
 ```
 
 Your package installs from the same URL as everything else: the virtual index serves your upload and pypi.org side by

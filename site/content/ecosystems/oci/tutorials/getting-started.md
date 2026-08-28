@@ -98,12 +98,12 @@ crane pull --insecure 127.0.0.1:4433/dockerhub/library/alpine:latest alpine.tar
 
 Pushing needs a write-granting `[[index.access_token]]` on the hosted index. peryx accepts any username; the token's
 secret is the Basic-auth password. Log in, tag an image for the `images` route, and push it. Blobs stream into the
-content-addressed store and are verified on commit:
+content-addressed store and are verified on commit. Mount `demo-secret` at `/run/secrets/peryx-token` before logging in:
 
 {% <tabs names="docker, podman, crane"> %}
 
 ```shell
-docker login 127.0.0.1:4433 -u _ -p demo-secret
+docker login 127.0.0.1:4433 -u _ --password-stdin < /run/secrets/peryx-token
 docker tag alpine 127.0.0.1:4433/images/app:1.0
 docker push 127.0.0.1:4433/images/app:1.0
 ```
@@ -111,7 +111,7 @@ docker push 127.0.0.1:4433/images/app:1.0
 %%%
 
 ```shell
-podman login --tls-verify=false 127.0.0.1:4433 -u _ -p demo-secret
+podman login --tls-verify=false 127.0.0.1:4433 -u _ --password-stdin < /run/secrets/peryx-token
 podman tag alpine 127.0.0.1:4433/images/app:1.0
 podman push --tls-verify=false 127.0.0.1:4433/images/app:1.0
 ```
@@ -119,7 +119,7 @@ podman push --tls-verify=false 127.0.0.1:4433/images/app:1.0
 %%%
 
 ```shell
-crane auth login 127.0.0.1:4433 -u _ -p demo-secret
+crane auth login 127.0.0.1:4433 -u _ --password-stdin < /run/secrets/peryx-token
 crane push --insecure alpine.tar 127.0.0.1:4433/images/app:1.0
 ```
 
