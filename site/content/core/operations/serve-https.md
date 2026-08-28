@@ -44,13 +44,38 @@ replace caller-supplied forwarding headers:
 
 ```nginx
 location / {
-    proxy_set_header Host $host;
+    client_max_body_size 10g;
+    proxy_http_version 1.1;
+    proxy_request_buffering off;
+    proxy_send_timeout 5m;
+    proxy_read_timeout 5m;
+    proxy_set_header Host $http_host;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header X-Forwarded-For $remote_addr;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_pass http://127.0.0.1:4433;
 }
 ```
+
+`client_max_body_size 10g` caps each proxied request at 10 GiB. nginx returns `413 Request Entity Too Large` before
+forwarding a larger body. Set the ceiling above the largest artifact and its multipart overhead; peryx applies
+`max_artifact_size_bytes` and repository quotas after it receives the stream. Setting the size to `0` disables nginx's
+body-size check. See nginx's
+[`client_max_body_size`](https://nginx.org/en/docs/http/ngx_http_core_module.html#client_max_body_size) reference.
+
+`proxy_request_buffering off` sends a request body to peryx as nginx receives it. Keep `proxy_http_version 1.1`
+explicit: nginx otherwise buffers a chunked HTTP/1.1 request when the upstream proxy connection uses HTTP/1.0. The
+five-minute `proxy_send_timeout` and `proxy_read_timeout` values limit idle gaps between writes to peryx and reads from
+peryx. They do not limit the total duration of a transfer that continues to make progress. Increase them if the private
+network or post-upload processing can stay idle for more than five minutes. See nginx's
+[`proxy_request_buffering`](https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_request_buffering),
+[`proxy_send_timeout`](https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_send_timeout), and
+[`proxy_read_timeout`](https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_read_timeout) references.
+
+`$http_host` preserves the client's `Host` header, including an explicit port such as `registry.example:8443`. peryx
+uses that authority for the OCI token realm and generated client URLs. nginx's
+[`proxy_set_header`](https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_set_header) reference distinguishes
+`$http_host` from `$host`.
 
 Trust the proxy address in `peryx.toml`:
 
