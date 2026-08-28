@@ -10,6 +10,7 @@ use peryx_identity::{
     OidcProviderSettings, PRE_AUTH_COOKIE, PendingLogin, ProviderId, SESSION_COOKIE, ServerUser, SessionSealer, UserId,
     UserName, UserState,
 };
+use rstest::rstest;
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
 use wiremock::matchers::{method, path};
@@ -139,6 +140,19 @@ fn set_cookies(response: &Response<Body>) -> Vec<String> {
         .collect()
 }
 
+fn pre_auth_cookie(state: &str) -> String {
+    let pending = PendingLogin {
+        state: state.to_owned(),
+        nonce: "n".to_owned(),
+        verifier: "v".to_owned(),
+        challenge: "c".to_owned(),
+    };
+    format!(
+        "{PRE_AUTH_COOKIE}={}",
+        SessionSealer::new(KEY).seal_pre_auth(&pending, VALID_UNTIL)
+    )
+}
+
 fn location(response: &Response<Body>) -> String {
     response.headers()[header::LOCATION].to_str().unwrap().to_owned()
 }
@@ -146,6 +160,11 @@ fn location(response: &Response<Body>) -> String {
 async fn body_json(response: Response<Body>) -> Value {
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
     serde_json::from_slice(&bytes).unwrap()
+}
+
+async fn body_text(response: Response<Body>) -> String {
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    String::from_utf8(bytes.to_vec()).unwrap()
 }
 
 #[tokio::test]
@@ -289,24 +308,107 @@ async fn test_callback_without_a_pre_auth_cookie_is_a_bad_request() {
 #[tokio::test]
 async fn test_callback_with_a_mismatched_state_fails_authentication() {
     let (_dir, state) = state_with_provider("http://issuer.invalid/");
-    let pending = PendingLogin {
-        state: "expected".to_owned(),
-        nonce: "n".to_owned(),
-        verifier: "v".to_owned(),
-        challenge: "c".to_owned(),
-    };
-    let cookie = format!(
-        "{PRE_AUTH_COOKIE}={}",
-        SessionSealer::new(KEY).seal_pre_auth(&pending, VALID_UNTIL)
-    );
     let response = send(
         state,
         Method::GET,
         "/_/login/corporate/callback?state=forged&code=c",
-        Some(&cookie),
+        Some(&pre_auth_cookie("expected")),
     )
     .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+}
+
+#[tokio::test]
+async fn test_callback_error_clears_the_matching_handoff_without_echoing_provider_detail() {
+    let (_dir, state) = state_with_provider("http://127.0.0.1:1/");
+    let response = send(
+        state,
+        Method::GET,
+        concat!(
+            "/_/login/corporate/callback?error=access_denied&state=expected",
+            "&error_description=provider-secret&error_uri=https%3A%2F%2Fprovider.example%2Fsecret"
+        ),
+        Some(&pre_auth_cookie("expected")),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    assert!(
+        set_cookies(&response)
+            .iter()
+            .any(|cookie| cookie.starts_with(&format!("{PRE_AUTH_COOKIE}=;")) && cookie.contains("Max-Age=0"))
+    );
+    assert_eq!(body_text(response).await, "authentication was denied");
+}
+
+#[rstest]
+#[case::interaction(
+    "interaction_required",
+    StatusCode::UNAUTHORIZED,
+    "authentication requires user interaction"
+)]
+#[case::provider(
+    "temporarily_unavailable",
+    StatusCode::SERVICE_UNAVAILABLE,
+    "the login provider is unavailable"
+)]
+#[case::unknown("provider_extension", StatusCode::UNAUTHORIZED, "authentication failed")]
+#[tokio::test]
+async fn test_callback_maps_authorization_errors(
+    #[case] error: &str,
+    #[case] status: StatusCode,
+    #[case] message: &str,
+) {
+    let (_dir, state) = state_with_provider("http://127.0.0.1:1/");
+    let response = send(
+        state,
+        Method::GET,
+        &format!("/_/login/corporate/callback?error={error}&state=expected"),
+        Some(&pre_auth_cookie("expected")),
+    )
+    .await;
+
+    assert_eq!(response.status(), status);
+    assert_eq!(body_text(response).await, message);
+}
+
+#[tokio::test]
+async fn test_callback_error_with_a_mismatched_state_preserves_the_handoff() {
+    let (_dir, state) = state_with_provider("http://127.0.0.1:1/");
+    let response = send(
+        state,
+        Method::GET,
+        "/_/login/corporate/callback?error=access_denied&state=forged",
+        Some(&pre_auth_cookie("expected")),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(set_cookies(&response).is_empty());
+}
+
+#[rstest]
+#[case::both("state=s&code=c&error=access_denied")]
+#[case::missing_state("error=access_denied")]
+#[case::missing_result("state=s")]
+#[case::repeated_state("state=s&state=s&code=c")]
+#[case::repeated_code("state=s&code=c&code=c")]
+#[case::repeated_error("state=s&error=access_denied&error=server_error")]
+#[tokio::test]
+async fn test_callback_rejects_an_invalid_response_shape(#[case] query: &str) {
+    let (_dir, state) = state_with_provider("http://127.0.0.1:1/");
+    let response = send(
+        state,
+        Method::GET,
+        &format!("/_/login/corporate/callback?{query}"),
+        None,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_text(response).await, "invalid authentication response");
 }
 
 #[tokio::test]

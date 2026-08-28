@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, RawQuery, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse as _, Response};
 use peryx_driver::AppState;
@@ -47,10 +47,17 @@ pub async fn login_start(State(state): State<Arc<AppState>>, Path(provider): Pat
 pub async fn login_callback(
     State(state): State<Arc<AppState>>,
     Path(provider): Path<String>,
-    Query(response): Query<CallbackResponse>,
+    RawQuery(query): RawQuery,
     headers: HeaderMap,
 ) -> Response {
-    let Some(service) = state.serving.oidc_login(&provider) else {
+    no_store(login_callback_inner(&state, &provider, query.as_deref(), &headers).await)
+}
+
+async fn login_callback_inner(state: &AppState, provider: &str, query: Option<&str>, headers: &HeaderMap) -> Response {
+    let Some(response) = query.and_then(parse_callback_query) else {
+        return (StatusCode::BAD_REQUEST, "invalid authentication response").into_response();
+    };
+    let Some(service) = state.serving.oidc_login(provider) else {
         return provider_not_found();
     };
     let Some(sealer) = state.serving.session_sealer() else {
@@ -58,7 +65,7 @@ pub async fn login_callback(
     };
     let now = (state.serving.clock)();
     let Some(pending) =
-        read_cookie(&headers, PRE_AUTH_COOKIE).and_then(|value| sealer.open_pre_auth::<PendingLogin>(&value, now))
+        read_cookie(headers, PRE_AUTH_COOKIE).and_then(|value| sealer.open_pre_auth::<PendingLogin>(&value, now))
     else {
         return (
             StatusCode::BAD_REQUEST,
@@ -66,19 +73,59 @@ pub async fn login_callback(
         )
             .into_response();
     };
-    match service.callback(&response, &pending, now).await {
-        Ok(resolution) => {
-            let session = sealer.seal_session(&resolution.user, now + SESSION_TTL_SECS);
-            redirect(
-                ROOT_PATH,
-                &[
-                    set_cookie(SESSION_COOKIE, &session, ROOT_PATH, SESSION_TTL_SECS),
-                    clear_cookie(PRE_AUTH_COOKIE, PRE_AUTH_PATH),
-                ],
-            )
+    match response {
+        CallbackQuery::Code(response) => match service.callback(&response, &pending, now).await {
+            Ok(resolution) => {
+                let session = sealer.seal_session(&resolution.user, now + SESSION_TTL_SECS);
+                redirect(
+                    ROOT_PATH,
+                    &[
+                        set_cookie(SESSION_COOKIE, &session, ROOT_PATH, SESSION_TTL_SECS),
+                        clear_cookie(PRE_AUTH_COOKIE, PRE_AUTH_PATH),
+                    ],
+                )
+            }
+            Err(error) => login_error_response(&error),
+        },
+        CallbackQuery::Error { state, error } => {
+            if !pending.matches_state(&state) {
+                return provider_error_response(OidcProviderError::StateMismatch);
+            }
+            let mut response = authorization_error_response(&error);
+            response.headers_mut().append(
+                header::SET_COOKIE,
+                HeaderValue::from_str(&clear_cookie(PRE_AUTH_COOKIE, PRE_AUTH_PATH))
+                    .expect("a cleared cookie is a valid header value"),
+            );
+            response
         }
-        Err(error) => login_error_response(&error),
     }
+}
+
+fn parse_callback_query(query: &str) -> Option<CallbackQuery> {
+    let (mut state, mut code, mut error) = (None, None, None);
+    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+        let field = match key.as_ref() {
+            "state" => &mut state,
+            "code" => &mut code,
+            "error" => &mut error,
+            _ => continue,
+        };
+        if field.replace(value.into_owned()).is_some() {
+            return None;
+        }
+    }
+    let state = state?;
+    match (code, error) {
+        (Some(code), None) => Some(CallbackQuery::Code(CallbackResponse { state, code })),
+        (None, Some(error)) => Some(CallbackQuery::Error { state, error }),
+        _ => None,
+    }
+}
+
+enum CallbackQuery {
+    Code(CallbackResponse),
+    Error { state: String, error: String },
 }
 
 /// `GET /_/session` - the read-only UI's login state.
@@ -136,6 +183,19 @@ fn login_error_response<E>(error: &OidcLoginError<E>) -> Response {
     }
 }
 
+fn authorization_error_response(error: &str) -> Response {
+    match error {
+        "access_denied" => (StatusCode::UNAUTHORIZED, "authentication was denied").into_response(),
+        "interaction_required" | "login_required" | "account_selection_required" | "consent_required" => {
+            (StatusCode::UNAUTHORIZED, "authentication requires user interaction").into_response()
+        }
+        "server_error" | "temporarily_unavailable" => {
+            (StatusCode::SERVICE_UNAVAILABLE, "the login provider is unavailable").into_response()
+        }
+        _ => (StatusCode::UNAUTHORIZED, "authentication failed").into_response(),
+    }
+}
+
 fn read_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
     let header = headers.get(header::COOKIE)?.to_str().ok()?;
     header.split(';').find_map(|pair| {
@@ -173,4 +233,11 @@ fn redirect(location: &str, cookies: &[String]) -> Response {
 
 fn json_no_store(status: StatusCode, body: &serde_json::Value) -> Response {
     (status, [(header::CACHE_CONTROL, "no-store")], axum::Json(body)).into_response()
+}
+
+fn no_store(mut response: Response) -> Response {
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }

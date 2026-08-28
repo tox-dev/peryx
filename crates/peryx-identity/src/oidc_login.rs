@@ -201,7 +201,7 @@ impl OidcLoginProvider {
         pending: &PendingLogin,
         now: i64,
     ) -> Result<ExternalLogin, OidcProviderError> {
-        if !crate::secrets_match(&response.state, &pending.state) {
+        if !pending.matches_state(&response.state) {
             return Err(OidcProviderError::StateMismatch);
         }
         let endpoints = self.endpoints(now).await?;
@@ -460,6 +460,13 @@ pub struct PendingLogin {
     pub nonce: String,
     pub verifier: String,
     pub challenge: String,
+}
+
+impl PendingLogin {
+    #[must_use]
+    pub fn matches_state(&self, presented: &str) -> bool {
+        crate::secrets_match(presented, &self.state)
+    }
 }
 
 impl std::fmt::Debug for PendingLogin {

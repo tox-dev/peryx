@@ -9,7 +9,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse as _, Response};
 use axum::routing::{any, delete, get, post, put};
 use http_body_util::BodyExt as _;
-use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
+use tower_http::trace::{DefaultOnResponse, TraceLayer};
 
 use crate::handlers;
 use peryx_driver::http_services::HttpDomainServices;
@@ -50,7 +50,7 @@ pub fn router_with_services(state: Arc<AppState>, services: HttpDomainServices) 
         )
         .layer(
             TraceLayer::new_for_http()
-                .make_span_with(DefaultMakeSpan::new().level(tracing::Level::INFO))
+                .make_span_with(request_span)
                 .on_response(DefaultOnResponse::new().level(tracing::Level::INFO)),
         );
     let router = if state.serving.rate_limits.enabled() {
@@ -64,6 +64,18 @@ pub fn router_with_services(state: Arc<AppState>, services: HttpDomainServices) 
         router
     };
     router.layer(Extension(services)).with_state(state)
+}
+
+fn request_span(request: &Request) -> tracing::Span {
+    let path = request.uri().path();
+    if path
+        .strip_prefix("/_/login/")
+        .and_then(|path| path.strip_suffix("/callback"))
+        .is_some_and(|provider| !provider.is_empty() && !provider.contains('/'))
+    {
+        return tracing::info_span!("request", method = %request.method(), uri = path, version = ?request.version());
+    }
+    tracing::info_span!("request", method = %request.method(), uri = %request.uri(), version = ?request.version())
 }
 
 fn service_routes() -> Router<Arc<AppState>> {
