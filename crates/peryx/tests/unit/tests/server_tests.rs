@@ -772,7 +772,7 @@ fn ldap_provider(bind: LdapBindConfig) -> LdapProviderConfig {
 fn oidc_provider(id: &str, client_secret: Option<SecretSource>) -> OidcProviderConfig {
     OidcProviderConfig {
         id: ProviderId::new(id).unwrap(),
-        issuer: url::Url::parse("https://idp.example/realms/main").unwrap(),
+        issuer: "https://idp.example/realms/main".to_owned(),
         client_id: "peryx".to_owned(),
         client_secret,
         redirect_uri: url::Url::parse("https://registry.example/oidc/callback").unwrap(),
@@ -838,7 +838,7 @@ fn test_build_state_reports_an_unreadable_oidc_client_secret() {
 fn test_build_state_rejects_an_invalid_oidc_provider() {
     let dir = tempfile::tempdir().unwrap();
     let mut provider = oidc_provider("corporate", None);
-    provider.issuer = url::Url::parse("https://idp.example/?tenant=main").unwrap();
+    provider.issuer = "https://idp.example/?tenant=main".to_owned();
     let config = Config {
         data_dir: dir.path().to_path_buf(),
         auth: AuthConfig {

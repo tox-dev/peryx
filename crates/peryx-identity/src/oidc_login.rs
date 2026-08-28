@@ -36,7 +36,7 @@ const OPENID_SCOPE: &str = "openid";
 pub struct OidcProviderSettings {
     pub id: ProviderId,
     /// The discovery document must repeat the configured issuer URL byte for byte.
-    pub issuer: Url,
+    pub issuer: String,
     pub client_id: String,
     /// `None` configures a public client that relies on PKCE.
     pub client_secret: Option<String>,
@@ -117,8 +117,13 @@ impl OidcLoginProvider {
         transport: Arc<dyn OidcHttpTransport>,
         client: reqwest::Client,
     ) -> Result<Self, OidcProviderBuildError> {
-        let issuer = secure_url(&settings.issuer).ok_or(OidcProviderBuildError::InvalidIssuer)?;
-        if settings.issuer.query().is_some() || settings.issuer.fragment().is_some() {
+        let issuer = Url::parse(&settings.issuer).map_err(|_| OidcProviderBuildError::InvalidIssuer)?;
+        let issuer = secure_url(&issuer).ok_or(OidcProviderBuildError::InvalidIssuer)?;
+        if issuer.query().is_some()
+            || issuer.fragment().is_some()
+            || (issuer.as_str() != settings.issuer
+                && !(issuer.path() == "/" && issuer[..url::Position::BeforePath] == settings.issuer))
+        {
             return Err(OidcProviderBuildError::InvalidIssuer);
         }
         if secure_url(&settings.redirect_uri).is_none() || settings.redirect_uri.fragment().is_some() {
@@ -138,7 +143,7 @@ impl OidcLoginProvider {
         }
         Ok(Self {
             id: settings.id,
-            issuer: settings.issuer.as_str().to_owned(),
+            issuer: settings.issuer,
             discovery: discovery_url(issuer),
             client_id: settings.client_id,
             client_secret: settings.client_secret,

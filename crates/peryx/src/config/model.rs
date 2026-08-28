@@ -520,7 +520,7 @@ impl Default for AuthConfig {
 #[derive(Clone, PartialEq, Eq)]
 pub struct OidcProviderConfig {
     pub id: ProviderId,
-    pub issuer: Url,
+    pub issuer: String,
     pub client_id: String,
     /// The confidential client secret, or `None` for a public client that relies on PKCE alone.
     pub client_secret: Option<SecretSource>,

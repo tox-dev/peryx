@@ -45,7 +45,7 @@ fn empty_state() -> (tempfile::TempDir, AppState) {
 fn settings(destination: &str) -> OidcProviderSettings {
     OidcProviderSettings {
         id: ProviderId::new("corporate").unwrap(),
-        issuer: url::Url::parse(&secure_origin(destination)).unwrap(),
+        issuer: secure_origin(destination),
         client_id: "peryx-web".to_owned(),
         client_secret: None,
         redirect_uri: url::Url::parse("https://repository.example/_/login/corporate/callback").unwrap(),
@@ -212,7 +212,7 @@ async fn test_callback_without_a_configured_sealer_is_a_server_error() {
 #[tokio::test]
 async fn test_a_disabled_linked_user_surfaces_a_store_error() {
     let server = MockServer::start().await;
-    let issuer = format!("{}/", secure_origin(&server.uri()));
+    let issuer = secure_origin(&server.uri());
     mount_issuer(&server, &issuer).await;
     let dir = tempfile::tempdir().unwrap();
     let meta = peryx_storage::meta::MetaStore::open(dir.path().join("peryx.redb")).unwrap();
@@ -433,9 +433,9 @@ async fn mount_issuer(server: &MockServer, issuer: &str) {
         .and(path("/.well-known/openid-configuration"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "issuer": issuer,
-            "authorization_endpoint": format!("{issuer}authorize"),
-            "token_endpoint": format!("{issuer}token"),
-            "jwks_uri": format!("{issuer}jwks"),
+            "authorization_endpoint": format!("{issuer}/authorize"),
+            "token_endpoint": format!("{issuer}/token"),
+            "jwks_uri": format!("{issuer}/jwks"),
             "id_token_signing_alg_values_supported": ["RS256"],
         })))
         .mount(server)
@@ -452,14 +452,14 @@ async fn mount_issuer(server: &MockServer, issuer: &str) {
 #[tokio::test]
 async fn test_login_start_redirects_to_the_provider_and_seals_the_handoff() {
     let server = MockServer::start().await;
-    let issuer = format!("{}/", secure_origin(&server.uri()));
+    let issuer = secure_origin(&server.uri());
     mount_issuer(&server, &issuer).await;
     let (_dir, state) = state_with_provider(&server.uri());
 
     let response = send(state, Method::GET, "/_/login/corporate", None).await;
 
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
-    assert!(location(&response).starts_with(&format!("{issuer}authorize")));
+    assert!(location(&response).starts_with(&format!("{issuer}/authorize")));
     let cookies = set_cookies(&response);
     assert!(
         cookies.iter().any(|c| c.starts_with(&format!("{PRE_AUTH_COOKIE}="))
@@ -472,7 +472,7 @@ async fn test_login_start_redirects_to_the_provider_and_seals_the_handoff() {
 #[tokio::test]
 async fn test_a_valid_callback_creates_a_session() {
     let server = MockServer::start().await;
-    let issuer = format!("{}/", secure_origin(&server.uri()));
+    let issuer = secure_origin(&server.uri());
     mount_issuer(&server, &issuer).await;
     let dir = tempfile::tempdir().unwrap();
     let meta = peryx_storage::meta::MetaStore::open(dir.path().join("peryx.redb")).unwrap();

@@ -24,7 +24,7 @@ const PRIVATE_KEY_DER: &str = "MIIEpAIBAAKCAQEAyRE6rHuNR0QbHO3H3Kt2pOKGVhQqGZXIn
 fn settings(issuer: &str) -> OidcProviderSettings {
     OidcProviderSettings {
         id: ProviderId::new("corporate").unwrap(),
-        issuer: Url::parse(issuer).unwrap(),
+        issuer: issuer.to_owned(),
         client_id: "peryx-web".to_owned(),
         client_secret: Some("s3cret".to_owned()),
         redirect_uri: Url::parse("https://registry.example/oidc/corporate/callback").unwrap(),
@@ -61,7 +61,7 @@ fn mint(kid: &str, claims: &Value) -> String {
 }
 
 fn issuer(server: &MockServer) -> String {
-    format!("{}/", secure_origin(&server.uri()))
+    secure_origin(&server.uri())
 }
 
 fn base_claims(server: &MockServer) -> Value {
@@ -897,8 +897,10 @@ fn test_scope_string_inserts_and_deduplicates_openid() {
 }
 
 #[rstest]
-#[case::http_issuer(OidcProviderBuildError::InvalidIssuer, |s: &mut OidcProviderSettings| s.issuer = Url::parse("http://issuer.example").unwrap())]
-#[case::issuer_query(OidcProviderBuildError::InvalidIssuer, |s: &mut OidcProviderSettings| s.issuer = Url::parse("https://issuer.example/?x=1").unwrap())]
+#[case::http_issuer(OidcProviderBuildError::InvalidIssuer, |s: &mut OidcProviderSettings| s.issuer = "http://issuer.example".to_owned())]
+#[case::issuer_query(OidcProviderBuildError::InvalidIssuer, |s: &mut OidcProviderSettings| s.issuer = "https://issuer.example/?x=1".to_owned())]
+#[case::issuer_userinfo(OidcProviderBuildError::InvalidIssuer, |s: &mut OidcProviderSettings| s.issuer = "https://user@issuer.example".to_owned())]
+#[case::normalized_issuer(OidcProviderBuildError::InvalidIssuer, |s: &mut OidcProviderSettings| s.issuer = "https://ISSUER.example".to_owned())]
 #[case::redirect_fragment(OidcProviderBuildError::InvalidRedirectUri, |s: &mut OidcProviderSettings| s.redirect_uri = Url::parse("https://app.example/cb#x").unwrap())]
 #[case::empty_client(OidcProviderBuildError::EmptyClientId, |s: &mut OidcProviderSettings| s.client_id.clear())]
 #[case::empty_subject(OidcProviderBuildError::InvalidClaim, |s: &mut OidcProviderSettings| s.subject_claim.clear())]

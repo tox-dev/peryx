@@ -506,7 +506,7 @@ fn test_login_services_and_session_sealer_install_by_provider_id() {
         .set_oidc_logins([OidcLoginService::new(
             OidcLoginProvider::new(OidcProviderSettings {
                 id: ProviderId::new("browser").unwrap(),
-                issuer: Url::parse("https://issuer.example").unwrap(),
+                issuer: "https://issuer.example".to_owned(),
                 client_id: "peryx-web".to_owned(),
                 client_secret: None,
                 redirect_uri: Url::parse("https://registry.example/oidc/browser/callback").unwrap(),

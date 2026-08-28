@@ -493,6 +493,21 @@ fn test_oidc_provider_config_applies_claim_and_bound_defaults() {
     "issuer = \"not a url\"\nclient_id = \"peryx\"\nredirect_uri = \"https://registry.example/cb\"\n",
     "`issuer` must be an https URL"
 )]
+#[case::issuer_query(
+    "web",
+    "issuer = \"https://idp.example?tenant=main\"\nclient_id = \"peryx\"\nredirect_uri = \"https://registry.example/cb\"\n",
+    "`issuer` must preserve its configured https URL"
+)]
+#[case::issuer_userinfo(
+    "web",
+    "issuer = \"https://user@idp.example\"\nclient_id = \"peryx\"\nredirect_uri = \"https://registry.example/cb\"\n",
+    "`issuer` must preserve its configured https URL"
+)]
+#[case::normalized_issuer(
+    "web",
+    "issuer = \"https://IDP.example\"\nclient_id = \"peryx\"\nredirect_uri = \"https://registry.example/cb\"\n",
+    "`issuer` must preserve its configured https URL"
+)]
 #[case::redirect_scheme(
     "web",
     "issuer = \"https://idp.example\"\nclient_id = \"peryx\"\nredirect_uri = \"http://registry.example/cb\"\n",

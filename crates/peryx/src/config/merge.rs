@@ -866,7 +866,16 @@ fn classify_oidc_provider(mut raw: RawOidcProvider) -> Result<OidcProviderConfig
         id: provider_id.clone(),
         reason,
     };
-    let issuer = secure_https(&raw.issuer).ok_or_else(|| error("`issuer` must be an https URL"))?;
+    let issuer_url = secure_https(&raw.issuer).ok_or_else(|| error("`issuer` must be an https URL"))?;
+    if !issuer_url.username().is_empty()
+        || issuer_url.password().is_some()
+        || issuer_url.query().is_some()
+        || issuer_url.fragment().is_some()
+        || (issuer_url.as_str() != raw.issuer
+            && !(issuer_url.path() == "/" && issuer_url[..url::Position::BeforePath] == raw.issuer))
+    {
+        return Err(error("`issuer` must preserve its configured https URL"));
+    }
     let redirect_uri = secure_https(&raw.redirect_uri).ok_or_else(|| error("`redirect_uri` must be an https URL"))?;
     if raw.client_id.trim().is_empty() {
         return Err(error("`client_id` must not be empty"));
@@ -895,7 +904,7 @@ fn classify_oidc_provider(mut raw: RawOidcProvider) -> Result<OidcProviderConfig
         .collect::<Result<_, _>>()?;
     Ok(OidcProviderConfig {
         id,
-        issuer,
+        issuer: raw.issuer,
         client_id: raw.client_id,
         client_secret,
         redirect_uri,
