@@ -188,32 +188,56 @@ const fn is_benchmarking_ipv4(ip: Ipv4Addr) -> bool {
     a == 198 && (b & 0xfe == 18)
 }
 
+// IANA registry snapshot 2025-10-09:
+// https://www.iana.org/assignments/iana-ipv6-special-registry/iana-ipv6-special-registry.xhtml
+const IPV6_GLOBAL_EXCEPTIONS: &[(Ipv6Addr, u32)] = &[
+    (Ipv6Addr::new(0x2001, 1, 0, 0, 0, 0, 0, 1), 128),
+    (Ipv6Addr::new(0x2001, 1, 0, 0, 0, 0, 0, 2), 128),
+    (Ipv6Addr::new(0x2001, 1, 0, 0, 0, 0, 0, 3), 128),
+    (Ipv6Addr::new(0x2001, 4, 0x112, 0, 0, 0, 0, 0), 48),
+    (Ipv6Addr::new(0x2001, 3, 0, 0, 0, 0, 0, 0), 32),
+    (Ipv6Addr::new(0x2001, 0x20, 0, 0, 0, 0, 0, 0), 28),
+    (Ipv6Addr::new(0x2001, 0x30, 0, 0, 0, 0, 0, 0), 28),
+];
+
+const IPV6_BLOCKED_PREFIXES: &[(Ipv6Addr, u32)] = &[
+    (Ipv6Addr::UNSPECIFIED, 128),
+    (Ipv6Addr::LOCALHOST, 128),
+    (Ipv6Addr::new(0x64, 0xff9b, 1, 0, 0, 0, 0, 0), 48),
+    (Ipv6Addr::new(0x100, 0, 0, 0, 0, 0, 0, 0), 64),
+    (Ipv6Addr::new(0x100, 0, 0, 1, 0, 0, 0, 0), 64),
+    (Ipv6Addr::new(0x2001, 0, 0, 0, 0, 0, 0, 0), 23),
+    (Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0), 32),
+    (Ipv6Addr::new(0x2002, 0, 0, 0, 0, 0, 0, 0), 16),
+    (Ipv6Addr::new(0x3fff, 0, 0, 0, 0, 0, 0, 0), 20),
+    (Ipv6Addr::new(0x5f00, 0, 0, 0, 0, 0, 0, 0), 16),
+    (Ipv6Addr::new(0xfc00, 0, 0, 0, 0, 0, 0, 0), 7),
+    (Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0), 10),
+    // RFC 3879 acknowledges that deployments may still route deprecated site-local addresses:
+    // https://www.rfc-editor.org/rfc/rfc3879.html
+    (Ipv6Addr::new(0xfec0, 0, 0, 0, 0, 0, 0, 0), 10),
+    (Ipv6Addr::new(0xff00, 0, 0, 0, 0, 0, 0, 0), 8),
+];
+
 const fn is_global_ipv6(ip: Ipv6Addr) -> bool {
     if let Some(mapped) = ip.to_ipv4_mapped() {
         return is_global_ipv4(mapped);
     }
-    if ip.is_unspecified() {
-        return false;
-    }
-    if ip.is_loopback() {
-        return false;
-    }
-    let first = ip.segments()[0];
-    if first & 0xff00 == 0xff00 {
-        return false;
-    }
-    if first & 0xffc0 == 0xfe80 {
-        return false;
-    }
-    if first & 0xfe00 == 0xfc00 {
-        return false;
-    }
-    !is_documentation_ipv6(ip)
+    matches_any_ipv6_prefix(ip, IPV6_GLOBAL_EXCEPTIONS) || !matches_any_ipv6_prefix(ip, IPV6_BLOCKED_PREFIXES)
 }
 
-const fn is_documentation_ipv6(ip: Ipv6Addr) -> bool {
-    let [first, second, ..] = ip.segments();
-    first == 0x2001 && second == 0xdb8
+const fn matches_any_ipv6_prefix(ip: Ipv6Addr, prefixes: &[(Ipv6Addr, u32)]) -> bool {
+    let address = u128::from_be_bytes(ip.octets());
+    let mut index = 0;
+    while index < prefixes.len() {
+        let (network, prefix_len) = prefixes[index];
+        let mask = u128::MAX << (128 - prefix_len);
+        if address & mask == u128::from_be_bytes(network.octets()) & mask {
+            return true;
+        }
+        index += 1;
+    }
+    false
 }
 
 struct SystemResolver;

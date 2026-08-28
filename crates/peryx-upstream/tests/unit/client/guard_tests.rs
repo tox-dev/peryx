@@ -70,6 +70,16 @@ fn test_check_url_rejects_non_http_scheme() {
 #[case::before_benchmark_range("198.17.255.255")]
 #[case::after_benchmark_range("198.20.0.0")]
 #[case::outside_documentation_range("[2001:db9::1]")]
+#[case::v6_mapped_public("[::ffff:8.8.8.8]")]
+#[case::v6_translation("[64:ff9b::1]")]
+#[case::v6_pcp_anycast("[2001:1::1]")]
+#[case::v6_turn_anycast("[2001:1::2]")]
+#[case::v6_dns_sd_anycast("[2001:1::3]")]
+#[case::v6_amt("[2001:3::1]")]
+#[case::v6_as112("[2001:4:112::1]")]
+#[case::v6_orchid_v2("[2001:20::1]")]
+#[case::v6_det("[2001:30::1]")]
+#[case::v6_direct_as112("[2620:4f:8000::1]")]
 fn test_check_url_allows_global_literal(#[case] address: &str) {
     guard("https://pub.example.com/", &[])
         .check_url(&Url::parse(&format!("https://{address}/x")).unwrap())
@@ -87,7 +97,26 @@ fn test_check_url_allows_domain_deferring_to_resolver() {
 #[case("http://127.0.0.1/x")]
 #[case("http://10.0.0.1/x")]
 #[case("http://169.254.169.254/latest/meta-data/")]
+#[case("http://[::]/x")]
 #[case("http://[::1]/x")]
+#[case("http://[::ffff:127.0.0.1]/x")]
+#[case("http://[64:ff9b:1::1]/x")]
+#[case("http://[100::1]/x")]
+#[case("http://[100:0:0:1::1]/x")]
+#[case("http://[2001::1]/x")]
+#[case("http://[2001:1::4]/x")]
+#[case("http://[2001:2::1]/x")]
+#[case("http://[2001:4:113::1]/x")]
+#[case("http://[2001:10::1]/x")]
+#[case("http://[2001:40::1]/x")]
+#[case("http://[2001:db8::1]/x")]
+#[case("http://[2002::1]/x")]
+#[case("http://[3fff::1]/x")]
+#[case("http://[5f00::1]/x")]
+#[case("http://[fc00::1]/x")]
+#[case("http://[fe80::1]/x")]
+#[case("http://[fec0::1]/x")]
+#[case("http://[ff02::1]/x")]
 fn test_check_url_blocks_non_global_literal(#[case] url: &str) {
     let error = guard("https://pub.example.com/", &[])
         .check_url(&Url::parse(url).unwrap())
@@ -159,6 +188,53 @@ async fn test_resolver_keeps_only_global_addresses_for_untrusted_host() {
     .unwrap();
 
     assert_eq!(kept, vec!["8.8.8.8:80".parse().unwrap()]);
+}
+
+#[rstest]
+#[case::mapped_public("::ffff:8.8.8.8")]
+#[case::translation("64:ff9b::1")]
+#[case::pcp_anycast("2001:1::1")]
+#[case::turn_anycast("2001:1::2")]
+#[case::dns_sd_anycast("2001:1::3")]
+#[case::amt("2001:3::1")]
+#[case::as112("2001:4:112::1")]
+#[case::orchid_v2("2001:20::1")]
+#[case::det("2001:30::1")]
+#[tokio::test]
+async fn test_resolver_keeps_global_ipv6_exception(#[case] address: &str) {
+    let socket = format!("[{address}]:80").parse().unwrap();
+    let kept = resolve(
+        &guard_with("https://pub.example.com/", &[], Ok(vec![socket])),
+        "cdn.example.com",
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(kept, vec![socket]);
+}
+
+#[rstest]
+#[case::mapped_loopback("::ffff:127.0.0.1")]
+#[case::translation_private("64:ff9b:1::1")]
+#[case::discard_only("100::1")]
+#[case::dummy("100:0:0:1::1")]
+#[case::teredo("2001::1")]
+#[case::benchmarking("2001:2::1")]
+#[case::orchid_deprecated("2001:10::1")]
+#[case::six_to_four("2002::1")]
+#[case::documentation("3fff::1")]
+#[case::segment_routing("5f00::1")]
+#[case::site_local("fec0::1")]
+#[tokio::test]
+async fn test_resolver_rejects_non_global_ipv6(#[case] address: &str) {
+    let socket = format!("[{address}]:80").parse().unwrap();
+    let error = resolve(
+        &guard_with("https://pub.example.com/", &[], Ok(vec![socket])),
+        "cdn.example.com",
+    )
+    .await;
+
+    assert!(error.is_err());
 }
 
 #[tokio::test]
