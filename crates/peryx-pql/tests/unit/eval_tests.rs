@@ -39,12 +39,41 @@ fn test_evaluate_comparisons() {
     assert!(!evaluate(&compare("n", CompareOp::Gt, Literal::Int(5)), &row));
 }
 
+#[rstest::rstest]
+#[case::null_equal("missing", CompareOp::Eq)]
+#[case::null_not_equal("missing", CompareOp::Ne)]
+#[case::unlike_not_equal("s", CompareOp::Ne)]
+#[case::unlike_ordered("s", CompareOp::Lt)]
+fn test_evaluate_incomparable_values_do_not_match(#[case] field: &str, #[case] op: CompareOp) {
+    assert!(!evaluate(&compare(field, op, Literal::Int(1)), &row()));
+}
+
 #[test]
-fn test_evaluate_incomparable_never_matches_ordering() {
+fn test_evaluate_boolean_logic_preserves_incomparable_state() {
     let row = row();
-    assert!(!evaluate(&compare("s", CompareOp::Lt, Literal::Int(1)), &row));
-    assert!(!evaluate(&compare("missing", CompareOp::Eq, Literal::Int(1)), &row));
-    assert!(evaluate(&compare("missing", CompareOp::Ne, Literal::Int(1)), &row));
+    let unknown = compare("missing", CompareOp::Ne, Literal::Int(1));
+    let yes = compare("n", CompareOp::Eq, Literal::Int(5));
+    let no = compare("n", CompareOp::Eq, Literal::Int(9));
+    assert_eq!(
+        (
+            evaluate(&Predicate::Or(Box::new(unknown.clone()), Box::new(yes.clone())), &row),
+            evaluate(
+                &Predicate::Not(Box::new(
+                    Predicate::Or(Box::new(unknown.clone()), Box::new(no.clone()),)
+                )),
+                &row,
+            ),
+            evaluate(
+                &Predicate::Not(Box::new(Predicate::And(Box::new(unknown.clone()), Box::new(yes),))),
+                &row,
+            ),
+            evaluate(
+                &Predicate::Not(Box::new(Predicate::And(Box::new(unknown), Box::new(no)))),
+                &row,
+            ),
+        ),
+        (true, false, false, true)
+    );
 }
 
 #[test]
@@ -61,6 +90,10 @@ fn test_evaluate_boolean_logic() {
         &row
     ));
     assert!(evaluate(&Predicate::Or(Box::new(no.clone()), Box::new(yes)), &row));
+    assert!(!evaluate(
+        &Predicate::Or(Box::new(no.clone()), Box::new(no.clone())),
+        &row
+    ));
     assert!(evaluate(&Predicate::Not(Box::new(no)), &row));
 }
 

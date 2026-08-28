@@ -1,6 +1,7 @@
 mod cursor_tests;
 mod eval_tests;
 mod execute_tests;
+mod null_comparison_tests;
 mod parse_tests;
 mod plan_tests;
 mod primitive_tests;
