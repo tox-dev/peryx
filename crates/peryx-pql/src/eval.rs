@@ -42,6 +42,7 @@ pub fn literal_value(literal: &Literal) -> Value {
         Literal::Bool(value) => Value::Bool(*value),
         Literal::Timestamp(value) => Value::Timestamp(*value),
         Literal::Param(_) => Value::Null,
+        Literal::BoundParam { value, .. } => value.clone(),
     }
 }
 

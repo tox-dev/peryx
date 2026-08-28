@@ -1,7 +1,9 @@
+use std::collections::BTreeMap;
+
 use crate::ast::OrderKey;
 use crate::catalog::FieldClass;
 use crate::error::PqlError;
-use crate::parse::parse;
+use crate::parse::{bind, parse};
 use crate::plan::{DEFAULT_LIMIT, MAX_LIMIT, OutputColumn, Plan, leading_filter, plan};
 use crate::source::FetchFilter;
 use crate::value::{Value, ValueType};
@@ -93,6 +95,41 @@ fn test_plan_rejects_unbound_parameter() {
     assert_eq!(
         plan_text("from policy.decisions where state == :missing"),
         Err(PqlError::Validation("a parameter was left unbound".to_owned()))
+    );
+}
+
+#[rstest]
+#[case::comparison("from policy.decisions where evaluated_at >= :value and state == :value")]
+#[case::membership("from policy.decisions where evaluated_at in (:value) and state in (:value)")]
+#[case::prefix("from policy.decisions where evaluated_at == :value and resource starts_with :value")]
+fn test_plan_rejects_a_parameter_used_by_incompatible_columns(#[case] text: &str) {
+    let ast = bind(
+        parse(text).expect("parses"),
+        &BTreeMap::from([("value".to_owned(), Value::Str("2026-06-01T00:00:00Z".to_owned()))]),
+    )
+    .expect("binds");
+    assert_eq!(
+        plan(&ast, &schema()),
+        Err(PqlError::Validation(
+            "parameter `:value` has incompatible timestamp and string column contexts".to_owned()
+        ))
+    );
+}
+
+#[rstest]
+#[case::malformed("not-a-time")]
+#[case::out_of_range("10000-01-01T00:00:00Z")]
+fn test_plan_rejects_an_invalid_bound_timestamp(#[case] value: &str) {
+    let ast = bind(
+        parse("from policy.decisions where evaluated_at >= :cutoff").expect("parses"),
+        &BTreeMap::from([("cutoff".to_owned(), Value::Str(value.to_owned()))]),
+    )
+    .expect("binds");
+    assert_eq!(
+        plan(&ast, &schema()),
+        Err(PqlError::Validation(
+            "parameter `:cutoff` is not an RFC 3339 timestamp".to_owned()
+        ))
     );
 }
 

@@ -25,6 +25,13 @@ fn test_literal_value_lowers_each_literal() {
     assert_eq!(literal_value(&Literal::Bool(false)), Value::Bool(false));
     assert_eq!(literal_value(&Literal::Timestamp(2)), Value::Timestamp(2));
     assert_eq!(literal_value(&Literal::Param("p".to_owned())), Value::Null);
+    assert_eq!(
+        literal_value(&Literal::BoundParam {
+            name: "p".to_owned(),
+            value: Value::Str("a".to_owned()),
+        }),
+        Value::Str("a".to_owned())
+    );
 }
 
 #[test]

@@ -6,7 +6,7 @@ use crate::catalog::DomainSchema;
 use crate::cursor;
 use crate::error::PqlError;
 use crate::eval::evaluate;
-use crate::plan::{OutputColumn, Plan, gate_join, leading_filter, plan, validate};
+use crate::plan::{OutputColumn, Plan, gate_join, leading_filter, plan_resolved, resolve_params, validate_resolved};
 use crate::scope::{QueryScope, RepoScope};
 use crate::source::DataSource;
 use crate::value::{Row, Value};
@@ -34,7 +34,8 @@ pub fn execute(
         return execute_join(ast, join, scope, cursor_text, source);
     }
     let schema = source.schema(&ast.domain).ok_or(PqlError::Unauthorized)?;
-    let plan = plan(ast, schema)?;
+    let ast = resolve_params(ast, schema)?;
+    let plan = plan_resolved(&ast, schema)?;
     let filter = ast
         .predicate
         .as_ref()
@@ -43,7 +44,7 @@ pub fn execute(
     let candidates = scope_filter(source.fetch(&ast.domain, scope, filter.as_ref())?, scope, schema);
     Ok(finish(
         candidates,
-        ast,
+        &ast,
         plan,
         schema.natural_order,
         &ast.domain,
@@ -63,8 +64,9 @@ fn execute_join(
     let schema_b = source.schema(&join.domain).ok_or(PqlError::Unauthorized)?;
     validate_join(&join.on, schema_a, schema_b)?;
     let merged = merge_schemas(schema_a, schema_b);
-    let plan = validate(ast, &merged)?;
-    gate_join(ast, schema_a, schema_b)?;
+    let ast = resolve_params(ast, &merged)?;
+    let plan = validate_resolved(&ast, &merged)?;
+    gate_join(&ast, schema_a, schema_b)?;
     let cursor_domain = join_cursor_key(&ast.domain, &join.domain);
     let offset = decode_offset(cursor_text, &cursor_domain, scope)?;
     let outer_filter = ast
@@ -80,7 +82,7 @@ fn execute_join(
     let candidates = join_rows(outer, &probe, &join.on, schema_a, schema_b);
     Ok(finish(
         candidates,
-        ast,
+        &ast,
         plan,
         merged.natural_order,
         &cursor_domain,

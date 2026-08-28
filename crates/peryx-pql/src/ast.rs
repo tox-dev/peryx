@@ -72,6 +72,7 @@ pub enum Literal {
     Bool(bool),
     Timestamp(i64),
     Param(String),
+    BoundParam { name: String, value: crate::value::Value },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

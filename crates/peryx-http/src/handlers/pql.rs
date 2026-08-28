@@ -13,7 +13,7 @@ use peryx_driver::authz::{Decision, DenyReason, ScopedDecision};
 use peryx_driver::http_services::HttpDomainServices;
 use peryx_driver::state::{AppState, Index};
 use peryx_identity::{Action, Denial, Resource, Scope, UserId, parse_basic};
-use peryx_pql::ast::{CompareOp, Literal, Predicate};
+use peryx_pql::ast::{CompareOp, Predicate};
 use peryx_pql::catalog::FieldClass;
 use peryx_pql::{OutputColumn, Page, PqlError, QueryScope, RepoScope, StatusClass, Value as PqlValue, bind, parse};
 
@@ -232,8 +232,11 @@ fn repository_equality(predicate: Option<&Predicate>) -> Option<String> {
         Predicate::Compare {
             field,
             op: CompareOp::Eq,
-            value: Literal::Str(value),
-        } if field == "repository" => Some(value.clone()),
+            value,
+        } if field == "repository" => match peryx_pql::literal_value(value) {
+            PqlValue::Str(value) => Some(value),
+            _ => None,
+        },
         _ => None,
     }
 }

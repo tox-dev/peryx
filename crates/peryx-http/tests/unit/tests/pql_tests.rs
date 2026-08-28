@@ -323,6 +323,124 @@ async fn test_query_binds_parameters_out_of_band() {
     assert_eq!(resources(&document), ["alpha", "gamma"]);
 }
 
+#[rstest]
+#[case::utc("1970-01-01T00:00:20Z")]
+#[case::offset("1970-01-01T01:00:20+01:00")]
+#[case::fractional("1970-01-01T00:00:20.999Z")]
+#[tokio::test]
+async fn test_query_binds_timestamp_parameters(#[case] cutoff: &str) {
+    let (_dir, meta, app) = app(false).await;
+    seed(&meta);
+    let (status, _headers, document) = post(
+        &app,
+        json!({
+            "query": "from policy.decisions where evaluated_at >= :cutoff order by evaluated_at desc",
+            "params": {"cutoff": cutoff}
+        }),
+        Some(("Alice", PASSWORD)),
+    )
+    .await;
+    assert_eq!(
+        (status, resources(&document)),
+        (StatusCode::OK, vec!["alpha".to_owned(), "beta".to_owned()])
+    );
+}
+
+#[tokio::test]
+async fn test_query_keeps_integer_parameters_on_integer_columns() {
+    let (_dir, _meta, metrics, app) = build(false).await;
+    seed_usage(&metrics);
+    let (status, _headers, document) = post(
+        &app,
+        json!({"query": "from usage.reads where reads == :reads", "params": {"reads": 2}}),
+        Some(("Alice", PASSWORD)),
+    )
+    .await;
+    assert_eq!(
+        (status, resources(&document)),
+        (StatusCode::OK, vec!["alpha".to_owned()])
+    );
+}
+
+#[rstest]
+#[case::malformed("not-a-time")]
+#[case::out_of_range("10000-01-01T00:00:00Z")]
+#[tokio::test]
+async fn test_query_rejects_invalid_timestamp_parameters(#[case] cutoff: &str) {
+    let (_dir, meta, app) = app(false).await;
+    seed(&meta);
+    let (status, _headers, document) = post(
+        &app,
+        json!({
+            "query": "from policy.decisions where evaluated_at >= :cutoff",
+            "params": {"cutoff": cutoff}
+        }),
+        Some(("Alice", PASSWORD)),
+    )
+    .await;
+    assert_eq!(
+        (status, document["error"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("the query is not valid"))
+    );
+}
+
+#[tokio::test]
+async fn test_query_rejects_conflicting_parameter_contexts() {
+    let (_dir, meta, app) = app(false).await;
+    seed(&meta);
+    let (status, _headers, document) = post(
+        &app,
+        json!({
+            "query": "from policy.decisions where evaluated_at >= :value and state == :value",
+            "params": {"value": "1970-01-01T00:00:00Z"}
+        }),
+        Some(("Alice", PASSWORD)),
+    )
+    .await;
+    assert_eq!(
+        (status, document["error"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("the query is not valid"))
+    );
+}
+
+#[tokio::test]
+async fn test_query_rejects_a_missing_parameter() {
+    let (_dir, meta, app) = app(false).await;
+    seed(&meta);
+    let (status, _headers, document) = post(
+        &app,
+        json!({"query": "from policy.decisions where evaluated_at >= :cutoff"}),
+        Some(("Alice", PASSWORD)),
+    )
+    .await;
+    assert_eq!(
+        (status, document["error"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("a query parameter was not supplied"))
+    );
+}
+
+#[tokio::test]
+async fn test_query_rejects_a_null_parameter() {
+    let (_dir, meta, app) = app(false).await;
+    seed(&meta);
+    let (status, _headers, document) = post(
+        &app,
+        json!({
+            "query": "from policy.decisions where evaluated_at >= :cutoff",
+            "params": {"cutoff": null}
+        }),
+        Some(("Alice", PASSWORD)),
+    )
+    .await;
+    assert_eq!(
+        (status, document["error"].as_str()),
+        (
+            StatusCode::BAD_REQUEST,
+            Some("a query parameter has an unsupported type")
+        )
+    );
+}
+
 #[tokio::test]
 async fn test_query_narrows_read_through_resource_index() {
     // A leading `resource ==` equality is the cost gate's indexed filter; the source pushes it into the

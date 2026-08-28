@@ -1,4 +1,5 @@
-//! Parameters enter the AST as [`Literal::Param`], so values cannot alter query structure.
+//! Parameters enter the AST as [`Literal::Param`], so values cannot alter query structure. Binding
+//! retains their JSON type until planning resolves the referenced column.
 
 use std::collections::BTreeMap;
 
@@ -81,10 +82,12 @@ fn bind_literal(literal: Literal, params: &Params) -> Result<Literal, PqlError> 
         return Ok(literal);
     };
     match params.get(&name) {
-        Some(Value::Bool(value)) => Ok(Literal::Bool(*value)),
-        Some(Value::Int(value)) => Ok(Literal::Int(*value)),
-        Some(Value::Str(value)) => Ok(Literal::Str(value.clone())),
-        Some(Value::Timestamp(value)) => Ok(Literal::Timestamp(*value)),
+        Some(value @ (Value::Bool(_) | Value::Int(_) | Value::Str(_) | Value::Timestamp(_))) => {
+            Ok(Literal::BoundParam {
+                name,
+                value: value.clone(),
+            })
+        }
         Some(Value::Null) | None => Err(PqlError::MissingParameter(name)),
     }
 }
@@ -171,10 +174,16 @@ fn lex_string(text: &str, index: usize, tokens: &mut Vec<Token>) -> Result<usize
 fn lex_timestamp(text: &str, index: usize, tokens: &mut Vec<Token>) -> Result<usize, PqlError> {
     let end = token_end(text, index + 1);
     let literal = &text[index + 1..end];
-    let parsed = OffsetDateTime::parse(literal, &Rfc3339)
-        .map_err(|_| PqlError::Parse("invalid timestamp literal".to_owned()))?;
-    tokens.push(Token::Timestamp(parsed.unix_timestamp()));
+    let timestamp =
+        timestamp_seconds(literal).ok_or_else(|| PqlError::Parse("invalid timestamp literal".to_owned()))?;
+    tokens.push(Token::Timestamp(timestamp));
     Ok(end)
+}
+
+pub(crate) fn timestamp_seconds(text: &str) -> Option<i64> {
+    OffsetDateTime::parse(text, &Rfc3339)
+        .ok()
+        .map(OffsetDateTime::unix_timestamp)
 }
 
 fn lex_param(text: &str, index: usize, tokens: &mut Vec<Token>) -> Result<usize, PqlError> {

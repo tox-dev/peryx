@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use crate::ast::{Aggregate, AggregateFunc, Ast, CompareOp, Literal, OrderKey, Predicate, Selection};
 use crate::catalog::{Column, DomainSchema, FieldClass};
@@ -28,7 +28,14 @@ pub struct Plan {
 /// Returns [`PqlError::Validation`] for an unknown or mistyped field or a misused aggregate, and
 /// [`PqlError::CostExceeded`] when an unbounded domain is queried without a cheap leading filter.
 pub fn plan(ast: &Ast, schema: &DomainSchema) -> Result<Plan, PqlError> {
-    let plan = validate(ast, schema)?;
+    let ast = resolve_params(ast, schema)?;
+    let plan = validate_resolved(&ast, schema)?;
+    cost_gate(&ast, schema)?;
+    Ok(plan)
+}
+
+pub(crate) fn plan_resolved(ast: &Ast, schema: &DomainSchema) -> Result<Plan, PqlError> {
+    let plan = validate_resolved(ast, schema)?;
     cost_gate(ast, schema)?;
     Ok(plan)
 }
@@ -49,6 +56,10 @@ pub fn gate_join(ast: &Ast, outer: &DomainSchema, probe: &DomainSchema) -> Resul
 /// # Errors
 /// Returns [`PqlError::Validation`] for an unknown or mistyped field or a misused aggregate.
 pub fn validate(ast: &Ast, schema: &DomainSchema) -> Result<Plan, PqlError> {
+    validate_resolved(&resolve_params(ast, schema)?, schema)
+}
+
+pub(crate) fn validate_resolved(ast: &Ast, schema: &DomainSchema) -> Result<Plan, PqlError> {
     if let Some(predicate) = &ast.predicate {
         validate_predicate(predicate, schema)?;
     }
@@ -65,6 +76,97 @@ pub fn validate(ast: &Ast, schema: &DomainSchema) -> Result<Plan, PqlError> {
         limit,
         outputs,
     })
+}
+
+pub(crate) fn resolve_params(ast: &Ast, schema: &DomainSchema) -> Result<Ast, PqlError> {
+    let mut resolved = ast.clone();
+    let mut expected = BTreeMap::new();
+    if let Some(predicate) = resolved.predicate.take() {
+        resolved.predicate = Some(resolve_predicate(predicate, schema, &mut expected)?);
+    }
+    Ok(resolved)
+}
+
+fn resolve_predicate(
+    predicate: Predicate,
+    schema: &DomainSchema,
+    expected: &mut BTreeMap<String, ValueType>,
+) -> Result<Predicate, PqlError> {
+    match predicate {
+        Predicate::Or(left, right) => Ok(Predicate::Or(
+            Box::new(resolve_predicate(*left, schema, expected)?),
+            Box::new(resolve_predicate(*right, schema, expected)?),
+        )),
+        Predicate::And(left, right) => Ok(Predicate::And(
+            Box::new(resolve_predicate(*left, schema, expected)?),
+            Box::new(resolve_predicate(*right, schema, expected)?),
+        )),
+        Predicate::Not(inner) => Ok(Predicate::Not(Box::new(resolve_predicate(*inner, schema, expected)?))),
+        Predicate::Compare { field, op, value } => {
+            let column = require_column(&field, schema)?;
+            Ok(Predicate::Compare {
+                field,
+                op,
+                value: resolve_literal(value, column, expected)?,
+            })
+        }
+        Predicate::In { field, values } => {
+            let column = require_column(&field, schema)?;
+            Ok(Predicate::In {
+                field,
+                values: values
+                    .into_iter()
+                    .map(|value| resolve_literal(value, column, expected))
+                    .collect::<Result<_, _>>()?,
+            })
+        }
+        Predicate::StartsWith { field, prefix } => {
+            let column = require_column(&field, schema)?;
+            if column.value_type != ValueType::Str {
+                return Err(PqlError::Validation(format!(
+                    "`starts_with` needs a string column, but `{field}` is {}",
+                    column.value_type.as_str()
+                )));
+            }
+            Ok(Predicate::StartsWith {
+                field,
+                prefix: resolve_literal(prefix, column, expected)?,
+            })
+        }
+    }
+}
+
+fn resolve_literal(
+    literal: Literal,
+    column: &Column,
+    expected: &mut BTreeMap<String, ValueType>,
+) -> Result<Literal, PqlError> {
+    let Literal::BoundParam { name, value } = literal else {
+        return Ok(literal);
+    };
+    if let Some(prior) = expected.insert(name.clone(), column.value_type)
+        && prior != column.value_type
+    {
+        return Err(PqlError::Validation(format!(
+            "parameter `:{name}` has incompatible {} and {} column contexts",
+            prior.as_str(),
+            column.value_type.as_str()
+        )));
+    }
+    match (value, column.value_type) {
+        (Value::Bool(value), ValueType::Bool) => Ok(Literal::Bool(value)),
+        (Value::Int(value), ValueType::Int) => Ok(Literal::Int(value)),
+        (Value::Str(value), ValueType::Str) => Ok(Literal::Str(value)),
+        (Value::Timestamp(value), ValueType::Timestamp) => Ok(Literal::Timestamp(value)),
+        (Value::Str(value), ValueType::Timestamp) => crate::parse::timestamp_seconds(&value)
+            .map(Literal::Timestamp)
+            .ok_or_else(|| PqlError::Validation(format!("parameter `:{name}` is not an RFC 3339 timestamp"))),
+        _ => Err(PqlError::Validation(format!(
+            "the literal does not match the {} column `{}`",
+            column.value_type.as_str(),
+            column.name
+        ))),
+    }
 }
 
 fn validate_output_names(outputs: &[OutputColumn]) -> Result<(), PqlError> {
@@ -130,7 +232,9 @@ fn validate_compare(field: &str, op: CompareOp, value: &Literal, schema: &Domain
 
 fn check_literal_type(column: &Column, literal: &Literal) -> Result<(), PqlError> {
     let matches = match literal {
-        Literal::Param(_) => return Err(PqlError::Validation("a parameter was left unbound".to_owned())),
+        Literal::Param(_) | Literal::BoundParam { .. } => {
+            return Err(PqlError::Validation("a parameter was left unbound".to_owned()));
+        }
         Literal::Str(_) => column.value_type == ValueType::Str,
         Literal::Bool(_) => column.value_type == ValueType::Bool,
         Literal::Int(_) => column.value_type == ValueType::Int,

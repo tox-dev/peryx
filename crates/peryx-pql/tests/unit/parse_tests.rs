@@ -201,7 +201,7 @@ fn test_parse_join_composite_key() {
 }
 
 #[test]
-fn test_bind_replaces_each_param_type() {
+fn test_bind_retains_each_param_type_for_planning() {
     let parsed = parse(r"from d where a == :s and b == :i and c == :b and t == :ts").expect("parses");
     let bound = bind(
         parsed,
@@ -219,12 +219,16 @@ fn test_bind_replaces_each_param_type() {
             predicate: Some(Predicate::And(
                 Box::new(Predicate::And(
                     Box::new(Predicate::And(
-                        Box::new(compare("a", CompareOp::Eq, Literal::Str("x".to_owned()))),
-                        Box::new(compare("b", CompareOp::Eq, Literal::Int(3))),
+                        Box::new(compare(
+                            "a",
+                            CompareOp::Eq,
+                            bound_param("s", Value::Str("x".to_owned())),
+                        )),
+                        Box::new(compare("b", CompareOp::Eq, bound_param("i", Value::Int(3)))),
                     )),
-                    Box::new(compare("c", CompareOp::Eq, Literal::Bool(true))),
+                    Box::new(compare("c", CompareOp::Eq, bound_param("b", Value::Bool(true)),)),
                 )),
-                Box::new(compare("t", CompareOp::Eq, Literal::Timestamp(100))),
+                Box::new(compare("t", CompareOp::Eq, bound_param("ts", Value::Timestamp(100)),)),
             )),
             ..ast("d")
         }
@@ -243,8 +247,16 @@ fn test_bind_replaces_params_under_or_and_not() {
         bound,
         Ast {
             predicate: Some(Predicate::Or(
-                Box::new(compare("a", CompareOp::Eq, Literal::Str("left".to_owned()))),
-                Box::new(Predicate::Not(Box::new(compare("b", CompareOp::Eq, Literal::Int(7))))),
+                Box::new(compare(
+                    "a",
+                    CompareOp::Eq,
+                    bound_param("x", Value::Str("left".to_owned())),
+                )),
+                Box::new(Predicate::Not(Box::new(compare(
+                    "b",
+                    CompareOp::Eq,
+                    bound_param("y", Value::Int(7)),
+                )))),
             )),
             ..ast("d")
         }
@@ -283,11 +295,14 @@ fn test_bind_in_and_starts_with_params() {
             predicate: Some(Predicate::And(
                 Box::new(Predicate::In {
                     field: "a".to_owned(),
-                    values: vec![Literal::Str("a".to_owned()), Literal::Str("b".to_owned())],
+                    values: vec![
+                        bound_param("x", Value::Str("a".to_owned())),
+                        Literal::Str("b".to_owned()),
+                    ],
                 }),
                 Box::new(Predicate::StartsWith {
                     field: "c".to_owned(),
-                    prefix: Literal::Str("n".to_owned()),
+                    prefix: bound_param("p", Value::Str("n".to_owned())),
                 }),
             )),
             ..ast("d")
@@ -298,6 +313,13 @@ fn test_bind_in_and_starts_with_params() {
 #[test]
 fn test_bind_without_predicate_is_noop() {
     assert_eq!(bind(ast("d"), &BTreeMap::new()), Ok(ast("d")));
+}
+
+fn bound_param(name: &str, value: Value) -> Literal {
+    Literal::BoundParam {
+        name: name.to_owned(),
+        value,
+    }
 }
 
 #[test]

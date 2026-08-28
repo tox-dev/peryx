@@ -414,6 +414,29 @@ fn test_run_end_to_end_binds_parameters() {
 }
 
 #[test]
+fn test_run_resolves_a_timestamp_before_fetch() {
+    let source = TestSource::new(rows());
+    run(
+        "from policy.decisions where evaluated_at == :cutoff",
+        &std::collections::BTreeMap::from([("cutoff".to_owned(), Value::Str("1970-01-01T00:03:20Z".to_owned()))]),
+        &operator_scope(),
+        None,
+        &source,
+    )
+    .expect("runs");
+    assert_eq!(
+        source.fetches(),
+        vec![(
+            "policy.decisions".to_owned(),
+            Some(FetchFilter {
+                column: "evaluated_at",
+                values: vec![Value::Timestamp(200)],
+            })
+        )]
+    );
+}
+
+#[test]
 fn test_run_surfaces_parse_error() {
     use std::collections::BTreeMap;
 
