@@ -62,6 +62,7 @@ fn test_error_messages_cover_every_variant() {
         "conditional write conflicted with another request"
     );
     assert_eq!(S3Error::NoSuchUpload.to_string(), "multipart upload no longer exists");
+    assert_eq!(S3Error::GenerationChanged.to_string(), "object changed during read");
     assert_eq!(
         S3Error::Request("reset".to_owned()).to_string(),
         "s3 request failed: reset"
@@ -320,7 +321,7 @@ async fn test_get_accepts_a_partial_response_matching_the_request(
 ) {
     let client = get_client(get_response(206, Some(content_range), None, expected));
 
-    let get = client.get("cache/sha256/digest", Some(range)).await.unwrap();
+    let get = client.get("cache/sha256/digest", Some(range), None).await.unwrap();
 
     assert_eq!(get.total_bytes, total);
     assert_eq!(collect_body(get).await, expected);
@@ -346,7 +347,7 @@ async fn test_get_rejects_a_range_the_backend_did_not_honor(
 ) {
     let client = get_client(get_response(status, content_range, content_length, body));
 
-    let error = client.get("cache/sha256/digest", Some(1..5)).await.err().unwrap();
+    let error = client.get("cache/sha256/digest", Some(1..5), None).await.err().unwrap();
 
     assert!(matches!(error, S3Error::InvalidResponse("content range")));
 }
@@ -355,7 +356,7 @@ async fn test_get_rejects_a_range_the_backend_did_not_honor(
 async fn test_get_reads_a_whole_object_without_a_range() {
     let client = get_client(get_response(200, None, Some(7), b"package"));
 
-    let get = client.get("cache/sha256/digest", None).await.unwrap();
+    let get = client.get("cache/sha256/digest", None, None).await.unwrap();
 
     assert_eq!(get.total_bytes, 7);
     assert_eq!(collect_body(get).await, b"package");
@@ -365,7 +366,7 @@ async fn test_get_reads_a_whole_object_without_a_range() {
 async fn test_get_rejects_an_unsolicited_partial_for_an_unranged_read() {
     let client = get_client(get_response(206, Some("bytes 0-3/7"), None, b"pack"));
 
-    let error = client.get("cache/sha256/digest", None).await.err().unwrap();
+    let error = client.get("cache/sha256/digest", None, None).await.err().unwrap();
 
     assert!(matches!(error, S3Error::InvalidResponse("content range")));
 }
@@ -374,7 +375,7 @@ async fn test_get_rejects_an_unsolicited_partial_for_an_unranged_read() {
 async fn test_get_rejects_an_unranged_read_without_a_content_length() {
     let client = get_client(get_response(200, None, None, b""));
 
-    let error = client.get("cache/sha256/digest", None).await.err().unwrap();
+    let error = client.get("cache/sha256/digest", None, None).await.err().unwrap();
 
     assert!(matches!(error, S3Error::InvalidResponse("content length")));
 }
@@ -383,7 +384,7 @@ async fn test_get_rejects_an_unranged_read_without_a_content_length() {
 async fn test_get_serves_an_empty_range_without_a_request() {
     let client = get_client(get_response(500, None, None, b""));
 
-    let get = client.get("cache/sha256/digest", Some(3..3)).await.unwrap();
+    let get = client.get("cache/sha256/digest", Some(3..3), None).await.unwrap();
 
     assert_eq!(get.total_bytes, 0);
     assert!(collect_body(get).await.is_empty());
@@ -401,7 +402,7 @@ async fn test_get_body_reports_its_request_deadline() {
     settings.request_timeout = Duration::from_millis(20);
     let (client, _) = capturing_client(S3Config::new(settings).unwrap(), Some(response));
 
-    let mut get = client.get("cache/sha256/digest", None).await.unwrap();
+    let mut get = client.get("cache/sha256/digest", None, None).await.unwrap();
     let error = get.body.next().await.unwrap().unwrap_err();
 
     assert!(matches!(error, S3Error::Request(_)));

@@ -68,16 +68,18 @@ impl S3Backend {
 
     async fn open_inner(&self, digest: &Digest, range: Option<Range<u64>>) -> Result<BlobRead, BlobError> {
         let key = self.key_for(digest);
-        let total = if range.is_some() {
-            self.client
-                .head(&key)
-                .await
-                .map_err(|error| blob_error(error, Some(digest)))?
-                .ok_or_else(|| BlobError::not_found(digest))?
-                .bytes
+        let head = if range.is_some() {
+            Some(
+                self.client
+                    .head(&key)
+                    .await
+                    .map_err(|error| blob_error(error, Some(digest)))?
+                    .ok_or_else(|| BlobError::not_found(digest))?,
+            )
         } else {
-            0
+            None
         };
+        let total = head.as_ref().map_or(0, |head| head.bytes);
         if let Some(range) = &range
             && (range.start > range.end || range.end > total)
         {
@@ -97,12 +99,26 @@ impl S3Backend {
                 BlobReadBody::Stream(futures_util::stream::empty().boxed()),
             ));
         }
+        let if_match = head
+            .as_ref()
+            .map(|head| {
+                head.etag
+                    .as_deref()
+                    .ok_or_else(|| blob_error(S3Error::InvalidResponse("ETag"), Some(digest)))
+            })
+            .transpose()?;
         let response = self
             .client
-            .get(&key, range.clone())
+            .get(&key, range.clone(), if_match)
             .await
             .map_err(|error| blob_error(error, Some(digest)))?;
-        let total = range.as_ref().map_or(response.total_bytes, |_| total);
+        if head.as_ref().is_some_and(|head| head.bytes != response.total_bytes) {
+            return Err(blob_error(
+                S3Error::InvalidResponse("content range total"),
+                Some(digest),
+            ));
+        }
+        let total = response.total_bytes;
         let range = range.unwrap_or(0..total);
         Ok(BlobRead::new(
             "s3",
@@ -129,7 +145,7 @@ impl S3Backend {
     }
 
     async fn verify_inner(&self, digest: &Digest) -> Result<bool, BlobError> {
-        let response = match self.client.get(&self.key_for(digest), None).await {
+        let response = match self.client.get(&self.key_for(digest), None, None).await {
             Ok(response) => response,
             Err(S3Error::NotFound) => return Err(BlobError::not_found(digest)),
             Err(error) => return Err(blob_error(error, Some(digest))),
@@ -158,7 +174,7 @@ impl S3Backend {
     }
 
     async fn materialize_inner(&self, digest: &Digest) -> Result<BlobLease, BlobError> {
-        let response = match self.client.get(&self.key_for(digest), None).await {
+        let response = match self.client.get(&self.key_for(digest), None, None).await {
             Ok(response) => response,
             Err(S3Error::NotFound) => return Err(BlobError::not_found(digest)),
             Err(error) => return Err(blob_error(error, Some(digest))),

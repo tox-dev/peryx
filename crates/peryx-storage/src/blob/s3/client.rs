@@ -28,15 +28,18 @@ pub enum S3Error {
     Conflict,
     #[error("multipart upload no longer exists")]
     NoSuchUpload,
+    #[error("object changed during read")]
+    GenerationChanged,
     #[error("s3 request failed: {0}")]
     Request(String),
     #[error("s3 returned an invalid {0}")]
     InvalidResponse(&'static str),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct S3Head {
     pub bytes: u64,
+    pub etag: Option<String>,
 }
 
 pub struct S3Get {
@@ -139,6 +142,7 @@ impl S3Client {
         {
             Ok(output) => Ok(Some(S3Head {
                 bytes: object_length(output.content_length())?,
+                etag: output.e_tag().map(str::to_owned),
             })),
             Err(error) => match map_sdk_error(&error.into()) {
                 S3Error::NotFound => Ok(None),
@@ -151,7 +155,7 @@ impl S3Client {
     ///
     /// # Errors
     /// Returns [`S3Error`] when the request or body stream fails.
-    pub async fn get(&self, key: &str, range: Option<Range<u64>>) -> Result<S3Get, S3Error> {
+    pub async fn get(&self, key: &str, range: Option<Range<u64>>, if_match: Option<&str>) -> Result<S3Get, S3Error> {
         // HTTP has no inclusive representation for an empty end-exclusive range.
         if range.as_ref().is_some_and(Range::is_empty) {
             return Ok(S3Get {
@@ -166,11 +170,20 @@ impl S3Client {
         if let Some(range) = &range {
             request = request.range(format!("bytes={}-{}", range.start, range.end.saturating_sub(1)));
         }
+        if let Some(etag) = if_match {
+            request = request.if_match(etag);
+        }
         let output = tokio::time::timeout_at(deadline, request.send())
             .await
             .map_err(|error| S3Error::Request(error.to_string()))?
             .map_err(aws_sdk_s3::Error::from)
-            .map_err(|error| map_sdk_error(&error))?;
+            .map_err(|error| {
+                if if_match.is_some() && error.code() == Some("PreconditionFailed") {
+                    S3Error::GenerationChanged
+                } else {
+                    map_sdk_error(&error)
+                }
+            })?;
         let total_bytes = resolve_total_bytes(range.as_ref(), output.content_range(), output.content_length())?;
         let body = futures_util::stream::try_unfold((output.body, deadline), next_body_chunk).boxed();
         Ok(S3Get { total_bytes, body })

@@ -600,6 +600,15 @@ async fn run_wire_read_child(storage: &BlobStorage, scenario: WireReadScenario) 
                 b"acka"
             );
         }
+        WireReadScenario::RangeGenerationChanged => {
+            assert_range_open_error(storage, "object changed during read").await;
+        }
+        WireReadScenario::RangeTotalMismatch => {
+            assert_range_open_error(storage, "s3 returned an invalid content range total").await;
+        }
+        WireReadScenario::RangeMissingEtag => {
+            assert_range_open_error(storage, "s3 returned an invalid ETag").await;
+        }
         WireReadScenario::EmptyRange => {
             assert!(
                 storage
@@ -638,6 +647,14 @@ async fn run_wire_read_child(storage: &BlobStorage, scenario: WireReadScenario) 
             );
         }
     }
+}
+
+async fn assert_range_open_error(storage: &BlobStorage, expected: &str) {
+    let error = storage.open(&Digest::of(b"package"), Some(1..5)).await.err().unwrap();
+    assert_eq!(
+        (error.kind(), std::error::Error::source(&error).unwrap().to_string()),
+        (BlobErrorKind::Io, expected.to_owned())
+    );
 }
 
 async fn run_wire_write_child(storage: &BlobStorage, scenario: WireWriteScenario) {
@@ -771,6 +788,9 @@ enum WireReadScenario {
     Head,
     WholeRead,
     Range,
+    RangeGenerationChanged,
+    RangeTotalMismatch,
+    RangeMissingEtag,
     EmptyRange,
     Verify,
     VerifyMismatch,
@@ -842,6 +862,9 @@ impl ChildScenario {
             "wire_head" => Ok(Self::Read(WireReadScenario::Head)),
             "wire_whole_read" => Ok(Self::Read(WireReadScenario::WholeRead)),
             "wire_range" => Ok(Self::Read(WireReadScenario::Range)),
+            "wire_range_generation_changed" => Ok(Self::Read(WireReadScenario::RangeGenerationChanged)),
+            "wire_range_total_mismatch" => Ok(Self::Read(WireReadScenario::RangeTotalMismatch)),
+            "wire_range_missing_etag" => Ok(Self::Read(WireReadScenario::RangeMissingEtag)),
             "wire_empty_range" => Ok(Self::Read(WireReadScenario::EmptyRange)),
             "wire_verify" => Ok(Self::Read(WireReadScenario::Verify)),
             "wire_verify_mismatch" => Ok(Self::Read(WireReadScenario::VerifyMismatch)),

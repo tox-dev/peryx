@@ -53,6 +53,9 @@ enum WireBehavior {
     Head,
     WholeRead,
     Range,
+    RangeGenerationChanged,
+    RangeTotalMismatch,
+    RangeMissingEtag,
     EmptyRange,
     Verify,
     VerifyMismatch,
@@ -86,6 +89,9 @@ enum WireReadBehavior {
     Head,
     WholeRead,
     Range,
+    RangeGenerationChanged,
+    RangeTotalMismatch,
+    RangeMissingEtag,
     EmptyRange,
     Verify,
     VerifyMismatch,
@@ -132,6 +138,9 @@ impl WireBehavior {
             Self::Head => "wire_head",
             Self::WholeRead => "wire_whole_read",
             Self::Range => "wire_range",
+            Self::RangeGenerationChanged => "wire_range_generation_changed",
+            Self::RangeTotalMismatch => "wire_range_total_mismatch",
+            Self::RangeMissingEtag => "wire_range_missing_etag",
             Self::EmptyRange => "wire_empty_range",
             Self::Verify => "wire_verify",
             Self::VerifyMismatch => "wire_verify_mismatch",
@@ -270,6 +279,13 @@ async fn mount_wire_behavior(server: &MockServer, behavior: WireBehavior) {
         WireBehavior::Head => mount_wire_reads(server, WireReadBehavior::Head).await,
         WireBehavior::WholeRead => mount_wire_reads(server, WireReadBehavior::WholeRead).await,
         WireBehavior::Range => mount_wire_reads(server, WireReadBehavior::Range).await,
+        WireBehavior::RangeGenerationChanged => {
+            mount_wire_reads(server, WireReadBehavior::RangeGenerationChanged).await;
+        }
+        WireBehavior::RangeTotalMismatch => {
+            mount_wire_reads(server, WireReadBehavior::RangeTotalMismatch).await;
+        }
+        WireBehavior::RangeMissingEtag => mount_wire_reads(server, WireReadBehavior::RangeMissingEtag).await,
         WireBehavior::EmptyRange => mount_wire_reads(server, WireReadBehavior::EmptyRange).await,
         WireBehavior::Verify => mount_wire_reads(server, WireReadBehavior::Verify).await,
         WireBehavior::VerifyMismatch => mount_wire_reads(server, WireReadBehavior::VerifyMismatch).await,
@@ -339,11 +355,9 @@ async fn mount_wire_reads(server: &MockServer, behavior: WireReadBehavior) {
                 .await;
         }
         WireReadBehavior::Range => {
-            Mock::given(method("HEAD"))
-                .respond_with(ResponseTemplate::new(200).insert_header("Content-Length", "7"))
-                .mount(server)
-                .await;
+            mount_range_head(server, Some("\"generation-a\"")).await;
             Mock::given(method("GET"))
+                .and(header("If-Match", "\"generation-a\""))
                 .respond_with(
                     ResponseTemplate::new(206)
                         .insert_header("Content-Range", "bytes 1-4/7")
@@ -352,6 +366,27 @@ async fn mount_wire_reads(server: &MockServer, behavior: WireReadBehavior) {
                 .mount(server)
                 .await;
         }
+        WireReadBehavior::RangeGenerationChanged => {
+            mount_range_head(server, Some("\"generation-a\"")).await;
+            Mock::given(method("GET"))
+                .and(header("If-Match", "\"generation-a\""))
+                .respond_with(service_error(412, "PreconditionFailed"))
+                .mount(server)
+                .await;
+        }
+        WireReadBehavior::RangeTotalMismatch => {
+            mount_range_head(server, Some("\"generation-a\"")).await;
+            Mock::given(method("GET"))
+                .and(header("If-Match", "\"generation-a\""))
+                .respond_with(
+                    ResponseTemplate::new(206)
+                        .insert_header("Content-Range", "bytes 1-4/8")
+                        .set_body_bytes(b"acka"),
+                )
+                .mount(server)
+                .await;
+        }
+        WireReadBehavior::RangeMissingEtag => mount_range_head(server, None).await,
         WireReadBehavior::VerifyMismatch => {
             Mock::given(method("GET"))
                 .respond_with(ResponseTemplate::new(200).set_body_bytes(b"corrupt"))
@@ -359,6 +394,14 @@ async fn mount_wire_reads(server: &MockServer, behavior: WireReadBehavior) {
                 .await;
         }
     }
+}
+
+async fn mount_range_head(server: &MockServer, etag: Option<&str>) {
+    let mut response = ResponseTemplate::new(200).insert_header("Content-Length", "7");
+    if let Some(etag) = etag {
+        response = response.insert_header("ETag", etag);
+    }
+    Mock::given(method("HEAD")).respond_with(response).mount(server).await;
 }
 
 async fn mount_wire_writes(server: &MockServer, behavior: WireWriteBehavior) {
@@ -735,6 +778,9 @@ fn assert_child_succeeded(output: &Output) {
 #[case::head(WireBehavior::Head)]
 #[case::whole_read(WireBehavior::WholeRead)]
 #[case::range(WireBehavior::Range)]
+#[case::range_generation_changed(WireBehavior::RangeGenerationChanged)]
+#[case::range_total_mismatch(WireBehavior::RangeTotalMismatch)]
+#[case::range_missing_etag(WireBehavior::RangeMissingEtag)]
 #[case::empty_range(WireBehavior::EmptyRange)]
 #[case::verify(WireBehavior::Verify)]
 #[case::verify_mismatch(WireBehavior::VerifyMismatch)]
@@ -2244,12 +2290,17 @@ async fn mount_public(server: &MockServer, scenario: PublicScenario) {
         .await;
     Mock::given(method("HEAD"))
         .and(path(object_path(b"package")))
-        .respond_with(ResponseTemplate::new(200).insert_header("Content-Length", "7"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Length", "7")
+                .insert_header("ETag", "\"generation-a\""),
+        )
         .with_priority(2)
         .mount(server)
         .await;
     Mock::given(method("GET"))
         .and(header("Range", "bytes=1-4"))
+        .and(header("If-Match", "\"generation-a\""))
         .respond_with(
             ResponseTemplate::new(206)
                 .insert_header("Content-Range", "Bytes 1-4/7")
