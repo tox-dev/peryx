@@ -12,8 +12,8 @@ use super::{body_has_code, hosted, oci_digest, proxy, send, send_with, virtual_s
 use crate::store::{self, Manifest};
 
 const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
-const INDEX_TYPE: &str = "application/vnd.oci.image.index.v1+json";
 const LEGACY_ACCEPT: &str = "application/vnd.docker.distribution.manifest.v2+json";
+const LIST_TYPE: &str = "application/vnd.docker.distribution.manifest.list.v2+json";
 
 fn revoke(state: &AppState, digest: &str) {
     state
@@ -335,10 +335,21 @@ async fn test_revoked_proxy_tag_never_serves_from_cache(#[case] fetched_at: i64)
 async fn test_legacy_manifest_negotiation_cannot_select_a_revoked_child() {
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = hosted(&dir);
-    let child = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}"#;
-    let child_digest = store_manifest(&state, "app", "child", child);
+    let child = br#"{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json"}"#;
+    let child_digest = oci_digest(child);
+    store::record_manifest(
+        &state.serving.meta,
+        "store",
+        "app",
+        &child_digest,
+        &Manifest {
+            media_type: LEGACY_ACCEPT.to_owned(),
+            bytes: child.to_vec(),
+        },
+    )
+    .unwrap();
     let index = format!(
-        r#"{{"schemaVersion":2,"mediaType":"{INDEX_TYPE}","manifests":[{{"digest":"{child_digest}","platform":{{"os":"linux","architecture":"amd64"}}}}]}}"#,
+        r#"{{"schemaVersion":2,"mediaType":"{LIST_TYPE}","manifests":[{{"digest":"{child_digest}","platform":{{"os":"linux","architecture":"amd64"}}}}]}}"#,
     )
     .into_bytes();
     let index_digest = oci_digest(&index);
@@ -348,7 +359,7 @@ async fn test_legacy_manifest_negotiation_cannot_select_a_revoked_child() {
         "app",
         &index_digest,
         &Manifest {
-            media_type: INDEX_TYPE.to_owned(),
+            media_type: LIST_TYPE.to_owned(),
             bytes: index.clone(),
         },
     )

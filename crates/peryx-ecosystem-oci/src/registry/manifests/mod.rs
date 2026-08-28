@@ -124,11 +124,9 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         Ok(response)
     }
 
-    /// Rewrite an index response to its `linux/amd64` child when the served list media type has no
-    /// positive effective quality under the client's `Accept`, the substitution `distribution` makes
-    /// for legacy Docker (< 17.06) that sends only the schema-2 image type. An `Accept` that is absent
-    /// or gives the list type positive quality, a non-index response, or an index without a
-    /// `linux/amd64` child all serve the resolved manifest unchanged.
+    /// Rewrite a Docker manifest list to its `linux/amd64` child for legacy Docker (< 17.06), which
+    /// sends only the schema-2 image type. OCI indexes and unusable Docker fallbacks are rejected
+    /// because the client did not advertise any representation the registry can serve.
     async fn negotiate_manifest(
         &self,
         state: &ServingState,
@@ -152,6 +150,13 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         {
             return Ok(response);
         }
+        if media_type_base(&content_type) == OCI_INDEX_TYPE {
+            return Ok(error_response(
+                ErrorCode::ManifestUnknown,
+                "OCI index found, but accept header does not support OCI indexes",
+            ));
+        }
+        let accept = accept.expect("an unacceptable list has an Accept header");
         let digest = response
             .headers()
             .get(DOCKER_CONTENT_DIGEST)
@@ -160,7 +165,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
             .to_owned();
         let list = store::get_manifest(&state.meta, &digest)?.expect("a served manifest is stored under its digest");
         let Some(child) = store::linux_amd64_child(&list.bytes) else {
-            return Ok(response);
+            return Ok(error_response(ErrorCode::ManifestUnknown, "manifest unknown"));
         };
         if digest_decision(state, &child)? == DigestDecision::Revoked {
             return Ok(error_response(ErrorCode::ManifestUnknown, "manifest unknown"));
@@ -169,7 +174,10 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
             return Ok(error_response(ErrorCode::ManifestUnknown, "manifest unknown"));
         }
         if let Some(manifest) = store::get_manifest(&state.meta, &child)? {
-            return Ok(manifest_response(manifest, &child, head));
+            return Ok(acceptable_manifest_response(
+                manifest_response(manifest, &child, head),
+                accept,
+            ));
         }
         for member in members {
             if let Some(client) = member.proxy_client()
@@ -177,10 +185,10 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
                     .pull_manifest_by_digest(state, client, &member.name, repo, &child, head)
                     .await?
             {
-                return Ok(served);
+                return Ok(acceptable_manifest_response(served, accept));
             }
         }
-        Ok(response)
+        Ok(error_response(ErrorCode::ManifestUnknown, "manifest unknown"))
     }
 
     /// Try one member for a manifest by digest. `None` means this member does not have it (a `404`),
@@ -347,6 +355,22 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
                 stale_tag(state, index, repo, tag, head)?.unwrap_or_else(|| upstream_manifest_error(&err)),
             )),
         }
+    }
+}
+
+fn acceptable_manifest_response(response: Response, accept: &str) -> Response {
+    if response.status() != StatusCode::OK {
+        return response;
+    }
+    let content_type = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .expect("a served manifest carries its content type");
+    if media_type_acceptable(accept, content_type) {
+        response
+    } else {
+        error_response(ErrorCode::ManifestInvalid, "schema-2 manifest not supported by client")
     }
 }
 
