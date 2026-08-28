@@ -113,8 +113,7 @@ pub enum DigestRevocationQueryError {
     InvalidLimit,
 }
 
-/// Rebuilds the derived count for legacy or drifted stores. Corrupt rows remain queryable as errors but
-/// do not prevent startup.
+/// Rebuilds the derived count for legacy or drifted stores.
 ///
 /// # Errors
 /// Returns a store error when the tables cannot be opened, read, or written.
@@ -124,10 +123,7 @@ pub(super) fn backfill_digest_revocation_state(txn: &redb::WriteTransaction) -> 
         let mut active: u64 = 0;
         for entry in records.iter()? {
             let (_key, value) = entry?;
-            // The read path reports corrupt rows; startup can rebuild the count without classifying them.
-            let Ok(record) = serde_json::from_slice::<DigestRevocation>(value.value()) else {
-                continue;
-            };
+            let record = serde_json::from_slice::<DigestRevocation>(value.value())?;
             if record.state == DigestRevocationState::Active {
                 active += 1;
             }

@@ -407,11 +407,10 @@ fn test_digest_revocation_open_backfills_active_count_for_pre_index_store() {
 }
 
 #[test]
-fn test_digest_revocation_open_skips_a_corrupt_row_without_failing() {
+fn test_digest_revocation_open_rejects_a_corrupt_row_without_committing_state() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("peryx.redb");
     write_raw_revocation_rows(&path, &[revocation(1, DigestRevocationState::Active)]);
-    // Malformed rows must not prevent store startup or inflate the backfill count.
     {
         let database = redb::Database::open(&path).unwrap();
         let txn = database.begin_write().unwrap();
@@ -426,11 +425,14 @@ fn test_digest_revocation_open_skips_a_corrupt_row_without_failing() {
         txn.commit().unwrap();
     }
 
-    let store = MetaStore::open(&path).unwrap();
-
-    assert!(store.has_active_digest_revocation().unwrap());
-    store.lift_digest_revocation(&digest(1), &UserId::random(), 30).unwrap();
-    assert!(!store.has_active_digest_revocation().unwrap());
+    assert!(matches!(MetaStore::open(&path), Err(crate::meta::MetaError::Decode(_))));
+    assert!(matches!(
+        MetaStore::open_existing(path)
+            .unwrap()
+            .has_active_digest_revocation(),
+        Err(crate::meta::MetaError::DriverPrecondition(message))
+            if message == "digest revocation index is incomplete"
+    ));
 }
 
 #[test]
