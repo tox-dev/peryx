@@ -1458,6 +1458,76 @@ async fn test_upload_large_text_field_is_bad_request() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(body.contains("upload field \"name\" exceeds 65536 bytes"));
 }
+#[rstest]
+#[case::at_limit(32, "missing required field: content")]
+#[case::over_limit(33, "bad upload: upload text fields exceed 2097152 bytes")]
+#[tokio::test]
+async fn test_upload_bounds_aggregate_text_bytes(#[case] field_count: usize, #[case] expected: &str) {
+    let h = harness().await;
+    let value = "x".repeat(64 * 1024);
+    let fields = vec![("license_file", value.as_str()); field_count];
+
+    assert_eq!(
+        post_text_fields(&h.state, &fields).await,
+        (StatusCode::BAD_REQUEST, expected.to_owned())
+    );
+}
+#[tokio::test]
+async fn test_upload_rejects_duplicate_scalar_fields() {
+    let h = harness().await;
+    let fields = [("name", "first"), ("name", "second")];
+
+    assert_eq!(
+        post_text_fields(&h.state, &fields).await,
+        (
+            StatusCode::BAD_REQUEST,
+            "bad upload: duplicate upload field \"name\"".to_owned(),
+        )
+    );
+}
+#[tokio::test]
+async fn test_upload_bounds_repeated_metadata_fields() {
+    let h = harness().await;
+    let fields = vec![("license_file", ""); 65];
+
+    assert_eq!(
+        post_text_fields(&h.state, &fields).await,
+        (
+            StatusCode::BAD_REQUEST,
+            "bad upload: upload field \"license_file\" appears more than 64 times".to_owned(),
+        )
+    );
+}
+#[tokio::test]
+async fn test_upload_bounds_multipart_parts() {
+    let h = harness().await;
+    let fields = vec![("ignored", ""); 257];
+
+    assert_eq!(
+        post_text_fields(&h.state, &fields).await,
+        (
+            StatusCode::BAD_REQUEST,
+            "bad upload: upload has more than 256 parts".to_owned(),
+        )
+    );
+}
+
+async fn post_text_fields(state: &Arc<AppState>, fields: &[(&str, &str)]) -> (StatusCode, String) {
+    let (content_type, body) = multipart_body(fields, None);
+    post_upload_response(state, "/root/pypi/", Some(&upload_auth()), &content_type, body).await
+}
+
+#[tokio::test]
+async fn test_upload_excludes_content_from_text_budget() {
+    let h = harness().await;
+    let content = vec![b'x'; 2 * 1024 * 1024 + 1];
+    let (content_type, body) = multipart_body(&upload_fields(), Some(("peryxpkg-1.0-py3-none-any.whl", &content)));
+
+    let (status, body) = post_upload_response(&h.state, "/root/pypi/", Some(&upload_auth()), &content_type, body).await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.contains("uploaded content does not match the filename format"));
+}
 #[tokio::test]
 async fn test_upload_malformed_multipart_is_bad_request() {
     let h = harness().await;

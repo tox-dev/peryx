@@ -12,6 +12,14 @@ use super::HttpResult;
 use super::response::policy_denial_response;
 
 const MAX_UPLOAD_TEXT_FIELD_BYTES: usize = 64 * 1024;
+/// One attestation bundle may use 1 MiB; the second MiB leaves the same bounded share for all other
+/// retained metadata.
+const MAX_UPLOAD_TEXT_BYTES: usize = 2 * 1024 * 1024;
+/// Three repeatable metadata fields may each reach their own limit, leaving 64 parts for scalar and
+/// ignored fields.
+const MAX_UPLOAD_PARTS: usize = 256;
+/// A 64-entry cap admits long repeated metadata lists without unbounded vector growth.
+const MAX_UPLOAD_REPEATED_FIELDS: usize = 64;
 
 /// The aggregate cap on the PEP 740 `attestations` field. A bundle carries certificates and
 /// transparency proofs, so it needs more room than a metadata line, but this bounds what one
@@ -29,7 +37,9 @@ pub(super) async fn collect_form(
 ) -> HttpResult<(UploadForm, Option<StagedUpload>)> {
     let mut form = UploadForm::default();
     let mut staged = None;
+    let mut budget = FormBudget::default();
     while let Some(field) = multipart.next_field().await.map_err(reject)? {
+        budget.add_part()?;
         let field_name = field.name().unwrap_or_default().to_owned();
         if field_name == "content" {
             if staged.is_some() {
@@ -41,15 +51,60 @@ pub(super) async fn collect_form(
             }
             staged = Some(stage_content(field, blobs, max_file_size, &form).await?);
         } else if let Some(upload_field) = upload_text_field(&field_name) {
-            let value = read_text_field(field, &field_name, text_field_limit(upload_field)).await?;
+            budget.add_field(upload_field, &field_name)?;
+            let value = read_text_field(field, &field_name, text_field_limit(upload_field), &mut budget).await?;
             if !browser || !browser_derived(upload_field) {
                 set_upload_text_field(&mut form, upload_field, value);
             }
         } else {
-            drain_field(field).await?;
+            drain_field(field, &mut budget).await?;
         }
     }
     Ok((form, staged))
+}
+
+#[derive(Default)]
+struct FormBudget {
+    parts: usize,
+    text_bytes: usize,
+    fields: [usize; UploadTextField::COUNT],
+}
+
+impl FormBudget {
+    fn add_part(&mut self) -> HttpResult<()> {
+        self.parts += 1;
+        if self.parts > MAX_UPLOAD_PARTS {
+            return Err(reject(format!("upload has more than {MAX_UPLOAD_PARTS} parts")).into());
+        }
+        Ok(())
+    }
+
+    fn add_field(&mut self, field: UploadTextField, name: &str) -> HttpResult<()> {
+        let count = &mut self.fields[field as usize];
+        *count += 1;
+        let limit = if field.is_repeated() {
+            MAX_UPLOAD_REPEATED_FIELDS
+        } else {
+            1
+        };
+        if *count <= limit {
+            return Ok(());
+        }
+        let reason = if limit == 1 {
+            format!("duplicate upload field {name:?}")
+        } else {
+            format!("upload field {name:?} appears more than {limit} times")
+        };
+        Err(reject(reason).into())
+    }
+
+    fn add_text(&mut self, bytes: usize) -> HttpResult<()> {
+        if self.text_bytes.saturating_add(bytes) > MAX_UPLOAD_TEXT_BYTES {
+            return Err(reject(format!("upload text fields exceed {MAX_UPLOAD_TEXT_BYTES} bytes")).into());
+        }
+        self.text_bytes += bytes;
+        Ok(())
+    }
 }
 
 fn complete_browser_form(form: &mut UploadForm) -> Result<(), UploadError> {
@@ -67,6 +122,7 @@ fn complete_browser_form(form: &mut UploadForm) -> Result<(), UploadError> {
 }
 
 #[derive(Clone, Copy)]
+#[repr(usize)]
 enum UploadTextField {
     Action,
     MetadataVersion,
@@ -84,6 +140,14 @@ enum UploadTextField {
     Blake2Digest,
     Md5Digest,
     Attestations,
+}
+
+impl UploadTextField {
+    const COUNT: usize = Self::Attestations as usize + 1;
+
+    const fn is_repeated(self) -> bool {
+        matches!(self, Self::LicenseFile | Self::ProvidesExtra | Self::ProjectUrl)
+    }
 }
 
 const fn browser_derived(field: UploadTextField) -> bool {
@@ -147,6 +211,7 @@ async fn read_text_field(
     mut field: axum::extract::multipart::Field<'_>,
     name: &str,
     limit: usize,
+    budget: &mut FormBudget,
 ) -> HttpResult<String> {
     let mut bytes = Vec::new();
     while let Some(chunk) = field.chunk().await.map_err(reject)? {
@@ -158,13 +223,16 @@ async fn read_text_field(
                 .into_response()
                 .into());
         }
+        budget.add_text(chunk.len())?;
         bytes.extend_from_slice(&chunk);
     }
     String::from_utf8(bytes).map_err(|error| reject(error).into())
 }
 
-async fn drain_field(mut field: axum::extract::multipart::Field<'_>) -> HttpResult<()> {
-    while field.chunk().await.map_err(reject)?.is_some() {}
+async fn drain_field(mut field: axum::extract::multipart::Field<'_>, budget: &mut FormBudget) -> HttpResult<()> {
+    while let Some(chunk) = field.chunk().await.map_err(reject)? {
+        budget.add_text(chunk.len())?;
+    }
     Ok(())
 }
 
