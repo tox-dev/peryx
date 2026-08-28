@@ -422,15 +422,10 @@ pub async fn stale_page_harness(max_stale_secs: i64, fetched_at: i64) -> Harness
 pub struct AuthorityDouble {
     pub committed: u64,
     pub current: u64,
-    pub homed: bool,
 }
 
 #[async_trait::async_trait]
 impl peryx_driver::state::OwnershipAuthority for AuthorityDouble {
-    async fn has_home(&self, _authority: &str) -> bool {
-        self.homed
-    }
-
     async fn committed_epoch(&self, _authority: &str) -> u64 {
         self.committed
     }
@@ -443,7 +438,10 @@ impl peryx_driver::state::OwnershipAuthority for AuthorityDouble {
         &self,
         _authority: &str,
     ) -> Result<peryx_driver::state::HomeClaim, peryx_driver::state::OwnershipError> {
-        Ok(peryx_driver::state::HomeClaim::AlreadyHomed)
+        Ok(peryx_driver::state::HomeClaim {
+            home: "local".to_owned(),
+            epoch: self.committed,
+        })
     }
 
     fn cluster_status(&self) -> peryx_driver::state::ClusterStatus {
@@ -484,7 +482,7 @@ pub fn install_distributed_services(state: &mut AppState) {
     state
         .install_distributed_availability(peryx_ha::AvailabilityStateInstall {
             role: peryx_core::NodeRole::Writer,
-            topology: peryx_core::TopologyConfig::default(),
+            topology: local_topology(),
             blobs: peryx_ha::BlobServices::new(None, Arc::new(LocalDurability)),
             analytics: Arc::new(UnavailableCompleteness),
             capabilities: peryx_ha::AvailabilityCapabilities {
@@ -496,6 +494,20 @@ pub fn install_distributed_services(state: &mut AppState) {
         })
         .unwrap();
     state.register_plugin_service(ownership).unwrap();
+}
+
+fn local_topology() -> peryx_core::TopologyConfig {
+    peryx_core::TopologyConfig {
+        mode: peryx_core::TopologyMode::Ha,
+        group: Some("test".to_owned()),
+        members: vec![peryx_core::TopologyMember {
+            node: "writer".to_owned(),
+            dc: "local".to_owned(),
+            address: "http://127.0.0.1".to_owned(),
+            role: peryx_core::NodeRole::Writer,
+        }],
+        local_node: Some("writer".to_owned()),
+    }
 }
 
 fn wire(mut state: AppState, distributed: bool) -> Arc<AppState> {
@@ -537,17 +549,13 @@ impl TestOwnership {
 
 #[async_trait::async_trait]
 impl peryx_ha::OwnershipAuthority for TestOwnership {
-    async fn has_home(&self, authority: &str) -> bool {
-        match self.ownership() {
-            Some(owner) => owner.has_home(authority).await,
-            None => true,
-        }
-    }
-
     async fn claim_home(&self, authority: &str) -> Result<peryx_ha::HomeClaim, peryx_ha::OwnershipError> {
         match self.ownership() {
             Some(owner) => owner.claim_home(authority).await,
-            None => Ok(peryx_ha::HomeClaim::AlreadyHomed),
+            None => Ok(peryx_ha::HomeClaim {
+                home: "local".to_owned(),
+                epoch: 0,
+            }),
         }
     }
 
@@ -634,15 +642,16 @@ async fn test_ownership_uses_local_defaults_until_bound() {
     ownership.bind(Arc::new(AuthorityDouble {
         committed: 7,
         current: 8,
-        homed: true,
     }));
 
-    assert!(ownership.has_home("flask").await);
     assert_eq!(ownership.committed_epoch("flask").await, 7);
     assert!(ownership.admit_epoch("flask", 8).await);
     assert_eq!(
         ownership.claim_home("flask").await.unwrap(),
-        peryx_driver::state::HomeClaim::AlreadyHomed
+        peryx_driver::state::HomeClaim {
+            home: "local".to_owned(),
+            epoch: 7,
+        }
     );
     assert_eq!(
         ownership.cluster_status(),

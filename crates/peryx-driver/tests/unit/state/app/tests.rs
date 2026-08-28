@@ -463,7 +463,7 @@ async fn test_none_mode_preserves_single_node_ownership_semantics() {
     let (_dir, state) = local_state();
     let serving = state.serving.as_ref();
 
-    serving.claim_first_publish_home("catalog").await;
+    serving.claim_first_publish_home("catalog").await.unwrap();
 
     assert_eq!(serving.committed_authority_epoch("catalog").await, 0);
     assert!(serving.admit_authority_epoch("catalog", 41).await);
@@ -544,15 +544,10 @@ struct OwnershipCapability;
 
 #[async_trait]
 impl peryx_ha::OwnershipAuthority for OwnershipCapability {
-    async fn has_home(&self, authority: &str) -> bool {
-        authority == "catalog"
-    }
-
     async fn claim_home(&self, authority: &str) -> Result<peryx_ha::HomeClaim, peryx_ha::OwnershipError> {
-        Ok(if self.has_home(authority).await {
-            peryx_ha::HomeClaim::AlreadyHomed
-        } else {
-            peryx_ha::HomeClaim::AssignedHere
+        Ok(peryx_ha::HomeClaim {
+            home: if authority == "catalog" { "home" } else { "west" }.to_owned(),
+            epoch: self.committed_epoch(authority).await,
         })
     }
 
@@ -600,10 +595,12 @@ async fn test_distributed_ownership_and_topology_delegate_to_the_capability() {
 
     assert_eq!(serving.availability_topology(), &topology);
     assert!(Arc::ptr_eq(serving.ownership_authority().unwrap(), &ownership));
-    assert!(ownership.has_home("catalog").await);
     assert_eq!(
         ownership.claim_home("catalog").await.unwrap(),
-        peryx_ha::HomeClaim::AlreadyHomed
+        peryx_ha::HomeClaim {
+            home: "home".to_owned(),
+            epoch: 7,
+        }
     );
     assert_eq!(ownership.cluster_status().term, 7);
     assert_eq!(serving.committed_authority_epoch("catalog").await, 7);

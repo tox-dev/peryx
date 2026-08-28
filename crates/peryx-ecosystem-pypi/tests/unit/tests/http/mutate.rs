@@ -640,11 +640,8 @@ async fn test_delete_project_named_promote() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
-#[rstest]
-#[case::home_ingress(true)]
-#[case::non_home_ingress(false)]
 #[tokio::test]
-async fn test_yank_applies_at_the_current_authority_epoch(#[case] homed: bool) {
+async fn test_yank_applies_at_the_current_authority_epoch() {
     let h = authority_harness().await;
     upload_peryxpkg(&h.state, "/root/pypi/", &fixture_wheel()).await;
 
@@ -653,7 +650,6 @@ async fn test_yank_applies_at_the_current_authority_epoch(#[case] homed: bool) {
         AuthorityDouble {
             committed: 5,
             current: 5,
-            homed,
         },
     );
     assert_eq!(
@@ -674,7 +670,6 @@ async fn test_yank_under_a_superseded_epoch_conflicts_and_writes_nothing() {
         AuthorityDouble {
             committed: 5,
             current: 6,
-            homed: true,
         },
     );
     let (status, body) = request_response(&h.state, "PUT", "/root/pypi/peryxpkg/1.0/yank", Some(&upload_auth())).await;
@@ -694,7 +689,6 @@ async fn test_delete_at_the_current_authority_epoch_applies() {
         AuthorityDouble {
             committed: 9,
             current: 9,
-            homed: true,
         },
     );
     assert_eq!(
@@ -714,7 +708,6 @@ async fn test_delete_under_a_superseded_epoch_conflicts_and_keeps_the_file() {
         AuthorityDouble {
             committed: 5,
             current: 6,
-            homed: true,
         },
     );
     let (status, body) = request_response(&h.state, "DELETE", "/root/pypi/peryxpkg/", Some(&upload_auth())).await;
@@ -738,7 +731,6 @@ async fn test_restore_under_a_superseded_epoch_conflicts() {
         AuthorityDouble {
             committed: 5,
             current: 6,
-            homed: true,
         },
     );
     let (status, body) = request_response(&h.state, "PUT", "/root/pypi/peryxpkg/restore", Some(&upload_auth())).await;

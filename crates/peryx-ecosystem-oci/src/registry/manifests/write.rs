@@ -71,13 +71,10 @@ pub(in crate::registry) async fn put_manifest(
     if let Some(response) = missing_manifest_reference(state, index, &repo, &bytes).await? {
         return Ok(response);
     }
-    let manifest = Manifest {
-        media_type: media_type.clone(),
-        bytes: bytes.to_vec(),
+    let fence = match claim_repository_home(state, &repo).await {
+        Ok(fence) => fence,
+        Err(response) => return Ok(response),
     };
-    // Snapshot the repository's committed authority epoch before the push stages anything, so a home
-    // that transfers while the manifest is validated and reserved is caught by the re-admit below.
-    let fence = repository_epoch(state, &repo).await;
     let reservation = match reserve_push(state, index, &repo, reference, &canonical, bytes.len() as u64)? {
         PushReservation::Rejected(response) => return Ok(response),
         PushReservation::Admitted(reservation) => reservation,
@@ -95,7 +92,10 @@ pub(in crate::registry) async fn put_manifest(
             index: &index.name,
             repo: &repo,
             canonical: &canonical,
-            manifest: &manifest,
+            manifest: &Manifest {
+                media_type: media_type.clone(),
+                bytes: bytes.to_vec(),
+            },
             reference,
             reservation,
             journal,
@@ -103,7 +103,6 @@ pub(in crate::registry) async fn put_manifest(
     )? {
         state.bump_search_epoch();
     }
-    claim_repository_home(state, &repo).await;
     store::record_content_placement(&state.meta, &canonical, store::OciArtifactOrigin::Pushed, true)?;
     let subject = record_referrer(state, &index.name, &repo, &canonical, &media_type, &bytes)?;
     let location = format!("/v2/{name}/manifests/{canonical}");

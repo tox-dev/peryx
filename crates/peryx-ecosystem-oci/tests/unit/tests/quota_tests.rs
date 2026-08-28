@@ -273,7 +273,7 @@ async fn test_repair_releases_aborted_blob_pushes_for_later_admission() {
     );
     abort_blob_after_admission(&state, &app, b"a1").await;
     abort_blob_after_admission(&state, &app, b"b2").await;
-    bind_ownership(&state, super::EpochAuthority::settled(1, true));
+    bind_ownership(&state, super::EpochAuthority::settled(1));
 
     assert_eq!(push_blob(&app, "store/app", b"c3").await, StatusCode::FORBIDDEN);
     assert_eq!(

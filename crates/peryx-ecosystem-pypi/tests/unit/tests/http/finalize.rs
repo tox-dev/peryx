@@ -202,7 +202,6 @@ async fn test_a_validation_failure_rejects_before_publication(#[case] failure: F
             AuthorityDouble {
                 committed: 0,
                 current: 0,
-                homed: false,
             },
         );
     }

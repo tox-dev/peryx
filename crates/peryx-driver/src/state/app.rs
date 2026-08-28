@@ -165,9 +165,13 @@ impl AvailabilityState {
         }
     }
 
-    async fn claim_first_publish_home(&self, authority: &str) {
-        if let Some(state) = &self.distributed {
-            state.claim_first_publish_home(authority).await;
+    async fn claim_first_publish_home(
+        &self,
+        authority: &str,
+    ) -> Result<Option<crate::state::HomeClaim>, crate::state::OwnershipError> {
+        match &self.distributed {
+            Some(state) => state.claim_first_publish_home(authority).await,
+            None => Ok(None),
         }
     }
 
@@ -268,8 +272,11 @@ impl DistributedAvailability {
         self.blobs.durability().confirm(write).await
     }
 
-    async fn claim_first_publish_home(&self, authority: &str) {
-        crate::state::ownership::claim_first_publish_home(self.capabilities.ownership.as_ref(), authority).await;
+    async fn claim_first_publish_home(
+        &self,
+        authority: &str,
+    ) -> Result<Option<crate::state::HomeClaim>, crate::state::OwnershipError> {
+        crate::state::ownership::claim_first_publish_home(self.capabilities.ownership.as_ref(), authority).await
     }
 
     async fn committed_authority_epoch(&self, authority: &str) -> u64 {
@@ -457,11 +464,16 @@ impl ServingState {
         self.availability.record_home_placement(digest_hex, size, fence);
     }
 
-    /// Assign `authority`'s home on its first publish, best effort. A publish path calls this after it
-    /// commits a new resource or repository; it claims a home only when a group runs and the authority has
-    /// none yet, and never blocks the publish on the outcome.
-    pub async fn claim_first_publish_home(&self, authority: &str) {
-        self.availability.claim_first_publish_home(authority).await;
+    /// Returns `authority`'s committed home and epoch, assigning the local datacenter when unowned.
+    /// `None` means this process runs without distributed ownership.
+    ///
+    /// # Errors
+    /// Returns the ownership group's resolution or commit error.
+    pub async fn claim_first_publish_home(
+        &self,
+        authority: &str,
+    ) -> Result<Option<crate::state::HomeClaim>, crate::state::OwnershipError> {
+        self.availability.claim_first_publish_home(authority).await
     }
 
     /// The committed authority epoch for `authority`, the fence value a writer stamps onto work it

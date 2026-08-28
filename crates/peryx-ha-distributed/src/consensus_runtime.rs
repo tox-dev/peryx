@@ -13,7 +13,7 @@ use crate::{
     Rejection,
 };
 use anyhow::{Context as _, bail};
-use openraft::error::{ClientWriteError, RaftError};
+use openraft::error::{CheckIsLeaderError, ClientWriteError, RaftError};
 use openraft::{LogId, StoredMembership};
 use peryx_ha::{
     ClusterStatus, CommandOutcome, CommandReceipt, ControlCommand, ControlError, HomeClaim, MembershipControl,
@@ -328,17 +328,22 @@ impl OwnershipGroup {
     pub const fn new(node: RaftNode, home: DatacenterId) -> Self {
         Self { node, home }
     }
+
+    async fn committed_home(&self, authority: &AuthorityKey) -> Result<HomeClaim, OwnershipError> {
+        self.node
+            .state_machine()
+            .home_claim(authority)
+            .await
+            .map(|(home, epoch)| HomeClaim {
+                home: home.0,
+                epoch: epoch.0,
+            })
+            .ok_or_else(|| OwnershipError::Unavailable("committed home is missing after assignment".to_owned()))
+    }
 }
 
 #[async_trait::async_trait]
 impl OwnershipAuthority for OwnershipHandle {
-    async fn has_home(&self, authority: &str) -> bool {
-        match self.group.upgrade() {
-            Some(group) => OwnershipAuthority::has_home(group.as_ref(), authority).await,
-            None => false,
-        }
-    }
-
     async fn committed_epoch(&self, authority: &str) -> u64 {
         match self.group.upgrade() {
             Some(group) => OwnershipAuthority::committed_epoch(group.as_ref(), authority).await,
@@ -394,14 +399,6 @@ impl MembershipControl for OwnershipHandle {
 
 #[async_trait::async_trait]
 impl OwnershipAuthority for OwnershipGroup {
-    async fn has_home(&self, authority: &str) -> bool {
-        self.node
-            .state_machine()
-            .home_of(&AuthorityKey(authority.to_owned()))
-            .await
-            .is_some()
-    }
-
     async fn committed_epoch(&self, authority: &str) -> u64 {
         self.node
             .state_machine()
@@ -420,17 +417,36 @@ impl OwnershipAuthority for OwnershipGroup {
     }
 
     async fn claim_home(&self, authority: &str) -> Result<HomeClaim, OwnershipError> {
+        let authority = AuthorityKey(authority.to_owned());
+        if self.node.state_machine().home_of(&authority).await.is_some() {
+            self.node
+                .raft()
+                .ensure_linearizable()
+                .await
+                .map_err(|error| match error {
+                    RaftError::APIError(CheckIsLeaderError::ForwardToLeader(forward)) => OwnershipError::NotLeader {
+                        leader: forward.leader_node.map(|node| node.addr),
+                    },
+                    error => OwnershipError::Unavailable(error.to_string()),
+                })?;
+            return self.committed_home(&authority).await;
+        }
         let command = OwnershipCommand::AssignHome {
-            authority: AuthorityKey(authority.to_owned()),
+            authority: authority.clone(),
             home: self.home.clone(),
             cause: AssignmentCause::FirstPublish,
         };
         match self.node.submit(command).await {
-            // Committed rejections retain the existing home; `Assigned` identifies the winning caller.
-            Ok(response) => Ok(match response {
-                OwnershipResponse::Applied(OwnershipEffect::Assigned { .. }) => HomeClaim::AssignedHere,
-                _ => HomeClaim::AlreadyHomed,
+            Ok(OwnershipResponse::Applied(OwnershipEffect::Assigned { epoch })) => Ok(HomeClaim {
+                home: self.home.0.clone(),
+                epoch: epoch.0,
             }),
+            Ok(OwnershipResponse::Applied(OwnershipEffect::Rejected(Rejection::AlreadyAssigned))) => {
+                self.committed_home(&authority).await
+            }
+            Ok(response) => Err(OwnershipError::Unavailable(format!(
+                "ownership assignment returned {response:?}"
+            ))),
             Err(RaftError::APIError(ClientWriteError::ForwardToLeader(forward))) => Err(OwnershipError::NotLeader {
                 leader: forward.leader_node.map(|node| node.addr),
             }),

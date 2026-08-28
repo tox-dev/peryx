@@ -1,18 +1,17 @@
 pub use peryx_ha::{ClusterStatus, HomeClaim, OwnershipAuthority, OwnershipError, TransferOutcome};
 
-/// Claim an unowned authority without blocking writes on consensus reachability.
+/// Resolve an authority's committed home, assigning this datacenter when it is unowned.
+///
+/// # Errors
+/// Returns the running group's linearizable resolution or claim error.
 pub(super) async fn claim_first_publish_home(
     group: Option<&std::sync::Arc<dyn OwnershipAuthority>>,
     authority: &str,
-) -> bool {
-    let Some(group) = group else { return false };
-    if group.has_home(authority).await {
-        return false;
+) -> Result<Option<HomeClaim>, OwnershipError> {
+    match group {
+        Some(group) => group.claim_home(authority).await.map(Some),
+        None => Ok(None),
     }
-    if let Err(error) = group.claim_home(authority).await {
-        tracing::warn!(%error, authority, "first-publish home claim did not commit");
-    }
-    true
 }
 
 /// Return the committed epoch, or `0` without distributed ownership.

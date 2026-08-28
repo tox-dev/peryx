@@ -239,12 +239,11 @@ struct FixedGroup;
 
 #[async_trait::async_trait]
 impl OwnershipAuthority for FixedGroup {
-    async fn has_home(&self, _authority: &str) -> bool {
-        false
-    }
-
     async fn claim_home(&self, _authority: &str) -> Result<HomeClaim, OwnershipError> {
-        Ok(HomeClaim::AlreadyHomed)
+        Ok(HomeClaim {
+            home: "east".to_owned(),
+            epoch: 7,
+        })
     }
 
     fn cluster_status(&self) -> ClusterStatus {
@@ -358,8 +357,13 @@ fn posture_reports_mode_and_role() {
 async fn fixed_group_implements_the_control_contract() {
     let group = FixedGroup;
 
-    assert!(!group.has_home("proj").await);
-    assert_eq!(group.claim_home("proj").await.unwrap(), HomeClaim::AlreadyHomed);
+    assert_eq!(
+        group.claim_home("proj").await.unwrap(),
+        HomeClaim {
+            home: "east".to_owned(),
+            epoch: 7,
+        }
+    );
     assert_eq!(group.committed_epoch("proj").await, 7);
     assert!(group.admit_epoch("proj", 7).await);
     assert_eq!(group.transfer_home("proj", "west").await.unwrap(), None);

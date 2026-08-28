@@ -2,17 +2,15 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use super::{
+    TestOwnership, app_with_distributed, auth, bind_ownership, body_has_code, hosted_writable_distributed, oci_index,
+    send, send_body, send_with, writer_acl,
+};
 use axum::http::{HeaderMap, Method, StatusCode};
 use bytes::Bytes;
 use peryx_driver::state::{ClusterStatus, HomeClaim, OwnershipAuthority, OwnershipError, TransferOutcome};
 use peryx_index::{Index, IndexKind};
 use peryx_policy::{Policy, PolicyConfig};
-use rstest::rstest;
-
-use super::{
-    TestOwnership, app_with_distributed, auth, bind_ownership, body_has_code, hosted_writable_distributed, oci_index,
-    send, send_body, send_with, writer_acl,
-};
 
 const TOKEN: &str = "s3cret";
 const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
@@ -22,6 +20,7 @@ const OTHER_MANIFEST: &[u8] =
 
 struct RecordingAuthority {
     fail_claim: bool,
+    home: &'static str,
     homed: Mutex<HashSet<String>>,
     checked: Mutex<Vec<String>>,
     claimed: Mutex<Vec<String>>,
@@ -29,16 +28,21 @@ struct RecordingAuthority {
 
 impl RecordingAuthority {
     fn unhomed() -> Arc<Self> {
-        Self::new(false)
+        Self::new("local", false)
     }
 
     fn failing() -> Arc<Self> {
-        Self::new(true)
+        Self::new("local", true)
     }
 
-    fn new(fail_claim: bool) -> Arc<Self> {
+    fn remote() -> Arc<Self> {
+        Self::new("west", false)
+    }
+
+    fn new(home: &'static str, fail_claim: bool) -> Arc<Self> {
         Arc::new(Self {
             fail_claim,
+            home,
             homed: Mutex::new(HashSet::new()),
             checked: Mutex::new(Vec::new()),
             claimed: Mutex::new(Vec::new()),
@@ -56,18 +60,22 @@ impl RecordingAuthority {
 
 #[async_trait::async_trait]
 impl OwnershipAuthority for RecordingAuthority {
-    async fn has_home(&self, authority: &str) -> bool {
-        self.checked.lock().unwrap().push(authority.to_owned());
-        self.homed.lock().unwrap().contains(authority)
-    }
-
     async fn claim_home(&self, authority: &str) -> Result<HomeClaim, OwnershipError> {
-        self.claimed.lock().unwrap().push(authority.to_owned());
+        self.checked.lock().unwrap().push(authority.to_owned());
+        let assigned = !self.homed.lock().unwrap().contains(authority);
+        if assigned {
+            self.claimed.lock().unwrap().push(authority.to_owned());
+        }
         if self.fail_claim {
             Err(OwnershipError::Unavailable("ownership group unreachable".to_owned()))
         } else {
-            self.homed.lock().unwrap().insert(authority.to_owned());
-            Ok(HomeClaim::AssignedHere)
+            if assigned {
+                self.homed.lock().unwrap().insert(authority.to_owned());
+            }
+            Ok(HomeClaim {
+                home: self.home.to_owned(),
+                epoch: 1,
+            })
         }
     }
 
@@ -119,7 +127,7 @@ async fn test_ownership_uses_local_defaults_until_bound() {
             None,
         )
     );
-    ownership.bind(super::EpochAuthority::settled(7, false));
+    ownership.bind(super::EpochAuthority::settled(7));
     assert_eq!(
         (
             ownership.committed_epoch("store/app").await,
@@ -191,12 +199,14 @@ async fn shared_distributed_test_services_expose_their_contracts() {
 
 #[tokio::test]
 async fn upload_epoch_authority_exposes_the_fence_state() {
-    let authority = super::EpochAuthority::settled(7, false);
+    let authority = super::EpochAuthority::settled(7);
 
-    assert!(!authority.has_home("store/app").await);
     assert_eq!(
         authority.claim_home("store/app").await.unwrap(),
-        HomeClaim::AlreadyHomed
+        HomeClaim {
+            home: "local".to_owned(),
+            epoch: 7,
+        }
     );
     assert_eq!(authority.cluster_status().term, 7);
     assert_eq!(authority.transfer_home("store/app", "node-b").await.unwrap(), None);
@@ -226,7 +236,7 @@ async fn test_first_manifest_push_claims_the_repositorys_home() {
     assert_eq!(push(&app, "v1").await, StatusCode::CREATED);
 
     // The ecosystem prefix isolates authority namespaces.
-    assert_eq!(group.checked(), ["oci:app"], "the path reads the home before claiming");
+    assert_eq!(group.checked(), ["oci:app"], "the path resolves the committed home");
     assert_eq!(
         group.claimed(),
         ["oci:app"],
@@ -252,32 +262,73 @@ async fn test_repeat_manifest_push_makes_no_second_claim() {
 }
 
 #[tokio::test]
-async fn test_a_home_claim_that_cannot_commit_does_not_block_the_push() {
+async fn test_a_home_claim_that_cannot_commit_publishes_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = hosted_writable_distributed(&dir, TOKEN);
     let group = RecordingAuthority::failing();
     bind_ownership(&state, group.clone());
-    assert_eq!(
-        push(&app, "v1").await,
-        StatusCode::CREATED,
-        "a claim that cannot commit is logged, never surfaced, and never blocks the push",
-    );
+    assert_eq!(push(&app, "v1").await, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(group.claimed(), ["oci:app"], "the claim was attempted");
+    assert_eq!(pull_status(&app, "v1").await, StatusCode::NOT_FOUND);
+    assert_eq!(state.serving.meta.current_serial().unwrap(), 0);
+    assert_eq!(
+        state
+            .serving
+            .meta
+            .quota_usage("store")
+            .unwrap()
+            .accounted_bytes
+            .committed,
+        0
+    );
+}
+
+#[tokio::test]
+async fn test_a_remote_home_winner_commits_no_manifest_effects() {
+    let dir = tempfile::tempdir().unwrap();
+    let index = Index {
+        acl: writer_acl(TOKEN),
+        policy: Policy::compile(
+            &PolicyConfig {
+                max_accounted_bytes: Some(u64::MAX),
+                ..PolicyConfig::default()
+            },
+            str::to_owned,
+        ),
+        ..oci_index("store", "store", IndexKind::Hosted { volatile: true })
+    };
+    let (state, app) = super::app_with_setup(&dir, vec![index], true, |state| {
+        super::install_test_distributed(state, None);
+    });
+    bind_ownership(&state, RecordingAuthority::remote());
+    let canonical = format!("sha256:{}", peryx_storage::blob::Digest::of(MANIFEST).as_str());
+
+    let (status, _, body) = push_full(&app, "v1", MANIFEST).await;
+
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_no_topology(&body);
+    assert_eq!(
+        (
+            crate::store::manifest_is_member(&state.serving.meta, "store", "app", &canonical).unwrap(),
+            crate::store::get_tag(&state.serving.meta, "store", "app", "v1").unwrap(),
+            state.serving.meta.current_serial().unwrap(),
+            state.serving.meta.quota_usage("store").unwrap().accounted_bytes,
+        ),
+        (false, None, 0, peryx_storage::meta::QuotaValue::default())
+    );
 }
 
 /// The fake fences mutations when its leased and current epochs differ.
 struct EpochAuthority {
     committed: AtomicU64,
     current: AtomicU64,
-    homed: bool,
 }
 
 impl EpochAuthority {
-    fn settled(epoch: u64, homed: bool) -> Arc<Self> {
+    fn settled(epoch: u64) -> Arc<Self> {
         Arc::new(Self {
             committed: AtomicU64::new(epoch),
             current: AtomicU64::new(epoch),
-            homed,
         })
     }
 
@@ -285,7 +336,6 @@ impl EpochAuthority {
         Arc::new(Self {
             committed: AtomicU64::new(leased),
             current: AtomicU64::new(current),
-            homed: true,
         })
     }
 
@@ -301,10 +351,6 @@ impl EpochAuthority {
 
 #[async_trait::async_trait]
 impl OwnershipAuthority for EpochAuthority {
-    async fn has_home(&self, _authority: &str) -> bool {
-        self.homed
-    }
-
     async fn committed_epoch(&self, _authority: &str) -> u64 {
         self.committed.load(Ordering::SeqCst)
     }
@@ -315,7 +361,10 @@ impl OwnershipAuthority for EpochAuthority {
     }
 
     async fn claim_home(&self, _authority: &str) -> Result<HomeClaim, OwnershipError> {
-        Ok(HomeClaim::AlreadyHomed)
+        Ok(HomeClaim {
+            home: "local".to_owned(),
+            epoch: self.committed.load(Ordering::SeqCst),
+        })
     }
 
     fn cluster_status(&self) -> ClusterStatus {
@@ -375,14 +424,11 @@ fn assert_no_topology(body: &Bytes) {
     }
 }
 
-#[rstest]
-#[case::home_ingress(true)]
-#[case::non_home_ingress(false)]
 #[tokio::test]
-async fn test_manifest_push_at_the_current_epoch_publishes(#[case] homed: bool) {
+async fn test_manifest_push_at_the_current_epoch_publishes() {
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = hosted_writable_distributed(&dir, TOKEN);
-    bind_ownership(&state, EpochAuthority::settled(5, homed));
+    bind_ownership(&state, EpochAuthority::settled(5));
     assert_eq!(push(&app, "v1").await, StatusCode::CREATED);
     assert_eq!(pull_status(&app, "v1").await, StatusCode::OK);
 }
@@ -409,7 +455,7 @@ async fn test_manifest_push_under_a_superseded_epoch_is_unavailable_then_retries
 async fn test_tag_replacement_under_a_superseded_epoch_keeps_the_old_target() {
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = hosted_writable_distributed(&dir, TOKEN);
-    let group = EpochAuthority::settled(5, true);
+    let group = EpochAuthority::settled(5);
     bind_ownership(&state, group.clone());
     let (status, headers, _) = push_full(&app, "release", MANIFEST).await;
     assert_eq!(status, StatusCode::CREATED);
@@ -429,7 +475,7 @@ async fn test_tag_replacement_under_a_superseded_epoch_keeps_the_old_target() {
 async fn test_manifest_delete_is_fenced_by_the_repository_epoch() {
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = hosted_writable_distributed(&dir, TOKEN);
-    let group = EpochAuthority::settled(9, true);
+    let group = EpochAuthority::settled(9);
     bind_ownership(&state, group.clone());
     assert_eq!(push(&app, "v1").await, StatusCode::CREATED);
 
@@ -454,7 +500,7 @@ async fn test_manifest_delete_is_fenced_by_the_repository_epoch() {
 async fn test_manifest_restore_is_fenced_by_the_repository_epoch() {
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = hosted_writable_distributed(&dir, TOKEN);
-    let group = EpochAuthority::settled(3, true);
+    let group = EpochAuthority::settled(3);
     bind_ownership(&state, group.clone());
     assert_eq!(push(&app, "v1").await, StatusCode::CREATED);
     assert_eq!(delete(&app, "v1").await, StatusCode::ACCEPTED);
@@ -506,7 +552,7 @@ async fn test_a_fenced_push_releases_its_quota_reservation() {
 #[tokio::test]
 async fn test_epoch_authority_double_reports_no_group_topology() {
     // Fence tests need epochs but no consensus runtime.
-    let group = EpochAuthority::settled(4, true);
+    let group = EpochAuthority::settled(4);
     let status = group.cluster_status();
     assert_eq!((status.leader, status.term, status.voters), (None, 4, Vec::new()));
     assert_eq!(group.transfer_home("app", "west").await.unwrap(), None);

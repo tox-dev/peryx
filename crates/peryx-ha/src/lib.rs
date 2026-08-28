@@ -649,10 +649,12 @@ pub trait ControlAuthorizer: Send + Sync {
 }
 
 #[must_use]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HomeClaim {
-    AssignedHere,
-    AlreadyHomed,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HomeClaim {
+    /// The datacenter selected by the committed assignment.
+    pub home: String,
+    /// The assignment epoch the winner must re-admit before publication.
+    pub epoch: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -679,8 +681,6 @@ pub enum OwnershipError {
 
 #[async_trait]
 pub trait OwnershipAuthority: Send + Sync {
-    async fn has_home(&self, authority: &str) -> bool;
-
     /// # Errors
     ///
     /// Returns [`OwnershipError`] when the claim cannot commit on the ownership leader.

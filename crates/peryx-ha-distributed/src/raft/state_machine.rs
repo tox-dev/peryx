@@ -105,6 +105,16 @@ impl OwnershipStateMachine {
         self.inner.lock().await.state.home(authority).cloned()
     }
 
+    /// Read both fields under one lock so they belong to the same assignment.
+    pub async fn home_claim(&self, authority: &AuthorityKey) -> Option<(DatacenterId, AuthorityEpoch)> {
+        let inner = self.inner.lock().await;
+        inner
+            .state
+            .home(authority)
+            .cloned()
+            .map(|home| (home, inner.state.epoch(authority)))
+    }
+
     /// Reads local applied state, which may lag on followers. Writers stamp this epoch on work; nodes
     /// that have applied a newer epoch reject stale work.
     pub async fn epoch_of(&self, authority: &AuthorityKey) -> AuthorityEpoch {

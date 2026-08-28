@@ -2198,14 +2198,11 @@ async fn test_put_without_digest_keeps_session_resumable() {
     assert_eq!(got, &blob[..]);
 }
 
-#[rstest]
-#[case::home_ingress(true)]
-#[case::non_home_ingress(false)]
 #[tokio::test]
-async fn test_monolithic_upload_at_the_current_epoch(#[case] homed: bool) {
+async fn test_monolithic_upload_at_the_current_epoch() {
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = super::hosted_writable_distributed(&dir, TOKEN);
-    bind_ownership(&state, EpochAuthority::settled(5, homed));
+    bind_ownership(&state, EpochAuthority::settled(5));
     let blob = b"single-post-blob-under-authority";
     let digest = oci_digest(blob);
 
@@ -2317,7 +2314,7 @@ async fn test_mount_at_the_current_epoch_publishes_the_blob() {
     let (state, app) = super::hosted_writable_distributed(&dir, TOKEN);
     let blob = b"source-layer-to-mount";
     let digest = upload_blob(&app, "store/source/app", blob).await;
-    bind_ownership(&state, EpochAuthority::settled(7, true));
+    bind_ownership(&state, EpochAuthority::settled(7));
     let (status, _, _) = send_body(
         &app,
         Method::POST,

@@ -6,7 +6,6 @@ use super::{
 };
 
 struct Fake {
-    homed: bool,
     claim: Result<HomeClaim, OwnershipError>,
     claims: Arc<Mutex<Vec<String>>>,
     epoch: u64,
@@ -22,14 +21,10 @@ fn clone_ownership_error(error: &OwnershipError) -> OwnershipError {
 
 #[async_trait::async_trait]
 impl OwnershipAuthority for Fake {
-    async fn has_home(&self, _authority: &str) -> bool {
-        self.homed
-    }
-
     async fn claim_home(&self, authority: &str) -> Result<HomeClaim, OwnershipError> {
         self.claims.lock().unwrap().push(authority.to_owned());
         match &self.claim {
-            Ok(outcome) => Ok(*outcome),
+            Ok(outcome) => Ok(outcome.clone()),
             Err(OwnershipError::NotLeader { leader }) => Err(OwnershipError::NotLeader { leader: leader.clone() }),
             Err(OwnershipError::Unavailable(reason)) => Err(OwnershipError::Unavailable(reason.clone())),
         }
@@ -63,9 +58,8 @@ impl OwnershipAuthority for Fake {
     }
 }
 
-fn group(homed: bool, claim: Result<HomeClaim, OwnershipError>) -> Arc<dyn OwnershipAuthority> {
+fn group(claim: Result<HomeClaim, OwnershipError>) -> Arc<dyn OwnershipAuthority> {
     Arc::new(Fake {
-        homed,
         claim,
         claims: Arc::default(),
         epoch: 7,
@@ -73,10 +67,16 @@ fn group(homed: bool, claim: Result<HomeClaim, OwnershipError>) -> Arc<dyn Owner
     })
 }
 
+fn home_claim() -> HomeClaim {
+    HomeClaim {
+        home: "east".to_owned(),
+        epoch: 7,
+    }
+}
+
 fn transferring_group(transfer: Result<Option<TransferOutcome>, OwnershipError>) -> Arc<dyn OwnershipAuthority> {
     Arc::new(Fake {
-        homed: true,
-        claim: Ok(HomeClaim::AlreadyHomed),
+        claim: Ok(home_claim()),
         claims: Arc::default(),
         epoch: 7,
         transfer,
@@ -84,58 +84,47 @@ fn transferring_group(transfer: Result<Option<TransferOutcome>, OwnershipError>)
 }
 
 #[tokio::test]
-async fn test_first_publish_claims_when_unhomed() {
+async fn test_first_publish_resolves_the_committed_snapshot() {
     let claims = Arc::new(Mutex::new(Vec::new()));
     let authority: Arc<dyn OwnershipAuthority> = Arc::new(Fake {
-        homed: false,
-        claim: Ok(HomeClaim::AssignedHere),
+        claim: Ok(home_claim()),
         claims: claims.clone(),
         epoch: 7,
         transfer: Ok(None),
     });
 
-    assert!(claim_first_publish_home(Some(&authority), "resource-a").await);
+    assert_eq!(
+        claim_first_publish_home(Some(&authority), "resource-a").await.unwrap(),
+        Some(home_claim())
+    );
     assert_eq!(*claims.lock().unwrap(), ["resource-a"]);
 }
 
 #[tokio::test]
-async fn test_first_publish_skips_an_already_homed_authority() {
+async fn test_first_publish_surfaces_a_claim_failure() {
     let claims = Arc::new(Mutex::new(Vec::new()));
     let authority: Arc<dyn OwnershipAuthority> = Arc::new(Fake {
-        homed: true,
-        claim: Err(OwnershipError::Unavailable("must not run".to_owned())),
-        claims: claims.clone(),
-        epoch: 7,
-        transfer: Ok(None),
-    });
-
-    assert!(!claim_first_publish_home(Some(&authority), "resource-a").await);
-    assert!(claims.lock().unwrap().is_empty());
-}
-
-#[tokio::test]
-async fn test_first_publish_swallows_a_claim_failure() {
-    let claims = Arc::new(Mutex::new(Vec::new()));
-    let authority: Arc<dyn OwnershipAuthority> = Arc::new(Fake {
-        homed: false,
         claim: Err(OwnershipError::NotLeader { leader: None }),
         claims: claims.clone(),
         epoch: 7,
         transfer: Ok(None),
     });
 
-    assert!(claim_first_publish_home(Some(&authority), "resource-a").await);
+    assert!(matches!(
+        claim_first_publish_home(Some(&authority), "resource-a").await,
+        Err(OwnershipError::NotLeader { leader: None })
+    ));
     assert_eq!(*claims.lock().unwrap(), ["resource-a"]);
 }
 
 #[tokio::test]
 async fn test_first_publish_is_a_no_op_without_a_group() {
-    assert!(!claim_first_publish_home(None, "resource-a").await);
+    assert_eq!(claim_first_publish_home(None, "resource-a").await.unwrap(), None);
 }
 
 #[tokio::test]
 async fn test_committed_epoch_reads_the_running_group() {
-    let group = group(true, Ok(HomeClaim::AlreadyHomed));
+    let group = group(Ok(home_claim()));
     assert_eq!(committed_authority_epoch(Some(&group), "proj").await, 7);
 }
 
@@ -146,7 +135,7 @@ async fn test_committed_epoch_is_the_unassigned_sentinel_without_a_group() {
 
 #[tokio::test]
 async fn test_admit_epoch_admits_the_committed_epoch_and_fences_a_stale_one() {
-    let group = group(true, Ok(HomeClaim::AlreadyHomed));
+    let group = group(Ok(home_claim()));
     assert!(admit_authority_epoch(Some(&group), "proj", 7).await);
     assert!(!admit_authority_epoch(Some(&group), "proj", 6).await);
 }
@@ -158,7 +147,7 @@ async fn test_admit_epoch_admits_everything_without_a_group() {
 
 #[tokio::test]
 async fn test_committed_epoch_reports_the_group_epoch() {
-    let group = group(false, Ok(HomeClaim::AlreadyHomed));
+    let group = group(Ok(home_claim()));
 
     assert_eq!(group.committed_epoch("proj").await, 7);
 }
@@ -207,8 +196,7 @@ async fn test_transfer_without_a_group_moves_nothing() {
 #[test]
 fn test_cluster_status_snapshots_the_group() {
     let status = Fake {
-        homed: false,
-        claim: Ok(HomeClaim::AlreadyHomed),
+        claim: Ok(home_claim()),
         claims: Arc::default(),
         epoch: 0,
         transfer: Ok(None),

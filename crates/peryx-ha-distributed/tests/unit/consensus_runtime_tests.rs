@@ -5,11 +5,15 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::Duration;
 
 use crate::DatacenterId;
+use crate::ownership::{AssignmentCause, OwnershipCommand};
 use crate::raft::log_store::RaftLogStoreAdapter;
 use crate::raft::network::PeerRaftNetworkFactory;
 use crate::raft::persistence::RaftLogStore;
 use crate::raft::{OwnershipStateMachine, PeryxNode, RaftConfig, RaftNode};
 use openraft::error::{ClientWriteError, ForwardToLeader, RaftError};
+use openraft::storage::RaftStateMachine as _;
+use openraft::testing::log_id;
+use openraft::{Entry, EntryPayload};
 use peryx_ha::{
     ClusterStatus, CommandOutcome, ControlCommand, ControlError, HomeClaim, MembershipControl as _,
     OwnershipAuthority as _, OwnershipError, TransferOutcome,
@@ -320,6 +324,13 @@ async fn leader_node(dir: &TempDir) -> RaftNode {
     node
 }
 
+fn east_claim(epoch: u64) -> HomeClaim {
+    HomeClaim {
+        home: "east".to_owned(),
+        epoch,
+    }
+}
+
 #[tokio::test]
 async fn test_ownership_handle_delegates_to_a_live_group() {
     let dir = tempfile::tempdir().unwrap();
@@ -329,9 +340,7 @@ async fn test_ownership_handle_delegates_to_a_live_group() {
     ));
     let handle = OwnershipHandle::new(&group);
 
-    assert!(!handle.has_home("proj").await);
-    assert_eq!(handle.claim_home("proj").await.unwrap(), HomeClaim::AssignedHere);
-    assert!(handle.has_home("proj").await);
+    assert_eq!(handle.claim_home("proj").await.unwrap(), east_claim(1));
     assert_eq!(handle.committed_epoch("proj").await, 1);
     assert!(handle.admit_epoch("proj", 1).await);
     assert_eq!(
@@ -366,7 +375,6 @@ async fn test_ownership_handle_fails_closed_after_the_group_stops() {
     let handle = OwnershipHandle::new(&group);
     drop(group);
 
-    assert!(!handle.has_home("proj").await);
     assert_eq!(handle.committed_epoch("proj").await, 0);
     assert!(!handle.admit_epoch("proj", 1).await);
     assert!(matches!(
@@ -396,12 +404,12 @@ async fn test_ownership_handle_fails_closed_after_the_group_stops() {
 }
 
 #[tokio::test]
-async fn test_claim_home_assigns_on_first_publish_then_reports_already_homed() {
+async fn test_claim_home_assigns_then_resolves_the_same_snapshot() {
     let dir = tempfile::tempdir().unwrap();
     let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned()));
 
-    assert_eq!(group.claim_home("proj").await.unwrap(), HomeClaim::AssignedHere);
-    assert_eq!(group.claim_home("proj").await.unwrap(), HomeClaim::AlreadyHomed);
+    assert_eq!(group.claim_home("proj").await.unwrap(), east_claim(1));
+    assert_eq!(group.claim_home("proj").await.unwrap(), east_claim(1));
 }
 
 #[tokio::test]
@@ -416,11 +424,36 @@ async fn test_claim_home_without_a_leader_reports_not_leader() {
 }
 
 #[tokio::test]
+async fn test_claim_home_checks_leadership_before_returning_a_cached_assignment() {
+    let dir = tempfile::tempdir().unwrap();
+    let node = started_node(&dir).await;
+    let mut state_machine = node.state_machine().clone();
+    state_machine
+        .apply([Entry {
+            log_id: log_id(1, voter_id("east"), 1),
+            payload: EntryPayload::Normal(OwnershipCommand::AssignHome {
+                authority: crate::AuthorityKey("proj".to_owned()),
+                home: DatacenterId("east".to_owned()),
+                cause: AssignmentCause::FirstPublish,
+            }),
+        }])
+        .await
+        .unwrap();
+    let group = OwnershipGroup::new(node, DatacenterId("east".to_owned()));
+
+    assert!(matches!(
+        group.claim_home("proj").await,
+        Err(OwnershipError::NotLeader { leader: None })
+    ));
+}
+
+#[tokio::test]
 async fn test_claim_home_on_a_stopped_group_is_unavailable() {
     let dir = tempfile::tempdir().unwrap();
     let node = leader_node(&dir).await;
+    let group = OwnershipGroup::new(node.clone(), DatacenterId("east".to_owned()));
+    assert_eq!(group.claim_home("proj").await.unwrap(), east_claim(1));
     node.raft().shutdown().await.unwrap();
-    let group = OwnershipGroup::new(node, DatacenterId("east".to_owned()));
 
     assert!(matches!(
         group.claim_home("proj").await,
@@ -429,28 +462,12 @@ async fn test_claim_home_on_a_stopped_group_is_unavailable() {
 }
 
 #[tokio::test]
-async fn test_has_home_reflects_a_committed_assignment() {
-    let dir = tempfile::tempdir().unwrap();
-    let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned()));
-
-    assert!(!group.has_home("proj").await);
-    assert_eq!(
-        group.claim_home("proj").await.unwrap(),
-        peryx_ha::HomeClaim::AssignedHere
-    );
-    assert!(group.has_home("proj").await);
-}
-
-#[tokio::test]
 async fn test_committed_epoch_reflects_the_first_assignment() {
     let dir = tempfile::tempdir().unwrap();
     let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned()));
 
     assert_eq!(group.committed_epoch("proj").await, 0);
-    assert_eq!(
-        group.claim_home("proj").await.unwrap(),
-        peryx_ha::HomeClaim::AssignedHere
-    );
+    assert_eq!(group.claim_home("proj").await.unwrap(), east_claim(1));
     assert_eq!(group.committed_epoch("proj").await, 1);
 }
 
@@ -458,10 +475,7 @@ async fn test_committed_epoch_reflects_the_first_assignment() {
 async fn test_admit_epoch_fences_a_superseded_epoch() {
     let dir = tempfile::tempdir().unwrap();
     let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned()));
-    assert_eq!(
-        group.claim_home("proj").await.unwrap(),
-        peryx_ha::HomeClaim::AssignedHere
-    );
+    assert_eq!(group.claim_home("proj").await.unwrap(), east_claim(1));
 
     assert!(group.admit_epoch("proj", 1).await, "the committed epoch is admitted");
     assert!(
@@ -479,10 +493,7 @@ async fn test_admit_epoch_fences_a_superseded_epoch() {
 async fn test_transfer_home_moves_a_homed_authority_and_advances_the_epoch() {
     let dir = tempfile::tempdir().unwrap();
     let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned()));
-    assert_eq!(
-        group.claim_home("proj").await.unwrap(),
-        peryx_ha::HomeClaim::AssignedHere
-    );
+    assert_eq!(group.claim_home("proj").await.unwrap(), east_claim(1));
 
     let moved = group.transfer_home("proj", "west").await.unwrap();
     assert_eq!(
@@ -510,10 +521,7 @@ async fn test_transfer_home_of_an_unassigned_authority_moves_nothing() {
 async fn test_transfer_home_to_the_current_home_moves_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned()));
-    assert_eq!(
-        group.claim_home("proj").await.unwrap(),
-        peryx_ha::HomeClaim::AssignedHere
-    );
+    assert_eq!(group.claim_home("proj").await.unwrap(), east_claim(1));
 
     assert_eq!(group.transfer_home("proj", "east").await.unwrap(), None);
     assert_eq!(group.committed_epoch("proj").await, 1);
@@ -746,10 +754,7 @@ async fn test_replacing_a_voter_without_a_leader_forwards_from_the_learner_add()
 async fn test_transferring_an_assigned_authority_commits() {
     let dir = tempfile::tempdir().unwrap();
     let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned()));
-    assert_eq!(
-        group.claim_home("proj").await.unwrap(),
-        peryx_ha::HomeClaim::AssignedHere
-    );
+    assert_eq!(group.claim_home("proj").await.unwrap(), east_claim(1));
 
     let receipt = group
         .submit(ControlCommand::TransferAuthority {
@@ -766,10 +771,7 @@ async fn test_transferring_an_assigned_authority_commits() {
 async fn test_transferring_to_the_same_home_is_invalid() {
     let dir = tempfile::tempdir().unwrap();
     let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned()));
-    assert_eq!(
-        group.claim_home("proj").await.unwrap(),
-        peryx_ha::HomeClaim::AssignedHere
-    );
+    assert_eq!(group.claim_home("proj").await.unwrap(), east_claim(1));
 
     let result = group
         .submit(ControlCommand::TransferAuthority {
@@ -832,10 +834,7 @@ async fn test_an_authority_command_without_a_leader_reports_the_forward_target()
 async fn test_advancing_an_assigned_authority_commits() {
     let dir = tempfile::tempdir().unwrap();
     let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned()));
-    assert_eq!(
-        group.claim_home("proj").await.unwrap(),
-        peryx_ha::HomeClaim::AssignedHere
-    );
+    assert_eq!(group.claim_home("proj").await.unwrap(), east_claim(1));
 
     let receipt = group
         .submit(ControlCommand::AdvanceEpoch {

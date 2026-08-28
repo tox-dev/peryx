@@ -257,7 +257,6 @@ async fn prepare_with_listener(
 
 async fn assert_ownership_unavailable(state: &AppState) {
     let authority = state.serving.ownership_authority().unwrap();
-    assert!(!authority.has_home("resource").await);
     assert!(matches!(
         authority.claim_home("resource").await,
         Err(peryx_ha::OwnershipError::Unavailable(reason)) if reason == "ownership is not active"

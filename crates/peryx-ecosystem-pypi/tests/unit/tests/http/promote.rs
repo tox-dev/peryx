@@ -435,7 +435,6 @@ async fn test_promote_at_the_current_authority_epoch_applies() {
         AuthorityDouble {
             committed: 4,
             current: 4,
-            homed: true,
         },
     );
     let (status, body) = request_response(
@@ -460,7 +459,6 @@ async fn test_promote_under_a_superseded_epoch_conflicts_and_promotes_nothing() 
         AuthorityDouble {
             committed: 5,
             current: 6,
-            homed: true,
         },
     );
     let (status, body) = request_response(

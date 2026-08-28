@@ -7,6 +7,7 @@ use super::support::*;
 
 struct RecordingAuthority {
     homed: HashSet<String>,
+    home: &'static str,
     fail_claim: bool,
     epoch: u64,
     admit: bool,
@@ -17,24 +18,29 @@ struct RecordingAuthority {
 
 impl RecordingAuthority {
     fn unhomed() -> Arc<Self> {
-        Self::new(HashSet::new(), false, 0, true)
+        Self::new(HashSet::new(), "local", false, 0, true)
     }
 
     fn already_homed(authority: &str) -> Arc<Self> {
-        Self::new(HashSet::from([authority.to_owned()]), false, 0, true)
+        Self::new(HashSet::from([authority.to_owned()]), "local", false, 1, true)
     }
 
     fn failing() -> Arc<Self> {
-        Self::new(HashSet::new(), true, 0, true)
+        Self::new(HashSet::new(), "local", true, 0, true)
+    }
+
+    fn remote() -> Arc<Self> {
+        Self::new(HashSet::new(), "west", false, 0, true)
     }
 
     fn homed_at_epoch(authority: &str, epoch: u64, admit: bool) -> Arc<Self> {
-        Self::new(HashSet::from([authority.to_owned()]), false, epoch, admit)
+        Self::new(HashSet::from([authority.to_owned()]), "local", false, epoch, admit)
     }
 
-    fn new(homed: HashSet<String>, fail_claim: bool, epoch: u64, admit: bool) -> Arc<Self> {
+    fn new(homed: HashSet<String>, home: &'static str, fail_claim: bool, epoch: u64, admit: bool) -> Arc<Self> {
         Arc::new(Self {
             homed,
+            home,
             fail_claim,
             epoch,
             admit,
@@ -59,17 +65,18 @@ impl RecordingAuthority {
 
 #[async_trait::async_trait]
 impl OwnershipAuthority for RecordingAuthority {
-    async fn has_home(&self, authority: &str) -> bool {
-        self.checked.lock().unwrap().push(authority.to_owned());
-        self.homed.contains(authority)
-    }
-
     async fn claim_home(&self, authority: &str) -> Result<HomeClaim, OwnershipError> {
-        self.claimed.lock().unwrap().push(authority.to_owned());
+        self.checked.lock().unwrap().push(authority.to_owned());
+        if !self.homed.contains(authority) {
+            self.claimed.lock().unwrap().push(authority.to_owned());
+        }
         if self.fail_claim {
             Err(OwnershipError::Unavailable("ownership group unreachable".to_owned()))
         } else {
-            Ok(HomeClaim::AssignedHere)
+            Ok(HomeClaim {
+                home: self.home.to_owned(),
+                epoch: self.epoch.max(1),
+            })
         }
     }
 
@@ -139,13 +146,12 @@ async fn test_first_publish_claims_the_projects_home() {
     let (status, body) = publish(&h.state).await;
 
     assert_eq!((status, body.as_str()), (StatusCode::OK, "upload accepted"));
-    assert_eq!(group.checked(), ["peryxpkg"], "the path reads the home before claiming");
+    assert_eq!(group.checked(), ["peryxpkg"], "the path resolves the committed home");
     assert_eq!(
         group.claimed(),
         ["peryxpkg"],
         "the first stored file claims the normalized project's home",
     );
-    // The claimed key is the normalized project key the store uses, so name variants route to one home.
     assert_eq!(
         h.state
             .serving
@@ -158,22 +164,38 @@ async fn test_first_publish_claims_the_projects_home() {
 }
 
 #[tokio::test]
-async fn test_repeat_publish_of_a_homed_project_makes_no_claim() {
+async fn test_a_local_winner_publishes_once_across_an_identical_retry() {
     let h = authority_harness().await;
-    let group = RecordingAuthority::already_homed("peryxpkg");
+    let group = RecordingAuthority::unhomed();
     bind_ownership_authority(&h.state, group.clone());
-    let (status, _) = publish(&h.state).await;
+    let first = publish(&h.state).await;
+    let second = publish(&h.state).await;
 
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(group.checked(), ["peryxpkg"], "the path reads the existing home");
-    assert!(
-        group.claimed().is_empty(),
-        "an already-homed project costs one local read and no consensus round",
+    assert_eq!(
+        (first, second),
+        (
+            (StatusCode::OK, "upload accepted".to_owned()),
+            (StatusCode::OK, "upload accepted".to_owned())
+        )
+    );
+    assert_eq!(
+        (
+            group.checked(),
+            group.claimed(),
+            group.admitted(),
+            h.state
+                .serving
+                .meta
+                .list_upload_entries("hosted", "peryxpkg")
+                .unwrap()
+                .len(),
+        ),
+        (vec!["peryxpkg".to_owned()], vec!["peryxpkg".to_owned()], vec![1], 1,)
     );
 }
 
 #[tokio::test]
-async fn test_a_home_claim_that_cannot_commit_does_not_block_the_publish() {
+async fn test_a_home_claim_that_cannot_commit_keeps_the_publish_pending() {
     let h = authority_harness().await;
     let group = RecordingAuthority::failing();
     bind_ownership_authority(&h.state, group.clone());
@@ -181,18 +203,47 @@ async fn test_a_home_claim_that_cannot_commit_does_not_block_the_publish() {
 
     assert_eq!(
         (status, body.as_str()),
-        (StatusCode::OK, "upload accepted"),
-        "a claim that cannot commit is logged, never surfaced, and never blocks the publish",
+        (StatusCode::SERVICE_UNAVAILABLE, "upload storage failed"),
     );
     assert_eq!(group.claimed(), ["peryxpkg"], "the claim was attempted");
-    assert_eq!(
+    assert!(
         h.state
             .serving
             .meta
             .list_upload_entries("hosted", "peryxpkg")
             .unwrap()
-            .len(),
-        1
+            .is_empty(),
+        "the failed claim publishes no file"
+    );
+}
+
+#[tokio::test]
+async fn test_a_remote_home_winner_cannot_expose_staged_bytes() {
+    let h = authority_harness().await;
+    let group = RecordingAuthority::remote();
+    bind_ownership_authority(&h.state, group);
+    let bytes = fixture_sdist();
+    let digest = peryx_storage::blob::Digest::of(&bytes);
+
+    assert_eq!(publish(&h.state).await.0, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(h.state.serving.blobs.open(&digest, None).await.is_err());
+    assert_eq!(
+        get(
+            &h.state,
+            &local_artifact_url("root/pypi", digest.as_str(), "peryxpkg-1.0.tar.gz"),
+            None,
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    assert!(
+        h.state
+            .serving
+            .meta
+            .list_upload_entries("hosted", "peryxpkg")
+            .unwrap()
+            .is_empty()
     );
 }
 

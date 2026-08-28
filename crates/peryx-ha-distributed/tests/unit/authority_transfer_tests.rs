@@ -63,12 +63,11 @@ struct FixedAuthority(u64);
 
 #[async_trait::async_trait]
 impl OwnershipAuthority for FixedAuthority {
-    async fn has_home(&self, _authority: &str) -> bool {
-        true
-    }
-
     async fn claim_home(&self, _authority: &str) -> Result<HomeClaim, OwnershipError> {
-        Ok(HomeClaim::AlreadyHomed)
+        Ok(HomeClaim {
+            home: "east".to_owned(),
+            epoch: self.0,
+        })
     }
 
     fn cluster_status(&self) -> ClusterStatus {
@@ -215,8 +214,13 @@ async fn test_ownership_authority_supplies_the_committed_epoch() {
 #[tokio::test]
 async fn test_fixed_authority_answers_its_snapshot() {
     let authority = FixedAuthority(7);
-    assert!(authority.has_home("proj").await);
-    assert_eq!(authority.claim_home("proj").await.unwrap(), HomeClaim::AlreadyHomed);
+    assert_eq!(
+        authority.claim_home("proj").await.unwrap(),
+        HomeClaim {
+            home: "east".to_owned(),
+            epoch: 7,
+        }
+    );
     assert_eq!(authority.cluster_status().term, 7);
     assert_eq!(OwnershipAuthority::committed_epoch(&authority, "proj").await, 7);
     assert!(authority.admit_epoch("proj", 7).await);

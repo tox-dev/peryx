@@ -16,7 +16,7 @@ use peryx::config::{
 use peryx::replication::ReplicationRuntime;
 use peryx::server::{build_state, router_for};
 use peryx_driver::state::AppState;
-use peryx_ha::AvailabilityHandle;
+use peryx_ha::{ActiveAvailabilityHandle, AvailabilityHandle};
 use peryx_ha_distributed::primary_router;
 use peryx_identity::{Action, GrantScope, Role};
 use peryx_policy::PolicyConfig;
@@ -44,7 +44,7 @@ const WRITER_IDENTITY: &str = "writer-a";
 #[tokio::test]
 async fn test_a_quota_admits_or_refuses_a_write_in_every_mode(#[case] build: fn(&tempfile::TempDir) -> Config) {
     let dir = tempfile::tempdir().unwrap();
-    let (state, router) = writer_node(&build(&dir));
+    let (state, router, _availability) = writer_node(&build(&dir)).await;
     let root = admin(&state).await;
 
     assert_eq!(upload(&router, "tight", UPLOAD).await, StatusCode::FORBIDDEN);
@@ -63,7 +63,7 @@ async fn test_a_quota_admits_or_refuses_a_write_in_every_mode(#[case] build: fn(
 #[tokio::test]
 async fn test_retention_plans_authoritative_candidates_in_every_mode(#[case] build: fn(&tempfile::TempDir) -> Config) {
     let dir = tempfile::tempdir().unwrap();
-    let (state, router) = writer_node(&build(&dir));
+    let (state, router, _availability) = writer_node(&build(&dir)).await;
     let root = admin(&state).await;
     let reader = reader(&state).await;
     assert_eq!(upload(&router, "store", UPLOAD).await, StatusCode::OK);
@@ -116,7 +116,7 @@ async fn test_the_catalog_lists_published_projects_in_every_mode() {
         ha_writer_config,
     ] {
         let dir = tempfile::tempdir().unwrap();
-        let (_state, router) = writer_node(&build(&dir));
+        let (_state, router, _availability) = writer_node(&build(&dir)).await;
 
         assert!(catalog(&router).await.is_empty());
         assert_eq!(upload(&router, "store", UPLOAD).await, StatusCode::OK);
@@ -340,16 +340,62 @@ fn claim_writer(dir: &tempfile::TempDir) {
         .unwrap();
 }
 
-fn writer_node(config: &Config) -> (Arc<AppState>, Router) {
+async fn writer_node(config: &Config) -> (Arc<AppState>, Router, Option<Box<dyn ActiveAvailabilityHandle>>) {
     let state = build_state(config).unwrap();
-    let router = if matches!(config.availability, AvailabilityConfig::None) {
-        router_for(state.clone())
-    } else {
-        ReplicationRuntime::new(config, &state)
-            .unwrap()
-            .mount(router_for(state.clone()))
-    };
-    (state, router)
+    if matches!(config.availability, AvailabilityConfig::None) {
+        return (state.clone(), router_for(state), None);
+    }
+    let listener = matches!(config.availability, AvailabilityConfig::Ha(_)).then(test_listener);
+    let prepared = ReplicationRuntime::new(config, &state)
+        .unwrap()
+        .prepare(
+            &state,
+            peryx_ha_distributed::reference_inventory(
+                peryx_driver::DriverSet::default().with(Arc::new(peryx_ecosystem_pypi::PypiServing)),
+                state.serving.meta.clone(),
+                config.indexes.iter().map(|index| index.name.clone()).collect(),
+            ),
+            listener,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        prepared.handle.listener_address().is_some(),
+        matches!(config.availability, AvailabilityConfig::Ha(_))
+    );
+    let router = router_for(state.clone()).merge(prepared.public_routes);
+    let active = AvailabilityHandle::activate(prepared.handle).unwrap();
+    (state, router, Some(Box::new(active)))
+}
+
+struct TestListener(std::net::TcpListener);
+
+impl peryx_ha_distributed::PreparedAvailabilityListener for TestListener {
+    fn address(&self) -> std::net::SocketAddr {
+        self.0.local_addr().unwrap()
+    }
+
+    fn serve(
+        self: Box<Self>,
+        router: Router,
+        shutdown: tokio_util::sync::CancellationToken,
+    ) -> Result<peryx_ha_distributed::AvailabilityListenerFuture, peryx_ha_distributed::AvailabilityListenerError> {
+        self.0.set_nonblocking(true)?;
+        let listener = tokio::net::TcpListener::from_std(self.0)?;
+        Ok(Box::pin(async move {
+            axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .with_graceful_shutdown(shutdown.cancelled_owned())
+            .await
+            .map_err(Into::into)
+        }))
+    }
+}
+
+fn test_listener() -> Box<dyn peryx_ha_distributed::PreparedAvailabilityListener> {
+    Box::new(TestListener(std::net::TcpListener::bind("127.0.0.1:0").unwrap()))
 }
 
 async fn replica_node(config: &Config) -> (Arc<AppState>, Router, peryx_ha_distributed::DistributedHandle) {

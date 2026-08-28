@@ -57,12 +57,11 @@ impl ReclamationFrontiers for EmptyFrontiers {
 
 #[async_trait::async_trait]
 impl OwnershipAuthority for StaticAuthority {
-    async fn has_home(&self, _authority: &str) -> bool {
-        true
-    }
-
     async fn claim_home(&self, _authority: &str) -> Result<HomeClaim, OwnershipError> {
-        Ok(HomeClaim::AssignedHere)
+        Ok(HomeClaim {
+            home: "local".to_owned(),
+            epoch: 7,
+        })
     }
 
     fn cluster_status(&self) -> ClusterStatus {
@@ -311,8 +310,13 @@ async fn worker_assembly_binds_distributed_jobs() {
         RuntimeMemberRole::Replica,
     ));
     let authority = Arc::new(StaticAuthority);
-    assert!(authority.has_home("resource").await);
-    assert_eq!(authority.claim_home("resource").await.unwrap(), HomeClaim::AssignedHere);
+    assert_eq!(
+        authority.claim_home("resource").await.unwrap(),
+        HomeClaim {
+            home: "local".to_owned(),
+            epoch: 7,
+        }
+    );
     assert_eq!(authority.cluster_status().term, 7);
     assert_eq!(authority.committed_epoch("resource").await, 7);
     assert!(authority.admit_epoch("resource", 7).await);
@@ -367,7 +371,6 @@ async fn deferred_worker_inputs_fail_closed_until_bound_and_active() {
     let ownership = DeferredOwnership::new(active.clone());
     ownership.bind(Some(Arc::new(StaticAuthority)));
 
-    assert!(!ownership.has_home("resource").await);
     assert!(matches!(
         ownership.claim_home("resource").await,
         Err(OwnershipError::Unavailable(_))
@@ -388,8 +391,13 @@ async fn deferred_worker_inputs_fail_closed_until_bound_and_active() {
     ));
 
     active.store(true, std::sync::atomic::Ordering::Release);
-    assert!(ownership.has_home("resource").await);
-    assert_eq!(ownership.claim_home("resource").await.unwrap(), HomeClaim::AssignedHere);
+    assert_eq!(
+        ownership.claim_home("resource").await.unwrap(),
+        HomeClaim {
+            home: "local".to_owned(),
+            epoch: 7,
+        }
+    );
     assert_eq!(ownership.cluster_status().term, 7);
     assert_eq!(ownership.committed_epoch("resource").await, 7);
     assert!(ownership.admit_epoch("resource", 7).await);

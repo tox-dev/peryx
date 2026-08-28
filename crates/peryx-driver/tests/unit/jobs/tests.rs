@@ -1811,7 +1811,6 @@ async fn test_search_rebuild_surfaces_an_indexer_failure() {
 struct TestAuthority {
     epoch: Arc<AtomicU64>,
     term: u64,
-    home: bool,
     claims: Arc<AtomicUsize>,
 }
 
@@ -1819,20 +1818,18 @@ fn test_authority(epoch: Arc<AtomicU64>, term: u64) -> Arc<TestAuthority> {
     Arc::new(TestAuthority {
         epoch,
         term,
-        home: true,
         claims: Arc::new(AtomicUsize::new(0)),
     })
 }
 
 #[async_trait]
 impl crate::state::OwnershipAuthority for TestAuthority {
-    async fn has_home(&self, _authority: &str) -> bool {
-        self.home
-    }
-
     async fn claim_home(&self, _authority: &str) -> Result<crate::state::HomeClaim, crate::state::OwnershipError> {
         self.claims.fetch_add(1, Ordering::SeqCst);
-        Ok(crate::state::HomeClaim::AssignedHere)
+        Ok(crate::state::HomeClaim {
+            home: "east".to_owned(),
+            epoch: self.epoch.load(Ordering::SeqCst),
+        })
     }
 
     fn cluster_status(&self) -> crate::state::ClusterStatus {
@@ -1861,22 +1858,18 @@ impl crate::state::OwnershipAuthority for TestAuthority {
     }
 }
 
-#[rstest]
-#[case::unowned(false, 1)]
-#[case::homed(true, 0)]
 #[tokio::test]
-async fn test_first_publish_home_claims_only_unowned_authorities(#[case] home: bool, #[case] expected_claims: usize) {
+async fn test_first_publish_home_resolves_the_authority() {
     let claims = Arc::new(AtomicUsize::new(0));
     let (_dir, state) = serving_with_authority(Arc::new(TestAuthority {
         epoch: Arc::new(AtomicU64::new(0)),
         term: 0,
-        home,
         claims: claims.clone(),
     }));
 
-    state.claim_first_publish_home("proj").await;
+    state.claim_first_publish_home("proj").await.unwrap();
 
-    assert_eq!(claims.load(Ordering::SeqCst), expected_claims);
+    assert_eq!(claims.load(Ordering::SeqCst), 1);
 }
 
 struct AdvancingJob {

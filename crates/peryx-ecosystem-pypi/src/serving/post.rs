@@ -213,13 +213,6 @@ async fn accept_upload(context: UploadContext<'_>, multipart: Multipart) -> Resp
     {
         return block;
     }
-    let quota = match project_quota_reservation(state, index, hosted, &prepared, &project, &filename) {
-        Ok(quota) => quota,
-        Err(block) => {
-            emit_upload_status_event(&audit, &block);
-            return block.response;
-        }
-    };
     if let Some(block) = upload_status_response(
         cache::project_status(state, index, &project).await,
         &index.route,
@@ -228,7 +221,7 @@ async fn accept_upload(context: UploadContext<'_>, multipart: Multipart) -> Resp
         emit_upload_status_event(&audit, &block);
         return block.response;
     }
-    admit_and_store(state, &hosted.name, &index.route, &project, prepared, quota, &audit).await
+    admit_and_store(state, index, hosted, &project, prepared, &audit).await
 }
 
 /// Durably admit the upload into the ingress datacenter, store it, and acknowledge it against the
@@ -240,24 +233,24 @@ async fn accept_upload(context: UploadContext<'_>, multipart: Multipart) -> Resp
 /// response unchanged and nothing is stored.
 async fn admit_and_store(
     state: &Arc<ServingState>,
-    hosted_name: &str,
-    route: &str,
+    index: &Index,
+    hosted: &Index,
     project: &str,
     prepared: upload::PreparedUpload,
-    quota: Option<PendingQuota>,
     audit: &UploadAudit<'_>,
 ) -> Response {
     let digest = prepared.digest.clone();
+    let incoming = prepared
+        .record
+        .file
+        .size
+        .expect("a prepared upload carries its byte size");
     let request = admission::AdmissionRequest {
-        tenant: route,
+        tenant: &index.route,
         authority: project,
         filename: &prepared.filename,
         digest: prepared.digest.as_str(),
-        size: prepared
-            .record
-            .file
-            .size
-            .expect("a prepared upload carries its byte size"),
+        size: incoming,
         ingress_dc: &admission::ingress_dc(state.availability_topology()),
     };
     let now = (state.clock)();
@@ -283,19 +276,23 @@ async fn admit_and_store(
     )) {
         return response;
     }
-    let stored = match cache::store_upload(state, hosted_name, prepared, quota).await {
+    let authority = crate::name::authority_key(project);
+    let fence = match first_publish_fence(state, &authority).await {
+        Ok(fence) => fence,
+        Err(response) => return response,
+    };
+    let quota = match project_quota_reservation(state, index, hosted, project, audit, incoming) {
+        Ok(quota) => quota,
+        Err(block) => {
+            emit_upload_status_event(audit, &block);
+            return block.response;
+        }
+    };
+    let stored = match cache::store_upload(state, &hosted.name, project, prepared, quota, fence).await {
         Ok(stored) => stored,
         // A store fault stays a 5xx and leaves the operation pending, so a retry re-drives it.
         Err(err) => return upload_store_error_response(audit, err),
     };
-    // The first stored file publishes the project, so it assigns the project's home datacenter through
-    // the ownership group; a later file finds a home already set and only reads it. The project routes
-    // through its canonical authority key - its PEP 503 normalized name - so every name variant homes
-    // under one authority.
-    let authority = crate::name::authority_key(project);
-    if stored.stored {
-        state.claim_first_publish_home(&authority).await;
-    }
     // The bytes are durable whether this stored fresh content or deduplicated an identical resend, so the
     // intent advances to admitted either way, which lets the reaper reclaim it.
     let _ = state
@@ -325,6 +322,29 @@ async fn admit_and_store(
         );
     }
     (response.status, response.body).into_response()
+}
+
+async fn first_publish_fence(state: &ServingState, authority: &str) -> Result<u64, Response> {
+    match state.claim_first_publish_home(authority).await {
+        Ok(None) => Ok(0),
+        Ok(Some(claim)) if state.availability_topology().local_datacenter() == Some(claim.home.as_str()) => {
+            Ok(claim.epoch)
+        }
+        Ok(Some(_)) => Err(first_publish_unavailable()),
+        Err(error) => {
+            tracing::warn!(%error, authority, "first-publish home could not be resolved");
+            Err(first_publish_unavailable())
+        }
+    }
+}
+
+fn first_publish_unavailable() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        [(header::RETRY_AFTER, "1")],
+        "project authority is unavailable; retry the upload",
+    )
+        .into_response()
 }
 
 /// Short-circuit an admitted write on its operation claim: replay a write that already published, or fail
@@ -368,28 +388,19 @@ fn project_quota_reservation(
     state: &Arc<ServingState>,
     index: &Index,
     hosted: &Index,
-    prepared: &upload::PreparedUpload,
     project: &str,
-    filename: &str,
+    audit: &UploadAudit<'_>,
+    incoming: u64,
 ) -> Result<Option<PendingQuota>, Box<UploadStatusBlock>> {
     let Some(quota) = effective_project_quota(index, hosted) else {
         return Ok(None);
     };
-    let exists = cache::upload_exists(state, &hosted.name, project, filename);
-    if upload_quota_result(exists, &index.route, project)? {
-        return Ok(None);
-    }
-    let incoming = prepared
-        .record
-        .file
-        .size
-        .expect("a prepared upload carries its byte size");
     let package = PackageName::new(project);
     let request = quota::quota_reservation(
         &hosted.name,
         &package,
-        Some(prepared.record.version.as_str()),
-        prepared.digest.as_str(),
+        Some(audit.version),
+        audit.digest,
         incoming,
         (state.clock)(),
     );
@@ -407,13 +418,13 @@ fn project_quota_reservation(
                     .max_project_bytes
                     .expect("a project-byte rejection has a configured limit"),
                 project,
-                filename,
+                audit.filename,
                 total,
             )))
         }
         Admission::Rejected(QuotaRejection::Limits(violations)) => {
             quota::record_decision(state, hosted, project, true);
-            Err(Box::new(upload_limits_denial(&violations, project, filename)))
+            Err(Box::new(upload_limits_denial(&violations, project, audit.filename)))
         }
     }
 }

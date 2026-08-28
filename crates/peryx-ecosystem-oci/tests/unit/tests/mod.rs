@@ -73,17 +73,13 @@ impl TestOwnership {
 
 #[async_trait::async_trait]
 impl peryx_ha::OwnershipAuthority for TestOwnership {
-    async fn has_home(&self, authority: &str) -> bool {
-        match self.ownership() {
-            Some(owner) => owner.has_home(authority).await,
-            None => true,
-        }
-    }
-
     async fn claim_home(&self, authority: &str) -> Result<peryx_ha::HomeClaim, peryx_ha::OwnershipError> {
         match self.ownership() {
             Some(owner) => owner.claim_home(authority).await,
-            None => Ok(peryx_ha::HomeClaim::AlreadyHomed),
+            None => Ok(peryx_ha::HomeClaim {
+                home: "local".to_owned(),
+                epoch: 0,
+            }),
         }
     }
 
@@ -299,7 +295,7 @@ fn install_test_distributed(state: &mut AppState, availability: Option<Arc<dyn p
     state
         .install_distributed_availability(peryx_ha::AvailabilityStateInstall {
             role: peryx_core::NodeRole::Writer,
-            topology: peryx_core::TopologyConfig::default(),
+            topology: local_topology(),
             blobs: peryx_ha::BlobServices::new(availability, Arc::new(LocalDurability)),
             analytics: Arc::new(UnavailableCompleteness),
             capabilities: peryx_ha::AvailabilityCapabilities {
@@ -311,6 +307,20 @@ fn install_test_distributed(state: &mut AppState, availability: Option<Arc<dyn p
         })
         .unwrap();
     state.register_plugin_service(ownership).unwrap();
+}
+
+fn local_topology() -> peryx_core::TopologyConfig {
+    peryx_core::TopologyConfig {
+        mode: peryx_core::TopologyMode::Ha,
+        group: Some("test".to_owned()),
+        members: vec![peryx_core::TopologyMember {
+            node: "writer".to_owned(),
+            dc: "local".to_owned(),
+            address: "http://127.0.0.1".to_owned(),
+            role: peryx_core::NodeRole::Writer,
+        }],
+        local_node: Some("writer".to_owned()),
+    }
 }
 
 struct LocalDurability;
@@ -756,16 +766,14 @@ fn oci_digest(bytes: &[u8]) -> String {
 struct EpochAuthority {
     committed: std::sync::atomic::AtomicU64,
     current: std::sync::atomic::AtomicU64,
-    homed: bool,
     entered: Option<Arc<tokio::sync::Semaphore>>,
 }
 
 impl EpochAuthority {
-    fn settled(epoch: u64, homed: bool) -> Arc<Self> {
+    fn settled(epoch: u64) -> Arc<Self> {
         Arc::new(Self {
             committed: std::sync::atomic::AtomicU64::new(epoch),
             current: std::sync::atomic::AtomicU64::new(epoch),
-            homed,
             entered: None,
         })
     }
@@ -774,7 +782,6 @@ impl EpochAuthority {
         Arc::new(Self {
             committed: std::sync::atomic::AtomicU64::new(leased),
             current: std::sync::atomic::AtomicU64::new(current),
-            homed: true,
             entered: None,
         })
     }
@@ -785,7 +792,6 @@ impl EpochAuthority {
             Arc::new(Self {
                 committed: std::sync::atomic::AtomicU64::new(epoch),
                 current: std::sync::atomic::AtomicU64::new(epoch),
-                homed: true,
                 entered: Some(entered.clone()),
             }),
             entered,
@@ -800,10 +806,6 @@ impl EpochAuthority {
 
 #[async_trait::async_trait]
 impl peryx_driver::state::OwnershipAuthority for EpochAuthority {
-    async fn has_home(&self, _authority: &str) -> bool {
-        self.homed
-    }
-
     async fn committed_epoch(&self, _authority: &str) -> u64 {
         self.committed.load(std::sync::atomic::Ordering::SeqCst)
     }
@@ -821,7 +823,10 @@ impl peryx_driver::state::OwnershipAuthority for EpochAuthority {
         &self,
         _authority: &str,
     ) -> Result<peryx_driver::state::HomeClaim, peryx_driver::state::OwnershipError> {
-        Ok(peryx_driver::state::HomeClaim::AlreadyHomed)
+        Ok(peryx_driver::state::HomeClaim {
+            home: "local".to_owned(),
+            epoch: self.committed.load(std::sync::atomic::Ordering::SeqCst),
+        })
     }
 
     fn cluster_status(&self) -> peryx_driver::state::ClusterStatus {

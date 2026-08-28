@@ -1118,13 +1118,6 @@ impl DeferredOwnership {
 
 #[async_trait::async_trait]
 impl OwnershipAuthority for DeferredOwnership {
-    async fn has_home(&self, authority: &str) -> bool {
-        match self.current() {
-            Some(ownership) => ownership.has_home(authority).await,
-            None => false,
-        }
-    }
-
     async fn claim_home(&self, authority: &str) -> Result<peryx_ha::HomeClaim, peryx_ha::OwnershipError> {
         match self.current() {
             Some(ownership) => ownership.claim_home(authority).await,

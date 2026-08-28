@@ -66,6 +66,7 @@ sha2.workspace = true
 tar.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["io-util", "net", "process", "sync", "test-util", "time"] }
+tokio-util.workspace = true
 url.workspace = true
 wiremock.workspace = true
 zip.workspace = true

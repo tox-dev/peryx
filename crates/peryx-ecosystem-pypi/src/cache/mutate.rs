@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use crate::quota::PendingQuota;
 use crate::store::PypiStore as _;
-use crate::store::{Guard, PromotedRelease, UploadMutation, upload_key};
+use crate::store::{Guard, PromotedRelease, UploadMutation};
 use crate::upload::{self, PreparedUpload, TrashInfo, Uploaded};
 use crate::{ProjectStatus, Yanked, file_matches_version, parse_distribution_filename, to_json, versions_match};
 use peryx_core::path::local_artifact_url;
@@ -49,40 +49,33 @@ pub struct StoredUpload {
     pub commit: Option<peryx_storage::meta::JournalCommit>,
 }
 
+/// Stage and publish an upload under the exact authority epoch its caller resolved.
+///
+/// # Errors
+/// Returns [`CacheError::AuthoritySuperseded`] when the epoch moved, or a store error when staging or
+/// publication fails.
 pub async fn store_upload(
     state: &ServingState,
     name: &str,
+    project: &str,
     prepared: PreparedUpload,
     quota: Option<PendingQuota>,
+    fence: u64,
 ) -> Result<StoredUpload, CacheError> {
-    let project = prepared.normalized.clone();
-    let fence = control_epoch(state, &project).await;
     let publish = upload::stage_publish(&state.blobs, prepared).await?;
-    admit_control(state, &project, fence).await?;
+    admit_control(state, project, fence).await?;
     let published = upload::commit_publish(&state.meta, name, publish, quota, crate::replication_enabled(state))?;
     for (digest, size) in &published.placements {
         state.record_home_placement(digest.as_str(), *size, fence);
     }
     state.record_operation_trace(peryx_driver::state::OperationKind::Publish, fence);
     if published.stored {
-        state.invalidate_resource(&project);
+        state.invalidate_resource(project);
     }
     Ok(StoredUpload {
         stored: published.stored,
         commit: published.commit,
     })
-}
-
-/// Whether the hosted target already owns a filename, which makes the immutable upload an
-/// idempotent no-op or a content conflict rather than a new quota allocation.
-///
-/// # Errors
-/// Returns [`CacheError`] if the store lookup fails.
-pub fn upload_exists(state: &ServingState, hosted: &str, normalized: &str, filename: &str) -> Result<bool, CacheError> {
-    Ok(state
-        .meta
-        .get_driver_value(&upload_key(hosted, normalized, filename))?
-        .is_some())
 }
 
 /// Copy one uploaded release from one hosted layer to another without touching blob bytes.
