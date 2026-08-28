@@ -252,9 +252,8 @@ impl SearchIndex {
         let top_docs = TopDocs::with_limit(params.page_size)
             .and_offset(offset)
             .order_by_string_fast_field("sort", Order::Asc);
-        let total = searcher.search(&*query, &Count)?;
-        let results = searcher
-            .search(&*query, &top_docs)?
+        let (total, top_docs) = searcher.search(&*query, &(Count, top_docs))?;
+        let results = top_docs
             .into_iter()
             .map(|(_sort, address)| {
                 let mut result = self.result_from_doc(&searcher.doc::<TantivyDocument>(address)?);
