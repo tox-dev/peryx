@@ -305,6 +305,7 @@ pub struct Topology {
     members: Vec<MemberSpec>,
     bootstrap_admin: bool,
     index_config: String,
+    replica_page_size: Option<usize>,
     write_ack_deadline_secs: Option<u64>,
     harness: ProcessHarness,
 }
@@ -319,6 +320,7 @@ impl Topology {
             members: vec![MemberSpec::new("node-a", "local", Role::Writer)],
             bootstrap_admin: false,
             index_config: String::new(),
+            replica_page_size: None,
             write_ack_deadline_secs: None,
             harness: ProcessHarness::default(),
         }
@@ -333,6 +335,7 @@ impl Topology {
             members,
             bootstrap_admin: false,
             index_config: String::new(),
+            replica_page_size: None,
             write_ack_deadline_secs: None,
             harness: ProcessHarness::default(),
         }
@@ -347,6 +350,7 @@ impl Topology {
             members,
             bootstrap_admin: false,
             index_config: String::new(),
+            replica_page_size: None,
             write_ack_deadline_secs: None,
             harness: ProcessHarness::default(),
         }
@@ -367,6 +371,12 @@ impl Topology {
         if !self.index_config.ends_with('\n') {
             self.index_config.push('\n');
         }
+        self
+    }
+
+    #[must_use]
+    pub const fn with_replica_page_size(mut self, page_size: usize) -> Self {
+        self.replica_page_size = Some(page_size);
         self
     }
 
@@ -1321,9 +1331,13 @@ fn node_config(
             let base = upstream.map_or_else(|| format!("http://127.0.0.1:{}", writer.1), str::to_owned);
             let _ = write!(
                 config,
-                "[availability.replication]\nrole = \"replica\"\nupstream = \"{base}\"\ntoken = \"{}\"\n\n",
+                "[availability.replication]\nrole = \"replica\"\nupstream = \"{base}\"\ntoken = \"{}\"\n",
                 topology.token,
             );
+            if let Some(page_size) = topology.replica_page_size {
+                let _ = writeln!(config, "page_size = {page_size}");
+            }
+            config.push('\n');
         }
         let _ = writeln!(config, "[availability.listener]\nbind = \"127.0.0.1:{control_port}\"");
     }

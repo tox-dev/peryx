@@ -410,26 +410,28 @@ fn metadata_peers(
     resume: u64,
     page_size: std::num::NonZeroUsize,
 ) -> anyhow::Result<PeerSet<HttpPeerTransport>> {
-    // Preserve the configured page bound across each peer fetch.
     let limits = SetLimits {
         request_size: page_size,
         ..DEFAULT_SET_LIMITS
     };
     let mut set = PeerSet::new(limits, DEFAULT_RECONNECT_POLICY);
     let mut joined = std::collections::BTreeSet::new();
+    let transport_limits = TransferLimits {
+        max_operations: page_size,
+        ..DEFAULT_TRANSFER_LIMITS
+    };
     if let Some(membership) = membership {
         for member in &membership.members {
             if Some(member.node.as_str()) == this || !joined.insert(member.address.clone()) {
                 continue;
             }
-            let transport =
-                HttpPeerTransport::new(&member.address, token, DEFAULT_TRANSFER_LIMITS, METADATA_FETCH_TIMEOUT)
-                    .with_context(|| format!("build the metadata peer transport for {}", member.node))?;
+            let transport = HttpPeerTransport::new(&member.address, token, transport_limits, METADATA_FETCH_TIMEOUT)
+                .with_context(|| format!("build the metadata peer transport for {}", member.node))?;
             set.join(member.node.clone(), transport, resume);
         }
     }
     if joined.insert(upstream.to_owned()) {
-        let transport = HttpPeerTransport::new(upstream, token, DEFAULT_TRANSFER_LIMITS, METADATA_FETCH_TIMEOUT)
+        let transport = HttpPeerTransport::new(upstream, token, transport_limits, METADATA_FETCH_TIMEOUT)
             .context("build the upstream metadata transport")?;
         set.join(UPSTREAM_SOURCE, transport, resume);
     }

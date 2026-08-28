@@ -8,6 +8,7 @@ use std::time::Duration;
 use harness::{
     HarnessError, MemberSpec, Node, OwnershipControl, ProcessHarness, Role, Topology, Toxiproxy, cargo_binary,
 };
+use peryx_storage::meta::MetaStore;
 
 fn process_harness() -> ProcessHarness {
     ProcessHarness::new(cargo_binary("peryx"))
@@ -336,4 +337,28 @@ fn test_replica_recovers_metadata_after_a_writer_disconnect() {
         .restart()
         .expect("the writer restarts on its port");
     await_caught_up(&cluster.nodes()[replica]);
+}
+
+#[test]
+fn test_replica_at_primary_page_limit_applies_metadata() {
+    let cluster = Topology::dc(
+        "east",
+        vec![
+            MemberSpec::new("writer-a", "east-1", Role::Writer),
+            MemberSpec::new("replica-b", "east-2", Role::Replica),
+        ],
+    )
+    .with_process_harness(process_harness())
+    .with_replica_page_size(1000)
+    .start_with_data(|member, data| {
+        if member.role == Role::Writer {
+            MetaStore::open(data.join("peryx.redb"))
+                .unwrap()
+                .commit_driver_txn(|_| Ok::<_, peryx_storage::meta::MetaError>(((), vec![b"seed".to_vec()])))
+                .unwrap();
+        }
+    })
+    .expect("dc cluster starts");
+
+    await_caught_up(cluster.node("replica-b").expect("the replica is present"));
 }
