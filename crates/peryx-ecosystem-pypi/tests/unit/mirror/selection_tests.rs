@@ -151,7 +151,7 @@ async fn mirror_rejects_requirement_cycle_through_parent_alias() {
     std::fs::write(&root, "-r sub/../requirements.txt\n").unwrap();
 
     assert_eq!(
-        mirror_requirements(&root).await.unwrap_err(),
+        mirror_requirements(&[&root]).await.unwrap_err(),
         format!(
             "requirements include cycle: {} -> {}",
             root.display(),
@@ -170,7 +170,7 @@ async fn mirror_rejects_requirement_cycle_through_symlink_alias() {
     std::os::unix::fs::symlink(&root, &alias).unwrap();
 
     assert_eq!(
-        mirror_requirements(&root).await.unwrap_err(),
+        mirror_requirements(&[&root]).await.unwrap_err(),
         format!("requirements include cycle: {} -> {}", root.display(), alias.display())
     );
 }
@@ -184,17 +184,28 @@ async fn mirror_accepts_a_noncyclic_repeated_requirement_include() {
     std::fs::write(dir.path().join("right.txt"), "-r shared.txt\n").unwrap();
     std::fs::write(dir.path().join("shared.txt"), "demo==1\n").unwrap();
 
+    assert_eq!(mirror_requirements(&[&root]).await.unwrap(), missing_demo_output());
+}
+
+#[tokio::test]
+async fn mirror_reads_a_top_level_requirement_file_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("requirements.txt");
+    std::fs::write(&root, "demo==1\n").unwrap();
+
     assert_eq!(
-        mirror_requirements(&root).await.unwrap(),
-        concat!(
-            "kind\tindex\tproject\tfilename\tdigest\turl\tbytes\tstatus\treason\n",
-            "page\tpypi\tdemo\t\t\t\t\tskipped\tproject not found\n",
-            "summary\tpypi\t\tprojects\t\t\t1\tprojects\t\n",
-            "summary\tpypi\t\tfiles\t\t\t0\tfiles\t\n",
-            "summary\tpypi\t\tskipped\t\t\t1\tskipped\t\n",
-            "summary\tpypi\t\tfailures\t\t\t0\tfailures\t\n",
-        )
+        mirror_requirements(&[&root, &root]).await.unwrap(),
+        missing_demo_output()
     );
+}
+
+#[tokio::test]
+async fn mirror_joins_a_requirement_continuation() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("requirements.txt");
+    std::fs::write(&root, "demo>=1,\\\n<2\n").unwrap();
+
+    assert_eq!(mirror_requirements(&[&root]).await.unwrap(), missing_demo_output());
 }
 
 #[tokio::test]
@@ -204,18 +215,23 @@ async fn mirror_reports_a_missing_include_by_its_resolved_path() {
     std::fs::write(&root, "-r nested/missing.txt\n").unwrap();
 
     assert_eq!(
-        mirror_requirements(&root).await.unwrap_err(),
+        mirror_requirements(&[&root]).await.unwrap_err(),
         format!("read requirements {}", dir.path().join("nested/missing.txt").display())
     );
 }
 
-async fn mirror_requirements(path: &Path) -> Result<String, String> {
+async fn mirror_requirements(paths: &[&Path]) -> Result<String, String> {
     let fixture = test_support::state(vec![cached_index("https://example.invalid/simple/", true)]);
     let configured = toml::Table::new();
     let mut overrides = toml::Table::new();
     overrides.insert(
         "requirements".to_owned(),
-        toml::Value::Array(vec![toml::Value::String(path.display().to_string())]),
+        toml::Value::Array(
+            paths
+                .iter()
+                .map(|path| toml::Value::String(path.display().to_string()))
+                .collect(),
+        ),
     );
     let mut output = Vec::new();
     crate::PypiServing
@@ -232,6 +248,17 @@ async fn mirror_requirements(path: &Path) -> Result<String, String> {
         )
         .await?;
     Ok(String::from_utf8(output).expect("mirror output is UTF-8"))
+}
+
+fn missing_demo_output() -> &'static str {
+    concat!(
+        "kind\tindex\tproject\tfilename\tdigest\turl\tbytes\tstatus\treason\n",
+        "page\tpypi\tdemo\t\t\t\t\tskipped\tproject not found\n",
+        "summary\tpypi\t\tprojects\t\t\t1\tprojects\t\n",
+        "summary\tpypi\t\tfiles\t\t\t0\tfiles\t\n",
+        "summary\tpypi\t\tskipped\t\t\t1\tskipped\t\n",
+        "summary\tpypi\t\tfailures\t\t\t0\tfailures\t\n",
+    )
 }
 
 #[test]
