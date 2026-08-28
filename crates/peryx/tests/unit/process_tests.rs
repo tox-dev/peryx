@@ -623,7 +623,7 @@ fn test_local_server_stops_its_configured_webhook_worker() {
     config.indexes[0].webhooks.push(WebhookConfig {
         name: "audit".to_owned(),
         url: "http://127.0.0.1:1/events".to_owned(),
-        secret: WebhookSecret::Literal("secret".to_owned()),
+        secret: WebhookSecret::Literal("test-webhook-signing-secret-32-bytes".to_owned()),
         events: vec!["upload".to_owned()],
     });
     let active = crate::server::activate_plugins(&config, &plugins).unwrap();
@@ -681,7 +681,7 @@ fn test_distributed_server_installs_plugin_runtime_and_stops() {
     config.indexes[0].webhooks.push(WebhookConfig {
         name: "audit".to_owned(),
         url: "http://127.0.0.1:1/events".to_owned(),
-        secret: WebhookSecret::Literal("secret".to_owned()),
+        secret: WebhookSecret::Literal("test-webhook-signing-secret-32-bytes".to_owned()),
         events: vec!["upload".to_owned()],
     });
     run_server_until_with_active_plugins(&config, &active, cancelled()).unwrap();

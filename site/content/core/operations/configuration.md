@@ -889,8 +889,9 @@ secret_env = "PERYX_WEBHOOK_SECRET"
 | `secret_env` | Environment variable containing the HMAC signing secret | (none)     |
 | `events`     | Event names to send; empty selects all supported events | all        |
 
-Use one of `secret` or `secret_env`. Event names come from the selected owner. An empty `events` list subscribes to each
-event that implementation emits.
+Use one of `secret` or `secret_env`. The resolved value must meet the
+[webhook secret requirements](@/core/operations/webhooks.md#secret-strength). Event names come from the selected owner.
+An empty `events` list subscribes to each event that implementation emits.
 
 Peryx stores pending deliveries in the metadata database and sends them outside the request path. Transport failures and
 HTTP `5xx` responses retry up to five attempts with capped backoff of 5, 15, 45, then 135 seconds; `408 Request Timeout`

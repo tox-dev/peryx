@@ -160,7 +160,7 @@ fn target_config(name: &str, url: &str) -> WebhookTargetConfig {
         index: "hosted".to_owned(),
         name: name.to_owned(),
         url: url.to_owned(),
-        secret: "secret".to_owned(),
+        secret: "test-webhook-signing-secret-32-bytes".to_owned(),
         events: Vec::new(),
     }
 }

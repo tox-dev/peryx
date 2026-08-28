@@ -21,6 +21,23 @@ Each target belongs to one index:
 An empty or omitted event list receives each event the owner exposes. Ecosystem guides define event names and payload
 schemas.
 
+### Secret strength
+
+Peryx uses the UTF-8 bytes of the resolved `secret` or `secret_env` value as the HMAC-SHA256 key. The value must contain
+at least 32 bytes. [RFC 2104 section 3](https://www.rfc-editor.org/rfc/rfc2104.html#section-3) recommends a key at least
+as long as the hash output, which is 32 bytes for SHA-256. Length does not supply entropy; generate each target secret
+from a cryptographic random source.
+
+Generate 32 random bytes as hexadecimal and create the output with owner-only permissions:
+
+```console
+$ umask 077
+$ openssl rand -hex 32 > peryx-webhook-secret
+```
+
+Set `secret_env` to an environment variable containing that file's value, or set `secret` to the value itself. Peryx
+checks the resolved value during startup and `check-config`.
+
 ## Delivery envelope
 
 Every delivery uses `POST` with an owner-defined JSON body and these headers:

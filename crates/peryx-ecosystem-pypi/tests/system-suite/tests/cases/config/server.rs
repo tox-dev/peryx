@@ -906,7 +906,7 @@ fn test_build_state_reports_webhook_errors() {
     index.webhooks.push(WebhookConfig {
         name: "ci".to_owned(),
         url: "ftp://ci.example/hook".to_owned(),
-        secret: WebhookSecret::Literal("secret".to_owned()),
+        secret: WebhookSecret::Literal("test-webhook-signing-secret-32-bytes".to_owned()),
         events: Vec::new(),
     });
     let config = config_with(&dir, vec![index]);
@@ -984,7 +984,7 @@ fn bad_webhook_config(dir: &tempfile::TempDir) -> Config {
     index.webhooks.push(WebhookConfig {
         name: "ci".to_owned(),
         url: "ftp://ci.example/hook".to_owned(),
-        secret: WebhookSecret::Literal("secret".to_owned()),
+        secret: WebhookSecret::Literal("test-webhook-signing-secret-32-bytes".to_owned()),
         events: Vec::new(),
     });
     config_with(dir, vec![index])
@@ -997,7 +997,7 @@ async fn test_build_state_starts_webhook_runtime() {
     index.webhooks.push(WebhookConfig {
         name: "ci".to_owned(),
         url: "https://ci.example/hook".to_owned(),
-        secret: WebhookSecret::Literal("secret".to_owned()),
+        secret: WebhookSecret::Literal("test-webhook-signing-secret-32-bytes".to_owned()),
         events: Vec::new(),
     });
     let config = config_with(&dir, vec![index]);

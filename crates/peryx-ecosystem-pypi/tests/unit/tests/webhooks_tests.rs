@@ -26,7 +26,7 @@ use peryx_http::router;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::Policy;
 
-const SECRET: &str = "hook-secret";
+const SECRET: &str = "test-webhook-signing-secret-32-bytes";
 
 struct Harness {
     _dir: tempfile::TempDir,

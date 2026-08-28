@@ -6,6 +6,8 @@ use super::*;
 
 type ErrorMatch = fn(&WebhookConfigError) -> bool;
 
+const SECRET: &str = "test-webhook-signing-secret-32-bytes";
+
 fn target(name: &str, url: &str, secret: &str, events: &[&str]) -> WebhookTargetConfig {
     WebhookTargetConfig {
         index: "hosted".to_owned(),
@@ -18,7 +20,7 @@ fn target(name: &str, url: &str, secret: &str, events: &[&str]) -> WebhookTarget
 
 #[test]
 fn test_runtime_matches_all_events_when_no_filter_is_set() {
-    let runtime = WebhookRuntime::new(vec![target("ci", "https://ci.example/hook", "secret", &[])]).unwrap();
+    let runtime = WebhookRuntime::new(vec![target("ci", "https://ci.example/hook", SECRET, &[])]).unwrap();
 
     assert_eq!(runtime.target_names("hosted", "resource-write"), ["ci"]);
     assert_eq!(runtime.target_names("hosted", "management"), ["ci"]);
@@ -26,19 +28,18 @@ fn test_runtime_matches_all_events_when_no_filter_is_set() {
 }
 
 #[rstest]
-#[case::empty_name(vec![target("", "https://ci.example/hook", "secret", &[])], |err: &WebhookConfigError| matches!(err, WebhookConfigError::EmptyName { .. }))]
-#[case::empty_secret(vec![target("ci", "https://ci.example/hook", "", &[])], |err: &WebhookConfigError| matches!(err, WebhookConfigError::EmptySecret { .. }))]
+#[case::empty_name(vec![target("", "https://ci.example/hook", SECRET, &[])], |err: &WebhookConfigError| matches!(err, WebhookConfigError::EmptyName { .. }))]
 #[case::duplicate(
     vec![
-        target("ci", "https://ci.example/hook", "secret", &[]),
-        target("ci", "https://ci.example/other", "secret", &[]),
+        target("ci", "https://ci.example/hook", SECRET, &[]),
+        target("ci", "https://ci.example/other", SECRET, &[]),
     ],
     |err: &WebhookConfigError| matches!(err, WebhookConfigError::Duplicate { .. })
 )]
-#[case::invalid_url(vec![target("ci", "not a url", "secret", &[])], |err: &WebhookConfigError| matches!(err, WebhookConfigError::InvalidUrl { .. }))]
-#[case::invalid_scheme(vec![target("ci", "file:///tmp/hook", "secret", &[])], |err: &WebhookConfigError| matches!(err, WebhookConfigError::InvalidScheme { .. }))]
-#[case::credentials(vec![target("ci", "https://user@ci.example/hook", "secret", &[])], |err: &WebhookConfigError| matches!(err, WebhookConfigError::SensitiveUrlParts { .. }))]
-#[case::sensitive_url_parts(vec![target("ci", "https://ci.example/hook?token=secret", "secret", &[])], |err: &WebhookConfigError| matches!(err, WebhookConfigError::SensitiveUrlParts { .. }))]
+#[case::invalid_url(vec![target("ci", "not a url", SECRET, &[])], |err: &WebhookConfigError| matches!(err, WebhookConfigError::InvalidUrl { .. }))]
+#[case::invalid_scheme(vec![target("ci", "file:///tmp/hook", SECRET, &[])], |err: &WebhookConfigError| matches!(err, WebhookConfigError::InvalidScheme { .. }))]
+#[case::credentials(vec![target("ci", "https://user@ci.example/hook", SECRET, &[])], |err: &WebhookConfigError| matches!(err, WebhookConfigError::SensitiveUrlParts { .. }))]
+#[case::sensitive_url_parts(vec![target("ci", "https://ci.example/hook?token=secret", SECRET, &[])], |err: &WebhookConfigError| matches!(err, WebhookConfigError::SensitiveUrlParts { .. }))]
 fn test_runtime_rejects_invalid_target_config(
     #[case] configs: Vec<WebhookTargetConfig>,
     #[case] matches_error: ErrorMatch,
@@ -47,6 +48,31 @@ fn test_runtime_rejects_invalid_target_config(
         panic!("expected an invalid-config error");
     };
     assert!(matches_error(&err));
+}
+
+#[rstest]
+#[case::one_byte(1)]
+#[case::below_minimum(31)]
+fn test_runtime_rejects_undersized_secrets(#[case] length: usize) {
+    let secret = "z".repeat(length);
+
+    let error = WebhookRuntime::new(vec![target("ci", "https://ci.example/hook", &secret, &[])])
+        .err()
+        .expect("undersized secret must fail");
+    let message = error.to_string();
+
+    assert_eq!(
+        (message.as_str(), message.contains(&secret)),
+        (
+            "webhook target ci on index hosted secret must contain at least 32 bytes",
+            false,
+        )
+    );
+}
+
+#[test]
+fn test_runtime_accepts_a_32_byte_secret() {
+    WebhookRuntime::new(vec![target("ci", "https://ci.example/hook", &"x".repeat(32), &[])]).unwrap();
 }
 
 #[rstest]
@@ -76,7 +102,7 @@ async fn test_delivery_client_surfaces_redirects_instead_of_following_them(#[cas
 #[test]
 fn test_runtime_rejects_invalid_event_name() {
     assert!(matches!(
-        WebhookRuntime::new(vec![target("ci", "https://ci.example/hook", "secret", &["Bad event"])]),
+        WebhookRuntime::new(vec![target("ci", "https://ci.example/hook", SECRET, &["Bad event"])]),
         Err(WebhookConfigError::UnknownEvent(event)) if event == "Bad event"
     ));
 }

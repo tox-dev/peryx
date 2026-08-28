@@ -74,7 +74,7 @@ actions = ["write"]
 [[index.webhook]]
 name = "audit"
 url = "http://127.0.0.1:1/events"
-secret = "secret"
+secret = "test-webhook-signing-secret-32-bytes"
 events = ["upload"]
 "#;
 

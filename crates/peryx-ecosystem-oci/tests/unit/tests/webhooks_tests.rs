@@ -23,7 +23,7 @@ fn hosted_with_webhook(dir: &tempfile::TempDir, events: &[&str]) -> (Arc<AppStat
         index: "store".to_owned(),
         name: "ci".to_owned(),
         url: "http://127.0.0.1:1/hook".to_owned(),
-        secret: "hook-secret".to_owned(),
+        secret: "test-webhook-signing-secret-32-bytes".to_owned(),
         events: events.iter().map(|event| (*event).to_owned()).collect(),
     }])
     .unwrap();

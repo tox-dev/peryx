@@ -6,6 +6,8 @@ use url::Url;
 
 use super::event::valid_identifier;
 
+const MIN_SECRET_BYTES: usize = 32;
+
 pub struct WebhookRuntime {
     pub(super) client: reqwest::Client,
     targets: HashMap<String, Vec<WebhookTarget>>,
@@ -29,7 +31,7 @@ impl WebhookRuntime {
     }
 
     /// # Errors
-    /// Returns an error for duplicate target names, invalid URLs, empty secrets, or invalid event names.
+    /// Returns an error for duplicate target names, invalid URLs, undersized secrets, or invalid event names.
     pub fn new(configs: Vec<WebhookTargetConfig>) -> Result<Self, WebhookConfigError> {
         let mut seen = HashSet::new();
         let mut targets: HashMap<String, Vec<WebhookTarget>> = HashMap::new();
@@ -37,10 +39,11 @@ impl WebhookRuntime {
             if config.name.is_empty() {
                 return Err(WebhookConfigError::EmptyName { index: config.index });
             }
-            if config.secret.is_empty() {
-                return Err(WebhookConfigError::EmptySecret {
+            if config.secret.len() < MIN_SECRET_BYTES {
+                return Err(WebhookConfigError::SecretTooShort {
                     index: config.index,
                     target: config.name,
+                    minimum: MIN_SECRET_BYTES,
                 });
             }
             if !seen.insert((config.index.clone(), config.name.clone())) {
@@ -106,8 +109,12 @@ pub struct WebhookTargetConfig {
 pub enum WebhookConfigError {
     #[error("webhook target name is empty on index {index}")]
     EmptyName { index: String },
-    #[error("webhook target {target} on index {index} has an empty secret")]
-    EmptySecret { index: String, target: String },
+    #[error("webhook target {target} on index {index} secret must contain at least {minimum} bytes")]
+    SecretTooShort {
+        index: String,
+        target: String,
+        minimum: usize,
+    },
     #[error("duplicate webhook target {target} on index {index}")]
     Duplicate { index: String, target: String },
     #[error("webhook target URL {url:?} is invalid: {source}")]

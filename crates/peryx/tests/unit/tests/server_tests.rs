@@ -17,7 +17,8 @@ use tower::ServiceExt as _;
 
 use crate::config::{
     AuthConfig, AvailabilityConfig, BlobStorageConfig, Config, DcMember, DcMembership, DcRole, LdapBindConfig,
-    LdapProviderConfig, OidcProviderConfig, ReplicationConfig, S3StorageConfig, SecretSource,
+    LdapProviderConfig, OidcProviderConfig, ReplicationConfig, S3StorageConfig, SecretSource, WebhookConfig,
+    WebhookSecret,
 };
 use crate::server::{
     build_indexes_with_plugins, build_router_with_plugins, build_state_with_plugins, check_config_with_plugins,
@@ -714,7 +715,7 @@ fn test_token_realm_boundaries_reject_a_short_environment_signing_key() {
     let dir = tempfile::tempdir().unwrap();
     let config = signing_key_config(dir.path(), SecretSource::Env(KEY_ENV.to_owned()));
 
-    for boundary in [SigningKeyBoundary::Startup, SigningKeyBoundary::CheckConfig] {
+    for boundary in CONFIG_BOUNDARIES {
         assert_eq!(
             boundary.validate(&config).unwrap_err().to_string(),
             "`auth.signing_key` must contain at least 32 bytes"
@@ -723,21 +724,22 @@ fn test_token_realm_boundaries_reject_a_short_environment_signing_key() {
 }
 
 #[derive(Clone, Copy)]
-enum SigningKeyBoundary {
+enum ConfigBoundary {
     Startup,
     CheckConfig,
 }
 
 type SigningKeySource = fn(&Path, &str) -> SecretSource;
 
-const SIGNING_KEY_CASES: [(SigningKeyBoundary, SigningKeySource); 4] = [
-    (SigningKeyBoundary::Startup, literal_signing_key),
-    (SigningKeyBoundary::Startup, file_signing_key),
-    (SigningKeyBoundary::CheckConfig, literal_signing_key),
-    (SigningKeyBoundary::CheckConfig, file_signing_key),
+const CONFIG_BOUNDARIES: [ConfigBoundary; 2] = [ConfigBoundary::Startup, ConfigBoundary::CheckConfig];
+const SIGNING_KEY_CASES: [(ConfigBoundary, SigningKeySource); 4] = [
+    (ConfigBoundary::Startup, literal_signing_key),
+    (ConfigBoundary::Startup, file_signing_key),
+    (ConfigBoundary::CheckConfig, literal_signing_key),
+    (ConfigBoundary::CheckConfig, file_signing_key),
 ];
 
-impl SigningKeyBoundary {
+impl ConfigBoundary {
     fn validate(self, config: &Config) -> anyhow::Result<()> {
         match self {
             Self::Startup => build_state(config).map(drop),
@@ -1378,7 +1380,7 @@ hosted = true
 [[index.webhook]]
 name = "literal"
 url = "https://hooks.example/literal"
-secret = "secret"
+secret = "test-webhook-signing-secret-32-bytes"
 
 [[index.webhook]]
 name = "environment"
@@ -1389,6 +1391,76 @@ secret_env = "PATH"
     .unwrap();
 
     assert!(!state.serving.webhooks.is_empty());
+}
+
+#[rstest]
+#[case::below_minimum(31, false)]
+#[case::minimum(32, true)]
+fn test_webhook_boundaries_enforce_literal_secret_length(#[case] length: usize, #[case] valid: bool) {
+    for boundary in CONFIG_BOUNDARIES {
+        let dir = tempfile::tempdir().unwrap();
+        let secret = "z".repeat(length);
+        let result = boundary.validate(&webhook_config(&dir, WebhookSecret::Literal(secret.clone())));
+
+        if valid {
+            result.unwrap();
+        } else {
+            assert_webhook_secret_error(result, &secret);
+        }
+    }
+}
+
+#[test]
+fn test_webhook_boundaries_enforce_environment_secret_length() {
+    const SECRET_ENV: &str = "PERYX_TEST_WEBHOOK_SECRET_BOUNDARY";
+    if let Ok(secret) = std::env::var(SECRET_ENV) {
+        for boundary in CONFIG_BOUNDARIES {
+            let dir = tempfile::tempdir().unwrap();
+            let result = boundary.validate(&webhook_config(&dir, WebhookSecret::Env(SECRET_ENV.to_owned())));
+            if secret.len() >= 32 {
+                result.unwrap();
+            } else {
+                assert_webhook_secret_error(result, &secret);
+            }
+        }
+        return;
+    }
+
+    for length in [31, 32] {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::server_tests::test_webhook_boundaries_enforce_environment_secret_length",
+            ])
+            .env(SECRET_ENV, "z".repeat(length))
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+}
+
+fn assert_webhook_secret_error(result: anyhow::Result<()>, secret: &str) {
+    let error = format!("{:#}", result.unwrap_err());
+    assert_eq!(
+        (error.as_str(), error.contains(secret),),
+        (
+            "build webhook targets: webhook target ci on index hosted secret must contain at least 32 bytes",
+            false,
+        )
+    );
+}
+
+fn webhook_config(dir: &tempfile::TempDir, secret: WebhookSecret) -> Config {
+    let mut config = neutral_config();
+    config.data_dir = dir.path().to_path_buf();
+    config.indexes[0].name = "hosted".to_owned();
+    config.indexes[0].webhooks.push(WebhookConfig {
+        name: "ci".to_owned(),
+        url: "https://hooks.example/ci".to_owned(),
+        secret,
+        events: Vec::new(),
+    });
+    config
 }
 
 #[test]
