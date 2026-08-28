@@ -70,6 +70,10 @@ crane pull peryx.internal:4433/dockerhub/library/alpine:latest alpine.tar
 The first pull runs the upstream's Bearer-token handshake, verifies each digest, and caches the blobs; subsequent pulls
 come from disk. Content addressing lets images that share a layer use one cached copy.
 
+The daemon checks the registry with `GET /v2/`, then requests the manifest at
+`GET /v2/dockerhub/library/alpine/manifests/latest`. peryx uses `dockerhub` to select the cached index and sends
+`library/alpine` to Docker Hub.
+
 ## Rewrite images in a pipeline
 
 Prefix the route wherever the pipeline names an image. For example, a [GitHub Actions](https://docs.github.com/actions)
@@ -84,41 +88,15 @@ jobs:
       - run: docker run --rm peryx.internal:4433/dockerhub/library/postgres:16
 ```
 
-## Mirror Docker Hub without changing image names
+## Keep the route in image names
 
-To leave `docker pull alpine` unchanged, register peryx as a Docker Hub mirror in the daemon config. The daemon then
-routes Docker Hub pulls through peryx without any prefix in the image name:
+Do not register this routed endpoint under Docker's `registry-mirrors`. For `docker pull alpine`, a root mirror receives
+the manifest request as `GET /v2/library/alpine/manifests/latest`; Docker does not add the `dockerhub` route. peryx
+requires every configured index to have a [non-empty route](@/core/operations/configuration.md), so the `dockerhub`
+index cannot match that request.
 
-```json
-{
-  "registry-mirrors": [
-    "https://peryx.internal:4433"
-  ]
-}
-```
-
-Reload the daemon (`systemctl reload docker`) and bake this `daemon.json` into your runner image. Note the `https://`:
-the mirror endpoint must be TLS, so peryx needs a trusted certificate. If it serves plain HTTP, add its host to
-`insecure-registries` in the same file:
-
-```json
-{
-  "registry-mirrors": [
-    "http://peryx.internal:4433"
-  ],
-  "insecure-registries": [
-    "peryx.internal:4433"
-  ]
-}
-```
-
-In this mode the daemon resolves `alpine` to `library/alpine` before it calls the mirror, so peryx receives the full
-name. A routed pull (`peryx.internal:4433/dockerhub/alpine`) arrives as the short name the user typed, and the cached
-index resolves it; see [mirror Docker Hub official images](@/ecosystems/oci/guides/hub-official-images.md).
-
-`registry-mirrors` covers Docker Hub only; images from [GHCR](https://docs.github.com/packages),
-[ECR](https://aws.amazon.com/ecr/), or a private registry resolve through their original registry. Front each with its
-own proxy index (point `cached` at `https://ghcr.io` and pull through that route) and rewrite the image reference.
+Rewrite each image reference with the route as shown above. Images from [GHCR](https://docs.github.com/packages),
+[ECR](https://aws.amazon.com/ecr/), or a private registry need their own cached index and route.
 
 ## Inspect usage and storage
 
