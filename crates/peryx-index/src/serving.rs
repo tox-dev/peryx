@@ -10,10 +10,19 @@ pub struct Inflight {
     gates: Arc<DashMap<Arc<str>, Arc<Gate>>>,
 }
 
+impl Inflight {
+    /// Subscribe to owners joining the active flight for `key`.
+    #[must_use]
+    pub fn subscribe(&self, key: &str) -> Option<FlightEvents> {
+        Some(FlightEvents(self.gates.get(key)?.joins.subscribe()))
+    }
+}
+
 #[derive(Debug)]
 struct Gate {
     mutex: Arc<tokio::sync::Mutex<()>>,
     users: AtomicUsize,
+    joins: tokio::sync::watch::Sender<u64>,
 }
 
 impl Gate {
@@ -21,6 +30,7 @@ impl Gate {
         Self {
             mutex: Arc::default(),
             users: AtomicUsize::new(1),
+            joins: tokio::sync::watch::channel(0).0,
         }
     }
 }
@@ -72,6 +82,19 @@ impl Drop for FlightGate {
 }
 
 #[derive(Debug)]
+pub struct FlightEvents(tokio::sync::watch::Receiver<u64>);
+
+impl FlightEvents {
+    /// Wait for another owner to join the subscribed flight.
+    ///
+    /// # Errors
+    /// Returns when every owner leaves before another joins.
+    pub async fn next_join(&mut self) -> Result<(), tokio::sync::watch::error::RecvError> {
+        self.0.changed().await
+    }
+}
+
+#[derive(Debug)]
 pub struct FlightGuard {
     _guard: tokio::sync::OwnedMutexGuard<()>,
     flight: FlightGate,
@@ -82,8 +105,10 @@ pub fn flight_gate(inflight: &Inflight, key: &str) -> FlightGate {
     let key = Arc::<str>::from(key);
     let gate = match inflight.gates.entry(key.clone()) {
         Entry::Occupied(entry) => {
-            entry.get().users.fetch_add(1, Ordering::Relaxed);
-            entry.get().clone()
+            let gate = entry.get().clone();
+            gate.users.fetch_add(1, Ordering::Relaxed);
+            gate.joins.send_modify(|joins| *joins += 1);
+            gate
         }
         Entry::Vacant(entry) => entry.insert(Arc::new(Gate::new())).clone(),
     };

@@ -18,6 +18,34 @@ async fn test_same_key_waiters_share_one_gate() {
 }
 
 #[tokio::test]
+async fn test_flight_subscription_reports_the_next_owner() {
+    let inflight = Inflight::default();
+    let first = flight_gate(&inflight, "digest");
+    let mut events = inflight.subscribe("digest").unwrap();
+    let mut next_join = std::pin::pin!(events.next_join());
+    assert!(matches!(
+        next_join.as_mut().poll(&mut Context::from_waker(Waker::noop())),
+        Poll::Pending
+    ));
+
+    let second = flight_gate(&inflight, "digest");
+
+    next_join.await.expect("the next owner joins the flight");
+    drop((first, second));
+}
+
+#[tokio::test]
+async fn test_flight_subscription_closes_with_the_flight() {
+    let inflight = Inflight::default();
+    let flight = flight_gate(&inflight, "digest");
+    let mut events = inflight.subscribe("digest").unwrap();
+
+    drop(flight);
+
+    assert!(events.next_join().await.is_err());
+}
+
+#[tokio::test]
 async fn test_distinct_keys_lock_independently() {
     let inflight = Inflight::default();
     let first = flight_gate(&inflight, "first").lock().await;

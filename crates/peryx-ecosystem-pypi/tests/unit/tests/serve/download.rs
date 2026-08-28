@@ -152,11 +152,22 @@ async fn test_concurrent_inspect_misses_share_one_fetch() {
     tokio::time::timeout(std::time::Duration::from_secs(2), stalled.wait_until_entered())
         .await
         .expect("the first inspection reaches upstream");
+    let mut events = h
+        .state
+        .serving
+        .cache
+        .inflight
+        .subscribe(digest.as_str())
+        .expect("the first inspection owns the flight");
     let second = tokio::spawn({
         let state = h.state.clone();
         let uri = uri.clone();
         async move { get(&state, &uri, None).await }
     });
+    events
+        .next_join()
+        .await
+        .expect("the second inspection joins the flight");
     stalled.release();
     let (first, second) = tokio::join!(first, second);
     let (first, second) = (first.unwrap(), second.unwrap());
