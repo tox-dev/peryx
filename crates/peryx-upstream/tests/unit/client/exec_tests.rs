@@ -100,9 +100,12 @@ impl Helper {
     }
 
     async fn await_start(&self) {
+        Self::wait(&self.start_event).await;
+    }
+
+    async fn wait(fifo: &AsyncFd<File>) {
         let mut signal = [0];
-        self.start_event
-            .async_io(Interest::READABLE, |mut file| file.read_exact(&mut signal))
+        fifo.async_io(Interest::READABLE, |mut file| file.read_exact(&mut signal))
             .await
             .unwrap();
     }
@@ -127,8 +130,8 @@ impl Helper {
         }
     }
 
-    async fn signal_requests(fifo: &AsyncFd<File>) {
-        fifo.async_io(Interest::WRITABLE, |mut file| file.write_all(b"ready\n"))
+    async fn write(fifo: &AsyncFd<File>, bytes: &[u8]) {
+        fifo.async_io(Interest::WRITABLE, |mut file| file.write_all(bytes))
             .await
             .unwrap();
     }
@@ -428,18 +431,33 @@ async fn test_helper_rejects_invalid_responses(#[case] response: &str, #[case] m
 
 #[tokio::test]
 async fn test_helper_rejects_a_credential_inside_the_expiry_margin() {
-    let expiry = (OffsetDateTime::now_utc() + time::Duration::seconds(15))
-        .format(&Rfc3339)
-        .unwrap();
-    let helper = Helper::responding(&format!(
-        r#"{{"version":1,"expires_at":"{expiry}","type":"bearer","token":"token"}}"#
-    ));
+    let helper = Helper::script(|ready, response| {
+        format!(
+            "/bin/cat >/dev/null\nprintf x > {}\nIFS= read -r response < {}\nprintf '%s' \"$response\"\n",
+            shell_quote(ready.display()),
+            shell_quote(response.display())
+        )
+    });
+    let ready = fifo(&helper.executions);
+    let response = helper.requests_fifo();
     let provider = helper
         .config(CredentialFailure::Fail)
         .provider("https://resources.example", CredentialScope::Read)
         .unwrap();
 
-    let error = helper.run_after_start(provider.credential()).await.unwrap_err();
+    let ((), credential) = tokio::join!(
+        async {
+            Helper::wait(&ready).await;
+            let expiry = (OffsetDateTime::now_utc() + time::Duration::seconds(15))
+                .format(&Rfc3339)
+                .unwrap();
+            let response_line =
+                format!("{{\"version\":1,\"expires_at\":\"{expiry}\",\"type\":\"bearer\",\"token\":\"token\"}}\n");
+            Helper::write(&response, response_line.as_bytes()).await;
+        },
+        provider.credential()
+    );
+    let error = credential.unwrap_err();
 
     assert_eq!(
         error.to_string(),
@@ -627,7 +645,7 @@ async fn test_helper_timeout_after_closing_stdout() {
         .unwrap();
     let credential = tokio::spawn(async move { provider.credential().await });
     helper.await_start().await;
-    Helper::signal_requests(&requests).await;
+    Helper::write(&requests, b"ready\n").await;
     tokio::time::pause();
     tokio::time::advance(Duration::from_secs(61)).await;
 
@@ -654,7 +672,7 @@ async fn test_helper_can_close_stdout_before_exiting() {
     let credential = tokio::spawn(async move { provider.credential().await });
 
     helper.await_start().await;
-    Helper::signal_requests(&requests).await;
+    Helper::write(&requests, b"ready\n").await;
 
     let snapshot = credential.await.unwrap().unwrap();
 
@@ -728,7 +746,7 @@ async fn test_concurrent_requests_execute_one_helper() {
 
     let (snapshots, ()) = tokio::join!(join_all((0..50).map(|_| provider.credential())), async {
         helper.await_start().await;
-        Helper::signal_requests(&requests).await;
+        Helper::write(&requests, b"ready\n").await;
     });
 
     assert_eq!(helper.execution_count(), 1);
