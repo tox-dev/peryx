@@ -17,7 +17,7 @@ use crate::client_transport::{
 };
 use crate::http::{authorized, unauthorized};
 
-use openraft::error::{InstallSnapshotError, NetworkError, RPCError, RaftError, Unreachable};
+use openraft::error::{InstallSnapshotError, NetworkError, RPCError, RaftError, RemoteError, Unreachable};
 use openraft::network::{RPCOption, RaftNetwork, RaftNetworkFactory};
 use openraft::raft::{
     AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse, VoteRequest,
@@ -264,14 +264,14 @@ where
     }
 }
 
-/// Stores client-construction errors and returns a retryable `Unreachable` error from the next call.
+/// Retains peer identity so `OpenRaft` can distinguish peer rejections from transport failures.
 pub struct PeerRaftNetwork {
+    target: NodeId,
+    target_node: PeryxNode,
     client: Result<RaftRpcClient, RaftRpcConfigError>,
 }
 
 impl PeerRaftNetwork {
-    /// Maps invalid peer addresses and transport loss to retryable `Unreachable` errors. Protocol and
-    /// remote Raft failures become `Network` errors.
     async fn call<Req, Resp, E>(
         &self,
         rpc: RaftRpc,
@@ -291,7 +291,9 @@ impl PeerRaftNetwork {
             .send(rpc, request)
             .await
             .map_err(|error| unreachable_or_network(&error))?;
-        wire.map_err(|error| RPCError::Network(NetworkError::new(&error)))
+        wire.map_err(|error| {
+            RPCError::RemoteError(RemoteError::new_with_node(self.target, self.target_node.clone(), error))
+        })
     }
 }
 
@@ -340,11 +342,13 @@ impl PeerRaftNetworkFactory {
 impl RaftNetworkFactory<TypeConfig> for PeerRaftNetworkFactory {
     type Network = PeerRaftNetwork;
 
-    async fn new_client(&mut self, _target: NodeId, node: &PeryxNode) -> Self::Network {
+    async fn new_client(&mut self, target: NodeId, node: &PeryxNode) -> Self::Network {
         // OpenRaft creates clients inside replication tasks, and this trait cannot return an error. Store
         // invalid-address errors so calls return `Unreachable` without panicking the task.
         let base = format!("http://{}/", node.addr);
         PeerRaftNetwork {
+            target,
+            target_node: node.clone(),
             client: RaftRpcClient::new(&base, self.token.clone(), self.timeout),
         }
     }

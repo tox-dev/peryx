@@ -287,7 +287,7 @@ mod adapter {
 
     use axum::body::Bytes;
     use openraft::Vote;
-    use openraft::error::{Fatal, InstallSnapshotError, RPCError, RaftError};
+    use openraft::error::{Fatal, InstallSnapshotError, RPCError, RaftError, RemoteError};
     use openraft::network::{RPCOption, RaftNetwork, RaftNetworkFactory};
     use openraft::raft::{
         AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse, VoteRequest,
@@ -303,6 +303,7 @@ mod adapter {
     use std::sync::Arc;
 
     type NodeId = u64;
+    const TARGET: NodeId = 7;
 
     struct StubVoter {
         remote_error: bool,
@@ -344,7 +345,7 @@ mod adapter {
 
     async fn client_to(addr: &str) -> PeerRaftNetwork {
         PeerRaftNetworkFactory::new(TOKEN, Duration::from_secs(5))
-            .new_client(1, &node(addr))
+            .new_client(TARGET, &node(addr))
             .await
     }
 
@@ -410,25 +411,41 @@ mod adapter {
     }
 
     #[tokio::test]
-    async fn test_a_remote_raft_error_maps_to_a_network_error() {
+    async fn test_a_remote_raft_error_retains_its_target() {
         let server = stub_server(true).await;
-        let mut network = client_to(&peer_addr(&server.url)).await;
+        let address = peer_addr(&server.url);
+        let mut network = client_to(&address).await;
         let error = network
             .vote(vote_req(), RPCOption::new(Duration::from_secs(1)))
             .await
             .unwrap_err();
-        assert!(matches!(error, RPCError::Network(_)), "{error:?}");
+        assert_eq!(
+            error,
+            RPCError::RemoteError(RemoteError::new_with_node(
+                TARGET,
+                node(&address),
+                RaftError::Fatal(Fatal::Panicked)
+            ))
+        );
     }
 
     #[tokio::test]
-    async fn test_a_remote_snapshot_error_maps_to_a_network_error() {
+    async fn test_a_remote_snapshot_error_retains_its_target() {
         let server = stub_server(true).await;
-        let mut network = client_to(&peer_addr(&server.url)).await;
+        let address = peer_addr(&server.url);
+        let mut network = client_to(&address).await;
         let error = network
             .install_snapshot(snapshot_req(), RPCOption::new(Duration::from_secs(1)))
             .await
             .unwrap_err();
-        assert!(matches!(error, RPCError::Network(_)), "{error:?}");
+        assert_eq!(
+            error,
+            RPCError::RemoteError(RemoteError::new_with_node(
+                TARGET,
+                node(&address),
+                RaftError::Fatal(Fatal::Panicked)
+            ))
+        );
     }
 
     #[tokio::test]
