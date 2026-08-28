@@ -585,10 +585,17 @@ fn test_reconcile_pass_continues_after_a_nonlocal_page() {
 }
 
 #[test]
-fn test_reconciler_requires_multiple_datacenters() {
+fn test_reconciler_accepts_one_datacenter_for_local_integrity_checks() {
     let (_dir, store, _root, _backend) = filesystem();
 
-    assert!(FilesystemPlacementReconciler::new(dc("home"), store, BTreeSet::from([dc("home")])).is_none());
+    assert!(FilesystemPlacementReconciler::new(dc("home"), store, BTreeSet::from([dc("home")])).is_some());
+}
+
+#[test]
+fn test_reconciler_rejects_an_empty_placement_policy() {
+    let (_dir, store, _root, _backend) = filesystem();
+
+    assert!(FilesystemPlacementReconciler::new(dc("home"), store, BTreeSet::new()).is_none());
 }
 
 #[test]

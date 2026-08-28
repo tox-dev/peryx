@@ -116,7 +116,7 @@ impl Config {
         self.jobs = self
             .jobs
             .apply(partial.jobs, &self.indexes, self.availability.mode(), plugins)?;
-        self.jobs.validate_availability(self.availability.mode())?;
+        self.jobs.validate_mode(self.availability.mode())?;
         Ok(self)
     }
 }

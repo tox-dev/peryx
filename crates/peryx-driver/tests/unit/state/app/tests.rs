@@ -10,6 +10,7 @@ use peryx_identity::{
 };
 use peryx_storage::blob::{BlobDurability, BlobMetadata, BlobStore, Digest};
 use peryx_storage::meta::MetaStore;
+use tracing_subscriber::layer::SubscriberExt as _;
 use url::Url;
 
 use super::AppState;
@@ -109,6 +110,28 @@ struct HomePlacementCapability {
     error: Option<String>,
 }
 
+#[derive(Clone, Default)]
+struct EventCapture(Arc<Mutex<Vec<String>>>);
+
+impl<Subscriber> tracing_subscriber::Layer<Subscriber> for EventCapture
+where
+    Subscriber: tracing::Subscriber,
+{
+    fn on_event(&self, event: &tracing::Event<'_>, _context: tracing_subscriber::layer::Context<'_, Subscriber>) {
+        struct Visitor<'a>(&'a mut Vec<String>);
+
+        impl tracing::field::Visit for Visitor<'_> {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "message" {
+                    self.0.push(format!("{value:?}"));
+                }
+            }
+        }
+
+        event.record(&mut Visitor(&mut self.0.lock().unwrap()));
+    }
+}
+
 impl peryx_ha::HomePlacementRecorder for HomePlacementCapability {
     fn record(&self, digest: &str, size: u64, fence: u64) -> Result<(), String> {
         *self.observed.lock().unwrap() = Some((digest.to_owned(), size, fence));
@@ -158,6 +181,18 @@ fn test_record_home_placement_swallows_capability_failures() {
         *capability.observed.lock().unwrap(),
         Some((DIGEST_HEX.to_owned(), 2_048, 2))
     );
+}
+
+#[test]
+fn test_record_home_placement_reports_a_missing_capability() {
+    let capture = EventCapture::default();
+    let subscriber = tracing_subscriber::registry().with(capture.clone());
+    let _guard = tracing::subscriber::set_default(subscriber);
+    let (_dir, state) = state_with(home_topology("home"));
+
+    state.serving.record_home_placement(DIGEST_HEX, 2_048, 2);
+
+    assert_eq!(*capture.0.lock().unwrap(), ["home placement recorder is unavailable"]);
 }
 
 struct Metrics;

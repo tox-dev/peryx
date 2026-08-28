@@ -298,6 +298,7 @@ impl DistributedAvailability {
 
     fn record_home_placement(&self, digest_hex: &str, size: u64, fence: u64) {
         let Some(recorder) = &self.capabilities.home_placement else {
+            tracing::warn!(digest = digest_hex, "home placement recorder is unavailable");
             return;
         };
         if let Err(error) = recorder.record(digest_hex, size, fence) {

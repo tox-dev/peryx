@@ -105,7 +105,7 @@ fn topology(members: Vec<crate::RuntimeMember>) -> ServiceTopology {
             group: "availability".to_owned(),
             members,
         }),
-        node_identity: Some("local".to_owned()),
+        local_identity: Some("local".to_owned()),
     }
 }
 
@@ -202,6 +202,103 @@ fn service_installation_applies_the_distributed_contract() {
     assert_eq!(state.serving.availability_topology().mode, peryx_core::TopologyMode::Dc);
     assert_eq!(state.http_routes().count(), 1);
     assert!(state.serving.authority_drainer().is_some());
+}
+
+#[test]
+fn dc_worker_records_home_placement_under_the_writer_identity() {
+    let (_dir, context, workers) = dc_workers(None);
+    let digest = peryx_identity::ArtifactDigest::from_sha256("a".repeat(64)).unwrap();
+
+    workers
+        .home_placement
+        .unwrap()
+        .record(digest.sha256(), 2_048, 3)
+        .unwrap();
+
+    let placements = context.meta.blob_placements(&digest).unwrap();
+    assert_eq!((placements.len(), placements[0].key.data_center.as_str()), (1, "east"));
+}
+
+#[tokio::test]
+async fn dc_worker_runs_placement_reconciliation() {
+    let (_dir, _context, workers) = dc_workers(Some("east"));
+
+    assert_eq!(
+        workers
+            .placement
+            .unwrap()
+            .reconcile_pass(&|| false, std::num::NonZeroUsize::MIN)
+            .await
+            .unwrap(),
+        peryx_ha::AvailabilityTaskReport::default()
+    );
+}
+
+#[tokio::test]
+async fn dc_worker_runs_reclamation() {
+    let (_dir, _context, workers) = dc_workers(None);
+
+    assert_eq!(
+        workers
+            .reclaimer
+            .unwrap()
+            .reclaim_pass(&|| false, 0, std::num::NonZeroUsize::MIN)
+            .await
+            .unwrap(),
+        peryx_ha::AvailabilityTaskReport::default()
+    );
+}
+
+#[tokio::test]
+async fn dc_worker_runs_cross_datacenter_copy_when_a_remote_datacenter_exists() {
+    let (_dir, _context, workers) = dc_workers(Some("west"));
+
+    assert_eq!(
+        workers
+            .copier
+            .unwrap()
+            .copy_pass(&|| false, std::num::NonZeroUsize::MIN)
+            .await
+            .unwrap(),
+        peryx_ha::AvailabilityTaskReport::default()
+    );
+}
+
+fn dc_workers(replica_dc: Option<&str>) -> (tempfile::TempDir, DistributedServiceContext, AvailabilityCapabilities) {
+    let dir = tempfile::tempdir().unwrap();
+    let context = service_context(&dir);
+    let mut config = runtime_config(
+        &dir,
+        DistributedMode::Dc,
+        RuntimeRole::Primary {
+            source: "local".to_owned(),
+            token: "token".to_owned(),
+        },
+    );
+    config.node_identity = None;
+    if let Some(replica_dc) = replica_dc {
+        config.membership.as_mut().unwrap().members.push(member(
+            "replica",
+            replica_dc,
+            "http://replica.internal:4460",
+            RuntimeMemberRole::Replica,
+        ));
+    }
+    let workers = assemble_workers(
+        &config,
+        DistributedWorkerContext {
+            filesystem: context.blobs.filesystem_store().cloned(),
+            backend: context.blobs.backend_id(),
+            meta: context.meta.clone(),
+            blobs: context.blobs.clone(),
+            clock: context.clock.clone(),
+            authority: None,
+            references: Arc::new(EmptyReferences),
+            frontiers: Arc::new(EmptyFrontiers),
+        },
+    )
+    .unwrap();
+    (dir, context, workers)
 }
 
 #[rstest::rstest]
@@ -543,11 +640,11 @@ fn assembly_skips_topologies_without_a_local_member() {
     let (_dir, store, backend) = storage();
     let missing_identity = ServiceTopology {
         membership: None,
-        node_identity: None,
+        local_identity: None,
     };
     let missing_membership = ServiceTopology {
         membership: None,
-        node_identity: Some("local".to_owned()),
+        local_identity: Some("local".to_owned()),
     };
     let unknown_identity = topology(vec![member(
         "remote",
@@ -629,7 +726,7 @@ fn assembly_builds_multi_datacenter_services() {
 }
 
 #[test]
-fn assembly_skips_single_datacenter_workers() {
+fn assembly_skips_single_datacenter_copy_but_keeps_reconciliation() {
     let (_dir, store, backend) = storage();
     let topology = topology(vec![member(
         "local",
@@ -643,7 +740,7 @@ fn assembly_skips_single_datacenter_workers() {
             .unwrap()
             .is_none()
     );
-    assert!(filesystem_placement_reconciler(&topology, store).unwrap().is_none());
+    assert!(filesystem_placement_reconciler(&topology, store).unwrap().is_some());
 }
 
 #[test]
@@ -661,11 +758,11 @@ fn reclamation_selector_requires_the_writer_in_membership() {
 
     let missing_identity = ServiceTopology {
         membership: None,
-        node_identity: None,
+        local_identity: None,
     };
     let missing_membership = ServiceTopology {
         membership: None,
-        node_identity: None,
+        local_identity: None,
     };
     let unknown_writer = topology(vec![member(
         "remote",
@@ -700,7 +797,7 @@ fn local_member_requires_an_explicit_identity() {
         "http://east.internal:4460",
         RuntimeMemberRole::Writer,
     )]);
-    topology.node_identity = None;
+    topology.local_identity = None;
 
     assert!(local_member(&topology).is_none());
 }

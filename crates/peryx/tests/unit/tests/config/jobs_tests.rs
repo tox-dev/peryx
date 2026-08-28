@@ -13,6 +13,18 @@ fn distributed_config(mode: &str, schedules: &str) -> Config {
     ))
 }
 
+fn dc_config(job: &str, replica_dc: &str, blob: &str) -> Config {
+    toml_config(&format!(
+        "writer_identity = \"writer\"\n\
+         [availability]\nmode = \"dc\"\ngroup = \"group\"\n\
+         [availability.replication]\nrole = \"primary\"\nsource = \"a\"\ntoken = \"b\"\n\
+         [[availability.member]]\nnode = \"writer\"\ndc = \"east\"\naddress = \"https://writer:4460\"\nrole = \"writer\"\n\
+         [[availability.member]]\nnode = \"replica\"\ndc = \"{replica_dc}\"\naddress = \"https://replica:4460\"\nrole = \"replica\"\n\
+         {blob}\n\
+         [[jobs.schedule]]\njob = \"{job}\"\ninterval_secs = 60\n"
+    ))
+}
+
 #[test]
 fn test_jobs_default_to_local() {
     assert_eq!(Config::default().jobs.mode, JobsMode::Local);
@@ -243,4 +255,72 @@ fn test_none_availability_rejects_distributed_schedules(#[case] job: &str) {
         Config::default().apply(partial).unwrap_err().to_string(),
         "jobs schedule [0]: `none` availability cannot schedule distributed jobs"
     );
+}
+
+#[test]
+fn test_dc_copy_schedule_requires_a_remote_datacenter() {
+    assert_eq!(
+        dc_config("dc_copy", "east", "").validate().unwrap_err().to_string(),
+        "jobs schedule [0]: `dc_copy` requires a remote datacenter"
+    );
+}
+
+#[test]
+fn test_distributed_schedule_requires_a_primary() {
+    let mut config = dc_config("reclamation", "east", "");
+    config.availability = crate::config::AvailabilityConfig::Dc(crate::config::ReplicationConfig::Replica {
+        upstream: "https://writer:4460".to_owned(),
+        token: crate::config::SecretSource::Literal("token".to_owned()),
+        poll_interval: Duration::from_secs(1),
+        page_size: std::num::NonZeroUsize::MIN,
+    });
+
+    assert_eq!(
+        config.validate().unwrap_err().to_string(),
+        "jobs schedule [0]: distributed jobs require a primary availability node"
+    );
+}
+
+#[test]
+fn test_distributed_schedule_requires_a_local_member_roster() {
+    let config = distributed_config("dc", "[[jobs.schedule]]\njob = \"reclamation\"\ninterval_secs = 60\n");
+
+    assert_eq!(
+        config.validate().unwrap_err().to_string(),
+        "jobs schedule [0]: distributed jobs require a local member roster"
+    );
+}
+
+#[rstest]
+#[case::dc_copy("dc_copy", "west")]
+#[case::placement_reconcile("placement_reconcile", "east")]
+fn test_filesystem_schedule_accepts_an_installed_capability(#[case] job: &str, #[case] replica_dc: &str) {
+    dc_config(job, replica_dc, "").validate().unwrap();
+}
+
+#[rstest]
+#[case::dc_copy("dc_copy")]
+#[case::placement_reconcile("placement_reconcile")]
+fn test_filesystem_jobs_reject_an_object_store(#[case] job: &str) {
+    let config = dc_config(
+        job,
+        "west",
+        "[blob]\nbackend = \"s3\"\nendpoint = \"https://s3.example.com\"\nbucket = \"blobs\"\nregion = \"us-east-1\"",
+    );
+
+    assert_eq!(
+        config.validate().unwrap_err().to_string(),
+        "jobs schedule [0]: copy and placement jobs require filesystem blob storage"
+    );
+}
+
+#[test]
+fn test_reclamation_schedule_accepts_an_object_store() {
+    let config = dc_config(
+        "reclamation",
+        "west",
+        "[blob]\nbackend = \"s3\"\nendpoint = \"https://s3.example.com\"\nbucket = \"blobs\"\nregion = \"us-east-1\"",
+    );
+
+    config.validate().unwrap();
 }

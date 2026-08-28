@@ -31,7 +31,7 @@ pub struct FilesystemPlacementReconciler {
 impl FilesystemPlacementReconciler {
     #[must_use]
     pub fn new(local_dc: DataCenterId, store: BlobStore, target_dcs: BTreeSet<DataCenterId>) -> Option<Self> {
-        if target_dcs.len() < 2 {
+        if target_dcs.is_empty() {
             return None;
         }
         Some(Self {

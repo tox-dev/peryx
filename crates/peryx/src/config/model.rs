@@ -176,7 +176,7 @@ impl Default for JobsConfig {
 }
 
 impl JobsConfig {
-    pub(super) fn validate_availability(&self, mode: AvailabilityMode) -> Result<(), ConfigError> {
+    pub(super) fn validate_mode(&self, mode: AvailabilityMode) -> Result<(), ConfigError> {
         if mode == AvailabilityMode::None
             && let Some((index, _)) = self
                 .schedules
@@ -424,7 +424,8 @@ impl Config {
             }
         }
         let mode = self.availability.mode();
-        self.jobs.validate_availability(mode)?;
+        self.jobs.validate_mode(mode)?;
+        self.validate_scheduled_jobs()?;
         if let Err(shortfall) = self.blob.durability().check(mode.durability_requirement()) {
             return Err(ConfigError::Durability {
                 mode: mode.as_str(),
@@ -432,6 +433,50 @@ impl Config {
             });
         }
         self.validate_topology(mode)
+    }
+
+    fn validate_scheduled_jobs(&self) -> Result<(), ConfigError> {
+        let local = self
+            .node_identity
+            .as_deref()
+            .or(self.writer_identity.as_deref())
+            .and_then(|identity| {
+                self.dc_membership
+                    .as_ref()?
+                    .members
+                    .iter()
+                    .find(|member| member.node == identity)
+            });
+        for (index, schedule) in self.jobs.schedules.iter().enumerate() {
+            let job = schedule.job.as_str();
+            if !peryx_ha_distributed::is_scheduled_job_kind(job) {
+                continue;
+            }
+            let reason = if !matches!(self.availability.replication(), Some(ReplicationConfig::Primary { .. })) {
+                Some("distributed jobs require a primary availability node")
+            } else if local.is_none() {
+                Some("distributed jobs require a local member roster")
+            } else if matches!(job, "dc_copy" | "placement_reconcile")
+                && !matches!(self.blob, BlobStorageConfig::Filesystem)
+            {
+                Some("copy and placement jobs require filesystem blob storage")
+            } else if job == "dc_copy"
+                && !self.dc_membership.as_ref().is_some_and(|membership| {
+                    membership
+                        .members
+                        .iter()
+                        .any(|member| Some(member.dc.as_str()) != local.map(|local| local.dc.as_str()))
+                })
+            {
+                Some("`dc_copy` requires a remote datacenter")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                return Err(ConfigError::Jobs { index, reason });
+            }
+        }
+        Ok(())
     }
 
     fn validate_topology(&self, mode: AvailabilityMode) -> Result<(), ConfigError> {

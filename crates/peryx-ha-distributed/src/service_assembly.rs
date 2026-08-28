@@ -955,19 +955,16 @@ pub fn assemble_workers(
     if !matches!(config.role, RuntimeRole::Primary { .. }) {
         return Ok(AvailabilityCapabilities::default());
     }
-    let Some(node_identity) = config.node_identity.as_deref() else {
+    let Some(local_identity) = config.node_identity.as_deref().or(config.writer_identity.as_deref()) else {
         return Ok(AvailabilityCapabilities::default());
     };
     let topology = ServiceTopology {
         membership: config.membership.clone(),
-        node_identity: config.node_identity.clone(),
+        local_identity: Some(local_identity.to_owned()),
     };
-    let home_placement = config
-        .membership
-        .as_ref()
-        .and_then(|membership| membership.members.iter().find(|member| member.node == node_identity))
-        .map(|member| {
-            DataCenterId::new(member.datacenter.clone())
+    let home_placement = local_member(&topology)
+        .map(|(_, member)| {
+            DataCenterId::new(&member.datacenter)
                 .with_context(|| format!("local datacenter identity {}", member.datacenter))
         })
         .transpose()?
@@ -1240,8 +1237,8 @@ pub fn availability_control_router(config: &RuntimeConfig, context: Availability
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ServiceTopology {
-    pub membership: Option<RuntimeMembership>,
-    pub node_identity: Option<String>,
+    membership: Option<RuntimeMembership>,
+    local_identity: Option<String>,
 }
 
 /// # Errors
@@ -1298,7 +1295,7 @@ fn blob_reclamation_selector(
 }
 
 fn local_member(topology: &ServiceTopology) -> Option<(&crate::RuntimeMembership, &crate::RuntimeMember)> {
-    let identity = topology.node_identity.as_deref()?;
+    let identity = topology.local_identity.as_deref()?;
     let membership = topology.membership.as_ref()?;
     membership
         .members
