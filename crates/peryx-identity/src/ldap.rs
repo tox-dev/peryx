@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fmt;
 use std::num::NonZeroU32;
 use std::sync::{Arc, OnceLock};
@@ -14,7 +15,7 @@ use url::Url;
 
 use crate::{
     ExternalGroup, ExternalGroupGrant, ExternalIdentity, ExternalIdentityLinker, ExternalIdentityResolution,
-    ExternalIdentityStore, ExternalLogin, ExternalSubject, ProviderId, UserName,
+    ExternalIdentityStore, ExternalLogin, ExternalSubject, MAX_EXTERNAL_GROUPS, ProviderId, UserName,
 };
 
 const LDAP_INVALID_CREDENTIALS: u32 = 49;
@@ -283,12 +284,19 @@ impl LdapProvider {
             .as_deref()
             .and_then(|attribute| attribute_values(entry, attribute))
             .unwrap_or_default();
-        let mut groups = group_values
-            .iter()
-            .map(|group| ExternalGroup::new(group).map_err(|_| LdapProviderError::InvalidEntry))
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut groups = HashSet::with_capacity(MAX_EXTERNAL_GROUPS);
+        for group in group_values {
+            let group = ExternalGroup::new(group).map_err(|_| LdapProviderError::InvalidEntry)?;
+            if groups.contains(&group) {
+                continue;
+            }
+            if groups.len() == MAX_EXTERNAL_GROUPS {
+                return Err(LdapProviderError::InvalidEntry);
+            }
+            groups.insert(group);
+        }
+        let mut groups = groups.into_iter().collect::<Vec<_>>();
         groups.sort_by(|left, right| left.as_str().cmp(right.as_str()));
-        groups.dedup();
         ExternalLogin::new(
             ExternalIdentity::new(
                 self.id.clone(),

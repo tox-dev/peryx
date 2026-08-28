@@ -8,9 +8,9 @@ use std::thread;
 use std::time::Duration;
 
 use peryx_identity::{
-    ExternalGroupGrant, ExternalIdentityResolution, ExternalLinkRequest, ExternalLogin, GrantScope, LdapBindMode,
-    LdapLoginError, LdapLoginService, LdapProvider, LdapProviderError, LdapProviderSettings, MAX_EXTERNAL_GROUPS,
-    ProviderId, Role, ServerUser, UserId, UserName, UserState,
+    ExternalGroup, ExternalGroupGrant, ExternalIdentityResolution, ExternalLinkRequest, ExternalLogin, GrantScope,
+    LdapBindMode, LdapLoginError, LdapLoginService, LdapProvider, LdapProviderError, LdapProviderSettings,
+    MAX_EXTERNAL_GROUPS, ProviderId, Role, ServerUser, UserId, UserName, UserState,
 };
 use rcgen::{
     BasicConstraints, CertificateParams, CertifiedIssuer, ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose,
@@ -105,6 +105,43 @@ async fn test_ldap_login_accepts_maximum_display_name() {
     assert_eq!(login.display_name.display().len(), 1_024);
 }
 
+#[tokio::test]
+async fn test_ldap_login_accepts_maximum_unique_groups_with_repeats() {
+    let server = TestLdapServer::start();
+    let login = authenticate_with_group_attribute(&server, "employeeType")
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        login.groups.iter().map(ExternalGroup::as_str).collect::<Vec<_>>(),
+        (0..MAX_EXTERNAL_GROUPS)
+            .map(|value| format!("group-{value:03}"))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn test_ldap_login_rejects_the_first_excess_unique_group() {
+    let server = TestLdapServer::start();
+
+    assert_eq!(
+        authenticate_with_group_attribute(&server, "description")
+            .await
+            .unwrap_err(),
+        LdapProviderError::InvalidEntry
+    );
+}
+
+async fn authenticate_with_group_attribute(
+    server: &TestLdapServer,
+    group_attribute: &str,
+) -> Result<Option<ExternalLogin>, LdapProviderError> {
+    let mut settings = openldap_settings(server.port(), server.ca().to_vec(), search_bind());
+    settings.group_attribute = Some(group_attribute.to_owned());
+    LdapProvider::new(settings).unwrap().authenticate("fry", "fry").await
+}
+
 async fn assert_service_link(search_provider: LdapProvider, fry: &ExternalLogin) {
     let requests = Arc::new(Mutex::new(Vec::new()));
     let captured = Arc::clone(&requests);
@@ -156,7 +193,6 @@ async fn assert_invalid_entries(port: u16, certificate: &[u8]) {
         ("title", "displayName", Some("memberOf")),
         ("entryUUID", "title", Some("memberOf")),
         ("entryUUID", "displayName", Some("title")),
-        ("entryUUID", "displayName", Some("description")),
     ] {
         let mut invalid = openldap_settings(port, certificate.to_vec(), search_bind());
         invalid.subject_attribute = subject.to_owned();
@@ -600,9 +636,20 @@ impl DirectoryEntry {
         if name.eq_ignore_ascii_case("description") {
             let mut descriptions = String::new();
             for value in 0..=MAX_EXTERNAL_GROUPS {
-                writeln!(descriptions, "group-{value}").unwrap();
+                writeln!(descriptions, "group-{value:03}").unwrap();
             }
             return Some(descriptions.lines().map(str::to_owned).collect());
+        }
+        if name.eq_ignore_ascii_case("employeeType") {
+            return Some(
+                (0..MAX_EXTERNAL_GROUPS)
+                    .rev()
+                    .flat_map(|value| {
+                        let group = format!("group-{value:03}");
+                        [group.clone(), group]
+                    })
+                    .collect(),
+            );
         }
         None
     }
