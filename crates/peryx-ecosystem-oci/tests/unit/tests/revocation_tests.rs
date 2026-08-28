@@ -232,6 +232,38 @@ async fn test_revoked_manifest_digest_never_reaches_the_proxy() {
 }
 
 #[tokio::test]
+async fn test_revocation_during_manifest_digest_fetch_prevents_cache() {
+    let server = MockServer::start().await;
+    let body = br#"{"schemaVersion":2}"#;
+    let digest = oci_digest(body);
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
+    let revoking = state.clone();
+    let revoked = digest.clone();
+    Mock::given(method("GET"))
+        .and(path(format!("/v2/app/manifests/{digest}")))
+        .respond_with(move |_: &wiremock::Request| {
+            revoke(&revoking, &revoked);
+            ResponseTemplate::new(200).set_body_raw(body.to_vec(), MANIFEST_TYPE)
+        })
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let (status, _, response) = send(&app, Method::GET, &format!("/v2/hub/app/manifests/{digest}")).await;
+
+    assert_eq!(
+        (
+            status,
+            body_has_code(&response, "MANIFEST_UNKNOWN"),
+            store::get_manifest(&state.serving.meta, &digest).unwrap(),
+            store::manifest_is_member(&state.serving.meta, "hub", "app", &digest).unwrap(),
+        ),
+        (StatusCode::NOT_FOUND, true, None, false)
+    );
+}
+
+#[tokio::test]
 async fn test_revoked_proxy_tag_target_stops_after_head() {
     let server = MockServer::start().await;
     let digest = format!("sha256:{}", "b".repeat(64));
@@ -278,28 +310,6 @@ async fn test_revoked_canonical_manifest_is_not_cached_when_head_has_no_digest()
     let (status, _, _) = send(&app, Method::GET, "/v2/hub/app/manifests/latest").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(store::get_manifest(&state.serving.meta, &digest).unwrap(), None);
-}
-
-#[tokio::test]
-async fn test_revoked_canonical_manifest_blocks_a_non_sha256_digest_pull() {
-    let server = MockServer::start().await;
-    let body = br#"{"schemaVersion":2}"#;
-    let canonical = oci_digest(body);
-    let requested = format!("sha512:{}", "c".repeat(128));
-    Mock::given(method("GET"))
-        .and(path(format!("/v2/app/manifests/{requested}")))
-        .respond_with(ResponseTemplate::new(200).set_body_raw(body.to_vec(), MANIFEST_TYPE))
-        .expect(1)
-        .mount(&server)
-        .await;
-    let dir = tempfile::tempdir().unwrap();
-    let (state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
-    revoke(&state, &canonical);
-
-    let (status, _, response) = send(&app, Method::GET, &format!("/v2/hub/app/manifests/{requested}")).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    assert!(body_has_code(&response, "MANIFEST_UNKNOWN"), "{response:?}");
-    assert_eq!(store::get_manifest(&state.serving.meta, &canonical).unwrap(), None);
 }
 
 #[rstest]
@@ -655,5 +665,34 @@ async fn test_referrers_hide_revoked_descriptors_and_subjects() {
     assert_eq!(
         (status, &document["manifests"]),
         (StatusCode::OK, &serde_json::json!([]))
+    );
+}
+
+#[tokio::test]
+async fn test_referrers_accept_sha512_subject_with_active_revocations() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = hosted(&dir);
+    let subject = format!("sha512:{}", "5".repeat(128));
+    let referrer = format!("sha256:{}", "6".repeat(64));
+    let descriptor = serde_json::json!({"digest":referrer,"artifactType":"application/vnd.example.sig"});
+    store::put_referrer(
+        &state.serving.meta,
+        "store",
+        "app",
+        &subject,
+        &referrer,
+        descriptor.to_string().as_bytes(),
+    )
+    .unwrap();
+    revoke(&state, &format!("sha256:{}", "7".repeat(64)));
+
+    let (status, _, body) = send(&app, Method::GET, &format!("/v2/store/app/referrers/{subject}")).await;
+
+    assert_eq!(
+        (
+            status,
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap()["manifests"].clone(),
+        ),
+        (StatusCode::OK, serde_json::json!([descriptor]))
     );
 }

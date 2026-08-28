@@ -292,23 +292,37 @@ async fn test_manifest_by_tag_wrong_sha256_advertised_is_a_gateway_error() {
     let (status, _, _) = send(&app, Method::GET, "/v2/hub/app/manifests/latest").await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
 }
+#[rstest]
+#[case::short_sha256("sha256:abcd")]
+#[case::non_hex_sha256(&format!("sha256:{}", "g".repeat(64)))]
+#[case::uppercase_sha256(&format!("sha256:{}", "A".repeat(64)))]
+#[case::sha512(&format!("sha512:{}", "c".repeat(128)))]
+#[case::unknown_algorithm(&format!("multihash:{}", "d".repeat(64)))]
 #[tokio::test]
-async fn test_manifest_by_non_sha256_digest_is_served() {
+async fn test_manifest_digest_is_rejected_before_route_effects(#[case] reference: &str) {
     let server = MockServer::start().await;
-    let body = br#"{"schemaVersion":2,"config":{}}"#;
-    let requested = format!("sha512:{}", "c".repeat(128));
-    // Noncanonical requested digests remain valid upstream content addresses.
-    Mock::given(method("GET"))
-        .and(path(format!("/v2/app/manifests/{requested}")))
-        .respond_with(ResponseTemplate::new(200).set_body_raw(body.to_vec(), MANIFEST_TYPE))
-        .mount(&server)
-        .await;
     let dir = tempfile::tempdir().unwrap();
-    let (_state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
-    let (status, headers, got) = send(&app, Method::GET, &format!("/v2/hub/app/manifests/{requested}")).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(got, &body[..]);
-    assert_eq!(headers["docker-content-digest"], requested);
+    let (state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
+    for method in [Method::GET, Method::HEAD, Method::PUT, Method::DELETE] {
+        let (status, _, body) = send(&app, method.clone(), &format!("/v2/hub/app/manifests/{reference}")).await;
+        assert_eq!(
+            (status, body_has_code(&body, "DIGEST_INVALID")),
+            (StatusCode::BAD_REQUEST, method != Method::HEAD),
+            "method {method}"
+        );
+    }
+    let (status, _, body) = send(&app, Method::GET, &format!("/v2/missing/app/manifests/{reference}")).await;
+    assert_eq!(
+        (status, body_has_code(&body, "DIGEST_INVALID")),
+        (StatusCode::BAD_REQUEST, true)
+    );
+    assert_eq!(
+        (
+            server.received_requests().await.unwrap().len(),
+            state.serving.meta.current_serial().unwrap()
+        ),
+        (0, 0)
+    );
 }
 #[tokio::test]
 async fn test_manifest_by_digest_upstream_error_is_a_gateway_error() {

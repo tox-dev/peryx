@@ -10,7 +10,7 @@
 //! Store and blob-io faults propagate through [`ServeError`] so the serving methods read as the happy
 //! path, and a single conversion turns a fault into a `502`.
 use crate::error::{ErrorCode, error_response, gateway_error};
-use crate::name::{OciRoute, classify};
+use crate::name::{OciRoute, Reference, classify, valid_manifest_digest};
 use crate::settings::IndexSettings;
 use crate::upload_session::UploadStore as _;
 use crate::upstream::{Upstream, UpstreamError};
@@ -456,6 +456,15 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         let allow = allowed_methods(&route);
         if !allow.split(", ").any(|allowed| method.as_str() == allowed) {
             return method_not_allowed(allow);
+        }
+        if matches!(
+            &route,
+            OciRoute::Manifest {
+                reference: Reference::Digest(digest),
+                ..
+            } if !valid_manifest_digest(digest)
+        ) {
+            return error_response(ErrorCode::DigestInvalid, "manifest digest is invalid");
         }
         let governed_read = read
             && matches!(

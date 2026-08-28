@@ -164,15 +164,24 @@ fn valid_name_component(component: &str) -> bool {
     true
 }
 
-/// A manifest reference: a digest if it carries an `algorithm:` prefix, otherwise a tag.
+/// Keep colon-bearing values as digest candidates so the handler can report `DIGEST_INVALID`.
 pub fn parse_reference(reference: &str) -> Option<Reference> {
     if reference.contains(':') {
-        parse_digest(reference).map(Reference::Digest)
+        Some(Reference::Digest(reference.to_owned()))
     } else if valid_tag(reference) {
         Some(Reference::Tag(reference.to_owned()))
     } else {
         None
     }
+}
+
+pub fn valid_manifest_digest(digest: &str) -> bool {
+    digest.strip_prefix("sha256:").is_some_and(|encoded| {
+        encoded.len() == 64
+            && encoded
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    })
 }
 
 pub fn parse_image_reference(raw: &str) -> Option<ImageReference> {
