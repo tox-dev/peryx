@@ -19,14 +19,15 @@ generates those files). peryx covers the same read-through behavior in one proce
 
 ### Overlap
 
-Both are read-through pypi.org mirrors that cache what they fetch, host private uploads, and let hosted names shadow the
-cached index. Their caching behavior overlaps in these areas:
+Both are read-through pypi.org mirrors that cache what they fetch and host private uploads. Their caching behavior
+overlaps in these areas:
 
 - **Read-through mirroring** of pypi.org (or any simple index), cached on first use.
 - **Private uploads** over the [twine](https://twine.readthedocs.io/) API, served from the same host as the cached
   index.
 - **Composition**: devpi's index inheritance (`bases`) maps onto peryx's
-  [virtual indexes](@/core/repositories/indexes.md), and hosted files shadow upstream ones in both.
+  [virtual indexes](@/core/repositories/indexes.md). The default PyPI mode unions distinct filenames; configure
+  [project isolation](@/ecosystems/pypi/reference/policy.md#project-isolation) when migrating a private name boundary.
 - **Yank and delete** of hosted files.
 - **A web UI** for browsing packages (devpi-web; built into peryx at `/`).
 - **Streaming artifact downloads**: devpi's `FileStreamer` and peryx both tee a wheel to disk while the client reads it,
@@ -90,7 +91,7 @@ packages need a `twine upload` pass into the new hosted index. Map the commands 
 | `devpi login` and `devpi upload`             | `twine upload --repository-url http://host:4433/{route}/ dist/*` |
 | `devpi remove pkg==1.0`                      | `DELETE /{route}/{project}/{version}/`                           |
 | `volatile=False`                             | `volatile = false` on the hosted index                           |
-| `mirror_whitelist`                           | Hosted names shadow the cached index by default                  |
+| `mirror_whitelist`                           | Explicit `fallback_mode` and `protected_names` source policy     |
 | `acl_upload`                                 | One or more scoped `[[index.access_token]]` grants               |
 | devpi-web plugin                             | Built in at `/`                                                  |
 | primary/replica options                      | `[availability]` with `mode = "dc"` or `mode = "ha"`             |

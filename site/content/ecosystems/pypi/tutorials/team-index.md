@@ -1,17 +1,17 @@
 +++
 title = "Build a team index"
-description = "Design a topology in TOML: separate team indexes, one shared cache, and private packages that shadow PyPI."
+description = "Design separate team indexes with one shared cache and project-level source isolation."
 weight = 2
 +++
 
-Replace the default configuration with a shared pypi.org cached index, two team indexes with their own uploads, and one
-route where a private package shadows its public namesake. You will see exactly what each index role contributes. It
-takes about fifteen minutes and builds on [getting started](@/core/start/getting-started.md).
+Replace the default configuration with a shared pypi.org cached index and two team indexes with their own uploads. Each
+team route excludes cached candidates for projects in its hosted layer. The tutorial takes about fifteen minutes and
+builds on [getting started](@/core/start/getting-started.md).
 
 ## Target configuration
 
-Two teams, `data` and `web`, each publish private packages. Both install through one cache. A package published by
-either team must never be fetched from pypi.org, even if someone registers the same name there.
+Two teams, `data` and `web`, each publish private packages. Both install through one cache. A distribution from pypi.org
+must not appear on a team route after that team publishes the same project name.
 
 ## Write the topology
 
@@ -53,10 +53,16 @@ ecosystem = "pypi"
 name = "data"
 layers = ["data-hosted", "pypi"]
 
+[index.policy]
+fallback_mode = "private-first"
+
 [[index]]
 ecosystem = "pypi"
 name = "web"
 layers = ["web-hosted", "pypi"]
+
+[index.policy]
+fallback_mode = "private-first"
 ```
 
 Read it bottom-up: `data` and `web` are virtual indexes, each serving its team's hosted index first and the shared
@@ -105,7 +111,7 @@ curl -s http://127.0.0.1:4433/data/simple/mypkg/ | grep -c "mypkg-1.0.0"   # 1: 
 curl -s http://127.0.0.1:4433/web/simple/mypkg/ | grep -c "mypkg-1.0.0"    # 0, or 404
 ```
 
-## Verify name shadowing
+## Verify project isolation
 
 Your package's name now resolves only to your upload on the `data` route. Prove it: ask for a project that exists both
 locally and upstream, and check where the files come from.
@@ -115,10 +121,15 @@ curl -s -H "Accept: application/vnd.pypi.simple.v1+json" \
     http://127.0.0.1:4433/data/simple/mypkg/ | python3 -m json.tool | grep url
 ```
 
-Every URL points back at peryx, and the versions listed are yours alone. If someone registers `mypkg` on pypi.org
-tomorrow with version `99.0`, nothing changes: the hosted layer answers first, and the cached index is never consulted
-for a name the hosted layer has. [The index model](@/core/repositories/indexes.md) explains why this ordering is the
-dependency-confusion defense.
+Every URL points back at peryx, and the versions listed are yours alone. If someone registers `mypkg` version `99.0` on
+pypi.org tomorrow, `private-first` keeps that cached candidate out of the response because the hosted layer contains the
+project.
+
+Without `private-first`, the default `fallback` mode merges distinct filenames from both layers. A hosted `mypkg-1.0.0`
+and upstream `mypkg-99.0` would both appear, and an installer could select `99.0`. Filename precedence only resolves a
+collision when two layers supply the same filename.
+[Policy settings](@/ecosystems/pypi/reference/policy.md#project-isolation) explains the three fallback modes and
+protected names.
 
 ## Next steps
 

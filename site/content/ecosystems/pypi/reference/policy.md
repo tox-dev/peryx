@@ -38,6 +38,43 @@ attestation_mode = "enforce"
 query an immediate cached member. `fallback` preserves filename-level merging. `protected_names` takes precedence over
 all three modes.
 
+## Project isolation
+
+The default `fallback` mode keeps the first occurrence of each filename and merges the remaining filenames. If a hosted
+layer contains `acme-1.0-py3-none-any.whl` and a cached layer contains `acme-9.0-py3-none-any.whl`, the project page
+contains both files. An installer can select `9.0`.
+
+Set `private-first` on the virtual route to exclude cached files whenever a hosted member contains the project:
+
+```toml
+[[index]]
+ecosystem = "pypi"
+name = "pypi"
+
+[[index.upstream]]
+name = "primary"
+url = "https://pypi.org/simple/"
+
+[[index]]
+ecosystem = "pypi"
+name = "hosted"
+hosted = true
+
+[[index]]
+ecosystem = "pypi"
+name = "packages"
+layers = ["hosted", "pypi"]
+write_target = "hosted"
+
+[index.policy]
+fallback_mode = "private-first"
+```
+
+With this policy, uploading an `acme` file to `hosted` removes all cached `acme` candidates from the `packages` project
+page. `no-fallback` excludes the immediate cached member for all projects. `protected_names` denies cached candidates
+for matching name globs in each fallback mode. The [team-index tutorial](@/ecosystems/pypi/tutorials/team-index.md) adds
+upload credentials and commands for a runnable setup.
+
 Release-age policy hides files with no `upload-time` because their age cannot be established. Attestation policy checks
 the bound statements' predicate types; it does not verify signatures, certificates, transparency logs, or publisher
 identity. See [upload attestations](@/ecosystems/pypi/reference/uploads.md#attestations) for validation order.

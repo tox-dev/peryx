@@ -46,8 +46,10 @@ The three [index roles](@/core/repositories/indexes.md) map to PyPI as follows:
   pypi.org, [TestPyPI](https://test.pypi.org/), [Artifactory](https://jfrog.com/artifactory/), or a GitLab registry.
 - **hosted**: a store for wheels and sdists published through the standard upload API. Twine or `uv publish` writes the
   files without using an upstream.
-- **virtual**: an ordered stack of cached and hosted indexes under one URL. Hosted uploads shadow upstream files with
-  the same name. Clients use one `index-url` without `--extra-index-url`.
+- **virtual**: an ordered stack of cached and hosted indexes under one URL. The default mode unions versions and keeps
+  the first occurrence of each filename. Clients use one `index-url` without `--extra-index-url`. Configure
+  [project isolation](@/ecosystems/pypi/reference/policy.md#project-isolation) when a hosted project must exclude cached
+  candidates with other filenames.
 
 A cached route retries upstream server errors, timeouts, and `429` responses with bounded backoff. A valid `Retry-After`
 delay or HTTP date takes precedence, capped at 30 seconds.

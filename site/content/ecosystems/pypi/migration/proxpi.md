@@ -37,8 +37,9 @@ its file cache defaults to a temporary directory, and it has no uploads and no p
   `tempfile.mkdtemp()` that is deleted on shutdown, so without a configured `PROXPI_CACHE_DIR` nothing survives a
   restart. Under four gunicorn workers the in-memory index cache is duplicated per worker and never shared. peryx is one
   process with a persistent content-addressed store shared by everything it does.
-- **Private packages.** peryx hosts your own uploads [shadowing upstream names](@/core/repositories/indexes.md); proxpi
-  is a proxy only, with no upload path.
+- **Private packages.** peryx hosts your own uploads beside cached upstream files; proxpi is a proxy only, with no
+  upload path. Configure [project isolation](@/ecosystems/pypi/reference/policy.md#project-isolation) when upstream
+  versions must disappear after a private upload.
 - **Verified caching.** peryx checks each artifact against the digest its index page advertised before caching it.
 - **No redirect to upstream.** When a download runs past `PROXPI_DOWNLOAD_TIMEOUT` (0.9 s default), proxpi redirects the
   client to pypi.org, so clients still need direct upstream access. peryx always serves through itself.

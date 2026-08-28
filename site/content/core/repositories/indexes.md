@@ -48,6 +48,10 @@ visibility and access policy before returning a merged result.
 Shadowing gives a hosted candidate precedence over an upstream candidate. The owner defines the candidate key and the
 scope of that precedence.
 
+PyPI uses the distribution filename as the default candidate key. A hosted file replaces an upstream file with the same
+filename, while distinct versions remain in the merged project page. Project-name isolation requires an explicit
+[PyPI fallback policy](@/ecosystems/pypi/reference/policy.md#project-isolation).
+
 Put the rule at the virtual route when clients cannot enforce one source policy. A client that adds another source can
 bypass the route's decision, so access policy must restrict alternate sources when shadowing forms a security boundary.
 

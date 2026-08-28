@@ -14,8 +14,10 @@ and local file serving.
 
 simpleindex suits route-only deployments. Redirected clients wait on the upstream, while peryx caches upstream responses
 for machines behind one uplink. peryx also accepts [twine](https://twine.readthedocs.io/) uploads. A virtual index
-applies hosted-first [dependency-confusion](@/core/repositories/indexes.md) protection to each published name without a
-route pattern for that project.
+merges hosted and cached filenames by default. Set `fallback_mode = "private-first"` when a hosted project must exclude
+cached candidates without a route pattern for that project. The
+[team-index tutorial](@/ecosystems/pypi/tutorials/team-index.md) shows a complete configuration and the
+higher-public-version case.
 
 ## Configuration mapping
 

@@ -36,8 +36,9 @@ maintainers.
   [cold installs at upstream speed](@/core/operations/performance.md), and a content-addressed store that dedupes.
 - **Outage resilience.** An upstream outage takes pypiserver's fallback installs down with it. peryx serves the last
   good page while the upstream is unreachable, so a pypi.org blip degrades to stale-but-working.
-- **Shadowing.** Your uploads [shadow upstream names](@/core/repositories/indexes.md) instead of coexisting with a
-  redirect.
+- **Composition.** Your uploads and cached upstream files share one route. Peryx keeps the first occurrence of an exact
+  filename; distinct versions form a union unless the route configures
+  [project isolation](@/ecosystems/pypi/reference/policy.md#project-isolation).
 - **[PEP 658](https://peps.python.org/pep-0658/) metadata.** pypiserver serves none; peryx serves it by default.
 
 ### Performance vs peryx

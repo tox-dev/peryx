@@ -249,6 +249,6 @@ the upstream URL in the error body.
 
 ## Related
 
-- Why one URL with shadowing beats `--extra-index-url`: [the index model](@/core/repositories/indexes.md)
+- Keep private names on one source: [PyPI project isolation](@/ecosystems/pypi/reference/policy.md#project-isolation)
 - Serve a network with no internet route: [air-gapped](@/ecosystems/pypi/guides/air-gapped.md)
 - Upstream capability differences peryx papers over: [standards](@/ecosystems/pypi/reference/standards.md)

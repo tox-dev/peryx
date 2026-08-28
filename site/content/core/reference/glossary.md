@@ -53,6 +53,12 @@ Removal of unreferenced content after reference checks, retention rules, and rec
 
 A distributed member that applies committed state and bytes and rejects client mutations.
 
+## Shadowing
+
+Precedence for one candidate supplied by more than one virtual-index member. The ecosystem owner defines the candidate
+key. PyPI uses the distribution filename by default, so shadowing one file does not isolate every version of its
+project.
+
 ## Upstream
 
 An external source consulted by a cached index.

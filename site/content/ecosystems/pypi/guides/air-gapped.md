@@ -21,7 +21,9 @@ data_dir = "/var/lib/peryx"
 
 Set `PIP_INDEX_URL` or `UV_INDEX_URL` to `http://<egress-host>:4433/root/pypi/simple/`. The egress host becomes the
 firewall boundary and [monitoring point](@/core/operations/monitor.md). peryx counts downloads per project and file, and
-[private packages shadow upstream packages](@/core/repositories/indexes.md).
+the virtual route merges private and cached files. Add a
+[project-isolation policy](@/ecosystems/pypi/reference/policy.md#project-isolation) for private names that must exclude
+upstream versions.
 
 If the egress host itself must go through a corporate proxy, standard `HTTPS_PROXY` environment variables apply to
 peryx's upstream client.
