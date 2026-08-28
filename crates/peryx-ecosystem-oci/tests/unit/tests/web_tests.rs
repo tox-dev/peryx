@@ -70,15 +70,17 @@ async fn put_manifest(app: &axum::Router, reference: &str, media_type: &str, bod
     assert_eq!(status, StatusCode::CREATED, "{body:?}");
 }
 
-async fn populated() -> (tempfile::TempDir, Arc<peryx_driver::AppState>, axum::Router, String) {
+async fn populated_with_layer(
+    layer: &[u8],
+    layer_media_type: &str,
+) -> (tempfile::TempDir, Arc<peryx_driver::AppState>, axum::Router, String) {
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = hosted_writable(&dir, TOKEN);
     let config = br#"{"architecture":"amd64","os":"linux"}"#;
     let config_digest = upload(&app, config).await;
-    let layer = gzip_layer();
-    let layer_digest = upload(&app, &layer).await;
+    let layer_digest = upload(&app, layer).await;
     let image = format!(
-        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{config_digest}","size":{config_size}}},"layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip","digest":"{layer_digest}","size":{layer_size}}}]}}"#,
+        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{config_digest}","size":{config_size}}},"layers":[{{"mediaType":"{layer_media_type}","digest":"{layer_digest}","size":{layer_size}}}]}}"#,
         config_size = config.len(),
         layer_size = layer.len(),
     );
@@ -102,6 +104,10 @@ async fn populated() -> (tempfile::TempDir, Arc<peryx_driver::AppState>, axum::R
     )
     .await;
     (dir, state, app, layer_digest)
+}
+
+async fn populated() -> (tempfile::TempDir, Arc<peryx_driver::AppState>, axum::Router, String) {
+    populated_with_layer(&gzip_layer(), "application/vnd.oci.image.layer.v1.tar+gzip").await
 }
 
 async fn browse(state: &Arc<peryx_driver::AppState>, position: usize, query: impl Into<String>) -> Option<BrowsePage> {
@@ -229,6 +235,44 @@ async fn test_browse_manifest_lists_layer() {
             vec!["Digest", "Size", "Media type", "Contents"],
             layer_digest.as_str(),
             true
+        ),
+    );
+}
+
+#[tokio::test]
+async fn test_browse_zstd_layer_is_not_linked_or_parsed() {
+    let layer = [0x28, 0xb5, 0x2f, 0xfd, 0x20, 0, 0x15, 0, 0, 0, 0];
+    let (_dir, state, _app, layer_digest) =
+        populated_with_layer(&layer, "application/vnd.oci.image.layer.v1.tar+zstd").await;
+    let page = browse(&state, 0, "project=app&ref=1.0").await.unwrap();
+    let section = section_json(&page.sections[1]);
+    let error = state
+        .driver_set()
+        .get_browse(&crate::ECOSYSTEM)
+        .unwrap()
+        .browse(
+            state.serving.clone(),
+            0,
+            format!("project=app&ref=1.0&layer={layer_digest}"),
+            None,
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        (
+            section["rows"][0]["cells"][0]["href"].is_null(),
+            section["rows"][0]["cells"][3]["href"].is_null(),
+            section["rows"][0]["cells"][3]["text"].as_str(),
+            error,
+        ),
+        (
+            true,
+            true,
+            Some(""),
+            format!(
+                "layer contents for {layer_digest} on \"store/app\": 422 Unprocessable Entity: unsupported archive type"
+            ),
         ),
     );
 }

@@ -1,3 +1,4 @@
+use mediatype::{MediaType, Name, names};
 use peryx_core::{BrowseCell, BrowseLink, BrowsePage, BrowseProperty, BrowseRow, BrowseSection};
 use serde::Serialize;
 
@@ -293,9 +294,36 @@ fn content_reference(value: &serde_json::Value) -> ManifestContentReference {
     ManifestContentReference {
         digest: string_at(value, "digest"),
         size: value["size"].as_u64().unwrap_or_default(),
-        browsable: media_type.contains("tar"),
+        browsable: browsable_layer_media_type(&media_type),
         media_type,
         platform,
+    }
+}
+
+const OCI_LAYER_TAR: Name<'static> = Name::new_unchecked("vnd.oci.image.layer.v1.tar");
+const OCI_NONDISTRIBUTABLE_LAYER_TAR: Name<'static> =
+    Name::new_unchecked("vnd.oci.image.layer.nondistributable.v1.tar");
+const DOCKER_LAYER_GZIP: Name<'static> = Name::new_unchecked("vnd.docker.image.rootfs.diff.tar.gzip");
+const DOCKER_FOREIGN_LAYER_GZIP: Name<'static> = Name::new_unchecked("vnd.docker.image.rootfs.foreign.diff.tar.gzip");
+
+fn browsable_layer_media_type(value: &str) -> bool {
+    let Ok(media_type) = MediaType::parse(value) else {
+        return false;
+    };
+    if media_type.ty != names::APPLICATION || !media_type.params.is_empty() {
+        return false;
+    }
+    match media_type.suffix {
+        Some(suffix) if suffix == "gzip" => {
+            media_type.subty == OCI_LAYER_TAR || media_type.subty == OCI_NONDISTRIBUTABLE_LAYER_TAR
+        }
+        None => {
+            media_type.subty == OCI_LAYER_TAR
+                || media_type.subty == OCI_NONDISTRIBUTABLE_LAYER_TAR
+                || media_type.subty == DOCKER_LAYER_GZIP
+                || media_type.subty == DOCKER_FOREIGN_LAYER_GZIP
+        }
+        Some(_) => false,
     }
 }
 

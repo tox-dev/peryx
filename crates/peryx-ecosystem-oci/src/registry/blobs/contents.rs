@@ -48,20 +48,59 @@ pub(super) fn layer_query_member(query: &str) -> Result<Option<(String, u64)>, s
     Ok(member.map(|member| (member, offset)))
 }
 
-/// A synthetic filename that tells the archive engine how the layer blob is framed. The engine picks
-/// its decoder by extension, and a content-addressed blob has none, so sniff the gzip magic and name
-/// it accordingly.
-fn layer_archive_name(path: &Path) -> &'static str {
-    let mut magic = [0_u8; 2];
-    let gzip = std::fs::File::open(path)
-        .and_then(|mut file| file.read_exact(&mut magic))
-        .is_ok()
-        && magic == [0x1f, 0x8b];
-    if gzip { "layer.tar.gz" } else { "layer.tar" }
+enum LayerFraming {
+    Tar,
+    Gzip,
+    Zstd,
+    Unknown,
+}
+
+fn layer_framing(path: &Path) -> LayerFraming {
+    let mut prefix = Vec::with_capacity(512);
+    let readable = std::fs::File::open(path)
+        .and_then(|file| file.take(512).read_to_end(&mut prefix))
+        .is_ok();
+    if readable && prefix.starts_with(&[0x1f, 0x8b]) {
+        LayerFraming::Gzip
+    } else if readable && prefix.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
+        LayerFraming::Zstd
+    } else if !readable || is_tar_header(&prefix) {
+        LayerFraming::Tar
+    } else {
+        LayerFraming::Unknown
+    }
+}
+
+fn is_tar_header(prefix: &[u8]) -> bool {
+    let Some(header) = prefix.get(..512) else {
+        return false;
+    };
+    if header.iter().all(|byte| *byte == 0) {
+        return true;
+    }
+    let Some(stored) = std::str::from_utf8(&header[148..156])
+        .ok()
+        .map(|value| value.trim_matches(['\0', ' ']))
+        .filter(|value| !value.is_empty())
+        .and_then(|value| u32::from_str_radix(value, 8).ok())
+    else {
+        return false;
+    };
+    stored
+        == header[..148]
+            .iter()
+            .chain([b' '; 8].iter())
+            .chain(header[156..].iter())
+            .map(|byte| u32::from(*byte))
+            .sum::<u32>()
 }
 
 pub(super) fn layer_contents_response(path: &Path, selected: Option<(String, u64)>) -> Response {
-    let filename = layer_archive_name(path);
+    let filename = match layer_framing(path) {
+        LayerFraming::Tar => "layer.tar",
+        LayerFraming::Gzip => "layer.tar.gz",
+        LayerFraming::Zstd | LayerFraming::Unknown => return layer_error_response(&ArchiveError::Unsupported),
+    };
     match selected {
         None => match archive::list_members_path(&PROFILE, filename, path) {
             Ok(members) => axum::Json(serde_json::json!({ "members": members })).into_response(),

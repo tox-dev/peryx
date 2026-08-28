@@ -41,6 +41,7 @@ futures-util.workspace = true
 getrandom.workspace = true
 http-body.workspace = true
 http-body-util.workspace = true
+mediatype.workspace = true
 parking_lot.workspace = true
 reqwest = { workspace = true, features = ["gzip", "http2", "rustls-no-provider", "stream"] }
 rustls.workspace = true

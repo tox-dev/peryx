@@ -67,6 +67,40 @@ fn test_manifest_page_totals_sizes_and_saturates_overflow(
     );
 }
 
+#[rstest]
+#[case::oci_tar("application/vnd.oci.image.layer.v1.tar", true)]
+#[case::oci_gzip("APPLICATION/VND.OCI.IMAGE.LAYER.V1.TAR+GZIP", true)]
+#[case::oci_zstd("application/vnd.oci.image.layer.v1.tar+zstd", false)]
+#[case::oci_nondistributable_tar("application/vnd.oci.image.layer.nondistributable.v1.tar", true)]
+#[case::oci_nondistributable_gzip("application/vnd.oci.image.layer.nondistributable.v1.tar+gzip", true)]
+#[case::oci_nondistributable_zstd("application/vnd.oci.image.layer.nondistributable.v1.tar+zstd", false)]
+#[case::docker_gzip("application/vnd.docker.image.rootfs.diff.tar.gzip", true)]
+#[case::docker_foreign_gzip("application/vnd.docker.image.rootfs.foreign.diff.tar.gzip", true)]
+#[case::artifact("application/vnd.example.layer.tar+gzip", false)]
+#[case::parameter("application/vnd.oci.image.layer.v1.tar+gzip; level=9", false)]
+#[case::invalid("vnd.oci.image.layer.v1.tar+gzip", false)]
+fn test_manifest_page_only_links_supported_layer_media_types(#[case] media_type: &str, #[case] browsable: bool) {
+    let manifest = format!(r#"{{"layers":[{{"digest":"sha256:abc","size":1,"mediaType":"{media_type}"}}]}}"#);
+    let page = manifest_page(
+        "oci",
+        "team/app",
+        "latest",
+        manifest_content_from_bytes(manifest.as_bytes()).unwrap(),
+    );
+    let BrowseSection::Table { rows, .. } = &page.sections[1] else {
+        panic!("manifest table missing");
+    };
+
+    assert_eq!(
+        (
+            rows[0].cells[0].href.is_some(),
+            rows[0].cells[3].href.is_some(),
+            rows[0].cells[3].text.as_str(),
+        ),
+        (browsable, browsable, if browsable { "contents" } else { "" }),
+    );
+}
+
 #[test]
 fn test_member_page_links_the_next_chunk() {
     let page = member_page(

@@ -85,6 +85,20 @@ async fn test_contents_lists_an_uncompressed_layer() {
 }
 
 #[tokio::test]
+async fn test_contents_lists_an_empty_uncompressed_layer() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let digest = upload(&app, &[0; 1024]).await;
+
+    let (status, _, body) = send(&app, Method::GET, &format!("/v2/store/app/blobs/{digest}/contents")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap()["members"],
+        serde_json::json!([]),
+    );
+}
+
+#[tokio::test]
 async fn test_contents_previews_a_text_member() {
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = hosted_writable(&dir, TOKEN);
@@ -186,8 +200,51 @@ async fn test_contents_of_a_corrupt_layer_is_unprocessable() {
     let (_state, app) = hosted_writable(&dir, TOKEN);
     let digest = upload(&app, b"not a tar at all").await;
 
-    let (status, _, _) = send(&app, Method::GET, &format!("/v2/store/app/blobs/{digest}/contents")).await;
+    let (status, _, body) = send(&app, Method::GET, &format!("/v2/store/app/blobs/{digest}/contents")).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(&body[..], b"unsupported archive type");
+}
+
+#[tokio::test]
+async fn test_contents_of_a_layer_with_an_invalid_tar_checksum_is_unsupported() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let mut layer = tar_layer();
+    layer[148..156].fill(b'x');
+    let digest = upload(&app, &layer).await;
+
+    let (status, _, body) = send(&app, Method::GET, &format!("/v2/store/app/blobs/{digest}/contents")).await;
+    assert_eq!(
+        (status, &body[..]),
+        (StatusCode::UNPROCESSABLE_ENTITY, b"unsupported archive type".as_slice()),
+    );
+}
+
+#[tokio::test]
+async fn test_contents_of_a_truncated_gzip_layer_is_unprocessable() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let digest = upload(&app, &[0x1f, 0x8b]).await;
+
+    let (status, _, body) = send(&app, Method::GET, &format!("/v2/store/app/blobs/{digest}/contents")).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        std::str::from_utf8(&body).unwrap().starts_with("archive read failed:"),
+        "{body:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_contents_of_a_zstd_layer_is_unsupported() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let digest = upload(&app, &[0x28, 0xb5, 0x2f, 0xfd, 0x20, 0, 0x15, 0, 0, 0, 0]).await;
+
+    let (status, _, body) = send(&app, Method::GET, &format!("/v2/store/app/blobs/{digest}/contents")).await;
+    assert_eq!(
+        (status, &body[..]),
+        (StatusCode::UNPROCESSABLE_ENTITY, b"unsupported archive type".as_slice()),
+    );
 }
 
 #[tokio::test]
