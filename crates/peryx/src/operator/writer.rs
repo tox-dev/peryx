@@ -38,14 +38,15 @@ pub fn promote_writer_with_plugins(
 /// writer already owns is rejected.
 ///
 /// # Errors
-/// Returns an error when no writer identity is configured, the metadata store cannot be opened,
-/// another writer already owns the store, the identity is invalid, or output fails.
+/// Returns an error when no writer identity is configured, the process cannot create the data directory
+/// or metadata store, another writer already owns the store, the identity is invalid, or output fails.
 pub fn claim_writer(config: &Config, out: &mut dyn Write) -> anyhow::Result<()> {
     claim_writer_with_plugins(config, &crate::compiled_plugins(), out)
 }
 
 /// # Errors
-/// Returns an error when metadata access, identity claim, or output fails.
+/// Returns an error when the process cannot create the data directory, metadata access or identity
+/// claim fails, or output fails.
 pub fn claim_writer_with_plugins(
     config: &Config,
     plugins: &peryx_plugin_registry::PluginRegistry,
@@ -54,6 +55,8 @@ pub fn claim_writer_with_plugins(
     let identity = config.writer_identity.as_deref().ok_or_else(|| {
         anyhow!("writer identity is not configured; set `writer_identity` to the writer this replica follows")
     })?;
+    std::fs::create_dir_all(&config.data_dir)
+        .context(format!("create data directory {}", config.data_dir.display()))?;
     let path = config.data_dir.join("peryx.redb");
     let meta = crate::metadata::open(&path, plugins)?;
     meta.claim_writer_identity(identity)

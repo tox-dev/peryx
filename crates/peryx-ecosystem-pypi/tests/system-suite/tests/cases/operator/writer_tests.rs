@@ -146,15 +146,20 @@ fn test_claim_writer_rejects_an_empty_identity() {
 }
 
 #[test]
-fn test_claim_writer_reports_an_unusable_store() {
+fn test_claim_writer_reports_an_unusable_data_directory() {
     let dir = tempfile::tempdir().unwrap();
+    let data_dir = dir.path().join("data");
+    std::fs::write(&data_dir, []).unwrap();
     let config = Config {
-        data_dir: dir.path().join("missing"),
+        data_dir,
         writer_identity: Some("writer-a".to_owned()),
         ..Config::default()
     };
 
     let error = operator::claim_writer(&config, &mut Vec::new()).unwrap_err();
 
-    assert!(error.to_string().contains("open metadata store"), "{error}");
+    assert_eq!(
+        error.to_string(),
+        format!("create data directory {}", config.data_dir.display())
+    );
 }

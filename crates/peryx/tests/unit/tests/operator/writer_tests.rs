@@ -6,14 +6,15 @@ use crate::config::Config;
 use crate::operator;
 
 #[test]
-fn test_claim_writer_changes_the_stored_identity() {
+fn test_claim_writer_creates_missing_data_directory() {
     let dir = tempfile::tempdir().unwrap();
-    let config = writer_config(dir.path());
+    let data_dir = dir.path().join("missing");
+    let config = writer_config(&data_dir);
     let mut out = Vec::new();
 
     operator::claim_writer(&config, &mut out).unwrap();
 
-    let meta = MetaStore::open_existing(dir.path().join("peryx.redb")).unwrap();
+    let meta = MetaStore::open_existing(data_dir.join("peryx.redb")).unwrap();
     assert_eq!(
         (meta.writer_identity().unwrap(), out),
         (Some("writer-a".to_owned()), b"writer\twriter-a\n".to_vec())
@@ -59,13 +60,18 @@ fn test_promote_writer_requires_a_configured_identity() {
 }
 
 #[test]
-fn test_claim_writer_reports_store_open_errors() {
+fn test_claim_writer_reports_data_directory_errors() {
     let dir = tempfile::tempdir().unwrap();
-    let config = writer_config(&dir.path().join("missing"));
+    let data_dir = dir.path().join("data");
+    std::fs::write(&data_dir, []).unwrap();
+    let config = writer_config(&data_dir);
 
     let error = operator::claim_writer(&config, &mut Vec::new()).unwrap_err();
 
-    assert!(error.to_string().contains("open metadata store"), "{error:#}");
+    assert_eq!(
+        error.to_string(),
+        format!("create data directory {}", data_dir.display())
+    );
 }
 
 #[test]
