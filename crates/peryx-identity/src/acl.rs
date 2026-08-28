@@ -17,12 +17,13 @@ pub fn authorize(
     if action == Action::Read && acl.anonymous_read {
         return Ok(());
     }
+    let now = system_now();
     match principal {
         Principal::Named { subject } => acl
             .token(subject)
             .ok_or(Denial::Forbidden)
             .and_then(|token| authorize_grants(&token.grants, resource, action)),
-        Principal::Anonymous if acl.grants_to_anyone(action) => Err(Denial::Unauthenticated),
+        Principal::Anonymous if acl.grants_to_anyone_at(action, now) => Err(Denial::Unauthenticated),
         Principal::Anonymous => Err(Denial::Unavailable),
     }
 }
@@ -35,6 +36,7 @@ pub fn authorize_all(principal: &Principal, acl: &IndexAcl, action: Action) -> R
     if action == Action::Read && acl.anonymous_read {
         return Ok(());
     }
+    let now = system_now();
     match principal {
         Principal::Named { subject } => acl.token(subject).ok_or(Denial::Forbidden).and_then(|token| {
             token
@@ -44,7 +46,7 @@ pub fn authorize_all(principal: &Principal, acl: &IndexAcl, action: Action) -> R
                 .then_some(())
                 .ok_or(Denial::Forbidden)
         }),
-        Principal::Anonymous if acl.grants_to_anyone(action) => Err(Denial::Unauthenticated),
+        Principal::Anonymous if acl.grants_to_anyone_at(action, now) => Err(Denial::Unauthenticated),
         Principal::Anonymous => Err(Denial::Unavailable),
     }
 }
@@ -149,6 +151,13 @@ impl IndexAcl {
             .any(|token| token.grants.iter().any(|grant| grant.actions.contains(&action)))
     }
 
+    #[must_use]
+    pub fn grants_to_anyone_at(&self, action: Action, now: i64) -> bool {
+        self.tokens
+            .iter()
+            .any(|token| token.live(now) && token.grants.iter().any(|grant| grant.actions.contains(&action)))
+    }
+
     fn token(&self, name: &str) -> Option<&NamedToken> {
         self.tokens.iter().find(|token| token.name == name)
     }
@@ -174,6 +183,12 @@ impl NamedToken {
     fn live(&self, now: i64) -> bool {
         self.expires_at.is_none_or(|expiry| now < expiry)
     }
+}
+
+fn system_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| i64::try_from(duration.as_secs()).unwrap_or(i64::MAX))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

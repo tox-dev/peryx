@@ -154,15 +154,20 @@ fn test_authorize_all_requires_a_matching_wildcard_grant(
 }
 
 #[rstest]
-#[case::public(true, true, Ok(()))]
-#[case::credential_required(false, true, Err(Denial::Unauthenticated))]
-#[case::unavailable(false, false, Err(Denial::Unavailable))]
+#[case::public(true, true, None, Ok(()))]
+#[case::credential_required(false, true, Some(i64::MAX), Err(Denial::Unauthenticated))]
+#[case::expired(false, true, Some(0), Err(Denial::Unavailable))]
+#[case::unavailable(false, false, None, Err(Denial::Unavailable))]
 fn test_authorize_all_classifies_anonymous_reads(
     #[case] anonymous_read: bool,
     #[case] token_can_read: bool,
+    #[case] expires_at: Option<i64>,
     #[case] expected: Result<(), Denial>,
 ) {
-    let tokens = token_can_read.then(|| token("ci", "s3cret", grant(&["*"], &[Action::Read])));
+    let tokens = token_can_read.then(|| NamedToken {
+        expires_at,
+        ..token("ci", "s3cret", grant(&["*"], &[Action::Read]))
+    });
     let acl = IndexAcl {
         anonymous_read,
         tokens: tokens.into_iter().collect(),
@@ -188,9 +193,14 @@ fn test_exact_resource_matching_does_not_expand_globs(
     );
 }
 
-#[test]
-fn test_authorize_tells_an_anonymous_write_to_authenticate() {
-    let acl = acl(vec![token("ci", "s3cret", grant(&["*"], &[Action::Write]))]);
+#[rstest]
+#[case::active(i64::MAX, Err(Denial::Unauthenticated))]
+#[case::expired(0, Err(Denial::Unavailable))]
+fn test_authorize_classifies_anonymous_by_live_grants(#[case] expires_at: i64, #[case] expected: Result<(), Denial>) {
+    let acl = acl(vec![NamedToken {
+        expires_at: Some(expires_at),
+        ..token("ci", "s3cret", grant(&["*"], &[Action::Write]))
+    }]);
     assert_eq!(
         authorize(
             &Principal::Anonymous,
@@ -198,7 +208,7 @@ fn test_authorize_tells_an_anonymous_write_to_authenticate() {
             ResourceMatch::Pattern("team/api"),
             Action::Write
         ),
-        Err(Denial::Unauthenticated)
+        expected
     );
 }
 
@@ -276,6 +286,23 @@ fn test_identify_ignores_an_expired_token() {
     let header = basic(b"client:s3cret");
     assert_eq!(acl.identify(Some(&header), 99).principal, subject("ci"));
     assert_eq!(acl.identify(Some(&header), 100).principal, Principal::Anonymous);
+}
+
+#[rstest]
+#[case::unbounded(None, i64::MAX, true)]
+#[case::before_expiry(Some(100), 99, true)]
+#[case::at_expiry(Some(100), 100, false)]
+fn test_grants_to_anyone_at_uses_live_tokens(
+    #[case] expires_at: Option<i64>,
+    #[case] now: i64,
+    #[case] expected: bool,
+) {
+    let acl = acl(vec![NamedToken {
+        expires_at,
+        ..token("ci", "s3cret", grant(&["*"], &[Action::Write]))
+    }]);
+
+    assert_eq!(acl.grants_to_anyone_at(Action::Write, now), expected);
 }
 
 #[test]

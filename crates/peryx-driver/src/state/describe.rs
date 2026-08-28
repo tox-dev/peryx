@@ -5,21 +5,26 @@ use peryx_upstream::{UpstreamHealth, UpstreamRouter};
 /// Describe every runtime index without touching storage or upstream state.
 #[must_use]
 pub fn describe_indexes(indexes: &[Index]) -> Vec<IndexDescription> {
+    let now = system_now();
     (0..indexes.len())
-        .map(|position| describe_index(indexes, position))
+        .map(|position| describe_index_at(indexes, position, now))
         .collect()
 }
 
 #[must_use]
 pub fn describe_index(indexes: &[Index], position: usize) -> IndexDescription {
+    describe_index_at(indexes, position, system_now())
+}
+
+fn describe_index_at(indexes: &[Index], position: usize, now: i64) -> IndexDescription {
     let index = &indexes[position];
     let (layers, precedence, uploads, volatile_deletes, upload_to) = match &index.kind {
         IndexKind::Cached { .. } => (Vec::new(), Vec::new(), false, false, None),
         IndexKind::Hosted { .. } => (
             Vec::new(),
             Vec::new(),
-            writable(index),
-            writable(index) && volatile(index),
+            active(index, Action::Write, now),
+            active(index, Action::Delete, now) && volatile(index),
             None,
         ),
         IndexKind::Virtual { layers, write_target } => {
@@ -32,8 +37,8 @@ pub fn describe_index(indexes: &[Index], position: usize) -> IndexDescription {
                 })
                 .collect();
             let target = write_target.map(|pos| &indexes[pos]);
-            let uploads = target.is_some_and(writable);
-            let volatile_deletes = target.is_some_and(|index| writable(index) && volatile(index));
+            let uploads = target.is_some_and(|index| active(index, Action::Write, now));
+            let volatile_deletes = target.is_some_and(|index| active(index, Action::Delete, now) && volatile(index));
             let upload_to = target.map(|index| index.name.clone());
             (names, precedence, uploads, volatile_deletes, upload_to)
         }
@@ -53,7 +58,7 @@ pub fn describe_index(indexes: &[Index], position: usize) -> IndexDescription {
             None,
             Some(HostedDescription {
                 volatile: *volatile,
-                upload_token: SecretDescription::new(writable(index)),
+                upload_token: SecretDescription::new(index.acl.grants_to_anyone(Action::Write)),
             }),
         ),
         IndexKind::Virtual { .. } => (None, None),
@@ -83,12 +88,18 @@ const fn kind_str(kind: &IndexKind) -> &'static str {
     }
 }
 
-fn writable(index: &Index) -> bool {
-    index.acl.grants_to_anyone(Action::Write)
+fn active(index: &Index, action: Action, now: i64) -> bool {
+    index.acl.grants_to_anyone_at(action, now)
 }
 
 const fn volatile(index: &Index) -> bool {
     matches!(index.kind, IndexKind::Hosted { volatile: true })
+}
+
+fn system_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| i64::try_from(duration.as_secs()).unwrap_or(i64::MAX))
 }
 
 /// A configured index as presented to humans: on the dashboard, in `/+status`, and in discovery.

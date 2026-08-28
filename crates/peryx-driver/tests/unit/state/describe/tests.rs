@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use super::{MemberDescription, describe_index, describe_indexes, describe_upstream_route};
 use peryx_core::Ecosystem;
 use peryx_identity::{Action, Glob, Grant, IndexAcl, NamedToken};
@@ -8,18 +6,22 @@ use peryx_policy::Policy;
 use peryx_upstream::{NamedUpstream, UpstreamClient, UpstreamRouter};
 use rstest::rstest;
 
-fn writer_acl(secret: impl Into<String>) -> IndexAcl {
+fn named_token(name: &str, actions: &[Action], expires_at: Option<i64>) -> NamedToken {
+    NamedToken {
+        name: name.to_owned(),
+        secret: "secret".to_owned(),
+        grants: vec![Grant {
+            resources: vec![Glob::new("*")],
+            actions: actions.iter().copied().collect(),
+        }],
+        expires_at,
+    }
+}
+
+fn token_acl(actions: &[Action], expires_at: Option<i64>) -> IndexAcl {
     IndexAcl {
         anonymous_read: true,
-        tokens: vec![NamedToken {
-            name: "uploader".to_owned(),
-            secret: secret.into(),
-            grants: vec![Grant {
-                resources: vec![Glob::new("*")],
-                actions: BTreeSet::from([Action::Write, Action::Delete]),
-            }],
-            expires_at: None,
-        }],
+        tokens: vec![named_token("token", actions, expires_at)],
     }
 }
 
@@ -89,22 +91,21 @@ fn test_describe_indexes_preserves_input_order() {
 }
 
 #[rstest]
-#[case::hosted_read_only_stable(false, false, false, false)]
-#[case::hosted_read_only_volatile(false, false, true, false)]
-#[case::hosted_writable_stable(false, true, false, false)]
-#[case::hosted_writable_volatile(false, true, true, true)]
-#[case::virtual_read_only_stable(true, false, false, false)]
-#[case::virtual_read_only_volatile(true, false, true, false)]
-#[case::virtual_writable_stable(true, true, false, false)]
-#[case::virtual_writable_volatile(true, true, true, true)]
-fn test_volatile_deletes_require_a_writable_volatile_target(
+#[case::hosted_upload_only(false, &[Action::Write], true, true, false)]
+#[case::hosted_delete_only(false, &[Action::Delete], true, false, true)]
+#[case::hosted_both(false, &[Action::Write, Action::Delete], true, true, true)]
+#[case::hosted_stable_delete(false, &[Action::Delete], false, false, false)]
+#[case::virtual_upload_only(true, &[Action::Write], true, true, false)]
+#[case::virtual_delete_only(true, &[Action::Delete], true, false, true)]
+#[case::virtual_both(true, &[Action::Write, Action::Delete], true, true, true)]
+fn test_describe_index_uses_each_active_action(
     #[case] virtual_index: bool,
-    #[case] writable: bool,
+    #[case] actions: &[Action],
     #[case] volatile: bool,
-    #[case] expected: bool,
+    #[case] expected_uploads: bool,
+    #[case] expected_deletes: bool,
 ) {
-    let acl = if writable { writer_acl("s") } else { IndexAcl::default() };
-    let mut indexes = vec![index("store", IndexKind::Hosted { volatile }, acl)];
+    let mut indexes = vec![index("store", IndexKind::Hosted { volatile }, token_acl(actions, None))];
     let position = if virtual_index {
         indexes.push(index(
             "virtual",
@@ -119,7 +120,49 @@ fn test_volatile_deletes_require_a_writable_volatile_target(
         0
     };
 
-    assert_eq!(describe_index(&indexes, position).volatile_deletes, expected);
+    let described = describe_index(&indexes, position);
+    assert_eq!(
+        (described.uploads, described.volatile_deletes),
+        (expected_uploads, expected_deletes)
+    );
+}
+
+#[test]
+fn test_expired_grants_disable_capabilities_but_remain_configured() {
+    let indexes = vec![index(
+        "store",
+        IndexKind::Hosted { volatile: true },
+        token_acl(&[Action::Write, Action::Delete], Some(0)),
+    )];
+
+    let described = describe_index(&indexes, 0);
+    assert_eq!((described.uploads, described.volatile_deletes), (false, false));
+    assert!(described.hosted.unwrap().upload_token.configured);
+}
+
+#[test]
+fn test_active_grant_for_another_token_keeps_its_capability() {
+    let mut acl = token_acl(&[Action::Write], Some(0));
+    acl.tokens
+        .push(named_token("active", &[Action::Delete], Some(i64::MAX)));
+    let indexes = vec![index("store", IndexKind::Hosted { volatile: true }, acl)];
+
+    let described = describe_index(&indexes, 0);
+    assert_eq!((described.uploads, described.volatile_deletes), (false, true));
+}
+
+#[test]
+fn test_removing_a_token_removes_its_capabilities() {
+    let mut indexes = vec![index(
+        "store",
+        IndexKind::Hosted { volatile: true },
+        token_acl(&[Action::Write, Action::Delete], None),
+    )];
+    indexes[0].acl.tokens.clear();
+
+    let described = describe_index(&indexes, 0);
+    assert_eq!((described.uploads, described.volatile_deletes), (false, false));
+    assert!(!described.hosted.unwrap().upload_token.configured);
 }
 
 #[test]
@@ -147,7 +190,11 @@ fn test_virtual_precedence_forces_cached_members_last_and_tags_roles() {
 #[test]
 fn test_virtual_upload_target_drives_uploads_and_volatile_deletes() {
     let indexes = vec![
-        index("store", IndexKind::Hosted { volatile: true }, writer_acl("s")),
+        index(
+            "store",
+            IndexKind::Hosted { volatile: true },
+            token_acl(&[Action::Write, Action::Delete], None),
+        ),
         index(
             "v",
             IndexKind::Virtual {
