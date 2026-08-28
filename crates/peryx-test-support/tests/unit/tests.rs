@@ -904,6 +904,131 @@ fn toxiproxy_readiness_timeout_reaps_the_process() {
 }
 
 #[test]
+fn toxiproxy_rejects_a_foreign_control_api() {
+    with_fixture(|fixture| {
+        let (startup, receiver, mut child) = toxiproxy_start_at_gate(fixture, "gate-port");
+        let mut port = [0; 2];
+        child.read_exact(&mut port).expect("read selected control port");
+        let foreign = TcpListener::bind(("127.0.0.1", u16::from_be_bytes(port))).expect("bind foreign control API");
+        child.write_all(&[1]).expect("release child startup");
+        let control = foreign.local_addr().expect("foreign control address");
+        let server = thread::spawn(move || {
+            let mut requests = Vec::new();
+            loop {
+                let (mut stream, _) = foreign.accept().expect("accept control request");
+                let request = read_request(&mut stream);
+                let shutdown = request.starts_with("GET /shutdown ");
+                let status = if request.starts_with("GET /version ") { 200 } else { 404 };
+                write_response(&mut stream, status, b"{}", 2);
+                requests.push(request);
+                if shutdown {
+                    return requests;
+                }
+            }
+        });
+
+        let result = receiver
+            .recv_timeout(FIXTURE_DEADLOCK_GUARD)
+            .expect("receive bounded startup result");
+        let error = result.as_ref().err().map(ToString::to_string);
+        drop(child);
+        drop(result);
+        let mut shutdown = TcpStream::connect(control).expect("connect foreign shutdown");
+        shutdown
+            .write_all(b"GET /shutdown HTTP/1.1\r\n\r\n")
+            .expect("request foreign shutdown");
+        shutdown.read_to_end(&mut Vec::new()).expect("read foreign shutdown");
+        let requests = server.join().expect("join foreign control API");
+        startup.join().expect("join toxiproxy startup");
+
+        assert_eq!(
+            error.as_deref(),
+            Some("toxiproxy: control API does not belong to the spawned process")
+        );
+        assert!(
+            requests
+                .iter()
+                .any(|request| request.starts_with("GET /proxies/peryx-control-")),
+            "the harness did not verify control ownership: {requests:?}",
+        );
+    });
+}
+
+#[test]
+fn toxiproxy_fixture_reports_rejected_shutdown() {
+    with_fixture(|fixture| {
+        let gate = TcpListener::bind("127.0.0.1:0").expect("bind shutdown gate");
+        fs::write(
+            fixture.toxi_mode(),
+            format!(
+                "shutdown-gate:{}",
+                gate.local_addr().expect("shutdown gate address").port()
+            ),
+        )
+        .expect("reject graceful shutdown");
+        let control = TcpListener::bind("127.0.0.1:0").expect("reserve control port");
+        let port = control.local_addr().expect("control address").port();
+        drop(control);
+        let mut process = Command::new(fixture.toxiproxy())
+            .args(["-host", "127.0.0.1", "-port"])
+            .arg(port.to_string())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("start toxiproxy fixture");
+        let mut startup = String::new();
+        BufReader::new(process.stdout.take().expect("fixture stdout"))
+            .read_line(&mut startup)
+            .expect("read startup event");
+        assert!(startup.contains("Starting Toxiproxy HTTP server"), "{startup}");
+
+        let mut request = TcpStream::connect(("127.0.0.1", port)).expect("connect control API");
+        request
+            .write_all(b"POST /shutdown HTTP/1.1\r\nHost: fixture\r\nContent-Length: 0\r\n\r\n")
+            .expect("request fixture shutdown");
+        let mut child = accept_within(&gate, FIXTURE_DEADLOCK_GUARD, "shutdown request event");
+        child.read_exact(&mut [0]).expect("identify shutdown request");
+        let response = read_request(&mut request);
+        child.write_all(&[1]).expect("release fixture shutdown");
+
+        assert!(response.starts_with("HTTP/1.1 404 "), "{response}");
+        assert!(process.wait().expect("reap toxiproxy fixture").success());
+    });
+}
+
+#[test]
+fn toxiproxy_kills_its_child_after_shutdown_is_rejected() {
+    with_fixture(|fixture| {
+        let gate = TcpListener::bind("127.0.0.1:0").expect("bind shutdown gate");
+        fs::write(
+            fixture.toxi_mode(),
+            format!(
+                "shutdown-gate:{}",
+                gate.local_addr().expect("shutdown gate address").port()
+            ),
+        )
+        .expect("reject graceful shutdown");
+        let mut toxiproxy = fixture.start_toxiproxy();
+        let (sender, receiver) = mpsc::sync_channel(1);
+
+        thread::scope(|scope| {
+            let stop = scope.spawn(|| {
+                toxiproxy.kill();
+                sender.send(()).expect("publish shutdown completion");
+            });
+            let mut child = accept_within(&gate, FIXTURE_DEADLOCK_GUARD, "shutdown request event");
+            child.read_exact(&mut [0]).expect("identify shutdown request");
+            assert_eq!(
+                child.read(&mut [0]).expect("observe fixture child exit"),
+                0,
+                "fixture child remained alive after rejected shutdown",
+            );
+            stop.join().expect("join toxiproxy shutdown");
+            receiver.recv().expect("receive shutdown completion");
+        });
+    });
+}
+
+#[test]
 fn proxied_topology_public_behavior() {
     with_fixture(|fixture| {
         let mut toxiproxy = fixture.start_toxiproxy();
@@ -921,6 +1046,34 @@ fn proxied_topology_public_behavior() {
             .start_proxied(&mut toxiproxy, true)
             .expect("start healthy proxied cluster");
         assert_eq!(healthy.cluster().nodes().len(), 2);
+    });
+}
+
+#[test]
+fn toxiproxy_uses_its_bound_proxy_address() {
+    with_fixture(|fixture| {
+        let mut toxiproxy = fixture.start_toxiproxy();
+        let proxy = toxiproxy.proxy("127.0.0.1:1").expect("create proxy");
+
+        assert_eq!(proxy.endpoint(), "127.0.0.1:23456");
+    });
+}
+
+#[test]
+fn toxiproxy_rejects_invalid_proxy_responses() {
+    with_fixture(|fixture| {
+        let mut toxiproxy = fixture.start_toxiproxy();
+        let errors = ["proxy-malformed", "proxy-missing-listen"].map(|state| {
+            fs::write(fixture.toxi_state(), state).expect("configure proxy response");
+            toxiproxy
+                .proxy("127.0.0.1:1")
+                .err()
+                .expect("invalid proxy response must fail")
+                .to_string()
+        });
+
+        assert!(errors[0].starts_with("toxiproxy: decode POST /proxies:"));
+        assert_eq!(errors[1], "toxiproxy: POST /proxies omitted its bound address");
     });
 }
 

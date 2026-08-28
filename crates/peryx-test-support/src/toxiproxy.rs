@@ -1,10 +1,14 @@
 //! [`Drop`] reaps the managed proxy process. Blocking control requests keep the harness synchronous.
 
+use std::fs::{File, OpenOptions};
+use std::io::Write as _;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use serde_json::json;
+use serde_json::{Value, json};
+use tempfile::NamedTempFile;
 
 use super::{
     EVENT_TIMEOUT, HarnessError, StartupSignal, free_port, http_client, kill_group, spawn_in_group, spawn_with_events,
@@ -13,6 +17,7 @@ use super::{
 
 const CONTROL_HOST: &str = "127.0.0.1";
 const START_TIMEOUT: Duration = Duration::from_secs(10);
+static NEXT_CONTROL_OWNER: AtomicU64 = AtomicU64::new(0);
 
 /// A running `toxiproxy-server` and a client bound to its control API.
 pub struct Toxiproxy {
@@ -21,6 +26,7 @@ pub struct Toxiproxy {
     http: reqwest::blocking::Client,
     next: u32,
     graceful_shutdown: bool,
+    control_owned: bool,
 }
 
 impl Toxiproxy {
@@ -56,11 +62,22 @@ impl Toxiproxy {
         deadlock_guard: Duration,
         graceful_shutdown: bool,
     ) -> Result<Self, HarnessError> {
+        let _allocation_lock = control_allocation_lock()?;
         let control_port = free_port();
         let control = format!("http://{CONTROL_HOST}:{control_port}");
+        let control_owner = format!(
+            "peryx-control-{}-{}",
+            std::process::id(),
+            NEXT_CONTROL_OWNER.fetch_add(1, Ordering::Relaxed),
+        );
+        let mut ownership_config = NamedTempFile::new()?;
+        write_ownership_config(&mut ownership_config, &control_owner)?;
+        ownership_config.flush()?;
         let mut command = Command::new(binary);
         command
             .args(["-host", CONTROL_HOST, "-port", &control_port.to_string()])
+            .arg("-config")
+            .arg(ownership_config.path())
             .stdin(Stdio::piped());
         spawn_in_group(&mut command);
         let (server, events) = spawn_with_events(&mut command, None, true)
@@ -71,6 +88,7 @@ impl Toxiproxy {
             http: http_client(Duration::from_secs(2)),
             next: 0,
             graceful_shutdown,
+            control_owned: false,
         };
         let mut first_event_is_startup = false;
         Self::require_event(
@@ -106,7 +124,10 @@ impl Toxiproxy {
                 .timeout(remaining.min(Duration::from_millis(100)))
                 .send()
             {
-                Ok(response) if response.status().is_success() => return Ok(toxiproxy),
+                Ok(response) if response.status().is_success() => {
+                    toxiproxy.verify_control_ownership(&control_owner)?;
+                    return Ok(toxiproxy);
+                }
                 Ok(response) if response.status() == reqwest::StatusCode::NOT_FOUND => {
                     last_failure = format!("control API returned {}", response.status());
                 }
@@ -133,6 +154,21 @@ impl Toxiproxy {
         }
     }
 
+    fn verify_control_ownership(&mut self, owner: &str) -> Result<(), HarnessError> {
+        let ownership_verified = self
+            .http
+            .get(format!("{}/proxies/{owner}", self.control))
+            .send()
+            .is_ok_and(|response| response.status().is_success());
+        if !ownership_verified {
+            return Err(HarnessError::Toxiproxy(
+                "control API does not belong to the spawned process".to_owned(),
+            ));
+        }
+        self.control_owned = true;
+        Ok(())
+    }
+
     fn require_event(
         signal: std::io::Result<StartupSignal>,
         within: Duration,
@@ -154,11 +190,14 @@ impl Toxiproxy {
     pub fn proxy(&mut self, upstream: &str) -> Result<Proxy, HarnessError> {
         self.next += 1;
         let name = format!("peryx-{}", self.next);
-        let listen = format!("{CONTROL_HOST}:{}", free_port());
-        self.post(
+        let response = self.post(
             "/proxies",
-            &json!({ "name": name, "listen": listen, "upstream": upstream, "enabled": true }),
+            &json!({ "name": name, "listen": format!("{CONTROL_HOST}:0"), "upstream": upstream, "enabled": true }),
         )?;
+        let listen = response["listen"]
+            .as_str()
+            .ok_or_else(|| HarnessError::Toxiproxy("POST /proxies omitted its bound address".to_owned()))?
+            .to_owned();
         Ok(Proxy {
             listen,
             name,
@@ -167,7 +206,7 @@ impl Toxiproxy {
         })
     }
 
-    fn post(&self, path: &str, body: &serde_json::Value) -> Result<(), HarnessError> {
+    fn post(&self, path: &str, body: &Value) -> Result<Value, HarnessError> {
         let response = self
             .http
             .post(format!("{}{path}", self.control))
@@ -175,7 +214,9 @@ impl Toxiproxy {
             .send()
             .map_err(|error| HarnessError::Toxiproxy(format!("POST {path}: {error}")))?;
         if response.status().is_success() {
-            Ok(())
+            response
+                .json()
+                .map_err(|error| HarnessError::Toxiproxy(format!("decode POST {path}: {error}")))
         } else {
             Err(HarnessError::Toxiproxy(format!(
                 "POST {path} returned {}",
@@ -199,12 +240,57 @@ impl Toxiproxy {
         if matches!(self.server.try_wait(), Ok(Some(_))) {
             return;
         }
-        if self.graceful_shutdown && self.http.post(format!("{}/shutdown", self.control)).send().is_ok() {
+        if self.graceful_shutdown
+            && self.control_owned
+            && self
+                .http
+                .post(format!("{}/shutdown", self.control))
+                .send()
+                .is_ok_and(|response| response.status().is_success())
+        {
             let _ = self.server.wait();
             return;
         }
         kill_group(&mut self.server);
     }
+}
+
+fn control_allocation_lock() -> Result<File, HarnessError> {
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(std::env::temp_dir().join("peryx-toxiproxy-control.lock"))?;
+    lock.lock()?;
+    Ok(lock)
+}
+
+fn write_ownership_config(writer: &mut impl std::io::Write, owner: &str) -> std::io::Result<()> {
+    let ownership = json!([{ "name": owner, "upstream": "127.0.0.1:1", "enabled": false }]).to_string();
+    writer.write_all(ownership.as_bytes())
+}
+
+pub(super) fn run_process_fixture() -> std::process::ExitCode {
+    #[cfg(unix)]
+    if let Some(mode) = std::env::args_os().nth(1)
+        && matches!(
+            mode.to_str(),
+            Some("toxiproxy-config-write" | "toxiproxy-config-write-error")
+        )
+    {
+        let (reader, writer) = nix::unistd::pipe().expect("create ownership config pipe");
+        let _reader = (mode == "toxiproxy-config-write").then_some(reader);
+        let mut writer = File::from(writer);
+        return match write_ownership_config(&mut writer, "fixture-owner") {
+            Ok(()) => std::process::ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("toxiproxy ownership config write failed: {:?}", error.kind());
+                std::process::ExitCode::FAILURE
+            }
+        };
+    }
+    super::process_fixture::run()
 }
 
 impl Drop for Toxiproxy {

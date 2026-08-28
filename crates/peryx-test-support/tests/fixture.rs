@@ -15,6 +15,33 @@ fn process_fixture_rejects_missing_arguments() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("expected serve command"));
 }
 
+#[cfg(unix)]
+#[test]
+fn process_fixture_reports_toxiproxy_config_write_failure() {
+    let output = std::process::Command::new(peryx_test_support::cargo_binary("peryx-test-fixture"))
+        .arg("toxiproxy-config-write-error")
+        .output()
+        .expect("run process fixture");
+
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "toxiproxy ownership config write failed: BrokenPipe\n",
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn process_fixture_writes_toxiproxy_config() {
+    let output = std::process::Command::new(peryx_test_support::cargo_binary("peryx-test-fixture"))
+        .arg("toxiproxy-config-write")
+        .output()
+        .expect("run process fixture");
+
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+}
+
 #[test]
 fn cargo_binary_uses_nextest_metadata() {
     assert_eq!(

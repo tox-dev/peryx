@@ -47,7 +47,7 @@ pub const ADMIN_PASSWORD: &str = "harness-admin-secret";
 /// Runs the package's process fixture with the current executable name and arguments.
 #[must_use]
 pub fn run_process_fixture() -> std::process::ExitCode {
-    process_fixture::run()
+    toxiproxy::run_process_fixture()
 }
 
 #[must_use]
