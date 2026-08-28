@@ -103,7 +103,7 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           tools: ${{ env.MUTATION_TOOLS }}
-      - run: just mutation-baseline-archive .tox/mutation-baseline.tar.zst
+      - run: just mutation-baseline-archive .tox/mutation-baseline
       - id: shards
         run: |
           mutants=$(just mutation-count)
@@ -117,7 +117,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: mutation-baseline
-          path: .tox/mutation-baseline.tar.zst
+          path: .tox/mutation-baseline
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
@@ -143,7 +143,7 @@ jobs:
         with:
           name: mutation-baseline
           path: .tox/mutation-baseline
-      - run: just mutation-baseline-run .tox/mutation-baseline/mutation-baseline.tar.zst "slice:$PARTITION/8"
+      - run: just mutation-baseline-run .tox/mutation-baseline "slice:$PARTITION/8"
         env:
           PARTITION: ${{ matrix.partition }}
 

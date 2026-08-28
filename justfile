@@ -190,31 +190,56 @@ fuzz package target seconds="60": _project-temp
 
 # Mutate one workspace shard.
 mutation shard="0/1" in_place="false" jobs="2" baseline="run" timeout="500": test-deps
-    PATH="{{ tools_root }}/bin:$PATH" cargo mutants --workspace --all-features --test-tool nextest \
-      --no-shuffle --shard "{{ shard }}" --output .tox/mutants \
-      {{ if in_place == "true" { "--in-place" } else { "--jobs " + jobs } }} \
-      --jobserver-tasks "{{ jobs }}" --baseline "{{ baseline }}" \
-      --timeout "{{ timeout }}" --build-timeout "{{ timeout }}" \
-      -- --profile ci -E 'not(test(e2e_live))'
+    mkdir -p .tox/mutants
+    workspace_status=0; hydrate_status=0; \
+      PATH="{{ tools_root }}/bin:$PATH" cargo mutants --workspace --all-features --test-tool nextest \
+        --exclude 'crates/peryx-web/src/data/*.rs' --exclude 'crates/peryx-web/src/url.rs' \
+        --no-shuffle --shard "{{ shard }}" --output .tox/mutants/workspace \
+        {{ if in_place == "true" { "--in-place" } else { "--jobs " + jobs } }} \
+        --jobserver-tasks "{{ jobs }}" --baseline "{{ baseline }}" \
+        --timeout "{{ timeout }}" --build-timeout "{{ timeout }}" \
+        -- --profile ci -E 'not(test(e2e_live))' || workspace_status=$?; \
+      PATH="{{ tools_root }}/bin:$PATH" cargo mutants --package peryx-web \
+        --no-default-features --features hydrate --test-tool nextest \
+        --file 'crates/peryx-web/src/data/*.rs' --file 'crates/peryx-web/src/url.rs' \
+        --no-shuffle --shard "{{ shard }}" --output .tox/mutants/web-hydrate \
+        {{ if in_place == "true" { "--in-place" } else { "--jobs " + jobs } }} \
+        --jobserver-tasks "{{ jobs }}" --baseline "{{ baseline }}" \
+        --timeout "{{ timeout }}" --build-timeout "{{ timeout }}" \
+        -- --profile ci || hydrate_status=$?; \
+      (( workspace_status == 0 && hydrate_status == 0 ))
 
 # Run the mutation baseline suite.
 mutation-baseline: test-deps
     INSTA_UPDATE=no INSTA_FORCE_PASS=0 PATH="{{ tools_root }}/bin:$PATH" cargo nextest run --verbose \
       --workspace --all-features --profile ci -E 'not(test(e2e_live))'
+    PATH="{{ tools_root }}/bin:$PATH" cargo nextest run --verbose --package peryx-web \
+      --no-default-features --features hydrate --profile ci
 
-# Build the mutation baseline test archive.
-mutation-baseline-archive archive: _project-temp
-    cargo nextest archive --workspace --all-features --profile ci --archive-file "{{ archive }}"
+# Build the mutation baseline test archives.
+mutation-baseline-archive directory: _project-temp
+    mkdir -p "{{ directory }}"
+    cargo nextest archive --workspace --all-features --profile ci \
+      --archive-file "{{ directory }}/workspace.tar.zst"
+    cargo nextest archive --package peryx-web --no-default-features --features hydrate --profile ci \
+      --archive-file "{{ directory }}/web-hydrate.tar.zst"
 
-# Run a partition from the mutation baseline archive.
-mutation-baseline-run archive partition="slice:1/1": test-deps
+# Run a partition from the mutation baseline archives.
+mutation-baseline-run directory partition="slice:1/1": test-deps
     INSTA_UPDATE=no INSTA_FORCE_PASS=0 PATH="{{ tools_root }}/bin:$PATH" \
-      cargo nextest run --archive-file "{{ archive }}" --workspace-remap "{{ justfile_directory() }}" \
+      cargo nextest run --archive-file "{{ directory }}/workspace.tar.zst" \
+      --workspace-remap "{{ justfile_directory() }}" \
       --profile ci --partition "{{ partition }}" -E 'not(test(e2e_live))'
+    PATH="{{ tools_root }}/bin:$PATH" cargo nextest run \
+      --archive-file "{{ directory }}/web-hydrate.tar.zst" \
+      --workspace-remap "{{ justfile_directory() }}" --profile ci --partition "{{ partition }}"
 
 # Count workspace mutation candidates.
 mutation-count: _project-temp
-    cargo mutants --list --workspace --all-features | wc -l
+    { cargo mutants --list --workspace --all-features \
+        --exclude 'crates/peryx-web/src/data/*.rs' --exclude 'crates/peryx-web/src/url.rs'; \
+      cargo mutants --list --package peryx-web --no-default-features --features hydrate \
+        --file 'crates/peryx-web/src/data/*.rs' --file 'crates/peryx-web/src/url.rs'; } | wc -l
 
 # Install browser-test dependencies for the shared and owner suites.
 frontend-deps: _project-temp

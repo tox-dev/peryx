@@ -312,5 +312,6 @@ fn counters_for(usage: &UiStats, route: &str) -> UiCounters {
 }
 
 #[cfg(test)]
+#[cfg(feature = "ssr")]
 #[path = "../../tests/unit/pages/admin/tests.rs"]
 mod tests;

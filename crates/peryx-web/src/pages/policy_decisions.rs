@@ -448,5 +448,6 @@ fn or_dash(value: Option<String>) -> String {
 }
 
 #[cfg(test)]
+#[cfg(feature = "ssr")]
 #[path = "../../tests/unit/pages/policy_decisions/tests.rs"]
 mod tests;

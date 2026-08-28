@@ -57,5 +57,6 @@ fn login_view(state: UiLoginState) -> impl IntoView {
 }
 
 #[cfg(test)]
+#[cfg(feature = "ssr")]
 #[path = "../../tests/unit/pages/login/tests.rs"]
 mod tests;

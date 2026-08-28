@@ -202,5 +202,6 @@ fn IndexCard(index: UiIndex, counters: Option<UiCounters>) -> impl IntoView {
 }
 
 #[cfg(test)]
+#[cfg(feature = "ssr")]
 #[path = "../../tests/unit/pages/dashboard/tests.rs"]
 mod tests;

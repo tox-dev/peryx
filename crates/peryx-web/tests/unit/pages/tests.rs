@@ -1,9 +1,15 @@
+#[cfg(feature = "ssr")]
 use leptos::prelude::*;
 
-use crate::model::{UiCounters, UiEcosystemSummary, UiMetricFamily, UiSnapshot, UiStats};
+use crate::model::{UiCounters, UiStats};
+#[cfg(feature = "ssr")]
+use crate::model::{UiEcosystemSummary, UiMetricFamily, UiSnapshot};
 
-use super::{ErrorMessage, ecosystem_stats, human_size, optional_counters_for};
+#[cfg(feature = "ssr")]
+use super::{ErrorMessage, ecosystem_stats};
+use super::{human_size, optional_counters_for};
 
+#[cfg(feature = "ssr")]
 #[test]
 fn ecosystem_stats_render_declared_and_missing_families() {
     let html = ecosystem_stats(&UiSnapshot {
@@ -51,6 +57,7 @@ fn optional_counters_find_exact_route() {
     assert_eq!(optional_counters_for(&usage, "cache"), None);
 }
 
+#[cfg(feature = "ssr")]
 #[test]
 fn error_message_escapes_text() {
     let html = view! { <ErrorMessage message="<failure>".to_owned() /> }.to_html();

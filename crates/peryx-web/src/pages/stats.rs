@@ -159,5 +159,6 @@ fn artifact_rows(rows: Vec<(String, UiCounters)>) -> Vec<AnyView> {
 }
 
 #[cfg(test)]
+#[cfg(feature = "ssr")]
 #[path = "../../tests/unit/pages/stats/tests.rs"]
 mod tests;
