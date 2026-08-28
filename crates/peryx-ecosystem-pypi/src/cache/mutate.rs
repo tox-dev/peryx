@@ -98,7 +98,7 @@ pub async fn promote_release(
     let mut blob_sizes = BTreeMap::new();
     for (filename, bytes) in state.meta.list_upload_entries(source, normalized)? {
         let mut uploaded: Uploaded = serde_json::from_slice(&bytes)?;
-        if !versions_match(&uploaded.version, version) {
+        if uploaded.trashed.is_some() || !versions_match(&uploaded.version, version) {
             continue;
         }
         matched = true;

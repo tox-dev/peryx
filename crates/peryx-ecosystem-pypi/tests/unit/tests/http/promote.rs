@@ -304,6 +304,102 @@ async fn test_promote_reports_no_matching_source_release() {
     );
 }
 #[tokio::test]
+async fn test_promote_reports_no_live_source_release() {
+    let h = authority_promotion_harness().await;
+    trash_staging_release(&h.state).await;
+    let serial = h.state.serving.meta.current_serial().unwrap();
+
+    let response = request_response(
+        &h.state,
+        "PUT",
+        "/prod/peryxpkg/1.0/promote?from=staging",
+        Some(&upload_auth()),
+    )
+    .await;
+    let target_status = get(&h.state, "/prod/simple/peryxpkg/", Some("application/json"))
+        .await
+        .0;
+
+    assert_eq!(
+        (response, target_status, h.state.serving.meta.current_serial().unwrap(),),
+        (
+            (
+                StatusCode::NOT_FOUND,
+                "promotion: no uploaded files on source \"staging\" match project \"peryxpkg\" version \"1.0\""
+                    .to_owned(),
+            ),
+            StatusCode::NOT_FOUND,
+            serial,
+        )
+    );
+}
+
+#[tokio::test]
+async fn test_promote_copies_only_live_source_files() {
+    let h = authority_promotion_harness().await;
+    trash_staging_release(&h.state).await;
+    assert_eq!(upload_version(&h.state, "/staging/", "1.0.0").await, StatusCode::OK);
+    let serial = h.state.serving.meta.current_serial().unwrap();
+    let logs = LogCapture::default();
+    let _guard = logs.install();
+
+    let response = request_response(
+        &h.state,
+        "PUT",
+        "/prod/peryxpkg/1.0/promote?from=staging",
+        Some(&upload_auth()),
+    )
+    .await;
+    let (_, _, detail) = get(&h.state, "/prod/simple/peryxpkg/", Some("application/json")).await;
+    let detail: serde_json::Value = serde_json::from_str(&detail).unwrap();
+    let journal = read_journal_entries(&h.state.serving.meta, serial, 10)
+        .unwrap()
+        .entries
+        .into_iter()
+        .map(|entry| (entry.action, entry.version, entry.filename))
+        .collect::<Vec<_>>();
+    let event = logs
+        .security_events()
+        .into_iter()
+        .find(|event| field(event, "action") == Some("promote"))
+        .unwrap();
+
+    assert_eq!(
+        (
+            response,
+            detail["files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|file| file["filename"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            journal,
+            field(&event, "result"),
+            event["fields"]["count"].as_u64(),
+        ),
+        (
+            (StatusCode::OK, "promoted 1 file(s)".to_owned()),
+            vec!["peryxpkg-1.0.0-py3-none-any.whl"],
+            vec![(
+                "add-file".to_owned(),
+                Some("1.0.0".to_owned()),
+                Some("peryxpkg-1.0.0-py3-none-any.whl".to_owned()),
+            )],
+            Some("success"),
+            Some(1),
+        )
+    );
+}
+
+async fn trash_staging_release(state: &Arc<AppState>) {
+    assert_eq!(upload_version(state, "/staging/", "1.0").await, StatusCode::OK);
+    assert_eq!(
+        request(state, "DELETE", "/staging/peryxpkg/1.0/", Some(&upload_auth()),).await,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
 async fn test_promote_conflicts_on_target_filename_with_different_bytes() {
     let h = authority_promotion_harness().await;
     upload_wheel_to(
