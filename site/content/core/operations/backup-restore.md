@@ -151,26 +151,40 @@ recovery time objective from a real run rather than an estimate.
 
 ## Cluster identity and rollback
 
-`--force` replaces a directory's files, but it never lets one node adopt another node's identity. Before it writes,
-restore reads the identity the target's own metadata store has claimed. When that identity differs from the backup's,
-restore refuses outright, `--force` or not, because two nodes sharing one identity is a split brain no overwrite should
-create:
+Before `--force` replaces a readable metadata store, restore compares its `writer_identity` with the backup's claim.
+Different non-empty labels fail the restore whether the operator passes `--force`:
 
 ```console
 $ peryx restore /backups/node-b --data-dir /var/lib/peryx --force
 Error: refusing to restore node node-b onto a directory claimed by node node-a; clear the target or restore node-a's own backup
 ```
 
-Restoring a node's own backup is always allowed. When the backup's recovery point sits behind the control-plane serial
-the target has already reached, restore proceeds under `--force` but warns, since rolling a node back to an earlier
-point discards the writes made since:
+The guard has no installation identity. It compares the writer labels that both metadata stores record:
+
+| Backup label | Target store                         | Identity result                          |
+| ------------ | ------------------------------------ | ---------------------------------------- |
+| `node-a`     | readable, label `node-b`             | refuse                                   |
+| `node-a`     | readable, label `node-a`             | allow                                    |
+| absent       | readable, with or without a label    | allow; no backup label exists to compare |
+| any          | readable, label absent               | allow; no target label exists to compare |
+| any          | cleared; metadata store absent       | allow; no target store exists to inspect |
+| any          | unreadable or held open by a process | fail before replacing any target files   |
+
+The normal empty-target rule follows this identity check, so an occupied target needs `--force`. Clearing a target
+removes its writer label and the comparison. `none` mode records no label, and operators can reuse labels across
+separate installations; inspect the backup and target before replacing either case.
+
+When both readable stores carry the same label, a forced restore can roll control state backward. If the backup's
+recovery point precedes the target's control-plane serial, restore warns about the discarded writes:
 
 ```console
 warning	restore	rollback	target at serial 4192, backup at 4188
 ```
 
-A target with no metadata store, or one whose store cannot be opened, carries no identity to compare, so a fresh
-recovery passes without either check.
+For a production-to-staging restore, start with an empty or cleared staging target so no target label blocks the copy.
+The restored metadata retains the backup's writer label. Review its
+[configuration and credentials](#what-a-backup-contains) and isolate staging from production networks before starting
+it; the restore guard does not prove that the two installations have distinct identities.
 
 ## Recovery paths
 
