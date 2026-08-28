@@ -2,6 +2,7 @@ use super::{
     LocalStatus, MAX_TOPOLOGY_NODES, NodeLiveness, NodeRole, TopologyConfig, TopologyMember, TopologyMode,
     TopologyNode, TopologySnapshot, TopologyView,
 };
+use rstest::rstest;
 
 fn member(node: &str, dc: &str, role: NodeRole) -> TopologyMember {
     TopologyMember {
@@ -87,21 +88,46 @@ fn test_administrator_view_adds_the_advertised_addresses() {
     assert_eq!(node(&snapshot, "replica-b").address.as_deref(), Some("replica-b:8080"));
 }
 
-#[test]
-fn test_snapshot_caps_the_node_list_but_reports_the_full_count() {
-    let members = (0..MAX_TOPOLOGY_NODES + 5)
-        .map(|index| member(&format!("node-{index}"), &format!("dc-{index}"), NodeRole::Replica))
+#[rstest]
+#[case::without_local(None)]
+#[case::local_before_cap(Some(5))]
+#[case::local_after_cap(Some(MAX_TOPOLOGY_NODES + 4))]
+#[case::missing_local(Some(MAX_TOPOLOGY_NODES + 5))]
+fn test_snapshot_caps_the_roster_and_retains_a_matching_local(#[case] local_index: Option<usize>) {
+    let member_count = MAX_TOPOLOGY_NODES + 5;
+    let mut retained: Vec<_> = (0..MAX_TOPOLOGY_NODES).collect();
+    if let Some(local_index) = local_index.filter(|index| *index >= MAX_TOPOLOGY_NODES && *index < member_count) {
+        retained[MAX_TOPOLOGY_NODES - 1] = local_index;
+    }
+    let expected = retained
+        .into_iter()
+        .map(|index| {
+            let is_local = Some(index) == local_index;
+            TopologyNode {
+                node: format!("node-{index}"),
+                dc: format!("dc-{index}"),
+                role: NodeRole::Replica,
+                local: is_local,
+                liveness: Some(if is_local {
+                    NodeLiveness::Live
+                } else {
+                    NodeLiveness::Unknown
+                }),
+                frontier: is_local.then_some(42),
+                address: None,
+            }
+        })
         .collect();
-    let config = TopologyConfig {
+    let snapshot = TopologyConfig {
         mode: TopologyMode::Ha,
         group: Some("wide".to_owned()),
-        members,
-        local_node: None,
-    };
-    let snapshot = config.snapshot(TopologyView::Administrator, local(), 0);
-    assert_eq!(snapshot.nodes.len(), MAX_TOPOLOGY_NODES);
-    assert_eq!(snapshot.node_count, MAX_TOPOLOGY_NODES + 5);
-    assert!(snapshot.nodes.iter().all(|node| !node.local), "no node is local here");
+        members: (0..member_count)
+            .map(|index| member(&format!("node-{index}"), &format!("dc-{index}"), NodeRole::Replica))
+            .collect(),
+        local_node: local_index.map(|index| format!("node-{index}")),
+    }
+    .snapshot(TopologyView::Operator, local(), 0);
+    assert_eq!((snapshot.node_count, snapshot.nodes), (member_count, expected));
 }
 
 #[test]

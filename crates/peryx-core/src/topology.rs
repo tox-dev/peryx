@@ -105,10 +105,17 @@ impl TopologyConfig {
     pub fn snapshot(&self, view: TopologyView, local: LocalStatus, captured_at: i64) -> TopologySnapshot {
         let operator = view.admits(TopologyView::Operator);
         let administrator = view.admits(TopologyView::Administrator);
+        let tail_local = self
+            .local_node
+            .as_deref()
+            .and_then(|local| self.members.iter().position(|member| member.node == local))
+            .filter(|index| *index >= MAX_TOPOLOGY_NODES)
+            .map(|index| &self.members[index]);
         let nodes = self
             .members
             .iter()
-            .take(MAX_TOPOLOGY_NODES)
+            .take(MAX_TOPOLOGY_NODES - usize::from(tail_local.is_some()))
+            .chain(tail_local)
             .map(|member| {
                 let is_local = self.local_node.as_deref() == Some(member.node.as_str());
                 let liveness = if is_local {
