@@ -38,6 +38,7 @@ utoipa.workspace = true
 url.workspace = true
 
 [dev-dependencies]
+argon2.workspace = true
 redb.workspace = true
 rstest.workspace = true
 tempfile.workspace = true

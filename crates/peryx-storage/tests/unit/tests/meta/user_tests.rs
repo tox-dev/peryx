@@ -3,6 +3,7 @@ use std::sync::{Arc, Barrier};
 
 use peryx_identity::{PasswordCheck, PasswordPolicy, ServerUser, UserId, UserLifecycleChange, UserName, UserState};
 use redb::TableDefinition;
+use rstest::rstest;
 
 use super::store;
 use crate::meta::{MetaError, MetaStore, UserStoreError};
@@ -239,6 +240,38 @@ fn test_user_password_round_trips_and_clears() {
 
     reopened.clear_user_password(&user.id).unwrap();
     assert_eq!(reopened.get_user_password(&user.id).unwrap(), None);
+}
+
+#[rstest]
+#[case::matching(None, true, "replacement", "checked")]
+#[case::reset(Some("reset"), false, "reset", "replacement")]
+fn test_compare_and_set_user_password_requires_the_checked_verifier(
+    #[case] reset: Option<&str>,
+    #[case] expected_replacement: bool,
+    #[case] accepted: &str,
+    #[case] rejected: &str,
+) {
+    let (_dir, store) = store();
+    let policy = PasswordPolicy::new(8, 1, 1).unwrap();
+    let user = store.create_user("Alice").unwrap();
+    let checked = policy.hash("checked").unwrap();
+    let replacement = policy.hash("replacement").unwrap();
+    store.set_user_password(&user.id, &checked).unwrap();
+    if let Some(reset) = reset {
+        store.set_user_password(&user.id, &policy.hash(reset).unwrap()).unwrap();
+    }
+
+    assert_eq!(
+        store
+            .compare_and_set_user_password(&user.id, &checked, &replacement)
+            .unwrap(),
+        expected_replacement
+    );
+    let stored = store.get_user_password(&user.id).unwrap().unwrap();
+    assert_eq!(
+        (stored.check(accepted, &policy), stored.check(rejected, &policy)),
+        (PasswordCheck::Accepted { stale: false }, PasswordCheck::Rejected)
+    );
 }
 
 #[test]

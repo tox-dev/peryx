@@ -222,6 +222,33 @@ impl MetaStore {
             .transpose()?)
     }
 
+    /// Replaces the verifier only when it still matches the value the caller checked.
+    ///
+    /// # Errors
+    /// Returns a store error when the record cannot be read, decoded, or committed.
+    pub fn compare_and_set_user_password(
+        &self,
+        id: &UserId,
+        expected: &PasswordVerifier,
+        replacement: &PasswordVerifier,
+    ) -> Result<bool, MetaError> {
+        let txn = self.db.begin_write()?;
+        {
+            let mut table = txn.open_table(USER_VERIFIER)?;
+            let current = table
+                .get(id.as_str())?
+                .map(|value| serde_json::from_slice::<PasswordVerifier>(value.value()))
+                .transpose()?;
+            if current.as_ref() != Some(expected) {
+                return Ok(false);
+            }
+            let bytes = serde_json::to_vec(replacement)?;
+            table.insert(id.as_str(), bytes.as_slice())?;
+        }
+        txn.commit()?;
+        Ok(true)
+    }
+
     /// Disables password authentication for the user.
     ///
     /// # Errors

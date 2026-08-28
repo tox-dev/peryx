@@ -131,11 +131,11 @@ impl UserService {
     /// An unknown name, a disabled account, a passwordless account, and a wrong password all fail the
     /// same way - `Ok(None)` after spending one derivation's worth of work - so none is distinguishable
     /// from the others by its response or its timing. A successful check whose verifier has fallen
-    /// behind the policy re-enrolls it under the same ID before returning, and a failure to do so does
-    /// not deny the login that already succeeded.
+    /// behind the policy re-enrolls it under the same ID before returning. The store replaces only the
+    /// verifier checked; authentication fails if another request changed it.
     ///
     /// # Errors
-    /// Returns the storage error when the identity lookup itself fails, which denies the login.
+    /// Returns a storage error when lookup or conditional replacement fails.
     pub async fn authenticate(&self, display_name: &str, password: &str) -> Result<Option<UserId>, MetaError> {
         let active = match self.store.get_user_by_name(display_name) {
             Ok(user) => user.filter(|user| user.state == UserState::Active),
@@ -150,14 +150,20 @@ impl UserService {
             self.spend_decoy(password.to_owned()).await;
             return Ok(None);
         };
-        let (policy, presented) = (self.policy, password.to_owned());
-        match self.gated(move || verifier.check(&presented, &policy)).await {
+        let (policy, presented, checked) = (self.policy, password.to_owned(), verifier.clone());
+        match self.gated(move || checked.check(&presented, &policy)).await {
             PasswordCheck::Rejected => Ok(None),
-            PasswordCheck::Accepted { stale } => {
-                if stale {
-                    let _ = self.set_password(&user.id, password).await;
-                }
-                Ok(Some(user.id))
+            PasswordCheck::Accepted { stale: false } => Ok(Some(user.id)),
+            PasswordCheck::Accepted { stale: true } => {
+                let replacement = self.hash(password.to_owned()).await.ok();
+                let replaced = replacement
+                    .map(|replacement| {
+                        self.store
+                            .compare_and_set_user_password(&user.id, &verifier, &replacement)
+                    })
+                    .transpose()?
+                    .unwrap_or(false);
+                Ok(replaced.then_some(user.id))
             }
         }
     }

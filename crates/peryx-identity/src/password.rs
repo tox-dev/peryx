@@ -107,15 +107,20 @@ impl PasswordVerifier {
             return PasswordCheck::Rejected;
         }
         PasswordCheck::Accepted {
-            stale: params_trail(&parsed, policy),
+            stale: profile_trails(&parsed, policy),
         }
     }
 }
 
-/// Re-enroll when any cost differs so tightened and loosened policies converge after login.
-fn params_trail(hash: &PasswordHash<'_>, policy: &PasswordPolicy) -> bool {
+/// Re-enroll when the algorithm profile or any cost differs from the active policy.
+fn profile_trails(hash: &PasswordHash<'_>, policy: &PasswordPolicy) -> bool {
     let params = Params::try_from(hash).expect("a verified argon2 hash carries valid parameters");
-    params.m_cost() != policy.memory_kib || params.t_cost() != policy.iterations || params.p_cost() != policy.lanes
+    hash.algorithm != Algorithm::Argon2id.ident()
+        || hash.version != Some(Version::V0x13.into())
+        || params.m_cost() != policy.memory_kib
+        || params.t_cost() != policy.iterations
+        || params.p_cost() != policy.lanes
+        || params.output_len() != Some(Params::DEFAULT_OUTPUT_LEN)
 }
 
 impl fmt::Debug for PasswordVerifier {

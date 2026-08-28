@@ -2,9 +2,11 @@ use std::collections::BTreeSet;
 use std::error::Error as _;
 use std::sync::Arc;
 
+use argon2::password_hash::{PasswordHasher as _, SaltString};
+use argon2::{Algorithm, Argon2, Params, Version};
 use peryx_identity::{
-    Action, Glob, Grant, IndexAcl, NamedToken, PasswordCheck, PasswordError, PasswordPolicy, Principal, UserId,
-    UserLifecycleChange, UserState,
+    Action, Glob, Grant, IndexAcl, NamedToken, PasswordCheck, PasswordError, PasswordPolicy, PasswordVerifier,
+    Principal, UserId, UserLifecycleChange, UserState,
 };
 use peryx_storage::meta::MetaStore;
 use tokio::sync::Barrier;
@@ -189,6 +191,33 @@ async fn test_authenticate_upgrades_a_stale_verifier_under_the_same_id() {
     let upgraded = store.get_user_password(&user.id).unwrap().unwrap();
     assert_eq!(
         upgraded.check("correct horse", &tighter),
+        PasswordCheck::Accepted { stale: false }
+    );
+}
+
+#[tokio::test]
+async fn test_authenticate_upgrades_a_legacy_profile() {
+    let (_dir, store, service) = cheap_service();
+    let user = service.create("Alice").unwrap();
+    let salt = SaltString::encode_b64(&[0; 16]).unwrap();
+    let params = Params::new(8, 1, 1, Some(16)).unwrap();
+    let encoded = Argon2::new(Algorithm::Argon2i, Version::V0x10, params)
+        .hash_password(b"correct horse", &salt)
+        .unwrap()
+        .to_string();
+    let verifier: PasswordVerifier = serde_json::from_value(serde_json::Value::String(encoded)).unwrap();
+    store.set_user_password(&user.id, &verifier).unwrap();
+
+    assert_eq!(
+        service.authenticate("Alice", "correct horse").await.unwrap(),
+        Some(user.id.clone())
+    );
+    assert_eq!(
+        store
+            .get_user_password(&user.id)
+            .unwrap()
+            .unwrap()
+            .check("correct horse", &cheap_policy()),
         PasswordCheck::Accepted { stale: false }
     );
 }
