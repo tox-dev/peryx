@@ -30,6 +30,25 @@ fn query(text: &str, scope: &QueryScope, cursor: Option<&str>) -> Result<Page, P
     execute(&parse(text).expect("parses"), scope, cursor, &TestSource::new(rows()))
 }
 
+#[rstest]
+#[case::projection("from policy.decisions select resource, resource", "resource")]
+#[case::group("from policy.decisions aggregate count() as n by state, state", "state")]
+#[case::aliases("from policy.decisions aggregate count() as n, sum(reads) as n by state", "n")]
+#[case::group_alias("from policy.decisions aggregate count() as state by state", "state")]
+fn test_execute_rejects_duplicate_output_names_before_fetch(#[case] text: &str, #[case] name: &str) {
+    let source = TestSource::failing();
+    assert_eq!(
+        (
+            execute(&parse(text).expect("parses"), &operator_scope(), None, &source),
+            source.fetches(),
+        ),
+        (
+            Err(PqlError::Validation(format!("duplicate output name `{name}`"))),
+            Vec::new(),
+        )
+    );
+}
+
 #[test]
 fn test_execute_orders_by_natural_key_desc() {
     assert_eq!(

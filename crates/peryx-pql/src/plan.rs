@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::ast::{Aggregate, AggregateFunc, Ast, CompareOp, Literal, OrderKey, Predicate, Selection};
 use crate::catalog::{Column, DomainSchema, FieldClass};
 use crate::error::PqlError;
@@ -56,12 +58,23 @@ pub fn validate(ast: &Ast, schema: &DomainSchema) -> Result<Plan, PqlError> {
     } else {
         project(&ast.selection, schema)?
     };
+    validate_output_names(&outputs)?;
     let order_by = resolve_order(&ast.order_by, &outputs)?;
     Ok(Plan {
         order_by,
         limit,
         outputs,
     })
+}
+
+fn validate_output_names(outputs: &[OutputColumn]) -> Result<(), PqlError> {
+    let mut names = HashSet::with_capacity(outputs.len());
+    for output in outputs {
+        if !names.insert(&output.name) {
+            return Err(PqlError::Validation(format!("duplicate output name `{}`", output.name)));
+        }
+    }
+    Ok(())
 }
 
 fn resolve_limit(limit: Option<u32>) -> Result<u32, PqlError> {
