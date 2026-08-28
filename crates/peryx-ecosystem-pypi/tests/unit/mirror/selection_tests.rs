@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
+use peryx_driver::serving::{MirrorAction, MirrorDriver as _, MirrorRequest};
 use peryx_index::{Index, IndexKind};
 use rstest::rstest;
 use wiremock::matchers::{header, method, path};
@@ -7,7 +9,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::{
     all_projects, candidates, content_type_is_json, include_target, logical_lines, parse_selector, requirement_line,
-    requirement_selectors, selection, strip_comment, tags_allowed, target, target_upstream, wheel_tags_allowed,
+    selection, strip_comment, tags_allowed, target, target_upstream, wheel_tags_allowed,
 };
 use crate::mirror::test_support::{self, cached_index, hosted_index};
 use crate::mirror::{
@@ -132,31 +134,104 @@ fn include_targets_match_pip_forms(#[case] line: &str, #[case] expected: Option<
 }
 
 #[test]
-fn requirement_files_join_lines_follow_includes_and_ignore_cycles() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join("requirements.txt");
-    let child = dir.path().join("child.txt");
-    std::fs::write(
-        &root,
-        "demo>=1 \\\n; python_version > '3.8'\n-r child.txt\n# ignored \\\n\n",
-    )
-    .unwrap();
-    std::fs::write(
-        &child,
-        "other==2 # pin\n-r requirements.txt\n--index-url https://example.test/simple\n",
-    )
-    .unwrap();
-
-    assert_eq!(
-        requirement_selectors(&[root]).unwrap(),
-        ["demo>=1 ; python_version > '3.8'", "other==2"]
-    );
+fn requirement_files_join_lines_and_strip_comments() {
     assert_eq!(
         logical_lines("name#fragment # comment\ntrailing\\"),
         ["name#fragment", "trailing"]
     );
     assert_eq!(strip_comment("name\t# comment"), "name\t");
     assert_eq!(requirement_line("demo>=1 --hash=sha256:abc"), "demo>=1");
+}
+
+#[tokio::test]
+async fn mirror_rejects_requirement_cycle_through_parent_alias() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("requirements.txt");
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    std::fs::write(&root, "-r sub/../requirements.txt\n").unwrap();
+
+    assert_eq!(
+        mirror_requirements(&root).await.unwrap_err(),
+        format!(
+            "requirements include cycle: {} -> {}",
+            root.display(),
+            dir.path().join("sub/../requirements.txt").display()
+        )
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn mirror_rejects_requirement_cycle_through_symlink_alias() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("requirements.txt");
+    let alias = dir.path().join("alias.txt");
+    std::fs::write(&root, "-r alias.txt\n").unwrap();
+    std::os::unix::fs::symlink(&root, &alias).unwrap();
+
+    assert_eq!(
+        mirror_requirements(&root).await.unwrap_err(),
+        format!("requirements include cycle: {} -> {}", root.display(), alias.display())
+    );
+}
+
+#[tokio::test]
+async fn mirror_accepts_a_noncyclic_repeated_requirement_include() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("requirements.txt");
+    std::fs::write(&root, "-r left.txt\n-r right.txt\n").unwrap();
+    std::fs::write(dir.path().join("left.txt"), "-r shared.txt\n").unwrap();
+    std::fs::write(dir.path().join("right.txt"), "-r shared.txt\n").unwrap();
+    std::fs::write(dir.path().join("shared.txt"), "demo==1\n").unwrap();
+
+    assert_eq!(
+        mirror_requirements(&root).await.unwrap(),
+        concat!(
+            "kind\tindex\tproject\tfilename\tdigest\turl\tbytes\tstatus\treason\n",
+            "page\tpypi\tdemo\t\t\t\t\tskipped\tproject not found\n",
+            "summary\tpypi\t\tprojects\t\t\t1\tprojects\t\n",
+            "summary\tpypi\t\tfiles\t\t\t0\tfiles\t\n",
+            "summary\tpypi\t\tskipped\t\t\t1\tskipped\t\n",
+            "summary\tpypi\t\tfailures\t\t\t0\tfailures\t\n",
+        )
+    );
+}
+
+#[tokio::test]
+async fn mirror_reports_a_missing_include_by_its_resolved_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("requirements.txt");
+    std::fs::write(&root, "-r nested/missing.txt\n").unwrap();
+
+    assert_eq!(
+        mirror_requirements(&root).await.unwrap_err(),
+        format!("read requirements {}", dir.path().join("nested/missing.txt").display())
+    );
+}
+
+async fn mirror_requirements(path: &Path) -> Result<String, String> {
+    let fixture = test_support::state(vec![cached_index("https://example.invalid/simple/", true)]);
+    let configured = toml::Table::new();
+    let mut overrides = toml::Table::new();
+    overrides.insert(
+        "requirements".to_owned(),
+        toml::Value::Array(vec![toml::Value::String(path.display().to_string())]),
+    );
+    let mut output = Vec::new();
+    crate::PypiServing
+        .mirror(
+            fixture.state,
+            MirrorRequest {
+                action: MirrorAction::Plan,
+                index: "pypi",
+                settings: &configured,
+                configured: &configured,
+                overrides: &overrides,
+            },
+            &mut output,
+        )
+        .await?;
+    Ok(String::from_utf8(output).expect("mirror output is UTF-8"))
 }
 
 #[test]

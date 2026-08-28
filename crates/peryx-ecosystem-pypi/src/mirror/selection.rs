@@ -148,30 +148,67 @@ fn parse_selector(raw: &str) -> anyhow::Result<ProjectSelector> {
 
 fn requirement_selectors(paths: &[PathBuf]) -> anyhow::Result<Vec<String>> {
     let mut selectors = Vec::new();
-    let mut seen = BTreeSet::new();
+    let mut processed = BTreeSet::new();
     for path in paths {
-        read_requirements(path, &mut selectors, &mut seen)?;
+        read_requirements(path, &mut selectors, &mut processed)?;
     }
     Ok(selectors)
 }
 
-fn read_requirements(path: &Path, selectors: &mut Vec<String>, seen: &mut BTreeSet<PathBuf>) -> anyhow::Result<()> {
-    let path = path.to_path_buf();
-    if !seen.insert(path.clone()) {
+fn read_requirements(
+    path: &Path,
+    selectors: &mut Vec<String>,
+    processed: &mut BTreeSet<PathBuf>,
+) -> anyhow::Result<()> {
+    let canonical = canonical_requirements_path(path)?;
+    if processed.contains(&canonical) {
         return Ok(());
     }
-    let text = std::fs::read_to_string(&path).context(format!("read requirements {}", path.display()))?;
-    for logical in logical_lines(&text) {
+    let mut stack = vec![requirement_file(path.to_path_buf(), canonical)?];
+    while let Some(file) = stack.last_mut() {
+        let Some(logical) = file.lines.next() else {
+            processed.insert(stack.pop().expect("the stack has a completed file").canonical);
+            continue;
+        };
         let line = requirement_line(&logical);
         if let Some(nested) = include_target(line) {
-            let fallback_parent = Path::new(".");
-            let nested = path.parent().unwrap_or(fallback_parent).join(nested);
-            read_requirements(&nested, selectors, seen)?;
+            let nested = file.path.parent().unwrap_or_else(|| Path::new(".")).join(nested);
+            let canonical = canonical_requirements_path(&nested)?;
+            if let Some(cycle_start) = stack.iter().position(|file| file.canonical == canonical) {
+                let mut cycle = stack[cycle_start..]
+                    .iter()
+                    .map(|file| file.path.display().to_string())
+                    .collect::<Vec<_>>();
+                cycle.push(nested.display().to_string());
+                bail!("requirements include cycle: {}", cycle.join(" -> "));
+            }
+            if !processed.contains(&canonical) {
+                stack.push(requirement_file(nested, canonical)?);
+            }
         } else if !line.starts_with('-') {
             selectors.push(line.to_owned());
         }
     }
     Ok(())
+}
+
+fn canonical_requirements_path(path: &Path) -> anyhow::Result<PathBuf> {
+    std::fs::canonicalize(path).context(format!("read requirements {}", path.display()))
+}
+
+fn requirement_file(path: PathBuf, canonical: PathBuf) -> anyhow::Result<RequirementFile> {
+    let text = std::fs::read_to_string(&canonical).context(format!("read requirements {}", path.display()))?;
+    Ok(RequirementFile {
+        path,
+        canonical,
+        lines: logical_lines(&text).into_iter(),
+    })
+}
+
+struct RequirementFile {
+    path: PathBuf,
+    canonical: PathBuf,
+    lines: std::vec::IntoIter<String>,
 }
 
 // pip accepts `-r`/`--requirement` and `-c`/`--constraint` with the path attached (`-rchild.txt`),
