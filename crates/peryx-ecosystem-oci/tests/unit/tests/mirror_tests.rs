@@ -41,10 +41,18 @@ async fn mount_manifest(server: &MockServer, repo: &str, reference: &str, body: 
 }
 
 fn image_manifest(config: &[u8], layer: &[u8]) -> Vec<u8> {
+    image_manifest_with_layers(config, &[layer])
+}
+
+fn image_manifest_with_layers(config: &[u8], layers: &[&[u8]]) -> Vec<u8> {
+    let layers = layers
+        .iter()
+        .map(|layer| format!(r#"{{"mediaType":"{LAYER_TYPE}","digest":"{}"}}"#, oci_digest(layer)))
+        .collect::<Vec<_>>()
+        .join(",");
     format!(
-        r#"{{"schemaVersion":2,"mediaType":"{MANIFEST_TYPE}","config":{{"mediaType":"{CONFIG_TYPE}","digest":"{}"}},"layers":[{{"mediaType":"{LAYER_TYPE}","digest":"{}"}}]}}"#,
+        r#"{{"schemaVersion":2,"mediaType":"{MANIFEST_TYPE}","config":{{"mediaType":"{CONFIG_TYPE}","digest":"{}"}},"layers":[{layers}]}}"#,
         oci_digest(config),
-        oci_digest(layer),
     )
     .into_bytes()
 }
@@ -84,6 +92,59 @@ async fn test_mirror_syncs_a_manifest_and_its_blobs() {
             .all(|row| row.status == "cached")
     );
     assert_eq!(verify.last().unwrap().status, "synced");
+}
+
+#[tokio::test]
+async fn test_mirror_summary_counts_mixed_results_and_bytes() {
+    let server = MockServer::start().await;
+    let cached = b"cached-config";
+    let seed_layer = b"seed-layer";
+    let seed_manifest = image_manifest(cached, seed_layer);
+    mount_manifest(&server, "library/app", "seed", &seed_manifest, MANIFEST_TYPE).await;
+    mount_blob(&server, "library/app", cached).await;
+    mount_blob(&server, "library/app", seed_layer).await;
+    let dir = tempfile::tempdir().unwrap();
+    let (state, _) = proxy(&dir, &format!("{}/", server.uri()), false);
+    mirror(
+        &state.serving,
+        &state.serving.indexes[0],
+        &["library/app:seed".to_owned()],
+        MirrorMode::Sync,
+    )
+    .await
+    .unwrap();
+
+    let downloaded = b"downloaded-layer";
+    let missing = b"missing-layer";
+    let manifest = image_manifest_with_layers(cached, &[downloaded, missing]);
+    mount_manifest(&server, "library/app", "mixed", &manifest, MANIFEST_TYPE).await;
+    mount_blob(&server, "library/app", downloaded).await;
+
+    let rows = mirror(
+        &state.serving,
+        &state.serving.indexes[0],
+        &["library/app:mixed".to_owned()],
+        MirrorMode::Sync,
+    )
+    .await
+    .unwrap();
+    let summary = rows.last().unwrap();
+
+    assert_eq!(summary.status, "error");
+    assert_eq!(summary.bytes, manifest.len() as u64 + downloaded.len() as u64);
+    assert_eq!(summary.reason, "2 synced, 1 cached, 1 errors");
+}
+
+#[tokio::test]
+async fn test_empty_mirror_summary_reports_no_work() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, _) = proxy(&dir, "http://127.0.0.1:1/", false);
+
+    let rows = mirror(&state.serving, &state.serving.indexes[0], &[], MirrorMode::Verify)
+        .await
+        .unwrap();
+
+    assert_eq!(rows.last().unwrap().reason, "0 synced, 0 cached, 0 errors");
 }
 
 #[tokio::test]
@@ -525,7 +586,7 @@ async fn test_mirror_rejects_malformed_references_before_network_access() {
                     digest: String::new(),
                     status: "error",
                     bytes: 0,
-                    reason: "0 synced, 1 errors".to_owned(),
+                    reason: "0 synced, 0 cached, 1 errors".to_owned(),
                 },
             ],
             "{raw}"

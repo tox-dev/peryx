@@ -169,21 +169,24 @@ pub async fn mirror(
             )),
         }
     }
-    let (synced, errors) = rows
-        .iter()
-        .fold((0u64, 0u64), |(synced, errors), row| match row.status {
-            "synced" => (synced + 1, errors),
-            "error" => (synced, errors + 1),
-            _ => (synced, errors),
-        });
+    let (synced, cached, errors, bytes) =
+        rows.iter()
+            .fold((0u64, 0u64, 0u64, 0u64), |(synced, cached, errors, bytes), row| {
+                (
+                    synced + u64::from(row.status == "synced"),
+                    cached + u64::from(row.status == "cached"),
+                    errors + u64::from(row.status == "error"),
+                    bytes.saturating_add(row.bytes),
+                )
+            });
     rows.push(MirrorRow::row(
         "summary",
         "",
         "",
         "",
         if errors == 0 { "synced" } else { "error" },
-        synced,
-        format!("{synced} synced, {errors} errors"),
+        bytes,
+        format!("{synced} synced, {cached} cached, {errors} errors"),
     ));
     for row in &mut rows {
         row.index.clone_from(&index.name);

@@ -171,7 +171,7 @@ async fn mirror_reports_stable_columns_across_actions() {
     let empty = toml::Table::new();
     let digest = oci_digest(manifest);
 
-    for (action, expected_detail, expected_summary_filename) in [
+    for (action, expected_detail, expected_summary) in [
         (
             MirrorAction::Plan,
             [
@@ -185,7 +185,7 @@ async fn mirror_reports_stable_columns_across_actions() {
                 "selected",
                 "",
             ],
-            "images",
+            ["summary", "hub", "", "images", "", "", "1", "images", ""],
         ),
         (
             MirrorAction::Sync,
@@ -200,7 +200,17 @@ async fn mirror_reports_stable_columns_across_actions() {
                 "synced",
                 "",
             ],
-            "",
+            [
+                "summary",
+                "hub",
+                "",
+                "",
+                "",
+                "",
+                "2",
+                "synced",
+                "1 synced, 0 cached, 0 errors",
+            ],
         ),
         (
             MirrorAction::Verify,
@@ -215,7 +225,17 @@ async fn mirror_reports_stable_columns_across_actions() {
                 "cached",
                 "",
             ],
-            "",
+            [
+                "summary",
+                "hub",
+                "",
+                "",
+                "",
+                "",
+                "0",
+                "synced",
+                "0 synced, 1 cached, 0 errors",
+            ],
         ),
     ] {
         let mut output = Vec::new();
@@ -235,10 +255,38 @@ async fn mirror_reports_stable_columns_across_actions() {
             .unwrap();
 
         let rows = report_rows(std::str::from_utf8(&output).unwrap());
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0], expected_detail);
-        assert_eq!(&rows[1][..4], &["summary", "hub", "", expected_summary_filename]);
+        assert_eq!(rows, [expected_detail, expected_summary]);
     }
+}
+
+#[tokio::test]
+async fn mirror_reports_failed_summary() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, _) = proxy(&dir, "http://127.0.0.1:1/", false);
+    let configured = images(&["library/example:latest"]);
+    let empty = toml::Table::new();
+    let mut output = Vec::new();
+
+    OciRegistry::default()
+        .mirror(
+            state,
+            MirrorRequest {
+                action: MirrorAction::Verify,
+                index: "hub",
+                settings: &empty,
+                configured: &configured,
+                overrides: &empty,
+            },
+            &mut output,
+        )
+        .await
+        .expect_err("missing content fails verification");
+
+    let rows = report_rows(std::str::from_utf8(&output).unwrap());
+    assert_eq!(
+        rows.last().unwrap()[6..],
+        ["0", "error", "0 synced, 0 cached, 1 errors"]
+    );
 }
 
 #[tokio::test]
