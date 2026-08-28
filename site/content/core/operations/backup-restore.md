@@ -1,14 +1,15 @@
 +++
 title = "Back up and restore"
-description = "Capture a self-contained, verifiable backup of a filesystem-backed data directory and restore it into a fresh node."
+description = "Capture a verifiable backup of a filesystem-backed data directory and restore it into a fresh node."
 weight = 11
 +++
 
-A filesystem-backed backup is a self-contained directory that reproduces a peryx node's durable state: its effective
-configuration, its metadata store, and every blob that metadata references. It is offline by construction.
-`peryx backup create` reads a stopped or quiescent data directory and writes files with hash checks; nothing about it
-talks to a running server or an upstream. That makes a backup portable. Copy it to another host, verify it there, and
-restore it into an empty data directory to rebuild the node.
+A filesystem-backed backup is a portable directory that reproduces a peryx node's durable state: its effective
+configuration, its metadata store, and every blob that metadata references. Secrets backed by files or environment
+variables remain external dependencies and must be available to the restored node. The backup is offline by
+construction. `peryx backup create` reads a stopped or quiescent data directory and writes files with hash checks;
+nothing about it talks to a running server or an upstream. That makes a backup portable. Copy it to another host, verify
+it there, and restore it into an empty data directory to rebuild the node.
 
 Reach for this when you move a node between hosts, seed a staging environment from production state, or hold a
 point-in-time image before a risky migration. It is not continuous replication: for a hot standby that follows the
@@ -33,10 +34,16 @@ exactly those, so an unreferenced blob left behind by an interrupted write does 
 therefore a compaction that carries the live working set, not the on-disk residue. `backup create` rehashes each blob as
 it copies it; a blob whose bytes no longer hash to its digest aborts the backup rather than sealing corruption into it.
 
-The configuration snapshot does not contain secret values. It records S3 credentials, index tokens read from files, and
-webhook secrets sourced from the environment as references (the path or environment variable name), not values. Even so,
-the snapshot names your indexes, upstreams, and routes, and the metadata store carries security-sensitive records, so
-treat a backup directory as sensitive and store it with the same care as the node.
+The configuration snapshot can contain secret values. A secret configured inline remains inline so the effective
+configuration can round-trip. This applies to inline signing keys, LDAP bind passwords, OIDC client secrets, replication
+tokens, index access tokens, upstream passwords and tokens, and webhook secrets. A secret configured through a `_file`
+or `_env` option remains a path or environment variable name; its resolved value is not copied. Provision those
+referenced secrets on the restore host before starting the node.
+
+Treat the backup directory and every copy as credential-bearing material. Restrict access to operators authorized to use
+the contained credentials, and preserve the same protections when copying or archiving it. If a backup reaches an
+unauthorized recipient, rotate every inline credential it contains and create a new backup. Deleting the disclosed copy
+does not invalidate credentials that someone may already have read.
 
 On Unix, `backup create` enforces that itself. It creates the backup root `0700` and the secret-bearing files it writes
 there, the configuration snapshot, the metadata store, and the manifest, `0600`, regardless of the process umask. A
