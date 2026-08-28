@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use peryx_test_support::{HarnessError, ProcessHarness, Topology, Toxiproxy, spawn_on_port, spawn_with_config};
+use peryx_test_support::{
+    HarnessError, ProcessHarness, Topology, Toxiproxy, peryx_binary, spawn_on_port, spawn_with_config,
+};
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -21,6 +23,19 @@ fn cargo_binary_uses_nextest_metadata() {
         std::env::var_os("NEXTEST").map(|_| peryx_test_support::cargo_binary("peryx-test-fixture")),
         std::env::var_os("NEXTEST_BIN_EXE_peryx_test_fixture").map(PathBuf::from),
     );
+}
+
+#[test]
+fn peryx_binary_uses_the_current_cargo_profile() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+
+    temp_env::with_var("PERYX_BIN", None::<&Path>, || {
+        assert_eq!(
+            peryx_binary(),
+            peryx_test_support::cargo_binary("peryx-test-fixture")
+                .with_file_name(format!("peryx{}", std::env::consts::EXE_SUFFIX)),
+        );
+    });
 }
 
 #[test]

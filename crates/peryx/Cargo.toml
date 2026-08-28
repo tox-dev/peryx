@@ -12,7 +12,6 @@ default-run = "peryx"
 name = "peryx"
 path = "src/main.rs"
 test = false
-required-features = ["composition-oci", "composition-pypi"]
 
 [[bin]]
 name = "peryx-process-fixture"
@@ -29,8 +28,10 @@ required-features = ["process-fixture"]
 
 [features]
 default = ["composition-oci", "composition-pypi"]
-composition-oci = ["dep:peryx-ecosystem-oci"]
-composition-pypi = ["dep:peryx-ecosystem-pypi"]
+# Require this marker in each ecosystem composition to reject an empty binary registry.
+composition = []
+composition-oci = ["composition", "dep:peryx-ecosystem-oci"]
+composition-pypi = ["composition", "dep:peryx-ecosystem-pypi"]
 # Requires toxiproxy-server to inject faults into spawned processes.
 availability-e2e = []
 process-fixture = []

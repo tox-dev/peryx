@@ -14,7 +14,7 @@ use std::time::Duration;
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use peryx_storage::blob::Digest;
-use peryx_test_support::{Node, ProcessHarness, ProcessLimit, cargo_binary};
+use peryx_test_support::{Node, ProcessHarness, ProcessLimit, peryx_binary};
 use rstest::rstest;
 use sha2::{Digest as _, Sha256};
 use tempfile::TempDir;
@@ -235,7 +235,7 @@ impl Peryx {
              [[index]]\nname = \"root-pypi\"\nroute = \"root/pypi\"\nlayers = [\"hosted\", \"upstream\"]\nwrite_target = \"hosted\"\n\
              [index.policy]\n{policy_toml}"
         );
-        let node = ProcessHarness::new(cargo_binary("peryx-pypi-system-server"))
+        let node = ProcessHarness::new(peryx_binary())
             .with_ready_timeout(SERVER_STARTUP_TIMEOUT)
             .with_process_limit(SERVER_LIMIT.clone())
             .spawn_with_config("pypi-e2e", &config_toml)
@@ -492,7 +492,7 @@ fn e2e_client_runner_reports_unexpected_status(
     #[case] expected: &str,
 ) {
     let peryx = Peryx::start_against("http://127.0.0.1:9/simple/");
-    let mut command = Command::new(cargo_binary("peryx-pypi-system-server"));
+    let mut command = Command::new(peryx_binary());
     command.arg(argument);
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         runner(&mut command, "test command", &peryx);
@@ -503,7 +503,7 @@ fn e2e_client_runner_reports_unexpected_status(
 
 #[test]
 fn e2e_run_reports_command_failure() {
-    let mut command = Command::new(cargo_binary("peryx-pypi-system-server"));
+    let mut command = Command::new(peryx_binary());
     command.arg("--invalid-e2e-test-option");
     let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         run(&mut command, "test command");

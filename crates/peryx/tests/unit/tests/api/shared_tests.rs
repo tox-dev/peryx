@@ -1,17 +1,27 @@
 use std::collections::BTreeSet;
 
+#[cfg(feature = "composition-pypi")]
 use axum::body::Body;
+#[cfg(feature = "composition-pypi")]
 use axum::http::{Request, StatusCode, header};
+#[cfg(feature = "composition-pypi")]
 use base64::Engine as _;
+#[cfg(feature = "composition-pypi")]
 use http_body_util::BodyExt as _;
+#[cfg(feature = "composition-pypi")]
 use peryx_ecosystem_pypi::store::PypiStore as _;
+#[cfg(feature = "composition-pypi")]
 use peryx_identity::{GrantScope, Role};
+#[cfg(feature = "composition-pypi")]
 use tower::ServiceExt as _;
 use utoipa::openapi::PathsBuilder;
 
-use crate::api::{openapi, openapi_for, openapi_json, openapi_json_for, openapi_with_plugins};
+#[cfg(feature = "composition-oci")]
+use crate::api::openapi_with_plugins;
+use crate::api::{openapi, openapi_for, openapi_json, openapi_json_for};
 
 #[test]
+#[cfg(feature = "composition-oci")]
 fn test_oci_only_openapi_omits_the_pypi_shadow_path() {
     let plugins = peryx_plugin_registry::PluginRegistry::new(vec![peryx_ecosystem_oci::registration()]).unwrap();
     let spec = serde_json::to_value(openapi_with_plugins(&plugins)).unwrap();
@@ -79,6 +89,7 @@ fn test_openapi_document_covers_every_endpoint() {
 }
 
 #[tokio::test]
+#[cfg(feature = "composition-pypi")]
 async fn test_shadow_contract_openapi_matches_the_public_handler() {
     let spec = serde_json::to_value(openapi()).unwrap();
     let operation = &spec["paths"]["/+shadow/candidates"]["get"];
@@ -322,6 +333,7 @@ fn assert_json_objects_are_sorted(value: &serde_json::Value) {
     }
 }
 
+#[cfg(feature = "composition-pypi")]
 fn seed_shadow_candidate(state: &peryx_driver::AppState) {
     let filename = "acme_pkg-1.0-py3-none-any.whl";
     let uploaded = peryx_ecosystem_pypi::upload::Uploaded {

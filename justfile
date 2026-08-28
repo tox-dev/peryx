@@ -106,25 +106,31 @@ platform-test: _project-temp
 
 # Run hermetic PyPI client boundary tests.
 e2e: _project-temp
-    cargo nextest run -p peryx-pypi-system-tests --features e2e --test e2e -E 'not(test(e2e_live))'
+    just _system-test-build composition-pypi
+    PERYX_SINGLE_COMPOSITION=1 cargo nextest run -p peryx-pypi-system-tests \
+      --features e2e --test e2e -E 'not(test(e2e_live))'
 
 # Run live PyPI client boundary tests.
 e2e-live: test-deps
-    PATH="{{ tools_root }}/bin:$PATH" cargo nextest run -p peryx-pypi-system-tests \
+    just _system-test-build composition-pypi
+    PERYX_SINGLE_COMPOSITION=1 PATH="{{ tools_root }}/bin:$PATH" cargo nextest run -p peryx-pypi-system-tests \
       --features e2e-live --test e2e -E 'test(e2e_live)'
 
 # Run PyPI system tests without external-service cases.
 pypi-system: _project-temp
-    cargo nextest run -p peryx-pypi-system-tests --tests \
+    just _system-test-build composition-pypi
+    PERYX_SINGLE_COMPOSITION=1 cargo nextest run -p peryx-pypi-system-tests --tests \
       -E 'not(binary(e2e)) & not(binary(availability)) & not(binary(s3_upload))'
 
 # Run OCI system tests without availability cases.
 oci-system: _project-temp
-    cargo nextest run -p peryx-oci-system-tests --tests -E 'not(binary(availability))'
+    just _system-test-build composition-oci
+    PERYX_SINGLE_COMPOSITION=1 cargo nextest run -p peryx-oci-system-tests --tests -E 'not(binary(availability))'
 
 # Run the PyPI S3 upload tests.
 s3: _project-temp
-    cargo nextest run -p peryx-pypi-system-tests --test s3_upload
+    just _system-test-build composition-pypi
+    PERYX_SINGLE_COMPOSITION=1 cargo nextest run -p peryx-pypi-system-tests --test s3_upload
 
 # Run storage tests backed by S3 containers.
 storage-s3: _project-temp _docker-ready
@@ -133,8 +139,10 @@ storage-s3: _project-temp _docker-ready
 # Run distributed availability tests.
 availability: _project-temp
     cargo nextest run -p peryx --features availability-e2e --test availability --test cluster --test observability
-    cargo nextest run -p peryx-pypi-system-tests --test availability
-    cargo nextest run -p peryx-oci-system-tests --test availability
+    just _system-test-build composition-pypi
+    PERYX_SINGLE_COMPOSITION=1 cargo nextest run -p peryx-pypi-system-tests --test availability
+    just _system-test-build composition-oci
+    PERYX_SINGLE_COMPOSITION=1 cargo nextest run -p peryx-oci-system-tests --test availability
 
 # Run an availability simulation selection.
 simulation filter="all()": _project-temp
@@ -142,7 +150,17 @@ simulation filter="all()": _project-temp
 
 # Check every feature independently.
 features: _project-temp
-    cargo hack --workspace --each-feature check --all-targets
+    cargo check --package peryx --no-default-features --lib
+    @if output="$(cargo check --package peryx --no-default-features --bin peryx 2>&1)"; then \
+      echo 'zero-feature peryx binary compiled' >&2; exit 1; \
+    fi; rg -F 'the peryx binary requires at least one `composition-*` feature' <<< "$output"
+    cargo hack --workspace --exclude peryx --each-feature check --all-targets
+    cargo hack --package peryx --each-feature --features composition-pypi check --all-targets
+    cargo check --package peryx --no-default-features --features composition-oci --all-targets
+
+# Build the shipped server with one composition feature.
+_system-test-build feature: _project-temp
+    cargo build --package peryx --bin peryx --no-default-features --features "{{ feature }}"
 
 # Check direct dependency lower bounds.
 direct-minimum: _project-temp

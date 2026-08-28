@@ -1,5 +1,24 @@
 use std::process::{Command, Output};
 
+#[test]
+fn shipped_binary_exposes_expected_oci_openapi() {
+    let output = Command::new(peryx_test_support::peryx_binary())
+        .arg("openapi")
+        .output()
+        .unwrap();
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let paths = document["paths"].as_object().unwrap();
+
+    assert_eq!(
+        (
+            output.status.success(),
+            paths.contains_key("/v2/"),
+            paths.contains_key("/{route}/simple/{project}/"),
+        ),
+        (true, true, std::env::var_os("PERYX_SINGLE_COMPOSITION").is_none(),),
+    );
+}
+
 #[rstest::rstest]
 #[case::requirements("requirements=[]", "requirements")]
 #[case::mode("mode=\"all\"", "mode")]
@@ -53,7 +72,7 @@ fn run_prefetch(prefetch: &str, args: &[&str]) -> Output {
         ),
     )
     .unwrap();
-    Command::new(peryx_test_support::cargo_binary("peryx-oci-system-server"))
+    Command::new(peryx_test_support::peryx_binary())
         .args(["mirror", "plan", "mirror", "--config"])
         .arg(config_path)
         .arg("--data-dir")

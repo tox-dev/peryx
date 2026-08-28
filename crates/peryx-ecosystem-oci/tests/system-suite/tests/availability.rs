@@ -52,7 +52,7 @@ mod harness {
     }
 
     fn process_harness() -> peryx_test_support::ProcessHarness {
-        peryx_test_support::ProcessHarness::new(peryx_test_support::cargo_binary("peryx-oci-system-server"))
+        peryx_test_support::ProcessHarness::new(peryx_test_support::peryx_binary())
     }
 }
 

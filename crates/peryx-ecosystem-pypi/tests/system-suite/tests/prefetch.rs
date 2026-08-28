@@ -2,6 +2,25 @@ use std::io::ErrorKind;
 use std::net::TcpListener;
 use std::process::{Command, Output};
 
+#[test]
+fn shipped_binary_exposes_expected_pypi_openapi() {
+    let output = Command::new(peryx_test_support::peryx_binary())
+        .arg("openapi")
+        .output()
+        .unwrap();
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let paths = document["paths"].as_object().unwrap();
+
+    assert_eq!(
+        (
+            output.status.success(),
+            paths.contains_key("/{route}/simple/{project}/"),
+            paths.contains_key("/v2/"),
+        ),
+        (true, true, std::env::var_os("PERYX_SINGLE_COMPOSITION").is_none(),),
+    );
+}
+
 #[rstest::rstest]
 #[case::file("[index.prefetch]\nimages = []\n", &[])]
 #[case::cli("", &["--option", "images=[]"])]
@@ -32,7 +51,7 @@ fn run_prefetch(config: &str, args: &[&str]) -> Output {
     let directory = tempfile::tempdir().unwrap();
     let config_path = directory.path().join("peryx.toml");
     std::fs::write(&config_path, config).unwrap();
-    Command::new(peryx_test_support::cargo_binary("peryx-pypi-system-server"))
+    Command::new(peryx_test_support::peryx_binary())
         .args(["mirror", "plan", "mirror", "--config"])
         .arg(config_path)
         .arg("--data-dir")

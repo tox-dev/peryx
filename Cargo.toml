@@ -158,7 +158,6 @@ codegen-units = 1
 name = "peryx"
 bin-package = "peryx"
 bin-target = "peryx"
-bin-features = ["composition-oci", "composition-pypi"]
 lib-package = "peryx-web"
 lib-features = ["hydrate"]
 lib-default-features = false

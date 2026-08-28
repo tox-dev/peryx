@@ -86,7 +86,7 @@ impl Default for ProcessHarness {
 }
 
 impl ProcessHarness {
-    /// Use `binary` instead of resolving `PERYX_BIN` or `peryx` from `PATH`.
+    /// Use `binary` instead of resolving the shipped `peryx` test binary.
     #[must_use]
     pub fn new(binary: impl Into<PathBuf>) -> Self {
         Self {
@@ -1537,8 +1537,23 @@ fn inherited_listener_command(binary: &Path, listeners: NodeListeners, log: std:
     command
 }
 
-fn peryx_binary() -> PathBuf {
-    std::env::var_os("PERYX_BIN").map_or_else(|| PathBuf::from("peryx"), PathBuf::from)
+/// Resolves the shipped server binary from `PERYX_BIN` or the current Cargo profile directory.
+///
+/// # Panics
+/// Panics if `current_exe` fails or its path has no Cargo profile ancestor.
+#[must_use]
+pub fn peryx_binary() -> PathBuf {
+    std::env::var_os("PERYX_BIN").map_or_else(
+        || {
+            std::env::current_exe()
+                .expect("current test executable path")
+                .parent()
+                .and_then(Path::parent)
+                .expect("Cargo profile directory")
+                .join(format!("peryx{}", std::env::consts::EXE_SUFFIX))
+        },
+        PathBuf::from,
+    )
 }
 
 /// Put a child in its own process group so the harness can signal all descendants.

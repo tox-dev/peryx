@@ -295,6 +295,7 @@ fn test_build_router_serves_public_probes(#[case] uri: &str, #[case] expected: &
 }
 
 #[test]
+#[cfg(all(feature = "composition-oci", feature = "composition-pypi"))]
 fn test_shipped_plugins_compose_and_serve_their_protocols() {
     let plugins = peryx_plugin_registry::PluginRegistry::new(vec![
         peryx_ecosystem_pypi::registration(),

@@ -8,13 +8,6 @@ repository.workspace = true
 publish = false
 
 [[bin]]
-name = "peryx-pypi-system-server"
-path = "src/main.rs"
-test = false
-bench = false
-doc = false
-
-[[bin]]
 name = "peryx-pypi-s3-upload-fixture"
 path = "tests/fixtures/s3_upload.rs"
 test = false

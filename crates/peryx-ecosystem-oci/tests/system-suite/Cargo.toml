@@ -7,15 +7,7 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
-[[bin]]
-name = "peryx-oci-system-server"
-path = "src/main.rs"
-test = false
-doc = false
-
 [dependencies]
-anyhow.workspace = true
-clap.workspace = true
 peryx = { path = "../../../peryx", version = "0.0.1", default-features = false, features = ["composition-oci"] }
 
 [dev-dependencies]

@@ -4,7 +4,7 @@ use peryx_storage::blob::Digest;
 use serde_json::{Value, json};
 
 use crate::harness::{
-    ADMIN_PASSWORD, ADMIN_USER, Cluster, MemberSpec, Node, ProcessHarness, Role, Topology, Toxiproxy, cargo_binary,
+    ADMIN_PASSWORD, ADMIN_USER, Cluster, MemberSpec, Node, ProcessHarness, Role, Topology, Toxiproxy, peryx_binary,
 };
 use crate::pypi_support::{PypiNodeExt as _, WHEEL, WHEEL_FILENAME, config as pypi_config};
 
@@ -22,7 +22,7 @@ fn writer_and_replica() -> Topology {
     )
     .with_admin()
     .with_index_config(&pypi_config().replace("projects", "resources"))
-    .with_process_harness(ProcessHarness::new(cargo_binary("peryx-pypi-system-server")))
+    .with_process_harness(ProcessHarness::new(peryx_binary()))
 }
 
 fn readiness_document(writer: &Node) -> Value {

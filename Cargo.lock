@@ -5042,10 +5042,8 @@ dependencies = [
 name = "peryx-oci-system-tests"
 version = "0.0.1"
 dependencies = [
- "anyhow",
  "axum",
  "base64 0.23.1",
- "clap",
  "flate2",
  "http-body-util",
  "peryx",
