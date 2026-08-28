@@ -12,21 +12,26 @@ redirects clients to canonical URLs. See [Simple API serving](@/ecosystems/pypi/
 ## Advertised Simple API version
 
 Every Simple page peryx serves carries a version: `meta.api-version` in the [PEP 691](https://peps.python.org/pep-0691/)
-JSON, `pypi:repository-version` in the [PEP 503](https://peps.python.org/pep-0503/) HTML `<meta>`. peryx does not stamp
-a fixed number. It derives the version from what the upstream it proxies declared, so the advertised version never
-promises a field the re-served payload can omit.
+JSON, `pypi:repository-version` in the [PEP 503](https://peps.python.org/pep-0503/) HTML `<meta>`. Hosted pages use
+peryx's 1.4 ceiling. For proxied pages, peryx derives the version from what the upstream declared and does not promise a
+field that the re-served payload can omit.
 
 ### Version rule
 
-peryx reads the version the upstream declared for the project, then maps it to what it serves:
+peryx assigns hosted pages its ceiling and maps upstream declarations as follows:
 
-| Upstream declares                                                     | peryx serves | Why                                                         |
-| --------------------------------------------------------------------- | ------------ | ----------------------------------------------------------- |
-| `1.1`, `1.2`, `1.3`, `1.4`, `1.5`, … (minor ≥ 1)                      | `1.4`        | PEP 700 makes `versions` and per-file `size` mandatory here |
-| `1.0`                                                                 | `1.0`        | PEP 691 mandates neither field                              |
-| nothing (a bare PEP 503 HTML index, or JSON that omits `api-version`) | `1.0`        | promises neither field                                      |
-| a major other than `1` (`2.0`, …)                                     | rejected     | unsupported major; the upstream page is not served          |
-| a version that does not parse (`1.x`, `abc`)                          | rejected     | invalid version; the upstream page is not served            |
+| Page source                                                        | peryx serves | Why                                                         |
+| ------------------------------------------------------------------ | ------------ | ----------------------------------------------------------- |
+| hosted by peryx                                                    | `1.4`        | peryx supplies every required field                         |
+| upstream declares `1.1`, `1.2`, `1.3`, `1.4`, `1.5`, … (minor ≥ 1) | `1.4`        | PEP 700 makes `versions` and per-file `size` mandatory here |
+| upstream declares `1.0`                                            | `1.0`        | PEP 691 mandates neither field                              |
+| bare PEP 503 HTML, or JSON that omits `api-version`                | `1.0`        | the upstream promises neither field                         |
+| upstream declares a major other than `1` (`2.0`, …)                | rejected     | peryx does not support the major version                    |
+| upstream declares a version that does not parse (`1.x`, `abc`)     | rejected     | peryx rejects the invalid version                           |
+
+A hosted page and a versioned JSON upstream that declares 1.1 both serve 1.4, but for different reasons: peryx supplies
+the hosted fields, while the upstream promises the PEP 700 fields. peryx returns 1.0 for a bare HTML upstream because it
+makes no version promise.
 
 `1.4` is peryx's own ceiling: the highest version it implements. The threshold that decides between the ceiling and the
 base is [PEP 700](https://peps.python.org/pep-0700/)'s, minor version `1`. Above it, every guarantee through `1.4` is
@@ -40,9 +45,9 @@ PEP 700 raised the Simple API to `1.1` and made two fields mandatory in the JSON
 - **`versions`**: a top-level array of every release version of the project.
 - **`size`**: an integer byte count on every file entry.
 
-A page that advertises `1.1` or higher promises both are present; `1.0` promises neither. peryx advertises `1.4` only
-when the upstream declared `1.1+`, where those fields are guaranteed in the bytes it re-serves, and falls back to `1.0`
-otherwise.
+A page that advertises `1.1` or higher promises both are present; `1.0` promises neither. peryx advertises `1.4` for
+hosted content and when an upstream declared `1.1+`, where the upstream guarantees those fields in the bytes peryx
+re-serves. peryx falls back to `1.0` for an upstream that makes neither guarantee.
 
 ### Virtual indexes take the weakest layer
 
