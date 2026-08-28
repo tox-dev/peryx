@@ -260,6 +260,7 @@ async fn test_artifact_client_reads_ranges_from_mirror() {
 
 #[tokio::test]
 async fn test_artifact_client_does_not_fallback_range_reads_when_disabled() {
+    let origin = MockServer::start().await;
     let mirror = MockServer::start().await;
     for request_method in ["HEAD", "GET"] {
         Mock::given(method(request_method))
@@ -269,13 +270,14 @@ async fn test_artifact_client_does_not_fallback_range_reads_when_disabled() {
             .mount(&mirror)
             .await;
     }
-    let source = NamedUpstream::new("origin", UpstreamClient::new("https://origin.example/api/").unwrap())
+    let source = NamedUpstream::new("origin", UpstreamClient::new(&origin.uri()).unwrap())
         .with_artifact_mirror(UpstreamClient::new(&mirror.uri()).unwrap(), false);
     let artifacts = source.artifacts();
-    let url = "https://origin.example/files/artifact.bin";
+    let url = format!("{}/files/artifact.bin", origin.uri());
 
-    assert!(artifacts.head_file_for_range(url).await.is_err());
-    assert!(artifacts.fetch_range(url, 1, 3, 3).await.is_err());
+    assert!(artifacts.head_file_for_range(&url).await.is_err());
+    assert!(artifacts.fetch_range(&url, 1, 3, 3).await.is_err());
+    assert!(origin.received_requests().await.unwrap().is_empty());
 }
 
 #[tokio::test]

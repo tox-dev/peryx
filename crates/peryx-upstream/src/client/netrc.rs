@@ -28,11 +28,13 @@ impl Netrc {
     /// ownership or permissions, or contains invalid netrc syntax.
     pub fn from_path(path: &Path) -> Result<Self, NetrcError> {
         #[cfg(windows)]
-        if !std::fs::metadata(path).map_err(read_error(path))?.is_file() {
-            return Err(NetrcError::NotRegular {
+        std::fs::metadata(path)
+            .map_err(read_error(path))?
+            .is_file()
+            .then_some(())
+            .ok_or_else(|| NetrcError::NotRegular {
                 path: path.to_path_buf(),
-            });
-        }
+            })?;
         let mut file = File::open(path).map_err(read_error(path))?;
         let metadata = file.metadata().map_err(read_error(path))?;
         if !metadata.is_file() {
@@ -77,7 +79,7 @@ impl Netrc {
         if let Some(port) = effective_port {
             candidates.push(format!("{host}:{port}"));
         }
-        if effective_port.is_some() && url.port().is_none() {
+        if matches!((effective_port, url.port()), (Some(_), None)) {
             candidates.push(host.clone());
             if let Some(unbracketed) = host.strip_prefix('[').and_then(|value| value.strip_suffix(']')) {
                 candidates.push(unbracketed.to_owned());
@@ -87,7 +89,12 @@ impl Netrc {
         candidates
             .into_iter()
             .find_map(|candidate| self.parsed.hosts.get(&candidate))
-            .filter(|entry| !entry.login.is_empty() || !entry.password.is_empty())
+            .filter(|entry| {
+                matches!(
+                    (entry.login.is_empty(), entry.password.is_empty()),
+                    (false, _) | (_, false)
+                )
+            })
             .map_or(Auth::None, |entry| Auth::Basic {
                 username: entry.login.clone(),
                 password: entry.password.clone(),

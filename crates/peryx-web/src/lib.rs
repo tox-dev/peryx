@@ -149,7 +149,7 @@ fn HeaderSearch() -> impl IntoView {
     let suggestions = Resource::new(
         move || query.get(),
         |query| async move {
-            if query.trim().chars().count() < 2 {
+            if query.trim().chars().nth(1).is_none() {
                 return Ok(Vec::new());
             }
             load_search(query, "all".to_owned(), "all".to_owned(), 1, 25)

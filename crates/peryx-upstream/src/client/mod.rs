@@ -204,7 +204,7 @@ impl UpstreamClient {
         )
         .http1_only()
         .build()?;
-        let (cross_origin_http, cross_origin_bulk) = if include_identity && tls.has_identity() {
+        let (cross_origin_http, cross_origin_bulk) = if matches!((include_identity, tls.has_identity()), (true, true)) {
             (
                 configure_http_client(
                     tls.apply(reqwest::Client::builder(), false),
@@ -326,7 +326,7 @@ impl UpstreamClient {
     pub async fn fetch_bytes(&self, url: &str) -> Result<Bytes, UpstreamError> {
         let url = Url::parse(url)?;
         self.guard.check_url(&url)?;
-        let mut attempt = 0;
+        let mut retries = 0..MAX_RETRIES;
         loop {
             let response = self
                 .send_with_retry(|auth| {
@@ -340,11 +340,10 @@ impl UpstreamClient {
                 .error_for_status()?;
             match response.bytes().await {
                 Ok(bytes) => return Ok(bytes),
-                Err(err) if should_retry_error(&err) && attempt < MAX_RETRIES => {
-                    sleep_before_retry_str(url.as_str(), attempt, &err).await;
-                    attempt += 1;
-                }
-                Err(err) => return Err(err.into()),
+                Err(err) => match (should_retry_error(&err), retries.next()) {
+                    (true, Some(attempt)) => sleep_before_retry_str(url.as_str(), attempt, &err).await,
+                    _ => return Err(err.into()),
+                },
             }
         }
     }
@@ -360,7 +359,7 @@ impl UpstreamClient {
 
         let url = Url::parse(url)?;
         self.guard.check_url(&url)?;
-        let mut attempt = 0;
+        let mut retries = 0..MAX_RETRIES;
         loop {
             let response = self
                 .send_with_retry(|auth| {
@@ -389,12 +388,13 @@ impl UpstreamClient {
                     }
                     Ok(Some(chunk)) => bytes.extend_from_slice(&chunk),
                     Ok(None) => return Ok(bytes.freeze()),
-                    Err(err) if should_retry_error(&err) && attempt < MAX_RETRIES => {
-                        sleep_before_retry_str(url.as_str(), attempt, &err).await;
-                        attempt += 1;
-                        break;
-                    }
-                    Err(err) => return Err(err.into()),
+                    Err(err) => match (should_retry_error(&err), retries.next()) {
+                        (true, Some(attempt)) => {
+                            sleep_before_retry_str(url.as_str(), attempt, &err).await;
+                            break;
+                        }
+                        _ => return Err(err.into()),
+                    },
                 }
             }
         }
@@ -599,7 +599,7 @@ impl UpstreamClient {
         &self,
         mut request: impl FnMut(&Auth) -> reqwest::RequestBuilder,
     ) -> Result<reqwest::Response, UpstreamError> {
-        let mut attempt = 0;
+        let mut retries = 0..MAX_RETRIES;
         let mut credential = self.credentials.credential().await.map_err(UpstreamError::from)?;
         let mut refreshed = false;
         loop {
@@ -618,21 +618,21 @@ impl UpstreamClient {
                     credential = replacement;
                     refreshed = true;
                 }
-                Ok(response) if should_retry_status(response.status()) && attempt < MAX_RETRIES => {
-                    let url = response.url().clone();
-                    let status = response.status();
-                    sleep_before_retry_status(&url, attempt, status, response.headers()).await;
-                    attempt += 1;
-                }
                 Ok(response) => {
+                    if let (true, Some(attempt)) = (should_retry_status(response.status()), retries.next()) {
+                        let url = response.url().clone();
+                        let status = response.status();
+                        sleep_before_retry_status(&url, attempt, status, response.headers()).await;
+                        continue;
+                    }
                     self.reachability.store(REACHABILITY_REACHABLE, Ordering::Relaxed);
                     return Ok(response);
                 }
-                Err(err) if should_retry_error(&err) && attempt < MAX_RETRIES => {
-                    sleep_before_retry_str(err.url().map_or("unknown URL", Url::as_str), attempt, &err).await;
-                    attempt += 1;
-                }
                 Err(err) => {
+                    if let (true, Some(attempt)) = (should_retry_error(&err), retries.next()) {
+                        sleep_before_retry_str(err.url().map_or("unknown URL", Url::as_str), attempt, &err).await;
+                        continue;
+                    }
                     self.reachability.store(REACHABILITY_UNREACHABLE, Ordering::Relaxed);
                     return Err(err.into());
                 }
@@ -676,7 +676,7 @@ fn guarded_redirect_policy(
     let base = base.clone();
     let guard = guard.clone();
     reqwest::redirect::Policy::custom(move |attempt| {
-        if attempt.previous().len() > MAX_REDIRECTS {
+        if attempt.previous().get(MAX_REDIRECTS).is_some() {
             return attempt.error(TooManyRedirects);
         }
         if restrict_identity && !same_origin(&base, attempt.url()) {

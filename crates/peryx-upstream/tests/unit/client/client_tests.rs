@@ -281,6 +281,15 @@ async fn test_fetch_range_disables_on_bad_range_response(
     assert!(!client.may_support_ranges());
 }
 
+#[test]
+fn test_upstream_range_error_does_not_disable_ranges() {
+    let error = crate::RangeError::Upstream(UpstreamError::InvalidResponse {
+        reason: "bad metadata".to_owned(),
+    });
+
+    assert!(!error.disables_ranges());
+}
+
 #[tokio::test]
 async fn test_fetch_range_rejects_short_body() {
     let server = RangeServer::start(RangeResponse::ShortChunked);

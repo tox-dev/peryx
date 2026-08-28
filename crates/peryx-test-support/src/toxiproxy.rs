@@ -124,18 +124,16 @@ impl Toxiproxy {
                 .timeout(remaining.min(Duration::from_millis(100)))
                 .send()
             {
-                Ok(response) if response.status().is_success() => {
-                    toxiproxy.verify_control_ownership(&control_owner)?;
-                    return Ok(toxiproxy);
-                }
-                Ok(response) if response.status() == reqwest::StatusCode::NOT_FOUND => {
-                    last_failure = format!("control API returned {}", response.status());
-                }
                 Ok(response) => {
-                    return Err(HarnessError::Toxiproxy(format!(
-                        "control API returned {}",
-                        response.status()
-                    )));
+                    let status = response.status();
+                    match status.as_u16() {
+                        200..=299 => {
+                            toxiproxy.verify_control_ownership(&control_owner)?;
+                            return Ok(toxiproxy);
+                        }
+                        404 => last_failure = format!("control API returned {status}"),
+                        _ => return Err(HarnessError::Toxiproxy(format!("control API returned {status}"))),
+                    }
                 }
                 Err(error) => last_failure = error.to_string(),
             }

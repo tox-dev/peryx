@@ -1696,25 +1696,25 @@ pub fn process_alive(pid: u32) -> bool {
     }
     #[cfg(windows)]
     {
-        windows_process_alive(pid)
-    }
-}
+        use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
 
-#[cfg(windows)]
-#[allow(unsafe_code, reason = "Windows exposes process status through raw handle APIs")]
-fn windows_process_alive(pid: u32) -> bool {
-    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
-    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
-
-    unsafe {
-        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if process.is_null() {
-            return false;
+        #[allow(unsafe_code, reason = "Windows exposes process status through raw handle APIs")]
+        unsafe {
+            let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if process.is_null() {
+                return false;
+            }
+            let mut status = 0;
+            let queried = GetExitCodeProcess(process, &raw mut status);
+            CloseHandle(process);
+            matches!(
+                (std::num::NonZero::new(queried), status.cmp(&(STILL_ACTIVE as u32))),
+                (Some(_), std::cmp::Ordering::Equal)
+            )
         }
-        let mut status = 0;
-        let active = GetExitCodeProcess(process, &raw mut status) != 0 && status == STILL_ACTIVE as u32;
-        CloseHandle(process);
-        active
     }
 }
 

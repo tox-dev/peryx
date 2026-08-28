@@ -62,10 +62,17 @@ fn test_check_url_rejects_non_http_scheme() {
     assert!(matches!(error, UpstreamError::BlockedDestination { .. }));
 }
 
-#[test]
-fn test_check_url_allows_global_literal() {
+#[rstest]
+#[case::public_dns("8.8.8.8")]
+#[case::outside_protocol_assignment("192.1.0.1")]
+#[case::before_shared_range("100.63.255.255")]
+#[case::after_shared_range("100.128.0.0")]
+#[case::before_benchmark_range("198.17.255.255")]
+#[case::after_benchmark_range("198.20.0.0")]
+#[case::outside_documentation_range("[2001:db9::1]")]
+fn test_check_url_allows_global_literal(#[case] address: &str) {
     guard("https://pub.example.com/", &[])
-        .check_url(&Url::parse("https://8.8.8.8/x").unwrap())
+        .check_url(&Url::parse(&format!("https://{address}/x")).unwrap())
         .unwrap();
 }
 

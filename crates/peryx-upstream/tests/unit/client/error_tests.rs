@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use rstest::rstest;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -75,6 +77,24 @@ async fn test_fetch_bytes_reports_request_failures() {
 
     assert_eq!(err.user_message(), "upstream connection failed");
     assert_eq!(client.reachability().as_str(), "unreachable");
+}
+
+#[tokio::test]
+async fn test_timeout_error_has_specific_user_message() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(1)))
+        .mount(&server)
+        .await;
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    let error = reqwest::Client::new()
+        .get(server.uri())
+        .timeout(Duration::from_millis(1))
+        .send()
+        .await
+        .unwrap_err();
+
+    assert_eq!(UpstreamError::from(error).user_message(), "upstream request timed out");
 }
 
 #[tokio::test]

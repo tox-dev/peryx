@@ -358,6 +358,10 @@ fn fixture_toxiproxy_uses_protocol_readiness() {
     let control = TcpListener::bind("127.0.0.1:0").expect("bind explicit control listener");
     let control_address = control.local_addr().expect("explicit control address");
     let command = thread::spawn(move || run_toxiproxy(&executable, &[], Some(control)));
+    let body = r#"{"name":"peryx-1"}"#;
+    let create = format!("POST /proxies HTTP/1.1\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+    assert!(request(control_address, &create).contains("200 test"));
+    assert!(request(control_address, &create).contains("409 test"));
     assert!(request(control_address, "POST /shutdown HTTP/1.1\r\nContent-Length: 0\r\n\r\n").contains("204 test"));
     assert_eq!(command.join().expect("join ready toxiproxy"), Ok(()));
 }

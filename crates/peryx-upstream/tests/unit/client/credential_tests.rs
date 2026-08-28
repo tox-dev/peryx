@@ -108,6 +108,22 @@ async fn test_provider_refreshes_after_its_deadline() {
 }
 
 #[tokio::test]
+async fn test_provider_keeps_its_snapshot_before_the_deadline() {
+    let provider = CredentialProvider::refreshing(
+        Auth::Bearer("old".to_owned()),
+        refresh(CredentialFailure::Fail),
+        unavailable_credential,
+    );
+
+    let snapshot = provider.credential().await.unwrap();
+
+    assert_eq!(
+        (snapshot.auth(), snapshot.generation()),
+        (&Auth::Bearer("old".to_owned()), 0)
+    );
+}
+
+#[tokio::test]
 async fn test_provider_fail_policy_caches_a_redacted_error() {
     let loads = Arc::new(AtomicUsize::new(0));
     let provider = CredentialProvider::refreshing(Auth::Bearer("old".to_owned()), refresh(CredentialFailure::Fail), {

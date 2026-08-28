@@ -62,7 +62,7 @@ impl ClientDiscovery for EcosystemDriverFixture {
 #[async_trait::async_trait]
 impl AbsoluteProtocolDriver for EcosystemDriverFixture {
     fn prefixes(&self) -> &'static [&'static str] {
-        &[]
+        &["/__fixture/"]
     }
 
     fn classify_route(&self, _path: &str) -> RouteClass {

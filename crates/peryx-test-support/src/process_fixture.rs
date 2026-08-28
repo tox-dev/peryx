@@ -64,7 +64,8 @@ fn run_peryx(executable: &Path, args: &[String], public_listener: Option<TcpList
         std::io::stdout().flush().expect("flush process start event");
     }
     if matches!(serve_mode.as_str(), "hang" | "silent-hang") {
-        let listener = public_listener.unwrap_or_else(|| fixture_listener(PUBLIC_LISTENER_FD_ENV, port));
+        let listener = public_listener
+            .unwrap_or_else(|| fixture_listener_from_descriptor(std::env::var_os(PUBLIC_LISTENER_FD_ENV), port));
         let (mut stream, _) = listener.accept().expect("accept shutdown request");
         assert_eq!(request_path(&read_request(&mut stream)), "/__fixture/shutdown");
         write_response(&mut stream, 204, b"", 0);
@@ -75,7 +76,8 @@ fn run_peryx(executable: &Path, args: &[String], public_listener: Option<TcpList
         eprintln!("invalid config");
         return Err("invalid config".to_owned());
     }
-    let public = public_listener.unwrap_or_else(|| fixture_listener(PUBLIC_LISTENER_FD_ENV, port));
+    let public = public_listener
+        .unwrap_or_else(|| fixture_listener_from_descriptor(std::env::var_os(PUBLIC_LISTENER_FD_ENV), port));
     let control_server = config
         .lines()
         .find_map(|line| {
@@ -83,8 +85,8 @@ fn run_peryx(executable: &Path, args: &[String], public_listener: Option<TcpList
                 .and_then(|value| value.strip_suffix('"'))
         })
         .map(|control| {
-            let control = fixture_listener(
-                AVAILABILITY_LISTENER_FD_ENV,
+            let control = fixture_listener_from_descriptor(
+                std::env::var_os(AVAILABILITY_LISTENER_FD_ENV),
                 control.parse::<u16>().expect("control port"),
             );
             let address = control.local_addr().expect("control listener address");
@@ -104,9 +106,7 @@ fn run_peryx(executable: &Path, args: &[String], public_listener: Option<TcpList
     }
     serve_peryx(&public, &sibling(executable, "state"), false);
     if let Some((address, server)) = control_server {
-        if !server.is_finished() {
-            shutdown_server(address);
-        }
+        shutdown_server(address);
         server.join().expect("join control server");
     }
     Ok(())
@@ -132,21 +132,23 @@ fn fail_when(mode: &Path, message: &str) -> Result<(), String> {
     }
 }
 
-#[cfg(unix)]
-fn fixture_listener(variable: &str, port: u16) -> TcpListener {
-    fixture_listener_from_descriptor(std::env::var_os(variable), port)
-}
-
-#[cfg(unix)]
 fn fixture_listener_from_descriptor(descriptor: Option<OsString>, port: u16) -> TcpListener {
-    let Some(descriptor) = descriptor else {
-        return TcpListener::bind(("127.0.0.1", port)).expect("bind fixture listener");
-    };
-    let descriptor = descriptor
-        .to_string_lossy()
-        .parse()
-        .expect("inherited listener descriptor");
-    inherited_listener(owned_inherited_descriptor(descriptor), port)
+    #[cfg(unix)]
+    {
+        let Some(descriptor) = descriptor else {
+            return TcpListener::bind(("127.0.0.1", port)).expect("bind fixture listener");
+        };
+        let descriptor = descriptor
+            .to_string_lossy()
+            .parse()
+            .expect("inherited listener descriptor");
+        inherited_listener(owned_inherited_descriptor(descriptor), port)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = descriptor;
+        TcpListener::bind(("127.0.0.1", port)).expect("bind fixture listener")
+    }
 }
 
 #[cfg(unix)]
@@ -163,11 +165,6 @@ fn inherited_listener(descriptor: std::os::fd::OwnedFd, port: u16) -> TcpListene
     let listener = TcpListener::from(descriptor);
     assert_eq!(listener.local_addr().expect("fixture listener address").port(), port);
     listener
-}
-
-#[cfg(not(unix))]
-fn fixture_listener(_variable: &str, port: u16) -> TcpListener {
-    TcpListener::bind(("127.0.0.1", port)).expect("bind fixture listener")
 }
 
 fn serve_peryx(listener: &TcpListener, state_path: &Path, control: bool) {
@@ -224,7 +221,7 @@ fn write_topology_stream(stream: &mut TcpStream, state: &str) {
 }
 
 fn peryx_response(path: &str, control: bool, state: &str) -> (u16, Vec<u8>, usize) {
-    let response = if control && path == "/availability/v1/status" {
+    let response = if matches!((control, path), (true, "/availability/v1/status")) {
         match state {
             "control-500" => (500, b"error".to_vec()),
             "control-invalid" => (200, b"{".to_vec()),
@@ -317,6 +314,7 @@ fn run_toxiproxy(executable: &Path, args: &[String], control_listener: Option<Tc
     if let Some(gate) = &mut readiness_gate {
         gate.write_all(&[1]).expect("acknowledge control bind");
     }
+    let mut proxies = std::collections::HashSet::new();
     loop {
         let (mut stream, _) = listener.accept().expect("accept toxiproxy request");
         let request = read_request(&mut stream);
@@ -338,6 +336,8 @@ fn run_toxiproxy(executable: &Path, args: &[String], control_listener: Option<Tc
             404
         } else if state == "startup-error" || state == "error" && !request.starts_with("GET /version ") {
             500
+        } else if request.starts_with("POST /proxies ") && !proxies.insert(proxy_name(&request)) {
+            409
         } else {
             200
         };
@@ -352,6 +352,14 @@ fn run_toxiproxy(executable: &Path, args: &[String], control_listener: Option<Tc
         };
         write_response(&mut stream, status, body, body.len());
     }
+}
+
+fn proxy_name(request: &str) -> String {
+    let body = request.split_once("\r\n\r\n").expect("proxy request has a body").1;
+    serde_json::from_str::<serde_json::Value>(body).expect("parse proxy request")["name"]
+        .as_str()
+        .expect("proxy request has a name")
+        .to_owned()
 }
 
 fn emit_toxiproxy_startup() {
@@ -378,7 +386,7 @@ fn read_request(stream: &mut TcpStream) -> String {
     let mut bytes = Vec::new();
     loop {
         let read = reader.read_until(b'\n', &mut bytes).expect("read request header");
-        if read == 0 || bytes.ends_with(b"\r\n\r\n") {
+        if matches!((read, bytes.ends_with(b"\r\n\r\n")), (0, _) | (_, true)) {
             break;
         }
     }

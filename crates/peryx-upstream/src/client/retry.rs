@@ -30,7 +30,9 @@ pub fn retry_after(headers: &HeaderMap) -> Option<Duration> {
 
 #[must_use]
 pub fn should_retry_error(err: &reqwest::Error) -> bool {
-    err.is_timeout() || err.is_connect() || err.is_body() || err.is_decode()
+    [err.is_timeout(), err.is_connect(), err.is_body(), err.is_decode()]
+        .into_iter()
+        .any(std::convert::identity)
 }
 
 pub async fn sleep_before_retry(url: &Url, attempt: u32, err: &reqwest::Error) {
@@ -57,9 +59,10 @@ pub(super) async fn sleep_before_retry_status(url: &Url, attempt: u32, status: S
 }
 
 fn retry_delay(attempt: u32) -> Duration {
-    let cap = RETRY_CAP_MILLIS.min(RETRY_BASE_MILLIS.saturating_mul(1_u64 << attempt.min(20)));
-    let floor = cap / 2;
-    Duration::from_millis(floor + jitter(cap - floor + 1))
+    let multiplier = 2_u64.pow(attempt.min(20));
+    let cap = RETRY_CAP_MILLIS.min(RETRY_BASE_MILLIS.saturating_mul(multiplier));
+    let floor = cap.div_euclid(2);
+    Duration::from_millis(floor.saturating_add(jitter(cap.abs_diff(floor).saturating_add(1))))
 }
 
 fn jitter(modulus: u64) -> u64 {

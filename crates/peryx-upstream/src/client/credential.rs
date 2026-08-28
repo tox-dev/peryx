@@ -204,10 +204,11 @@ impl CredentialProvider {
     /// Returns the latest source failure under [`CredentialFailure::Fail`].
     pub async fn credential(&self) -> Result<Arc<CredentialSnapshot>, CredentialError> {
         let snapshot = self.0.snapshot.load_full();
-        if !self.refresh_due(&snapshot) {
-            return CredentialSnapshot::resolved(snapshot);
+        if self.refresh_due(&snapshot) {
+            self.refresh(snapshot.generation()).await
+        } else {
+            CredentialSnapshot::resolved(snapshot)
         }
-        self.refresh(snapshot.generation()).await
     }
 
     #[must_use]
@@ -240,13 +241,13 @@ impl CredentialProvider {
     fn refresh_due(&self, snapshot: &CredentialSnapshot) -> bool {
         snapshot
             .refresh_deadline
-            .is_some_and(|deadline| self.0.started.elapsed() >= deadline)
+            .is_some_and(|deadline| self.0.started.elapsed().cmp(&deadline).is_ge())
     }
 
     async fn refresh(&self, generation: u64) -> Result<Arc<CredentialSnapshot>, CredentialError> {
         let _guard = self.0.refresh_gate.lock().await;
         let current = self.0.snapshot.load_full();
-        if current.generation() != generation {
+        if current.generation().cmp(&generation).is_ne() {
             return CredentialSnapshot::resolved(current);
         }
         let refresh = self.0.refresh.expect("a refresh needs refresh policy");

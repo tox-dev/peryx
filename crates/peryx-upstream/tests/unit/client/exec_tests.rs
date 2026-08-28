@@ -552,6 +552,19 @@ async fn test_helper_output_is_bounded() {
 }
 
 #[tokio::test]
+async fn test_helper_accepts_output_at_the_limit() {
+    let helper = Helper::script(|_, _| "/bin/cat >/dev/null\nprintf '%065536d' 0\n".to_owned());
+    let provider = helper
+        .config(CredentialFailure::Fail)
+        .provider("https://resources.example", CredentialScope::Read)
+        .unwrap();
+
+    let error = helper.run_after_start(provider.credential()).await.unwrap_err();
+
+    assert_eq!(error.to_string(), "credential helper returned an invalid response");
+}
+
+#[tokio::test]
 async fn test_helper_timeout_kills_descendants() {
     let helper = Helper::script(|_, requests| {
         format!(

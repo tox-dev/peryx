@@ -217,7 +217,9 @@ impl ExecCredentialConfig {
                 .expect("owned child stdout remains readable");
             output
         }));
-        let deadline = tokio::time::Instant::now() + self.0.timeout;
+        let deadline = tokio::time::Instant::now()
+            .checked_add(self.0.timeout)
+            .expect("validated credential timeout fits the Tokio clock");
         let mut status = None;
         let mut output = None;
         let outcome = {

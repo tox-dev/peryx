@@ -89,7 +89,7 @@ fn ecosystem_driver_fixture_registers_declared_behavior() {
         peryx_driver::discovery::minimal_entry(&description)
     );
     assert_eq!(FIXTURE_DRIVER.client_endpoint("fixture"), "/fixture/");
-    assert!(FIXTURE_DRIVER.prefixes().is_empty());
+    assert_eq!(FIXTURE_DRIVER.prefixes(), &["/__fixture/"]);
     assert!(state.driver_for(&FIXTURE_ECOSYSTEM).is_some());
     assert!(state.driver_for(&OTHER_ECOSYSTEM).is_some());
     assert!(state.client_discovery_for(&FIXTURE_ECOSYSTEM).is_some());
@@ -715,6 +715,7 @@ fn toxiproxy_public_behavior() {
         assert!(toxiproxy.control_is_up());
         let proxy = toxiproxy.proxy("127.0.0.1:9000").expect("create proxy");
         assert!(proxy.endpoint().starts_with("127.0.0.1:"));
+        toxiproxy.proxy("127.0.0.1:9001").expect("create second proxy");
         proxy.partition().expect("partition proxy");
         proxy.heal().expect("heal proxy");
         proxy.pause(Duration::MAX).expect("pause proxy");
