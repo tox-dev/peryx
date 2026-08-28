@@ -88,7 +88,7 @@ async fn browse_contract_renders_unsafe_link_destinations_as_text() {
                     },
                     BrowseLink {
                         label: "Control".to_owned(),
-                        href: "java\nscript:alert(5)".to_owned(),
+                        href: "relative\u{7f}path".to_owned(),
                     },
                     BrowseLink {
                         label: "File".to_owned(),
@@ -142,6 +142,7 @@ async fn browse_contract_renders_unsafe_link_destinations_as_text() {
     for destination in ["javascript:", "data:", "file:"] {
         assert!(!body.contains(destination), "unexpected {destination:?} in {body}");
     }
+    assert!(body.contains("<span>Control</span>"), "{body}");
 }
 
 #[tokio::test]

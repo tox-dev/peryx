@@ -185,6 +185,15 @@ fn test_search_page_from_json() {
     assert!(!page.results[1].available);
 }
 
+#[rstest]
+#[case::uploaded("uploaded", "Uploaded")]
+#[case::override_source("override", "Override")]
+#[case::cached("cached", "Cached")]
+#[case::unknown("future", "Cached")]
+fn test_search_result_labels_source(#[case] source_type: &str, #[case] expected: &str) {
+    assert_eq!(crate::model::source_label(source_type), expected);
+}
+
 #[test]
 fn test_search_page_accepts_empty_results() {
     let value = serde_json::json!({
@@ -277,21 +286,47 @@ fn test_search_page_shown_range(
 }
 
 #[test]
-fn test_stats_routes_sums_totals_and_sorts_busiest_first() {
+fn test_stats_routes_sums_all_counters() {
     let value = serde_json::json!({
-        "hosted": {"base": {"pages": 1, "reads": 0, "bytes": 10}, "hosted": {"writes": 2}},
         "root/alpha": {
-            "base": {"pages": 5, "reads": 3, "bytes": 900},
-            "cached": {"refreshes": 2, "changed": 1}
+            "base": {"pages": 1, "reads": 2, "bytes": 3, "rejected": 4},
+            "ecosystem": {"metadata": 5},
+            "hosted": {"writes": 6},
+            "cached": {
+                "refreshes": 7,
+                "changed": 8,
+                "stale_served": 9,
+                "upstream_errors": 10
+            }
         },
     });
-    let stats = crate::model::stats_routes(&value);
-    assert_eq!(stats.totals.pages, 6);
-    assert_eq!(stats.totals.bytes, 910);
-    assert_eq!(stats.totals.writes, 2);
-    assert_eq!(stats.totals.changed, 1);
-    assert_eq!(stats.rows[0].0, "root/alpha");
-    assert_eq!(stats.rows[1].0, "hosted");
+    assert_eq!(
+        crate::model::stats_routes(&value).totals,
+        crate::model::UiCounters {
+            pages: 1,
+            reads: 2,
+            metadata: 5,
+            writes: 6,
+            bytes: 3,
+            refreshes: 7,
+            changed: 8,
+            stale_served: 9,
+            upstream_errors: 10,
+            rejected: 4,
+        }
+    );
+}
+
+#[test]
+fn test_stats_routes_sorts_by_total_activity() {
+    let stats = crate::model::stats_routes(&serde_json::json!({
+        "higher-sum": {"base": {"pages": 10, "reads": 0}},
+        "higher-product": {"base": {"pages": 3, "reads": 3}},
+    }));
+    assert_eq!(
+        stats.rows.into_iter().map(|(name, _)| name).collect::<Vec<_>>(),
+        ["higher-sum", "higher-product"]
+    );
 }
 
 #[test]

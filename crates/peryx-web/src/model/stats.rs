@@ -54,8 +54,12 @@ fn sorted_rows(value: &serde_json::Value) -> Vec<(String, UiCounters)> {
         .flatten()
         .map(|(name, counters)| (name.clone(), UiCounters::from_value(counters)))
         .collect();
-    rows.sort_by(|(a_name, a), (b_name, b)| (b.reads + b.pages, a_name).cmp(&(a.reads + a.pages, b_name)));
+    rows.sort_by(|(a_name, a), (b_name, b)| activity(b).cmp(&activity(a)).then_with(|| a_name.cmp(b_name)));
     rows
+}
+
+const fn activity(counters: &UiCounters) -> u64 {
+    counters.reads + counters.pages
 }
 
 /// Parse the top-level `/+stats` document: one row per index route, totals summed across them.
