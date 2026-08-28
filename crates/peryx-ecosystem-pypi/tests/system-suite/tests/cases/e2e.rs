@@ -341,9 +341,17 @@ fn sum_labeled_counter(metrics: &str, name: &str) -> u64 {
 }
 
 fn uv_venv() -> TempDir {
+    create_venv(Command::new("uv").arg("venv"))
+}
+
+fn pip_venv() -> TempDir {
+    create_venv(Command::new("uv").args(["venv", "--seed"]))
+}
+
+fn create_venv(command: &mut Command) -> TempDir {
     let dir = TempDir::new().expect("venv dir");
     // `uv venv` rejects a target pre-populated by `UV_CACHE_DIR`.
-    run(Command::new("uv").arg("venv").arg(dir.path()), "uv venv");
+    run(command.arg(dir.path()), "uv venv");
     dir
 }
 
@@ -351,22 +359,25 @@ fn venv_python(venv: &TempDir) -> PathBuf {
     venv.path().join("bin").join("python")
 }
 
-fn pip_install(venv: &TempDir, peryx: &Peryx, spec: &str) {
-    let mut cmd = Command::new("pip3");
-    cmd.arg("--python").arg(venv_python(venv)).args([
-        "install",
-        "--no-cache-dir",
-        "--no-input",
-        "--index-url",
-        &peryx.index_url(),
-        spec,
-    ]);
-    run_against(&mut cmd, "pip install", peryx);
+fn pip_install(pip_venv: &TempDir, venv: &TempDir, peryx: &Peryx, spec: &str) {
+    run_against(
+        &mut pip_install_command(pip_venv, venv, peryx, spec),
+        "pip install",
+        peryx,
+    );
 }
 
-fn pip_install_fails(venv: &TempDir, peryx: &Peryx, spec: &str) {
-    let mut cmd = Command::new("pip3");
-    cmd.arg("--python").arg(venv_python(venv)).args([
+fn pip_install_fails(pip_venv: &TempDir, venv: &TempDir, peryx: &Peryx, spec: &str) {
+    run_against_fails(
+        &mut pip_install_command(pip_venv, venv, peryx, spec),
+        "pip install",
+        peryx,
+    );
+}
+
+fn pip_install_command(pip_venv: &TempDir, venv: &TempDir, peryx: &Peryx, spec: &str) -> Command {
+    let mut command = Command::new(venv_python(pip_venv));
+    command.args(["-m", "pip", "--python"]).arg(venv_python(venv)).args([
         "install",
         "--no-cache-dir",
         "--no-input",
@@ -374,7 +385,7 @@ fn pip_install_fails(venv: &TempDir, peryx: &Peryx, spec: &str) {
         &peryx.index_url(),
         spec,
     ]);
-    run_against_fails(&mut cmd, "pip install", peryx);
+    command
 }
 
 fn uv_install(venv: &TempDir, peryx: &Peryx, spec: &str) {
@@ -393,30 +404,37 @@ fn uv_install_fails(venv: &TempDir, peryx: &Peryx, spec: &str) {
     run_against_fails(&mut cmd, "uv pip install", peryx);
 }
 
-#[derive(Clone, Copy)]
 enum Client {
-    Pip,
+    Pip(TempDir),
     Uv,
 }
 
 impl Client {
-    fn install(self, venv: &TempDir, peryx: &Peryx, spec: &str) {
+    fn pip() -> Self {
+        Self::Pip(pip_venv())
+    }
+
+    const fn uv() -> Self {
+        Self::Uv
+    }
+
+    fn install(&self, venv: &TempDir, peryx: &Peryx, spec: &str) {
         match self {
-            Self::Pip => pip_install(venv, peryx, spec),
+            Self::Pip(pip_venv) => pip_install(pip_venv, venv, peryx, spec),
             Self::Uv => uv_install(venv, peryx, spec),
         }
     }
 
-    fn install_fails(self, venv: &TempDir, peryx: &Peryx, spec: &str) {
+    fn install_fails(&self, venv: &TempDir, peryx: &Peryx, spec: &str) {
         match self {
-            Self::Pip => pip_install_fails(venv, peryx, spec),
+            Self::Pip(pip_venv) => pip_install_fails(pip_venv, venv, peryx, spec),
             Self::Uv => uv_install_fails(venv, peryx, spec),
         }
     }
 
-    const fn name(self) -> &'static str {
+    const fn name(&self) -> &'static str {
         match self {
-            Self::Pip => "pip",
+            Self::Pip(_) => "pip",
             Self::Uv => "uv",
         }
     }
@@ -524,8 +542,8 @@ fn assert_importable(venv: &TempDir, module: &str) {
 }
 
 #[rstest]
-#[case::pip(Client::Pip)]
-#[case::uv(Client::Uv)]
+#[case::pip(Client::pip())]
+#[case::uv(Client::uv())]
 fn e2e_client_installs_and_resolves_dependencies(#[case] client: Client) {
     let (_upstream, peryx) = hermetic();
     let venv = uv_venv();
@@ -535,8 +553,8 @@ fn e2e_client_installs_and_resolves_dependencies(#[case] client: Client) {
 }
 
 #[rstest]
-#[case::pip(Client::Pip, "pip")]
-#[case::uv(Client::Uv, "uv")]
+#[case::pip(Client::pip(), "pip")]
+#[case::uv(Client::uv(), "uv")]
 fn e2e_client_uses_pep658_metadata_fast_path(#[case] client: Client, #[case] expected_name: &str) {
     let (_upstream, peryx) = hermetic();
     let venv = uv_venv();
@@ -550,8 +568,8 @@ fn e2e_client_uses_pep658_metadata_fast_path(#[case] client: Client, #[case] exp
 }
 
 #[rstest]
-#[case::pip(Client::Pip)]
-#[case::uv(Client::Uv)]
+#[case::pip(Client::pip())]
+#[case::uv(Client::uv())]
 fn e2e_client_respects_policy_blocked_dependency(#[case] client: Client) {
     let (_upstream, peryx) = hermetic_with_overlay_policy("block_projects = [\"peryxb\"]\n");
     let venv = uv_venv();
@@ -629,7 +647,7 @@ fn uv_publish(peryx: &Peryx, wheel: &std::path::Path) {
     run(&mut cmd, "uv publish");
 }
 
-fn assert_client_fallback_modes(client: Client) {
+fn assert_client_fallback_modes(client: &Client) {
     for (mode, upstream_allowed) in [("fallback", true), ("private-first", true), ("no-fallback", false)] {
         let policy = format!("fallback_mode = \"{mode}\"\nprotected_names = [\"peryxb\"]\n");
         let (_upstream, peryx) = hermetic_with_overlay_policy(&policy);
@@ -656,10 +674,10 @@ fn assert_client_fallback_modes(client: Client) {
 }
 
 #[rstest]
-#[case::pip(Client::Pip)]
-#[case::uv(Client::Uv)]
+#[case::pip(Client::pip())]
+#[case::uv(Client::uv())]
 fn e2e_client_respects_virtual_fallback_modes(#[case] client: Client) {
-    assert_client_fallback_modes(client);
+    assert_client_fallback_modes(&client);
 }
 
 #[test]
@@ -757,8 +775,8 @@ fn http_verb(port: u16, verb: &str, path: &str) -> (u16, String) {
 
 #[cfg(feature = "e2e-live")]
 #[rstest]
-#[case::pip(Client::Pip)]
-#[case::uv(Client::Uv)]
+#[case::pip(Client::pip())]
+#[case::uv(Client::uv())]
 fn e2e_live_client_installs_from_pypi_via_pep658(#[case] client: Client) {
     let peryx = Peryx::start_against("https://pypi.org/simple/");
     let venv = uv_venv();
