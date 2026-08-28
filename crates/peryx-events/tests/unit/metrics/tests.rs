@@ -141,6 +141,13 @@ fn grouped_read(repository: &str, resource: &str, group: &str, source: Option<&s
 
 #[test]
 fn test_record_bounds_the_queue_and_counts_drops_under_overload() {
+    let log = tempfile::NamedTempFile::new().unwrap();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_max_level(tracing::Level::WARN)
+        .with_writer(log.reopen().unwrap())
+        .finish();
     let entered = Arc::new(Barrier::new(2));
     let release = Arc::new(Barrier::new(2));
     let first = Arc::new(AtomicBool::new(true));
@@ -160,11 +167,18 @@ fn test_record_bounds_the_queue_and_counts_drops_under_overload() {
     metrics.record(read("alpha", "resource-a", "resource-a-1.bin", 1));
     entered.wait();
 
-    let sends = 70_000;
-    for _ in 1..sends {
-        metrics.record(read("alpha", "resource-a", "resource-a-1.bin", 1));
-    }
-    assert!(metrics.dropped() > 0, "overload was not reported");
+    let mut sends = 1;
+    tracing::subscriber::with_default(subscriber, || {
+        while metrics.dropped() < 1_024 {
+            metrics.record(read("alpha", "resource-a", "resource-a-1.bin", 1));
+            sends += 1;
+        }
+    });
+    assert_eq!(metrics.dropped(), 1_024);
+    let output = std::fs::read_to_string(log.path()).unwrap();
+    assert_eq!(output.matches("metrics event queue full, dropping event").count(), 2);
+    assert!(output.contains("dropped=1"), "{output}");
+    assert!(output.contains("dropped=1024"), "{output}");
     let processed = sends - metrics.dropped();
     release.wait();
     metrics.flush().unwrap();
@@ -248,6 +262,7 @@ fn test_durable_reads_survive_a_restart() {
     metrics.record(read("root/alpha", "resource-d", artifact, 100));
     metrics.record(read("root/alpha", "resource-d", artifact, 50));
     flush_and_assert(&metrics, || persisted_reads(&meta.analytics()) == Some(2));
+    assert_eq!(metrics.index_totals()["root/alpha"].base.bytes, 150);
     drop(metrics);
 
     let restarted = Metrics::start_durable(meta.analytics(), None, clock_on_day(0)).unwrap();
@@ -256,6 +271,7 @@ fn test_durable_reads_survive_a_restart() {
     assert_eq!(index.base.reads, 2);
     assert_eq!(index.base.bytes, 150);
     let artifacts = restarted.drill(Some("root/alpha"), Some("resource-d"));
+    assert_eq!(artifacts["totals"]["base"]["bytes"], 150);
     assert_eq!(artifacts["artifacts"][artifact]["reads"], 2);
     assert_eq!(artifacts["artifacts"][artifact]["bytes"], 150);
 }
@@ -402,6 +418,25 @@ fn test_operational_events_update_each_counter_family() {
         [("extension_runs", 3), ("extension_size", 12)].into()
     );
     assert_eq!(
+        metrics.drill(Some("alpha"), Some("demo"))["totals"],
+        serde_json::json!({
+            "base": {
+                "pages": 0,
+                "reads": 0,
+                "bytes": 0,
+                "rejected": 1,
+            },
+            "cached": {
+                "refreshes": 2,
+                "changed": 1,
+                "stale_served": 1,
+                "upstream_errors": 1,
+            },
+            "hosted": {"writes": 1},
+            "ecosystem": {"metadata": 2},
+        })
+    );
+    assert_eq!(
         metrics.drill(Some("alpha"), Some("demo"))["artifacts"]["demo.bin"]["ecosystem"]["metadata"],
         1
     );
@@ -421,6 +456,10 @@ fn test_batches_without_a_read_persist_nothing() {
             .get("alpha")
             .is_some_and(|totals| totals.base.pages == 1)
     });
+    assert_eq!(
+        metrics.drill(Some("alpha"), Some("resource-b"))["totals"]["base"]["pages"],
+        1
+    );
     assert_eq!(persisted_reads(&meta.analytics()), None);
     assert!(meta.analytics().load_daily().unwrap().is_none());
 }
@@ -893,6 +932,17 @@ fn test_current_day_reads_the_query_clock() {
         window_clamped_to_retention: true,
     }
 )]
+#[case::retention_boundary(
+    Some(7),
+    Some(993 * SECONDS_PER_DAY),
+    None,
+    UsageInterval {
+        from_day: 993,
+        to_day: 1_000,
+        retained_from_day: Some(993),
+        window_clamped_to_retention: false,
+    }
+)]
 fn test_resolve_usage_interval(
     #[case] retention: Option<u32>,
     #[case] from: Option<i64>,
@@ -963,6 +1013,31 @@ fn test_usage_top_is_empty_when_the_window_predates_every_bucket() {
     let interval = metrics.resolve_usage_interval(Some(100 * SECONDS_PER_DAY), Some(200 * SECONDS_PER_DAY));
 
     assert!(metrics.usage_top(None, &interval).is_empty());
+}
+
+#[test]
+fn test_usage_window_includes_its_first_day() {
+    let (_dir, _meta, metrics) = durable_on(500, None);
+    metrics.record(grouped_read("a", "resource-b", "1.0", None, 10));
+    flush_and_assert(&metrics, || metrics.daily_usage().len() == 1);
+
+    assert_eq!(
+        metrics.usage_top(
+            None,
+            &UsageInterval {
+                from_day: 500,
+                to_day: 500,
+                retained_from_day: None,
+                window_clamped_to_retention: false,
+            },
+        ),
+        [ResourceUsage {
+            repository: "a".into(),
+            resource: "resource-b".into(),
+            reads: 1,
+            bytes: 10,
+        }]
+    );
 }
 
 #[test]

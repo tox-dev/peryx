@@ -221,6 +221,29 @@ fn test_apply_rejects_a_batch_over_the_row_limit() {
 }
 
 #[test]
+fn test_apply_accepts_a_batch_at_the_row_limit() {
+    let mut state = ApplyState::new(ApplyLimits {
+        max_rows_per_batch: 1,
+        max_retained_intervals: 8,
+    });
+    let dimension = key(20_000, "3.0", "upstream");
+
+    assert_eq!(
+        state
+            .apply(&batch(interval("east", 1, 1), &[(dimension.clone(), 2, 50)]))
+            .unwrap(),
+        ApplyOutcome::Applied
+    );
+    assert_eq!(
+        state.total(&dimension),
+        AggregateDelta {
+            downloads: 2,
+            bytes: 50
+        }
+    );
+}
+
+#[test]
 fn test_batch_too_large_message_names_the_row_limit() {
     let error = ApplyError::BatchTooLarge { limit: 1, actual: 2 };
 

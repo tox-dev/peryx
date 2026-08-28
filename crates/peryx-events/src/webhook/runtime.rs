@@ -10,7 +10,7 @@ pub struct WebhookRuntime {
     pub(super) client: reqwest::Client,
     targets: HashMap<String, Vec<WebhookTarget>>,
     pub(super) running: Arc<AtomicBool>,
-    pub(super) stopped: tokio::sync::watch::Sender<u64>,
+    pub(super) stopped: tokio::sync::watch::Sender<()>,
     pub(super) notify: tokio::sync::Notify,
 }
 
@@ -18,7 +18,7 @@ impl WebhookRuntime {
     #[must_use]
     pub fn disabled() -> Self {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-        let (stopped, _) = tokio::sync::watch::channel(0);
+        let (stopped, _) = tokio::sync::watch::channel(());
         Self {
             client: delivery_client(),
             targets: HashMap::new(),

@@ -31,7 +31,6 @@ pub fn emit<H: WebhookHost>(host: &H, event: &WebhookEvent) {
     }
     let payload = serde_json::to_string(&event.envelope.data).expect("webhook payload is valid JSON");
     let event_name = event.envelope.event;
-    let mut enqueued = 0;
     for target in targets {
         let result = host.meta().enqueue_webhook_delivery(NewWebhookDelivery {
             index: &event.index,
@@ -41,13 +40,8 @@ pub fn emit<H: WebhookHost>(host: &H, event: &WebhookEvent) {
             created_at_unix: event.created_at_unix,
         });
         log_enqueue_error(result.as_ref().err(), event, &target);
-        if result.is_ok() {
-            enqueued += 1;
-        }
     }
-    if enqueued > 0 {
-        host.webhooks().notify.notify_one();
-    }
+    host.webhooks().notify.notify_one();
 }
 
 #[derive(Clone, Debug, thiserror::Error)]
@@ -64,13 +58,13 @@ pub struct WebhookHandle {
 
 struct RunningGuard {
     running: Arc<std::sync::atomic::AtomicBool>,
-    stopped: tokio::sync::watch::Sender<u64>,
+    stopped: tokio::sync::watch::Sender<()>,
 }
 
 impl Drop for RunningGuard {
     fn drop(&mut self) {
         self.running.store(false, Ordering::Release);
-        self.stopped.send_modify(|generation| *generation += 1);
+        self.stopped.send_replace(());
     }
 }
 
@@ -97,13 +91,6 @@ impl WebhookHandle {
 
 fn webhook_failure(result: Result<(), WebhookLifecycleError>) -> WebhookLifecycleError {
     result.expect_err("a live delivery worker cannot stop cleanly")
-}
-
-impl Drop for WebhookHandle {
-    fn drop(&mut self) {
-        drop(self.cancellation.take());
-        self.task.abort();
-    }
 }
 
 #[must_use]
@@ -176,9 +163,9 @@ async fn deliver_due<H: WebhookHost>(host: &Arc<H>) -> Result<(), MetaError> {
     let mut in_flight = FuturesUnordered::new();
     let mut busy: HashSet<(String, String)> = HashSet::new();
     loop {
-        while in_flight.len() < MAX_CONCURRENT_DELIVERIES {
+        loop {
             let now = host.now();
-            let want = MAX_CONCURRENT_DELIVERIES - in_flight.len();
+            let want = MAX_CONCURRENT_DELIVERIES.saturating_sub(in_flight.len());
             let deliveries = host.meta().list_due_webhook_deliveries(now, want, &busy)?;
             if deliveries.is_empty() {
                 break;

@@ -58,9 +58,11 @@ impl WebhookHost for TestHost {
 }
 
 #[rstest]
-#[case::permanent(false, WebhookDeliveryStatus::Failed, None)]
-#[case::transient(true, WebhookDeliveryStatus::Pending, Some(1_005))]
+#[case::permanent(0, false, WebhookDeliveryStatus::Failed, None)]
+#[case::transient(0, true, WebhookDeliveryStatus::Pending, Some(1_005))]
+#[case::attempt_limit(4, true, WebhookDeliveryStatus::Failed, None)]
 fn test_record_failure_only_reschedules_retriable_responses(
+    #[case] prior_attempts: u16,
     #[case] retriable: bool,
     #[case] expected: WebhookDeliveryStatus,
     #[case] next_attempt_at_unix: Option<i64>,
@@ -81,8 +83,12 @@ fn test_record_failure_only_reschedules_retriable_responses(
             created_at_unix: 10,
         })
         .unwrap();
-    let delivery = host.meta().get_webhook_delivery(&id).unwrap().unwrap();
+    for _ in 0..prior_attempts {
+        let delivery = host.meta().get_webhook_delivery(&id).unwrap().unwrap();
+        record_failure(&host, &delivery, host.now(), Some(404), "http status 404", true);
+    }
 
+    let delivery = host.meta().get_webhook_delivery(&id).unwrap().unwrap();
     record_failure(&host, &delivery, host.now(), Some(404), "http status 404", retriable);
 
     let stored = host.meta().get_webhook_delivery(&id).unwrap().unwrap();
@@ -94,7 +100,13 @@ fn test_record_failure_only_reschedules_retriable_responses(
             stored.response_status,
             stored.last_error.as_deref(),
         ),
-        (expected, 1, next_attempt_at_unix, Some(404), Some("http status 404"))
+        (
+            expected,
+            prior_attempts + 1,
+            next_attempt_at_unix,
+            Some(404),
+            Some("http status 404")
+        )
     );
 }
 

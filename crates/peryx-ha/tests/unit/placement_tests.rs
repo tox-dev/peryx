@@ -36,6 +36,10 @@ fn record(state: BlobPlacementState, fence: u64, generation: u64) -> BlobPlaceme
 #[case::backend(BackendId::new("s3").map(|value| value.as_str().to_owned()), Ok("s3".to_owned()))]
 #[case::data_center(DataCenterId::new("dc-1").map(|value| value.as_str().to_owned()), Ok("dc-1".to_owned()))]
 #[case::location(BackendLocation::new("blobs/aa").map(|value| value.as_str().to_owned()), Ok("blobs/aa".to_owned()))]
+#[case::maximum_length(
+    BackendId::new("a".repeat(512)).map(|value| value.as_str().to_owned()),
+    Ok("a".repeat(512))
+)]
 fn test_key_components_accept_valid_values(
     #[case] result: Result<String, PlacementKeyError>,
     #[case] expected: Result<String, PlacementKeyError>,
@@ -252,6 +256,18 @@ fn test_non_stage_transition_requires_a_record(#[case] transition: BlobPlacement
             transition: transition.label(),
         })
     );
+}
+
+#[rstest]
+#[case::stage(BlobPlacementTransition::Stage, "stage")]
+#[case::verify(BlobPlacementTransition::Verify { observed: digest(1), size: 1 }, "verify")]
+#[case::fail(
+    BlobPlacementTransition::Fail { class: BlobPlacementFailure::SourceUnavailable },
+    "fail"
+)]
+#[case::revoke(BlobPlacementTransition::Revoke, "revoke")]
+fn test_transition_labels_name_the_operation(#[case] transition: BlobPlacementTransition, #[case] expected: &str) {
+    assert_eq!(transition.label(), expected);
 }
 
 #[test]
