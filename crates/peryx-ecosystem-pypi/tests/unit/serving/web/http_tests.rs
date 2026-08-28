@@ -15,8 +15,10 @@ use peryx_policy::Policy;
 use peryx_storage::blob::BlobStorage;
 use peryx_storage::meta::MetaStore;
 use peryx_upstream::UpstreamClient;
+use rstest::rstest;
 
 use super::browse_http;
+use crate::store::{CachedIndex, PypiStore as _};
 
 #[tokio::test]
 async fn upload_form_lists_escaped_writable_pypi_indexes() {
@@ -108,6 +110,50 @@ async fn browse_http_distinguishes_bad_queries_and_missing_resources() {
 
         assert_eq!((status, body.as_str()), (expected_status, expected_body), "{uri}");
     }
+}
+
+#[rstest]
+#[case::utf8(&[0xff], "is not UTF-8")]
+#[case::source(b"https://files.example/flask.whl", "missing field \"source\"")]
+#[case::size(b"https://files.example/flask.whl\npypi\nlarge", "invalid integer field \"size\"")]
+#[tokio::test]
+async fn browse_http_reports_a_source_record_decode_failure(#[case] record: &[u8], #[case] expected: &str) {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("peryx.redb");
+    let meta = MetaStore::open(&path).unwrap();
+    let digest = peryx_storage::blob::Digest::of(b"remote wheel");
+    seed_cached_project(&meta, digest.as_str());
+    meta.put_driver_value(&format!("pypi\0f\0{}", digest.as_str()), record)
+        .unwrap();
+
+    let state = cached_app(&directory, meta);
+    let (status, _, body) = send(state, Method::GET, "/browse?index=pypi&project=flask", None).await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(body.contains(expected), "{body}");
+}
+
+#[tokio::test]
+async fn browse_http_reports_a_placement_record_read_failure() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("peryx.redb");
+    let meta = MetaStore::open(&path).unwrap();
+    let digest = peryx_storage::blob::Digest::of(b"remote wheel");
+    seed_cached_project(&meta, digest.as_str());
+    drop(meta);
+    let database = redb::Database::open(&path).unwrap();
+    let write = database.begin_write().unwrap();
+    write
+        .open_table(redb::TableDefinition::<&str, &str>::new("artifact_placement"))
+        .unwrap();
+    write.commit().unwrap();
+    drop(database);
+
+    let state = cached_app(&directory, MetaStore::open_existing(&path).unwrap());
+    let (status, _, body) = send(state, Method::GET, "/browse?index=pypi&project=flask", None).await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(body.contains("artifact_placement is of type"), "{body}");
 }
 
 #[tokio::test]
@@ -202,6 +248,44 @@ fn app(indexes: Vec<Index>) -> (tempfile::TempDir, Arc<AppState>) {
     );
     crate::tests::install(&mut state);
     (directory, Arc::new(state))
+}
+
+fn cached_app(directory: &tempfile::TempDir, meta: MetaStore) -> Arc<AppState> {
+    let mut state = AppState::new(
+        meta,
+        BlobStorage::filesystem(directory.path().join("blobs")),
+        60,
+        vec![index(
+            "pypi",
+            "pypi",
+            crate::ECOSYSTEM,
+            IndexKind::Cached {
+                client: UpstreamClient::new("https://example.invalid/simple/").unwrap(),
+                offline: true,
+            },
+            IndexAcl::default(),
+        )],
+    );
+    crate::tests::install(&mut state);
+    Arc::new(state)
+}
+
+fn seed_cached_project(meta: &MetaStore, digest: &str) {
+    let body = format!(
+        r#"{{"meta":{{"api-version":"1.1"}},"name":"flask","versions":["1.0"],"files":[{{"filename":"flask-1.0-py3-none-any.whl","url":"https://files.example/flask.whl","hashes":{{"sha256":"{digest}"}}}}]}}"#
+    );
+    meta.put_index(
+        "pypi/flask",
+        &CachedIndex {
+            etag: None,
+            last_serial: None,
+            fetched_at_unix: 900,
+            content_type: Some("application/vnd.pypi.simple.v1+json".to_owned()),
+            fresh_secs: None,
+            body: body.into_bytes(),
+        },
+    )
+    .unwrap();
 }
 
 fn hosted(acl: IndexAcl) -> Index {

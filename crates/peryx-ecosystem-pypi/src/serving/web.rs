@@ -710,7 +710,7 @@ pub(super) async fn project_page(
         ui.name = display;
     }
     apply_actions(&route, &mut ui);
-    apply_placement(&state, &hosted, &mut ui);
+    apply_placement(&state, &hosted, &mut ui).map_err(crate::error_message)?;
     apply_provenance(&state, &mut ui).await;
     let default = default_version(&ui);
     // A pre-PEP 700 upstream names no versions, so no release owns a file and the newest sibling stands in.
@@ -844,10 +844,12 @@ fn collect_hosted_filenames(
 ///
 /// The availability comes straight from the stored projection, which a repair pass keeps in step with
 /// the content store; a listing therefore never reads a blob per row. A file the placement store has
-/// not recorded - an upstream catalog entry never fetched - stays proxied and remote-only. A store
-/// read that fails falls back to that same default: the page was built from earlier reads of the same
-/// store, so a failure here is a torn database the caller cannot recover a truer answer from.
-fn apply_placement(state: &ServingState, hosted: &BTreeSet<String>, ui: &mut ProjectView) {
+/// not recorded - an upstream catalog entry never fetched - stays proxied and remote-only.
+fn apply_placement(
+    state: &ServingState,
+    hosted: &BTreeSet<String>,
+    ui: &mut ProjectView,
+) -> Result<(), peryx_storage::meta::MetaError> {
     for file in &mut ui.files {
         let is_hosted = hosted.contains(&file.filename);
         file.upstream = if is_hosted {
@@ -855,14 +857,10 @@ fn apply_placement(state: &ServingState, hosted: &BTreeSet<String>, ui: &mut Pro
         } else {
             state
                 .meta
-                .get_file_url(&file.sha256)
-                .ok()
-                .flatten()
+                .get_file_url(&file.sha256)?
                 .and_then(|source| source.upstream)
         };
-        let placement = ArtifactPlacementStore::get_artifact_placement(&state.meta, &file.sha256)
-            .ok()
-            .flatten();
+        let placement = ArtifactPlacementStore::get_artifact_placement(&state.meta, &file.sha256)?;
         if is_hosted {
             file.source = UiArtifactSource::Hosted;
             // The upload is authoritative and its bytes are local. Only a hosted-source placement,
@@ -882,6 +880,7 @@ fn apply_placement(state: &ServingState, hosted: &BTreeSet<String>, ui: &mut Pro
             file.availability = UiByteAvailability::RemoteOnly;
         }
     }
+    Ok(())
 }
 
 const fn ui_source(source: ArtifactSource) -> UiArtifactSource {

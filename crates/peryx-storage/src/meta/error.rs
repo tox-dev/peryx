@@ -19,6 +19,21 @@ pub enum MetaError {
     ReplicaSerialConflict { expected: u64, actual: u64 },
     #[error("driver precondition failed: {0}")]
     DriverPrecondition(String),
+    #[error("driver record {key:?} is not UTF-8")]
+    DriverRecordUtf8 {
+        key: String,
+        #[source]
+        source: std::string::FromUtf8Error,
+    },
+    #[error("driver record {key:?} has invalid integer field {field:?}")]
+    DriverRecordInteger {
+        key: String,
+        field: &'static str,
+        #[source]
+        source: std::num::ParseIntError,
+    },
+    #[error("driver record {key:?} is missing field {field:?}")]
+    DriverRecordMissing { key: String, field: &'static str },
     #[error("blob {digest} is being reclaimed; publish the reference again once its deletion finishes")]
     BlobReclaiming { digest: String },
 }

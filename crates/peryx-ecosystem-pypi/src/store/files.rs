@@ -58,12 +58,19 @@ pub fn put_file_url(meta: &MetaStore, sha256: &str, url: &str, source: &str) -> 
 }
 
 /// # Errors
-/// Returns a store error if the read fails.
+/// Returns a store error if the read fails or the source record is invalid.
 pub fn get_file_url(meta: &MetaStore, sha256: &str) -> Result<Option<FileSource>, MetaError> {
-    Ok(meta
-        .get_driver_value(&file_key(sha256))?
-        .and_then(|raw| String::from_utf8(raw).ok())
-        .and_then(|value| split_file_source(&value)))
+    let key = file_key(sha256);
+    meta.get_driver_value(&key)?
+        .map(|raw| {
+            String::from_utf8(raw)
+                .map_err(|source| MetaError::DriverRecordUtf8 {
+                    key: key.clone(),
+                    source,
+                })
+                .and_then(|value| split_file_source(&key, &value))
+        })
+        .transpose()
 }
 
 /// # Errors
@@ -198,12 +205,27 @@ fn split_provenance(value: &str) -> Option<(String, u64)> {
     Some((sha256.to_owned(), size.parse().ok()?))
 }
 
-fn split_file_source(value: &str) -> Option<FileSource> {
+fn split_file_source(key: &str, value: &str) -> Result<FileSource, MetaError> {
     let mut parts = value.splitn(4, '\n');
-    Some(FileSource {
-        url: parts.next()?.to_owned(),
-        source: parts.next()?.to_owned(),
-        size: parts.next().and_then(|size| size.parse().ok()),
+    let url = parts.next().unwrap_or_default();
+    let source = parts.next().ok_or_else(|| MetaError::DriverRecordMissing {
+        key: key.to_owned(),
+        field: "source",
+    })?;
+    let size = parts
+        .next()
+        .filter(|size| !size.is_empty())
+        .map(str::parse)
+        .transpose()
+        .map_err(|source| MetaError::DriverRecordInteger {
+            key: key.to_owned(),
+            field: "size",
+            source,
+        })?;
+    Ok(FileSource {
+        url: url.to_owned(),
+        source: source.to_owned(),
+        size,
         upstream: parts.next().filter(|upstream| !upstream.is_empty()).map(str::to_owned),
     })
 }

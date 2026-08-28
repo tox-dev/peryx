@@ -49,13 +49,13 @@ fn test_recording_a_cached_locator_projects_a_remote_only_placement() {
 #[test]
 fn test_file_source_without_size_keeps_routed_upstream() {
     assert_eq!(
-        split_file_source("https://files.example/pkg.whl\npypi\n\nmirror"),
-        Some(FileSource {
+        split_file_source("source", "https://files.example/pkg.whl\npypi\n\nmirror").unwrap(),
+        FileSource {
             url: "https://files.example/pkg.whl".to_owned(),
             source: "pypi".to_owned(),
             size: None,
             upstream: Some("mirror".to_owned()),
-        })
+        }
     );
 }
 
