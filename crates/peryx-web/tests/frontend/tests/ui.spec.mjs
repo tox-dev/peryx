@@ -19,18 +19,15 @@ test("navigation completes when the application hydrates", async ({ page }) => {
     await releaseAsset.promise;
     await route.continue();
   });
-  let completed = false;
-  const navigation = goto(page, "/").then(() => {
-    completed = true;
-  });
+  const navigation = goto(page, "/");
   try {
     await assetRequested.promise;
-    await page.waitForSelector("body[data-hydrated]");
-    await Promise.resolve();
-    expect(completed).toBe(true);
+    await navigation;
+    expect(await page.locator("body").getAttribute("data-hydrated")).toBe(
+      "true",
+    );
   } finally {
     releaseAsset.resolve();
-    await navigation;
     await page.unrouteAll({ behavior: "wait" });
   }
 });
