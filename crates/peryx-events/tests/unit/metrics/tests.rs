@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
-use std::sync::{Arc, Barrier, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use peryx_ha::{
@@ -69,6 +69,27 @@ fn checkpoint_clock() -> (Clock, Receiver<()>, SyncSender<()>) {
             2 * SECONDS_PER_DAY
         }),
         checkpointed,
+        resume,
+    )
+}
+
+fn pausing_aggregator_clock(unix_secs: i64) -> (Arc<AtomicI64>, Clock, Receiver<()>, SyncSender<()>) {
+    let now = Arc::new(AtomicI64::new(unix_secs));
+    let clock_now = Arc::clone(&now);
+    let paused = AtomicBool::new(false);
+    let (pausing, paused_at) = sync_channel(0);
+    let (resume, resumed) = sync_channel(0);
+    let resumed = Mutex::new(resumed);
+    (
+        now,
+        Arc::new(move || {
+            if std::thread::current().name() == Some("peryx-metrics") && !paused.swap(true, Ordering::SeqCst) {
+                pausing.send(()).unwrap();
+                resumed.lock().unwrap().recv().unwrap();
+            }
+            clock_now.load(Ordering::SeqCst)
+        }),
+        paused_at,
         resume,
     )
 }
@@ -148,24 +169,11 @@ fn test_record_bounds_the_queue_and_counts_drops_under_overload() {
         .with_max_level(tracing::Level::WARN)
         .with_writer(log.reopen().unwrap())
         .finish();
-    let entered = Arc::new(Barrier::new(2));
-    let release = Arc::new(Barrier::new(2));
-    let first = Arc::new(AtomicBool::new(true));
-    let clock: Clock = Arc::new({
-        let entered = Arc::clone(&entered);
-        let release = Arc::clone(&release);
-        move || {
-            if first.swap(false, Ordering::SeqCst) {
-                entered.wait();
-                release.wait();
-            }
-            0
-        }
-    });
+    let (_now, clock, aggregating, resume) = pausing_aggregator_clock(0);
     let (_dir, meta) = store();
-    let metrics = Metrics::start_durable(meta.analytics(), None, clock).unwrap();
+    let metrics = Metrics::start_durable(meta.analytics(), Some(7), clock).unwrap();
     metrics.record(read("alpha", "resource-a", "resource-a-1.bin", 1));
-    entered.wait();
+    aggregating.recv().unwrap();
 
     let mut sends = 1;
     tracing::subscriber::with_default(subscriber, || {
@@ -180,7 +188,7 @@ fn test_record_bounds_the_queue_and_counts_drops_under_overload() {
     assert!(output.contains("dropped=1"), "{output}");
     assert!(output.contains("dropped=1024"), "{output}");
     let processed = sends - metrics.dropped();
-    release.wait();
+    resume.send(()).unwrap();
     metrics.flush().unwrap();
     let aggregated: u64 = metrics
         .index_totals()
@@ -509,6 +517,44 @@ fn test_daily_buckets_split_by_group_source_and_day() {
 }
 
 #[test]
+fn test_daily_buckets_use_record_time_across_worker_delay() {
+    let (now, clock, aggregating, resume) = pausing_aggregator_clock(SECONDS_PER_DAY - 1);
+    let (_dir, meta) = store();
+    let metrics = Metrics::start_durable(meta.analytics(), Some(7), clock).unwrap();
+    metrics.record(grouped_read("alpha", "resource-b", "1.0", None, 3));
+    aggregating.recv().unwrap();
+    now.store(SECONDS_PER_DAY, Ordering::SeqCst);
+    resume.send(()).unwrap();
+    metrics.flush().unwrap();
+    metrics.record(grouped_read("alpha", "resource-b", "1.0", None, 5));
+    metrics.flush().unwrap();
+
+    assert_eq!(
+        metrics.daily_usage(),
+        [
+            DailyUsage {
+                day: 0,
+                repository: "alpha".into(),
+                resource: "resource-b".into(),
+                group: "1.0".into(),
+                source: String::new(),
+                reads: 1,
+                bytes: 3,
+            },
+            DailyUsage {
+                day: 1,
+                repository: "alpha".into(),
+                resource: "resource-b".into(),
+                group: "1.0".into(),
+                source: String::new(),
+                reads: 1,
+                bytes: 5,
+            },
+        ]
+    );
+}
+
+#[test]
 fn test_retention_drops_expired_days_and_keeps_retained_totals() {
     let (_dir, meta) = store();
     let old = Metrics::start_durable(meta.analytics(), Some(7), clock_on_day(100)).unwrap();
@@ -602,7 +648,10 @@ fn test_idle_interval_persists_pending_observations() {
     };
     let (sender, receiver) = sync_channel(1);
     sender
-        .send(Message::Observation(grouped_read("alpha", "resource-a", "1", None, 8)))
+        .send(Message::Observation {
+            event: grouped_read("alpha", "resource-a", "1", None, 8),
+            recorded_at: 2 * SECONDS_PER_DAY,
+        })
         .unwrap();
     let mut state = FlushState::durable(true, Arc::new(RwLock::new(None)));
 

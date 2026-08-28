@@ -305,7 +305,7 @@ fn system_clock() -> Clock {
 }
 
 enum Message {
-    Observation(Observation),
+    Observation { event: Observation, recorded_at: i64 },
     Drain(Sender<Result<(), MetricsError>>),
     Flush(Sender<Result<(), MetricsError>>),
     Shutdown(Sender<Result<(), MetricsError>>),
@@ -580,7 +580,10 @@ impl Metrics {
     ///
     /// Every drop increments [`Metrics::dropped`]; throttled logs expose sustained overload.
     pub fn record(&self, event: Observation) {
-        if let Err(TrySendError::Full(_)) = self.sender.try_send(Message::Observation(event)) {
+        if let Err(TrySendError::Full(_)) = self.sender.try_send(Message::Observation {
+            event,
+            recorded_at: (self.clock)(),
+        }) {
             let total = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
             if total == 1 || total.is_multiple_of(DROP_LOG_INTERVAL) {
                 tracing::warn!(target: "peryx::metrics", dropped = total, "metrics event queue full, dropping event");
@@ -1040,9 +1043,9 @@ fn absorb_batch(first: Message, receiver: &Receiver<Message>, ctx: &Aggregator) 
     let mut batch = Batch::default();
     {
         let mut tree = ctx.tree.write().expect("metrics lock");
-        absorb(first, &mut tree, ctx.clock, &mut batch);
+        absorb(first, &mut tree, &mut batch);
         while let Ok(message) = receiver.try_recv() {
-            absorb(message, &mut tree, ctx.clock, &mut batch);
+            absorb(message, &mut tree, &mut batch);
         }
     }
     fold_daily_batch(
@@ -1096,11 +1099,11 @@ fn persist(ctx: &Aggregator, state: &mut FlushState) -> Result<(), MetricsError>
     }
 }
 
-fn absorb(message: Message, tree: &mut StatsTree, clock: &Clock, batch: &mut Batch) {
+fn absorb(message: Message, tree: &mut StatsTree, batch: &mut Batch) {
     match message {
-        Message::Observation(event) => {
+        Message::Observation { event, recorded_at } => {
             batch.dirty |= matches!(&event, Observation::Read { .. });
-            collect_daily(&event, clock, &mut batch.reads);
+            collect_daily(&event, recorded_at, &mut batch.reads);
             apply(tree, event);
         }
         Message::Drain(completion) => batch.controls.push(Control::Drain(completion)),
@@ -1109,7 +1112,7 @@ fn absorb(message: Message, tree: &mut StatsTree, clock: &Clock, batch: &mut Bat
     }
 }
 
-fn collect_daily(event: &Observation, clock: &Clock, out: &mut Vec<(DailyKey, u64)>) {
+fn collect_daily(event: &Observation, recorded_at: i64, out: &mut Vec<(DailyKey, u64)>) {
     if let Observation::Read {
         repository,
         resource,
@@ -1121,7 +1124,7 @@ fn collect_daily(event: &Observation, clock: &Clock, out: &mut Vec<(DailyKey, u6
     {
         out.push((
             DailyKey {
-                day: utc_day(clock()),
+                day: utc_day(recorded_at),
                 repository: repository.clone(),
                 resource: resource.clone(),
                 group: group.clone().unwrap_or_default(),
