@@ -70,8 +70,6 @@ pub trait EcosystemRegistration: Send + Sync {
 }
 
 pub trait EcosystemAuth: Send + Sync {
-    fn fields(&self) -> &'static [&'static str];
-    fn defaults(&self) -> toml::Table;
     /// # Errors
     /// Returns the ecosystem's configuration error.
     fn validate(&self, config: PluginAuthConfig<'_>) -> Result<(), String>;

@@ -174,14 +174,6 @@ impl EcosystemConfig for OciPlugin {
 }
 
 impl EcosystemAuth for OciPlugin {
-    fn fields(&self) -> &'static [&'static str] {
-        &[]
-    }
-
-    fn defaults(&self) -> toml::Table {
-        toml::Table::new()
-    }
-
     fn validate(&self, config: PluginAuthConfig<'_>) -> Result<(), String> {
         if config.signing_key_configured
             && config.token_ttl_secs < 60
@@ -282,7 +274,7 @@ pub fn registration() -> peryx_plugin_registry::PluginRegistration {
         rate_limit_principal: Some(&OciPlugin),
         client_discovery: Some(&OciPlugin),
         openapi: &OciPlugin,
-        auth: Some(&OciPlugin),
+        auth: Some(peryx_plugin_registry::PluginAuthRegistration::Shared(&OciPlugin)),
         browse: Some(&OciPlugin),
         snippets: None,
         metadata_migration: None,

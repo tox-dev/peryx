@@ -9,6 +9,10 @@ status-level = "slow"
 [profile.ci.junit]
 path = "junit.xml"
 
+[profile.mutation]
+inherits = "ci"
+fail-fast = true
+
 [test-groups]
 containers = { max-threads = 1 }
 e2e-servers = { max-threads = 4 }

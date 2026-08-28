@@ -32,12 +32,22 @@ pub struct PluginRegistration {
     pub rate_limit_principal: Option<&'static dyn RateLimitPrincipal>,
     pub client_discovery: Option<&'static dyn ClientDiscovery>,
     pub openapi: &'static dyn EcosystemOpenApi,
-    pub auth: Option<&'static dyn EcosystemAuth>,
+    pub auth: Option<PluginAuthRegistration>,
     pub browse: Option<&'static dyn EcosystemBrowse>,
     pub snippets: Option<&'static dyn EcosystemSnippet>,
     pub metadata_migration: Option<Arc<dyn peryx_storage::meta::MetadataMigration>>,
     pub operator_jobs: &'static [&'static dyn OperatorJob],
     pub priority: u16,
+}
+
+#[derive(Clone, Copy)]
+pub enum PluginAuthRegistration {
+    Shared(&'static dyn EcosystemAuth),
+    Extension {
+        auth: &'static dyn EcosystemAuth,
+        fields: &'static [&'static str],
+        defaults: fn() -> toml::Table,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -205,7 +215,7 @@ impl PluginRegistry {
         let auth_fields = registrations
             .iter()
             .filter_map(|registration| registration.auth)
-            .flat_map(EcosystemAuth::fields)
+            .flat_map(PluginAuthRegistration::fields)
             .copied()
             .collect();
         Self {
@@ -432,7 +442,8 @@ impl PluginRegistry {
         self.registrations
             .iter()
             .filter_map(|registration| registration.auth)
-            .flat_map(EcosystemAuth::defaults)
+            .filter_map(PluginAuthRegistration::defaults)
+            .flatten()
             .collect()
     }
 
@@ -449,9 +460,13 @@ impl PluginRegistry {
             return Err(format!("auth: unknown field `{field}`"));
         }
         let values = self.auth_extensions(values);
-        for auth in self.registrations.iter().filter_map(|registration| registration.auth) {
+        for registration in &self.registrations {
+            let Some(auth) = registration.auth else {
+                continue;
+            };
+            let (auth, fields) = auth.auth_and_fields();
             auth.validate(PluginAuthConfig {
-                values: &owned_fields(&values, auth.fields()),
+                values: &owned_fields(&values, fields),
                 signing_key_configured,
                 token_ttl_secs,
                 indexes,
@@ -468,8 +483,12 @@ impl PluginRegistry {
         values: &toml::Table,
     ) -> Result<(), String> {
         let values = self.auth_extensions(values);
-        for auth in self.registrations.iter().filter_map(|registration| registration.auth) {
-            auth.install(context, &owned_fields(&values, auth.fields()))?;
+        for registration in &self.registrations {
+            let Some(auth) = registration.auth else {
+                continue;
+            };
+            let (auth, fields) = auth.auth_and_fields();
+            auth.install(context, &owned_fields(&values, fields))?;
         }
         Ok(())
     }
@@ -645,7 +664,7 @@ fn validate_registrations(registrations: &[PluginRegistration]) -> Result<(), Re
         if let Some(field) = registration
             .auth
             .into_iter()
-            .flat_map(EcosystemAuth::fields)
+            .flat_map(PluginAuthRegistration::fields)
             .find(|field| !auth_fields.insert(**field))
         {
             return Err(RegistryError::DuplicateAuthField(field));
@@ -666,6 +685,26 @@ fn validate_registrations(registrations: &[PluginRegistration]) -> Result<(), Re
         }
     }
     Ok(())
+}
+
+impl PluginAuthRegistration {
+    fn auth_and_fields(self) -> (&'static dyn EcosystemAuth, &'static [&'static str]) {
+        match self {
+            Self::Shared(auth) => (auth, &[]),
+            Self::Extension { auth, fields, .. } => (auth, fields),
+        }
+    }
+
+    fn fields(self) -> &'static [&'static str] {
+        self.auth_and_fields().1
+    }
+
+    fn defaults(self) -> Option<toml::Table> {
+        match self {
+            Self::Shared(_) => None,
+            Self::Extension { defaults, .. } => Some(defaults()),
+        }
+    }
 }
 
 fn path_prefix(prefix: &str, path: &str) -> bool {

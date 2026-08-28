@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use crate::{OperatorJobDefaults, OperatorJobRequest, PluginRegistration, PluginRegistry, RegistryError};
+use crate::{
+    OperatorJobDefaults, OperatorJobRequest, PluginAuthRegistration, PluginRegistration, PluginRegistry, RegistryError,
+};
 use axum::Router;
 use axum::body::Body;
 use axum::extract::Request;
@@ -52,7 +54,13 @@ fn duplicate_registration_values_are_rejected(#[case] case: DuplicateCase, #[cas
         DuplicateCase::Ecosystem => registrations[1].registration = &SECONDARY_REGISTRATION,
         DuplicateCase::Priority => registrations[1].priority = registrations[0].priority,
         DuplicateCase::OperatorJob => registrations[0].operator_jobs = registrations[1].operator_jobs,
-        DuplicateCase::AuthField => registrations[1].auth = Some(&SECONDARY_AUTH),
+        DuplicateCase::AuthField => {
+            registrations[1].auth = Some(PluginAuthRegistration::Extension {
+                auth: &SECONDARY_AUTH,
+                fields: &["secondary"],
+                defaults: toml::Table::new,
+            });
+        }
     }
     assert_eq!(PluginRegistry::new(registrations).err(), Some(expected));
 }

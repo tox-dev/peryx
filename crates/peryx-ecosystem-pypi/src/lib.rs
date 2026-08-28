@@ -206,14 +206,6 @@ impl EcosystemRegistration for PypiPlugin {
 
 #[cfg(feature = "serving")]
 impl EcosystemAuth for PypiPlugin {
-    fn fields(&self) -> &'static [&'static str] {
-        trusted_publishing::AUTH_FIELDS
-    }
-
-    fn defaults(&self) -> toml::Table {
-        trusted_publishing::auth_defaults()
-    }
-
     fn validate(&self, config: peryx_driver::serving::PluginAuthConfig<'_>) -> Result<(), String> {
         trusted_publishing::validate(config)
     }
@@ -392,7 +384,11 @@ pub fn registration() -> peryx_plugin_registry::PluginRegistration {
         rate_limit_principal: Some(&PypiPlugin),
         client_discovery: Some(&PypiPlugin),
         openapi: &PypiPlugin,
-        auth: Some(&PypiPlugin),
+        auth: Some(peryx_plugin_registry::PluginAuthRegistration::Extension {
+            auth: &PypiPlugin,
+            fields: trusted_publishing::AUTH_FIELDS,
+            defaults: trusted_publishing::auth_defaults,
+        }),
         browse: Some(&PypiPlugin),
         snippets: Some(&PypiPlugin),
         metadata_migration: Some(Arc::new(PypiPlugin)),

@@ -11,6 +11,7 @@ use rstest::rstest;
 use utoipa::openapi::PathsBuilder;
 
 use crate::{ECOSYSTEM, OciPlugin, registration};
+use peryx_plugin_registry::PluginAuthRegistration;
 
 fn state() -> (tempfile::TempDir, AppState) {
     let dir = tempfile::tempdir().unwrap();
@@ -32,6 +33,7 @@ fn plugin_exposes_its_contract() {
     let plugin = OciPlugin;
 
     assert_eq!(plugin.ecosystem(), ECOSYSTEM);
+    assert_eq!(plugin.absolute_prefixes(), &["/v2/"]);
     let protocol = plugin.driver();
     let driver = protocol.absolute().unwrap();
     assert_eq!(driver.prefixes(), &["/v2/"]);
@@ -75,10 +77,7 @@ fn plugin_exposes_its_contract() {
 
 #[test]
 fn plugin_auth_uses_only_shared_settings() {
-    assert_eq!(
-        (OciPlugin.fields(), OciPlugin.defaults()),
-        (&[] as &[&str], toml::Table::new())
-    );
+    assert!(matches!(registration().auth, Some(PluginAuthRegistration::Shared(_))));
 }
 
 #[test]

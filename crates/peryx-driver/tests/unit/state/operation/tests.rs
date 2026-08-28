@@ -22,14 +22,14 @@ fn test_claim_admitted_write_records_a_pending_write_with_a_retention_deadline()
     state.claim_admitted_write("op");
     let stored = meta.operation_outcome("op").unwrap().unwrap();
     assert_eq!(stored.state, OperationState::Pending);
-    assert_eq!(stored.expiry_unix, Some(NOW + OPERATION_RETENTION_SECS));
+    assert_eq!(stored.expiry_unix, Some(NOW + 86_400));
 }
 
 #[test]
 fn test_claim_admitted_write_that_never_finalizes_expires() {
     let (_dir, state, meta) = state();
     state.claim_admitted_write("op");
-    let health = meta.operation_outcome_health(NOW + OPERATION_RETENTION_SECS).unwrap();
+    let health = meta.operation_outcome_health(NOW + 86_400).unwrap();
     assert_eq!(
         health.expired, 1,
         "an unfinalized write reads expired past its deadline"

@@ -6,6 +6,7 @@ use peryx_identity::{Action, Glob, Grant, IndexAcl, NamedToken};
 use peryx_index::{Index, IndexKind};
 use peryx_policy::Policy;
 use peryx_upstream::{NamedUpstream, UpstreamClient, UpstreamRouter};
+use rstest::rstest;
 
 fn writer_acl(secret: impl Into<String>) -> IndexAcl {
     IndexAcl {
@@ -87,13 +88,38 @@ fn test_describe_indexes_preserves_input_order() {
     );
 }
 
-#[test]
-fn test_hosted_index_reports_volatile_deletes_when_writable_and_volatile() {
-    let indexes = vec![index("store", IndexKind::Hosted { volatile: true }, writer_acl("s"))];
-    let described = describe_index(&indexes, 0);
-    assert_eq!(described.kind, "hosted");
-    assert!(described.volatile_deletes);
-    assert!(described.precedence.is_empty());
+#[rstest]
+#[case::hosted_read_only_stable(false, false, false, false)]
+#[case::hosted_read_only_volatile(false, false, true, false)]
+#[case::hosted_writable_stable(false, true, false, false)]
+#[case::hosted_writable_volatile(false, true, true, true)]
+#[case::virtual_read_only_stable(true, false, false, false)]
+#[case::virtual_read_only_volatile(true, false, true, false)]
+#[case::virtual_writable_stable(true, true, false, false)]
+#[case::virtual_writable_volatile(true, true, true, true)]
+fn test_volatile_deletes_require_a_writable_volatile_target(
+    #[case] virtual_index: bool,
+    #[case] writable: bool,
+    #[case] volatile: bool,
+    #[case] expected: bool,
+) {
+    let acl = if writable { writer_acl("s") } else { IndexAcl::default() };
+    let mut indexes = vec![index("store", IndexKind::Hosted { volatile }, acl)];
+    let position = if virtual_index {
+        indexes.push(index(
+            "virtual",
+            IndexKind::Virtual {
+                layers: vec![0],
+                write_target: Some(0),
+            },
+            IndexAcl::default(),
+        ));
+        1
+    } else {
+        0
+    };
+
+    assert_eq!(describe_index(&indexes, position).volatile_deletes, expected);
 }
 
 #[test]
@@ -133,7 +159,6 @@ fn test_virtual_upload_target_drives_uploads_and_volatile_deletes() {
     ];
     let described = describe_index(&indexes, 1);
     assert!(described.uploads);
-    assert!(described.volatile_deletes);
     assert_eq!(described.upload_to.as_deref(), Some("store"));
     assert_eq!(described.precedence, vec![member("store", "hosted")]);
 }

@@ -1,7 +1,7 @@
 use std::cell::Cell;
 use std::sync::Arc;
 
-use crate::{OperatorJob, OperatorJobDefaults, OperatorJobOptions, PluginRegistration};
+use crate::{OperatorJob, OperatorJobDefaults, OperatorJobOptions, PluginAuthRegistration, PluginRegistration};
 use axum::extract::Request;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -44,7 +44,11 @@ pub fn registrations() -> Vec<PluginRegistration> {
             rate_limit_principal: Some(&SECONDARY_REGISTRATION),
             client_discovery: Some(&SECONDARY_REGISTRATION),
             openapi: &SECONDARY_OPEN_API,
-            auth: Some(&SECONDARY_AUTH),
+            auth: Some(PluginAuthRegistration::Extension {
+                auth: &SECONDARY_AUTH,
+                fields: &["secondary"],
+                defaults: secondary_auth_defaults,
+            }),
             browse: Some(&SECONDARY_BROWSE),
             snippets: Some(&SNIPPETS),
             metadata_migration: None,
@@ -59,7 +63,11 @@ pub fn registrations() -> Vec<PluginRegistration> {
             rate_limit_principal: Some(&PRIMARY_REGISTRATION),
             client_discovery: Some(&PRIMARY_REGISTRATION),
             openapi: &PRIMARY_OPEN_API,
-            auth: Some(&PRIMARY_AUTH),
+            auth: Some(PluginAuthRegistration::Extension {
+                auth: &PRIMARY_AUTH,
+                fields: &["primary"],
+                defaults: primary_auth_defaults,
+            }),
             browse: Some(&PRIMARY_BROWSE),
             snippets: Some(&SNIPPETS),
             metadata_migration: None,
@@ -329,18 +337,6 @@ pub struct Auth(Ecosystem);
 pub(super) struct AuthInstallMarker(pub(super) Ecosystem);
 
 impl EcosystemAuth for Auth {
-    fn fields(&self) -> &'static [&'static str] {
-        if self.0 == PRIMARY {
-            &["primary"]
-        } else {
-            &["secondary"]
-        }
-    }
-
-    fn defaults(&self) -> toml::Table {
-        toml::Table::from_iter([(self.fields()[0].to_owned(), toml::Value::Boolean(true))])
-    }
-
     fn validate(&self, config: PluginAuthConfig<'_>) -> Result<(), String> {
         if config
             .values
@@ -361,6 +357,14 @@ impl EcosystemAuth for Auth {
             Ok(())
         }
     }
+}
+
+fn primary_auth_defaults() -> toml::Table {
+    toml::Table::from_iter([("primary".to_owned(), toml::Value::Boolean(true))])
+}
+
+fn secondary_auth_defaults() -> toml::Table {
+    toml::Table::from_iter([("secondary".to_owned(), toml::Value::Boolean(true))])
 }
 
 struct Browse(Ecosystem);

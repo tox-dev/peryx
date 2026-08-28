@@ -20,10 +20,18 @@ fn test_rate_limit_constructor_keeps_default_runtime_controls() {
     let state = AppState::with_rate_limits(meta, blobs, 60, Vec::new(), RateLimitConfig::default(), []);
 
     assert_eq!(state.serving.max_stale_secs, DEFAULT_MAX_STALE_SECS);
-    assert_eq!(
-        state.serving.cache.hot.policy().max_capacity(),
-        Some(DEFAULT_HOT_CACHE_BYTES)
-    );
+    assert_eq!(DEFAULT_HOT_CACHE_BYTES, 268_435_456);
+    assert_eq!(state.serving.cache.hot.policy().max_capacity(), Some(268_435_456));
+}
+
+#[test]
+fn test_default_clock_stamps_operations_with_unix_time() {
+    let (_dir, meta, blobs) = stores();
+    let state = AppState::new(meta.clone(), blobs, 60, Vec::new());
+
+    state.serving.claim_admitted_write("clock");
+
+    assert!(meta.operation_outcome("clock").unwrap().unwrap().updated_at_unix > 1_700_000_000);
 }
 
 #[test]

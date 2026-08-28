@@ -15,6 +15,7 @@ use peryx_driver::serving::{
 use peryx_identity::IndexAcl;
 use peryx_index::{Index, IndexKind};
 use peryx_plugin_registry::OperatorJobOptions;
+use peryx_plugin_registry::PluginAuthRegistration;
 use peryx_policy::{
     Policy, RetentionClass, RetentionConfig, RetentionDecision, RetentionOutcome, RetentionPolicy, RetentionSelector,
     RetentionVisibility,
@@ -89,13 +90,10 @@ fn plugin_exposes_identity_defaults_and_driver() {
 
 #[test]
 fn plugin_exposes_trusted_publishing_auth_configuration() {
-    let plugin = PypiPlugin;
-
-    assert_eq!(plugin.fields(), &["oidc_audience", "trusted_publisher"]);
-    assert_eq!(
-        plugin.defaults(),
-        toml::Table::from_iter([("oidc_audience".to_owned(), toml::Value::String("peryx".to_owned()),)])
-    );
+    assert!(matches!(
+        registration().auth,
+        Some(PluginAuthRegistration::Extension { .. })
+    ));
 }
 
 #[test]

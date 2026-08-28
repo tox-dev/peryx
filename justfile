@@ -195,7 +195,7 @@ mutation shard="0/1" in_place="false" jobs="2" baseline="run" timeout="500": tes
       {{ if in_place == "true" { "--in-place" } else { "--jobs " + jobs } }} \
       --jobserver-tasks "{{ jobs }}" --baseline "{{ baseline }}" \
       --timeout "{{ timeout }}" --build-timeout "{{ timeout }}" \
-      -- --profile ci -E 'not(test(e2e_live))'
+      -- --profile mutation -E 'not(test(e2e_live))'
 
 # Run the mutation baseline suite.
 mutation-baseline: test-deps

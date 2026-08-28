@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use axum::Router;
@@ -11,7 +12,9 @@ use peryx_core::{Ecosystem, Lexicon};
 use peryx_identity::IndexAcl;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::Policy;
-use peryx_search::EmptyIndexer;
+use peryx_search::{
+    ContentSource, EmptyIndexer, IndexerCtx, SearchDocument, SearchDocumentProvider, SearchError, SearchParams,
+};
 use peryx_storage::blob::{BlobDurability, BlobStore};
 use peryx_storage::meta::MetaStore;
 
@@ -34,6 +37,25 @@ struct IndexedDriver;
 struct ReplacementDriver;
 
 struct Drainer;
+
+struct MutableDocs(Arc<Mutex<String>>);
+
+impl SearchDocumentProvider for MutableDocs {
+    fn documents(&self, _ctx: &IndexerCtx<'_>) -> Result<Vec<SearchDocument>, SearchError> {
+        let text = self.0.lock().unwrap().clone();
+        Ok(vec![SearchDocument {
+            display_label: "package".to_owned(),
+            resource_key: "package".to_owned(),
+            route: "root".to_owned(),
+            index: "root".to_owned(),
+            ecosystem: "indexed".to_owned(),
+            source: ContentSource::Cached,
+            available_locally: false,
+            summary: None,
+            text,
+        }])
+    }
+}
 
 #[async_trait]
 impl peryx_ha::AuthorityDrainer for Drainer {
@@ -939,4 +961,50 @@ fn test_registration_defaults_and_read_only_mutation_are_observable() {
         Err("serving state is already shared".to_owned())
     );
     assert!(shared.read_only);
+}
+
+#[test]
+fn test_read_only_retry_interval_is_observable() {
+    let (_dir, mut state) = state();
+
+    state.set_read_only_retry_after(Some(Duration::from_secs(17))).unwrap();
+
+    assert_eq!(state.serving.read_only_retry_after(), Some(Duration::from_secs(17)));
+}
+
+#[test]
+fn test_search_epoch_refreshes_the_published_index() {
+    let (_dir, mut state) = state();
+    let text = Arc::new(Mutex::new("old".to_owned()));
+    state.register_lexicon(Ecosystem::new("indexed"), &Lexicon::NEUTRAL);
+    state
+        .register_protocol(
+            ProtocolDriver::Indexed(Arc::new(IndexedDriver)),
+            Arc::new(MutableDocs(text.clone())),
+        )
+        .unwrap();
+    let state = Arc::new(state);
+    let services = crate::http_services::HttpDomainServices::for_state(&state);
+    assert_eq!(
+        services.search().search(SearchParams::default(), None).unwrap().total,
+        1
+    );
+    *text.lock().unwrap() = "new".to_owned();
+
+    state.serving.bump_search_epoch();
+
+    assert_eq!(
+        services
+            .search()
+            .search(
+                SearchParams {
+                    query: "new".to_owned(),
+                    ..SearchParams::default()
+                },
+                None,
+            )
+            .unwrap()
+            .total,
+        1
+    );
 }

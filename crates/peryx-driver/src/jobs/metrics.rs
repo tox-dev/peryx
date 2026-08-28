@@ -46,7 +46,7 @@ impl JobMetrics {
 
     pub(crate) fn started(&self, kind: &'static str) {
         self.with(kind, |counters| {
-            counters.started += 1;
+            counters.started = counters.started.saturating_add(1);
             counters.running += 1;
         });
     }
