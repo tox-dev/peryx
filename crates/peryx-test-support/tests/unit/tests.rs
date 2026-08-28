@@ -590,6 +590,20 @@ fn process_ready_reports_an_external_reap() {
 }
 
 #[test]
+fn process_ready_reports_a_stopped_node() {
+    with_fixture(|fixture| {
+        let mut node = fixture.harness().spawn_with_config("stopped", "").expect("start node");
+        node.kill();
+
+        assert!(matches!(
+            node.await_ready(),
+            Err(HarnessError::NotReady { timeout, log, .. })
+                if timeout.is_zero() && log.contains("process stopped")
+        ));
+    });
+}
+
+#[test]
 fn process_accepts_the_startup_signal_as_its_first_event() {
     with_fixture(|fixture| {
         fs::write(fixture.serve_mode(), "direct-startup").expect("start with the readiness event");

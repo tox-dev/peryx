@@ -678,7 +678,7 @@ impl Cluster {
         if accepted {
             return Ok(());
         }
-        let Some(node) = self.nodes.iter().find(|node| process_alive(node.child.id())) else {
+        let Some(node) = self.nodes.iter().find(|node| process_alive(node.pid())) else {
             return Err(HarnessError::SignalClosed {
                 node: "cluster".to_owned(),
                 last,
@@ -733,7 +733,8 @@ impl OwnershipControl for Cluster {
 #[derive(Debug)]
 pub struct Node {
     identity: String,
-    child: Child,
+    child: Option<Child>,
+    process_id: u32,
     port: u16,
     control_port: u16,
     config: PathBuf,
@@ -782,7 +783,8 @@ impl Node {
         let (child, process_events) = launch(&config, data.path(), port, &topology.harness.binary, listeners)?;
         let mut node = Self {
             identity: member.node.clone(),
-            child,
+            process_id: child.id(),
+            child: Some(child),
             port,
             control_port,
             config,
@@ -806,16 +808,14 @@ impl Node {
         if self.ready {
             return self.ready_observation();
         }
+        let Some(child) = self.child.as_mut() else {
+            return Err(self.stopped());
+        };
         let mut first_event_is_startup = false;
-        match wait_for_startup(
-            &mut self.child,
-            &self.process_events,
-            self.deadlock_guard,
-            &mut |line| {
-                first_event_is_startup = line.contains("peryx listening");
-                true
-            },
-        )? {
+        match wait_for_startup(child, &self.process_events, self.deadlock_guard, &mut |line| {
+            first_event_is_startup = line.contains("peryx listening");
+            true
+        })? {
             StartupSignal::Matched => {}
             StartupSignal::Exited(status) => return Err(self.exited_early(status)),
             StartupSignal::TimedOut => {
@@ -823,7 +823,7 @@ impl Node {
             }
         }
         if !first_event_is_startup {
-            match wait_for_startup(&mut self.child, &self.process_events, self.ready_timeout, &mut |line| {
+            match wait_for_startup(child, &self.process_events, self.ready_timeout, &mut |line| {
                 line.contains("peryx listening")
             })? {
                 StartupSignal::Matched => {}
@@ -836,6 +836,10 @@ impl Node {
         let observation = self.ready_observation();
         self.ready = observation.is_ok();
         observation
+    }
+
+    fn stopped(&self) -> HarnessError {
+        self.not_ready(Duration::ZERO, Err("process stopped".to_owned()))
     }
 
     fn ready_observation(&self) -> Result<(), HarnessError> {
@@ -871,7 +875,7 @@ impl Node {
             log: format!(
                 "last observation: {}\nprocess: running (pid {})\n{}",
                 observation.map_or_else(|error| error, |(code, body)| format!("HTTP {code}: {body}")),
-                self.child.id(),
+                self.process_id,
                 self.log_tail(),
             ),
         }
@@ -909,7 +913,8 @@ impl Node {
         )?;
         Ok(Self {
             identity: identity.to_owned(),
-            child,
+            process_id: child.id(),
+            child: Some(child),
             port,
             control_port: 0,
             config,
@@ -931,8 +936,8 @@ impl Node {
     }
 
     #[must_use]
-    pub fn pid(&self) -> u32 {
-        self.child.id()
+    pub const fn pid(&self) -> u32 {
+        self.process_id
     }
 
     #[must_use]
@@ -947,7 +952,9 @@ impl Node {
 
     #[must_use]
     pub fn is_running(&mut self) -> bool {
-        matches!(self.child.try_wait(), Ok(None))
+        self.child
+            .as_mut()
+            .is_some_and(|child| matches!(child.try_wait(), Ok(None)))
     }
 
     #[must_use]
@@ -1156,7 +1163,8 @@ impl Node {
             &self.binary,
             NodeListeners::on_ports(self.port, self.control_port)?,
         )?;
-        self.child = child;
+        self.process_id = child.id();
+        self.child = Some(child);
         self.process_events = process_events;
         self.ready = false;
         self.await_ready()
@@ -1216,12 +1224,12 @@ impl Node {
     pub fn diagnostics(&self) -> String {
         format!(
             "process: {} (pid {})\nlog:\n{}",
-            if process_alive(self.child.id()) {
+            if process_alive(self.process_id) {
                 "running"
             } else {
                 "not running"
             },
-            self.child.id(),
+            self.process_id,
             self.log_tail(),
         )
     }
@@ -1229,10 +1237,10 @@ impl Node {
     fn snapshot(&self) -> NodeArtifact {
         NodeArtifact {
             identity: self.identity.clone(),
-            process: if process_alive(self.child.id()) {
-                format!("running (pid {})", self.child.id())
+            process: if process_alive(self.process_id) {
+                format!("running (pid {})", self.process_id)
             } else {
-                format!("not running (pid {})", self.child.id())
+                format!("not running (pid {})", self.process_id)
             },
             topology: self.topology().map(|(_, body)| body),
             status: self.status().map(|(_, body)| body),
@@ -1241,7 +1249,11 @@ impl Node {
     }
 
     fn stop(&mut self) {
-        if matches!(self.child.try_wait(), Ok(Some(_))) {
+        self.ready = false;
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        if matches!(child.try_wait(), Ok(Some(_))) {
             return;
         }
         if let Some(path) = &self.shutdown_path
@@ -1251,10 +1263,10 @@ impl Node {
                 .send()
                 .is_ok()
         {
-            let _ = self.child.wait();
+            let _ = child.wait();
             return;
         }
-        kill_group(&mut self.child);
+        kill_group(&mut child);
     }
 }
 
