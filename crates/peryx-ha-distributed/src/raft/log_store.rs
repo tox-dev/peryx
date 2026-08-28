@@ -23,14 +23,6 @@ enum LogStoreError {
     Codec(#[from] serde_json::Error),
 }
 
-impl From<LogStoreError> for StorageError<NodeId> {
-    fn from(error: LogStoreError) -> Self {
-        // `OpenRaft` turns every `StorageError` into `Fatal` and shuts down the node. Subject and verb
-        // affect diagnostics; the source preserves the concrete redb or serde failure.
-        StorageIOError::new(ErrorSubject::Store, ErrorVerb::Read, AnyError::new(&error)).into()
-    }
-}
-
 #[derive(Clone)]
 pub struct RaftLogStoreAdapter {
     store: RaftLogStore,
@@ -127,7 +119,8 @@ impl RaftLogReader<TypeConfig> for RaftLogStoreAdapter {
         &mut self,
         range: RB,
     ) -> Result<Vec<Entry>, StorageError<NodeId>> {
-        Ok(self.entries_in_range(range)?)
+        self.entries_in_range(range)
+            .map_err(|error| storage_error(&error, ErrorSubject::Logs, ErrorVerb::Read))
     }
 }
 
@@ -135,7 +128,8 @@ impl RaftLogStorage<TypeConfig> for RaftLogStoreAdapter {
     type LogReader = Self;
 
     async fn get_log_state(&mut self) -> Result<LogState<TypeConfig>, StorageError<NodeId>> {
-        Ok(self.log_state()?)
+        self.log_state()
+            .map_err(|error| storage_error(&error, ErrorSubject::Logs, ErrorVerb::Read))
     }
 
     async fn get_log_reader(&mut self) -> Self::LogReader {
@@ -143,11 +137,13 @@ impl RaftLogStorage<TypeConfig> for RaftLogStoreAdapter {
     }
 
     async fn save_vote(&mut self, vote: &Vote<NodeId>) -> Result<(), StorageError<NodeId>> {
-        Ok(self.store_vote(vote)?)
+        self.store_vote(vote)
+            .map_err(|error| storage_error(&error, ErrorSubject::Vote, ErrorVerb::Write))
     }
 
     async fn read_vote(&mut self) -> Result<Option<Vote<NodeId>>, StorageError<NodeId>> {
-        Ok(self.load_vote()?)
+        self.load_vote()
+            .map_err(|error| storage_error(&error, ErrorSubject::Vote, ErrorVerb::Read))
     }
 
     async fn append<I>(&mut self, entries: I, callback: LogFlushed<TypeConfig>) -> Result<(), StorageError<NodeId>>
@@ -155,27 +151,37 @@ impl RaftLogStorage<TypeConfig> for RaftLogStoreAdapter {
         I: IntoIterator<Item = Entry> + OptionalSend,
         I::IntoIter: OptionalSend,
     {
-        self.append_entries(entries)?;
+        self.append_entries(entries)
+            .map_err(|error| storage_error(&error, ErrorSubject::Logs, ErrorVerb::Write))?;
         // redb committed the batch before this callback, satisfying OpenRaft's durability contract.
         callback.log_io_completed(Ok(()));
         Ok(())
     }
 
     async fn truncate(&mut self, log_id: LogId<NodeId>) -> Result<(), StorageError<NodeId>> {
-        Ok(self.truncate_from(log_id.index)?)
+        self.truncate_from(log_id.index)
+            .map_err(|error| storage_error(&error, ErrorSubject::Log(log_id), ErrorVerb::Delete))
     }
 
     async fn purge(&mut self, log_id: LogId<NodeId>) -> Result<(), StorageError<NodeId>> {
-        Ok(self.purge_upto(log_id)?)
+        self.purge_upto(log_id)
+            .map_err(|error| storage_error(&error, ErrorSubject::Log(log_id), ErrorVerb::Delete))
     }
 
     async fn save_committed(&mut self, committed: Option<LogId<NodeId>>) -> Result<(), StorageError<NodeId>> {
-        Ok(self.store_committed(committed)?)
+        self.store_committed(committed)
+            .map_err(|error| storage_error(&error, ErrorSubject::Logs, ErrorVerb::Write))
     }
 
     async fn read_committed(&mut self) -> Result<Option<LogId<NodeId>>, StorageError<NodeId>> {
-        Ok(self.load_committed()?)
+        self.load_committed()
+            .map_err(|error| storage_error(&error, ErrorSubject::Logs, ErrorVerb::Read))
     }
+}
+
+fn storage_error(error: &LogStoreError, subject: ErrorSubject<NodeId>, verb: ErrorVerb) -> StorageError<NodeId> {
+    // Storage failures remain fatal in OpenRaft; subject and verb only affect diagnostics.
+    StorageIOError::new(subject, verb, AnyError::new(error)).into()
 }
 
 #[cfg(test)]
