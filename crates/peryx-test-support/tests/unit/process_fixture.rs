@@ -363,6 +363,43 @@ fn fixture_toxiproxy_uses_protocol_readiness() {
 }
 
 #[test]
+fn fixture_toxiproxy_publishes_its_bound_control_port() {
+    let directory = tempfile::tempdir().expect("create fixture directory");
+    let executable = directory.path().join("toxiproxy-server");
+    fs::write(&executable, "").expect("create toxiproxy executable");
+    fs::write(sibling(&executable, "toxi-state"), "ok").expect("set toxiproxy state");
+    let gate = TcpListener::bind("127.0.0.1:0").expect("bind readiness gate");
+    fs::write(
+        sibling(&executable, "toxi-mode"),
+        format!(
+            "gate-port:{}",
+            gate.local_addr().expect("readiness gate address").port()
+        ),
+    )
+    .expect("set readiness gate");
+    let control = TcpListener::bind("127.0.0.1:0").expect("bind control listener");
+    let control_address = control.local_addr().expect("control address");
+    let command = thread::spawn(move || {
+        run_toxiproxy(
+            &executable,
+            &["-port".to_owned(), control_address.port().to_string()],
+            Some(control),
+        )
+    });
+    let mut readiness = accept_within(&gate, TOXIPROXY_FAILURE_TIMEOUT, "toxiproxy readiness event");
+    let mut published_port = [0; 2];
+    readiness.read_exact(&mut published_port).expect("read control port");
+    assert_eq!(u16::from_be_bytes(published_port), control_address.port());
+    readiness
+        .shutdown(std::net::Shutdown::Write)
+        .expect("release readiness cleanup");
+    readiness.read_exact(&mut [0]).expect("observe control bind");
+    assert!(request(control_address, "GET /version HTTP/1.1\r\n\r\n").contains("200 test"));
+    assert!(request(control_address, "POST /shutdown HTTP/1.1\r\nContent-Length: 0\r\n\r\n").contains("204 test"));
+    assert_eq!(command.join().expect("join toxiproxy fixture"), Ok(()));
+}
+
+#[test]
 #[should_panic(expected = "fixture gate not received within 0ns")]
 fn fixture_gate_timeout_is_bounded() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind fixture gate");
