@@ -168,12 +168,17 @@ async fn test_manual_tls_entrypoints_stop_on_cancellation() {
         allow_remote_plaintext: false,
     });
 
-    prepare_public_server(&config, axum::Router::new(), cancelled())
-        .await
-        .unwrap()
-        .serve()
-        .await
-        .unwrap();
+    prepare_public_server(
+        &config,
+        config.listen_address().unwrap(),
+        axum::Router::new(),
+        cancelled(),
+    )
+    .await
+    .unwrap()
+    .serve()
+    .await
+    .unwrap();
     prepare_availability_listener(&config)
         .await
         .unwrap()
@@ -196,12 +201,17 @@ async fn test_acme_entrypoint_stops_on_cancellation() {
         staging: true,
     }));
 
-    prepare_public_server(&config, axum::Router::new(), cancelled())
-        .await
-        .unwrap()
-        .serve()
-        .await
-        .unwrap();
+    prepare_public_server(
+        &config,
+        config.listen_address().unwrap(),
+        axum::Router::new(),
+        cancelled(),
+    )
+    .await
+    .unwrap()
+    .serve()
+    .await
+    .unwrap();
 }
 
 #[test]
@@ -631,6 +641,40 @@ fn test_distributed_server_installs_plugin_runtime_and_stops() {
     run_server_until_with_active_plugins(&config, &active, cancelled()).unwrap();
 }
 
+#[test]
+fn test_distributed_server_releases_listener_after_public_bind_failure() {
+    let public_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let public_address = public_listener.local_addr().unwrap();
+    let availability_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let availability_address = availability_listener.local_addr().unwrap();
+    drop(availability_listener);
+    let directory = tempfile::tempdir().unwrap();
+    let plugins = plugins_without_retention();
+    let mut config = local_config(&directory, &plugins);
+    config.host = public_address.ip().to_string();
+    config.port = public_address.port();
+    config.writer_identity = Some("writer".to_owned());
+    config.availability = AvailabilityConfig::Dc(ReplicationConfig::Primary {
+        source: "writer".to_owned(),
+        token: SecretSource::Literal("replication-token".to_owned()),
+    });
+    config.availability_listener = Some(AvailabilityListenerConfig {
+        bind: availability_address,
+        tls: None,
+        allow_remote_plaintext: false,
+    });
+    let active = crate::server::activate_plugins(&config, &plugins).unwrap();
+
+    let error = run_server_until_with_active_plugins(&config, &active, cancelled()).unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains(&format!("bind HTTP listener on {public_address}"))
+    );
+    drop(std::net::TcpListener::bind(availability_address).unwrap());
+}
+
 struct FailingAvailabilityListener(std::net::SocketAddr);
 
 impl peryx_ha_distributed::PreparedAvailabilityListener for FailingAvailabilityListener {
@@ -672,9 +716,16 @@ async fn test_prepared_process_rolls_back_an_activation_failure() {
     .await
     .unwrap();
 
-    let error = run_prepared_process(&config, state, router, Some(availability), cancelled())
-        .await
-        .unwrap_err();
+    let error = run_prepared_process(
+        &config,
+        config.listen_address().unwrap(),
+        state,
+        router,
+        Some(availability),
+        cancelled(),
+    )
+    .await
+    .unwrap_err();
 
     assert!(
         error.to_string().contains("injected failure at 127.0.0.1:1"),

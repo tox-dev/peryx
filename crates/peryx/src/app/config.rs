@@ -27,14 +27,14 @@ pub fn config_check_with_active_plugins(
     plugins: &peryx_plugin_registry::PluginRegistry,
     out: &mut dyn Write,
 ) -> anyhow::Result<()> {
-    server::check_config_with_active_plugins(config, plugins)?;
+    let listen_address = server::check_config_with_active_plugins(config, plugins)?;
     writeln!(out, "configuration is valid")?;
     let scheme = match &config.tls {
         None => "http",
         Some(TlsConfig::Manual { .. }) => "https",
         Some(TlsConfig::Acme(_)) => "https+acme",
     };
-    writeln!(out, "  listen: {scheme}://{}:{}", config.host, config.port)?;
+    writeln!(out, "  listen: {scheme}://{listen_address}")?;
     let count = config.indexes.len();
     let plural = if count == 1 { "" } else { "es" };
     writeln!(out, "  indexes: {count} configured index{plural}")?;

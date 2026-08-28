@@ -301,6 +301,7 @@ fn run_server_with_active_plugins(
     shutdown: tokio_util::sync::CancellationToken,
     shutdown_control: ShutdownControl,
 ) -> anyhow::Result<()> {
+    let listen_address = config.listen_address()?;
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
     runtime.block_on(async move {
         let signal_task = match shutdown_control {
@@ -314,7 +315,7 @@ fn run_server_with_active_plugins(
         crate::server::recover_job_attempts(&state)?;
         let router = crate::server::router_for(state.clone());
         let availability = prepare_process_availability(config, plugins, &state).await?;
-        let result = run_prepared_process(config, state, router, availability, shutdown).await;
+        let result = run_prepared_process(config, listen_address, state, router, availability, shutdown).await;
         if let Some(signal_task) = signal_task {
             signal_task.abort();
         }
@@ -324,6 +325,7 @@ fn run_server_with_active_plugins(
 
 async fn run_prepared_process(
     config: &Config,
+    listen_address: std::net::SocketAddr,
     state: Arc<peryx_driver::AppState>,
     mut router: axum::Router,
     mut prepared_availability: Option<
@@ -338,7 +340,7 @@ async fn run_prepared_process(
         .as_ref()
         .is_some_and(|prepared| prepared.is_replica);
     let mut tasks = ProcessTasks::new(shutdown.clone());
-    let public_server = match prepare_public_server(config, router, shutdown.clone()).await {
+    let public_server = match prepare_public_server(config, listen_address, router, shutdown.clone()).await {
         Ok(server) => server,
         Err(error) => {
             return finish_process(Err(error), tasks, move || async move {
@@ -583,12 +585,10 @@ impl PreparedPublicServer {
 
 async fn prepare_public_server(
     config: &Config,
+    addr: std::net::SocketAddr,
     router: axum::Router,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> anyhow::Result<PreparedPublicServer> {
-    let addr: std::net::SocketAddr = format!("{}:{}", config.host, config.port)
-        .parse()
-        .with_context(|| format!("parse listen address {}:{}", config.host, config.port))?;
     let listener = public_tcp_listener(
         inherited_tcp_listener(PUBLIC_LISTENER_FD_ENV, addr)?,
         addr,

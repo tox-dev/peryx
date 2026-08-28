@@ -1,4 +1,5 @@
 use std::io::Write as _;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use peryx_driver::rate_limit::RateLimitConfig;
@@ -85,6 +86,33 @@ fn test_default_config() {
     assert_eq!(c.cache_ttl_secs, 300);
     assert_eq!(c.log, LogConfig::default());
     assert_eq!(c.rate_limit, RateLimitConfig::default());
+}
+
+#[rstest::rstest]
+#[case::ipv4("127.0.0.1", "127.0.0.1:4433")]
+#[case::ipv6_wildcard("::", "[::]:4433")]
+#[case::ipv6_loopback("::1", "[::1]:4433")]
+fn test_listen_address_accepts_ip_literals(#[case] host: &str, #[case] expected: &str) {
+    let config = Config {
+        host: host.to_owned(),
+        ..Config::default()
+    };
+
+    assert_eq!(
+        config.listen_address().unwrap(),
+        expected.parse::<SocketAddr>().unwrap()
+    );
+}
+
+#[test]
+fn test_listen_address_resolves_localhost() {
+    let config = Config {
+        host: "localhost".to_owned(),
+        ..Config::default()
+    };
+
+    let address = config.listen_address().unwrap();
+    assert_eq!((address.ip().is_loopback(), address.port()), (true, 4433));
 }
 
 #[test]

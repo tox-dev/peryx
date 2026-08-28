@@ -39,6 +39,12 @@ pub enum ConfigError {
     Read { path: PathBuf, source: std::io::Error },
     #[error("failed to parse config file {path}: {source}")]
     Parse { path: PathBuf, source: toml::de::Error },
+    #[error("`host` {host:?} with `port` {port} cannot resolve to a listen address: {source}")]
+    ListenAddress {
+        host: String,
+        port: u16,
+        source: std::io::Error,
+    },
     #[error("index {name}: {reason}")]
     Index { name: String, reason: &'static str },
     #[error("index {index}: token {name}: {reason}")]

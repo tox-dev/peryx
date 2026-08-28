@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
-use std::net::SocketAddr;
+use std::net::{SocketAddr, ToSocketAddrs as _};
 use std::num::{NonZeroU32, NonZeroUsize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -341,6 +341,21 @@ pub struct AvailabilityListenerTls {
 }
 
 impl Config {
+    /// # Errors
+    /// Returns [`ConfigError::ListenAddress`] when the host cannot resolve to a socket address.
+    pub fn listen_address(&self) -> Result<SocketAddr, ConfigError> {
+        let listen_error = |source| ConfigError::ListenAddress {
+            host: self.host.clone(),
+            port: self.port,
+            source,
+        };
+        (self.host.as_str(), self.port)
+            .to_socket_addrs()
+            .map_err(&listen_error)?
+            .next()
+            .ok_or_else(|| listen_error(std::io::ErrorKind::AddrNotAvailable.into()))
+    }
+
     /// # Errors
     /// Returns [`ConfigError::WriterIdentity`] when an identity is blank, configured without replication,
     /// or absent from a replication role that needs one during promotion.

@@ -130,7 +130,7 @@ pub struct RuntimeArgs {
     #[arg(long, short = 'c')]
     pub config: Option<PathBuf>,
 
-    /// Bind host.
+    /// Bind IP address or DNS hostname. IPv6 literals do not need brackets.
     #[arg(long)]
     pub host: Option<String>,
 

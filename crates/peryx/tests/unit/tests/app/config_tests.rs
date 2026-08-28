@@ -41,6 +41,38 @@ fn test_config_check_reports_the_listener_scheme(#[case] tls: Option<TlsConfig>,
     );
 }
 
+#[test]
+fn test_config_check_reports_a_bare_ipv6_listener() {
+    let config = Config {
+        host: "::1".to_owned(),
+        ..Config::default()
+    };
+    let mut output = Vec::new();
+
+    config_check(&config, &mut output).unwrap();
+
+    assert!(
+        String::from_utf8(output)
+            .unwrap()
+            .contains("  listen: http://[::1]:4433\n")
+    );
+}
+
+#[test]
+fn test_config_check_rejects_an_invalid_host() {
+    let config = Config {
+        host: "not a host".to_owned(),
+        ..Config::default()
+    };
+
+    assert!(
+        config_check(&config, &mut Vec::new())
+            .unwrap_err()
+            .to_string()
+            .starts_with("`host` \"not a host\" with `port` 4433 cannot resolve to a listen address:")
+    );
+}
+
 #[rstest]
 #[case::none(AvailabilityConfig::None, None, "none (single node)")]
 #[case::dc_primary(AvailabilityConfig::Dc(primary()), None, "dc (primary, source \"writer-a\")")]

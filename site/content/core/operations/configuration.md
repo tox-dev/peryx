@@ -37,6 +37,10 @@ the variable. Only scalar settings are environment-configurable. The `[[index]]`
 `[log]` block also reads variables (`PERYX_LOG_LEVEL`, `PERYX_LOG_FORMAT`, `PERYX_LOG_SINK`, `PERYX_LOG_FILE`); see
 [`[log]`](#log).
 
+`host` accepts an IP literal or DNS hostname. Write IPv6 literals without URL brackets, such as `::` or `::1`; Peryx
+adds brackets when it prints the listener URL. `peryx config check` rejects a host it cannot resolve and reports the
+selected socket address. `serve` passes its selected address to the listener without parsing the host again.
+
 `cache_ttl_secs` is both a fallback and a ceiling. When an upstream response carries a usable `Cache-Control` lifetime
 (`s-maxage` or `max-age`) that is **shorter**, that lifetime governs the page; a longer one is clamped to
 `cache_ttl_secs`. The fallback applies when the header is absent, `no-cache`/`no-store`, or zero.

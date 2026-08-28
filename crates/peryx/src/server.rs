@@ -100,7 +100,7 @@ pub fn check_config_with_plugins(
     plugins: &peryx_plugin_registry::PluginRegistry,
 ) -> anyhow::Result<()> {
     let plugins = activate_plugins(config, plugins)?;
-    check_config_with_active_plugins(config, &plugins)
+    check_config_with_active_plugins(config, &plugins).map(drop)
 }
 
 pub(crate) fn activate_plugins(
@@ -115,16 +115,17 @@ pub(crate) fn activate_plugins(
 pub(crate) fn check_config_with_active_plugins(
     config: &Config,
     plugins: &peryx_plugin_registry::PluginRegistry,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<std::net::SocketAddr> {
     config
         .validate_with_plugins(plugins)
         .context("validate configuration")?;
+    let listen_address = config.listen_address()?;
     resolve_signing_key(config)?;
     crate::logging::validate(&config.log).context("validate logging configuration")?;
     build_indexes_with_plugins(&config.indexes, &config.auth, config.offline, plugins)?;
     build_index_settings_with_plugins(&config.indexes, plugins)?;
     build_webhooks(&config.indexes)?;
-    Ok(())
+    Ok(listen_address)
 }
 
 /// Open the stores and resolve the configured indexes into the shared application state, without

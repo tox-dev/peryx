@@ -1,5 +1,6 @@
 #![cfg(feature = "system-tests")]
 
+use rstest::rstest;
 use std::{
     ffi::OsStr,
     path::{Path, PathBuf},
@@ -355,12 +356,18 @@ fn bootstrap_admin_creates_an_account() {
     assert!(data.join("peryx.redb").is_file());
 }
 
-#[test]
-fn serve_reports_an_invalid_listen_address() {
+#[rstest]
+#[case::serve(&["serve"])]
+#[case::config_check(&["config", "check"])]
+fn runtime_command_rejects_an_invalid_host(#[case] command: &[&str]) {
     let store = Store::new();
-    let output = store.command(["serve", "--host", "invalid-address"]).output().unwrap();
+    let output = store
+        .command(command.iter().copied())
+        .args(["--host", "not a host"])
+        .output()
+        .unwrap();
 
-    assert_failure(&output, "invalid-address");
+    assert_failure(&output, "`host` \"not a host\"");
 }
 
 #[test]
