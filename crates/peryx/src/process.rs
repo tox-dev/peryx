@@ -16,6 +16,75 @@ type BoxedLayer = Box<dyn Layer<Registry> + Send + Sync>;
 const PUBLIC_LISTENER_FD_ENV: &str = "PERYX_INHERITED_PUBLIC_LISTENER_FD";
 const AVAILABILITY_LISTENER_FD_ENV: &str = "PERYX_INHERITED_AVAILABILITY_LISTENER_FD";
 
+#[cfg(unix)]
+struct ShutdownSignals {
+    interrupt: tokio::signal::unix::Signal,
+    terminate: tokio::signal::unix::Signal,
+}
+
+#[cfg(windows)]
+struct ShutdownSignals {
+    ctrl_c: tokio::signal::windows::CtrlC,
+}
+
+#[cfg(unix)]
+impl ShutdownSignals {
+    fn new() -> std::io::Result<Self> {
+        Ok(Self {
+            interrupt: tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?,
+            terminate: tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?,
+        })
+    }
+
+    async fn cancel(mut self, cancellation: tokio_util::sync::CancellationToken) {
+        let signal = tokio::select! {
+            _ = self.interrupt.recv() => nix::sys::signal::Signal::SIGINT,
+            _ = self.terminate.recv() => nix::sys::signal::Signal::SIGTERM,
+        };
+        restore_default_shutdown_signals(signal);
+        cancellation.cancel();
+        tracing::info!(signal = signal.as_str(), "shutdown signal received");
+    }
+}
+
+#[cfg(windows)]
+impl ShutdownSignals {
+    fn new() -> std::io::Result<Self> {
+        Ok(Self {
+            ctrl_c: tokio::signal::windows::ctrl_c()?,
+        })
+    }
+
+    async fn cancel(mut self, cancellation: tokio_util::sync::CancellationToken) {
+        self.ctrl_c.recv().await;
+        cancellation.cancel();
+        tracing::info!(signal = "Ctrl-C", "shutdown signal received");
+    }
+}
+
+#[cfg(unix)]
+#[allow(
+    unsafe_code,
+    reason = "POSIX provides no safe API for restoring default signal handlers"
+)]
+fn restore_default_shutdown_signals(received: nix::sys::signal::Signal) {
+    let other = if received == nix::sys::signal::Signal::SIGINT {
+        nix::sys::signal::Signal::SIGTERM
+    } else {
+        nix::sys::signal::Signal::SIGINT
+    };
+    for signal in [received, other] {
+        // Tokio retains its handlers after listeners are dropped, so restore the process defaults explicitly.
+        unsafe { nix::sys::signal::signal(signal, nix::sys::signal::SigHandler::SigDfl) }
+            .expect("shutdown signal constants are valid");
+    }
+}
+
+enum ShutdownControl {
+    Injected,
+    ProcessSignals,
+}
+
 struct ResolvedConfig {
     config: Config,
     plugins: peryx_plugin_registry::PluginRegistry,
@@ -179,40 +248,77 @@ impl ProcessTasks {
     }
 
     async fn shutdown(self) -> anyhow::Result<()> {
-        let webhook = match self.webhooks {
-            Some(webhooks) => webhooks.shutdown().await.map_err(anyhow::Error::from),
-            None => Ok(()),
-        };
+        let mut results = Vec::with_capacity(
+            self.cache_warming.len() + usize::from(self.scheduler.is_some()) + usize::from(self.webhooks.is_some()),
+        );
+        if let Some(webhooks) = self.webhooks {
+            let result = webhooks.shutdown().await.map_err(anyhow::Error::from);
+            log_shutdown_result("webhook delivery", &result);
+            results.push(("webhook delivery", result));
+        }
         self.cancellation.cancel();
-        let mut results = Vec::with_capacity(self.cache_warming.len() + usize::from(self.scheduler.is_some()));
         if let Some(scheduler) = self.scheduler {
-            results.push(("local scheduler", scheduler.await.context("join local scheduler")));
+            let result = scheduler.await.context("join local scheduler");
+            log_shutdown_result("local scheduler", &result);
+            results.push(("local scheduler", result));
         }
         for warming in self.cache_warming {
-            results.push((
-                "cache warming",
-                warming
-                    .await
-                    .context("join cache warming task")
-                    .and_then(std::convert::identity),
-            ));
+            let result = warming
+                .await
+                .context("join cache warming task")
+                .and_then(std::convert::identity);
+            log_shutdown_result("cache warming", &result);
+            results.push(("cache warming", result));
         }
-        combined_results(std::iter::once(("webhook delivery", webhook)).chain(results))
+        combined_results(results)
     }
 }
 
-pub(crate) fn run_server_until_with_active_plugins(
+/// Runs the server until `shutdown` is cancelled without taking ownership of process signals.
+///
+/// # Errors
+/// Returns an error if server setup, serving, or shutdown fails.
+pub fn run_server_until_with_active_plugins(
     config: &Config,
     plugins: &peryx_plugin_registry::PluginRegistry,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> anyhow::Result<()> {
+    run_server_with_active_plugins(config, plugins, shutdown, ShutdownControl::Injected)
+}
+
+fn run_server_with_signals(config: &Config, plugins: &peryx_plugin_registry::PluginRegistry) -> anyhow::Result<()> {
+    run_server_with_active_plugins(
+        config,
+        plugins,
+        tokio_util::sync::CancellationToken::new(),
+        ShutdownControl::ProcessSignals,
+    )
+}
+
+fn run_server_with_active_plugins(
+    config: &Config,
+    plugins: &peryx_plugin_registry::PluginRegistry,
+    shutdown: tokio_util::sync::CancellationToken,
+    shutdown_control: ShutdownControl,
+) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
     runtime.block_on(async move {
+        let signal_task = match shutdown_control {
+            ShutdownControl::Injected => None,
+            ShutdownControl::ProcessSignals => {
+                let signals = ShutdownSignals::new()?;
+                Some(tokio::spawn(signals.cancel(shutdown.clone())))
+            }
+        };
         let state = crate::server::build_state_with_active_plugins(config, plugins)?;
         crate::server::recover_job_attempts(&state)?;
         let router = crate::server::router_for(state.clone());
         let availability = prepare_process_availability(config, plugins, &state).await?;
-        run_prepared_process(config, state, router, availability, shutdown).await
+        let result = run_prepared_process(config, state, router, availability, shutdown).await;
+        if let Some(signal_task) = signal_task {
+            signal_task.abort();
+        }
+        result
     })
 }
 
@@ -237,7 +343,11 @@ async fn run_prepared_process(
         Err(error) => {
             return finish_process(Err(error), tasks, move || async move {
                 match prepared_availability {
-                    Some(prepared) => prepared.shutdown().await.map_err(anyhow::Error::from),
+                    Some(prepared) => {
+                        let result = prepared.shutdown().await.map_err(anyhow::Error::from);
+                        log_shutdown_result("availability", &result);
+                        result
+                    }
                     None => Ok(()),
                 }
             })
@@ -299,9 +409,13 @@ async fn run_prepared_process(
     };
     finish_process(result, tasks, move || async move {
         match availability {
-            Some(mut active) => peryx_ha::ActiveAvailabilityHandle::shutdown(&mut active.handle)
-                .await
-                .map_err(anyhow::Error::from),
+            Some(mut active) => {
+                let result = peryx_ha::ActiveAvailabilityHandle::shutdown(&mut active.handle)
+                    .await
+                    .map_err(anyhow::Error::from);
+                log_shutdown_result("availability", &result);
+                result
+            }
             None => Ok(()),
         }
     })
@@ -324,6 +438,13 @@ where
         ("process tasks", tasks),
         ("availability shutdown", availability),
     ])
+}
+
+fn log_shutdown_result(resource: &'static str, result: &anyhow::Result<()>) {
+    match result {
+        Ok(()) => tracing::info!(resource, "resource shutdown completed"),
+        Err(error) => tracing::error!(resource, %error, "resource shutdown failed"),
+    }
 }
 
 fn combined_results(results: impl IntoIterator<Item = (&'static str, anyhow::Result<()>)>) -> anyhow::Result<()> {
@@ -877,7 +998,7 @@ pub fn run_with_plugins(cli: Cli, plugins: &peryx_plugin_registry::PluginRegistr
             let ResolvedConfig { config, plugins } = resolve_config(&args, plugins)?;
             logging::validate(&config.log)?;
             let _guard = install_logging(&config.log)?;
-            run_server_until_with_active_plugins(&config, &plugins, tokio_util::sync::CancellationToken::new())
+            run_server_with_signals(&config, &plugins)
         }
         crate::cli::Command::Init(args) => {
             let ResolvedConfig { config, .. } = resolve_config(&args, plugins)?;

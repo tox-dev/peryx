@@ -213,7 +213,10 @@ before the writer's current frontier before it first polls, so its catch-up copi
 the whole catalogue. The [bootstrap administrator](@/core/access/bootstrap-administrator.md) runs on the writer;
 replicas serve the identity state they copy.
 
-During shutdown, the node cancels distributed work before joining its listener, consensus, and workers.
+On Unix, send `SIGTERM` or `SIGINT`; on other platforms, use Ctrl-C. The first signal stops listener acceptance, lets
+in-flight requests finish, drains webhook delivery, cancels the local scheduler, and shuts down availability resources.
+Peryx logs each resource's shutdown result before the process exits. On Unix, a second `SIGTERM` or `SIGINT` kills the
+process if a drain is stuck.
 
 ## Monitor each shape
 

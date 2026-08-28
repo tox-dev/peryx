@@ -4603,6 +4603,7 @@ dependencies = [
  "http-body-util",
  "ipnet",
  "mimalloc",
+ "nix 0.31.3",
  "peryx-core",
  "peryx-driver",
  "peryx-ecosystem-oci",
