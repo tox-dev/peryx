@@ -125,9 +125,6 @@ pub async fn finalize_admitted_upload(
     }
 
     let epoch = state.committed_authority_epoch(descriptor.authority).await;
-    if !state.admit_authority_epoch(descriptor.authority, epoch).await {
-        return Err(FinalizeError::Rejected(FinalizeFailure::Fenced));
-    }
     if descriptor.artifact_sha256 != intent.digest || descriptor.artifact_size != intent.size {
         return Err(FinalizeError::Rejected(FinalizeFailure::ChecksumMismatch));
     }
@@ -138,7 +135,17 @@ pub async fn finalize_admitted_upload(
         return Err(FinalizeError::Rejected(FinalizeFailure::Unauthorized));
     }
 
-    publish(state, intent_key, descriptor, (state.clock)())
+    let lease = match state.begin_authority_epoch_write(descriptor.authority, epoch).await {
+        Ok(lease) if lease.is_some() || state.ownership_authority().is_none() => lease,
+        Ok(_) | Err(_) => return Err(FinalizeError::Rejected(FinalizeFailure::Fenced)),
+    };
+    let result = publish(state, intent_key, descriptor, lease.as_ref(), (state.clock)());
+    if let Some(lease) = lease
+        && let Err(error) = state.finish_authority_epoch_write(&lease).await
+    {
+        tracing::warn!(%error, authority = lease.authority, "authority write lease release failed");
+    }
+    result
 }
 
 /// Whether the descriptor's principal holds write on its index under the index's current ACL. An
@@ -167,6 +174,7 @@ fn publish(
     state: &ServingState,
     intent_key: &str,
     descriptor: &FinalizeDescriptor<'_>,
+    lease: Option<&peryx_ha::AuthorityWriteLease>,
     now: i64,
 ) -> Result<Finalization, FinalizeError> {
     let file = PublishedFile {
@@ -191,11 +199,14 @@ fn publish(
         now,
     };
     let guard =
-        |existing: Option<&[u8]>| Ok::<_, MetaError>(if existing.is_some() { Guard::Skip } else { Guard::Commit });
+        |existing: Option<&[u8]>| Ok::<_, FinalizeError>(if existing.is_some() { Guard::Skip } else { Guard::Commit });
     // The terminal-outcome replay is decided before publication, so this commit publishes rather than
     // replays; either way the operation ends published with the same acknowledgement.
     state.meta.commit_finalized_write(write, |txn| {
-        publish_file_in_txn::<MetaError>(txn, crate::replication_enabled(state), &file, guard)
+        if lease.is_some_and(|lease| !lease.admits((state.clock)())) {
+            return Err(FinalizeError::Rejected(FinalizeFailure::Fenced));
+        }
+        publish_file_in_txn::<FinalizeError>(txn, crate::replication_enabled(state), &file, guard)
             .map(|(_, journal)| journal)
     })?;
     Ok(Finalization::Published {

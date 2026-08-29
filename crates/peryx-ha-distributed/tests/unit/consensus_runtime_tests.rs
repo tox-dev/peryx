@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::Duration;
 
@@ -14,6 +15,7 @@ use openraft::error::{ClientWriteError, ForwardToLeader, RaftError};
 use openraft::storage::RaftStateMachine as _;
 use openraft::testing::log_id;
 use openraft::{Entry, EntryPayload};
+use peryx_core::Clock;
 use peryx_ha::{
     ClusterStatus, CommandOutcome, ControlCommand, ControlError, HomeClaim, MembershipControl as _,
     OwnershipAuthority as _, OwnershipError, TransferOutcome,
@@ -331,6 +333,12 @@ fn east_claim(epoch: u64) -> HomeClaim {
     }
 }
 
+fn adjustable_clock(now: i64) -> (Arc<AtomicI64>, Clock) {
+    let now = Arc::new(AtomicI64::new(now));
+    let source = now.clone();
+    (now, Arc::new(move || source.load(Ordering::SeqCst)))
+}
+
 #[tokio::test]
 async fn test_ownership_handle_delegates_to_a_live_group() {
     let dir = tempfile::tempdir().unwrap();
@@ -343,6 +351,8 @@ async fn test_ownership_handle_delegates_to_a_live_group() {
     assert_eq!(handle.claim_home("proj").await.unwrap(), east_claim(1));
     assert_eq!(handle.committed_epoch("proj").await, 1);
     assert!(handle.admit_epoch("proj", 1).await);
+    let lease = handle.begin_epoch_write("proj", 1).await.unwrap().unwrap();
+    handle.finish_epoch_write(&lease).await.unwrap();
     assert_eq!(
         handle.transfer_home("proj", "west").await.unwrap(),
         Some(TransferOutcome {
@@ -377,6 +387,21 @@ async fn test_ownership_handle_fails_closed_after_the_group_stops() {
 
     assert_eq!(handle.committed_epoch("proj").await, 0);
     assert!(!handle.admit_epoch("proj", 1).await);
+    assert!(matches!(
+        handle.begin_epoch_write("proj", 1).await,
+        Err(OwnershipError::Unavailable(message)) if message == "ownership consensus stopped"
+    ));
+    assert!(matches!(
+        handle
+            .finish_epoch_write(&peryx_ha::AuthorityWriteLease {
+                authority: "proj".to_owned(),
+                epoch: 1,
+                id: "write-1".to_owned(),
+                expires_at_unix: 10,
+            })
+            .await,
+        Err(OwnershipError::Unavailable(message)) if message == "ownership consensus stopped"
+    ));
     assert!(matches!(
         handle.claim_home("proj").await,
         Err(OwnershipError::Unavailable(message)) if message == "ownership consensus stopped"
@@ -487,6 +512,109 @@ async fn test_admit_epoch_fences_a_superseded_epoch() {
         !group.admit_epoch("other", 1).await,
         "an unassigned authority fences all work"
     );
+}
+
+#[tokio::test]
+async fn test_write_lease_rejects_unassigned_and_wrong_epoch_releases() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, clock) = adjustable_clock(100);
+    let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned())).with_clock(clock);
+
+    assert_eq!(group.begin_epoch_write("ghost", 1).await.unwrap(), None);
+    assert_eq!(group.claim_home("proj").await.unwrap(), east_claim(1));
+    let lease = group.begin_epoch_write("proj", 1).await.unwrap().unwrap();
+    let mut wrong = lease.clone();
+    wrong.epoch = 2;
+    assert!(matches!(
+        group.finish_epoch_write(&wrong).await,
+        Err(OwnershipError::Unavailable(_))
+    ));
+    group.finish_epoch_write(&lease).await.unwrap();
+}
+
+#[tokio::test]
+async fn test_transfer_before_a_paused_writer_leases_fences_its_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, clock) = adjustable_clock(100);
+    let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned())).with_clock(clock);
+    assert_eq!(group.claim_home("proj").await.unwrap(), east_claim(1));
+    let snapshot = group.committed_epoch("proj").await;
+
+    assert!(group.transfer_home("proj", "west").await.unwrap().is_some());
+    assert_eq!(group.begin_epoch_write("proj", snapshot).await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn test_transfer_after_a_writer_leases_waits_for_its_finish() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, clock) = adjustable_clock(100);
+    let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned())).with_clock(clock);
+    assert_eq!(group.claim_home("proj").await.unwrap(), east_claim(1));
+    let lease = group.begin_epoch_write("proj", 1).await.unwrap().unwrap();
+
+    assert!(matches!(
+        group.transfer_home("proj", "west").await,
+        Err(OwnershipError::Unavailable(message)) if message == "authority transfer is blocked by a live write lease"
+    ));
+    group.finish_epoch_write(&lease).await.unwrap();
+    assert_eq!(group.transfer_home("proj", "west").await.unwrap().unwrap().epoch, 2);
+}
+
+#[tokio::test]
+async fn test_crashed_writer_expires_before_transfer_and_new_epoch_admission() {
+    let dir = tempfile::tempdir().unwrap();
+    let (now, clock) = adjustable_clock(100);
+    let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned())).with_clock(clock);
+    assert_eq!(group.claim_home("proj").await.unwrap(), east_claim(1));
+    let _abandoned = group.begin_epoch_write("proj", 1).await.unwrap().unwrap();
+
+    now.store(
+        100 + peryx_ha::AUTHORITY_WRITE_LEASE_SECS + peryx_ha::AUTHORITY_CLOCK_SKEW_SECS,
+        Ordering::SeqCst,
+    );
+    assert_eq!(group.transfer_home("proj", "west").await.unwrap().unwrap().epoch, 2);
+    assert_eq!(group.begin_epoch_write("proj", 1).await.unwrap(), None);
+    assert_eq!(group.begin_epoch_write("proj", 2).await.unwrap().unwrap().epoch, 2);
+}
+
+#[tokio::test]
+async fn test_transfer_waits_for_every_concurrent_writer() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, clock) = adjustable_clock(100);
+    let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned())).with_clock(clock);
+    assert_eq!(group.claim_home("proj").await.unwrap(), east_claim(1));
+    let first = group.begin_epoch_write("proj", 1).await.unwrap().unwrap();
+    let second = group.begin_epoch_write("proj", 1).await.unwrap().unwrap();
+
+    group.finish_epoch_write(&first).await.unwrap();
+    assert!(matches!(
+        group.transfer_home("proj", "west").await,
+        Err(OwnershipError::Unavailable(message)) if message == "authority transfer is blocked by a live write lease"
+    ));
+    group.finish_epoch_write(&second).await.unwrap();
+    assert!(group.transfer_home("proj", "west").await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn test_control_transfer_and_epoch_advance_reject_a_live_writer() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, clock) = adjustable_clock(100);
+    let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned())).with_clock(clock);
+    assert_eq!(group.claim_home("proj").await.unwrap(), east_claim(1));
+    let lease = group.begin_epoch_write("proj", 1).await.unwrap().unwrap();
+
+    for command in [
+        ControlCommand::TransferAuthority {
+            authority: "proj".to_owned(),
+            new_home: "west".to_owned(),
+        },
+        ControlCommand::AdvanceEpoch {
+            authority: "proj".to_owned(),
+        },
+    ] {
+        assert!(matches!(group.submit(command).await, Err(ControlError::Invalid(_))));
+    }
+    group.finish_epoch_write(&lease).await.unwrap();
 }
 
 #[tokio::test]

@@ -81,6 +81,7 @@ pub enum ServeError {
     Store(MetaError),
     Io(std::io::Error),
     Transport(String),
+    Fenced,
 }
 
 #[derive(Debug)]
@@ -130,6 +131,7 @@ impl ServeError {
             Self::Store(err) => format!("metadata store error: {err}"),
             Self::Io(err) => format!("blob io error: {err}"),
             Self::Transport(err) => format!("upstream transfer failed: {err}"),
+            Self::Fenced => "repository authority moved".to_owned(),
         }
     }
 
@@ -138,6 +140,7 @@ impl ServeError {
             Self::Store(err) => gateway_error(&format!("metadata store error: {err}")),
             Self::Io(err) => gateway_error(&format!("blob io error: {err}")),
             Self::Transport(err) => gateway_error(&format!("upstream transfer failed: {err}")),
+            Self::Fenced => authority::authority_moved(),
         }
     }
 }
@@ -521,7 +524,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
                 if read {
                     self.serve_blob(&state, &name, &digest, head, headers).await
                 } else {
-                    self.delete_blob(&state, headers, &name, &digest)
+                    self.delete_blob(&state, headers, &name, &digest).await
                 }
             }
             OciRoute::BlobContents { name, digest } => self.serve_layer_contents(&state, &name, &digest, query).await,

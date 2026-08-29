@@ -1146,6 +1146,28 @@ impl OwnershipAuthority for DeferredOwnership {
         }
     }
 
+    async fn begin_epoch_write(
+        &self,
+        authority: &str,
+        presented: u64,
+    ) -> Result<Option<peryx_ha::AuthorityWriteLease>, peryx_ha::OwnershipError> {
+        match self.current() {
+            Some(ownership) => ownership.begin_epoch_write(authority, presented).await,
+            None => Err(peryx_ha::OwnershipError::Unavailable(
+                "ownership is not active".to_owned(),
+            )),
+        }
+    }
+
+    async fn finish_epoch_write(&self, lease: &peryx_ha::AuthorityWriteLease) -> Result<(), peryx_ha::OwnershipError> {
+        match self.current() {
+            Some(ownership) => ownership.finish_epoch_write(lease).await,
+            None => Err(peryx_ha::OwnershipError::Unavailable(
+                "ownership is not active".to_owned(),
+            )),
+        }
+    }
+
     async fn transfer_home(
         &self,
         authority: &str,

@@ -119,6 +119,94 @@ async fn test_finalize_publishes_rows_outcome_and_intent_advance() {
 }
 
 #[tokio::test]
+async fn test_finalize_rejects_an_expired_quorum_lease_before_publication() {
+    let harness = authority_harness().await;
+    initialize_distributed_schema(&harness.state);
+    admit(&harness.state.serving.meta);
+    install_authority(
+        &harness.state,
+        AuthorityDouble {
+            committed: 7,
+            current: 7,
+            lease_expires_at_unix: 1005,
+            ..AuthorityDouble::default()
+        },
+    );
+    let principal = Principal::Named {
+        subject: "uploader".to_owned(),
+    };
+    let operation = operation();
+    let digest = digest();
+
+    let result = finalize_admitted_upload(
+        &harness.state.serving,
+        INTENT_KEY,
+        &descriptor(&operation, &digest, &principal),
+    )
+    .await;
+
+    assert_eq!(result, Err(FinalizeError::Rejected(FinalizeFailure::Fenced)));
+    assert_eq!(harness.state.serving.meta.current_serial().unwrap(), 0);
+    assert_eq!(
+        harness
+            .state
+            .serving
+            .meta
+            .staged_intent(INTENT_KEY)
+            .unwrap()
+            .unwrap()
+            .phase,
+        IntentPhase::Pending
+    );
+}
+
+#[tokio::test]
+async fn test_finalize_release_failure_does_not_revoke_publication() {
+    let harness = authority_harness().await;
+    initialize_distributed_schema(&harness.state);
+    admit(&harness.state.serving.meta);
+    install_authority(
+        &harness.state,
+        AuthorityDouble {
+            committed: 7,
+            current: 7,
+            finish_available: false,
+            ..AuthorityDouble::default()
+        },
+    );
+    let principal = Principal::Named {
+        subject: "uploader".to_owned(),
+    };
+    let operation = operation();
+    let digest = digest();
+
+    let result = finalize_admitted_upload(
+        &harness.state.serving,
+        INTENT_KEY,
+        &descriptor(&operation, &digest, &principal),
+    )
+    .await;
+
+    assert_eq!(
+        result,
+        Ok(Finalization::Published {
+            response: b"upload accepted".to_vec()
+        })
+    );
+    assert_eq!(
+        harness
+            .state
+            .serving
+            .meta
+            .operation_outcome(&operation)
+            .unwrap()
+            .unwrap()
+            .state,
+        OperationState::Published
+    );
+}
+
+#[tokio::test]
 async fn test_finalize_replays_the_first_result_without_a_second_write() {
     let harness = authority_harness().await;
     initialize_distributed_schema(&harness.state);
@@ -224,6 +312,7 @@ async fn test_a_validation_failure_rejects_before_publication(#[case] failure: F
             AuthorityDouble {
                 committed: 0,
                 current: 0,
+                ..AuthorityDouble::default()
             },
         );
     }

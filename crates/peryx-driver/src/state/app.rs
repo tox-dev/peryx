@@ -189,6 +189,36 @@ impl AvailabilityState {
         }
     }
 
+    async fn begin_authority_epoch_write(
+        &self,
+        authority: &str,
+        presented: u64,
+    ) -> Result<Option<crate::state::AuthorityWriteLease>, crate::state::OwnershipError> {
+        match &self.distributed {
+            Some(state) => {
+                super::ownership::begin_authority_epoch_write(
+                    state.capabilities.ownership.as_ref(),
+                    authority,
+                    presented,
+                )
+                .await
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn finish_authority_epoch_write(
+        &self,
+        lease: &crate::state::AuthorityWriteLease,
+    ) -> Result<(), crate::state::OwnershipError> {
+        match &self.distributed {
+            Some(state) => {
+                super::ownership::finish_authority_epoch_write(state.capabilities.ownership.as_ref(), lease).await
+            }
+            None => Ok(()),
+        }
+    }
+
     fn cluster_term(&self) -> u64 {
         self.distributed.as_ref().map_or(0, |state| state.cluster_term())
     }
@@ -489,6 +519,29 @@ impl ServingState {
     /// authority to supersede its work, so it admits everything.
     pub async fn admit_authority_epoch(&self, authority: &str, presented: u64) -> bool {
         self.availability.admit_authority_epoch(authority, presented).await
+    }
+
+    /// Acquire the quorum lease that spans one metadata commit, or `None` without distributed ownership.
+    ///
+    /// # Errors
+    /// Returns the ownership error when the lease cannot commit.
+    pub async fn begin_authority_epoch_write(
+        &self,
+        authority: &str,
+        presented: u64,
+    ) -> Result<Option<crate::state::AuthorityWriteLease>, crate::state::OwnershipError> {
+        self.availability
+            .begin_authority_epoch_write(authority, presented)
+            .await
+    }
+
+    /// # Errors
+    /// Returns the ownership error when the quorum cannot release the lease.
+    pub async fn finish_authority_epoch_write(
+        &self,
+        lease: &crate::state::AuthorityWriteLease,
+    ) -> Result<(), crate::state::OwnershipError> {
+        self.availability.finish_authority_epoch_write(lease).await
     }
 
     /// The ownership group's monotonic term, the fence a cluster-singleton background job leases under so

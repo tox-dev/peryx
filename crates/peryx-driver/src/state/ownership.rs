@@ -1,4 +1,6 @@
-pub use peryx_ha::{ClusterStatus, HomeClaim, OwnershipAuthority, OwnershipError, TransferOutcome};
+pub use peryx_ha::{
+    AuthorityWriteLease, ClusterStatus, HomeClaim, OwnershipAuthority, OwnershipError, TransferOutcome,
+};
 
 /// Resolve an authority's committed home, assigning this datacenter when it is unowned.
 ///
@@ -34,6 +36,27 @@ pub(super) async fn admit_authority_epoch(
     match group {
         Some(group) => group.admit_epoch(authority, presented).await,
         None => true,
+    }
+}
+
+pub(super) async fn begin_authority_epoch_write(
+    group: Option<&std::sync::Arc<dyn OwnershipAuthority>>,
+    authority: &str,
+    presented: u64,
+) -> Result<Option<AuthorityWriteLease>, OwnershipError> {
+    match group {
+        Some(group) => group.begin_epoch_write(authority, presented).await,
+        None => Ok(None),
+    }
+}
+
+pub(super) async fn finish_authority_epoch_write(
+    group: Option<&std::sync::Arc<dyn OwnershipAuthority>>,
+    lease: &AuthorityWriteLease,
+) -> Result<(), OwnershipError> {
+    match group {
+        Some(group) => group.finish_epoch_write(lease).await,
+        None => Ok(()),
     }
 }
 

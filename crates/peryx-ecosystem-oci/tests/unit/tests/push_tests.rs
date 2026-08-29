@@ -1374,6 +1374,63 @@ async fn test_manifest_put_faults_are_gateway_errors() {
     assert!(body_has_code(&body, "UNKNOWN"), "{body:?}");
 }
 
+fn read_only_app(dir: &tempfile::TempDir) -> axum::Router {
+    let meta = MetaStore::open_existing_read_only(dir.path().join("peryx.redb")).unwrap();
+    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let mut state = AppState::with_clock(
+        meta,
+        blobs,
+        60,
+        vec![writable_index("store", "store", true, TOKEN)],
+        Arc::new(|| 1000),
+    );
+    super::install_oci(&mut state, HashMap::new(), false);
+    peryx_http::router(Arc::new(state))
+}
+
+#[tokio::test]
+async fn test_monolithic_upload_reports_a_membership_store_fault() {
+    let dir = tempfile::tempdir().unwrap();
+    drop(MetaStore::open(dir.path().join("peryx.redb")).unwrap());
+    let app = read_only_app(&dir);
+    let blob = b"read-only-monolithic";
+
+    let (status, _, body) = send_body(
+        &app,
+        Method::POST,
+        &format!("/v2/store/app/blobs/uploads/?digest={}", oci_digest(blob)),
+        &[("authorization", &auth(TOKEN))],
+        blob.to_vec(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert!(body_has_code(&body, "UNKNOWN"), "{body:?}");
+}
+
+#[tokio::test]
+async fn test_session_finish_reports_a_membership_store_fault() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = hosted_writable(&dir, TOKEN);
+    let blob = b"read-only-session";
+    let location = stage_one_chunk(&app, blob).await;
+    drop(app);
+    drop(state);
+    let app = read_only_app(&dir);
+
+    let (status, _, body) = send_body(
+        &app,
+        Method::PUT,
+        &format!("{location}?digest={}", oci_digest(blob)),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert!(body_has_code(&body, "UNKNOWN"), "{body:?}");
+}
+
 #[tokio::test]
 async fn test_monolithic_upload_body_read_error_is_a_gateway_error() {
     let dir = tempfile::tempdir().unwrap();
@@ -2274,6 +2331,28 @@ async fn test_monolithic_upload_under_a_superseded_epoch_is_unavailable() {
 }
 
 #[tokio::test]
+async fn test_monolithic_upload_without_a_quorum_aborts_the_pending_blob() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = super::hosted_writable_distributed(&dir, TOKEN);
+    bind_ownership(&state, EpochAuthority::unavailable(5));
+    let blob = b"a-layer-without-a-quorum";
+    let digest = oci_digest(blob);
+
+    let (status, _, body) = send_body(
+        &app,
+        Method::POST,
+        &format!("/v2/store/app/blobs/uploads/?digest={digest}"),
+        &[("authorization", &auth(TOKEN))],
+        blob.to_vec(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(body_has_code(&body, "UNAVAILABLE"), "{body:?}");
+    assert!(state.serving.blobs.open(&Digest::of(blob), None).await.is_err());
+}
+
+#[tokio::test]
 async fn test_session_finish_under_a_superseded_epoch_keeps_the_stage_for_retry() {
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = super::hosted_writable_distributed(&dir, TOKEN);
@@ -2315,6 +2394,34 @@ async fn test_session_finish_under_a_superseded_epoch_keeps_the_stage_for_retry(
 }
 
 #[tokio::test]
+async fn test_session_finish_without_a_quorum_keeps_the_stage_for_retry() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = super::hosted_writable_distributed(&dir, TOKEN);
+    let blob = b"a-resumable-layer-without-a-quorum";
+    let digest = oci_digest(blob);
+    let location = stage_one_chunk(&app, blob).await;
+    bind_ownership(&state, EpochAuthority::unavailable(5));
+
+    let (status, _, body) = send_body(
+        &app,
+        Method::PUT,
+        &format!("{location}?digest={digest}"),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(body_has_code(&body, "UNAVAILABLE"), "{body:?}");
+    assert_eq!(
+        send_with(&app, Method::GET, &location, &[("authorization", &auth(TOKEN))])
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+}
+
+#[tokio::test]
 async fn test_mount_under_a_superseded_epoch_is_unavailable() {
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = super::hosted_writable_distributed(&dir, TOKEN);
@@ -2333,6 +2440,58 @@ async fn test_mount_under_a_superseded_epoch_is_unavailable() {
 
     let (status, _, _) = send(&app, Method::GET, &format!("/v2/store/target/app/blobs/{digest}")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_mount_without_a_quorum_publishes_no_membership() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = super::hosted_writable_distributed(&dir, TOKEN);
+    let digest = upload_blob(&app, "store/source/app", b"source-layer-to-mount").await;
+    bind_ownership(&state, EpochAuthority::unavailable(5));
+
+    let (status, _, body) = send_body(
+        &app,
+        Method::POST,
+        &format!("/v2/store/target/app/blobs/uploads/?mount={digest}&from=store/source/app"),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(body_has_code(&body, "UNAVAILABLE"), "{body:?}");
+    assert_eq!(
+        send(&app, Method::GET, &format!("/v2/store/target/app/blobs/{digest}"))
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[rstest]
+#[case::unavailable(EpochAuthority::unavailable(5))]
+#[case::superseded(EpochAuthority::superseded(5, 6))]
+#[tokio::test]
+async fn test_blob_delete_without_a_current_quorum_lease_preserves_membership(#[case] authority: Arc<EpochAuthority>) {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = super::hosted_writable_distributed(&dir, TOKEN);
+    let blob = b"retained-through-a-transfer";
+    let digest = upload_blob(&app, "store/app", blob).await;
+    bind_ownership(&state, authority);
+
+    let (status, _, body) = send_body(
+        &app,
+        Method::DELETE,
+        &format!("/v2/store/app/blobs/{digest}"),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(body_has_code(&body, "UNAVAILABLE"), "{body:?}");
+    let (status, _, stored) = send(&app, Method::GET, &format!("/v2/store/app/blobs/{digest}")).await;
+    assert_eq!((status, stored.as_ref()), (StatusCode::OK, blob.as_slice()));
 }
 
 #[tokio::test]

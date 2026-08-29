@@ -33,6 +33,7 @@ toml.workspace = true
 tracing.workspace = true
 utoipa.workspace = true
 url.workspace = true
+uuid.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "net", "rt", "sync", "time"] }
 tokio-util.workspace = true
 

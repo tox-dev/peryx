@@ -16,9 +16,10 @@ use anyhow::{Context as _, bail};
 use openraft::error::{CheckIsLeaderError, ClientWriteError, RaftError};
 use openraft::raft::ClientWriteResponse;
 use openraft::{LogId, StoredMembership};
+use peryx_core::Clock;
 use peryx_ha::{
-    ClusterStatus, CommandOutcome, CommandReceipt, ControlCommand, ControlError, HomeClaim, MembershipControl,
-    OwnershipAuthority, OwnershipError, TransferOutcome,
+    AUTHORITY_WRITE_LEASE_SECS, AuthorityWriteLease, ClusterStatus, CommandOutcome, CommandReceipt, ControlCommand,
+    ControlError, HomeClaim, MembershipControl, OwnershipAuthority, OwnershipError, TransferOutcome,
 };
 use url::Url;
 
@@ -311,6 +312,7 @@ pub struct OwnershipGroup {
     node: RaftNode,
     home: DatacenterId,
     peer_token: Option<String>,
+    clock: Clock,
 }
 
 pub struct OwnershipHandle {
@@ -327,11 +329,12 @@ impl OwnershipHandle {
 
 impl OwnershipGroup {
     #[must_use]
-    pub const fn new(node: RaftNode, home: DatacenterId) -> Self {
+    pub fn new(node: RaftNode, home: DatacenterId) -> Self {
         Self {
             node,
             home,
             peer_token: None,
+            clock: Arc::new(unix_now),
         }
     }
 
@@ -340,6 +343,18 @@ impl OwnershipGroup {
         self.peer_token = Some(token.into());
         self
     }
+
+    #[must_use]
+    pub fn with_clock(mut self, clock: Clock) -> Self {
+        self.clock = clock;
+        self
+    }
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| i64::try_from(duration.as_secs()).unwrap_or(i64::MAX))
 }
 
 #[async_trait::async_trait]
@@ -356,6 +371,26 @@ impl OwnershipAuthority for OwnershipHandle {
             Some(group) => OwnershipAuthority::admit_epoch(group.as_ref(), authority, presented).await,
             None => false,
         }
+    }
+
+    async fn begin_epoch_write(
+        &self,
+        authority: &str,
+        presented: u64,
+    ) -> Result<Option<AuthorityWriteLease>, OwnershipError> {
+        let group = self
+            .group
+            .upgrade()
+            .ok_or_else(|| OwnershipError::Unavailable("ownership consensus stopped".to_owned()))?;
+        OwnershipAuthority::begin_epoch_write(group.as_ref(), authority, presented).await
+    }
+
+    async fn finish_epoch_write(&self, lease: &AuthorityWriteLease) -> Result<(), OwnershipError> {
+        let group = self
+            .group
+            .upgrade()
+            .ok_or_else(|| OwnershipError::Unavailable("ownership consensus stopped".to_owned()))?;
+        OwnershipAuthority::finish_epoch_write(group.as_ref(), lease).await
     }
 
     async fn claim_home(&self, authority: &str) -> Result<HomeClaim, OwnershipError> {
@@ -416,6 +451,53 @@ impl OwnershipAuthority for OwnershipGroup {
         matches!(admission, Admission::Admit)
     }
 
+    async fn begin_epoch_write(
+        &self,
+        authority: &str,
+        presented: u64,
+    ) -> Result<Option<AuthorityWriteLease>, OwnershipError> {
+        let issued_at_unix = (self.clock)();
+        let command = OwnershipCommand::BeginEpochWrite {
+            authority: AuthorityKey(authority.to_owned()),
+            epoch: AuthorityEpoch(presented),
+            id: uuid::Uuid::new_v4().to_string(),
+            issued_at_unix,
+            expires_at_unix: issued_at_unix.saturating_add(AUTHORITY_WRITE_LEASE_SECS),
+        };
+        match self.submit_command(command).await?.data {
+            OwnershipResponse::Applied(OwnershipEffect::WriteLeased {
+                epoch,
+                id,
+                expires_at_unix,
+            }) => Ok(Some(AuthorityWriteLease {
+                authority: authority.to_owned(),
+                epoch: epoch.0,
+                id,
+                expires_at_unix,
+            })),
+            OwnershipResponse::Applied(OwnershipEffect::Rejected(
+                Rejection::EpochMismatch | Rejection::NotAssigned,
+            )) => Ok(None),
+            response => Err(OwnershipError::Unavailable(format!(
+                "ownership write lease returned {response:?}"
+            ))),
+        }
+    }
+
+    async fn finish_epoch_write(&self, lease: &AuthorityWriteLease) -> Result<(), OwnershipError> {
+        let command = OwnershipCommand::FinishEpochWrite {
+            authority: AuthorityKey(lease.authority.clone()),
+            epoch: AuthorityEpoch(lease.epoch),
+            id: lease.id.clone(),
+        };
+        match self.submit_command(command).await?.data {
+            OwnershipResponse::Applied(OwnershipEffect::WriteFinished) => Ok(()),
+            response => Err(OwnershipError::Unavailable(format!(
+                "ownership write release returned {response:?}"
+            ))),
+        }
+    }
+
     async fn claim_home(&self, authority: &str) -> Result<HomeClaim, OwnershipError> {
         let authority = AuthorityKey(authority.to_owned());
         if self.node.state_machine().home_of(&authority).await.is_some() {
@@ -459,6 +541,7 @@ impl OwnershipAuthority for OwnershipGroup {
         let command = OwnershipCommand::RecordTransfer {
             authority: AuthorityKey(authority.to_owned()),
             new_home: DatacenterId(new_home.to_owned()),
+            now_unix: (self.clock)(),
         };
         match self.submit_command(command).await?.data {
             // Committed rejections retain the existing home; `Transferred` records a move.
@@ -467,6 +550,9 @@ impl OwnershipAuthority for OwnershipGroup {
                 to: to.0,
                 epoch: epoch.0,
             })),
+            OwnershipResponse::Applied(OwnershipEffect::Rejected(Rejection::WritesInFlight)) => Err(
+                OwnershipError::Unavailable("authority transfer is blocked by a live write lease".to_owned()),
+            ),
             _ => Ok(None),
         }
     }
@@ -507,12 +593,14 @@ impl MembershipControl for OwnershipGroup {
                 self.submit_ownership(OwnershipCommand::RecordTransfer {
                     authority: AuthorityKey(authority),
                     new_home: DatacenterId(new_home),
+                    now_unix: (self.clock)(),
                 })
                 .await
             }
             ControlCommand::AdvanceEpoch { authority } => {
                 self.submit_ownership(OwnershipCommand::AdvanceAuthorityEpoch {
                     authority: AuthorityKey(authority),
+                    now_unix: (self.clock)(),
                 })
                 .await
             }
@@ -602,6 +690,9 @@ impl OwnershipGroup {
                         return Err(ControlError::Invalid(
                             "the authority is not assigned a home to move or fence".to_owned(),
                         ));
+                    }
+                    OwnershipResponse::Applied(OwnershipEffect::Rejected(Rejection::WritesInFlight)) => {
+                        return Err(ControlError::Invalid("the authority has a live write lease".to_owned()));
                     }
                     _ => CommandOutcome::Committed,
                 };

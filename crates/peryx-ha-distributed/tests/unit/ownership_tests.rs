@@ -26,13 +26,37 @@ fn assign(authority: &str, home: &str) -> OwnershipCommand {
 fn advance(authority: &str) -> OwnershipCommand {
     OwnershipCommand::AdvanceAuthorityEpoch {
         authority: key(authority),
+        now_unix: 0,
     }
 }
 
 fn transfer(authority: &str, new_home: &str) -> OwnershipCommand {
+    transfer_at(authority, new_home, 0)
+}
+
+fn transfer_at(authority: &str, new_home: &str, now_unix: i64) -> OwnershipCommand {
     OwnershipCommand::RecordTransfer {
         authority: key(authority),
         new_home: dc(new_home),
+        now_unix,
+    }
+}
+
+fn begin_write(authority: &str, epoch: u64, id: &str, issued_at_unix: i64) -> OwnershipCommand {
+    OwnershipCommand::BeginEpochWrite {
+        authority: key(authority),
+        epoch: AuthorityEpoch(epoch),
+        id: id.to_owned(),
+        issued_at_unix,
+        expires_at_unix: issued_at_unix + peryx_ha::AUTHORITY_WRITE_LEASE_SECS,
+    }
+}
+
+fn finish_write(authority: &str, epoch: u64, id: &str) -> OwnershipCommand {
+    OwnershipCommand::FinishEpochWrite {
+        authority: key(authority),
+        epoch: AuthorityEpoch(epoch),
+        id: id.to_owned(),
     }
 }
 
@@ -181,6 +205,225 @@ fn test_advancing_an_unassigned_authority_is_rejected() {
 }
 
 #[test]
+fn test_write_lease_requires_the_committed_epoch() {
+    let mut state = OwnershipState::new();
+    state.apply(&assign("proj", "east"), META);
+
+    assert_eq!(
+        state.apply(&begin_write("proj", 2, "write-1", 100), META),
+        OwnershipEffect::Rejected(Rejection::EpochMismatch)
+    );
+}
+
+#[test]
+fn test_write_lease_rejects_a_caller_supplied_long_expiry() {
+    let mut state = OwnershipState::new();
+    state.apply(&assign("proj", "east"), META);
+
+    assert_eq!(
+        state.apply(
+            &OwnershipCommand::BeginEpochWrite {
+                authority: key("proj"),
+                epoch: AuthorityEpoch(1),
+                id: "write-1".to_owned(),
+                issued_at_unix: 100,
+                expires_at_unix: 100 + peryx_ha::AUTHORITY_WRITE_LEASE_SECS + 1,
+            },
+            META,
+        ),
+        OwnershipEffect::Rejected(Rejection::InvalidLease)
+    );
+}
+
+#[test]
+fn test_write_lease_rejects_an_empty_window() {
+    let mut state = OwnershipState::new();
+    state.apply(&assign("proj", "east"), META);
+
+    assert_eq!(
+        state.apply(
+            &OwnershipCommand::BeginEpochWrite {
+                authority: key("proj"),
+                epoch: AuthorityEpoch(1),
+                id: "write-1".to_owned(),
+                issued_at_unix: 100,
+                expires_at_unix: 100,
+            },
+            META,
+        ),
+        OwnershipEffect::Rejected(Rejection::InvalidLease)
+    );
+}
+
+#[test]
+fn test_write_commands_reject_an_unassigned_authority() {
+    let mut state = OwnershipState::new();
+
+    for command in [
+        begin_write("proj", 1, "write-1", 100),
+        finish_write("proj", 1, "write-1"),
+    ] {
+        assert_eq!(
+            state.apply(&command, META),
+            OwnershipEffect::Rejected(Rejection::NotAssigned)
+        );
+    }
+}
+
+#[test]
+fn test_finish_rejects_the_wrong_epoch_for_a_live_id() {
+    let mut state = OwnershipState::new();
+    state.apply(&assign("proj", "east"), META);
+    state.apply(&begin_write("proj", 1, "write-1", 100), META);
+
+    assert_eq!(
+        state.apply(&finish_write("proj", 2, "write-1"), META),
+        OwnershipEffect::Rejected(Rejection::EpochMismatch)
+    );
+    assert_eq!(
+        state.apply(&transfer("proj", "west"), META),
+        OwnershipEffect::Rejected(Rejection::WritesInFlight)
+    );
+}
+
+#[test]
+fn test_finishing_an_absent_id_is_idempotent() {
+    let mut state = OwnershipState::new();
+    state.apply(&assign("proj", "east"), META);
+
+    assert_eq!(
+        state.apply(&finish_write("proj", 1, "write-1"), META),
+        OwnershipEffect::WriteFinished
+    );
+}
+
+#[test]
+fn test_active_write_lease_blocks_transfer_until_finish() {
+    let mut state = OwnershipState::new();
+    state.apply(&assign("proj", "east"), META);
+    state.apply(&begin_write("proj", 1, "write-1", 100), META);
+
+    assert_eq!(
+        state.apply(&transfer("proj", "west"), META),
+        OwnershipEffect::Rejected(Rejection::WritesInFlight)
+    );
+    assert_eq!(
+        state.apply(&finish_write("proj", 1, "write-1"), META),
+        OwnershipEffect::WriteFinished
+    );
+    assert!(matches!(
+        state.apply(&transfer("proj", "west"), META),
+        OwnershipEffect::Transferred {
+            epoch: AuthorityEpoch(2),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn test_active_write_lease_blocks_epoch_advance() {
+    let mut state = OwnershipState::new();
+    state.apply(&assign("proj", "east"), META);
+    state.apply(&begin_write("proj", 1, "write-1", 100), META);
+
+    assert_eq!(
+        state.apply(&advance("proj"), META),
+        OwnershipEffect::Rejected(Rejection::WritesInFlight)
+    );
+    assert_eq!(state.epoch(&key("proj")), AuthorityEpoch(1));
+}
+
+#[test]
+fn test_a_new_write_command_prunes_skew_safe_expired_leases() {
+    let mut state = OwnershipState::new();
+    state.apply(&assign("proj", "east"), META);
+    state.apply(&begin_write("proj", 1, "write-1", 100), META);
+
+    state.apply(
+        &begin_write(
+            "proj",
+            1,
+            "write-2",
+            100 + peryx_ha::AUTHORITY_WRITE_LEASE_SECS + peryx_ha::AUTHORITY_CLOCK_SKEW_SECS,
+        ),
+        META,
+    );
+    state.apply(&finish_write("proj", 1, "write-2"), META);
+
+    assert!(matches!(
+        state.apply(&transfer("proj", "west"), META),
+        OwnershipEffect::Transferred { .. }
+    ));
+}
+
+#[test]
+fn test_transfer_waits_through_the_clock_skew_guard() {
+    let mut state = OwnershipState::new();
+    state.apply(&assign("proj", "east"), META);
+    state.apply(&begin_write("proj", 1, "write-1", 100), META);
+
+    assert_eq!(
+        state.apply(
+            &transfer_at(
+                "proj",
+                "west",
+                100 + peryx_ha::AUTHORITY_WRITE_LEASE_SECS + peryx_ha::AUTHORITY_CLOCK_SKEW_SECS - 1,
+            ),
+            META,
+        ),
+        OwnershipEffect::Rejected(Rejection::WritesInFlight)
+    );
+}
+
+#[test]
+fn test_expired_write_lease_releases_transfer_and_new_epoch_admission() {
+    let mut state = OwnershipState::new();
+    state.apply(&assign("proj", "east"), META);
+    state.apply(&begin_write("proj", 1, "write-1", 100), META);
+
+    assert!(matches!(
+        state.apply(
+            &transfer_at(
+                "proj",
+                "west",
+                100 + peryx_ha::AUTHORITY_WRITE_LEASE_SECS + peryx_ha::AUTHORITY_CLOCK_SKEW_SECS,
+            ),
+            META,
+        ),
+        OwnershipEffect::Transferred {
+            epoch: AuthorityEpoch(2),
+            ..
+        }
+    ));
+    assert!(matches!(
+        state.apply(&begin_write("proj", 2, "write-2", 200), META),
+        OwnershipEffect::WriteLeased {
+            epoch: AuthorityEpoch(2),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn test_transfer_waits_for_all_live_write_ids() {
+    let mut state = OwnershipState::new();
+    state.apply(&assign("proj", "east"), META);
+    state.apply(&begin_write("proj", 1, "write-1", 100), META);
+    state.apply(&begin_write("proj", 1, "write-2", 100), META);
+
+    state.apply(&finish_write("proj", 1, "write-1"), META);
+    assert_eq!(
+        state.apply(&transfer("proj", "west"), META),
+        OwnershipEffect::Rejected(Rejection::WritesInFlight)
+    );
+    state.apply(&finish_write("proj", 1, "write-2"), META);
+    assert!(matches!(
+        state.apply(&transfer("proj", "west"), META),
+        OwnershipEffect::Transferred { .. }
+    ));
+}
+
+#[test]
 fn test_transfer_moves_the_home_mints_the_next_epoch_and_records_the_move() {
     let mut state = OwnershipState::new();
     state.apply(&assign("proj", "east"), META);
@@ -312,8 +555,9 @@ fn test_snapshot_restore_round_trips_the_full_state() {
     state.apply(&transfer("alpha", "west"), META);
     state.apply(&assign("beta", "north"), AppliedMeta { term: 1, index: 5 });
     state.apply(&advance("beta"), META);
+    state.apply(&begin_write("beta", 2, "write-1", 100), META);
 
-    let restored = OwnershipState::restore(&state.snapshot()).unwrap();
+    let mut restored = OwnershipState::restore(&state.snapshot()).unwrap();
 
     assert_eq!(restored, state);
     assert_eq!(restored.epoch(&key("alpha")), AuthorityEpoch(2));
@@ -336,6 +580,10 @@ fn test_snapshot_restore_round_trips_the_full_state() {
         })
     );
     assert_eq!(restored.epoch(&key("beta")), AuthorityEpoch(2));
+    assert_eq!(
+        restored.apply(&transfer("beta", "south"), META),
+        OwnershipEffect::Rejected(Rejection::WritesInFlight)
+    );
 }
 
 #[test]

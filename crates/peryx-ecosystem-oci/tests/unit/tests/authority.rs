@@ -3,8 +3,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use super::{
-    TestOwnership, app_with_distributed, auth, bind_ownership, body_has_code, hosted_writable_distributed, oci_index,
-    send, send_body, send_with, writer_acl,
+    TestOwnership, app_with_distributed, auth, bind_ownership, body_has_code, hosted_writable_distributed,
+    hosted_writable_distributed_with_clock, oci_index, send, send_body, send_with, writer_acl,
 };
 use axum::http::{HeaderMap, Method, StatusCode};
 use bytes::Bytes;
@@ -93,6 +93,23 @@ impl OwnershipAuthority for RecordingAuthority {
 
     async fn admit_epoch(&self, _authority: &str, _presented: u64) -> bool {
         true
+    }
+
+    async fn begin_epoch_write(
+        &self,
+        authority: &str,
+        presented: u64,
+    ) -> Result<Option<peryx_ha::AuthorityWriteLease>, OwnershipError> {
+        Ok(Some(peryx_ha::AuthorityWriteLease {
+            authority: authority.to_owned(),
+            epoch: presented,
+            id: "test-write".to_owned(),
+            expires_at_unix: i64::MAX,
+        }))
+    }
+
+    async fn finish_epoch_write(&self, _lease: &peryx_ha::AuthorityWriteLease) -> Result<(), OwnershipError> {
+        Ok(())
     }
 
     async fn transfer_home(&self, authority: &str, new_home: &str) -> Result<Option<TransferOutcome>, OwnershipError> {
@@ -322,6 +339,9 @@ async fn test_a_remote_home_winner_commits_no_manifest_effects() {
 struct EpochAuthority {
     committed: AtomicU64,
     current: AtomicU64,
+    expires_at_unix: i64,
+    finish_available: bool,
+    lease_clock_calls: Option<Arc<AtomicU64>>,
 }
 
 impl EpochAuthority {
@@ -329,6 +349,9 @@ impl EpochAuthority {
         Arc::new(Self {
             committed: AtomicU64::new(epoch),
             current: AtomicU64::new(epoch),
+            expires_at_unix: i64::MAX,
+            finish_available: true,
+            lease_clock_calls: None,
         })
     }
 
@@ -336,6 +359,29 @@ impl EpochAuthority {
         Arc::new(Self {
             committed: AtomicU64::new(leased),
             current: AtomicU64::new(current),
+            expires_at_unix: i64::MAX,
+            finish_available: true,
+            lease_clock_calls: None,
+        })
+    }
+
+    fn leased(epoch: u64, expires_at_unix: i64, finish_available: bool) -> Arc<Self> {
+        Arc::new(Self {
+            committed: AtomicU64::new(epoch),
+            current: AtomicU64::new(epoch),
+            expires_at_unix,
+            finish_available,
+            lease_clock_calls: None,
+        })
+    }
+
+    fn expiring_between_checks(epoch: u64, lease_clock_calls: Arc<AtomicU64>) -> Arc<Self> {
+        Arc::new(Self {
+            committed: AtomicU64::new(epoch),
+            current: AtomicU64::new(epoch),
+            expires_at_unix: 1006,
+            finish_available: true,
+            lease_clock_calls: Some(lease_clock_calls),
         })
     }
 
@@ -358,6 +404,33 @@ impl OwnershipAuthority for EpochAuthority {
     async fn admit_epoch(&self, _authority: &str, presented: u64) -> bool {
         let current = self.current.load(Ordering::SeqCst);
         current != 0 && presented == current
+    }
+
+    async fn begin_epoch_write(
+        &self,
+        authority: &str,
+        presented: u64,
+    ) -> Result<Option<peryx_ha::AuthorityWriteLease>, OwnershipError> {
+        if let Some(calls) = &self.lease_clock_calls {
+            calls.store(0, Ordering::SeqCst);
+        }
+        let current = self.current.load(Ordering::SeqCst);
+        Ok(
+            (current != 0 && presented == current).then(|| peryx_ha::AuthorityWriteLease {
+                authority: authority.to_owned(),
+                epoch: presented,
+                id: "test-write".to_owned(),
+                expires_at_unix: self.expires_at_unix,
+            }),
+        )
+    }
+
+    async fn finish_epoch_write(&self, _lease: &peryx_ha::AuthorityWriteLease) -> Result<(), OwnershipError> {
+        if self.finish_available {
+            Ok(())
+        } else {
+            Err(OwnershipError::Unavailable("quorum unavailable".to_owned()))
+        }
     }
 
     async fn claim_home(&self, _authority: &str) -> Result<HomeClaim, OwnershipError> {
@@ -434,6 +507,45 @@ async fn test_manifest_push_at_the_current_epoch_publishes() {
 }
 
 #[tokio::test]
+async fn test_manifest_push_with_an_expired_lease_never_mutates_metadata() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = hosted_writable_distributed_with_clock(&dir, TOKEN, Arc::new(|| 1000));
+    bind_ownership(&state, EpochAuthority::leased(5, 1005, true));
+
+    assert_eq!(push(&app, "v1").await, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(pull_status(&app, "v1").await, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_manifest_push_fences_a_lease_that_expires_before_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let calls = Arc::new(AtomicU64::new(0));
+    let clock_calls = calls.clone();
+    let clock = Arc::new(move || {
+        if clock_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            1000
+        } else {
+            1001
+        }
+    });
+    let (state, app) = hosted_writable_distributed_with_clock(&dir, TOKEN, clock);
+    bind_ownership(&state, EpochAuthority::expiring_between_checks(5, calls));
+
+    assert_eq!(push(&app, "v1").await, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(pull_status(&app, "v1").await, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_manifest_push_release_failure_does_not_revoke_the_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = hosted_writable_distributed(&dir, TOKEN);
+    bind_ownership(&state, EpochAuthority::leased(5, i64::MAX, false));
+
+    assert_eq!(push(&app, "v1").await, StatusCode::CREATED);
+    assert_eq!(pull_status(&app, "v1").await, StatusCode::OK);
+}
+
+#[tokio::test]
 async fn test_manifest_push_under_a_superseded_epoch_is_unavailable_then_retries() {
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = hosted_writable_distributed(&dir, TOKEN);
@@ -448,6 +560,30 @@ async fn test_manifest_push_under_a_superseded_epoch_is_unavailable_then_retries
 
     group.settle();
     assert_eq!(push(&app, "v1").await, StatusCode::CREATED);
+    assert_eq!(pull_status(&app, "v1").await, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_manifest_push_without_a_quorum_lease_publishes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = hosted_writable_distributed(&dir, TOKEN);
+    bind_ownership(&state, super::EpochAuthority::unavailable(5));
+
+    let (status, _, body) = push_full(&app, "v1", MANIFEST).await;
+
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(body_has_code(&body, "UNAVAILABLE"), "{body:?}");
+    assert_eq!(pull_status(&app, "v1").await, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_unassigned_distributed_authority_cannot_delete_local_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = hosted_writable_distributed(&dir, TOKEN);
+    assert_eq!(push(&app, "v1").await, StatusCode::CREATED);
+    bind_ownership(&state, EpochAuthority::settled(0));
+
+    assert_eq!(delete(&app, "v1").await, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(pull_status(&app, "v1").await, StatusCode::OK);
 }
 

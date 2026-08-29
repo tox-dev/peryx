@@ -108,6 +108,29 @@ impl peryx_ha::OwnershipAuthority for TestOwnership {
         }
     }
 
+    async fn begin_epoch_write(
+        &self,
+        authority: &str,
+        presented: u64,
+    ) -> Result<Option<peryx_ha::AuthorityWriteLease>, peryx_ha::OwnershipError> {
+        match self.ownership() {
+            Some(owner) => owner.begin_epoch_write(authority, presented).await,
+            None => Ok(Some(peryx_ha::AuthorityWriteLease {
+                authority: authority.to_owned(),
+                epoch: presented,
+                id: "local-write".to_owned(),
+                expires_at_unix: i64::MAX,
+            })),
+        }
+    }
+
+    async fn finish_epoch_write(&self, lease: &peryx_ha::AuthorityWriteLease) -> Result<(), peryx_ha::OwnershipError> {
+        match self.ownership() {
+            Some(owner) => owner.finish_epoch_write(lease).await,
+            None => Ok(()),
+        }
+    }
+
     async fn transfer_home(
         &self,
         authority: &str,
@@ -536,6 +559,26 @@ fn hosted_writable_distributed(dir: &TempDir, token: &str) -> (Arc<AppState>, ax
     app_with_distributed(dir, writable_index("store", "store", true, token))
 }
 
+fn hosted_writable_distributed_with_clock(
+    dir: &TempDir,
+    token: &str,
+    clock: Arc<dyn Fn() -> i64 + Send + Sync>,
+) -> (Arc<AppState>, axum::Router) {
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let mut state = AppState::with_clock(
+        meta,
+        blobs,
+        60,
+        vec![writable_index("store", "store", true, token)],
+        clock,
+    );
+    install_oci(&mut state, HashMap::new(), false);
+    install_test_distributed(&mut state, None);
+    let state = Arc::new(state);
+    (state.clone(), router(state))
+}
+
 fn hosted_with_clock(
     dir: &TempDir,
     token: &str,
@@ -772,6 +815,7 @@ struct EpochAuthority {
     committed: std::sync::atomic::AtomicU64,
     current: std::sync::atomic::AtomicU64,
     entered: Option<Arc<tokio::sync::Semaphore>>,
+    available: bool,
 }
 
 impl EpochAuthority {
@@ -780,6 +824,7 @@ impl EpochAuthority {
             committed: std::sync::atomic::AtomicU64::new(epoch),
             current: std::sync::atomic::AtomicU64::new(epoch),
             entered: None,
+            available: true,
         })
     }
 
@@ -788,6 +833,16 @@ impl EpochAuthority {
             committed: std::sync::atomic::AtomicU64::new(leased),
             current: std::sync::atomic::AtomicU64::new(current),
             entered: None,
+            available: true,
+        })
+    }
+
+    fn unavailable(epoch: u64) -> Arc<Self> {
+        Arc::new(Self {
+            committed: std::sync::atomic::AtomicU64::new(epoch),
+            current: std::sync::atomic::AtomicU64::new(epoch),
+            entered: None,
+            available: false,
         })
     }
 
@@ -798,6 +853,7 @@ impl EpochAuthority {
                 committed: std::sync::atomic::AtomicU64::new(epoch),
                 current: std::sync::atomic::AtomicU64::new(epoch),
                 entered: Some(entered.clone()),
+                available: true,
             }),
             entered,
         )
@@ -824,10 +880,40 @@ impl peryx_driver::state::OwnershipAuthority for EpochAuthority {
         current != 0 && presented == current
     }
 
+    async fn begin_epoch_write(
+        &self,
+        authority: &str,
+        presented: u64,
+    ) -> Result<Option<peryx_ha::AuthorityWriteLease>, peryx_ha::OwnershipError> {
+        if !self.available {
+            return Err(peryx_ha::OwnershipError::Unavailable("quorum unavailable".to_owned()));
+        }
+        if let Some(entered) = &self.entered {
+            entered.add_permits(1);
+            return std::future::pending().await;
+        }
+        let current = self.current.load(std::sync::atomic::Ordering::SeqCst);
+        Ok(
+            (current != 0 && presented == current).then(|| peryx_ha::AuthorityWriteLease {
+                authority: authority.to_owned(),
+                epoch: presented,
+                id: "test-write".to_owned(),
+                expires_at_unix: i64::MAX,
+            }),
+        )
+    }
+
+    async fn finish_epoch_write(&self, _lease: &peryx_ha::AuthorityWriteLease) -> Result<(), peryx_ha::OwnershipError> {
+        Ok(())
+    }
+
     async fn claim_home(
         &self,
         _authority: &str,
     ) -> Result<peryx_driver::state::HomeClaim, peryx_driver::state::OwnershipError> {
+        if !self.available {
+            return Err(peryx_ha::OwnershipError::Unavailable("quorum unavailable".to_owned()));
+        }
         Ok(peryx_driver::state::HomeClaim {
             home: "local".to_owned(),
             epoch: self.committed.load(std::sync::atomic::Ordering::SeqCst),

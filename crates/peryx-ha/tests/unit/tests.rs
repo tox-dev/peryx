@@ -1014,6 +1014,89 @@ fn public_error_messages_preserve_context() {
     );
 }
 
+#[rstest]
+#[case::active(94, true)]
+#[case::guard_boundary(95, false)]
+#[case::past_expiry(101, false)]
+fn authority_write_lease_reserves_the_clock_skew_window(#[case] now: i64, #[case] admitted: bool) {
+    let lease = AuthorityWriteLease {
+        authority: "proj".to_owned(),
+        epoch: 1,
+        id: "write-1".to_owned(),
+        expires_at_unix: 100,
+    };
+
+    assert_eq!(lease.admits(now), admitted);
+}
+
+struct AuthorityWithoutWriteLeases;
+
+#[async_trait]
+impl OwnershipAuthority for AuthorityWithoutWriteLeases {
+    async fn claim_home(&self, _authority: &str) -> Result<HomeClaim, OwnershipError> {
+        Err(OwnershipError::Unavailable("claim disabled".to_owned()))
+    }
+
+    fn cluster_status(&self) -> ClusterStatus {
+        ClusterStatus {
+            leader: None,
+            term: 0,
+            voters: Vec::new(),
+        }
+    }
+
+    async fn committed_epoch(&self, _authority: &str) -> u64 {
+        0
+    }
+
+    async fn admit_epoch(&self, _authority: &str, _presented: u64) -> bool {
+        false
+    }
+
+    async fn transfer_home(
+        &self,
+        _authority: &str,
+        _new_home: &str,
+    ) -> Result<Option<TransferOutcome>, OwnershipError> {
+        Ok(None)
+    }
+}
+
+#[tokio::test]
+async fn ownership_authority_defaults_fail_closed_without_write_lease_support() {
+    let authority = AuthorityWithoutWriteLeases;
+    let lease = AuthorityWriteLease {
+        authority: "proj".to_owned(),
+        epoch: 1,
+        id: "write-1".to_owned(),
+        expires_at_unix: 100,
+    };
+
+    assert!(matches!(
+        authority.begin_epoch_write("proj", 1).await,
+        Err(OwnershipError::Unavailable(message)) if message == "ownership write leasing is unavailable"
+    ));
+    assert!(matches!(
+        authority.finish_epoch_write(&lease).await,
+        Err(OwnershipError::Unavailable(message)) if message == "ownership write leasing is unavailable"
+    ));
+    assert!(matches!(
+        authority.claim_home("proj").await,
+        Err(OwnershipError::Unavailable(_))
+    ));
+    assert_eq!(
+        authority.cluster_status(),
+        ClusterStatus {
+            leader: None,
+            term: 0,
+            voters: Vec::new(),
+        }
+    );
+    assert_eq!(authority.committed_epoch("proj").await, 0);
+    assert!(!authority.admit_epoch("proj", 1).await);
+    assert_eq!(authority.transfer_home("proj", "west").await.unwrap(), None);
+}
+
 #[test]
 fn frontier_reply_serialization_preserves_the_contract() {
     let reply = FrontierReply {

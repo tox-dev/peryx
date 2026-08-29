@@ -14,32 +14,62 @@ use super::resolve::resolve_detail_optional;
 
 /// A metadata control routes through the project's ownership authority: the normalized project name is
 /// the authority key, so every PEP 503 name variant fences on one epoch. The control snapshots that
-/// epoch before it reads, then re-admits it before it writes, so a home transfer that lands while the
-/// control resolves is caught before it can change serial or visibility under a superseded epoch.
+/// epoch before it reads, then leases it through the metadata commit.
 ///
-/// Snapshot the committed epoch a control will finalize under. `0` when this process runs no ownership
-/// group, or the authority has no committed home, which admits the control unfenced.
+/// Snapshot the committed epoch a control will finalize under. `0` is unfenced only when the process has
+/// no ownership group; a configured group must lease a nonzero committed epoch.
 async fn control_epoch(state: &ServingState, authority: &str) -> u64 {
     state.committed_authority_epoch(authority).await
 }
 
-/// Fence a control whose leased epoch a transfer superseded, before it writes. A former home that read
-/// the project at `fence` but whose authority advanced is rejected, so its stale write never lands. A
-/// process with no group, or an unhomed authority (`fence` of `0`), holds no epoch and is never fenced.
-async fn admit_control(state: &ServingState, authority: &str, fence: u64) -> Result<(), CacheError> {
-    if fence != 0 && !state.admit_authority_epoch(authority, fence).await {
-        return Err(CacheError::AuthoritySuperseded);
+async fn commit_control<T>(
+    state: &ServingState,
+    authority: &str,
+    fence: u64,
+    mutation: impl FnOnce(&ControlLease<'_>) -> Result<T, CacheError>,
+) -> Result<T, CacheError> {
+    let lease = match state.begin_authority_epoch_write(authority, fence).await {
+        Ok(Some(lease)) => Some(lease),
+        Ok(None) if state.ownership_authority().is_none() => None,
+        Ok(None) | Err(_) => return Err(CacheError::AuthoritySuperseded),
+    };
+    let lease = ControlLease { state, lease };
+    let result = mutation(&lease);
+    lease.finish().await;
+    result
+}
+
+struct ControlLease<'a> {
+    state: &'a ServingState,
+    lease: Option<peryx_ha::AuthorityWriteLease>,
+}
+
+impl ControlLease<'_> {
+    fn check(&self) -> Result<(), CacheError> {
+        if self
+            .lease
+            .as_ref()
+            .is_some_and(|lease| !lease.admits((self.state.clock)()))
+        {
+            return Err(CacheError::AuthoritySuperseded);
+        }
+        Ok(())
     }
-    Ok(())
+
+    async fn finish(self) {
+        if let Some(lease) = self.lease
+            && let Err(error) = self.state.finish_authority_epoch_write(&lease).await
+        {
+            tracing::warn!(%error, authority = lease.authority, "authority write lease release failed");
+        }
+    }
 }
 
 /// Persist a prepared upload into the hosted store `name`: commit the staged blobs, record the file
 /// and its project, and bump the serial. Returns `false` for a same-bytes duplicate.
 ///
 /// The publish fences on the project's ownership authority like every other mutation: it snapshots the
-/// committed epoch, commits the blobs, then re-admits the epoch before the record write. A publish that
-/// reads the project as its home but whose authority moved home mid-store is rejected before the record
-/// lands, so a stale home never assigns a serial or makes a file visible under a superseded epoch.
+/// committed epoch, commits the blobs, then leases the epoch through the record write.
 ///
 /// # Errors
 /// Returns [`CacheError::AuthoritySuperseded`] when a home transfer superseded the epoch mid-store, or
@@ -63,8 +93,12 @@ pub async fn store_upload(
     fence: u64,
 ) -> Result<StoredUpload, CacheError> {
     let publish = upload::stage_publish(&state.blobs, prepared).await?;
-    admit_control(state, project, fence).await?;
-    let published = upload::commit_publish(&state.meta, name, publish, quota, crate::replication_enabled(state))?;
+    let published = commit_control(state, project, fence, |lease| {
+        lease.check()?;
+        upload::commit_publish(&state.meta, name, publish, quota, crate::replication_enabled(state))
+            .map_err(CacheError::from)
+    })
+    .await?;
     for (digest, size) in &published.placements {
         state.record_home_placement(digest.as_str(), *size, fence);
     }
@@ -125,7 +159,6 @@ pub async fn promote_release(
         .meta
         .get_project(source, normalized)?
         .unwrap_or_else(|| normalized.to_owned());
-    admit_control(state, normalized, fence).await?;
     let release = PromotedRelease {
         index: target,
         normalized,
@@ -134,9 +167,13 @@ pub async fn promote_release(
         blob_sizes: &blob_sizes,
         submitted_at_unix: (state.clock)(),
     };
-    let promoted = state
-        .meta
-        .promote_files_checked(crate::replication_enabled(state), &release, promote_conflict)?;
+    let promoted = commit_control(state, normalized, fence, |lease| {
+        lease.check()?;
+        state
+            .meta
+            .promote_files_checked(crate::replication_enabled(state), &release, promote_conflict)
+    })
+    .await?;
     if promoted > 0 {
         super::invalidate_project(state, target, normalized);
     }
@@ -181,33 +218,38 @@ pub async fn set_yanked(
     let fence = control_epoch(state, normalized).await;
     let uploaded = upload_filenames(state, hosted, normalized)?;
     let served = served_filenames(state, index, normalized, version).await?;
-    admit_control(state, normalized, fence).await?;
     let submitted_at_unix = (state.clock)();
-    let mut changed = yank_uploads(state, hosted, normalized, version, &yanked, submitted_at_unix)?;
-    for filename in served {
-        if uploaded.contains(&filename) {
-            continue;
-        }
-        if let Some(value) = yank_override_value(&yanked)? {
-            state.meta.put_override(
+    let changed = commit_control(state, normalized, fence, |lease| {
+        lease.check()?;
+        let mut changed = yank_uploads(state, hosted, normalized, version, &yanked, submitted_at_unix)?;
+        for filename in served {
+            if uploaded.contains(&filename) {
+                continue;
+            }
+            lease.check()?;
+            if let Some(value) = yank_override_value(&yanked)? {
+                state.meta.put_override(
+                    crate::replication_enabled(state),
+                    hosted,
+                    normalized,
+                    &filename,
+                    &value,
+                    submitted_at_unix,
+                )?;
+                changed += 1;
+            } else if state.meta.delete_override(
                 crate::replication_enabled(state),
                 hosted,
                 normalized,
                 &filename,
-                &value,
                 submitted_at_unix,
-            )?;
-            changed += 1;
-        } else if state.meta.delete_override(
-            crate::replication_enabled(state),
-            hosted,
-            normalized,
-            &filename,
-            submitted_at_unix,
-        )? {
-            changed += 1;
+            )? {
+                changed += 1;
+            }
         }
-    }
+        Ok(changed)
+    })
+    .await?;
     if changed > 0 {
         super::invalidate_project(state, hosted, normalized);
     }
@@ -255,22 +297,27 @@ pub async fn remove_files(
     let fence = control_epoch(state, normalized).await;
     let filenames = served_filenames(state, index, normalized, version).await?;
     let uploaded = upload_filenames(state, hosted, normalized)?;
-    admit_control(state, normalized, fence).await?;
-    let mut affected = trash_uploads(state, hosted, volatile, normalized, version, trash)?;
-    for filename in filenames {
-        if uploaded.contains(&filename) {
-            continue;
+    let affected = commit_control(state, normalized, fence, |lease| {
+        lease.check()?;
+        let mut affected = trash_uploads(state, hosted, volatile, normalized, version, trash)?;
+        for filename in filenames {
+            if uploaded.contains(&filename) {
+                continue;
+            }
+            lease.check()?;
+            state.meta.put_override(
+                crate::replication_enabled(state),
+                hosted,
+                normalized,
+                &filename,
+                HIDDEN,
+                trash.deleted_at_unix,
+            )?;
+            affected += 1;
         }
-        state.meta.put_override(
-            crate::replication_enabled(state),
-            hosted,
-            normalized,
-            &filename,
-            HIDDEN,
-            trash.deleted_at_unix,
-        )?;
-        affected += 1;
-    }
+        Ok(affected)
+    })
+    .await?;
     if affected > 0 {
         super::invalidate_project(state, hosted, normalized);
     }
@@ -289,26 +336,31 @@ pub async fn restore_files(
     version: Option<&str>,
 ) -> Result<usize, CacheError> {
     let fence = control_epoch(state, normalized).await;
-    admit_control(state, normalized, fence).await?;
     let submitted_at_unix = (state.clock)();
-    let mut restored = untrash_uploads(state, hosted, normalized, version, submitted_at_unix)?;
-    for (filename, kind) in state.meta.list_overrides(hosted, normalized)? {
-        if kind != HIDDEN {
-            continue;
+    let restored = commit_control(state, normalized, fence, |lease| {
+        lease.check()?;
+        let mut restored = untrash_uploads(state, hosted, normalized, version, submitted_at_unix)?;
+        for (filename, kind) in state.meta.list_overrides(hosted, normalized)? {
+            if kind != HIDDEN {
+                continue;
+            }
+            if version.is_some_and(|version| !file_matches_version(&filename, version)) {
+                continue;
+            }
+            lease.check()?;
+            if state.meta.delete_override(
+                crate::replication_enabled(state),
+                hosted,
+                normalized,
+                &filename,
+                submitted_at_unix,
+            )? {
+                restored += 1;
+            }
         }
-        if version.is_some_and(|version| !file_matches_version(&filename, version)) {
-            continue;
-        }
-        if state.meta.delete_override(
-            crate::replication_enabled(state),
-            hosted,
-            normalized,
-            &filename,
-            submitted_at_unix,
-        )? {
-            restored += 1;
-        }
-    }
+        Ok(restored)
+    })
+    .await?;
     if restored > 0 {
         super::invalidate_project(state, hosted, normalized);
     }

@@ -25,6 +25,7 @@ fn assign(authority: &str, home: &str) -> OwnershipCommand {
 fn advance(authority: &str) -> OwnershipCommand {
     OwnershipCommand::AdvanceAuthorityEpoch {
         authority: key(authority),
+        now_unix: 0,
     }
 }
 
@@ -32,6 +33,7 @@ fn transfer(authority: &str, new_home: &str) -> OwnershipCommand {
     OwnershipCommand::RecordTransfer {
         authority: key(authority),
         new_home: DatacenterId(new_home.to_owned()),
+        now_unix: 0,
     }
 }
 
@@ -40,7 +42,10 @@ fn minted(effect: &OwnershipEffect) -> Option<AuthorityEpoch> {
         OwnershipEffect::Assigned { epoch, .. }
         | OwnershipEffect::EpochAdvanced { epoch }
         | OwnershipEffect::Transferred { epoch, .. } => Some(*epoch),
-        OwnershipEffect::AlreadyAssigned { .. } | OwnershipEffect::Rejected(_) => None,
+        OwnershipEffect::AlreadyAssigned { .. }
+        | OwnershipEffect::WriteLeased { .. }
+        | OwnershipEffect::WriteFinished
+        | OwnershipEffect::Rejected(_) => None,
     }
 }
 

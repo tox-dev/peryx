@@ -1,9 +1,10 @@
 use super::blobs::{
-    BlobCommitContext, authority_moved, blob_created, commit_blob, commit_staged_upload, epoch_admits,
-    release_reservation, upload_epoch,
+    BlobCommitContext, authority_moved, blob_created, commit_blob, commit_staged_upload, release_reservation,
+    upload_epoch,
 };
 use super::*;
 use crate::error::{ErrorCode, error_response};
+use crate::registry::authority::{EpochCommit, commit_epoch};
 use crate::store::{self};
 use crate::upload_session::UploadRecord;
 use axum::body::Body;
@@ -47,7 +48,10 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
                 if let Some(response) = policy_size_denial(index, &repo, metadata.bytes) {
                     return Ok(response);
                 }
-                let fence = upload_epoch(state, &repo).await;
+                let fence = match upload_epoch(state, &repo).await {
+                    Ok(fence) => fence,
+                    Err(response) => return Ok(response),
+                };
                 // A mount publishes an existing blob into this repository without a transfer, so it
                 // reserves the mounted digest's bytes exactly as an upload of them would; a digest
                 // already served here is not reserved again.
@@ -60,21 +64,26 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
                         crate::quota::Admission::Reserved(record) => Some(record),
                     }
                 };
-                if !epoch_admits(state, &repo, fence).await {
-                    release_reservation(state, reservation)?;
-                    return Ok(authority_moved());
-                }
-                let committed = crate::quota::commit_blob_membership(
-                    &state.meta,
-                    &index.name,
-                    &repo,
-                    mount,
-                    reservation,
-                    None,
-                    journal,
-                );
-                committed?;
-                return Ok(blob_created(name, mount));
+                let mutation = commit_epoch(state, &repo, fence, |lease| {
+                    lease.guard()?;
+                    crate::quota::commit_blob_membership(
+                        &state.meta,
+                        &index.name,
+                        &repo,
+                        mount,
+                        reservation.clone(),
+                        None,
+                        journal,
+                    )
+                })
+                .await?;
+                return match mutation {
+                    EpochCommit::Committed(()) => Ok(blob_created(name, mount)),
+                    EpochCommit::Fenced => {
+                        release_reservation(state, reservation)?;
+                        Ok(authority_moved())
+                    }
+                };
             }
         }
         if let Some(digest) = params.get("digest") {

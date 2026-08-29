@@ -1,8 +1,9 @@
 use std::sync::{Arc, Mutex};
 
 use super::{
-    ClusterStatus, HomeClaim, OwnershipAuthority, OwnershipError, TransferOutcome, admit_authority_epoch,
-    claim_first_publish_home, committed_authority_epoch, transfer_authority_home,
+    AuthorityWriteLease, ClusterStatus, HomeClaim, OwnershipAuthority, OwnershipError, TransferOutcome,
+    admit_authority_epoch, begin_authority_epoch_write, claim_first_publish_home, committed_authority_epoch,
+    finish_authority_epoch_write, transfer_authority_home,
 };
 
 struct Fake {
@@ -44,6 +45,25 @@ impl OwnershipAuthority for Fake {
 
     async fn admit_epoch(&self, _authority: &str, presented: u64) -> bool {
         self.epoch != 0 && presented == self.epoch
+    }
+
+    async fn begin_epoch_write(
+        &self,
+        authority: &str,
+        presented: u64,
+    ) -> Result<Option<AuthorityWriteLease>, OwnershipError> {
+        Ok(
+            (self.epoch != 0 && presented == self.epoch).then(|| AuthorityWriteLease {
+                authority: authority.to_owned(),
+                epoch: presented,
+                id: "write-1".to_owned(),
+                expires_at_unix: i64::MAX,
+            }),
+        )
+    }
+
+    async fn finish_epoch_write(&self, _lease: &AuthorityWriteLease) -> Result<(), OwnershipError> {
+        Ok(())
     }
 
     async fn transfer_home(
@@ -143,6 +163,32 @@ async fn test_admit_epoch_admits_the_committed_epoch_and_fences_a_stale_one() {
 #[tokio::test]
 async fn test_admit_epoch_admits_everything_without_a_group() {
     assert!(admit_authority_epoch(None, "proj", 6).await);
+}
+
+#[tokio::test]
+async fn test_write_lease_delegates_to_the_group() {
+    let group = group(Ok(home_claim()));
+
+    let lease = begin_authority_epoch_write(Some(&group), "proj", 7)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!((lease.authority.as_str(), lease.epoch), ("proj", 7));
+    finish_authority_epoch_write(Some(&group), &lease).await.unwrap();
+}
+
+#[tokio::test]
+async fn test_write_lease_is_absent_without_a_group() {
+    let lease = AuthorityWriteLease {
+        authority: "proj".to_owned(),
+        epoch: 7,
+        id: "write-1".to_owned(),
+        expires_at_unix: 100,
+    };
+
+    assert_eq!(begin_authority_epoch_write(None, "proj", 7).await.unwrap(), None);
+    finish_authority_epoch_write(None, &lease).await.unwrap();
 }
 
 #[tokio::test]

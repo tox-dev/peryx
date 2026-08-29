@@ -453,6 +453,19 @@ pub async fn stale_page_harness(max_stale_secs: i64, fetched_at: i64) -> Harness
 pub struct AuthorityDouble {
     pub committed: u64,
     pub current: u64,
+    pub lease_expires_at_unix: i64,
+    pub finish_available: bool,
+}
+
+impl Default for AuthorityDouble {
+    fn default() -> Self {
+        Self {
+            committed: 0,
+            current: 0,
+            lease_expires_at_unix: i64::MAX,
+            finish_available: true,
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -463,6 +476,29 @@ impl peryx_driver::state::OwnershipAuthority for AuthorityDouble {
 
     async fn admit_epoch(&self, _authority: &str, presented: u64) -> bool {
         self.current != 0 && presented == self.current
+    }
+
+    async fn begin_epoch_write(
+        &self,
+        authority: &str,
+        presented: u64,
+    ) -> Result<Option<peryx_ha::AuthorityWriteLease>, peryx_ha::OwnershipError> {
+        Ok(
+            (self.current != 0 && presented == self.current).then(|| peryx_ha::AuthorityWriteLease {
+                authority: authority.to_owned(),
+                epoch: presented,
+                id: "test-write".to_owned(),
+                expires_at_unix: self.lease_expires_at_unix,
+            }),
+        )
+    }
+
+    async fn finish_epoch_write(&self, _lease: &peryx_ha::AuthorityWriteLease) -> Result<(), peryx_ha::OwnershipError> {
+        if self.finish_available {
+            Ok(())
+        } else {
+            Err(peryx_ha::OwnershipError::Unavailable("quorum unavailable".to_owned()))
+        }
     }
 
     async fn claim_home(
@@ -615,6 +651,29 @@ impl peryx_ha::OwnershipAuthority for TestOwnership {
         }
     }
 
+    async fn begin_epoch_write(
+        &self,
+        authority: &str,
+        presented: u64,
+    ) -> Result<Option<peryx_ha::AuthorityWriteLease>, peryx_ha::OwnershipError> {
+        match self.ownership() {
+            Some(owner) => owner.begin_epoch_write(authority, presented).await,
+            None => Ok(Some(peryx_ha::AuthorityWriteLease {
+                authority: authority.to_owned(),
+                epoch: presented,
+                id: "local-write".to_owned(),
+                expires_at_unix: i64::MAX,
+            })),
+        }
+    }
+
+    async fn finish_epoch_write(&self, lease: &peryx_ha::AuthorityWriteLease) -> Result<(), peryx_ha::OwnershipError> {
+        match self.ownership() {
+            Some(owner) => owner.finish_epoch_write(lease).await,
+            None => Ok(()),
+        }
+    }
+
     async fn transfer_home(
         &self,
         authority: &str,
@@ -673,6 +732,7 @@ async fn test_ownership_uses_local_defaults_until_bound() {
     ownership.bind(Arc::new(AuthorityDouble {
         committed: 7,
         current: 8,
+        ..AuthorityDouble::default()
     }));
 
     assert_eq!(ownership.committed_epoch("flask").await, 7);

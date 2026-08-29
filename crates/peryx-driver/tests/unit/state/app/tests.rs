@@ -646,6 +646,26 @@ impl peryx_ha::OwnershipAuthority for OwnershipCapability {
         presented >= self.committed_epoch(authority).await
     }
 
+    async fn begin_epoch_write(
+        &self,
+        authority: &str,
+        presented: u64,
+    ) -> Result<Option<peryx_ha::AuthorityWriteLease>, peryx_ha::OwnershipError> {
+        Ok(self
+            .admit_epoch(authority, presented)
+            .await
+            .then(|| peryx_ha::AuthorityWriteLease {
+                authority: authority.to_owned(),
+                epoch: presented,
+                id: "write-1".to_owned(),
+                expires_at_unix: i64::MAX,
+            }))
+    }
+
+    async fn finish_epoch_write(&self, _lease: &peryx_ha::AuthorityWriteLease) -> Result<(), peryx_ha::OwnershipError> {
+        Ok(())
+    }
+
     async fn transfer_home(
         &self,
         authority: &str,
@@ -684,6 +704,12 @@ async fn test_distributed_ownership_and_topology_delegate_to_the_capability() {
     assert_eq!(ownership.cluster_status().term, 7);
     assert_eq!(serving.committed_authority_epoch("catalog").await, 7);
     assert!(!serving.admit_authority_epoch("catalog", 6).await);
+    let lease = serving
+        .begin_authority_epoch_write("catalog", 7)
+        .await
+        .unwrap()
+        .unwrap();
+    serving.finish_authority_epoch_write(&lease).await.unwrap();
     assert_eq!(serving.cluster_term(), 7);
     assert_eq!(
         serving.transfer_authority_home("catalog", "west").await.unwrap(),
@@ -695,8 +721,8 @@ async fn test_distributed_ownership_and_topology_delegate_to_the_capability() {
     );
 }
 
-#[test]
-fn test_none_mode_and_webhook_host_expose_process_state() {
+#[tokio::test]
+async fn test_none_mode_and_webhook_host_expose_process_state() {
     let (_dir, state) = local_state();
     let serving = state.serving.as_ref();
 
@@ -706,6 +732,16 @@ fn test_none_mode_and_webhook_host_expose_process_state() {
     assert!(serving.cross_dc_copier().is_none());
     assert!(serving.blob_reclaimer().is_none());
     assert!(serving.placement_reconciler().is_none());
+    assert_eq!(serving.begin_authority_epoch_write("catalog", 7).await.unwrap(), None);
+    serving
+        .finish_authority_epoch_write(&peryx_ha::AuthorityWriteLease {
+            authority: "catalog".to_owned(),
+            epoch: 7,
+            id: "write-1".to_owned(),
+            expires_at_unix: 100,
+        })
+        .await
+        .unwrap();
     let serial = serving.meta.current_serial().unwrap();
     serving.record_home_placement(DIGEST_HEX, 1, 1);
     assert_eq!(serving.meta.current_serial().unwrap(), serial);

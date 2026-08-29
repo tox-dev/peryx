@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::authority::AuthorityKey;
 use crate::envelope::AuthorityEpoch;
+use peryx_ha::{AUTHORITY_CLOCK_SKEW_SECS, AUTHORITY_WRITE_LEASE_SECS};
 
 /// The unassigned epoch, which [`AuthorityFence`](crate::AuthorityFence) rejects.
 const UNASSIGNED: AuthorityEpoch = AuthorityEpoch(0);
@@ -55,11 +56,24 @@ pub enum OwnershipCommand {
         cause: AssignmentCause,
     },
     /// Increases an assigned authority's epoch without moving its home.
-    AdvanceAuthorityEpoch { authority: AuthorityKey },
+    AdvanceAuthorityEpoch { authority: AuthorityKey, now_unix: i64 },
+    BeginEpochWrite {
+        authority: AuthorityKey,
+        epoch: AuthorityEpoch,
+        id: String,
+        issued_at_unix: i64,
+        expires_at_unix: i64,
+    },
+    FinishEpochWrite {
+        authority: AuthorityKey,
+        epoch: AuthorityEpoch,
+        id: String,
+    },
     /// Moves an assigned authority, increases its epoch, and records the transfer.
     RecordTransfer {
         authority: AuthorityKey,
         new_home: DatacenterId,
+        now_unix: i64,
     },
 }
 
@@ -76,6 +90,12 @@ pub enum OwnershipEffect {
     EpochAdvanced {
         epoch: AuthorityEpoch,
     },
+    WriteLeased {
+        epoch: AuthorityEpoch,
+        id: String,
+        expires_at_unix: i64,
+    },
+    WriteFinished,
     Transferred {
         from: DatacenterId,
         to: DatacenterId,
@@ -89,6 +109,9 @@ pub enum OwnershipEffect {
 pub enum Rejection {
     NotAssigned,
     SameHome,
+    EpochMismatch,
+    InvalidLease,
+    WritesInFlight,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -105,6 +128,14 @@ struct AuthorityRecord {
     epoch: AuthorityEpoch,
     assignment: Assignment,
     transfers: Vec<TransferRecord>,
+    #[serde(default)]
+    writes: BTreeMap<String, WriteLeaseRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct WriteLeaseRecord {
+    epoch: AuthorityEpoch,
+    expires_at_unix: i64,
 }
 
 /// Missing authorities are unassigned and read as epoch zero.
@@ -123,8 +154,20 @@ impl OwnershipState {
     pub fn apply(&mut self, command: &OwnershipCommand, meta: AppliedMeta) -> OwnershipEffect {
         match command {
             OwnershipCommand::AssignHome { authority, home, cause } => self.assign_home(authority, home, *cause, meta),
-            OwnershipCommand::AdvanceAuthorityEpoch { authority } => self.advance_epoch(authority),
-            OwnershipCommand::RecordTransfer { authority, new_home } => self.transfer(authority, new_home),
+            OwnershipCommand::AdvanceAuthorityEpoch { authority, now_unix } => self.advance_epoch(authority, *now_unix),
+            OwnershipCommand::BeginEpochWrite {
+                authority,
+                epoch,
+                id,
+                issued_at_unix,
+                expires_at_unix,
+            } => self.begin_write(authority, *epoch, id, *issued_at_unix, *expires_at_unix),
+            OwnershipCommand::FinishEpochWrite { authority, epoch, id } => self.finish_write(authority, *epoch, id),
+            OwnershipCommand::RecordTransfer {
+                authority,
+                new_home,
+                now_unix,
+            } => self.transfer(authority, new_home, *now_unix),
         }
     }
 
@@ -154,6 +197,7 @@ impl OwnershipState {
                     epoch,
                 },
                 transfers: Vec::new(),
+                writes: BTreeMap::new(),
             },
         );
         OwnershipEffect::Assigned {
@@ -162,21 +206,70 @@ impl OwnershipState {
         }
     }
 
-    fn advance_epoch(&mut self, authority: &AuthorityKey) -> OwnershipEffect {
+    fn advance_epoch(&mut self, authority: &AuthorityKey, now_unix: i64) -> OwnershipEffect {
         let Some(record) = self.authorities.get_mut(&authority.0) else {
             return OwnershipEffect::Rejected(Rejection::NotAssigned);
         };
+        expire_writes(record, now_unix);
+        if !record.writes.is_empty() {
+            return OwnershipEffect::Rejected(Rejection::WritesInFlight);
+        }
         let epoch = AuthorityEpoch(record.epoch.0 + 1);
         record.epoch = epoch;
         OwnershipEffect::EpochAdvanced { epoch }
     }
 
-    fn transfer(&mut self, authority: &AuthorityKey, new_home: &DatacenterId) -> OwnershipEffect {
+    fn begin_write(
+        &mut self,
+        authority: &AuthorityKey,
+        epoch: AuthorityEpoch,
+        id: &str,
+        issued_at_unix: i64,
+        expires_at_unix: i64,
+    ) -> OwnershipEffect {
+        let Some(record) = self.authorities.get_mut(&authority.0) else {
+            return OwnershipEffect::Rejected(Rejection::NotAssigned);
+        };
+        expire_writes(record, issued_at_unix);
+        if record.epoch != epoch {
+            return OwnershipEffect::Rejected(Rejection::EpochMismatch);
+        }
+        if expires_at_unix <= issued_at_unix
+            || expires_at_unix.saturating_sub(issued_at_unix) > AUTHORITY_WRITE_LEASE_SECS
+        {
+            return OwnershipEffect::Rejected(Rejection::InvalidLease);
+        }
+        record
+            .writes
+            .insert(id.to_owned(), WriteLeaseRecord { epoch, expires_at_unix });
+        OwnershipEffect::WriteLeased {
+            epoch,
+            id: id.to_owned(),
+            expires_at_unix,
+        }
+    }
+
+    fn finish_write(&mut self, authority: &AuthorityKey, epoch: AuthorityEpoch, id: &str) -> OwnershipEffect {
+        let Some(record) = self.authorities.get_mut(&authority.0) else {
+            return OwnershipEffect::Rejected(Rejection::NotAssigned);
+        };
+        if record.writes.get(id).is_some_and(|lease| lease.epoch != epoch) {
+            return OwnershipEffect::Rejected(Rejection::EpochMismatch);
+        }
+        record.writes.remove(id);
+        OwnershipEffect::WriteFinished
+    }
+
+    fn transfer(&mut self, authority: &AuthorityKey, new_home: &DatacenterId, now_unix: i64) -> OwnershipEffect {
         let Some(record) = self.authorities.get_mut(&authority.0) else {
             return OwnershipEffect::Rejected(Rejection::NotAssigned);
         };
         if record.home == *new_home {
             return OwnershipEffect::Rejected(Rejection::SameHome);
+        }
+        expire_writes(record, now_unix);
+        if !record.writes.is_empty() {
+            return OwnershipEffect::Rejected(Rejection::WritesInFlight);
         }
         let epoch = AuthorityEpoch(record.epoch.0 + 1);
         let from = std::mem::replace(&mut record.home, new_home.clone());
@@ -243,4 +336,12 @@ impl OwnershipState {
         }
         Ok(Self { authorities })
     }
+}
+
+fn expire_writes(record: &mut AuthorityRecord, now_unix: i64) -> usize {
+    let before = record.writes.len();
+    record
+        .writes
+        .retain(|_, lease| lease.expires_at_unix.saturating_add(AUTHORITY_CLOCK_SKEW_SECS) > now_unix);
+    before - record.writes.len()
 }

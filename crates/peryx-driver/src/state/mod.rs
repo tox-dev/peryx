@@ -15,7 +15,9 @@ pub use describe::{
     HostedDescription, IndexDescription, MemberDescription, SecretDescription, UpstreamDescription,
     UpstreamSourceDescription, describe_index, describe_indexes,
 };
-pub use ownership::{ClusterStatus, HomeClaim, OwnershipAuthority, OwnershipError, TransferOutcome};
+pub use ownership::{
+    AuthorityWriteLease, ClusterStatus, HomeClaim, OwnershipAuthority, OwnershipError, TransferOutcome,
+};
 pub use peryx_core::PrometheusSource;
 pub use peryx_ha::{CommandOutcome, CommandReceipt, ControlCommand, ControlError, MembershipControl, OperationKind};
 pub use peryx_index::{Index, IndexKind};

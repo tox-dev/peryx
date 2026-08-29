@@ -773,10 +773,17 @@ impl DistributedRuntime {
         match &self.consensus {
             Some(plan) => {
                 let started = plan.ignite_with_lifecycle(lifecycle).await?;
-                let peer_router = crate::raft::network::raft_rpc_router(plan.token(), started.node().rpc_handler())
-                    .expect("the replication token was validated before consensus startup");
+                let peer_router = crate::raft::network::raft_rpc_router(
+                    plan.token(),
+                    started.node().rpc_handler_with_clock(self.clock.clone()),
+                )
+                .expect("the replication token was validated before consensus startup");
                 let (node, executor) = started.commit();
-                let group = Arc::new(OwnershipGroup::new(node, plan.home()).with_peer_forwarding(plan.token()));
+                let group = Arc::new(
+                    OwnershipGroup::new(node, plan.home())
+                        .with_peer_forwarding(plan.token())
+                        .with_clock(self.clock.clone()),
+                );
                 let ownership = Arc::new(crate::consensus_runtime::OwnershipHandle::new(&group));
                 Ok(Some(Consensus {
                     authority: ownership.clone(),

@@ -1,12 +1,10 @@
 //! A manifest publish, tag replacement, or delete is a metadata change under the repository's home
-//! authority. A mutation snapshots the repository's committed epoch when it starts, then re-admits that
-//! epoch just before it commits: a mutation whose home did not move commits under the epoch it leased,
-//! while one whose home transferred mid-flight leased a superseded epoch and is turned away before it
-//! changes any tag or manifest. A home that fails over yields the survivor's result, and a stale node's
-//! late write never exposes a second one.
+//! authority. A mutation snapshots the committed epoch, then acquires a bounded quorum lease before its
+//! metadata transaction. A transfer cannot commit while that lease is live, and an expired writer cannot
+//! commit after a transfer.
 //!
-//! A process with no ownership group, or a repository no group has homed (a committed epoch of `0`),
-//! holds no epoch and is never fenced, so a standalone deployment mutates exactly as it did before.
+//! A process with no ownership group holds no epoch, so a standalone deployment mutates exactly as it
+//! did before. A configured group fails closed until the repository has a committed home.
 
 use axum::response::Response;
 use peryx_driver::ServingState;
@@ -32,20 +30,73 @@ pub(in crate::registry) async fn claim_repository_home(state: &ServingState, rep
     }
 }
 
-/// Snapshot the repository's committed authority epoch to re-admit before a metadata mutation commits.
-/// Keyed by the repository's canonical authority key, the same key its home was assigned under.
+/// Snapshot the repository's committed authority epoch before a metadata mutation.
 pub(in crate::registry) async fn repository_epoch(state: &ServingState, repo: &str) -> u64 {
     state.committed_authority_epoch(&crate::name::authority_key(repo)).await
 }
 
-/// Whether a mutation leased at `fence` may still commit under `repo`'s committed epoch. A process with
-/// no ownership group, or a repository no group has homed (`fence` of `0`), holds no epoch and is never
-/// fenced.
-pub(in crate::registry) async fn epoch_admits(state: &ServingState, repo: &str, fence: u64) -> bool {
-    fence == 0
-        || state
-            .admit_authority_epoch(&crate::name::authority_key(repo), fence)
-            .await
+pub(in crate::registry) enum EpochCommit<T> {
+    Committed(T),
+    Fenced,
+}
+
+pub(in crate::registry) async fn commit_epoch<T>(
+    state: &ServingState,
+    repo: &str,
+    fence: u64,
+    mutation: impl FnOnce(&EpochLease<'_>) -> Result<T, ServeError>,
+) -> Result<EpochCommit<T>, ServeError> {
+    commit_authority_epoch(state, &crate::name::authority_key(repo), fence, mutation).await
+}
+
+pub(in crate::registry) async fn commit_authority_epoch<T>(
+    state: &ServingState,
+    authority: &str,
+    fence: u64,
+    mutation: impl FnOnce(&EpochLease<'_>) -> Result<T, ServeError>,
+) -> Result<EpochCommit<T>, ServeError> {
+    let lease = match state.begin_authority_epoch_write(authority, fence).await {
+        Ok(Some(lease)) => Some(lease),
+        Ok(None) if state.ownership_authority().is_none() => None,
+        Ok(None) | Err(_) => return Ok(EpochCommit::Fenced),
+    };
+    let lease = EpochLease { state, lease };
+    let result = if lease.check() {
+        match mutation(&lease) {
+            Ok(value) => Ok(EpochCommit::Committed(value)),
+            Err(ServeError::Fenced) => Ok(EpochCommit::Fenced),
+            Err(error) => Err(error),
+        }
+    } else {
+        Ok(EpochCommit::Fenced)
+    };
+    lease.finish().await;
+    result
+}
+
+pub(in crate::registry) struct EpochLease<'a> {
+    state: &'a ServingState,
+    lease: Option<peryx_ha::AuthorityWriteLease>,
+}
+
+impl EpochLease<'_> {
+    pub(in crate::registry) fn check(&self) -> bool {
+        self.lease
+            .as_ref()
+            .is_none_or(|lease| lease.admits((self.state.clock)()))
+    }
+
+    pub(in crate::registry) fn guard(&self) -> Result<(), ServeError> {
+        if self.check() { Ok(()) } else { Err(ServeError::Fenced) }
+    }
+
+    async fn finish(self) {
+        if let Some(lease) = self.lease
+            && let Err(error) = self.state.finish_authority_epoch_write(&lease).await
+        {
+            tracing::warn!(%error, authority = lease.authority, "authority write lease release failed");
+        }
+    }
 }
 
 /// The retry response for a mutation whose repository authority advanced past the epoch it leased. It is

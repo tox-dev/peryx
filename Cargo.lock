@@ -4959,6 +4959,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "utoipa",
+ "uuid",
 ]
 
 [[package]]

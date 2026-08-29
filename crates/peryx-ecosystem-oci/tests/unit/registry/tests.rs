@@ -15,6 +15,10 @@ fn test_serve_error_maps_every_fault_to_a_gateway_error() {
         ServeError::Transport("reset".to_owned()).into_response().status(),
         StatusCode::BAD_GATEWAY
     );
+    assert_eq!(
+        ServeError::Fenced.into_response().status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
 }
 
 #[test]
@@ -35,6 +39,7 @@ fn test_serve_error_message_describes_every_fault() {
             .message()
             .contains("upstream transfer failed")
     );
+    assert_eq!(ServeError::Fenced.message(), "repository authority moved");
 }
 
 #[tokio::test]

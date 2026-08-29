@@ -25,6 +25,7 @@ fn assign(authority: &str, home: &str) -> OwnershipCommand {
 fn advance(authority: &str) -> OwnershipCommand {
     OwnershipCommand::AdvanceAuthorityEpoch {
         authority: key(authority),
+        now_unix: 0,
     }
 }
 

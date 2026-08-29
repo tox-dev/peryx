@@ -11,6 +11,9 @@ struct RecordingAuthority {
     fail_claim: bool,
     epoch: u64,
     admit: bool,
+    lease_available: bool,
+    lease_expires_at_unix: i64,
+    finish_error: Option<&'static str>,
     checked: Mutex<Vec<String>>,
     claimed: Mutex<Vec<String>>,
     admitted: Mutex<Vec<u64>>,
@@ -18,32 +21,81 @@ struct RecordingAuthority {
 
 impl RecordingAuthority {
     fn unhomed() -> Arc<Self> {
-        Self::new(HashSet::new(), "local", false, 0, true)
+        Self::new(HashSet::new(), "local", false, 0, true, true)
     }
 
     fn already_homed(authority: &str) -> Arc<Self> {
-        Self::new(HashSet::from([authority.to_owned()]), "local", false, 1, true)
+        Self::new(HashSet::from([authority.to_owned()]), "local", false, 1, true, true)
     }
 
     fn failing() -> Arc<Self> {
-        Self::new(HashSet::new(), "local", true, 0, true)
+        Self::new(HashSet::new(), "local", true, 0, true, true)
     }
 
     fn remote() -> Arc<Self> {
-        Self::new(HashSet::new(), "west", false, 0, true)
+        Self::new(HashSet::new(), "west", false, 0, true, true)
     }
 
     fn homed_at_epoch(authority: &str, epoch: u64, admit: bool) -> Arc<Self> {
-        Self::new(HashSet::from([authority.to_owned()]), "local", false, epoch, admit)
+        Self::new(
+            HashSet::from([authority.to_owned()]),
+            "local",
+            false,
+            epoch,
+            admit,
+            true,
+        )
     }
 
-    fn new(homed: HashSet<String>, home: &'static str, fail_claim: bool, epoch: u64, admit: bool) -> Arc<Self> {
+    fn unavailable(authority: &str, epoch: u64) -> Arc<Self> {
+        Self::new(
+            HashSet::from([authority.to_owned()]),
+            "local",
+            false,
+            epoch,
+            true,
+            false,
+        )
+    }
+
+    fn leased(
+        authority: &str,
+        epoch: u64,
+        lease_expires_at_unix: i64,
+        finish_error: Option<&'static str>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            homed: HashSet::from([authority.to_owned()]),
+            home: "local",
+            fail_claim: false,
+            epoch,
+            admit: true,
+            lease_available: true,
+            lease_expires_at_unix,
+            finish_error,
+            checked: Mutex::new(Vec::new()),
+            claimed: Mutex::new(Vec::new()),
+            admitted: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn new(
+        homed: HashSet<String>,
+        home: &'static str,
+        fail_claim: bool,
+        epoch: u64,
+        admit: bool,
+        lease_available: bool,
+    ) -> Arc<Self> {
         Arc::new(Self {
             homed,
             home,
             fail_claim,
             epoch,
             admit,
+            lease_available,
+            lease_expires_at_unix: i64::MAX,
+            finish_error: None,
             checked: Mutex::new(Vec::new()),
             claimed: Mutex::new(Vec::new()),
             admitted: Mutex::new(Vec::new()),
@@ -95,6 +147,28 @@ impl OwnershipAuthority for RecordingAuthority {
     async fn admit_epoch(&self, _authority: &str, presented: u64) -> bool {
         self.admitted.lock().unwrap().push(presented);
         self.admit
+    }
+
+    async fn begin_epoch_write(
+        &self,
+        authority: &str,
+        presented: u64,
+    ) -> Result<Option<peryx_ha::AuthorityWriteLease>, OwnershipError> {
+        self.admitted.lock().unwrap().push(presented);
+        if !self.lease_available {
+            return Err(OwnershipError::Unavailable("quorum unavailable".to_owned()));
+        }
+        Ok(self.admit.then(|| peryx_ha::AuthorityWriteLease {
+            authority: authority.to_owned(),
+            epoch: presented,
+            id: "test-write".to_owned(),
+            expires_at_unix: self.lease_expires_at_unix,
+        }))
+    }
+
+    async fn finish_epoch_write(&self, _lease: &peryx_ha::AuthorityWriteLease) -> Result<(), OwnershipError> {
+        self.finish_error
+            .map_or(Ok(()), |error| Err(OwnershipError::Unavailable(error.to_owned())))
     }
 
     async fn transfer_home(
@@ -272,6 +346,47 @@ async fn test_a_publish_under_the_current_authority_epoch_stores() {
 }
 
 #[tokio::test]
+async fn test_an_expired_quorum_lease_publishes_no_file() {
+    let h = authority_harness().await;
+    bind_ownership_authority(&h.state, RecordingAuthority::leased("peryxpkg", 7, 1005, None));
+
+    let (status, body) = publish(&h.state).await;
+
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(body.contains("authority advanced"), "{body:?}");
+    assert!(
+        h.state
+            .serving
+            .meta
+            .list_upload_entries("hosted", "peryxpkg")
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn test_a_lease_release_failure_does_not_revoke_a_publish() {
+    let h = authority_harness().await;
+    bind_ownership_authority(
+        &h.state,
+        RecordingAuthority::leased("peryxpkg", 7, i64::MAX, Some("quorum unavailable")),
+    );
+
+    let (status, body) = publish(&h.state).await;
+
+    assert_eq!((status, body.as_str()), (StatusCode::OK, "upload accepted"));
+    assert_eq!(
+        h.state
+            .serving
+            .meta
+            .list_upload_entries("hosted", "peryxpkg")
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn test_a_stale_home_publish_is_fenced_by_the_authority_epoch() {
     let h = authority_harness().await;
     let group = RecordingAuthority::homed_at_epoch("peryxpkg", 7, false);
@@ -292,5 +407,45 @@ async fn test_a_stale_home_publish_is_fenced_by_the_authority_epoch() {
             .unwrap()
             .is_empty(),
         "the record write never ran, so no file published under the stale home",
+    );
+}
+
+#[tokio::test]
+async fn test_a_publish_without_a_quorum_lease_is_fenced() {
+    let h = authority_harness().await;
+    bind_ownership_authority(&h.state, RecordingAuthority::unavailable("peryxpkg", 7));
+
+    let (status, body) = publish(&h.state).await;
+
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(body.contains("authority advanced"), "{body:?}");
+    assert!(
+        h.state
+            .serving
+            .meta
+            .list_upload_entries("hosted", "peryxpkg")
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn test_unassigned_distributed_authority_cannot_delete_local_state() {
+    let h = authority_harness().await;
+    assert_eq!(publish(&h.state).await.0, StatusCode::OK);
+    bind_ownership_authority(&h.state, RecordingAuthority::homed_at_epoch("peryxpkg", 0, false));
+
+    assert_eq!(
+        request(&h.state, "DELETE", "/root/pypi/peryxpkg/", Some(&upload_auth()),).await,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        h.state
+            .serving
+            .meta
+            .list_upload_entries("hosted", "peryxpkg")
+            .unwrap()
+            .len(),
+        1
     );
 }

@@ -9,6 +9,7 @@ use peryx_driver::range::unsatisfiable_range;
 use super::uploads::created;
 use super::*;
 use crate::error::{ErrorCode, error_response, gateway_error};
+use crate::registry::authority::{EpochCommit, claim_repository_home, commit_epoch};
 use crate::store::{self};
 use crate::upstream::UpstreamError;
 use axum::body::Body;
@@ -259,7 +260,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         Ok(BlobFetch::Absent)
     }
 
-    pub(super) fn delete_blob(
+    pub(super) async fn delete_blob(
         &self,
         state: &Arc<ServingState>,
         headers: &HeaderMap,
@@ -276,13 +277,20 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
                 "only sha256 blob digests are supported",
             ));
         }
+        let fence = match claim_repository_home(state, &repo).await {
+            Ok(fence) => fence,
+            Err(response) => return Ok(response),
+        };
         let membership = store::blob_membership_key(&index.name, &repo, digest);
-        let deleted = {
-            let mut memberships = self.blob_memberships.write();
-            memberships.remove(&membership);
-            let deleted = crate::quota::release_blob_membership(&state.meta, &index.name, &repo, digest)?;
-            drop(memberships);
-            deleted
+        let mutation = commit_epoch(state, &repo, fence, |lease| {
+            lease.guard()?;
+            self.blob_memberships.write().remove(&membership);
+            crate::quota::release_blob_membership(&state.meta, &index.name, &repo, digest)
+        })
+        .await?;
+        let deleted = match mutation {
+            EpochCommit::Committed(deleted) => deleted,
+            EpochCommit::Fenced => return Ok(authority_moved()),
         };
         if !deleted {
             return Ok(error_response(ErrorCode::BlobUnknown, "blob unknown"));
@@ -456,21 +464,11 @@ fn download_error_response(err: DownloadError) -> Response {
 }
 
 /// A blob's placement is content-addressed and independent of any repository home, but recording that a
-/// repository serves the digest is a metadata write under the repository's authority. An upload snapshots
-/// the repository's committed epoch, then re-admits it before it records membership: an upload whose
-/// authority did not move commits under the epoch it leased, while one whose home transferred while the
-/// bytes arrived leased a superseded epoch and is turned away before it changes placement.
+/// repository serves the digest is a metadata write under the repository's authority.
 ///
-/// Snapshot the repository's committed authority epoch to re-admit before a blob upload records membership.
-pub(super) async fn upload_epoch(state: &ServingState, repo: &str) -> u64 {
-    state.committed_authority_epoch(repo).await
-}
-
-/// Whether an upload leased at `fence` may still record membership under `repo`'s committed epoch. A
-/// process with no ownership group, or a repository no group has homed (`fence` of `0`), holds no epoch
-/// and is never fenced.
-pub(super) async fn epoch_admits(state: &ServingState, repo: &str, fence: u64) -> bool {
-    fence == 0 || state.admit_authority_epoch(repo, fence).await
+/// Snapshot the repository's committed authority epoch before a blob upload records membership.
+pub(super) async fn upload_epoch(state: &ServingState, repo: &str) -> Result<u64, Response> {
+    claim_repository_home(state, repo).await
 }
 
 /// The retry response for an upload whose repository authority advanced past the epoch it leased. It is a
@@ -521,7 +519,13 @@ pub(super) async fn commit_blob(context: BlobCommitContext<'_>, pending: BlobWri
             "only sha256 blob digests are supported",
         ));
     };
-    let fence = upload_epoch(state, repo).await;
+    let fence = match upload_epoch(state, repo).await {
+        Ok(fence) => fence,
+        Err(response) => {
+            pending.abort().await.map_err(ServeError::from)?;
+            return Ok(response);
+        }
+    };
     // A digest this repository already serves is accounted; re-pushing it must not reserve again.
     let reservation = if store::blob_is_member(&state.meta, &index.name, repo, digest)? {
         None
@@ -535,17 +539,31 @@ pub(super) async fn commit_blob(context: BlobCommitContext<'_>, pending: BlobWri
             crate::quota::Admission::Reserved(record) => Some(record),
         }
     };
-    if !epoch_admits(state, repo, fence).await {
-        release_reservation(state, reservation)?;
-        pending.abort().await.map_err(ServeError::from)?;
-        return Ok(authority_moved());
-    }
     let operation = blob_operation(&index.name, repo, digest);
     state.claim_admitted_write(&operation);
     match pending.commit(&storage).await {
         Ok(_receipt) => {
-            crate::quota::commit_blob_membership(&state.meta, &index.name, repo, digest, reservation, None, journal)?;
-            state.record_home_placement(storage.as_str(), bytes, fence);
+            let mutation = commit_epoch(state, repo, fence, |lease| {
+                lease.guard()?;
+                crate::quota::commit_blob_membership(
+                    &state.meta,
+                    &index.name,
+                    repo,
+                    digest,
+                    reservation.clone(),
+                    None,
+                    journal,
+                )?;
+                lease.guard()?;
+                state.record_home_placement(storage.as_str(), bytes, fence);
+                Ok(())
+            })
+            .await?;
+            if matches!(mutation, EpochCommit::Fenced) {
+                release_reservation(state, reservation)?;
+                state.finalize_admitted_write(&operation, OperationResult::Failed, b"");
+                return Ok(authority_moved());
+            }
             state.finalize_admitted_write(&operation, OperationResult::Published, b"");
             state.record_operation_trace(peryx_driver::state::OperationKind::Publish, fence);
             Ok(blob_created(name, digest))
@@ -585,7 +603,10 @@ pub(super) async fn commit_staged_upload(
         bytes,
         journal,
     } = context;
-    let fence = upload_epoch(state, repo).await;
+    let fence = match upload_epoch(state, repo).await {
+        Ok(fence) => fence,
+        Err(response) => return Ok(response),
+    };
     let reservation = if store::blob_is_member(&state.meta, &index.name, repo, digest)? {
         None
     } else {
@@ -599,27 +620,31 @@ pub(super) async fn commit_staged_upload(
             crate::quota::Admission::Reserved(record) => Some(record),
         }
     };
-    if !epoch_admits(state, repo, fence).await {
-        // Keep the durable stage and its session so status stays usable and a retry, once the transfer
-        // has settled, finalizes without re-uploading a byte; only the momentary reservation is released.
-        release_reservation(state, reservation)?;
-        return Ok(authority_moved());
-    }
     let operation = blob_operation(&index.name, repo, digest);
     state.claim_admitted_write(&operation);
     match state.blobs.finish_upload(session, &storage).await {
         Ok(()) => {
-            let committed = crate::quota::commit_blob_membership(
-                &state.meta,
-                &index.name,
-                repo,
-                digest,
-                reservation,
-                Some(session),
-                journal,
-            );
-            committed?;
-            state.record_home_placement(storage.as_str(), bytes, fence);
+            let mutation = commit_epoch(state, repo, fence, |lease| {
+                lease.guard()?;
+                crate::quota::commit_blob_membership(
+                    &state.meta,
+                    &index.name,
+                    repo,
+                    digest,
+                    reservation.clone(),
+                    Some(session),
+                    journal,
+                )?;
+                lease.guard()?;
+                state.record_home_placement(storage.as_str(), bytes, fence);
+                Ok(())
+            })
+            .await?;
+            if matches!(mutation, EpochCommit::Fenced) {
+                release_reservation(state, reservation)?;
+                state.finalize_admitted_write(&operation, OperationResult::Failed, b"");
+                return Ok(authority_moved());
+            }
             state.finalize_admitted_write(&operation, OperationResult::Published, b"");
             state.record_operation_trace(peryx_driver::state::OperationKind::Publish, fence);
             Ok(blob_created(name, digest))

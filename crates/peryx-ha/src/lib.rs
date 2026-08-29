@@ -653,9 +653,33 @@ pub trait ControlAuthorizer: Send + Sync {
 pub struct HomeClaim {
     /// The datacenter selected by the committed assignment.
     pub home: String,
-    /// The assignment epoch the winner must re-admit before publication.
+    /// The assignment epoch the winner must lease before publication.
     pub epoch: u64,
 }
+
+/// A quorum-issued window in which one authority mutation may commit.
+#[must_use]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorityWriteLease {
+    pub authority: String,
+    pub epoch: u64,
+    pub id: String,
+    pub expires_at_unix: i64,
+}
+
+impl AuthorityWriteLease {
+    #[must_use]
+    pub const fn admits(&self, now_unix: i64) -> bool {
+        now_unix.saturating_add(AUTHORITY_CLOCK_SKEW_SECS) < self.expires_at_unix
+    }
+}
+
+/// Maximum permitted wall-clock error on an availability-group member. Writers stop this far before
+/// expiry; transfer keeps the permit this far after expiry, so their commit windows cannot overlap.
+pub const AUTHORITY_CLOCK_SKEW_SECS: i64 = 5;
+
+/// Maximum lifetime of an authority write lease.
+pub const AUTHORITY_WRITE_LEASE_SECS: i64 = 30;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransferOutcome {
@@ -691,6 +715,28 @@ pub trait OwnershipAuthority: Send + Sync {
     async fn committed_epoch(&self, authority: &str) -> u64;
 
     async fn admit_epoch(&self, authority: &str, presented: u64) -> bool;
+
+    /// # Errors
+    ///
+    /// Returns [`OwnershipError`] when the quorum cannot lease the presented epoch.
+    async fn begin_epoch_write(
+        &self,
+        _authority: &str,
+        _presented: u64,
+    ) -> Result<Option<AuthorityWriteLease>, OwnershipError> {
+        Err(OwnershipError::Unavailable(
+            "ownership write leasing is unavailable".to_owned(),
+        ))
+    }
+
+    /// # Errors
+    ///
+    /// Returns [`OwnershipError`] when the quorum cannot release the lease.
+    async fn finish_epoch_write(&self, _lease: &AuthorityWriteLease) -> Result<(), OwnershipError> {
+        Err(OwnershipError::Unavailable(
+            "ownership write leasing is unavailable".to_owned(),
+        ))
+    }
 
     /// # Errors
     ///

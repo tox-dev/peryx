@@ -650,6 +650,7 @@ async fn test_yank_applies_at_the_current_authority_epoch() {
         AuthorityDouble {
             committed: 5,
             current: 5,
+            ..AuthorityDouble::default()
         },
     );
     assert_eq!(
@@ -670,6 +671,7 @@ async fn test_yank_under_a_superseded_epoch_conflicts_and_writes_nothing() {
         AuthorityDouble {
             committed: 5,
             current: 6,
+            ..AuthorityDouble::default()
         },
     );
     let (status, body) = request_response(&h.state, "PUT", "/root/pypi/peryxpkg/1.0/yank", Some(&upload_auth())).await;
@@ -689,6 +691,7 @@ async fn test_delete_at_the_current_authority_epoch_applies() {
         AuthorityDouble {
             committed: 9,
             current: 9,
+            ..AuthorityDouble::default()
         },
     );
     assert_eq!(
@@ -708,6 +711,7 @@ async fn test_delete_under_a_superseded_epoch_conflicts_and_keeps_the_file() {
         AuthorityDouble {
             committed: 5,
             current: 6,
+            ..AuthorityDouble::default()
         },
     );
     let (status, body) = request_response(&h.state, "DELETE", "/root/pypi/peryxpkg/", Some(&upload_auth())).await;
@@ -731,6 +735,7 @@ async fn test_restore_under_a_superseded_epoch_conflicts() {
         AuthorityDouble {
             committed: 5,
             current: 6,
+            ..AuthorityDouble::default()
         },
     );
     let (status, body) = request_response(&h.state, "PUT", "/root/pypi/peryxpkg/restore", Some(&upload_auth())).await;

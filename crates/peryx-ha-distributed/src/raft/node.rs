@@ -16,6 +16,8 @@ use crate::ownership::OwnershipCommand;
 use crate::raft::config::RaftConfig;
 use crate::raft::network::{RaftRpc, RaftRpcHandler, RaftRpcRejection};
 use crate::raft::{OwnershipResponse, OwnershipStateMachine, PeryxNode, TypeConfig};
+use peryx_core::Clock;
+use peryx_ha::AUTHORITY_WRITE_LEASE_SECS;
 
 type NodeId = u64;
 
@@ -131,14 +133,21 @@ impl RaftNode {
     /// group cannot reach quorum.
     #[must_use]
     pub fn rpc_handler(&self) -> Arc<dyn RaftRpcHandler> {
+        self.rpc_handler_with_clock(Arc::new(unix_now))
+    }
+
+    #[must_use]
+    pub fn rpc_handler_with_clock(&self, clock: Clock) -> Arc<dyn RaftRpcHandler> {
         Arc::new(OwnershipRpcHandler {
             raft: self.raft.clone(),
+            clock,
         })
     }
 }
 
 struct OwnershipRpcHandler {
     raft: Raft<TypeConfig>,
+    clock: Clock,
 }
 
 #[async_trait::async_trait]
@@ -150,7 +159,7 @@ impl RaftRpcHandler for OwnershipRpcHandler {
                 Ok(encode(&self.raft.append_entries(request).await))
             }
             RaftRpc::ClientWrite => {
-                let request: OwnershipCommand = decode(&body)?;
+                let request = stamp_leader_time(decode(&body)?, (self.clock)());
                 Ok(encode(&self.raft.client_write(request).await))
             }
             RaftRpc::Vote => {
@@ -163,6 +172,37 @@ impl RaftRpcHandler for OwnershipRpcHandler {
             }
         }
     }
+}
+
+fn stamp_leader_time(command: OwnershipCommand, now_unix: i64) -> OwnershipCommand {
+    match command {
+        OwnershipCommand::BeginEpochWrite {
+            authority, epoch, id, ..
+        } => OwnershipCommand::BeginEpochWrite {
+            authority,
+            epoch,
+            id,
+            issued_at_unix: now_unix,
+            expires_at_unix: now_unix.saturating_add(AUTHORITY_WRITE_LEASE_SECS),
+        },
+        OwnershipCommand::AdvanceAuthorityEpoch { authority, .. } => {
+            OwnershipCommand::AdvanceAuthorityEpoch { authority, now_unix }
+        }
+        OwnershipCommand::RecordTransfer {
+            authority, new_home, ..
+        } => OwnershipCommand::RecordTransfer {
+            authority,
+            new_home,
+            now_unix,
+        },
+        command => command,
+    }
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| i64::try_from(duration.as_secs()).unwrap_or(i64::MAX))
 }
 
 fn decode<T: serde::de::DeserializeOwned>(body: &Bytes) -> Result<T, RaftRpcRejection> {

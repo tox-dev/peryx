@@ -80,6 +80,23 @@ impl OwnershipAuthority for StaticAuthority {
         presented == 7
     }
 
+    async fn begin_epoch_write(
+        &self,
+        authority: &str,
+        presented: u64,
+    ) -> Result<Option<peryx_ha::AuthorityWriteLease>, OwnershipError> {
+        Ok((presented == 7).then(|| peryx_ha::AuthorityWriteLease {
+            authority: authority.to_owned(),
+            epoch: presented,
+            id: "write-1".to_owned(),
+            expires_at_unix: i64::MAX,
+        }))
+    }
+
+    async fn finish_epoch_write(&self, _lease: &peryx_ha::AuthorityWriteLease) -> Result<(), OwnershipError> {
+        Ok(())
+    }
+
     async fn transfer_home(&self, authority: &str, new_home: &str) -> Result<Option<TransferOutcome>, OwnershipError> {
         Ok(Some(TransferOutcome {
             from: authority.to_owned(),
@@ -481,6 +498,21 @@ async fn deferred_worker_inputs_fail_closed_until_bound_and_active() {
     assert_eq!(ownership.committed_epoch("resource").await, 0);
     assert!(!ownership.admit_epoch("resource", 7).await);
     assert!(matches!(
+        ownership.begin_epoch_write("resource", 7).await,
+        Err(OwnershipError::Unavailable(_))
+    ));
+    assert!(matches!(
+        ownership
+            .finish_epoch_write(&peryx_ha::AuthorityWriteLease {
+                authority: "resource".to_owned(),
+                epoch: 7,
+                id: "write-1".to_owned(),
+                expires_at_unix: 100,
+            })
+            .await,
+        Err(OwnershipError::Unavailable(_))
+    ));
+    assert!(matches!(
         ownership.transfer_home("resource", "west").await,
         Err(OwnershipError::Unavailable(_))
     ));
@@ -496,6 +528,8 @@ async fn deferred_worker_inputs_fail_closed_until_bound_and_active() {
     assert_eq!(ownership.cluster_status().term, 7);
     assert_eq!(ownership.committed_epoch("resource").await, 7);
     assert!(ownership.admit_epoch("resource", 7).await);
+    let lease = ownership.begin_epoch_write("resource", 7).await.unwrap().unwrap();
+    ownership.finish_epoch_write(&lease).await.unwrap();
     assert_eq!(ownership.transfer_home("east", "west").await.unwrap().unwrap().epoch, 8);
 
     let references = DeferredReferences::default();

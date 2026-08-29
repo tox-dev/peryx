@@ -3,12 +3,12 @@ use std::time::Duration;
 
 use axum::body::Bytes;
 use openraft::error::{ClientWriteError, Fatal, ForwardToLeader, InitializeError, RaftError};
-use openraft::raft::InstallSnapshotRequest;
+use openraft::raft::{ClientWriteResponse, InstallSnapshotRequest};
 use openraft::{ServerState, SnapshotMeta, Vote};
 use tempfile::TempDir;
 
 use crate::consensus_runtime::OwnershipGroup;
-use crate::ownership::{AssignmentCause, DatacenterId, OwnershipCommand, OwnershipEffect};
+use crate::ownership::{AssignmentCause, DatacenterId, OwnershipCommand, OwnershipEffect, Rejection};
 use crate::raft::log_store::RaftLogStoreAdapter;
 use crate::raft::network::{PeerRaftNetworkFactory, RaftRpc, RaftRpcRejection, raft_rpc_router};
 use crate::raft::persistence::RaftLogStore;
@@ -97,6 +97,73 @@ async fn test_a_committed_command_returns_its_applied_effect() {
 }
 
 #[tokio::test]
+async fn test_client_write_rpc_stamps_lease_times_with_the_leader_clock() {
+    let dir = tempfile::tempdir().unwrap();
+    let node = leader_node(&dir).await;
+    node.submit(OwnershipCommand::AssignHome {
+        authority: AuthorityKey("proj".to_owned()),
+        home: DatacenterId("east".to_owned()),
+        cause: AssignmentCause::FirstPublish,
+    })
+    .await
+    .unwrap();
+    let handler = node.rpc_handler_with_clock(std::sync::Arc::new(|| 42));
+
+    let body = Bytes::from(
+        serde_json::to_vec(&OwnershipCommand::BeginEpochWrite {
+            authority: AuthorityKey("proj".to_owned()),
+            epoch: AuthorityEpoch(1),
+            id: "write-1".to_owned(),
+            issued_at_unix: -1_000,
+            expires_at_unix: i64::MAX,
+        })
+        .unwrap(),
+    );
+    let reply = handler.handle(RaftRpc::ClientWrite, body).await.unwrap();
+    let response: Result<ClientWriteResponse<TypeConfig>, RaftError<u64, ClientWriteError<u64, PeryxNode>>> =
+        serde_json::from_slice(&reply).unwrap();
+    assert_eq!(
+        response.unwrap().data,
+        OwnershipResponse::Applied(OwnershipEffect::WriteLeased {
+            epoch: AuthorityEpoch(1),
+            id: "write-1".to_owned(),
+            expires_at_unix: 42 + peryx_ha::AUTHORITY_WRITE_LEASE_SECS,
+        })
+    );
+
+    let body = Bytes::from(
+        serde_json::to_vec(&OwnershipCommand::RecordTransfer {
+            authority: AuthorityKey("proj".to_owned()),
+            new_home: DatacenterId("west".to_owned()),
+            now_unix: i64::MAX,
+        })
+        .unwrap(),
+    );
+    let reply = handler.handle(RaftRpc::ClientWrite, body).await.unwrap();
+    let response: Result<ClientWriteResponse<TypeConfig>, RaftError<u64, ClientWriteError<u64, PeryxNode>>> =
+        serde_json::from_slice(&reply).unwrap();
+    assert_eq!(
+        response.unwrap().data,
+        OwnershipResponse::Applied(OwnershipEffect::Rejected(Rejection::WritesInFlight))
+    );
+
+    let body = Bytes::from(
+        serde_json::to_vec(&OwnershipCommand::AdvanceAuthorityEpoch {
+            authority: AuthorityKey("proj".to_owned()),
+            now_unix: i64::MAX,
+        })
+        .unwrap(),
+    );
+    let reply = handler.handle(RaftRpc::ClientWrite, body).await.unwrap();
+    let response: Result<ClientWriteResponse<TypeConfig>, RaftError<u64, ClientWriteError<u64, PeryxNode>>> =
+        serde_json::from_slice(&reply).unwrap();
+    assert_eq!(
+        response.unwrap().data,
+        OwnershipResponse::Applied(OwnershipEffect::Rejected(Rejection::WritesInFlight))
+    );
+}
+
+#[tokio::test]
 async fn test_a_submit_without_a_leader_surfaces_the_error() {
     let dir = tempfile::tempdir().unwrap();
     let node = start_node(&dir, RaftConfig::default()).await.unwrap();
@@ -104,6 +171,7 @@ async fn test_a_submit_without_a_leader_surfaces_the_error() {
     let result = node
         .submit(OwnershipCommand::AdvanceAuthorityEpoch {
             authority: AuthorityKey("proj".to_owned()),
+            now_unix: 0,
         })
         .await;
 
