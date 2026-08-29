@@ -32,20 +32,29 @@ pub async fn file_path(
     route: String,
     filename: String,
 ) -> Result<BlobLease, CacheError> {
+    Ok(file_path_with_size(state, digest, route, filename).await?.0)
+}
+
+pub async fn file_path_with_size(
+    state: Arc<ServingState>,
+    digest: Digest,
+    route: String,
+    filename: String,
+) -> Result<(BlobLease, u64), CacheError> {
     ensure_digest_clear(&state, &digest)?;
-    if state.blobs.head(&digest).await?.is_some() {
-        return Ok(state.blobs.materialize(&digest).await?);
+    if let Some(metadata) = state.blobs.head(&digest).await? {
+        return Ok((state.blobs.materialize(&digest).await?, metadata.bytes));
     }
     let mut handle = {
         let gate = flight_gate(&state, digest.as_str());
         let guard = gate.lock_owned().await;
-        if state.blobs.head(&digest).await?.is_some() {
+        if let Some(metadata) = state.blobs.head(&digest).await? {
             release_flight(&state, digest.as_str(), guard);
-            return Ok(state.blobs.materialize(&digest).await?);
+            return Ok((state.blobs.materialize(&digest).await?, metadata.bytes));
         }
-        if fill_remote(&state, &digest).await.is_some() {
+        if let Some(metadata) = fill_remote(&state, &digest).await {
             release_flight(&state, digest.as_str(), guard);
-            return Ok(state.blobs.materialize(&digest).await?);
+            return Ok((state.blobs.materialize(&digest).await?, metadata.bytes));
         }
         let handle = if let Some(running) = existing_download(&state, &digest) {
             running
@@ -55,8 +64,8 @@ pub async fn file_path(
         release_flight(&state, digest.as_str(), guard);
         handle
     };
-    wait_for_download(&mut handle).await?;
-    Ok(state.blobs.materialize(&digest).await?)
+    let bytes = wait_for_download(&mut handle).await?;
+    Ok((state.blobs.materialize(&digest).await?, bytes))
 }
 
 pub enum FileProbe {
@@ -202,11 +211,12 @@ fn existing_download(state: &ServingState, digest: &Digest) -> Option<DownloadHa
     state.downloads.get(digest.as_str())
 }
 
-async fn wait_for_download(handle: &mut DownloadHandle) -> Result<(), CacheError> {
+async fn wait_for_download(handle: &mut DownloadHandle) -> Result<u64, CacheError> {
     loop {
-        let done = handle.progress().borrow_and_update().done.clone();
+        let progress = handle.progress().borrow_and_update().clone();
+        let done = progress.done;
         match done {
-            Some(Ok(())) => return Ok(()),
+            Some(Ok(())) => return Ok(progress.flushed),
             Some(Err(message)) => return Err(CacheError::Stream(message)),
             None => {
                 handle

@@ -8,9 +8,7 @@ use anyhow::{Context as _, bail};
 use peryx_driver::{AppState, ServingState};
 use peryx_storage::blob::Digest;
 
-use super::report::{
-    blob_size, unix_now, write_count, write_file_row, write_file_row_bytes, write_page_row, write_row,
-};
+use super::report::{unix_now, write_count, write_file_row, write_file_row_bytes, write_page_row, write_row};
 use super::selection::{candidates, content_type_is_json, selection, target};
 use super::{
     BlobCheck, FileCandidate, HEADER, PrefetchConfig, PrefetchFile, PrefetchOptions, Row, Selection, SelectionSource,
@@ -280,16 +278,12 @@ async fn sync_file(
     file: &PrefetchFile,
 ) -> Result<SyncOutcome, crate::cache::CacheError> {
     let digest = Digest::from_hex(&file.digest).ok_or(crate::cache::CacheError::FileNotFound)?;
-    if state.blobs.head(&digest).await?.is_some() {
-        return Ok(SyncOutcome::Cached(blob_size(&state, &digest).await));
+    if let Some(metadata) = state.blobs.head(&digest).await? {
+        return Ok(SyncOutcome::Cached(metadata.bytes));
     }
-    let path = crate::cache::file_path(state, digest.clone(), target.route.clone(), file.filename.clone()).await?;
-    Ok(SyncOutcome::Downloaded(
-        path.path()
-            .metadata()
-            .expect("a blob lease keeps its materialized path available")
-            .len(),
-    ))
+    let (_, bytes) =
+        crate::cache::file_path_with_size(state, digest, target.route.clone(), file.filename.clone()).await?;
+    Ok(SyncOutcome::Downloaded(bytes))
 }
 
 async fn sync_metadata(
@@ -301,8 +295,8 @@ async fn sync_metadata(
 ) -> Result<SyncOutcome, crate::cache::CacheError> {
     let artifact = Digest::from_hex(artifact_digest).ok_or(crate::cache::CacheError::FileNotFound)?;
     let metadata = Digest::from_hex(metadata_digest).ok_or(crate::cache::CacheError::FileNotFound)?;
-    if state.blobs.head(&metadata).await?.is_some() {
-        return Ok(SyncOutcome::Cached(blob_size(state, &metadata).await));
+    if let Some(metadata) = state.blobs.head(&metadata).await? {
+        return Ok(SyncOutcome::Cached(metadata.bytes));
     }
     Ok(SyncOutcome::Downloaded(
         crate::cache::metadata_bytes(state, &artifact, route, metadata_filename)

@@ -1,7 +1,4 @@
-use peryx_storage::blob::Digest;
-
-use super::{blob_size, unix_now, write_count, write_file_row, write_file_row_bytes, write_page_row, write_row};
-use crate::mirror::test_support;
+use super::{unix_now, write_count, write_file_row, write_file_row_bytes, write_page_row, write_row};
 use crate::mirror::{PrefetchFile, PrefetchMetadata, Row};
 
 fn file() -> PrefetchFile {
@@ -46,23 +43,6 @@ fn report_writes_each_row_shape() {
     assert!(rows.contains("file\tpypi\tdemo\tdemo-1.0.tar.gz"));
     assert!(rows.contains("summary\tpypi\t\tfiles\t\t\t2\tfiles\t\n"));
     assert!(rows.contains("metadata\tpypi\tdemo\tdemo.metadata"));
-}
-
-#[tokio::test]
-async fn blob_size_reports_present_and_missing_blobs() {
-    let fixture = test_support::state(Vec::new());
-    let present = Digest::of(b"present");
-    fixture
-        .state
-        .serving
-        .blobs
-        .blocking()
-        .put_bytes_as(b"present", &present)
-        .unwrap();
-
-    assert_eq!(blob_size(&fixture.state.serving, &present).await, 7);
-    assert_eq!(blob_size(&fixture.state.serving, &Digest::of(b"missing")).await, 0);
-    assert!(fixture.dir.path().exists());
 }
 
 #[test]

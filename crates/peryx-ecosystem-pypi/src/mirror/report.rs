@@ -1,9 +1,6 @@
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use peryx_driver::ServingState;
-use peryx_storage::blob::Digest;
-
 use super::{PrefetchFile, Row};
 
 pub(super) fn write_page_row(
@@ -95,16 +92,6 @@ pub(super) fn write_count(
             reason: "",
         },
     )
-}
-
-pub(super) async fn blob_size(state: &ServingState, digest: &Digest) -> u64 {
-    state
-        .blobs
-        .head(digest)
-        .await
-        .ok()
-        .flatten()
-        .map_or(0, |metadata| metadata.bytes)
 }
 
 pub(super) fn unix_now() -> u64 {

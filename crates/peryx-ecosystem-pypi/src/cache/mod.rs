@@ -22,6 +22,7 @@ mod resolve;
 mod shadow;
 
 pub(crate) use download::download_dimensions;
+pub(crate) use download::file_path_with_size;
 pub use download::{FileOutcome, FileProbe, file_path, probe_file, stream_file};
 pub use fetch::{
     MAX_PROJECT_BYTES, MAX_PROJECT_FILES, ProjectSyncError, ProjectSyncOutcome, RefreshSummary, refresh_stale_pages,

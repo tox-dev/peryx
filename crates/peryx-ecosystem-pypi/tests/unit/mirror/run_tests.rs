@@ -284,9 +284,80 @@ async fn sync_downloads_metadata_and_artifacts() {
     .unwrap();
 
     let output = String::from_utf8(output).unwrap();
-    assert!(output.contains("downloaded"));
-    assert!(output.contains("skipped"));
+    assert_eq!(
+        reported_sizes(&output, "downloaded"),
+        [
+            ("metadata", "demo-1.0-py3-none-any.whl.metadata", "8"),
+            ("file", "demo-1.0-py3-none-any.whl", "8"),
+            ("file", "demo-1.0.zip", "5"),
+        ]
+    );
     assert!(output.contains("files_downloaded\t\t\t3"));
+    assert!(output.contains("bytes_downloaded\t\t\t21"));
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn mirror_sync_reports_blob_head_errors_for_artifacts_and_metadata() {
+    let server = MockServer::start().await;
+    let mut detail = artifact_detail(&server.uri());
+    detail.files.truncate(1);
+    Mock::given(method("GET"))
+        .and(path("/simple/demo/"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(to_json(&detail), "application/vnd.pypi.simple.v1+json"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let fixture = test_support::state(vec![cached_index(&format!("{}/simple/", server.uri()), false)]);
+    let store = fixture.state.serving.blobs.filesystem_store().unwrap();
+    for digest in [Digest::of(b"artifact"), Digest::of(b"metadata")] {
+        let path = store.path_for(&digest);
+        std::fs::create_dir_all(path.parent().unwrap().parent().unwrap()).unwrap();
+        std::fs::write(path.parent().unwrap(), b"not a directory").unwrap();
+    }
+    let configured = toml::Table::from_iter([
+        ("mode".to_owned(), toml::Value::String("selected".to_owned())),
+        (
+            "packages".to_owned(),
+            toml::Value::Array(vec![toml::Value::String("demo".to_owned())]),
+        ),
+    ]);
+    let mut output = Vec::new();
+
+    let error = crate::PypiServing
+        .mirror(
+            fixture.state,
+            MirrorRequest {
+                action: MirrorAction::Sync,
+                index: "pypi",
+                settings: &toml::Table::new(),
+                configured: &configured,
+                overrides: &toml::Table::new(),
+            },
+            &mut output,
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(error, "prefetch sync found 2 failure(s)");
+    let output = String::from_utf8(output).unwrap();
+    assert_eq!(
+        output
+            .lines()
+            .filter_map(|line| {
+                let cells = line.split('\t').collect::<Vec<_>>();
+                (cells.get(7) == Some(&"failure"))
+                    .then(|| (cells[0], cells[3], cells[6], cells[8].starts_with("blob store error:")))
+            })
+            .collect::<Vec<_>>(),
+        [
+            ("metadata", "demo-1.0-py3-none-any.whl.metadata", "", true),
+            ("file", "demo-1.0-py3-none-any.whl", "8", true),
+        ]
+    );
+    assert!(output.contains("files_downloaded\t\t\t0"));
+    assert!(output.contains("bytes_downloaded\t\t\t0"));
+    assert!(output.contains("failures\t\t\t2"));
     server.verify().await;
 }
 
@@ -494,7 +565,15 @@ async fn sync_files_reports_cached_metadata_only_and_filtered_files() {
     )
     .await
     .unwrap();
-    assert!(String::from_utf8(output).unwrap().contains("cached"));
+    let output = String::from_utf8(output).unwrap();
+    assert_eq!(
+        reported_sizes(&output, "cached"),
+        [
+            ("metadata", "demo-1.0-py3-none-any.whl.metadata", "8"),
+            ("file", "demo-1.0-py3-none-any.whl", "8"),
+            ("file", "demo-1.0.zip", "5"),
+        ]
+    );
     assert_eq!(summary.skipped, 1);
 
     selection.filters.metadata_only = true;
@@ -792,4 +871,14 @@ async fn mirror_driver_reports_a_valid_empty_selection_override() {
         "cached index pypi has no selected packages; add [index.prefetch].packages or --option 'packages=[\"requests\"]'"
     );
     assert!(output.is_empty());
+}
+
+fn reported_sizes<'output>(output: &'output str, status: &str) -> Vec<(&'output str, &'output str, &'output str)> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let cells = line.split('\t').collect::<Vec<_>>();
+            (cells.get(7) == Some(&status)).then(|| (cells[0], cells[3], cells[6]))
+        })
+        .collect()
 }
