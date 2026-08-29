@@ -5,7 +5,8 @@ use std::sync::Arc;
 use anyhow::{Context as _, ensure};
 use peryx_driver::AppState;
 use peryx_driver::jobs::{
-    JobLimits, JobScheduler, MAX_SEARCH_REBUILD_CHUNK, NodeJob, ScheduledJob, SearchRebuildJob, scheduled_job,
+    JobLimits, JobRunOutcome, JobScheduler, MAX_SEARCH_REBUILD_CHUNK, NodeJob, ScheduledJob, SearchRebuildJob,
+    scheduled_job,
 };
 use peryx_ha_distributed::AuthorityDrainJob;
 use peryx_storage::meta::{JobRunQuery, MetaStore};
@@ -169,7 +170,7 @@ fn run_node_job(
     out: &mut dyn Write,
 ) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
-    let report = runtime.block_on(async {
+    let outcome = runtime.block_on(async {
         let state = crate::server::build_state_with_active_plugins(config, plugins)?;
         let scheduler = JobScheduler::new(state.serving.clone(), JobLimits::node_local());
         let result = scheduler
@@ -179,6 +180,14 @@ fn run_node_job(
         scheduler.shutdown().await;
         result
     })?;
+    let JobRunOutcome::Succeeded(report) = outcome else {
+        let report = outcome.report();
+        anyhow::bail!(
+            "job cancelled after processing {} items and changing {}",
+            report.processed,
+            report.changed
+        );
+    };
     writeln!(out, "processed\t{}", report.processed)?;
     writeln!(out, "changed\t{}", report.changed)?;
     writeln!(out, "quota_released\t{}", report.quota_released)?;

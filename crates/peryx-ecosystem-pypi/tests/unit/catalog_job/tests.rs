@@ -2,7 +2,9 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
-use peryx_driver::jobs::{JobLimits, JobReport, JobScheduler, PluginScheduledJob, ScheduledJob, scheduled_job};
+use peryx_driver::jobs::{
+    JobLimits, JobReport, JobRunOutcome, JobScheduler, PluginScheduledJob, ScheduledJob, scheduled_job,
+};
 use peryx_driver::serving::{JobConfig, JobIndexConfig};
 use peryx_driver::state::AppState;
 use peryx_index::{Index, IndexKind};
@@ -76,7 +78,7 @@ async fn run(app: &Arc<AppState>, parameters: CatalogSyncParameters) -> Result<J
     let job = scheduled_job(app, &catalog_sync(parameters)).unwrap();
     let result = scheduler.run(job).await;
     scheduler.shutdown().await;
-    result
+    result.map(JobRunOutcome::report)
 }
 
 async fn mount_root(server: &MockServer, projects: &[&str]) {
@@ -709,11 +711,11 @@ async fn test_catalog_job_uses_the_public_factory_and_scheduler_completion() {
     let job = scheduled_job(&app, &catalog_sync(parameters("scheduled", 1, 1))).unwrap();
     assert_eq!(
         scheduler.run(job).await.unwrap(),
-        JobReport {
+        JobRunOutcome::succeeded(JobReport {
             processed: 0,
             changed: 1,
             ..JobReport::default()
-        }
+        })
     );
     scheduler.shutdown().await;
     assert_eq!(app.serving.meta.list_job_runs().unwrap()[0].state, JobState::Succeeded);
@@ -755,11 +757,11 @@ async fn test_cancellation_drops_an_inflight_project_without_partial_publication
             .expect("the project job reports cancellation")
             .unwrap()
             .unwrap(),
-        JobReport {
+        JobRunOutcome::cancelled(JobReport {
             processed: 0,
             changed: 1,
             ..JobReport::default()
-        }
+        })
     );
     assert!(
         crate::store::catalog_state(&app.serving.meta, "cancel-project")
@@ -803,7 +805,7 @@ async fn test_cancellation_drops_an_inflight_root_without_publication() {
             .expect("the root job reports cancellation")
             .unwrap()
             .unwrap(),
-        JobReport::default()
+        JobRunOutcome::cancelled(JobReport::default())
     );
     assert!(
         crate::store::catalog_state(&app.serving.meta, "cancel-root")

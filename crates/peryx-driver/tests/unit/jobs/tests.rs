@@ -19,9 +19,9 @@ use super::attempts::JobAttemptError;
 use super::scheduler::{JobLimits, Submit};
 use super::{
     CacheRefreshJob, CancelJobRun, IdleReclaimJob, IntentFinalizeJob, JobCompletionOutcome, JobContext, JobFailure,
-    JobHistoryCleanup, JobReport, JobScheduler, LeaseScope, NodeJob, NodeJobMetadata, PluginScheduledJob,
-    RegisteredScheduledJob, Schedule, ScheduledJob, ScheduledJobFactory, SearchRebuildJob, run_schedules,
-    scheduled_job, submit_maintenance,
+    JobHistoryCleanup, JobReport, JobRunOutcome, JobScheduler, LeaseScope, NodeJob, NodeJobMetadata,
+    PluginScheduledJob, RegisteredScheduledJob, Schedule, ScheduledJob, ScheduledJobFactory, SearchRebuildJob,
+    run_schedules, scheduled_job, submit_maintenance,
 };
 use crate::serving::{CacheRefresher, IdleReclaimer, IntentFinalizer, RefreshSweep};
 use crate::state::{AppState, Clock, ServingState};
@@ -222,18 +222,21 @@ impl NodeJob for TestJob {
         }
     }
 
-    async fn run(&self, ctx: &JobContext) -> Result<JobReport, JobFailure> {
+    async fn run(&self, ctx: &JobContext) -> Result<JobRunOutcome, JobFailure> {
         self.ran.fetch_add(1, Ordering::SeqCst);
         self.started.notify_one();
         let result = match &self.action {
-            Action::Return(result) => result.clone().map_err(|message| JobFailure::new("test", message)),
+            Action::Return(result) => result
+                .clone()
+                .map(JobRunOutcome::succeeded)
+                .map_err(|message| JobFailure::new("test", message)),
             Action::Block(release) => {
                 release.notified().await;
-                Ok(JobReport::default())
+                Ok(JobRunOutcome::succeeded(JobReport::default()))
             }
             Action::UntilCancelled => {
                 ctx.cancelled().await;
-                Ok(JobReport::default())
+                Ok(JobRunOutcome::cancelled(JobReport::default()))
             }
             Action::FailWhenCancelled => {
                 ctx.cancelled().await;
@@ -250,7 +253,7 @@ impl NodeJob for TestJob {
                     .meta
                     .finish_job_run(&id, JobOutcome::succeeded(1_000, 0, 0))
                     .unwrap();
-                Ok(JobReport::default())
+                Ok(JobRunOutcome::succeeded(JobReport::default()))
             }
             Action::Panic => panic!("test panic"),
         };
@@ -373,11 +376,11 @@ async fn test_a_succeeding_job_runs_and_is_not_recorded_without_persistence() {
     );
     assert_eq!(
         scheduler.run(job.clone()).await.unwrap(),
-        JobReport {
+        JobRunOutcome::succeeded(JobReport {
             processed: 4,
             changed: 2,
             ..JobReport::default()
-        }
+        })
     );
     assert_eq!(job.ran.load(Ordering::SeqCst), 1);
     assert!(job_runs(&state.meta).is_empty());
@@ -400,7 +403,7 @@ async fn test_run_waits_for_and_returns_a_jobs_report() {
             .with_subscriber(test_subscriber())
             .await
             .unwrap(),
-        report
+        JobRunOutcome::succeeded(report)
     );
     assert_eq!(
         scheduler
@@ -628,7 +631,10 @@ async fn test_cancel_job_run_signals_only_the_selected_attempt() {
         .id;
 
     assert_eq!(scheduler.cancel_job_run(&selected_id).unwrap(), CancelJobRun::Requested);
-    assert_eq!(selected_run.await.unwrap().unwrap(), JobReport::default());
+    assert_eq!(
+        selected_run.await.unwrap().unwrap(),
+        JobRunOutcome::cancelled(JobReport::default())
+    );
     assert_eq!(
         state.meta.get_job_run(&selected_id).unwrap().unwrap().state,
         JobState::Cancelled
@@ -642,11 +648,38 @@ async fn test_cancel_job_run_signals_only_the_selected_attempt() {
         JobState::Running
     );
     scheduler.shutdown().await;
-    assert_eq!(other_run.await.unwrap().unwrap(), JobReport::default());
+    assert_eq!(
+        other_run.await.unwrap().unwrap(),
+        JobRunOutcome::cancelled(JobReport::default())
+    );
 }
 
 #[tokio::test]
-async fn test_cancel_job_run_records_cancelled_when_the_job_returns_an_error() {
+async fn test_cancel_job_run_cannot_relabel_completed_work() {
+    let (_dir, state) = serving();
+    let scheduler = Arc::new(JobScheduler::new(state.clone(), limits(1, 2, 1, 1)));
+    let release = Arc::new(Notify::new());
+    let job = TestJob::persisting("probe", "completed", Action::Block(release.clone()));
+    let run = tokio::spawn({
+        let scheduler = scheduler.clone();
+        let job = job.clone();
+        async move { scheduler.run(job).await }
+    });
+    job.started.notified().await;
+    let id = job_runs(&state.meta)[0].id.clone();
+
+    assert_eq!(scheduler.cancel_job_run(&id).unwrap(), CancelJobRun::Requested);
+    release.notify_one();
+    assert_eq!(
+        run.await.unwrap().unwrap(),
+        JobRunOutcome::succeeded(JobReport::default())
+    );
+    assert_eq!(state.meta.get_job_run(&id).unwrap().unwrap().state, JobState::Succeeded);
+    scheduler.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_cancel_job_run_preserves_an_error_after_cancellation() {
     let (_dir, state) = serving();
     let scheduler = Arc::new(JobScheduler::new(state.clone(), limits(1, 2, 1, 1)));
     let job = TestJob::persisting("probe", "failing", Action::FailWhenCancelled);
@@ -667,14 +700,14 @@ async fn test_cancel_job_run_records_cancelled_when_the_job_returns_an_error() {
             kind: JobKind::new("cache_refresh").unwrap(),
             scope: "failing".to_owned(),
             repository: None,
-            state: JobState::Cancelled,
+            state: JobState::Failed,
             started_at_unix: 1_000,
             finished_at_unix: Some(1_000),
             items_processed: 0,
             items_changed: 0,
             quota_released: 0,
             quota_remaining: 0,
-            error: None,
+            error: Some("test: cancelled at boundary".to_owned()),
         }
     );
     scheduler.shutdown().await;
@@ -1011,11 +1044,11 @@ async fn test_idle_reclaim_reports_changed_resources() {
 
     assert_eq!(
         job.run(&context(state, CancellationToken::new())).await.unwrap(),
-        JobReport {
+        JobRunOutcome::succeeded(JobReport {
             processed: 2,
             changed: 2,
             ..JobReport::default()
-        }
+        })
     );
     assert_eq!(driver.reclaim_calls.load(Ordering::SeqCst), 1);
     assert_eq!(job.kind(), "idle_reclaim");
@@ -1034,11 +1067,11 @@ async fn test_intent_finalize_reports_finalized_intents() {
 
     assert_eq!(
         job.run(&context(state, CancellationToken::new())).await.unwrap(),
-        JobReport {
+        JobRunOutcome::succeeded(JobReport {
             processed: 3,
             changed: 3,
             ..JobReport::default()
-        }
+        })
     );
     assert_eq!(driver.finalize_calls.load(Ordering::SeqCst), 1);
     assert_eq!(job.kind(), "intent_finalize");
@@ -1056,11 +1089,11 @@ async fn test_cache_refresh_reports_the_sweep() {
 
     assert_eq!(
         job.run(&context(state, CancellationToken::new())).await.unwrap(),
-        JobReport {
+        JobRunOutcome::succeeded(JobReport {
             processed: 3,
             changed: 1,
             ..JobReport::default()
-        }
+        })
     );
     assert_eq!(job.kind(), "cache_refresh");
     assert_eq!(job.scope(), "example");
@@ -1106,7 +1139,7 @@ async fn test_cancelled_capability_jobs_do_no_work() {
     ] {
         assert_eq!(
             job.run(&context(state.clone(), cancel.clone())).await.unwrap(),
-            JobReport::default()
+            JobRunOutcome::cancelled(JobReport::default())
         );
     }
     assert_eq!(
@@ -1175,8 +1208,8 @@ impl NodeJob for BareJob {
         }
     }
 
-    async fn run(&self, _ctx: &JobContext) -> Result<JobReport, JobFailure> {
-        Ok(JobReport::default())
+    async fn run(&self, _ctx: &JobContext) -> Result<JobRunOutcome, JobFailure> {
+        Ok(JobRunOutcome::succeeded(JobReport::default()))
     }
 }
 
@@ -1187,7 +1220,10 @@ async fn test_a_node_local_job_runs_without_a_persisted_record() {
     let job = BareJob { scope: String::new() };
 
     assert_eq!((job.repository(), job.persist_as()), (None, None));
-    assert_eq!(scheduler.run(Arc::new(job)).await.unwrap(), JobReport::default());
+    assert_eq!(
+        scheduler.run(Arc::new(job)).await.unwrap(),
+        JobRunOutcome::succeeded(JobReport::default())
+    );
     assert!(job_runs(&state.meta).is_empty());
     scheduler.shutdown().await;
 }
@@ -1230,11 +1266,11 @@ async fn test_job_history_cleanup_removes_every_excess_terminal_attempt() {
 
     assert_eq!(
         report,
-        JobReport {
+        JobRunOutcome::succeeded(JobReport {
             processed: 8,
             changed: 8,
             ..JobReport::default()
-        }
+        })
     );
     assert_eq!(job_runs(&state.meta).len(), 16);
 }
@@ -1257,7 +1293,7 @@ async fn test_job_history_cleanup_honors_cancellation_before_writing() {
         .await
         .unwrap();
 
-    assert_eq!(report, JobReport::default());
+    assert_eq!(report, JobRunOutcome::cancelled(JobReport::default()));
     assert_eq!(job_runs(&state.meta).len(), 17);
 }
 
@@ -1767,11 +1803,11 @@ async fn test_search_rebuild_persists_a_node_wide_run_and_reports_documents() {
 
     assert_eq!(
         report,
-        JobReport {
+        JobRunOutcome::succeeded(JobReport {
             processed: 2,
             changed: 2,
             ..JobReport::default()
-        }
+        })
     );
     let runs = job_runs(&state.serving.meta);
     assert_eq!(runs.len(), 1);
@@ -1793,7 +1829,7 @@ async fn test_search_rebuild_cancelled_reports_no_change() {
         .await
         .unwrap();
 
-    assert_eq!(report, JobReport::default());
+    assert_eq!(report, JobRunOutcome::cancelled(JobReport::default()));
 }
 
 #[tokio::test]
@@ -1896,11 +1932,11 @@ impl NodeJob for AdvancingJob {
         }
     }
 
-    async fn run(&self, ctx: &JobContext) -> Result<JobReport, JobFailure> {
+    async fn run(&self, ctx: &JobContext) -> Result<JobRunOutcome, JobFailure> {
         self.leased.store(ctx.authority_fence(), Ordering::SeqCst);
         self.epoch.fetch_add(1, Ordering::SeqCst);
         self.failure.map_or_else(
-            || Ok(JobReport::default()),
+            || Ok(JobRunOutcome::succeeded(JobReport::default())),
             |message| Err(JobFailure::new("test", message)),
         )
     }
@@ -1973,7 +2009,7 @@ async fn test_a_repository_job_at_epoch_zero_is_not_fenced() {
                 Action::Return(Ok(JobReport::default())),
             ))
             .await,
-        Ok(JobReport::default())
+        Ok(JobRunOutcome::succeeded(JobReport::default()))
     );
     scheduler.shutdown().await;
 }
@@ -2066,7 +2102,8 @@ async fn test_write_ledger_reap_drains_settled_rows_and_keeps_pending() {
         .unwrap();
 
     assert_eq!(
-        report.processed, 2,
+        report.report().processed,
+        2,
         "one admitted intent and one finalized operation reaped"
     );
     assert_eq!(state.meta.staged_intent("done").unwrap(), None);
@@ -2141,12 +2178,12 @@ async fn test_write_ledger_reap_repairs_old_quota_and_keeps_young_owner() {
             state.meta.quota_usage("private").unwrap().accounted_bytes,
         ),
         (
-            JobReport {
+            JobRunOutcome::succeeded(JobReport {
                 processed: 2,
                 changed: 1,
                 quota_released: 1,
                 quota_remaining: 1,
-            },
+            }),
             (JobKind::new("write_ledger_reap").unwrap(), JobState::Succeeded, 1, 1),
             true,
             peryx_storage::meta::QuotaValue {
@@ -2168,7 +2205,7 @@ async fn test_write_ledger_reap_stops_when_cancelled() {
         .await
         .unwrap();
 
-    assert_eq!(report, JobReport::default());
+    assert_eq!(report, JobRunOutcome::cancelled(JobReport::default()));
 }
 
 #[tokio::test]
@@ -2233,7 +2270,7 @@ impl NodeJob for SingletonJob {
         }
     }
 
-    async fn run(&self, ctx: &JobContext) -> Result<JobReport, JobFailure> {
+    async fn run(&self, ctx: &JobContext) -> Result<JobRunOutcome, JobFailure> {
         self.ran.fetch_add(1, Ordering::SeqCst);
         self.leased.store(ctx.authority_fence(), Ordering::SeqCst);
         if let Some((holder, epoch)) = &self.supersede {
@@ -2243,7 +2280,7 @@ impl NodeJob for SingletonJob {
                 .claim_job_lease(&self.key, holder, *epoch, now, 300)
                 .expect("a higher epoch takes the lease");
         }
-        Ok(JobReport::default())
+        Ok(JobRunOutcome::succeeded(JobReport::default()))
     }
 }
 

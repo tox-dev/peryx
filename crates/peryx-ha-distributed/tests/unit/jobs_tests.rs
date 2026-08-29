@@ -3,7 +3,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 
 use async_trait::async_trait;
-use peryx_driver::jobs::{JobLimits, JobReport, JobScheduler, LeaseScope, NodeJob, scheduled_job};
+use peryx_driver::jobs::{
+    CancelJobRun, JobLimits, JobReport, JobRunOutcome, JobScheduler, LeaseScope, NodeJob, scheduled_job,
+};
 use peryx_driver::state::AppState;
 use peryx_ha::{
     AuthorityDrainer, AvailabilityCapabilities, AvailabilityTaskError, AvailabilityTaskReport, BlobReclaimer,
@@ -12,6 +14,7 @@ use peryx_ha::{
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::{JobKind, MetaStore};
 use rstest::rstest;
+use tokio::sync::Notify;
 
 use super::{
     AuthorityDrainJob, DEFAULT_DC_COPY_CONCURRENCY, DEFAULT_PLACEMENT_RECONCILE_BATCH, DEFAULT_RECLAMATION_BATCH,
@@ -258,11 +261,11 @@ async fn test_distributed_job_runs_its_bound_capability(#[case] case: JobCase) {
     assert_eq!((job.kind(), job.scope(), job.lease_scope()), (kind, "", lease));
     assert_eq!(
         scheduler.run(job).await.unwrap(),
-        JobReport {
+        JobRunOutcome::succeeded(JobReport {
             processed: 5,
             changed: 2,
             ..JobReport::default()
-        }
+        })
     );
     match case {
         JobCase::DcCopy => assert_eq!(
@@ -328,12 +331,12 @@ impl AuthorityDrainer for Drainer {
 }
 
 #[rstest]
-#[case::success(false, Ok(JobReport { processed: 3, changed: 2, ..JobReport::default() }))]
+#[case::success(false, Ok(JobRunOutcome::succeeded(JobReport { processed: 3, changed: 2, ..JobReport::default() })))]
 #[case::failure(true, Err("storage: unavailable".to_owned()))]
 #[tokio::test]
 async fn test_authority_drain_runs_through_the_scheduler(
     #[case] failed: bool,
-    #[case] expected: Result<JobReport, String>,
+    #[case] expected: Result<JobRunOutcome, String>,
 ) {
     let (_directory, app) = app();
     let scheduler = JobScheduler::new(app.serving, JobLimits::node_local());
@@ -351,5 +354,57 @@ async fn test_authority_drain_runs_through_the_scheduler(
     assert_eq!(scheduler.run(job).await, expected);
     assert_eq!(drainer.now.load(Ordering::SeqCst), 41);
     assert!(!drainer.cancelled.load(Ordering::SeqCst));
+    scheduler.shutdown().await;
+}
+
+struct CancelledDrainer {
+    started: Notify,
+    release: Notify,
+}
+
+#[async_trait]
+impl AuthorityDrainer for CancelledDrainer {
+    async fn drain(
+        &self,
+        _: i64,
+        cancelled: &(dyn Fn() -> bool + Send + Sync),
+    ) -> Result<AvailabilityTaskReport, AvailabilityTaskError> {
+        self.started.notify_one();
+        self.release.notified().await;
+        assert!(cancelled());
+        Ok(AvailabilityTaskReport {
+            processed: 3,
+            changed: 2,
+        })
+    }
+}
+
+#[tokio::test]
+async fn test_authority_drain_reports_observed_cancellation() {
+    let (_directory, app) = app();
+    let meta = app.serving.meta.clone();
+    let scheduler = JobScheduler::new(app.serving, JobLimits::node_local());
+    let drainer = Arc::new(CancelledDrainer {
+        started: Notify::new(),
+        release: Notify::new(),
+    });
+    let job = Arc::new(AuthorityDrainJob::new("resource", drainer.clone()));
+
+    let cancel = async {
+        drainer.started.notified().await;
+        let id = meta.list_job_runs().unwrap()[0].id.clone();
+        assert_eq!(scheduler.cancel_job_run(&id).unwrap(), CancelJobRun::Requested);
+        drainer.release.notify_one();
+    };
+    let (outcome, ()) = tokio::join!(scheduler.run(job), cancel);
+
+    assert_eq!(
+        outcome.unwrap(),
+        JobRunOutcome::cancelled(JobReport {
+            processed: 3,
+            changed: 2,
+            ..JobReport::default()
+        })
+    );
     scheduler.shutdown().await;
 }

@@ -4,7 +4,8 @@ use std::sync::Arc;
 use peryx_core::{DefaultIndex, DefaultIndexKind, Ecosystem};
 use peryx_driver::AppState;
 use peryx_driver::jobs::{
-    JobContext, JobFailure, JobReport, LeaseScope, NodeJob, NodeJobMetadata, PluginScheduledJob, ScheduledJobFactory,
+    JobContext, JobFailure, JobReport, JobRunOutcome, LeaseScope, NodeJob, NodeJobMetadata, PluginScheduledJob,
+    ScheduledJobFactory,
 };
 use peryx_driver::rate_limit::RouteClass;
 use peryx_driver::serving::{
@@ -196,6 +197,26 @@ fn test_job_run_reports_the_registered_job_counts() {
     assert_eq!(
         String::from_utf8(output).unwrap(),
         "processed\t2\nchanged\t1\nquota_released\t0\nquota_remaining\t0\n"
+    );
+}
+
+#[test]
+fn test_job_run_reports_cancelled_work() {
+    let plugins = plugins();
+    let (_directory, meta, config) = store_and_config(&plugins);
+    drop(meta);
+
+    let error = job_with_plugins(
+        &config,
+        &plugins,
+        &run_command_for_target(Some("run"), "cancelled"),
+        &mut Vec::new(),
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "job cancelled after processing 4 items and changing 3"
     );
 }
 
@@ -517,10 +538,14 @@ fn run_command() -> JobCommand {
 }
 
 fn run_command_for(command: Option<&str>) -> JobCommand {
+    run_command_for_target(command, "main")
+}
+
+fn run_command_for_target(command: Option<&str>, target: &str) -> JobCommand {
     JobCommand::Run {
         runtime: RuntimeArgs::default(),
         command: command.map(str::to_owned),
-        target: "main".to_owned(),
+        target: target.to_owned(),
         source: None,
         item_limit: None,
         concurrency: None,
@@ -756,6 +781,7 @@ impl OperatorJob for FixtureOperatorJob {
                 target: options.target.to_owned(),
                 processed: u64::try_from(options.item_limit).expect("usize fits in u64"),
                 changed: u64::try_from(options.concurrency).expect("usize fits in u64"),
+                cancelled: options.target == "cancelled",
             }),
         ))
     }
@@ -765,6 +791,7 @@ struct RunJobFactory {
     target: String,
     processed: u64,
     changed: u64,
+    cancelled: bool,
 }
 
 impl ScheduledJobFactory for RunJobFactory {
@@ -784,6 +811,7 @@ impl ScheduledJobFactory for RunJobFactory {
                 changed: self.changed,
                 ..JobReport::default()
             },
+            cancelled: self.cancelled,
         }))
     }
 }
@@ -791,6 +819,7 @@ impl ScheduledJobFactory for RunJobFactory {
 struct RunJob {
     target: String,
     report: JobReport,
+    cancelled: bool,
 }
 
 #[async_trait::async_trait]
@@ -811,7 +840,11 @@ impl NodeJob for RunJob {
         }
     }
 
-    async fn run(&self, _: &JobContext) -> Result<JobReport, JobFailure> {
-        Ok(self.report)
+    async fn run(&self, _: &JobContext) -> Result<JobRunOutcome, JobFailure> {
+        Ok(if self.cancelled {
+            JobRunOutcome::cancelled(self.report)
+        } else {
+            JobRunOutcome::succeeded(self.report)
+        })
     }
 }

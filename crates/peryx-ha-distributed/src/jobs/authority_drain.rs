@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use peryx_driver::jobs::{JobContext, JobFailure, JobReport, LeaseScope, NodeJob, NodeJobMetadata};
+use peryx_driver::jobs::{JobContext, JobFailure, JobRunOutcome, LeaseScope, NodeJob, NodeJobMetadata};
 use peryx_ha::AuthorityDrainer;
 use peryx_storage::meta::JobKind;
 
@@ -40,11 +40,12 @@ impl NodeJob for AuthorityDrainJob {
         }
     }
 
-    async fn run(&self, context: &JobContext) -> Result<JobReport, JobFailure> {
+    async fn run(&self, context: &JobContext) -> Result<JobRunOutcome, JobFailure> {
+        let cancellation = super::CancellationProbe::new(context);
         self.drainer
-            .drain(context.now(), &|| context.is_cancelled())
+            .drain(context.now(), &|| cancellation.is_cancelled())
             .await
-            .map(super::task_report)
+            .map(|report| cancellation.outcome(report))
             .map_err(|error| super::task_failure(&error))
     }
 }

@@ -8,7 +8,8 @@ use base64::engine::general_purpose::STANDARD;
 use http_body_util::BodyExt as _;
 use peryx_driver::authz::AuthorizationService;
 use peryx_driver::jobs::{
-    JobContext, JobFailure, JobLimits, JobReport, JobScheduler, LeaseScope, NodeJob, NodeJobMetadata, Submit,
+    JobContext, JobFailure, JobLimits, JobReport, JobRunOutcome, JobScheduler, LeaseScope, NodeJob, NodeJobMetadata,
+    Submit,
 };
 use peryx_driver::state::AppState;
 use peryx_driver::users::UserService;
@@ -186,10 +187,10 @@ impl NodeJob for ParkedJob {
         }
     }
 
-    async fn run(&self, ctx: &JobContext) -> Result<JobReport, JobFailure> {
+    async fn run(&self, ctx: &JobContext) -> Result<JobRunOutcome, JobFailure> {
         self.started.notify_one();
         ctx.cancelled().await;
-        Ok(JobReport::default())
+        Ok(JobRunOutcome::cancelled(JobReport::default()))
     }
 }
 

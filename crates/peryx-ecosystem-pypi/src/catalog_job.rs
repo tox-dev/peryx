@@ -7,7 +7,8 @@ use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use peryx_driver::jobs::{
-    JobContext, JobFailure, JobReport, LeaseScope, NodeJob, NodeJobMetadata, PluginScheduledJob, ScheduledJobFactory,
+    JobContext, JobFailure, JobReport, JobRunOutcome, LeaseScope, NodeJob, NodeJobMetadata, PluginScheduledJob,
+    ScheduledJobFactory,
 };
 use peryx_driver::serving::JobConfig;
 use peryx_events::metrics::{MetricFamily, MetricKind, Metrics};
@@ -291,7 +292,7 @@ impl NodeJob for CatalogSyncJob {
         }
     }
 
-    async fn run(&self, ctx: &JobContext) -> Result<JobReport, JobFailure> {
+    async fn run(&self, ctx: &JobContext) -> Result<JobRunOutcome, JobFailure> {
         let state = ctx.state();
         if state.read_only {
             return Err(JobFailure::new(
@@ -465,12 +466,12 @@ async fn sync_projects<C: SimpleClientExt + Sync>(
     policy: &peryx_policy::Policy,
     parameters: &CatalogSyncParameters,
     fallback_source: &str,
-) -> Result<JobReport, JobFailure> {
+) -> Result<JobRunOutcome, JobFailure> {
     let state = ctx.state();
     let meta = &state.meta;
     let inflight = &state.cache.inflight;
     let root = tokio::select! {
-        () = ctx.cancelled() => return Ok(JobReport::default()),
+        () = ctx.cancelled() => return Ok(JobRunOutcome::cancelled(JobReport::default())),
         root = sync_catalog(client, inflight, meta, repository, fallback_source) => root,
     };
     let (metric_outcome, root_changed) = match root {
@@ -500,11 +501,11 @@ async fn sync_projects<C: SimpleClientExt + Sync>(
     };
     loop {
         let next = tokio::select! {
-            () = ctx.cancelled() => return Ok(report),
+            () = ctx.cancelled() => return Ok(JobRunOutcome::cancelled(report)),
             next = outcomes.next() => next,
         };
         let Some((project, outcome)) = next else {
-            return Ok(report);
+            return Ok(JobRunOutcome::succeeded(report));
         };
         report.processed += 1;
         match outcome {

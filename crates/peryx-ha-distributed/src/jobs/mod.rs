@@ -2,14 +2,15 @@ mod authority_drain;
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use peryx_driver::jobs::{
-    JobContext, JobFailure, JobReport, LeaseScope, NodeJob, NodeJobMetadata, RegisteredScheduledJob, ScheduledJob,
-    ScheduledJobFactory,
+    JobContext, JobFailure, JobReport, JobRunOutcome, LeaseScope, NodeJob, NodeJobMetadata, RegisteredScheduledJob,
+    ScheduledJob, ScheduledJobFactory,
 };
 use peryx_driver::state::AppState;
-use peryx_ha::{BlobReclaimer, CrossDcCopier, PlacementReconciler};
+use peryx_ha::{AvailabilityTaskReport, BlobReclaimer, CrossDcCopier, PlacementReconciler};
 
 pub use authority_drain::AuthorityDrainJob;
 
@@ -22,6 +23,34 @@ const AUTHORITY_DRAIN: &str = "authority_drain";
 const DC_COPY: &str = "dc_copy";
 const PLACEMENT_RECONCILE: &str = "placement_reconcile";
 const RECLAMATION: &str = "reclamation";
+
+struct CancellationProbe<'a> {
+    context: &'a JobContext,
+    observed: AtomicBool,
+}
+
+impl<'a> CancellationProbe<'a> {
+    const fn new(context: &'a JobContext) -> Self {
+        Self {
+            context,
+            observed: AtomicBool::new(false),
+        }
+    }
+
+    fn is_cancelled(&self) -> bool {
+        let cancelled = self.context.is_cancelled();
+        self.observed.fetch_or(cancelled, Ordering::Relaxed);
+        cancelled
+    }
+
+    fn outcome(&self, report: AvailabilityTaskReport) -> JobRunOutcome {
+        if self.observed.load(Ordering::Relaxed) {
+            JobRunOutcome::cancelled(task_report(report))
+        } else {
+            JobRunOutcome::succeeded(task_report(report))
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DcCopyParameters {
@@ -221,11 +250,12 @@ impl NodeJob for DcCopyJob {
         }
     }
 
-    async fn run(&self, context: &JobContext) -> Result<JobReport, JobFailure> {
+    async fn run(&self, context: &JobContext) -> Result<JobRunOutcome, JobFailure> {
+        let cancellation = CancellationProbe::new(context);
         self.copier
-            .copy_pass(&|| context.is_cancelled(), self.parameters.concurrency())
+            .copy_pass(&|| cancellation.is_cancelled(), self.parameters.concurrency())
             .await
-            .map(task_report)
+            .map(|report| cancellation.outcome(report))
             .map_err(|error| task_failure(&error))
     }
 }
@@ -260,11 +290,12 @@ impl NodeJob for PlacementReconcileJob {
         }
     }
 
-    async fn run(&self, context: &JobContext) -> Result<JobReport, JobFailure> {
+    async fn run(&self, context: &JobContext) -> Result<JobRunOutcome, JobFailure> {
+        let cancellation = CancellationProbe::new(context);
         self.reconciler
-            .reconcile_pass(&|| context.is_cancelled(), self.parameters.batch)
+            .reconcile_pass(&|| cancellation.is_cancelled(), self.parameters.batch)
             .await
-            .map(task_report)
+            .map(|report| cancellation.outcome(report))
             .map_err(|error| task_failure(&error))
     }
 }
@@ -299,15 +330,16 @@ impl NodeJob for ReclamationJob {
         }
     }
 
-    async fn run(&self, context: &JobContext) -> Result<JobReport, JobFailure> {
+    async fn run(&self, context: &JobContext) -> Result<JobRunOutcome, JobFailure> {
+        let cancellation = CancellationProbe::new(context);
         self.reclaimer
             .reclaim_pass(
-                &|| context.is_cancelled(),
+                &|| cancellation.is_cancelled(),
                 context.authority_fence(),
                 self.parameters.batch,
             )
             .await
-            .map(task_report)
+            .map(|report| cancellation.outcome(report))
             .map_err(|error| task_failure(&error))
     }
 }

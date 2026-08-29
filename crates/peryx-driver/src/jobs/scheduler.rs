@@ -20,7 +20,7 @@ use peryx_storage::meta::{JobOutcome, MetaError, NewJobRun};
 
 use super::attempts::{CancelJobRun, JobAttemptError};
 use super::metrics::{JobMetrics, Outcome, Reject};
-use super::{JobCompletion, JobContext, JobFailure, JobReport, LeaseScope, NodeJob};
+use super::{JobCompletion, JobContext, JobFailure, JobReport, JobRunOutcome, LeaseScope, NodeJob};
 use crate::state::ServingState;
 
 /// How long a cluster-singleton lease stays held before it lapses absent a renewal. A run claims at
@@ -199,7 +199,7 @@ impl JobScheduler {
     ///
     /// # Errors
     /// Returns a user-visible message when admission is refused or execution fails.
-    pub async fn run(&self, job: Arc<dyn NodeJob>) -> Result<JobReport, String> {
+    pub async fn run(&self, job: Arc<dyn NodeJob>) -> Result<JobRunOutcome, String> {
         let (sender, receiver) = oneshot::channel();
         match self.admit(job, Some(sender)) {
             Submit::Queued => receiver.await.expect("an admitted job sends its result"),
@@ -217,7 +217,11 @@ impl JobScheduler {
         self.shared.state.job_attempts.cancel(id)
     }
 
-    fn admit(&self, job: Arc<dyn NodeJob>, completion: Option<oneshot::Sender<Result<JobReport, String>>>) -> Submit {
+    fn admit(
+        &self,
+        job: Arc<dyn NodeJob>,
+        completion: Option<oneshot::Sender<Result<JobRunOutcome, String>>>,
+    ) -> Submit {
         let kind = job.kind();
         if self.shared.cancel.is_cancelled() {
             return Submit::ShuttingDown;
@@ -254,7 +258,7 @@ async fn run_admitted(
     shared: Arc<Shared>,
     job: Arc<dyn NodeJob>,
     slot: OwnedSemaphorePermit,
-    completion: Option<oneshot::Sender<Result<JobReport, String>>>,
+    completion: Option<oneshot::Sender<Result<JobRunOutcome, String>>>,
 ) {
     let _slot = slot;
     let _worker = shared
@@ -272,32 +276,29 @@ async fn run_admitted(
     }
 }
 
-async fn execute(job: &dyn NodeJob, shared: &Shared, cancel: &CancellationToken) -> Result<JobReport, JobError> {
+async fn execute(job: &dyn NodeJob, shared: &Shared, cancel: &CancellationToken) -> Result<JobRunOutcome, JobError> {
     let kind = job.kind();
     shared.metrics.started(kind);
     let (outcome, result) = if cancel.is_cancelled() {
-        (
-            Outcome::Cancelled,
-            Err(JobError::Job(JobFailure::new(
-                "cancelled",
-                "node-local job cancelled before it started",
-            ))),
-        )
+        (Outcome::Cancelled, Ok(JobRunOutcome::cancelled(JobReport::default())))
     } else {
         let (result, outcome) = run_persisted(job, shared, cancel).await;
-        if outcome != Outcome::Cancelled {
-            let scope = job.scope();
-            match &result {
-                Ok(report) => tracing::info!(kind, scope, ?report, "node-local job finished"),
-                Err(error) => tracing::error!(kind, scope, %error, "node-local job failed"),
+        let scope = job.scope();
+        match &result {
+            Ok(JobRunOutcome::Succeeded(report)) => {
+                tracing::info!(kind, scope, ?report, "node-local job finished");
             }
+            Ok(JobRunOutcome::Cancelled(_)) => {}
+            Err(error) => tracing::error!(kind, scope, %error, "node-local job failed"),
         }
         (outcome, result)
     };
     shared.metrics.finished(kind, outcome);
-    let _ = shared
-        .completions
-        .send(JobCompletion::new(kind, outcome, result.as_ref().ok().copied()));
+    let _ = shared.completions.send(JobCompletion::new(
+        kind,
+        outcome,
+        result.as_ref().ok().copied().map(JobRunOutcome::report),
+    ));
     result
 }
 
@@ -305,7 +306,7 @@ async fn run_persisted(
     job: &dyn NodeJob,
     shared: &Shared,
     cancel: &CancellationToken,
-) -> (Result<JobReport, JobError>, Outcome) {
+) -> (Result<JobRunOutcome, JobError>, Outcome) {
     let run = match job.persist_as() {
         Some(kind) => match shared.state.job_attempts.start(
             NewJobRun {
@@ -344,24 +345,22 @@ async fn run_persisted(
         }
         Acquired::NotAcquired(reason) => (Err(JobFailure::new("lease_not_held", reason)), false),
     };
-    let cancelled = cancel.is_cancelled() && !panicked;
     let outcome = if panicked {
         Outcome::Failed
-    } else if cancelled {
-        Outcome::Cancelled
-    } else if result.is_ok() {
-        Outcome::Succeeded
     } else {
-        Outcome::Failed
+        match &result {
+            Ok(JobRunOutcome::Succeeded(_)) => Outcome::Succeeded,
+            Ok(JobRunOutcome::Cancelled(_)) => Outcome::Cancelled,
+            Err(_) => Outcome::Failed,
+        }
     };
     if let Some(id) = run {
         let finished_at_unix = (shared.state.clock)();
         let error = result.as_ref().err().map(ToString::to_string);
-        let persisted = if outcome == Outcome::Cancelled {
-            let report = result.as_ref().ok().copied().unwrap_or_default();
+        let persisted = if let Ok(JobRunOutcome::Cancelled(report)) = &result {
             JobOutcome::cancelled(finished_at_unix, report.processed, report.changed)
                 .with_quota(report.quota_released, report.quota_remaining)
-        } else if let Ok(report) = &result {
+        } else if let Ok(JobRunOutcome::Succeeded(report)) = &result {
             JobOutcome::succeeded(finished_at_unix, report.processed, report.changed)
                 .with_quota(report.quota_released, report.quota_remaining)
         } else {

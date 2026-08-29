@@ -60,6 +60,34 @@ pub struct JobReport {
     pub quota_remaining: u64,
 }
 
+/// The result of a job that stopped without failing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobRunOutcome {
+    /// The job completed its work.
+    Succeeded(JobReport),
+    /// The job stopped after observing cancellation.
+    Cancelled(JobReport),
+}
+
+impl JobRunOutcome {
+    #[must_use]
+    pub const fn succeeded(report: JobReport) -> Self {
+        Self::Succeeded(report)
+    }
+
+    #[must_use]
+    pub const fn cancelled(report: JobReport) -> Self {
+        Self::Cancelled(report)
+    }
+
+    #[must_use]
+    pub const fn report(self) -> JobReport {
+        match self {
+            Self::Succeeded(report) | Self::Cancelled(report) => report,
+        }
+    }
+}
+
 /// A node-local job lifecycle event published after metrics and durable history are final.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JobCompletion {
@@ -217,7 +245,7 @@ pub trait NodeJob: Send + Sync {
 
     /// # Errors
     /// Returns a user-visible message when the work fails.
-    async fn run(&self, ctx: &JobContext) -> Result<JobReport, JobFailure>;
+    async fn run(&self, ctx: &JobContext) -> Result<JobRunOutcome, JobFailure>;
 }
 
 struct IdleReclaimJob {
@@ -245,20 +273,20 @@ impl NodeJob for IdleReclaimJob {
         }
     }
 
-    async fn run(&self, ctx: &JobContext) -> Result<JobReport, JobFailure> {
+    async fn run(&self, ctx: &JobContext) -> Result<JobRunOutcome, JobFailure> {
         if ctx.is_cancelled() {
-            return Ok(JobReport::default());
+            return Ok(JobRunOutcome::cancelled(JobReport::default()));
         }
         let reclaimed = self.reclaimer.reclaim_idle(ctx.state().clone()).await;
         if reclaimed > 0 {
             tracing::info!(ecosystem = %self.ecosystem, reclaimed, "idle resources reclaimed");
         }
         let reclaimed = u64::try_from(reclaimed).expect("reclaimed count fits in u64");
-        Ok(JobReport {
+        Ok(JobRunOutcome::succeeded(JobReport {
             processed: reclaimed,
             changed: reclaimed,
             ..JobReport::default()
-        })
+        }))
     }
 }
 
@@ -285,19 +313,19 @@ impl NodeJob for IntentFinalizeJob {
         }
     }
 
-    async fn run(&self, ctx: &JobContext) -> Result<JobReport, JobFailure> {
+    async fn run(&self, ctx: &JobContext) -> Result<JobRunOutcome, JobFailure> {
         if ctx.is_cancelled() {
-            return Ok(JobReport::default());
+            return Ok(JobRunOutcome::cancelled(JobReport::default()));
         }
         let finalized = self.finalizer.finalize_admitted(ctx.state().clone()).await;
         if finalized > 0 {
             tracing::info!(ecosystem = %self.ecosystem, finalized, "admitted writes finalized at home");
         }
-        Ok(JobReport {
+        Ok(JobRunOutcome::succeeded(JobReport {
             processed: finalized,
             changed: finalized,
             ..JobReport::default()
-        })
+        }))
     }
 }
 
@@ -324,9 +352,9 @@ impl NodeJob for CacheRefreshJob {
         }
     }
 
-    async fn run(&self, ctx: &JobContext) -> Result<JobReport, JobFailure> {
+    async fn run(&self, ctx: &JobContext) -> Result<JobRunOutcome, JobFailure> {
         if ctx.is_cancelled() {
-            return Ok(JobReport::default());
+            return Ok(JobRunOutcome::cancelled(JobReport::default()));
         }
         let sweep = self
             .refresher
@@ -336,11 +364,11 @@ impl NodeJob for CacheRefreshJob {
         if sweep.checked > 0 {
             tracing::info!(ecosystem = %self.ecosystem, ?sweep, "background refresh sweep");
         }
-        Ok(JobReport {
+        Ok(JobRunOutcome::succeeded(JobReport {
             processed: sweep.checked as u64,
             changed: sweep.changed as u64,
             ..JobReport::default()
-        })
+        }))
     }
 }
 
@@ -374,15 +402,15 @@ impl NodeJob for JobHistoryCleanup {
         }
     }
 
-    async fn run(&self, ctx: &JobContext) -> Result<JobReport, JobFailure> {
+    async fn run(&self, ctx: &JobContext) -> Result<JobRunOutcome, JobFailure> {
         let mut removed = 0_u64;
         loop {
             if ctx.is_cancelled() {
-                return Ok(JobReport {
+                return Ok(JobRunOutcome::cancelled(JobReport {
                     processed: removed,
                     changed: removed,
                     ..JobReport::default()
-                });
+                }));
             }
             let batch = ctx
                 .state()
@@ -391,11 +419,11 @@ impl NodeJob for JobHistoryCleanup {
                 .map_err(|error| JobFailure::new("storage", error.to_string()))?;
             removed += u64::try_from(batch).expect("bounded batch fits in u64");
             if batch == 0 {
-                return Ok(JobReport {
+                return Ok(JobRunOutcome::succeeded(JobReport {
                     processed: removed,
                     changed: removed,
                     ..JobReport::default()
-                });
+                }));
             }
         }
     }
@@ -451,15 +479,15 @@ impl NodeJob for WriteLedgerReap {
         }
     }
 
-    async fn run(&self, ctx: &JobContext) -> Result<JobReport, JobFailure> {
+    async fn run(&self, ctx: &JobContext) -> Result<JobRunOutcome, JobFailure> {
         let mut reaped = 0_u64;
         loop {
             if ctx.is_cancelled() {
-                return Ok(JobReport {
+                return Ok(JobRunOutcome::cancelled(JobReport {
                     processed: reaped,
                     changed: reaped,
                     ..JobReport::default()
-                });
+                }));
             }
             let now = (ctx.state().clock)();
             let intents = reap_storage_result(ctx.state().meta.prune_ingress_intents(
@@ -479,12 +507,12 @@ impl NodeJob for WriteLedgerReap {
         ))?;
         let quota_released = reaped_count(quota.released);
         let quota_remaining = reaped_count(quota.remaining);
-        Ok(JobReport {
+        Ok(JobRunOutcome::succeeded(JobReport {
             processed: reaped + quota_released + quota_remaining,
             changed: reaped + quota_released,
             quota_released,
             quota_remaining,
-        })
+        }))
     }
 }
 
@@ -534,7 +562,7 @@ impl NodeJob for SearchRebuildJob {
         }
     }
 
-    async fn run(&self, ctx: &JobContext) -> Result<JobReport, JobFailure> {
+    async fn run(&self, ctx: &JobContext) -> Result<JobRunOutcome, JobFailure> {
         let state = ctx.state();
         let mut reported = 0_u64;
         let outcome = state
@@ -555,16 +583,16 @@ impl NodeJob for SearchRebuildJob {
             })
             .map_err(|error| JobFailure::new("search_rebuild", error.to_string()))?;
         Ok(match outcome {
-            RebuildOutcome::Published { documents } => JobReport {
+            RebuildOutcome::Published { documents } => JobRunOutcome::succeeded(JobReport {
                 processed: documents,
                 changed: documents,
                 ..JobReport::default()
-            },
-            RebuildOutcome::Aborted { documents } => JobReport {
+            }),
+            RebuildOutcome::Aborted { documents } => JobRunOutcome::cancelled(JobReport {
                 processed: documents,
                 changed: 0,
                 ..JobReport::default()
-            },
+            }),
         })
     }
 }
