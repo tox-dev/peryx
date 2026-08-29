@@ -1671,34 +1671,53 @@ fn test_s3_fixture_rejects_an_invalid_integration_config() {
 }
 
 #[cfg(feature = "container-tests")]
+#[tokio::test]
+async fn test_wait_for_child_signal_reports_child_stderr() {
+    let staging = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    let mut process = child_command(
+        &server.uri(),
+        staging.path(),
+        "unknown",
+        ROOT_ACCESS_KEY,
+        ROOT_SECRET_KEY,
+    )
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .spawn()
+    .unwrap();
+
+    let error = tokio::spawn(async move { wait_for_child_signal(&mut process, STREAM_OPENED).await })
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("unknown S3 scenario: unknown"));
+}
+
+#[cfg(feature = "container-tests")]
 async fn wait_for_child_signal(process: &mut tokio::process::Child, expected: &str) -> tokio::process::ChildStdout {
-    tokio::time::timeout(
+    match tokio::time::timeout(
         Duration::from_secs(30),
         wait_for_signal(process.stdout.take().unwrap(), expected),
     )
     .await
     .unwrap()
-    .unwrap()
-}
-
-#[cfg(feature = "container-tests")]
-async fn add_toxic(container: &ContainerAsync<GenericImage>, toxic: &str, attributes: &[&str]) {
-    let mut args = vec![
-        "/toxiproxy-cli".to_owned(),
-        "toxic".to_owned(),
-        "add".to_owned(),
-        "-t".to_owned(),
-        toxic.to_owned(),
-    ];
-    for attribute in attributes {
-        args.extend(["-a".to_owned(), (*attribute).to_owned()]);
+    {
+        Ok(stdout) => stdout,
+        Err(error) => {
+            let mut stderr = Vec::new();
+            process.stderr.take().unwrap().read_to_end(&mut stderr).await.unwrap();
+            let status = process.wait().await.unwrap();
+            panic!(
+                "{error}; child status: {status}; stderr: {}",
+                String::from_utf8_lossy(&stderr)
+            );
+        }
     }
-    args.push("s3".to_owned());
-    exec(container, args).await;
 }
 
 #[cfg(feature = "container-tests")]
-async fn stream_failure(toxic: &str, attributes: &[&str], scenario: &str, after_open: bool) {
+async fn trickling_stream() {
     let minio = minio().await;
     let bytes = vec![0x5a; STREAM_BYTES];
     let digest = Digest::of(&bytes);
@@ -1712,37 +1731,65 @@ async fn stream_failure(toxic: &str, attributes: &[&str], scenario: &str, after_
         .await
         .unwrap();
     let toxiproxy = toxiproxy(&minio).await;
-    if after_open {
-        // Throttle before transfer to avoid toxiproxy's mutation race.
-        add_toxic(&toxiproxy.container, "bandwidth", &["rate=64"]).await;
-    } else {
-        add_toxic(&toxiproxy.container, toxic, attributes).await;
-    }
-    let staging = tempfile::tempdir().unwrap();
-    let mut process = child_command(
-        &toxiproxy.endpoint,
-        staging.path(),
-        scenario,
-        ROOT_ACCESS_KEY,
-        ROOT_SECRET_KEY,
+    exec(
+        &toxiproxy.container,
+        [
+            "/toxiproxy-cli",
+            "toxic",
+            "add",
+            "-t",
+            "slicer",
+            "-a",
+            "average_size=32768",
+            "-a",
+            "size_variation=0",
+            "-a",
+            "delay=20000",
+            "s3",
+        ],
     )
-    .stdin(Stdio::piped())
-    .stdout(Stdio::piped())
-    .stderr(Stdio::piped())
-    .spawn()
-    .unwrap();
-    process.stdout = Some(
-        tokio::time::timeout(
-            Duration::from_secs(30),
-            wait_for_signal(process.stdout.take().unwrap(), STREAM_OPENED),
-        )
-        .await
-        .unwrap()
-        .unwrap(),
-    );
-    if after_open {
-        add_toxic(&toxiproxy.container, toxic, attributes).await;
+    .await;
+    let staging = tempfile::tempdir().unwrap();
+    collect_stream(opened_stream_child(&toxiproxy.endpoint, staging.path(), "stream_trickle").await).await;
+    drop(minio);
+}
+
+#[cfg(feature = "container-tests")]
+async fn interrupted_stream(interruption: StreamInterruption) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let (release, wait) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(serve_interrupted_stream(listener, wait, interruption));
+    let staging = tempfile::tempdir().unwrap();
+    let process = opened_stream_child(&endpoint, staging.path(), interruption.scenario()).await;
+
+    release.send(()).unwrap();
+    match interruption {
+        StreamInterruption::Closed => {
+            server.await.unwrap();
+            collect_stream(process).await;
+        }
+        StreamInterruption::Stalled => {
+            collect_stream(process).await;
+            server.await.unwrap();
+        }
     }
+}
+
+#[cfg(feature = "container-tests")]
+async fn opened_stream_child(endpoint: &str, staging: &Path, scenario: &str) -> tokio::process::Child {
+    let mut process = child_command(endpoint, staging, scenario, ROOT_ACCESS_KEY, ROOT_SECRET_KEY)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    process.stdout = Some(wait_for_child_signal(&mut process, STREAM_OPENED).await);
+    process
+}
+
+#[cfg(feature = "container-tests")]
+async fn collect_stream(mut process: tokio::process::Child) {
     process.stdin.take().unwrap().write_all(b"collect").await.unwrap();
     assert_child_succeeded(
         &tokio::time::timeout(Duration::from_secs(30), process.wait_with_output())
@@ -1750,7 +1797,41 @@ async fn stream_failure(toxic: &str, attributes: &[&str], scenario: &str, after_
             .unwrap()
             .unwrap(),
     );
-    drop(minio);
+}
+
+#[cfg(feature = "container-tests")]
+async fn serve_interrupted_stream(
+    listener: tokio::net::TcpListener,
+    wait: tokio::sync::oneshot::Receiver<()>,
+    interruption: StreamInterruption,
+) {
+    let (mut connection, _) = listener.accept().await.unwrap();
+    assert_ne!(connection.read(&mut [0; 4096]).await.unwrap(), 0);
+    connection
+        .write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {STREAM_BYTES}\r\nConnection: close\r\n\r\n").as_bytes())
+        .await
+        .unwrap();
+    wait.await.unwrap();
+    if matches!(interruption, StreamInterruption::Stalled) {
+        assert_eq!(connection.read(&mut [0; 1]).await.unwrap(), 0);
+    }
+}
+
+#[cfg(feature = "container-tests")]
+#[derive(Clone, Copy)]
+enum StreamInterruption {
+    Closed,
+    Stalled,
+}
+
+#[cfg(feature = "container-tests")]
+impl StreamInterruption {
+    const fn scenario(self) -> &'static str {
+        match self {
+            Self::Closed => "stream_reset",
+            Self::Stalled => "stream_timeout",
+        }
+    }
 }
 
 #[cfg(feature = "container-tests")]
@@ -2104,22 +2185,17 @@ async fn test_s3_container_coordinates_simultaneous_multipart_acquisition() {
 
 #[cfg(feature = "container-tests")]
 #[rstest]
-#[case::reset("reset_peer", &["timeout=0"], "stream_reset", true)]
-#[case::stalled("timeout", &["timeout=0"], "stream_timeout", true)]
-#[case::trickling(
-    "slicer",
-    &["average_size=32768", "size_variation=0", "delay=20000"],
-    "stream_trickle",
-    false
-)]
+#[case::closed(StreamInterruption::Closed)]
+#[case::stalled(StreamInterruption::Stalled)]
 #[tokio::test]
-async fn test_s3_container_stream_failures(
-    #[case] toxic: &str,
-    #[case] attributes: &[&str],
-    #[case] scenario: &str,
-    #[case] after_open: bool,
-) {
-    stream_failure(toxic, attributes, scenario, after_open).await;
+async fn test_s3_stream_interruptions(#[case] interruption: StreamInterruption) {
+    interrupted_stream(interruption).await;
+}
+
+#[cfg(feature = "container-tests")]
+#[tokio::test]
+async fn test_s3_container_accepts_a_trickling_stream() {
+    trickling_stream().await;
 }
 
 #[tokio::test]

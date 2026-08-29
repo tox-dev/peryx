@@ -1,3 +1,5 @@
+#[cfg(feature = "container-tests")]
+use std::error::Error as _;
 use std::ffi::OsString;
 #[cfg(feature = "container-tests")]
 use std::io::{Read as _, Write as _, stdin};
@@ -551,25 +553,36 @@ async fn run_container_child(storage: &BlobStorage, scenario: ContainerScenario)
             let (first, second) = tokio::join!(storage.put_bytes(&bytes), other.put_bytes(&bytes));
             assert_eq!(first.unwrap(), second.unwrap());
         }
-        ContainerScenario::StreamReset | ContainerScenario::StreamTimeout | ContainerScenario::StreamTrickle => {
-            let bytes = vec![0x5a; STREAM_BYTES];
-            let read = storage.open(&Digest::of(&bytes), None).await.unwrap();
-            {
-                let mut stdout = std::io::stdout().lock();
-                writeln!(stdout, "{STREAM_OPENED}").unwrap();
-                stdout.flush().unwrap();
-            }
-            tokio::task::spawn_blocking(|| stdin().read_exact(&mut [0]))
-                .await
-                .unwrap()
-                .unwrap();
-            let result = read.collect(STREAM_BYTES as u64).await;
-            if matches!(scenario, ContainerScenario::StreamTrickle) {
-                assert_eq!(result.unwrap(), bytes);
-            } else {
-                assert_eq!(result.unwrap_err().kind(), BlobErrorKind::Io);
-            }
+        ContainerScenario::StreamReset => {
+            run_container_stream(storage, Some("s3 request failed: streaming error")).await;
         }
+        ContainerScenario::StreamTimeout => {
+            run_container_stream(storage, Some("s3 request failed: deadline has elapsed")).await;
+        }
+        ContainerScenario::StreamTrickle => run_container_stream(storage, None).await,
+    }
+}
+
+#[cfg(feature = "container-tests")]
+async fn run_container_stream(storage: &BlobStorage, expected_error: Option<&str>) {
+    let bytes = vec![0x5a; STREAM_BYTES];
+    let read = storage.open(&Digest::of(&bytes), None).await.unwrap();
+    {
+        let mut stdout = std::io::stdout().lock();
+        writeln!(stdout, "{STREAM_OPENED}").unwrap();
+        stdout.flush().unwrap();
+    }
+    tokio::task::spawn_blocking(|| stdin().read_exact(&mut [0]))
+        .await
+        .unwrap()
+        .unwrap();
+    let result = read.collect(STREAM_BYTES as u64).await;
+    if let Some(expected_error) = expected_error {
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), BlobErrorKind::Io);
+        assert_eq!(error.source().unwrap().to_string(), expected_error);
+    } else {
+        assert_eq!(result.unwrap(), bytes);
     }
 }
 
