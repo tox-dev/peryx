@@ -42,14 +42,14 @@ fn test_cache_fsck_reports_metadata_problems() {
     app::cache(&config, &fsck_command(), &mut out).unwrap();
     let text = String::from_utf8(out).unwrap();
     for expected in [
-        "metadata\tindex\tpypi/bad\tinvalid project detail\n",
-        "metadata\tfile-url\tbad\tinvalid record\n",
-        "metadata\tpep658\tbad\tinvalid record\n",
-        "metadata\tproject\t/\tinvalid record\n",
-        "metadata\tupload\thosted/pkg/bad.whl\tinvalid record\n",
-        "metadata\tupload\t//\tinvalid key\n",
-        "metadata\tupload\thosted/pkg/pkg-1.0.whl\tmissing blob ",
-        "metadata\toverride\t//\tinvalid record\n",
+        "metadata\tpypi\tindex\tpypi/bad\tinvalid project detail\n",
+        "metadata\tpypi\tfile-url\tbad\tinvalid record\n",
+        "metadata\tpypi\tpep658\tbad\tinvalid record\n",
+        "metadata\tpypi\tproject\t/\tinvalid record\n",
+        "metadata\tpypi\tupload\thosted/pkg/bad.whl\tinvalid record\n",
+        "metadata\tpypi\tupload\t//\tinvalid key\n",
+        "metadata\tpypi\tupload\thosted/pkg/pkg-1.0.whl\tmissing blob ",
+        "metadata\tpypi\toverride\t//\tinvalid record\n",
         "problems\t8\n",
     ] {
         assert!(text.contains(expected), "{text}");
@@ -73,11 +73,11 @@ fn test_cache_fsck_reports_missing_metadata_blob() {
     app::cache(&config, &fsck_command(), &mut out).unwrap();
     let text = String::from_utf8(out).unwrap();
     assert!(text.contains(&format!(
-        "metadata\tupload\thosted/pkg/pkg-1.0.whl\tmissing blob {}",
+        "metadata\tpypi\tupload\thosted/pkg/pkg-1.0.whl\tmissing blob {}",
         digest.as_str()
     )));
     assert!(text.contains(&format!(
-        "metadata\tupload\thosted/pkg/pkg-1.0.whl\tmissing blob {}",
+        "metadata\tpypi\tupload\thosted/pkg/pkg-1.0.whl\tmissing blob {}",
         metadata_digest.as_str()
     )));
 }
@@ -109,7 +109,7 @@ fn test_cache_fsck_reports_corrupt_index_record() {
     assert!(
         String::from_utf8(out)
             .unwrap()
-            .contains("metadata\tindex\tpypi/corrupt\t")
+            .contains("metadata\tpypi\tindex\tpypi/corrupt\t")
     );
 }
 

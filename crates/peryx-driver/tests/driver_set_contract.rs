@@ -233,6 +233,7 @@ fn driver_set_registers_and_dispatches_independent_capabilities() {
         set.fsck_drivers()
             .next()
             .unwrap()
+            .1
             .fsck_metadata(&meta, &blobs, &mut Vec::new()),
         Err("fsck".to_owned())
     );

@@ -480,6 +480,7 @@ fn register_capabilities(registrar: &mut dyn CapabilityRegistrar, driver: Arc<Oc
     registrar.register_metrics(ECOSYSTEM, driver.clone());
     registrar.register_policy(ECOSYSTEM, driver.clone());
     registrar.register_blob_references(ECOSYSTEM, driver.clone());
+    registrar.register_fsck(ECOSYSTEM, driver.clone());
     registrar.register_trash(ECOSYSTEM, driver.clone());
     registrar.register_browse(ECOSYSTEM, driver);
 }

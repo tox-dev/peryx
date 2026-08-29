@@ -381,11 +381,11 @@ pub fn fsck_metadata(meta: &MetaStore, blobs: &BlobStorage, out: &mut dyn Write)
             Ok(record) if parse_detail(&record.body).is_ok() => {}
             Ok(_) => {
                 problems += 1;
-                writeln!(out, "metadata\tindex\t{key}\tinvalid project detail")?;
+                writeln!(out, "metadata\tpypi\tindex\t{key}\tinvalid project detail")?;
             }
             Err(err) => {
                 problems += 1;
-                writeln!(out, "metadata\tindex\t{key}\t{err}")?;
+                writeln!(out, "metadata\tpypi\tindex\t{key}\t{err}")?;
             }
         }
         Ok::<(), std::io::Error>(())
@@ -394,7 +394,7 @@ pub fn fsck_metadata(meta: &MetaStore, blobs: &BlobStorage, out: &mut dyn Write)
     meta.scan_file_urls(|digest, value| {
         if Digest::from_hex(digest).is_none() || split_pair(value).is_none() {
             problems += 1;
-            writeln!(out, "metadata\tfile-url\t{digest}\tinvalid record")?;
+            writeln!(out, "metadata\tpypi\tfile-url\t{digest}\tinvalid record")?;
         }
         Ok::<(), std::io::Error>(())
     })
@@ -405,7 +405,7 @@ pub fn fsck_metadata(meta: &MetaStore, blobs: &BlobStorage, out: &mut dyn Write)
                 .is_some_and(|(_url, metadata_digest, _source)| Digest::from_hex(metadata_digest).is_some());
         if !valid {
             problems += 1;
-            writeln!(out, "metadata\tpep658\t{digest}\tinvalid record")?;
+            writeln!(out, "metadata\tpypi\tpep658\t{digest}\tinvalid record")?;
         }
         Ok::<(), std::io::Error>(())
     })
@@ -413,7 +413,7 @@ pub fn fsck_metadata(meta: &MetaStore, blobs: &BlobStorage, out: &mut dyn Write)
     meta.scan_project_records(|key, display| {
         if !valid_project_key(key) || display.is_empty() {
             problems += 1;
-            writeln!(out, "metadata\tproject\t{key}\tinvalid record")?;
+            writeln!(out, "metadata\tpypi\tproject\t{key}\tinvalid record")?;
         }
         Ok::<(), std::io::Error>(())
     })
@@ -421,18 +421,18 @@ pub fn fsck_metadata(meta: &MetaStore, blobs: &BlobStorage, out: &mut dyn Write)
     meta.scan_upload_records(|key, bytes| {
         let Some(digests) = upload_digests(bytes) else {
             problems += 1;
-            writeln!(out, "metadata\tupload\t{key}\tinvalid record")?;
+            writeln!(out, "metadata\tpypi\tupload\t{key}\tinvalid record")?;
             return Ok(());
         };
         if !valid_upload_key(key) {
             problems += 1;
-            writeln!(out, "metadata\tupload\t{key}\tinvalid key")?;
+            writeln!(out, "metadata\tpypi\tupload\t{key}\tinvalid key")?;
             return Ok(());
         }
         for digest in digests {
             if blobs.blocking().head(&digest).map_err(std::io::Error::other)?.is_none() {
                 problems += 1;
-                writeln!(out, "metadata\tupload\t{key}\tmissing blob {}", digest.as_str())?;
+                writeln!(out, "metadata\tpypi\tupload\t{key}\tmissing blob {}", digest.as_str())?;
             }
         }
         Ok::<(), std::io::Error>(())
@@ -441,7 +441,7 @@ pub fn fsck_metadata(meta: &MetaStore, blobs: &BlobStorage, out: &mut dyn Write)
     meta.scan_override_records(|key, kind| {
         if !valid_upload_key(key) || !matches!(kind, "hidden" | "yanked") {
             problems += 1;
-            writeln!(out, "metadata\toverride\t{key}\tinvalid record")?;
+            writeln!(out, "metadata\tpypi\toverride\t{key}\tinvalid record")?;
         }
         Ok::<(), std::io::Error>(())
     })
@@ -449,7 +449,7 @@ pub fn fsck_metadata(meta: &MetaStore, blobs: &BlobStorage, out: &mut dyn Write)
     meta.scan_provenance_records(|digest, value| {
         if valid_provenance(digest, value).is_none() {
             problems += 1;
-            writeln!(out, "metadata\tprovenance\t{digest}\tinvalid record")?;
+            writeln!(out, "metadata\tpypi\tprovenance\t{digest}\tinvalid record")?;
         }
         Ok::<(), std::io::Error>(())
     })

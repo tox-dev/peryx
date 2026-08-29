@@ -23,8 +23,8 @@ use futures_util::{FutureExt as _, StreamExt as _};
 use parking_lot::RwLock;
 use peryx_driver::ServingState;
 use peryx_driver::serving::{
-    AbsoluteProtocolDriver, BlobReferenceDriver, BrowseDriver, EcosystemDriver, IdleReclaimer, MetricsDriver,
-    PolicyDriver, TrashDriver,
+    AbsoluteProtocolDriver, BlobReferenceDriver, BrowseDriver, EcosystemDriver, FsckDriver, IdleReclaimer,
+    MetricsDriver, PolicyDriver, TrashDriver,
 };
 use peryx_identity::{Action, ArtifactDigest, Denial, DigestDecision, Identity};
 use peryx_index::{Index, IndexKind};
@@ -336,6 +336,17 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> BlobReferenceDriver for O
         meta: &peryx_storage::meta::MetaStore,
     ) -> Result<std::collections::BTreeSet<String>, String> {
         Ok(crate::referenced_blob_digests(meta).map_err(ServeError::from)?)
+    }
+}
+
+impl<S: BuildHasher + Default + Send + Sync + 'static> FsckDriver for OciRegistryWithHasher<S> {
+    fn fsck_metadata(
+        &self,
+        meta: &peryx_storage::meta::MetaStore,
+        blobs: &peryx_storage::blob::BlobStorage,
+        out: &mut dyn std::io::Write,
+    ) -> Result<u64, String> {
+        crate::store::fsck_metadata(meta, blobs, out)
     }
 }
 

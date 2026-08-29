@@ -242,7 +242,7 @@ fn test_fsck_metadata_rejects_each_invalid_field(
     assert!(
         String::from_utf8(output)
             .unwrap()
-            .starts_with(&format!("metadata\t{record}\t{key}\t"))
+            .starts_with(&format!("metadata\tpypi\t{record}\t{key}\t"))
     );
 }
 
@@ -259,7 +259,7 @@ fn test_fsck_metadata_rejects_an_invalid_upload_key_with_present_blobs() {
     assert_eq!(fsck_metadata(&meta, &blobs, &mut output).unwrap(), 1);
     assert_eq!(
         String::from_utf8(output).unwrap(),
-        "metadata\tupload\thosted/demo/\tinvalid key\n"
+        "metadata\tpypi\tupload\thosted/demo/\tinvalid key\n"
     );
 }
 

@@ -35,6 +35,20 @@ fn test_cache_fsck_includes_plugin_metadata_problems() {
 }
 
 #[test]
+fn test_cache_fsck_reports_an_ecosystem_without_a_checker() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = config_at(&dir);
+    let meta = MetaStore::open(config.data_dir.join("peryx.redb")).unwrap();
+    crate::tests::support::store_repositories(&meta, &["missing"]);
+    drop(meta);
+    let mut output = Vec::new();
+
+    cache_with_plugins(&config, &plugins(), &command(), &mut output).unwrap();
+
+    assert_eq!(output, b"metadata\tmissing\tmissing checker\nproblems\t1\n");
+}
+
+#[test]
 fn test_cache_fsck_propagates_plugin_output_failures() {
     let dir = tempfile::tempdir().unwrap();
     let plugins = crate::tests::support::plugins_with_fsck();

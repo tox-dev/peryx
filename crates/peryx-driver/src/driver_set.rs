@@ -162,8 +162,8 @@ impl DriverSet {
         self.cache.values()
     }
 
-    pub fn fsck_drivers(&self) -> impl Iterator<Item = &Arc<dyn FsckDriver>> {
-        self.fsck.values()
+    pub fn fsck_drivers(&self) -> impl Iterator<Item = (&Ecosystem, &Arc<dyn FsckDriver>)> {
+        self.fsck.iter()
     }
 
     #[must_use]

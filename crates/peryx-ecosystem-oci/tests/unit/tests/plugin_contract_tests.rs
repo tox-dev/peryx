@@ -148,7 +148,18 @@ fn registration_builds_the_driver_only_after_activation() {
     let registry = peryx_plugin_registry::PluginRegistry::new(vec![registration()]).unwrap();
 
     assert!(registry.protocol(&ECOSYSTEM).is_none());
-    assert!(registry.activate([ECOSYSTEM]).unwrap().protocol(&ECOSYSTEM).is_some());
+    let activated = registry.activate([ECOSYSTEM]).unwrap();
+    assert_eq!(
+        (
+            activated.protocol(&ECOSYSTEM).is_some(),
+            activated
+                .drivers()
+                .fsck_drivers()
+                .map(|(ecosystem, _)| ecosystem.clone())
+                .collect::<Vec<_>>(),
+        ),
+        (true, vec![ECOSYSTEM])
+    );
 }
 
 #[test]
