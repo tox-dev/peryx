@@ -221,7 +221,7 @@ fn build_state_with_active_backend_and_plugins(
             }
         }
     }
-    attach_policy_decision_recorders(&meta, &mut indexes)?;
+    attach_policy_decision_recorders(&meta, &mut indexes, read_only)?;
     if !read_only {
         crate::config::reconcile_configured_repositories(&meta, &configs);
     }
@@ -496,7 +496,10 @@ impl PolicyDecisionRecorder for StoredPolicyDecisionRecorder {
     }
 }
 
-fn attach_policy_decision_recorders(meta: &MetaStore, indexes: &mut [Index]) -> anyhow::Result<()> {
+fn attach_policy_decision_recorders(meta: &MetaStore, indexes: &mut [Index], read_only: bool) -> anyhow::Result<()> {
+    if read_only {
+        return Ok(());
+    }
     for index in indexes {
         meta.advance_policy_generation(&index.name)
             .context(format!("advance policy generation for {}", index.name))?;

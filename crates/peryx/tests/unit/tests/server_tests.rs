@@ -1376,6 +1376,46 @@ async fn test_build_state_records_policy_decisions_and_rejects_oversized_records
             .len(),
         1
     );
+    assert_eq!(state.serving.meta.policy_input_generation("hosted").unwrap().policy, 1);
+}
+
+#[test]
+fn test_build_state_keeps_read_only_policy_generation_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = parsed_config(&dir, "[[index]]\nname = \"hosted\"\nhosted = true\n");
+    config.read_only = true;
+
+    let state = build_state(&config).unwrap();
+
+    assert_eq!(state.serving.meta.policy_input_generation("hosted").unwrap().policy, 0);
+}
+
+#[rstest]
+#[case::allow("allowed", true)]
+#[case::deny("blocked", false)]
+fn test_build_state_enforces_read_only_policy_without_recording(#[case] resource: &str, #[case] allowed: bool) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = parsed_config(
+        &dir,
+        "[[index]]\nname = \"hosted\"\nhosted = true\n[index.policy]\nblock_resources = [\"blocked\"]\n",
+    );
+    config.read_only = true;
+    let state = build_state(&config).unwrap();
+
+    let result = state.serving.indexes[0]
+        .policy
+        .check_resource(PolicyAction::Upload, resource);
+
+    assert_eq!(result.is_ok(), allowed);
+    assert!(
+        state
+            .serving
+            .meta
+            .query_policy_decisions(&PolicyDecisionQuery::default())
+            .unwrap()
+            .decisions
+            .is_empty()
+    );
 }
 
 #[tokio::test]
