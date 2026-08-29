@@ -253,7 +253,7 @@ struct ReadSnapshot {
 }
 
 /// `day` leads ordering so retention removes an expired prefix in one split.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct DailyKey {
     day: i64,
     repository: String,
@@ -896,11 +896,16 @@ impl Metrics {
     ) -> BTreeMap<K, DailyTotals> {
         let daily = self.daily.read().expect("metrics lock");
         let mut folded: BTreeMap<K, DailyTotals> = BTreeMap::new();
-        for (bucket, totals) in daily.iter() {
-            if bucket.day < interval.from_day
-                || bucket.day > interval.to_day
-                || repository.is_some_and(|repository| bucket.repository != repository)
-            {
+        for (bucket, totals) in daily
+            .range(
+                DailyKey {
+                    day: interval.from_day,
+                    ..DailyKey::default()
+                }..,
+            )
+            .take_while(|(bucket, _)| bucket.day <= interval.to_day)
+        {
+            if repository.is_some_and(|repository| bucket.repository != repository) {
                 continue;
             }
             let group = folded.entry(key(bucket)).or_default();

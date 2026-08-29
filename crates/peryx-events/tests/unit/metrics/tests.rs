@@ -1126,6 +1126,27 @@ fn test_usage_top_is_empty_when_the_window_predates_every_bucket() {
 }
 
 #[test]
+fn test_usage_top_is_empty_when_interval_is_reversed() {
+    let (_dir, _meta, metrics) = durable_on(500, None);
+    metrics.record(grouped_read("a", "resource-b", "1.0", None, 10));
+    flush_and_assert(&metrics, || metrics.daily_usage().len() == 1);
+
+    assert!(
+        metrics
+            .usage_top(
+                None,
+                &UsageInterval {
+                    from_day: 501,
+                    to_day: 500,
+                    retained_from_day: None,
+                    window_clamped_to_retention: false,
+                },
+            )
+            .is_empty()
+    );
+}
+
+#[test]
 fn test_usage_window_includes_its_first_day() {
     let (_dir, _meta, metrics) = durable_on(500, None);
     metrics.record(grouped_read("a", "resource-b", "1.0", None, 10));
@@ -1144,6 +1165,36 @@ fn test_usage_window_includes_its_first_day() {
         [ResourceUsage {
             repository: "a".into(),
             resource: "resource-b".into(),
+            reads: 1,
+            bytes: 10,
+        }]
+    );
+}
+
+#[test]
+fn test_usage_window_excludes_adjacent_days() {
+    let (_dir, meta) = store();
+    for day in 499..=501 {
+        let metrics = Metrics::start_durable(meta.analytics(), None, clock_on_day(day)).unwrap();
+        metrics.record(grouped_read("a", "resource-b", "1.0", None, 10));
+        flush_and_assert(&metrics, || meta.analytics().load_daily().unwrap().is_some());
+    }
+    let metrics = Metrics::start_durable(meta.analytics(), None, clock_on_day(501)).unwrap();
+
+    assert_eq!(
+        metrics.usage_timeline(
+            None,
+            &UsageInterval {
+                from_day: 500,
+                to_day: 500,
+                retained_from_day: None,
+                window_clamped_to_retention: false,
+            },
+        ),
+        [TimelineBucket {
+            day: 500,
+            start_unix: 500 * SECONDS_PER_DAY,
+            end_unix: 501 * SECONDS_PER_DAY,
             reads: 1,
             bytes: 10,
         }]
