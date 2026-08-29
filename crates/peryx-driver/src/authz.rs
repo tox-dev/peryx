@@ -13,8 +13,8 @@ use peryx_events::security::{AuthorizationDenial, authorization_denied};
 use peryx_identity::{GrantScope, Resource, Role, RoleGrant, Scope, UserId, grants_permit};
 use peryx_storage::meta::{CreateGrantOutcome, MetaError, MetaStore, RoleGrantPage};
 pub use peryx_storage::meta::{
-    DeleteGrantOutcome, RoleGrantFilter, RoleGrantQuery, RoleGrantQueryError, RoleGrantStoreError, StoredRoleGrant,
-    role_grant_reach,
+    DeleteGrantOutcome, RoleGrantFilter, RoleGrantOrigin, RoleGrantQuery, RoleGrantQueryError, RoleGrantStoreError,
+    StoredRoleGrant, role_grant_reach,
 };
 
 /// Role-based authorization over persistent server users.

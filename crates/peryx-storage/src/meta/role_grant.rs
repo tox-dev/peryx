@@ -16,6 +16,16 @@ pub enum RoleGrantStoreError {
     DisabledUser { id: UserId },
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RoleGrantOrigin {
+    #[default]
+    Manual,
+    ExternalIdentity {
+        link_id: String,
+    },
+}
+
 /// Audit fields default for records written before managed grants existed.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StoredRoleGrant {
@@ -30,6 +40,8 @@ pub struct StoredRoleGrant {
     /// `None` for bootstrap and group-sync bindings.
     #[serde(default)]
     pub granted_at_unix: Option<i64>,
+    #[serde(default)]
+    pub origin: RoleGrantOrigin,
 }
 
 impl StoredRoleGrant {
@@ -39,13 +51,24 @@ impl StoredRoleGrant {
             version: 1,
             granted_by: None,
             granted_at_unix: None,
+            origin: RoleGrantOrigin::Manual,
+        }
+    }
+
+    pub(super) const fn external(grant: RoleGrant, link_id: String) -> Self {
+        Self {
+            grant,
+            version: 0,
+            granted_by: None,
+            granted_at_unix: None,
+            origin: RoleGrantOrigin::ExternalIdentity { link_id },
         }
     }
 
     /// Encodes the primary key into a stable identifier unique across users, roles, and reaches.
     #[must_use]
     pub fn id(&self) -> String {
-        encode_grant_id(&primary_key(&self.grant))
+        encode_grant_id(&record_key(self))
     }
 }
 
@@ -59,6 +82,7 @@ pub struct CreateGrantOutcome {
 /// [`Self::Removed`] retains the final record for audit.
 pub enum DeleteGrantOutcome {
     NotFound,
+    ExternallyManaged { link_id: String },
     PreconditionFailed { current: u64 },
     Removed(StoredRoleGrant),
 }
@@ -138,6 +162,7 @@ impl MetaStore {
             version: existing.map_or(1, |prior| prior.version + 1),
             granted_by: Some(granted_by.clone()),
             granted_at_unix: Some(now),
+            origin: RoleGrantOrigin::Manual,
         };
         write_grant(&txn, &record)?;
         txn.commit().map_err(MetaError::from)?;
@@ -185,6 +210,10 @@ impl MetaStore {
         let txn = self.db.begin_write()?;
         let outcome = match read_grant(&txn, &key)? {
             None => DeleteGrantOutcome::NotFound,
+            Some(StoredRoleGrant {
+                origin: RoleGrantOrigin::ExternalIdentity { link_id },
+                ..
+            }) => DeleteGrantOutcome::ExternallyManaged { link_id },
             Some(stored) if stored.version != expected_version => DeleteGrantOutcome::PreconditionFailed {
                 current: stored.version,
             },
@@ -276,8 +305,9 @@ impl MetaStore {
         match txn.open_table(ROLE_GRANT) {
             Ok(table) => {
                 for entry in table.range(start.as_str()..end.as_str())? {
-                    let (key, value) = entry?;
-                    grants.insert(key.value().to_owned(), decode_binding(value.value())?);
+                    let (_, value) = entry?;
+                    let grant = decode_binding(value.value())?;
+                    grants.entry(primary_key(&grant)).or_insert(grant);
                 }
             }
             Err(redb::TableError::TableDoesNotExist(_)) => {}
@@ -307,6 +337,7 @@ pub fn role_grant_reach(id: &str) -> Option<GrantScope> {
     let (Some(_user), Some(_role), Some(reach)) = (parts.next(), parts.next(), parts.next()) else {
         return None;
     };
+    let reach = reach.split('\0').next()?;
     if reach == "server" {
         return Some(GrantScope::Server);
     }
@@ -320,6 +351,24 @@ pub(super) fn write_grant(txn: &WriteTransaction, stored: &StoredRoleGrant) -> R
         .insert(primary_key(&stored.grant).as_str(), bytes.as_slice())?;
     txn.open_table(ROLE_GRANT_BY_SCOPE)?
         .insert(scope_key(&stored.grant).as_str(), bytes.as_slice())?;
+    Ok(())
+}
+
+pub(super) fn write_external_grant(txn: &WriteTransaction, link_id: &str, grant: &RoleGrant) -> Result<(), MetaError> {
+    let stored = StoredRoleGrant::external(grant.clone(), link_id.to_owned());
+    let bytes = serde_json::to_vec(&stored)?;
+    txn.open_table(ROLE_GRANT)?
+        .insert(record_key(&stored).as_str(), bytes.as_slice())?;
+    txn.open_table(ROLE_GRANT_BY_SCOPE)?
+        .insert(stored_scope_key(&stored).as_str(), bytes.as_slice())?;
+    Ok(())
+}
+
+pub(super) fn remove_external_grant(txn: &WriteTransaction, link_id: &str, grant: &RoleGrant) -> Result<(), MetaError> {
+    let stored = StoredRoleGrant::external(grant.clone(), link_id.to_owned());
+    txn.open_table(ROLE_GRANT)?.remove(record_key(&stored).as_str())?;
+    txn.open_table(ROLE_GRANT_BY_SCOPE)?
+        .remove(stored_scope_key(&stored).as_str())?;
     Ok(())
 }
 
@@ -369,6 +418,21 @@ fn scope_key(grant: &RoleGrant) -> String {
         grant.user,
         grant.role.as_str()
     )
+}
+
+pub(super) fn record_key(stored: &StoredRoleGrant) -> String {
+    origin_key(primary_key(&stored.grant), &stored.origin)
+}
+
+fn stored_scope_key(stored: &StoredRoleGrant) -> String {
+    origin_key(scope_key(&stored.grant), &stored.origin)
+}
+
+fn origin_key(key: String, origin: &RoleGrantOrigin) -> String {
+    match origin {
+        RoleGrantOrigin::Manual => key,
+        RoleGrantOrigin::ExternalIdentity { link_id } => format!("{key}\u{0}external_identity\u{0}{link_id}"),
+    }
 }
 
 fn reach_of(scope: &GrantScope) -> String {

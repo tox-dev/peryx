@@ -34,6 +34,8 @@ pub enum MetaError {
     },
     #[error("driver record {key:?} is missing field {field:?}")]
     DriverRecordMissing { key: String, field: &'static str },
+    #[error("external role grant key {key:?} is malformed")]
+    MalformedExternalGrantKey { key: String },
     #[error("blob {digest} is being reclaimed; publish the reference again once its deletion finishes")]
     BlobReclaiming { digest: String },
 }

@@ -4,7 +4,7 @@ use rstest::rstest;
 
 use super::store;
 use crate::meta::{
-    DeleteGrantOutcome, MetaError, MetaStore, RoleGrantFilter, RoleGrantQuery, RoleGrantQueryError,
+    DeleteGrantOutcome, MetaError, MetaStore, RoleGrantFilter, RoleGrantOrigin, RoleGrantQuery, RoleGrantQueryError,
     RoleGrantStoreError, StoredRoleGrant,
 };
 
@@ -14,8 +14,25 @@ fn sample_id() -> String {
         version: 0,
         granted_by: None,
         granted_at_unix: None,
+        origin: RoleGrantOrigin::Manual,
     }
     .id()
+}
+
+#[test]
+fn test_stored_grants_without_an_origin_remain_manual() {
+    let grant = RoleGrant::new(UserId::random(), Role::Operator, GrantScope::Server);
+    let stored: StoredRoleGrant = serde_json::from_value(serde_json::json!({
+        "user": grant.user,
+        "role": grant.role,
+        "scope": grant.scope,
+        "version": 1,
+        "granted_by": null,
+        "granted_at_unix": null,
+    }))
+    .unwrap();
+
+    assert_eq!(stored.origin, RoleGrantOrigin::Manual);
 }
 
 const RAW_USER: TableDefinition<&str, &[u8]> = TableDefinition::new("server_user");
@@ -104,6 +121,7 @@ fn test_reprovisioning_keeps_the_binding_at_version_one() {
         version: 0,
         granted_by: None,
         granted_at_unix: None,
+        origin: RoleGrantOrigin::Manual,
     }
     .id();
     let stored = store.managed_grant(&id).unwrap().unwrap();
@@ -311,6 +329,7 @@ fn test_a_stored_grant_id_round_trips_to_its_reach() {
         version: 0,
         granted_by: None,
         granted_at_unix: None,
+        origin: RoleGrantOrigin::Manual,
     };
     assert_eq!(
         crate::meta::role_grant_reach(&stored.id()),

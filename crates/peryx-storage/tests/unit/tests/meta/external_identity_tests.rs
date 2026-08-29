@@ -2,15 +2,19 @@ use std::sync::{Arc, Barrier};
 
 use peryx_identity::{
     ExternalGroup, ExternalGroupGrant, ExternalIdentity, ExternalIdentityLinker, ExternalLinkRequest, ExternalLogin,
-    ExternalSubject, GrantScope, ManagedRoleGrant, ProviderId, Role, UserName, UserState,
+    ExternalSubject, GrantScope, ManagedRoleGrant, ProviderId, Role, RoleGrant, UserId, UserName, UserState,
 };
 use redb::TableDefinition;
 use sha2::{Digest as _, Sha256};
 
 use super::store;
-use crate::meta::{ExternalIdentityStoreError, MetaError, MetaStore};
+use crate::meta::{
+    DeleteGrantOutcome, ExternalIdentityStoreError, MetaError, MetaStore, RoleGrantFilter, RoleGrantOrigin,
+    RoleGrantQuery,
+};
 
 const RAW_EXTERNAL_IDENTITY: TableDefinition<&[u8], &[u8]> = TableDefinition::new("external_identity");
+const RAW_EXTERNAL_ROLE_GRANT: TableDefinition<&str, &[u8]> = TableDefinition::new("external_role_grant");
 
 fn identity(provider: &str, subject: &str) -> ExternalIdentity {
     ExternalIdentity::new(
@@ -86,6 +90,70 @@ fn test_first_login_persists_one_stable_link_user_and_grants() {
             repository("team/api")
         )]
     );
+}
+
+#[test]
+fn test_link_owned_grants_use_every_managed_listing_index() {
+    let (_dir, store) = store();
+    let result = store
+        .link_external_identity(request(
+            "corporate",
+            "employee-42",
+            "Alice",
+            vec![grant(Role::RepositoryPublisher, repository("team/api"))],
+        ))
+        .unwrap();
+    let scope = repository("team/api");
+    let pages = [
+        RoleGrantFilter::All,
+        RoleGrantFilter::User(result.user.id.clone()),
+        RoleGrantFilter::Resource(scope),
+    ]
+    .map(|filter| {
+        store
+            .list_managed_grants(&RoleGrantQuery {
+                filter,
+                cursor: None,
+                limit: 10,
+            })
+            .unwrap()
+    });
+
+    assert!(pages.iter().all(|page| page.grants == pages[0].grants));
+    assert!(matches!(
+        pages[0].grants.as_slice(),
+        [stored] if stored.grant.user == result.user.id
+            && matches!(stored.origin, RoleGrantOrigin::ExternalIdentity { .. })
+    ));
+}
+
+#[test]
+fn test_link_owned_grants_are_inspectable_but_not_directly_deletable() {
+    let (_dir, store) = store();
+    store
+        .link_external_identity(request(
+            "corporate",
+            "employee-42",
+            "Alice",
+            vec![grant(Role::RepositoryPublisher, repository("team/api"))],
+        ))
+        .unwrap();
+    let stored = store
+        .list_managed_grants(&RoleGrantQuery {
+            filter: RoleGrantFilter::All,
+            cursor: None,
+            limit: 10,
+        })
+        .unwrap()
+        .grants
+        .pop()
+        .unwrap();
+    assert_eq!(store.managed_grant(&stored.id()).unwrap(), Some(stored.clone()));
+    assert!(matches!(
+        store.delete_managed_grant(&stored.id(), stored.version).unwrap(),
+        DeleteGrantOutcome::ExternallyManaged { link_id }
+            if stored.origin == RoleGrantOrigin::ExternalIdentity { link_id: link_id.clone() }
+    ));
 }
 
 #[test]
@@ -234,6 +302,86 @@ fn test_empty_group_refresh_removes_managed_authority() {
 
     assert!(refreshed.grants_changed);
     assert!(store.user_role_grants(&first.user.id).unwrap().is_empty());
+    assert!(
+        store
+            .list_managed_grants(&RoleGrantQuery {
+                filter: RoleGrantFilter::User(first.user.id),
+                cursor: None,
+                limit: 10,
+            })
+            .unwrap()
+            .grants
+            .is_empty()
+    );
+}
+
+#[test]
+fn test_open_backfills_existing_link_owned_grants_into_listing_indexes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peryx.redb");
+    let database = redb::Database::create(&path).unwrap();
+    let txn = database.begin_write().unwrap();
+    let grant = RoleGrant::new(UserId::random(), Role::Operator, GrantScope::Server);
+    let bytes = serde_json::to_vec(&grant).unwrap();
+    txn.open_table(RAW_EXTERNAL_ROLE_GRANT)
+        .unwrap()
+        .insert(
+            format!("{}/ext_existing/operator/server", grant.user).as_str(),
+            bytes.as_slice(),
+        )
+        .unwrap();
+    txn.commit().unwrap();
+    drop(database);
+
+    let store = MetaStore::open(&path).unwrap();
+    let page = store
+        .list_managed_grants(&RoleGrantQuery {
+            filter: RoleGrantFilter::All,
+            cursor: None,
+            limit: 10,
+        })
+        .unwrap();
+
+    assert!(matches!(
+        page.grants.as_slice(),
+        [stored] if stored.grant == grant
+            && stored.origin == RoleGrantOrigin::ExternalIdentity { link_id: "ext_existing".to_owned() }
+    ));
+    drop(store);
+    assert_eq!(
+        MetaStore::open(path)
+            .unwrap()
+            .list_managed_grants(&RoleGrantQuery {
+                filter: RoleGrantFilter::All,
+                cursor: None,
+                limit: 10,
+            })
+            .unwrap()
+            .grants
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn test_open_rejects_a_malformed_existing_link_owned_grant_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peryx.redb");
+    let database = redb::Database::create(&path).unwrap();
+    let txn = database.begin_write().unwrap();
+    let grant = RoleGrant::new(UserId::random(), Role::Operator, GrantScope::Server);
+    let bytes = serde_json::to_vec(&grant).unwrap();
+    txn.open_table(RAW_EXTERNAL_ROLE_GRANT)
+        .unwrap()
+        .insert("malformed", bytes.as_slice())
+        .unwrap();
+    txn.commit().unwrap();
+    drop(database);
+
+    assert!(matches!(
+        MetaStore::open(path),
+        Err(MetaError::MalformedExternalGrantKey { key }) if key == "malformed"
+    ));
 }
 
 #[test]

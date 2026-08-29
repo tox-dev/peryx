@@ -8,7 +8,10 @@ use http_body_util::BodyExt as _;
 use peryx_driver::authz::AuthorizationService;
 use peryx_driver::state::AppState;
 use peryx_driver::users::UserService;
-use peryx_identity::{GrantScope, PasswordPolicy, Role, RoleGrant, UserId};
+use peryx_identity::{
+    ExternalIdentity, ExternalLinkRequest, ExternalSubject, GrantScope, ManagedRoleGrant, PasswordPolicy, ProviderId,
+    Role, RoleGrant, UserId, UserName,
+};
 use peryx_storage::meta::MetaStore;
 use rstest::rstest;
 use serde_json::{Value, json};
@@ -34,6 +37,7 @@ struct Fixture {
     administrator: UserId,
     ted: UserId,
     dan: UserId,
+    external: UserId,
     seeded: String,
 }
 
@@ -78,6 +82,21 @@ impl Fixture {
             .unwrap()
             .record
             .id();
+        let external = meta
+            .link_external_identity(ExternalLinkRequest {
+                identity: ExternalIdentity::new(
+                    ProviderId::new("corporate").unwrap(),
+                    ExternalSubject::new("employee-42").unwrap(),
+                ),
+                display_name: UserName::new("External User").unwrap(),
+                grants: vec![ManagedRoleGrant {
+                    role: Role::RepositoryReader,
+                    scope: repository(REPO),
+                }],
+            })
+            .unwrap()
+            .user
+            .id;
 
         drop((users, authz, meta));
         apply_fault(&path, fault, &administrator, &ted);
@@ -93,6 +112,7 @@ impl Fixture {
             administrator,
             ted,
             dan,
+            external,
             seeded,
         }
     }
@@ -145,6 +165,44 @@ impl Fixture {
         let document = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
         (status, headers, document)
     }
+}
+
+#[tokio::test]
+async fn test_link_owned_grants_are_visible_and_name_their_owner_on_delete() {
+    let fixture = Fixture::new().await;
+    let admin = Some(("Alice", ADMIN));
+    let listed = fixture
+        .request(Method::GET, &format!("/+grants?user={}", fixture.external), admin, None)
+        .await;
+    let grant = &listed.2["grants"][0];
+    let id = grant["id"].as_str().unwrap();
+    let link_id = grant["origin"]["link_id"].as_str().unwrap();
+
+    assert_eq!(listed.0, StatusCode::OK);
+    assert_eq!(grant["origin"]["kind"], "external_identity");
+    assert_eq!(
+        fixture
+            .request(Method::GET, &format!("/+grants/{id}"), admin, None)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let rejected = fixture
+        .raw(
+            Method::DELETE,
+            &format!("/+grants/{id}"),
+            RawRequest {
+                credential: admin,
+                if_match: Some("\"0\""),
+                ..RawRequest::default()
+            },
+        )
+        .await;
+    assert_eq!(rejected.0, StatusCode::CONFLICT);
+    assert_eq!(
+        rejected.2["error"],
+        format!("grant is managed by external identity link {link_id}")
+    );
 }
 
 #[derive(Default)]
@@ -243,6 +301,7 @@ async fn test_an_administrator_creates_inspects_lists_and_revokes_a_grant() {
     assert_eq!(created["version"], 1);
     assert_eq!(created["granted_by"], fixture.administrator.as_str());
     assert_eq!(created["granted_at_unix"], 42);
+    assert_eq!(created["origin"], json!({"kind": "manual"}));
 
     let reassert = fixture
         .request(

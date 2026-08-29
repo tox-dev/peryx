@@ -96,8 +96,8 @@ pub use revocation::{
     DigestRevocationStatus, LiftRevocationOutcome, PutRevocationError, PutRevocationOutcome,
 };
 pub use role_grant::{
-    CreateGrantOutcome, DeleteGrantOutcome, RoleGrantFilter, RoleGrantPage, RoleGrantQuery, RoleGrantQueryError,
-    RoleGrantStoreError, StoredRoleGrant, role_grant_reach,
+    CreateGrantOutcome, DeleteGrantOutcome, RoleGrantFilter, RoleGrantOrigin, RoleGrantPage, RoleGrantQuery,
+    RoleGrantQueryError, RoleGrantStoreError, StoredRoleGrant, role_grant_reach,
 };
 pub use scoped_token::{
     NewScopedToken, RevokeScopedTokenOutcome, ScopedTokenPage, ScopedTokenQuery, ScopedTokenQueryError,
@@ -297,6 +297,7 @@ impl MetaStore {
             txn.open_table(SCOPED_TOKEN_REACH)?;
             txn.open_table(SCOPED_TOKEN_VERIFIER)?;
         }
+        external_identity::backfill_role_grants(&txn)?;
         revocation::backfill_digest_revocation_state(&txn)?;
         txn.commit()?;
         Ok(Self {

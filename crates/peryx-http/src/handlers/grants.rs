@@ -180,6 +180,10 @@ pub async fn revoke_grant(State(state): State<Arc<AppState>>, headers: HeaderMap
             axum::Json(serde_json::json!({"error": "grant version precondition failed"})),
         )
             .into_response(),
+        Ok(DeleteGrantOutcome::ExternallyManaged { link_id }) => problem(
+            StatusCode::CONFLICT,
+            &format!("grant is managed by external identity link {link_id}"),
+        ),
         Ok(DeleteGrantOutcome::NotFound) => StatusCode::NOT_FOUND.into_response(),
         Err(_) => unavailable(),
     }
@@ -245,6 +249,7 @@ fn grant_json(stored: &StoredRoleGrant) -> serde_json::Value {
         "version": stored.version,
         "granted_by": stored.granted_by,
         "granted_at_unix": stored.granted_at_unix,
+        "origin": stored.origin,
     })
 }
 
@@ -283,6 +288,6 @@ fn unavailable() -> Response {
     problem(StatusCode::SERVICE_UNAVAILABLE, "grant service unavailable")
 }
 
-fn problem(status: StatusCode, message: &'static str) -> Response {
+fn problem(status: StatusCode, message: &str) -> Response {
     (status, axum::Json(serde_json::json!({"error": message}))).into_response()
 }

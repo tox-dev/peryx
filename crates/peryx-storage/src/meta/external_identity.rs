@@ -8,8 +8,9 @@ use redb::{ReadableTable as _, WriteTransaction};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+use super::role_grant::{remove_external_grant, write_external_grant};
 use super::user::{append_event, read_user, write_user};
-use super::{EXTERNAL_IDENTITY, EXTERNAL_ROLE_GRANT, MetaError, MetaStore, USER_NAME};
+use super::{EXTERNAL_IDENTITY, EXTERNAL_ROLE_GRANT, MetaError, MetaStore, ROLE_GRANT, USER_NAME};
 
 const KEY_DOMAIN: &[u8] = b"peryx.external-identity.v1\0";
 
@@ -179,17 +180,19 @@ fn replace_managed_grants(
     requested: &[ManagedRoleGrant],
 ) -> Result<bool, MetaError> {
     let (start, end) = managed_prefix_bounds(&link.user_id, &link.id);
-    let mut table = txn.open_table(EXTERNAL_ROLE_GRANT)?;
-    let existing = table
-        .range(start.as_str()..end.as_str())?
-        .map(|entry| {
-            let (key, value) = entry?;
-            Ok((
-                key.value().to_owned(),
-                serde_json::from_slice::<RoleGrant>(value.value())?,
-            ))
-        })
-        .collect::<Result<BTreeMap<_, _>, MetaError>>()?;
+    let existing = {
+        let table = txn.open_table(EXTERNAL_ROLE_GRANT)?;
+        table
+            .range(start.as_str()..end.as_str())?
+            .map(|entry| {
+                let (key, value) = entry?;
+                Ok((
+                    key.value().to_owned(),
+                    serde_json::from_slice::<RoleGrant>(value.value())?,
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>, MetaError>>()?
+    };
     let desired = requested
         .iter()
         .map(|grant| {
@@ -200,14 +203,65 @@ fn replace_managed_grants(
     if existing == desired {
         return Ok(false);
     }
+    for grant in existing.values() {
+        remove_external_grant(txn, &link.id, grant)?;
+    }
+    let mut table = txn.open_table(EXTERNAL_ROLE_GRANT)?;
     for key in existing.keys() {
         table.remove(key.as_str())?;
     }
-    for (key, grant) in desired {
+    for (key, grant) in &desired {
         let bytes = serde_json::to_vec(&grant)?;
         table.insert(key.as_str(), bytes.as_slice())?;
     }
+    drop(table);
+    for grant in desired.values() {
+        write_external_grant(txn, &link.id, grant)?;
+    }
     Ok(true)
+}
+
+pub(super) fn backfill_role_grants(txn: &WriteTransaction) -> Result<(), MetaError> {
+    let external = txn.open_table(EXTERNAL_ROLE_GRANT)?;
+    let first = {
+        let Some((key, value)) = external.iter()?.next().transpose()? else {
+            return Ok(());
+        };
+        (
+            key.value().to_owned(),
+            serde_json::from_slice::<RoleGrant>(value.value())?,
+        )
+    };
+    drop(external);
+    let grants = txn.open_table(ROLE_GRANT)?;
+    let stored = super::role_grant::StoredRoleGrant::external(first.1, external_grant_link_id(&first.0)?.to_owned());
+    let needs_backfill = grants.get(super::role_grant::record_key(&stored).as_str())?.is_none();
+    drop(grants);
+    if needs_backfill {
+        let external = txn.open_table(EXTERNAL_ROLE_GRANT)?;
+        let existing = external
+            .iter()?
+            .map(|entry| {
+                let (key, value) = entry?;
+                Ok((
+                    key.value().to_owned(),
+                    serde_json::from_slice::<RoleGrant>(value.value())?,
+                ))
+            })
+            .collect::<Result<Vec<_>, MetaError>>()?;
+        drop(external);
+        for (key, grant) in existing {
+            write_external_grant(txn, external_grant_link_id(&key)?, &grant)?;
+        }
+    }
+    Ok(())
+}
+
+fn external_grant_link_id(key: &str) -> Result<&str, MetaError> {
+    key.split('/')
+        .nth(1)
+        .filter(|link_id| !link_id.is_empty())
+        .ok_or_else(|| MetaError::MalformedExternalGrantKey { key: key.to_owned() })
 }
 
 fn identity_key(identity: &ExternalIdentity) -> [u8; 32] {
