@@ -11,7 +11,7 @@
 
 use peryx_events::security::{AuthorizationDenial, authorization_denied};
 use peryx_identity::{GrantScope, Resource, Role, RoleGrant, Scope, UserId, grants_permit};
-use peryx_storage::meta::{CreateGrantOutcome, MetaError, MetaStore, RoleGrantPage};
+use peryx_storage::meta::{CreateGrantOutcome, MetaError, MetaStore, RoleGrantPage, VersionPrecondition};
 pub use peryx_storage::meta::{
     DeleteGrantOutcome, RoleGrantFilter, RoleGrantOrigin, RoleGrantQuery, RoleGrantQueryError, RoleGrantStoreError,
     StoredRoleGrant, role_grant_reach,
@@ -109,8 +109,12 @@ impl AuthorizationService {
 
     /// # Errors
     /// Returns a store error when the transaction cannot commit.
-    pub fn delete_managed_grant(&self, id: &str, expected_version: u64) -> Result<DeleteGrantOutcome, MetaError> {
-        self.store.delete_managed_grant(id, expected_version)
+    pub fn delete_managed_grant(
+        &self,
+        id: &str,
+        precondition: impl Into<VersionPrecondition>,
+    ) -> Result<DeleteGrantOutcome, MetaError> {
+        self.store.delete_managed_grant(id, precondition)
     }
 
     /// # Errors

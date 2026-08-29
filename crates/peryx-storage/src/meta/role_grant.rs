@@ -4,7 +4,7 @@ use std::ops::Bound;
 use peryx_identity::{GrantScope, Role, RoleGrant, ServerUser, UserId, UserState};
 use redb::{ReadableTable as _, WriteTransaction};
 
-use super::{EXTERNAL_ROLE_GRANT, MetaError, MetaStore, ROLE_GRANT, ROLE_GRANT_BY_SCOPE, USER};
+use super::{EXTERNAL_ROLE_GRANT, MetaError, MetaStore, ROLE_GRANT, ROLE_GRANT_BY_SCOPE, USER, VersionPrecondition};
 
 #[derive(Debug, thiserror::Error)]
 pub enum RoleGrantStoreError {
@@ -81,9 +81,8 @@ pub struct CreateGrantOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// [`Self::Removed`] retains the final record for audit.
 pub enum DeleteGrantOutcome {
-    NotFound,
     ExternallyManaged { link_id: String },
-    PreconditionFailed { current: u64 },
+    PreconditionFailed { current: Option<u64> },
     Removed(StoredRoleGrant),
 }
 
@@ -199,24 +198,29 @@ impl MetaStore {
         }
     }
 
-    /// Removes the binding only at `expected_version`, so a concurrent reassertion wins safely.
+    /// Removes the binding when `precondition` matches, so a concurrent reassertion wins.
     ///
     /// # Errors
     /// Returns a store error when the transaction cannot commit.
-    pub fn delete_managed_grant(&self, id: &str, expected_version: u64) -> Result<DeleteGrantOutcome, MetaError> {
+    pub fn delete_managed_grant(
+        &self,
+        id: &str,
+        precondition: impl Into<VersionPrecondition>,
+    ) -> Result<DeleteGrantOutcome, MetaError> {
         let Some(key) = decode_grant_id(id) else {
-            return Ok(DeleteGrantOutcome::NotFound);
+            return Ok(DeleteGrantOutcome::PreconditionFailed { current: None });
         };
+        let precondition = precondition.into();
         let txn = self.db.begin_write()?;
         let outcome = match read_grant(&txn, &key)? {
-            None => DeleteGrantOutcome::NotFound,
+            None => DeleteGrantOutcome::PreconditionFailed { current: None },
+            Some(stored) if !precondition.matches(Some(stored.version)) => DeleteGrantOutcome::PreconditionFailed {
+                current: Some(stored.version),
+            },
             Some(StoredRoleGrant {
                 origin: RoleGrantOrigin::ExternalIdentity { link_id },
                 ..
             }) => DeleteGrantOutcome::ExternallyManaged { link_id },
-            Some(stored) if stored.version != expected_version => DeleteGrantOutcome::PreconditionFailed {
-                current: stored.version,
-            },
             Some(stored) => {
                 remove_grant(&txn, &stored.grant)?;
                 DeleteGrantOutcome::Removed(stored)

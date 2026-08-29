@@ -255,7 +255,17 @@ async fn test_full_lifecycle_create_inspect_list_update_disable_enable() {
 
 impl Fixture {
     async fn if_match_put(&self, id: &str, if_match: &str, body: Value) -> (StatusCode, HeaderMap, Value) {
-        let request = Request::builder()
+        self.if_match_put_values(id, &[HeaderValue::try_from(if_match).unwrap()], body)
+            .await
+    }
+
+    async fn if_match_put_values(
+        &self,
+        id: &str,
+        if_match: &[HeaderValue],
+        body: Value,
+    ) -> (StatusCode, HeaderMap, Value) {
+        let mut request = Request::builder()
             .method(Method::PUT)
             .uri(format!("/+repositories/{id}"))
             .header(
@@ -263,9 +273,11 @@ impl Fixture {
                 format!("Basic {}", STANDARD.encode(format!("{}:{}", ADMIN.0, ADMIN.1))),
             )
             .header(header::CONTENT_TYPE, "application/json")
-            .header(header::IF_MATCH, if_match)
             .body(Body::from(serde_json::to_vec(&body).unwrap()))
             .unwrap();
+        for value in if_match {
+            request.headers_mut().append(header::IF_MATCH, value.clone());
+        }
         self.run(request).await
     }
 
@@ -559,26 +571,36 @@ async fn test_list_paginates() {
 }
 
 #[tokio::test]
-async fn test_update_enforces_the_if_match_precondition() {
+async fn test_update_rejects_a_stale_if_match() {
     let fixture = Fixture::new().await;
     let id = fixture.create("root/alpha").await["id"].as_str().unwrap().to_owned();
 
-    let bad = fixture
-        .if_match_put(&id, "not-a-version", json!({"display_name": "x", "definition": {}}))
-        .await;
-    assert_eq!(bad.0, StatusCode::BAD_REQUEST);
-
-    let conflict = fixture
+    let response = fixture
         .if_match_put(&id, "\"9\"", json!({"display_name": "x", "definition": {}}))
         .await;
-    assert_eq!(conflict.0, StatusCode::CONFLICT);
-    assert_eq!(conflict.2["current_version"], 1);
 
-    let missing = fixture
+    assert_eq!(response.0, StatusCode::PRECONDITION_FAILED);
+    assert_eq!(response.1[header::ETAG], "\"1\"");
+    assert_eq!(response.2["current_version"], 1);
+}
+
+#[tokio::test]
+async fn test_update_rejects_if_match_for_a_missing_visible_repository() {
+    let fixture = Fixture::new().await;
+
+    let response = fixture
         .if_match_put("repo_absent", "\"1\"", json!({"display_name": "x", "definition": {}}))
         .await;
-    assert_eq!(missing.0, StatusCode::NOT_FOUND);
 
+    assert_eq!(response.0, StatusCode::PRECONDITION_FAILED);
+    assert!(!response.1.contains_key(header::ETAG));
+    assert_eq!(response.2, json!({"error": "repository version precondition failed"}));
+}
+
+#[tokio::test]
+async fn test_update_validates_the_body() {
+    let fixture = Fixture::new().await;
+    let id = fixture.create("root/alpha").await["id"].as_str().unwrap().to_owned();
     let field = fixture
         .if_match_put(&id, "\"1\"", json!({"display_name": "", "definition": {}}))
         .await;
@@ -586,6 +608,80 @@ async fn test_update_enforces_the_if_match_precondition() {
 
     let non_json = self_non_json_put(&fixture, &id).await;
     assert_eq!(non_json, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+}
+
+#[rstest]
+#[case::wildcard(vec![HeaderValue::from_static("*")])]
+#[case::matching_list(vec![HeaderValue::from_static("\"0\", \"1\"")])]
+#[case::quoted_comma(vec![HeaderValue::from_static("\"opaque,tag\", \"1\"")])]
+#[case::empty_members(vec![HeaderValue::from_static(",,\"1\",")])]
+#[case::multiple_fields(vec![HeaderValue::from_static("\"0\""), HeaderValue::from_static("\"1\"")])]
+#[tokio::test]
+async fn test_update_accepts_rfc_if_match_forms(#[case] fields: Vec<HeaderValue>) {
+    let fixture = Fixture::new().await;
+    let id = fixture.create("root/alpha").await["id"].as_str().unwrap().to_owned();
+
+    let response = fixture
+        .if_match_put_values(&id, &fields, json!({"display_name": "Matched", "definition": {}}))
+        .await;
+
+    assert_eq!((response.0, response.2["version"].as_u64()), (StatusCode::OK, Some(2)));
+}
+
+#[rstest]
+#[case::weak("W/\"1\"")]
+#[case::noncanonical("\"01\"")]
+#[case::opaque("\"opaque\"")]
+#[case::whitespace(" \t")]
+#[tokio::test]
+async fn test_update_rejects_valid_unmatched_if_match(#[case] field: &str) {
+    let fixture = Fixture::new().await;
+    let id = fixture.create("root/alpha").await["id"].as_str().unwrap().to_owned();
+
+    let response = fixture
+        .if_match_put(&id, field, json!({"display_name": "Rejected", "definition": {}}))
+        .await;
+    let stored = fixture
+        .send(Method::GET, &format!("/+repositories/{id}"), Some(ADMIN), None)
+        .await;
+
+    assert_eq!(response.0, StatusCode::PRECONDITION_FAILED);
+    assert_eq!(stored.2["display_name"], "A repo");
+}
+
+#[tokio::test]
+async fn test_update_treats_an_obs_text_tag_as_valid_and_unmatched() {
+    let fixture = Fixture::new().await;
+    let id = fixture.create("root/alpha").await["id"].as_str().unwrap().to_owned();
+
+    let response = fixture
+        .if_match_put_values(
+            &id,
+            &[HeaderValue::from_bytes(b"\"\x80\"").unwrap()],
+            json!({"display_name": "Rejected", "definition": {}}),
+        )
+        .await;
+
+    assert_eq!(response.0, StatusCode::PRECONDITION_FAILED);
+}
+
+#[rstest]
+#[case::wildcard_and_tag("*, \"1\"")]
+#[case::two_wildcards("*, *")]
+#[case::unclosed_tag("\"1")]
+#[case::missing_comma("\"1\" \"2\"")]
+#[case::space_in_tag("\"has space\"")]
+#[case::lowercase_weak("w/\"1\"")]
+#[tokio::test]
+async fn test_update_rejects_malformed_if_match(#[case] field: &str) {
+    let fixture = Fixture::new().await;
+    let id = fixture.create("root/alpha").await["id"].as_str().unwrap().to_owned();
+
+    let response = fixture
+        .if_match_put(&id, field, json!({"display_name": "Rejected", "definition": {}}))
+        .await;
+
+    assert_eq!(response.0, StatusCode::BAD_REQUEST);
 }
 
 async fn self_non_json_put(fixture: &Fixture, id: &str) -> StatusCode {
@@ -604,7 +700,7 @@ async fn self_non_json_put(fixture: &Fixture, id: &str) -> StatusCode {
 }
 
 #[tokio::test]
-async fn test_disable_requires_if_match_and_conflicts_on_a_stale_version() {
+async fn test_disable_requires_if_match_and_rejects_a_stale_version() {
     let fixture = Fixture::new().await;
     let id = fixture.create("root/alpha").await["id"].as_str().unwrap().to_owned();
 
@@ -623,15 +719,15 @@ async fn test_disable_requires_if_match_and_conflicts_on_a_stale_version() {
         .await;
     assert_eq!(no_precondition, StatusCode::PRECONDITION_REQUIRED);
 
-    let conflict = fixture
+    let failed = fixture
         .if_match_post(&format!("/+repositories/{id}/disable"), "\"9\"")
         .await;
-    assert_eq!(conflict.0, StatusCode::CONFLICT);
+    assert_eq!(failed.0, StatusCode::PRECONDITION_FAILED);
 
     let missing = fixture
         .if_match_post("/+repositories/repo_absent/disable", "\"1\"")
         .await;
-    assert_eq!(missing.0, StatusCode::NOT_FOUND);
+    assert_eq!(missing.0, StatusCode::PRECONDITION_FAILED);
 }
 
 #[tokio::test]

@@ -143,7 +143,7 @@ fn test_managed_grant_lifecycle_uses_versions() {
     assert_eq!(
         service.delete_managed_grant(&id, created.record.version + 1).unwrap(),
         DeleteGrantOutcome::PreconditionFailed {
-            current: created.record.version
+            current: Some(created.record.version)
         }
     );
     assert!(matches!(

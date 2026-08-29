@@ -300,7 +300,10 @@ fn test_a_grant_reads_back_by_its_stable_id() {
 fn test_a_malformed_id_reads_and_deletes_as_absent(#[case] id: &str) {
     let (_dir, store) = store();
     assert_eq!(store.managed_grant(id).unwrap(), None);
-    assert_eq!(store.delete_managed_grant(id, 0).unwrap(), DeleteGrantOutcome::NotFound);
+    assert_eq!(
+        store.delete_managed_grant(id, 0).unwrap(),
+        DeleteGrantOutcome::PreconditionFailed { current: None }
+    );
 }
 
 fn id_for(key: &str) -> String {
@@ -349,7 +352,7 @@ fn test_revocation_honors_the_version_precondition_and_frees_the_next_read() {
     assert_eq!(
         store.delete_managed_grant(&id, stored.version + 1).unwrap(),
         DeleteGrantOutcome::PreconditionFailed {
-            current: stored.version
+            current: Some(stored.version)
         }
     );
     assert_eq!(store.user_role_grants(&alice).unwrap(), vec![grant]);
@@ -361,7 +364,7 @@ fn test_revocation_honors_the_version_precondition_and_frees_the_next_read() {
     assert_eq!(store.user_role_grants(&alice).unwrap(), Vec::new());
     assert_eq!(
         store.delete_managed_grant(&id, 0).unwrap(),
-        DeleteGrantOutcome::NotFound
+        DeleteGrantOutcome::PreconditionFailed { current: None }
     );
 }
 

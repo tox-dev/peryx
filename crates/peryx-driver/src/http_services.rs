@@ -20,7 +20,7 @@ pub use peryx_storage::meta::{
     CreateRepositoryError, NewRepository, PolicyDecisionItem, PolicyDecisionPage, PolicyDecisionQuery,
     PolicyDecisionQueryError, PolicyInputGeneration, RepositoryFieldError, RepositoryId, RepositoryPage,
     RepositoryQuery, RepositoryQueryError, RepositoryRecord, RepositoryState, RepositoryStateError, RepositoryUpdate,
-    UpdateRepositoryError,
+    UpdateRepositoryError, VersionPrecondition,
 };
 
 pub trait RepositoryService: Send + Sync {
@@ -45,7 +45,7 @@ pub trait RepositoryService: Send + Sync {
     fn update(
         &self,
         id: &RepositoryId,
-        expected: u64,
+        precondition: VersionPrecondition,
         update: RepositoryUpdate,
         actor: &peryx_identity::UserId,
         now: i64,
@@ -57,7 +57,7 @@ pub trait RepositoryService: Send + Sync {
     fn set_enabled(
         &self,
         id: &RepositoryId,
-        expected: u64,
+        precondition: VersionPrecondition,
         enabled: bool,
         actor: &peryx_identity::UserId,
         now: i64,
@@ -282,23 +282,23 @@ impl RepositoryService for StoreServices {
     fn update(
         &self,
         id: &RepositoryId,
-        expected: u64,
+        precondition: VersionPrecondition,
         update: RepositoryUpdate,
         actor: &peryx_identity::UserId,
         now: i64,
     ) -> Result<RepositoryRecord, UpdateRepositoryError> {
-        self.meta.update_repository(id, expected, update, actor, now)
+        self.meta.update_repository(id, precondition, update, actor, now)
     }
 
     fn set_enabled(
         &self,
         id: &RepositoryId,
-        expected: u64,
+        precondition: VersionPrecondition,
         enabled: bool,
         actor: &peryx_identity::UserId,
         now: i64,
     ) -> Result<RepositoryRecord, RepositoryStateError> {
-        self.meta.set_repository_enabled(id, expected, enabled, actor, now)
+        self.meta.set_repository_enabled(id, precondition, enabled, actor, now)
     }
 }
 

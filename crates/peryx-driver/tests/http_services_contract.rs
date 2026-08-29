@@ -5,7 +5,7 @@ use std::time::Duration;
 use peryx_core::Ecosystem;
 use peryx_driver::http_services::{
     HttpDomainServices, NewRepository, PolicyDecisionQuery, RepositoryQuery, RepositoryService, RepositoryState,
-    RepositoryStateError, RepositoryUpdate, StoreServices,
+    RepositoryStateError, RepositoryUpdate, StoreServices, VersionPrecondition,
 };
 use peryx_driver::retention::{RetentionExport, RetentionQuery};
 use peryx_driver::serving::RetentionDriver;
@@ -104,7 +104,7 @@ fn repository_service_owns_the_complete_store_lifecycle() {
     let updated = service
         .update(
             &created.id,
-            1,
+            VersionPrecondition::exact(1),
             RepositoryUpdate {
                 display_name: "Renamed".to_owned(),
                 definition: serde_json::json!({"visible": true}),
@@ -113,15 +113,17 @@ fn repository_service_owns_the_complete_store_lifecycle() {
             2,
         )
         .unwrap();
-    let disabled = service.set_enabled(&created.id, 2, false, &actor, 3).unwrap();
+    let disabled = service
+        .set_enabled(&created.id, VersionPrecondition::exact(2), false, &actor, 3)
+        .unwrap();
 
     assert_eq!(listed.repositories, vec![created.clone()]);
     assert_eq!(inspected, created);
     assert_eq!((updated.display_name.as_str(), updated.version), ("Renamed", 2));
     assert_eq!((disabled.state, disabled.version), (RepositoryState::Disabled, 3));
     assert!(matches!(
-        service.set_enabled(&disabled.id, 2, true, &actor, 4),
-        Err(RepositoryStateError::VersionConflict { current: 3 })
+        service.set_enabled(&disabled.id, VersionPrecondition::exact(2), true, &actor, 4),
+        Err(RepositoryStateError::PreconditionFailed { current: Some(3) })
     ));
 }
 

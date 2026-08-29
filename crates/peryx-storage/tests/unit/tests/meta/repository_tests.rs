@@ -162,7 +162,7 @@ fn test_update_repository_rejects_a_missing_record_and_an_invalid_name() {
             &UserId::random(),
             2,
         ),
-        Err(UpdateRepositoryError::NotFound)
+        Err(UpdateRepositoryError::PreconditionFailed { current: None })
     ));
     assert!(matches!(
         store.update_repository(
@@ -214,7 +214,7 @@ fn test_update_repository_conflict_preserves_the_winning_update() {
         .unwrap_err();
     assert!(matches!(
         conflict,
-        UpdateRepositoryError::VersionConflict { current: 2 }
+        UpdateRepositoryError::PreconditionFailed { current: Some(2) }
     ));
     assert_eq!(store.repository(&record.id).unwrap(), Some(winner));
 }
@@ -247,11 +247,11 @@ fn test_set_repository_enabled_rejects_missing_records_and_stale_preconditions()
         .unwrap();
     assert!(matches!(
         store.set_repository_enabled(&crate::meta::RepositoryId::random(), 1, false, &UserId::random(), 2),
-        Err(RepositoryStateError::NotFound)
+        Err(RepositoryStateError::PreconditionFailed { current: None })
     ));
     assert!(matches!(
         store.set_repository_enabled(&record.id, 9, false, &UserId::random(), 2),
-        Err(RepositoryStateError::VersionConflict { current: 1 })
+        Err(RepositoryStateError::PreconditionFailed { current: Some(1) })
     ));
 }
 
@@ -434,24 +434,16 @@ fn test_repository_errors_have_exact_messages_and_sources() {
     let update_field: UpdateRepositoryError = RepositoryFieldError::EmptyDisplayName.into();
     assert_eq!(update_field.to_string(), "repository display name must not be empty");
     assert_eq!(
-        UpdateRepositoryError::NotFound.to_string(),
-        "no repository holds this identifier"
-    );
-    assert_eq!(
-        UpdateRepositoryError::VersionConflict { current: 3 }.to_string(),
-        "repository is at version 3, not the expected version"
+        UpdateRepositoryError::PreconditionFailed { current: Some(3) }.to_string(),
+        "repository version precondition failed"
     );
 
     let state: RepositoryStateError = meta().into();
     assert_eq!(state.to_string(), "driver precondition failed: boom");
     assert!(state.source().is_none());
     assert_eq!(
-        RepositoryStateError::NotFound.to_string(),
-        "no repository holds this identifier"
-    );
-    assert_eq!(
-        RepositoryStateError::VersionConflict { current: 3 }.to_string(),
-        "repository is at version 3, not the expected version"
+        RepositoryStateError::PreconditionFailed { current: Some(3) }.to_string(),
+        "repository version precondition failed"
     );
 
     let query: RepositoryQueryError = meta().into();

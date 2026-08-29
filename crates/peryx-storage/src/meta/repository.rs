@@ -10,7 +10,7 @@ use peryx_identity::UserId;
 use redb::ReadableTable as _;
 use serde::{Deserialize, Serialize};
 
-use super::{MetaError, MetaStore, REPOSITORY, REPOSITORY_ROUTE};
+use super::{MetaError, MetaStore, REPOSITORY, REPOSITORY_ROUTE, VersionPrecondition};
 
 const MAX_QUERY_LIMIT: usize = 100;
 const MAX_ROUTE_BYTES: usize = 512;
@@ -108,27 +108,22 @@ pub enum CreateRepositoryError {
     DuplicateRoute { route: String },
 }
 
-/// `VersionConflict` reports the stored version for refetch and retry.
 #[derive(Debug, thiserror::Error)]
 pub enum UpdateRepositoryError {
     #[error(transparent)]
     Store(#[from] MetaError),
     #[error(transparent)]
     Field(#[from] RepositoryFieldError),
-    #[error("no repository holds this identifier")]
-    NotFound,
-    #[error("repository is at version {current}, not the expected version")]
-    VersionConflict { current: u64 },
+    #[error("repository version precondition failed")]
+    PreconditionFailed { current: Option<u64> },
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum RepositoryStateError {
     #[error(transparent)]
     Store(#[from] MetaError),
-    #[error("no repository holds this identifier")]
-    NotFound,
-    #[error("repository is at version {current}, not the expected version")]
-    VersionConflict { current: u64 },
+    #[error("repository version precondition failed")]
+    PreconditionFailed { current: Option<u64> },
 }
 
 /// A bounded query in identifier order with an exclusive cursor.
@@ -277,28 +272,32 @@ impl MetaStore {
             .transpose()?)
     }
 
-    /// Requires `expected_version` to match and preserves the ID, route, and ecosystem.
+    /// Requires `precondition` to match and preserves the ID, route, and ecosystem.
     ///
     /// # Errors
-    /// Returns [`RepositoryFieldError`] for an invalid display name, [`UpdateRepositoryError::NotFound`]
-    /// for an unknown ID, [`UpdateRepositoryError::VersionConflict`] for a stale precondition, or a
-    /// store error when reading, encoding, or committing fails.
+    /// Returns [`RepositoryFieldError`] for an invalid display name,
+    /// [`UpdateRepositoryError::PreconditionFailed`] when the record or version does not match, or a store
+    /// error when reading, encoding, or committing fails.
     pub fn update_repository(
         &self,
         id: &RepositoryId,
-        expected_version: u64,
+        precondition: impl Into<VersionPrecondition>,
         update: RepositoryUpdate,
         actor: &UserId,
         now: i64,
     ) -> Result<RepositoryRecord, UpdateRepositoryError> {
         validate_display_name(&update.display_name)?;
+        let precondition = precondition.into();
         let txn = self.db.begin_write().map_err(MetaError::from)?;
-        let mut record = load_for_update(&txn, id)?.ok_or(UpdateRepositoryError::NotFound)?;
-        if record.version != expected_version {
-            return Err(UpdateRepositoryError::VersionConflict {
-                current: record.version,
-            });
-        }
+        let mut record = match load_for_update(&txn, id)? {
+            Some(record) if precondition.matches(Some(record.version)) => record,
+            Some(record) => {
+                return Err(UpdateRepositoryError::PreconditionFailed {
+                    current: Some(record.version),
+                });
+            }
+            None => return Err(UpdateRepositoryError::PreconditionFailed { current: None }),
+        };
         record.display_name = update.display_name;
         record.definition = update.definition;
         record.version += 1;
@@ -309,28 +308,31 @@ impl MetaStore {
         Ok(record)
     }
 
-    /// Requires `expected_version` to match. Repeating the current state returns the record unchanged;
+    /// Requires `precondition` to match. Repeating the current state returns the record unchanged;
     /// a transition advances the version.
     ///
     /// # Errors
-    /// Returns [`RepositoryStateError::NotFound`] for an unknown ID,
-    /// [`RepositoryStateError::VersionConflict`] for a stale precondition, or a store error when
-    /// reading, encoding, or committing fails.
+    /// Returns [`RepositoryStateError::PreconditionFailed`] when the record or version does not match,
+    /// or a store error when reading, encoding, or committing fails.
     pub fn set_repository_enabled(
         &self,
         id: &RepositoryId,
-        expected_version: u64,
+        precondition: impl Into<VersionPrecondition>,
         enabled: bool,
         actor: &UserId,
         now: i64,
     ) -> Result<RepositoryRecord, RepositoryStateError> {
+        let precondition = precondition.into();
         let txn = self.db.begin_write().map_err(MetaError::from)?;
-        let mut record = load_for_update(&txn, id)?.ok_or(RepositoryStateError::NotFound)?;
-        if record.version != expected_version {
-            return Err(RepositoryStateError::VersionConflict {
-                current: record.version,
-            });
-        }
+        let mut record = match load_for_update(&txn, id)? {
+            Some(record) if precondition.matches(Some(record.version)) => record,
+            Some(record) => {
+                return Err(RepositoryStateError::PreconditionFailed {
+                    current: Some(record.version),
+                });
+            }
+            None => return Err(RepositoryStateError::PreconditionFailed { current: None }),
+        };
         let desired = if enabled {
             RepositoryState::Enabled
         } else {

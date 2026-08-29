@@ -17,6 +17,8 @@ use peryx_identity::{GrantScope, Role, RoleGrant, UserId, can_manage_grants, par
 
 use crate::response_security::ProtectedCachePolicy;
 
+use super::IfMatchError;
+
 const MAX_BODY: usize = 4 * 1024;
 const DEFAULT_LIMIT: usize = 25;
 
@@ -154,37 +156,37 @@ pub async fn revoke_grant(State(state): State<Arc<AppState>>, headers: HeaderMap
         Ok(caller) => caller,
         Err(response) => return response,
     };
-    let expected = match headers.get(header::IF_MATCH) {
-        None => {
+    if !administers(&id, &grants) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let precondition = match super::if_match(&headers) {
+        Ok(precondition) => precondition,
+        Err(IfMatchError::Missing) => {
             return problem(
                 StatusCode::PRECONDITION_REQUIRED,
                 "revocation requires an If-Match precondition",
             );
         }
-        Some(value) => match value.to_str().ok().and_then(parse_etag) {
-            Some(version) => version,
-            None => return problem(StatusCode::BAD_REQUEST, "invalid If-Match precondition"),
-        },
+        Err(IfMatchError::Malformed) => {
+            return problem(StatusCode::BAD_REQUEST, "invalid If-Match precondition");
+        }
     };
-    if !administers(&id, &grants) {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-    match state.serving.authorization.delete_managed_grant(&id, expected) {
+    match state.serving.authorization.delete_managed_grant(&id, precondition) {
         Ok(DeleteGrantOutcome::Removed(stored)) => {
             record(&actor, RoleGrantChange::Revoke, &stored.grant, "allowed", "removed");
             StatusCode::NO_CONTENT.into_response()
         }
-        Ok(DeleteGrantOutcome::PreconditionFailed { current }) => (
-            StatusCode::PRECONDITION_FAILED,
-            [(header::ETAG, etag(current))],
-            axum::Json(serde_json::json!({"error": "grant version precondition failed"})),
-        )
-            .into_response(),
+        Ok(DeleteGrantOutcome::PreconditionFailed { current }) => {
+            let mut response = problem(StatusCode::PRECONDITION_FAILED, "grant version precondition failed");
+            if let Some(current) = current {
+                response.headers_mut().insert(header::ETAG, etag(current));
+            }
+            response
+        }
         Ok(DeleteGrantOutcome::ExternallyManaged { link_id }) => problem(
             StatusCode::CONFLICT,
             &format!("grant is managed by external identity link {link_id}"),
         ),
-        Ok(DeleteGrantOutcome::NotFound) => StatusCode::NOT_FOUND.into_response(),
         Err(_) => unavailable(),
     }
 }
@@ -266,10 +268,6 @@ fn reach_label(scope: &GrantScope) -> String {
         GrantScope::Server => "server".to_owned(),
         GrantScope::Repository { name } => format!("repository/{name}"),
     }
-}
-
-fn parse_etag(value: &str) -> Option<u64> {
-    value.trim().trim_matches('"').parse().ok()
 }
 
 fn etag(version: u64) -> HeaderValue {

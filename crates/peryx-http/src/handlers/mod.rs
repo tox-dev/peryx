@@ -1,5 +1,7 @@
 //! Longest-prefix routing dispatches repository traffic without encoding ecosystem paths here.
 
+use std::collections::BTreeSet;
+
 mod acl;
 mod analytics;
 mod discover;
@@ -22,6 +24,7 @@ mod usage;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use mediatype::{MediaType, names};
+use peryx_driver::http_services::VersionPrecondition;
 use peryx_driver::state::{AppState, Index};
 use peryx_identity::{Action, Denial};
 
@@ -75,6 +78,96 @@ fn is_json(headers: &HeaderMap) -> bool {
         .ok()
         .and_then(|value| MediaType::parse(value).ok())
         .is_some_and(|media_type| media_type.ty == names::APPLICATION && media_type.subty == names::JSON)
+}
+
+#[derive(Clone, Copy)]
+enum IfMatchError {
+    Missing,
+    Malformed,
+}
+
+fn if_match(headers: &HeaderMap) -> Result<VersionPrecondition, IfMatchError> {
+    let fields = headers.get_all(header::IF_MATCH);
+    let mut values = fields.iter();
+    let first = values.next().ok_or(IfMatchError::Missing)?;
+    let mut wildcard_count = 0;
+    let mut saw_tag = false;
+    let mut versions = BTreeSet::new();
+    for value in std::iter::once(first).chain(values) {
+        parse_if_match_field(value.as_bytes(), &mut wildcard_count, &mut saw_tag, &mut versions)?;
+    }
+    if wildcard_count > 1 || wildcard_count == 1 && saw_tag {
+        return Err(IfMatchError::Malformed);
+    }
+    Ok(if wildcard_count == 1 {
+        VersionPrecondition::Exists
+    } else {
+        VersionPrecondition::Versions(versions)
+    })
+}
+
+// Commas are valid inside opaque tags: https://www.rfc-editor.org/rfc/rfc9110.html#section-8.8.3
+fn parse_if_match_field(
+    field: &[u8],
+    wildcard_count: &mut usize,
+    saw_tag: &mut bool,
+    versions: &mut BTreeSet<u64>,
+) -> Result<(), IfMatchError> {
+    let mut index = 0;
+    while index < field.len() {
+        while field.get(index).is_some_and(|byte| matches!(byte, b' ' | b'\t')) {
+            index += 1;
+        }
+        if index == field.len() {
+            break;
+        }
+        if field[index] == b',' {
+            index += 1;
+            continue;
+        }
+        if field[index] == b'*' {
+            *wildcard_count += 1;
+        } else {
+            let weak = field[index..].starts_with(b"W/");
+            if weak {
+                index += 2;
+            }
+            if field.get(index) != Some(&b'"') {
+                return Err(IfMatchError::Malformed);
+            }
+            index += 1;
+            let start = index;
+            while field.get(index).is_some_and(|byte| *byte != b'"') {
+                if !matches!(field[index], b'!' | b'#'..=b'~' | b'\x80'..=b'\xff') {
+                    return Err(IfMatchError::Malformed);
+                }
+                index += 1;
+            }
+            if field.get(index) != Some(&b'"') {
+                return Err(IfMatchError::Malformed);
+            }
+            *saw_tag = true;
+            if !weak
+                && let Ok(value) = std::str::from_utf8(&field[start..index])
+                && let Ok(version) = value.parse::<u64>()
+                && version.to_string() == value
+            {
+                versions.insert(version);
+            }
+        }
+        index += 1;
+        while field.get(index).is_some_and(|byte| matches!(byte, b' ' | b'\t')) {
+            index += 1;
+        }
+        if index == field.len() {
+            break;
+        }
+        if field[index] != b',' {
+            return Err(IfMatchError::Malformed);
+        }
+        index += 1;
+    }
+    Ok(())
 }
 
 /// HTTP handlers distinguish an authenticated denial from a missing or invalid credential.

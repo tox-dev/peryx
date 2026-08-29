@@ -80,13 +80,26 @@ fn repository_paths(paths: PathsBuilder) -> PathsBuilder {
         .path(
             "/+repositories/{id}/disable",
             PathItemBuilder::new()
-                .operation(HttpMethod::Post, repository_state_operation("Disable a repository", "Disables a repository, conditional on an `If-Match` version. Idempotent: disabling an already-disabled repository returns it unchanged."))
+                .operation(
+                    HttpMethod::Post,
+                    repository_state_operation(
+                        "Disable a repository",
+                        "Disables a repository when `If-Match` matches. Disabling an already-disabled repository \
+                         returns it unchanged.",
+                    ),
+                )
                 .build(),
         )
         .path(
             "/+repositories/{id}/enable",
             PathItemBuilder::new()
-                .operation(HttpMethod::Post, repository_state_operation("Enable a repository", "Re-enables a disabled repository, conditional on an `If-Match` version."))
+                .operation(
+                    HttpMethod::Post,
+                    repository_state_operation(
+                        "Enable a repository",
+                        "Re-enables a disabled repository when `If-Match` matches.",
+                    ),
+                )
                 .build(),
         )
 }
@@ -107,6 +120,17 @@ fn repository_id_parameter() -> utoipa::openapi::path::Parameter {
         "Opaque, stable repository identifier from a create or list response",
         json!("repo_2f7e6a1b9c4d4e2f8a1b2c3d4e5f6a7b"),
     )
+    .build()
+}
+
+fn if_match_parameter() -> utoipa::openapi::path::Parameter {
+    parameter(
+        "If-Match",
+        ParameterIn::Header,
+        "A strong entity tag list or `*`; the operation runs when any tag matches or the resource exists",
+        json!("\"1\""),
+    )
+    .required(Required::True)
     .build()
 }
 
@@ -205,12 +229,13 @@ fn update_repository() -> OperationBuilder {
             .tag("operations")
             .summary(Some("Update a repository"))
             .description(Some(
-                "Replaces a repository's display name and definition, conditional on an `If-Match` version. The \
-                 route and ecosystem cannot change. A stale precondition conflicts and the winning version rides \
-                 back on the `ETag`.",
+                "Replaces a repository's display name and definition, conditional on `If-Match`. The route and \
+                 ecosystem cannot change. A failed precondition returns the current `ETag` when the repository \
+                 exists.",
             ))
             .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
             .parameter(repository_id_parameter())
+            .parameter(if_match_parameter())
             .request_body(Some(
                 RequestBodyBuilder::new()
                     .required(Some(Required::True))
@@ -227,13 +252,13 @@ fn update_repository() -> OperationBuilder {
                 "400",
                 api_json_response(
                     "The `If-Match` precondition is malformed",
-                    json!({"error": "If-Match must be a repository version"}),
+                    json!({"error": "If-Match must contain entity tags or *"}),
                 ),
             )
             .response(
-                "409",
+                "412",
                 api_json_response(
-                    "The repository is at a different version than the precondition named",
+                    "The `If-Match` condition is false for the selected repository",
                     json!({"error": "repository version precondition failed"}),
                 ),
             )
@@ -263,6 +288,7 @@ fn repository_state_operation(summary: &'static str, description: &'static str) 
             .description(Some(description))
             .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
             .parameter(repository_id_parameter())
+            .parameter(if_match_parameter())
             .response(
                 "200",
                 api_json_response("The repository in its new state", repository_example()),
@@ -271,13 +297,13 @@ fn repository_state_operation(summary: &'static str, description: &'static str) 
                 "400",
                 api_json_response(
                     "The `If-Match` precondition is malformed",
-                    json!({"error": "If-Match must be a repository version"}),
+                    json!({"error": "If-Match must contain entity tags or *"}),
                 ),
             )
             .response(
-                "409",
+                "412",
                 api_json_response(
-                    "The repository is at a different version than the precondition named",
+                    "The `If-Match` condition is false for the selected repository",
                     json!({"error": "repository version precondition failed"}),
                 ),
             )
@@ -1600,12 +1626,13 @@ fn revoke_grant() -> OperationBuilder {
             .tag("operations")
             .summary(Some("Revoke a role grant"))
             .description(Some(
-                "Removes a binding, conditional on an `If-Match` naming the version the caller observed. A revoke \
-                 that raced a re-assertion fails the precondition rather than dropping the newer grant. The removal \
-                 is reflected by the next authorization decision without a restart.",
+                "Removes a binding when `If-Match` contains its strong entity tag or `*`. A revoke that raced a \
+                 re-assertion returns `412` and keeps the newer grant. The next authorization decision reflects the \
+                 removal without a restart.",
             ))
             .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
             .parameter(grant_id_parameter())
+            .parameter(if_match_parameter())
             .response("204", ResponseBuilder::new().description("The binding was removed"))
             .response(
                 "400",
@@ -1617,7 +1644,7 @@ fn revoke_grant() -> OperationBuilder {
             .response(
                 "412",
                 api_json_response(
-                    "The binding is at a different version than the precondition named",
+                    "The `If-Match` condition is false for the selected binding",
                     json!({"error": "grant version precondition failed"}),
                 ),
             )

@@ -187,17 +187,32 @@ async fn test_link_owned_grants_are_visible_and_name_their_owner_on_delete() {
             .0,
         StatusCode::OK
     );
+    let version = grant["version"].as_u64().unwrap();
+    let stale_if_match = format!("\"{}\"", version + 1);
+    let stale = fixture
+        .raw(
+            Method::DELETE,
+            &format!("/+grants/{id}"),
+            RawRequest {
+                credential: admin,
+                if_match: Some(&stale_if_match),
+                ..RawRequest::default()
+            },
+        )
+        .await;
+    let if_match = format!("\"{version}\"");
     let rejected = fixture
         .raw(
             Method::DELETE,
             &format!("/+grants/{id}"),
             RawRequest {
                 credential: admin,
-                if_match: Some("\"0\""),
+                if_match: Some(&if_match),
                 ..RawRequest::default()
             },
         )
         .await;
+    assert_eq!(stale.0, StatusCode::PRECONDITION_FAILED);
     assert_eq!(rejected.0, StatusCode::CONFLICT);
     assert_eq!(
         rejected.2["error"],
@@ -355,7 +370,7 @@ async fn test_an_administrator_creates_inspects_lists_and_revokes_a_grant() {
             &format!("/+grants/{id}"),
             RawRequest {
                 credential: admin,
-                if_match: Some("\"2\""),
+                if_match: Some("\"1\", \"2\""),
                 ..RawRequest::default()
             },
         )
@@ -374,12 +389,68 @@ async fn test_an_administrator_creates_inspects_lists_and_revokes_a_grant() {
             &format!("/+grants/{id}"),
             RawRequest {
                 credential: admin,
-                if_match: Some("\"2\""),
+                if_match: Some("*"),
                 ..RawRequest::default()
             },
         )
         .await;
-    assert_eq!(again.0, StatusCode::NOT_FOUND);
+    assert_eq!(again.0, StatusCode::PRECONDITION_FAILED);
+    assert!(!again.1.contains_key(header::ETAG));
+}
+
+#[tokio::test]
+async fn test_revocation_rejects_a_weak_if_match_without_removing_the_grant() {
+    let fixture = Fixture::new().await;
+    let admin = Some(("Alice", ADMIN));
+    let uri = format!("/+grants/{}", fixture.seeded);
+
+    let rejected = fixture
+        .raw(
+            Method::DELETE,
+            &uri,
+            RawRequest {
+                credential: admin,
+                if_match: Some("W/\"1\""),
+                ..RawRequest::default()
+            },
+        )
+        .await;
+    let removed = fixture
+        .raw(
+            Method::DELETE,
+            &uri,
+            RawRequest {
+                credential: admin,
+                if_match: Some("\"1\""),
+                ..RawRequest::default()
+            },
+        )
+        .await;
+
+    assert_eq!(rejected.0, StatusCode::PRECONDITION_FAILED);
+    assert_eq!(removed.0, StatusCode::NO_CONTENT);
+}
+
+#[rstest]
+#[case::wildcard("*")]
+#[case::matching_list("\"0\", \"1\"")]
+#[tokio::test]
+async fn test_revocation_accepts_rfc_if_match_forms(#[case] if_match: &str) {
+    let fixture = Fixture::new().await;
+
+    let response = fixture
+        .raw(
+            Method::DELETE,
+            &format!("/+grants/{}", fixture.seeded),
+            RawRequest {
+                credential: Some(("Alice", ADMIN)),
+                if_match: Some(if_match),
+                ..RawRequest::default()
+            },
+        )
+        .await;
+
+    assert_eq!(response.0, StatusCode::NO_CONTENT);
 }
 
 #[tokio::test]
@@ -494,7 +565,7 @@ async fn test_a_publisher_holds_no_delegation_authority() {
                 &format!("/+grants/{}", fixture.seeded),
                 RawRequest {
                     credential: paul,
-                    if_match: Some("\"1\""),
+                    if_match: Some("\""),
                     ..RawRequest::default()
                 },
             )
@@ -581,35 +652,43 @@ async fn test_a_grant_to_an_unknown_or_disabled_user_is_rejected() {
 }
 
 #[tokio::test]
-async fn test_revocation_demands_a_well_formed_precondition() {
+async fn test_revocation_requires_if_match() {
     let fixture = Fixture::new().await;
-    let admin = Some(("Alice", ADMIN));
-    let uri = format!("/+grants/{}", fixture.seeded);
-
-    let missing = fixture
+    let response = fixture
         .raw(
             Method::DELETE,
-            &uri,
+            &format!("/+grants/{}", fixture.seeded),
             RawRequest {
-                credential: admin,
+                credential: Some(("Alice", ADMIN)),
                 ..RawRequest::default()
             },
         )
         .await;
-    assert_eq!(missing.0, StatusCode::PRECONDITION_REQUIRED);
 
-    let malformed = fixture
+    assert_eq!(response.0, StatusCode::PRECONDITION_REQUIRED);
+}
+
+#[rstest]
+#[case::bare("not-a-version")]
+#[case::wildcard_list("*, \"1\"")]
+#[case::unclosed("\"1")]
+#[tokio::test]
+async fn test_revocation_rejects_malformed_if_match(#[case] if_match: &str) {
+    let fixture = Fixture::new().await;
+
+    let response = fixture
         .raw(
             Method::DELETE,
-            &uri,
+            &format!("/+grants/{}", fixture.seeded),
             RawRequest {
-                credential: admin,
-                if_match: Some("not-a-version"),
+                credential: Some(("Alice", ADMIN)),
+                if_match: Some(if_match),
                 ..RawRequest::default()
             },
         )
         .await;
-    assert_eq!(malformed.0, StatusCode::BAD_REQUEST);
+
+    assert_eq!(response.0, StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]

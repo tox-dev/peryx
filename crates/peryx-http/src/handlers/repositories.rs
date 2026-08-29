@@ -16,7 +16,7 @@ use peryx_driver::authz::{Decision, ScopedDecision};
 use peryx_driver::http_services::{
     CreateRepositoryError, HttpDomainServices, NewRepository, RepositoryFieldError, RepositoryId, RepositoryQuery,
     RepositoryQueryError, RepositoryRecord, RepositoryState, RepositoryStateError, RepositoryUpdate,
-    UpdateRepositoryError,
+    UpdateRepositoryError, VersionPrecondition,
 };
 use peryx_driver::state::AppState;
 use peryx_identity::{Resource, Scope, UserId, parse_basic};
@@ -24,6 +24,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::response_security::ProtectedCachePolicy;
+
+use super::IfMatchError;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -136,8 +138,8 @@ pub async fn update_repository(
         Ok(actor) => actor,
         Err(response) => return response,
     };
-    let expected = match if_match(&headers) {
-        Ok(version) => version,
+    let precondition = match version_precondition(&headers) {
+        Ok(precondition) => precondition,
         Err(rejection) => return rejection.into_response(),
     };
     let update: UpdateBody = match parse_json(&headers, &body) {
@@ -150,11 +152,10 @@ pub async fn update_repository(
     };
     match services
         .repositories()
-        .update(&id, expected, update, &actor, now(&state))
+        .update(&id, precondition, update, &actor, now(&state))
     {
         Ok(record) => record_response(StatusCode::OK, &record),
-        Err(UpdateRepositoryError::NotFound) => not_found(),
-        Err(UpdateRepositoryError::VersionConflict { current }) => version_conflict(current),
+        Err(UpdateRepositoryError::PreconditionFailed { current }) => precondition_failed(current),
         Err(UpdateRepositoryError::Field(error)) => field_error(&error),
         Err(UpdateRepositoryError::Store(_)) => unavailable(),
     }
@@ -189,17 +190,16 @@ async fn set_enabled(
         Ok(actor) => actor,
         Err(response) => return response,
     };
-    let expected = match if_match(headers) {
-        Ok(version) => version,
+    let precondition = match version_precondition(headers) {
+        Ok(precondition) => precondition,
         Err(rejection) => return rejection.into_response(),
     };
     match services
         .repositories()
-        .set_enabled(id, expected, enabled, &actor, now(state))
+        .set_enabled(id, precondition, enabled, &actor, now(state))
     {
         Ok(record) => record_response(StatusCode::OK, &record),
-        Err(RepositoryStateError::NotFound) => not_found(),
-        Err(RepositoryStateError::VersionConflict { current }) => version_conflict(current),
+        Err(RepositoryStateError::PreconditionFailed { current }) => precondition_failed(current),
         Err(RepositoryStateError::Store(_)) => unavailable(),
     }
 }
@@ -260,16 +260,16 @@ fn parse_json<T: serde::de::DeserializeOwned>(headers: &HeaderMap, body: &Bytes)
     })
 }
 
-fn if_match(headers: &HeaderMap) -> Result<u64, Rejection> {
-    let Some(value) = headers.get(header::IF_MATCH) else {
-        return Err(Rejection {
+fn version_precondition(headers: &HeaderMap) -> Result<VersionPrecondition, Rejection> {
+    super::if_match(headers).map_err(|error| match error {
+        IfMatchError::Missing => Rejection {
             status: StatusCode::PRECONDITION_REQUIRED,
             message: "an If-Match version is required",
-        });
-    };
-    value.to_str().ok().and_then(parse_etag).ok_or(Rejection {
-        status: StatusCode::BAD_REQUEST,
-        message: "If-Match must be a repository version",
+        },
+        IfMatchError::Malformed => Rejection {
+            status: StatusCode::BAD_REQUEST,
+            message: "If-Match must contain entity tags or *",
+        },
     })
 }
 
@@ -304,12 +304,15 @@ fn record_response(status: StatusCode, record: &RepositoryRecord) -> Response {
     response
 }
 
-fn version_conflict(current: u64) -> Response {
-    let mut response = respond(
-        StatusCode::CONFLICT,
-        json!({ "error": "repository version precondition failed", "current_version": current }),
-    );
-    response.headers_mut().insert(header::ETAG, etag(current));
+fn precondition_failed(current: Option<u64>) -> Response {
+    let mut body = json!({ "error": "repository version precondition failed" });
+    if let Some(current) = current {
+        body["current_version"] = json!(current);
+    }
+    let mut response = respond(StatusCode::PRECONDITION_FAILED, body);
+    if let Some(current) = current {
+        response.headers_mut().insert(header::ETAG, etag(current));
+    }
     response
 }
 
@@ -368,10 +371,6 @@ fn unavailable() -> Response {
 
 fn etag(version: u64) -> HeaderValue {
     HeaderValue::from_str(&format!("\"{version}\"")).expect("a version is a valid etag")
-}
-
-fn parse_etag(value: &str) -> Option<u64> {
-    value.trim().trim_start_matches("W/").trim_matches('"').parse().ok()
 }
 
 fn now(state: &AppState) -> i64 {

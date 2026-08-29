@@ -36,6 +36,7 @@ mod role_grant;
 mod scoped_token;
 mod transfer_audit;
 mod user;
+mod version;
 mod visibility;
 mod webhook;
 mod writer;
@@ -104,6 +105,7 @@ pub use scoped_token::{
     ScopedTokenRecord, ScopedTokenWriteError,
 };
 pub use user::{StoredPasswordVerifier, UserStoreError};
+pub use version::VersionPrecondition;
 pub use webhook::{NewWebhookDelivery, WebhookDeliveryAttempt, WebhookDeliveryRecord, WebhookDeliveryStatus};
 
 const SERIAL: TableDefinition<&str, u64> = TableDefinition::new("serial");
