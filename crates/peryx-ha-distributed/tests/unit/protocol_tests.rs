@@ -18,6 +18,7 @@ fn record(state: BlobPlacementState, generation: u64) -> BlobPlacementRecord {
         },
         state,
         fence: 3,
+        transfer_attempt: 1,
         generation,
         updated_at_unix: 100,
     }

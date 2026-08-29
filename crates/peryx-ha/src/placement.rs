@@ -271,6 +271,8 @@ pub struct BlobPlacementRecord {
     pub key: BlobPlacementKey,
     pub state: BlobPlacementState,
     pub fence: u64,
+    #[serde(default)]
+    pub transfer_attempt: u64,
     pub generation: u64,
     pub updated_at_unix: i64,
 }
@@ -278,8 +280,19 @@ pub struct BlobPlacementRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlobPlacementTransition {
     Stage,
-    Verify { observed: ArtifactDigest, size: u64 },
-    Fail { class: BlobPlacementFailure },
+    Checkpoint {
+        attempt: u64,
+    },
+    Verify {
+        attempt: u64,
+        observed: ArtifactDigest,
+        size: u64,
+    },
+    Fail {
+        attempt: u64,
+        class: BlobPlacementFailure,
+    },
+    Invalidate,
     Revoke,
 }
 
@@ -288,9 +301,18 @@ impl BlobPlacementTransition {
     pub const fn label(&self) -> &'static str {
         match self {
             Self::Stage => "stage",
+            Self::Checkpoint { .. } => "checkpoint",
             Self::Verify { .. } => "verify",
             Self::Fail { .. } => "fail",
+            Self::Invalidate => "invalidate",
             Self::Revoke => "revoke",
+        }
+    }
+
+    const fn attempt(&self) -> Option<u64> {
+        match self {
+            Self::Checkpoint { attempt } | Self::Verify { attempt, .. } | Self::Fail { attempt, .. } => Some(*attempt),
+            Self::Stage | Self::Invalidate | Self::Revoke => None,
         }
     }
 }
@@ -321,11 +343,18 @@ pub enum BlobPlacementDecisionError {
     MissingPlacement { transition: &'static str },
     #[error("a newer fence {current} supersedes the applied fence {applied}")]
     StaleFence { current: u64, applied: u64 },
+    #[error("transfer attempt {current} supersedes attempt {applied}")]
+    StaleTransferAttempt { current: u64, applied: u64 },
+    #[error("transfer attempt fence {current} does not match fence {applied}")]
+    TransferAttemptFenceMismatch { current: u64, applied: u64 },
+    #[error("the transfer attempt counter is exhausted")]
+    TransferAttemptExhausted,
 }
 
 /// # Errors
 ///
-/// Returns an error for a stale fence, a missing placement, or an illegal transition.
+/// Returns an error for stale ownership, a missing placement, an exhausted attempt counter, or an
+/// illegal transition.
 pub fn decide_blob_placement(
     key: &BlobPlacementKey,
     prior: Option<&BlobPlacementRecord>,
@@ -341,12 +370,36 @@ pub fn decide_blob_placement(
             applied: fence,
         });
     }
-    match next_blob_placement(key, prior, transition)? {
+    if let (Some(record), Some(attempt)) = (prior, transition.attempt()) {
+        if fence != record.fence {
+            return Err(BlobPlacementDecisionError::TransferAttemptFenceMismatch {
+                current: record.fence,
+                applied: fence,
+            });
+        }
+        if attempt != record.transfer_attempt {
+            return Err(BlobPlacementDecisionError::StaleTransferAttempt {
+                current: record.transfer_attempt,
+                applied: attempt,
+            });
+        }
+    }
+    match next_blob_placement(key, prior, transition, fence)? {
         NextBlobPlacement::Unchanged(record) => Ok(BlobPlacementOutcome::Unchanged(record.clone())),
         NextBlobPlacement::Applied(state) => Ok(BlobPlacementOutcome::Applied(BlobPlacementRecord {
             key: key.clone(),
             state,
             fence: prior.map_or(fence, |record| record.fence.max(fence)),
+            transfer_attempt: if matches!(transition, BlobPlacementTransition::Stage) {
+                prior.map_or(Ok(1), |record| {
+                    record
+                        .transfer_attempt
+                        .checked_add(1)
+                        .ok_or(BlobPlacementDecisionError::TransferAttemptExhausted)
+                })?
+            } else {
+                prior.map_or(0, |record| record.transfer_attempt)
+            },
             generation: prior.map_or(1, |record| record.generation + 1),
             updated_at_unix: now,
         })),
@@ -362,6 +415,7 @@ fn next_blob_placement<'a>(
     key: &BlobPlacementKey,
     prior: Option<&'a BlobPlacementRecord>,
     transition: &BlobPlacementTransition,
+    fence: u64,
 ) -> Result<NextBlobPlacement<'a>, BlobPlacementDecisionError> {
     use BlobPlacementState as State;
     use BlobPlacementTransition as Transition;
@@ -372,8 +426,14 @@ fn next_blob_placement<'a>(
         (Some(record), Transition::Stage) if matches!(record.state, State::Failed { .. }) => {
             Ok(Applied(State::Pending))
         }
+        (Some(record), Transition::Stage) if matches!(record.state, State::Pending) && fence > record.fence => {
+            Ok(Applied(State::Pending))
+        }
         (Some(record), Transition::Stage) if matches!(record.state, State::Pending) => Ok(Unchanged(record)),
-        (Some(record), Transition::Verify { observed, size }) if matches!(record.state, State::Pending) => {
+        (Some(record), Transition::Checkpoint { .. }) if matches!(record.state, State::Pending) => {
+            Ok(Applied(State::Pending))
+        }
+        (Some(record), Transition::Verify { observed, size, .. }) if matches!(record.state, State::Pending) => {
             Ok(Applied(if observed == &key.digest {
                 State::Verified { size: *size }
             } else {
@@ -382,17 +442,14 @@ fn next_blob_placement<'a>(
                 }
             }))
         }
-        (Some(record), Transition::Fail { class }) if matches!(record.state, State::Pending) => {
+        (Some(record), Transition::Fail { class, .. }) if matches!(record.state, State::Pending) => {
             Ok(Applied(State::Failed { class: *class }))
         }
-        (
-            Some(record),
-            Transition::Fail {
+        (Some(record), Transition::Invalidate) if matches!(record.state, State::Verified { .. }) => {
+            Ok(Applied(State::Failed {
                 class: BlobPlacementFailure::DigestMismatch,
-            },
-        ) if matches!(record.state, State::Verified { .. }) => Ok(Applied(State::Failed {
-            class: BlobPlacementFailure::DigestMismatch,
-        })),
+            }))
+        }
         (Some(record), Transition::Fail { .. }) if matches!(record.state, State::Failed { .. }) => {
             Ok(Unchanged(record))
         }

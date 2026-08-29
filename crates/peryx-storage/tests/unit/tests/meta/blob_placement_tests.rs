@@ -28,6 +28,7 @@ fn record(key: BlobPlacementKey, generation: u64) -> BlobPlacementRecord {
         key,
         state: BlobPlacementState::Pending,
         fence: 3,
+        transfer_attempt: 1,
         generation,
         updated_at_unix: generation.cast_signed(),
     }

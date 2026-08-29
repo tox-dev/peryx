@@ -25,7 +25,11 @@ pub struct CrossDcCopy {
     pub fence: NonZeroU64,
 }
 
-pub fn copy_backlog_entry(records: &[BlobPlacementRecord], local_dc: &DataCenterId) -> Option<CopyBacklogEntry> {
+pub fn copy_backlog_entry(
+    records: &[BlobPlacementRecord],
+    local_dc: &DataCenterId,
+    fence: NonZeroU64,
+) -> Option<CopyBacklogEntry> {
     let mut local_settled = false;
     let mut sources = Vec::new();
     for record in records {
@@ -36,11 +40,10 @@ pub fn copy_backlog_entry(records: &[BlobPlacementRecord], local_dc: &DataCenter
                 generation: record.generation,
                 size,
             }),
-            BlobPlacementState::Verified { .. } | BlobPlacementState::Pending | BlobPlacementState::Revoked
-                if is_local =>
-            {
+            BlobPlacementState::Verified { .. } | BlobPlacementState::Revoked if is_local => {
                 local_settled = true;
             }
+            BlobPlacementState::Pending if is_local && record.fence >= fence.get() => local_settled = true,
             _ => {}
         }
     }

@@ -2,7 +2,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use peryx_ha::{
-    BackendId, BackendLocation, BlobPlacementKey, BlobPlacementState, BlobPlacementStatus, BlobPlacementTransition,
+    BackendId, BackendLocation, BlobPlacementFailure, BlobPlacementKey, BlobPlacementState, BlobPlacementStatus,
+    BlobPlacementTransition,
 };
 use peryx_identity::{ArtifactDigest, RevocationReason, UserId};
 use peryx_storage::blob::{BlobStorage, BlobStore, Digest};
@@ -60,6 +61,7 @@ fn seed_verified(meta: &MetaStore, key: &BlobPlacementKey, size: u64) {
         meta,
         key,
         &BlobPlacementTransition::Verify {
+            attempt: 1,
             observed: key.digest.clone(),
             size,
         },

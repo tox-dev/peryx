@@ -30,6 +30,7 @@ fn record(
         key: key(suffix, data_center, location),
         state,
         fence: 1,
+        transfer_attempt: 1,
         generation,
         updated_at_unix: 0,
     }
@@ -43,6 +44,7 @@ fn test_backlog_selects_verified_remote_sources() {
             record(1, "south", "south/01", 4, BlobPlacementState::Verified { size: 20 }),
         ],
         &DataCenterId::new("west").unwrap(),
+        NonZeroU64::new(1).unwrap(),
     )
     .unwrap();
 
@@ -66,6 +68,7 @@ fn test_backlog_breaks_generation_ties_by_ledger_order() {
             record(1, "south", "south/01", 4, BlobPlacementState::Verified { size: 20 }),
         ],
         &DataCenterId::new("west").unwrap(),
+        NonZeroU64::new(1).unwrap(),
     )
     .unwrap();
 
@@ -94,6 +97,7 @@ fn test_backlog_skips_settled_local_placements() {
                     record(1, "west", "west/01", 1, state),
                 ],
                 &local,
+                NonZeroU64::new(1).unwrap(),
             )
             .is_none()
         );
@@ -116,6 +120,21 @@ fn test_backlog_retries_failed_local_placements() {
             ),
         ],
         &DataCenterId::new("west").unwrap(),
+        NonZeroU64::new(1).unwrap(),
+    );
+
+    assert!(entry.is_some());
+}
+
+#[test]
+fn test_backlog_retries_pending_after_an_ownership_transition() {
+    let entry = copy_backlog_entry(
+        &[
+            record(1, "east", "east/01", 1, BlobPlacementState::Verified { size: 10 }),
+            record(1, "west", "west/01", 1, BlobPlacementState::Pending),
+        ],
+        &DataCenterId::new("west").unwrap(),
+        NonZeroU64::new(2).unwrap(),
     );
 
     assert!(entry.is_some());
@@ -125,6 +144,13 @@ fn test_backlog_retries_failed_local_placements() {
 fn test_backlog_requires_records_and_a_verified_source() {
     let local = DataCenterId::new("west").unwrap();
 
-    assert!(copy_backlog_entry(&[], &local).is_none());
-    assert!(copy_backlog_entry(&[record(1, "east", "east/01", 1, BlobPlacementState::Pending)], &local).is_none());
+    assert!(copy_backlog_entry(&[], &local, NonZeroU64::new(1).unwrap()).is_none());
+    assert!(
+        copy_backlog_entry(
+            &[record(1, "east", "east/01", 1, BlobPlacementState::Pending)],
+            &local,
+            NonZeroU64::new(1).unwrap(),
+        )
+        .is_none()
+    );
 }

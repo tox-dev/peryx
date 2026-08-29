@@ -52,6 +52,7 @@ async fn build_app(corrupt: bool) -> (tempfile::TempDir, Arc<AppState>) {
     drop(authorization);
     drop(users);
     let verify = BlobPlacementTransition::Verify {
+        attempt: 1,
         observed: digest(),
         size: 4096,
     };
@@ -63,6 +64,7 @@ async fn build_app(corrupt: bool) -> (tempfile::TempDir, Arc<AppState>) {
         &[
             BlobPlacementTransition::Stage,
             BlobPlacementTransition::Fail {
+                attempt: 1,
                 class: BlobPlacementFailure::SourceUnavailable,
             },
         ],

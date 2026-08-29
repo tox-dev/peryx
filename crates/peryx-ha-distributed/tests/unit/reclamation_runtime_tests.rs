@@ -74,6 +74,7 @@ fn verified_placement(meta: &MetaStore, digest: &ArtifactDigest) {
         meta,
         &key,
         &BlobPlacementTransition::Verify {
+            attempt: 1,
             observed: digest.clone(),
             size: 1,
         },

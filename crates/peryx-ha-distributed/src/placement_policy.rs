@@ -96,11 +96,12 @@ pub fn record_local_placement(
     {
         return Ok(BlobPlacementOutcome::Unchanged(record));
     }
-    apply_blob_placement(meta, &key, &BlobPlacementTransition::Stage, fence, now)?;
+    let staged = apply_blob_placement(meta, &key, &BlobPlacementTransition::Stage, fence, now)?;
     apply_blob_placement(
         meta,
         &key,
         &BlobPlacementTransition::Verify {
+            attempt: staged.record().transfer_attempt,
             observed: digest.clone(),
             size,
         },

@@ -2,10 +2,15 @@ use std::num::{NonZeroU64, NonZeroUsize};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::LoopbackBlobSource;
+use crate::support::TestServer;
+use axum::extract::{Request, State};
+use axum::middleware::Next;
+use axum::response::Response;
 use axum::serve::ListenerExt as _;
 use peryx_ha::{BackendLocation, BlobPlacementState, BlobPlacementStatus, DataCenterId};
 use peryx_identity::ArtifactDigest;
 use peryx_storage::blob::BlobStorage;
+use tokio::sync::Notify;
 use tokio_util::bytes::Bytes;
 
 use super::*;
@@ -103,6 +108,7 @@ fn seed_verified(meta: &MetaStore, key: &BlobPlacementKey, size: u64) {
         meta,
         key,
         &BlobPlacementTransition::Verify {
+            attempt: 1,
             observed: key.digest.clone(),
             size,
         },
@@ -136,6 +142,20 @@ impl SourceTransports for FakePeers {
             .get(source_dc)
             .map(|transport| transport as &(dyn BlobTransport + Send + Sync))
     }
+}
+
+#[derive(Clone)]
+struct RequestGate {
+    fetches: Arc<AtomicUsize>,
+    started: Arc<Notify>,
+    release: Arc<Notify>,
+}
+
+async fn gate_blob_request(State(gate): State<RequestGate>, request: Request, next: Next) -> Response {
+    gate.fetches.fetch_add(1, Ordering::SeqCst);
+    gate.started.notify_one();
+    gate.release.notified().await;
+    next.run(request).await
 }
 
 fn copier_with(
@@ -176,7 +196,7 @@ fn test_record_reports_a_committed_transition() {
         &clock,
     );
 
-    assert!(recorded);
+    assert!(recorded.is_some());
 }
 
 #[test]
@@ -204,7 +224,7 @@ fn test_record_reports_a_rejected_transition() {
         &clock,
     );
 
-    assert!(!recorded);
+    assert!(recorded.is_none());
 }
 
 #[test]
@@ -348,6 +368,146 @@ async fn test_copy_one_publishes_and_records_a_verified_copy() {
     assert!(recorded);
     assert_eq!(store.read(&blob).unwrap(), CONTENT);
     assert_eq!(local_state(&meta, &target).status(), BlobPlacementStatus::Verified);
+}
+
+#[tokio::test]
+async fn test_restart_recovers_pending_after_the_ownership_term_advances() {
+    let meta_dir = tempfile::tempdir().unwrap();
+    let path = meta_dir.path().join("peryx.redb");
+    let meta = crate::support::distributed_meta(&path);
+    let (_store_dir, store, backend) = filesystem();
+    let (blob, artifact) = digests(CONTENT);
+    seed_verified(
+        &meta,
+        &key(&artifact, &backend, "east", "peer/loc"),
+        CONTENT.len() as u64,
+    );
+    let target = key(&artifact, &backend, "home", artifact.sha256());
+    crate::apply_blob_placement(&meta, &target, &BlobPlacementTransition::Stage, 5, 10).unwrap();
+    drop(meta);
+    let meta = MetaStore::open_existing(path).unwrap();
+    let copier = copier_with(
+        "home",
+        backend,
+        store.clone(),
+        Arc::new(FakePeers::holding("east", &blob, CONTENT)),
+    );
+    let clock: Clock = Arc::new(|| 20);
+
+    let live_report = copier
+        .copy_pass(&meta, &clock, 5, &|| false, NonZeroUsize::MIN)
+        .await
+        .unwrap();
+    let recovered_report = copier
+        .copy_pass(&meta, &clock, 9, &|| false, NonZeroUsize::MIN)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        (
+            live_report,
+            recovered_report,
+            store.read(&blob).unwrap(),
+            meta.blob_placement(&target).unwrap(),
+        ),
+        (
+            AvailabilityTaskReport::default(),
+            AvailabilityTaskReport {
+                processed: 1,
+                changed: 1,
+            },
+            CONTENT.to_vec(),
+            Some(peryx_ha::BlobPlacementRecord {
+                key: target,
+                state: BlobPlacementState::Verified {
+                    size: CONTENT.len() as u64,
+                },
+                fence: 9,
+                transfer_attempt: 2,
+                generation: 3,
+                updated_at_unix: 20,
+            }),
+        )
+    );
+}
+
+#[tokio::test]
+async fn test_concurrent_pass_does_not_duplicate_a_live_attempt() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let source_blobs = BlobStorage::filesystem(source_dir.path().join("blobs"));
+    source_blobs.put_bytes(CONTENT).await.unwrap();
+    let (_meta_dir, meta) = meta();
+    let (_store_dir, store, backend) = filesystem();
+    let (_blob, artifact) = digests(CONTENT);
+    seed_verified(
+        &meta,
+        &key(&artifact, &backend, "east", "peer/loc"),
+        CONTENT.len() as u64,
+    );
+    let fetches = Arc::new(AtomicUsize::new(0));
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let server = TestServer::start(
+        crate::primary_router(
+            "primary",
+            "token",
+            crate::support::distributed_meta(source_dir.path().join("peryx.redb")),
+            source_blobs,
+        )
+        .unwrap()
+        .layer(axum::middleware::from_fn_with_state(
+            RequestGate {
+                fetches: fetches.clone(),
+                started: started.clone(),
+                release: release.clone(),
+            },
+            gate_blob_request,
+        )),
+    )
+    .await;
+    let copier = Arc::new(
+        CrossDcBlobCopier::http(
+            dc("home"),
+            HashMap::from([("east".to_owned(), server.url.clone())]),
+            "token",
+            store,
+            backend,
+        )
+        .unwrap()
+        .unwrap(),
+    );
+    let clock: Clock = Arc::new(|| 20);
+    let first = tokio::spawn({
+        let copier = copier.clone();
+        let meta = meta.clone();
+        let clock = clock.clone();
+        async move {
+            copier
+                .copy_pass(&meta, &clock, 5, &|| false, NonZeroUsize::MIN)
+                .await
+                .unwrap()
+        }
+    });
+    started.notified().await;
+
+    let concurrent = copier
+        .copy_pass(&meta, &clock, 5, &|| false, NonZeroUsize::MIN)
+        .await
+        .unwrap();
+    release.notify_one();
+    let first = first.await.unwrap();
+
+    assert_eq!(
+        (first, concurrent, fetches.load(Ordering::SeqCst)),
+        (
+            AvailabilityTaskReport {
+                processed: 1,
+                changed: 1,
+            },
+            AvailabilityTaskReport::default(),
+            1,
+        )
+    );
 }
 
 #[tokio::test]

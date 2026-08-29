@@ -110,6 +110,7 @@ fn seed_verified(meta: &MetaStore, digest: &Digest, dc: &str, backend: &str, loc
         meta,
         &key,
         &BlobPlacementTransition::Verify {
+            attempt: 1,
             observed: artifact,
             size,
         },
@@ -551,6 +552,7 @@ fn test_verified_size_reads_only_a_verified_placement() {
         key: key(&digest, "east", "filesystem", "east/a"),
         state,
         fence: 1,
+        transfer_attempt: 1,
         generation: 2,
         updated_at_unix: 0,
     };

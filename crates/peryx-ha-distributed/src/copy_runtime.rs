@@ -13,7 +13,7 @@ use crate::{BlobTransport, CopyError, HttpBlobTransport, TransferLimits, Transpo
 use peryx_core::Clock;
 use peryx_ha::{
     AvailabilityTaskError, AvailabilityTaskReport, BackendId, BlobPlacementFailure, BlobPlacementKey,
-    BlobPlacementTransition, DataCenterId,
+    BlobPlacementOutcome, BlobPlacementTransition, DataCenterId,
 };
 use peryx_storage::blob::{BlobStore, Digest};
 use peryx_storage::meta::MetaStore;
@@ -95,7 +95,7 @@ impl CrossDcBlobCopier {
                 .scan_blob_placement_groups(cursor.as_deref(), batch)
                 .map_err(|error| task_error("copy_backlog_scan", error))?;
             planned.extend(page.groups.iter().filter_map(|records| {
-                copy_backlog_entry(records, &self.local_dc)
+                copy_backlog_entry(records, &self.local_dc, fence)
                     .map(|entry| plan_cross_dc_copy(&entry, &self.local_dc, &self.backend, fence))
             }));
             match page.next_cursor {
@@ -112,27 +112,29 @@ impl CrossDcBlobCopier {
             tracing::warn!(source_dc, "cross-datacenter copy has no reachable source peer");
             return false;
         };
-        if !record(
+        let Some(BlobPlacementOutcome::Applied(staged)) = record(
             meta,
             &copy.target,
             &BlobPlacementTransition::Stage,
             copy.fence.get(),
             clock,
-        ) {
+        ) else {
             return false;
-        }
+        };
         let digest = Digest::from_hex(copy.target.digest.sha256()).expect("artifact digests are validated SHA-256");
         let outcome = copy_blob_to_target(transport, &self.store, &digest).await;
         let transition = match &outcome {
             Ok(()) => BlobPlacementTransition::Verify {
+                attempt: staged.transfer_attempt,
                 observed: copy.target.digest.clone(),
                 size: copy.size,
             },
             Err(error) => BlobPlacementTransition::Fail {
+                attempt: staged.transfer_attempt,
                 class: failure_class(error),
             },
         };
-        let recorded = record(meta, &copy.target, &transition, copy.fence.get(), clock);
+        let recorded = record(meta, &copy.target, &transition, copy.fence.get(), clock).is_some();
         outcome.is_ok() && recorded
     }
 }
@@ -173,12 +175,12 @@ fn record(
     transition: &BlobPlacementTransition,
     fence: u64,
     clock: &Clock,
-) -> bool {
+) -> Option<BlobPlacementOutcome> {
     match apply_blob_placement(meta, key, transition, fence, (clock)()) {
-        Ok(_) => true,
+        Ok(outcome) => Some(outcome),
         Err(error) => {
             tracing::warn!(%error, ?transition, "cross-datacenter copy could not record a placement");
-            false
+            None
         }
     }
 }

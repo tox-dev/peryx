@@ -6,8 +6,8 @@ use std::num::NonZeroUsize;
 
 use peryx_core::Clock;
 use peryx_ha::{
-    AvailabilityTaskError, AvailabilityTaskReport, BlobPlacementFailure, BlobPlacementKey, BlobPlacementState,
-    BlobPlacementTransition, DataCenterId, ReclamationState, ReclamationStore,
+    AvailabilityTaskError, AvailabilityTaskReport, BlobPlacementKey, BlobPlacementState, BlobPlacementTransition,
+    DataCenterId, ReclamationState, ReclamationStore,
 };
 use peryx_identity::ArtifactDigest;
 use peryx_storage::blob::{BlobErrorKind, BlobStore, Digest};
@@ -97,15 +97,7 @@ impl FilesystemPlacementReconciler {
             return false;
         }
         // Stop routing to corrupt bytes before clearing the path for a replacement.
-        if !record_transition(
-            meta,
-            key,
-            &BlobPlacementTransition::Fail {
-                class: BlobPlacementFailure::DigestMismatch,
-            },
-            fence,
-            clock,
-        ) {
+        if !record_transition(meta, key, &BlobPlacementTransition::Invalidate, fence, clock) {
             return false;
         }
         if let Err(error) = self.store.remove(&digest) {

@@ -1441,6 +1441,7 @@ fn reclamation_placement(suffix: u8, state: BlobPlacementState) -> BlobPlacement
         },
         state,
         fence: 1,
+        transfer_attempt: 1,
         generation: 1,
         updated_at_unix: 10,
     }

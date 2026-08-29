@@ -78,6 +78,7 @@ fn seed_verified_placement_on(meta: &MetaStore, digest: &Digest, dc: &str, backe
         meta,
         &key,
         &BlobPlacementTransition::Verify {
+            attempt: 1,
             observed: artifact,
             size,
         },

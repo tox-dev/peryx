@@ -27,6 +27,7 @@ fn record(state: BlobPlacementState, fence: u64, generation: u64) -> BlobPlaceme
         key: key(),
         state,
         fence,
+        transfer_attempt: 1,
         generation,
         updated_at_unix: 10,
     }
@@ -68,9 +69,23 @@ fn test_stage_creates_a_pending_record() {
             key: key(),
             state: BlobPlacementState::Pending,
             fence: 3,
+            transfer_attempt: 1,
             generation: 1,
             updated_at_unix: 20,
         })
+    );
+}
+
+#[test]
+fn test_placement_without_an_attempt_reads_as_legacy_state() {
+    let mut encoded = serde_json::to_value(record(BlobPlacementState::Pending, 3, 1)).unwrap();
+    encoded.as_object_mut().unwrap().remove("transfer_attempt");
+    let mut expected = record(BlobPlacementState::Pending, 3, 1);
+    expected.transfer_attempt = 0;
+
+    assert_eq!(
+        serde_json::from_value::<BlobPlacementRecord>(encoded).unwrap(),
+        expected
     );
 }
 
@@ -95,7 +110,11 @@ fn test_verify_projects_digest_evidence(#[case] observed: ArtifactDigest, #[case
     let outcome = decide_blob_placement(
         &key(),
         Some(&prior),
-        &BlobPlacementTransition::Verify { observed, size: 4_096 },
+        &BlobPlacementTransition::Verify {
+            attempt: 1,
+            observed,
+            size: 4_096,
+        },
         3,
         20,
     )
@@ -123,6 +142,7 @@ fn test_failed_placement_can_be_restaged() {
             key: key(),
             state: BlobPlacementState::Pending,
             fence: 3,
+            transfer_attempt: 2,
             generation: 3,
             updated_at_unix: 30,
         }
@@ -144,6 +164,7 @@ fn test_repeated_failure_is_unchanged() {
             &key(),
             Some(&prior),
             &BlobPlacementTransition::Fail {
+                attempt: 1,
                 class: BlobPlacementFailure::BackendRejected,
             },
             3,
@@ -161,6 +182,7 @@ fn test_pending_failure_records_the_failure() {
             &key(),
             Some(&record(BlobPlacementState::Pending, 3, 1)),
             &BlobPlacementTransition::Fail {
+                attempt: 1,
                 class: BlobPlacementFailure::SourceUnavailable,
             },
             3,
@@ -173,6 +195,7 @@ fn test_pending_failure_records_the_failure() {
                 class: BlobPlacementFailure::SourceUnavailable,
             },
             fence: 3,
+            transfer_attempt: 1,
             generation: 2,
             updated_at_unix: 30,
         })
@@ -180,28 +203,92 @@ fn test_pending_failure_records_the_failure() {
 }
 
 #[test]
-fn test_fence_rejects_stale_writes_and_accepts_takeover() {
+fn test_fence_rejects_stale_writes() {
     let prior = record(BlobPlacementState::Pending, 5, 1);
     assert_eq!(
         decide_blob_placement(&key(), Some(&prior), &BlobPlacementTransition::Stage, 3, 20),
         Err(BlobPlacementDecisionError::StaleFence { current: 5, applied: 3 })
     );
+}
 
+#[test]
+fn test_newer_fence_claims_pending_placement() {
+    let prior = record(BlobPlacementState::Pending, 5, 1);
+    assert_eq!(
+        decide_blob_placement(&key(), Some(&prior), &BlobPlacementTransition::Stage, 9, 30).unwrap(),
+        BlobPlacementOutcome::Applied(BlobPlacementRecord {
+            key: key(),
+            state: BlobPlacementState::Pending,
+            fence: 9,
+            transfer_attempt: 2,
+            generation: 2,
+            updated_at_unix: 30,
+        })
+    );
+}
+
+#[rstest]
+#[case::checkpoint(BlobPlacementTransition::Checkpoint { attempt: 1 })]
+#[case::verify(BlobPlacementTransition::Verify { attempt: 1, observed: digest(1), size: 1 })]
+#[case::fail(BlobPlacementTransition::Fail {
+    attempt: 1,
+    class: BlobPlacementFailure::SourceUnavailable,
+})]
+fn test_stale_attempt_cannot_mutate_a_replacement(#[case] transition: BlobPlacementTransition) {
+    let mut prior = record(BlobPlacementState::Pending, 9, 2);
+    prior.transfer_attempt = 2;
+
+    assert_eq!(
+        decide_blob_placement(&key(), Some(&prior), &transition, 9, 30),
+        Err(BlobPlacementDecisionError::StaleTransferAttempt { current: 2, applied: 1 })
+    );
+}
+
+#[test]
+fn test_attempt_write_requires_the_claimed_fence() {
     assert_eq!(
         decide_blob_placement(
             &key(),
-            Some(&prior),
-            &BlobPlacementTransition::Verify {
-                observed: digest(1),
-                size: 1,
-            },
+            Some(&record(BlobPlacementState::Pending, 5, 1)),
+            &BlobPlacementTransition::Checkpoint { attempt: 1 },
             9,
+            30,
+        ),
+        Err(BlobPlacementDecisionError::TransferAttemptFenceMismatch { current: 5, applied: 9 })
+    );
+}
+
+#[test]
+fn test_checkpoint_renews_the_claimed_attempt() {
+    assert_eq!(
+        decide_blob_placement(
+            &key(),
+            Some(&record(BlobPlacementState::Pending, 5, 1)),
+            &BlobPlacementTransition::Checkpoint { attempt: 1 },
+            5,
             30,
         )
         .unwrap()
-        .record()
-        .fence,
-        9
+        .record(),
+        &BlobPlacementRecord {
+            key: key(),
+            state: BlobPlacementState::Pending,
+            fence: 5,
+            transfer_attempt: 1,
+            generation: 2,
+            updated_at_unix: 30,
+        }
+    );
+}
+
+#[test]
+fn test_exhausted_attempt_cannot_be_reclaimed() {
+    let mut prior = record(BlobPlacementState::Pending, 5, 1);
+    prior.transfer_attempt = u64::MAX;
+
+    assert_eq!(
+        decide_blob_placement(&key(), Some(&prior), &BlobPlacementTransition::Stage, 9, 30),
+        Err(BlobPlacementDecisionError::TransferAttemptExhausted)
     );
 }
 
@@ -225,11 +312,11 @@ fn test_revoke_withdraws_or_preserves_a_revoked_record(#[case] state: BlobPlacem
 #[case::stage_verified(BlobPlacementState::Verified { size: 1 }, BlobPlacementTransition::Stage)]
 #[case::fail_verified(
     BlobPlacementState::Verified { size: 1 },
-    BlobPlacementTransition::Fail { class: BlobPlacementFailure::SourceUnavailable }
+    BlobPlacementTransition::Fail { attempt: 1, class: BlobPlacementFailure::SourceUnavailable }
 )]
 #[case::verify_verified(
     BlobPlacementState::Verified { size: 1 },
-    BlobPlacementTransition::Verify { observed: digest(1), size: 1 }
+    BlobPlacementTransition::Verify { attempt: 1, observed: digest(1), size: 1 }
 )]
 #[case::stage_revoked(BlobPlacementState::Revoked, BlobPlacementTransition::Stage)]
 fn test_illegal_transitions_report_the_state_and_step(
@@ -246,8 +333,10 @@ fn test_illegal_transitions_report_the_state_and_step(
 }
 
 #[rstest]
-#[case::verify(BlobPlacementTransition::Verify { observed: digest(1), size: 1 })]
-#[case::fail(BlobPlacementTransition::Fail { class: BlobPlacementFailure::SourceUnavailable })]
+#[case::checkpoint(BlobPlacementTransition::Checkpoint { attempt: 1 })]
+#[case::verify(BlobPlacementTransition::Verify { attempt: 1, observed: digest(1), size: 1 })]
+#[case::fail(BlobPlacementTransition::Fail { attempt: 1, class: BlobPlacementFailure::SourceUnavailable })]
+#[case::invalidate(BlobPlacementTransition::Invalidate)]
 #[case::revoke(BlobPlacementTransition::Revoke)]
 fn test_non_stage_transition_requires_a_record(#[case] transition: BlobPlacementTransition) {
     assert_eq!(
@@ -260,11 +349,13 @@ fn test_non_stage_transition_requires_a_record(#[case] transition: BlobPlacement
 
 #[rstest]
 #[case::stage(BlobPlacementTransition::Stage, "stage")]
-#[case::verify(BlobPlacementTransition::Verify { observed: digest(1), size: 1 }, "verify")]
+#[case::checkpoint(BlobPlacementTransition::Checkpoint { attempt: 1 }, "checkpoint")]
+#[case::verify(BlobPlacementTransition::Verify { attempt: 1, observed: digest(1), size: 1 }, "verify")]
 #[case::fail(
-    BlobPlacementTransition::Fail { class: BlobPlacementFailure::SourceUnavailable },
+    BlobPlacementTransition::Fail { attempt: 1, class: BlobPlacementFailure::SourceUnavailable },
     "fail"
 )]
+#[case::invalidate(BlobPlacementTransition::Invalidate, "invalidate")]
 #[case::revoke(BlobPlacementTransition::Revoke, "revoke")]
 fn test_transition_labels_name_the_operation(#[case] transition: BlobPlacementTransition, #[case] expected: &str) {
     assert_eq!(transition.label(), expected);
@@ -275,18 +366,10 @@ fn test_digest_failure_demotes_a_verified_record() {
     let prior = record(BlobPlacementState::Verified { size: 1 }, 3, 2);
 
     assert_eq!(
-        decide_blob_placement(
-            &key(),
-            Some(&prior),
-            &BlobPlacementTransition::Fail {
-                class: BlobPlacementFailure::DigestMismatch,
-            },
-            3,
-            30,
-        )
-        .unwrap()
-        .record()
-        .state,
+        decide_blob_placement(&key(), Some(&prior), &BlobPlacementTransition::Invalidate, 3, 30,)
+            .unwrap()
+            .record()
+            .state,
         BlobPlacementState::Failed {
             class: BlobPlacementFailure::DigestMismatch,
         }

@@ -16,6 +16,7 @@ fn record(data_center: &str, location: &str, state: BlobPlacementState) -> BlobP
         },
         state,
         fence: 1,
+        transfer_attempt: 1,
         generation: 1,
         updated_at_unix: 0,
     }

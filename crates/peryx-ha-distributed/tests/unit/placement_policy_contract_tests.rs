@@ -39,6 +39,7 @@ fn verify(store: &MetaStore, key: &BlobPlacementKey) {
         store,
         key,
         &BlobPlacementTransition::Verify {
+            attempt: 1,
             observed: key.digest.clone(),
             size: 1,
         },
@@ -60,6 +61,7 @@ fn test_routing_partitions_every_placement_state() {
         &store,
         &failed,
         &BlobPlacementTransition::Fail {
+            attempt: 1,
             class: BlobPlacementFailure::BackendRejected,
         },
         3,
@@ -212,6 +214,7 @@ fn test_record_local_placement_recovers_a_failed_copy() {
         &store,
         &key,
         &BlobPlacementTransition::Fail {
+            attempt: 1,
             class: BlobPlacementFailure::DigestMismatch,
         },
         3,
