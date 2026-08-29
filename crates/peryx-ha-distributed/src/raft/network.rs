@@ -27,6 +27,7 @@ use openraft::raft::{
 use crate::raft::{PeryxNode, TypeConfig};
 
 const APPEND_ENTRIES_PATH: &str = "+replication/v1/raft/append-entries";
+const CLIENT_WRITE_PATH: &str = "+replication/v1/raft/client-write";
 const VOTE_PATH: &str = "+replication/v1/raft/vote";
 const INSTALL_SNAPSHOT_PATH: &str = "+replication/v1/raft/install-snapshot";
 
@@ -41,6 +42,7 @@ pub const DEFAULT_MAX_RPC_REQUEST_BYTES: usize = 64 * 1024 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RaftRpc {
     AppendEntries,
+    ClientWrite,
     Vote,
     InstallSnapshot,
 }
@@ -49,6 +51,7 @@ impl RaftRpc {
     const fn path(self) -> &'static str {
         match self {
             Self::AppendEntries => APPEND_ENTRIES_PATH,
+            Self::ClientWrite => CLIENT_WRITE_PATH,
             Self::Vote => VOTE_PATH,
             Self::InstallSnapshot => INSTALL_SNAPSHOT_PATH,
         }
@@ -58,6 +61,7 @@ impl RaftRpc {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::AppendEntries => "append_entries",
+            Self::ClientWrite => "client_write",
             Self::Vote => "vote",
             Self::InstallSnapshot => "install_snapshot",
         }
@@ -225,6 +229,7 @@ pub fn raft_rpc_router(
     let state = RaftRpcState { token, handler };
     Ok(Router::new()
         .route(&format!("/{APPEND_ENTRIES_PATH}"), post(dispatch_append_entries))
+        .route(&format!("/{CLIENT_WRITE_PATH}"), post(dispatch_client_write))
         .route(&format!("/{VOTE_PATH}"), post(dispatch_vote))
         .route(&format!("/{INSTALL_SNAPSHOT_PATH}"), post(dispatch_install_snapshot))
         .layer(DefaultBodyLimit::max(DEFAULT_MAX_RPC_REQUEST_BYTES))
@@ -233,6 +238,10 @@ pub fn raft_rpc_router(
 
 async fn dispatch_append_entries(State(state): State<RaftRpcState>, headers: HeaderMap, body: Bytes) -> Response {
     dispatch(&state, RaftRpc::AppendEntries, &headers, body).await
+}
+
+async fn dispatch_client_write(State(state): State<RaftRpcState>, headers: HeaderMap, body: Bytes) -> Response {
+    dispatch(&state, RaftRpc::ClientWrite, &headers, body).await
 }
 
 async fn dispatch_vote(State(state): State<RaftRpcState>, headers: HeaderMap, body: Bytes) -> Response {

@@ -79,6 +79,7 @@ fn test_router_rejects_an_empty_token() {
 #[test]
 fn test_rpc_labels_are_stable() {
     assert_eq!(RaftRpc::AppendEntries.as_str(), "append_entries");
+    assert_eq!(RaftRpc::ClientWrite.as_str(), "client_write");
     assert_eq!(RaftRpc::Vote.as_str(), "vote");
     assert_eq!(RaftRpc::InstallSnapshot.as_str(), "install_snapshot");
 }
@@ -111,6 +112,11 @@ async fn assert_round_trip(rpc: RaftRpc, label: &str) {
 #[tokio::test]
 async fn test_send_round_trips_append_entries_to_its_endpoint() {
     assert_round_trip(RaftRpc::AppendEntries, "append_entries").await;
+}
+
+#[tokio::test]
+async fn test_send_round_trips_client_write_to_its_endpoint() {
+    assert_round_trip(RaftRpc::ClientWrite, "client_write").await;
 }
 
 #[tokio::test]
@@ -325,6 +331,7 @@ mod adapter {
             let vote = Vote::new(1, 1);
             let bytes = match rpc {
                 RaftRpc::AppendEntries => wire(self.remote_error, AppendEntriesResponse::<NodeId>::Success),
+                RaftRpc::ClientWrite => unreachable!("the OpenRaft adapter never sends client writes"),
                 RaftRpc::Vote => wire(self.remote_error, VoteResponse::new(vote, None, true)),
                 RaftRpc::InstallSnapshot => wire(self.remote_error, InstallSnapshotResponse { vote }),
             };

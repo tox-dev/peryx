@@ -7,12 +7,14 @@ use openraft::raft::InstallSnapshotRequest;
 use openraft::{ServerState, SnapshotMeta, Vote};
 use tempfile::TempDir;
 
+use crate::consensus_runtime::OwnershipGroup;
 use crate::ownership::{AssignmentCause, DatacenterId, OwnershipCommand, OwnershipEffect};
 use crate::raft::log_store::RaftLogStoreAdapter;
 use crate::raft::network::{PeerRaftNetworkFactory, RaftRpc, RaftRpcRejection, raft_rpc_router};
 use crate::raft::persistence::RaftLogStore;
 use crate::raft::{OwnershipResponse, OwnershipStateMachine, PeryxNode, RaftConfig, RaftNode, StartError, TypeConfig};
 use crate::{AuthorityEpoch, AuthorityKey};
+use peryx_ha::OwnershipAuthority as _;
 
 const RPC_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -279,18 +281,24 @@ async fn test_a_three_node_group_forms_quorum_over_the_mounted_rpc_endpoints() {
     let voters = nodes[0].metrics().borrow().membership_config.nodes().count();
     assert_eq!(voters, 3, "all three voters are in the membership");
 
-    let response = nodes[usize::try_from(elected - 1).unwrap()]
-        .submit(OwnershipCommand::AssignHome {
-            authority: AuthorityKey("proj".to_owned()),
-            home: DatacenterId("dc1".to_owned()),
-            cause: AssignmentCause::FirstPublish,
-        })
-        .await
-        .unwrap();
-    assert!(matches!(
-        response,
-        OwnershipResponse::Applied(OwnershipEffect::Assigned { .. })
-    ));
+    let follower = (1..=3u64).find(|id| *id != elected).unwrap();
+    let mut follower_metrics = nodes[usize::try_from(follower - 1).unwrap()].metrics();
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        follower_metrics.wait_for(|metrics| metrics.current_leader == Some(elected)),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let home = format!("dc{follower}");
+    let group = OwnershipGroup::new(
+        nodes[usize::try_from(follower - 1).unwrap()].clone(),
+        DatacenterId(home.clone()),
+    )
+    .with_peer_forwarding(CLUSTER_TOKEN);
+
+    assert_eq!(group.claim_home("proj").await.unwrap().home, home);
+    assert_eq!(group.claim_home("proj").await.unwrap().epoch, 1);
 
     for node in &nodes {
         node.raft().shutdown().await.unwrap();

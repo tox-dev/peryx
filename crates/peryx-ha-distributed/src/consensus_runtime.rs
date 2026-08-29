@@ -5,15 +5,16 @@ use std::time::Duration;
 
 use crate::lifecycle::Lifecycle;
 use crate::raft::log_store::RaftLogStoreAdapter;
-use crate::raft::network::PeerRaftNetworkFactory;
+use crate::raft::network::{PeerRaftNetworkFactory, RaftRpc, RaftRpcClient};
 use crate::raft::persistence::RaftLogStore;
-use crate::raft::{OwnershipResponse, OwnershipStateMachine, PeryxNode, RaftConfig, RaftNode};
+use crate::raft::{OwnershipResponse, OwnershipStateMachine, PeryxNode, RaftConfig, RaftNode, TypeConfig};
 use crate::{
     Admission, AssignmentCause, AuthorityEpoch, AuthorityKey, DatacenterId, OwnershipCommand, OwnershipEffect,
     Rejection,
 };
 use anyhow::{Context as _, bail};
 use openraft::error::{CheckIsLeaderError, ClientWriteError, RaftError};
+use openraft::raft::ClientWriteResponse;
 use openraft::{LogId, StoredMembership};
 use peryx_ha::{
     ClusterStatus, CommandOutcome, CommandReceipt, ControlCommand, ControlError, HomeClaim, MembershipControl,
@@ -309,6 +310,7 @@ pub fn report_raft_exit(
 pub struct OwnershipGroup {
     node: RaftNode,
     home: DatacenterId,
+    peer_token: Option<String>,
 }
 
 pub struct OwnershipHandle {
@@ -326,7 +328,17 @@ impl OwnershipHandle {
 impl OwnershipGroup {
     #[must_use]
     pub const fn new(node: RaftNode, home: DatacenterId) -> Self {
-        Self { node, home }
+        Self {
+            node,
+            home,
+            peer_token: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_peer_forwarding(mut self, token: impl Into<String>) -> Self {
+        self.peer_token = Some(token.into());
+        self
     }
 }
 
@@ -407,21 +419,22 @@ impl OwnershipAuthority for OwnershipGroup {
     async fn claim_home(&self, authority: &str) -> Result<HomeClaim, OwnershipError> {
         let authority = AuthorityKey(authority.to_owned());
         if self.node.state_machine().home_of(&authority).await.is_some() {
-            self.node
-                .raft()
-                .ensure_linearizable()
-                .await
-                .map_err(|error| match error {
-                    RaftError::APIError(CheckIsLeaderError::ForwardToLeader(forward)) => OwnershipError::NotLeader {
+            match self.node.raft().ensure_linearizable().await {
+                Ok(_) => {
+                    if let Some((home, epoch)) = self.node.state_machine().home_claim(&authority).await {
+                        return Ok(HomeClaim {
+                            home: home.0,
+                            epoch: epoch.0,
+                        });
+                    }
+                }
+                Err(RaftError::APIError(CheckIsLeaderError::ForwardToLeader(_))) if self.peer_token.is_some() => {}
+                Err(RaftError::APIError(CheckIsLeaderError::ForwardToLeader(forward))) => {
+                    return Err(OwnershipError::NotLeader {
                         leader: forward.leader_node.map(|node| node.addr),
-                    },
-                    error => OwnershipError::Unavailable(error.to_string()),
-                })?;
-            if let Some((home, epoch)) = self.node.state_machine().home_claim(&authority).await {
-                return Ok(HomeClaim {
-                    home: home.0,
-                    epoch: epoch.0,
-                });
+                    });
+                }
+                Err(error) => return Err(OwnershipError::Unavailable(error.to_string())),
             }
         }
         let command = OwnershipCommand::AssignHome {
@@ -429,20 +442,16 @@ impl OwnershipAuthority for OwnershipGroup {
             home: self.home.clone(),
             cause: AssignmentCause::FirstPublish,
         };
-        match self.node.submit(command).await {
-            Ok(OwnershipResponse::Applied(
+        match self.submit_command(command).await?.data {
+            OwnershipResponse::Applied(
                 OwnershipEffect::Assigned { home, epoch } | OwnershipEffect::AlreadyAssigned { home, epoch },
-            )) => Ok(HomeClaim {
+            ) => Ok(HomeClaim {
                 home: home.0,
                 epoch: epoch.0,
             }),
-            Ok(response) => Err(OwnershipError::Unavailable(format!(
+            response => Err(OwnershipError::Unavailable(format!(
                 "ownership assignment returned {response:?}"
             ))),
-            Err(RaftError::APIError(ClientWriteError::ForwardToLeader(forward))) => Err(OwnershipError::NotLeader {
-                leader: forward.leader_node.map(|node| node.addr),
-            }),
-            Err(error) => Err(OwnershipError::Unavailable(error.to_string())),
         }
     }
 
@@ -451,20 +460,14 @@ impl OwnershipAuthority for OwnershipGroup {
             authority: AuthorityKey(authority.to_owned()),
             new_home: DatacenterId(new_home.to_owned()),
         };
-        match self.node.submit(command).await {
+        match self.submit_command(command).await?.data {
             // Committed rejections retain the existing home; `Transferred` records a move.
-            Ok(OwnershipResponse::Applied(OwnershipEffect::Transferred { from, to, epoch })) => {
-                Ok(Some(TransferOutcome {
-                    from: from.0,
-                    to: to.0,
-                    epoch: epoch.0,
-                }))
-            }
-            Ok(_) => Ok(None),
-            Err(RaftError::APIError(ClientWriteError::ForwardToLeader(forward))) => Err(OwnershipError::NotLeader {
-                leader: forward.leader_node.map(|node| node.addr),
-            }),
-            Err(error) => Err(OwnershipError::Unavailable(error.to_string())),
+            OwnershipResponse::Applied(OwnershipEffect::Transferred { from, to, epoch }) => Ok(Some(TransferOutcome {
+                from: from.0,
+                to: to.0,
+                epoch: epoch.0,
+            })),
+            _ => Ok(None),
         }
     }
 
@@ -518,6 +521,36 @@ impl MembershipControl for OwnershipGroup {
 }
 
 impl OwnershipGroup {
+    async fn submit_command(
+        &self,
+        command: OwnershipCommand,
+    ) -> Result<ClientWriteResponse<TypeConfig>, OwnershipError> {
+        match self.node.raft().client_write(command.clone()).await {
+            Ok(response) => Ok(response),
+            Err(error) => {
+                if !matches!(error, RaftError::APIError(ClientWriteError::ForwardToLeader(_))) {
+                    return Err(map_ownership_write_error(error));
+                }
+                let Some(token) = self.peer_token.as_deref() else {
+                    return Err(map_ownership_write_error(error));
+                };
+                let Some(target) = self.node.forward_target(&error) else {
+                    return Err(map_ownership_write_error(error));
+                };
+                let client = RaftRpcClient::new(&format!("http://{}/", target.addr), token, PEER_RPC_TIMEOUT)
+                    .expect("the replication token and peer address were validated at startup");
+                let response: Result<
+                    ClientWriteResponse<TypeConfig>,
+                    RaftError<VoterId, ClientWriteError<VoterId, PeryxNode>>,
+                > = client
+                    .send(RaftRpc::ClientWrite, &command)
+                    .await
+                    .map_err(|error| OwnershipError::Unavailable(error.to_string()))?;
+                response.map_err(map_ownership_write_error)
+            }
+        }
+    }
+
     async fn add_learner(&self, datacenter: &str, address: String) -> Result<CommandReceipt, ControlError> {
         let node = PeryxNode {
             datacenter: DatacenterId(datacenter.to_owned()),
@@ -559,7 +592,7 @@ impl OwnershipGroup {
 
     /// Returns rejected state-machine transitions as invalid commands, not committed receipts.
     async fn submit_ownership(&self, command: OwnershipCommand) -> Result<CommandReceipt, ControlError> {
-        match self.node.raft().client_write(command).await {
+        match self.submit_command(command).await {
             Ok(response) => match response.data {
                 OwnershipResponse::Applied(OwnershipEffect::Rejected(rejection)) => {
                     Err(ControlError::Invalid(rejection_reason(rejection).to_owned()))
@@ -572,8 +605,18 @@ impl OwnershipGroup {
                     Vec::new(),
                 )),
             },
-            Err(error) => Err(map_write_error(&error)),
+            Err(OwnershipError::NotLeader { leader }) => Err(ControlError::NotLeader { leader }),
+            Err(error) => Err(ControlError::Unavailable(error.to_string())),
         }
+    }
+}
+
+fn map_ownership_write_error(error: RaftError<VoterId, ClientWriteError<VoterId, PeryxNode>>) -> OwnershipError {
+    match error {
+        RaftError::APIError(ClientWriteError::ForwardToLeader(forward)) => OwnershipError::NotLeader {
+            leader: forward.leader_node.map(|node| node.addr),
+        },
+        error => OwnershipError::Unavailable(error.to_string()),
     }
 }
 

@@ -1,5 +1,5 @@
 mod harness {
-    pub use peryx_test_support::{Cluster, MemberSpec, Node, OwnershipControl, Role};
+    pub use peryx_test_support::{Cluster, MemberSpec, Node, Role};
 
     pub struct Topology {
         inner: peryx_test_support::Topology,

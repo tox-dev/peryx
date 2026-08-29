@@ -149,6 +149,10 @@ impl RaftRpcHandler for OwnershipRpcHandler {
                 let request: AppendEntriesRequest<TypeConfig> = decode(&body)?;
                 Ok(encode(&self.raft.append_entries(request).await))
             }
+            RaftRpc::ClientWrite => {
+                let request: OwnershipCommand = decode(&body)?;
+                Ok(encode(&self.raft.client_write(request).await))
+            }
             RaftRpc::Vote => {
                 let request: VoteRequest<NodeId> = decode(&body)?;
                 Ok(encode(&self.raft.vote(request).await))

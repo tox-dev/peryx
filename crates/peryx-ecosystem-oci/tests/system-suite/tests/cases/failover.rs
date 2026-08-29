@@ -7,7 +7,7 @@ use peryx_storage::blob::Digest;
 use peryx_storage::meta::MetaStore;
 use serde_json::Value;
 
-use crate::harness::{Cluster, MemberSpec, Node, OwnershipControl as _, Role, Topology};
+use crate::harness::{Cluster, MemberSpec, Node, Role, Topology};
 
 const OCI_ROUTE: &str = "oci";
 const OCI_MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
@@ -213,10 +213,7 @@ fn assert_image_intact(node: &Node, manifest_digest: &str) {
 #[test]
 fn test_home_dc_oci_push_is_retry_safe_and_survives_a_home_failure() {
     let mut cluster = home_oci_group();
-    let leader = cluster
-        .await_leader(Duration::from_secs(90))
-        .expect("the ha group agrees on a leader");
-    assert_eq!(cluster.leader().expect("read the settled leader"), Some(leader));
+    await_writer_leader(&cluster);
     let writer = cluster.node("writer-east").expect("the home writer is present");
 
     let manifest_digest = push_image(writer);
@@ -230,6 +227,7 @@ fn test_home_dc_oci_push_is_retry_safe_and_survives_a_home_failure() {
         .unwrap();
     home.kill();
     home.restart().expect("the home datacenter restarts on its store");
+    await_writer_leader(&cluster);
     let writer = cluster.node("writer-east").expect("the home writer is back");
 
     assert_image_intact(writer, &manifest_digest);
@@ -240,6 +238,21 @@ fn test_home_dc_oci_push_is_retry_safe_and_survives_a_home_failure() {
         "the retry publishes the identical manifest digest",
     );
     assert_image_intact(writer, &manifest_digest);
+}
+
+fn await_writer_leader(cluster: &Cluster) {
+    let leader = cluster
+        .await_leader(Duration::from_secs(90))
+        .expect("the ha group agrees on a leader");
+    cluster
+        .await_topology_signal(Duration::from_secs(90), |cluster| {
+            let observed = cluster.node("writer-east").and_then(Node::consensus_leader);
+            (
+                (observed.as_deref() == Some(leader.as_str())).then_some(()),
+                format!("writer-east last observed leader: {observed:?}"),
+            )
+        })
+        .expect("the home writer observes the elected leader");
 }
 
 #[test]

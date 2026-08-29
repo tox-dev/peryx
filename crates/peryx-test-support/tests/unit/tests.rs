@@ -227,6 +227,7 @@ fn node_public_behavior() {
         assert_eq!(writer.status(), Some((200, "{\"version\":\"test\"}".to_owned())));
         assert_eq!(writer.readiness(), Some((200, "ready".to_owned())));
         assert_eq!(writer.topology(), Some((200, "topology".to_owned())));
+        assert_eq!(writer.consensus_leader(), Some("dc-a".to_owned()));
         assert_eq!(writer.metrics(), Some((200, "metric 1\n".to_owned())));
         assert_eq!(writer.placements(), Some((200, "placements".to_owned())));
         assert_eq!(writer.http_get("/text"), Some((200, "text".to_owned())));

@@ -697,18 +697,8 @@ impl Cluster {
     fn observed_leader(&self) -> Option<String> {
         let mut tally: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
         for node in &self.nodes {
-            let Some((200, body)) = node.control_get_as(ADMIN_USER, ADMIN_PASSWORD, "/availability/v1/status") else {
-                continue;
-            };
-            let Ok(status) = serde_json::from_str::<serde_json::Value>(&body) else {
-                continue;
-            };
-            if let Some(leader) = status
-                .get("consensus")
-                .and_then(|consensus| consensus.get("leader"))
-                .and_then(serde_json::Value::as_str)
-            {
-                *tally.entry(leader.to_owned()).or_default() += 1;
+            if let Some(leader) = node.consensus_leader() {
+                *tally.entry(leader).or_default() += 1;
             }
         }
         let quorum = self.nodes.len() / 2 + 1;
@@ -976,6 +966,19 @@ impl Node {
     #[must_use]
     pub fn topology(&self) -> Option<(u16, String)> {
         self.http_get("/+availability/topology")
+    }
+
+    #[must_use]
+    pub fn consensus_leader(&self) -> Option<String> {
+        let (200, body) = self.control_get_as(ADMIN_USER, ADMIN_PASSWORD, "/availability/v1/status")? else {
+            return None;
+        };
+        serde_json::from_str::<serde_json::Value>(&body)
+            .ok()?
+            .get("consensus")?
+            .get("leader")?
+            .as_str()
+            .map(str::to_owned)
     }
 
     #[must_use]
