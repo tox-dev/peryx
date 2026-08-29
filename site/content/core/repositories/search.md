@@ -37,15 +37,28 @@ Both endpoints return one response schema and accept the same query fields.
 
 | Field          | Values                                  | Default | Contract                                     |
 | -------------- | --------------------------------------- | ------- | -------------------------------------------- |
-| `q`            | Text or `re:<expression>`               | Empty   | Matches normalized and display names         |
+| `q`            | Text or `re:<expression>`               | Empty   | Matches the ecosystem's search document      |
 | `route`        | Configured route                        | Any     | Restricts a global query                     |
 | `type`         | `all`, `uploaded`, `cached`, `override` | `all`   | Restricts record source                      |
 | `availability` | `all`, `local`                          | `all`   | Restricts records by local byte availability |
 | `page`         | Positive integer                        | `1`     | Selects a result page                        |
 | `page_size`    | `25`, `50`, or `100`                    | `25`    | Sets the result count                        |
 
-Plain text uses case-insensitive substring matching. The `re:` prefix selects the search engine's regular-expression
-dialect. An invalid expression or availability value returns `400 Bad Request`.
+Plain text uses case-insensitive substring matching. The `re:` prefix selects a case-insensitive regular expression in
+the search engine's dialect. Both modes inspect an ecosystem-provided search document, so a match does not need to
+appear in `display_label` or `resource_key`. An invalid expression or availability value returns `400 Bad Request`.
+
+The ecosystem implementations build searchable text from these fields:
+
+| Ecosystem | Category      | Fields                                                                                                                                                                                                                                                                  |
+| --------- | ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| PyPI      | Identity      | Normalized, project-detail, and core-metadata names                                                                                                                                                                                                                     |
+| PyPI      | Catalog       | Versions, distribution filenames, and per-file `Requires-Python`                                                                                                                                                                                                        |
+| PyPI      | Core metadata | `Requires-Python`, summary, description, author and maintainer names and email addresses, license fields and files, keywords, dependencies and extras, classifiers, import names and namespaces, project URL labels and values, home page, and description content type |
+| OCI       | Repository    | Repository name and every tag                                                                                                                                                                                                                                           |
+
+For example, a PyPI project named `acme` with the summary `Temporary upload` matches `q=temporary`. An OCI repository
+named `team/app` with the tag `release-candidate` matches `q=candidate`.
 
 ## Response schema
 
