@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 use std::io::Write as _;
 use std::sync::Arc;
@@ -36,6 +37,17 @@ pub fn plugins_with_blob_references() -> PluginRegistry {
 
 pub fn plugins_with_broken_blob_references() -> PluginRegistry {
     registry(&BROKEN_BLOB_REGISTRATION)
+}
+
+#[cfg(unix)]
+pub fn with_blob_reference_event<T>(event: impl FnOnce() + 'static, action: impl FnOnce() -> T) -> T {
+    BLOB_REFERENCE_EVENT.with(|slot| {
+        assert!(slot.borrow().is_none());
+        slot.replace(Some(Box::new(event)));
+    });
+    let result = action();
+    BLOB_REFERENCE_EVENT.with(|slot| assert!(slot.borrow().is_none()));
+    result
 }
 
 pub fn plugins_with_fsck() -> PluginRegistry {
@@ -154,6 +166,9 @@ fn plugin_registration(
 
 const CORE: Ecosystem = Ecosystem::new("core");
 const PLAIN: Ecosystem = Ecosystem::new("plain");
+thread_local! {
+    static BLOB_REFERENCE_EVENT: RefCell<Option<Box<dyn FnOnce()>>> = RefCell::default();
+}
 static REGISTRATION: Registration = Registration {
     driver: &DRIVER,
     runtime: &RUNTIME,
@@ -554,6 +569,11 @@ impl ImportDriver for Driver {
 
 impl BlobReferenceDriver for Driver {
     fn referenced_blob_digests(&self, _: &MetaStore) -> Result<BTreeSet<String>, String> {
+        BLOB_REFERENCE_EVENT.with(|slot| {
+            if let Some(event) = slot.take() {
+                event();
+            }
+        });
         if self.has(Capability::BrokenBlobReferences) {
             return Err("blob-reference scan failed".to_owned());
         }

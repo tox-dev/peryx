@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Read as _, Write};
+use std::io::{BufReader, BufWriter, Read as _, Seek as _, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -162,9 +162,7 @@ fn manifest_membership(membership: &DcMembership) -> ManifestMembership {
     }
 }
 
-fn write_manifest(path: &Path, manifest: &BackupManifest) -> anyhow::Result<()> {
-    let manifest_path = path.join("manifest.json");
-    let mut file = create_private_file(&manifest_path).context(format!("create {}", manifest_path.display()))?;
+fn write_manifest(mut file: File, manifest: &BackupManifest) -> anyhow::Result<()> {
     serde_json::to_writer_pretty(&mut file, manifest)?;
     writeln!(file)?;
     file.sync_all()?;
@@ -192,21 +190,6 @@ fn create_private_dir_all(path: &Path) -> anyhow::Result<()> {
     #[cfg(not(unix))]
     let result = std::fs::create_dir_all(path);
     result.context(format!("create backup directory {}", path.display()))
-}
-
-/// Strip group and other access from an existing directory so a pre-created backup root cannot leak
-/// its contents. A no-op on platforms without Unix modes.
-#[cfg(unix)]
-fn tighten_private_dir(path: &Path) -> anyhow::Result<()> {
-    use std::os::unix::fs::PermissionsExt as _;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-        .context(format!("tighten backup directory {}", path.display()))?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn tighten_private_dir(_path: &Path) -> anyhow::Result<()> {
-    Ok(())
 }
 
 /// Create a file only its owner may read or write. On Unix it is created `0600` regardless of the
@@ -262,8 +245,12 @@ fn hashed_parent(path: &Path) -> anyhow::Result<&Path> {
 fn copy_hashed(source: &Path, dest: &Path, manifest_path: &str, access: Access) -> anyhow::Result<ManifestFile> {
     let parent = hashed_parent(dest)?;
     std::fs::create_dir_all(parent).context(format!("create {}", parent.display()))?;
+    Ok(copy_hashed_file(source, create_file(dest, access)?, manifest_path)?.0)
+}
+
+fn copy_hashed_file(source: &Path, output: File, manifest_path: &str) -> anyhow::Result<(ManifestFile, File)> {
     let mut input = BufReader::with_capacity(BUFFER_BYTES, File::open(source)?);
-    let mut output = BufWriter::with_capacity(BUFFER_BYTES, create_file(dest, access)?);
+    let mut output = BufWriter::with_capacity(BUFFER_BYTES, output);
     let mut hasher = Sha256::new();
     let mut size_bytes = 0;
     let mut buffer = vec![0; BUFFER_BYTES];
@@ -276,18 +263,19 @@ fn copy_hashed(source: &Path, dest: &Path, manifest_path: &str, access: Access) 
         hasher.update(&buffer[..read]);
         size_bytes += read as u64;
     }
-    output.into_inner()?.sync_all()?;
-    Ok(ManifestFile {
-        path: manifest_path.to_owned(),
-        sha256: hex(&hasher.finalize()),
-        size_bytes,
-    })
+    let output = output.into_inner()?;
+    output.sync_all()?;
+    Ok((
+        ManifestFile {
+            path: manifest_path.to_owned(),
+            sha256: hex(&hasher.finalize()),
+            size_bytes,
+        },
+        output,
+    ))
 }
 
-fn write_hashed(path: &Path, bytes: &[u8], manifest_path: &str) -> anyhow::Result<ManifestFile> {
-    let parent = hashed_parent(path)?;
-    std::fs::create_dir_all(parent).context(format!("create {}", parent.display()))?;
-    let mut file = create_private_file(path)?;
+fn write_hashed_file(mut file: File, bytes: &[u8], manifest_path: &str) -> anyhow::Result<ManifestFile> {
     file.write_all(bytes)?;
     file.sync_all()?;
     Ok(ManifestFile {
@@ -298,7 +286,12 @@ fn write_hashed(path: &Path, bytes: &[u8], manifest_path: &str) -> anyhow::Resul
 }
 
 fn hash_existing_file(path: &Path) -> anyhow::Result<HashedFile> {
-    let mut input = BufReader::with_capacity(BUFFER_BYTES, File::open(path)?);
+    hash_file(File::open(path)?)
+}
+
+fn hash_file(mut file: File) -> anyhow::Result<HashedFile> {
+    file.rewind()?;
+    let mut input = BufReader::with_capacity(BUFFER_BYTES, file);
     let mut hasher = Sha256::new();
     let mut size_bytes = 0;
     let mut buffer = vec![0; BUFFER_BYTES];

@@ -47,9 +47,11 @@ does not invalidate credentials that someone may already have read.
 
 On Unix, `backup create` enforces that itself. It creates the backup root `0700` and the secret-bearing files it writes
 there, the configuration snapshot, the metadata store, and the manifest, `0600`, regardless of the process umask. A
-target directory you pre-create is tightened to `0700` before anything is written, so a `0755` directory left by an
-earlier step never exposes the copy. `restore` applies the same `0600` to the `config.toml` and `peryx.redb` it lays
-down. Other platforms carry no Unix mode bits, so protect the directory with the filesystem's own access controls.
+pre-created target must belong to the effective user. The command opens that directory without following a symlink,
+tightens the open directory to `0700`, and creates each member relative to the same descriptor. It confirms the target
+still names that directory before writing the manifest. Exclusive, no-follow opens make a member symlink or replaced
+directory fail before manifest publication. `restore` applies the same `0600` to the `config.toml` and `peryx.redb` it
+lays down. Other platforms carry no Unix mode bits, so protect the directory with the filesystem's own access controls.
 
 ## Availability state
 
@@ -62,7 +64,7 @@ a static datacenter roster is configured, `membership` records its group and eve
 and role. The configuration snapshot omits that roster, so the manifest is the backup's only durable record of the
 topology the recovery point belongs to.
 
-`backup create` reads the frontier and placement count from the copied metadata store, not the live one, so both
+`backup create` reads the frontier and placement count from the quiesced metadata store whose bytes it copies, so both
 describe exactly the bytes the backup holds rather than a moving target. That is what makes the recovery point coherent:
 the metadata copy, the frontier that names it, and the placement count that sizes it all come from the same snapshot.
 

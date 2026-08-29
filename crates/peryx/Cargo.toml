@@ -84,6 +84,7 @@ url.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31.3", features = ["signal"] }
+rustix = { workspace = true, features = ["fs", "process"] }
 syslog-tracing = "0.3"
 
 [target.'cfg(target_os = "linux")'.dependencies]

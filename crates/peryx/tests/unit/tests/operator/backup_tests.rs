@@ -9,6 +9,8 @@ use crate::config::{
     self, AvailabilityConfig, Config, DcMember, DcMembership, DcRole, ReplicationConfig, SecretSource,
 };
 use crate::operator;
+#[cfg(unix)]
+use crate::tests::support::with_blob_reference_event;
 use crate::tests::support::{fixture_job, plugins, store_repositories};
 
 use super::support::{
@@ -40,10 +42,32 @@ fn test_backup_accepts_an_empty_precreated_target() {
     let root = tempfile::tempdir().unwrap();
     let backup = root.path().join("backup");
     std::fs::create_dir(&backup).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&backup, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
     let mut output = Vec::new();
 
     backup_create_with_references(&config, &backup, &mut output).unwrap();
 
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let metadata = std::fs::metadata(&backup).unwrap();
+        assert_eq!(
+            (
+                metadata.uid(),
+                metadata.permissions().mode() & 0o777,
+                std::fs::metadata(backup.join("manifest.json"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+            ),
+            (rustix::process::geteuid().as_raw(), 0o700, 0o600)
+        );
+    }
     assert_eq!(
         (
             backup.join("manifest.json").is_file(),
@@ -51,6 +75,173 @@ fn test_backup_accepts_an_empty_precreated_target() {
         ),
         (true, true)
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_backup_rejects_a_symlink_target() {
+    let (_source, config, _content, _metadata) = backup_fixture();
+    let root = tempfile::tempdir().unwrap();
+    let actual = root.path().join("actual");
+    std::fs::create_dir(&actual).unwrap();
+    let backup = root.path().join("backup");
+    std::os::unix::fs::symlink(&actual, &backup).unwrap();
+
+    let error = backup_create_with_references(&config, &backup, &mut Vec::new()).unwrap_err();
+
+    assert_eq!(
+        (
+            error.to_string().contains("is a symbolic link"),
+            std::fs::read_dir(&actual).unwrap().next().is_none(),
+        ),
+        (true, true)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_backup_rejects_a_target_owned_by_another_user() {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let (_source, config, _content, _metadata) = backup_fixture();
+    let root = tempfile::tempdir().unwrap();
+    let candidate = root.path().join("backup");
+    std::fs::create_dir(&candidate).unwrap();
+    let owner_changed = rustix::fs::chown(
+        &candidate,
+        Some(rustix::fs::Uid::from_raw(rustix::process::geteuid().as_raw() ^ 1)),
+        None,
+    )
+    .is_ok();
+    let backup = if owner_changed { candidate } else { PathBuf::from("/") };
+    assert_ne!(
+        std::fs::metadata(&backup).unwrap().uid(),
+        rustix::process::geteuid().as_raw()
+    );
+
+    let error = backup_create_with_references(&config, &backup, &mut Vec::new()).unwrap_err();
+
+    assert!(error.to_string().contains("is owned by another user"), "{error:#}");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_backup_rejects_a_manifest_symlink_added_after_acceptance() {
+    let (_source, config, _content, _metadata) = backup_fixture();
+    let root = tempfile::tempdir().unwrap();
+    let backup = root.path().join("backup");
+    std::fs::create_dir(&backup).unwrap();
+    let victim = root.path().join("victim");
+    std::fs::write(&victim, b"unchanged").unwrap();
+    let event_backup = backup.clone();
+    let event_victim = victim.clone();
+
+    let error = with_blob_reference_event(
+        move || std::os::unix::fs::symlink(event_victim, event_backup.join("manifest.json")).unwrap(),
+        || backup_create_with_references(&config, &backup, &mut Vec::new()),
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        (
+            error.to_string().contains("create backup member manifest.json"),
+            std::fs::read(victim).unwrap(),
+        ),
+        (true, b"unchanged".to_vec())
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_backup_rejects_a_directory_symlink_added_after_acceptance() {
+    let (_source, config, _content, _metadata) = backup_fixture();
+    let root = tempfile::tempdir().unwrap();
+    let backup = root.path().join("backup");
+    std::fs::create_dir(&backup).unwrap();
+    let victim = root.path().join("victim");
+    std::fs::create_dir(&victim).unwrap();
+    let event_backup = backup.clone();
+    let event_victim = victim.clone();
+
+    let error = with_blob_reference_event(
+        move || std::os::unix::fs::symlink(event_victim, event_backup.join("metadata")).unwrap(),
+        || backup_create_with_references(&config, &backup, &mut Vec::new()),
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        (
+            error.to_string().contains("open backup directory metadata"),
+            std::fs::read_dir(victim).unwrap().next().is_none(),
+        ),
+        (true, true)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_backup_reports_an_unlinked_accepted_directory() {
+    let (_source, config, _content, _metadata) = backup_fixture();
+    let root = tempfile::tempdir().unwrap();
+    let backup = root.path().join("backup");
+    std::fs::create_dir(&backup).unwrap();
+    let event_backup = backup.clone();
+
+    let error = with_blob_reference_event(
+        move || std::fs::remove_dir(event_backup).unwrap(),
+        || backup_create_with_references(&config, &backup, &mut Vec::new()),
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        (
+            error.to_string().contains("create backup directory metadata"),
+            backup.exists(),
+        ),
+        (true, false)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_backup_rejects_target_replacement_after_acceptance() {
+    let (_source, config, _content, _metadata) = backup_fixture();
+    let root = tempfile::tempdir().unwrap();
+    let backup = root.path().join("backup");
+    std::fs::create_dir(&backup).unwrap();
+    let accepted = root.path().join("accepted");
+    let event_backup = backup.clone();
+    let event_accepted = accepted.clone();
+
+    let error = with_blob_reference_event(
+        move || {
+            std::fs::rename(&event_backup, &event_accepted).unwrap();
+            std::fs::create_dir(event_backup).unwrap();
+        },
+        || backup_create_with_references(&config, &backup, &mut Vec::new()),
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        (
+            error.to_string().contains("was replaced while creating the backup"),
+            std::fs::read_dir(&backup).unwrap().next().is_none(),
+            accepted.join("manifest.json").exists(),
+        ),
+        (true, true, false)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_backup_reports_target_inspection_errors() {
+    let (_source, config, _content, _metadata) = backup_fixture();
+    let root = tempfile::tempdir().unwrap();
+    let backup = root.path().join("x".repeat(1024));
+
+    let error = backup_create_with_references(&config, &backup, &mut Vec::new()).unwrap_err();
+
+    assert!(error.to_string().contains("inspect backup path"), "{error:#}");
 }
 
 #[test]
