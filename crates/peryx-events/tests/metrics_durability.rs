@@ -1,15 +1,16 @@
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use peryx_events::metrics::{Clock, Metrics, MetricsError, MetricsStore, Observation};
+use peryx_events::metrics::{Clock, DailyUsage, Metrics, MetricsError, MetricsStore, Observation};
+use peryx_storage::meta::AnalyticsCheckpoint;
 use rstest::rstest;
 
+#[derive(Clone)]
 struct TestStore {
-    reads: Option<Vec<u8>>,
-    daily: Option<Vec<u8>>,
+    checkpoint: Arc<Mutex<AnalyticsCheckpoint>>,
     read_failure: Option<ReadFailure>,
-    failing_write: bool,
-    failing_daily_write: bool,
+    write_failure: Arc<Mutex<Option<WriteFailure>>>,
     writes: Arc<AtomicUsize>,
 }
 
@@ -19,29 +20,37 @@ enum ReadFailure {
     Daily,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WriteFailure {
+    Lifetime,
+    Daily,
+}
+
 impl MetricsStore for TestStore {
-    fn load(&self) -> Result<Option<Vec<u8>>, MetricsError> {
-        if self.read_failure == Some(ReadFailure::Lifetime) {
-            return Err(MetricsError::Persistence("lifetime read failed".to_owned()));
+    fn load_checkpoint(&self) -> Result<AnalyticsCheckpoint, MetricsError> {
+        match self.read_failure {
+            Some(ReadFailure::Lifetime) => {
+                return Err(MetricsError::Persistence("lifetime read failed".to_owned()));
+            }
+            Some(ReadFailure::Daily) => return Err(MetricsError::Persistence("daily read failed".to_owned())),
+            None => {}
         }
-        Ok(self.reads.clone())
+        Ok(self.checkpoint.lock().unwrap().clone())
     }
 
-    fn save(&self, _snapshot: &[u8]) -> Result<(), MetricsError> {
-        Self::fail_write(self.failing_write)?;
-        self.writes.fetch_add(1, Ordering::Relaxed);
-        Ok(())
-    }
-
-    fn load_daily(&self) -> Result<Option<Vec<u8>>, MetricsError> {
-        if self.read_failure == Some(ReadFailure::Daily) {
-            return Err(MetricsError::Persistence("daily read failed".to_owned()));
+    fn save_checkpoint(&self, lifetime: &[u8], daily: &[u8]) -> Result<(), MetricsError> {
+        let failure = self.write_failure.lock().unwrap().take();
+        if failure == Some(WriteFailure::Lifetime) {
+            return Err(Self::write_error("lifetime"));
         }
-        Ok(self.daily.clone())
-    }
-
-    fn save_daily(&self, _snapshot: &[u8]) -> Result<(), MetricsError> {
-        Self::fail_write(self.failing_daily_write)?;
+        let lifetime = lifetime.to_vec();
+        if failure == Some(WriteFailure::Daily) {
+            return Err(Self::write_error("daily"));
+        }
+        *self.checkpoint.lock().unwrap() = AnalyticsCheckpoint {
+            lifetime: Some(lifetime),
+            daily: Some(daily.to_vec()),
+        };
         self.writes.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
@@ -50,36 +59,27 @@ impl MetricsStore for TestStore {
 impl TestStore {
     fn new(reads: Option<Vec<u8>>, daily: Option<Vec<u8>>) -> Self {
         Self {
-            reads,
-            daily,
+            checkpoint: Arc::new(Mutex::new(AnalyticsCheckpoint { lifetime: reads, daily })),
             read_failure: None,
-            failing_write: false,
-            failing_daily_write: false,
+            write_failure: Arc::new(Mutex::new(None)),
             writes: Arc::default(),
         }
     }
 
-    fn failing() -> Self {
-        Self {
-            failing_write: true,
-            ..Self::new(None, None)
-        }
-    }
-
-    fn failing_daily() -> Self {
-        Self {
-            failing_daily_write: true,
-            ..Self::new(None, None)
-        }
+    fn failing(failure: WriteFailure) -> Self {
+        let store = Self::new(None, None);
+        *store.write_failure.lock().unwrap() = Some(failure);
+        store
     }
 
     fn failing_read(failure: ReadFailure, writes: Arc<AtomicUsize>) -> Self {
         Self {
-            reads: Some(br#"{"artifacts":[]}"#.to_vec()),
-            daily: Some(br#"{"schema":1,"buckets":[]}"#.to_vec()),
+            checkpoint: Arc::new(Mutex::new(AnalyticsCheckpoint {
+                lifetime: Some(br#"{"artifacts":[]}"#.to_vec()),
+                daily: Some(br#"{"schema":1,"buckets":[]}"#.to_vec()),
+            })),
             read_failure: Some(failure),
-            failing_write: false,
-            failing_daily_write: false,
+            write_failure: Arc::new(Mutex::new(None)),
             writes,
         }
     }
@@ -91,11 +91,8 @@ impl TestStore {
         }
     }
 
-    fn fail_write(failing: bool) -> Result<(), MetricsError> {
-        if !failing {
-            return Ok(());
-        }
-        Err(MetricsError::Persistence("read-only store".to_owned()))
+    fn write_error(snapshot: &str) -> MetricsError {
+        MetricsError::Persistence(format!("{snapshot} write failed"))
     }
 }
 
@@ -129,18 +126,41 @@ fn test_unsupported_daily_schema_stops_startup() {
 }
 
 #[rstest]
-#[case::reads(TestStore::failing())]
-#[case::daily(TestStore::failing_daily())]
-fn test_checkpoint_failure_is_returned_and_observable(#[case] store: TestStore) {
+#[case::lifetime(WriteFailure::Lifetime, "metrics persistence failed: lifetime write failed")]
+#[case::daily(WriteFailure::Daily, "metrics persistence failed: daily write failed")]
+fn test_checkpoint_failure_stays_pending_until_retry(#[case] failure: WriteFailure, #[case] expected: &str) {
+    let store = TestStore::failing(failure);
+    let persisted = store.clone();
     let metrics = Metrics::start_durable(store, None, clock()).unwrap();
     metrics.record(observation());
 
     assert!(matches!(metrics.flush(), Err(MetricsError::Persistence(_))));
+    assert_eq!(metrics.durability_failure().as_deref(), Some(expected));
+    let before_retry = Metrics::start_durable(persisted.clone(), None, clock()).unwrap();
     assert_eq!(
-        metrics.durability_failure().as_deref(),
-        Some("metrics persistence failed: read-only store")
+        (before_retry.index_totals().len(), before_retry.daily_usage().len()),
+        (0, 0)
     );
-    assert!(matches!(metrics.shutdown(), Err(MetricsError::Persistence(_))));
+    before_retry.shutdown().unwrap();
+
+    metrics.flush().unwrap();
+    assert_eq!(metrics.durability_failure(), None);
+    metrics.shutdown().unwrap();
+    let restarted = Metrics::start_durable(persisted, None, clock()).unwrap();
+    assert_eq!(restarted.index_totals()["hosted"].base.reads, 1);
+    assert_eq!(
+        restarted.daily_usage(),
+        [DailyUsage {
+            day: 0,
+            repository: "hosted".to_owned(),
+            resource: "demo".to_owned(),
+            group: "1.0".to_owned(),
+            source: String::new(),
+            reads: 1,
+            bytes: 1,
+        }]
+    );
+    restarted.shutdown().unwrap();
 }
 
 #[test]
@@ -185,7 +205,7 @@ fn test_missing_snapshots_allow_a_checkpoint() {
 
     metrics.flush().unwrap();
 
-    assert_eq!(writes.load(Ordering::Relaxed), 2);
+    assert_eq!(writes.load(Ordering::Relaxed), 1);
     metrics.shutdown().unwrap();
 }
 

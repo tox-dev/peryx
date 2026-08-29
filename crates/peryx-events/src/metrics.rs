@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use peryx_core::Role;
 use peryx_ha::{AggregateDelta, AggregateKey, AggregateRow, AnalyticsBatch, AuthorityEpoch, IntervalId, ProducerId};
-use peryx_storage::meta::{AnalyticsHandle, MetaError};
+use peryx_storage::meta::{AnalyticsCheckpoint, AnalyticsHandle, MetaError};
 
 /// Unix seconds supplied by the process clock.
 pub type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
@@ -332,38 +332,26 @@ pub enum MetricsError {
 }
 
 pub trait MetricsStore: Send + Sync + 'static {
+    /// Loads the lifetime and daily snapshots from one storage snapshot.
+    ///
     /// # Errors
-    /// Returns an error when the snapshot cannot be read.
-    fn load(&self) -> Result<Option<Vec<u8>>, MetricsError>;
+    /// Returns an error when either snapshot cannot be read.
+    fn load_checkpoint(&self) -> Result<AnalyticsCheckpoint, MetricsError>;
 
+    /// Commits the lifetime and daily snapshots as one checkpoint.
+    ///
     /// # Errors
-    /// Returns an error when the snapshot cannot be written.
-    fn save(&self, snapshot: &[u8]) -> Result<(), MetricsError>;
-
-    /// # Errors
-    /// Returns an error when the daily snapshot cannot be read.
-    fn load_daily(&self) -> Result<Option<Vec<u8>>, MetricsError>;
-
-    /// # Errors
-    /// Returns an error when the daily snapshot cannot be written.
-    fn save_daily(&self, snapshot: &[u8]) -> Result<(), MetricsError>;
+    /// Returns an error when either snapshot cannot be written.
+    fn save_checkpoint(&self, lifetime: &[u8], daily: &[u8]) -> Result<(), MetricsError>;
 }
 
 impl MetricsStore for AnalyticsHandle {
-    fn load(&self) -> Result<Option<Vec<u8>>, MetricsError> {
-        Ok(Self::load(self)?)
+    fn load_checkpoint(&self) -> Result<AnalyticsCheckpoint, MetricsError> {
+        Ok(Self::load_checkpoint(self)?)
     }
 
-    fn save(&self, snapshot: &[u8]) -> Result<(), MetricsError> {
-        Ok(Self::save(self, snapshot)?)
-    }
-
-    fn load_daily(&self) -> Result<Option<Vec<u8>>, MetricsError> {
-        Ok(Self::load_daily(self)?)
-    }
-
-    fn save_daily(&self, snapshot: &[u8]) -> Result<(), MetricsError> {
-        Ok(Self::save_daily(self, snapshot)?)
+    fn save_checkpoint(&self, lifetime: &[u8], daily: &[u8]) -> Result<(), MetricsError> {
+        Ok(Self::save_checkpoint(self, lifetime, daily)?)
     }
 }
 
@@ -438,15 +426,20 @@ impl Metrics {
         flush_interval: Duration,
     ) -> Result<Self, MetricsError> {
         let (sender, receiver) = sync_channel(capacity);
+        let AnalyticsCheckpoint { lifetime: reads, daily } = store
+            .as_ref()
+            .map(|store| store.load_checkpoint())
+            .transpose()?
+            .unwrap_or_default();
         let mut initial = StatsTree::new();
-        if let Some(bytes) = store.as_ref().map(|store| store.load()).transpose()?.flatten() {
+        if let Some(bytes) = reads {
             restore_reads(
                 &mut initial,
                 serde_json::from_slice(&bytes).map_err(MetricsError::ReadSnapshot)?,
             );
         }
         let mut daily_initial = DailyBuckets::new();
-        if let Some(bytes) = store.as_ref().map(|store| store.load_daily()).transpose()?.flatten() {
+        if let Some(bytes) = daily {
             let snapshot: DailySnapshot = serde_json::from_slice(&bytes).map_err(MetricsError::DailySnapshot)?;
             if snapshot.schema != DAILY_SCHEMA {
                 return Err(MetricsError::DailySchema(snapshot.schema));
@@ -1122,7 +1115,7 @@ fn persist(ctx: &Aggregator, state: &mut FlushState) -> Result<(), MetricsError>
         .expect("serialize metrics snapshot");
     let daily = serde_json::to_vec(&snapshot_daily(&ctx.daily.read().expect("metrics lock")))
         .expect("serialize daily usage snapshot");
-    let result = store.save(&reads).and_then(|()| store.save_daily(&daily));
+    let result = store.save_checkpoint(&reads, &daily);
     state.reset_interval();
     match result {
         Ok(()) => {

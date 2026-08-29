@@ -41,7 +41,7 @@ mod visibility;
 mod webhook;
 mod writer;
 
-pub use analytics::AnalyticsHandle;
+pub use analytics::{AnalyticsCheckpoint, AnalyticsHandle};
 pub use bootstrap::AdministratorBootstrapError;
 pub use error::{MetaError, MetaScanError, WriterIdentityError};
 pub use external_identity::ExternalIdentityStoreError;

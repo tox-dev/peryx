@@ -10,7 +10,10 @@ use std::path::Path;
 use std::sync::{Arc, Barrier};
 
 use crate::blob::{CHUNK_BYTES, ChunkedDigest, Digest};
-use crate::meta::{IntentAdmission, IntentLimits, IntentUsage, MetaError, MetaStore, NewReconcileEntry, TransferAudit};
+use crate::meta::{
+    AnalyticsCheckpoint, IntentAdmission, IntentLimits, IntentUsage, MetaError, MetaStore, NewReconcileEntry,
+    TransferAudit,
+};
 
 const DISTRIBUTED_TABLES: [&str; 17] = [
     "artifact_placement",
@@ -346,7 +349,7 @@ fn test_open_existing_read_only_reads_and_rejects_writes() {
     let writable = MetaStore::open(&path).unwrap();
     assert!(format!("{writable:?}").contains("ReadWrite"));
     assert_eq!(writable.next_serial().unwrap(), 1);
-    writable.analytics().save(b"snapshot").unwrap();
+    writable.analytics().save_checkpoint(b"lifetime", b"daily").unwrap();
     drop(writable);
 
     let read_only = MetaStore::open_existing_read_only(path).unwrap();
@@ -354,11 +357,17 @@ fn test_open_existing_read_only_reads_and_rejects_writes() {
     let analytics = read_only.analytics();
 
     assert_eq!(read_only.current_serial().unwrap(), 1);
-    assert_eq!(analytics.load().unwrap(), Some(b"snapshot".to_vec()));
+    assert_eq!(
+        analytics.load_checkpoint().unwrap(),
+        AnalyticsCheckpoint {
+            lifetime: Some(b"lifetime".to_vec()),
+            daily: Some(b"daily".to_vec()),
+        }
+    );
     assert_read_only(read_only.next_serial().unwrap_err());
-    assert_read_only(analytics.save(b"changed").unwrap_err());
+    assert_read_only(analytics.save_checkpoint(b"changed", b"changed").unwrap_err());
     drop(read_only);
-    assert_eq!(analytics.load().unwrap(), None);
+    assert_eq!(analytics.load_checkpoint().unwrap(), AnalyticsCheckpoint::default());
 }
 
 fn assert_read_only(err: MetaError) {

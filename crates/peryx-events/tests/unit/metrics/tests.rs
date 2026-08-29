@@ -8,7 +8,7 @@ use peryx_ha::{
     AggregateDelta, AggregateKey, AggregateRow, AnalyticsBatch, AnalyticsBatchSource as _, AuthorityEpoch, IntervalId,
     ProducerId,
 };
-use peryx_storage::meta::{AnalyticsHandle, MetaStore};
+use peryx_storage::meta::{AnalyticsCheckpoint, AnalyticsHandle, MetaStore};
 use rstest::rstest;
 
 use super::{
@@ -101,7 +101,7 @@ fn flush_and_assert(metrics: &Metrics, done: impl Fn() -> bool) {
 }
 
 fn persisted_reads(store: &AnalyticsHandle) -> Option<u64> {
-    let bytes = store.load().unwrap()?;
+    let bytes = store.load_checkpoint().unwrap().lifetime?;
     let snapshot: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     Some(
         snapshot["artifacts"]
@@ -116,24 +116,16 @@ fn persisted_snapshot(snapshot: Option<Vec<u8>>) -> serde_json::Value {
     serde_json::from_slice(&snapshot.expect("metrics flush did not persist a snapshot")).unwrap()
 }
 
-struct RejectingDailyStore {
+struct RejectingCheckpointStore {
     checkpointed: std::sync::mpsc::Sender<()>,
 }
 
-impl MetricsStore for RejectingDailyStore {
-    fn load(&self) -> Result<Option<Vec<u8>>, MetricsError> {
-        Ok(None)
+impl MetricsStore for RejectingCheckpointStore {
+    fn load_checkpoint(&self) -> Result<AnalyticsCheckpoint, MetricsError> {
+        Ok(AnalyticsCheckpoint::default())
     }
 
-    fn save(&self, _snapshot: &[u8]) -> Result<(), MetricsError> {
-        Ok(())
-    }
-
-    fn load_daily(&self) -> Result<Option<Vec<u8>>, MetricsError> {
-        Ok(None)
-    }
-
-    fn save_daily(&self, _snapshot: &[u8]) -> Result<(), MetricsError> {
+    fn save_checkpoint(&self, _lifetime: &[u8], _daily: &[u8]) -> Result<(), MetricsError> {
         self.checkpointed.send(()).ok();
         Err(MetricsError::Persistence("read-only store".to_owned()))
     }
@@ -151,20 +143,12 @@ struct PausingCheckpointStore {
 }
 
 impl MetricsStore for PausingCheckpointStore {
-    fn load(&self) -> Result<Option<Vec<u8>>, MetricsError> {
-        MetricsStore::load(&self.store)
+    fn load_checkpoint(&self) -> Result<AnalyticsCheckpoint, MetricsError> {
+        MetricsStore::load_checkpoint(&self.store)
     }
 
-    fn save(&self, snapshot: &[u8]) -> Result<(), MetricsError> {
-        MetricsStore::save(&self.store, snapshot)
-    }
-
-    fn load_daily(&self) -> Result<Option<Vec<u8>>, MetricsError> {
-        MetricsStore::load_daily(&self.store)
-    }
-
-    fn save_daily(&self, snapshot: &[u8]) -> Result<(), MetricsError> {
-        MetricsStore::save_daily(&self.store, snapshot)?;
+    fn save_checkpoint(&self, lifetime: &[u8], daily: &[u8]) -> Result<(), MetricsError> {
+        MetricsStore::save_checkpoint(&self.store, lifetime, daily)?;
         self.checkpointed.send(()).unwrap();
         self.resumed.lock().unwrap().recv().unwrap();
         Ok(())
@@ -172,20 +156,12 @@ impl MetricsStore for PausingCheckpointStore {
 }
 
 impl MetricsStore for CheckpointStore {
-    fn load(&self) -> Result<Option<Vec<u8>>, MetricsError> {
-        MetricsStore::load(&self.store)
+    fn load_checkpoint(&self) -> Result<AnalyticsCheckpoint, MetricsError> {
+        MetricsStore::load_checkpoint(&self.store)
     }
 
-    fn save(&self, snapshot: &[u8]) -> Result<(), MetricsError> {
-        MetricsStore::save(&self.store, snapshot)
-    }
-
-    fn load_daily(&self) -> Result<Option<Vec<u8>>, MetricsError> {
-        MetricsStore::load_daily(&self.store)
-    }
-
-    fn save_daily(&self, snapshot: &[u8]) -> Result<(), MetricsError> {
-        MetricsStore::save_daily(&self.store, snapshot)?;
+    fn save_checkpoint(&self, lifetime: &[u8], daily: &[u8]) -> Result<(), MetricsError> {
+        MetricsStore::save_checkpoint(&self.store, lifetime, daily)?;
         self.checkpointed.send(()).unwrap();
         Ok(())
     }
@@ -265,7 +241,8 @@ fn test_neutral_daily_snapshot_seeds_a_producer_offline() {
         bytes: 4096,
     };
     meta.analytics()
-        .save_daily(
+        .save_checkpoint(
+            br#"{"artifacts":[]}"#,
             &serde_json::to_vec(&serde_json::json!({
                 "schema": 1,
                 "buckets": [seeded],
@@ -284,7 +261,7 @@ fn test_snapshots_emit_neutral_wire_keys() {
     metrics.record(grouped_read("alpha", "demo", "1", Some("upstream"), 3));
     metrics.flush().unwrap();
     assert_eq!(
-        persisted_snapshot(meta.analytics().load().unwrap()),
+        persisted_snapshot(meta.analytics().load_checkpoint().unwrap().lifetime),
         serde_json::json!({
             "artifacts": [{
                 "repository": "alpha",
@@ -296,7 +273,7 @@ fn test_snapshots_emit_neutral_wire_keys() {
         })
     );
     assert_eq!(
-        persisted_snapshot(meta.analytics().load_daily().unwrap()),
+        persisted_snapshot(meta.analytics().load_checkpoint().unwrap().daily),
         serde_json::json!({
             "schema": 1,
             "buckets": [{
@@ -523,7 +500,7 @@ fn test_batches_without_a_read_persist_nothing() {
         1
     );
     assert_eq!(persisted_reads(&meta.analytics()), None);
-    assert!(meta.analytics().load_daily().unwrap().is_none());
+    assert!(meta.analytics().load_checkpoint().unwrap().daily.is_none());
 }
 
 #[test]
@@ -687,7 +664,7 @@ fn test_idle_retention_expires_memory_exports_and_snapshot() {
             .is_empty()
     );
     assert_eq!(
-        persisted_snapshot(meta.analytics().load_daily().unwrap()),
+        persisted_snapshot(meta.analytics().load_checkpoint().unwrap().daily),
         serde_json::json!({"schema": 1, "buckets": []})
     );
 }
@@ -829,7 +806,7 @@ fn test_zero_interval_persists_a_completed_batch() {
 fn test_idle_interval_reports_checkpoint_failure() {
     let (checkpointed, checkpoint) = std::sync::mpsc::channel();
     let metrics = Metrics::spawn(
-        Some(Arc::new(RejectingDailyStore { checkpointed })),
+        Some(Arc::new(RejectingCheckpointStore { checkpointed })),
         None,
         clock_on_day(2),
         1,
@@ -899,7 +876,7 @@ fn test_daily_usage_survives_a_restart() {
     let (_dir, meta) = store();
     let metrics = Metrics::start_durable(meta.analytics(), None, clock_on_day(42)).unwrap();
     metrics.record(grouped_read("alpha", "resource-b", "3.0", Some("up"), 12));
-    flush_and_assert(&metrics, || meta.analytics().load_daily().unwrap().is_some());
+    flush_and_assert(&metrics, || meta.analytics().load_checkpoint().unwrap().daily.is_some());
     drop(metrics);
 
     let restarted = Metrics::start_durable(meta.analytics(), None, clock_on_day(42)).unwrap();
@@ -1053,7 +1030,7 @@ fn test_missing_dimensions_restore_as_empty_labels() {
     let (_dir, meta) = store();
     let metrics = Metrics::start_durable(meta.analytics(), None, clock_on_day(3)).unwrap();
     metrics.record(read("alpha", "resource-b", "resource-b-3.0.bin", 8));
-    flush_and_assert(&metrics, || meta.analytics().load_daily().unwrap().is_some());
+    flush_and_assert(&metrics, || meta.analytics().load_checkpoint().unwrap().daily.is_some());
     drop(metrics);
 
     let restarted = Metrics::start_durable(meta.analytics(), None, clock_on_day(3)).unwrap();
@@ -1281,7 +1258,7 @@ fn test_usage_window_excludes_adjacent_days() {
     for day in 499..=501 {
         let metrics = Metrics::start_durable(meta.analytics(), None, clock_on_day(day)).unwrap();
         metrics.record(grouped_read("a", "resource-b", "1.0", None, 10));
-        flush_and_assert(&metrics, || meta.analytics().load_daily().unwrap().is_some());
+        flush_and_assert(&metrics, || meta.analytics().load_checkpoint().unwrap().daily.is_some());
     }
     let metrics = Metrics::start_durable(meta.analytics(), None, clock_on_day(501)).unwrap();
 
@@ -1369,7 +1346,7 @@ fn test_usage_timeline_buckets_reads_by_ascending_day() {
     let (_dir, meta) = store();
     let earlier = Metrics::start_durable(meta.analytics(), None, clock_on_day(500)).unwrap();
     earlier.record(grouped_read("a", "resource-b", "1.0", None, 10));
-    flush_and_assert(&earlier, || meta.analytics().load_daily().unwrap().is_some());
+    flush_and_assert(&earlier, || meta.analytics().load_checkpoint().unwrap().daily.is_some());
     drop(earlier);
 
     let metrics = Metrics::start_durable(meta.analytics(), None, clock_on_day(501)).unwrap();
