@@ -23,8 +23,8 @@ use futures_util::{FutureExt as _, StreamExt as _};
 use parking_lot::RwLock;
 use peryx_driver::ServingState;
 use peryx_driver::serving::{
-    AbsoluteProtocolDriver, BlobReferenceDriver, BrowseDriver, EcosystemDriver, FsckDriver, IdleReclaimer,
-    MetricsDriver, PolicyDriver, TrashDriver,
+    AbsoluteProtocolDriver, BlobReferenceDriver, BrowseDriver, BrowseRequest, EcosystemDriver, FsckDriver,
+    IdleReclaimer, MetricsDriver, PolicyDriver, TrashDriver,
 };
 use peryx_identity::{Action, ArtifactDigest, Denial, DigestDecision, Identity};
 use peryx_index::{Index, IndexKind};
@@ -371,17 +371,28 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> TrashDriver for OciRegist
 impl<S: BuildHasher + Default + Send + Sync + 'static> BrowseDriver for OciRegistryWithHasher<S> {
     async fn browse(
         &self,
-        state: Arc<ServingState>,
-        position: usize,
-        raw_query: String,
-        base: Option<&peryx_driver::discovery::BaseUrl>,
-    ) -> Result<Option<peryx_core::BrowsePage>, String> {
+        request: BrowseRequest<'_>,
+    ) -> Result<Option<peryx_core::BrowsePage>, peryx_driver::serving::BrowseError> {
+        let BrowseRequest {
+            state,
+            position,
+            raw_query,
+            access,
+            base,
+        } = request;
         let route = state.index_at(position).route.clone();
         let query = BrowseQuery::parse(&raw_query)?;
+        let index_access = access.for_index(state.index_at(position));
+        query.project.as_deref().map_or_else(
+            || index_access.authorize_any_resource(),
+            |project| index_access.authorize_resource(peryx_identity::ResourceMatch::Pattern(project)),
+        )?;
         let Some(repository) = query.project else {
             return Ok(Some(crate::web::index_page(
                 &route,
-                repositories(&state, state.index_at(position)).map_err(ServeError::from)?,
+                repositories(&state, state.index_at(position))
+                    .map_err(ServeError::from)
+                    .map_err(String::from)?,
             )));
         };
         let Some(reference) = query.reference else {
@@ -389,7 +400,8 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> BrowseDriver for OciRegis
                 &route,
                 &repository,
                 self.repository_tags(&state, state.index_at(position), &repository)
-                    .await?,
+                    .await
+                    .map_err(String::from)?,
             )));
         };
         let Some(digest) = query.layer else {

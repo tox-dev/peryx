@@ -6,6 +6,7 @@ use axum::http::HeaderMap;
 use leptos::prelude::*;
 use peryx_core::BrowsePage;
 use peryx_driver::discovery::BaseUrl;
+use peryx_driver::serving::BrowseRequest;
 use peryx_driver::{AppState, ServingState};
 
 use super::resolve;
@@ -22,22 +23,25 @@ pub async fn browse(raw_query: &str) -> Result<Option<BrowsePage>, String> {
         }
     }
     let (position, _) = resolve(&app, &route)?;
-    if !app.serving.index_at(position).acl.anonymous_read
-        && super::read_access(&app.serving)
-            .await?
-            .for_index(app.serving.index_at(position))
-            .authorize_any_resource()
-            .is_err()
-    {
-        return Err("read access denied".to_owned());
-    }
     let Some(browse) = app.driver_set().get_browse(&app.serving.index_at(position).ecosystem) else {
         return Err(format!("index {route:?} does not support browsing"));
     };
+    let access = if app.serving.index_at(position).acl.anonymous_read {
+        peryx_driver::access::ReadAccess::from_headers(&app.serving, &HeaderMap::new())
+    } else {
+        super::read_access(&app.serving).await?
+    };
     let base = request_base(&app.serving).await;
     browse
-        .browse(app.serving.clone(), position, raw_query.to_owned(), base.as_ref())
+        .browse(BrowseRequest {
+            state: app.serving.clone(),
+            position,
+            raw_query: raw_query.to_owned(),
+            access: &access,
+            base: base.as_ref(),
+        })
         .await
+        .map_err(|error| error.to_string())
 }
 
 async fn request_base(state: &ServingState) -> Option<BaseUrl> {

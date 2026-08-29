@@ -1,6 +1,5 @@
 use super::support::*;
-use peryx_driver::serving::BrowseDriver as _;
-use peryx_driver::serving::IndexedProtocolDriver as _;
+use peryx_driver::serving::{BrowseDriver as _, BrowseRequest, IndexedProtocolDriver as _};
 use peryx_ha::ArtifactPlacement;
 use rstest::rstest;
 
@@ -143,7 +142,7 @@ async fn test_artifact_path_rejects_an_invalid_digest() {
     let err = browse_artifact(h.state.serving.clone(), 0, "pypi", "not-hex", "flask.whl")
         .await
         .unwrap_err();
-    assert!(err.contains("invalid sha256 digest"), "{err}");
+    assert!(err.to_string().contains("invalid sha256 digest"), "{err}");
 }
 
 #[tokio::test]
@@ -170,7 +169,7 @@ async fn test_artifact_path_rejects_a_digest_that_is_not_a_project_member() {
     )
     .await
     .unwrap_err();
-    assert!(err.contains("is not a member of project"), "{err}");
+    assert!(err.to_string().contains("is not a member of project"), "{err}");
 }
 
 #[tokio::test]
@@ -196,7 +195,7 @@ async fn test_artifact_path_reports_an_unfetchable_member_file() {
     )
     .await
     .unwrap_err();
-    assert!(err.contains("artifact on index"), "{err}");
+    assert!(err.to_string().contains("artifact on index"), "{err}");
 }
 
 #[tokio::test]
@@ -217,7 +216,7 @@ async fn test_artifact_path_reports_a_project_detail_error() {
     )
     .await
     .unwrap_err();
-    assert!(err.contains("for project"), "{err}");
+    assert!(err.to_string().contains("for project"), "{err}");
 }
 
 #[rstest]
@@ -389,7 +388,7 @@ async fn test_project_page_surfaces_a_resolve_error() {
         .mount(&h.server)
         .await;
     let err = browse_project(h.state.serving.clone(), 0, "pypi").await.unwrap_err();
-    assert!(err.contains("project detail on index"), "{err}");
+    assert!(err.to_string().contains("project detail on index"), "{err}");
 }
 
 #[tokio::test]
@@ -399,7 +398,7 @@ async fn test_project_page_rejects_a_bad_metadata_wheel_digest() {
     mount_json_page(&h.server, &detail_with_metadata("not-a-digest", &file_url, "also-bad")).await;
     get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
     let err = browse_project(h.state.serving.clone(), 0, "pypi").await.unwrap_err();
-    assert!(err.contains("invalid sha256 digest"), "{err}");
+    assert!(err.to_string().contains("invalid sha256 digest"), "{err}");
 }
 
 #[tokio::test]
@@ -416,7 +415,7 @@ async fn test_project_page_reports_an_unfetchable_metadata_sibling() {
     get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
 
     let err = browse_project(h.state.serving.clone(), 0, "pypi").await.unwrap_err();
-    assert!(err.contains("metadata fetch on index"), "{err}");
+    assert!(err.to_string().contains("metadata fetch on index"), "{err}");
 }
 
 #[tokio::test]
@@ -440,7 +439,8 @@ async fn test_project_page_reports_a_malformed_metadata_sibling() {
     let err = browse_project(h.state.serving.clone(), 0, "pypi").await.unwrap_err();
 
     assert!(
-        err.contains("metadata parse on index \"pypi\" for file \"flask-1.0-py3-none-any.whl\": header line"),
+        err.to_string()
+            .contains("metadata parse on index \"pypi\" for file \"flask-1.0-py3-none-any.whl\": header line"),
         "{err}"
     );
 }
@@ -630,9 +630,16 @@ async fn browse_project(
     state: Arc<peryx_driver::state::ServingState>,
     position: usize,
     index: &str,
-) -> Result<Option<peryx_core::BrowsePage>, String> {
+) -> Result<Option<peryx_core::BrowsePage>, peryx_driver::serving::BrowseError> {
+    let access = peryx_driver::access::ReadAccess::from_headers(&state, &axum::http::HeaderMap::new());
     crate::serving::PypiServing
-        .browse(state, position, format!("index={index}&project=flask"), None)
+        .browse(BrowseRequest {
+            state,
+            position,
+            raw_query: format!("index={index}&project=flask"),
+            access: &access,
+            base: None,
+        })
         .await
 }
 
@@ -642,14 +649,16 @@ async fn browse_artifact(
     index: &str,
     digest: &str,
     filename: &str,
-) -> Result<Option<peryx_core::BrowsePage>, String> {
+) -> Result<Option<peryx_core::BrowsePage>, peryx_driver::serving::BrowseError> {
+    let access = peryx_driver::access::ReadAccess::from_headers(&state, &axum::http::HeaderMap::new());
     crate::serving::PypiServing
-        .browse(
+        .browse(BrowseRequest {
             state,
             position,
-            format!("index={index}&project=flask&sha256={digest}&file={filename}"),
-            None,
-        )
+            raw_query: format!("index={index}&project=flask&sha256={digest}&file={filename}"),
+            access: &access,
+            base: None,
+        })
         .await
 }
 

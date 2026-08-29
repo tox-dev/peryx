@@ -315,17 +315,49 @@ pub trait ServiceDriver: Send + Sync {
     async fn service_post(&self, state: Arc<ServingState>, request: Request) -> Response;
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BrowseError {
+    Denied(peryx_identity::Denial),
+    Internal(String),
+}
+
+impl std::fmt::Display for BrowseError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Denied(_) => formatter.write_str("read access denied"),
+            Self::Internal(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for BrowseError {}
+
+impl From<peryx_identity::Denial> for BrowseError {
+    fn from(denial: peryx_identity::Denial) -> Self {
+        Self::Denied(denial)
+    }
+}
+
+impl From<String> for BrowseError {
+    fn from(message: String) -> Self {
+        Self::Internal(message)
+    }
+}
+
+pub struct BrowseRequest<'a> {
+    pub state: Arc<ServingState>,
+    pub position: usize,
+    pub raw_query: String,
+    pub access: &'a crate::access::ReadAccess,
+    pub base: Option<&'a crate::discovery::BaseUrl>,
+}
+
 #[async_trait]
 pub trait BrowseDriver: Send + Sync {
     /// # Errors
-    /// Returns an error when a browse query cannot be resolved.
-    async fn browse(
-        &self,
-        state: Arc<ServingState>,
-        position: usize,
-        raw_query: String,
-        base: Option<&crate::discovery::BaseUrl>,
-    ) -> Result<Option<BrowsePage>, String>;
+    /// Returns a denial when the credential cannot browse the requested resource, or an error when the query cannot be
+    /// resolved.
+    async fn browse(&self, request: BrowseRequest<'_>) -> Result<Option<BrowsePage>, BrowseError>;
 }
 
 pub trait IndexCredentialDriver: Send + Sync {

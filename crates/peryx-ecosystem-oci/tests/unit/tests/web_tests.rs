@@ -4,7 +4,9 @@ use std::sync::{Arc, Mutex};
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use peryx_core::{BrowsePage, BrowseSection};
-use peryx_driver::serving::EcosystemBrowse as _;
+use peryx_driver::ServingState;
+use peryx_driver::access::ReadAccess;
+use peryx_driver::serving::{BrowseRequest, EcosystemBrowse as _};
 use rstest::rstest;
 
 use super::{
@@ -111,13 +113,24 @@ async fn populated() -> (tempfile::TempDir, Arc<peryx_driver::AppState>, axum::R
 }
 
 async fn browse(state: &Arc<peryx_driver::AppState>, position: usize, query: impl Into<String>) -> Option<BrowsePage> {
+    let access = read_access(&state.serving);
     state
         .driver_set()
         .get_browse(&crate::ECOSYSTEM)
         .unwrap()
-        .browse(state.serving.clone(), position, query.into(), None)
+        .browse(BrowseRequest {
+            state: state.serving.clone(),
+            position,
+            raw_query: query.into(),
+            access: &access,
+            base: None,
+        })
         .await
         .unwrap()
+}
+
+fn read_access(state: &ServingState) -> ReadAccess {
+    ReadAccess::from_headers(state, &axum::http::HeaderMap::new())
 }
 
 fn section_json(section: &BrowseSection) -> serde_json::Value {
@@ -250,12 +263,13 @@ async fn test_browse_zstd_layer_is_not_linked_or_parsed() {
         .driver_set()
         .get_browse(&crate::ECOSYSTEM)
         .unwrap()
-        .browse(
-            state.serving.clone(),
-            0,
-            format!("project=app&ref=1.0&layer={layer_digest}"),
-            None,
-        )
+        .browse(BrowseRequest {
+            state: state.serving.clone(),
+            position: 0,
+            raw_query: format!("project=app&ref=1.0&layer={layer_digest}"),
+            access: &read_access(&state.serving),
+            base: None,
+        })
         .await
         .unwrap_err();
 
@@ -264,7 +278,7 @@ async fn test_browse_zstd_layer_is_not_linked_or_parsed() {
             section["rows"][0]["cells"][0]["href"].is_null(),
             section["rows"][0]["cells"][3]["href"].is_null(),
             section["rows"][0]["cells"][3]["text"].as_str(),
-            error,
+            error.to_string(),
         ),
         (
             true,
@@ -330,15 +344,16 @@ async fn test_browse_absent_layer_reports_error() {
         .driver_set()
         .get_browse(&crate::ECOSYSTEM)
         .unwrap()
-        .browse(
-            state.serving.clone(),
-            0,
-            format!("project=app&ref=1.0&layer={absent}"),
-            None,
-        )
+        .browse(BrowseRequest {
+            state: state.serving.clone(),
+            position: 0,
+            raw_query: format!("project=app&ref=1.0&layer={absent}"),
+            access: &read_access(&state.serving),
+            base: None,
+        })
         .await
         .unwrap_err();
-    assert!(error.contains("layer contents"), "{error}");
+    assert!(error.to_string().contains("layer contents"), "{error}");
 }
 
 #[tokio::test]
@@ -372,15 +387,16 @@ async fn test_browse_member_of_absent_layer_reports_error() {
         .driver_set()
         .get_browse(&crate::ECOSYSTEM)
         .unwrap()
-        .browse(
-            state.serving.clone(),
-            0,
-            format!("project=app&ref=1.0&layer={absent}&member=app%2Fconfig.toml&offset=0"),
-            None,
-        )
+        .browse(BrowseRequest {
+            state: state.serving.clone(),
+            position: 0,
+            raw_query: format!("project=app&ref=1.0&layer={absent}&member=app%2Fconfig.toml&offset=0"),
+            access: &read_access(&state.serving),
+            base: None,
+        })
         .await
         .unwrap_err();
-    assert!(error.contains("layer contents"), "{error}");
+    assert!(error.to_string().contains("layer contents"), "{error}");
 }
 
 #[tokio::test]
@@ -421,7 +437,18 @@ async fn test_registered_browse_uses_compiled_library_prefix(
     let browse = tokio::spawn({
         let driver = state.driver_set().get_browse(&crate::ECOSYSTEM).unwrap().clone();
         let serving = state.serving.clone();
-        async move { driver.browse(serving, 0, "project=browse".to_owned(), None).await }
+        async move {
+            let access = read_access(&serving);
+            driver
+                .browse(BrowseRequest {
+                    state: serving,
+                    position: 0,
+                    raw_query: "project=browse".to_owned(),
+                    access: &access,
+                    base: None,
+                })
+                .await
+        }
     });
     let browse_path = browse_request.await.unwrap();
 
@@ -483,12 +510,13 @@ async fn test_browse_content_of_unreachable_proxy_reports_error(#[case] suffix: 
             .driver_set()
             .get_browse(&crate::ECOSYSTEM)
             .unwrap()
-            .browse(
-                state.serving.clone(),
-                0,
-                format!("project=library%2Fnginx&ref=1.0&layer={digest}{suffix}"),
-                None,
-            )
+            .browse(BrowseRequest {
+                state: state.serving.clone(),
+                position: 0,
+                raw_query: format!("project=library%2Fnginx&ref=1.0&layer={digest}{suffix}"),
+                access: &read_access(&state.serving),
+                base: None,
+            })
             .await
             .is_err()
     );
@@ -651,10 +679,12 @@ async fn test_plugin_browse_reports_missing_resources(#[case] uri: &str, #[case]
 async fn test_plugin_browse_reports_layer_and_member_failures() {
     let (_dir, state, _app, layer_digest) = populated().await;
     let absent = oci_digest(b"absent");
+    let browse = format!("/+ui/browse?index=store&project=app&ref=1.0&layer={absent}");
     let member = format!("/+ui/member?index=store&project=app&layer={layer_digest}&member=app%2Flogo.bin&offset=0");
 
     assert_eq!(
         (
+            browse_response(&state, &browse, None).await.0,
             browse_response(
                 &state,
                 &format!("/+ui/members?index=store&project=app&layer={absent}"),
@@ -664,7 +694,11 @@ async fn test_plugin_browse_reports_layer_and_member_failures() {
             .0,
             browse_response(&state, &member, None).await.0,
         ),
-        (StatusCode::INTERNAL_SERVER_ERROR, StatusCode::INTERNAL_SERVER_ERROR)
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::INTERNAL_SERVER_ERROR,
+        )
     );
 }
 

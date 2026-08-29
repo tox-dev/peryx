@@ -3,6 +3,7 @@ use std::str::FromStr as _;
 use axum::http::{Method, StatusCode, header};
 use peryx_core::{BrowseLink, BrowsePage, BrowseSection};
 use peryx_driver::AppState;
+use peryx_driver::serving::BrowseRequest;
 use peryx_identity::{ArtifactDigest, RevocationReason, UserId};
 use rstest::rstest;
 use wiremock::matchers::{method, path, query_param, query_param_is_missing};
@@ -474,11 +475,18 @@ async fn test_proxy_tag_filter_resolves_and_caches_targets() {
         );
     }
 
+    let access = peryx_driver::access::ReadAccess::from_headers(&state.serving, &axum::http::HeaderMap::new());
     let view = state
         .driver_set()
         .get_browse(&crate::ECOSYSTEM)
         .unwrap()
-        .browse(state.serving.clone(), 0, "project=app".to_owned(), None)
+        .browse(BrowseRequest {
+            state: state.serving.clone(),
+            position: 0,
+            raw_query: "project=app".to_owned(),
+            access: &access,
+            base: None,
+        })
         .await
         .unwrap()
         .unwrap();

@@ -240,6 +240,7 @@ async fn test_ui_oci_manifest_command_uses_trusted_request_origin() {
 #[rstest]
 #[case::anonymous(String::new(), false)]
 #[case::reader(reader_authorization(), true)]
+#[case::other_reader(other_reader_authorization(), false)]
 #[tokio::test]
 async fn test_ui_private_oci_repository_rendering_follows_read_acl(
     #[case] authorization: String,
@@ -251,6 +252,24 @@ async fn test_ui_private_oci_repository_rendering_follows_read_acl(
 
     let (status, body) = get_authorized(&router, "/browse?index=images&project=app", &authorization).await;
     assert_eq!((status, body.contains("ref=1.0")), (StatusCode::OK, expected), "{body}");
+}
+
+#[rstest]
+#[tokio::test]
+async fn test_ui_private_oci_browse_api_rejects_a_reader_for_another_repository(
+    private_oci_ui_router: (tempfile::TempDir, axum::Router),
+) {
+    let (_dir, router) = private_oci_ui_router;
+    push_oci_image(&router).await;
+
+    let (status, body) = get_authorized(
+        &router,
+        "/+ui/browse?index=images&project=app&ref=1.0",
+        &other_reader_authorization(),
+    )
+    .await;
+
+    assert_eq!((status, body), (StatusCode::FORBIDDEN, String::new()));
 }
 
 #[rstest]
@@ -387,6 +406,13 @@ fn private_oci_ui_config(dir: &tempfile::TempDir) -> Config {
         actions: BTreeSet::from([Action::Read]),
         expires_at: None,
     });
+    config.indexes[0].tokens.push(TokenConfig {
+        name: "other-reader".to_owned(),
+        secret: SecretSource::Literal("other-read-secret".to_owned()),
+        resources: vec!["other".to_owned()],
+        actions: BTreeSet::from([Action::Read]),
+        expires_at: None,
+    });
     let mut public = config.indexes[0].clone();
     "public".clone_into(&mut public.name);
     "public".clone_into(&mut public.route);
@@ -429,4 +455,8 @@ async fn test_ui_dashboard_shows_the_oci_registry_endpoint_not_simple() {
 
 fn reader_authorization() -> String {
     format!("Basic {}", STANDARD.encode("_:read-secret"))
+}
+
+fn other_reader_authorization() -> String {
+    format!("Basic {}", STANDARD.encode("_:other-read-secret"))
 }

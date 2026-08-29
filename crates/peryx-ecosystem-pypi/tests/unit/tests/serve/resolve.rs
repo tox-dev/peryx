@@ -1,7 +1,7 @@
 use super::support::*;
 use crate::policy::FallbackMode;
 use crate::tests::http::{LogCapture, field, policy, put_local_project};
-use peryx_driver::serving::BrowseDriver as _;
+use peryx_driver::serving::{BrowseDriver as _, BrowseRequest};
 use peryx_identity::IndexAcl;
 
 fn nested_flask_page(digest: &str) -> String {
@@ -870,8 +870,15 @@ async fn test_project_page_reports_an_unreachable_upstream() {
             acl: IndexAcl::default(),
         }]
     });
+    let access = peryx_driver::access::ReadAccess::from_headers(&state.serving, &axum::http::HeaderMap::new());
     let result = crate::serving::PypiServing
-        .browse(state.serving.clone(), 0, "index=pypi&project=flask".to_owned(), None)
+        .browse(BrowseRequest {
+            state: state.serving.clone(),
+            position: 0,
+            raw_query: "index=pypi&project=flask".to_owned(),
+            access: &access,
+            base: None,
+        })
         .await;
     assert!(result.is_err(), "{result:?}");
 }

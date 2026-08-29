@@ -20,10 +20,10 @@ use peryx_driver::AppState;
 use peryx_driver::access::ReadAccess;
 use peryx_driver::discovery::BaseUrl;
 use peryx_driver::serving::{
-    AuthInstallContext, BrowseDriver, CapabilityRegistrar, ClientDiscovery, CompiledEcosystemSettings,
-    DistributedInstallContext, DistributedRuntime, EcosystemAuth, EcosystemBrowse, EcosystemConfig, EcosystemOpenApi,
-    EcosystemRegistration, EcosystemRuntime, MirrorAction, MirrorDriver, MirrorRequest, PluginAuthConfig,
-    ProtocolDriver, RateLimitPrincipal, RuntimeInstallContext,
+    AuthInstallContext, BrowseDriver, BrowseError, BrowseRequest, CapabilityRegistrar, ClientDiscovery,
+    CompiledEcosystemSettings, DistributedInstallContext, DistributedRuntime, EcosystemAuth, EcosystemBrowse,
+    EcosystemConfig, EcosystemOpenApi, EcosystemRegistration, EcosystemRuntime, MirrorAction, MirrorDriver,
+    MirrorRequest, PluginAuthConfig, ProtocolDriver, RateLimitPrincipal, RuntimeInstallContext,
 };
 use peryx_identity::Denial;
 
@@ -302,13 +302,6 @@ async fn browse_http(state: Arc<AppState>, request: Request) -> Response {
         Err(error) => return (StatusCode::BAD_REQUEST, error).into_response(),
     };
     let access = ReadAccess::from_headers(&state.serving, request.headers());
-    let index_access = access.for_index(state.serving.index_at(position));
-    if let Err(denial) = query.project.as_deref().map_or_else(
-        || index_access.authorize_any_resource(),
-        |project| index_access.authorize_resource(peryx_identity::ResourceMatch::Pattern(project)),
-    ) {
-        return browse_denial(denial);
-    }
     let Some(driver) = state.serving.plugin_service::<OciRegistry>() else {
         return (StatusCode::SERVICE_UNAVAILABLE, "OCI driver not installed").into_response();
     };
@@ -328,8 +321,8 @@ async fn browse_http(state: Arc<AppState>, request: Request) -> Response {
             path: request.uri().path(),
             query,
             raw_query,
+            access: &access,
             base: base.as_ref(),
-            index_access: &index_access,
         },
     )
     .boxed()
@@ -341,8 +334,8 @@ struct BrowseHttpRequest<'a> {
     path: &'a str,
     query: registry::BrowseQuery,
     raw_query: &'a str,
+    access: &'a ReadAccess,
     base: Option<&'a BaseUrl>,
-    index_access: &'a peryx_driver::access::IndexReadAccess<'a>,
 }
 
 async fn browse_resource_response(
@@ -351,14 +344,24 @@ async fn browse_resource_response(
     position: usize,
     request: BrowseHttpRequest<'_>,
 ) -> Result<Response, Response> {
+    if request.path != "/+ui/browse" {
+        let index_access = request.access.for_index(state.serving.index_at(position));
+        if let Err(denial) = request.query.project.as_deref().map_or_else(
+            || index_access.authorize_any_resource(),
+            |project| index_access.authorize_resource(peryx_identity::ResourceMatch::Pattern(project)),
+        ) {
+            return Err(browse_denial(denial));
+        }
+    }
     match request.path {
         "/+ui/browse" => driver
-            .browse(
-                state.serving.clone(),
+            .browse(BrowseRequest {
+                state: state.serving.clone(),
                 position,
-                request.raw_query.to_owned(),
-                request.base,
-            )
+                raw_query: request.raw_query.to_owned(),
+                access: request.access,
+                base: request.base,
+            })
             .await
             .map(|page| {
                 page.map_or_else(
@@ -366,12 +369,13 @@ async fn browse_resource_response(
                     |page| Json(page).into_response(),
                 )
             })
-            .map_err(browse_error),
+            .map_err(browse_driver_error),
         "/+ui/projects" => registry::repositories(&state.serving, state.serving.index_at(position))
             .map(|mut repositories| {
                 repositories.retain(|repository| {
                     request
-                        .index_access
+                        .access
+                        .for_index(state.serving.index_at(position))
                         .authorize_resource(peryx_identity::ResourceMatch::Pattern(repository))
                         .is_ok()
                 });
@@ -443,6 +447,13 @@ fn browse_values(raw_query: &str) -> HashMap<String, String> {
     url::form_urlencoded::parse(raw_query.as_bytes())
         .map(|(key, value)| (key.into_owned(), value.into_owned()))
         .collect()
+}
+
+fn browse_driver_error(error: BrowseError) -> Response {
+    match error {
+        BrowseError::Denied(denial) => browse_denial(denial),
+        BrowseError::Internal(message) => browse_error(message),
+    }
 }
 
 fn browse_denial(denial: Denial) -> Response {

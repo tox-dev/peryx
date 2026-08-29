@@ -93,6 +93,10 @@ fn reader_authorization() -> String {
     format!("Basic {}", STANDARD.encode("_:read-secret"))
 }
 
+fn other_reader_authorization() -> String {
+    format!("Basic {}", STANDARD.encode("_:other-read-secret"))
+}
+
 #[fixture]
 fn private_pypi_ui_router() -> (tempfile::TempDir, axum::Router) {
     let dir = tempfile::tempdir().unwrap();
@@ -118,6 +122,13 @@ fn private_pypi_ui_config(dir: &tempfile::TempDir) -> Config {
                     name: "reader".to_owned(),
                     secret: SecretSource::Literal("read-secret".to_owned()),
                     resources: vec!["*".to_owned()],
+                    actions: BTreeSet::from([Action::Read]),
+                    expires_at: None,
+                },
+                TokenConfig {
+                    name: "other-reader".to_owned(),
+                    secret: SecretSource::Literal("other-read-secret".to_owned()),
+                    resources: vec!["other".to_owned()],
                     actions: BTreeSet::from([Action::Read]),
                     expires_at: None,
                 },
@@ -1145,6 +1156,39 @@ async fn test_ui_private_archive_listing_serves_an_authorized_reader(
     let (status, content) = get_authorized(&router, &member, &reader_authorization()).await;
     assert_eq!(status, StatusCode::OK);
     assert!(content.contains("Metadata-Version"), "{content}");
+}
+
+#[rstest]
+#[case::project("", "veloxdemo-1.0.0-py3-none-any.whl")]
+#[case::archive("&member=veloxdemo-1.0.0.dist-info%2FMETADATA", "Metadata-Version")]
+#[tokio::test]
+async fn test_ui_private_browse_rejects_a_reader_for_another_project(
+    #[case] suffix: &str,
+    #[case] private_content: &str,
+    private_pypi_ui_router: (tempfile::TempDir, axum::Router),
+) {
+    let (_dir, router) = private_pypi_ui_router;
+    let sha = upload_private_fixture(&router).await;
+    let uri = if suffix.is_empty() {
+        "/browse?index=vault&project=veloxdemo".to_owned()
+    } else {
+        format!("/browse?index=vault&project=veloxdemo&sha256={sha}&file=veloxdemo-1.0.0-py3-none-any.whl{suffix}")
+    };
+    let authorization = other_reader_authorization();
+
+    let (render_status, rendered) = get_authorized(&router, &uri, &authorization).await;
+    let (data_status, data) = get_authorized(&router, &format!("/+ui{uri}"), &authorization).await;
+
+    assert_eq!(
+        (
+            render_status,
+            rendered.contains("read access denied"),
+            rendered.contains(private_content),
+            data_status,
+            data,
+        ),
+        (StatusCode::OK, true, false, StatusCode::FORBIDDEN, String::new())
+    );
 }
 
 #[rstest]

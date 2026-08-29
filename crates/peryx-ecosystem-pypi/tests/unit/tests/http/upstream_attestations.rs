@@ -2,7 +2,7 @@ use super::attestations::{attestations_field, upload_with_attestations};
 use super::support::*;
 use crate::policy::RemoteMetadataMode;
 use crate::store::UpstreamAttestation;
-use peryx_driver::serving::BrowseDriver as _;
+use peryx_driver::serving::{BrowseDriver as _, BrowseRequest};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::sync::oneshot;
 
@@ -282,13 +282,15 @@ async fn test_project_page_flags_a_mirrored_provenance_claim() {
     mount_upstream_attestation_page(&harness, &digest).await;
     get(&harness.state, "/pypi/simple/peryxpkg/", Some("application/json")).await;
 
+    let access = peryx_driver::access::ReadAccess::from_headers(&harness.state.serving, &axum::http::HeaderMap::new());
     let page = crate::serving::PypiServing
-        .browse(
-            harness.state.serving.clone(),
-            0,
-            format!("index=pypi&project=peryxpkg&filename={FILENAME}"),
-            None,
-        )
+        .browse(BrowseRequest {
+            state: harness.state.serving.clone(),
+            position: 0,
+            raw_query: format!("index=pypi&project=peryxpkg&filename={FILENAME}"),
+            access: &access,
+            base: None,
+        })
         .await
         .unwrap()
         .unwrap();

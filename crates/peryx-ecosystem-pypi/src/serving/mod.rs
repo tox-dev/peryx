@@ -19,9 +19,9 @@ use peryx_driver::AppState;
 use peryx_driver::not_found;
 use peryx_driver::rate_limit::RouteClass;
 use peryx_driver::serving::{
-    BlobReferenceDriver, BrowseDriver, CacheDriver, CacheRefresher, EcosystemDriver, FsckDriver, ImportDriver,
-    IndexSummaryDriver, IndexedProtocolDriver, IntentFinalizer, JobDriver, MetricsDriver, NameDriver, PolicyDriver,
-    PolicyDryRunDriver, RefreshSweep, ReplicatedApplyDriver, RetentionDriver, ServiceDriver, TrashDriver,
+    BlobReferenceDriver, BrowseDriver, BrowseRequest, CacheDriver, CacheRefresher, EcosystemDriver, FsckDriver,
+    ImportDriver, IndexSummaryDriver, IndexedProtocolDriver, IntentFinalizer, JobDriver, MetricsDriver, NameDriver,
+    PolicyDriver, PolicyDryRunDriver, RefreshSweep, ReplicatedApplyDriver, RetentionDriver, ServiceDriver, TrashDriver,
 };
 use peryx_driver::state::{SEARCH_VIEW, ServingState, ViewBlock};
 use peryx_events::metrics::MetricFamily;
@@ -503,12 +503,16 @@ impl ImportDriver for PypiServing {
 impl BrowseDriver for PypiServing {
     async fn browse(
         &self,
-        state: Arc<ServingState>,
-        position: usize,
-        raw_query: String,
-        base: Option<&peryx_driver::discovery::BaseUrl>,
-    ) -> Result<Option<peryx_core::BrowsePage>, String> {
-        web::browse(state, position, &raw_query).await.map(|page| {
+        request: BrowseRequest<'_>,
+    ) -> Result<Option<peryx_core::BrowsePage>, peryx_driver::serving::BrowseError> {
+        let BrowseRequest {
+            state,
+            position,
+            raw_query,
+            access,
+            base,
+        } = request;
+        web::browse(state, position, &raw_query, access).await.map(|page| {
             page.map(|mut page| {
                 if let Some(command) = &mut page.command
                     && let Some(base) = base

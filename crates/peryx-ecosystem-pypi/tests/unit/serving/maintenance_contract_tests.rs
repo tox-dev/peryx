@@ -7,8 +7,8 @@ use base64::engine::general_purpose::STANDARD;
 use peryx_core::BrowseSection;
 use peryx_core::path::local_artifact_url;
 use peryx_driver::serving::{
-    BrowseDriver as _, CacheDriver as _, IndexCredentialDriver as _, JobConfig, JobDriver as _, NameDriver as _,
-    PolicyDriver as _, ReplicatedApplyDriver as _, TrashDriver as _,
+    BrowseDriver as _, BrowseRequest, CacheDriver as _, IndexCredentialDriver as _, JobConfig, JobDriver as _,
+    NameDriver as _, PolicyDriver as _, ReplicatedApplyDriver as _, TrashDriver as _,
 };
 use peryx_driver::{AppState, ServingState};
 use peryx_identity::{Action, Denial, Glob, Grant, IndexAcl, NamedToken};
@@ -222,12 +222,19 @@ async fn serving_browses_and_inspects_a_hosted_archive() {
     let (_dir, state) = state();
     let (filename, digest) = seed_archive(&state.serving);
     let serving = PypiServing;
+    let access = peryx_driver::access::ReadAccess::from_headers(&state.serving, &axum::http::HeaderMap::new());
 
     assert_project_browse(&serving, &state.serving).await;
 
     let archive_query = format!("index=hosted&project=demo&file={digest}%2F{filename}");
     let archive = serving
-        .browse(state.serving.clone(), 0, archive_query.clone(), None)
+        .browse(BrowseRequest {
+            state: state.serving.clone(),
+            position: 0,
+            raw_query: archive_query.clone(),
+            access: &access,
+            base: None,
+        })
         .await
         .unwrap()
         .unwrap();
@@ -258,12 +265,13 @@ async fn serving_browses_and_inspects_a_hosted_archive() {
     );
 
     let member = serving
-        .browse(
-            state.serving.clone(),
-            0,
-            format!("{archive_query}&member=README.txt"),
-            None,
-        )
+        .browse(BrowseRequest {
+            state: state.serving.clone(),
+            position: 0,
+            raw_query: format!("{archive_query}&member=README.txt"),
+            access: &access,
+            base: None,
+        })
         .await
         .unwrap()
         .unwrap();
@@ -291,8 +299,15 @@ async fn serving_browses_and_inspects_a_hosted_archive() {
 }
 
 async fn assert_project_browse(serving: &PypiServing, state: &Arc<ServingState>) {
+    let access = peryx_driver::access::ReadAccess::from_headers(state, &axum::http::HeaderMap::new());
     let projects = serving
-        .browse(state.clone(), 0, "index=hosted".to_owned(), None)
+        .browse(BrowseRequest {
+            state: state.clone(),
+            position: 0,
+            raw_query: "index=hosted".to_owned(),
+            access: &access,
+            base: None,
+        })
         .await
         .unwrap()
         .unwrap();
@@ -311,7 +326,13 @@ async fn assert_project_browse(serving: &PypiServing, state: &Arc<ServingState>)
     );
 
     let project = serving
-        .browse(state.clone(), 0, "index=hosted&project=demo".to_owned(), None)
+        .browse(BrowseRequest {
+            state: state.clone(),
+            position: 0,
+            raw_query: "index=hosted&project=demo".to_owned(),
+            access: &access,
+            base: None,
+        })
         .await
         .unwrap()
         .unwrap();
@@ -331,9 +352,16 @@ async fn assert_nested_archive(
     filename: &str,
     digest: &str,
 ) {
+    let access = peryx_driver::access::ReadAccess::from_headers(state, &axum::http::HeaderMap::new());
     let nested_query = format!("{archive_query}&container=inner.zip");
     let nested = serving
-        .browse(state.clone(), 0, nested_query.clone(), None)
+        .browse(BrowseRequest {
+            state: state.clone(),
+            position: 0,
+            raw_query: nested_query.clone(),
+            access: &access,
+            base: None,
+        })
         .await
         .unwrap()
         .unwrap();
@@ -381,7 +409,13 @@ async fn assert_nested_archive(
     );
 
     let nested_member = serving
-        .browse(state.clone(), 0, format!("{nested_query}&member=pkg%2Fmodule.py"), None)
+        .browse(BrowseRequest {
+            state: state.clone(),
+            position: 0,
+            raw_query: format!("{nested_query}&member=pkg%2Fmodule.py"),
+            access: &access,
+            base: None,
+        })
         .await
         .unwrap()
         .unwrap();

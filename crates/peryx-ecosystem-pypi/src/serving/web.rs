@@ -15,7 +15,7 @@ use peryx_core::{
 };
 use peryx_driver::access::ReadAccess;
 use peryx_driver::discovery::BaseUrl;
-use peryx_driver::serving::BrowseDriver as _;
+use peryx_driver::serving::{BrowseDriver as _, BrowseError, BrowseRequest};
 use peryx_driver::{AppState, ServingState};
 use peryx_ha::{ArtifactPlacementStore, ArtifactSource, ByteAvailability};
 use peryx_identity::{Denial, ResourceMatch};
@@ -62,14 +62,6 @@ pub(super) async fn browse_http(state: Arc<AppState>, request: Request) -> Respo
         return StatusCode::NOT_FOUND.into_response();
     };
     let access = ReadAccess::from_headers(&state.serving, request.headers());
-    let index_access = access.for_index(state.serving.index_at(position));
-    let authorized = query.project.as_deref().map_or_else(
-        || index_access.authorize_any_resource(),
-        |project| index_access.authorize_resource(ResourceMatch::Pattern(project)),
-    );
-    if let Err(denial) = authorized {
-        return denial_response(denial);
-    }
     let base = BaseUrl::from_request(
         request.headers(),
         request.uri(),
@@ -79,12 +71,19 @@ pub(super) async fn browse_http(state: Arc<AppState>, request: Request) -> Respo
             .is_some_and(|ConnectInfo(address)| state.serving.rate_limits.trusts_proxy(address.ip())),
     );
     match super::PypiServing
-        .browse(state.serving.clone(), position, raw_query, base.as_ref())
+        .browse(BrowseRequest {
+            state: state.serving.clone(),
+            position,
+            raw_query,
+            access: &access,
+            base: base.as_ref(),
+        })
         .await
     {
         Ok(Some(page)) => no_store(Json(page).into_response()),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
-        Err(message) => (StatusCode::INTERNAL_SERVER_ERROR, message).into_response(),
+        Err(BrowseError::Denied(denial)) => denial_response(denial),
+        Err(BrowseError::Internal(message)) => (StatusCode::INTERNAL_SERVER_ERROR, message).into_response(),
     }
 }
 
@@ -92,18 +91,26 @@ pub(super) async fn browse(
     state: Arc<ServingState>,
     position: usize,
     raw_query: &str,
-) -> Result<Option<BrowsePage>, String> {
+    access: &ReadAccess,
+) -> Result<Option<BrowsePage>, BrowseError> {
     let query = BrowseQuery::parse(raw_query)?;
+    let index_access = access.for_index(state.index_at(position));
+    query.project.as_deref().map_or_else(
+        || index_access.authorize_any_resource(),
+        |project| index_access.authorize_resource(ResourceMatch::Pattern(project)),
+    )?;
     if let Some(project) = query.project.clone() {
         if let Some((digest, filename)) = query.archive()? {
             return archive_page(state, position, project, digest, filename, query)
                 .await
-                .map(Some);
+                .map(Some)
+                .map_err(BrowseError::from);
         }
         return project_page(state, position, project)
             .await?
             .map(|(project, metadata)| project_browse_page(&query, project, metadata))
-            .transpose();
+            .transpose()
+            .map_err(BrowseError::from);
     }
     Ok(Some(project_list_page(
         &state.index_at(position).route,

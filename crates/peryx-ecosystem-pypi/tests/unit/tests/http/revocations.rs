@@ -38,12 +38,16 @@ async fn test_revoked_digest_is_removed_from_each_project_representation() {
         assert!(body.contains("flask-3.0.whl"), "{uri}: {body}");
     }
 
+    let access = peryx_driver::access::ReadAccess::from_headers(&h.state.serving, &axum::http::HeaderMap::new());
     let page = peryx_driver::serving::BrowseDriver::browse(
         &crate::PypiServing,
-        h.state.serving.clone(),
-        0,
-        "index=pypi&project=flask".to_owned(),
-        None,
+        peryx_driver::serving::BrowseRequest {
+            state: h.state.serving.clone(),
+            position: 0,
+            raw_query: "index=pypi&project=flask".to_owned(),
+            access: &access,
+            base: None,
+        },
     )
     .await
     .unwrap()

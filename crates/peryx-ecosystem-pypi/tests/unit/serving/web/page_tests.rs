@@ -5,7 +5,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use peryx_core::BrowseSection;
 use peryx_driver::AppState;
-use peryx_driver::serving::BrowseDriver as _;
+use peryx_driver::serving::{BrowseDriver as _, BrowseRequest};
 use peryx_ha::{ArtifactPlacement, ArtifactSource};
 use peryx_identity::IndexAcl;
 use peryx_index::{Index, IndexKind};
@@ -23,13 +23,15 @@ const FILENAME: &str = "demo-1.0-py3-none-any.whl";
 #[tokio::test]
 async fn project_page_converts_metadata_lifecycle_and_provenance() {
     let (_directory, state) = rich_project();
+    let access = peryx_driver::access::ReadAccess::from_headers(&state.serving, &axum::http::HeaderMap::new());
     let page = PypiServing
-        .browse(
-            state.serving.clone(),
-            0,
-            "index=hosted&project=demo&version=1.0&filename=py3.*whl&filename_match=regex".to_owned(),
-            None,
-        )
+        .browse(BrowseRequest {
+            state: state.serving.clone(),
+            position: 0,
+            raw_query: "index=hosted&project=demo&version=1.0&filename=py3.*whl&filename_match=regex".to_owned(),
+            access: &access,
+            base: None,
+        })
         .await
         .unwrap()
         .unwrap();
@@ -101,13 +103,15 @@ async fn project_page_converts_metadata_lifecycle_and_provenance() {
 #[tokio::test]
 async fn project_page_supports_substring_filters() {
     let (_directory, state) = rich_project();
+    let access = peryx_driver::access::ReadAccess::from_headers(&state.serving, &axum::http::HeaderMap::new());
     let page = PypiServing
-        .browse(
-            state.serving.clone(),
-            0,
-            "index=hosted&project=demo&filename=PY3-NONE".to_owned(),
-            None,
-        )
+        .browse(BrowseRequest {
+            state: state.serving.clone(),
+            position: 0,
+            raw_query: "index=hosted&project=demo&filename=PY3-NONE".to_owned(),
+            access: &access,
+            base: None,
+        })
         .await
         .unwrap()
         .unwrap();
@@ -121,17 +125,22 @@ async fn project_page_supports_substring_filters() {
 #[tokio::test]
 async fn project_page_rejects_invalid_filename_regexes() {
     let (_directory, state) = rich_project();
+    let access = peryx_driver::access::ReadAccess::from_headers(&state.serving, &axum::http::HeaderMap::new());
     let error = PypiServing
-        .browse(
-            state.serving.clone(),
-            0,
-            "index=hosted&project=demo&filename=%5B&filename_match=regex".to_owned(),
-            None,
-        )
+        .browse(BrowseRequest {
+            state: state.serving.clone(),
+            position: 0,
+            raw_query: "index=hosted&project=demo&filename=%5B&filename_match=regex".to_owned(),
+            access: &access,
+            base: None,
+        })
         .await
         .unwrap_err();
 
-    assert!(error.starts_with("invalid regex: regex parse error:"), "{error}");
+    assert!(
+        error.to_string().starts_with("invalid regex: regex parse error:"),
+        "{error}"
+    );
 }
 
 fn rich_project() -> (tempfile::TempDir, Arc<AppState>) {

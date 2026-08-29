@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use peryx_core::BrowseBadge;
 use peryx_driver::AppState;
-use peryx_driver::serving::BrowseDriver as _;
+use peryx_driver::serving::{BrowseDriver as _, BrowseRequest};
 use peryx_identity::IndexAcl;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::Policy;
@@ -33,13 +33,15 @@ async fn project_commands_quote_the_served_display_name() {
         ),
     ] {
         let (_directory, state) = cached_project(display, &versions);
+        let access = peryx_driver::access::ReadAccess::from_headers(&state.serving, &axum::http::HeaderMap::new());
         let page = PypiServing
-            .browse(
-                state.serving.clone(),
-                0,
-                "index=root%2Fpackages&project=demo".to_owned(),
-                None,
-            )
+            .browse(BrowseRequest {
+                state: state.serving.clone(),
+                position: 0,
+                raw_query: "index=root%2Fpackages&project=demo".to_owned(),
+                access: &access,
+                base: None,
+            })
             .await
             .unwrap()
             .unwrap();

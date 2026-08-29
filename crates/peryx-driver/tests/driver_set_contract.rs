@@ -5,8 +5,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use peryx_core::Ecosystem;
 use peryx_driver::serving::{
-    BlobReferenceDriver, BrowseDriver, CacheDriver, CapabilityRegistrar, EcosystemDriver, FsckDriver, ImportDriver,
-    JobConfig, JobDriver, MetricsDriver, NameDriver, RetentionDriver, TrashDriver,
+    BlobReferenceDriver, BrowseDriver, BrowseError, BrowseRequest, CacheDriver, CapabilityRegistrar, EcosystemDriver,
+    FsckDriver, ImportDriver, JobConfig, JobDriver, MetricsDriver, NameDriver, RetentionDriver, TrashDriver,
 };
 use peryx_driver::serving::{CachePage, PurgeReport};
 use peryx_driver::{BlobReferenceScan, BlobReferenceScanError, DriverSet};
@@ -151,14 +151,8 @@ impl ImportDriver for Driver {
 
 #[async_trait]
 impl BrowseDriver for Driver {
-    async fn browse(
-        &self,
-        _state: Arc<peryx_driver::ServingState>,
-        _position: usize,
-        _raw_query: String,
-        _base: Option<&peryx_driver::discovery::BaseUrl>,
-    ) -> Result<Option<peryx_core::BrowsePage>, String> {
-        Err("browse".to_owned())
+    async fn browse(&self, _request: BrowseRequest<'_>) -> Result<Option<peryx_core::BrowsePage>, BrowseError> {
+        Err(BrowseError::Internal("browse".to_owned()))
     }
 }
 
@@ -360,6 +354,19 @@ fn blob_reference_scan_error_preserves_store_sources() {
     assert!(error.source().is_some());
 }
 
+#[test]
+fn browse_errors_preserve_public_messages() {
+    for (error, expected) in [
+        (
+            BrowseError::Denied(peryx_identity::Denial::Forbidden),
+            "read access denied",
+        ),
+        (BrowseError::Internal("browse".to_owned()), "browse"),
+    ] {
+        assert_eq!(error.to_string(), expected);
+    }
+}
+
 #[tokio::test]
 async fn driver_set_dispatches_browse_capability() {
     let ecosystem = Ecosystem::new("example");
@@ -377,12 +384,19 @@ async fn driver_set_dispatches_browse_capability() {
         60,
         Vec::new(),
     ));
+    let access = peryx_driver::access::ReadAccess::from_headers(&state.serving, &axum::http::HeaderMap::new());
 
     assert_eq!(
         set.get_browse(&ecosystem)
             .unwrap()
-            .browse(state.serving.clone(), 0, String::new(), None)
+            .browse(BrowseRequest {
+                state: state.serving.clone(),
+                position: 0,
+                raw_query: String::new(),
+                access: &access,
+                base: None,
+            })
             .await,
-        Err("browse".to_owned())
+        Err(BrowseError::Internal("browse".to_owned()))
     );
 }

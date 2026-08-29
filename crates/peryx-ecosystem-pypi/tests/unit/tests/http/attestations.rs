@@ -1,6 +1,6 @@
 use super::support::*;
 use crate::policy::AttestationMode;
-use peryx_driver::serving::BrowseDriver as _;
+use peryx_driver::serving::{BrowseDriver as _, BrowseRequest};
 
 pub(super) const FILENAME: &str = "peryxpkg-1.0-py3-none-any.whl";
 const PUBLISH_PREDICATE: &str = "https://docs.pypi.org/attestations/publish/v1";
@@ -161,13 +161,15 @@ async fn test_project_page_flags_an_unreadable_hosted_provenance() {
 }
 
 async fn browse_provenance(harness: &Harness, filename: &str) -> peryx_core::BrowseBadge {
+    let access = peryx_driver::access::ReadAccess::from_headers(&harness.state.serving, &axum::http::HeaderMap::new());
     let page = crate::serving::PypiServing
-        .browse(
-            harness.state.serving.clone(),
-            2,
-            format!("index=root%2Fpypi&project=peryxpkg&filename={filename}"),
-            None,
-        )
+        .browse(BrowseRequest {
+            state: harness.state.serving.clone(),
+            position: 2,
+            raw_query: format!("index=root%2Fpypi&project=peryxpkg&filename={filename}"),
+            access: &access,
+            base: None,
+        })
         .await
         .unwrap()
         .unwrap();

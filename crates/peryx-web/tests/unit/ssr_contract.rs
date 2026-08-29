@@ -14,10 +14,10 @@ use peryx_core::{
 };
 use peryx_driver::rate_limit::RouteClass;
 use peryx_driver::serving::{
-    AbsoluteProtocolDriver, BrowseDriver, EcosystemDriver, IndexSummary, IndexSummaryDriver, IndexSummaryError,
-    MetricsDriver, RecentWrite,
+    AbsoluteProtocolDriver, BrowseDriver, BrowseRequest, EcosystemDriver, IndexSummary, IndexSummaryDriver,
+    IndexSummaryError, MetricsDriver, RecentWrite,
 };
-use peryx_driver::state::{AppState, Index, IndexDescription, IndexKind, ServingState, describe_index};
+use peryx_driver::state::{AppState, Index, IndexDescription, IndexKind, describe_index};
 use peryx_events::metrics::{MetricFamily, MetricKind};
 use peryx_identity::{Action, Glob, Grant, GrantScope, IndexAcl, NamedToken, Role, SESSION_COOKIE, SessionSealer};
 use peryx_storage::blob::BlobStore;
@@ -438,8 +438,19 @@ async fn contract_driver_returns_declared_values() {
         )
     );
     let (_directory, app) = state(vec![index]);
+    let access = peryx_driver::access::ReadAccess::from_headers(&app.serving, &HeaderMap::new());
     assert_eq!(
-        BrowseDriver::browse(&driver, app.serving.clone(), 0, QUERY.to_owned(), None).await,
+        BrowseDriver::browse(
+            &driver,
+            BrowseRequest {
+                state: app.serving.clone(),
+                position: 0,
+                raw_query: QUERY.to_owned(),
+                access: &access,
+                base: None,
+            },
+        )
+        .await,
         Ok(expected_page)
     );
 }
@@ -589,12 +600,17 @@ struct ContractDriver {
 impl BrowseDriver for ContractDriver {
     async fn browse(
         &self,
-        _state: Arc<ServingState>,
-        position: usize,
-        raw_query: String,
-        _base: Option<&peryx_driver::discovery::BaseUrl>,
-    ) -> Result<Option<BrowsePage>, String> {
+        request: BrowseRequest<'_>,
+    ) -> Result<Option<BrowsePage>, peryx_driver::serving::BrowseError> {
+        let BrowseRequest {
+            state,
+            position,
+            raw_query,
+            access,
+            ..
+        } = request;
         assert_eq!((position, raw_query.as_str()), (0, QUERY));
+        access.for_index(state.index_at(position)).authorize_any_resource()?;
         Ok(self.browse_response.clone())
     }
 }
