@@ -76,8 +76,7 @@ pub enum Format {
     Html,
 }
 
-#[must_use]
-pub fn negotiate(headers: &HeaderMap) -> Format {
+pub fn negotiate(headers: &HeaderMap) -> Option<Format> {
     let mut json = Preference::default();
     let mut html = Preference::default();
     for accept in headers
@@ -96,11 +95,21 @@ pub fn negotiate(headers: &HeaderMap) -> Format {
             }
         }
     }
-    if json.quality > html.quality {
-        Format::Json
-    } else {
-        Format::Html
+    if !headers.contains_key(header::ACCEPT) {
+        json.consider(0, 1000);
+        html.consider(0, 1000);
     }
+    [(Format::Json, json), (Format::Html, html)]
+        .into_iter()
+        .filter(|(_, preference)| preference.quality > 0)
+        .max_by_key(|(format, preference)| {
+            (
+                preference.quality,
+                preference.specificity,
+                u8::from(matches!(format, Format::Json)),
+            )
+        })
+        .map(|(format, _)| format)
 }
 
 #[derive(Default)]

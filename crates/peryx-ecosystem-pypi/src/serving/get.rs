@@ -117,12 +117,15 @@ async fn pypi_get(
         if !project.trailing_slash {
             return simple_slash_redirect(uri, rest, &format!("simple/{}/", project.normalized));
         }
+        let Some(format) = negotiate(headers) else {
+            return simple_not_acceptable_response();
+        };
         let normalized = project.normalized;
         state.metrics.record(Observation::Page {
             repository: index.route.clone(),
             resource: normalized.clone(),
         });
-        if matches!(negotiate(headers), Format::Json) {
+        if matches!(format, Format::Json) {
             match cache::stream_detail(state.clone(), position, normalized.clone())
                 .boxed()
                 .await
@@ -146,7 +149,6 @@ async fn pypi_get(
             }
         }
         let index = state.index_at(position);
-        let format = negotiate(headers);
         if matches!(format, Format::Html) {
             let representation_key = state.representation_key(&index.route, &normalized, cache::SIMPLE_HTML);
             let hot = match revocation_safe_hot_page(state, &representation_key) {
@@ -274,9 +276,21 @@ async fn legacy_json_route(state: &Arc<ServingState>, index: &Index, rest: &str)
 }
 
 fn simple_index_response(state: &ServingState, index: &Index, headers: &HeaderMap) -> Response {
+    let Some(format) = negotiate(headers) else {
+        return simple_not_acceptable_response();
+    };
     let list = cache::resolve_list(state, index)
         .and_then(|list| cache::list_serial(state, index).map(|last_serial| (list, last_serial)));
-    index_response(list, negotiate(headers), &index.route)
+    index_response(list, format, &index.route)
+}
+
+fn simple_not_acceptable_response() -> Response {
+    (
+        StatusCode::NOT_ACCEPTABLE,
+        [(header::VARY, "Accept")],
+        "no acceptable Simple API representation",
+    )
+        .into_response()
 }
 
 /// PEP 503 canonical Simple URLs end in a slash; a request that drops it is redirected rather than

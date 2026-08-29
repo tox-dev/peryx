@@ -52,9 +52,10 @@ wasm bundle that hydrates the pages).
 
 ## Content negotiation
 
-Simple-API responses honor the `Accept` header: `application/vnd.pypi.simple.v1+json`
-([PEP 691](https://peps.python.org/pep-0691/)) when the client asks for JSON, `text/html`
-([PEP 503](https://peps.python.org/pep-0503/)) otherwise. Responses carry `Vary: Accept` and advertise
+Peryx selects the representation with the highest quality that `Accept` permits. It uses specificity for equal-quality
+matches and `application/vnd.pypi.simple.v1+json` ([PEP 691](https://peps.python.org/pep-0691/)) for the final tie.
+Peryx treats a missing `Accept` field as `*/*`, which selects JSON. It returns `406 Not Acceptable` if neither JSON nor
+`text/html` ([PEP 503](https://peps.python.org/pep-0503/)) qualifies. Responses carry `Vary: Accept` and advertise
 `meta.api-version` 1.4 for hosted content and upstream pages that declare version 1.1 or newer. An upstream page that
 declares 1.0 or no version gets 1.0; see the [version rule](@/ecosystems/pypi/reference/simple-api.md#version-rule).
 peryx preserves upstream Simple API fields it understands, including `versions`, `size`, `upload-time`,
