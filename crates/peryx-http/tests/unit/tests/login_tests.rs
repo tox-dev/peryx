@@ -6,9 +6,9 @@ use axum::http::{Method, Request, Response, StatusCode, header};
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use peryx_driver::state::AppState;
 use peryx_identity::{
-    ExternalIdentity, ExternalLinkRequest, ExternalSubject, OidcHttpTransport, OidcLoginProvider, OidcLoginService,
-    OidcProviderSettings, PRE_AUTH_COOKIE, PendingLogin, ProviderId, SESSION_COOKIE, ServerUser, SessionSealer, UserId,
-    UserName, UserState,
+    ExternalGroup, ExternalGroupGrant, ExternalIdentity, ExternalLinkRequest, ExternalSubject, GrantScope,
+    ManagedRoleGrant, OidcHttpTransport, OidcLoginProvider, OidcLoginService, OidcProviderSettings, PRE_AUTH_COOKIE,
+    PendingLogin, ProviderId, Role, RoleGrant, SESSION_COOKIE, ServerUser, SessionSealer, UserId, UserName, UserState,
 };
 use rstest::rstest;
 use serde_json::{Value, json};
@@ -516,7 +516,11 @@ fn encoding_key() -> EncodingKey {
 }
 
 fn mint(issuer: &str, nonce: &str) -> String {
-    let claims = json!({
+    mint_with_groups(issuer, nonce, None)
+}
+
+fn mint_with_groups(issuer: &str, nonce: &str, groups: Option<Value>) -> String {
+    let mut claims = json!({
         "iss": issuer,
         "aud": "peryx-web",
         "exp": VALID_UNTIL,
@@ -525,6 +529,9 @@ fn mint(issuer: &str, nonce: &str) -> String {
         "sub": "subject-123",
         "name": "Grace Hopper",
     });
+    if let Some(groups) = groups {
+        claims["groups"] = groups;
+    }
     let mut header = Header::new(Algorithm::RS256);
     header.kid = Some("k1".to_owned());
     jsonwebtoken::encode(&header, &claims, &encoding_key()).unwrap()
@@ -628,5 +635,92 @@ async fn test_a_valid_callback_creates_a_session() {
             .iter()
             .any(|c| c.starts_with(&format!("{PRE_AUTH_COOKIE}=;")) && c.contains("Max-Age=0")),
         "pre-auth not cleared: {cookies:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_a_malformed_group_claim_preserves_managed_grants() {
+    let server = MockServer::start().await;
+    let issuer = secure_origin(&server.uri());
+    mount_issuer(&server, &issuer).await;
+    let dir = tempfile::tempdir().unwrap();
+    let meta = peryx_storage::meta::MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let linked = meta
+        .link_external_identity(ExternalLinkRequest {
+            identity: ExternalIdentity::new(
+                ProviderId::new("corporate").unwrap(),
+                ExternalSubject::new("subject-123").unwrap(),
+            ),
+            display_name: UserName::new("Grace Hopper").unwrap(),
+            grants: vec![ManagedRoleGrant {
+                role: Role::RepositoryReader,
+                scope: GrantScope::Repository {
+                    name: "packages".to_owned(),
+                },
+            }],
+        })
+        .unwrap();
+    let mut state = AppState::with_clock(
+        meta.clone(),
+        peryx_storage::blob::BlobStore::new(dir.path().join("blobs")),
+        60,
+        Vec::new(),
+        Arc::new(|| NOW),
+    );
+    let mut provider_settings = settings(&server.uri());
+    provider_settings.groups_claim = Some("groups".to_owned());
+    let provider = OidcLoginProvider::with_http_transport(provider_settings, transport(&server.uri())).unwrap();
+    assert!(state.set_session_sealer(SessionSealer::new(KEY)).is_ok());
+    let authorization = provider.authorization(NOW).await.unwrap();
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "at",
+            "token_type": "Bearer",
+            "id_token": mint_with_groups(
+                &issuer,
+                &authorization.pending.nonce,
+                Some(json!(["release-admin", {"name": "developers"}])),
+            ),
+        })))
+        .mount(&server)
+        .await;
+    assert!(
+        state
+            .set_oidc_logins([OidcLoginService::new(
+                provider,
+                meta.clone(),
+                vec![ExternalGroupGrant {
+                    group: ExternalGroup::new("release-admin").unwrap(),
+                    role: Role::Operator,
+                    scope: GrantScope::Server,
+                }],
+            )])
+            .is_ok()
+    );
+    let response = send(
+        Arc::new(state),
+        Method::GET,
+        &format!(
+            "/_/login/corporate/callback?state={}&code=auth-code",
+            authorization.pending.state
+        ),
+        Some(&format!(
+            "{PRE_AUTH_COOKIE}={}",
+            SessionSealer::new(KEY).seal_pre_auth(&authorization.pending, VALID_UNTIL)
+        )),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        meta.user_role_grants(&linked.user.id).unwrap(),
+        vec![RoleGrant::new(
+            linked.user.id,
+            Role::RepositoryReader,
+            GrantScope::Repository {
+                name: "packages".to_owned(),
+            },
+        )]
     );
 }

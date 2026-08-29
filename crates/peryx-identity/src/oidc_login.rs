@@ -607,14 +607,17 @@ fn scope_string(scopes: &[String]) -> String {
 }
 
 fn claim_groups(value: &Value) -> Result<Vec<ExternalGroup>, OidcProviderError> {
-    let names = match value {
-        Value::String(single) => vec![single.as_str()],
-        Value::Array(values) => values.iter().filter_map(Value::as_str).collect(),
+    let values = match value {
+        Value::String(_) => std::slice::from_ref(value),
+        Value::Array(values) => values,
         _ => return Err(OidcProviderError::InvalidClaims),
     };
-    names
-        .into_iter()
-        .map(|name| ExternalGroup::new(name).map_err(|_| OidcProviderError::InvalidClaims))
+    values
+        .iter()
+        .map(|value| {
+            ExternalGroup::new(value.as_str().ok_or(OidcProviderError::InvalidClaims)?)
+                .map_err(|_| OidcProviderError::InvalidClaims)
+        })
         .collect()
 }
 

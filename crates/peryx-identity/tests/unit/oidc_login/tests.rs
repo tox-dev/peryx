@@ -429,11 +429,14 @@ async fn test_blank_display_name_is_rejected() {
     ));
 }
 
+#[rstest]
+#[case::single(json!("solo"), vec!["solo"])]
+#[case::sorted_and_deduplicated(json!(["ops", "dev", "ops"]), vec!["dev", "ops"])]
 #[tokio::test]
-async fn test_single_string_group_is_accepted() {
+async fn test_valid_group_claim_is_normalized(#[case] groups: Value, #[case] expected: Vec<&str>) {
     let (server, provider) = ready().await;
     let mut claims = base_claims(&server);
-    claims["groups"] = "solo".into();
+    claims["groups"] = groups;
     mount_token(
         &server,
         json!({"id_token": mint("key-1", &claims), "token_type": "Bearer"}),
@@ -442,7 +445,7 @@ async fn test_single_string_group_is_accepted() {
     let login = provider.callback(&response(), &pending(), NOW).await.unwrap();
     assert_eq!(
         login.groups.iter().map(ExternalGroup::as_str).collect::<Vec<_>>(),
-        vec!["solo"]
+        expected
     );
 }
 
@@ -464,6 +467,8 @@ async fn test_absent_group_claim_asserts_no_groups() {
 
 #[rstest]
 #[case::wrong_type(json!(5))]
+#[case::integer_array(json!([42]))]
+#[case::mixed_array(json!(["release-admin", {"name": "developers"}]))]
 #[case::control_character(json!(["ok", "b\u{0001}d"]))]
 #[tokio::test]
 async fn test_invalid_group_claim_is_rejected(#[case] groups: Value) {
