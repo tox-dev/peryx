@@ -5,7 +5,7 @@ use axum::extract::ConnectInfo;
 use axum::http::{HeaderMap, Method, Request, StatusCode};
 use axum::response::{IntoResponse as _, Response};
 use peryx_driver::http_services::HttpDomainServices;
-use peryx_driver::rate_limit::RateLimitConfig;
+use peryx_driver::rate_limit::{RateLimitConfig, RouteLimit};
 use peryx_identity::IndexAcl;
 use rstest::rstest;
 use tower::ServiceExt as _;
@@ -437,7 +437,7 @@ async fn test_replica_retry_interval_rounds_up_to_delta_seconds() {
         .oneshot(
             Request::builder()
                 .method(Method::DELETE)
-                .uri("/+repositories/alpha")
+                .uri("/+grants/alpha")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -449,13 +449,94 @@ async fn test_replica_retry_interval_rounds_up_to_delta_seconds() {
 }
 
 #[tokio::test]
-async fn test_rate_limit_layer_is_mounted_when_enabled() {
+async fn test_read_only_node_preserves_method_not_allowed_for_process_routes() {
     let (_dir, state) = unwired_state_with_limits(RateLimitConfig::enabled_defaults());
-    let response = crate::router(state)
-        .oneshot(Request::builder().uri("/+health").body(Body::empty()).unwrap())
+    let mut state = std::sync::Arc::into_inner(state).unwrap();
+    state.set_read_only(true).unwrap();
+
+    let response = crate::router(std::sync::Arc::new(state))
+        .oneshot(
+            Request::builder()
+                .method(Method::TRACE)
+                .uri("/+repositories")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
+
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+}
+
+#[tokio::test]
+async fn test_rate_limit_layer_is_mounted_when_enabled() {
+    let (_dir, state) = unwired_state_with_limits(RateLimitConfig {
+        admin: RouteLimit::new(1, 60),
+        ..RateLimitConfig::enabled_defaults()
+    });
+    let app = crate::router(state);
+    assert_eq!(
+        request_statuses(&app, Method::GET, "/+health").await,
+        [StatusCode::OK; 2]
+    );
+}
+
+#[rstest]
+#[case::read(Method::GET)]
+#[case::write(Method::POST)]
+#[tokio::test]
+async fn test_management_routes_use_the_admin_limit(#[case] method: Method) {
+    let (_dir, state) = unwired_state_with_limits(RateLimitConfig {
+        admin: RouteLimit::new(1, 60),
+        ..RateLimitConfig::enabled_defaults()
+    });
+
+    let app = crate::router(state);
+    let management = request_statuses(&app, method, "/+repositories").await;
+    let package_read = app
+        .oneshot(Request::get("/unknown").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        (management[1], package_read.status()),
+        (StatusCode::TOO_MANY_REQUESTS, StatusCode::NOT_FOUND)
+    );
+}
+
+#[rstest]
+#[case::read(Method::GET, "/_/session")]
+#[case::write(Method::POST, "/_/logout")]
+#[tokio::test]
+async fn test_authentication_routes_use_the_authentication_limit(#[case] method: Method, #[case] uri: &str) {
+    let (_dir, state) = unwired_state_with_limits(RateLimitConfig {
+        authentication: RouteLimit::new(1, 60),
+        ..RateLimitConfig::enabled_defaults()
+    });
+
+    assert_eq!(
+        request_statuses(&crate::router(state), method, uri).await[1],
+        StatusCode::TOO_MANY_REQUESTS
+    );
+}
+
+async fn request_statuses(app: &axum::Router, method: Method, uri: &str) -> [StatusCode; 2] {
+    let mut statuses = [StatusCode::INTERNAL_SERVER_ERROR; 2];
+    for status in &mut statuses {
+        *status = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method.clone())
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status();
+    }
+    statuses
 }
 
 #[tokio::test]

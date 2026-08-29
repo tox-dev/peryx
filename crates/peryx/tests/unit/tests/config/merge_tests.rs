@@ -225,7 +225,8 @@ fn test_rate_limits_from_toml_overlay_defaults() {
         "\
 [rate_limit]\nenabled = true\nmax_clients = 32\ntrusted_proxies = [\"127.0.0.1/32\", \"2001:db8::/32\"]\n\
 [rate_limit.listing]\nrequests = 10\nwindow_secs = 5\n\
-[rate_limit.upload]\nrequests = 2\n",
+[rate_limit.upload]\nrequests = 2\n\
+[rate_limit.authentication]\nrequests = 3\n",
     );
 
     assert!(c.rate_limit.enabled);
@@ -241,6 +242,7 @@ fn test_rate_limits_from_toml_overlay_defaults() {
         RateLimitConfig::default().upload.window_secs
     );
     assert_eq!(c.rate_limit.artifact, RateLimitConfig::default().artifact);
+    assert_eq!(c.rate_limit.authentication, RouteLimit::new(3, 60));
 }
 
 #[test]

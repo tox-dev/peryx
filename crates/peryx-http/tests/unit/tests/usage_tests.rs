@@ -79,8 +79,16 @@ impl PrometheusSource for ProcessMetrics {
 struct OwnerRoutes;
 
 impl HttpRoutes for OwnerRoutes {
-    fn routes(&self) -> axum::Router<Arc<AppState>> {
-        axum::Router::new().route("/+owner", route_get(|| async { "owner" }))
+    fn routes(&self) -> peryx_driver::RouteSet {
+        peryx_driver::RouteSet::new().route(
+            peryx_driver::RouteDescriptor::new(
+                peryx_driver::RouteMethod::Get,
+                "/+owner",
+                peryx_driver::RoutePosture::Read,
+                peryx_driver::RouteRateLimit::Class(RouteClass::Admin),
+            ),
+            route_get(|| async { "owner" }),
+        )
     }
 }
 

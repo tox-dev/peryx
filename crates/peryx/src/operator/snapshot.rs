@@ -214,6 +214,7 @@ struct SnapshotRateLimit<'a> {
     artifact: SnapshotRouteLimit,
     upload: SnapshotRouteLimit,
     admin: SnapshotRouteLimit,
+    authentication: SnapshotRouteLimit,
 }
 
 #[derive(Serialize)]
@@ -774,6 +775,7 @@ fn snapshot_rate_limit(rate_limit: &RateLimitConfig) -> SnapshotRateLimit<'_> {
         artifact,
         upload,
         admin,
+        authentication,
     } = rate_limit;
     SnapshotRateLimit {
         enabled: *enabled,
@@ -784,6 +786,7 @@ fn snapshot_rate_limit(rate_limit: &RateLimitConfig) -> SnapshotRateLimit<'_> {
         artifact: snapshot_route_limit(*artifact),
         upload: snapshot_route_limit(*upload),
         admin: snapshot_route_limit(*admin),
+        authentication: snapshot_route_limit(*authentication),
     }
 }
 

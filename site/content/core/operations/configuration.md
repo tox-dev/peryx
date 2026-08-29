@@ -552,13 +552,17 @@ principal. peryx groups rotated invalid `Authorization` values under the peer IP
 
 Each route class is a sub-table with `requests` and `window_secs`:
 
-| Table                   | Route class                                     | Default        |
-| ----------------------- | ----------------------------------------------- | -------------- |
-| `[rate_limit.listing]`  | Resource listings and detail pages              | `600` / `60s`  |
-| `[rate_limit.metadata]` | Separate metadata objects                       | `1200` / `60s` |
-| `[rate_limit.artifact]` | Artifact reads and inspection                   | `300` / `60s`  |
-| `[rate_limit.upload]`   | Mutation requests                               | `60` / `60s`   |
-| `[rate_limit.admin]`    | Status, stats, metrics, and discovery endpoints | `120` / `60s`  |
+| Table                         | Route class                                     | Default        |
+| ----------------------------- | ----------------------------------------------- | -------------- |
+| `[rate_limit.listing]`        | Resource listings and detail pages              | `600` / `60s`  |
+| `[rate_limit.metadata]`       | Separate metadata objects                       | `1200` / `60s` |
+| `[rate_limit.artifact]`       | Artifact reads and inspection                   | `300` / `60s`  |
+| `[rate_limit.upload]`         | Mutation requests                               | `60` / `60s`   |
+| `[rate_limit.admin]`          | Status, stats, metrics, and discovery endpoints | `120` / `60s`  |
+| `[rate_limit.authentication]` | Login, session, and token exchange requests     | `60` / `60s`   |
+
+The authentication class uses the upload default because password checks and token exchanges consume bounded
+cryptographic workers. Its separate bucket prevents login traffic from exhausting management or package-write capacity.
 
 The selected ecosystem maps each route to one request group. Read methods retain the group of the resource they address;
 the method alone does not turn a read into a write. Ecosystem documentation defines each route map:

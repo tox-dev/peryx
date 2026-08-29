@@ -2,7 +2,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use axum::Router;
 use axum::body::Body;
 use axum::extract::Request;
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
@@ -19,13 +18,14 @@ use peryx_storage::meta::MetaStore;
 use rstest::rstest;
 
 use super::AppState;
+use crate::HttpRoutes;
 use crate::rate_limit::RouteClass;
 use crate::serving::{
     AbsoluteProtocolDriver, CacheRefresher, ClientDiscovery, EcosystemDriver, EcosystemRegistration, IdleReclaimer,
     IndexCredentialDriver, IndexSummary, IndexSummaryDriver, IndexSummaryError, IndexedProtocolDriver, IntentFinalizer,
     MirrorAction, MirrorDriver, MirrorRequest, ProtocolDriver, RateLimitPrincipal, RefreshSweep, ReplicatedApplyDriver,
 };
-use crate::state::{HttpRoutes, ServingState, ViewBlock};
+use crate::state::{ServingState, ViewBlock};
 use tower::ServiceExt;
 
 struct Driver;
@@ -268,8 +268,8 @@ struct RuntimeCapability;
 struct Registration;
 
 impl HttpRoutes for Routes {
-    fn routes(&self) -> Router<Arc<AppState>> {
-        Router::new()
+    fn routes(&self) -> crate::RouteSet {
+        crate::RouteSet::new()
     }
 }
 
@@ -449,6 +449,7 @@ async fn test_registered_capabilities_delegate_behavior() {
             .next()
             .unwrap()
             .routes()
+            .into_router()
             .with_state(state.clone())
             .oneshot(Request::new(Body::empty()))
             .await

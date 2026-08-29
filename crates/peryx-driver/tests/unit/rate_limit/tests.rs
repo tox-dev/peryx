@@ -19,13 +19,14 @@ use peryx_storage::meta::MetaStore;
 use tower::ServiceExt as _;
 
 use super::{
-    ActorKey, ForwardedClient, RateLimitConfig, RateLimiter, RouteClass, RouteLimit, UpstreamLimits, limited_response,
-    malformed_forwarded_response, real_ip, service_route_class,
+    ActorKey, ForwardedClient, RateLimitConfig, RateLimiter, RouteClass, RouteLimit, UpstreamLimits,
+    ecosystem_route_class, limited_response, malformed_forwarded_response, real_ip,
 };
 use crate::serving::{
     AbsoluteProtocolDriver, EcosystemDriver, IndexedProtocolDriver, ProtocolDriver, RateLimitPrincipal, ServiceDriver,
 };
 use crate::state::{AppState, ServingState};
+use crate::{RouteDescriptor, RouteMethod, RoutePosture, RouteRateLimit};
 
 struct IndexedDriver;
 
@@ -227,48 +228,33 @@ fn test_the_window_resets_and_readmits_once_time_advances_past_it() {
 }
 
 #[test]
-fn test_service_route_class_handles_writes_and_service_routes() {
+fn test_ecosystem_route_class_handles_writes_and_common_reads() {
     assert_eq!(
-        service_route_class(&Method::POST, "/alpha/items"),
+        ecosystem_route_class(&Method::POST, "/alpha/items"),
         Some(RouteClass::Upload)
     );
-    assert_eq!(service_route_class(&Method::GET, "/+status"), Some(RouteClass::Admin));
-    assert_eq!(service_route_class(&Method::GET, "/+acl"), Some(RouteClass::Admin));
     assert_eq!(
-        service_route_class(&Method::GET, "/+revocations"),
+        ecosystem_route_class(&Method::GET, "/alpha/hosted/+api"),
         Some(RouteClass::Admin)
     );
     assert_eq!(
-        service_route_class(&Method::PUT, "/+revocations/sha256:digest"),
-        Some(RouteClass::Admin)
-    );
-    assert_eq!(
-        service_route_class(&Method::POST, "/+revocations/sha256:digest/lift"),
-        Some(RouteClass::Admin)
-    );
-    assert_eq!(
-        service_route_class(&Method::GET, "/alpha/hosted/+api"),
-        Some(RouteClass::Admin)
-    );
-    assert_eq!(
-        service_route_class(&Method::GET, "/alpha/resources/widget/details"),
+        ecosystem_route_class(&Method::GET, "/alpha/resources/widget/details"),
         None
     );
 }
 
 #[test]
-fn test_service_route_class_treats_head_and_options_as_reads() {
-    assert_eq!(service_route_class(&Method::HEAD, "/service/resources/current"), None);
-    assert_eq!(service_route_class(&Method::OPTIONS, "/alpha/items/current"), None);
-    assert_eq!(service_route_class(&Method::HEAD, "/+status"), Some(RouteClass::Admin));
+fn test_ecosystem_route_class_treats_head_and_options_as_reads() {
+    assert_eq!(ecosystem_route_class(&Method::HEAD, "/service/resources/current"), None);
+    assert_eq!(ecosystem_route_class(&Method::OPTIONS, "/alpha/items/current"), None);
     for method in [Method::PUT, Method::PATCH, Method::DELETE] {
         assert_eq!(
-            service_route_class(&method, "/service/resources/1"),
+            ecosystem_route_class(&method, "/service/resources/1"),
             Some(RouteClass::Upload)
         );
     }
     assert_eq!(
-        service_route_class(&Method::TRACE, "/alpha/items"),
+        ecosystem_route_class(&Method::TRACE, "/alpha/items"),
         Some(RouteClass::Upload)
     );
 }
@@ -282,6 +268,7 @@ fn test_route_classes_expose_stable_names_and_limits() {
         (RouteClass::Artifact, "artifact", config.artifact),
         (RouteClass::Upload, "upload", config.upload),
         (RouteClass::Admin, "admin", config.admin),
+        (RouteClass::Authentication, "authentication", config.authentication),
     ];
 
     assert_eq!(RouteClass::all(), expected.map(|(class, _, _)| class));
@@ -311,6 +298,7 @@ fn test_default_limiter_is_disabled_and_counts_each_class() {
             ("artifact", 1, 0),
             ("upload", 1, 0),
             ("admin", 1, 0),
+            ("authentication", 1, 0),
         ]
     );
 }
@@ -501,6 +489,17 @@ fn router(state: AppState) -> Router {
         .layer(middleware::from_fn_with_state(Arc::new(state), super::enforce))
 }
 
+fn process_request(path: &'static str, rate_limit: RouteRateLimit) -> Request<Body> {
+    let mut request = Request::get(path).body(Body::empty()).unwrap();
+    request.extensions_mut().insert(RouteDescriptor::new(
+        RouteMethod::Get,
+        path,
+        RoutePosture::Read,
+        rate_limit,
+    ));
+    request
+}
+
 #[tokio::test]
 async fn test_enforce_bypasses_health_and_limits_admin_requests() {
     let config = RateLimitConfig {
@@ -513,7 +512,7 @@ async fn test_enforce_bypasses_health_and_limits_admin_requests() {
     assert_eq!(
         router
             .clone()
-            .oneshot(Request::get("/+health").body(Body::empty()).unwrap())
+            .oneshot(process_request("/+health", RouteRateLimit::Exempt))
             .await
             .unwrap()
             .status(),
@@ -522,14 +521,14 @@ async fn test_enforce_bypasses_health_and_limits_admin_requests() {
     assert_eq!(
         router
             .clone()
-            .oneshot(Request::get("/+status").body(Body::empty()).unwrap())
+            .oneshot(process_request("/+status", RouteRateLimit::Class(RouteClass::Admin)))
             .await
             .unwrap()
             .status(),
         StatusCode::NO_CONTENT
     );
     let response = router
-        .oneshot(Request::get("/+status").body(Body::empty()).unwrap())
+        .oneshot(process_request("/+status", RouteRateLimit::Class(RouteClass::Admin)))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);

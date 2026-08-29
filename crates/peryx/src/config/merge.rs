@@ -1222,6 +1222,7 @@ fn apply_rate_limit(mut base: RateLimitConfig, partial: PartialRateLimitConfig) 
     base.artifact = apply_route_limit(base.artifact, partial.artifact);
     base.upload = apply_route_limit(base.upload, partial.upload);
     base.admin = apply_route_limit(base.admin, partial.admin);
+    base.authentication = apply_route_limit(base.authentication, partial.authentication);
     base
 }
 

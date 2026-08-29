@@ -435,6 +435,22 @@ async fn test_callback_maps_an_unreachable_provider_to_service_unavailable() {
 }
 
 #[tokio::test]
+async fn test_callback_is_rejected_on_a_read_only_replica() {
+    let (_dir, mut state) = empty_state();
+    state.set_read_only(true).unwrap();
+
+    let response = send(
+        Arc::new(state),
+        Method::GET,
+        "/_/login/corporate/callback?state=s&code=c",
+        None,
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
 async fn test_session_without_a_cookie_reports_no_user() {
     let (dir, mut state) = empty_state();
     assert!(state.set_session_sealer(SessionSealer::new(KEY)).is_ok());

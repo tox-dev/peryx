@@ -5,10 +5,11 @@ use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::{Extension, Json, Router};
+use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
 
-use peryx_driver::{AppState, HttpRoutes};
+use peryx_driver::rate_limit::RouteClass;
+use peryx_driver::{AppState, HttpRoutes, RouteDescriptor, RouteMethod, RoutePosture, RouteRateLimit, RouteSet};
 
 use super::runtime::{ExchangeError, ExchangedToken, IdentityExchange};
 
@@ -23,14 +24,27 @@ impl TrustedPublishingRoutes {
 }
 
 impl HttpRoutes for TrustedPublishingRoutes {
-    fn routes(&self) -> Router<Arc<AppState>> {
-        Router::new()
-            .route("/_/oidc/audience", get(oidc_audience))
+    fn routes(&self) -> RouteSet {
+        RouteSet::new()
             .route(
-                "/_/oidc/mint-token",
+                RouteDescriptor::new(
+                    RouteMethod::Get,
+                    "/_/oidc/audience",
+                    RoutePosture::Read,
+                    RouteRateLimit::Class(RouteClass::Authentication),
+                ),
+                get(oidc_audience),
+            )
+            .route(
+                RouteDescriptor::new(
+                    RouteMethod::Post,
+                    "/_/oidc/mint-token",
+                    RoutePosture::Mutation,
+                    RouteRateLimit::Class(RouteClass::Authentication),
+                ),
                 post(oidc_mint_token).layer(DefaultBodyLimit::max(40 * 1024)),
             )
-            .layer(Extension(self.runtime.clone()))
+            .with_extension(self.runtime.clone())
     }
 }
 

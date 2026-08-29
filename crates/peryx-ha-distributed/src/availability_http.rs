@@ -4,7 +4,6 @@ use std::hash::{Hash as _, Hasher as _};
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::Router;
 use axum::extract::State;
 use axum::http::{HeaderMap, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -14,7 +13,9 @@ use futures_util::stream::{self, Stream};
 use peryx_core::{LocalStatus, NodeLiveness, TopologySnapshot, TopologyView};
 use peryx_driver::HttpRoutes;
 use peryx_driver::ServingStateAvailabilityAuthorizer;
+use peryx_driver::rate_limit::RouteClass;
 use peryx_driver::state::{AppState, ServingState};
+use peryx_driver::{RouteDescriptor, RouteMethod, RoutePosture, RouteRateLimit, RouteSet};
 use peryx_ha::{AvailabilityAudience, AvailabilityAuthorizer as _};
 
 use peryx_http::response_security::ProtectedCachePolicy;
@@ -26,21 +27,39 @@ const TOPOLOGY_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 pub struct DistributedHttpRoutes;
 
 impl HttpRoutes for DistributedHttpRoutes {
-    fn routes(&self) -> Router<Arc<AppState>> {
-        Router::new()
+    fn routes(&self) -> RouteSet {
+        RouteSet::new()
             .route(
-                "/+analytics/completeness",
+                read("/+analytics/completeness"),
                 get(crate::completeness_http::analytics_completeness),
             )
-            .route("/+availability/topology", get(availability_topology))
-            .route("/+availability/topology/stream", get(availability_topology_stream))
-            .route("/+availability/operations", get(crate::operations_http::operations))
-            .route("/+availability/placements", get(crate::placements_http::placements))
+            .route(read("/+availability/topology"), get(availability_topology))
             .route(
-                "/+availability/placements/{digest}",
+                read("/+availability/topology/stream"),
+                get(availability_topology_stream),
+            )
+            .route(
+                read("/+availability/operations"),
+                get(crate::operations_http::operations),
+            )
+            .route(
+                read("/+availability/placements"),
+                get(crate::placements_http::placements),
+            )
+            .route(
+                read("/+availability/placements/{digest}"),
                 get(crate::placements_http::blob_placements),
             )
     }
+}
+
+const fn read(path: &'static str) -> RouteDescriptor {
+    RouteDescriptor::new(
+        RouteMethod::Get,
+        path,
+        RoutePosture::Read,
+        RouteRateLimit::Class(RouteClass::Admin),
+    )
 }
 
 async fn availability_topology(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {

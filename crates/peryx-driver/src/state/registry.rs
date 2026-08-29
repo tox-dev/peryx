@@ -393,7 +393,7 @@ impl AppState {
         Ok(())
     }
 
-    pub fn register_http_routes(&mut self, routes: Arc<dyn super::app::HttpRoutes>) {
+    pub fn register_http_routes(&mut self, routes: Arc<dyn crate::HttpRoutes>) {
         self.http_routes.push(routes);
     }
 

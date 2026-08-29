@@ -6,6 +6,7 @@ use axum::http::{HeaderMap, HeaderValue, Request, StatusCode, header};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use http_body_util::BodyExt as _;
+use peryx_driver::rate_limit::{RateLimitConfig, RouteLimit};
 use peryx_driver::{AppState, HttpRoutes as _};
 use peryx_identity::{Action, Glob, Grant, GrantScope, IndexAcl, NamedToken, Role};
 use peryx_index::{Index, IndexKind};
@@ -65,6 +66,44 @@ async fn shadow_routes_serve_the_admin_page() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(headers[header::CONTENT_TYPE], "text/html; charset=utf-8");
     assert_eq!(body, include_str!("../../../src/shadow/shadow.html"));
+}
+
+#[tokio::test]
+async fn shadow_routes_use_the_admin_limit() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut state = AppState::with_rate_limits(
+        MetaStore::open(directory.path().join("peryx.redb")).unwrap(),
+        BlobStorage::filesystem(directory.path().join("blobs")),
+        60,
+        Vec::new(),
+        RateLimitConfig {
+            admin: RouteLimit::new(1, 60),
+            ..RateLimitConfig::enabled_defaults()
+        },
+        std::iter::empty(),
+    );
+    crate::tests::install(&mut state);
+    let app = peryx_http::router(Arc::new(state));
+
+    let first = app
+        .clone()
+        .oneshot(Request::get("/admin/shadow").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let second = app
+        .clone()
+        .oneshot(Request::get("/admin/shadow").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let package_read = app
+        .oneshot(Request::get("/unknown").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        (first.status(), second.status(), package_read.status()),
+        (StatusCode::OK, StatusCode::TOO_MANY_REQUESTS, StatusCode::NOT_FOUND)
+    );
 }
 
 #[tokio::test]
@@ -692,6 +731,7 @@ async fn request(
     }
     let response = ShadowRoutes
         .routes()
+        .into_router()
         .with_state(state.clone())
         .oneshot(request.body(Body::empty()).unwrap())
         .await

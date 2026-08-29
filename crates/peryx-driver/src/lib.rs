@@ -9,6 +9,7 @@ pub mod conditional;
 pub mod discovery;
 pub mod download;
 mod driver_set;
+mod http_routes;
 pub mod http_services;
 pub mod jobs;
 pub mod openapi;
@@ -27,10 +28,13 @@ pub use availability::{
     ServingStateAvailabilityAuthorizer, ServingStateControlAuthorizer, ServingStateMetadataFrontierProvider,
 };
 pub use driver_set::{BlobReferenceScan, BlobReferenceScanError, DriverSet};
+pub use http_routes::{
+    HttpRoutes, ProcessRouteMethodNotAllowed, RouteDescriptor, RouteMethod, RoutePosture, RouteRateLimit, RouteSet,
+};
 pub use serving::PolicyDryRunDriver;
 pub use state::{
-    AppState, DEFAULT_HOT_CACHE_BYTES, DEFAULT_MAX_STALE_SECS, HttpRoutes, Index, IndexDescription, IndexKind,
-    PrometheusSource, ServingState,
+    AppState, DEFAULT_HOT_CACHE_BYTES, DEFAULT_MAX_STALE_SECS, Index, IndexDescription, IndexKind, PrometheusSource,
+    ServingState,
 };
 
 #[must_use]

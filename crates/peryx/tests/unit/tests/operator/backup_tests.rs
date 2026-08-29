@@ -295,6 +295,10 @@ window_secs = 42
 requests = 51
 window_secs = 52
 
+[rate_limit.authentication]
+requests = 61
+window_secs = 62
+
 [auth]
 signing_key_file = "/run/secrets/signing-key"
 token_ttl_secs = 601

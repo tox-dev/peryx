@@ -4,19 +4,21 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 
-use axum::Router;
 use axum::extract::{Query, Request, State};
 use axum::response::Response;
 use axum::routing::get;
 use peryx_core::Ecosystem;
 use peryx_driver::discovery::BaseUrl;
+use peryx_driver::rate_limit::RouteClass;
 use peryx_driver::serving::{
     CapabilityInstallContext, ClientDiscovery, CompiledEcosystemSettings, DistributedInstallContext,
     DistributedRuntime, EcosystemAuth, EcosystemBrowse, EcosystemConfig, EcosystemDriver, EcosystemOpenApi,
     EcosystemRegistration, EcosystemRuntime, EcosystemSnippet, JobConfig, PluginAuthConfig, PluginIndexConfig,
     ProtocolDriver, RateLimitPrincipal, RuntimeInstallContext,
 };
-use peryx_driver::{AppState, DriverSet, HttpRoutes};
+use peryx_driver::{
+    AppState, DriverSet, HttpRoutes, RouteDescriptor, RouteMethod, RoutePosture, RouteRateLimit, RouteSet,
+};
 use utoipa::openapi::PathsBuilder;
 
 #[cfg(test)]
@@ -649,12 +651,17 @@ struct BrowseQuery {
 }
 
 impl HttpRoutes for BrowseRoutes {
-    fn routes(&self) -> Router<Arc<AppState>> {
+    fn routes(&self) -> RouteSet {
         let browsers = Arc::new(self.browsers.clone());
-        self.paths.iter().fold(Router::new(), |router, &path| {
+        self.paths.iter().fold(RouteSet::new(), |routes, &path| {
             let browsers = browsers.clone();
-            router.route(
-                path,
+            routes.route(
+                RouteDescriptor::new(
+                    RouteMethod::Get,
+                    path,
+                    RoutePosture::Read,
+                    RouteRateLimit::Class(RouteClass::Listing),
+                ),
                 get(
                     move |State(state): State<Arc<AppState>>, Query(query): Query<BrowseQuery>, request: Request| {
                         let browsers = browsers.clone();

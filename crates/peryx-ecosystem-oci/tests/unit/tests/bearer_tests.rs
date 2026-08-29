@@ -160,6 +160,30 @@ async fn test_refreshed_bearers_for_one_principal_share_a_rate_limit_bucket() {
     );
 }
 
+#[tokio::test]
+async fn test_token_mint_uses_an_independent_authentication_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, app) = realm_app_with_clock_and_limits(
+        &dir,
+        vec![scoped_index("store", "store", "ci", SECRET, "team/*", &[Action::Read])],
+        Arc::new(current_unix_time),
+        RateLimitConfig {
+            authentication: RouteLimit::new(1, 60),
+            upload: RouteLimit::new(1, 60),
+            ..RateLimitConfig::enabled_defaults()
+        },
+        300,
+    );
+    let query = "service=peryx&scope=repository:store/team/app:pull";
+
+    let first = request_token(&app, query, Some(&auth(SECRET))).await.0;
+    let second = request_token(&app, query, Some(&auth(SECRET))).await.0;
+    let (package_write, ..) = send(&app, Method::POST, "/v2/store/team/app/manifests/1.0").await;
+
+    assert_eq!((first, second), (StatusCode::OK, StatusCode::TOO_MANY_REQUESTS));
+    assert_eq!(package_write, StatusCode::METHOD_NOT_ALLOWED);
+}
+
 #[rstest]
 #[case::anonymous(None, "Bearer realm=\"/v2/token\",service=\"peryx\",scope=\"registry:catalog:*\"")]
 #[case::invalid_bearer(

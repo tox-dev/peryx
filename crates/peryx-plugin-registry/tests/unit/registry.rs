@@ -1356,7 +1356,10 @@ fn browse_app(indexes: impl IntoIterator<Item = Index>) -> Router {
         .unwrap();
     let router = state
         .http_routes()
-        .fold(Router::new(), |router, routes| router.merge(routes.routes()));
+        .fold(peryx_driver::RouteSet::new(), |routes, registered| {
+            routes.merge(registered.routes())
+        })
+        .into_router();
     router.with_state(Arc::new(state))
 }
 

@@ -294,6 +294,9 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> AbsoluteProtocolDriver fo
 
     fn classify_route(&self, path: &str) -> peryx_driver::rate_limit::RouteClass {
         use peryx_driver::rate_limit::RouteClass;
+        if matches!(path, "/v2/token" | "/v2/token/") {
+            return RouteClass::Authentication;
+        }
         match classify(path) {
             Some(OciRoute::Blob { .. }) => RouteClass::Artifact,
             _ => RouteClass::Listing,

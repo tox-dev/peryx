@@ -758,7 +758,7 @@ fn test_rate_limiter_default_has_zeroed_counters() {
     let counters = limiter.counters();
 
     assert!(!limiter.enabled());
-    assert_eq!(counters.len(), 5);
+    assert_eq!(counters.len(), 6);
     assert!(
         counters
             .iter()

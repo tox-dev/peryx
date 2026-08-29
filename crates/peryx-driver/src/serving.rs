@@ -10,7 +10,8 @@ use axum::response::Response;
 use peryx_core::DefaultIndex;
 use peryx_core::{BrowsePage, Ecosystem};
 
-use crate::state::{HttpRoutes, ServingState, ViewBlock};
+use crate::HttpRoutes;
+use crate::state::{ServingState, ViewBlock};
 
 #[derive(Debug, Clone)]
 pub struct PluginIndexConfig<'a> {

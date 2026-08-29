@@ -500,6 +500,7 @@ pub struct PartialRateLimitConfig {
     pub artifact: PartialRouteLimit,
     pub upload: PartialRouteLimit,
     pub admin: PartialRouteLimit,
+    pub authentication: PartialRouteLimit,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]

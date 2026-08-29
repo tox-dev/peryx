@@ -100,7 +100,7 @@ pub fn install_services(config: &DistributedServiceConfig, state: &mut AppState)
 impl AvailabilityAssembler for DistributedServiceAssembly {
     type Config = DistributedServiceConfig;
     type Context = DistributedServiceContext;
-    type Routes = Arc<dyn peryx_driver::state::HttpRoutes>;
+    type Routes = Arc<dyn peryx_driver::HttpRoutes>;
     type Error = anyhow::Error;
 
     fn assemble(config: &Self::Config, context: &Self::Context) -> anyhow::Result<AvailabilityInstall<Self::Routes>> {

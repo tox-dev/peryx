@@ -10,7 +10,8 @@ use axum::extract::{Query, State};
 use axum::http::{HeaderMap, Request, StatusCode, Uri, header};
 use axum::response::{IntoResponse as _, Response};
 use peryx_driver::authz::{Decision, DenyReason, ScopedDecision};
-use peryx_driver::{AppState, HttpRoutes};
+use peryx_driver::rate_limit::RouteClass;
+use peryx_driver::{AppState, HttpRoutes, RouteDescriptor, RouteMethod, RoutePosture, RouteRateLimit, RouteSet};
 use peryx_identity::{Action, Resource, Scope, UserId, parse_basic};
 use peryx_policy::PolicyDecisionState;
 
@@ -24,10 +25,26 @@ use super::{ShadowQuery, ShadowQueryError, ShadowReason};
 pub struct ShadowRoutes;
 
 impl HttpRoutes for ShadowRoutes {
-    fn routes(&self) -> axum::Router<Arc<AppState>> {
-        axum::Router::new()
-            .route("/+shadow/candidates", axum::routing::get(shadow_candidates))
-            .route("/admin/shadow", axum::routing::get(shadow_admin))
+    fn routes(&self) -> RouteSet {
+        RouteSet::new()
+            .route(
+                RouteDescriptor::new(
+                    RouteMethod::Get,
+                    "/+shadow/candidates",
+                    RoutePosture::Read,
+                    RouteRateLimit::Class(RouteClass::Admin),
+                ),
+                axum::routing::get(shadow_candidates),
+            )
+            .route(
+                RouteDescriptor::new(
+                    RouteMethod::Get,
+                    "/admin/shadow",
+                    RoutePosture::Read,
+                    RouteRateLimit::Class(RouteClass::Admin),
+                ),
+                axum::routing::get(shadow_admin),
+            )
     }
 }
 

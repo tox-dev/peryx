@@ -8,7 +8,7 @@ mod ownership;
 mod registry;
 mod traces;
 
-pub use app::{AppState, Clock, HttpRoutes, ServingState};
+pub use app::{AppState, Clock, ServingState};
 pub use build::{DEFAULT_HOT_CACHE_BYTES, DEFAULT_MAX_STALE_SECS, DEFAULT_TOKEN_TTL_SECS, RuntimeOptions};
 pub use derived_views::{REQUIRED_VIEWS, ReadableFrontier, SEARCH_VIEW, ViewBlock, readable_frontier};
 pub use describe::{

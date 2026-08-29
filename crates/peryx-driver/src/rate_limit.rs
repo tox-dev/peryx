@@ -15,6 +15,7 @@ use moka::sync::Cache;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::state::AppState;
+use crate::{ProcessRouteMethodNotAllowed, RouteDescriptor, RouteRateLimit};
 
 /// Concurrent upstream fetches allowed per cached index; `0` (the default) means unlimited.
 ///
@@ -33,14 +34,22 @@ pub enum RouteClass {
     Artifact,
     Upload,
     Admin,
+    Authentication,
 }
 
 impl RouteClass {
-    const ALL: [Self; 5] = [Self::Listing, Self::Metadata, Self::Artifact, Self::Upload, Self::Admin];
-    const COUNT: u64 = 5;
+    const ALL: [Self; 6] = [
+        Self::Listing,
+        Self::Metadata,
+        Self::Artifact,
+        Self::Upload,
+        Self::Admin,
+        Self::Authentication,
+    ];
+    const COUNT: u64 = 6;
 
     #[must_use]
-    pub const fn all() -> [Self; 5] {
+    pub const fn all() -> [Self; 6] {
         Self::ALL
     }
 
@@ -52,6 +61,7 @@ impl RouteClass {
             Self::Artifact => "artifact",
             Self::Upload => "upload",
             Self::Admin => "admin",
+            Self::Authentication => "authentication",
         }
     }
 }
@@ -79,6 +89,7 @@ pub struct RateLimitConfig {
     pub artifact: RouteLimit,
     pub upload: RouteLimit,
     pub admin: RouteLimit,
+    pub authentication: RouteLimit,
 }
 
 impl Default for RateLimitConfig {
@@ -92,6 +103,7 @@ impl Default for RateLimitConfig {
             artifact: RouteLimit::new(300, 60),
             upload: RouteLimit::new(60, 60),
             admin: RouteLimit::new(120, 60),
+            authentication: RouteLimit::new(60, 60),
         }
     }
 }
@@ -108,6 +120,7 @@ impl RateLimitConfig {
             artifact: RouteLimit::new(300, 60),
             upload: RouteLimit::new(60, 60),
             admin: RouteLimit::new(120, 60),
+            authentication: RouteLimit::new(60, 60),
         }
     }
 
@@ -119,6 +132,7 @@ impl RateLimitConfig {
             RouteClass::Artifact => self.artifact,
             RouteClass::Upload => self.upload,
             RouteClass::Admin => self.admin,
+            RouteClass::Authentication => self.authentication,
         }
     }
 }
@@ -251,6 +265,7 @@ struct RouteCounters {
     artifact: AtomicU64,
     upload: AtomicU64,
     admin: AtomicU64,
+    authentication: AtomicU64,
 }
 
 impl RouteCounters {
@@ -269,6 +284,7 @@ impl RouteCounters {
             RouteClass::Artifact => &self.artifact,
             RouteClass::Upload => &self.upload,
             RouteClass::Admin => &self.admin,
+            RouteClass::Authentication => &self.authentication,
         }
     }
 }
@@ -432,12 +448,21 @@ pub struct UpstreamLimited {
 }
 
 pub async fn enforce(State(state): State<Arc<AppState>>, request: axum::extract::Request, next: Next) -> Response {
-    let path = request.uri().path();
-    if matches!(path, "/+health" | "/+ready") {
+    if request.extensions().get::<ProcessRouteMethodNotAllowed>().is_some() {
         return next.run(request).await;
     }
+    let declared_class = match request
+        .extensions()
+        .get::<RouteDescriptor>()
+        .map(|route| route.rate_limit())
+    {
+        Some(RouteRateLimit::Class(class)) => Some(class),
+        Some(RouteRateLimit::Exempt) => return next.run(request).await,
+        None => None,
+    };
+    let path = request.uri().path();
     let mut service_post_class = None;
-    if *request.method() == Method::POST {
+    if declared_class.is_none() && *request.method() == Method::POST {
         for (_, service) in state.driver_set().services() {
             if let Some(class) = service.classify_service_post(path.trim_start_matches('/'), request.headers()) {
                 service_post_class = Some(class);
@@ -445,14 +470,17 @@ pub async fn enforce(State(state): State<Arc<AppState>>, request: axum::extract:
             }
         }
     }
-    let class = service_post_class.or_else(|| service_route_class(request.method(), path));
+    let class = declared_class
+        .or(service_post_class)
+        .or_else(|| ecosystem_route_class(request.method(), path));
     let has_authorization = request.headers().contains_key(header::AUTHORIZATION);
     // Avoid a second route lookup when credential validation and read classification both need the driver.
-    let resolved_driver = if service_post_class.is_none() && (class.is_none() || has_authorization) {
-        route_driver(&state, path)
-    } else {
-        None
-    };
+    let resolved_driver =
+        if declared_class.is_none() && service_post_class.is_none() && (class.is_none() || has_authorization) {
+            route_driver(&state, path)
+        } else {
+            None
+        };
     let class = match (class, resolved_driver) {
         (Some(class), _) => class,
         (None, Some((driver, _))) => state
@@ -504,16 +532,13 @@ pub async fn enforce(State(state): State<Arc<AppState>>, request: axum::extract:
     }
 }
 
-/// Classifies core routes and returns `None` for reads inside an ecosystem namespace.
+/// Classifies fallback routes shared by ecosystem namespaces.
 ///
 /// The owning driver's `classify_route` handles ecosystem URL semantics, including top-level and
 /// per-index namespaces.
 #[must_use]
-pub fn service_route_class(method: &Method, path: &str) -> Option<RouteClass> {
+pub fn ecosystem_route_class(method: &Method, path: &str) -> Option<RouteClass> {
     let path = path.trim_start_matches('/');
-    if path == "+revocations" || path.starts_with("+revocations/") {
-        return Some(RouteClass::Admin);
-    }
     // HEAD and OPTIONS share read budgets because they do not mutate state.
     if matches!(*method, Method::POST | Method::PUT | Method::PATCH | Method::DELETE) {
         return Some(RouteClass::Upload);
@@ -521,21 +546,7 @@ pub fn service_route_class(method: &Method, path: &str) -> Option<RouteClass> {
     if method != Method::GET && method != Method::HEAD && method != Method::OPTIONS {
         return Some(RouteClass::Upload);
     }
-    if matches!(
-        path,
-        "" | "+api"
-            | "+api/"
-            | "+status"
-            | "+health"
-            | "+ready"
-            | "+acl"
-            | "+stats"
-            | "metrics"
-            | "api-docs/openapi.json"
-    ) || matches!(path, "stats" | "admin/status")
-        || path.ends_with("/+api")
-        || path.contains("/+api/")
-    {
+    if matches!(path, "stats" | "admin/status") || path.ends_with("/+api") || path.contains("/+api/") {
         return Some(RouteClass::Admin);
     }
     None

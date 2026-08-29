@@ -24,10 +24,6 @@ use peryx_search::SearchIndex;
 
 pub use peryx_core::Clock;
 
-pub trait HttpRoutes: Send + Sync {
-    fn routes(&self) -> axum::Router<Arc<AppState>>;
-}
-
 /// Request state without driver-registry access.
 pub struct ServingState {
     pub meta: MetaStore,
@@ -388,7 +384,7 @@ pub struct AppState {
     /// Drivers supply the combined API document at startup.
     pub(super) openapi: std::sync::Arc<str>,
     pub(super) prometheus: Mutex<Vec<Arc<dyn PrometheusSource>>>,
-    pub(super) http_routes: Vec<Arc<dyn HttpRoutes>>,
+    pub(super) http_routes: Vec<Arc<dyn crate::HttpRoutes>>,
 }
 
 impl AppState {
@@ -410,7 +406,7 @@ impl AppState {
         }
     }
 
-    pub fn http_routes(&self) -> impl Iterator<Item = &Arc<dyn HttpRoutes>> {
+    pub fn http_routes(&self) -> impl Iterator<Item = &Arc<dyn crate::HttpRoutes>> {
         self.http_routes.iter()
     }
 }

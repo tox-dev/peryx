@@ -72,6 +72,8 @@ fn test_classify_route_buckets_blob_pulls_as_artifacts() {
         registry.classify_route(&format!("/v2/store/app/blobs/{digest}/contents")),
         RouteClass::Listing
     );
+    assert_eq!(registry.classify_route("/v2/token"), RouteClass::Authentication);
+    assert_eq!(registry.classify_route("/v2/token/"), RouteClass::Authentication);
 }
 
 #[test]

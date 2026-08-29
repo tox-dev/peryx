@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
+use peryx_driver::rate_limit::{RateLimitConfig, RouteLimit};
 use peryx_driver::state::AppState;
 use peryx_identity::OidcVerificationError;
 use tower::ServiceExt as _;
@@ -145,6 +146,58 @@ fn state_with_exchange(exchange: impl IdentityExchange + 'static) -> (tempfile::
 
 fn successful_exchange() -> StubExchange {
     StubExchange::new(ExchangeResult::Success)
+}
+
+#[rstest::rstest]
+#[case::read(Method::GET, "/_/oidc/audience", StatusCode::OK)]
+#[case::write(Method::POST, "/_/oidc/mint-token", StatusCode::UNPROCESSABLE_ENTITY)]
+#[tokio::test]
+async fn test_oidc_routes_use_an_independent_authentication_limit(
+    #[case] method: Method,
+    #[case] uri: &str,
+    #[case] first_status: StatusCode,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = AppState::with_rate_limits(
+        peryx_storage::meta::MetaStore::open(dir.path().join("peryx.redb")).unwrap(),
+        peryx_storage::blob::BlobStore::new(dir.path().join("blobs")),
+        60,
+        Vec::new(),
+        RateLimitConfig {
+            authentication: RouteLimit::new(1, 60),
+            ..RateLimitConfig::enabled_defaults()
+        },
+        std::iter::empty(),
+    );
+    state.register_http_routes(Arc::new(TrustedPublishingRoutes::new(Arc::new(StubExchange::new(
+        ExchangeResult::InvalidIdentity,
+    )))));
+    let app = peryx_http::router(Arc::new(state));
+    let first = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(method.clone())
+                .uri(uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let second = app
+        .clone()
+        .oneshot(Request::builder().method(method).uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let package_write = app
+        .oneshot(Request::post("/unknown").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        (first.status(), second.status(), package_write.status()),
+        (first_status, StatusCode::TOO_MANY_REQUESTS, StatusCode::NOT_FOUND)
+    );
 }
 
 #[test]
