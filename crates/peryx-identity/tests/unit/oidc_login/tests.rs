@@ -79,6 +79,7 @@ fn base_claims(server: &MockServer) -> Value {
 
 fn pending() -> PendingLogin {
     PendingLogin {
+        provider: ProviderId::new("corporate").unwrap(),
         state: "state-abc".to_owned(),
         nonce: "nonce-abc".to_owned(),
         verifier: "verifier-abc".to_owned(),
@@ -218,6 +219,20 @@ async fn test_callback_rejects_a_mismatched_state() {
         provider.callback(&callback, &pending(), NOW).await,
         Err(OidcProviderError::StateMismatch)
     ));
+}
+
+#[tokio::test]
+async fn test_callback_rejects_a_mismatched_provider_without_a_request() {
+    let server = MockServer::start().await;
+    let provider = provider(&server.uri());
+    let mut pending = pending();
+    pending.provider = ProviderId::new("partner").unwrap();
+
+    assert_eq!(
+        provider.callback(&response(), &pending, NOW).await,
+        Err(OidcProviderError::ProviderMismatch)
+    );
+    assert!(server.received_requests().await.unwrap().is_empty());
 }
 
 #[rstest]
@@ -1050,6 +1065,7 @@ fn test_new_accepts_a_secure_provider() {
 #[case::unavailable(OidcProviderError::Unavailable, true, false)]
 #[case::invalid_response(OidcProviderError::InvalidProviderResponse, true, false)]
 #[case::unknown_key(OidcProviderError::UnknownKey, true, false)]
+#[case::provider(OidcProviderError::ProviderMismatch, false, false)]
 #[case::state(OidcProviderError::StateMismatch, false, false)]
 #[case::exchange_transport(
     OidcProviderError::TokenExchange(OidcTokenExchangeError::Transport { status: None }),

@@ -67,12 +67,11 @@ async fn login_callback_inner(state: &AppState, provider: &str, query: Option<&s
     let Some(pending) =
         read_cookie(headers, PRE_AUTH_COOKIE).and_then(|value| sealer.open_pre_auth::<PendingLogin>(&value, now))
     else {
-        return (
-            StatusCode::BAD_REQUEST,
-            "the login session is missing or has expired; start again",
-        )
-            .into_response();
+        return rejected_handoff();
     };
+    if !pending.matches_provider(service.id()) {
+        return rejected_handoff();
+    }
     match response {
         CallbackQuery::Code(response) => match service.callback(&response, &pending, now).await {
             Ok(resolution) => {
@@ -162,6 +161,20 @@ fn provider_not_found() -> Response {
 
 fn misconfigured() -> Response {
     (StatusCode::INTERNAL_SERVER_ERROR, "browser login is not configured").into_response()
+}
+
+fn rejected_handoff() -> Response {
+    let mut response = (
+        StatusCode::BAD_REQUEST,
+        "the login session is missing or has expired; start again",
+    )
+        .into_response();
+    response.headers_mut().append(
+        header::SET_COOKIE,
+        HeaderValue::from_str(&clear_cookie(PRE_AUTH_COOKIE, PRE_AUTH_PATH))
+            .expect("a cleared cookie is a valid header value"),
+    );
+    response
 }
 
 /// Only a valid `invalid_grant` response rejects authentication; upstream failures remain server errors.

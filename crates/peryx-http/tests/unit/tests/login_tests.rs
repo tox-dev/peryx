@@ -63,6 +63,13 @@ fn provider(destination: &str) -> OidcLoginProvider {
     OidcLoginProvider::with_http_transport(settings(destination), transport(destination)).unwrap()
 }
 
+fn provider_with_id(id: &str, destination: &str) -> OidcLoginProvider {
+    let mut settings = settings(destination);
+    settings.id = ProviderId::new(id).unwrap();
+    settings.redirect_uri.set_path(&format!("/_/login/{id}/callback"));
+    OidcLoginProvider::with_http_transport(settings, transport(destination)).unwrap()
+}
+
 fn transport(destination: &str) -> Arc<dyn OidcHttpTransport> {
     Arc::new(WiremockTransport {
         logical_origin: url::Url::parse(&secure_origin(destination)).unwrap(),
@@ -101,6 +108,10 @@ impl OidcHttpTransport for WiremockTransport {
 }
 
 fn state_with_provider(destination: &str) -> (tempfile::TempDir, Arc<AppState>) {
+    state_with_providers(vec![provider(destination)])
+}
+
+fn state_with_providers(providers: Vec<OidcLoginProvider>) -> (tempfile::TempDir, Arc<AppState>) {
     let dir = tempfile::tempdir().unwrap();
     let meta = peryx_storage::meta::MetaStore::open(dir.path().join("peryx.redb")).unwrap();
     let mut state = AppState::with_clock(
@@ -110,11 +121,14 @@ fn state_with_provider(destination: &str) -> (tempfile::TempDir, Arc<AppState>) 
         Vec::new(),
         Arc::new(|| NOW),
     );
-    let provider = provider(destination);
     assert!(state.set_session_sealer(SessionSealer::new(KEY)).is_ok());
     assert!(
         state
-            .set_oidc_logins([OidcLoginService::new(provider, meta, Vec::new())])
+            .set_oidc_logins(providers.into_iter().map(|provider| OidcLoginService::new(
+                provider,
+                meta.clone(),
+                Vec::new()
+            )))
             .is_ok()
     );
     (dir, Arc::new(state))
@@ -142,6 +156,7 @@ fn set_cookies(response: &Response<Body>) -> Vec<String> {
 
 fn pre_auth_cookie(state: &str) -> String {
     let pending = PendingLogin {
+        provider: ProviderId::new("corporate").unwrap(),
         state: state.to_owned(),
         nonce: "n".to_owned(),
         verifier: "v".to_owned(),
@@ -306,6 +321,86 @@ async fn test_callback_without_a_pre_auth_cookie_is_a_bad_request() {
 }
 
 #[tokio::test]
+async fn test_callback_rejects_a_handoff_from_another_provider_without_contacting_it() {
+    let corporate = MockServer::start().await;
+    let partner = MockServer::start().await;
+    let corporate_uri = corporate.uri();
+    mount_issuer(&corporate, &secure_origin(&corporate_uri)).await;
+    let (_dir, state) = state_with_providers(vec![
+        provider(&corporate_uri),
+        provider_with_id("partner", &partner.uri()),
+    ]);
+    let start = send(state.clone(), Method::GET, "/_/login/corporate", None).await;
+    let redirect = location(&start);
+    let pending_state = url::Url::parse(&redirect)
+        .unwrap()
+        .query_pairs()
+        .find_map(|(key, value)| (key == "state").then(|| value.into_owned()))
+        .unwrap();
+    let cookie = set_cookies(&start)
+        .into_iter()
+        .find_map(|cookie| {
+            cookie
+                .starts_with(&format!("{PRE_AUTH_COOKIE}="))
+                .then(|| cookie.split(';').next().unwrap().to_owned())
+        })
+        .unwrap();
+
+    let response = send(
+        state,
+        Method::GET,
+        &format!("/_/login/partner/callback?state={pending_state}&code=c"),
+        Some(&cookie),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(
+        set_cookies(&response)
+            .iter()
+            .any(|cookie| cookie.starts_with(&format!("{PRE_AUTH_COOKIE}=;")) && cookie.contains("Max-Age=0"))
+    );
+    assert_eq!(
+        body_text(response).await,
+        "the login session is missing or has expired; start again"
+    );
+    assert!(partner.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_callback_rejects_and_clears_a_legacy_handoff() {
+    let server = MockServer::start().await;
+    let (_dir, state) = state_with_provider(&server.uri());
+    let cookie = format!(
+        "{PRE_AUTH_COOKIE}={}",
+        SessionSealer::new(KEY).seal_pre_auth(
+            &json!({ "state": "expected", "nonce": "n", "verifier": "v", "challenge": "c" }),
+            VALID_UNTIL,
+        )
+    );
+
+    let response = send(
+        state,
+        Method::GET,
+        "/_/login/corporate/callback?state=expected&code=c",
+        Some(&cookie),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(
+        set_cookies(&response)
+            .iter()
+            .any(|cookie| cookie.starts_with(&format!("{PRE_AUTH_COOKIE}=;")) && cookie.contains("Max-Age=0"))
+    );
+    assert_eq!(
+        body_text(response).await,
+        "the login session is missing or has expired; start again"
+    );
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn test_callback_with_a_mismatched_state_fails_authentication() {
     let (_dir, state) = state_with_provider("http://issuer.invalid/");
     let response = send(
@@ -415,6 +510,7 @@ async fn test_callback_rejects_an_invalid_response_shape(#[case] query: &str) {
 async fn test_callback_maps_an_unreachable_provider_to_service_unavailable() {
     let (_dir, state) = state_with_provider("http://127.0.0.1:1/");
     let pending = PendingLogin {
+        provider: ProviderId::new("corporate").unwrap(),
         state: "s".to_owned(),
         nonce: "n".to_owned(),
         verifier: "v".to_owned(),
@@ -685,22 +781,15 @@ async fn test_login_start_redirects_to_the_provider_and_seals_the_handoff() {
     );
 }
 
+#[rstest]
+#[case::single_provider(false)]
+#[case::matching_provider_among_multiple(true)]
 #[tokio::test]
-async fn test_a_valid_callback_creates_a_session() {
+async fn test_a_valid_callback_creates_a_session(#[case] multiple_providers: bool) {
     let server = MockServer::start().await;
     let issuer = secure_origin(&server.uri());
     mount_issuer(&server, &issuer).await;
-    let dir = tempfile::tempdir().unwrap();
-    let meta = peryx_storage::meta::MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-    let mut state = AppState::with_clock(
-        meta.clone(),
-        peryx_storage::blob::BlobStore::new(dir.path().join("blobs")),
-        60,
-        Vec::new(),
-        Arc::new(|| NOW),
-    );
     let provider = provider(&server.uri());
-    assert!(state.set_session_sealer(SessionSealer::new(KEY)).is_ok());
 
     let authorization = provider.authorization(NOW).await.unwrap();
     let id_token = mint(&issuer, &authorization.pending.nonce);
@@ -711,12 +800,11 @@ async fn test_a_valid_callback_creates_a_session() {
         })))
         .mount(&server)
         .await;
-    assert!(
-        state
-            .set_oidc_logins([OidcLoginService::new(provider, meta, Vec::new())])
-            .is_ok()
-    );
-    let state = Arc::new(state);
+    let mut providers = vec![provider];
+    if multiple_providers {
+        providers.push(provider_with_id("partner", &server.uri()));
+    }
+    let (_dir, state) = state_with_providers(providers);
 
     let cookie = format!(
         "{PRE_AUTH_COOKIE}={}",

@@ -173,6 +173,7 @@ impl OidcLoginProvider {
         let endpoints = self.endpoints(now).await?;
         let verifier = random_token()?;
         let pending = PendingLogin {
+            provider: self.id.clone(),
             state: random_token()?,
             nonce: random_token()?,
             challenge: pkce_challenge(&verifier),
@@ -193,14 +194,17 @@ impl OidcLoginProvider {
     }
 
     /// # Errors
-    /// Returns [`OidcProviderError`] on a state mismatch, a failed exchange, or an ID token that fails
-    /// signature, issuer, audience, time claim, or nonce validation.
+    /// Returns [`OidcProviderError`] on a provider or state mismatch, a failed exchange, or an ID token
+    /// that fails signature, issuer, audience, time claim, or nonce validation.
     pub async fn callback(
         &self,
         response: &CallbackResponse,
         pending: &PendingLogin,
         now: i64,
     ) -> Result<ExternalLogin, OidcProviderError> {
+        if !pending.matches_provider(&self.id) {
+            return Err(OidcProviderError::ProviderMismatch);
+        }
         if !pending.matches_state(&response.state) {
             return Err(OidcProviderError::StateMismatch);
         }
@@ -478,6 +482,7 @@ pub struct Authorization {
 /// Treat all fields as secrets; bind them to the browser session and use them once.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingLogin {
+    pub provider: ProviderId,
     pub state: String,
     pub nonce: String,
     pub verifier: String,
@@ -485,6 +490,11 @@ pub struct PendingLogin {
 }
 
 impl PendingLogin {
+    #[must_use]
+    pub fn matches_provider(&self, presented: &ProviderId) -> bool {
+        presented == &self.provider
+    }
+
     #[must_use]
     pub fn matches_state(&self, presented: &str) -> bool {
         crate::secrets_match(presented, &self.state)
@@ -559,6 +569,8 @@ pub enum OidcProviderError {
     InvalidProviderResponse,
     #[error("OIDC provider names an unknown signing key")]
     UnknownKey,
+    #[error("OIDC callback provider does not match the pending login")]
+    ProviderMismatch,
     #[error("OIDC callback state does not match the pending login")]
     StateMismatch,
     #[error("OIDC authorization code exchange failed: {0}")]
