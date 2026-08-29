@@ -598,8 +598,10 @@ impl OwnershipGroup {
                     OwnershipResponse::Applied(OwnershipEffect::Rejected(Rejection::SameHome)) => {
                         CommandOutcome::NoChange
                     }
-                    OwnershipResponse::Applied(OwnershipEffect::Rejected(rejection)) => {
-                        return Err(ControlError::Invalid(rejection_reason(rejection).to_owned()));
+                    OwnershipResponse::Applied(OwnershipEffect::Rejected(Rejection::NotAssigned)) => {
+                        return Err(ControlError::Invalid(
+                            "the authority is not assigned a home to move or fence".to_owned(),
+                        ));
                     }
                     _ => CommandOutcome::Committed,
                 };
@@ -653,13 +655,6 @@ pub fn map_write_error(error: &RaftError<u64, ClientWriteError<u64, PeryxNode>>)
             leader: forward.leader_node.as_ref().map(|node| node.addr.clone()),
         },
         other => ControlError::Unavailable(other.to_string()),
-    }
-}
-
-const fn rejection_reason(rejection: Rejection) -> &'static str {
-    match rejection {
-        Rejection::SameHome => "the authority already homes at that datacenter",
-        Rejection::NotAssigned => "the authority is not assigned a home to move or fence",
     }
 }
 
