@@ -5,7 +5,7 @@ use peryx_storage::meta::{IntentAdmission, IntentLimits, IntentPhase, OperationS
 use super::support::*;
 use crate::PypiServing;
 use crate::serving::finalize_sweep::finalize_admitted;
-use crate::store::put_upload;
+use crate::store::{list_upload_entries, put_upload};
 
 const ARTIFACT: &[u8] = b"finalized-artifact-bytes";
 const INDEX: &str = "hosted";
@@ -48,6 +48,37 @@ fn place(meta: &MetaStore) {
         .unwrap();
 }
 
+fn state_with_route_collision() -> (tempfile::TempDir, Arc<peryx_driver::state::ServingState>) {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    meta.initialize_distributed_state().unwrap();
+    let state = AppState::with_clock(
+        meta,
+        BlobStorage::filesystem(dir.path().join("blobs")),
+        60,
+        vec![
+            Index {
+                name: "other".to_owned(),
+                route: "other".to_owned(),
+                ecosystem: crate::ECOSYSTEM,
+                kind: IndexKind::Hosted { volatile: true },
+                policy: Policy::default(),
+                acl: peryx_identity::IndexAcl::default(),
+            },
+            Index {
+                name: INDEX.to_owned(),
+                route: INDEX.to_owned(),
+                ecosystem: crate::ECOSYSTEM,
+                kind: IndexKind::Hosted { volatile: true },
+                policy: Policy::default(),
+                acl: crate::tests::writer_acl("s3cret"),
+            },
+        ],
+        Arc::new(|| 1000),
+    );
+    (dir, state.serving)
+}
+
 #[tokio::test]
 async fn test_a_sweep_finalizes_a_pending_admitted_upload() {
     let harness = harness_with(true, true).await;
@@ -80,6 +111,68 @@ async fn test_a_sweep_finalizes_a_pending_admitted_upload() {
         .unwrap();
     assert_eq!(record.state, OperationState::Published);
     assert_eq!(record.response, b"upload accepted");
+}
+
+#[tokio::test]
+async fn test_a_sweep_finalizes_against_the_intent_route() {
+    let (_dir, state) = state_with_route_collision();
+    stage(&state.meta, INTENT_KEY, AUTHORITY);
+    place(&state.meta);
+    put_upload(&state.meta, "other", AUTHORITY, FILENAME, b"other").unwrap();
+    put_upload(&state.meta, INDEX, AUTHORITY, FILENAME, RECORD).unwrap();
+
+    let finalized = PypiServing.finalize_admitted(state.clone()).await;
+
+    assert_eq!(
+        (
+            finalized,
+            state.meta.staged_intent(INTENT_KEY).unwrap().unwrap().phase,
+            state.meta.operation_outcome(&operation()).unwrap().unwrap().state,
+        ),
+        (1, IntentPhase::Admitted, OperationState::Published),
+    );
+}
+
+#[rstest]
+#[case::missing_target_row(INDEX, false)]
+#[case::unknown_route("missing", true)]
+#[tokio::test]
+async fn test_a_sweep_does_not_fall_back_to_another_index(#[case] route: &str, #[case] store_target_row: bool) {
+    let (_dir, state) = state_with_route_collision();
+    let key = format!("pypi:{route}:{AUTHORITY}:{FILENAME}");
+    stage(&state.meta, &key, AUTHORITY);
+    place(&state.meta);
+    put_upload(&state.meta, "other", AUTHORITY, FILENAME, b"other").unwrap();
+    if store_target_row {
+        put_upload(&state.meta, INDEX, AUTHORITY, FILENAME, RECORD).unwrap();
+    }
+
+    let finalized = PypiServing.finalize_admitted(state.clone()).await;
+
+    assert_eq!(
+        (finalized, state.meta.staged_intent(&key).unwrap().unwrap().phase),
+        (0, IntentPhase::Pending),
+    );
+}
+
+#[tokio::test]
+async fn test_a_sweep_resolves_a_virtual_upload_route() {
+    let harness = harness_with(true, true).await;
+    initialize_distributed_schema(&harness.state);
+    let key = "pypi:root/pypi:flask:flask-1.0-py3-none-any.whl";
+    stage(&harness.state.serving.meta, key, AUTHORITY);
+    place(&harness.state.serving.meta);
+    put_upload(&harness.state.serving.meta, INDEX, AUTHORITY, FILENAME, RECORD).unwrap();
+
+    let finalized = PypiServing.finalize_admitted(harness.state.serving.clone()).await;
+
+    assert_eq!(
+        (
+            finalized,
+            harness.state.serving.meta.staged_intent(key).unwrap().unwrap().phase,
+        ),
+        (1, IntentPhase::Admitted),
+    );
 }
 
 #[tokio::test]
@@ -137,6 +230,50 @@ async fn test_a_sweep_skips_an_intent_whose_rows_are_not_stored_here() {
             .unwrap()
             .phase,
         IntentPhase::Pending,
+    );
+}
+
+#[tokio::test]
+async fn test_an_upload_retry_publishes_after_the_sweep_finds_no_target_row() {
+    let harness = harness_with(true, true).await;
+    let wheel = fixture_wheel();
+    let filename = "peryxpkg-1.0-py3-none-any.whl";
+    let key = format!("pypi:{INDEX}:peryxpkg:{filename}");
+    harness
+        .state
+        .serving
+        .meta
+        .stage_intent(
+            IntentAdmission {
+                authority: "peryxpkg",
+                key: &key,
+                digest: Digest::of(&wheel).as_str(),
+                size: wheel.len() as u64,
+                payload: b"payload",
+            },
+            LIMITS,
+            1000,
+        )
+        .unwrap();
+    assert_eq!(PypiServing.finalize_admitted(harness.state.serving.clone()).await, 0);
+    let (content_type, body) = multipart_body(&upload_fields(), Some((filename, &wheel)));
+
+    let status = post_upload(&harness.state, "/hosted/", Some(&upload_auth()), &content_type, body).await;
+
+    assert_eq!(
+        (
+            status,
+            harness.state.serving.meta.staged_intent(&key).unwrap().unwrap().phase,
+        ),
+        (StatusCode::OK, IntentPhase::Admitted),
+    );
+    assert_eq!(
+        list_upload_entries(&harness.state.serving.meta, INDEX, "peryxpkg")
+            .unwrap()
+            .into_iter()
+            .map(|(filename, _)| filename)
+            .collect::<Vec<_>>(),
+        [filename],
     );
 }
 

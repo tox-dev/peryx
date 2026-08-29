@@ -16,6 +16,7 @@ use peryx_index::Index;
 use peryx_storage::meta::StagedIntent;
 
 use super::finalize::{FinalizeDescriptor, finalize_admitted_upload};
+use super::upload_target;
 use crate::filename::distribution_version_segment;
 use crate::store::upload_key;
 
@@ -55,10 +56,10 @@ pub async fn finalize_admitted(state: &Arc<ServingState>) -> u64 {
 /// `false` for an intent this node cannot finalize - not `PyPI`, no stored rows, no write token, or fenced
 /// out - so the caller counts only the intents it advanced.
 async fn finalize_one(state: &Arc<ServingState>, key: &str, intent: &StagedIntent) -> bool {
-    let Some(filename) = pypi_filename(key) else {
+    let Some((route, filename)) = pypi_identity(key) else {
         return false;
     };
-    let Some((index, record)) = locate(state, &intent.authority, filename) else {
+    let Some((index, record)) = locate(state, route, &intent.authority, filename) else {
         return false;
     };
     let Some(principal) = write_principal(index, &intent.authority) else {
@@ -89,29 +90,28 @@ async fn finalize_one(state: &Arc<ServingState>, key: &str, intent: &StagedInten
     }
 }
 
-/// The distribution filename an intent key carries, or `None` when the key is not a `PyPI` intent. A `PyPI`
-/// key is `pypi:{route}:{authority}:{filename}`; the authority is read from the staging record, so only
-/// the filename is parsed back out here.
-fn pypi_filename(key: &str) -> Option<&str> {
-    let rest = key.strip_prefix(PYPI_INTENT_PREFIX)?;
-    let mut parts = rest.splitn(3, ':');
-    let _route = parts.next()?;
-    let _authority = parts.next()?;
-    parts.next()
+/// The index route and distribution filename an intent key carries, or `None` when the key is not a
+/// `PyPI` intent. The staging record supplies the authority.
+fn pypi_identity(key: &str) -> Option<(&str, &str)> {
+    let (route, identity) = key.strip_prefix(PYPI_INTENT_PREFIX)?.split_once(':')?;
+    let (_authority, filename) = identity.split_once(':')?;
+    Some((route, filename))
 }
 
 /// The configured index whose store holds this upload's rows, paired with its serialized record. The
 /// bytes were written where the upload was admitted, so a home finalize reads the record back to
 /// confirm the write landed and to re-publish it idempotently; an intent whose rows are not stored here
 /// has nothing to finalize.
-fn locate<'a>(state: &'a ServingState, authority: &str, filename: &str) -> Option<(&'a Index, Vec<u8>)> {
-    state.indexes.iter().find_map(|index| {
-        let record = state
+fn locate<'a>(state: &'a ServingState, route: &str, authority: &str, filename: &str) -> Option<(&'a Index, Vec<u8>)> {
+    let index = state.indexes.iter().find(|index| index.route == route)?;
+    let hosted = upload_target(state, index)?;
+    Some((
+        hosted,
+        state
             .meta
-            .get_driver_value(&upload_key(&index.name, authority, filename))
-            .ok()??;
-        Some((index, record))
-    })
+            .get_driver_value(&upload_key(&hosted.name, authority, filename))
+            .ok()??,
+    ))
 }
 
 /// A principal an index still authorizes to write `project`, standing in for the uploader at
