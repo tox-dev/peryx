@@ -892,6 +892,16 @@ pub enum DurabilityPolicy {
 
 impl DurabilityPolicy {
     #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Majority => "majority",
+            Self::Everywhere => "everywhere",
+            Self::AtLeast(_) => "at_least",
+        }
+    }
+
+    #[must_use]
     pub const fn required_acks(self, configured: usize) -> usize {
         match self {
             Self::Local => 1,

@@ -93,6 +93,7 @@ impl RuntimeRole {
 pub struct RuntimeConfig {
     pub mode: DistributedMode,
     pub role: RuntimeRole,
+    pub write_ack_policy: DurabilityPolicy,
     pub membership: Option<RuntimeMembership>,
     pub node_identity: Option<String>,
     pub writer_identity: Option<String>,
@@ -150,7 +151,6 @@ struct GroupReadinessSource {
     policy: DurabilityPolicy,
 }
 
-/// Static groups default to a strict majority of the configured roster.
 fn group_readiness_source(config: &RuntimeConfig) -> Option<GroupReadinessSource> {
     let members = config
         .membership
@@ -167,7 +167,7 @@ fn group_readiness_source(config: &RuntimeConfig) -> Option<GroupReadinessSource
         .collect();
     Some(GroupReadinessSource {
         members,
-        policy: DurabilityPolicy::Majority,
+        policy: config.write_ack_policy,
     })
 }
 
@@ -256,7 +256,7 @@ impl AvailabilityNode {
         json!({
             "ready": readiness.is_ready(),
             "durable_frontier": readiness.durable_frontier,
-            "policy": "majority",
+            "policy": group.policy.as_str(),
             "blocked": readiness.blocked,
         })
     }

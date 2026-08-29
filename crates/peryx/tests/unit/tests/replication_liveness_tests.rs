@@ -5,7 +5,9 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use http_body_util::BodyExt as _;
 use peryx_driver::state::AppState;
+use peryx_ha::DurabilityPolicy;
 use peryx_identity::{GrantScope, Role};
+use rstest::rstest;
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
 
@@ -173,7 +175,8 @@ async fn test_primary_without_a_roster_mounts_no_heartbeat_ingest() {
 #[tokio::test]
 async fn test_group_readiness_blocks_until_the_replica_reports_then_clears() {
     let dir = tempfile::tempdir().unwrap();
-    let config = primary_with_roster(&dir);
+    let mut config = primary_with_roster(&dir);
+    config.write_ack.policy = DurabilityPolicy::Majority;
     let state = build_state(&config).unwrap();
     let operator = operator(&state).await;
     let runtime = ReplicationRuntime::new(&config, &state).unwrap();
@@ -198,6 +201,48 @@ async fn test_group_readiness_blocks_until_the_replica_reports_then_clears() {
     assert_eq!(readiness["ready"], json!(true));
     assert_eq!(readiness["blocked"], Value::Null);
     assert_eq!(readiness["durable_frontier"], json!(0));
+}
+
+#[rstest]
+#[case::local(
+    DurabilityPolicy::Local,
+    json!({"ready": true, "durable_frontier": 0, "policy": "local", "blocked": null})
+)]
+#[case::majority(
+    DurabilityPolicy::Majority,
+    json!({
+        "ready": false,
+        "durable_frontier": 0,
+        "policy": "majority",
+        "blocked": {"insufficient_members": {"reporting": 1, "required": 2}},
+    })
+)]
+#[case::everywhere(
+    DurabilityPolicy::Everywhere,
+    json!({
+        "ready": false,
+        "durable_frontier": 0,
+        "policy": "everywhere",
+        "blocked": {"insufficient_members": {"reporting": 1, "required": 3}},
+    })
+)]
+#[tokio::test]
+async fn test_group_readiness_uses_the_write_ack_policy(#[case] policy: DurabilityPolicy, #[case] expected: Value) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = primary_with_roster(&dir);
+    config.write_ack.policy = policy;
+    config
+        .dc_membership
+        .as_mut()
+        .unwrap()
+        .members
+        .push(member("replica-b", DcRole::Replica));
+    let state = build_state(&config).unwrap();
+    let operator = operator(&state).await;
+    let runtime = ReplicationRuntime::new(&config, &state).unwrap();
+    let readiness = health(&runtime.mount(router_for(state)), Some(&operator)).await["group_readiness"].clone();
+
+    assert_eq!(readiness, expected);
 }
 
 #[tokio::test]

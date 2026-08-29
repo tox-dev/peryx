@@ -74,6 +74,7 @@ pub(crate) fn runtime_config(config: &Config) -> anyhow::Result<Option<RuntimeCo
     Ok(Some(RuntimeConfig {
         mode,
         role,
+        write_ack_policy: config.write_ack.policy,
         membership: config.dc_membership.as_ref().map(|membership| RuntimeMembership {
             group: membership.group.clone(),
             members: membership

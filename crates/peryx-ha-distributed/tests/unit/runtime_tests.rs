@@ -224,7 +224,6 @@ fn install_runtime_services(state: &mut Arc<AppState>, config: &RuntimeConfig) {
         &DistributedServiceConfig {
             runtime: config.clone(),
             read_only: false,
-            write_ack_policy: peryx_ha::DurabilityPolicy::Local,
             write_ack_deadline: Duration::ZERO,
         },
         Arc::get_mut(state).unwrap(),
@@ -392,6 +391,7 @@ fn primary_config(dir: &tempfile::TempDir, mode: DistributedMode) -> RuntimeConf
             source: "primary-a".to_owned(),
             token: TOKEN.to_owned(),
         },
+        write_ack_policy: peryx_ha::DurabilityPolicy::Local,
         membership: None,
         node_identity: None,
         writer_identity: None,
@@ -409,6 +409,7 @@ fn replica_config(dir: &tempfile::TempDir, upstream: &str) -> RuntimeConfig {
             poll_interval: Duration::from_millis(1),
             page_size: NonZeroUsize::new(2).unwrap(),
         },
+        write_ack_policy: peryx_ha::DurabilityPolicy::Local,
         membership: None,
         node_identity: None,
         writer_identity: Some("writer-a".to_owned()),
@@ -832,7 +833,6 @@ async fn prepared_runtime_owns_distributed_startup() {
         &DistributedServiceConfig {
             runtime: config.clone(),
             read_only: false,
-            write_ack_policy: peryx_ha::DurabilityPolicy::Local,
             write_ack_deadline: Duration::ZERO,
         },
         Arc::get_mut(&mut state).unwrap(),
@@ -874,7 +874,6 @@ async fn prepared_ha_runtime_binds_consensus_workers_and_shutdown() {
         &DistributedServiceConfig {
             runtime: config.clone(),
             read_only: false,
-            write_ack_policy: peryx_ha::DurabilityPolicy::Local,
             write_ack_deadline: Duration::ZERO,
         },
         Arc::get_mut(&mut state).unwrap(),
@@ -1001,7 +1000,6 @@ async fn missing_listener_starts_no_consensus_log_or_authority() {
         &DistributedServiceConfig {
             runtime: config.clone(),
             read_only: false,
-            write_ack_policy: peryx_ha::DurabilityPolicy::Local,
             write_ack_deadline: Duration::ZERO,
         },
         Arc::get_mut(&mut state).unwrap(),
@@ -1045,7 +1043,6 @@ async fn assembly_failure_publishes_no_authority() {
         &DistributedServiceConfig {
             runtime: config,
             read_only: false,
-            write_ack_policy: peryx_ha::DurabilityPolicy::Local,
             write_ack_deadline: Duration::ZERO,
         },
         Arc::get_mut(&mut state).unwrap(),
@@ -1252,6 +1249,7 @@ async fn primary_runtime_reports_group_readiness_and_ignites_consensus() {
     let (dir, mut state) = state();
     install_distributed_services(&mut state, peryx_core::TopologyMode::Ha, peryx_core::NodeRole::Writer);
     let mut config = primary_config(&dir, DistributedMode::Ha);
+    config.write_ack_policy = peryx_ha::DurabilityPolicy::Majority;
     config.node_identity = Some("writer".to_owned());
     config.writer_identity = Some("writer".to_owned());
     config.membership = Some(membership(vec![

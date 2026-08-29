@@ -15,8 +15,8 @@ use peryx_driver::{AppState, DriverSet};
 use peryx_ha::{
     AnalyticsCompleteness, AvailabilityAssembler, AvailabilityCapabilities, AvailabilityFailure, AvailabilityInstall,
     AvailabilityShutdownError, AvailabilityShutdownStage, AvailabilityTaskError, AvailabilityTaskReport, BlobServices,
-    ControlAuthorizer, ControlExecutor, DurabilityPolicy, OwnershipAuthority, ReceiptSource, ReclamationFrontiers,
-    ReferenceInventory, RemoteFrontierSource,
+    ControlAuthorizer, ControlExecutor, OwnershipAuthority, ReceiptSource, ReclamationFrontiers, ReferenceInventory,
+    RemoteFrontierSource,
 };
 use peryx_storage::blob::{BlobStorage, BlobStore};
 use peryx_storage::meta::{BackendId, DataCenterId};
@@ -35,7 +35,6 @@ const RECEIPT_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct DistributedServiceConfig {
     pub runtime: RuntimeConfig,
     pub read_only: bool,
-    pub write_ack_policy: DurabilityPolicy,
     pub write_ack_deadline: Duration,
 }
 
@@ -109,7 +108,7 @@ impl AvailabilityAssembler for DistributedServiceAssembly {
         let metrics = Arc::new(DcDurabilityMetrics::default());
         let durability = Arc::new(DistributedBlobDurability::new(
             topology.clone(),
-            config.write_ack_policy,
+            config.runtime.write_ack_policy,
             receipt_sources(&config.runtime)?,
             remote_frontier_sources(&config.runtime)?,
             config.write_ack_deadline,

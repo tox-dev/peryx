@@ -920,6 +920,15 @@ fn durability_policy_contract(#[case] policy: DurabilityPolicy, #[case] configur
 }
 
 #[rstest]
+#[case(DurabilityPolicy::Local, "local")]
+#[case(DurabilityPolicy::Majority, "majority")]
+#[case(DurabilityPolicy::Everywhere, "everywhere")]
+#[case(DurabilityPolicy::AtLeast(NonZeroUsize::new(3).unwrap()), "at_least")]
+fn durability_policy_name_contract(#[case] policy: DurabilityPolicy, #[case] expected: &str) {
+    assert_eq!(policy.as_str(), expected);
+}
+
+#[rstest]
 #[case(TransportError::Disconnected, true, None)]
 #[case(TransportError::Timeout, true, None)]
 #[case(TransportError::ServerError { status: 503 }, true, None)]

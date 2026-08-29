@@ -118,6 +118,7 @@ fn runtime_config(dir: &tempfile::TempDir, mode: DistributedMode, role: RuntimeR
     RuntimeConfig {
         mode,
         role,
+        write_ack_policy: peryx_ha::DurabilityPolicy::Majority,
         membership: Some(RuntimeMembership {
             group: "availability".to_owned(),
             members: vec![member(
@@ -156,7 +157,6 @@ fn distributed_services_own_topology_durability_and_metrics() {
                 },
             ),
             read_only: false,
-            write_ack_policy: peryx_ha::DurabilityPolicy::Majority,
             write_ack_deadline: Duration::from_secs(5),
         },
         &service_context(&dir),
@@ -190,7 +190,6 @@ fn service_installation_applies_the_distributed_contract() {
                 },
             ),
             read_only: false,
-            write_ack_policy: peryx_ha::DurabilityPolicy::Majority,
             write_ack_deadline: Duration::from_secs(5),
         },
         &mut state,
@@ -346,7 +345,6 @@ fn service_installation_propagates_configuration_errors(
         &DistributedServiceConfig {
             runtime,
             read_only: false,
-            write_ack_policy: peryx_ha::DurabilityPolicy::Local,
             write_ack_deadline: Duration::ZERO,
         },
         &mut state,

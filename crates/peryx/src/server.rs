@@ -357,7 +357,6 @@ fn configure_availability(state: &mut AppState, config: &Config, read_only: bool
         &peryx_ha_distributed::DistributedServiceConfig {
             runtime,
             read_only,
-            write_ack_policy: config.write_ack.policy,
             write_ack_deadline: config.write_ack.deadline,
         },
         state,

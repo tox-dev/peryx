@@ -142,9 +142,10 @@ without `node_identity` sends no heartbeat and counts as not reporting.
 
 The field carries four values. `ready` is whether the group can acknowledge a new write under its durability policy.
 `durable_frontier` is the highest serial the policy's required number of members have all applied, the serial the group
-guarantees is durable. `policy` names the quorum rule, `majority`: a strict majority of the configured members.
-`blocked` is `null` when the group is ready, otherwise the reason it is not: `writer_lost` when no writer is reporting,
-or `insufficient_members` with the `reporting` and `required` counts when a writer is present but too few members are.
+guarantees is durable. `policy` is the configured write-ack policy: `local` requires the writer, `majority` requires a
+strict majority of configured members, and `everywhere` requires every configured member. `blocked` is `null` when the
+group is ready, otherwise the reason it is not: `writer_lost` when no writer is reporting, or `insufficient_members`
+with the `reporting` and `required` counts when a writer is present but too few members are.
 
 Membership is the fixed configured roster, so a vanished replica reads as one that is not reporting rather than
 shrinking the quorum into a smaller, unsafe one. A single lagging or lost replica never blocks readiness while the rest
