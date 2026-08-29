@@ -522,6 +522,10 @@ impl BlobReferenceDriver for Driver {
 }
 
 impl RetentionDriver for Driver {
+    fn validate_retention(&self, _policy: &RetentionPolicy) -> Result<(), String> {
+        Ok(())
+    }
+
     fn plan_retention(
         &self,
         meta: &MetaStore,
@@ -530,6 +534,7 @@ impl RetentionDriver for Driver {
         now: Option<i64>,
         emit: &mut dyn FnMut(RetentionDecision) -> Result<(), String>,
     ) -> Result<RetentionSummary, String> {
+        self.validate_retention(policy)?;
         for decision in policy.plan_resource(
             now,
             [("2.0", 0), ("1.0", 1)]

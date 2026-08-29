@@ -18,10 +18,12 @@ use peryx_policy::{
     RetentionVisibility,
 };
 use peryx_storage::meta::MetaStore;
+use rstest::rstest;
 use tower::ServiceExt as _;
 
 const ADMIN_PASSWORD: &str = "administrator password";
 const OPERATOR_PASSWORD: &str = "operator password";
+const UNSUPPORTED_SELECTOR_ERROR: &str = "example retention does not support selector \"cached\"";
 
 type PlanCalls = Arc<Mutex<Vec<(String, Option<i64>)>>>;
 
@@ -34,6 +36,10 @@ struct StubDriver {
 }
 
 impl RetentionDriver for StubDriver {
+    fn validate_retention(&self, _policy: &peryx_policy::RetentionPolicy) -> Result<(), String> {
+        Ok(())
+    }
+
     fn plan_retention(
         &self,
         _meta: &MetaStore,
@@ -42,6 +48,7 @@ impl RetentionDriver for StubDriver {
         _now: Option<i64>,
         emit: &mut dyn FnMut(RetentionDecision) -> Result<(), String>,
     ) -> Result<RetentionSummary, String> {
+        self.validate_retention(policy)?;
         for decision in &self.decisions {
             emit(decision.clone())?;
         }
@@ -57,9 +64,14 @@ impl RetentionDriver for StubDriver {
 
 struct TimestampDriver {
     calls: PlanCalls,
+    validation_error: Option<&'static str>,
 }
 
 impl RetentionDriver for TimestampDriver {
+    fn validate_retention(&self, _policy: &peryx_policy::RetentionPolicy) -> Result<(), String> {
+        self.validation_error.map_or(Ok(()), |error| Err(error.to_owned()))
+    }
+
     fn plan_retention(
         &self,
         meta: &MetaStore,
@@ -68,6 +80,7 @@ impl RetentionDriver for TimestampDriver {
         now: Option<i64>,
         emit: &mut dyn FnMut(RetentionDecision) -> Result<(), String>,
     ) -> Result<RetentionSummary, String> {
+        self.validate_retention(policy)?;
         self.calls.lock().unwrap().push((index.to_owned(), now));
         StubDriver {
             decisions: ["a", "b", "c"].into_iter().map(decision).collect(),
@@ -279,7 +292,14 @@ async fn timestamp_fixture() -> (Fixture, Arc<AtomicI64>, PlanCalls) {
     let clock_now = now.clone();
     let clock: Clock = Arc::new(move || clock_now.load(Ordering::Relaxed));
     let calls = Arc::new(Mutex::new(Vec::new()));
-    let fixture = Fixture::with_driver(Arc::new(TimestampDriver { calls: calls.clone() }), clock).await;
+    let fixture = Fixture::with_driver(
+        Arc::new(TimestampDriver {
+            calls: calls.clone(),
+            validation_error: None,
+        }),
+        clock,
+    )
+    .await;
     (fixture, now, calls)
 }
 
@@ -320,6 +340,43 @@ async fn test_plan_returns_ordered_candidates_and_identity_for_an_administrator(
     assert_eq!(body["candidates"][0]["artifact"], "a");
     assert!(body["summary"]["policy_version"].is_number());
     assert!(body["next_cursor"].is_null());
+}
+
+#[rstest]
+#[case::plan("/+retention/plan")]
+#[case::export("/+retention/export")]
+#[tokio::test]
+async fn test_retention_rejects_an_unsupported_selector_before_output(#[case] uri: &str) {
+    let fixture = Fixture::with_driver(
+        Arc::new(TimestampDriver {
+            calls: Arc::new(Mutex::new(Vec::new())),
+            validation_error: Some(UNSUPPORTED_SELECTOR_ERROR),
+        }),
+        Arc::new(|| 0),
+    )
+    .await;
+
+    let response = fixture
+        .post(
+            uri,
+            Some(("Alice", ADMIN_PASSWORD)),
+            Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "repository": "hosted",
+                    "expire": [{"selector": "cached"}],
+                }))
+                .unwrap(),
+            ),
+            true,
+        )
+        .await;
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(
+        body.as_ref(),
+        br#"{"error":"example retention does not support selector \"cached\""}"#
+    );
 }
 
 #[tokio::test]

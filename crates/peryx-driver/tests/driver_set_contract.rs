@@ -58,14 +58,19 @@ impl FsckDriver for Driver {
 }
 
 impl RetentionDriver for Driver {
+    fn validate_retention(&self, _policy: &peryx_policy::RetentionPolicy) -> Result<(), String> {
+        Ok(())
+    }
+
     fn plan_retention(
         &self,
         _meta: &peryx_storage::meta::MetaStore,
         _index: &str,
-        _policy: &peryx_policy::RetentionPolicy,
+        policy: &peryx_policy::RetentionPolicy,
         _now: Option<i64>,
         emit: &mut dyn FnMut(peryx_policy::RetentionDecision) -> Result<(), String>,
     ) -> Result<peryx_policy::RetentionSummary, String> {
+        self.validate_retention(policy)?;
         emit(peryx_policy::RetentionDecision {
             resource: "resource".to_owned(),
             group: None,

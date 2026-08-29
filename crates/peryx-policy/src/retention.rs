@@ -124,6 +124,11 @@ impl RetentionPolicy {
         self.keep.is_empty() && self.expire.is_empty()
     }
 
+    /// Returns keep selectors followed by expire selectors.
+    pub fn selectors(&self) -> impl Iterator<Item = &RetentionSelector> {
+        self.keep.iter().chain(&self.expire)
+    }
+
     /// Uses rank, artifact, and digest order for deterministic plans.
     #[must_use]
     pub fn plan_resource(&self, now: Option<i64>, mut candidates: Vec<RetentionCandidate>) -> Vec<RetentionDecision> {

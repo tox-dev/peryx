@@ -29,6 +29,12 @@ Available selectors include:
 
 An `age` rule does not match an artifact without a recorded time or an evaluation without a clock.
 
+### PyPI support
+
+Hosted PyPI repositories support `age`, `resource-prefix`, `keep-latest-groups`, `trash`, and `visibility`. They reject
+`source`, `cached`, and `orphan` because hosted upload records do not carry those facts. Peryx handles cached content
+through cache eviction and unreferenced content through blob reclamation.
+
 ```toml
 keep = [
   { selector = "keep-latest-groups", count = 10 },

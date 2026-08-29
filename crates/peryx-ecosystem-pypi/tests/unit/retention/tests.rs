@@ -68,6 +68,29 @@ fn reject_decision(_: RetentionDecision) -> Result<(), String> {
     Err("client hung up".to_owned())
 }
 
+#[rstest]
+#[case::source(RetentionSelector::Source { name: "origin".to_owned() }, true)]
+#[case::cached(RetentionSelector::Cached, false)]
+#[case::orphan(RetentionSelector::Orphan, false)]
+fn test_evaluate_retention_rejects_unsupported_selectors(#[case] selector: RetentionSelector, #[case] keep: bool) {
+    let (_dir, meta) = store();
+    seed(&meta, "pypi", "demo", "1.0", Yanked::No, None);
+    let name = selector.name();
+    let (keep, expire) = if keep {
+        (vec![selector], Vec::new())
+    } else {
+        (Vec::new(), vec![selector])
+    };
+    let policy = RetentionPolicy::compile(&RetentionConfig { keep, expire }, crate::normalize_name);
+
+    let error = evaluate_retention(&meta, "pypi", &policy, None, RETENTION_PROJECT_BUDGET_BYTES, |_| {
+        panic!("an invalid policy must fail before emitting a decision")
+    })
+    .unwrap_err();
+
+    assert_eq!(error, format!("pypi retention does not support selector {name:?}"));
+}
+
 #[test]
 fn test_evaluate_retention_orders_versions_by_pep440_and_keeps_the_newest() {
     let (_dir, meta) = store();

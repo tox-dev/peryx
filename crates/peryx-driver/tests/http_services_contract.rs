@@ -343,6 +343,10 @@ fn domain_services_preserve_policy_filter_validation() {
 struct OneRetentionDriver;
 
 impl RetentionDriver for OneRetentionDriver {
+    fn validate_retention(&self, _policy: &RetentionPolicy) -> Result<(), String> {
+        Ok(())
+    }
+
     fn plan_retention(
         &self,
         _meta: &MetaStore,
@@ -351,6 +355,7 @@ impl RetentionDriver for OneRetentionDriver {
         _now: Option<i64>,
         emit: &mut dyn FnMut(RetentionDecision) -> Result<(), String>,
     ) -> Result<RetentionSummary, String> {
+        self.validate_retention(policy)?;
         emit(retention_decision())?;
         Ok(RetentionSummary {
             policy_version: policy.version(),

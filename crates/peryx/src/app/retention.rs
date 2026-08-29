@@ -51,6 +51,7 @@ fn dry_run(
     let index = resolve_index(config, &args.index)?;
     let driver = resolve_driver(drivers, index)?;
     let policy = load_rules(args.rules.as_deref(), |name| normalize_name(drivers, index, name))?;
+    driver.validate_retention(&policy).map_err(anyhow::Error::msg)?;
     let ecosystem = index.ecosystem.as_str();
     let (after, expect, evaluated_at) = resume(args.cursor.as_deref(), &args.index, ecosystem)?;
     writeln!(
@@ -87,6 +88,7 @@ fn export(
     let index = resolve_index(config, &args.index)?;
     let driver = resolve_driver(drivers, index)?;
     let policy = load_rules(args.rules.as_deref(), |name| normalize_name(drivers, index, name))?;
+    driver.validate_retention(&policy).map_err(anyhow::Error::msg)?;
     let ecosystem = index.ecosystem.as_str();
     let (after, expect, evaluated_at) = resume(args.cursor.as_deref(), &args.index, ecosystem)?;
     let summary = summary(&stores.meta, &args.index, &policy).map_err(anyhow::Error::msg)?;

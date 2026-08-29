@@ -194,6 +194,9 @@ impl Prepared {
                     .map_or_else(|| name.to_owned(), |driver| driver.normalize_name(name))
             },
         );
+        driver
+            .validate_retention(&policy)
+            .map_err(|reason| problem(StatusCode::UNPROCESSABLE_ENTITY, &reason))?;
         Ok(Self {
             driver,
             repository: index.name.clone(),

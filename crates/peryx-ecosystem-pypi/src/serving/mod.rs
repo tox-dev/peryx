@@ -400,6 +400,10 @@ impl FsckDriver for PypiServing {
 }
 
 impl RetentionDriver for PypiServing {
+    fn validate_retention(&self, policy: &peryx_policy::RetentionPolicy) -> Result<(), String> {
+        crate::retention::validate_retention(policy)
+    }
+
     fn plan_retention(
         &self,
         meta: &peryx_storage::meta::MetaStore,

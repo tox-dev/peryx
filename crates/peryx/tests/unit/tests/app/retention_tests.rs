@@ -141,6 +141,50 @@ fn test_retention_export_rejects_a_stale_cursor_before_output() {
     assert!(output.is_empty());
 }
 
+#[rstest]
+#[case::dry_run_source(false, "selector = \"source\"\nname = \"origin\"\n", "source")]
+#[case::dry_run_cached(false, "selector = \"cached\"\n", "cached")]
+#[case::dry_run_orphan(false, "selector = \"orphan\"\n", "orphan")]
+#[case::export_source(true, "selector = \"source\"\nname = \"origin\"\n", "source")]
+#[case::export_cached(true, "selector = \"cached\"\n", "cached")]
+#[case::export_orphan(true, "selector = \"orphan\"\n", "orphan")]
+fn test_retention_rejects_unsupported_pypi_selectors_before_output(
+    #[case] export: bool,
+    #[case] selector: &str,
+    #[case] name: &str,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let plugins = crate::compiled_plugins();
+    let config = Config {
+        data_dir: dir.path().to_path_buf(),
+        ..Config::with_plugins(&plugins)
+    };
+    drop(peryx_storage::meta::MetaStore::open(config.data_dir.join("peryx.redb")).unwrap());
+    let rules = dir.path().join("rules.toml");
+    std::fs::write(&rules, format!("[[expire]]\n{selector}")).unwrap();
+    let command = if export {
+        RetentionCommand::Export(RetentionExportArgs {
+            runtime: runtime_args(),
+            index: "hosted".to_owned(),
+            rules: Some(rules),
+            cursor: None,
+        })
+    } else {
+        let mut args = dry_run_args("hosted");
+        args.rules = Some(rules);
+        RetentionCommand::DryRun(args)
+    };
+    let mut output = Vec::new();
+
+    let error = retention_with_plugins(&config, &plugins, &command, &mut output).unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        format!("pypi retention does not support selector {name:?}")
+    );
+    assert!(output.is_empty());
+}
+
 #[test]
 fn test_retention_rejects_a_cursor_from_another_repository() {
     let dir = tempfile::tempdir().unwrap();

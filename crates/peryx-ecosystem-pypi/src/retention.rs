@@ -11,8 +11,8 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use peryx_policy::{
-    RetentionCandidate, RetentionClass, RetentionDecision, RetentionFrontier, RetentionPolicy, RetentionSummary,
-    RetentionVisibility,
+    RetentionCandidate, RetentionClass, RetentionDecision, RetentionFrontier, RetentionPolicy, RetentionSelector,
+    RetentionSummary, RetentionVisibility,
 };
 use peryx_storage::meta::MetaStore;
 
@@ -42,8 +42,8 @@ pub const RETENTION_PROJECT_BUDGET_BYTES: usize = 256 * 1024 * 1024;
 /// so peak memory stays bounded regardless of any one project's artifact count.
 ///
 /// # Errors
-/// Returns a message when the store cannot be read, an upload record does not decode, `emit` stops the
-/// scan, or a project's candidates exceed `budget`.
+/// Returns a message when the policy contains an unsupported selector, the store cannot be read, an
+/// upload record does not decode, `emit` stops the scan, or a project's candidates exceed `budget`.
 pub fn evaluate_retention<F>(
     meta: &MetaStore,
     index: &str,
@@ -55,7 +55,27 @@ pub fn evaluate_retention<F>(
 where
     F: FnMut(RetentionDecision) -> Result<(), String>,
 {
+    validate_retention(policy)?;
     evaluate_retention_with(meta, index, policy, now, budget, &mut emit)
+}
+
+/// # Errors
+/// Returns the first selector hosted `PyPI` records cannot evaluate.
+pub(crate) fn validate_retention(policy: &RetentionPolicy) -> Result<(), String> {
+    policy
+        .selectors()
+        .find(|selector| {
+            matches!(
+                selector,
+                RetentionSelector::Source { .. } | RetentionSelector::Cached | RetentionSelector::Orphan
+            )
+        })
+        .map_or(Ok(()), |selector| {
+            Err(format!(
+                "pypi retention does not support selector {:?}",
+                selector.name()
+            ))
+        })
 }
 
 fn evaluate_retention_with(

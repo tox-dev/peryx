@@ -236,7 +236,12 @@ pub trait FsckDriver: Send + Sync {
 
 pub trait RetentionDriver: Send + Sync {
     /// # Errors
-    /// Returns an error when the plan cannot be read or emitted.
+    /// Returns an error naming a selector the ecosystem cannot evaluate.
+    fn validate_retention(&self, policy: &peryx_policy::RetentionPolicy) -> Result<(), String>;
+
+    /// # Errors
+    /// Returns an error when the policy is unsupported or the plan cannot be read or emitted.
+    /// Implementations validate the policy before invoking `emit`.
     fn plan_retention(
         &self,
         meta: &peryx_storage::meta::MetaStore,
