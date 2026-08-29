@@ -95,27 +95,6 @@ fn pausing_aggregator_clock(unix_secs: i64) -> (Arc<AtomicI64>, Clock, Receiver<
     )
 }
 
-fn batch_boundary_clock() -> (Arc<AtomicI64>, Clock, Receiver<()>, SyncSender<()>) {
-    let now = Arc::new(AtomicI64::new(2 * SECONDS_PER_DAY));
-    let clock_now = Arc::clone(&now);
-    let pauses = AtomicUsize::new(0);
-    let (at_boundary, boundaries) = sync_channel(0);
-    let (resume, resumed) = sync_channel(0);
-    let resumed = Mutex::new(resumed);
-    (
-        now,
-        Arc::new(move || {
-            if std::thread::current().name() == Some("peryx-metrics") && pauses.fetch_add(1, Ordering::SeqCst) < 3 {
-                at_boundary.send(()).unwrap();
-                resumed.lock().unwrap().recv().unwrap();
-            }
-            clock_now.load(Ordering::SeqCst)
-        }),
-        boundaries,
-        resume,
-    )
-}
-
 fn flush_and_assert(metrics: &Metrics, done: impl Fn() -> bool) {
     metrics.flush().unwrap();
     assert!(done(), "metrics flushed an unexpected state");
@@ -163,6 +142,33 @@ impl MetricsStore for RejectingDailyStore {
 struct CheckpointStore {
     store: AnalyticsHandle,
     checkpointed: SyncSender<()>,
+}
+
+struct PausingCheckpointStore {
+    store: AnalyticsHandle,
+    checkpointed: SyncSender<()>,
+    resumed: Mutex<Receiver<()>>,
+}
+
+impl MetricsStore for PausingCheckpointStore {
+    fn load(&self) -> Result<Option<Vec<u8>>, MetricsError> {
+        MetricsStore::load(&self.store)
+    }
+
+    fn save(&self, snapshot: &[u8]) -> Result<(), MetricsError> {
+        MetricsStore::save(&self.store, snapshot)
+    }
+
+    fn load_daily(&self) -> Result<Option<Vec<u8>>, MetricsError> {
+        MetricsStore::load_daily(&self.store)
+    }
+
+    fn save_daily(&self, snapshot: &[u8]) -> Result<(), MetricsError> {
+        MetricsStore::save_daily(&self.store, snapshot)?;
+        self.checkpointed.send(()).unwrap();
+        self.resumed.lock().unwrap().recv().unwrap();
+        Ok(())
+    }
 }
 
 impl MetricsStore for CheckpointStore {
@@ -697,34 +703,42 @@ fn test_flush_drains_ephemeral_observations() {
 #[test]
 fn test_batch_limit_releases_readers_and_checkpoints_before_continuing() {
     let (_dir, meta) = store();
-    let (now, clock, boundaries, resume) = batch_boundary_clock();
+    let (checkpointed, checkpoint) = sync_channel(0);
+    let (resume, resumed) = sync_channel(0);
     let metrics = Metrics::spawn(
-        Some(Arc::new(meta.analytics()) as Arc<dyn MetricsStore>),
-        Some(7),
-        clock,
+        Some(Arc::new(PausingCheckpointStore {
+            store: meta.analytics(),
+            checkpointed,
+            resumed: Mutex::new(resumed),
+        })),
+        None,
+        clock_on_day(2),
         super::EVENT_QUEUE_CAPACITY,
         Duration::ZERO,
     )
     .unwrap();
     metrics.record(read("alpha", "resource-a", "first", 1));
-    boundaries.recv().unwrap();
+    checkpoint.recv().unwrap();
+    assert_eq!(metrics.index_totals()["alpha"].base.reads, 1);
+    assert_eq!(persisted_reads(&meta.analytics()), Some(1));
 
     for artifact in 0..=MAX_BATCH_MESSAGES {
         metrics.record(read("alpha", "resource-a", &artifact.to_string(), 1));
     }
     assert_eq!(metrics.dropped(), 0);
-    now.store(SECONDS_PER_DAY, Ordering::SeqCst);
     resume.send(()).unwrap();
-    boundaries.recv().unwrap();
+    checkpoint.recv().unwrap();
 
     assert_eq!(
         metrics.index_totals()["alpha"].base.reads,
         (MAX_BATCH_MESSAGES + 1) as u64
     );
-    assert_eq!(persisted_reads(&meta.analytics()), Some(1));
-    now.store(3 * SECONDS_PER_DAY, Ordering::SeqCst);
+    assert_eq!(
+        persisted_reads(&meta.analytics()),
+        Some((MAX_BATCH_MESSAGES + 1) as u64)
+    );
     resume.send(()).unwrap();
-    boundaries.recv().unwrap();
+    checkpoint.recv().unwrap();
 
     assert_eq!(
         metrics.index_totals()["alpha"].base.reads,
@@ -732,7 +746,7 @@ fn test_batch_limit_releases_readers_and_checkpoints_before_continuing() {
     );
     assert_eq!(
         persisted_reads(&meta.analytics()),
-        Some((MAX_BATCH_MESSAGES + 1) as u64)
+        Some((MAX_BATCH_MESSAGES + 2) as u64)
     );
     resume.send(()).unwrap();
     metrics.shutdown().unwrap();
@@ -822,6 +836,7 @@ fn test_idle_interval_reports_checkpoint_failure() {
     )
     .unwrap();
     metrics.record(grouped_read("alpha", "resource-a", "1", None, 8));
+    checkpoint.recv().unwrap();
     checkpoint.recv().unwrap();
     drop(checkpoint);
 
