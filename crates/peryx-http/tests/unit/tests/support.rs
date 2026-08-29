@@ -1,7 +1,7 @@
 use peryx_core::Ecosystem;
 use peryx_driver::serving::{
     AbsoluteProtocolDriver, CapabilityRegistrar, ClientDiscovery, EcosystemDriver, IndexCredentialDriver, IndexSummary,
-    IndexSummaryDriver, RecentWrite,
+    IndexSummaryDriver, IndexSummaryError, RecentWrite,
 };
 use peryx_driver::state::{AppState, Index, IndexDescription};
 use peryx_identity::{Action, Denial, authorize_all, parse_basic};
@@ -38,7 +38,10 @@ impl IndexSummaryDriver for ExampleSummary {
         _meta: &peryx_storage::meta::MetaStore,
         index_names: &[String],
         _recent_limit: usize,
-    ) -> Result<std::collections::HashMap<String, IndexSummary>, String> {
+    ) -> Result<std::collections::HashMap<String, IndexSummary>, IndexSummaryError> {
+        if index_names.iter().any(|name| name == "summary-failure") {
+            return Err(IndexSummaryError::Storage);
+        }
         Ok(index_names
             .iter()
             .map(|name| {

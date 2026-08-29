@@ -1,5 +1,6 @@
 use super::{MetaStore, UPLOAD_PREFIX};
 use crate::store::PypiStore as _;
+use peryx_driver::serving::{IndexSummaryDriver as _, IndexSummaryError};
 
 fn store() -> (tempfile::TempDir, MetaStore) {
     let dir = tempfile::tempdir().unwrap();
@@ -165,4 +166,26 @@ fn test_summarize_indexes_skips_a_malformed_upload_key() {
         .unwrap();
     let summary = meta.summarize_indexes(&["hosted".to_owned()], 5).unwrap();
     assert_eq!(summary["hosted"].write_count, 0);
+}
+
+#[test]
+fn test_summary_driver_classifies_storage_failures() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("peryx.redb");
+    drop(MetaStore::open(&path).unwrap());
+    let database = redb::Database::open(&path).unwrap();
+    let write = database.begin_write().unwrap();
+    write
+        .delete_table(redb::TableDefinition::<&str, &[u8]>::new("driver_kv"))
+        .unwrap();
+    write
+        .open_table(redb::TableDefinition::<&str, &str>::new("driver_kv"))
+        .unwrap();
+    write.commit().unwrap();
+    drop(database);
+
+    assert_eq!(
+        crate::PypiServing.summarize_indexes(&MetaStore::open_existing(path).unwrap(), &["hosted".to_owned()], 5),
+        Err(IndexSummaryError::Storage)
+    );
 }

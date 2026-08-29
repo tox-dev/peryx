@@ -49,6 +49,9 @@ Admin tables use bounded pages and stable cursors. Live topology uses a bounded 
 sends one projected snapshot on connect, emits after state changes, coalesces updates for slow readers, and drops a
 connection that cannot drain its socket.
 
+Repository activity summaries report `available`, `unavailable`, or `unsupported`. An unavailable summary includes a
+bounded error class and renders its counts as unavailable, so a metadata fault cannot look like an empty repository.
+
 ### Availability topology
 
 When distributed availability is configured, `/admin/topology` renders a role-filtered snapshot from

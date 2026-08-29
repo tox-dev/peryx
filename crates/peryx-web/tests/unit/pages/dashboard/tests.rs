@@ -1,6 +1,6 @@
 use leptos::prelude::*;
 
-use crate::model::{UiCounters, UiIndex, UiSnapshot, UiStats};
+use crate::model::{UiCounters, UiIndex, UiSnapshot, UiStats, UiSummaryStatus};
 
 use super::DashboardBody;
 
@@ -16,6 +16,8 @@ fn index(name: &str, kind: &str, layers: Vec<String>) -> UiIndex {
         upload_to: None,
         upstream: None,
         hosted: None,
+        summary_status: UiSummaryStatus::Available,
+        summary_error_class: None,
         resource_count: 0,
         write_count: 0,
         recent_writes: Vec::new(),

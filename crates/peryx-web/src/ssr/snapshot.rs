@@ -3,11 +3,13 @@ use std::sync::Arc;
 use axum::http::HeaderMap;
 use leptos::prelude::*;
 use peryx_driver::AppState;
-use peryx_driver::serving::IndexSummary;
+use peryx_driver::serving::{IndexSummary, IndexSummaryError};
 use peryx_driver::state::IndexDescription;
 use peryx_http::response_security::FieldClassification;
 
-use crate::model::{UiEcosystemSummary, UiHosted, UiIndex, UiMetricFamily, UiRecentWrite, UiSnapshot, UiUpstream};
+use crate::model::{
+    UiEcosystemSummary, UiHosted, UiIndex, UiMetricFamily, UiRecentWrite, UiSnapshot, UiSummaryStatus, UiUpstream,
+};
 
 /// Returns dashboard data allowed by the caller's status authority.
 #[must_use]
@@ -94,8 +96,7 @@ fn indexes(app: &AppState, administrator: bool, recent_limit: Option<usize>) -> 
             let summary = summaries
                 .as_ref()
                 .and_then(|summaries| summaries.get(&index.name))
-                .cloned()
-                .unwrap_or_default();
+                .cloned();
             let endpoint = app
                 .driver_for_name(&index.ecosystem)
                 .and_then(|driver| app.client_discovery_for(&driver.ecosystem()))
@@ -108,7 +109,21 @@ fn indexes(app: &AppState, administrator: bool, recent_limit: Option<usize>) -> 
         .collect()
 }
 
-fn index_view(index: IndexDescription, endpoint: String, summary: IndexSummary, administrator: bool) -> UiIndex {
+fn index_view(
+    index: IndexDescription,
+    endpoint: String,
+    outcome: Option<Result<IndexSummary, IndexSummaryError>>,
+    administrator: bool,
+) -> UiIndex {
+    let (summary_status, summary_error_class, summary) = match outcome {
+        Some(Ok(summary)) => (UiSummaryStatus::Available, None, summary),
+        Some(Err(error)) => (
+            UiSummaryStatus::Unavailable,
+            Some(error.as_str().to_owned()),
+            IndexSummary::default(),
+        ),
+        None => (UiSummaryStatus::Unsupported, None, IndexSummary::default()),
+    };
     UiIndex {
         name: index.name,
         route: index.route,
@@ -129,6 +144,8 @@ fn index_view(index: IndexDescription, endpoint: String, summary: IndexSummary, 
             token_configured: hosted.upload_token.configured,
             token_redacted: hosted.upload_token.redacted.map(str::to_owned),
         }),
+        summary_status,
+        summary_error_class,
         resource_count: summary.resource_count,
         write_count: summary.write_count,
         recent_writes: summary

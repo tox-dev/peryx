@@ -282,7 +282,7 @@ pub trait IndexSummaryDriver: Send + Sync {
         meta: &peryx_storage::meta::MetaStore,
         index_names: &[String],
         recent_limit: usize,
-    ) -> Result<std::collections::HashMap<String, IndexSummary>, String>;
+    ) -> Result<std::collections::HashMap<String, IndexSummary>, IndexSummaryError>;
 }
 
 pub trait TrashDriver: Send + Sync {
@@ -638,6 +638,23 @@ pub struct IndexSummary {
     pub resource_count: u64,
     pub write_count: u64,
     pub recent_writes: Vec<RecentWrite>,
+}
+
+/// Status surfaces expose these classes instead of driver error text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexSummaryError {
+    Storage,
+    InvalidData,
+}
+
+impl IndexSummaryError {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Storage => "storage",
+            Self::InvalidData => "invalid_data",
+        }
+    }
 }
 
 /// One recent artifact write without credentials.

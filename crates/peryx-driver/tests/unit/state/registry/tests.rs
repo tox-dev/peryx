@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -17,13 +16,14 @@ use peryx_search::{
 };
 use peryx_storage::blob::{BlobDurability, BlobStore};
 use peryx_storage::meta::MetaStore;
+use rstest::rstest;
 
 use super::AppState;
 use crate::rate_limit::RouteClass;
 use crate::serving::{
     AbsoluteProtocolDriver, CacheRefresher, ClientDiscovery, EcosystemDriver, EcosystemRegistration, IdleReclaimer,
-    IndexCredentialDriver, IndexSummary, IndexSummaryDriver, IndexedProtocolDriver, IntentFinalizer, MirrorAction,
-    MirrorDriver, MirrorRequest, ProtocolDriver, RateLimitPrincipal, RefreshSweep, ReplicatedApplyDriver,
+    IndexCredentialDriver, IndexSummary, IndexSummaryDriver, IndexSummaryError, IndexedProtocolDriver, IntentFinalizer,
+    MirrorAction, MirrorDriver, MirrorRequest, ProtocolDriver, RateLimitPrincipal, RefreshSweep, ReplicatedApplyDriver,
 };
 use crate::state::{HttpRoutes, ServingState, ViewBlock};
 use tower::ServiceExt;
@@ -141,12 +141,13 @@ impl IndexSummaryDriver for Driver {
         _meta: &MetaStore,
         index_names: &[String],
         _recent_limit: usize,
-    ) -> Result<std::collections::HashMap<String, IndexSummary>, String> {
+    ) -> Result<std::collections::HashMap<String, IndexSummary>, IndexSummaryError> {
         if index_names == ["failure"] {
-            return Err("summary failed".to_owned());
+            return Err(IndexSummaryError::Storage);
         }
         Ok(index_names
             .iter()
+            .filter(|name| name.as_str() != "omitted")
             .map(|name| (name.clone(), IndexSummary::default()))
             .collect())
     }
@@ -767,21 +768,28 @@ fn test_index_summaries_dispatch_to_matching_capability() {
     register_driver_capabilities(&mut state);
     state.register_driver(Arc::new(Driver));
 
-    assert!(state.index_summaries(5).contains_key("catalog"));
+    assert_eq!(
+        state.index_summaries(5).get("catalog"),
+        Some(&Ok(IndexSummary::default()))
+    );
 }
 
-#[test]
-fn test_index_summaries_report_a_driver_failure() {
+#[rstest]
+#[case::driver_failure("failure", IndexSummaryError::Storage, "storage")]
+#[case::driver_omission("omitted", IndexSummaryError::InvalidData, "invalid_data")]
+fn test_index_summaries_report_failures(
+    #[case] name: &str,
+    #[case] expected: IndexSummaryError,
+    #[case] expected_class: &str,
+) {
     let dir = tempfile::tempdir().unwrap();
-    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-    let blobs = BlobStore::new(dir.path().join("blobs"));
     let mut state = AppState::new(
-        meta,
-        blobs,
+        MetaStore::open(dir.path().join("peryx.redb")).unwrap(),
+        BlobStore::new(dir.path().join("blobs")),
         60,
         vec![Index {
-            name: "failure".to_owned(),
-            route: "failure".to_owned(),
+            name: name.to_owned(),
+            route: name.to_owned(),
             ecosystem: Ecosystem::new("example"),
             kind: IndexKind::Hosted { volatile: false },
             policy: Policy::default(),
@@ -791,14 +799,8 @@ fn test_index_summaries_report_a_driver_failure() {
     register_driver_capabilities(&mut state);
     state.register_driver(Arc::new(Driver));
 
-    let summaries = state.index_summaries(5);
-    let failures: &HashMap<Ecosystem, String> = summaries.as_ref();
-
-    assert!(summaries.is_empty());
-    assert_eq!(
-        failures.get(&Ecosystem::new("example")).map(String::as_str),
-        Some("summary failed")
-    );
+    let error = state.index_summaries(5).remove(name).unwrap().unwrap_err();
+    assert_eq!((error, error.as_str()), (expected, expected_class));
 }
 
 #[test]

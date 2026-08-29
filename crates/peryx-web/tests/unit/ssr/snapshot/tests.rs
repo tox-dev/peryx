@@ -14,7 +14,7 @@ use peryx_storage::meta::MetaStore;
 use super::{
     has_administrator_access, has_operator_access, index_view, redacted_auth, snapshot_for_class, stats_for_class,
 };
-use crate::model::{UiEcosystemSummary, UiHosted, UiIndex, UiRecentWrite, UiUpstream};
+use crate::model::{UiEcosystemSummary, UiHosted, UiIndex, UiRecentWrite, UiSummaryStatus, UiUpstream};
 
 #[test]
 fn status_access_matches_field_classification() {
@@ -93,7 +93,7 @@ fn index_projection_preserves_stats_and_redacts_administrator_secrets() {
     let projected = index_view(
         cached_description("bearer"),
         "https://packages.example/catalog".to_owned(),
-        IndexSummary {
+        Some(Ok(IndexSummary {
             resource_count: 3,
             write_count: 2,
             recent_writes: vec![RecentWrite {
@@ -103,7 +103,7 @@ fn index_projection_preserves_stats_and_redacts_administrator_secrets() {
                 written_at: Some("2026-08-10T00:00:00Z".to_owned()),
                 size: Some(41),
             }],
-        },
+        })),
         true,
     );
 
@@ -125,6 +125,8 @@ fn index_projection_preserves_stats_and_redacts_administrator_secrets() {
                 status: "configured".to_owned(),
             }),
             hosted: None,
+            summary_status: UiSummaryStatus::Available,
+            summary_error_class: None,
             resource_count: 3,
             write_count: 2,
             recent_writes: vec![UiRecentWrite {
@@ -145,14 +147,14 @@ fn index_projection_hides_administrator_configuration() {
             index_view(
                 cached_description("none"),
                 "/cached/".to_owned(),
-                IndexSummary::default(),
+                Some(Ok(IndexSummary::default())),
                 false
             )
             .upstream,
             index_view(
                 hosted_description(),
                 "/hosted/".to_owned(),
-                IndexSummary::default(),
+                Some(Ok(IndexSummary::default())),
                 false
             )
             .hosted,
@@ -167,7 +169,7 @@ fn index_projection_reports_hosted_secret_state() {
         index_view(
             hosted_description(),
             "/hosted/".to_owned(),
-            IndexSummary::default(),
+            Some(Ok(IndexSummary::default())),
             true
         )
         .hosted

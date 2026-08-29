@@ -1,6 +1,6 @@
 use leptos::prelude::*;
 
-use crate::model::{UiCounters, UiHosted, UiIndex, UiRecentWrite, UiSnapshot, UiStats, UiUpstream};
+use crate::model::{UiCounters, UiHosted, UiIndex, UiRecentWrite, UiSnapshot, UiStats, UiSummaryStatus, UiUpstream};
 
 use super::AdminStatusBody;
 
@@ -16,6 +16,8 @@ fn index(name: &str, kind: &str) -> UiIndex {
         upload_to: None,
         upstream: None,
         hosted: None,
+        summary_status: UiSummaryStatus::Available,
+        summary_error_class: None,
         resource_count: 2,
         write_count: 3,
         recent_writes: Vec::new(),
@@ -83,6 +85,17 @@ fn admin_status_body_renders_index_states_and_usage() {
     assert!(html.contains("1.5 kB"), "{html}");
     assert!(html.contains(">missing</span>"), "{html}");
     assert_eq!(html.matches(">n/a</td>").count(), 2, "{html}");
+    let mut unavailable = index("degraded", "hosted");
+    unavailable.summary_status = UiSummaryStatus::Unavailable;
+    unavailable.summary_error_class = Some("storage".to_owned());
+    let unavailable = view! {
+        <AdminStatusBody
+            data=UiSnapshot { indexes: vec![unavailable], ..UiSnapshot::default() }
+            usage=UiStats::default()
+        />
+    }
+    .to_html();
+    assert_eq!(unavailable.matches(">unavailable<").count(), 4, "{unavailable}");
     let empty = view! { <AdminStatusBody data=UiSnapshot::default() usage=UiStats::default() /> }.to_html();
     for expected in [
         "No indexes configured.",

@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::ops::Deref;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -8,26 +7,6 @@ use peryx_core::Ecosystem;
 use peryx_search::{IndexerCtx, SearchCtx};
 
 use super::app::{AppState, ServingState};
-
-#[derive(Default)]
-struct IndexSummaries {
-    summaries: HashMap<String, crate::serving::IndexSummary>,
-    failures: HashMap<Ecosystem, String>,
-}
-
-impl Deref for IndexSummaries {
-    type Target = HashMap<String, crate::serving::IndexSummary>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.summaries
-    }
-}
-
-impl AsRef<HashMap<Ecosystem, String>> for IndexSummaries {
-    fn as_ref(&self) -> &HashMap<Ecosystem, String> {
-        &self.failures
-    }
-}
 
 impl ServingState {
     #[must_use]
@@ -280,7 +259,7 @@ impl AppState {
     pub fn index_summaries(
         &self,
         recent_limit: usize,
-    ) -> impl Deref<Target = HashMap<String, crate::serving::IndexSummary>> + AsRef<HashMap<Ecosystem, String>> {
+    ) -> HashMap<String, Result<crate::serving::IndexSummary, crate::serving::IndexSummaryError>> {
         let mut by_ecosystem: HashMap<Ecosystem, Vec<String>> = HashMap::new();
         for index in &self.serving.indexes {
             by_ecosystem
@@ -288,15 +267,24 @@ impl AppState {
                 .or_default()
                 .push(index.name.clone());
         }
-        let mut result = IndexSummaries::default();
+        let mut result = HashMap::new();
         for (ecosystem, names) in by_ecosystem {
             let Some(driver) = self.drivers.get_index_summary(&ecosystem) else {
                 continue;
             };
             match driver.summarize_indexes(&self.serving.meta, &names, recent_limit) {
-                Ok(summaries) => result.summaries.extend(summaries),
+                Ok(mut summaries) => {
+                    for name in names {
+                        result.insert(
+                            name.clone(),
+                            summaries
+                                .remove(&name)
+                                .ok_or(crate::serving::IndexSummaryError::InvalidData),
+                        );
+                    }
+                }
                 Err(error) => {
-                    result.failures.insert(ecosystem, error);
+                    result.extend(names.into_iter().map(|name| (name, Err(error))));
                 }
             }
         }

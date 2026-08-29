@@ -56,6 +56,19 @@ async fn app() -> (tempfile::TempDir, Arc<AppState>) {
     app_with_fault(StoreFault::None).await
 }
 
+async fn app_with_summary_failure() -> (tempfile::TempDir, Arc<AppState>) {
+    let (directory, mut state) = app().await;
+    Arc::get_mut(&mut Arc::get_mut(&mut state).unwrap().serving)
+        .unwrap()
+        .indexes
+        .push(index(
+            "summary-failure",
+            IndexAcl::default(),
+            IndexKind::Hosted { volatile: false },
+        ));
+    (directory, state)
+}
+
 async fn app_with_fault(fault: StoreFault) -> (tempfile::TempDir, Arc<AppState>) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("peryx.redb");
@@ -318,6 +331,27 @@ async fn test_status_operator_sees_durable_metrics_startup_failure() {
             .is_some_and(|error| error.contains("analytics")),
         "{body}"
     );
+}
+
+#[tokio::test]
+async fn test_status_administrator_sees_summary_failures() {
+    let (_dir, state) = app_with_summary_failure().await;
+
+    let (status, _, body) = get(&state, Some(("Alice", USER_PASSWORD))).await;
+
+    assert_eq!(status, StatusCode::OK);
+    let index = body["indexes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|index| index["route"] == "summary-failure")
+        .unwrap();
+    assert_eq!(
+        index["summary"],
+        serde_json::json!({"status": "unavailable", "error_class": "storage"})
+    );
+    assert_eq!((index.get("resource_count"), index.get("write_count")), (None, None));
+    assert!(!body.to_string().contains("summary failed"), "{body}");
 }
 
 #[rstest]

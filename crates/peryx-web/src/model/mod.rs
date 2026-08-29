@@ -26,7 +26,9 @@ pub use placement::{
 };
 pub use policy_decision::{PolicyDecisionFilters, UiPolicyDecision, UiPolicyDecisionPage};
 pub use search::{UiSearchPage, UiSearchResult, source_label};
-pub use snapshot::{UiEcosystemSummary, UiHosted, UiIndex, UiMetricFamily, UiRecentWrite, UiSnapshot, UiUpstream};
+pub use snapshot::{
+    UiEcosystemSummary, UiHosted, UiIndex, UiMetricFamily, UiRecentWrite, UiSnapshot, UiSummaryStatus, UiUpstream,
+};
 pub use stats::{UiCounters, UiStats, stats_index, stats_resource, stats_routes};
 pub use topology::{
     HealthLabel, LocalNode, RoleFilter, StreamStatus, TopologyNode, TopologySnapshot, liveness_health, mode_label,

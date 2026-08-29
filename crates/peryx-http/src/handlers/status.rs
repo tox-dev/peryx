@@ -210,24 +210,50 @@ fn index_documents(state: &AppState, details: bool) -> Vec<serde_json::Value> {
                     },
                 }))),
             );
-            let summary = summaries.get(&index.name).cloned().unwrap_or_default();
-            object.insert("resource_count".to_owned(), serde_json::json!(summary.resource_count));
-            object.insert("write_count".to_owned(), serde_json::json!(summary.write_count));
-            let mut recent_writes = Vec::with_capacity(summary.recent_writes.len());
-            for write in summary.recent_writes {
-                recent_writes.push(serde_json::json!({
+            insert_index_summary(&mut object, summaries.get(&index.name));
+        }
+        documents.push(serde_json::Value::Object(object));
+    }
+    documents
+}
+
+fn insert_index_summary(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    outcome: Option<&Result<peryx_driver::serving::IndexSummary, peryx_driver::serving::IndexSummaryError>>,
+) {
+    let summary = match outcome {
+        None => {
+            object.insert("summary".to_owned(), serde_json::json!({"status": "unsupported"}));
+            return;
+        }
+        Some(Err(error)) => {
+            object.insert(
+                "summary".to_owned(),
+                serde_json::json!({"status": "unavailable", "error_class": error.as_str()}),
+            );
+            return;
+        }
+        Some(Ok(summary)) => summary,
+    };
+    object.insert("summary".to_owned(), serde_json::json!({"status": "available"}));
+    object.insert("resource_count".to_owned(), serde_json::json!(summary.resource_count));
+    object.insert("write_count".to_owned(), serde_json::json!(summary.write_count));
+    object.insert(
+        "recent_writes".to_owned(),
+        serde_json::json!(
+            summary
+                .recent_writes
+                .iter()
+                .map(|write| serde_json::json!({
                     "resource": write.resource,
                     "artifact": write.artifact,
                     "group": write.group,
                     "written_at": write.written_at,
                     "size": write.size,
-                }));
-            }
-            object.insert("recent_writes".to_owned(), serde_json::json!(recent_writes));
-        }
-        documents.push(serde_json::Value::Object(object));
-    }
-    documents
+                }))
+                .collect::<Vec<_>>()
+        ),
+    );
 }
 
 pub async fn health() -> Response {

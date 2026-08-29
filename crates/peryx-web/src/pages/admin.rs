@@ -2,7 +2,7 @@ use leptos::prelude::*;
 
 use super::{ecosystem_stats, human_size, optional_counters_for, start_refresh};
 use crate::data::{load_admin_snapshot, load_stats};
-use crate::model::{UiCounters, UiIndex, UiRecentWrite, UiSnapshot, UiStats};
+use crate::model::{UiCounters, UiIndex, UiRecentWrite, UiSnapshot, UiStats, UiSummaryStatus};
 use crate::url::{browse_index_url, stats_index_url};
 
 #[component]
@@ -28,8 +28,8 @@ fn AdminStatusBody(data: UiSnapshot, usage: UiStats) -> impl IntoView {
     let has_usage = usage.totals != UiCounters::default();
     let indexes = data.indexes.clone();
     let empty = indexes.is_empty();
-    let resource_count: u64 = indexes.iter().map(|index| index.resource_count).sum();
-    let write_count: u64 = indexes.iter().map(|index| index.write_count).sum();
+    let resource_count = summary_total(&indexes, |index| index.resource_count);
+    let write_count = summary_total(&indexes, |index| index.write_count);
     view! {
         <div class="ops-title">
             <h1>"Admin status"</h1>
@@ -64,6 +64,25 @@ fn AdminStatusBody(data: UiSnapshot, usage: UiStats) -> impl IntoView {
 
 fn kind_count(indexes: &[UiIndex], kind: &str) -> usize {
     indexes.iter().filter(|index| index.kind == kind).count()
+}
+
+fn summary_total(indexes: &[UiIndex], count: fn(&UiIndex) -> u64) -> String {
+    if indexes
+        .iter()
+        .all(|index| index.summary_status == UiSummaryStatus::Available)
+    {
+        indexes.iter().map(count).sum::<u64>().to_string()
+    } else {
+        "unavailable".to_owned()
+    }
+}
+
+fn summary_count(index: &UiIndex, count: u64) -> String {
+    if index.summary_status == UiSummaryStatus::Available {
+        count.to_string()
+    } else {
+        "unavailable".to_owned()
+    }
 }
 
 #[component]
@@ -101,8 +120,8 @@ fn AdminIndexTable(indexes: Vec<UiIndex>, all: Vec<UiIndex>) -> impl IntoView {
                                         <span class=format!("badge kind-{}", index.kind)>{index.kind.clone()}</span>
                                     </td>
                                     <td><a class="ops-endpoint" href=endpoint_href title=endpoint_title>{endpoint}</a></td>
-                                    <td>{index.resource_count}</td>
-                                    <td>{index.write_count}</td>
+                                    <td>{summary_count(&index, index.resource_count)}</td>
+                                    <td>{summary_count(&index, index.write_count)}</td>
                                     <td><TopologyCell index=index.clone() all=all.clone() /></td>
                                     <td><UploadCell index=index.clone() /></td>
                                     <td><StatusCell index /></td>

@@ -51,9 +51,20 @@ pub struct UiIndex {
     pub upload_to: Option<String>,
     pub upstream: Option<UiUpstream>,
     pub hosted: Option<UiHosted>,
+    pub summary_status: UiSummaryStatus,
+    pub summary_error_class: Option<String>,
     pub resource_count: u64,
     pub write_count: u64,
     pub recent_writes: Vec<UiRecentWrite>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum UiSummaryStatus {
+    Available,
+    Unavailable,
+    #[default]
+    Unsupported,
 }
 
 /// A cached index's upstream status, with credential material redacted by the server.
@@ -105,6 +116,8 @@ impl UiSnapshot {
                 upload_to: index["upload_to"].as_str().map(str::to_owned),
                 upstream: upstream_from_status(index),
                 hosted: hosted_from_status(index),
+                summary_status: serde_json::from_value(index["summary"]["status"].clone()).unwrap_or_default(),
+                summary_error_class: index["summary"]["error_class"].as_str().map(str::to_owned),
                 resource_count: u64_at(index, "resource_count"),
                 write_count: u64_at(index, "write_count"),
                 recent_writes: index["recent_writes"]

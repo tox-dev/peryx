@@ -462,8 +462,12 @@ impl IndexSummaryDriver for PypiServing {
         meta: &peryx_storage::meta::MetaStore,
         index_names: &[String],
         recent_limit: usize,
-    ) -> Result<std::collections::HashMap<String, peryx_driver::serving::IndexSummary>, String> {
-        crate::store::summarize_indexes(meta, index_names, recent_limit).map_err(crate::error_message)
+    ) -> Result<
+        std::collections::HashMap<String, peryx_driver::serving::IndexSummary>,
+        peryx_driver::serving::IndexSummaryError,
+    > {
+        crate::store::summarize_indexes(meta, index_names, recent_limit)
+            .map_err(|_| peryx_driver::serving::IndexSummaryError::Storage)
     }
 }
 

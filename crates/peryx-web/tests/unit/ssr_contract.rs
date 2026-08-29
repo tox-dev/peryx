@@ -14,7 +14,8 @@ use peryx_core::{
 };
 use peryx_driver::rate_limit::RouteClass;
 use peryx_driver::serving::{
-    AbsoluteProtocolDriver, BrowseDriver, EcosystemDriver, IndexSummary, IndexSummaryDriver, MetricsDriver, RecentWrite,
+    AbsoluteProtocolDriver, BrowseDriver, EcosystemDriver, IndexSummary, IndexSummaryDriver, IndexSummaryError,
+    MetricsDriver, RecentWrite,
 };
 use peryx_driver::state::{AppState, Index, IndexDescription, IndexKind, ServingState, describe_index};
 use peryx_events::metrics::{MetricFamily, MetricKind};
@@ -213,6 +214,7 @@ async fn browse_contract_reports_resolution_and_capability_errors() {
         &mut app,
         ContractDriver {
             browse_response: Some(fixture_page()),
+            summary_error: None,
         },
     );
     let app = Arc::new(app);
@@ -230,7 +232,13 @@ async fn browse_contract_reports_resolution_and_capability_errors() {
 #[tokio::test]
 async fn private_search_without_request_context_reports_header_extraction() {
     let (_directory, mut app) = state(vec![private_index()]);
-    register_contract_driver(&mut app, ContractDriver { browse_response: None });
+    register_contract_driver(
+        &mut app,
+        ContractDriver {
+            browse_response: None,
+            summary_error: None,
+        },
+    );
     let owner = Owner::new();
     owner.set();
     provide_context(Arc::new(app));
@@ -282,7 +290,13 @@ async fn status_contract_applies_public_operator_and_administrator_views() {
     assert!(body.contains("/fixture/"), "{body}");
 
     let (_directory, mut app) = state(vec![fixture_index()]);
-    register_contract_driver(&mut app, ContractDriver { browse_response: None });
+    register_contract_driver(
+        &mut app,
+        ContractDriver {
+            browse_response: None,
+            summary_error: None,
+        },
+    );
     app.register_client_discovery(FIXTURE_ECOSYSTEM, &BARE_DRIVER);
     app.serving.requests.store(7, Ordering::Relaxed);
     add_user(&app, "Alice", Role::Administrator).await;
@@ -312,6 +326,23 @@ async fn status_contract_applies_public_operator_and_administrator_views() {
     for expected in ["fixture-1.bin", "token configured", "&lt;redacted&gt;"] {
         assert!(body.contains(expected), "expected {expected:?} in {body}");
     }
+
+    let (_directory, mut app) = state(vec![fixture_index()]);
+    register_contract_driver(
+        &mut app,
+        ContractDriver {
+            browse_response: None,
+            summary_error: Some(IndexSummaryError::Storage),
+        },
+    );
+    add_user(&app, "Alice", Role::Administrator).await;
+    let (_, _, body) = render(
+        Arc::new(app),
+        "/admin/status",
+        &[(header::AUTHORIZATION.as_str(), ADMIN_AUTHORIZATION)],
+    )
+    .await;
+    assert_eq!(body.matches(">unavailable<").count(), 4, "{body}");
 }
 
 #[tokio::test]
@@ -365,6 +396,7 @@ async fn contract_driver_returns_declared_values() {
     let expected_page = Some(fixture_page());
     let driver = ContractDriver {
         browse_response: expected_page.clone(),
+        summary_error: None,
     };
 
     assert_eq!(driver.ecosystem(), FIXTURE_ECOSYSTEM);
@@ -465,7 +497,13 @@ async fn availability_views_apply_operator_and_administrator_access() {
 
 async fn render_browse(browse_response: Option<BrowsePage>) -> String {
     let (_directory, mut app) = state(vec![fixture_index()]);
-    register_contract_driver(&mut app, ContractDriver { browse_response });
+    register_contract_driver(
+        &mut app,
+        ContractDriver {
+            browse_response,
+            summary_error: None,
+        },
+    );
     let (status, _, body) = render(Arc::new(app), &format!("/browse?{QUERY}"), &[]).await;
     assert_eq!(status, StatusCode::OK);
     body
@@ -544,6 +582,7 @@ fn private_index() -> Index {
 
 struct ContractDriver {
     browse_response: Option<BrowsePage>,
+    summary_error: Option<IndexSummaryError>,
 }
 
 #[async_trait]
@@ -602,7 +641,10 @@ impl IndexSummaryDriver for ContractDriver {
         _meta: &MetaStore,
         index_names: &[String],
         recent_limit: usize,
-    ) -> Result<HashMap<String, IndexSummary>, String> {
+    ) -> Result<HashMap<String, IndexSummary>, IndexSummaryError> {
+        if let Some(error) = self.summary_error {
+            return Err(error);
+        }
         Ok(index_names
             .iter()
             .map(|name| {
