@@ -72,6 +72,10 @@ fn plugin_exposes_identity_defaults_and_driver() {
 
     assert_eq!(plugin.ecosystem(), ECOSYSTEM);
     assert_eq!(plugin.default_indexes(), DEFAULT_INDEXES);
+    assert_eq!(
+        plugin.webhook_events(),
+        ["delete", "restore", "unyank", "upload", "yank"]
+    );
     assert_eq!(plugin.driver().ecosystem(), ECOSYSTEM);
     assert!(plugin.driver().indexed().is_some());
     let registration = registration();

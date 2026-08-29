@@ -9,6 +9,7 @@ pub const BLOB_DELETE: &str = "blob-delete";
 pub const MANIFEST_DELETE: &str = "manifest-delete";
 pub const MANIFEST_PUSH: &str = "manifest-push";
 pub const MANIFEST_RESTORE: &str = "manifest-restore";
+pub const EVENTS: &[&str] = &[BLOB_DELETE, MANIFEST_DELETE, MANIFEST_PUSH, MANIFEST_RESTORE];
 
 pub struct OciWebhook<'a> {
     pub event: &'static str,

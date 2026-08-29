@@ -34,6 +34,10 @@ fn plugin_exposes_its_contract() {
 
     assert_eq!(plugin.ecosystem(), ECOSYSTEM);
     assert_eq!(plugin.absolute_prefixes(), &["/v2/"]);
+    assert_eq!(
+        plugin.webhook_events(),
+        ["blob-delete", "manifest-delete", "manifest-push", "manifest-restore"]
+    );
     let protocol = plugin.driver();
     let driver = protocol.absolute().unwrap();
     assert_eq!(driver.prefixes(), &["/v2/"]);

@@ -35,6 +35,18 @@ fn empty_registration_set_is_rejected() {
     assert_eq!(PluginRegistry::new(Vec::new()).err(), Some(RegistryError::Empty));
 }
 
+#[test]
+fn webhook_event_lookup_uses_the_registration_contract() {
+    let registry = registry();
+
+    assert_eq!(registry.webhook_events(&PRIMARY).unwrap(), ["resource-write"]);
+    assert_eq!(registry.webhook_events(&SECONDARY).unwrap(), ["resource-delete"]);
+    assert_eq!(
+        registry.webhook_events(&THIRD),
+        Err("ecosystem gamma is not installed".to_owned())
+    );
+}
+
 #[derive(Clone, Copy)]
 enum DuplicateCase {
     Ecosystem,

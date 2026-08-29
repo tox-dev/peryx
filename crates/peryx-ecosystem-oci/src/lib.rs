@@ -152,6 +152,10 @@ impl EcosystemRegistration for OciPlugin {
         registry::ABSOLUTE_PREFIXES
     }
 
+    fn webhook_events(&self) -> &'static [&'static str] {
+        webhook::EVENTS
+    }
+
     fn driver(&self) -> ProtocolDriver {
         ProtocolDriver::Absolute(Arc::new(OciRegistry::default()))
     }

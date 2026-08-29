@@ -162,6 +162,7 @@ fn target_config(name: &str, url: &str) -> WebhookTargetConfig {
         url: url.to_owned(),
         secret: "test-webhook-signing-secret-32-bytes".to_owned(),
         events: Vec::new(),
+        allowed_events: &["management", "resource-delete", "resource-write"],
     }
 }
 

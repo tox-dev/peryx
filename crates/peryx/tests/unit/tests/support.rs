@@ -256,6 +256,10 @@ impl EcosystemRegistration for Registration {
         &["/+fixture"]
     }
 
+    fn webhook_events(&self) -> &'static [&'static str] {
+        &["upload"]
+    }
+
     fn driver(&self) -> ProtocolDriver {
         ProtocolDriver::Absolute(Arc::new((*self.driver).clone()))
     }
@@ -280,6 +284,10 @@ impl EcosystemRegistration for PlainRegistration {
 
     fn absolute_prefixes(&self) -> &'static [&'static str] {
         &[]
+    }
+
+    fn webhook_events(&self) -> &'static [&'static str] {
+        &["upload"]
     }
 
     fn driver(&self) -> ProtocolDriver {

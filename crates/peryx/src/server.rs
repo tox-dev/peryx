@@ -124,7 +124,7 @@ pub(crate) fn check_config_with_active_plugins(
     crate::logging::validate(&config.log).context("validate logging configuration")?;
     build_indexes_with_plugins(&config.indexes, &config.auth, config.offline, plugins)?;
     build_index_settings_with_plugins(&config.indexes, plugins)?;
-    build_webhooks(&config.indexes)?;
+    build_webhooks(&config.indexes, plugins)?;
     Ok(listen_address)
 }
 
@@ -226,7 +226,7 @@ fn build_state_with_active_backend_and_plugins(
         crate::config::reconcile_configured_repositories(&meta, &configs);
     }
     let ecosystem_settings = build_index_settings_with_plugins(&configs, plugins)?;
-    let webhooks = build_webhooks(&configs)?;
+    let webhooks = build_webhooks(&configs, plugins)?;
     let search_path = config.data_dir.join("search-v1");
     let mut state = AppState::with_search_path_and_runtime(
         meta,
@@ -715,9 +715,16 @@ fn build_index_settings_with_plugins(
     Ok(settings)
 }
 
-fn build_webhooks(configs: &[IndexConfig]) -> anyhow::Result<WebhookRuntime> {
+fn build_webhooks(
+    configs: &[IndexConfig],
+    plugins: &peryx_plugin_registry::PluginRegistry,
+) -> anyhow::Result<WebhookRuntime> {
     let mut targets = Vec::new();
-    for index in configs {
+    for index in configs.iter().filter(|index| !index.webhooks.is_empty()) {
+        let allowed_events = plugins
+            .webhook_events(&index.ecosystem)
+            .map_err(anyhow::Error::msg)
+            .with_context(|| format!("resolve webhook events for {}", index.name))?;
         for webhook in &index.webhooks {
             targets.push(WebhookTargetConfig {
                 index: index.name.clone(),
@@ -725,6 +732,7 @@ fn build_webhooks(configs: &[IndexConfig]) -> anyhow::Result<WebhookRuntime> {
                 url: webhook.url.clone(),
                 secret: webhook_secret(&webhook.secret, &webhook.name)?,
                 events: webhook.events.clone(),
+                allowed_events,
             });
         }
     }

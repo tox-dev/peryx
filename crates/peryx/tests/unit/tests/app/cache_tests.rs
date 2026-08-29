@@ -298,6 +298,7 @@ fn test_cache_list_skips_drivers_without_cache_capability() {
 #[tokio::test]
 async fn test_cache_plugin_contract() {
     let plugins = plugins().activate([CORE]).unwrap();
+    assert!(plugins.webhook_events(&CORE).unwrap().is_empty());
     assert_eq!(
         plugins
             .compile_index_settings(&CORE, "main", &toml::Table::new())
@@ -491,6 +492,10 @@ impl EcosystemRegistration for CachePlugin {
 
     fn absolute_prefixes(&self) -> &'static [&'static str] {
         &["/cache-fixture"]
+    }
+
+    fn webhook_events(&self) -> &'static [&'static str] {
+        &[]
     }
 
     fn driver(&self) -> ProtocolDriver {

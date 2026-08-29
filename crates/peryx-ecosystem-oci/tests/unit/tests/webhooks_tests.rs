@@ -25,6 +25,7 @@ fn hosted_with_webhook(dir: &tempfile::TempDir, events: &[&str]) -> (Arc<AppStat
         url: "http://127.0.0.1:1/hook".to_owned(),
         secret: "test-webhook-signing-secret-32-bytes".to_owned(),
         events: events.iter().map(|event| (*event).to_owned()).collect(),
+        allowed_events: crate::registration().registration.webhook_events(),
     }])
     .unwrap();
     let mut state = AppState::with_clock_and_webhooks(

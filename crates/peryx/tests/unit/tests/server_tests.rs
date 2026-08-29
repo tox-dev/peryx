@@ -748,9 +748,17 @@ const SIGNING_KEY_CASES: [(ConfigBoundary, SigningKeySource); 4] = [
 
 impl ConfigBoundary {
     fn validate(self, config: &Config) -> anyhow::Result<()> {
+        self.validate_with_plugins(config, &plugins())
+    }
+
+    fn validate_with_plugins(
+        self,
+        config: &Config,
+        plugins: &peryx_plugin_registry::PluginRegistry,
+    ) -> anyhow::Result<()> {
         match self {
-            Self::Startup => build_state(config).map(drop),
-            Self::CheckConfig => check_config(config),
+            Self::Startup => build_state_with_plugins(config, plugins).map(drop),
+            Self::CheckConfig => check_config_with_plugins(config, plugins),
         }
     }
 }
@@ -1537,6 +1545,36 @@ secret_env = "PERYX_TEST_MISSING_WEBHOOK_SECRET"
     );
 }
 
+#[rstest]
+#[case("download")]
+#[case("manifest-push")]
+fn test_webhook_boundaries_reject_event_the_pypi_owner_does_not_emit(#[case] event: &str) {
+    let dir = tempfile::tempdir().unwrap();
+    let plugins = crate::compiled_plugins();
+
+    for boundary in CONFIG_BOUNDARIES {
+        assert_eq!(
+            format!(
+                "{:#}",
+                boundary
+                    .validate_with_plugins(&owner_webhook_config(&dir, "pypi", &[event]), &plugins)
+                    .unwrap_err()
+            ),
+            format!("build webhook targets: unknown webhook event {event:?}")
+        );
+    }
+}
+
+#[rstest]
+#[case("pypi", &["delete", "restore", "unyank", "upload", "yank"])]
+#[case("oci", &["blob-delete", "manifest-delete", "manifest-push", "manifest-restore"])]
+fn test_check_config_accepts_every_webhook_event_the_owner_emits(#[case] ecosystem: &str, #[case] events: &[&str]) {
+    let dir = tempfile::tempdir().unwrap();
+    let plugins = crate::compiled_plugins();
+
+    check_config_with_plugins(&owner_webhook_config(&dir, ecosystem, events), &plugins).unwrap();
+}
+
 #[test]
 fn test_build_state_uses_netrc_credentials() {
     let dir = tempfile::tempdir().unwrap();
@@ -1849,6 +1887,26 @@ fn parsed_config(dir: &tempfile::TempDir, text: &str) -> Config {
     for index in &mut config.indexes {
         index.ecosystem = ecosystem.clone();
     }
+    config
+}
+
+fn owner_webhook_config(dir: &tempfile::TempDir, ecosystem: &str, events: &[&str]) -> Config {
+    let plugins = crate::compiled_plugins();
+    let mut config = Config::with_plugins(&plugins)
+        .apply_with_plugins(
+            crate::config::from_toml(
+                dir.path().join("peryx.toml"),
+                &format!(
+                    "[[index]]\nname = \"hosted\"\necosystem = {ecosystem:?}\nhosted = true\n\
+                     [[index.webhook]]\nname = \"ci\"\nurl = \"https://hooks.example/ci\"\n\
+                     secret = \"test-webhook-signing-secret-32-bytes\"\nevents = {events:?}\n"
+                ),
+            )
+            .unwrap(),
+            &plugins,
+        )
+        .unwrap();
+    config.data_dir = dir.path().to_path_buf();
     config
 }
 

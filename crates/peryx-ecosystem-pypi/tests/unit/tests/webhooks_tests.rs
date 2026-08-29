@@ -73,6 +73,7 @@ impl Harness {
             url,
             secret: SECRET.to_owned(),
             events: events.iter().map(|event| (*event).to_owned()).collect(),
+            allowed_events: crate::registration().registration.webhook_events(),
         }])
         .unwrap();
         let (delivery_updates, delivery_receiver) = mpsc::unbounded_channel();

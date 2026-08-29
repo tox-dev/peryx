@@ -302,6 +302,11 @@ fn test_job_run_does_not_select_an_inactive_owner() {
 }
 
 #[test]
+fn test_job_plugin_exposes_no_webhook_events() {
+    assert!(plugins().webhook_events(&CORE).unwrap().is_empty());
+}
+
+#[test]
 fn test_job_registry_rejects_the_unsupported_distributed_runtime() {
     let plugins = plugins_with_distributed_runtime(&REJECTING_RUNTIME);
     let (_directory, meta, config) = store_and_config(&plugins);
@@ -687,6 +692,10 @@ impl EcosystemRegistration for Registration {
     }
 
     fn absolute_prefixes(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    fn webhook_events(&self) -> &'static [&'static str] {
         &[]
     }
 

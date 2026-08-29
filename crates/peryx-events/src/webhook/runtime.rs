@@ -56,7 +56,7 @@ impl WebhookRuntime {
                 name: config.name,
                 url: target_url(&config.url)?,
                 secret: config.secret,
-                events: WebhookEvents::new(config.events)?,
+                events: WebhookEvents::new(config.events, config.allowed_events)?,
             });
         }
         Ok(Self {
@@ -103,6 +103,7 @@ pub struct WebhookTargetConfig {
     pub url: String,
     pub secret: String,
     pub events: Vec<String>,
+    pub allowed_events: &'static [&'static str],
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -142,7 +143,7 @@ struct WebhookEvents {
 }
 
 impl WebhookEvents {
-    fn new(names: Vec<String>) -> Result<Self, WebhookConfigError> {
+    fn new(names: Vec<String>, allowed: &[&str]) -> Result<Self, WebhookConfigError> {
         if names.is_empty() {
             return Ok(Self {
                 all: true,
@@ -154,9 +155,11 @@ impl WebhookEvents {
             events: names
                 .into_iter()
                 .map(|name| {
-                    valid_identifier(&name)
-                        .then_some(name.clone())
-                        .ok_or(WebhookConfigError::UnknownEvent(name))
+                    if valid_identifier(&name) && allowed.contains(&name.as_str()) {
+                        Ok(name)
+                    } else {
+                        Err(WebhookConfigError::UnknownEvent(name))
+                    }
                 })
                 .collect::<Result<_, _>>()?,
         })

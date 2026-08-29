@@ -307,6 +307,10 @@ impl EcosystemRegistration for Registration {
         &["/artifacts"]
     }
 
+    fn webhook_events(&self) -> &'static [&'static str] {
+        &[]
+    }
+
     fn driver(&self) -> ProtocolDriver {
         ProtocolDriver::Absolute(Arc::new(Driver))
     }
@@ -940,9 +944,10 @@ fn test_registration_defaults_and_read_only_mutation_are_observable() {
         (
             registration.default_indexes(),
             registration.absolute_prefixes(),
+            registration.webhook_events(),
             registration.driver().ecosystem(),
         ),
-        (&[][..], &["/artifacts"][..], ecosystem)
+        (&[][..], &["/artifacts"][..], &[][..], ecosystem)
     );
     let mut drivers = crate::DriverSet::default();
     registration.register_capabilities(&mut drivers);

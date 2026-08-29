@@ -5,6 +5,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 use super::*;
 
 type ErrorMatch = fn(&WebhookConfigError) -> bool;
+const ALLOWED_EVENTS: &[&str] = &["management", "resource-write"];
 
 const SECRET: &str = "test-webhook-signing-secret-32-bytes";
 
@@ -15,6 +16,7 @@ fn target(name: &str, url: &str, secret: &str, events: &[&str]) -> WebhookTarget
         url: url.to_owned(),
         secret: secret.to_owned(),
         events: events.iter().map(|&event| event.to_owned()).collect(),
+        allowed_events: ALLOWED_EVENTS,
     }
 }
 
@@ -105,4 +107,26 @@ fn test_runtime_rejects_invalid_event_name() {
         WebhookRuntime::new(vec![target("ci", "https://ci.example/hook", SECRET, &["Bad event"])]),
         Err(WebhookConfigError::UnknownEvent(event)) if event == "Bad event"
     ));
+}
+
+#[test]
+fn test_runtime_rejects_event_the_owner_does_not_emit() {
+    assert!(matches!(
+        WebhookRuntime::new(vec![target(
+            "ci",
+            "https://ci.example/hook",
+            SECRET,
+            &["resource-delete"]
+        )]),
+        Err(WebhookConfigError::UnknownEvent(event)) if event == "resource-delete"
+    ));
+}
+
+#[rstest]
+#[case("management")]
+#[case("resource-write")]
+fn test_runtime_accepts_each_owner_event(#[case] event: &str) {
+    let runtime = WebhookRuntime::new(vec![target("ci", "https://ci.example/hook", SECRET, &[event])]).unwrap();
+
+    assert_eq!(runtime.target_names("hosted", event), ["ci"]);
 }

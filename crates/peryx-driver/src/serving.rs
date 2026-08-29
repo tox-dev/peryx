@@ -65,6 +65,7 @@ pub trait EcosystemRegistration: Send + Sync {
     fn ecosystem(&self) -> Ecosystem;
     fn default_indexes(&self) -> &'static [DefaultIndex];
     fn absolute_prefixes(&self) -> &'static [&'static str];
+    fn webhook_events(&self) -> &'static [&'static str];
     fn driver(&self) -> ProtocolDriver;
     fn register_capabilities(&self, registrar: &mut dyn CapabilityRegistrar);
 }

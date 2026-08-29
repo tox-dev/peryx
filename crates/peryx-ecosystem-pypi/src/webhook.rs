@@ -7,6 +7,7 @@ pub const RESTORE: &str = "restore";
 pub const UNYANK: &str = "unyank";
 pub const UPLOAD: &str = "upload";
 pub const YANK: &str = "yank";
+pub const EVENTS: &[&str] = &[DELETE, RESTORE, UNYANK, UPLOAD, YANK];
 
 #[derive(Clone, Copy)]
 pub struct PypiWebhook<'a> {

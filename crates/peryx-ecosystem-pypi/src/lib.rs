@@ -195,6 +195,10 @@ impl EcosystemRegistration for PypiPlugin {
         &[]
     }
 
+    fn webhook_events(&self) -> &'static [&'static str] {
+        webhook::EVENTS
+    }
+
     fn driver(&self) -> ProtocolDriver {
         ProtocolDriver::Indexed(Arc::new(PypiServing))
     }

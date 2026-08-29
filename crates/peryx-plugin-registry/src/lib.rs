@@ -292,6 +292,12 @@ impl PluginRegistry {
             .any(|registration| registration.registration.ecosystem() == *ecosystem)
     }
 
+    /// # Errors
+    /// Returns an error when the ecosystem is not installed.
+    pub fn webhook_events(&self, ecosystem: &Ecosystem) -> Result<&'static [&'static str], String> {
+        Ok(self.registration(ecosystem)?.registration.webhook_events())
+    }
+
     pub fn default_indexes(&self) -> impl Iterator<Item = &'static peryx_core::DefaultIndex> + '_ {
         self.registrations
             .iter()

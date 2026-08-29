@@ -246,6 +246,14 @@ impl EcosystemRegistration for Registration {
         self.prefixes
     }
 
+    fn webhook_events(&self) -> &'static [&'static str] {
+        if self.ecosystem == PRIMARY {
+            &["resource-write"]
+        } else {
+            &["resource-delete"]
+        }
+    }
+
     fn driver(&self) -> ProtocolDriver {
         DRIVER_FACTORY_CALLS.with(|calls| {
             let (primary, secondary) = calls.get();
