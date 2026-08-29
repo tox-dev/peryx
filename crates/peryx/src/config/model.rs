@@ -294,7 +294,7 @@ pub enum DcRole {
 pub struct DcMember {
     /// The member's stable identity, unique within the group.
     pub node: String,
-    /// The datacenter the member runs in. Multiple members may share it.
+    /// The datacenter the member runs in. `dc` members may share it; `ha` members may not.
     pub dc: String,
     /// The address peers reach this member on, unique within the group.
     pub address: String,

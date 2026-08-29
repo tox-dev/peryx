@@ -2,6 +2,7 @@ use std::fmt::Write as _;
 
 use rstest::rstest;
 
+use crate::config::{self, Config};
 use crate::operator;
 
 use super::support::{
@@ -352,6 +353,66 @@ fn test_verify_rejects_an_unsupported_availability_mode() {
     );
 }
 
+type MembershipMember = (&'static str, &'static str, &'static str, &'static str);
+
+fn membership_config(mode: &str, members: &[MembershipMember]) -> String {
+    let listener = if mode == "ha" { "[availability.listener]\n" } else { "" };
+    let roster = members.iter().fold(String::new(), |mut roster, (node, dc, address, role)| {
+        write!(
+            roster,
+                "[[availability.member]]\nnode = \"{node}\"\ndc = \"{dc}\"\naddress = \"{address}\"\nrole = \"{role}\"\n"
+        )
+        .unwrap();
+        roster
+    });
+    format!(
+        "[availability]\nmode = \"{mode}\"\ngroup = \"g\"\n\
+         [availability.replication]\nrole = \"primary\"\nsource = \"a\"\ntoken = \"t\"\n\
+         {listener}{roster}"
+    )
+}
+
+#[rstest]
+#[case::dc_distinct("dc", &[("w", "east", "https://w:1", "writer"), ("r", "west", "https://r:1", "replica")], true)]
+#[case::dc_shared("dc", &[("w", "east", "https://w:1", "writer"), ("r", "east", "https://r:1", "replica")], true)]
+#[case::ha_distinct("ha", &[("w", "east", "https://w:1", "writer"), ("r", "west", "https://r:1", "replica")], true)]
+#[case::ha_shared("ha", &[("w", "east", "https://w:1", "writer"), ("r", "east", "https://r:1", "replica")], false)]
+#[case::duplicate_node("dc", &[("w", "east", "https://w:1", "writer"), ("w", "west", "https://r:1", "replica")], false)]
+#[case::duplicate_address("dc", &[("w", "east", "https://same:1", "writer"), ("r", "west", "https://same:1", "replica")], false)]
+#[case::no_writer("dc", &[("a", "east", "https://a:1", "replica"), ("b", "west", "https://b:1", "replica")], false)]
+#[case::multiple_writers("dc", &[("a", "east", "https://a:1", "writer"), ("b", "west", "https://b:1", "writer")], false)]
+#[case::invalid_role("dc", &[("w", "east", "https://w:1", "writer"), ("r", "west", "https://r:1", "observer")], false)]
+fn test_config_and_backup_membership_rules_agree(
+    #[case] mode: &str,
+    #[case] members: &[MembershipMember],
+    #[case] expected: bool,
+) {
+    let configured = config::from_toml("x.toml".into(), &membership_config(mode, members))
+        .and_then(|partial| Config::default().apply(partial))
+        .is_ok();
+    let fixture = valid_backup();
+    mutate_manifest(&fixture.backup, |manifest| {
+        manifest["availability"]["mode"] = serde_json::json!(mode);
+        manifest["availability"]["membership"] = serde_json::json!({
+            "group": "g",
+            "members": members
+                .iter()
+                .map(|(node, dc, address, role)| serde_json::json!({
+                    "node": node,
+                    "dc": dc,
+                    "address": address,
+                    "role": role,
+                }))
+                .collect::<Vec<_>>(),
+        });
+    });
+
+    assert_eq!(
+        (configured, backup_verify(&fixture.backup, &mut Vec::new()).is_ok()),
+        (expected, expected)
+    );
+}
+
 #[rstest]
 #[case::empty_group(
     serde_json::json!({"group": "", "members": [
@@ -404,6 +465,7 @@ fn test_verify_rejects_an_unsupported_availability_mode() {
 fn test_verify_rejects_invalid_membership(#[case] membership: serde_json::Value, #[case] expected: &str) {
     let fixture = valid_backup();
     mutate_manifest(&fixture.backup, |manifest| {
+        manifest["availability"]["mode"] = serde_json::json!("ha");
         manifest["availability"]["membership"] = membership;
     });
     let mut out = Vec::new();

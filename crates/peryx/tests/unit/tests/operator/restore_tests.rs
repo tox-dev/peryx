@@ -7,8 +7,10 @@ use peryx_storage::meta::MetaStore;
 use rstest::rstest;
 
 use super::support::{
-    blob_relpath, claimed_data_dir, identified_backup, mutate_manifest, resign_file, restore, valid_backup,
+    backup_create_with_references, backup_fixture, backup_verify, blob_relpath, claimed_data_dir, identified_backup,
+    mutate_manifest, resign_file, restore, valid_backup,
 };
+use crate::config::{AvailabilityConfig, DcMember, DcMembership, DcRole, ReplicationConfig, SecretSource};
 use crate::operator;
 
 #[test]
@@ -73,6 +75,41 @@ fn test_restore_accepts_an_empty_precreated_target() {
     std::fs::create_dir(&restored).unwrap();
 
     restore(&fixture.backup, &restored, false, &mut Vec::new()).unwrap();
+
+    assert!(restored.join("peryx.redb").is_file());
+}
+
+#[test]
+fn test_restore_accepts_a_dc_backup_with_a_shared_datacenter() {
+    let (source, mut config, _, _) = backup_fixture();
+    config.availability = AvailabilityConfig::Dc(ReplicationConfig::Primary {
+        source: "primary-a".to_owned(),
+        token: SecretSource::Literal("token".to_owned()),
+    });
+    config.dc_membership = Some(DcMembership {
+        group: "group-a".to_owned(),
+        members: vec![
+            DcMember {
+                node: "node-a".to_owned(),
+                dc: "east".to_owned(),
+                address: "https://a:1".to_owned(),
+                role: DcRole::Writer,
+            },
+            DcMember {
+                node: "node-b".to_owned(),
+                dc: "east".to_owned(),
+                address: "https://b:1".to_owned(),
+                role: DcRole::Replica,
+            },
+        ],
+    });
+    config.validate().unwrap();
+    let backup = source.path().join("backup");
+    backup_create_with_references(&config, &backup, &mut Vec::new()).unwrap();
+    backup_verify(&backup, &mut Vec::new()).unwrap();
+    let restored = source.path().join("restored");
+
+    restore(&backup, &restored, false, &mut Vec::new()).unwrap();
 
     assert!(restored.join("peryx.redb").is_file());
 }

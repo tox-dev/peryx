@@ -178,7 +178,7 @@ fn check_membership(
             *problems += 1;
             writeln!(out, "problem\tavailability\tmembership\tduplicate node {}", member.node)?;
         }
-        if !dcs.insert(member.dc.as_str()) {
+        if availability.mode == "ha" && !dcs.insert(member.dc.as_str()) {
             *problems += 1;
             writeln!(out, "problem\tavailability\tmembership\tduplicate dc {}", member.dc)?;
         }
