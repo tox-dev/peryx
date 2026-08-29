@@ -220,7 +220,7 @@ async fn wheel_metadata_by_range(
     let entry = match find_central_directory_entry(&directory_bytes, &metadata_path) {
         DirectoryEntrySearch::Found(entry) => entry,
         DirectoryEntrySearch::Missing => return Ok(RemoteMetadata::Missing),
-        DirectoryEntrySearch::Invalid => return Ok(RemoteMetadata::Unsupported),
+        DirectoryEntrySearch::Unsupported | DirectoryEntrySearch::Invalid => return Ok(RemoteMetadata::Unsupported),
     };
     if entry.uncompressed_size > crate::archive::MAX_WHEEL_METADATA_BYTES
         || entry.compressed_size > crate::archive::MAX_WHEEL_METADATA_BYTES

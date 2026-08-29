@@ -233,48 +233,59 @@ async fn test_metadata_not_found_when_unregistered() {
 }
 #[tokio::test]
 async fn test_metadata_backfill_reads_wheel_ranges() {
-    let h = harness().await;
     let metadata = b"Metadata-Version: 2.1\nName: peryxpkg\nVersion: 1.0\n";
-    let wheel = fixture_wheel_with_metadata(metadata);
-    let digest = Digest::of(&wheel);
-    let filename = "peryxpkg-1.0-py3-none-any.whl";
-    let file_url = format!("{}/files/{filename}", h.server.uri());
-    h.state
-        .serving
-        .meta
-        .put_file_url(digest.as_str(), &file_url, "pypi")
-        .unwrap();
-    Mock::given(method("HEAD"))
-        .and(path(format!("/files/{filename}")))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("accept-ranges", "bytes")
-                .insert_header("content-length", wheel.len()),
-        )
-        .mount(&h.server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path(format!("/files/{filename}")))
-        .and(match_header("accept-encoding", "identity"))
-        .respond_with(range_response(wheel))
-        .mount(&h.server)
-        .await;
+    for (label, wheel) in [
+        ("classic", fixture_wheel_with_metadata(metadata)),
+        (
+            "encrypted nonmetadata entry",
+            wheel_with_encrypted_nonmetadata(metadata),
+        ),
+    ] {
+        let h = harness().await;
+        let digest = Digest::of(&wheel);
+        let filename = "peryxpkg-1.0-py3-none-any.whl";
+        let file_url = format!("{}/files/{filename}", h.server.uri());
+        h.state
+            .serving
+            .meta
+            .put_file_url(digest.as_str(), &file_url, "pypi")
+            .unwrap();
+        Mock::given(method("HEAD"))
+            .and(path(format!("/files/{filename}")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("accept-ranges", "bytes")
+                    .insert_header("content-length", wheel.len()),
+            )
+            .mount(&h.server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/files/{filename}")))
+            .and(match_header("accept-encoding", "identity"))
+            .respond_with(range_response(wheel))
+            .mount(&h.server)
+            .await;
 
-    let uri = format!("/pypi/files/{}/{filename}.metadata", digest.as_str());
-    let (status, _, body) = get(&h.state, &uri, None).await;
+        let uri = format!("/pypi/files/{}/{filename}.metadata", digest.as_str());
+        let (status, _, body) = get(&h.state, &uri, None).await;
 
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body.as_bytes(), metadata);
-    let (url, metadata_sha256, source) = h
-        .state
-        .serving
-        .meta
-        .get_metadata(digest.as_str())
-        .unwrap()
-        .expect("generated metadata registered");
-    assert_eq!(url, "peryx:generated");
-    assert_eq!(metadata_sha256, Digest::of(metadata).as_str());
-    assert_eq!(source, "pypi");
+        assert_eq!(status, StatusCode::OK, "{label}");
+        assert_eq!(body.as_bytes(), metadata, "{label}");
+        assert_eq!(
+            h.state
+                .serving
+                .meta
+                .get_metadata(digest.as_str())
+                .unwrap()
+                .expect("generated metadata registered"),
+            (
+                "peryx:generated".to_owned(),
+                Digest::of(metadata).as_str().to_owned(),
+                "pypi".to_owned(),
+            ),
+            "{label}"
+        );
+    }
 }
 #[tokio::test]
 async fn test_metadata_backfill_upstream_range_error_is_bad_gateway() {
@@ -470,6 +481,22 @@ async fn test_metadata_backfill_downloads_when_range_is_unusable() {
                     u32::try_from(crate::archive::MAX_WHEEL_METADATA_BYTES).unwrap() + 1,
                 )
             },
+        },
+        Case {
+            label: "metadata is encrypted",
+            build_ranged: |metadata, _wheel| wheel_with_encrypted_metadata(metadata),
+        },
+        Case {
+            label: "metadata has a ZIP64 compressed size",
+            build_ranged: |metadata, _wheel| wheel_with_metadata_central_u32(metadata, 20, u32::MAX),
+        },
+        Case {
+            label: "metadata has a ZIP64 uncompressed size",
+            build_ranged: |metadata, _wheel| wheel_with_metadata_central_u32(metadata, 24, u32::MAX),
+        },
+        Case {
+            label: "metadata has a ZIP64 local offset",
+            build_ranged: |metadata, _wheel| wheel_with_metadata_central_u32(metadata, 42, u32::MAX),
         },
         Case {
             label: "deflate is invalid",

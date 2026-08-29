@@ -21,6 +21,7 @@ pub(super) struct CentralDirectoryEntry {
 pub(super) enum DirectoryEntrySearch {
     Found(CentralDirectoryEntry),
     Missing,
+    Unsupported,
     Invalid,
 }
 pub(super) fn central_directory(tail: &[u8]) -> Option<CentralDirectory> {
@@ -44,6 +45,22 @@ pub(super) fn find_central_directory_entry(directory: &[u8], metadata_path: &str
         if !directory[position..].starts_with(&ZIP_CENTRAL_SIGNATURE) {
             return DirectoryEntrySearch::Invalid;
         }
+        let name_len =
+            usize::from(read_u16(directory, position + 28).expect("central directory fixed header is in bounds"));
+        let extra_len =
+            usize::from(read_u16(directory, position + 30).expect("central directory fixed header is in bounds"));
+        let comment_len =
+            usize::from(read_u16(directory, position + 32).expect("central directory fixed header is in bounds"));
+        let name_start = position + 46;
+        let name_end = name_start + name_len;
+        let next = name_end + extra_len + comment_len;
+        if next > directory.len() {
+            return DirectoryEntrySearch::Invalid;
+        }
+        if &directory[name_start..name_end] != metadata_path.as_bytes() {
+            position = next;
+            continue;
+        }
         let flags = read_u16(directory, position + 8).expect("central directory fixed header is in bounds");
         let compression_method =
             read_u16(directory, position + 10).expect("central directory fixed header is in bounds");
@@ -51,34 +68,21 @@ pub(super) fn find_central_directory_entry(directory: &[u8], metadata_path: &str
             u64::from(read_u32(directory, position + 20).expect("central directory fixed header is in bounds"));
         let uncompressed_size =
             u64::from(read_u32(directory, position + 24).expect("central directory fixed header is in bounds"));
-        let name_len =
-            usize::from(read_u16(directory, position + 28).expect("central directory fixed header is in bounds"));
-        let extra_len =
-            usize::from(read_u16(directory, position + 30).expect("central directory fixed header is in bounds"));
-        let comment_len =
-            usize::from(read_u16(directory, position + 32).expect("central directory fixed header is in bounds"));
         let local_header_offset =
             u64::from(read_u32(directory, position + 42).expect("central directory fixed header is in bounds"));
-        let name_start = position + 46;
-        let name_end = name_start + name_len;
-        let next = name_end + extra_len + comment_len;
-        if next > directory.len() {
-            return DirectoryEntrySearch::Invalid;
-        }
-        if flags & 1 == 0
-            && compressed_size != u64::from(u32::MAX)
-            && uncompressed_size != u64::from(u32::MAX)
-            && local_header_offset != u64::from(u32::MAX)
-            && &directory[name_start..name_end] == metadata_path.as_bytes()
+        if flags & 1 != 0
+            || compressed_size == u64::from(u32::MAX)
+            || uncompressed_size == u64::from(u32::MAX)
+            || local_header_offset == u64::from(u32::MAX)
         {
-            return DirectoryEntrySearch::Found(CentralDirectoryEntry {
-                compression_method,
-                compressed_size,
-                uncompressed_size,
-                local_header_offset,
-            });
+            return DirectoryEntrySearch::Unsupported;
         }
-        position = next;
+        return DirectoryEntrySearch::Found(CentralDirectoryEntry {
+            compression_method,
+            compressed_size,
+            uncompressed_size,
+            local_header_offset,
+        });
     }
     DirectoryEntrySearch::Missing
 }

@@ -145,6 +145,27 @@ pub fn wheel_with_metadata_uncompressed_size(metadata: &[u8], uncompressed_size:
     wheel[position + 24..position + 28].copy_from_slice(&uncompressed_size.to_le_bytes());
     wheel
 }
+pub fn wheel_with_metadata_central_u32(metadata: &[u8], field_offset: usize, value: u32) -> Vec<u8> {
+    let mut wheel = fixture_wheel_with_metadata(metadata);
+    let position = metadata_central_directory_position(&wheel);
+    wheel[position + field_offset..position + field_offset + 4].copy_from_slice(&value.to_le_bytes());
+    wheel
+}
+pub fn wheel_with_encrypted_metadata(metadata: &[u8]) -> Vec<u8> {
+    let mut wheel = fixture_wheel_with_metadata(metadata);
+    let position = metadata_central_directory_position(&wheel);
+    wheel[position + 8..position + 10].copy_from_slice(&1_u16.to_le_bytes());
+    wheel
+}
+pub fn wheel_with_encrypted_nonmetadata(metadata: &[u8]) -> Vec<u8> {
+    let mut wheel = fixture_wheel_with_metadata(metadata);
+    let position = wheel
+        .windows(4)
+        .position(|window| window == b"PK\x01\x02")
+        .expect("central-directory entry");
+    wheel[position + 8..position + 10].copy_from_slice(&1_u16.to_le_bytes());
+    wheel
+}
 pub fn overwrite_metadata_local_signature(wheel: &mut [u8], signature: [u8; 4]) {
     let position = metadata_local_header_position(wheel);
     wheel[position..position + 4].copy_from_slice(&signature);
