@@ -602,16 +602,12 @@ async fn test_http_copy_pass_reuses_one_connection_for_one_source() {
     let address = listener.local_addr().unwrap();
     let connections = Arc::new(AtomicUsize::new(0));
     let observed_connections = Arc::clone(&connections);
-    let server = tokio::spawn(async move {
-        axum::serve(
-            listener.tap_io(move |_| {
-                observed_connections.fetch_add(1, Ordering::Relaxed);
-            }),
-            router,
-        )
-        .await
-        .unwrap();
-    });
+    let server = tokio::spawn(std::future::IntoFuture::into_future(axum::serve(
+        listener.tap_io(move |_| {
+            observed_connections.fetch_add(1, Ordering::Relaxed);
+        }),
+        router,
+    )));
     let (_meta_dir, meta) = meta();
     let (_store_dir, store, backend) = filesystem();
     for content in contents {
