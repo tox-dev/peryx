@@ -4,6 +4,7 @@
 
 use std::collections::BTreeSet;
 
+use peryx_driver::ServingState;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::PolicyAction;
 use peryx_search::{
@@ -11,6 +12,23 @@ use peryx_search::{
 };
 
 use crate::store;
+
+pub struct SearchInvalidationGuard<'a> {
+    state: &'a ServingState,
+    resource: &'a str,
+}
+
+impl<'a> SearchInvalidationGuard<'a> {
+    pub const fn arm(state: &'a ServingState, resource: &'a str) -> Self {
+        Self { state, resource }
+    }
+}
+
+impl Drop for SearchInvalidationGuard<'_> {
+    fn drop(&mut self) {
+        self.state.invalidate_search_resource(self.resource);
+    }
+}
 
 /// Produces OCI search documents (one per image repository) for the neutral search index.
 #[derive(Debug, Clone, Copy, Default)]
@@ -30,17 +48,18 @@ impl SearchDocumentProvider for OciIndexer {
         Ok(documents)
     }
 
-    /// Re-derive one repository across every OCI index that serves it. A repository the index does not
-    /// serve contributes nothing, so a scoped refresh for another ecosystem's project touches no OCI
-    /// document; membership is decided from the repository's own tag keys, not a full repository scan.
+    /// Re-derive one repository across every OCI index. Each route contributes its key so a repository
+    /// that lost its last tag retires its prior document; routes that still serve it add a replacement.
     fn resource_update(&self, ctx: &IndexerCtx<'_>, name: &str) -> Result<ResourceUpdate, SearchError> {
         let mut update = ResourceUpdate::default();
         for index in ctx.indexes {
-            if index.ecosystem != crate::ECOSYSTEM || !serves_repository(ctx, index, name)? {
+            if index.ecosystem != crate::ECOSYSTEM {
                 continue;
             }
             update.keys.push(document_key(&index.route, name));
-            update.documents.push(document(ctx, index, name)?);
+            if serves_repository(ctx, index, name)? {
+                update.documents.push(document(ctx, index, name)?);
+            }
         }
         Ok(update)
     }

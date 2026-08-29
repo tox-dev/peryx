@@ -86,7 +86,7 @@ pub(in crate::registry) async fn put_manifest(
         release_reservation(state, reservation)?;
         return Ok(authority_moved());
     }
-    if crate::quota::publish_manifest(
+    crate::quota::publish_manifest(
         &state.meta,
         crate::quota::ManifestCommit {
             index: &index.name,
@@ -100,10 +100,10 @@ pub(in crate::registry) async fn put_manifest(
             reservation,
             journal,
         },
-    )? {
-        state.bump_search_epoch();
-    }
+    )?;
+    let search_invalidation = crate::search_oci::SearchInvalidationGuard::arm(state, &repo);
     store::record_content_placement(&state.meta, &canonical, store::OciArtifactOrigin::Pushed, true)?;
+    drop(search_invalidation);
     let subject = record_referrer(state, &index.name, &repo, &canonical, &media_type, &bytes)?;
     let location = format!("/v2/{name}/manifests/{canonical}");
     state.metrics.record(Observation::Write {
@@ -221,14 +221,14 @@ pub(in crate::registry) async fn delete_manifest(
         Reference::Tag(tag) => {
             let digest = store::trash_tag(&state.meta, &index.name, &repo, tag, &info, journal)?;
             if digest.is_some() {
-                state.bump_search_epoch();
+                state.invalidate_search_resource(&repo);
             }
             (digest.is_some(), Some(tag.clone()), digest)
         }
         Reference::Digest(digest) => {
             let removed = store::trash_manifest(&state.meta, &index.name, &repo, digest, &info, journal)?;
             if removed.is_some_and(|tags| tags > 0) {
-                state.bump_search_epoch();
+                state.invalidate_search_resource(&repo);
             }
             (removed.is_some(), None, Some(digest.clone()))
         }
@@ -287,7 +287,7 @@ pub(in crate::registry) async fn restore_manifest(
         },
     };
     if restored > 0 {
-        state.bump_search_epoch();
+        state.invalidate_search_resource(&repo);
     }
     emit_webhook(
         state,

@@ -1,13 +1,15 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
 use http_body_util::BodyExt as _;
+use peryx_driver::AppState;
 use peryx_identity::{Action, Glob, Grant, IndexAcl, NamedToken};
 use peryx_index::{Index, IndexKind};
 use peryx_policy::{Policy, PolicyConfig};
-use peryx_storage::blob::Digest;
-use peryx_storage::meta::{DriverBatch, OperationOutcomeQuery, OperationState};
+use peryx_storage::blob::{BlobStore, Digest};
+use peryx_storage::meta::{DriverBatch, MetaStore, OperationOutcomeQuery, OperationState};
 use rstest::rstest;
 use tower::ServiceExt as _;
 
@@ -1333,7 +1335,7 @@ async fn test_write_to_an_unresolvable_name_is_name_unknown() {
 }
 
 #[tokio::test]
-async fn test_manifest_put_body_error_is_a_gateway_error() {
+async fn test_manifest_put_faults_are_gateway_errors() {
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = hosted_writable(&dir, TOKEN);
     let erroring = futures_util::stream::iter(vec![
@@ -1350,6 +1352,26 @@ async fn test_manifest_put_body_error_is_a_gateway_error() {
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     assert_registry_version(response.headers());
     let _ = response.into_body().collect().await;
+
+    let path = dir.path().join("read-only.redb");
+    drop(MetaStore::open(&path).unwrap());
+    let meta = MetaStore::open_existing_read_only(path).unwrap();
+    let blobs = BlobStore::new(dir.path().join("read-only-blobs"));
+    let indexes = vec![writable_index("store", "store", true, TOKEN)];
+    let mut state = AppState::with_clock(meta, blobs, 60, indexes, Arc::new(|| 1000));
+    super::install_oci(&mut state, HashMap::new(), false);
+    let app = peryx_http::router(Arc::new(state));
+    let authorization = auth(TOKEN);
+    let headers = [
+        ("authorization", authorization.as_str()),
+        ("content-type", MANIFEST_TYPE),
+    ];
+    let manifest = br#"{"schemaVersion":2}"#;
+    let request_body = manifest.into();
+    let response = send_body(&app, Method::PUT, "/v2/store/app/manifests/v1", &headers, request_body).await;
+    let (status, _, body) = response;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert!(body_has_code(&body, "UNKNOWN"), "{body:?}");
 }
 
 #[tokio::test]

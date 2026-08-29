@@ -44,6 +44,10 @@ impl ServingState {
         self.search.bump_epoch();
     }
 
+    pub fn invalidate_search_resource(&self, resource: &str) {
+        self.search.invalidate_resource(resource);
+    }
+
     /// The highest metadata serial a replica may expose and the view holding it back, from the
     /// authoritative serial and every required view's durable frontier. Metadata above it stays
     /// hidden until the lagging view catches up, so a read never mixes new metadata with a stale view.

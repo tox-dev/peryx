@@ -230,14 +230,14 @@ pub fn publish_manifest(meta: &MetaStore, commit: ManifestCommit<'_>) -> Result<
             Reference::Tag(tag) => Some(tag.as_str()),
             Reference::Digest(_) => None,
         };
-        let grew = store::publish_manifest_txn(txn, index, repo, canonical, manifest, tag)?;
+        let changed = store::publish_manifest_txn(txn, index, repo, canonical, manifest, tag)?;
         let entries = crate::outbox::record(journal, || crate::outbox::OciMutation::PublishManifest {
             index: index.to_owned(),
             repo: repo.to_owned(),
             digest: canonical.to_owned(),
             tag: tag.map(str::to_owned),
         });
-        Ok((grew, entries))
+        Ok((changed, entries))
     };
     finalize(meta, reservation, None, body)
 }

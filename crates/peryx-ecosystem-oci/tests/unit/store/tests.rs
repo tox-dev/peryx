@@ -129,9 +129,10 @@ fn test_put_tag_reports_insert_and_repoints() {
         (
             put_tag(&meta, "hub", "library/nginx", "latest", "sha256:1").unwrap(),
             put_tag(&meta, "hub", "library/nginx", "latest", "sha256:2").unwrap(),
+            put_tag(&meta, "hub", "library/nginx", "latest", "sha256:2").unwrap(),
             get_tag(&meta, "hub", "library/nginx", "latest").unwrap()
         ),
-        (true, false, Some("sha256:2".to_owned()))
+        (true, true, false, Some("sha256:2".to_owned()))
     );
 }
 

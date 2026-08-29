@@ -277,10 +277,12 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         else {
             return Ok(None);
         };
-        if store::put_tag(&state.meta, index, repo, tag, &digest)? {
-            state.bump_search_epoch();
-        }
+        let changed = store::put_tag(&state.meta, index, repo, tag, &digest)?;
+        let search_invalidation = changed.then(|| crate::search_oci::SearchInvalidationGuard::arm(state, repo));
         store::set_tag_freshness(&state.meta, index, repo, tag, &digest, (state.clock)())?;
+        if let Some(search_invalidation) = search_invalidation {
+            drop(search_invalidation);
+        }
         Ok(Some(digest))
     }
 

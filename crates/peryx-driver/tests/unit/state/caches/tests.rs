@@ -65,11 +65,11 @@ fn test_representation_only_invalidation_advances_representation_key() {
 }
 
 #[test]
-fn test_search_epoch_can_advance_without_hot_invalidation() {
+fn test_scoped_search_invalidation_preserves_hot_representations() {
     let (_dir, state) = state();
     let key = state.representation_key("resources", "resource", "page");
 
-    state.bump_search_epoch();
+    state.invalidate_search_resource("resource");
 
     assert_eq!(state.representation_key("resources", "resource", "page"), key);
 }

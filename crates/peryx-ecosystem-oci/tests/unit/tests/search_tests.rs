@@ -1,6 +1,6 @@
 use axum::http::{Method, StatusCode};
 use peryx_core::Ecosystem;
-use peryx_identity::IndexAcl;
+use peryx_identity::{ArtifactDigest, IndexAcl, RevocationReason, UserId};
 use peryx_index::{Index, IndexKind};
 use peryx_policy::{Policy, PolicyConfig};
 use peryx_search::{ContentSource, SearchDocumentProvider as _};
@@ -16,6 +16,7 @@ use crate::store;
 
 const TOKEN: &str = "s3cret";
 const DIGEST: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const OTHER_DIGEST: &str = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
 const MANIFEST: &[u8] = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}"#;
 
@@ -56,9 +57,55 @@ async fn test_search_refreshes_after_hosted_tag_insert() {
     let (_, app) = hosted_writable(&dir, TOKEN);
     let before = search_total(&app, "app").await;
 
-    push_tag(&app, "team/app", "latest").await;
+    push_tag(&app, "store", "team/app", "latest").await;
 
     assert_eq!((before, search_total(&app, "app").await), (0, 1));
+}
+
+#[tokio::test]
+async fn test_search_refreshes_a_virtual_document_after_hosted_push() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, app) = virtual_stack(&dir, "http://127.0.0.1:1/");
+    assert_eq!(search_total(&app, "app").await, 0);
+
+    push_tag(&app, "reg", "team/app", "latest").await;
+
+    let response = send(&app, Method::GET, "/reg/+search?q=app&page_size=25").await;
+    assert_eq!(response.0, StatusCode::OK);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&response.2).unwrap()["total"],
+        1
+    );
+}
+
+#[tokio::test]
+async fn test_search_refreshes_after_placement_publication() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = hosted_writable(&dir, TOKEN);
+    let before = local_search_total(&app, "app").await;
+    store::put_tag(&state.serving.meta, "store", "team/app", "latest", DIGEST).unwrap();
+    let search_invalidation = crate::search_oci::SearchInvalidationGuard::arm(&state.serving, "team/app");
+    let during = local_search_total(&app, "app").await;
+    store::record_content_placement(&state.serving.meta, DIGEST, store::OciArtifactOrigin::Pushed, true).unwrap();
+
+    drop(search_invalidation);
+
+    assert_eq!((before, during, local_search_total(&app, "app").await), (0, 0, 1));
+}
+
+#[tokio::test]
+async fn test_incomplete_publication_remains_dirty() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = hosted_writable(&dir, TOKEN);
+    assert_eq!(search_total(&app, "app").await, 0);
+    store::put_tag(&state.serving.meta, "store", "team/app", "latest", DIGEST).unwrap();
+
+    drop(crate::search_oci::SearchInvalidationGuard::arm(
+        &state.serving,
+        "team/app",
+    ));
+
+    assert_eq!(search_total(&app, "app").await, 1);
 }
 
 #[tokio::test]
@@ -78,18 +125,58 @@ async fn test_search_refreshes_after_proxy_tag_fill() {
     assert_eq!((before, search_total(&app, "app").await), (0, 1));
 }
 
+#[tokio::test]
+async fn test_search_refreshes_after_proxy_tag_repoint() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v2/team/app/tags/list"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(br#"{"name":"team/app","tags":["latest"]}"#.to_vec(), "application/json"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("HEAD"))
+        .and(path("/v2/team/app/manifests/latest"))
+        .respond_with(ResponseTemplate::new(200).insert_header("docker-content-digest", OTHER_DIGEST))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
+    state
+        .serving
+        .revocations
+        .put(
+            &ArtifactDigest::from_sha256("c".repeat(64)).unwrap(),
+            &RevocationReason::new("compromised builder").unwrap(),
+            &UserId::random(),
+            1_000,
+        )
+        .unwrap();
+    store::put_tag(&state.serving.meta, "hub", "team/app", "latest", DIGEST).unwrap();
+    store::record_content_placement(&state.serving.meta, DIGEST, store::OciArtifactOrigin::Mirrored, true).unwrap();
+    let before = local_search_total(&app, "app").await;
+
+    let response = send(&app, Method::GET, "/v2/hub/team/app/tags/list").await;
+
+    assert_eq!(
+        (response.0, before, local_search_total(&app, "app").await),
+        (StatusCode::OK, 1, 0)
+    );
+}
+
 #[rstest::rstest]
 #[case::tag(false)]
 #[case::digest(true)]
 #[tokio::test]
-async fn test_search_refreshes_after_manifest_delete_removes_tag(#[case] by_digest: bool) {
+async fn test_search_refreshes_after_manifest_delete_and_restore(#[case] by_digest: bool) {
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = hosted_writable(&dir, TOKEN);
-    let digest = push_tag(&app, "team/app", "latest").await;
+    let digest = push_tag(&app, "store", "team/app", "latest").await;
     let before = search_total(&app, "app").await;
     let reference = if by_digest { digest.as_str() } else { "latest" };
 
-    send_body(
+    let delete = send_body(
         &app,
         Method::DELETE,
         &format!("/v2/store/team/app/manifests/{reference}"),
@@ -97,8 +184,20 @@ async fn test_search_refreshes_after_manifest_delete_removes_tag(#[case] by_dige
         Vec::new(),
     )
     .await;
+    let deleted = search_total(&app, "app").await;
+    let restore = send_body(
+        &app,
+        Method::PUT,
+        &format!("/v2/store/team/app/manifests/{reference}/restore"),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
 
-    assert_eq!((before, search_total(&app, "app").await), (1, 0));
+    assert_eq!(
+        (delete.0, before, deleted, restore.0, search_total(&app, "app").await),
+        (StatusCode::ACCEPTED, 1, 0, StatusCode::ACCEPTED, 1)
+    );
 }
 
 #[tokio::test]
@@ -197,7 +296,7 @@ async fn test_oci_indexer_resource_update_scopes_to_one_repository() {
 }
 
 #[tokio::test]
-async fn test_oci_indexer_resource_update_ignores_an_absent_repository() {
+async fn test_oci_indexer_resource_update_retires_an_absent_repository() {
     let dir = tempfile::tempdir().unwrap();
     let (state, _) = hosted_writable(&dir, TOKEN);
     store::put_tag(&state.serving.meta, "store", "library/app", "1.0", DIGEST).unwrap();
@@ -206,15 +305,14 @@ async fn test_oci_indexer_resource_update_ignores_an_absent_repository() {
         .resource_update(&state.serving.indexer_ctx(), "team/ghost")
         .unwrap();
 
-    assert!(
-        update.keys.is_empty(),
-        "a repository the index does not serve contributes no key"
+    assert_eq!(
+        (update.keys, update.documents.len()),
+        (vec![peryx_search::document_key("store", "team/ghost")], 0)
     );
-    assert!(update.documents.is_empty());
 }
 
 #[tokio::test]
-async fn test_oci_indexer_resource_update_omits_a_policy_blocked_repository() {
+async fn test_oci_indexer_resource_update_retires_a_policy_blocked_repository() {
     let dir = tempfile::tempdir().unwrap();
     let policy = Policy::compile(
         &PolicyConfig {
@@ -234,11 +332,10 @@ async fn test_oci_indexer_resource_update_omits_a_policy_blocked_repository() {
         .resource_update(&state.serving.indexer_ctx(), "blocked/app")
         .unwrap();
 
-    assert!(
-        update.keys.is_empty(),
-        "a blocked repository is not refreshed through search"
+    assert_eq!(
+        (update.keys, update.documents.len()),
+        (vec![peryx_search::document_key("store", "blocked/app")], 0)
     );
-    assert!(update.documents.is_empty());
 }
 
 #[tokio::test]
@@ -255,6 +352,7 @@ async fn test_oci_indexer_resource_update_follows_virtual_layers() {
         update.keys,
         vec![
             peryx_search::document_key("images", "team/app"),
+            peryx_search::document_key("hub", "team/app"),
             peryx_search::document_key("reg", "team/app"),
         ]
     );
@@ -266,7 +364,7 @@ async fn test_oci_search_availability_filter_uses_manifest_placement() {
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = hosted_writable(&dir, TOKEN);
     store::put_tag(&state.serving.meta, "store", "team/remote", "1.0", DIGEST).unwrap();
-    push_tag(&app, "team/local", "latest").await;
+    push_tag(&app, "store", "team/local", "latest").await;
 
     let documents = OciIndexer.documents(&state.serving.indexer_ctx()).unwrap();
     let remote = documents.iter().find(|doc| doc.display_label == "team/remote").unwrap();
@@ -288,14 +386,27 @@ async fn test_oci_search_availability_filter_uses_manifest_placement() {
     assert_eq!(value["results"][0]["available"], true);
 }
 
-async fn push_tag(app: &axum::Router, repo: &str, tag: &str) -> String {
+async fn push_tag(app: &axum::Router, route: &str, repo: &str, tag: &str) -> String {
     send_body(
         app,
         Method::PUT,
-        &format!("/v2/store/{repo}/manifests/{tag}"),
+        &format!("/v2/{route}/{repo}/manifests/{tag}"),
         &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
         MANIFEST.to_vec(),
     )
     .await;
     oci_digest(MANIFEST)
+}
+
+async fn local_search_total(app: &axum::Router, query: &str) -> u64 {
+    let response = send(
+        app,
+        Method::GET,
+        &format!("/+search?q={query}&availability=local&page_size=25"),
+    )
+    .await;
+    assert_eq!(response.0, StatusCode::OK);
+    serde_json::from_slice::<serde_json::Value>(&response.2).unwrap()["total"]
+        .as_u64()
+        .unwrap()
 }

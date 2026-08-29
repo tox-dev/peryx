@@ -346,7 +346,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
             // Only 404 proves a tag is absent. Preserve cached tags for authentication and transport failures.
             Err(UpstreamError::Status(StatusCode::NOT_FOUND)) => {
                 if store::delete_tag(&state.meta, index, repo, tag)? {
-                    state.bump_search_epoch();
+                    state.invalidate_search_resource(repo);
                 }
                 Ok(None)
             }
@@ -479,12 +479,12 @@ async fn store_manifest(
     };
     store::record_manifest(&state.meta, index, repo, &canonical, &manifest)?;
     store::record_content_placement(&state.meta, &canonical, store::OciArtifactOrigin::Mirrored, true)?;
+    let search_invalidation = crate::search_oci::SearchInvalidationGuard::arm(state, repo);
     if let Some(tag) = tag {
-        if store::put_tag(&state.meta, index, repo, tag, &canonical)? {
-            state.bump_search_epoch();
-        }
+        store::put_tag(&state.meta, index, repo, tag, &canonical)?;
         store::set_tag_freshness(&state.meta, index, repo, tag, &canonical, (state.clock)())?;
     }
+    drop(search_invalidation);
     Ok(StoredManifest::Stored(manifest, canonical))
 }
 

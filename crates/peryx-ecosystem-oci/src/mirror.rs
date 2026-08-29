@@ -296,12 +296,12 @@ impl Mirror<'_> {
         };
         store::record_manifest(&self.state.meta, self.index, repo, &digest, &manifest)?;
         store::record_content_placement(&self.state.meta, &digest, store::OciArtifactOrigin::Mirrored, true)?;
+        let search_invalidation = crate::search_oci::SearchInvalidationGuard::arm(self.state, repo);
         if let Some(tag) = tag {
-            if store::put_tag(&self.state.meta, self.index, repo, tag, &digest)? {
-                self.state.bump_search_epoch();
-            }
+            store::put_tag(&self.state.meta, self.index, repo, tag, &digest)?;
             store::set_tag_freshness(&self.state.meta, self.index, repo, tag, &digest, (self.state.clock)())?;
         }
+        drop(search_invalidation);
         rows.push(MirrorRow::synced(
             "manifest",
             repo,

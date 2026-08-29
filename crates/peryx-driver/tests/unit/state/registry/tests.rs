@@ -966,8 +966,7 @@ fn test_read_only_retry_interval_is_observable() {
     assert_eq!(state.serving.read_only_retry_after(), Some(Duration::from_secs(17)));
 }
 
-#[test]
-fn test_search_epoch_refreshes_the_published_index() {
+fn assert_search_invalidation_refreshes(invalidate: impl FnOnce(&ServingState)) {
     let (_dir, mut state) = state();
     let text = Arc::new(Mutex::new("old".to_owned()));
     state.register_lexicon(Ecosystem::new("indexed"), &Lexicon::NEUTRAL);
@@ -985,7 +984,7 @@ fn test_search_epoch_refreshes_the_published_index() {
     );
     *text.lock().unwrap() = "new".to_owned();
 
-    state.serving.bump_search_epoch();
+    invalidate(&state.serving);
 
     assert_eq!(
         services
@@ -1001,4 +1000,14 @@ fn test_search_epoch_refreshes_the_published_index() {
             .total,
         1
     );
+}
+
+#[test]
+fn test_search_epoch_refreshes_the_published_index() {
+    assert_search_invalidation_refreshes(ServingState::bump_search_epoch);
+}
+
+#[test]
+fn test_scoped_search_invalidation_refreshes_the_resource() {
+    assert_search_invalidation_refreshes(|state| state.invalidate_search_resource("package"));
 }

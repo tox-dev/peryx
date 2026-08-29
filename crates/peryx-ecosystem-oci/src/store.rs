@@ -235,13 +235,16 @@ pub fn put_tag(meta: &MetaStore, index: &str, repo: &str, tag: &str, digest: &st
     meta.commit_driver_txn(|txn| Ok((put_tag_txn(txn, index, repo, tag, digest)?, Vec::new())))
 }
 
-/// Point `tag` at `digest` inside an open transaction, reporting whether the searchable tag set grew,
+/// Point `tag` at `digest` inside an open transaction, reporting whether its target changed,
 /// so a caller can publish it atomically with a quota-reservation commit.
 ///
 /// # Errors
 /// Returns a store error if the write fails.
 pub fn put_tag_txn(txn: &mut DriverTxn, index: &str, repo: &str, tag: &str, digest: &str) -> Result<bool, MetaError> {
-    txn.upsert(&tag_key(index, repo, tag), digest.as_bytes())
+    let key = tag_key(index, repo, tag);
+    let changed = txn.get(&key)?.as_deref() != Some(digest.as_bytes());
+    txn.put(&key, digest.as_bytes())?;
+    Ok(changed)
 }
 
 /// Publish a pushed manifest and make its explicit reference live in the same transaction. A digest
