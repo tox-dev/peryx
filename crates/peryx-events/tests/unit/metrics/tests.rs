@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use std::sync::mpsc::{Receiver, SyncSender, channel, sync_channel};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -12,8 +12,9 @@ use peryx_storage::meta::{AnalyticsHandle, MetaStore};
 use rstest::rstest;
 
 use super::{
-    Aggregator, Clock, DailyUsage, FlushState, GroupUsage, Message, MetricFamily, MetricKind, Metrics, MetricsError,
-    MetricsStore, Observation, ResourceUsage, SourceUsage, TimelineBucket, UnusedResource, UsageInterval, step,
+    Aggregator, Clock, DailyUsage, FlushState, GroupUsage, MAX_BATCH_MESSAGES, Message, MetricFamily, MetricKind,
+    Metrics, MetricsError, MetricsStore, Observation, ResourceUsage, SourceUsage, TimelineBucket, UnusedResource,
+    UsageInterval, step,
 };
 
 const SECONDS_PER_DAY: i64 = 86_400;
@@ -90,6 +91,27 @@ fn pausing_aggregator_clock(unix_secs: i64) -> (Arc<AtomicI64>, Clock, Receiver<
             clock_now.load(Ordering::SeqCst)
         }),
         paused_at,
+        resume,
+    )
+}
+
+fn batch_boundary_clock() -> (Arc<AtomicI64>, Clock, Receiver<()>, SyncSender<()>) {
+    let now = Arc::new(AtomicI64::new(2 * SECONDS_PER_DAY));
+    let clock_now = Arc::clone(&now);
+    let pauses = AtomicUsize::new(0);
+    let (at_boundary, boundaries) = sync_channel(0);
+    let (resume, resumed) = sync_channel(0);
+    let resumed = Mutex::new(resumed);
+    (
+        now,
+        Arc::new(move || {
+            if std::thread::current().name() == Some("peryx-metrics") && pauses.fetch_add(1, Ordering::SeqCst) < 3 {
+                at_boundary.send(()).unwrap();
+                resumed.lock().unwrap().recv().unwrap();
+            }
+            clock_now.load(Ordering::SeqCst)
+        }),
+        boundaries,
         resume,
     )
 }
@@ -673,6 +695,73 @@ fn test_flush_drains_ephemeral_observations() {
 }
 
 #[test]
+fn test_batch_limit_releases_readers_and_checkpoints_before_continuing() {
+    let (_dir, meta) = store();
+    let (now, clock, boundaries, resume) = batch_boundary_clock();
+    let metrics = Metrics::spawn(
+        Some(Arc::new(meta.analytics()) as Arc<dyn MetricsStore>),
+        Some(7),
+        clock,
+        super::EVENT_QUEUE_CAPACITY,
+        Duration::ZERO,
+    )
+    .unwrap();
+    metrics.record(read("alpha", "resource-a", "first", 1));
+    boundaries.recv().unwrap();
+
+    for artifact in 0..=MAX_BATCH_MESSAGES {
+        metrics.record(read("alpha", "resource-a", &artifact.to_string(), 1));
+    }
+    assert_eq!(metrics.dropped(), 0);
+    now.store(SECONDS_PER_DAY, Ordering::SeqCst);
+    resume.send(()).unwrap();
+    boundaries.recv().unwrap();
+
+    assert_eq!(
+        metrics.index_totals()["alpha"].base.reads,
+        (MAX_BATCH_MESSAGES + 1) as u64
+    );
+    assert_eq!(persisted_reads(&meta.analytics()), Some(1));
+    now.store(3 * SECONDS_PER_DAY, Ordering::SeqCst);
+    resume.send(()).unwrap();
+    boundaries.recv().unwrap();
+
+    assert_eq!(
+        metrics.index_totals()["alpha"].base.reads,
+        (MAX_BATCH_MESSAGES + 2) as u64
+    );
+    assert_eq!(
+        persisted_reads(&meta.analytics()),
+        Some((MAX_BATCH_MESSAGES + 1) as u64)
+    );
+    resume.send(()).unwrap();
+    metrics.shutdown().unwrap();
+    assert_eq!(
+        persisted_reads(&meta.analytics()),
+        Some((MAX_BATCH_MESSAGES + 2) as u64)
+    );
+}
+
+#[test]
+fn test_flush_excludes_events_queued_after_its_control_message() {
+    let (_dir, meta) = store();
+    let (_now, clock, aggregating, resume) = pausing_aggregator_clock(2 * SECONDS_PER_DAY);
+    let metrics = Metrics::start_durable(meta.analytics(), Some(7), clock).unwrap();
+    metrics.record(read("alpha", "resource-a", "before", 1));
+    aggregating.recv().unwrap();
+    let (completion, done) = channel();
+    metrics.sender.send(Message::Flush(completion)).unwrap();
+    metrics.record(read("alpha", "resource-a", "after", 1));
+
+    resume.send(()).unwrap();
+    done.recv().unwrap().unwrap();
+
+    assert_eq!(persisted_reads(&meta.analytics()), Some(1));
+    metrics.flush().unwrap();
+    assert_eq!(persisted_reads(&meta.analytics()), Some(2));
+}
+
+#[test]
 fn test_drain_applies_without_persisting_observations() {
     let (_dir, meta) = store();
     let (clock, checkpointing, resume) = checkpoint_clock();
@@ -694,7 +783,7 @@ fn test_drain_applies_without_persisting_observations() {
 }
 
 #[test]
-fn test_idle_interval_persists_pending_observations() {
+fn test_zero_interval_persists_a_completed_batch() {
     let (_dir, meta) = store();
     let analytics = meta.analytics();
     let tree = RwLock::new(HashMap::default());
@@ -716,7 +805,6 @@ fn test_idle_interval_persists_pending_observations() {
         .unwrap();
     let mut state = FlushState::durable(true, Arc::new(RwLock::new(None)));
 
-    assert!(step(&receiver, &context, Duration::ZERO, &mut state));
     assert!(step(&receiver, &context, Duration::ZERO, &mut state));
 
     assert_eq!(persisted_reads(&meta.analytics()), Some(1));

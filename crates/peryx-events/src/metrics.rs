@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError, channel, sync_channel};
 use std::sync::{Arc, RwLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -24,6 +24,8 @@ const DAILY_SCHEMA: u32 = 1;
 
 /// Bounds memory when analytics writes lag traffic.
 const EVENT_QUEUE_CAPACITY: usize = 65_536;
+
+const MAX_BATCH_MESSAGES: usize = 1_024;
 
 /// Reports sustained overload without logging every dropped observation.
 const DROP_LOG_INTERVAL: u64 = 1_024;
@@ -960,14 +962,16 @@ struct Aggregator<'a> {
 struct FlushState {
     persistent: bool,
     pending: bool,
+    interval_started: Instant,
     durability_failure: Arc<RwLock<Option<String>>>,
 }
 
 impl FlushState {
-    const fn durable(persistent: bool, durability_failure: Arc<RwLock<Option<String>>>) -> Self {
+    fn durable(persistent: bool, durability_failure: Arc<RwLock<Option<String>>>) -> Self {
         Self {
             persistent,
             pending: false,
+            interval_started: Instant::now(),
             durability_failure,
         }
     }
@@ -978,6 +982,18 @@ impl FlushState {
 
     const fn pending(&self) -> bool {
         self.pending
+    }
+
+    fn wake_in(&self, interval: Duration, retention: bool) -> Option<Duration> {
+        (self.pending || retention).then(|| interval.saturating_sub(self.interval_started.elapsed()))
+    }
+
+    fn checkpoint_due(&self, interval: Duration) -> bool {
+        self.pending && self.interval_started.elapsed() >= interval
+    }
+
+    fn reset_interval(&mut self) {
+        self.interval_started = Instant::now();
     }
 }
 
@@ -998,11 +1014,11 @@ fn aggregate(
 }
 
 fn step(receiver: &Receiver<Message>, ctx: &Aggregator, interval: Duration, state: &mut FlushState) -> bool {
-    match receive(receiver, state.pending() || ctx.retention_days.is_some(), interval) {
+    match receive(receiver, state.wake_in(interval, ctx.retention_days.is_some())) {
         Received::Batch(first) => {
             let batch = absorb_batch(first, receiver, ctx);
             state.mark(batch.dirty);
-            for control in batch.controls {
+            if let Some(control) = batch.control {
                 let result = if matches!(control, Control::Drain(_)) || !state.pending() {
                     Ok(())
                 } else {
@@ -1013,15 +1029,21 @@ fn step(receiver: &Receiver<Message>, ctx: &Aggregator, interval: Duration, stat
                 if stop {
                     return false;
                 }
+            } else if state.checkpoint_due(interval)
+                && let Err(error) = persist(ctx, state)
+            {
+                tracing::error!(target: "peryx::metrics", %error, "metrics checkpoint failed");
             }
             true
         }
         Received::Idle => {
             state.mark(expire_retained(ctx.daily, ctx.retention_days, ctx.clock));
-            if state.pending()
-                && let Err(error) = persist(ctx, state)
-            {
-                tracing::error!(target: "peryx::metrics", %error, "metrics checkpoint failed");
+            if state.pending() {
+                if let Err(error) = persist(ctx, state) {
+                    tracing::error!(target: "peryx::metrics", %error, "metrics checkpoint failed");
+                }
+            } else {
+                state.reset_interval();
             }
             true
         }
@@ -1029,26 +1051,30 @@ fn step(receiver: &Receiver<Message>, ctx: &Aggregator, interval: Duration, stat
     }
 }
 
-/// Retention uses the checkpoint interval so expiry is not coupled to new traffic.
-fn receive(receiver: &Receiver<Message>, wake: bool, idle: Duration) -> Received {
-    if wake {
-        match receiver.recv_timeout(idle) {
+/// Use one deadline so idle traffic cannot delay persistence or retention.
+fn receive(receiver: &Receiver<Message>, wake_in: Option<Duration>) -> Received {
+    wake_in.map_or_else(
+        || receiver.recv().map_or(Received::Closed, Received::Batch),
+        |wait| match receiver.recv_timeout(wait) {
             Ok(message) => Received::Batch(message),
             Err(RecvTimeoutError::Timeout) => Received::Idle,
             Err(RecvTimeoutError::Disconnected) => Received::Closed,
-        }
-    } else {
-        receiver.recv().map_or(Received::Closed, Received::Batch)
-    }
+        },
+    )
 }
 
 fn absorb_batch(first: Message, receiver: &Receiver<Message>, ctx: &Aggregator) -> Batch {
     let mut batch = Batch::default();
     {
         let mut tree = ctx.tree.write().expect("metrics lock");
-        absorb(first, &mut tree, &mut batch);
-        while let Ok(message) = receiver.try_recv() {
+        for message in std::iter::once(first)
+            .chain(receiver.try_iter())
+            .take(MAX_BATCH_MESSAGES)
+        {
             absorb(message, &mut tree, &mut batch);
+            if batch.control.is_some() {
+                break;
+            }
         }
     }
     batch.dirty |= fold_daily_batch(
@@ -1064,7 +1090,7 @@ fn absorb_batch(first: Message, receiver: &Receiver<Message>, ctx: &Aggregator) 
 struct Batch {
     dirty: bool,
     reads: Vec<(DailyKey, u64)>,
-    controls: Vec<Control>,
+    control: Option<Control>,
 }
 
 enum Control {
@@ -1089,6 +1115,7 @@ fn persist(ctx: &Aggregator, state: &mut FlushState) -> Result<(), MetricsError>
     let daily = serde_json::to_vec(&snapshot_daily(&ctx.daily.read().expect("metrics lock")))
         .expect("serialize daily usage snapshot");
     let result = store.save(&reads).and_then(|()| store.save_daily(&daily));
+    state.reset_interval();
     match result {
         Ok(()) => {
             state.pending = false;
@@ -1109,9 +1136,9 @@ fn absorb(message: Message, tree: &mut StatsTree, batch: &mut Batch) {
             collect_daily(&event, recorded_at, &mut batch.reads);
             apply(tree, event);
         }
-        Message::Drain(completion) => batch.controls.push(Control::Drain(completion)),
-        Message::Flush(completion) => batch.controls.push(Control::Flush(completion)),
-        Message::Shutdown(completion) => batch.controls.push(Control::Shutdown(completion)),
+        Message::Drain(completion) => batch.control = Some(Control::Drain(completion)),
+        Message::Flush(completion) => batch.control = Some(Control::Flush(completion)),
+        Message::Shutdown(completion) => batch.control = Some(Control::Shutdown(completion)),
     }
 }
 
