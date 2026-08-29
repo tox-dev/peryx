@@ -2108,7 +2108,7 @@ async fn test_s3_container_coordinates_simultaneous_multipart_acquisition() {
 #[case::stalled("timeout", &["timeout=0"], "stream_timeout", true)]
 #[case::trickling(
     "slicer",
-    &["average_size=1048576", "size_variation=0", "delay=100000"],
+    &["average_size=32768", "size_variation=0", "delay=20000"],
     "stream_trickle",
     false
 )]

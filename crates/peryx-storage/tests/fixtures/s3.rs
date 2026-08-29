@@ -563,10 +563,12 @@ async fn run_container_child(storage: &BlobStorage, scenario: ContainerScenario)
                 .await
                 .unwrap()
                 .unwrap();
-            assert_eq!(
-                read.collect(STREAM_BYTES as u64).await.unwrap_err().kind(),
-                BlobErrorKind::Io
-            );
+            let result = read.collect(STREAM_BYTES as u64).await;
+            if matches!(scenario, ContainerScenario::StreamTrickle) {
+                assert_eq!(result.unwrap(), bytes);
+            } else {
+                assert_eq!(result.unwrap_err().kind(), BlobErrorKind::Io);
+            }
         }
     }
 }
