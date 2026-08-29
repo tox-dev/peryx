@@ -119,12 +119,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
             };
             match self
                 .upstream
-                .blob_head(
-                    client.base_url(),
-                    client.auth(),
-                    &self.upstream_repo(&member.name, client, repo),
-                    digest,
-                )
+                .blob_head(client, &self.upstream_repo(&member.name, client, repo), digest)
                 .await
             {
                 Ok(size) => {
@@ -231,12 +226,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
             if let Some(metadata) = stored {
                 match self
                     .upstream
-                    .blob_head(
-                        client.base_url(),
-                        client.auth(),
-                        &self.upstream_repo(&member.name, client, repo),
-                        digest,
-                    )
+                    .blob_head(client, &self.upstream_repo(&member.name, client, repo), digest)
                     .await
                 {
                     Ok(_) => {
@@ -249,12 +239,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
             }
             match self
                 .upstream
-                .blob(
-                    client.base_url(),
-                    client.auth(),
-                    &self.upstream_repo(&member.name, client, repo),
-                    digest,
-                )
+                .blob(client, &self.upstream_repo(&member.name, client, repo), digest)
                 .await
             {
                 Ok(response) => {

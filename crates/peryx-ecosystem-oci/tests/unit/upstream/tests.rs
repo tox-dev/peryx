@@ -2,7 +2,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use peryx_upstream::{CredentialFailure, CredentialProvider, CredentialRefresh};
+use peryx_upstream::{CredentialFailure, CredentialProvider, CredentialRefresh, UpstreamClient, UpstreamTls};
+use tokio::io::AsyncReadExt as _;
 use tokio::sync::Barrier;
 
 use super::*;
@@ -79,6 +80,10 @@ fn credentials(auth: Auth) -> CredentialProvider {
     CredentialProvider::fixed(auth)
 }
 
+fn upstream_client(base: &str, credentials: CredentialProvider) -> UpstreamClient {
+    UpstreamClient::with_credentials_and_tls_for_origin(base, credentials, &UpstreamTls::default(), base, &[]).unwrap()
+}
+
 use base64::Engine as _;
 use wiremock::matchers::{header as match_header, method, path, query_param};
 use wiremock::{Match, Mock, MockServer, Request, ResponseTemplate};
@@ -116,7 +121,11 @@ async fn assert_manifest_authenticates(server: &MockServer, base: &str) {
         .await;
 
     let response = Upstream::new()
-        .manifest(base, &credentials(Auth::None), "library/nginx", "latest")
+        .manifest(
+            &upstream_client(base, credentials(Auth::None)),
+            "library/nginx",
+            "latest",
+        )
         .await
         .unwrap();
 
@@ -158,7 +167,11 @@ async fn test_manifest_selects_bearer_from_combined_challenges() {
         .await;
 
     let response = Upstream::new()
-        .manifest(&base, &credentials(Auth::None), "library/nginx", "latest")
+        .manifest(
+            &upstream_client(&base, credentials(Auth::None)),
+            "library/nginx",
+            "latest",
+        )
         .await
         .unwrap();
 
@@ -221,7 +234,11 @@ async fn test_fetch_token_rejects_an_oversized_response() {
         .await;
 
     let error = Upstream::new()
-        .manifest(&base, &credentials(Auth::None), "library/nginx", "latest")
+        .manifest(
+            &upstream_client(&base, credentials(Auth::None)),
+            "library/nginx",
+            "latest",
+        )
         .await
         .unwrap_err();
 
@@ -294,7 +311,11 @@ async fn test_manifest_rejects_malformed_bearer_parameters(#[case] challenge: &s
         .await;
 
     let result = Upstream::new()
-        .manifest(&base, &credentials(Auth::None), "library/nginx", "latest")
+        .manifest(
+            &upstream_client(&base, credentials(Auth::None)),
+            "library/nginx",
+            "latest",
+        )
         .await;
 
     assert!(matches!(result, Err(UpstreamError::Status(StatusCode::UNAUTHORIZED))));
@@ -312,10 +333,96 @@ async fn test_manifest_rejects_an_invalid_bearer_realm() {
         .await;
 
     let result = Upstream::new()
-        .manifest(&base, &credentials(Auth::None), "library/nginx", "latest")
+        .manifest(
+            &upstream_client(&base, credentials(Auth::None)),
+            "library/nginx",
+            "latest",
+        )
         .await;
 
     assert!(matches!(result, Err(UpstreamError::Transport(message)) if message.starts_with("invalid bearer realm:")));
+}
+
+#[tokio::test]
+async fn test_manifest_blocks_a_private_bearer_realm() {
+    let server = MockServer::start().await;
+    let base = format!("{}/", server.uri());
+    Mock::given(method("GET"))
+        .and(path("/v2/library/nginx/manifests/latest"))
+        .respond_with(
+            ResponseTemplate::new(401)
+                .insert_header("www-authenticate", r#"Bearer realm="http://169.254.169.254/token""#),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let error = Upstream::new()
+        .manifest(
+            &upstream_client(&base, credentials(Auth::None)),
+            "library/nginx",
+            "latest",
+        )
+        .await
+        .unwrap_err();
+
+    assert!(
+        error.to_string().contains("169.254.169.254 is not a public address"),
+        "{error}"
+    );
+}
+
+#[rstest]
+#[case::loopback_hostname("http://localhost:9/private", "host resolves only to non-public addresses")]
+#[case::link_local_literal("http://169.254.169.254/private", "169.254.169.254 is not a public address")]
+#[case::private_literal("http://10.0.0.1/private", "10.0.0.1 is not a public address")]
+#[tokio::test]
+async fn test_manifest_blocks_redirects_to_private_destinations(#[case] location: &str, #[case] reason: &str) {
+    let server = MockServer::start().await;
+    let base = format!("{}/", server.uri());
+    Mock::given(method("GET"))
+        .and(path("/v2/library/nginx/manifests/latest"))
+        .respond_with(ResponseTemplate::new(302).insert_header("location", location))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let error = Upstream::new()
+        .manifest(
+            &upstream_client(&base, credentials(Auth::None)),
+            "library/nginx",
+            "latest",
+        )
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains(reason), "{error}");
+}
+
+#[tokio::test]
+async fn test_manifest_has_the_shared_read_deadline() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/", listener.local_addr().unwrap());
+    let client = upstream_client(&base, credentials(Auth::None));
+    let (request_seen_tx, request_seen_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut connection, _) = listener.accept().await.unwrap();
+        let mut request_bytes = [0; 4_096];
+        let received = connection.read(&mut request_bytes).await.unwrap();
+        assert!(request_bytes[..received].starts_with(b"GET /v2/library/nginx/manifests/latest"));
+        request_seen_tx.send(()).unwrap();
+        let _ = release_rx.await;
+    });
+    let request = tokio::spawn(async move { Upstream::new().manifest(&client, "library/nginx", "latest").await });
+    request_seen_rx.await.unwrap();
+    tokio::time::pause();
+    assert!(!request.is_finished());
+    tokio::time::advance(Duration::from_secs(31)).await;
+
+    assert!(matches!(request.await.unwrap(), Err(UpstreamError::Transport(_))));
+    release_tx.send(()).unwrap();
+    server.await.unwrap();
 }
 
 #[tokio::test]
@@ -333,7 +440,11 @@ async fn test_fetch_token_refuses_basic_credentials_to_a_cleartext_realm() {
         .await;
 
     let result = Upstream::new()
-        .manifest(&base, &credentials(basic("alice", "pw")), "library/nginx", "latest")
+        .manifest(
+            &upstream_client(&base, credentials(basic("alice", "pw"))),
+            "library/nginx",
+            "latest",
+        )
         .await;
 
     assert!(
@@ -357,7 +468,11 @@ async fn test_fetch_token_allows_basic_credentials_to_an_https_realm_on_another_
         .await;
 
     let result = Upstream::new()
-        .manifest(&base, &credentials(basic("alice", "pw")), "library/nginx", "latest")
+        .manifest(
+            &upstream_client(&base, credentials(basic("alice", "pw"))),
+            "library/nginx",
+            "latest",
+        )
         .await;
 
     // Docker Hub authenticates through a separate HTTPS host.
@@ -390,11 +505,19 @@ async fn test_send_does_not_share_a_token_across_providers() {
 
     let upstream = Upstream::new();
     upstream
-        .manifest(&base, &credentials(basic("alice", "pw")), "library/nginx", "latest")
+        .manifest(
+            &upstream_client(&base, credentials(basic("alice", "pw"))),
+            "library/nginx",
+            "latest",
+        )
         .await
         .unwrap();
     upstream
-        .manifest(&base, &credentials(basic("alice", "pw")), "library/nginx", "latest")
+        .manifest(
+            &upstream_client(&base, credentials(basic("alice", "pw"))),
+            "library/nginx",
+            "latest",
+        )
         .await
         .unwrap();
 }
@@ -454,9 +577,10 @@ async fn test_token_realm_401_refreshes_the_source_credential_once() {
         },
         || async { Ok(basic("alice", "new")) },
     );
+    let client = upstream_client(&base, credentials);
 
     let response = Upstream::new()
-        .manifest(&base, &credentials, "library/nginx", "latest")
+        .manifest(&client, "library/nginx", "latest")
         .await
         .unwrap();
 
@@ -476,10 +600,9 @@ async fn test_manifest_reports_a_scheduled_credential_refresh_failure() {
         },
         || async { Err(CredentialError::new("source unavailable")) },
     );
+    let client = upstream_client(&base, credentials);
 
-    let result = Upstream::new()
-        .manifest(&base, &credentials, "library/nginx", "latest")
-        .await;
+    let result = Upstream::new().manifest(&client, "library/nginx", "latest").await;
 
     assert!(matches!(result, Err(UpstreamError::Transport(message)) if message == "source unavailable"));
 }
@@ -510,10 +633,9 @@ async fn test_token_realm_reports_a_source_refresh_failure() {
         },
         || async { Err(CredentialError::new("source unavailable")) },
     );
+    let client = upstream_client(&base, credentials);
 
-    let result = Upstream::new()
-        .manifest(&base, &credentials, "library/nginx", "latest")
-        .await;
+    let result = Upstream::new().manifest(&client, "library/nginx", "latest").await;
 
     assert!(matches!(result, Err(UpstreamError::Transport(message)) if message == "source unavailable"));
 }
@@ -537,7 +659,11 @@ async fn test_token_realm_401_stops_when_refresh_is_disabled() {
         .await;
 
     let result = Upstream::new()
-        .manifest(&base, &credentials(Auth::None), "library/nginx", "latest")
+        .manifest(
+            &upstream_client(&base, credentials(Auth::None)),
+            "library/nginx",
+            "latest",
+        )
         .await;
 
     assert!(matches!(result, Err(UpstreamError::Status(StatusCode::UNAUTHORIZED))));
@@ -568,15 +694,9 @@ async fn test_send_reuses_a_cached_token_for_the_same_credentials() {
         .await;
 
     let upstream = Upstream::new();
-    let credentials = credentials(basic("alice", "pw1"));
-    upstream
-        .manifest(&base, &credentials, "library/nginx", "latest")
-        .await
-        .unwrap();
-    upstream
-        .manifest(&base, &credentials, "library/nginx", "latest")
-        .await
-        .unwrap();
+    let client = upstream_client(&base, credentials(basic("alice", "pw1")));
+    upstream.manifest(&client, "library/nginx", "latest").await.unwrap();
+    upstream.manifest(&client, "library/nginx", "latest").await.unwrap();
 }
 
 #[tokio::test]
@@ -613,35 +733,28 @@ async fn test_send_discards_a_cached_token_after_credential_refresh() {
         || async { Ok(basic("alice", "pw")) },
     );
     let upstream = Upstream::new();
+    let client = upstream_client(&base, credentials);
 
-    upstream
-        .manifest(&base, &credentials, "library/nginx", "latest")
-        .await
-        .unwrap();
-    upstream
-        .manifest(&base, &credentials, "library/nginx", "latest")
-        .await
-        .unwrap();
+    upstream.manifest(&client, "library/nginx", "latest").await.unwrap();
+    upstream.manifest(&client, "library/nginx", "latest").await.unwrap();
 }
 
 /// The barrier makes all pulls contend for one cold token.
 async fn concurrent_pulls(
     upstream: &Arc<Upstream>,
-    base: &str,
-    credentials: &CredentialProvider,
+    client: &UpstreamClient,
     count: usize,
 ) -> Vec<Result<StatusCode, UpstreamError>> {
     let barrier = Arc::new(Barrier::new(count));
     let mut pulls = Vec::with_capacity(count);
     for _ in 0..count {
         let upstream = Arc::clone(upstream);
-        let credentials = credentials.clone();
-        let base = base.to_owned();
+        let client = client.clone();
         let barrier = Arc::clone(&barrier);
         pulls.push(tokio::spawn(async move {
             barrier.wait().await;
             upstream
-                .manifest(&base, &credentials, "library/nginx", "latest")
+                .manifest(&client, "library/nginx", "latest")
                 .await
                 .map(|response| response.status())
         }));
@@ -668,6 +781,7 @@ async fn test_token_flight_retries_when_the_sender_closes() {
     let upstream = Upstream::new();
     let credentials = credentials(basic("alice", "pw"));
     let credential = credentials.credential().await.unwrap();
+    let client = upstream_client("https://registry.example/", credentials.clone());
     let cache_key = token_cache_key(
         "https://registry.example/",
         "repository:library/nginx:pull",
@@ -697,7 +811,7 @@ async fn test_token_flight_retries_when_the_sender_closes() {
     let ((), token) = tokio::join!(
         biased;
         close,
-        upstream.acquire_token(&cache_key, None, &challenge, &credentials, &credential),
+        upstream.acquire_token(&client, &cache_key, None, &challenge, &credentials, &credential),
     );
 
     assert_eq!(token.unwrap(), "retried");
@@ -708,6 +822,7 @@ async fn test_token_flight_waiter_returns_the_leader_token() {
     let upstream = Upstream::new();
     let credentials = credentials(basic("alice", "pw"));
     let credential = credentials.credential().await.unwrap();
+    let client = upstream_client("https://registry.example/", credentials.clone());
     let cache_key = token_cache_key(
         "https://registry.example/",
         "repository:library/nginx:pull",
@@ -723,7 +838,7 @@ async fn test_token_flight_waiter_returns_the_leader_token() {
 
     let (token, _) = tokio::join!(
         biased;
-        upstream.acquire_token(&cache_key, None, &challenge, &credentials, &credential),
+        upstream.acquire_token(&client, &cache_key, None, &challenge, &credentials, &credential),
         async { sender.send("shared".to_owned()).unwrap() },
     );
 
@@ -736,6 +851,7 @@ async fn test_token_flight_reuses_a_token_cached_after_the_registry_request() {
     let credentials = credentials(basic("alice", "pw"));
     let credential = credentials.credential().await.unwrap();
     let base = "https://registry.example/";
+    let client = upstream_client(base, credentials.clone());
     let scope = "repository:library/nginx:pull";
     let cache_key = token_cache_key(base, scope, credential.identity().provider());
     upstream.tokens.lock().await.insert(
@@ -749,6 +865,7 @@ async fn test_token_flight_reuses_a_token_cached_after_the_registry_request() {
     assert_eq!(
         upstream
             .acquire_token(
+                &client,
                 &cache_key,
                 None,
                 &Bearer {
@@ -779,9 +896,10 @@ async fn test_token_exchange_has_a_deadline() {
         .await;
     let mut upstream = Upstream::new();
     upstream.token_flight_timeout = Duration::from_millis(100);
+    let client = upstream_client(&base, credentials(basic("alice", "pw")));
     let manifest = tokio::spawn(async move {
         upstream
-            .manifest(&base, &credentials(basic("alice", "pw")), "library/nginx", "latest")
+            .manifest(&client, "library/nginx", "latest")
             .await
             .unwrap_err()
             .to_string()
@@ -816,12 +934,11 @@ async fn test_send_coalesces_concurrent_token_exchanges() {
         .await;
 
     let upstream = Arc::new(Upstream::new());
-    let credentials = credentials(basic("alice", "pw"));
+    let client = upstream_client(&base, credentials(basic("alice", "pw")));
     let pulls = tokio::spawn({
         let upstream = Arc::clone(&upstream);
-        let base = base.clone();
-        let credentials = credentials.clone();
-        async move { concurrent_pulls(&upstream, &base, &credentials, 8).await }
+        let client = client.clone();
+        async move { concurrent_pulls(&upstream, &client, 8).await }
     });
     drop(gate.entered().await);
     let outcomes = pulls.await.unwrap();
@@ -880,12 +997,11 @@ async fn test_send_reelects_a_leader_after_a_failed_exchange() {
         .await;
 
     let upstream = Arc::new(Upstream::new());
-    let credentials = credentials(basic("alice", "pw"));
+    let client = upstream_client(&base, credentials(basic("alice", "pw")));
     let pulls = tokio::spawn({
         let upstream = Arc::clone(&upstream);
-        let base = base.clone();
-        let credentials = credentials.clone();
-        async move { concurrent_pulls(&upstream, &base, &credentials, 2).await }
+        let client = client.clone();
+        async move { concurrent_pulls(&upstream, &client, 2).await }
     });
     drop(first.entered().await);
     let outcomes = pulls.await.unwrap();

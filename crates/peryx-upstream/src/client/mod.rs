@@ -263,6 +263,22 @@ impl UpstreamClient {
         }
     }
 
+    /// Builds a guarded request without attaching configured credentials. Protocol drivers with
+    /// their own authentication exchange can add credentials at that boundary.
+    ///
+    /// # Errors
+    /// Returns [`UpstreamError::Url`] for an invalid URL or [`UpstreamError::BlockedDestination`]
+    /// for a disallowed destination.
+    pub fn request_without_auth(
+        &self,
+        method: reqwest::Method,
+        url: &str,
+    ) -> Result<reqwest::RequestBuilder, UpstreamError> {
+        let url = Url::parse(url)?;
+        self.guard.check_url(&url)?;
+        Ok(self.http(&url).request(method, url))
+    }
+
     /// Opens a connection before traffic so the first request skips TCP and TLS handshakes.
     /// A failed warm-up does not fail future requests.
     pub async fn warm(&self) {

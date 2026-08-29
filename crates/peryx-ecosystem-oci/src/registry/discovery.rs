@@ -117,12 +117,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         }
         match self
             .upstream
-            .tags(
-                client.base_url(),
-                client.auth(),
-                &self.upstream_repo(index, client, repo),
-                query,
-            )
+            .tags(client, &self.upstream_repo(index, client, repo), query)
             .await
         {
             Ok(response) => {
@@ -267,12 +262,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         }
         let Ok(Some(digest)) = self
             .upstream
-            .manifest_digest(
-                client.base_url(),
-                client.auth(),
-                &self.upstream_repo(index, client, repo),
-                tag,
-            )
+            .manifest_digest(client, &self.upstream_repo(index, client, repo), tag)
             .await
         else {
             return Ok(None);
@@ -298,21 +288,12 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         digest: &str,
     ) -> Vec<serde_json::Value> {
         let repo = self.upstream_repo(index, client, repo);
-        match self
-            .upstream
-            .referrers(client.base_url(), client.auth(), &repo, digest)
-            .await
-        {
+        match self.upstream.referrers(client, &repo, digest).await {
             Ok(response) => referrer_manifests(response).await,
             Err(crate::upstream::UpstreamError::Status(StatusCode::NOT_FOUND)) => {
                 let Ok(response) = self
                     .upstream
-                    .manifest(
-                        client.base_url(),
-                        client.auth(),
-                        &repo,
-                        &crate::name::referrers_tag(digest),
-                    )
+                    .manifest(client, &repo, &crate::name::referrers_tag(digest))
                     .await
                 else {
                     return Vec::new();

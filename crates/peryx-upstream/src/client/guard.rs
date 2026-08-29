@@ -93,7 +93,10 @@ impl Resolve for OutboundGuard {
         Box::pin(async move {
             let kept = retain_allowed(trusted, inner.await?);
             if kept.is_empty() {
-                Err("upstream host resolves only to non-public addresses".into())
+                Err(UpstreamError::BlockedDestination {
+                    reason: "host resolves only to non-public addresses".to_owned(),
+                }
+                .into())
             } else {
                 Ok(Box::new(kept.into_iter()) as Addrs)
             }

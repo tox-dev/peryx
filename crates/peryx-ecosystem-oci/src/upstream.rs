@@ -14,6 +14,7 @@ use axum::http::{HeaderValue, Method, StatusCode};
 use peryx_identity::strip_auth_scheme;
 use peryx_upstream::{
     Auth, CredentialError, CredentialIdentity, CredentialProvider, CredentialProviderId, CredentialSnapshot,
+    UpstreamClient,
 };
 use reqwest::Response;
 use tokio::sync::{Mutex, broadcast};
@@ -30,14 +31,13 @@ application/vnd.oci.image.manifest.v1+json, \
 application/vnd.oci.image.index.v1+json, \
 */*";
 
-/// A shared upstream fetcher: one HTTP client and one token cache for every configured OCI proxy.
+/// A shared token cache for every configured OCI proxy. Callers pass the selected index's guarded client.
 ///
 /// `inflight` single-flights token exchanges: concurrent cold pulls that miss the same `(base, scope,
 /// provider)` key elect one leader to trade the challenge for a token while the rest await its result,
 /// so a burst that would otherwise fire one token request per pull fires one for the whole burst.
 #[derive(Debug)]
 pub struct Upstream {
-    http: reqwest::Client,
     tokens: Mutex<HashMap<TokenCacheKey, CachedToken>>,
     inflight: Mutex<HashMap<TokenCacheKey, broadcast::Sender<String>>>,
     token_flight_timeout: Duration,
@@ -80,7 +80,23 @@ impl std::fmt::Display for UpstreamError {
 
 impl From<reqwest::Error> for UpstreamError {
     fn from(err: reqwest::Error) -> Self {
+        // reqwest's display text omits the custom redirect cause that identifies the blocked address.
+        let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&err);
+        while let Some(error) = source {
+            if let Some(error @ peryx_upstream::UpstreamError::BlockedDestination { .. }) =
+                error.downcast_ref::<peryx_upstream::UpstreamError>()
+            {
+                return Self::Transport(error.to_string());
+            }
+            source = error.source();
+        }
         Self::Transport(err.to_string())
+    }
+}
+
+impl From<peryx_upstream::UpstreamError> for UpstreamError {
+    fn from(error: peryx_upstream::UpstreamError) -> Self {
+        Self::Transport(error.to_string())
     }
 }
 
@@ -114,20 +130,9 @@ impl Default for Upstream {
 }
 
 impl Upstream {
-    /// # Panics
-    /// Panics only if the TLS backend cannot initialize the HTTP client, which cannot happen once the
-    /// AWS-LC crypto provider is installed.
     #[must_use]
     pub fn new() -> Self {
-        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-        let http = reqwest::Client::builder()
-            .user_agent(concat!("peryx/", env!("CARGO_PKG_VERSION")))
-            .pool_max_idle_per_host(32)
-            .http2_adaptive_window(true)
-            .build()
-            .expect("build the OCI upstream HTTP client");
         Self {
-            http,
             tokens: Mutex::new(HashMap::new()),
             inflight: Mutex::new(HashMap::new()),
             token_flight_timeout: TOKEN_FLIGHT_TIMEOUT,
@@ -142,14 +147,12 @@ impl Upstream {
     /// Returns [`UpstreamError`] on a non-success status or a transport failure.
     pub async fn manifest(
         &self,
-        base: &str,
-        credentials: &CredentialProvider,
+        client: &UpstreamClient,
         repo: &str,
         reference: &str,
     ) -> Result<Response, UpstreamError> {
-        let url = format!("{base}v2/{repo}/manifests/{reference}");
-        self.send(Method::GET, base, credentials, &url, repo, Some(ACCEPT_MANIFESTS))
-            .await
+        let url = format!("{}v2/{repo}/manifests/{reference}", client.base_url());
+        self.send(Method::GET, client, &url, repo, Some(ACCEPT_MANIFESTS)).await
     }
 
     /// Ask what a tag points at, without asking for what it points at.
@@ -162,14 +165,13 @@ impl Upstream {
     /// Returns [`UpstreamError`] on a non-success status or a transport failure.
     pub async fn manifest_digest(
         &self,
-        base: &str,
-        credentials: &CredentialProvider,
+        client: &UpstreamClient,
         repo: &str,
         reference: &str,
     ) -> Result<Option<String>, UpstreamError> {
-        let url = format!("{base}v2/{repo}/manifests/{reference}");
+        let url = format!("{}v2/{repo}/manifests/{reference}", client.base_url());
         let response = self
-            .send(Method::HEAD, base, credentials, &url, repo, Some(ACCEPT_MANIFESTS))
+            .send(Method::HEAD, client, &url, repo, Some(ACCEPT_MANIFESTS))
             .await?;
         Ok(response
             .headers()
@@ -180,15 +182,9 @@ impl Upstream {
 
     /// # Errors
     /// Returns [`UpstreamError`] on a non-success status or a transport failure.
-    pub async fn blob(
-        &self,
-        base: &str,
-        credentials: &CredentialProvider,
-        repo: &str,
-        digest: &str,
-    ) -> Result<Response, UpstreamError> {
-        let url = format!("{base}v2/{repo}/blobs/{digest}");
-        self.send(Method::GET, base, credentials, &url, repo, None).await
+    pub async fn blob(&self, client: &UpstreamClient, repo: &str, digest: &str) -> Result<Response, UpstreamError> {
+        let url = format!("{}v2/{repo}/blobs/{digest}", client.base_url());
+        self.send(Method::GET, client, &url, repo, None).await
     }
 
     /// Check a blob's existence and size with a `HEAD`, so a client's pre-flight `HEAD` need not pull
@@ -198,13 +194,12 @@ impl Upstream {
     /// Returns [`UpstreamError`] on a non-success status (a `404` means absent) or a transport failure.
     pub async fn blob_head(
         &self,
-        base: &str,
-        credentials: &CredentialProvider,
+        client: &UpstreamClient,
         repo: &str,
         digest: &str,
     ) -> Result<Option<u64>, UpstreamError> {
-        let url = format!("{base}v2/{repo}/blobs/{digest}");
-        let response = self.send(Method::HEAD, base, credentials, &url, repo, None).await?;
+        let url = format!("{}v2/{repo}/blobs/{digest}", client.base_url());
+        let response = self.send(Method::HEAD, client, &url, repo, None).await?;
         Ok(response
             .headers()
             .get(reqwest::header::CONTENT_LENGTH)
@@ -216,16 +211,14 @@ impl Upstream {
     /// Returns [`UpstreamError`] on a non-success status or a transport failure.
     pub async fn referrers(
         &self,
-        base: &str,
-        credentials: &CredentialProvider,
+        client: &UpstreamClient,
         repo: &str,
         digest: &str,
     ) -> Result<Response, UpstreamError> {
-        let url = format!("{base}v2/{repo}/referrers/{digest}");
+        let url = format!("{}v2/{repo}/referrers/{digest}", client.base_url());
         self.send(
             Method::GET,
-            base,
-            credentials,
+            client,
             &url,
             repo,
             Some("application/vnd.oci.image.index.v1+json"),
@@ -235,19 +228,13 @@ impl Upstream {
 
     /// # Errors
     /// Returns [`UpstreamError`] on a non-success status or a transport failure.
-    pub async fn tags(
-        &self,
-        base: &str,
-        credentials: &CredentialProvider,
-        repo: &str,
-        query: &str,
-    ) -> Result<Response, UpstreamError> {
-        let mut url = format!("{base}v2/{repo}/tags/list");
+    pub async fn tags(&self, client: &UpstreamClient, repo: &str, query: &str) -> Result<Response, UpstreamError> {
+        let mut url = format!("{}v2/{repo}/tags/list", client.base_url());
         if !query.is_empty() {
             url.push('?');
             url.push_str(query);
         }
-        self.send(Method::GET, base, credentials, &url, repo, None).await
+        self.send(Method::GET, client, &url, repo, None).await
     }
 
     /// Send `method` with the token-auth flow: attach a cached token if any, and on a `401` carrying a
@@ -259,17 +246,17 @@ impl Upstream {
     async fn send(
         &self,
         method: Method,
-        base: &str,
-        credentials: &CredentialProvider,
+        client: &UpstreamClient,
         url: &str,
         repo: &str,
         accept: Option<&str>,
     ) -> Result<Response, UpstreamError> {
         let scope = format!("repository:{repo}:pull");
+        let credentials = client.auth();
         let credential = credentials.credential().await?;
-        let cache_key = token_cache_key(base, &scope, credential.identity().provider());
+        let cache_key = token_cache_key(client.base_url(), &scope, credential.identity().provider());
         let cached = self.cached_token(&cache_key, &credential).await;
-        let response = self.attempt(&method, url, accept, cached.as_deref()).await?;
+        let response = self.attempt(client, &method, url, accept, cached.as_deref()).await?;
         if response.status() != StatusCode::UNAUTHORIZED {
             return finish(response);
         }
@@ -282,9 +269,16 @@ impl Upstream {
             return finish(response);
         };
         let token = self
-            .acquire_token(&cache_key, cached.as_deref(), &challenge, credentials, &credential)
+            .acquire_token(
+                client,
+                &cache_key,
+                cached.as_deref(),
+                &challenge,
+                credentials,
+                &credential,
+            )
             .await?;
-        finish(self.attempt(&method, url, accept, Some(&token)).await?)
+        finish(self.attempt(client, &method, url, accept, Some(&token)).await?)
     }
 
     /// Single-flight the token exchange for `cache_key`. The first pull to miss a key inserts an
@@ -293,6 +287,7 @@ impl Upstream {
     /// so the waiters it wakes re-enter this loop and elect one fresh leader to retry, never a herd.
     async fn acquire_token(
         &self,
+        client: &UpstreamClient,
         cache_key: &TokenCacheKey,
         rejected_token: Option<&str>,
         challenge: &Bearer,
@@ -318,13 +313,7 @@ impl Upstream {
                     drop(inflight);
                     let result = timeout_at(
                         deadline,
-                        self.exchange(
-                            &cache_key.base,
-                            &cache_key.scope,
-                            challenge,
-                            credentials,
-                            credential.clone(),
-                        ),
+                        self.exchange(client, &cache_key.scope, challenge, credentials, credential.clone()),
                     )
                     .await
                     .map_err(|_| UpstreamError::Transport("token exchange timed out".to_owned()))
@@ -355,14 +344,14 @@ impl Upstream {
     /// the realm rejects the current generation. This is the unit `acquire_token` single-flights.
     async fn exchange(
         &self,
-        base: &str,
+        client: &UpstreamClient,
         scope: &str,
         challenge: &Bearer,
         credentials: &CredentialProvider,
         mut credential: Arc<CredentialSnapshot>,
     ) -> Result<String, UpstreamError> {
         let mut auth = credential.auth();
-        let token = match self.fetch_token(challenge, scope, auth).await {
+        let token = match self.fetch_token(client, challenge, scope, auth).await {
             Err(UpstreamError::Status(StatusCode::UNAUTHORIZED)) => {
                 let generation = credential.generation();
                 credential = credentials.refresh_after_unauthorized(generation).await?;
@@ -370,12 +359,12 @@ impl Upstream {
                     return Err(UpstreamError::Status(StatusCode::UNAUTHORIZED));
                 }
                 auth = credential.auth();
-                self.fetch_token(challenge, scope, auth).await?
+                self.fetch_token(client, challenge, scope, auth).await?
             }
             result => result?,
         };
         self.tokens.lock().await.insert(
-            token_cache_key(base, scope, credential.identity().provider()),
+            token_cache_key(client.base_url(), scope, credential.identity().provider()),
             CachedToken {
                 credentials: credential.identity(),
                 value: token.clone(),
@@ -386,12 +375,13 @@ impl Upstream {
 
     async fn attempt(
         &self,
+        client: &UpstreamClient,
         method: &Method,
         url: &str,
         accept: Option<&str>,
         token: Option<&str>,
     ) -> Result<Response, UpstreamError> {
-        let mut request = self.http.request(method.clone(), url);
+        let mut request = client.request_without_auth(method.clone(), url)?;
         if let Some(accept) = accept {
             request = request.header("accept", accept);
         }
@@ -403,7 +393,13 @@ impl Upstream {
 
     /// Trade a bearer challenge for a token at its realm, presenting the configured credentials so the
     /// realm returns an authenticated token (Docker Hub's higher rate tier) rather than an anonymous one.
-    async fn fetch_token(&self, challenge: &Bearer, scope: &str, auth: &Auth) -> Result<String, UpstreamError> {
+    async fn fetch_token(
+        &self,
+        client: &UpstreamClient,
+        challenge: &Bearer,
+        scope: &str,
+        auth: &Auth,
+    ) -> Result<String, UpstreamError> {
         let scope = challenge.scope.as_deref().unwrap_or(scope);
         let mut url = url::Url::parse(&challenge.realm)
             .map_err(|err| UpstreamError::Transport(format!("invalid bearer realm: {err}")))?;
@@ -423,7 +419,7 @@ impl Upstream {
                 query.append_pair("service", service);
             }
         }
-        let mut request = self.http.get(url);
+        let mut request = client.request_without_auth(Method::GET, url.as_str())?;
         if let Auth::Basic { username, password } = auth {
             request = request.basic_auth(username, Some(password));
         }

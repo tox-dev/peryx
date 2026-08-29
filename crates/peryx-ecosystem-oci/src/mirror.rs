@@ -8,7 +8,7 @@ use std::sync::Arc;
 use peryx_driver::ServingState;
 use peryx_index::Index;
 use peryx_storage::blob::Digest;
-use peryx_upstream::CredentialProvider;
+use peryx_upstream::UpstreamClient;
 use serde::Serialize;
 
 use crate::name::{ImageReference, Reference, parse_image_reference};
@@ -119,8 +119,7 @@ pub enum MirrorMode {
 struct Mirror<'a> {
     state: &'a Arc<ServingState>,
     upstream: &'a Upstream,
-    base: String,
-    credentials: CredentialProvider,
+    client: &'a UpstreamClient,
     index: &'a str,
     settings: IndexSettings,
     mode: MirrorMode,
@@ -137,11 +136,7 @@ pub async fn mirror(
     mode: MirrorMode,
 ) -> anyhow::Result<Vec<MirrorRow>> {
     let mut rows = Vec::new();
-    let Some((base, credentials)) = serving_members(state, index).into_iter().find_map(|member| {
-        member
-            .proxy_client()
-            .map(|client| (client.base_url().to_owned(), client.auth().clone()))
-    }) else {
+    let Some(client) = serving_members(state, index).into_iter().find_map(Index::proxy_client) else {
         rows.push(
             MirrorRow::error("summary", "", "", "", "index has no cached upstream".to_owned()).with_index(&index.name),
         );
@@ -151,8 +146,7 @@ pub async fn mirror(
     let context = Mirror {
         state,
         upstream: &upstream,
-        base,
-        credentials,
+        client,
         index: &index.name,
         settings,
         mode,
@@ -229,7 +223,7 @@ impl Mirror<'_> {
     /// The name `repo` is spelled with upstream. What lands in the store keeps the operator's spelling,
     /// so a mirrored image serves under the name it was asked for.
     fn upstream_repo<'a>(&self, repo: &'a str) -> std::borrow::Cow<'a, str> {
-        upstream_repo(self.settings.library_prefix, &self.base, repo)
+        upstream_repo(self.settings.library_prefix, self.client.base_url(), repo)
     }
 
     async fn one_ref(&self, image: &ImageReference, rows: &mut Vec<MirrorRow>) -> anyhow::Result<()> {
@@ -255,7 +249,7 @@ impl Mirror<'_> {
         }
         let response = match self
             .upstream
-            .manifest(&self.base, &self.credentials, &self.upstream_repo(repo), reference)
+            .manifest(self.client, &self.upstream_repo(repo), reference)
             .await
         {
             Ok(response) => response,
@@ -413,11 +407,7 @@ impl Mirror<'_> {
             ));
             return;
         }
-        match self
-            .upstream
-            .blob(&self.base, &self.credentials, &self.upstream_repo(repo), digest)
-            .await
-        {
+        match self.upstream.blob(self.client, &self.upstream_repo(repo), digest).await {
             Ok(response) => match download_blob(&self.state.blobs, &storage, response).await {
                 Ok(bytes) => rows.push(MirrorRow::synced("blob", repo, digest, digest, bytes)),
                 Err(err) => {
