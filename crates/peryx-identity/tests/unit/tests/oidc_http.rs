@@ -17,12 +17,12 @@ pub fn transport(destination: &str) -> Arc<dyn OidcHttpTransport> {
     Arc::new(WiremockTransport {
         logical_origin: Url::parse(&secure_origin(destination)).unwrap(),
         destination: Url::parse(destination).unwrap(),
-        client: reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(std::time::Duration::from_secs(5))
-            .build()
-            .unwrap(),
+        client: http_client(),
     })
+}
+
+pub fn insecure_transport() -> Arc<dyn OidcHttpTransport> {
+    Arc::new(InsecureTransport(http_client()))
 }
 
 pub fn secure_origin(origin: &str) -> String {
@@ -32,7 +32,7 @@ pub fn secure_origin(origin: &str) -> String {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub enum DiscoveryResponseBody {
+pub enum TestResponseBody {
     ExactChunked { limit: usize },
     OversizedChunked { limit: usize },
     ExactContentLength { limit: usize },
@@ -40,13 +40,13 @@ pub enum DiscoveryResponseBody {
     Truncated,
 }
 
-pub struct DiscoveryServer {
+pub struct TestHttpServer {
     address: SocketAddr,
     thread: Option<JoinHandle<()>>,
 }
 
-impl DiscoveryServer {
-    pub fn start(body: DiscoveryResponseBody) -> Self {
+impl TestHttpServer {
+    pub fn start(body: TestResponseBody) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         Self {
@@ -60,7 +60,7 @@ impl DiscoveryServer {
     }
 }
 
-impl Drop for DiscoveryServer {
+impl Drop for TestHttpServer {
     fn drop(&mut self) {
         let _ = TcpStream::connect(self.address);
         if let Some(thread) = self.thread.take() {
@@ -69,13 +69,13 @@ impl Drop for DiscoveryServer {
     }
 }
 
-fn serve_once(listener: &TcpListener, address: SocketAddr, body: DiscoveryResponseBody) {
+fn serve_once(listener: &TcpListener, address: SocketAddr, body: TestResponseBody) {
     let (mut socket, _) = listener.accept().unwrap();
     let mut request = [0; 1024];
     let _ = socket.read(&mut request);
     let response = match body {
-        DiscoveryResponseBody::ExactChunked { limit } | DiscoveryResponseBody::OversizedChunked { limit } => {
-            let size = if matches!(body, DiscoveryResponseBody::ExactChunked { .. }) {
+        TestResponseBody::ExactChunked { limit } | TestResponseBody::OversizedChunked { limit } => {
+            let size = if matches!(body, TestResponseBody::ExactChunked { .. }) {
                 limit
             } else {
                 limit + 1
@@ -93,9 +93,8 @@ fn serve_once(listener: &TcpListener, address: SocketAddr, body: DiscoveryRespon
                 body.len()
             )
         }
-        DiscoveryResponseBody::ExactContentLength { limit }
-        | DiscoveryResponseBody::OversizedContentLength { limit } => {
-            let length = if matches!(body, DiscoveryResponseBody::ExactContentLength { .. }) {
+        TestResponseBody::ExactContentLength { limit } | TestResponseBody::OversizedContentLength { limit } => {
+            let length = if matches!(body, TestResponseBody::ExactContentLength { .. }) {
                 limit
             } else {
                 limit + 1
@@ -104,7 +103,7 @@ fn serve_once(listener: &TcpListener, address: SocketAddr, body: DiscoveryRespon
                 "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {length}\r\nconnection: close\r\n\r\n{{}}"
             )
         }
-        DiscoveryResponseBody::Truncated => {
+        TestResponseBody::Truncated => {
             "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 8\r\nconnection: close\r\n\r\n{}"
                 .to_owned()
         }
@@ -141,4 +140,24 @@ impl OidcHttpTransport for WiremockTransport {
         }
         self.client.execute(request).await
     }
+}
+
+#[derive(Debug)]
+struct InsecureTransport(reqwest::Client);
+
+#[async_trait]
+impl OidcHttpTransport for InsecureTransport {
+    async fn execute(&self, mut request: reqwest::Request) -> Result<reqwest::Response, reqwest::Error> {
+        request.url_mut().set_scheme("http").unwrap();
+        self.0.execute(request).await
+    }
+}
+
+fn http_client() -> reqwest::Client {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap()
 }

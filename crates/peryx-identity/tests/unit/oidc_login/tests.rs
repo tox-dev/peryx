@@ -8,7 +8,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::*;
 use crate::tests::oidc_http::{
-    DiscoveryResponseBody, DiscoveryServer, MAX_DISCOVERY_BYTES, padded_json, secure_origin, transport,
+    MAX_DISCOVERY_BYTES, TestHttpServer, TestResponseBody, insecure_transport, padded_json, secure_origin, transport,
 };
 use crate::{ExternalIdentityResolution, ExternalLinkRequest, ServerUser, UserId, UserState};
 
@@ -488,28 +488,112 @@ async fn test_invalid_group_claim_is_rejected(#[case] groups: Value) {
     ));
 }
 
+#[rstest]
+#[case::invalid_request(
+    400,
+    "application/json",
+    r#"{"error":"invalid_request"}"#,
+    OidcTokenExchangeError::Protocol { status: 400, code: OidcTokenErrorCode::InvalidRequest }
+)]
+#[case::invalid_client(
+    401,
+    "application/json",
+    r#"{"error":"invalid_client"}"#,
+    OidcTokenExchangeError::Protocol { status: 401, code: OidcTokenErrorCode::InvalidClient }
+)]
+#[case::invalid_grant(
+    400,
+    "application/json",
+    concat!(
+        r#"{"error":"invalid_grant","error_description":"provider-secret","#,
+        r#""access_token":"token-secret","error_uri":"https://provider.example/secret"}"#
+    ),
+    OidcTokenExchangeError::Protocol { status: 400, code: OidcTokenErrorCode::InvalidGrant }
+)]
+#[case::unauthorized_client(
+    400,
+    "application/json",
+    r#"{"error":"unauthorized_client"}"#,
+    OidcTokenExchangeError::Protocol { status: 400, code: OidcTokenErrorCode::UnauthorizedClient }
+)]
+#[case::unsupported_grant_type(
+    400,
+    "application/json",
+    r#"{"error":"unsupported_grant_type"}"#,
+    OidcTokenExchangeError::Protocol { status: 400, code: OidcTokenErrorCode::UnsupportedGrantType }
+)]
+#[case::invalid_scope(
+    400,
+    "application/json",
+    r#"{"error":"invalid_scope"}"#,
+    OidcTokenExchangeError::Protocol { status: 400, code: OidcTokenErrorCode::InvalidScope }
+)]
+#[case::unknown(
+    400,
+    "application/json",
+    r#"{"error":"provider_extension"}"#,
+    OidcTokenExchangeError::Protocol { status: 400, code: OidcTokenErrorCode::Unknown }
+)]
+#[case::server_invalid_grant(
+    500,
+    "application/json",
+    r#"{"error":"invalid_grant"}"#,
+    OidcTokenExchangeError::Protocol { status: 500, code: OidcTokenErrorCode::InvalidGrant }
+)]
+#[case::success_invalid_grant(
+    200,
+    "application/json",
+    r#"{"error":"invalid_grant"}"#,
+    OidcTokenExchangeError::InvalidResponse { status: 200 }
+)]
+#[case::wrong_content_type(
+    400,
+    "text/plain",
+    r#"{"error":"invalid_grant"}"#,
+    OidcTokenExchangeError::InvalidResponse { status: 400 }
+)]
+#[case::html(500, "text/html", "<h1>provider-secret</h1>", OidcTokenExchangeError::InvalidResponse { status: 500 })]
+#[case::malformed(400, "application/json", r#"{"error":"invalid_grant"#,
+    OidcTokenExchangeError::InvalidResponse { status: 400 })]
+#[case::non_string_error(
+    400,
+    "application/json",
+    r#"{"error":5}"#,
+    OidcTokenExchangeError::InvalidResponse { status: 400 }
+)]
+#[case::missing_id_token(
+    200,
+    "application/json",
+    r#"{"token_type":"Bearer"}"#,
+    OidcTokenExchangeError::InvalidResponse { status: 200 }
+)]
 #[tokio::test]
-async fn test_token_exchange_error_status_fails_closed() {
+async fn test_token_exchange_failure_is_typed_and_redacted(
+    #[case] status: u16,
+    #[case] content_type: &str,
+    #[case] body: &str,
+    #[case] expected: OidcTokenExchangeError,
+) {
     let (server, provider) = ready().await;
     Mock::given(method("POST"))
         .and(path("/token"))
-        .respond_with(ResponseTemplate::new(400))
+        .respond_with(ResponseTemplate::new(status).set_body_raw(body, content_type))
         .mount(&server)
         .await;
-    assert!(matches!(
-        provider.callback(&response(), &pending(), NOW).await,
-        Err(OidcProviderError::TokenExchange)
-    ));
-}
-
-#[tokio::test]
-async fn test_token_response_without_an_id_token_is_rejected() {
-    let (server, provider) = ready().await;
-    mount_token(&server, json!({"token_type": "Bearer"})).await;
-    assert!(matches!(
-        provider.callback(&response(), &pending(), NOW).await,
-        Err(OidcProviderError::TokenExchange)
-    ));
+    let error = provider.callback(&response(), &pending(), NOW).await.unwrap_err();
+    assert_eq!(error, OidcProviderError::TokenExchange(expected));
+    let rendered = format!("{error:?} {error}");
+    let provider_url = server.uri();
+    assert!(
+        ![
+            "provider-secret",
+            "token-secret",
+            "provider.example",
+            provider_url.as_str()
+        ]
+        .into_iter()
+        .any(|secret| rendered.contains(secret))
+    );
 }
 
 #[rstest]
@@ -530,7 +614,15 @@ async fn test_token_response_size_bound(#[case] size: usize, #[case] accepted: b
         .mount(&server)
         .await;
 
-    assert_eq!(provider.callback(&response(), &pending(), NOW).await.is_ok(), accepted);
+    let result = provider.callback(&response(), &pending(), NOW).await;
+    if accepted {
+        assert!(result.is_ok());
+    } else {
+        assert_eq!(
+            result.unwrap_err(),
+            OidcProviderError::TokenExchange(OidcTokenExchangeError::InvalidResponse { status: 200 })
+        );
+    }
 }
 
 #[tokio::test]
@@ -562,8 +654,35 @@ async fn test_token_exchange_transport_failure_stays_unavailable() {
         .await;
     assert!(matches!(
         provider(&server.uri()).callback(&response(), &pending(), NOW).await,
-        Err(OidcProviderError::Unavailable)
+        Err(OidcProviderError::TokenExchange(OidcTokenExchangeError::Transport {
+            status: None
+        }))
     ));
+}
+
+#[tokio::test]
+async fn test_token_body_read_failure_retains_the_http_status() {
+    let token_server = TestHttpServer::start(TestResponseBody::Truncated);
+    let server = MockServer::start().await;
+    mount_discovery(
+        &server,
+        json!({
+            "issuer": issuer(&server),
+            "authorization_endpoint": format!("{}/authorize", secure_origin(&server.uri())),
+            "token_endpoint": format!("{}/token", secure_origin(&token_server.origin())),
+            "jwks_uri": format!("{}/jwks", secure_origin(&server.uri())),
+            "id_token_signing_alg_values_supported": ["RS256"],
+        }),
+        "application/json",
+    )
+    .await;
+    mount_jwks(&server, json!({"keys": [jwk("key-1")]})).await;
+    let provider = OidcLoginProvider::with_http_transport(settings(&issuer(&server)), insecure_transport()).unwrap();
+
+    assert_eq!(
+        provider.callback(&response(), &pending(), NOW).await.unwrap_err(),
+        OidcProviderError::TokenExchange(OidcTokenExchangeError::Transport { status: Some(200) })
+    );
 }
 
 #[tokio::test]
@@ -879,13 +998,13 @@ async fn test_verify_only_key_survives_alongside_incompatible_keys() {
 
 #[rstest]
 #[case::oversized_chunk(
-    DiscoveryResponseBody::OversizedChunked { limit: MAX_DISCOVERY_BYTES },
+    TestResponseBody::OversizedChunked { limit: MAX_DISCOVERY_BYTES },
     OidcProviderError::InvalidProviderResponse
 )]
-#[case::truncated(DiscoveryResponseBody::Truncated, OidcProviderError::Unavailable)]
+#[case::truncated(TestResponseBody::Truncated, OidcProviderError::Unavailable)]
 #[tokio::test]
-async fn test_malformed_discovery_body(#[case] body: DiscoveryResponseBody, #[case] expected: OidcProviderError) {
-    let server = DiscoveryServer::start(body);
+async fn test_malformed_discovery_body(#[case] body: TestResponseBody, #[case] expected: OidcProviderError) {
+    let server = TestHttpServer::start(body);
     assert_eq!(
         provider(&server.origin()).authorization(NOW).await.unwrap_err(),
         expected
@@ -928,15 +1047,47 @@ fn test_new_accepts_a_secure_provider() {
 }
 
 #[rstest]
-#[case::unavailable(OidcProviderError::Unavailable, true)]
-#[case::invalid_response(OidcProviderError::InvalidProviderResponse, true)]
-#[case::unknown_key(OidcProviderError::UnknownKey, true)]
-#[case::state(OidcProviderError::StateMismatch, false)]
-#[case::exchange(OidcProviderError::TokenExchange, false)]
-#[case::token(OidcProviderError::InvalidToken, false)]
-#[case::claims(OidcProviderError::InvalidClaims, false)]
-fn test_error_availability(#[case] error: OidcProviderError, #[case] expected: bool) {
-    assert_eq!(error.unavailable(), expected);
+#[case::unavailable(OidcProviderError::Unavailable, true, false)]
+#[case::invalid_response(OidcProviderError::InvalidProviderResponse, true, false)]
+#[case::unknown_key(OidcProviderError::UnknownKey, true, false)]
+#[case::state(OidcProviderError::StateMismatch, false, false)]
+#[case::exchange_transport(
+    OidcProviderError::TokenExchange(OidcTokenExchangeError::Transport { status: None }),
+    true,
+    false
+)]
+#[case::exchange_invalid_grant(
+    OidcProviderError::TokenExchange(OidcTokenExchangeError::Protocol {
+        status: 400,
+        code: OidcTokenErrorCode::InvalidGrant,
+    }),
+    false,
+    true
+)]
+#[case::exchange_invalid_client(
+    OidcProviderError::TokenExchange(OidcTokenExchangeError::Protocol {
+        status: 401,
+        code: OidcTokenErrorCode::InvalidClient,
+    }),
+    false,
+    false
+)]
+#[case::exchange_invalid_response(
+    OidcProviderError::TokenExchange(OidcTokenExchangeError::InvalidResponse { status: 500 }),
+    false,
+    false
+)]
+#[case::token(OidcProviderError::InvalidToken, false, false)]
+#[case::claims(OidcProviderError::InvalidClaims, false, false)]
+fn test_error_classification(
+    #[case] error: OidcProviderError,
+    #[case] unavailable: bool,
+    #[case] authentication_rejected: bool,
+) {
+    assert_eq!(
+        (error.unavailable(), error.authentication_rejected()),
+        (unavailable, authentication_rejected)
+    );
 }
 
 // One store avoids uncovered methods from per-test monomorphizations on x86.
@@ -1051,7 +1202,9 @@ async fn test_service_propagates_a_provider_failure() {
     let service = service(&server.uri(), store.clone());
     assert!(matches!(
         service.callback(&response(), &pending(), NOW).await,
-        Err(OidcLoginError::Provider(OidcProviderError::TokenExchange))
+        Err(OidcLoginError::Provider(OidcProviderError::TokenExchange(
+            OidcTokenExchangeError::InvalidResponse { status: 200 }
+        )))
     ));
     assert_eq!(store.calls(), 0);
 }

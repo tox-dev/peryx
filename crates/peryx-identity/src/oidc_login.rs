@@ -19,8 +19,8 @@ use url::Url;
 
 use crate::oidc::Audience;
 use crate::oidc_http::{
-    DISCOVERY_BODY_LIMIT, JWKS_BODY_LIMIT, MIN_FRESH_SECS, OidcHttpError, OidcHttpTransport, ReqwestOidcHttpTransport,
-    discovery_url, fetch, freshness, usable_keys,
+    BoundedResponseError, DISCOVERY_BODY_LIMIT, JWKS_BODY_LIMIT, MIN_FRESH_SECS, OidcHttpError, OidcHttpTransport,
+    ReqwestOidcHttpTransport, discovery_url, fetch, fetch_bounded, freshness, usable_keys,
 };
 use crate::{
     ExternalGroup, ExternalGroupGrant, ExternalIdentity, ExternalIdentityLinker, ExternalIdentityResolution,
@@ -227,16 +227,38 @@ impl OidcLoginProvider {
         if let Some(secret) = &self.client_secret {
             request = request.basic_auth(&self.client_id, Some(secret));
         }
-        let (body, _) = self
-            .fetch(request, TOKEN_BODY_LIMIT)
+        let response = fetch_bounded(self.transport.as_ref(), request, TOKEN_BODY_LIMIT)
             .await
-            .map_err(|error| match error {
-                OidcProviderError::InvalidProviderResponse => OidcProviderError::TokenExchange,
-                other => other,
+            .map_err(|error| {
+                OidcProviderError::TokenExchange(match error {
+                    BoundedResponseError::Transport { status } => OidcTokenExchangeError::Transport { status },
+                    BoundedResponseError::InvalidResponse { status } => {
+                        OidcTokenExchangeError::InvalidResponse { status }
+                    }
+                })
             })?;
-        serde_json::from_slice::<TokenResponse>(&body)
-            .map(|response| response.id_token)
-            .map_err(|_| OidcProviderError::TokenExchange)
+        let status = response.status.as_u16();
+        if !response.json {
+            return Err(OidcProviderError::TokenExchange(
+                OidcTokenExchangeError::InvalidResponse { status },
+            ));
+        }
+        if response.status.is_success() {
+            return serde_json::from_slice::<TokenResponse>(&response.body)
+                .map(|response| response.id_token)
+                .map_err(|_| OidcProviderError::TokenExchange(OidcTokenExchangeError::InvalidResponse { status }));
+        }
+        Err(
+            serde_json::from_slice::<TokenErrorResponse>(&response.body).map_or_else(
+                |_| OidcProviderError::TokenExchange(OidcTokenExchangeError::InvalidResponse { status }),
+                |response| {
+                    OidcProviderError::TokenExchange(OidcTokenExchangeError::Protocol {
+                        status,
+                        code: token_error_code(&response.error),
+                    })
+                },
+            ),
+        )
     }
 
     async fn identity(&self, id_token: &str, nonce: &str, now: i64) -> Result<ExternalLogin, OidcProviderError> {
@@ -496,6 +518,40 @@ pub enum OidcProviderBuildError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum OidcTokenExchangeError {
+    #[error("OIDC token endpoint transport failed")]
+    Transport { status: Option<u16> },
+    #[error("OIDC token endpoint returned HTTP {status} with OAuth error {code:?}")]
+    Protocol { status: u16, code: OidcTokenErrorCode },
+    #[error("OIDC token endpoint returned an invalid HTTP {status} response")]
+    InvalidResponse { status: u16 },
+}
+
+impl OidcTokenExchangeError {
+    #[must_use]
+    pub const fn authentication_rejected(&self) -> bool {
+        matches!(
+            self,
+            Self::Protocol {
+                status: 400,
+                code: OidcTokenErrorCode::InvalidGrant
+            }
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OidcTokenErrorCode {
+    InvalidRequest,
+    InvalidClient,
+    InvalidGrant,
+    UnauthorizedClient,
+    UnsupportedGrantType,
+    InvalidScope,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum OidcProviderError {
     #[error("OIDC provider unavailable")]
     Unavailable,
@@ -505,8 +561,8 @@ pub enum OidcProviderError {
     UnknownKey,
     #[error("OIDC callback state does not match the pending login")]
     StateMismatch,
-    #[error("OIDC authorization code exchange failed")]
-    TokenExchange,
+    #[error("OIDC authorization code exchange failed: {0}")]
+    TokenExchange(OidcTokenExchangeError),
     #[error("OIDC ID token failed validation")]
     InvalidToken,
     #[error("OIDC ID token claims do not match the configured mapping")]
@@ -519,8 +575,16 @@ impl OidcProviderError {
     pub const fn unavailable(&self) -> bool {
         matches!(
             self,
-            Self::Unavailable | Self::InvalidProviderResponse | Self::UnknownKey
+            Self::Unavailable
+                | Self::InvalidProviderResponse
+                | Self::UnknownKey
+                | Self::TokenExchange(OidcTokenExchangeError::Transport { .. })
         )
+    }
+
+    #[must_use]
+    pub const fn authentication_rejected(&self) -> bool {
+        matches!(self, Self::TokenExchange(error) if error.authentication_rejected())
     }
 }
 
@@ -572,6 +636,11 @@ struct TokenResponse {
 }
 
 #[derive(Deserialize)]
+struct TokenErrorResponse {
+    error: String,
+}
+
+#[derive(Deserialize)]
 struct IdTokenClaims {
     aud: Audience,
     exp: i64,
@@ -589,6 +658,18 @@ fn random_token() -> Result<String, OidcProviderError> {
     let mut bytes = [0u8; RANDOM_BYTES];
     getrandom::fill(&mut bytes).map_err(|_| OidcProviderError::Unavailable)?;
     Ok(URL_SAFE_NO_PAD.encode(bytes))
+}
+
+fn token_error_code(error: &str) -> OidcTokenErrorCode {
+    match error {
+        "invalid_request" => OidcTokenErrorCode::InvalidRequest,
+        "invalid_client" => OidcTokenErrorCode::InvalidClient,
+        "invalid_grant" => OidcTokenErrorCode::InvalidGrant,
+        "unauthorized_client" => OidcTokenErrorCode::UnauthorizedClient,
+        "unsupported_grant_type" => OidcTokenErrorCode::UnsupportedGrantType,
+        "invalid_scope" => OidcTokenErrorCode::InvalidScope,
+        _ => OidcTokenErrorCode::Unknown,
+    }
 }
 
 fn pkce_challenge(verifier: &str) -> String {

@@ -164,11 +164,18 @@ fn misconfigured() -> Response {
     (StatusCode::INTERNAL_SERVER_ERROR, "browser login is not configured").into_response()
 }
 
-/// Map a provider-side failure to a response without leaking the provider's detail: an outage is a
-/// retryable `503`, every rejection (bad state, nonce, signature, issuer, audience, redirect) a `401`.
+/// Only a valid `invalid_grant` response rejects authentication; upstream failures remain server errors.
 fn provider_error_response(error: OidcProviderError) -> Response {
-    if error.unavailable() {
+    if error.authentication_rejected() {
+        (StatusCode::UNAUTHORIZED, "authentication failed").into_response()
+    } else if error.unavailable() {
         (StatusCode::SERVICE_UNAVAILABLE, "the login provider is unavailable").into_response()
+    } else if matches!(error, OidcProviderError::TokenExchange(_)) {
+        (
+            StatusCode::BAD_GATEWAY,
+            "the login provider returned an invalid response",
+        )
+            .into_response()
     } else {
         (StatusCode::UNAUTHORIZED, "authentication failed").into_response()
     }

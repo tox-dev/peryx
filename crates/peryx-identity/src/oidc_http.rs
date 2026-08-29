@@ -39,39 +39,82 @@ pub async fn fetch(
     request: reqwest::RequestBuilder,
     limit: usize,
 ) -> Result<(Vec<u8>, Option<i64>), OidcHttpError> {
-    let request = request.build().map_err(|_| OidcHttpError::Unavailable)?;
+    let response = fetch_bounded(transport, request, limit)
+        .await
+        .map_err(|error| match error {
+            BoundedResponseError::Transport { .. } => OidcHttpError::Unavailable,
+            BoundedResponseError::InvalidResponse { .. } => OidcHttpError::InvalidResponse,
+        })?;
+    if !response.status.is_success() || !response.json {
+        return Err(OidcHttpError::InvalidResponse);
+    }
+    Ok((response.body, response.max_age))
+}
+
+pub struct BoundedResponse {
+    pub status: reqwest::StatusCode,
+    pub json: bool,
+    pub body: Vec<u8>,
+    pub max_age: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoundedResponseError {
+    Transport { status: Option<u16> },
+    InvalidResponse { status: u16 },
+}
+
+pub async fn fetch_bounded(
+    transport: &dyn OidcHttpTransport,
+    request: reqwest::RequestBuilder,
+    limit: usize,
+) -> Result<BoundedResponse, BoundedResponseError> {
+    let request = request
+        .build()
+        .map_err(|_| BoundedResponseError::Transport { status: None })?;
     let mut response = transport
         .execute(request)
         .await
-        .map_err(|_| OidcHttpError::Unavailable)?;
-    if !response.status().is_success()
-        || response
-            .headers()
-            .get(CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .is_none_or(|value| !is_json_content_type(value))
-        || response
-            .headers()
-            .get(CONTENT_LENGTH)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.parse::<usize>().ok())
-            .is_some_and(|length| length > limit)
+        .map_err(|_| BoundedResponseError::Transport { status: None })?;
+    let status = response.status();
+    if response
+        .headers()
+        .get(CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<usize>().ok())
+        .is_some_and(|length| length > limit)
     {
-        return Err(OidcHttpError::InvalidResponse);
+        return Err(BoundedResponseError::InvalidResponse {
+            status: status.as_u16(),
+        });
     }
+    let json = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(is_json_content_type);
     let max_age = response
         .headers()
         .get(CACHE_CONTROL)
         .and_then(|value| value.to_str().ok())
         .and_then(cache_max_age);
     let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|_| OidcHttpError::Unavailable)? {
+    while let Some(chunk) = response.chunk().await.map_err(|_| BoundedResponseError::Transport {
+        status: Some(status.as_u16()),
+    })? {
         if body.len() + chunk.len() > limit {
-            return Err(OidcHttpError::InvalidResponse);
+            return Err(BoundedResponseError::InvalidResponse {
+                status: status.as_u16(),
+            });
         }
         body.extend_from_slice(&chunk);
     }
-    Ok((body, max_age))
+    Ok(BoundedResponse {
+        status,
+        json,
+        body,
+        max_age,
+    })
 }
 
 pub fn discovery_url(issuer: &Url) -> Url {

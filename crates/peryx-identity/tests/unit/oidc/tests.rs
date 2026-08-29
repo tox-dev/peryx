@@ -10,7 +10,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::*;
 use crate::tests::oidc_http::{
-    DiscoveryResponseBody, DiscoveryServer, MAX_DISCOVERY_BYTES, MAX_JWKS_BYTES, padded_json, secure_origin, transport,
+    MAX_DISCOVERY_BYTES, MAX_JWKS_BYTES, TestHttpServer, TestResponseBody, padded_json, secure_origin, transport,
 };
 
 const NOW: i64 = 2_000_000_000;
@@ -619,37 +619,33 @@ async fn test_unavailable_key_set_endpoint_is_reported() {
 
 #[rstest]
 #[case::exact_chunk(
-    DiscoveryResponseBody::ExactChunked { limit: MAX_DISCOVERY_BYTES },
+    TestResponseBody::ExactChunked { limit: MAX_DISCOVERY_BYTES },
     "exact-chunk",
     OidcVerificationError::IssuerUnavailable
 )]
 #[case::oversized_chunk(
-    DiscoveryResponseBody::OversizedChunked { limit: MAX_DISCOVERY_BYTES },
+    TestResponseBody::OversizedChunked { limit: MAX_DISCOVERY_BYTES },
     "large",
     OidcVerificationError::InvalidIssuerResponse
 )]
 #[case::exact_length(
-    DiscoveryResponseBody::ExactContentLength { limit: MAX_DISCOVERY_BYTES },
+    TestResponseBody::ExactContentLength { limit: MAX_DISCOVERY_BYTES },
     "exact-length",
     OidcVerificationError::IssuerUnavailable
 )]
 #[case::oversized_length(
-    DiscoveryResponseBody::OversizedContentLength { limit: MAX_DISCOVERY_BYTES },
+    TestResponseBody::OversizedContentLength { limit: MAX_DISCOVERY_BYTES },
     "large-length",
     OidcVerificationError::InvalidIssuerResponse
 )]
-#[case::truncated(
-    DiscoveryResponseBody::Truncated,
-    "truncated",
-    OidcVerificationError::IssuerUnavailable
-)]
+#[case::truncated(TestResponseBody::Truncated, "truncated", OidcVerificationError::IssuerUnavailable)]
 #[tokio::test]
 async fn test_malformed_issuer_body(
-    #[case] body: DiscoveryResponseBody,
+    #[case] body: TestResponseBody,
     #[case] token_id: &str,
     #[case] expected: OidcVerificationError,
 ) {
-    let server = DiscoveryServer::start(body);
+    let server = TestHttpServer::start(body);
     let issuer = server.origin();
     assert_eq!(
         test_verifier(&issuer)

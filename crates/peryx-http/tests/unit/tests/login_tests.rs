@@ -434,6 +434,97 @@ async fn test_callback_maps_an_unreachable_provider_to_service_unavailable() {
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
 
+#[rstest]
+#[case::invalid_grant(
+    400,
+    "application/json",
+    concat!(
+        r#"{"error":"invalid_grant","error_description":"provider-secret","#,
+        r#""access_token":"token-secret","error_uri":"https://provider.example/secret"}"#
+    ),
+    StatusCode::UNAUTHORIZED,
+    "authentication failed"
+)]
+#[case::server_invalid_grant(
+    500,
+    "application/json",
+    r#"{"error":"invalid_grant"}"#,
+    StatusCode::BAD_GATEWAY,
+    "the login provider returned an invalid response"
+)]
+#[case::invalid_client(
+    401,
+    "application/json",
+    r#"{"error":"invalid_client"}"#,
+    StatusCode::BAD_GATEWAY,
+    "the login provider returned an invalid response"
+)]
+#[case::success_invalid_grant(
+    200,
+    "application/json",
+    r#"{"error":"invalid_grant"}"#,
+    StatusCode::BAD_GATEWAY,
+    "the login provider returned an invalid response"
+)]
+#[case::wrong_content_type(
+    400,
+    "text/plain",
+    r#"{"error":"invalid_grant"}"#,
+    StatusCode::BAD_GATEWAY,
+    "the login provider returned an invalid response"
+)]
+#[case::malformed(
+    400,
+    "application/json",
+    r#"{"error":"invalid_grant"#,
+    StatusCode::BAD_GATEWAY,
+    "the login provider returned an invalid response"
+)]
+#[case::html(
+    500,
+    "text/html",
+    "<h1>provider-secret</h1>",
+    StatusCode::BAD_GATEWAY,
+    "the login provider returned an invalid response"
+)]
+#[case::missing_id_token(
+    200,
+    "application/json",
+    r#"{"token_type":"Bearer"}"#,
+    StatusCode::BAD_GATEWAY,
+    "the login provider returned an invalid response"
+)]
+#[tokio::test]
+async fn test_callback_classifies_token_endpoint_failures_without_exposing_provider_text(
+    #[case] provider_status: u16,
+    #[case] content_type: &str,
+    #[case] provider_body: &str,
+    #[case] expected_status: StatusCode,
+    #[case] expected_body: &str,
+) {
+    let server = MockServer::start().await;
+    let issuer = secure_origin(&server.uri());
+    mount_issuer(&server, &issuer).await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(provider_status).set_body_raw(provider_body, content_type))
+        .mount(&server)
+        .await;
+    let (_dir, state) = state_with_provider(&server.uri());
+
+    let response = send(
+        state,
+        Method::GET,
+        "/_/login/corporate/callback?state=expected&code=auth-code",
+        Some(&pre_auth_cookie("expected")),
+    )
+    .await;
+
+    assert_eq!(response.status(), expected_status);
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    assert_eq!(body_text(response).await, expected_body);
+}
+
 #[tokio::test]
 async fn test_session_without_a_cookie_reports_no_user() {
     let (dir, mut state) = empty_state();

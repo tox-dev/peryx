@@ -41,7 +41,7 @@ pub use oidc::{OidcTokenVerifier, OidcVerificationError, OidcVerifier, VerifiedO
 pub use oidc_http::OidcHttpTransport;
 pub use oidc_login::{
     Authorization, CallbackResponse, OidcLoginError, OidcLoginProvider, OidcLoginService, OidcProviderBuildError,
-    OidcProviderError, OidcProviderSettings, PendingLogin,
+    OidcProviderError, OidcProviderSettings, OidcTokenErrorCode, OidcTokenExchangeError, PendingLogin,
 };
 pub use password::{PasswordCheck, PasswordError, PasswordPolicy, PasswordVerifier};
 pub use revocation::{ArtifactDigest, ArtifactDigestError, DigestDecision, RevocationReason, RevocationReasonError};
