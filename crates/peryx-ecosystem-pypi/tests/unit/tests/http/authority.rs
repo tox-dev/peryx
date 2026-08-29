@@ -154,11 +154,11 @@ impl OwnershipAuthority for RecordingAuthority {
         authority: &str,
         presented: u64,
     ) -> Result<Option<peryx_ha::AuthorityWriteLease>, OwnershipError> {
-        self.admitted.lock().unwrap().push(presented);
+        let admitted = self.admit_epoch(authority, presented).await;
         if !self.lease_available {
             return Err(OwnershipError::Unavailable("quorum unavailable".to_owned()));
         }
-        Ok(self.admit.then(|| peryx_ha::AuthorityWriteLease {
+        Ok(admitted.then(|| peryx_ha::AuthorityWriteLease {
             authority: authority.to_owned(),
             epoch: presented,
             id: "test-write".to_owned(),

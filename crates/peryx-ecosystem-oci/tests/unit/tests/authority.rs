@@ -414,15 +414,15 @@ impl OwnershipAuthority for EpochAuthority {
         if let Some(calls) = &self.lease_clock_calls {
             calls.store(0, Ordering::SeqCst);
         }
-        let current = self.current.load(Ordering::SeqCst);
-        Ok(
-            (current != 0 && presented == current).then(|| peryx_ha::AuthorityWriteLease {
+        Ok(self
+            .admit_epoch(authority, presented)
+            .await
+            .then(|| peryx_ha::AuthorityWriteLease {
                 authority: authority.to_owned(),
                 epoch: presented,
                 id: "test-write".to_owned(),
                 expires_at_unix: self.expires_at_unix,
-            }),
-        )
+            }))
     }
 
     async fn finish_epoch_write(&self, _lease: &peryx_ha::AuthorityWriteLease) -> Result<(), OwnershipError> {
