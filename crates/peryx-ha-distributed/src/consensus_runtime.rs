@@ -483,7 +483,7 @@ impl OwnershipAuthority for OwnershipGroup {
         ClusterStatus {
             leader,
             term: metrics.current_term,
-            voters: membership.nodes().map(|(_, node)| node.datacenter.0.clone()).collect(),
+            voters: voter_names(membership, &membership.voter_ids().collect()),
         }
     }
 }

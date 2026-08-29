@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -561,6 +561,31 @@ async fn test_cluster_status_reports_the_leader_and_voter_membership() {
     assert_eq!(status.leader, Some("east".to_owned()));
     assert!(status.term >= 1, "an elected leader holds a nonzero term");
     assert_eq!(status.voters, vec!["east".to_owned()]);
+}
+
+#[tokio::test]
+async fn test_cluster_status_excludes_a_committed_learner() {
+    let dir = tempfile::tempdir().unwrap();
+    let node = leader_node(&dir).await;
+    let group = OwnershipGroup::new(node.clone(), DatacenterId("east".to_owned()));
+
+    group.submit(add_learner("west")).await.unwrap();
+
+    assert_eq!(
+        (
+            node.metrics()
+                .borrow()
+                .membership_config
+                .nodes()
+                .map(|(_, member)| member.datacenter.0.clone())
+                .collect::<BTreeSet<_>>(),
+            group.cluster_status().voters,
+        ),
+        (
+            BTreeSet::from(["east".to_owned(), "west".to_owned()]),
+            vec!["east".to_owned()],
+        )
+    );
 }
 
 #[tokio::test]
