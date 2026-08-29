@@ -621,8 +621,9 @@ import os
 import sys
 
 open(sys.argv[2], "w").write(str(os.getpid()))
+server = http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), http.server.SimpleHTTPRequestHandler)
 print("listening on fixture", file=sys.stderr, flush=True)
-http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), http.server.SimpleHTTPRequestHandler).serve_forever()
+server.serve_forever()
 PY
     status=$?
     exit "$status"
