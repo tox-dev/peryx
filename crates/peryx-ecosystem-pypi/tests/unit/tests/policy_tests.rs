@@ -357,7 +357,7 @@ fn test_apply_detail_clears_versions_when_no_file_versions_remain() {
 }
 
 #[test]
-fn test_apply_detail_adds_missing_file_versions() {
+fn test_apply_detail_preserves_version_order_and_appends_missing_versions() {
     let policy = policy(|neutral, _pypi| {
         neutral.block_resources = vec!["blocked".to_owned()];
     });
@@ -369,14 +369,18 @@ fn test_apply_detail_adds_missing_file_versions() {
             ProjectDetail {
                 meta: Meta::default(),
                 name: "demo".to_owned(),
-                versions: Vec::new(),
-                files: vec![file("demo-2.0-py3-none-any.whl", Some(1))],
+                versions: vec!["3.0".to_owned(), "1.0".to_owned(), "3.0".to_owned()],
+                files: vec![
+                    file("demo-1.0-py3-none-any.whl", Some(1)),
+                    file("demo-2.0-py3-none-any.whl", Some(1)),
+                    file("demo-3.0-py3-none-any.whl", Some(1)),
+                ],
             },
             None,
         )
         .unwrap();
 
-    assert_eq!(detail.versions, ["2.0"]);
+    assert_eq!(detail.versions, ["3.0", "1.0", "3.0", "2.0"]);
 }
 
 #[test]

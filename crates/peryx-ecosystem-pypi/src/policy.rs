@@ -800,12 +800,15 @@ fn retain_versions_with_files(detail: &mut ProjectDetail) {
         .filter_map(|file| parse_distribution_filename(&file.filename).ok())
         .map(|parsed| parsed.version.to_string())
         .collect::<BTreeSet<_>>();
-    detail.versions.retain(|version| versions.contains(version));
-    for version in versions {
-        if !detail.versions.contains(&version) {
-            detail.versions.push(version);
+    let mut retained = BTreeSet::new();
+    detail.versions.retain(|version| {
+        if !versions.contains(version) {
+            return false;
         }
-    }
+        retained.insert(version.clone());
+        true
+    });
+    detail.versions.extend(versions.difference(&retained).cloned());
 }
 
 #[cfg(test)]
