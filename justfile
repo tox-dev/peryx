@@ -308,16 +308,56 @@ render-diagrams output="site/static/diagrams": _project-temp
     npm --prefix site ci
     rm -rf "{{ output }}"
     mkdir -p "{{ output }}"
+    (
+      cd site
+      node --input-type=module - "../{{ output }}" <<'NODE'
+    import { readdir, readFile } from "node:fs/promises";
+    import { basename, join } from "node:path";
+    import { run } from "@mermaid-js/mermaid-cli";
+    import puppeteer from "puppeteer";
+
+    const output = process.argv[2];
+    const sources = (await readdir("diagrams", { withFileTypes: true }))
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".mmd"))
+      .map((entry) => join("diagrams", entry.name))
+      .sort();
+    const themes = await Promise.all(
+      ["light", "dark"].map(async (name) => ({
+        name,
+        config: JSON.parse(await readFile(`diagrams/${name}.json`, "utf8")),
+      })),
+    );
+    const browser = await puppeteer.launch({ headless: "shell" });
+    try {
+      for (const source of sources) {
+        const name = basename(source, ".mmd");
+        for (const theme of themes) {
+          await run(source, `${output}/${name}-${theme.name}.svg.tmp.svg`, {
+            browser,
+            outputFormat: "svg",
+            parseMMDOptions: {
+              backgroundColor: "transparent",
+              iconPacks: [],
+              iconPacksNamesAndUrls: [],
+              mermaidConfig: { theme: "default", ...theme.config },
+              svgId: `peryx-${name}-${theme.name}`,
+              viewport: { width: 800, height: 600, deviceScaleFactor: 1 },
+            },
+            quiet: true,
+          });
+        }
+      }
+    } finally {
+      await browser.close();
+    }
+    NODE
+    )
     for source in site/diagrams/*.mmd; do
       name=$(basename "$source" .mmd)
       for theme in light dark; do
         rendered="{{ output }}/$name-$theme.svg"
         digest=$(shasum -a 256 "$source" "site/diagrams/$theme.json" site/package-lock.json | \
           shasum -a 256 | cut -d ' ' -f 1)
-        site/node_modules/.bin/mmdc --input "$source" \
-          --output "$rendered.tmp.svg" \
-          --configFile "site/diagrams/$theme.json" --backgroundColor transparent \
-          --svgId "peryx-$name-$theme" --quiet
         { printf '<!-- peryx-mermaid-input-sha256=%s -->\n' "$digest"; awk '1' "$rendered.tmp.svg"; } > "$rendered"
         rm "$rendered.tmp.svg"
       done
