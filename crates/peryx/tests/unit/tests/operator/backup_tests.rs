@@ -191,6 +191,7 @@ fn test_backup_records_distributed_state_and_membership() {
     let backup = root.path().join("backup");
     let mut out = Vec::new();
 
+    config.validate().unwrap();
     backup_create(&config, &backup, &mut out).unwrap();
 
     let manifest: serde_json::Value =
@@ -209,8 +210,8 @@ fn test_backup_records_distributed_state_and_membership() {
             serde_json::json!({
                 "group": "group-a",
                 "members": [
-                    {"node": "node-a", "dc": "east", "address": "10.0.0.1:8443", "role": "writer"},
-                    {"node": "node-b", "dc": "west", "address": "10.0.0.2:8443", "role": "replica"}
+                    {"node": "node-a", "dc": "east", "address": "http://10.0.0.1:8443", "role": "writer"},
+                    {"node": "node-b", "dc": "west", "address": "http://10.0.0.2:8443", "role": "replica"}
                 ]
             }),
         )
