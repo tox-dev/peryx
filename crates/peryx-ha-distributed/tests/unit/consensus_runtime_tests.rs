@@ -645,6 +645,23 @@ async fn test_a_command_on_a_stopped_group_is_unavailable() {
 }
 
 #[tokio::test]
+async fn test_an_authority_command_on_a_stopped_group_is_unavailable() {
+    let dir = tempfile::tempdir().unwrap();
+    let node = leader_node(&dir).await;
+    node.raft().shutdown().await.unwrap();
+    let group = OwnershipGroup::new(node, DatacenterId("east".to_owned()));
+
+    assert!(matches!(
+        group
+            .submit(ControlCommand::AdvanceEpoch {
+                authority: "proj".to_owned(),
+            })
+            .await,
+        Err(ControlError::Unavailable(_))
+    ));
+}
+
+#[tokio::test]
 async fn test_promoting_a_current_voter_is_a_no_op() {
     let dir = tempfile::tempdir().unwrap();
     let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned()));
@@ -818,7 +835,8 @@ fn test_a_forward_to_a_known_leader_names_its_address() {
 #[tokio::test]
 async fn test_an_authority_command_without_a_leader_reports_the_forward_target() {
     let dir = tempfile::tempdir().unwrap();
-    let group = OwnershipGroup::new(started_node(&dir).await, DatacenterId("east".to_owned()));
+    let group =
+        OwnershipGroup::new(started_node(&dir).await, DatacenterId("east".to_owned())).with_peer_forwarding(TOKEN);
 
     assert!(matches!(
         group
