@@ -2,7 +2,9 @@ use super::support::*;
 use crate::PypiIndexer;
 use crate::tests::http::placement_harness;
 use peryx_ha::{ArtifactPlacement, ArtifactSource};
-use peryx_search::{IndexerCtx, SearchDocumentProvider as _, SearchError};
+use peryx_search::{INDEXED_TEXT_BYTES, IndexerCtx, SearchDocumentProvider as _, SearchError};
+
+const OVERSIZED_CATALOG_FILES: usize = INDEXED_TEXT_BYTES / "large-catalog-1.0-00000-py3-none-any.whl".len() + 1;
 
 #[test]
 fn test_search_indexer_reports_a_metadata_scan_failure() {
@@ -58,6 +60,69 @@ async fn test_search_indexes_uploaded_metadata_and_route_scope() {
     assert_eq!(value["results"][0]["display_label"], "PeryxPkg");
     assert_eq!(value["results"][0]["resource_key"], "peryxpkg");
     assert_eq!(value["results"][0]["type"], "uploaded");
+}
+
+#[rstest::rstest]
+#[case::summary_short(1, &["quasarproxy"])]
+#[case::all_fields_large(OVERSIZED_CATALOG_FILES, &["quasarproxy", "large-catalog", "catalogneedle"])]
+#[tokio::test]
+async fn test_search_text_budget_preserves_each_field_class(#[case] file_count: usize, #[case] queries: &[&str]) {
+    let h = placement_harness().await;
+    put_search_budget_package(&h.state.serving, file_count);
+
+    let mut totals = Vec::with_capacity(queries.len());
+    for query in queries.iter().copied() {
+        totals.push((
+            query,
+            search_total(&h.state, &format!("/pypi/+search?q={query}&type=cached&page_size=25")).await,
+        ));
+    }
+    assert_eq!(totals, queries.iter().map(|query| (*query, 1)).collect::<Vec<_>>());
+}
+
+fn put_search_budget_package(state: &ServingState, file_count: usize) {
+    let files = (0..file_count)
+        .map(|index| {
+            let filename = if index == 0 {
+                "catalogneedle-1.0-py3-none-any.whl".to_owned()
+            } else {
+                format!("large-catalog-1.0-{index:05}-py3-none-any.whl")
+            };
+            file_with_hash(&filename, Digest::of(filename.as_bytes()).as_str(), Some(">=3.11"))
+        })
+        .collect::<Vec<_>>();
+    let metadata = state
+        .blobs
+        .blocking()
+        .put_bytes(
+            format!(
+                "Metadata-Version: 2.1\nName: {}\nVersion: 1.0\nSummary: quasarproxy\n",
+                "X".repeat(INDEXED_TEXT_BYTES / 2)
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+    state
+        .meta
+        .put_metadata(
+            files.first().unwrap().sha256().unwrap(),
+            "uploaded",
+            metadata.as_str(),
+            "pypi",
+        )
+        .unwrap();
+    put_cached_package(
+        state,
+        "pypi/large-catalog",
+        "pypi",
+        "large-catalog",
+        &ProjectDetail {
+            meta: Meta::default(),
+            name: "LargeCatalog".to_owned(),
+            versions: vec!["1.0".to_owned()],
+            files,
+        },
+    );
 }
 #[tokio::test]
 async fn test_search_drops_a_project_whose_only_upload_is_trashed() {

@@ -1,6 +1,6 @@
 //! Maps `PyPI` records into neutral search documents.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::convert::Infallible;
 
 use crate::policy::PypiPolicy;
@@ -18,6 +18,10 @@ use peryx_search::{
     ContentSource, INDEXED_TEXT_BYTES, IndexerCtx, ResourceUpdate, SearchDocument, SearchDocumentProvider, SearchError,
     document_key, truncate_to_chars,
 };
+
+const IDENTITY_TEXT_BYTES: usize = INDEXED_TEXT_BYTES / 4;
+const CORE_METADATA_TEXT_BYTES: usize = INDEXED_TEXT_BYTES / 2;
+const CATALOG_TEXT_BYTES: usize = INDEXED_TEXT_BYTES - IDENTITY_TEXT_BYTES - CORE_METADATA_TEXT_BYTES;
 
 /// Produces `PyPI` search documents for the neutral search index.
 #[derive(Debug, Clone, Copy, Default)]
@@ -428,26 +432,44 @@ fn search_text(
     detail: &ProjectDetail,
     metadata: Option<&CoreMetadataDoc>,
 ) -> String {
-    let mut text = String::with_capacity(512);
-    push_text(&mut text, display_label);
-    push_text(&mut text, normalized);
-    push_text(&mut text, &detail.name);
-    for version in &detail.versions {
-        push_text(&mut text, version);
-    }
-    for file in &detail.files {
-        push_text(&mut text, &file.filename);
-        if let Some(requires_python) = &file.requires_python {
-            push_text(&mut text, requires_python);
-        }
-    }
+    let mut identity = String::with_capacity(512);
+    push_unique_text(
+        &mut identity,
+        [normalized, detail.name.as_str(), display_label],
+        IDENTITY_TEXT_BYTES,
+    );
+
+    let mut core_metadata = String::with_capacity(512);
     if let Some(metadata) = metadata {
-        push_metadata(&mut text, metadata);
+        push_metadata(&mut core_metadata, metadata, CORE_METADATA_TEXT_BYTES);
+    }
+
+    let catalog_limit = CATALOG_TEXT_BYTES
+        + IDENTITY_TEXT_BYTES.saturating_sub(identity.len())
+        + CORE_METADATA_TEXT_BYTES.saturating_sub(core_metadata.len());
+    let mut catalog = String::with_capacity(512);
+    push_unique_text(
+        &mut catalog,
+        detail
+            .versions
+            .iter()
+            .map(String::as_str)
+            .chain(detail.files.iter().flat_map(|file| {
+                [Some(file.filename.as_str()), file.requires_python.as_deref()]
+                    .into_iter()
+                    .flatten()
+            })),
+        catalog_limit,
+    );
+
+    let mut text = String::with_capacity(512);
+    for section in [&identity, &core_metadata, &catalog] {
+        push_text(&mut text, section, INDEXED_TEXT_BYTES);
     }
     text
 }
 
-fn push_metadata(text: &mut String, metadata: &CoreMetadataDoc) {
+fn push_metadata(text: &mut String, metadata: &CoreMetadataDoc, limit: usize) {
     for value in [
         metadata.summary.as_deref(),
         metadata.requires_python.as_deref(),
@@ -462,7 +484,7 @@ fn push_metadata(text: &mut String, metadata: &CoreMetadataDoc) {
     .into_iter()
     .flatten()
     {
-        push_text(text, value);
+        push_text(text, value, limit);
     }
     for values in [
         metadata.keywords.as_slice(),
@@ -472,31 +494,44 @@ fn push_metadata(text: &mut String, metadata: &CoreMetadataDoc) {
         metadata.license_files.as_slice(),
     ] {
         for value in values {
-            push_text(text, value);
+            push_text(text, value, limit);
         }
     }
     for value in metadata.import_names.iter().chain(&metadata.import_namespaces) {
-        push_text(text, crate::metadata::import_parts(value).0);
+        push_text(text, crate::metadata::import_parts(value).0, limit);
     }
     for (label, url) in &metadata.project_urls {
-        push_text(text, label);
-        push_text(text, url);
+        push_text(text, label, limit);
+        push_text(text, url, limit);
     }
     if let Some(home_page) = &metadata.home_page {
-        push_text(text, home_page);
+        push_text(text, home_page, limit);
     }
-    push_text(text, &metadata.description);
+    push_text(text, &metadata.description, limit);
 }
 
-fn push_text(out: &mut String, value: &str) {
+fn push_unique_text<'a>(out: &mut String, values: impl IntoIterator<Item = &'a str>, limit: usize) {
+    let mut seen = HashSet::new();
+    for value in values {
+        if out.len() >= limit {
+            break;
+        }
+        let value = value.trim();
+        if seen.insert(value) {
+            push_text(out, value, limit);
+        }
+    }
+}
+
+fn push_text(out: &mut String, value: &str, limit: usize) {
     let value = value.trim();
-    if value.is_empty() || out.len() >= INDEXED_TEXT_BYTES {
+    if value.is_empty() || out.len() >= limit {
         return;
     }
     if !out.is_empty() {
         out.push(' ');
     }
-    let available = INDEXED_TEXT_BYTES.saturating_sub(out.len());
+    let available = limit.saturating_sub(out.len());
     out.push_str(truncate_to_chars(value, available));
 }
 
