@@ -10,6 +10,13 @@ use crate::{ProjectList, render_index_html, to_json};
 
 use super::{Format, MIME_HTML, MIME_JSON, MIME_LEGACY_JSON};
 
+#[derive(Clone, Copy)]
+pub(super) struct PageSerial(pub(super) Option<u64>);
+
+pub(super) fn page_serial(response: &Response) -> Option<PageSerial> {
+    response.extensions().get::<PageSerial>().copied()
+}
+
 /// Negotiated project-list response.
 pub fn index_response(result: Result<(ProjectList, Option<u64>), CacheError>, format: Format, index: &str) -> Response {
     let (list, last_serial) = match result {
@@ -111,6 +118,7 @@ pub(super) fn legacy_json_response(
 }
 
 fn with_last_serial(mut response: Response, last_serial: Option<u64>) -> Response {
+    response.extensions_mut().insert(PageSerial(last_serial));
     if let Some(last_serial) = last_serial {
         response.headers_mut().insert(
             axum::http::HeaderName::from_static("x-pypi-last-serial"),

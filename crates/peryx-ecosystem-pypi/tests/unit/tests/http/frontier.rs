@@ -129,6 +129,65 @@ async fn test_replica_holds_a_virtual_read_of_a_hosted_member_until_readable(
 }
 
 #[tokio::test]
+async fn test_replica_holds_a_streamed_virtual_page_until_readable() {
+    let (h, replica, published) = virtual_replica_below_frontier().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/peryxpkg/"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            br#"{"meta":{"api-version":"1.4"},"name":"peryxpkg","versions":[],"files":[]}"#.to_vec(),
+            "application/vnd.pypi.simple.v1+json",
+        ))
+        .mount(&h.server)
+        .await;
+    assert_virtual_json_held_until_readable(&h, &replica, published, "peryxpkg").await;
+}
+
+#[tokio::test]
+async fn test_replica_holds_a_hot_virtual_page_until_readable() {
+    let (h, replica, published) = virtual_replica_below_frontier().await;
+    replica.serving.cache.store_hot_versioned(
+        replica
+            .serving
+            .representation_key("root/pypi", "peryxpkg", cache::SIMPLE_JSON),
+        Bytes::from_static(br#"{"name":"hot-peryxpkg"}"#),
+        1_000_000,
+        Some(published),
+    );
+    assert_virtual_json_held_until_readable(&h, &replica, published, "hot-peryxpkg").await;
+}
+
+async fn virtual_replica_below_frontier() -> (Harness, Arc<AppState>, u64) {
+    let h = authority_harness().await;
+    assert_eq!(
+        upload_peryxpkg(&h.state, "/hosted/", &fixture_wheel()).await,
+        StatusCode::OK
+    );
+    let published = h.state.serving.meta.current_serial().unwrap();
+    let replica = replica_state(&h);
+    (h, replica, published)
+}
+
+async fn assert_virtual_json_held_until_readable(h: &Harness, replica: &Arc<AppState>, published: u64, expected: &str) {
+    let (held, ..) = get(
+        replica,
+        "/root/pypi/simple/peryxpkg/",
+        Some("application/vnd.pypi.simple.v1+json"),
+    )
+    .await;
+    assert_eq!(held, StatusCode::NOT_FOUND);
+
+    h.state.serving.meta.set_view_frontier(SEARCH_VIEW, published).unwrap();
+    let (served, _, body) = get(
+        replica,
+        "/root/pypi/simple/peryxpkg/",
+        Some("application/vnd.pypi.simple.v1+json"),
+    )
+    .await;
+    assert_eq!(served, StatusCode::OK);
+    assert!(body.contains(expected));
+}
+
+#[tokio::test]
 async fn test_apply_replicated_changes_retires_only_the_changed_projects() {
     let h = authority_harness().await;
     let hot_alpha = h

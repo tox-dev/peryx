@@ -20,8 +20,9 @@ use crate::policy::PypiPolicy;
 
 use super::inspect::inspect_route;
 use super::response::{
-    CacheContext, cache_error_response, detail_response, file_response, html_bytes_response, index_response,
-    json_bytes_response, legacy_bytes_response, legacy_json_response, policy_denial_response, provenance_response,
+    CacheContext, PageSerial, cache_error_response, detail_response, file_response, html_bytes_response,
+    index_response, json_bytes_response, legacy_bytes_response, legacy_json_response, page_serial,
+    policy_denial_response, provenance_response,
 };
 use super::{Format, HttpResult, METADATA_FAMILY, PROVENANCE_FAMILY, negotiate, path_error_response, safe_filename};
 use crate::attestation;
@@ -70,6 +71,11 @@ pub async fn pypi_dispatch_get(
 ) -> Response {
     let authenticated = headers.contains_key(header::AUTHORIZATION);
     let mut response = pypi_get(&state, position, rest, &headers, &uri, head).boxed().await;
+    if let Some(PageSerial(last_serial)) = page_serial(&response)
+        && holds_below_readable_frontier(&state, state.index_at(position), last_serial)
+    {
+        response = not_found();
+    }
     apply_revocation_cache_policy(&mut response, authenticated);
     response
 }
@@ -154,9 +160,6 @@ async fn pypi_get(
                 .boxed()
                 .await;
             if let Ok(Some(found)) = &detail {
-                if holds_below_readable_frontier(state, index, found.last_serial) {
-                    return not_found();
-                }
                 let body = bytes::Bytes::from(crate::render_detail_html(&found.detail));
                 remember_rendered(
                     state,
@@ -174,11 +177,6 @@ async fn pypi_get(
         let detail = cache::resolve_detail_page(state, index, &normalized, &index.route)
             .boxed()
             .await;
-        if let Ok(Some(found)) = &detail
-            && holds_below_readable_frontier(state, index, found.last_serial)
-        {
-            return not_found();
-        }
         return detail_response(detail, &index.route, &normalized);
     }
     if let Some(file) = rest.strip_prefix("files/") {
@@ -255,9 +253,6 @@ async fn legacy_json_route(state: &Arc<ServingState>, index: &Index, rest: &str)
             found.last_serial,
         )
     {
-        if holds_below_readable_frontier(state, index, found.last_serial) {
-            return Some(not_found());
-        }
         let body = bytes::Bytes::from(body);
         remember_rendered(
             state,
@@ -281,11 +276,6 @@ async fn legacy_json_route(state: &Arc<ServingState>, index: &Index, rest: &str)
 fn simple_index_response(state: &ServingState, index: &Index, headers: &HeaderMap) -> Response {
     let list = cache::resolve_list(state, index)
         .and_then(|list| cache::list_serial(state, index).map(|last_serial| (list, last_serial)));
-    if let Ok((_, last_serial)) = &list
-        && holds_below_readable_frontier(state, index, *last_serial)
-    {
-        return not_found();
-    }
     index_response(list, negotiate(headers), &index.route)
 }
 
