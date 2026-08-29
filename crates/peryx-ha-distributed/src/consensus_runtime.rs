@@ -590,21 +590,22 @@ impl OwnershipGroup {
         }
     }
 
-    /// Returns rejected state-machine transitions as invalid commands, not committed receipts.
+    /// Returns an unchanged transfer as a committed no-op so a retry receives a receipt.
     async fn submit_ownership(&self, command: OwnershipCommand) -> Result<CommandReceipt, ControlError> {
         match self.submit_command(command).await {
-            Ok(response) => match response.data {
-                OwnershipResponse::Applied(OwnershipEffect::Rejected(rejection)) => {
-                    Err(ControlError::Invalid(rejection_reason(rejection).to_owned()))
-                }
+            Ok(response) => {
+                let outcome = match response.data {
+                    OwnershipResponse::Applied(OwnershipEffect::Rejected(Rejection::SameHome)) => {
+                        CommandOutcome::NoChange
+                    }
+                    OwnershipResponse::Applied(OwnershipEffect::Rejected(rejection)) => {
+                        return Err(ControlError::Invalid(rejection_reason(rejection).to_owned()));
+                    }
+                    _ => CommandOutcome::Committed,
+                };
                 // Transfer and epoch commands have no voter transition to audit.
-                _ => Ok(committed_receipt(
-                    &response.log_id,
-                    CommandOutcome::Committed,
-                    Vec::new(),
-                    Vec::new(),
-                )),
-            },
+                Ok(committed_receipt(&response.log_id, outcome, Vec::new(), Vec::new()))
+            }
             Err(OwnershipError::NotLeader { leader }) => Err(ControlError::NotLeader { leader }),
             Err(error) => Err(ControlError::Unavailable(error.to_string())),
         }

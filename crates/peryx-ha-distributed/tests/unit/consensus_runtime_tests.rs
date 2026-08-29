@@ -810,19 +810,63 @@ async fn test_transferring_an_assigned_authority_commits() {
 }
 
 #[tokio::test]
-async fn test_transferring_to_the_same_home_is_invalid() {
+async fn test_repeating_a_transfer_returns_the_committed_no_op() {
     let dir = tempfile::tempdir().unwrap();
     let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned()));
     assert_eq!(group.claim_home("proj").await.unwrap(), east_claim(1));
 
-    let result = group
+    let committed = group
         .submit(ControlCommand::TransferAuthority {
             authority: "proj".to_owned(),
-            new_home: "east".to_owned(),
+            new_home: "west".to_owned(),
+        })
+        .await
+        .unwrap();
+    let repeated = group
+        .submit(ControlCommand::TransferAuthority {
+            authority: "proj".to_owned(),
+            new_home: "west".to_owned(),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        repeated,
+        peryx_ha::CommandReceipt {
+            term: committed.term,
+            index: committed.index + 1,
+            outcome: CommandOutcome::NoChange,
+            old_voters: Vec::new(),
+            new_voters: Vec::new(),
+        }
+    );
+    assert_eq!(
+        group.claim_home("proj").await.unwrap(),
+        HomeClaim {
+            home: "west".to_owned(),
+            epoch: 2,
+        }
+    );
+}
+
+#[tokio::test]
+async fn test_transferring_an_unassigned_authority_is_invalid() {
+    let dir = tempfile::tempdir().unwrap();
+    let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned()));
+
+    let result = group
+        .submit(ControlCommand::TransferAuthority {
+            authority: "ghost".to_owned(),
+            new_home: "west".to_owned(),
         })
         .await;
 
-    assert!(matches!(result, Err(ControlError::Invalid(_))));
+    assert_eq!(
+        result,
+        Err(ControlError::Invalid(
+            "the authority is not assigned a home to move or fence".to_owned()
+        ))
+    );
 }
 
 #[tokio::test]
