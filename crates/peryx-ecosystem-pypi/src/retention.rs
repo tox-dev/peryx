@@ -32,10 +32,8 @@ pub const RETENTION_PROJECT_BUDGET_BYTES: usize = 256 * 1024 * 1024;
 
 /// Evaluate one index's hosted uploads against `policy`.
 ///
-/// Each artifact's decision passes to `emit` in deterministic order (newest version first). Returns the
-/// plan's identity: the policy version and the metadata frontier the scan read. `emit` returns a
-/// message to stop early (a disconnected export client or a filled page), and the scan aborts without
-/// reading further; the whole path only reads metadata, so an interrupted plan writes nothing.
+/// `start` receives the plan identity after the read snapshot opens and before `emit` receives the first
+/// artifact decision. Either callback may stop the read-only scan by returning an error.
 ///
 /// `budget` caps the candidate footprint one project may hold at once (see
 /// [`RETENTION_PROJECT_BUDGET_BYTES`]); a project whose surviving candidates exceed it aborts the scan
@@ -43,20 +41,22 @@ pub const RETENTION_PROJECT_BUDGET_BYTES: usize = 256 * 1024 * 1024;
 ///
 /// # Errors
 /// Returns a message when the policy contains an unsupported selector, the store cannot be read, an
-/// upload record does not decode, `emit` stops the scan, or a project's candidates exceed `budget`.
-pub fn evaluate_retention<F>(
+/// upload record does not decode, a callback stops the scan, or a project's candidates exceed `budget`.
+pub fn evaluate_retention<S, F>(
     meta: &MetaStore,
     index: &str,
     policy: &RetentionPolicy,
     now: Option<i64>,
     budget: usize,
+    mut start: S,
     mut emit: F,
-) -> Result<RetentionSummary, String>
+) -> Result<(), String>
 where
+    S: FnMut(RetentionSummary) -> Result<(), String>,
     F: FnMut(RetentionDecision) -> Result<(), String>,
 {
     validate_retention(policy)?;
-    evaluate_retention_with(meta, index, policy, now, budget, &mut emit)
+    evaluate_retention_with(meta, index, policy, now, budget, &mut start, &mut emit)
 }
 
 /// # Errors
@@ -84,46 +84,54 @@ fn evaluate_retention_with(
     policy: &RetentionPolicy,
     now: Option<i64>,
     budget: usize,
+    start: &mut dyn FnMut(RetentionSummary) -> Result<(), String>,
     emit: &mut dyn FnMut(RetentionDecision) -> Result<(), String>,
-) -> Result<RetentionSummary, String> {
+) -> Result<(), String> {
     let mut current: Option<String> = None;
     let mut group: Vec<RetentionCandidate> = Vec::new();
     let mut used: usize = 0;
-    let generation = scan_upload_policy_snapshot(meta, index, |key, bytes| {
-        let Some((project, _filename)) = key.split_once('/') else {
-            return Ok(());
-        };
-        if current.as_deref() != Some(project) {
-            if current.is_some() {
-                plan_group(&mut group, policy, now, emit)?;
+    scan_upload_policy_snapshot(
+        meta,
+        index,
+        |generation| {
+            start(RetentionSummary {
+                policy_version: policy.version(),
+                frontier: RetentionFrontier {
+                    repository: generation.repository,
+                    catalog: generation.catalog,
+                    policy: generation.policy,
+                },
+            })
+        },
+        |key, bytes| {
+            let Some((project, _filename)) = key.split_once('/') else {
+                return Ok(());
+            };
+            if current.as_deref() != Some(project) {
+                if current.is_some() {
+                    plan_group(&mut group, policy, now, emit)?;
+                }
+                current = Some(project.to_owned());
+                used = 0;
             }
-            current = Some(project.to_owned());
-            used = 0;
-        }
-        let uploaded: Uploaded =
-            serde_json::from_slice(bytes).map_err(|err| format!("corrupt upload record {key}: {err}"))?;
-        let candidate = candidate(project, uploaded);
-        used = used.saturating_add(footprint(&candidate));
-        if used > budget {
-            return Err(format!(
-                "retention plan for project {project} exceeds the {budget}-byte per-project memory budget"
-            ));
-        }
-        group.push(candidate);
-        Ok::<(), String>(())
-    })
+            let uploaded: Uploaded =
+                serde_json::from_slice(bytes).map_err(|err| format!("corrupt upload record {key}: {err}"))?;
+            let candidate = candidate(project, uploaded);
+            used = used.saturating_add(footprint(&candidate));
+            if used > budget {
+                return Err(format!(
+                    "retention plan for project {project} exceeds the {budget}-byte per-project memory budget"
+                ));
+            }
+            group.push(candidate);
+            Ok::<(), String>(())
+        },
+    )
     .map_err(error_message)?;
     if current.is_some() {
         plan_group(&mut group, policy, now, emit).map_err(error_message)?;
     }
-    Ok(RetentionSummary {
-        policy_version: policy.version(),
-        frontier: RetentionFrontier {
-            repository: generation.repository,
-            catalog: generation.catalog,
-            policy: generation.policy,
-        },
-    })
+    Ok(())
 }
 
 fn plan_group(

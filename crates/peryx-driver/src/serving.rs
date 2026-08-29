@@ -243,15 +243,17 @@ pub trait RetentionDriver: Send + Sync {
 
     /// # Errors
     /// Returns an error when the policy is unsupported or the plan cannot be read or emitted.
-    /// Implementations validate the policy before invoking `emit`.
+    /// Implementations validate the policy, open the candidate snapshot, invoke `start` once, then
+    /// invoke `emit` for its decisions.
     fn plan_retention(
         &self,
         meta: &peryx_storage::meta::MetaStore,
         index: &str,
         policy: &peryx_policy::RetentionPolicy,
         now: Option<i64>,
+        start: &mut dyn FnMut(peryx_policy::RetentionSummary) -> Result<(), String>,
         emit: &mut dyn FnMut(peryx_policy::RetentionDecision) -> Result<(), String>,
-    ) -> Result<peryx_policy::RetentionSummary, String>;
+    ) -> Result<(), String>;
 }
 
 pub trait CacheDriver: Send + Sync {

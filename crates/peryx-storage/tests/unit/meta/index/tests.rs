@@ -77,17 +77,25 @@ fn test_visit_driver_policy_snapshot_is_consistent() {
     meta.put_driver_value("other/1", b"other").unwrap();
     meta.advance_policy_generation("private").unwrap();
     let mut visited = Vec::new();
+    let mut snapshot = None;
 
-    let snapshot = meta
-        .visit_driver_policy_snapshot("catalog/", "private", |key, value| {
+    meta.visit_driver_policy_snapshot(
+        "catalog/",
+        "private",
+        |generation| {
+            snapshot = Some(generation);
+            Ok::<(), std::io::Error>(())
+        },
+        |key, value| {
             visited.push((key.to_owned(), value.to_vec()));
             if visited.len() == 1 {
                 meta.put_driver_value("catalog/3", b"three").unwrap();
                 meta.advance_policy_generation("private").unwrap();
             }
             Ok::<(), std::io::Error>(())
-        })
-        .unwrap();
+        },
+    )
+    .unwrap();
 
     assert_eq!(
         visited,
@@ -96,10 +104,15 @@ fn test_visit_driver_policy_snapshot_is_consistent() {
             ("catalog/2".to_owned(), b"two".to_vec())
         ]
     );
-    assert_eq!(snapshot.policy, 1);
+    assert_eq!(snapshot.unwrap().policy, 1);
     assert_eq!(meta.policy_input_generation("private").unwrap().policy, 2);
     let error = meta
-        .visit_driver_policy_snapshot("catalog/", "private", |_key, _value| Err(std::io::Error::other("stop")))
+        .visit_driver_policy_snapshot(
+            "catalog/",
+            "private",
+            |_| Ok(()),
+            |_key, _value| Err(std::io::Error::other("stop")),
+        )
         .unwrap_err();
     assert!(matches!(error, MetaScanError::Visit(_)));
 }

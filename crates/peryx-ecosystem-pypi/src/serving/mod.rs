@@ -419,14 +419,16 @@ impl RetentionDriver for PypiServing {
         index: &str,
         policy: &peryx_policy::RetentionPolicy,
         now: Option<i64>,
+        start: &mut dyn FnMut(peryx_policy::RetentionSummary) -> Result<(), String>,
         emit: &mut dyn FnMut(peryx_policy::RetentionDecision) -> Result<(), String>,
-    ) -> Result<peryx_policy::RetentionSummary, String> {
+    ) -> Result<(), String> {
         crate::retention::evaluate_retention(
             meta,
             index,
             policy,
             now,
             crate::retention::RETENTION_PROJECT_BUDGET_BYTES,
+            start,
             emit,
         )
     }

@@ -3,13 +3,14 @@
 //! A dry-run prints a page of tab-separated candidates; an export streams the whole plan as
 //! [JSON Lines](https://jsonlines.org/), the identity first. Neither writes metadata.
 
+use std::cell::RefCell;
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Context as _;
 use peryx_driver::DriverSet;
-use peryx_driver::retention::{RetentionQuery, decode_cursor, plan, summary};
+use peryx_driver::retention::{RetentionQuery, decode_cursor, plan};
 use peryx_driver::serving::RetentionDriver;
 use peryx_plugin_registry::PluginRegistry;
 use peryx_policy::{RetentionConfig, RetentionDecision, RetentionPolicy, RetentionSummary};
@@ -67,9 +68,13 @@ fn dry_run(
         limit: args.limit,
         expect,
     };
-    let page = plan(driver.as_ref(), &stores.meta, &query, &mut |decision| {
-        write_row(out, decision).map_err(|err| err.to_string())
-    })
+    let page = plan(
+        driver.as_ref(),
+        &stores.meta,
+        &query,
+        &mut |_| Ok(()),
+        &mut |decision| write_row(out, decision).map_err(|err| err.to_string()),
+    )
     .map_err(|err| anyhow::anyhow!("{err}"))?;
     write_summary(out, "summary", page.summary)?;
     if let Some(cursor) = page.next_cursor {
@@ -91,16 +96,6 @@ fn export(
     driver.validate_retention(&policy).map_err(anyhow::Error::msg)?;
     let ecosystem = index.ecosystem.as_str();
     let (after, expect, evaluated_at) = resume(args.cursor.as_deref(), &args.index, ecosystem)?;
-    let summary = summary(&stores.meta, &args.index, &policy).map_err(anyhow::Error::msg)?;
-    // Refuse a resume the repository has outgrown before writing a header the reader would trust.
-    if expect.is_some_and(|expected| expected != summary) {
-        anyhow::bail!("the plan cursor is stale: the repository changed since it was issued");
-    }
-    writeln!(
-        out,
-        "{}",
-        serde_json::to_string(&serde_json::json!({ "summary": summary }))?
-    )?;
     let query = RetentionQuery {
         index: &args.index,
         ecosystem,
@@ -108,11 +103,20 @@ fn export(
         now: evaluated_at,
         after,
         limit: None,
-        expect: None,
+        expect,
     };
-    plan(driver.as_ref(), &stores.meta, &query, &mut |decision| {
-        write_json_line(out, decision).map_err(|err| err.to_string())
-    })
+    let out = RefCell::new(out);
+    plan(
+        driver.as_ref(),
+        &stores.meta,
+        &query,
+        &mut |summary| {
+            let header =
+                serde_json::to_string(&serde_json::json!({ "summary": summary })).map_err(|error| error.to_string())?;
+            writeln!(&mut **out.borrow_mut(), "{header}").map_err(|error| error.to_string())
+        },
+        &mut |decision| write_json_line(&mut **out.borrow_mut(), decision).map_err(|error| error.to_string()),
+    )
     .map_err(|err| anyhow::anyhow!("{err}"))?;
     Ok(())
 }

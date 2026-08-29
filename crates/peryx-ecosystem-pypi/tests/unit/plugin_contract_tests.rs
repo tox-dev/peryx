@@ -386,15 +386,27 @@ fn plugin_retention_capability_plans_hosted_uploads() {
         .activate([ECOSYSTEM])
         .unwrap();
     let mut decisions = Vec::new();
-    let summary = registry
+    let mut summary = None;
+    registry
         .drivers()
         .get_retention(&ECOSYSTEM)
         .unwrap()
-        .plan_retention(&state.serving.meta, "hosted", &policy, None, &mut |decision| {
-            decisions.push(decision);
-            Ok(())
-        })
+        .plan_retention(
+            &state.serving.meta,
+            "hosted",
+            &policy,
+            None,
+            &mut |current| {
+                summary = Some(current);
+                Ok(())
+            },
+            &mut |decision| {
+                decisions.push(decision);
+                Ok(())
+            },
+        )
         .unwrap();
+    let summary = summary.unwrap();
 
     assert_eq!(
         (summary.policy_version, decisions),

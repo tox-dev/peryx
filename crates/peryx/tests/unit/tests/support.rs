@@ -595,9 +595,19 @@ impl RetentionDriver for Driver {
         index: &str,
         policy: &RetentionPolicy,
         now: Option<i64>,
+        start: &mut dyn FnMut(RetentionSummary) -> Result<(), String>,
         emit: &mut dyn FnMut(RetentionDecision) -> Result<(), String>,
-    ) -> Result<RetentionSummary, String> {
+    ) -> Result<(), String> {
         self.validate_retention(policy)?;
+        let generation = meta.policy_input_generation(index).map_err(|error| error.to_string())?;
+        start(RetentionSummary {
+            policy_version: policy.version(),
+            frontier: peryx_policy::RetentionFrontier {
+                repository: generation.repository,
+                catalog: generation.catalog,
+                policy: generation.policy,
+            },
+        })?;
         for decision in policy.plan_resource(
             now,
             [("2.0", 0), ("1.0", 1)]
@@ -619,7 +629,7 @@ impl RetentionDriver for Driver {
         ) {
             emit(decision)?;
         }
-        peryx_driver::retention::summary(meta, index, policy)
+        Ok(())
     }
 }
 

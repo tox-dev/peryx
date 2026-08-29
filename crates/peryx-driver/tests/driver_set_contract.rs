@@ -81,9 +81,14 @@ impl RetentionDriver for Driver {
         _index: &str,
         policy: &peryx_policy::RetentionPolicy,
         _now: Option<i64>,
+        start: &mut dyn FnMut(peryx_policy::RetentionSummary) -> Result<(), String>,
         emit: &mut dyn FnMut(peryx_policy::RetentionDecision) -> Result<(), String>,
-    ) -> Result<peryx_policy::RetentionSummary, String> {
+    ) -> Result<(), String> {
         self.validate_retention(policy)?;
+        start(peryx_policy::RetentionSummary {
+            policy_version: policy.version(),
+            frontier: peryx_policy::RetentionFrontier::default(),
+        })?;
         emit(peryx_policy::RetentionDecision {
             resource: "resource".to_owned(),
             group: None,
@@ -237,6 +242,7 @@ fn driver_set_registers_and_dispatches_independent_capabilities() {
         "catalog",
         &peryx_policy::RetentionPolicy::compile(&peryx_policy::RetentionConfig::default(), str::to_owned),
         None,
+        &mut |_| Ok(()),
         &mut |decision| {
             decisions.push(decision);
             Ok(())

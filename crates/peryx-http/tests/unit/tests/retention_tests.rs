@@ -42,23 +42,30 @@ impl RetentionDriver for StubDriver {
 
     fn plan_retention(
         &self,
-        _meta: &MetaStore,
-        _index: &str,
+        meta: &MetaStore,
+        index: &str,
         policy: &peryx_policy::RetentionPolicy,
         _now: Option<i64>,
+        start: &mut dyn FnMut(RetentionSummary) -> Result<(), String>,
         emit: &mut dyn FnMut(RetentionDecision) -> Result<(), String>,
-    ) -> Result<RetentionSummary, String> {
+    ) -> Result<(), String> {
         self.validate_retention(policy)?;
+        let generation = meta.policy_input_generation(index).map_err(|error| error.to_string())?;
+        start(RetentionSummary {
+            policy_version: policy.version(),
+            frontier: RetentionFrontier {
+                repository: generation.repository,
+                catalog: generation.catalog,
+                policy: generation.policy,
+            },
+        })?;
         for decision in &self.decisions {
             emit(decision.clone())?;
         }
         if let Some(reason) = &self.fail {
             return Err(reason.clone());
         }
-        Ok(RetentionSummary {
-            policy_version: policy.version(),
-            frontier: RetentionFrontier::default(),
-        })
+        Ok(())
     }
 }
 
@@ -78,8 +85,9 @@ impl RetentionDriver for TimestampDriver {
         index: &str,
         policy: &peryx_policy::RetentionPolicy,
         now: Option<i64>,
+        start: &mut dyn FnMut(RetentionSummary) -> Result<(), String>,
         emit: &mut dyn FnMut(RetentionDecision) -> Result<(), String>,
-    ) -> Result<RetentionSummary, String> {
+    ) -> Result<(), String> {
         self.validate_retention(policy)?;
         self.calls.lock().unwrap().push((index.to_owned(), now));
         StubDriver {
@@ -87,7 +95,7 @@ impl RetentionDriver for TimestampDriver {
             unsupported: false,
             fail: None,
         }
-        .plan_retention(meta, index, policy, now, emit)
+        .plan_retention(meta, index, policy, now, start, emit)
     }
 }
 

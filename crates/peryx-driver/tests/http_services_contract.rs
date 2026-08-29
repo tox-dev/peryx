@@ -355,14 +355,16 @@ impl RetentionDriver for OneRetentionDriver {
         _index: &str,
         policy: &RetentionPolicy,
         _now: Option<i64>,
+        start: &mut dyn FnMut(RetentionSummary) -> Result<(), String>,
         emit: &mut dyn FnMut(RetentionDecision) -> Result<(), String>,
-    ) -> Result<RetentionSummary, String> {
+    ) -> Result<(), String> {
         self.validate_retention(policy)?;
-        emit(retention_decision())?;
-        Ok(RetentionSummary {
+        start(RetentionSummary {
             policy_version: policy.version(),
             frontier: peryx_policy::RetentionFrontier::default(),
-        })
+        })?;
+        emit(retention_decision())?;
+        Ok(())
     }
 }
 
@@ -387,7 +389,10 @@ async fn retention_service_owns_store_access_gating_and_export() {
     let fixture = Fixture::new(Vec::new());
     let services = HttpDomainServices::for_state(&fixture.state);
     let policy = RetentionPolicy::compile(&RetentionConfig::default(), str::to_owned);
-    let summary = services.retention().summary("source", &policy).unwrap();
+    let summary = RetentionSummary {
+        policy_version: policy.version(),
+        frontier: peryx_policy::RetentionFrontier::default(),
+    };
     let permit = services.retention().try_enter("source").unwrap();
     let page = services
         .retention()
@@ -403,20 +408,25 @@ async fn retention_service_owns_store_access_gating_and_export() {
                 expect: Some(summary),
             },
             &mut |_| Ok(()),
+            &mut |_| Ok(()),
         )
         .unwrap();
-    let body = services.retention().export(
-        Arc::new(OneRetentionDriver),
-        RetentionExport {
-            index: "source".to_owned(),
-            ecosystem: "example".to_owned(),
-            policy,
-            now: Some(42),
-            after: 0,
-            summary,
-        },
-        permit,
-    );
+    let (_, body) = services
+        .retention()
+        .export(
+            Arc::new(OneRetentionDriver),
+            RetentionExport {
+                index: "source".to_owned(),
+                ecosystem: "example".to_owned(),
+                policy,
+                now: Some(42),
+                after: 0,
+                expect: Some(summary),
+            },
+            permit,
+        )
+        .await
+        .unwrap();
     let exported = axum::body::to_bytes(body, 4096).await.unwrap();
 
     assert_eq!((page.summary, page.emitted, page.next_cursor), (summary, 1, None));

@@ -71,7 +71,7 @@ pub async fn retention_plan(
     };
     match services
         .retention()
-        .plan(request.driver.as_ref(), &query, &mut |decision| {
+        .plan(request.driver.as_ref(), &query, &mut |_| Ok(()), &mut |decision| {
             candidates.push(decision.clone());
             Ok(())
         }) {
@@ -100,15 +100,6 @@ pub async fn retention_export(
         Ok(prepared) => prepared,
         Err(response) => return response,
     };
-    let summary = match services.retention().summary(&request.repository, &request.policy) {
-        Ok(summary) => summary,
-        Err(reason) => return plan_error(&RetentionPlanError::Store(reason)),
-    };
-    // Reject a resume whose repository has shifted before any row streams, so a saved export never
-    // splices two snapshots.
-    if request.expect.is_some_and(|expected| expected != summary) {
-        return stale();
-    }
     let Some(permit) = services.retention().try_enter(&request.repository) else {
         return busy();
     };
@@ -118,9 +109,12 @@ pub async fn retention_export(
         policy: request.policy,
         now: request.evaluated_at,
         after: request.after,
-        summary,
+        expect: request.expect,
     };
-    let body = services.retention().export(request.driver, export, permit);
+    let (summary, body) = match services.retention().export(request.driver, export, permit).await {
+        Ok(started) => started,
+        Err(error) => return plan_error(&error),
+    };
     let mut response = (StatusCode::OK, body).into_response();
     let headers = response.headers_mut();
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/x-ndjson"));

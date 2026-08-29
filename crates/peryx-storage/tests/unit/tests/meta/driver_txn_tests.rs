@@ -274,12 +274,21 @@ fn test_driver_policy_snapshot_reads_rows_and_current_serial() {
     store.put_driver_value("scope/b", b"two").unwrap();
     store.next_serial().unwrap();
     let mut seen = Vec::new();
+    let mut generation = None;
 
-    let generation = store
-        .visit_driver_policy_snapshot("scope/", "repository", |key, value| {
-            seen.push((key.to_owned(), value.to_vec()));
-            Ok::<_, std::convert::Infallible>(())
-        })
+    store
+        .visit_driver_policy_snapshot(
+            "scope/",
+            "repository",
+            |current| {
+                generation = Some(current);
+                Ok::<_, std::convert::Infallible>(())
+            },
+            |key, value| {
+                seen.push((key.to_owned(), value.to_vec()));
+                Ok::<_, std::convert::Infallible>(())
+            },
+        )
         .unwrap();
 
     assert_eq!(
@@ -289,7 +298,7 @@ fn test_driver_policy_snapshot_reads_rows_and_current_serial() {
             ("scope/b".to_owned(), b"two".to_vec())
         ]
     );
-    assert_eq!(generation.repository, 1);
+    assert_eq!(generation.unwrap().repository, 1);
 }
 
 #[test]

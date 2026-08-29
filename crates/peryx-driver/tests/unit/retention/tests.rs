@@ -6,13 +6,51 @@ use peryx_policy::{
 };
 use peryx_storage::meta::MetaStore;
 
-use super::{RetentionPlanError, RetentionQuery, decode_cursor, encode_cursor, plan, summary};
+use super::{RetentionPlanError, RetentionQuery, decode_cursor, encode_cursor, plan};
 use crate::serving::RetentionDriver;
 
 #[derive(Default)]
 struct StubDriver {
     decisions: Vec<RetentionDecision>,
     fail: Option<String>,
+}
+
+enum SnapshotViolation {
+    Missing,
+    DecisionFirst,
+    Repeated,
+}
+
+struct InvalidDriver(SnapshotViolation);
+
+impl RetentionDriver for InvalidDriver {
+    fn validate_retention(&self, _policy: &RetentionPolicy) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn plan_retention(
+        &self,
+        _meta: &MetaStore,
+        _index: &str,
+        policy: &RetentionPolicy,
+        _now: Option<i64>,
+        start: &mut dyn FnMut(peryx_policy::RetentionSummary) -> Result<(), String>,
+        emit: &mut dyn FnMut(RetentionDecision) -> Result<(), String>,
+    ) -> Result<(), String> {
+        self.validate_retention(policy)?;
+        let summary = peryx_policy::RetentionSummary {
+            policy_version: policy.version(),
+            frontier: peryx_policy::RetentionFrontier::default(),
+        };
+        match self.0 {
+            SnapshotViolation::Missing => Ok(()),
+            SnapshotViolation::DecisionFirst => emit(decision("a")),
+            SnapshotViolation::Repeated => {
+                start(summary)?;
+                start(summary)
+            }
+        }
+    }
 }
 
 impl RetentionDriver for StubDriver {
@@ -26,19 +64,21 @@ impl RetentionDriver for StubDriver {
         _index: &str,
         policy: &RetentionPolicy,
         _now: Option<i64>,
+        start: &mut dyn FnMut(peryx_policy::RetentionSummary) -> Result<(), String>,
         emit: &mut dyn FnMut(RetentionDecision) -> Result<(), String>,
-    ) -> Result<peryx_policy::RetentionSummary, String> {
+    ) -> Result<(), String> {
         self.validate_retention(policy)?;
+        start(peryx_policy::RetentionSummary {
+            policy_version: policy.version(),
+            frontier: peryx_policy::RetentionFrontier::default(),
+        })?;
         for decision in &self.decisions {
             emit(decision.clone())?;
         }
         if let Some(reason) = &self.fail {
             return Err(reason.clone());
         }
-        Ok(peryx_policy::RetentionSummary {
-            policy_version: policy.version(),
-            frontier: peryx_policy::RetentionFrontier::default(),
-        })
+        Ok(())
     }
 }
 
@@ -68,16 +108,6 @@ fn empty_policy() -> RetentionPolicy {
     RetentionPolicy::compile(&RetentionConfig::default(), str::to_owned)
 }
 
-#[test]
-fn test_summary_surfaces_a_metadata_read_failure() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("bare.redb");
-    drop(redb::Database::create(&path).unwrap());
-    let store = MetaStore::open_existing(path).unwrap();
-
-    assert!(summary(&store, "alpha", &empty_policy()).is_err());
-}
-
 fn collect(
     driver: &dyn RetentionDriver,
     meta: &MetaStore,
@@ -96,7 +126,7 @@ fn collect(
         limit,
         expect,
     };
-    let page = plan(driver, meta, &query, &mut |decision| {
+    let page = plan(driver, meta, &query, &mut |_| Ok(()), &mut |decision| {
         seen.push(decision.artifact.clone());
         Ok(())
     })?;
@@ -116,6 +146,16 @@ fn test_plan_streams_every_decision_for_an_unbounded_export() {
     assert_eq!(seen, vec!["a", "b", "c"]);
     assert_eq!(page.emitted, 3);
     assert!(page.next_cursor.is_none());
+}
+
+#[test]
+fn test_plan_uses_the_snapshot_that_produced_its_decisions() {
+    let (_dir, meta) = store();
+    seed_generation(&meta);
+
+    let (_, page) = collect(&StubDriver::default(), &meta, &empty_policy(), 0, None, None).unwrap();
+
+    assert_eq!(page.summary.frontier, peryx_policy::RetentionFrontier::default());
 }
 
 #[test]
@@ -202,7 +242,9 @@ fn test_plan_reports_interruption_when_the_sink_stops() {
         expect: None,
     };
 
-    let result = plan(&driver, &meta, &query, &mut |_| Err("client hung up".to_owned()));
+    let result = plan(&driver, &meta, &query, &mut |_| Ok(()), &mut |_| {
+        Err("client hung up".to_owned())
+    });
 
     assert!(
         matches!(&result, Err(RetentionPlanError::Interrupted(reason)) if reason == "client hung up"),
@@ -222,6 +264,21 @@ fn test_plan_surfaces_a_store_failure_the_driver_raised() {
 
     assert!(
         matches!(&result, Err(RetentionPlanError::Store(reason)) if reason == "meta read failed"),
+        "{result:?}"
+    );
+}
+
+#[rstest::rstest]
+#[case::missing(SnapshotViolation::Missing, "without opening a snapshot")]
+#[case::decision_first(SnapshotViolation::DecisionFirst, "before opening a snapshot")]
+#[case::repeated(SnapshotViolation::Repeated, "more than one snapshot")]
+fn test_plan_rejects_an_invalid_snapshot_sequence(#[case] violation: SnapshotViolation, #[case] message: &str) {
+    let (_dir, meta) = store();
+
+    let result = collect(&InvalidDriver(violation), &meta, &empty_policy(), 0, None, None);
+
+    assert!(
+        matches!(&result, Err(RetentionPlanError::Store(reason)) if reason.contains(message)),
         "{result:?}"
     );
 }
@@ -286,18 +343,6 @@ fn seed_generation(meta: &MetaStore) {
     meta.advance_policy_generation("alpha").unwrap();
 }
 
-#[test]
-fn test_summary_reads_the_policy_version_and_metadata_frontier() {
-    let (_dir, meta) = store();
-    seed_generation(&meta);
-    let policy = empty_policy();
-
-    let summary = super::summary(&meta, "alpha", &policy).unwrap();
-
-    assert_eq!(summary.policy_version, policy.version());
-    assert_eq!(summary.frontier.policy, 1);
-}
-
 fn export_lines(
     driver: &dyn RetentionDriver,
     meta: &MetaStore,
@@ -305,7 +350,6 @@ fn export_lines(
     sink: &mut dyn FnMut(Bytes) -> Result<(), ()>,
 ) -> Result<(), RetentionPlanError> {
     let policy = empty_policy();
-    let summary = super::summary(meta, "alpha", &policy).unwrap();
     let query = RetentionQuery {
         index: "alpha",
         ecosystem: "example",
@@ -315,12 +359,13 @@ fn export_lines(
         limit: None,
         expect: None,
     };
-    super::write_export(driver, meta, &query, summary, sink)
+    super::write_export(driver, meta, &query, &mut |_| Ok(()), sink)
 }
 
 #[test]
 fn test_write_export_emits_a_header_then_one_decision_per_line() {
     let (_dir, meta) = store();
+    seed_generation(&meta);
     let driver = StubDriver {
         decisions: vec![decision("a"), decision("b")],
         fail: None,
@@ -338,6 +383,7 @@ fn test_write_export_emits_a_header_then_one_decision_per_line() {
         lines[0].get("summary").is_some(),
         "the first line carries the plan identity"
     );
+    assert_eq!(lines[0]["summary"]["frontier"]["policy"], 0);
     assert_eq!(lines[1]["artifact"], "a");
     assert_eq!(lines[2]["artifact"], "b");
 }
@@ -418,7 +464,6 @@ async fn test_export_body_streams_the_whole_plan() {
         fail: None,
     });
     let policy = empty_policy();
-    let summary = super::summary(&meta, "alpha", &policy).unwrap();
     let gates = super::RetentionGates::new(1);
     let permit = gates.try_enter("alpha").unwrap();
     let export = super::RetentionExport {
@@ -427,10 +472,10 @@ async fn test_export_body_streams_the_whole_plan() {
         policy,
         now: None,
         after: 0,
-        summary,
+        expect: None,
     };
 
-    let body = super::export_body(driver, meta, export, permit);
+    let (_, body) = super::export_body(driver, meta, export, permit).await.unwrap();
     let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
 
     let text = String::from_utf8(bytes.to_vec()).unwrap();
@@ -448,7 +493,6 @@ async fn test_export_body_poisons_the_stream_on_a_store_failure() {
         fail: Some("meta read failed".to_owned()),
     });
     let policy = empty_policy();
-    let summary = super::summary(&meta, "alpha", &policy).unwrap();
     let gates = super::RetentionGates::new(1);
     let permit = gates.try_enter("alpha").unwrap();
     let export = super::RetentionExport {
@@ -457,10 +501,10 @@ async fn test_export_body_poisons_the_stream_on_a_store_failure() {
         policy,
         now: None,
         after: 0,
-        summary,
+        expect: None,
     };
 
-    let body = super::export_body(driver, meta, export, permit);
+    let (_, body) = super::export_body(driver, meta, export, permit).await.unwrap();
     let collected = axum::body::to_bytes(body, usize::MAX).await;
 
     assert!(collected.is_err(), "a store failure poisons the body");

@@ -3,7 +3,6 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use axum::body::Body;
 use peryx_events::metrics::{Metrics, ResourceUsage};
-use peryx_policy::RetentionPolicy;
 use peryx_pql::catalog::{Column, DomainAuth, DomainSchema, FieldClass, Indexability};
 use peryx_pql::{Ast, DataSource, FetchFilter, Page, PqlError, QueryScope, RepoScope, Row, Value, ValueType, execute};
 use peryx_search::{SearchAccess, SearchError, SearchParams, SearchResponse};
@@ -11,7 +10,7 @@ use peryx_storage::blob::BlobStorage;
 use peryx_storage::meta::{MetaError, MetaStore};
 
 use crate::retention::{
-    RetentionExport, RetentionPage, RetentionPermit, RetentionPlanError, RetentionQuery, export_body, plan, summary,
+    RetentionExport, RetentionPage, RetentionPermit, RetentionPlanError, RetentionQuery, export_body, plan,
 };
 use crate::serving::RetentionDriver;
 use crate::trash::{TrashItem, TrashPage, TrashQuery, TrashQueryError, TrashRef, TrashServices};
@@ -88,6 +87,7 @@ pub trait QuotaReadService: Send + Sync {
     fn repository(&self, index: &crate::Index) -> Result<crate::quota::RepositoryQuota, String>;
 }
 
+#[async_trait]
 pub trait RetentionPlanningService: Send + Sync {
     fn try_enter(&self, repository: &str) -> Option<RetentionPermit>;
 
@@ -98,14 +98,19 @@ pub trait RetentionPlanningService: Send + Sync {
         &self,
         driver: &dyn RetentionDriver,
         query: &RetentionQuery<'_>,
+        start: &mut dyn FnMut(peryx_policy::RetentionSummary) -> Result<(), String>,
         emit: &mut dyn FnMut(&peryx_policy::RetentionDecision) -> Result<(), String>,
     ) -> Result<RetentionPage, RetentionPlanError>;
 
     /// # Errors
     ///
-    /// Returns the metadata error when the retention summary cannot be built.
-    fn summary(&self, repository: &str, policy: &RetentionPolicy) -> Result<peryx_policy::RetentionSummary, String>;
-    fn export(&self, driver: Arc<dyn RetentionDriver>, export: RetentionExport, permit: RetentionPermit) -> Body;
+    /// Returns [`RetentionPlanError`] when the snapshot cannot start.
+    async fn export(
+        &self,
+        driver: Arc<dyn RetentionDriver>,
+        export: RetentionExport,
+        permit: RetentionPermit,
+    ) -> Result<(peryx_policy::RetentionSummary, Body), RetentionPlanError>;
 }
 
 pub trait PqlQueryService: Send + Sync {
@@ -336,6 +341,7 @@ struct RetentionServices {
     gates: crate::retention::RetentionGates,
 }
 
+#[async_trait]
 impl RetentionPlanningService for RetentionServices {
     fn try_enter(&self, repository: &str) -> Option<RetentionPermit> {
         self.gates.try_enter(repository)
@@ -345,17 +351,19 @@ impl RetentionPlanningService for RetentionServices {
         &self,
         driver: &dyn RetentionDriver,
         query: &RetentionQuery<'_>,
+        start: &mut dyn FnMut(peryx_policy::RetentionSummary) -> Result<(), String>,
         emit: &mut dyn FnMut(&peryx_policy::RetentionDecision) -> Result<(), String>,
     ) -> Result<RetentionPage, RetentionPlanError> {
-        plan(driver, &self.meta, query, emit)
+        plan(driver, &self.meta, query, start, emit)
     }
 
-    fn summary(&self, repository: &str, policy: &RetentionPolicy) -> Result<peryx_policy::RetentionSummary, String> {
-        summary(&self.meta, repository, policy)
-    }
-
-    fn export(&self, driver: Arc<dyn RetentionDriver>, export: RetentionExport, permit: RetentionPermit) -> Body {
-        export_body(driver, self.meta.clone(), export, permit)
+    async fn export(
+        &self,
+        driver: Arc<dyn RetentionDriver>,
+        export: RetentionExport,
+        permit: RetentionPermit,
+    ) -> Result<(peryx_policy::RetentionSummary, Body), RetentionPlanError> {
+        export_body(driver, self.meta.clone(), export, permit).await
     }
 }
 

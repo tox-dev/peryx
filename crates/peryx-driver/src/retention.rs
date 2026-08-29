@@ -9,6 +9,7 @@
 //! through [`plan`], rejects a changed repository. The whole path only reads metadata, so an interrupted
 //! plan writes nothing.
 
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -16,7 +17,7 @@ use axum::body::Body;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use bytes::Bytes;
-use peryx_policy::{RetentionDecision, RetentionFrontier, RetentionPolicy, RetentionSummary};
+use peryx_policy::{RetentionDecision, RetentionPolicy, RetentionSummary};
 use peryx_storage::meta::MetaStore;
 use serde::{Deserialize, Serialize};
 
@@ -145,47 +146,87 @@ impl std::error::Error for RetentionPlanError {}
 
 /// Streams one retention plan after validating its metadata frontier.
 ///
-/// A mismatched `expect` rejects the resume as [stale](RetentionPlanError::Stale). `emit` receives up to
-/// `limit` decisions after the skip offset and may stop the read-only scan by returning an error.
+/// A mismatched `expect` rejects the resume as [stale](RetentionPlanError::Stale). `start` receives the
+/// snapshot identity before `emit` receives up to `limit` decisions after the skip offset. Either
+/// callback may stop the read-only scan by returning an error.
 ///
 /// # Errors
-/// Returns [`RetentionPlanError`] when the repository plans no retention, the cursor is stale, `emit`
-/// stopped the stream, or the store could not be read.
+/// Returns [`RetentionPlanError`] when the repository plans no retention, the cursor is stale, a
+/// callback stopped the stream, or the store could not be read.
 pub fn plan(
     driver: &dyn RetentionDriver,
     meta: &MetaStore,
     query: &RetentionQuery<'_>,
+    start: &mut dyn FnMut(RetentionSummary) -> Result<(), String>,
     emit: &mut dyn FnMut(&RetentionDecision) -> Result<(), String>,
 ) -> Result<RetentionPage, RetentionPlanError> {
-    let summary = summary(meta, query.index, query.policy).map_err(RetentionPlanError::Store)?;
-    if let Some(expected) = query.expect
-        && expected != summary
-    {
-        return Err(RetentionPlanError::Stale {
-            expected,
-            current: summary,
-        });
-    }
+    let mut summary = None;
+    let mut start_stop = None;
+    let started = Cell::new(false);
+    let mut protocol_error = None;
     let mut seen = 0_u64;
     let mut emitted = 0_u64;
     let mut stop: Option<Stop> = None;
-    let outcome = driver.plan_retention(meta, query.index, query.policy, query.now, &mut |decision| {
-        if seen < query.after {
+    let outcome = driver.plan_retention(
+        meta,
+        query.index,
+        query.policy,
+        query.now,
+        &mut |current| {
+            if started.replace(true) {
+                start_stop = Some(StartStop::Store(
+                    "the retention driver opened more than one snapshot".to_owned(),
+                ));
+                return Err(HALT.to_owned());
+            }
+            if let Some(expected) = query.expect
+                && expected != current
+            {
+                start_stop = Some(StartStop::Stale { expected, current });
+                return Err(HALT.to_owned());
+            }
+            start(current).inspect_err(|reason| start_stop = Some(StartStop::Interrupted(reason.clone())))?;
+            summary = Some(current);
+            Ok(())
+        },
+        &mut |decision| {
+            if !started.get() {
+                protocol_error = Some("the retention driver emitted a decision before opening a snapshot".to_owned());
+                return Err(HALT.to_owned());
+            }
+            if seen < query.after {
+                seen += 1;
+                return Ok(());
+            }
+            if query.limit.is_some_and(|limit| emitted >= limit as u64) {
+                stop = Some(Stop::Full);
+                return Err(HALT.to_owned());
+            }
             seen += 1;
-            return Ok(());
+            emit(&decision).inspect_err(|reason| stop = Some(Stop::Interrupted(reason.clone())))?;
+            emitted += 1;
+            Ok(())
+        },
+    );
+    match start_stop {
+        Some(StartStop::Stale { expected, current }) => {
+            return Err(RetentionPlanError::Stale { expected, current });
         }
-        if query.limit.is_some_and(|limit| emitted >= limit as u64) {
-            stop = Some(Stop::Full);
-            return Err(HALT.to_owned());
-        }
-        seen += 1;
-        emit(&decision).inspect_err(|reason| stop = Some(Stop::Interrupted(reason.clone())))?;
-        emitted += 1;
-        Ok(())
-    });
+        Some(StartStop::Interrupted(reason)) => return Err(RetentionPlanError::Interrupted(reason)),
+        Some(StartStop::Store(reason)) => return Err(RetentionPlanError::Store(reason)),
+        None => {}
+    }
+    if let Some(reason) = protocol_error {
+        return Err(RetentionPlanError::Store(reason));
+    }
+    let Some(summary) = summary else {
+        return Err(RetentionPlanError::Store(outcome.err().unwrap_or_else(|| {
+            "the retention driver returned without opening a snapshot".to_owned()
+        })));
+    };
     match (outcome, stop) {
         (_, Some(Stop::Interrupted(reason))) => Err(RetentionPlanError::Interrupted(reason)),
-        (Ok(_), _) => Ok(RetentionPage {
+        (Ok(()), _) => Ok(RetentionPage {
             summary,
             next_cursor: None,
             emitted,
@@ -205,28 +246,6 @@ pub fn plan(
     }
 }
 
-/// The plan's identity from the current metadata snapshot, without reading any candidate.
-///
-/// A resumed export reads this before streaming so it can send the identity as its first line and
-/// reject a stale cursor before any row leaves.
-///
-/// # Errors
-/// Returns the reason the store's policy-input generation could not be read.
-pub fn summary(meta: &MetaStore, index: &str, policy: &RetentionPolicy) -> Result<RetentionSummary, String> {
-    let generation = match meta.policy_input_generation(index) {
-        Ok(generation) => generation,
-        Err(error) => return Err(error.to_string()),
-    };
-    Ok(RetentionSummary {
-        policy_version: policy.version(),
-        frontier: RetentionFrontier {
-            repository: generation.repository,
-            catalog: generation.catalog,
-            policy: generation.policy,
-        },
-    })
-}
-
 /// A retention export's first JSON Lines record: the plan identity, so a saved export retains the
 /// policy version and metadata frontier a later apply must still match.
 #[derive(Serialize)]
@@ -242,7 +261,7 @@ pub struct RetentionExport {
     pub policy: RetentionPolicy,
     pub now: Option<i64>,
     pub after: u64,
-    pub summary: RetentionSummary,
+    pub expect: Option<RetentionSummary>,
 }
 
 /// # Errors
@@ -252,14 +271,20 @@ fn write_export(
     driver: &dyn RetentionDriver,
     meta: &MetaStore,
     query: &RetentionQuery<'_>,
-    summary: RetentionSummary,
+    started: &mut dyn FnMut(RetentionSummary) -> Result<(), String>,
     sink: &mut dyn FnMut(Bytes) -> Result<(), ()>,
 ) -> Result<(), RetentionPlanError> {
-    sink(line(&ExportHeader { summary }))
-        .map_err(|()| RetentionPlanError::Interrupted("export client gone".to_owned()))?;
-    plan(driver, meta, query, &mut |decision| {
-        sink(line(decision)).map_err(|()| "export client disconnected".to_owned())
-    })
+    let sink = RefCell::new(sink);
+    plan(
+        driver,
+        meta,
+        query,
+        &mut |summary| {
+            started(summary)?;
+            sink.borrow_mut()(line(&ExportHeader { summary })).map_err(|()| "export client gone".to_owned())
+        },
+        &mut |decision| sink.borrow_mut()(line(decision)).map_err(|()| "export client disconnected".to_owned()),
+    )
     .map(drop)
 }
 
@@ -272,19 +297,25 @@ fn line(value: &impl Serialize) -> Bytes {
 /// Streams retention decisions from a blocking scan through a bounded body channel.
 ///
 /// A slow reader backpressures the scan, and a disconnected reader stops it. `permit` holds the
-/// repository's concurrency slot for the stream lifetime. The validated `summary` appears first.
+/// repository's concurrency slot for the stream lifetime. The validated summary appears first.
+///
+/// # Errors
+/// Returns [`RetentionPlanError`] if the driver cannot open the snapshot or rejects its expected
+/// identity.
 ///
 /// # Panics
 /// Panics if the caller bypasses retention capability resolution.
-pub fn export_body(
+pub async fn export_body(
     driver: Arc<dyn crate::serving::RetentionDriver>,
     meta: MetaStore,
     export: RetentionExport,
     permit: RetentionPermit,
-) -> Body {
+) -> Result<(RetentionSummary, Body), RetentionPlanError> {
     let (tx, rx) = tokio::sync::mpsc::channel::<std::io::Result<Bytes>>(8);
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
+        let mut started_tx = Some(started_tx);
         let query = RetentionQuery {
             index: &export.index,
             ecosystem: &export.ecosystem,
@@ -292,21 +323,37 @@ pub fn export_body(
             now: export.now,
             after: export.after,
             limit: None,
-            expect: None,
+            expect: export.expect,
         };
-        let result = write_export(driver.as_ref(), &meta, &query, export.summary, &mut |bytes| {
-            tx.blocking_send(Ok(bytes)).map_err(drop)
-        });
-        // A store failure mid-stream poisons the body so the reader sees a truncated transfer rather
-        // than a plan it might mistake for complete. A disconnected reader already closed the channel,
-        // so this send is a harmless no-op.
-        if let Err(RetentionPlanError::Store(reason)) = result {
-            let _ = tx.blocking_send(Err(std::io::Error::other(reason)));
+        let result = write_export(
+            driver.as_ref(),
+            &meta,
+            &query,
+            &mut |summary| {
+                let sender = started_tx
+                    .take()
+                    .ok_or_else(|| "the retention driver opened more than one snapshot".to_owned())?;
+                sender.send(Ok(summary)).map_err(|_| "export request gone".to_owned())
+            },
+            &mut |bytes| tx.blocking_send(Ok(bytes)).map_err(drop),
+        );
+        if let Err(error) = result {
+            if let Some(started_tx) = started_tx {
+                let _ = started_tx.send(Err(error));
+            } else if let RetentionPlanError::Store(reason) = error {
+                let _ = tx.blocking_send(Err(std::io::Error::other(reason)));
+            }
         }
     });
-    Body::from_stream(futures_util::stream::unfold(rx, |mut rx| async move {
-        rx.recv().await.map(|chunk| (chunk, rx))
-    }))
+    let summary = started_rx
+        .await
+        .map_err(|_| RetentionPlanError::Interrupted("export worker stopped".to_owned()))??;
+    Ok((
+        summary,
+        Body::from_stream(futures_util::stream::unfold(rx, |mut rx| async move {
+            rx.recv().await.map(|chunk| (chunk, rx))
+        })),
+    ))
 }
 
 /// The sentinel a filled page returns from the sink so the driver's scan aborts; the outer match reads
@@ -316,6 +363,15 @@ const HALT: &str = "retention plan page is full";
 enum Stop {
     Full,
     Interrupted(String),
+}
+
+enum StartStop {
+    Stale {
+        expected: RetentionSummary,
+        current: RetentionSummary,
+    },
+    Interrupted(String),
+    Store(String),
 }
 
 /// A resume offset paired with the plan identity it belongs to, decoded from a cursor.

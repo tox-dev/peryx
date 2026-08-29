@@ -375,7 +375,7 @@ pub fn delete_upload(
 }
 
 /// # Errors
-/// Returns a scan error if the store read fails or the visitor returns an error.
+/// Returns a scan error if the store read fails or either callback returns an error.
 ///
 pub fn scan_upload_records<E>(
     meta: &MetaStore,
@@ -398,10 +398,11 @@ pub fn scan_upload_records<E>(
 pub fn scan_upload_policy_snapshot<E>(
     meta: &MetaStore,
     index: &str,
+    start: impl FnOnce(peryx_storage::meta::PolicyInputGeneration) -> Result<(), E>,
     mut visit: impl FnMut(&str, &[u8]) -> Result<(), E>,
-) -> Result<peryx_storage::meta::PolicyInputGeneration, MetaScanError<E>> {
+) -> Result<(), MetaScanError<E>> {
     let prefix = format!("{UPLOAD_PREFIX}{index}/");
-    meta.visit_driver_policy_snapshot(&prefix, index, |key, value| visit(&key[prefix.len()..], value))
+    meta.visit_driver_policy_snapshot(&prefix, index, start, |key, value| visit(&key[prefix.len()..], value))
 }
 
 /// Record an override for a file served from a read-only layer: `kind` is `yanked` or `hidden`,

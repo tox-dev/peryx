@@ -43,13 +43,39 @@ fn seed(meta: &MetaStore, index: &str, project: &str, version: &str, yanked: Yan
         .unwrap();
 }
 
-fn plan(meta: &MetaStore, index: &str, policy: &RetentionPolicy) -> (Vec<RetentionDecision>, RetentionFrontier) {
+fn evaluate(
+    meta: &MetaStore,
+    index: &str,
+    policy: &RetentionPolicy,
+) -> (
+    Result<(), String>,
+    Option<peryx_policy::RetentionSummary>,
+    Vec<RetentionDecision>,
+) {
     let mut decisions = Vec::new();
-    let summary = evaluate_retention(meta, index, policy, None, RETENTION_PROJECT_BUDGET_BYTES, |decision| {
-        decisions.push(decision);
-        Ok(())
-    })
-    .unwrap();
+    let mut summary = None;
+    let result = evaluate_retention(
+        meta,
+        index,
+        policy,
+        None,
+        RETENTION_PROJECT_BUDGET_BYTES,
+        |current| {
+            summary = Some(current);
+            Ok(())
+        },
+        |decision| {
+            decisions.push(decision);
+            Ok(())
+        },
+    );
+    (result, summary, decisions)
+}
+
+fn plan(meta: &MetaStore, index: &str, policy: &RetentionPolicy) -> (Vec<RetentionDecision>, RetentionFrontier) {
+    let (result, summary, decisions) = evaluate(meta, index, policy);
+    result.unwrap();
+    let summary = summary.unwrap();
     assert_eq!(summary.policy_version, policy.version());
     (decisions, summary.frontier)
 }
@@ -83,17 +109,14 @@ fn test_evaluate_retention_rejects_unsupported_selectors(#[case] selector: Reten
     };
     let policy = RetentionPolicy::compile(&RetentionConfig { keep, expire }, crate::normalize_name);
 
-    let error = evaluate_retention(
-        &meta,
-        "pypi",
-        &policy,
-        None,
-        RETENTION_PROJECT_BUDGET_BYTES,
-        reject_decision,
-    )
-    .unwrap_err();
+    let (result, summary, decisions) = evaluate(&meta, "pypi", &policy);
 
-    assert_eq!(error, format!("pypi retention does not support selector {name:?}"));
+    assert_eq!(
+        result.unwrap_err(),
+        format!("pypi retention does not support selector {name:?}")
+    );
+    assert!(summary.is_none());
+    assert!(decisions.is_empty());
 }
 
 #[test]
@@ -279,6 +302,7 @@ fn test_evaluate_retention_rejects_a_corrupt_upload_record() {
         &expire_all_but_latest(1),
         None,
         RETENTION_PROJECT_BUDGET_BYTES,
+        |_| Ok(()),
         |_| {
             seen += 1;
             Ok(())
@@ -301,6 +325,7 @@ fn test_evaluate_retention_stops_the_scan_when_emit_returns_an_error() {
         &expire_all_but_latest(1),
         None,
         RETENTION_PROJECT_BUDGET_BYTES,
+        |_| Ok(()),
         reject_decision,
     );
 
@@ -319,6 +344,7 @@ fn test_evaluate_retention_stops_before_scanning_the_next_project() {
         &expire_all_but_latest(1),
         None,
         RETENTION_PROJECT_BUDGET_BYTES,
+        |_| Ok(()),
         reject_decision,
     );
 
@@ -331,7 +357,15 @@ fn test_evaluate_retention_rejects_a_project_over_the_memory_budget() {
     seed(&meta, "pypi", "demo", "2.0", Yanked::No, None);
     seed(&meta, "pypi", "demo", "1.0", Yanked::No, None);
 
-    let result = evaluate_retention(&meta, "pypi", &expire_all_but_latest(1), None, 1, reject_decision);
+    let result = evaluate_retention(
+        &meta,
+        "pypi",
+        &expire_all_but_latest(1),
+        None,
+        1,
+        |_| Ok(()),
+        reject_decision,
+    );
 
     let message = result.unwrap_err();
     assert!(message.contains("project demo"), "{message}");
@@ -351,6 +385,7 @@ fn test_evaluate_retention_plans_a_project_within_the_memory_budget() {
         &expire_all_but_latest(1),
         None,
         RETENTION_PROJECT_BUDGET_BYTES,
+        |_| Ok(()),
         |_| {
             decisions += 1;
             Ok(())
@@ -383,6 +418,36 @@ fn test_evaluate_retention_reports_the_metadata_frontier() {
 
     assert_eq!(frontier.repository, 1);
     assert_eq!(frontier.policy, 1);
+}
+
+#[test]
+fn test_evaluate_retention_keeps_the_opened_frontier_during_a_concurrent_commit() {
+    let (_dir, meta) = store();
+    seed(&meta, "pypi", "demo", "1.0", Yanked::No, None);
+    let mut summary = None;
+    let mut decisions = Vec::new();
+
+    evaluate_retention(
+        &meta,
+        "pypi",
+        &expire_all_but_latest(1),
+        None,
+        RETENTION_PROJECT_BUDGET_BYTES,
+        |current| {
+            summary = Some(current);
+            meta.advance_policy_generation("pypi").unwrap();
+            Ok(())
+        },
+        |decision| {
+            decisions.push(decision);
+            Ok(())
+        },
+    )
+    .unwrap();
+
+    assert_eq!(summary.unwrap().frontier.policy, 0);
+    assert_eq!(meta.policy_input_generation("pypi").unwrap().policy, 1);
+    assert_eq!(decisions.len(), 1);
 }
 
 #[test]

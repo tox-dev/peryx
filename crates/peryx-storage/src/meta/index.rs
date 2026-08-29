@@ -177,13 +177,14 @@ impl MetaStore {
     /// Reads driver records and policy generation from one snapshot.
     ///
     /// # Errors
-    /// Returns a scan error if the store read fails or the visitor rejects one row.
+    /// Returns a scan error if the store read fails or either callback rejects the snapshot.
     pub fn visit_driver_policy_snapshot<E>(
         &self,
         prefix: &str,
         repository: &str,
+        start: impl FnOnce(PolicyInputGeneration) -> Result<(), E>,
         mut visit: impl FnMut(&str, &[u8]) -> Result<(), E>,
-    ) -> Result<PolicyInputGeneration, MetaScanError<E>> {
+    ) -> Result<(), MetaScanError<E>> {
         let txn = self.db.begin_read().map_err(MetaError::from)?;
         let mut generation = txn
             .open_table(POLICY_INPUT_GENERATION)
@@ -200,6 +201,7 @@ impl MetaStore {
             .get(SERIAL_KEY)
             .map_err(MetaError::from)?
             .map_or(0, |value| value.value());
+        start(generation).map_err(MetaScanError::Visit)?;
         let table = txn.open_table(DRIVER_KV).map_err(MetaError::from)?;
         for entry in table.range(prefix..).map_err(MetaError::from)? {
             let (key, value) = entry.map_err(MetaError::from)?;
@@ -208,7 +210,7 @@ impl MetaStore {
             }
             visit(key.value(), value.value()).map_err(MetaScanError::Visit)?;
         }
-        Ok(generation)
+        Ok(())
     }
 
     /// Commits a driver batch atomically. `durable = false` skips fsync for data that callers can refetch
