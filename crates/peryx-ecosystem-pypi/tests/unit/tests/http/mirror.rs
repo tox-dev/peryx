@@ -226,8 +226,11 @@ async fn test_persist_page_skips_policy_denied_file_registrations() {
     assert_eq!(status, StatusCode::OK);
     assert!(h.state.serving.meta.get_file_url(digest.as_str()).unwrap().is_none());
 }
+#[rstest]
+#[case::json(None)]
+#[case::html(Some("text/html"))]
 #[tokio::test]
-async fn test_mirror_detail_upstream_404() {
+async fn test_mirror_detail_upstream_404(#[case] accept: Option<&str>) {
     let h = harness().await;
     Mock::given(method("GET"))
         .and(path("/simple/missing/"))
@@ -235,9 +238,9 @@ async fn test_mirror_detail_upstream_404() {
         .expect(1)
         .mount(&h.server)
         .await;
-    let (status, ..) = get(&h.state, "/pypi/simple/missing/", None).await;
+    let (status, ..) = get(&h.state, "/pypi/simple/missing/", accept).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    let (status, ..) = get(&h.state, "/pypi/simple/missing/", None).await;
+    let (status, ..) = get(&h.state, "/pypi/simple/missing/", accept).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 #[tokio::test]
