@@ -181,33 +181,27 @@ async fn test_concurrent_inspect_misses_share_one_fetch() {
 async fn test_file_path_returns_blob_cached_while_waiting_for_gate() {
     let h = harness().await;
     let digest = Digest::of(b"wheel");
-    let guard = cache::flight_gate(&h.state.serving, digest.as_str()).lock_owned().await;
-    let task = cache::file_path(
+    let guard = peryx_index::serving::flight_gate(&h.state.serving.cache.inflight, digest.as_str())
+        .lock_owned()
+        .await;
+    let mut events = h
+        .state
+        .serving
+        .cache
+        .inflight
+        .subscribe(digest.as_str())
+        .expect("the held gate has an active flight");
+    let task = tokio::spawn(cache::file_path(
         h.state.serving.clone(),
         digest.clone(),
         "pypi".to_owned(),
         "flask.whl".to_owned(),
-    );
-    tokio::pin!(task);
-    let wake = Arc::new(WakeSignal::default());
-    let waker = futures_util::task::waker(wake.clone());
-    let mut context = std::task::Context::from_waker(&waker);
-    assert!(std::future::Future::poll(task.as_mut(), &mut context).is_pending());
-    wake.0.notified().await;
-    assert!(std::future::Future::poll(task.as_mut(), &mut context).is_pending());
+    ));
+    events.next_join().await.expect("file lookup joins the held flight");
     h.state.serving.blobs.put_bytes_as(b"wheel", &digest).await.unwrap();
     drop(guard);
-    let lease = task.await.unwrap();
+    let lease = task.await.unwrap().unwrap();
     assert_eq!(std::fs::read(lease.path()).unwrap(), b"wheel");
-}
-
-#[derive(Default)]
-struct WakeSignal(tokio::sync::Notify);
-
-impl futures_util::task::ArcWake for WakeSignal {
-    fn wake_by_ref(wake: &Arc<Self>) {
-        wake.0.notify_one();
-    }
 }
 
 #[tokio::test]
