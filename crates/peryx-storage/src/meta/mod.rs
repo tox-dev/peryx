@@ -101,7 +101,7 @@ pub use role_grant::{
 };
 pub use scoped_token::{
     NewScopedToken, RevokeScopedTokenOutcome, ScopedTokenPage, ScopedTokenQuery, ScopedTokenQueryError,
-    ScopedTokenRecord,
+    ScopedTokenRecord, ScopedTokenWriteError,
 };
 pub use user::{StoredPasswordVerifier, UserStoreError};
 pub use webhook::{NewWebhookDelivery, WebhookDeliveryAttempt, WebhookDeliveryRecord, WebhookDeliveryStatus};

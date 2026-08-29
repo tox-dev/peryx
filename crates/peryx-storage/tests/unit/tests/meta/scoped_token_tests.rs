@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::sync::{Arc, Barrier};
 
 use peryx_identity::{Action, GrantScope, TokenId, TokenName, TokenSecret, UserId};
 use redb::TableDefinition;
@@ -7,7 +8,7 @@ use rstest::rstest;
 use super::store;
 use crate::meta::{
     MetaError, MetaStore, NewScopedToken, RevokeScopedTokenOutcome, ScopedTokenQuery, ScopedTokenQueryError,
-    ScopedTokenRecord,
+    ScopedTokenRecord, ScopedTokenWriteError,
 };
 use crate::tests::pagination::Page;
 
@@ -79,6 +80,80 @@ fn test_verify_resolves_a_live_token_and_rejects_others() {
         Some(&created)
     );
     assert_eq!(store.verify_scoped_token(&TokenSecret::generate(), 200).unwrap(), None);
+}
+
+#[test]
+fn test_create_keeps_the_first_verifier_owner() {
+    let (_dir, store) = store();
+    let secret = TokenSecret::generate();
+    let first = store
+        .create_scoped_token(new_token("first", repo("hosted"), &secret, None))
+        .unwrap();
+
+    let error = store
+        .create_scoped_token(new_token("second", repo("hosted"), &secret, None))
+        .unwrap_err();
+
+    assert!(matches!(error, ScopedTokenWriteError::VerifierCollision));
+    assert_eq!(
+        store
+            .verify_scoped_token(&secret, 200)
+            .unwrap()
+            .as_ref()
+            .map(|record| &record.id),
+        Some(&first.id)
+    );
+    assert_eq!(
+        store
+            .list_scoped_tokens(&ScopedTokenQuery {
+                reach: repo("hosted"),
+                cursor: None,
+                limit: 25,
+            })
+            .unwrap()
+            .tokens,
+        vec![first]
+    );
+}
+
+#[test]
+fn test_create_allows_one_concurrent_verifier_owner() {
+    let (_dir, store) = store();
+    let secret = TokenSecret::generate();
+    let barrier = Arc::new(Barrier::new(3));
+    let results = std::thread::scope(|scope| {
+        let first_store = store.clone();
+        let first_barrier = Arc::clone(&barrier);
+        let first_request = new_token("first", repo("hosted"), &secret, None);
+        let first = scope.spawn(move || {
+            first_barrier.wait();
+            first_store.create_scoped_token(first_request)
+        });
+        let second_store = store.clone();
+        let second_barrier = Arc::clone(&barrier);
+        let second_request = new_token("second", repo("hosted"), &secret, None);
+        let second = scope.spawn(move || {
+            second_barrier.wait();
+            second_store.create_scoped_token(second_request)
+        });
+        barrier.wait();
+        [first.join().unwrap(), second.join().unwrap()]
+    });
+
+    assert_eq!(
+        (
+            results.iter().filter(|result| result.is_ok()).count(),
+            results
+                .iter()
+                .filter(|result| matches!(result, Err(ScopedTokenWriteError::VerifierCollision)))
+                .count(),
+        ),
+        (1, 1)
+    );
+    assert_eq!(
+        store.verify_scoped_token(&secret, 200).unwrap().map(|record| record.id),
+        results.into_iter().find_map(Result::ok).map(|record| record.id)
+    );
 }
 
 #[test]
@@ -169,6 +244,78 @@ fn test_rotate_leaves_sibling_tokens_valid() {
     let next = TokenSecret::generate();
     store.rotate_scoped_token(&target.id, &next.verifier()).unwrap();
     assert!(store.verify_scoped_token(&kept, 200).unwrap().is_some());
+}
+
+#[test]
+fn test_rotate_accepts_the_current_verifier() {
+    let (_dir, store) = store();
+    let secret = TokenSecret::generate();
+    let created = store
+        .create_scoped_token(new_token("ci", repo("hosted"), &secret, None))
+        .unwrap();
+
+    let rotated = store
+        .rotate_scoped_token(&created.id, &secret.verifier())
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(rotated.revision, 2);
+    assert_eq!(store.verify_scoped_token(&secret, 200).unwrap(), Some(rotated));
+}
+
+#[rstest]
+#[case::owner(true)]
+#[case::target(false)]
+fn test_rotate_collision_preserves_the_other_token_after_revocation(#[case] revoke_owner: bool) {
+    let (_dir, store) = store();
+    let owner_secret = TokenSecret::generate();
+    let owner = store
+        .create_scoped_token(new_token("owner", repo("hosted"), &owner_secret, None))
+        .unwrap();
+    let target_secret = TokenSecret::generate();
+    let target = store
+        .create_scoped_token(new_token("target", repo("hosted"), &target_secret, None))
+        .unwrap();
+
+    let error = store
+        .rotate_scoped_token(&target.id, &owner_secret.verifier())
+        .unwrap_err();
+    assert!(matches!(error, ScopedTokenWriteError::VerifierCollision));
+    assert_eq!(store.get_scoped_token(&target.id).unwrap(), Some(target.clone()));
+
+    let (revoked, remaining_secret, remaining) = if revoke_owner {
+        (&owner.id, &target_secret, &target)
+    } else {
+        (&target.id, &owner_secret, &owner)
+    };
+    store.revoke_scoped_token(revoked, 300).unwrap();
+    assert_eq!(
+        store.verify_scoped_token(remaining_secret, 301).unwrap(),
+        Some(remaining.clone())
+    );
+}
+
+#[test]
+fn test_rotate_preserves_a_foreign_old_verifier_owner() {
+    let (_dir, store, changed, owner, owner_secret) = store_with_foreign_verifier();
+    let next = TokenSecret::generate();
+
+    store.rotate_scoped_token(&changed.id, &next.verifier()).unwrap();
+
+    assert_eq!(store.verify_scoped_token(&owner_secret, 200).unwrap(), Some(owner));
+    assert_eq!(
+        store.verify_scoped_token(&next, 200).unwrap().map(|record| record.id),
+        Some(changed.id)
+    );
+}
+
+#[test]
+fn test_revoke_preserves_a_foreign_verifier_owner() {
+    let (_dir, store, changed, owner, owner_secret) = store_with_foreign_verifier();
+
+    store.revoke_scoped_token(&changed.id, 300).unwrap();
+
+    assert_eq!(store.verify_scoped_token(&owner_secret, 301).unwrap(), Some(owner));
 }
 
 #[test]
@@ -498,4 +645,37 @@ fn test_verify_and_list_skip_a_dangling_index_entry() {
         })
         .unwrap();
     assert_eq!(page.tokens, Vec::new());
+}
+
+fn store_with_foreign_verifier() -> (
+    tempfile::TempDir,
+    MetaStore,
+    ScopedTokenRecord,
+    ScopedTokenRecord,
+    TokenSecret,
+) {
+    let (dir, store) = store();
+    let changed = store
+        .create_scoped_token(new_token("changed", repo("hosted"), &TokenSecret::generate(), None))
+        .unwrap();
+    let owner_secret = TokenSecret::generate();
+    let owner = store
+        .create_scoped_token(new_token("owner", repo("hosted"), &owner_secret, None))
+        .unwrap();
+    drop(store);
+    let database = redb::Database::open(dir.path().join("peryx.redb")).unwrap();
+    let txn = database.begin_write().unwrap();
+    let bytes = serde_json::to_vec(&serde_json::json!({
+        "record": &changed,
+        "verifier": owner_secret.verifier(),
+    }))
+    .unwrap();
+    txn.open_table(RAW_TOKEN)
+        .unwrap()
+        .insert(changed.id.as_str(), bytes.as_slice())
+        .unwrap();
+    txn.commit().unwrap();
+    drop(database);
+    let store = MetaStore::open_existing(dir.path().join("peryx.redb")).unwrap();
+    (dir, store, changed, owner, owner_secret)
 }

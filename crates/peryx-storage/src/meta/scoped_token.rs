@@ -88,12 +88,21 @@ pub enum ScopedTokenQueryError {
     InvalidLimit,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum ScopedTokenWriteError {
+    #[error(transparent)]
+    Store(#[from] MetaError),
+    #[error("scoped-token verifier belongs to another token")]
+    VerifierCollision,
+}
+
 impl MetaStore {
     /// Commits the token and its reach and verifier indexes atomically.
     ///
     /// # Errors
-    /// Returns a store error when the row cannot be encoded or the transaction cannot commit.
-    pub fn create_scoped_token(&self, request: NewScopedToken) -> Result<ScopedTokenRecord, MetaError> {
+    /// Returns [`ScopedTokenWriteError::VerifierCollision`] when another token owns the verifier, or a
+    /// store error when the row cannot be encoded or the transaction cannot commit.
+    pub fn create_scoped_token(&self, request: NewScopedToken) -> Result<ScopedTokenRecord, ScopedTokenWriteError> {
         let NewScopedToken {
             name,
             reach,
@@ -118,17 +127,30 @@ impl MetaStore {
             record: record.clone(),
             verifier,
         };
-        let txn = self.db.begin_write()?;
+        let txn = self.db.begin_write().map_err(MetaError::from)?;
         {
-            let bytes = serde_json::to_vec(&stored)?;
-            txn.open_table(SCOPED_TOKEN)?
-                .insert(record.id.as_str(), bytes.as_slice())?;
-            txn.open_table(SCOPED_TOKEN_REACH)?
-                .insert(reach_index_key(&record.reach, &record.id).as_str(), record.id.as_str())?;
-            txn.open_table(SCOPED_TOKEN_VERIFIER)?
-                .insert(stored.verifier.as_str(), record.id.as_str())?;
+            let mut verifiers = txn.open_table(SCOPED_TOKEN_VERIFIER).map_err(MetaError::from)?;
+            if verifiers
+                .get(stored.verifier.as_str())
+                .map_err(MetaError::from)?
+                .is_some()
+            {
+                return Err(ScopedTokenWriteError::VerifierCollision);
+            }
+            verifiers
+                .insert(stored.verifier.as_str(), record.id.as_str())
+                .map_err(MetaError::from)?;
+            let bytes = serde_json::to_vec(&stored).map_err(MetaError::from)?;
+            txn.open_table(SCOPED_TOKEN)
+                .map_err(MetaError::from)?
+                .insert(record.id.as_str(), bytes.as_slice())
+                .map_err(MetaError::from)?;
+            txn.open_table(SCOPED_TOKEN_REACH)
+                .map_err(MetaError::from)?
+                .insert(reach_index_key(&record.reach, &record.id).as_str(), record.id.as_str())
+                .map_err(MetaError::from)?;
         }
-        txn.commit()?;
+        txn.commit().map_err(MetaError::from)?;
         Ok(record)
     }
 
@@ -248,13 +270,14 @@ impl MetaStore {
     /// tokens return `None` without changing access.
     ///
     /// # Errors
-    /// Returns a store error when the row cannot be read, encoded, or committed.
+    /// Returns [`ScopedTokenWriteError::VerifierCollision`] when another token owns the verifier, or a
+    /// store error when the row cannot be read, encoded, or committed.
     pub fn rotate_scoped_token(
         &self,
         id: &TokenId,
         verifier: &TokenVerifier,
-    ) -> Result<Option<ScopedTokenRecord>, MetaError> {
-        let txn = self.db.begin_write()?;
+    ) -> Result<Option<ScopedTokenRecord>, ScopedTokenWriteError> {
+        let txn = self.db.begin_write().map_err(MetaError::from)?;
         let Some(mut stored) = read_stored(&txn, id)? else {
             return Ok(None);
         };
@@ -262,15 +285,33 @@ impl MetaStore {
             return Ok(None);
         }
         {
-            let mut verifiers = txn.open_table(SCOPED_TOKEN_VERIFIER)?;
-            verifiers.remove(stored.verifier.as_str())?;
-            verifiers.insert(verifier.as_str(), id.as_str())?;
+            let mut verifiers = txn.open_table(SCOPED_TOKEN_VERIFIER).map_err(MetaError::from)?;
+            if verifiers
+                .get(verifier.as_str())
+                .map_err(MetaError::from)?
+                .is_some_and(|owner| owner.value() != id.as_str())
+            {
+                return Err(ScopedTokenWriteError::VerifierCollision);
+            }
+            if verifiers
+                .get(stored.verifier.as_str())
+                .map_err(MetaError::from)?
+                .is_some_and(|owner| owner.value() == id.as_str())
+            {
+                verifiers.remove(stored.verifier.as_str()).map_err(MetaError::from)?;
+            }
+            verifiers
+                .insert(verifier.as_str(), id.as_str())
+                .map_err(MetaError::from)?;
         }
         stored.verifier = verifier.clone();
         stored.record.revision += 1;
-        let bytes = serde_json::to_vec(&stored)?;
-        txn.open_table(SCOPED_TOKEN)?.insert(id.as_str(), bytes.as_slice())?;
-        txn.commit()?;
+        let bytes = serde_json::to_vec(&stored).map_err(MetaError::from)?;
+        txn.open_table(SCOPED_TOKEN)
+            .map_err(MetaError::from)?
+            .insert(id.as_str(), bytes.as_slice())
+            .map_err(MetaError::from)?;
+        txn.commit().map_err(MetaError::from)?;
         Ok(Some(stored.record))
     }
 
@@ -286,8 +327,15 @@ impl MetaStore {
         if stored.record.revoked_at.is_some() {
             return Ok(Some(RevokeScopedTokenOutcome::Unchanged(stored.record)));
         }
-        txn.open_table(SCOPED_TOKEN_VERIFIER)?
-            .remove(stored.verifier.as_str())?;
+        {
+            let mut verifiers = txn.open_table(SCOPED_TOKEN_VERIFIER)?;
+            if verifiers
+                .get(stored.verifier.as_str())?
+                .is_some_and(|owner| owner.value() == id.as_str())
+            {
+                verifiers.remove(stored.verifier.as_str())?;
+            }
+        }
         stored.record.revoked_at = Some(now);
         stored.record.revision += 1;
         let bytes = serde_json::to_vec(&stored)?;
