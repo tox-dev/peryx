@@ -1,5 +1,7 @@
+use std::collections::VecDeque;
 use std::convert::Infallible;
 use std::sync::Arc;
+use std::task::Poll;
 use std::time::Duration;
 
 use aws_sdk_s3::config::Credentials;
@@ -13,8 +15,10 @@ use rstest::rstest;
 use tokio::sync::OnceCell;
 use url::Url;
 
+use super::super::S3Backend;
 use super::super::config::S3Settings;
 use super::{BehaviorVersion, Builder, Client, Region, S3Client, S3Config, S3Error, S3Get, S3Part};
+use crate::blob::{BlobBackend, BlobStore, Digest};
 
 const CHECKSUM: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 
@@ -282,6 +286,18 @@ fn get_client(response: http::Response<SdkBody>) -> S3Client {
     capturing_client(S3Config::new(base_settings()).unwrap(), Some(response)).0
 }
 
+fn get_client_with_timeout(response: http::Response<SdkBody>, request_timeout: Duration) -> S3Client {
+    capturing_client(
+        S3Config::new(S3Settings {
+            request_timeout,
+            ..base_settings()
+        })
+        .unwrap(),
+        Some(response),
+    )
+    .0
+}
+
 fn get_response(
     status: u16,
     content_range: Option<&str>,
@@ -296,6 +312,44 @@ fn get_response(
         builder = builder.header("Content-Length", length.to_string());
     }
     builder.body(SdkBody::from(body.to_vec())).unwrap()
+}
+
+fn streamed_response(bytes: &'static [u8], interval: Duration) -> http::Response<SdkBody> {
+    let chunks = bytes
+        .iter()
+        .map(|byte| Bytes::copy_from_slice(&[*byte]))
+        .collect::<VecDeque<_>>();
+    let body = StreamBody::new(
+        futures_util::stream::unfold(chunks, move |mut chunks| async move {
+            let chunk = chunks.pop_front()?;
+            tokio::time::sleep(interval).await;
+            Some((Ok::<_, Infallible>(Frame::data(chunk)), chunks))
+        })
+        .fuse(),
+    );
+    http::Response::builder()
+        .status(200)
+        .header(http::header::CONTENT_LENGTH, bytes.len())
+        .body(SdkBody::from_body_1_x(body))
+        .unwrap()
+}
+
+fn yielding_range_response(body: &'static [u8], content_range: &'static str) -> http::Response<SdkBody> {
+    let mut pending = true;
+    let mut body = Some(Bytes::from_static(body));
+    let body = StreamBody::new(futures_util::stream::poll_fn(move |context| {
+        if pending {
+            pending = false;
+            context.waker().wake_by_ref();
+            return Poll::Pending;
+        }
+        Poll::Ready(body.take().map(|body| Ok::<_, Infallible>(Frame::data(body))))
+    }));
+    http::Response::builder()
+        .status(206)
+        .header(http::header::CONTENT_RANGE, content_range)
+        .body(SdkBody::from_body_1_x(body))
+        .unwrap()
 }
 
 async fn collect_body(get: S3Get) -> Vec<u8> {
@@ -390,17 +444,66 @@ async fn test_get_serves_an_empty_range_without_a_request() {
     assert!(collect_body(get).await.is_empty());
 }
 
-#[tokio::test]
-async fn test_get_body_reports_its_request_deadline() {
+#[derive(Clone, Copy)]
+enum StreamingOperation {
+    Read,
+    Verify,
+    Materialize,
+}
+
+#[rstest]
+#[case::read(StreamingOperation::Read)]
+#[case::verify(StreamingOperation::Verify)]
+#[case::materialize(StreamingOperation::Materialize)]
+#[tokio::test(start_paused = true)]
+async fn test_progressing_downloads_renew_the_body_timeout(#[case] operation: StreamingOperation) {
+    let timeout = Duration::from_secs(5);
+    let staging = tempfile::tempdir().unwrap();
+    let backend = S3Backend {
+        client: get_client_with_timeout(streamed_response(b"package", Duration::from_secs(4)), timeout),
+        staging: BlobStore::new(staging.path()),
+        acquisitions: Arc::default(),
+    };
+    let digest = Digest::of(b"package");
+    let started = tokio::time::Instant::now();
+
+    match operation {
+        StreamingOperation::Read => {
+            assert_eq!(
+                backend.open(digest, None).await.unwrap().collect(7).await.unwrap(),
+                b"package"
+            );
+        }
+        StreamingOperation::Verify => assert!(backend.verify(digest).await.unwrap()),
+        StreamingOperation::Materialize => {
+            assert_eq!(
+                std::fs::read(backend.materialize(digest).await.unwrap().path()).unwrap(),
+                b"package"
+            );
+        }
+    }
+    assert!(started.elapsed() > timeout);
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_range_body_timeout_starts_when_the_consumer_polls() {
+    let timeout = Duration::from_secs(5);
+    let client = get_client_with_timeout(yielding_range_response(b"acka", "bytes 1-4/7"), timeout);
+    let get = client.get("cache/sha256/digest", Some(1..5), None).await.unwrap();
+    tokio::time::advance(timeout + Duration::from_secs(1)).await;
+
+    assert_eq!(collect_body(get).await, b"acka");
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_get_body_reports_its_idle_timeout() {
     let body = StreamBody::new(futures_util::stream::pending::<Result<Frame<Bytes>, Infallible>>());
     let response = http::Response::builder()
         .status(200)
         .header(http::header::CONTENT_LENGTH, 1)
         .body(SdkBody::from_body_1_x(body))
         .unwrap();
-    let mut settings = base_settings();
-    settings.request_timeout = Duration::from_millis(20);
-    let (client, _) = capturing_client(S3Config::new(settings).unwrap(), Some(response));
+    let client = get_client_with_timeout(response, Duration::from_secs(5));
 
     let mut get = client.get("cache/sha256/digest", None, None).await.unwrap();
     let error = get.body.next().await.unwrap().unwrap_err();

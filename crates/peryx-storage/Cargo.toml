@@ -50,6 +50,7 @@ http-body.workspace = true
 http-body-util.workspace = true
 rstest.workspace = true
 testcontainers.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber.workspace = true
 wiremock.workspace = true
 

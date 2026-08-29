@@ -1,6 +1,7 @@
 use std::ops::Range;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client;
@@ -185,7 +186,8 @@ impl S3Client {
                 }
             })?;
         let total_bytes = resolve_total_bytes(range.as_ref(), output.content_range(), output.content_length())?;
-        let body = futures_util::stream::try_unfold((output.body, deadline), next_body_chunk).boxed();
+        let body =
+            futures_util::stream::try_unfold((output.body, self.config.request_timeout), next_body_chunk).boxed();
         Ok(S3Get { total_bytes, body })
     }
 
@@ -370,10 +372,10 @@ impl S3Client {
 }
 
 async fn next_body_chunk(
-    (mut body, deadline): (ByteStream, tokio::time::Instant),
-) -> Result<Option<(Bytes, (ByteStream, tokio::time::Instant))>, S3Error> {
-    match tokio::time::timeout_at(deadline, body.try_next()).await {
-        Ok(Ok(Some(bytes))) => Ok(Some((bytes, (body, deadline)))),
+    (mut body, idle_timeout): (ByteStream, Duration),
+) -> Result<Option<(Bytes, (ByteStream, Duration))>, S3Error> {
+    match tokio::time::timeout(idle_timeout, body.try_next()).await {
+        Ok(Ok(Some(bytes))) => Ok(Some((bytes, (body, idle_timeout)))),
         Ok(Ok(None)) => Ok(None),
         Ok(Err(error)) => Err(S3Error::Request(error.to_string())),
         Err(error) => Err(S3Error::Request(error.to_string())),
