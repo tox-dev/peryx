@@ -279,6 +279,9 @@ impl AppState {
             })
             .collect::<Vec<_>>();
         let metrics = Metrics::start_durable_or_degraded(meta.analytics(), usage_retention_days, clock.clone());
+        if let Some(error) = metrics.durability_failure() {
+            tracing::error!(target: "peryx::metrics", %error, "durable metrics startup failed");
+        }
         let users = crate::users::UserService::new(meta.clone());
         let authorization = crate::authz::AuthorizationService::new(meta.clone());
         let revocations = crate::revocations::RevocationService::new(meta.clone());

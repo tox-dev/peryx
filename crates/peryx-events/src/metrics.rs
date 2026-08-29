@@ -578,18 +578,21 @@ impl Metrics {
             .collect()
     }
 
-    /// Drops observations under load to keep request-path memory bounded.
+    /// Drops observations when the aggregator cannot accept them to keep request-path memory bounded.
     ///
-    /// Every drop increments [`Metrics::dropped`]; throttled logs expose sustained overload.
+    /// Every rejected observation increments [`Metrics::dropped`]; throttled logs expose the cause.
     pub fn record(&self, event: Observation) {
-        if let Err(TrySendError::Full(_)) = self.sender.try_send(Message::Observation {
+        let reason = match self.sender.try_send(Message::Observation {
             event,
             recorded_at: (self.clock)(),
         }) {
-            let total = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
-            if total == 1 || total.is_multiple_of(DROP_LOG_INTERVAL) {
-                tracing::warn!(target: "peryx::metrics", dropped = total, "metrics event queue full, dropping event");
-            }
+            Ok(()) => return,
+            Err(TrySendError::Full(_)) => "full",
+            Err(TrySendError::Disconnected(_)) => "unavailable",
+        };
+        let total = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
+        if total == 1 || total.is_multiple_of(DROP_LOG_INTERVAL) {
+            tracing::warn!(target: "peryx::metrics", dropped = total, reason, "dropping metrics event");
         }
     }
 

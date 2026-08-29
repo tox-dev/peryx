@@ -566,7 +566,7 @@ fn status() -> OperationBuilder {
         .description(Some(
             "Version, health, counters, and the configured indexes, each filtered to the caller's \
              class. Version, role, coarse health, and the basic index list are public; the serial, \
-             request count, blob backend, per-ecosystem rollups, and metric families need operator \
+             request count, blob backend, usage durability, per-ecosystem rollups, and metric families need operator \
              authority; each index's upstream hosts, write-token state, and recent writes need \
              administrator authority. The response is `private, no-cache`. The example shows the \
              administrator view.",
@@ -589,6 +589,7 @@ fn status() -> OperationBuilder {
                             "upstreams": {"reachable": 1, "unreachable": 0, "unknown": 0, "disabled": 0}
                         },
                         "requests": 128,
+                        "metrics_durability_failure": null,
                         "by_ecosystem": [
                             {"ecosystem": "example", "pages": 128, "reads": 6, "bytes": 64_733_247,
                              "rejected": 0, "writes": 4, "families": {"metadata": 37}}

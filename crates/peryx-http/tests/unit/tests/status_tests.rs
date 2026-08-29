@@ -35,11 +35,19 @@ const UPLOAD_SECRET: &str = "upload-secret";
 const USER_PASSWORD: &str = "local password";
 
 const PUBLIC_KEYS: &[&str] = &["version", "role", "health", "indexes"];
-const OPERATOR_KEYS: &[&str] = &["serial", "requests", "blob_storage", "by_ecosystem", "metric_families"];
+const OPERATOR_KEYS: &[&str] = &[
+    "serial",
+    "requests",
+    "blob_storage",
+    "by_ecosystem",
+    "metric_families",
+    "metrics_durability_failure",
+];
 
 #[derive(Clone, Copy)]
 enum StoreFault {
     None,
+    Analytics,
     Authentication,
     Authorization,
 }
@@ -74,6 +82,7 @@ async fn app_with_fault(fault: StoreFault) -> (tempfile::TempDir, Arc<AppState>)
     drop(meta);
     if let Some(table) = match fault {
         StoreFault::None => None,
+        StoreFault::Analytics => Some("analytics"),
         StoreFault::Authentication => Some("server_user_verifier"),
         StoreFault::Authorization => Some("role_grant"),
     } {
@@ -295,6 +304,20 @@ async fn test_status_administrator_sees_the_sensitive_index_fields() {
     assert_eq!(missing_driver["endpoint"], "/missing-driver/");
     let reachable = indexes.iter().find(|index| index["route"] == "reachable").unwrap();
     assert_eq!(reachable["upstream"]["sources"][0]["name"], "origin");
+}
+
+#[tokio::test]
+async fn test_status_operator_sees_durable_metrics_startup_failure() {
+    let (_dir, state) = app_with_fault(StoreFault::Analytics).await;
+
+    let (_, _, body) = get(&state, Some(("Olivia", USER_PASSWORD))).await;
+
+    assert!(
+        body["metrics_durability_failure"]
+            .as_str()
+            .is_some_and(|error| error.contains("analytics")),
+        "{body}"
+    );
 }
 
 #[rstest]

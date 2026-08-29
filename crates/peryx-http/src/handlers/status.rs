@@ -94,6 +94,11 @@ async fn status_document(
             serde_json::json!(family_descriptors(state)),
         ),
         ClassifiedField::new(
+            "metrics_durability_failure",
+            FieldClassification::Operator,
+            serde_json::json!(state.serving.metrics.durability_failure()),
+        ),
+        ClassifiedField::new(
             "indexes",
             FieldClassification::Public,
             serde_json::Value::Array(index_documents(state, administrator)),

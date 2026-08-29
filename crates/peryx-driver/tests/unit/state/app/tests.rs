@@ -69,6 +69,50 @@ fn local_state() -> (tempfile::TempDir, AppState) {
     (dir, AppState::new(meta, blobs, 60, Vec::new()))
 }
 
+#[test]
+fn test_state_reports_unreadable_metrics_at_startup() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peryx.redb");
+    drop(MetaStore::open(&path).unwrap());
+    let database = redb::Database::open(&path).unwrap();
+    let transaction = database.begin_write().unwrap();
+    transaction
+        .delete_table(redb::TableDefinition::<&str, &[u8]>::new("analytics"))
+        .unwrap();
+    transaction
+        .open_table(redb::TableDefinition::<&str, u64>::new("analytics"))
+        .unwrap();
+    transaction.commit().unwrap();
+    drop(database);
+    let log = tempfile::NamedTempFile::new().unwrap();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_max_level(tracing::Level::ERROR)
+        .with_writer(log.reopen().unwrap())
+        .finish();
+
+    let state = tracing::subscriber::with_default(subscriber, || {
+        AppState::new(
+            MetaStore::open_existing(path).unwrap(),
+            BlobStore::new(dir.path().join("blobs")),
+            60,
+            Vec::new(),
+        )
+    });
+
+    assert!(
+        state
+            .serving
+            .metrics
+            .durability_failure()
+            .is_some_and(|error| error.contains("analytics"))
+    );
+    let output = std::fs::read_to_string(log.path()).unwrap();
+    assert!(output.contains("durable metrics startup failed"), "{output}");
+    assert!(output.contains("analytics"), "{output}");
+}
+
 struct AvailabilityCapability;
 
 #[async_trait]

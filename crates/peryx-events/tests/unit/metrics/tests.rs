@@ -237,7 +237,8 @@ fn test_record_bounds_the_queue_and_counts_drops_under_overload() {
     });
     assert_eq!(metrics.dropped(), 1_024);
     let output = std::fs::read_to_string(log.path()).unwrap();
-    assert_eq!(output.matches("metrics event queue full, dropping event").count(), 2);
+    assert_eq!(output.matches("dropping metrics event").count(), 2);
+    assert!(output.contains("reason=\"full\""), "{output}");
     assert!(output.contains("dropped=1"), "{output}");
     assert!(output.contains("dropped=1024"), "{output}");
     let processed = sends - metrics.dropped();
