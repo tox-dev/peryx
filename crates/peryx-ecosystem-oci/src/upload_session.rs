@@ -23,10 +23,11 @@ pub trait UploadStore {
         session: Option<&str>,
         body: impl FnOnce(&mut DriverTxn) -> Result<(T, Vec<Vec<u8>>), E>,
     ) -> Result<T, E>;
-    fn commit_driver_txn_with_quota_closing_upload<T, E>(
+    fn commit_driver_txn_with_quota_if_closing_upload<T, E>(
         &self,
         id: Uuid,
         session: Option<&str>,
+        commit: impl FnOnce(&T) -> bool,
         body: impl FnOnce(&mut DriverTxn) -> Result<(T, Vec<Vec<u8>>), E>,
     ) -> Result<T, E>
     where
@@ -87,16 +88,17 @@ impl UploadStore for MetaStore {
         self.commit_driver_txn(close_session(session, body))
     }
 
-    fn commit_driver_txn_with_quota_closing_upload<T, E>(
+    fn commit_driver_txn_with_quota_if_closing_upload<T, E>(
         &self,
         id: Uuid,
         session: Option<&str>,
+        commit: impl FnOnce(&T) -> bool,
         body: impl FnOnce(&mut DriverTxn) -> Result<(T, Vec<Vec<u8>>), E>,
     ) -> Result<T, E>
     where
         E: From<MetaError> + From<QuotaError>,
     {
-        self.commit_driver_txn_with_quota(id, close_session(session, body))
+        self.commit_driver_txn_with_quota_if(id, commit, close_session(session, body))
     }
 }
 

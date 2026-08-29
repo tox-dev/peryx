@@ -1,7 +1,13 @@
-use peryx_storage::meta::{MetaStore, QuotaLimit, QuotaLimits};
+use peryx_storage::meta::{MetaStore, QuotaLimit, QuotaLimits, QuotaReservationState, QuotaUsage};
 
-use super::{ReserveOutcome, finalize, quota_reservation, reserve};
+use super::{
+    ManifestCommit, ReserveOutcome, commit_blob_membership, finalize, publish_manifest, quota_reservation,
+    release_blob_membership, reserve,
+};
+use crate::name::Reference;
 use crate::registry::ServeError;
+use crate::store::Manifest;
+use crate::upload_session::UploadStore as _;
 
 fn store() -> (tempfile::TempDir, MetaStore) {
     let dir = tempfile::tempdir().unwrap();
@@ -53,9 +59,13 @@ fn test_finalize_releases_the_reservation_after_a_driver_failure() {
     let record = meta.reserve_quota(request, QuotaLimits::default()).unwrap();
     let id = record.id;
 
-    let result = finalize(&meta, Some(record), None, |_txn| {
-        Err::<((), Vec<Vec<u8>>), _>(ServeError::Transport("driver write failed".to_owned()))
-    });
+    let result = finalize(
+        &meta,
+        Some(record),
+        None,
+        |()| true,
+        |_txn| Err::<((), Vec<Vec<u8>>), _>(ServeError::Transport("driver write failed".to_owned())),
+    );
 
     assert!(matches!(result, Err(ServeError::Transport(message)) if message == "driver write failed"));
     let usage = meta.quota_usage("store").unwrap();
@@ -68,5 +78,132 @@ fn test_finalize_releases_the_reservation_after_a_driver_failure() {
             meta.quota_reservation(id).unwrap(),
         ),
         (0, 0, 0, 0, None)
+    );
+}
+
+#[test]
+fn test_blob_commits_one_of_two_prechecked_reservations() {
+    let (_dir, meta) = store();
+    let first = meta
+        .reserve_quota(
+            quota_reservation("store", "app", None, "sha256:a", 4, 1),
+            QuotaLimits::default(),
+        )
+        .unwrap();
+    let second = meta
+        .reserve_quota(
+            quota_reservation("store", "app", None, "sha256:a", 4, 2),
+            QuotaLimits::default(),
+        )
+        .unwrap();
+    meta.begin_upload("loser", "store", "app", 2).unwrap();
+
+    commit_blob_membership(&meta, "store", "app", "sha256:a", Some(first), None, false).unwrap();
+    commit_blob_membership(
+        &meta,
+        "store",
+        "app",
+        "sha256:a",
+        Some(second.clone()),
+        Some("loser"),
+        false,
+    )
+    .unwrap();
+
+    assert_eq!(meta.quota_reservation(second.id).unwrap(), None);
+    assert_eq!(meta.upload_record("loser").unwrap(), None);
+    assert_eq!(meta.quota_usage("store").unwrap().accounted_bytes.committed, 4);
+    assert!(release_blob_membership(&meta, "store", "app", "sha256:a").unwrap());
+    assert_eq!(meta.quota_usage("store").unwrap(), QuotaUsage::default());
+}
+
+#[test]
+fn test_manifest_commits_one_of_two_prechecked_reservations() {
+    let (_dir, meta) = store();
+    let first = meta
+        .reserve_quota(
+            quota_reservation("store", "app", Some("stable"), "sha256:a", 4, 1),
+            QuotaLimits::default(),
+        )
+        .unwrap();
+    let second = meta
+        .reserve_quota(
+            quota_reservation("store", "app", Some("stable"), "sha256:a", 4, 2),
+            QuotaLimits::default(),
+        )
+        .unwrap();
+    let manifest = Manifest {
+        media_type: "application/vnd.oci.image.manifest.v1+json".to_owned(),
+        bytes: b"{}".to_vec(),
+    };
+    let reference = Reference::Tag("stable".to_owned());
+
+    for reservation in [first, second.clone()] {
+        publish_manifest(
+            &meta,
+            ManifestCommit {
+                index: "store",
+                repo: "app",
+                canonical: "sha256:a",
+                manifest: &manifest,
+                reference: &reference,
+                reservation: Some(reservation),
+                journal: false,
+            },
+        )
+        .unwrap();
+    }
+
+    assert_eq!(meta.quota_reservation(second.id).unwrap(), None);
+    assert_eq!(
+        (
+            meta.quota_usage("store").unwrap().accounted_bytes.committed,
+            meta.quota_resource_usage("store", "app").unwrap().groups.committed,
+        ),
+        (4, 1)
+    );
+}
+
+#[test]
+fn test_manifest_tag_replacement_commits_a_new_allocation() {
+    let (_dir, meta) = store();
+    let manifest = Manifest {
+        media_type: "application/vnd.oci.image.manifest.v1+json".to_owned(),
+        bytes: b"{}".to_vec(),
+    };
+    let reference = Reference::Tag("stable".to_owned());
+
+    for (digest, created_at_unix) in [("sha256:a", 1), ("sha256:b", 2)] {
+        let reservation = meta
+            .reserve_quota(
+                quota_reservation("store", "app", Some("stable"), digest, 4, created_at_unix),
+                QuotaLimits::default(),
+            )
+            .unwrap();
+        publish_manifest(
+            &meta,
+            ManifestCommit {
+                index: "store",
+                repo: "app",
+                canonical: digest,
+                manifest: &manifest,
+                reference: &reference,
+                reservation: Some(reservation.clone()),
+                journal: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            meta.quota_reservation(reservation.id).unwrap().unwrap().state,
+            QuotaReservationState::Committed
+        );
+    }
+
+    assert_eq!(
+        (
+            meta.quota_usage("store").unwrap().accounted_bytes.committed,
+            meta.quota_resource_usage("store", "app").unwrap().groups.committed,
+        ),
+        (8, 1)
     );
 }

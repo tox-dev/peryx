@@ -158,10 +158,10 @@ fn describe(violations: &[QuotaLimit]) -> String {
         .join(", ")
 }
 
-/// Publish a blob's `(index, repo)` membership, committing a quota reservation with it when the push
-/// was metered so the two land in one transaction. A finalizing resumable upload names its `session`,
-/// closed in that same transaction so membership never lands while the client's recovery handle
-/// lingers; a mount or a monolithic push passes `None`.
+/// Publish a blob's `(index, repo)` membership, committing a metered push's reservation only when the
+/// transaction inserts that membership. A finalizing resumable upload names its `session`, closed in
+/// that same transaction so membership never lands while the client's recovery handle lingers; a
+/// mount or a monolithic push passes `None`.
 pub fn commit_blob_membership(
     meta: &MetaStore,
     index: &str,
@@ -171,15 +171,22 @@ pub fn commit_blob_membership(
     session: Option<&str>,
     journal: crate::outbox::Outbox,
 ) -> Result<(), ServeError> {
-    finalize(meta, reservation, session, |txn| {
-        txn.put(&store::blob_membership_key(index, repo, digest), &[])?;
-        let entries = crate::outbox::record(journal, || crate::outbox::OciMutation::MountBlob {
-            index: index.to_owned(),
-            repo: repo.to_owned(),
-            digest: digest.to_owned(),
-        });
-        Ok(((), entries))
-    })
+    finalize(
+        meta,
+        reservation,
+        session,
+        |inserted| *inserted,
+        |txn| {
+            let inserted = txn.upsert(&store::blob_membership_key(index, repo, digest), &[])?;
+            let entries = crate::outbox::record(journal, || crate::outbox::OciMutation::MountBlob {
+                index: index.to_owned(),
+                repo: repo.to_owned(),
+                digest: digest.to_owned(),
+            });
+            Ok((inserted, entries))
+        },
+    )?;
+    Ok(())
 }
 
 /// Delete a blob's `(index, repo)` membership and release the committed quota allocation its push
@@ -225,33 +232,34 @@ pub fn publish_manifest(meta: &MetaStore, commit: ManifestCommit<'_>) -> Result<
         reservation,
         journal,
     } = commit;
-    let body = |txn: &mut DriverTxn| -> Result<(bool, Vec<Vec<u8>>), ServeError> {
+    let body = |txn: &mut DriverTxn| {
         let tag = match reference {
             Reference::Tag(tag) => Some(tag.as_str()),
             Reference::Digest(_) => None,
         };
-        let changed = store::publish_manifest_txn(txn, index, repo, canonical, manifest, tag)?;
+        let publication = store::publish_manifest_txn(txn, index, repo, canonical, manifest, tag)?;
         let entries = crate::outbox::record(journal, || crate::outbox::OciMutation::PublishManifest {
             index: index.to_owned(),
             repo: repo.to_owned(),
             digest: canonical.to_owned(),
             tag: tag.map(str::to_owned),
         });
-        Ok((changed, entries))
+        Ok::<_, ServeError>((publication, entries))
     };
-    finalize(meta, reservation, None, body)
+    finalize(meta, reservation, None, |publication| publication.allocated, body).map(|publication| publication.changed)
 }
 
 fn finalize<T>(
     meta: &MetaStore,
     reservation: Option<QuotaReservationRecord>,
     session: Option<&str>,
+    commit: impl FnOnce(&T) -> bool,
     body: impl FnOnce(&mut DriverTxn) -> Result<(T, Vec<Vec<u8>>), ServeError>,
 ) -> Result<T, ServeError> {
     let Some(record) = reservation else {
         return meta.commit_driver_txn_closing_upload(session, body);
     };
-    match meta.commit_driver_txn_with_quota_closing_upload(record.id, session, body) {
+    match meta.commit_driver_txn_with_quota_if_closing_upload(record.id, session, commit, body) {
         Ok(value) => Ok(value),
         Err(err) => {
             meta.release_quota_reservation(record.id)?;

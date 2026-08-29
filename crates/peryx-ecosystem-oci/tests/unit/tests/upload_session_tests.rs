@@ -170,7 +170,7 @@ fn test_metered_closing_upload_commits_quota_and_shuts_the_session() {
     store.begin_upload("session-1", "store", "app", 5).unwrap();
 
     store
-        .commit_driver_txn_with_quota_closing_upload(id, Some("session-1"), |txn| {
+        .commit_driver_txn_with_quota_if_closing_upload(id, Some("session-1"), settle, |txn| {
             txn.put(MEMBERSHIP, &[])?;
             Ok::<_, QuotaError>(((), Vec::new()))
         })
@@ -193,7 +193,7 @@ fn test_metered_closing_upload_keeps_the_session_when_membership_fails() {
     let id = reserve(&store, 7);
     store.begin_upload("session-1", "store", "app", 5).unwrap();
 
-    let result = store.commit_driver_txn_with_quota_closing_upload(id, Some("session-1"), |txn| {
+    let result = store.commit_driver_txn_with_quota_if_closing_upload(id, Some("session-1"), settle, |txn| {
         txn.put(MEMBERSHIP, &[])?;
         Err::<((), Vec<Vec<u8>>), _>(QuotaError::Store(MetaError::DriverPrecondition(
             "membership failed".to_owned(),
@@ -219,7 +219,7 @@ fn test_metered_closing_upload_rejects_an_already_committed_reservation() {
     store.commit_quota_reservation(id).unwrap();
     store.begin_upload("session-1", "store", "app", 5).unwrap();
 
-    let result = store.commit_driver_txn_with_quota_closing_upload(id, Some("session-1"), |txn| {
+    let result = store.commit_driver_txn_with_quota_if_closing_upload(id, Some("session-1"), settle, |txn| {
         txn.put(MEMBERSHIP, &[])?;
         Ok::<_, QuotaError>(((), Vec::new()))
     });
@@ -235,7 +235,7 @@ fn test_metered_closing_upload_retry_converges_on_one_membership_and_charge() {
     let id = reserve(&store, 7);
     store.begin_upload("session-1", "store", "app", 5).unwrap();
     store
-        .commit_driver_txn_with_quota_closing_upload(id, Some("session-1"), |txn| {
+        .commit_driver_txn_with_quota_if_closing_upload(id, Some("session-1"), settle, |txn| {
             txn.put(MEMBERSHIP, &[])?;
             Err::<((), Vec<Vec<u8>>), _>(QuotaError::Store(MetaError::DriverPrecondition(
                 "first attempt".to_owned(),
@@ -244,7 +244,7 @@ fn test_metered_closing_upload_retry_converges_on_one_membership_and_charge() {
         .unwrap_err();
 
     store
-        .commit_driver_txn_with_quota_closing_upload(id, Some("session-1"), |txn| {
+        .commit_driver_txn_with_quota_if_closing_upload(id, Some("session-1"), settle, |txn| {
             txn.put(MEMBERSHIP, &[])?;
             Ok::<_, QuotaError>(((), Vec::new()))
         })
@@ -267,7 +267,7 @@ fn test_metered_closing_upload_without_a_session_commits_the_rows() {
     let id = reserve(&store, 7);
 
     store
-        .commit_driver_txn_with_quota_closing_upload(id, None, |txn| {
+        .commit_driver_txn_with_quota_if_closing_upload(id, None, settle, |txn| {
             txn.put(MEMBERSHIP, &[])?;
             Ok::<_, QuotaError>(((), Vec::new()))
         })
@@ -281,4 +281,8 @@ fn test_metered_closing_upload_without_a_session_commits_the_rows() {
             reserved: 0,
         }
     );
+}
+
+fn settle<T>(_: &T) -> bool {
+    true
 }

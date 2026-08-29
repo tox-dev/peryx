@@ -153,15 +153,15 @@ pub fn record_manifest(
 ///
 /// # Errors
 /// Returns a store error if a write fails.
-pub fn record_manifest_txn(
+fn record_manifest_txn(
     txn: &mut DriverTxn,
     index: &str,
     repo: &str,
     digest: &str,
     manifest: &Manifest,
-) -> Result<(), MetaError> {
+) -> Result<bool, MetaError> {
     txn.put(&manifest_key(digest), &manifest.encode())?;
-    txn.put(&membership_key(index, repo, digest), &[])?;
+    let inserted = txn.upsert(&membership_key(index, repo, digest), &[])?;
     let (children, blobs) = manifest_descriptors(&manifest.bytes);
     for child in children {
         txn.put(&membership_key(index, repo, &child), &[])?;
@@ -169,7 +169,7 @@ pub fn record_manifest_txn(
     for blob in blobs {
         txn.put(&blob_membership_key(index, repo, &blob), &[])?;
     }
-    Ok(())
+    Ok(inserted)
 }
 
 fn membership_key(index: &str, repo: &str, digest: &str) -> String {
@@ -260,14 +260,26 @@ pub fn publish_manifest_txn(
     digest: &str,
     manifest: &Manifest,
     tag: Option<&str>,
-) -> Result<bool, MetaError> {
-    record_manifest_txn(txn, index, repo, digest, manifest)?;
+) -> Result<ManifestPublication, MetaError> {
+    let inserted = record_manifest_txn(txn, index, repo, digest, manifest)?;
     txn.remove(&manifest_trash_key(index, repo, digest))?;
     let Some(tag) = tag else {
-        return Ok(false);
+        return Ok(ManifestPublication {
+            changed: false,
+            allocated: inserted,
+        });
     };
     txn.remove(&tag_trash_key(index, repo, tag))?;
-    put_tag_txn(txn, index, repo, tag, digest)
+    let allocated = txn.get(&tag_key(index, repo, tag))?.as_deref() != Some(digest.as_bytes());
+    Ok(ManifestPublication {
+        changed: put_tag_txn(txn, index, repo, tag, digest)?,
+        allocated,
+    })
+}
+
+pub struct ManifestPublication {
+    pub changed: bool,
+    pub allocated: bool,
 }
 
 /// # Errors
