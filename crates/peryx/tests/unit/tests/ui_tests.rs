@@ -84,13 +84,13 @@ fn topology_config(dir: &tempfile::TempDir) -> Config {
                 DcMember {
                     node: "writer-a".to_owned(),
                     dc: "east-1".to_owned(),
-                    address: "writer-a.internal:8443".to_owned(),
+                    address: "https://writer-a.internal:8443".to_owned(),
                     role: DcRole::Writer,
                 },
                 DcMember {
                     node: "replica-b".to_owned(),
                     dc: "east-2".to_owned(),
-                    address: "replica-b.internal:8443".to_owned(),
+                    address: "https://replica-b.internal:8443".to_owned(),
                     role: DcRole::Replica,
                 },
             ],

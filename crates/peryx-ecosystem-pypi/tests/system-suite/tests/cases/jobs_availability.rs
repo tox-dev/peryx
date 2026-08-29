@@ -308,13 +308,13 @@ fn group() -> DcMembership {
             DcMember {
                 node: WRITER_IDENTITY.to_owned(),
                 dc: "east-1".to_owned(),
-                address: "10.0.0.1:8080".to_owned(),
+                address: "http://10.0.0.1:8080".to_owned(),
                 role: DcRole::Writer,
             },
             DcMember {
                 node: "replica-b".to_owned(),
                 dc: "east-2".to_owned(),
-                address: "10.0.0.2:8080".to_owned(),
+                address: "http://10.0.0.2:8080".to_owned(),
                 role: DcRole::Replica,
             },
         ],

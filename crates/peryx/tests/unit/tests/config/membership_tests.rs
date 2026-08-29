@@ -210,6 +210,19 @@ fn test_group_rejects_invalid_topologies(#[case] roster: String, #[case] expecte
 }
 
 #[rstest]
+#[case::blank(" ", "member `address` must not be empty")]
+#[case::bare_host("10.0.0.1:8443", "must be an http or https URL")]
+#[case::non_http_scheme("ftp://a:1", "must be an http or https URL")]
+#[case::non_url("not a url", "must be an http or https URL")]
+fn test_resolved_config_rejects_an_invalid_member_address(#[case] address: &str, #[case] expected: &str) {
+    let mut config = dc_config(&writer_and_replica()).unwrap();
+    config.dc_membership.as_mut().unwrap().members[0].address = address.to_owned();
+
+    let error = config.validate().unwrap_err();
+    assert!(error.to_string().contains(expected), "{error}");
+}
+
+#[rstest]
 #[case::unknown_role(member("w", "dc-1", "https://a:1", "observer"), "unknown variant `observer`")]
 #[case::unknown_field(
     "[[availability.member]]\nnode = \"w\"\ndc = \"dc-1\"\naddress = \"https://a:1\"\nrole = \"writer\"\nregion = \"x\"\n".to_owned(),

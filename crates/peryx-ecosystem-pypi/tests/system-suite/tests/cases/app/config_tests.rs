@@ -110,8 +110,8 @@ fn dc_replica() -> ReplicationConfig {
     Some(DcMembership {
         group: "east".to_owned(),
         members: vec![
-            DcMember { node: "writer-a".to_owned(), dc: "dc-1".to_owned(), address: "a".to_owned(), role: DcRole::Writer },
-            DcMember { node: "replica-b".to_owned(), dc: "dc-2".to_owned(), address: "b".to_owned(), role: DcRole::Replica },
+            DcMember { node: "writer-a".to_owned(), dc: "dc-1".to_owned(), address: "https://a:1".to_owned(), role: DcRole::Writer },
+            DcMember { node: "replica-b".to_owned(), dc: "dc-2".to_owned(), address: "https://b:1".to_owned(), role: DcRole::Replica },
         ],
     }),
     "  availability: dc (primary, source \"writer-a\"), group \"east\" (2 members)\n"
@@ -123,7 +123,7 @@ fn dc_replica() -> ReplicationConfig {
         members: vec![DcMember {
             node: "writer-a".to_owned(),
             dc: "dc-1".to_owned(),
-            address: "a".to_owned(),
+            address: "https://a:1".to_owned(),
             role: DcRole::Writer,
         }],
     }),

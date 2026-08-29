@@ -45,10 +45,10 @@ fn roster(members: Vec<DcMember>) -> DcMembership {
 }
 
 #[test]
-fn test_installs_a_reader_reaching_peers_by_bare_address_and_full_url() {
+fn test_installs_a_reader_reaching_peers_by_http_and_https() {
     let membership = roster(vec![
-        member("node-a", "dc-1", "10.0.0.1:8080", DcRole::Writer),
-        member("node-b", "dc-2", "10.0.0.2:8080", DcRole::Replica),
+        member("node-a", "dc-1", "http://10.0.0.1:8080", DcRole::Writer),
+        member("node-b", "dc-2", "http://10.0.0.2:8080", DcRole::Replica),
         member("node-c", "dc-3", "https://peer-c.example:8443", DcRole::Replica),
     ]);
 
@@ -63,14 +63,18 @@ fn test_installs_a_reader_reaching_peers_by_bare_address_and_full_url() {
             .iter()
             .map(|member| member.address.as_str())
             .collect::<Vec<_>>(),
-        ["10.0.0.1:8080", "10.0.0.2:8080", "https://peer-c.example:8443"]
+        [
+            "http://10.0.0.1:8080",
+            "http://10.0.0.2:8080",
+            "https://peer-c.example:8443"
+        ]
     );
 }
 
 #[test]
 fn test_install_fails_on_an_unusable_peer_address() {
     let membership = roster(vec![
-        member("node-a", "dc-1", "10.0.0.1:8080", DcRole::Writer),
+        member("node-a", "dc-1", "http://10.0.0.1:8080", DcRole::Writer),
         member("node-b", "dc-2", "http://a b", DcRole::Replica),
     ]);
 
@@ -79,17 +83,16 @@ fn test_install_fails_on_an_unusable_peer_address() {
         .expect("invalid peer address must fail startup");
 
     assert!(
-        err.to_string()
-            .contains("read-through blob transport for datacenter dc-2"),
-        "{err}"
+        format!("{err:#}").contains("member `address` \"http://a b\" must be an http or https URL"),
+        "{err:#}"
     );
 }
 
 #[test]
 fn test_install_fails_on_an_invalid_local_datacenter() {
     let membership = roster(vec![
-        member("node-a", "", "10.0.0.1:8080", DcRole::Writer),
-        member("node-b", "dc-2", "10.0.0.2:8080", DcRole::Replica),
+        member("node-a", "", "http://10.0.0.1:8080", DcRole::Writer),
+        member("node-b", "dc-2", "http://10.0.0.2:8080", DcRole::Replica),
     ]);
 
     let err = build(config(dc_primary(), Some(membership), Some("node-a")))
@@ -132,9 +135,9 @@ fn test_no_reader_when_the_roster_has_no_remote_peer() {
 #[test]
 fn test_the_reader_resolves_the_local_datacenter_from_the_node_identity() {
     let membership = roster(vec![
-        member("node-a", "dc-1", "10.0.0.1:8080", DcRole::Writer),
-        member("node-b", "dc-2", "10.0.0.2:8080", DcRole::Replica),
-        member("node-c", "dc-3", "10.0.0.3:8080", DcRole::Replica),
+        member("node-a", "dc-1", "http://10.0.0.1:8080", DcRole::Writer),
+        member("node-b", "dc-2", "http://10.0.0.2:8080", DcRole::Replica),
+        member("node-c", "dc-3", "http://10.0.0.3:8080", DcRole::Replica),
     ]);
     let config = Config {
         node_identity: Some("node-b".to_owned()),

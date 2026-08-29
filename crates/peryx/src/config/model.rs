@@ -296,7 +296,7 @@ pub struct DcMember {
     pub node: String,
     /// The datacenter the member runs in. `dc` members may share it; `ha` members may not.
     pub dc: String,
-    /// The address peers reach this member on, unique within the group.
+    /// The HTTP(S) base URL peers reach this member on, unique within the group.
     pub address: String,
     pub role: DcRole,
 }
@@ -358,8 +358,7 @@ impl Config {
     }
 
     /// # Errors
-    /// Returns [`ConfigError::WriterIdentity`] when an identity is blank, configured without replication,
-    /// or absent from a replication role that needs one during promotion.
+    /// Returns the first validation error using the compiled plugins.
     pub fn validate(&self) -> Result<(), ConfigError> {
         self.validate_with_plugins(&crate::compiled_plugins())
     }
@@ -504,6 +503,12 @@ impl Config {
     }
 
     fn validate_topology(&self, mode: AvailabilityMode) -> Result<(), ConfigError> {
+        if let Some(membership) = &self.dc_membership {
+            membership
+                .members
+                .iter()
+                .try_for_each(|member| validate_member_address(&member.address))?;
+        }
         if mode.is_distributed() && self.write_ack.policy != DurabilityPolicy::Local && self.dc_membership.is_none() {
             return Err(ConfigError::Availability {
                 reason: "`write_ack.policy` stronger than `local` requires `[[availability.member]]`",
@@ -552,6 +557,20 @@ impl Config {
             .as_ref()
             .is_none_or(|membership| membership.members.iter().any(|member| member.node == identity))
     }
+}
+
+pub(super) fn validate_member_address(address: &str) -> Result<(), ConfigError> {
+    if address.trim().is_empty() {
+        return Err(ConfigError::DcMembership {
+            reason: "member `address` must not be empty".to_owned(),
+        });
+    }
+    if !Url::parse(address).is_ok_and(|url| matches!(url.scheme(), "http" | "https") && !url.cannot_be_a_base()) {
+        return Err(ConfigError::DcMembership {
+            reason: format!("member `address` {address:?} must be an http or https URL"),
+        });
+    }
+    Ok(())
 }
 
 /// One day keeps realm token expiry arithmetic within the configured credential lifetime.

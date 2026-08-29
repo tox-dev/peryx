@@ -1650,7 +1650,7 @@ fn test_build_state_uses_node_identity_for_the_local_datacenter() {
             group: "group".to_owned(),
             members: vec![
                 dc_member("east-writer", "east", "http://east/", DcRole::Writer),
-                dc_member("west-replica", "west", "not a url", DcRole::Replica),
+                dc_member("west-replica", "west", "https://west/", DcRole::Replica),
             ],
         }),
         ..s3_blob_config(&dir)
@@ -1671,7 +1671,7 @@ fn test_member_transports_follow_the_configured_topology() {
         token: SecretSource::Literal("token".to_owned()),
     };
     let members = vec![
-        dc_member("local", "east", "127.0.0.1:8000", DcRole::Writer),
+        dc_member("local", "east", "http://127.0.0.1:8000", DcRole::Writer),
         dc_member("peer", "east", "http://127.0.0.1:8001", DcRole::Replica),
         dc_member("west", "west", "https://127.0.0.1:8002", DcRole::Replica),
     ];
@@ -1712,7 +1712,6 @@ fn test_member_transports_follow_the_configured_topology() {
         token: SecretSource::Literal("token".to_owned()),
     }),
     "east",
-    "build receipt transport for peer peer",
 )]
 #[case::remote_datacenter(
     AvailabilityConfig::Ha(ReplicationConfig::Primary {
@@ -1720,13 +1719,8 @@ fn test_member_transports_follow_the_configured_topology() {
         token: SecretSource::Literal("token".to_owned()),
     }),
     "west",
-    "build remote frontier transport for datacenter west",
 )]
-fn test_build_state_rejects_an_invalid_member_transport(
-    #[case] availability: AvailabilityConfig,
-    #[case] peer_dc: &str,
-    #[case] expected: &str,
-) {
+fn test_build_state_rejects_an_invalid_member_address(#[case] availability: AvailabilityConfig, #[case] peer_dc: &str) {
     let dir = tempfile::tempdir().unwrap();
     let node_identity = matches!(availability, AvailabilityConfig::Ha(_)).then(|| "local".to_owned());
     let config = Config {
@@ -1735,7 +1729,7 @@ fn test_build_state_rejects_an_invalid_member_transport(
         dc_membership: Some(DcMembership {
             group: "group".to_owned(),
             members: vec![
-                dc_member("local", "east", "127.0.0.1:8000", DcRole::Writer),
+                dc_member("local", "east", "http://127.0.0.1:8000", DcRole::Writer),
                 dc_member("peer", peer_dc, "not a url", DcRole::Replica),
             ],
         }),
@@ -1745,10 +1739,13 @@ fn test_build_state_rejects_an_invalid_member_transport(
     };
 
     let Err(error) = build_state(&config) else {
-        panic!("expected invalid member transport");
+        panic!("expected invalid member address");
     };
 
-    assert!(format!("{error:#}").contains(expected), "{error:#}");
+    assert!(
+        format!("{error:#}").contains("member `address` \"not a url\" must be an http or https URL"),
+        "{error:#}"
+    );
 }
 
 #[test]
@@ -1761,7 +1758,7 @@ fn test_member_transports_fall_back_to_the_rostered_writer_without_a_node_identi
     };
     let membership = Some(DcMembership {
         group: "group".to_owned(),
-        members: vec![dc_member("writer", "east", "127.0.0.1:8000", DcRole::Writer)],
+        members: vec![dc_member("writer", "east", "http://127.0.0.1:8000", DcRole::Writer)],
     });
     let dc = Config {
         data_dir: dc_dir.path().to_path_buf(),

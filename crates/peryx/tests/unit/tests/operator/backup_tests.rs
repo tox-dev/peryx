@@ -175,13 +175,13 @@ fn test_backup_records_distributed_state_and_membership() {
                 DcMember {
                     node: "node-a".to_owned(),
                     dc: "east".to_owned(),
-                    address: "10.0.0.1:8443".to_owned(),
+                    address: "http://10.0.0.1:8443".to_owned(),
                     role: DcRole::Writer,
                 },
                 DcMember {
                     node: "node-b".to_owned(),
                     dc: "west".to_owned(),
-                    address: "10.0.0.2:8443".to_owned(),
+                    address: "http://10.0.0.2:8443".to_owned(),
                     role: DcRole::Replica,
                 },
             ],

@@ -8,11 +8,9 @@ use peryx_driver::serving::{JobConfig, JobIndexConfig};
 use peryx_ha_distributed::DurabilityPolicy;
 use peryx_identity::{ExternalGroup, ExternalGroupGrant, GrantScope, ProviderId};
 use peryx_upstream::{CredentialFailure, ExecCredentialConfig, ExecCredentialConfigError};
+use std::collections::{HashMap, HashSet};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
-use url::Url;
-
-use std::collections::{HashMap, HashSet};
 
 use super::ConfigError;
 use super::model::{
@@ -21,7 +19,7 @@ use super::model::{
     DEFAULT_REPLICA_POLL_INTERVAL_SECS, DEFAULT_WRITE_ACK_DEADLINE_SECS, DcMember, DcMembership, DcRole, IndexConfig,
     IndexKind, JobsConfig, LdapBindConfig, LdapProviderConfig, LogConfig, MAX_TOKEN_TTL_SECS, OidcProviderConfig,
     ReplicationConfig, S3StorageConfig, SecretSource, TlsConfig, TokenConfig, UpstreamConfig, UpstreamRoutingConfig,
-    UpstreamTlsConfig, WebhookConfig, WebhookSecret, WriteAckConfig,
+    UpstreamTlsConfig, WebhookConfig, WebhookSecret, WriteAckConfig, validate_member_address,
 };
 use super::raw::{
     PartialAuthConfig, PartialConfig, PartialJobsConfig, PartialLogConfig, PartialRateLimitConfig, PartialRouteLimit,
@@ -576,21 +574,9 @@ fn non_blank(value: String, field: &str) -> Result<String, ConfigError> {
     Ok(value)
 }
 
-/// A member's advertised address is the base a peer-to-peer transport reaches it on, so it must be an
-/// `http(s)` URL a client can build requests from, not a bare host or an opaque string. This applies the
-/// same check [`HttpPeerTransport::new`] and [`HttpBlobTransport::new`] make on their base, at config
-/// time, so a misconfigured address is refused before any peer work starts. The blank check runs first,
-/// keeping its distinct "must not be empty" reason.
 fn member_address(value: String) -> Result<String, ConfigError> {
-    let address = non_blank(value, "member `address`")?;
-    let usable_base =
-        Url::parse(&address).is_ok_and(|url| matches!(url.scheme(), "http" | "https") && !url.cannot_be_a_base());
-    if !usable_base {
-        return Err(membership_error(format!(
-            "member `address` {address:?} must be an http or https URL"
-        )));
-    }
-    Ok(address)
+    validate_member_address(&value)?;
+    Ok(value)
 }
 
 fn membership_error(reason: impl Into<String>) -> ConfigError {
