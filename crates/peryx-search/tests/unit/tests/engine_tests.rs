@@ -126,6 +126,34 @@ fn test_search_rejects_an_invalid_indexed_ecosystem() {
 }
 
 #[test]
+fn test_search_rejects_an_oversized_window_before_refreshing_the_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let stores = Stores::open(&dir);
+    let lexicons = LexiconRegistry::default();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut search = SearchIndex::in_memory();
+    search.add_indexer(Arc::new(CountingDocs {
+        calls: calls.clone(),
+        advance_serial: false,
+        names: Vec::new(),
+    }));
+
+    assert!(matches!(
+        (
+            search.search(
+                &stores.ctx(&lexicons),
+                SearchParams {
+                    page: usize::MAX,
+                    ..SearchParams::default()
+                },
+            ),
+            calls.load(Ordering::Relaxed),
+        ),
+        (Err(SearchError::ResultWindowTooLarge { .. }), 0)
+    ));
+}
+
+#[test]
 fn test_rebuild_publishes_new_documents_without_an_epoch_bump() {
     let dir = tempfile::tempdir().unwrap();
     let stores = Stores::open(&dir);

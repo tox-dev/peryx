@@ -20,6 +20,8 @@ pub enum SearchError {
     InvalidSource(String),
     #[error("invalid availability filter {0:?}")]
     InvalidAvailability(String),
+    #[error("search page {page} with size {page_size} exceeds the {max}-result window")]
+    ResultWindowTooLarge { page: usize, page_size: usize, max: usize },
     #[error("invalid indexed ecosystem {0:?}")]
     InvalidEcosystem(String),
 }
@@ -32,6 +34,7 @@ impl SearchError {
             self,
             Self::InvalidSource(_)
                 | Self::InvalidAvailability(_)
+                | Self::ResultWindowTooLarge { .. }
                 | Self::Tantivy(tantivy::TantivyError::InvalidArgument(_))
         )
     }

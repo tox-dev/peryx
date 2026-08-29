@@ -33,16 +33,52 @@ fn test_query_parameters_reject_unknown_source_filters() {
     assert!(matches!(error, SearchError::InvalidSource(value) if value == "blocked"));
 }
 
+#[rstest]
+#[case::last_window(100, 100, Some(9_900))]
+#[case::first_window_above_limit(101, 100, None)]
+#[case::offset_overflow(usize::MAX, 100, None)]
+#[case::end_overflow(2, usize::MAX, None)]
+fn test_query_offset_bounds_the_result_window(
+    #[case] page: usize,
+    #[case] page_size: usize,
+    #[case] expected: Option<usize>,
+) {
+    let params = SearchParams {
+        page,
+        page_size,
+        ..SearchParams::default()
+    };
+
+    match expected {
+        Some(offset) => assert_eq!(params.offset().unwrap(), offset),
+        None => assert!(matches!(
+            params.offset(),
+            Err(SearchError::ResultWindowTooLarge {
+                page: rejected_page,
+                page_size: rejected_page_size,
+                max: 10_000,
+            }) if (rejected_page, rejected_page_size) == (page, page_size)
+        )),
+    }
+}
+
+#[rstest]
+#[case::first_window_above_limit("page=101&page_size=100")]
+#[case::arithmetic_overflow(&format!("page={}&page_size=100", usize::MAX))]
+fn test_query_parameters_reject_oversized_result_windows(#[case] query: &str) {
+    assert!(matches!(
+        SearchParams::from_query(Some(query)),
+        Err(SearchError::ResultWindowTooLarge { .. })
+    ));
+}
+
 #[test]
-fn test_query_offset_saturates() {
+fn test_query_parameters_accept_the_maximum_result_window() {
+    let params = SearchParams::from_query(Some("page=100&page_size=100")).unwrap();
+
     assert_eq!(
-        SearchParams {
-            page: usize::MAX,
-            page_size: 100,
-            ..SearchParams::default()
-        }
-        .offset(),
-        usize::MAX
+        (params.page, params.page_size, params.offset().unwrap()),
+        (100, 100, 9_900)
     );
 }
 

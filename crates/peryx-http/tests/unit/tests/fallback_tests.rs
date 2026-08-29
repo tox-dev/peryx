@@ -636,6 +636,28 @@ async fn test_root_search_rejects_an_invalid_filter() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
+#[tokio::test]
+async fn test_root_search_rejects_an_oversized_result_window() {
+    let (_dir, state) = unwired_state();
+    let response = crate::router(state)
+        .oneshot(
+            Request::builder()
+                .uri("/+search?page=101&page_size=100")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(
+            &axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+        )
+        .unwrap(),
+        serde_json::json!({"error": "search page 101 with size 100 exceeds the 10000-result window"})
+    );
+}
+
 #[rstest]
 #[case::global("/+search?q=demo")]
 #[case::index("/private/+search?q=demo")]

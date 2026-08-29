@@ -5,6 +5,9 @@ use crate::error::SearchError;
 const DEFAULT_PAGE_SIZE: usize = 25;
 const PAGE_SIZES: [usize; 3] = [25, 50, 100];
 
+/// Maximum `offset + page_size`; Tantivy's offset collection cost grows with this sum.
+const MAX_RESULT_WINDOW: usize = 10_000;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchParams {
     pub query: String,
@@ -64,12 +67,27 @@ impl SearchParams {
                 _ => {}
             }
         }
+        params.offset()?;
         Ok(params)
     }
 
-    #[must_use]
-    pub const fn offset(&self) -> usize {
-        self.page.saturating_sub(1).saturating_mul(self.page_size)
+    /// # Errors
+    /// Returns an error when page arithmetic overflows or the result window exceeds the fixed limit.
+    pub fn offset(&self) -> Result<usize, SearchError> {
+        self.page
+            .checked_sub(1)
+            .and_then(|page| page.checked_mul(self.page_size))
+            .and_then(|offset| {
+                offset
+                    .checked_add(self.page_size)
+                    .filter(|end| *end <= MAX_RESULT_WINDOW)
+                    .map(|_| offset)
+            })
+            .ok_or(SearchError::ResultWindowTooLarge {
+                page: self.page,
+                page_size: self.page_size,
+                max: MAX_RESULT_WINDOW,
+            })
     }
 }
 

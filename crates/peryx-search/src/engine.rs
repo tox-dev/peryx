@@ -245,10 +245,10 @@ impl SearchIndex {
         params: SearchParams,
         access: Option<&SearchAccess>,
     ) -> Result<SearchResponse, SearchError> {
+        let offset = params.offset()?;
         self.ensure_current(ctx)?;
         let query = self.query(&params, access)?;
         let searcher = self.reader.searcher();
-        let offset = params.offset();
         let top_docs = TopDocs::with_limit(params.page_size)
             .and_offset(offset)
             .order_by_string_fast_field("sort", Order::Asc);

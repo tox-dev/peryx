@@ -8,6 +8,14 @@ fn test_bad_request_classification() {
         (SearchError::InvalidSource("bad".to_owned()), true),
         (SearchError::InvalidAvailability("bad".to_owned()), true),
         (
+            SearchError::ResultWindowTooLarge {
+                page: 101,
+                page_size: 100,
+                max: 10_000,
+            },
+            true,
+        ),
+        (
             SearchError::Tantivy(tantivy::TantivyError::InvalidArgument("bad".to_owned())),
             true,
         ),
