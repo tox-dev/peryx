@@ -4,6 +4,7 @@ use std::io::{BufRead as _, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, bail};
+use peryx_driver::BlobReferenceScanError;
 use peryx_plugin_registry::PluginRegistry;
 use peryx_storage::blob::Digest;
 use peryx_storage::meta::MetaStore;
@@ -301,14 +302,26 @@ fn check_metadata_references(
     out: &mut dyn Write,
     problems: &mut u64,
 ) -> anyhow::Result<()> {
-    for digest in crate::app::referenced_blob_digests_with_drivers(drivers, meta)
-        .context("scan backup metadata blob references")?
-    {
+    let scan = match drivers.scan_blob_references(meta) {
+        Ok(scan) => scan,
+        Err(BlobReferenceScanError::MissingDrivers(ecosystems)) => {
+            *problems += 1;
+            writeln!(
+                out,
+                "problem\tmetadata-reference-scope\t{}\tmissing blob-reference driver",
+                ecosystems.iter().map(String::as_str).collect::<Vec<_>>().join(",")
+            )?;
+            return Ok(());
+        }
+        Err(error) => return Err(error).context("scan backup metadata blob references"),
+    };
+    for digest in scan.digests {
         if !entries.contains_key(&digest) {
             *problems += 1;
             writeln!(out, "problem\tblob-index\t{digest}\tmissing referenced digest")?;
         }
     }
+    writeln!(out, "scope\tecosystems\t{}", scan.ecosystems.join(","))?;
     Ok(())
 }
 

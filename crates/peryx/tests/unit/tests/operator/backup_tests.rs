@@ -9,7 +9,7 @@ use crate::config::{
     self, AvailabilityConfig, Config, DcMember, DcMembership, DcRole, ReplicationConfig, SecretSource,
 };
 use crate::operator;
-use crate::tests::support::{fixture_job, plugins};
+use crate::tests::support::{fixture_job, plugins, store_repositories};
 
 use super::support::{
     backup_create, backup_create_with_references, backup_fixture, bounded_before, s3_blob_config, valid_backup,
@@ -40,10 +40,17 @@ fn test_backup_accepts_an_empty_precreated_target() {
     let root = tempfile::tempdir().unwrap();
     let backup = root.path().join("backup");
     std::fs::create_dir(&backup).unwrap();
+    let mut output = Vec::new();
 
-    backup_create_with_references(&config, &backup, &mut Vec::new()).unwrap();
+    backup_create_with_references(&config, &backup, &mut output).unwrap();
 
-    assert!(backup.join("manifest.json").is_file());
+    assert_eq!(
+        (
+            backup.join("manifest.json").is_file(),
+            String::from_utf8(output).unwrap().contains("ecosystems\tcore\n"),
+        ),
+        (true, true)
+    );
 }
 
 #[test]
@@ -87,6 +94,33 @@ fn test_backup_rejects_object_storage_before_creating_the_target() {
             backup.exists(),
         ),
         (true, false)
+    );
+}
+
+#[test]
+fn test_backup_refuses_an_uncovered_stored_ecosystem_before_creating_the_target() {
+    let root = tempfile::tempdir().unwrap();
+    let data_dir = root.path().join("data");
+    std::fs::create_dir(&data_dir).unwrap();
+    let meta = MetaStore::open(data_dir.join("peryx.redb")).unwrap();
+    store_repositories(&meta, &["pypi", "oci"]);
+    drop(meta);
+    let mut config = Config {
+        data_dir,
+        ..Config::default()
+    };
+    config.indexes.retain(|index| index.ecosystem.as_str() == "pypi");
+    let backup = root.path().join("backup");
+
+    let error = operator::backup_create(&config, &backup, &mut Vec::new()).unwrap_err();
+
+    assert_eq!(
+        (
+            error.to_string(),
+            format!("{error:#}").contains("blob-reference drivers: oci"),
+            backup.exists(),
+        ),
+        ("scan metadata blob references".to_owned(), true, false)
     );
 }
 

@@ -34,8 +34,28 @@ pub fn plugins_with_blob_references() -> PluginRegistry {
     registry(&BLOB_REGISTRATION)
 }
 
+pub fn plugins_with_broken_blob_references() -> PluginRegistry {
+    registry(&BROKEN_BLOB_REGISTRATION)
+}
+
 pub fn plugins_with_fsck() -> PluginRegistry {
     registry(&FSCK_REGISTRATION)
+}
+
+pub fn store_repositories(meta: &MetaStore, ecosystems: &[&str]) {
+    for ecosystem in ecosystems {
+        meta.create_repository(
+            peryx_storage::meta::NewRepository {
+                route: (*ecosystem).to_owned(),
+                display_name: (*ecosystem).to_owned(),
+                ecosystem: (*ecosystem).to_owned(),
+                definition: serde_json::json!({}),
+                created_by: peryx_identity::UserId::random(),
+            },
+            1,
+        )
+        .unwrap();
+    }
 }
 
 pub fn plugins_without_retention() -> PluginRegistry {
@@ -50,7 +70,7 @@ pub fn plugins_with_inactive_owner(
     migration: Option<Arc<dyn peryx_storage::meta::MetadataMigration>>,
 ) -> PluginRegistry {
     PluginRegistry::new(vec![
-        plugin_registration(&REGISTRATION, &RUNTIME, &RUNTIME, &DRIVER, None, 1),
+        plugin_registration(&BLOB_REGISTRATION, &BLOB_RUNTIME, &BLOB_RUNTIME, &BLOB_DRIVER, None, 1),
         plugin_registration(
             &INACTIVE_REGISTRATION,
             &INACTIVE_RUNTIME,
@@ -142,6 +162,10 @@ static BLOB_REGISTRATION: Registration = Registration {
     driver: &BLOB_DRIVER,
     runtime: &BLOB_RUNTIME,
 };
+static BROKEN_BLOB_REGISTRATION: Registration = Registration {
+    driver: &BROKEN_BLOB_DRIVER,
+    runtime: &BROKEN_BLOB_RUNTIME,
+};
 static FSCK_REGISTRATION: Registration = Registration {
     driver: &FSCK_DRIVER,
     runtime: &FSCK_RUNTIME,
@@ -181,6 +205,10 @@ static BLOB_DRIVER: Driver = Driver {
         Capability::Retention,
     ],
 };
+static BROKEN_BLOB_DRIVER: Driver = Driver {
+    ecosystem: CORE,
+    capabilities: &[Capability::BrokenBlobReferences],
+};
 static FSCK_DRIVER: Driver = Driver {
     ecosystem: CORE,
     capabilities: &[
@@ -199,6 +227,9 @@ static INACTIVE_DRIVER: Driver = Driver {
 static ECOSYSTEM_CONFIG: TestConfig = TestConfig;
 static RUNTIME: Runtime = Runtime { driver: &DRIVER };
 static BLOB_RUNTIME: Runtime = Runtime { driver: &BLOB_DRIVER };
+static BROKEN_BLOB_RUNTIME: Runtime = Runtime {
+    driver: &BROKEN_BLOB_DRIVER,
+};
 static FSCK_RUNTIME: Runtime = Runtime { driver: &FSCK_DRIVER };
 static PLAIN_RUNTIME: PlainRuntime = PlainRuntime;
 static INACTIVE_RUNTIME: Runtime = Runtime {
@@ -366,6 +397,7 @@ struct Driver {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Capability {
     BlobReferences,
+    BrokenBlobReferences,
     DirectoryImport,
     Fsck,
     Mirroring,
@@ -379,7 +411,7 @@ impl Driver {
     }
 
     fn register_capabilities(&self, registrar: &mut dyn CapabilityRegistrar) {
-        if self.has(Capability::BlobReferences) {
+        if self.has(Capability::BlobReferences) || self.has(Capability::BrokenBlobReferences) {
             registrar.register_blob_references(self.ecosystem.clone(), Arc::new(self.clone()));
         }
         if self.has(Capability::DirectoryImport) {
@@ -514,6 +546,12 @@ impl ImportDriver for Driver {
 
 impl BlobReferenceDriver for Driver {
     fn referenced_blob_digests(&self, _: &MetaStore) -> Result<BTreeSet<String>, String> {
+        if self.has(Capability::BrokenBlobReferences) {
+            return Err("blob-reference scan failed".to_owned());
+        }
+        if self.ecosystem == PLAIN {
+            return Err("inactive blob-reference driver ran".to_owned());
+        }
         Ok([Digest::of(b"artifact bytes"), Digest::of(b"metadata bytes")]
             .into_iter()
             .map(|digest| digest.as_str().to_owned())

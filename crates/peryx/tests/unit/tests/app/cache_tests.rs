@@ -243,7 +243,8 @@ fn test_cache_dispatches_maintenance_commands() {
             })),
             concat!(
                 "action\ttarget\tdigest\tsize_bytes\tpath\n",
-                "summary\tdry-run\torphaned-blobs\t0\t0\n"
+                "summary\tdry-run\torphaned-blobs\t0\t0\n",
+                "scope\tecosystems\t\n"
             ),
         ),
     ];

@@ -4,7 +4,8 @@ use std::sync::Arc;
 use peryx_core::{Ecosystem, TrashRecord};
 use peryx_driver::DriverSet;
 use peryx_driver::serving::{BlobReferenceDriver, CapabilityRegistrar, EcosystemDriver, TrashDriver};
-use peryx_storage::meta::MetaStore;
+use peryx_identity::UserId;
+use peryx_storage::meta::{MetaStore, NewRepository};
 
 #[derive(Clone, Copy)]
 enum Capability {
@@ -106,7 +107,10 @@ fn reference_inventory_propagates_driver_failures() {
         Vec::new(),
     );
 
-    assert_eq!(inventory.referenced(), Err("references unavailable".to_owned()));
+    assert_eq!(
+        inventory.referenced(),
+        Err("scan example blob references: references unavailable".to_owned())
+    );
 }
 
 #[test]
@@ -140,4 +144,33 @@ fn reference_inventory_skips_absent_capabilities() {
     );
 
     assert_eq!(inventory.referenced().unwrap(), BTreeSet::new());
+}
+
+#[test]
+fn reference_inventory_rejects_an_uncovered_repository_ecosystem() {
+    let (_directory, meta) = store();
+    meta.create_repository(
+        NewRepository {
+            route: "other".to_owned(),
+            display_name: "Other".to_owned(),
+            ecosystem: "other".to_owned(),
+            definition: serde_json::json!({}),
+            created_by: UserId::random(),
+        },
+        1,
+    )
+    .unwrap();
+    let inventory = super::reference_inventory(
+        drivers(References {
+            blobs: Capability::Ready,
+            trash: Capability::Ready,
+        }),
+        meta,
+        Vec::new(),
+    );
+
+    assert_eq!(
+        inventory.referenced(),
+        Err("metadata contains repositories for ecosystems without blob-reference drivers: other".to_owned())
+    );
 }

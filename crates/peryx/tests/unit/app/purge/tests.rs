@@ -50,10 +50,15 @@ fn test_orphan_purge_report_formats_service_output() {
     };
     let mut output = Vec::new();
 
-    write_orphan_purge_report(&mut output, "removed", &report).unwrap();
+    write_orphan_purge_report(&mut output, "removed", &["oci".to_owned(), "pypi".to_owned()], &report).unwrap();
 
     assert_eq!(
         String::from_utf8(output).unwrap(),
-        "action\ttarget\tdigest\tsize_bytes\tpath\nremoved\torphaned-blob\tabc\t6\tblobs/abc\nsummary\tremoved\torphaned-blobs\t1\t6\n"
+        concat!(
+            "action\ttarget\tdigest\tsize_bytes\tpath\n",
+            "removed\torphaned-blob\tabc\t6\tblobs/abc\n",
+            "summary\tremoved\torphaned-blobs\t1\t6\n",
+            "scope\tecosystems\toci,pypi\n"
+        )
     );
 }

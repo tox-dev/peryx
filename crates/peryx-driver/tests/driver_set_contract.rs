@@ -1,16 +1,29 @@
+use std::collections::BTreeSet;
+use std::error::Error as _;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use peryx_core::Ecosystem;
-use peryx_driver::DriverSet;
 use peryx_driver::serving::{
     BlobReferenceDriver, BrowseDriver, CacheDriver, CapabilityRegistrar, EcosystemDriver, FsckDriver, ImportDriver,
     JobConfig, JobDriver, MetricsDriver, NameDriver, RetentionDriver, TrashDriver,
 };
 use peryx_driver::serving::{CachePage, PurgeReport};
+use peryx_driver::{BlobReferenceScan, BlobReferenceScanError, DriverSet};
+use peryx_identity::UserId;
 
 struct Driver {
     ecosystem: Ecosystem,
+}
+
+struct References {
+    digest: &'static str,
+}
+
+impl BlobReferenceDriver for References {
+    fn referenced_blob_digests(&self, _meta: &peryx_storage::meta::MetaStore) -> Result<BTreeSet<String>, String> {
+        Ok(BTreeSet::from([self.digest.to_owned()]))
+    }
 }
 
 impl EcosystemDriver for Driver {
@@ -262,6 +275,88 @@ fn driver_set_registers_and_dispatches_independent_capabilities() {
         ),
         Err("import".to_owned())
     );
+}
+
+#[test]
+fn driver_set_scans_all_covered_repository_ecosystems() {
+    let directory = tempfile::tempdir().unwrap();
+    let meta = peryx_storage::meta::MetaStore::open(directory.path().join("peryx.redb")).unwrap();
+    for (route, ecosystem) in [("a", "alpha"), ("b", "beta")] {
+        meta.create_repository(
+            peryx_storage::meta::NewRepository {
+                route: route.to_owned(),
+                display_name: route.to_owned(),
+                ecosystem: ecosystem.to_owned(),
+                definition: serde_json::json!({}),
+                created_by: UserId::random(),
+            },
+            1,
+        )
+        .unwrap();
+    }
+    let mut set = DriverSet::default();
+    set.register_blob_references(Ecosystem::new("alpha"), Arc::new(References { digest: "a" }));
+    set.register_blob_references(Ecosystem::new("beta"), Arc::new(References { digest: "b" }));
+
+    assert_eq!(
+        set.scan_blob_references(&meta).unwrap(),
+        BlobReferenceScan {
+            ecosystems: vec!["alpha".to_owned(), "beta".to_owned()],
+            digests: ["a".to_owned(), "b".to_owned()].into_iter().collect(),
+        }
+    );
+}
+
+#[test]
+fn driver_set_names_all_uncovered_repository_ecosystems() {
+    let directory = tempfile::tempdir().unwrap();
+    let meta = peryx_storage::meta::MetaStore::open(directory.path().join("peryx.redb")).unwrap();
+    for ecosystem in ["gamma", "beta"] {
+        meta.create_repository(
+            peryx_storage::meta::NewRepository {
+                route: ecosystem.to_owned(),
+                display_name: ecosystem.to_owned(),
+                ecosystem: ecosystem.to_owned(),
+                definition: serde_json::json!({}),
+                created_by: UserId::random(),
+            },
+            1,
+        )
+        .unwrap();
+    }
+    let error = DriverSet::default().scan_blob_references(&meta).unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "metadata contains repositories for ecosystems without blob-reference drivers: beta, gamma"
+    );
+}
+
+#[test]
+fn driver_set_names_the_failing_reference_driver() {
+    let directory = tempfile::tempdir().unwrap();
+    let meta = peryx_storage::meta::MetaStore::open(directory.path().join("peryx.redb")).unwrap();
+    let mut set = DriverSet::default();
+    set.register_blob_references(
+        Ecosystem::new("example"),
+        Arc::new(Driver {
+            ecosystem: Ecosystem::new("example"),
+        }),
+    );
+    let error = set.scan_blob_references(&meta).unwrap_err();
+
+    assert_eq!(error.to_string(), "scan example blob references: blob references");
+}
+
+#[test]
+fn blob_reference_scan_error_preserves_store_sources() {
+    let error = BlobReferenceScanError::Store(peryx_storage::meta::MetaError::DriverPrecondition("broken".to_owned()));
+
+    assert_eq!(
+        error.to_string(),
+        "read repository ecosystems: driver precondition failed: broken"
+    );
+    assert!(error.source().is_some());
 }
 
 #[tokio::test]

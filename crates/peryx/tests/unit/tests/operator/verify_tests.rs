@@ -1,5 +1,6 @@
 use std::fmt::Write as _;
 
+use peryx_storage::meta::MetaStore;
 use rstest::rstest;
 
 use crate::config::{self, Config};
@@ -8,6 +9,35 @@ use crate::operator;
 use super::support::{
     BackupFixture, backup_verify, blob_relpath, identified_backup, mutate_manifest, resign_file, valid_backup,
 };
+use crate::tests::support::{plugins_with_broken_blob_references, store_repositories};
+
+fn backup_with_uncovered_stored_ecosystem() -> (tempfile::TempDir, std::path::PathBuf) {
+    let root = tempfile::tempdir().unwrap();
+    let data_dir = root.path().join("data");
+    std::fs::create_dir(&data_dir).unwrap();
+    let meta = MetaStore::open(data_dir.join("peryx.redb")).unwrap();
+    store_repositories(&meta, &["pypi", "oci"]);
+    drop(meta);
+    let backup = root.path().join("backup");
+    operator::backup_create(
+        &Config {
+            data_dir,
+            ..Config::default()
+        },
+        &backup,
+        &mut Vec::new(),
+    )
+    .unwrap();
+    let config_path = backup.join("config.toml");
+    let mut snapshot = toml::from_str::<toml::Value>(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+    snapshot["index"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|index| index["ecosystem"].as_str() == Some("pypi"));
+    std::fs::write(&config_path, toml::to_string_pretty(&snapshot).unwrap()).unwrap();
+    resign_file(&backup, "config", "config.toml");
+    (root, backup)
+}
 
 #[test]
 fn test_verify_accepts_a_complete_backup_without_mutation() {
@@ -18,7 +48,57 @@ fn test_verify_accepts_a_complete_backup_without_mutation() {
 
     backup_verify(&fixture.backup, &mut out).unwrap();
 
-    assert_eq!((out, std::fs::read(metadata).unwrap()), (b"ok\n".to_vec(), before));
+    assert_eq!(
+        (out, std::fs::read(metadata).unwrap()),
+        (b"scope\tecosystems\tcore\nok\n".to_vec(), before)
+    );
+}
+
+#[test]
+fn test_verify_reports_an_uncovered_stored_ecosystem() {
+    let (_root, backup) = backup_with_uncovered_stored_ecosystem();
+    let mut output = Vec::new();
+
+    let error = operator::backup_verify(&backup, &mut output).unwrap_err();
+
+    assert_eq!(
+        (error.to_string(), String::from_utf8(output).unwrap()),
+        (
+            "backup verification failed with 1 problem(s)".to_owned(),
+            concat!(
+                "problem\tmetadata-reference-scope\toci\tmissing blob-reference driver\n",
+                "problems\t1\n"
+            )
+            .to_owned(),
+        )
+    );
+}
+
+#[test]
+fn test_verify_propagates_uncovered_scope_output_errors() {
+    let (_root, backup) = backup_with_uncovered_stored_ecosystem();
+    let mut output: &mut [u8] = &mut [];
+
+    let error = operator::backup_verify(&backup, &mut output).unwrap_err();
+
+    assert_eq!(
+        error.downcast_ref::<std::io::Error>().map(std::io::Error::kind),
+        Some(std::io::ErrorKind::WriteZero)
+    );
+}
+
+#[test]
+fn test_verify_propagates_blob_reference_driver_errors() {
+    let fixture = valid_backup();
+
+    let error =
+        operator::backup_verify_with_plugins(&fixture.backup, &plugins_with_broken_blob_references(), &mut Vec::new())
+            .unwrap_err();
+
+    assert_eq!(
+        format!("{error:#}"),
+        "scan backup metadata blob references: scan core blob references: blob-reference scan failed"
+    );
 }
 
 #[rstest]
@@ -207,7 +287,7 @@ fn test_verify_accepts_empty_blob_index_rows() {
 
     backup_verify(&fixture.backup, &mut out).unwrap();
 
-    assert_eq!(out, b"ok\n");
+    assert_eq!(out, b"scope\tecosystems\tcore\nok\n");
 }
 
 #[test]

@@ -25,7 +25,6 @@ pub use indexes::{config_snippet, config_snippet_with_plugins, index, index_with
 pub(crate) use jobs::job_with_active_plugins;
 pub use jobs::{job, job_with_plugins};
 pub use policy::{policy, policy_with_plugins};
-pub(crate) use purge::referenced_blob_digests_with_drivers;
 pub use quota::{quota, quota_with_plugins};
 pub use retention::{retention, retention_with_plugins};
 pub use revocation::revocation;

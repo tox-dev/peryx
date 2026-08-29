@@ -34,9 +34,14 @@ pub fn backup_create_with_plugins(
     crate::app::reject_object_store_blob(config, "creating an offline backup")?;
     let distributed = config.availability.mode().is_distributed();
     let source_metadata = config.data_dir.join("peryx.redb");
-    let _quiesced = quiesce_source(&source_metadata)?;
-    prepare_new_backup_dir(path)?;
+    validate_backup_target(path)?;
+    let source_meta = quiesce_source(&source_metadata)?;
     let plugins = crate::server::activate_plugins(config, plugins)?;
+    let references = plugins
+        .drivers()
+        .scan_blob_references(&source_meta)
+        .context("scan metadata blob references")?;
+    prepare_new_backup_dir(path)?;
     let config_info = write_hashed(
         &path.join("config.toml"),
         config_snapshot(config)?.as_bytes(),
@@ -57,8 +62,7 @@ pub fn backup_create_with_plugins(
         let meta = crate::metadata::open_existing(&path.join("metadata/peryx.redb"), &plugins)?;
         let mut index = BufWriter::new(File::create(path.join("blobs.tsv")).context("create blobs.tsv")?);
         writeln!(index, "{BLOB_INDEX_HEADER}")?;
-        let (blob_count, blob_bytes) =
-            copy_referenced_blobs(plugins.drivers(), &meta, &source_blobs, path, &mut index)?;
+        let (blob_count, blob_bytes) = copy_referenced_blobs(&references.digests, &source_blobs, path, &mut index)?;
         index.into_inner()?.sync_all()?;
         let metadata_frontier = meta.current_serial().context("read metadata frontier")?;
         let placements = if distributed {
@@ -105,6 +109,7 @@ pub fn backup_create_with_plugins(
     write_manifest(path, &manifest)?;
     writeln!(out, "created\t{}", path.display())?;
     writeln!(out, "metadata\t{}", config.data_dir.join("peryx.redb").display())?;
+    writeln!(out, "ecosystems\t{}", references.ecosystems.join(","))?;
     writeln!(out, "blobs\t{blob_count}\t{blob_bytes}")?;
     let mode = &manifest.availability.mode;
     let frontier = manifest.availability.metadata_frontier;
@@ -139,18 +144,15 @@ fn quiesce_source(source: &Path) -> anyhow::Result<MetaStore> {
 /// returning the count and total bytes. Blobs are content-addressed artifacts, so they carry the
 /// platform-default mode under the owner-only backup root rather than a private one.
 fn copy_referenced_blobs(
-    drivers: &peryx_driver::DriverSet,
-    meta: &MetaStore,
+    digests: &std::collections::BTreeSet<String>,
     source_blobs: &BlobStorage,
     path: &Path,
     index: &mut impl Write,
 ) -> anyhow::Result<(u64, u64)> {
     let mut blob_count = 0_u64;
     let mut blob_bytes = 0_u64;
-    for digest in
-        crate::app::referenced_blob_digests_with_drivers(drivers, meta).context("scan metadata blob references")?
-    {
-        let digest = Digest::from_hex(&digest).context("metadata scan returned an invalid digest")?;
+    for digest in digests {
+        let digest = Digest::from_hex(digest).context("metadata scan returned an invalid digest")?;
         let source = source_blobs
             .blocking()
             .materialize(&digest)
@@ -180,14 +182,22 @@ fn copy_referenced_blobs(
 }
 
 fn prepare_new_backup_dir(path: &Path) -> anyhow::Result<()> {
+    validate_backup_target(path)?;
     if path.exists() {
-        anyhow::ensure!(
-            path.is_dir(),
-            "backup path {} exists and is not a directory",
-            path.display()
-        );
-        anyhow::ensure!(is_empty_dir(path)?, "backup path {} is not empty", path.display());
         return tighten_private_dir(path);
     }
     create_private_dir_all(path)
+}
+
+fn validate_backup_target(path: &Path) -> anyhow::Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    anyhow::ensure!(
+        path.is_dir(),
+        "backup path {} exists and is not a directory",
+        path.display()
+    );
+    anyhow::ensure!(is_empty_dir(path)?, "backup path {} is not empty", path.display());
+    Ok(())
 }

@@ -387,6 +387,23 @@ impl MetaStore {
         })
     }
 
+    /// # Errors
+    /// Returns a store error when a repository record cannot be read or decoded.
+    pub fn repository_ecosystems(&self) -> Result<BTreeSet<String>, MetaError> {
+        let txn = self.db.begin_read().map_err(MetaError::from)?;
+        let table = txn.open_table(REPOSITORY).map_err(MetaError::from)?;
+        table
+            .iter()
+            .map_err(MetaError::from)?
+            .map(|entry| {
+                let (_key, value) = entry.map_err(MetaError::from)?;
+                serde_json::from_slice::<RepositoryRecord>(value.value())
+                    .map(|record| record.ecosystem)
+                    .map_err(MetaError::from)
+            })
+            .collect()
+    }
+
     /// Matches records by route. New routes start at version 1, changed records advance their version,
     /// and unchanged or omitted routes retain their records. Ecosystem changes fail the atomic batch.
     ///

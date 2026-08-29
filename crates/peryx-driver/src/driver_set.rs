@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
+use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 
 use peryx_core::Ecosystem;
@@ -27,6 +28,42 @@ pub struct DriverSet {
     services: HashMap<Ecosystem, Arc<dyn ServiceDriver>>,
     browse: HashMap<Ecosystem, Arc<dyn BrowseDriver>>,
     index_credentials: HashMap<Ecosystem, Arc<dyn IndexCredentialDriver>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlobReferenceScan {
+    pub ecosystems: Vec<String>,
+    pub digests: BTreeSet<String>,
+}
+
+#[derive(Debug)]
+pub enum BlobReferenceScanError {
+    Store(peryx_storage::meta::MetaError),
+    MissingDrivers(BTreeSet<String>),
+    Driver { ecosystem: Ecosystem, reason: String },
+}
+
+impl Display for BlobReferenceScanError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Store(error) => write!(formatter, "read repository ecosystems: {error}"),
+            Self::MissingDrivers(ecosystems) => write!(
+                formatter,
+                "metadata contains repositories for ecosystems without blob-reference drivers: {}",
+                ecosystems.iter().map(String::as_str).collect::<Vec<_>>().join(", ")
+            ),
+            Self::Driver { ecosystem, reason } => write!(formatter, "scan {ecosystem} blob references: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for BlobReferenceScanError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Store(error) => Some(error),
+            Self::MissingDrivers(_) | Self::Driver { .. } => None,
+        }
+    }
 }
 
 impl DriverSet {
@@ -80,6 +117,41 @@ impl DriverSet {
 
     pub fn blob_reference_drivers(&self) -> impl Iterator<Item = &Arc<dyn BlobReferenceDriver>> {
         self.blob_references.values()
+    }
+
+    /// # Errors
+    /// Returns every uncovered stored ecosystem or the first metadata or driver scan error.
+    pub fn scan_blob_references(
+        &self,
+        meta: &peryx_storage::meta::MetaStore,
+    ) -> Result<BlobReferenceScan, BlobReferenceScanError> {
+        let stored = meta.repository_ecosystems().map_err(BlobReferenceScanError::Store)?;
+        let ecosystems = self
+            .blob_references
+            .keys()
+            .map(|ecosystem| ecosystem.as_str().to_owned())
+            .collect::<BTreeSet<_>>();
+        let missing = stored.difference(&ecosystems).cloned().collect::<BTreeSet<_>>();
+        if !missing.is_empty() {
+            return Err(BlobReferenceScanError::MissingDrivers(missing));
+        }
+        let mut drivers = self.blob_references.iter().collect::<Vec<_>>();
+        drivers.sort_unstable_by_key(|(ecosystem, _)| ecosystem.as_str());
+        let mut digests = BTreeSet::new();
+        for (ecosystem, driver) in drivers {
+            digests.extend(
+                driver
+                    .referenced_blob_digests(meta)
+                    .map_err(|reason| BlobReferenceScanError::Driver {
+                        ecosystem: ecosystem.clone(),
+                        reason,
+                    })?,
+            );
+        }
+        Ok(BlobReferenceScan {
+            ecosystems: ecosystems.into_iter().collect(),
+            digests,
+        })
     }
 
     pub fn trash_drivers(&self) -> impl Iterator<Item = (&Ecosystem, &Arc<dyn TrashDriver>)> {

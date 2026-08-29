@@ -783,10 +783,11 @@ struct DriverReferences {
 
 impl ReferenceInventory for DriverReferences {
     fn referenced(&self) -> Result<BTreeSet<String>, String> {
-        let mut referenced = BTreeSet::new();
-        for source in self.drivers.blob_reference_drivers() {
-            referenced.extend(source.referenced_blob_digests(&self.meta)?);
-        }
+        let mut referenced = self
+            .drivers
+            .scan_blob_references(&self.meta)
+            .map_err(|error| error.to_string())?
+            .digests;
         for (ecosystem, trash) in self.drivers.trash_drivers() {
             for record in trash
                 .trash_records(&self.meta, &self.index_names)

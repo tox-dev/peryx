@@ -320,6 +320,27 @@ fn test_list_repositories_is_empty_without_records() {
     assert_eq!(page.next_cursor, None);
 }
 
+#[test]
+fn test_repository_ecosystems_include_distinct_disabled_records() {
+    let (_dir, store) = store();
+    let actor = UserId::random();
+    let disabled = store
+        .create_repository(new_repo("disabled", "Disabled", "beta", &actor), 1)
+        .unwrap();
+    store
+        .create_repository(new_repo("first", "First", "alpha", &actor), 1)
+        .unwrap();
+    store
+        .create_repository(new_repo("second", "Second", "alpha", &actor), 1)
+        .unwrap();
+    store.set_repository_enabled(&disabled.id, 1, false, &actor, 2).unwrap();
+
+    assert_eq!(
+        store.repository_ecosystems().unwrap(),
+        ["alpha".to_owned(), "beta".to_owned()].into_iter().collect()
+    );
+}
+
 #[rstest]
 #[case(0)]
 #[case(101)]
@@ -389,6 +410,7 @@ fn test_repository_operations_surface_a_corrupt_record() {
         store.list_repositories(&RepositoryQuery::default()),
         Err(RepositoryQueryError::Store(_))
     ));
+    assert!(store.repository_ecosystems().is_err());
 }
 
 #[test]

@@ -26,7 +26,7 @@ pub mod users;
 pub use availability::{
     ServingStateAvailabilityAuthorizer, ServingStateControlAuthorizer, ServingStateMetadataFrontierProvider,
 };
-pub use driver_set::DriverSet;
+pub use driver_set::{BlobReferenceScan, BlobReferenceScanError, DriverSet};
 pub use serving::PolicyDryRunDriver;
 pub use state::{
     AppState, DEFAULT_HOT_CACHE_BYTES, DEFAULT_MAX_STALE_SECS, HttpRoutes, Index, IndexDescription, IndexKind,

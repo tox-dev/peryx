@@ -1,5 +1,6 @@
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
+use rstest::rstest;
 
 use crate::app;
 use crate::app::tests::{bounded_output, runtime_args};
@@ -21,6 +22,7 @@ fn test_cache_purge_orphaned_blobs_dry_run_keeps_the_blob() {
         "{output}"
     );
     assert!(output.contains("summary\tdry-run\torphaned-blobs\t1\t6\n"), "{output}");
+    assert!(output.contains("scope\tecosystems\toci,pypi\n"), "{output}");
     assert!(blobs.exists(&orphan));
 }
 
@@ -39,7 +41,35 @@ fn test_cache_purge_orphaned_blobs_removes_the_blob_after_confirmation() {
         "{output}"
     );
     assert!(output.contains("summary\tremoved\torphaned-blobs\t1\t6\n"), "{output}");
+    assert!(output.contains("scope\tecosystems\toci,pypi\n"), "{output}");
     assert!(!blobs.exists(&orphan));
+}
+
+#[rstest]
+#[case::dry_run(false)]
+#[case::confirmed(true)]
+fn test_cache_purge_refuses_an_uncovered_stored_ecosystem(#[case] yes: bool) {
+    let (dir, mut config) = empty_cache();
+    config.indexes.retain(|index| index.ecosystem.as_str() == "pypi");
+    let meta = MetaStore::open_existing(dir.path().join("peryx.redb")).unwrap();
+    crate::tests::support::store_repositories(&meta, &["pypi", "oci"]);
+    drop(meta);
+    let blobs = BlobStore::new(config.data_dir.join("blobs"));
+    let digest = blobs.write(b"must remain").unwrap();
+    let mut output = Vec::new();
+
+    let error = app::cache(&config, &orphan_command(yes), &mut output).unwrap_err();
+
+    assert_eq!(
+        (error.to_string(), output, blobs.exists(&digest),),
+        (
+            "scan metadata blob references: metadata contains repositories for ecosystems without blob-reference \
+             drivers: oci"
+                .to_owned(),
+            Vec::new(),
+            true,
+        )
+    );
 }
 
 #[test]
