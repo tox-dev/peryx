@@ -49,9 +49,21 @@ fn test_analytics_handle_shares_the_store_database() {
 fn test_analytics_handle_is_a_noop_once_the_store_drops() {
     let (_dir, meta) = store();
     let handle = meta.analytics();
+    handle.save_apply(b"retained apply").unwrap();
+    handle.save_producer(b"retained producer").unwrap();
+    assert_eq!(
+        (handle.load_apply().unwrap(), handle.load_producer().unwrap()),
+        (Some(b"retained apply".to_vec()), Some(b"retained producer".to_vec()))
+    );
     drop(meta);
     handle.save_checkpoint(b"ignored", b"ignored").unwrap();
+    handle.save_apply(b"ignored").unwrap();
+    handle.save_producer(b"ignored").unwrap();
     assert_eq!(handle.load_checkpoint().unwrap(), AnalyticsCheckpoint::default());
+    assert_eq!(
+        (handle.load_apply().unwrap(), handle.load_producer().unwrap()),
+        (None, None)
+    );
 }
 
 #[test]
