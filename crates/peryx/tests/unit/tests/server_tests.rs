@@ -8,6 +8,7 @@ use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt as _;
 use peryx_identity::{Action, ProviderId};
 use peryx_policy::PolicyAction;
+use peryx_storage::blob::Digest;
 use peryx_storage::meta::{
     AccountingClass, JobKind, JobState, MetaStore, NewJobRun, NewQuotaReservation, PolicyDecisionQuery, QuotaLimits,
 };
@@ -164,7 +165,13 @@ fn inactive_owner_migrations_and_ha_references_do_not_run() {
         config.indexes.iter().map(|index| index.name.clone()).collect(),
     );
 
-    references.referenced().unwrap();
+    assert_eq!(
+        references.referenced().unwrap(),
+        [Digest::of(b"artifact bytes"), Digest::of(b"metadata bytes")]
+            .into_iter()
+            .map(|digest| digest.as_str().to_owned())
+            .collect()
+    );
 }
 
 #[test]

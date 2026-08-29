@@ -222,7 +222,7 @@ static FSCK_DRIVER: Driver = Driver {
 static PLAIN_DRIVER: EcosystemDriverFixture = EcosystemDriverFixture::new(PLAIN, RouteClass::Metadata);
 static INACTIVE_DRIVER: Driver = Driver {
     ecosystem: PLAIN,
-    capabilities: &[Capability::BlobReferences],
+    capabilities: &[Capability::BrokenBlobReferences],
 };
 static ECOSYSTEM_CONFIG: TestConfig = TestConfig;
 static RUNTIME: Runtime = Runtime { driver: &DRIVER };
@@ -548,9 +548,6 @@ impl BlobReferenceDriver for Driver {
     fn referenced_blob_digests(&self, _: &MetaStore) -> Result<BTreeSet<String>, String> {
         if self.has(Capability::BrokenBlobReferences) {
             return Err("blob-reference scan failed".to_owned());
-        }
-        if self.ecosystem == PLAIN {
-            return Err("inactive blob-reference driver ran".to_owned());
         }
         Ok([Digest::of(b"artifact bytes"), Digest::of(b"metadata bytes")]
             .into_iter()

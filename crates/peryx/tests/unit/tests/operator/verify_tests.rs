@@ -594,7 +594,8 @@ fn test_verify_propagates_availability_report_write_errors(#[case] report: Avail
             });
         }
     });
-    let mut out: &mut [u8] = &mut [];
+    let mut scope_output = [0; b"scope\tecosystems\tcore\n".len()];
+    let mut out = scope_output.as_mut_slice();
 
     let error = backup_verify(&fixture.backup, &mut out).unwrap_err();
 
