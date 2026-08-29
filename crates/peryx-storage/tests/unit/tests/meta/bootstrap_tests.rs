@@ -25,6 +25,7 @@ fn test_bootstrap_commits_an_authenticating_administrator_and_event() {
             .get_user_password(&user.id)
             .unwrap()
             .unwrap()
+            .verifier()
             .check("correct horse battery staple", &PasswordPolicy::new(8, 1, 1).unwrap()),
         PasswordCheck::Accepted { stale: false }
     );

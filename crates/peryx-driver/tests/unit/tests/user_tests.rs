@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::error::Error as _;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Barrier as ThreadBarrier};
 
 use argon2::password_hash::{PasswordHasher as _, SaltString};
 use argon2::{Algorithm, Argon2, Params, Version};
@@ -8,8 +9,9 @@ use peryx_identity::{
     Action, Glob, Grant, IndexAcl, NamedToken, PasswordCheck, PasswordError, PasswordPolicy, PasswordVerifier,
     Principal, UserId, UserLifecycleChange, UserState,
 };
-use peryx_storage::meta::MetaStore;
+use peryx_storage::meta::{MetaStore, StoredPasswordVerifier};
 use tokio::sync::Barrier;
+use tracing_subscriber::layer::SubscriberExt as _;
 
 use crate::users::{BootstrapError, EnrollError, UserService};
 
@@ -179,7 +181,7 @@ async fn test_authenticate_upgrades_a_stale_verifier_under_the_same_id() {
     let strong = UserService::with_password_settings(store.clone(), tighter, 2);
     let stored = store.get_user_password(&user.id).unwrap().unwrap();
     assert_eq!(
-        stored.check("correct horse", &tighter),
+        stored.verifier().check("correct horse", &tighter),
         PasswordCheck::Accepted { stale: true }
     );
 
@@ -190,9 +192,107 @@ async fn test_authenticate_upgrades_a_stale_verifier_under_the_same_id() {
 
     let upgraded = store.get_user_password(&user.id).unwrap().unwrap();
     assert_eq!(
-        upgraded.check("correct horse", &tighter),
+        upgraded.verifier().check("correct horse", &tighter),
         PasswordCheck::Accepted { stale: false }
     );
+}
+
+#[rstest::rstest]
+#[case::reset(ConcurrentPasswordChange::Reset)]
+#[case::clear(ConcurrentPasswordChange::Clear)]
+#[case::enrollment(ConcurrentPasswordChange::Enrollment)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_authenticate_rejects_a_stale_verifier_after_a_password_change(#[case] change: ConcurrentPasswordChange) {
+    let (_dir, store, weak) = cheap_service();
+    let user = weak.create("Alice").unwrap();
+    weak.set_password(&user.id, "old password").await.unwrap();
+    let policy = PasswordPolicy::new(16, 2, 1).unwrap();
+    let service = UserService::with_password_settings(store.clone(), policy, 2);
+    let verifier_read = Arc::new(ThreadBarrier::new(2));
+    let release_login = Arc::new(ThreadBarrier::new(2));
+    let verifier_reads = Arc::new(AtomicUsize::new(0));
+    let login = {
+        let service = service.clone();
+        let verifier_read = Arc::clone(&verifier_read);
+        let release_login = Arc::clone(&release_login);
+        let verifier_reads = Arc::clone(&verifier_reads);
+        std::thread::spawn(move || {
+            let subscriber = tracing_subscriber::registry().with(VerifierReadBarrier {
+                verifier_read,
+                release_login,
+                verifier_reads,
+            });
+            tracing::subscriber::with_default(subscriber, || {
+                tokio::runtime::Builder::new_current_thread()
+                    .build()
+                    .unwrap()
+                    .block_on(service.authenticate("Alice", "old password"))
+            })
+        })
+    };
+    verifier_read.wait();
+
+    match change {
+        ConcurrentPasswordChange::Reset => service.set_password(&user.id, "new password").await.unwrap(),
+        ConcurrentPasswordChange::Clear => service.clear_password(&user.id).unwrap(),
+        ConcurrentPasswordChange::Enrollment => {
+            service.clear_password(&user.id).unwrap();
+            service.set_password(&user.id, "new password").await.unwrap();
+        }
+    }
+    let password_after_change = store
+        .get_user_password(&user.id)
+        .unwrap()
+        .map(|stored| stored.verifier().clone());
+    release_login.wait();
+
+    assert_eq!(login.join().unwrap().unwrap(), None);
+    assert_eq!(verifier_reads.load(Ordering::SeqCst), 1);
+    let stored = store.get_user_password(&user.id).unwrap();
+    assert_eq!(
+        stored.as_ref().map(StoredPasswordVerifier::verifier),
+        password_after_change.as_ref()
+    );
+    match change {
+        ConcurrentPasswordChange::Clear => assert!(stored.is_none()),
+        ConcurrentPasswordChange::Reset | ConcurrentPasswordChange::Enrollment => {
+            let stored = stored.unwrap();
+            assert_eq!(
+                (
+                    stored.verifier().check("new password", &policy),
+                    stored.verifier().check("old password", &policy),
+                ),
+                (PasswordCheck::Accepted { stale: false }, PasswordCheck::Rejected)
+            );
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ConcurrentPasswordChange {
+    Reset,
+    Clear,
+    Enrollment,
+}
+
+struct VerifierReadBarrier {
+    verifier_read: Arc<ThreadBarrier>,
+    release_login: Arc<ThreadBarrier>,
+    verifier_reads: Arc<AtomicUsize>,
+}
+
+impl<Subscriber> tracing_subscriber::Layer<Subscriber> for VerifierReadBarrier
+where
+    Subscriber: tracing::Subscriber,
+{
+    fn on_event(&self, event: &tracing::Event<'_>, _context: tracing_subscriber::layer::Context<'_, Subscriber>) {
+        if event.metadata().target() == "peryx_driver::users::password_verifier_read"
+            && self.verifier_reads.fetch_add(1, Ordering::SeqCst) == 0
+        {
+            self.verifier_read.wait();
+            self.release_login.wait();
+        }
+    }
 }
 
 #[tokio::test]
@@ -217,6 +317,7 @@ async fn test_authenticate_upgrades_a_legacy_profile() {
             .get_user_password(&user.id)
             .unwrap()
             .unwrap()
+            .verifier()
             .check("correct horse", &cheap_policy()),
         PasswordCheck::Accepted { stale: false }
     );

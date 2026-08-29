@@ -103,7 +103,7 @@ pub use scoped_token::{
     NewScopedToken, RevokeScopedTokenOutcome, ScopedTokenPage, ScopedTokenQuery, ScopedTokenQueryError,
     ScopedTokenRecord,
 };
-pub use user::UserStoreError;
+pub use user::{StoredPasswordVerifier, UserStoreError};
 pub use webhook::{NewWebhookDelivery, WebhookDeliveryAttempt, WebhookDeliveryRecord, WebhookDeliveryStatus};
 
 const SERIAL: TableDefinition<&str, u64> = TableDefinition::new("serial");

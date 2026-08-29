@@ -5,6 +5,19 @@ use redb::{ReadableTable as _, WriteTransaction};
 
 use super::{MetaError, MetaStore, USER, USER_EVENT, USER_NAME, USER_VERIFIER};
 
+/// A verifier and the serialized row identity required for conditional replacement.
+pub struct StoredPasswordVerifier {
+    verifier: PasswordVerifier,
+    serialized: Vec<u8>,
+}
+
+impl StoredPasswordVerifier {
+    #[must_use]
+    pub const fn verifier(&self) -> &PasswordVerifier {
+        &self.verifier
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum UserStoreError {
     #[error(transparent)]
@@ -209,37 +222,40 @@ impl MetaStore {
     ///
     /// # Errors
     /// Returns a store error when the record cannot be read or decoded.
-    pub fn get_user_password(&self, id: &UserId) -> Result<Option<PasswordVerifier>, MetaError> {
+    pub fn get_user_password(&self, id: &UserId) -> Result<Option<StoredPasswordVerifier>, MetaError> {
         let txn = self.db.begin_read()?;
         let table = match txn.open_table(USER_VERIFIER) {
             Ok(table) => table,
             Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
             Err(error) => return Err(error.into()),
         };
-        Ok(table
-            .get(id.as_str())?
-            .map(|value| serde_json::from_slice(value.value()))
-            .transpose()?)
+        let Some(value) = table.get(id.as_str())? else {
+            return Ok(None);
+        };
+        let serialized = value.value().to_vec();
+        Ok(Some(StoredPasswordVerifier {
+            verifier: serde_json::from_slice(&serialized)?,
+            serialized,
+        }))
     }
 
     /// Replaces the verifier only when it still matches the value the caller checked.
     ///
     /// # Errors
-    /// Returns a store error when the record cannot be read, decoded, or committed.
+    /// Returns a store error when the transaction cannot read or replace the row.
     pub fn compare_and_set_user_password(
         &self,
         id: &UserId,
-        expected: &PasswordVerifier,
+        expected: &StoredPasswordVerifier,
         replacement: &PasswordVerifier,
     ) -> Result<bool, MetaError> {
         let txn = self.db.begin_write()?;
         {
             let mut table = txn.open_table(USER_VERIFIER)?;
-            let current = table
+            if table
                 .get(id.as_str())?
-                .map(|value| serde_json::from_slice::<PasswordVerifier>(value.value()))
-                .transpose()?;
-            if current.as_ref() != Some(expected) {
+                .is_none_or(|value| value.value() != expected.serialized)
+            {
                 return Ok(false);
             }
             let bytes = serde_json::to_vec(replacement)?;

@@ -150,7 +150,8 @@ impl UserService {
             self.spend_decoy(password.to_owned()).await;
             return Ok(None);
         };
-        let (policy, presented, checked) = (self.policy, password.to_owned(), verifier.clone());
+        tracing::trace!(target: "peryx_driver::users::password_verifier_read", user_id = %user.id);
+        let (policy, presented, checked) = (self.policy, password.to_owned(), verifier.verifier().clone());
         match self.gated(move || checked.check(&presented, &policy)).await {
             PasswordCheck::Rejected => Ok(None),
             PasswordCheck::Accepted { stale: false } => Ok(Some(user.id)),

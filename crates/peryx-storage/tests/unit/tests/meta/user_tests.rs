@@ -11,6 +11,7 @@ use crate::meta::{MetaError, MetaStore, UserStoreError};
 const RAW_DRIVER: TableDefinition<&str, &[u8]> = TableDefinition::new("driver_kv");
 const RAW_USER: TableDefinition<&str, &[u8]> = TableDefinition::new("server_user");
 const RAW_USER_NAME: TableDefinition<&str, &str> = TableDefinition::new("server_user_name");
+const RAW_USER_VERIFIER: TableDefinition<&str, &[u8]> = TableDefinition::new("server_user_verifier");
 
 fn raw_store(setup: impl FnOnce(&redb::WriteTransaction)) -> (tempfile::TempDir, MetaStore) {
     let dir = tempfile::tempdir().unwrap();
@@ -220,7 +221,7 @@ fn test_user_password_round_trips_and_clears() {
     let (dir, store) = store();
     let policy = PasswordPolicy::new(8, 1, 1).unwrap();
     let user = store.create_user("Alice").unwrap();
-    assert_eq!(store.get_user_password(&user.id).unwrap(), None);
+    assert!(store.get_user_password(&user.id).unwrap().is_none());
 
     store
         .set_user_password(&user.id, &policy.hash("first").unwrap())
@@ -233,13 +234,13 @@ fn test_user_password_round_trips_and_clears() {
     let reopened = MetaStore::open_existing(dir.path().join("peryx.redb")).unwrap();
     let stored = reopened.get_user_password(&user.id).unwrap().unwrap();
     assert_eq!(
-        stored.check("second", &policy),
+        stored.verifier().check("second", &policy),
         PasswordCheck::Accepted { stale: false }
     );
-    assert_eq!(stored.check("first", &policy), PasswordCheck::Rejected);
+    assert_eq!(stored.verifier().check("first", &policy), PasswordCheck::Rejected);
 
     reopened.clear_user_password(&user.id).unwrap();
-    assert_eq!(reopened.get_user_password(&user.id).unwrap(), None);
+    assert!(reopened.get_user_password(&user.id).unwrap().is_none());
 }
 
 #[rstest]
@@ -257,6 +258,7 @@ fn test_compare_and_set_user_password_requires_the_checked_verifier(
     let checked = policy.hash("checked").unwrap();
     let replacement = policy.hash("replacement").unwrap();
     store.set_user_password(&user.id, &checked).unwrap();
+    let checked = store.get_user_password(&user.id).unwrap().unwrap();
     if let Some(reset) = reset {
         store.set_user_password(&user.id, &policy.hash(reset).unwrap()).unwrap();
     }
@@ -269,8 +271,44 @@ fn test_compare_and_set_user_password_requires_the_checked_verifier(
     );
     let stored = store.get_user_password(&user.id).unwrap().unwrap();
     assert_eq!(
-        (stored.check(accepted, &policy), stored.check(rejected, &policy)),
+        (
+            stored.verifier().check(accepted, &policy),
+            stored.verifier().check(rejected, &policy),
+        ),
         (PasswordCheck::Accepted { stale: false }, PasswordCheck::Rejected)
+    );
+}
+
+#[test]
+fn test_compare_and_set_user_password_requires_the_checked_serialization() {
+    let (dir, store) = store();
+    let policy = PasswordPolicy::new(8, 1, 1).unwrap();
+    let user = store.create_user("Alice").unwrap();
+    let checked = policy.hash("checked").unwrap();
+    store.set_user_password(&user.id, &checked).unwrap();
+    let checked = store.get_user_password(&user.id).unwrap().unwrap();
+    drop(store);
+
+    let database = redb::Database::open(dir.path().join("peryx.redb")).unwrap();
+    let txn = database.begin_write().unwrap();
+    txn.open_table(RAW_USER_VERIFIER)
+        .unwrap()
+        .insert(
+            user.id.as_str(),
+            serde_json::to_string(checked.verifier())
+                .unwrap()
+                .replace('$', r"\u0024")
+                .as_bytes(),
+        )
+        .unwrap();
+    txn.commit().unwrap();
+    drop(database);
+
+    let reopened = MetaStore::open_existing(dir.path().join("peryx.redb")).unwrap();
+    assert!(
+        !reopened
+            .compare_and_set_user_password(&user.id, &checked, &policy.hash("replacement").unwrap())
+            .unwrap()
     );
 }
 
@@ -368,7 +406,7 @@ fn test_user_reads_treat_missing_old_tables_as_empty() {
     assert_eq!(store.get_user(&id).unwrap(), None);
     assert_eq!(store.get_user_by_name("Alice").unwrap(), None);
     assert_eq!(store.user_events(&id).unwrap(), Vec::new());
-    assert_eq!(store.get_user_password(&id).unwrap(), None);
+    assert!(store.get_user_password(&id).unwrap().is_none());
     assert_eq!(store.create_user("Alice").unwrap().state, UserState::Active);
 }
 
