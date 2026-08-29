@@ -293,6 +293,38 @@ fn blocked_client() -> UpstreamClient {
     UpstreamClient::new("https://pub.example.com/api/").unwrap()
 }
 
+#[rstest]
+#[case::conditional(ConditionalRequest::Etag, "http://127.0.0.1:1/x")]
+#[case::validated(ConditionalRequest::LastModified, "http://169.254.169.254/latest/meta-data/")]
+#[tokio::test]
+async fn test_conditional_requests_block_private_literals(#[case] request: ConditionalRequest, #[case] url: &str) {
+    let error = request
+        .send(&blocked_client(), Url::parse(url).unwrap())
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, UpstreamError::BlockedDestination { .. }));
+}
+
+#[derive(Clone, Copy)]
+enum ConditionalRequest {
+    Etag,
+    LastModified,
+}
+
+impl ConditionalRequest {
+    async fn send(self, client: &UpstreamClient, url: Url) -> Result<reqwest::Response, UpstreamError> {
+        match self {
+            Self::Etag => client.send_conditional(url, "application/json", Some("etag")).await,
+            Self::LastModified => {
+                client
+                    .send_validated(url, "application/json", None, Some("Mon, 01 Jan 2024 00:00:00 GMT"))
+                    .await
+            }
+        }
+    }
+}
+
 #[tokio::test]
 async fn test_fetch_bytes_blocks_private_literal() {
     let error = blocked_client().fetch_bytes("http://127.0.0.1:1/x").await.unwrap_err();

@@ -488,6 +488,23 @@ async fn test_upstream_attestation_proxy_mode_fetches_without_retaining() {
     }
 }
 
+#[rstest]
+#[case::loopback("http://127.0.0.2/provenance")]
+#[case::link_local("https://169.254.169.254/latest/meta-data/")]
+#[tokio::test]
+async fn test_upstream_attestation_blocks_private_destinations(#[case] destination: &str) {
+    let harness = upstream_harness(RemoteMetadataMode::Proxy).await;
+    let digest = "18".repeat(32);
+    mount_upstream_attestation_page_at(&harness, &digest, destination).await;
+    let (page_status, ..) = get(&harness.state, "/pypi/simple/peryxpkg/", Some("application/json")).await;
+
+    let (status, _, body) = get(&harness.state, &upstream_provenance_uri(&digest), None).await;
+
+    assert_eq!(page_status, StatusCode::OK);
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert!(body.ends_with(": upstream destination is not permitted"), "{body}");
+}
+
 #[tokio::test]
 async fn test_authenticated_upstream_attestation_response_is_private() {
     let harness = upstream_harness(RemoteMetadataMode::Proxy).await;

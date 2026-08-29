@@ -537,7 +537,8 @@ impl UpstreamClient {
     /// open response, including `304` and `404` statuses.
     ///
     /// # Errors
-    /// Returns [`UpstreamError::Credential`] when refresh fails, or [`UpstreamError::Http`] when the
+    /// Returns [`UpstreamError::BlockedDestination`] when the initial URL violates the outbound
+    /// policy, [`UpstreamError::Credential`] when refresh fails, or [`UpstreamError::Http`] when the
     /// request fails after exhausting retries.
     pub async fn send_conditional(
         &self,
@@ -552,7 +553,8 @@ impl UpstreamClient {
     /// time.
     ///
     /// # Errors
-    /// Returns [`UpstreamError::Credential`] when refresh fails, or [`UpstreamError::Http`] when the
+    /// Returns [`UpstreamError::BlockedDestination`] when the initial URL violates the outbound
+    /// policy, [`UpstreamError::Credential`] when refresh fails, or [`UpstreamError::Http`] when the
     /// request fails after exhausting retries.
     pub async fn send_validated(
         &self,
@@ -561,6 +563,7 @@ impl UpstreamClient {
         etag: Option<&str>,
         last_modified: Option<&str>,
     ) -> Result<reqwest::Response, UpstreamError> {
+        self.guard.check_url(&url)?;
         self.send_with_retry(&mut |auth| {
             let mut request = self
                 .authenticate(self.http(&url).get(url.clone()), &url, auth)
