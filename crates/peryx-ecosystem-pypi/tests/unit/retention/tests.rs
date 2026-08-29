@@ -83,9 +83,14 @@ fn test_evaluate_retention_rejects_unsupported_selectors(#[case] selector: Reten
     };
     let policy = RetentionPolicy::compile(&RetentionConfig { keep, expire }, crate::normalize_name);
 
-    let error = evaluate_retention(&meta, "pypi", &policy, None, RETENTION_PROJECT_BUDGET_BYTES, |_| {
-        panic!("an invalid policy must fail before emitting a decision")
-    })
+    let error = evaluate_retention(
+        &meta,
+        "pypi",
+        &policy,
+        None,
+        RETENTION_PROJECT_BUDGET_BYTES,
+        reject_decision,
+    )
     .unwrap_err();
 
     assert_eq!(error, format!("pypi retention does not support selector {name:?}"));
