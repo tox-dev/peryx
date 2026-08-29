@@ -22,20 +22,31 @@ const SCAN_BATCH: NonZeroUsize = NonZeroUsize::new(256).unwrap();
 const SOURCE_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 trait SourceTransports: Send + Sync {
-    fn transport(&self, source_dc: &str) -> Option<Box<dyn BlobTransport + Send + Sync>>;
+    fn transport(&self, source_dc: &str) -> Option<&(dyn BlobTransport + Send + Sync)>;
 }
 
 struct RosterTransports {
-    roster: HashMap<String, String>,
-    token: String,
-    limits: TransferLimits,
+    transports: HashMap<String, HttpBlobTransport>,
+}
+
+impl RosterTransports {
+    fn new(roster: HashMap<String, String>, token: &str) -> Result<Self, crate::HttpBlobError> {
+        let transports = roster
+            .into_iter()
+            .map(|(data_center, base)| {
+                HttpBlobTransport::new(&base, token.to_owned(), TransferLimits::default(), SOURCE_FETCH_TIMEOUT)
+                    .map(|transport| (data_center, transport))
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(Self { transports })
+    }
 }
 
 impl SourceTransports for RosterTransports {
-    fn transport(&self, source_dc: &str) -> Option<Box<dyn BlobTransport + Send + Sync>> {
-        let base = self.roster.get(source_dc)?;
-        let transport = HttpBlobTransport::new(base, self.token.clone(), self.limits, SOURCE_FETCH_TIMEOUT).ok()?;
-        Some(Box::new(transport))
+    fn transport(&self, source_dc: &str) -> Option<&(dyn BlobTransport + Send + Sync)> {
+        self.transports
+            .get(source_dc)
+            .map(|transport| transport as &(dyn BlobTransport + Send + Sync))
     }
 }
 
@@ -47,27 +58,24 @@ pub struct CrossDcBlobCopier {
 }
 
 impl CrossDcBlobCopier {
-    #[must_use]
+    /// # Errors
+    /// Returns an error when a roster address or the replication token cannot build an HTTP transport.
     pub fn http(
         local_dc: DataCenterId,
         roster: HashMap<String, String>,
-        token: String,
+        token: &str,
         store: BlobStore,
         backend: BackendId,
-    ) -> Option<Self> {
+    ) -> Result<Option<Self>, crate::HttpBlobError> {
         if roster.is_empty() {
-            return None;
+            return Ok(None);
         }
-        Some(Self {
+        Ok(Some(Self {
             local_dc,
             backend,
             store,
-            sources: Arc::new(RosterTransports {
-                roster,
-                token,
-                limits: TransferLimits::default(),
-            }),
-        })
+            sources: Arc::new(RosterTransports::new(roster, token)?),
+        }))
     }
 
     fn collect_backlog(
@@ -114,7 +122,7 @@ impl CrossDcBlobCopier {
             return false;
         }
         let digest = Digest::from_hex(copy.target.digest.sha256()).expect("artifact digests are validated SHA-256");
-        let outcome = copy_blob_to_target(transport.as_ref(), &self.store, &digest).await;
+        let outcome = copy_blob_to_target(transport, &self.store, &digest).await;
         let transition = match &outcome {
             Ok(()) => BlobPlacementTransition::Verify {
                 observed: copy.target.digest.clone(),

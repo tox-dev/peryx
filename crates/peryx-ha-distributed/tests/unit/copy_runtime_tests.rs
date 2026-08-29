@@ -1,6 +1,8 @@
 use std::num::{NonZeroU64, NonZeroUsize};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::LoopbackBlobSource;
+use axum::serve::ListenerExt as _;
 use peryx_ha::{BackendLocation, BlobPlacementState, BlobPlacementStatus, DataCenterId};
 use peryx_identity::ArtifactDigest;
 use peryx_storage::blob::BlobStorage;
@@ -40,7 +42,11 @@ fn filesystem() -> (tempfile::TempDir, BlobStore, BackendId) {
 fn test_http_copier_requires_a_remote_datacenter() {
     let (_dir, store, backend) = filesystem();
 
-    assert!(CrossDcBlobCopier::http(dc("home"), HashMap::new(), "token".to_owned(), store, backend).is_none());
+    assert!(
+        CrossDcBlobCopier::http(dc("home"), HashMap::new(), "token", store, backend)
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
@@ -51,11 +57,28 @@ fn test_http_copier_accepts_a_remote_datacenter() {
         CrossDcBlobCopier::http(
             dc("home"),
             HashMap::from([("east".to_owned(), "http://peer/".to_owned())]),
-            "token".to_owned(),
+            "token",
             store,
             backend,
         )
+        .unwrap()
         .is_some()
+    );
+}
+
+#[test]
+fn test_http_copier_rejects_an_invalid_remote_address() {
+    let (_dir, store, backend) = filesystem();
+
+    assert!(
+        CrossDcBlobCopier::http(
+            dc("home"),
+            HashMap::from([("east".to_owned(), "peer.invalid".to_owned())]),
+            "token",
+            store,
+            backend,
+        )
+        .is_err()
     );
 }
 
@@ -90,7 +113,7 @@ fn seed_verified(meta: &MetaStore, key: &BlobPlacementKey, size: u64) {
 }
 
 struct FakePeers {
-    peers: HashMap<String, HashMap<Digest, Bytes>>,
+    peers: HashMap<String, LoopbackBlobSource>,
 }
 
 impl FakePeers {
@@ -98,19 +121,20 @@ impl FakePeers {
         Self {
             peers: HashMap::from([(
                 data_center.to_owned(),
-                HashMap::from([(digest.clone(), Bytes::copy_from_slice(content))]),
+                LoopbackBlobSource::new(
+                    HashMap::from([(digest.clone(), Bytes::copy_from_slice(content))]),
+                    TransferLimits::default(),
+                ),
             )]),
         }
     }
 }
 
 impl SourceTransports for FakePeers {
-    fn transport(&self, source_dc: &str) -> Option<Box<dyn BlobTransport + Send + Sync>> {
-        let blobs = self.peers.get(source_dc)?;
-        Some(Box::new(LoopbackBlobSource::new(
-            blobs.clone(),
-            TransferLimits::default(),
-        )))
+    fn transport(&self, source_dc: &str) -> Option<&(dyn BlobTransport + Send + Sync)> {
+        self.peers
+            .get(source_dc)
+            .map(|transport| transport as &(dyn BlobTransport + Send + Sync))
     }
 }
 
@@ -204,28 +228,27 @@ fn test_failure_class_maps_each_loss_to_its_evidence() {
     );
 }
 
-#[test]
-fn test_roster_transport_resolves_only_a_rostered_buildable_peer() {
-    let good = RosterTransports {
-        roster: HashMap::from([("east".to_owned(), "http://peer/".to_owned())]),
-        token: "secret".to_owned(),
-        limits: TransferLimits::default(),
-    };
-    assert!(good.transport("east").is_some());
-    assert!(
-        good.transport("absent").is_none(),
-        "an unrostered datacenter resolves nothing"
-    );
+fn roster_transports() -> RosterTransports {
+    RosterTransports::new(
+        HashMap::from([("east".to_owned(), "http://peer/".to_owned())]),
+        "secret",
+    )
+    .unwrap()
+}
 
-    let empty_token = RosterTransports {
-        roster: HashMap::from([("east".to_owned(), "http://peer/".to_owned())]),
-        token: String::new(),
-        limits: TransferLimits::default(),
-    };
-    assert!(
-        empty_token.transport("east").is_none(),
-        "an address that cannot build a client resolves nothing"
-    );
+#[test]
+fn test_roster_transport_resolves_a_rostered_peer() {
+    assert!(roster_transports().transport("east").is_some());
+}
+
+#[test]
+fn test_roster_transport_skips_an_unrostered_peer() {
+    assert!(roster_transports().transport("absent").is_none());
+}
+
+#[test]
+fn test_roster_transport_rejects_an_empty_token() {
+    assert!(RosterTransports::new(HashMap::from([("east".to_owned(), "http://peer/".to_owned())]), "",).is_err());
 }
 
 #[test]
@@ -392,7 +415,10 @@ async fn test_copy_one_records_a_source_loss() {
         backend.clone(),
         store,
         Arc::new(FakePeers {
-            peers: HashMap::from([("east".to_owned(), HashMap::new())]),
+            peers: HashMap::from([(
+                "east".to_owned(),
+                LoopbackBlobSource::new(HashMap::new(), TransferLimits::default()),
+            )]),
         }),
     );
     let copy = plan(&artifact, &backend, "east", "home", 4);
@@ -422,7 +448,10 @@ async fn test_copy_one_records_a_digest_mismatch() {
         Arc::new(FakePeers {
             peers: HashMap::from([(
                 "east".to_owned(),
-                HashMap::from([(blob, Bytes::from_static(b"different bytes entirely"))]),
+                LoopbackBlobSource::new(
+                    HashMap::from([(blob, Bytes::from_static(b"different bytes entirely"))]),
+                    TransferLimits::default(),
+                ),
             )]),
         }),
     );
@@ -549,4 +578,66 @@ async fn test_copy_pass_drains_the_backlog_under_a_live_term() {
     assert_eq!(store.read(&blob).unwrap(), CONTENT);
     let local = key(&artifact, &backend, "home", artifact.sha256());
     assert_eq!(local_state(&meta, &local).status(), BlobPlacementStatus::Verified);
+}
+
+#[tokio::test]
+async fn test_http_copy_pass_reuses_one_connection_for_one_source() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let source_blobs = BlobStorage::filesystem(source_dir.path().join("blobs"));
+    let contents = [
+        b"first cross-datacenter blob".as_slice(),
+        b"second cross-datacenter blob".as_slice(),
+    ];
+    for content in contents {
+        source_blobs.put_bytes(content).await.unwrap();
+    }
+    let router = crate::primary_router(
+        "primary",
+        "token",
+        crate::support::distributed_meta(source_dir.path().join("peryx.redb")),
+        source_blobs,
+    )
+    .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let connections = Arc::new(AtomicUsize::new(0));
+    let observed_connections = Arc::clone(&connections);
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener.tap_io(move |_| {
+                observed_connections.fetch_add(1, Ordering::Relaxed);
+            }),
+            router,
+        )
+        .await
+        .unwrap();
+    });
+    let (_meta_dir, meta) = meta();
+    let (_store_dir, store, backend) = filesystem();
+    for content in contents {
+        let (_, artifact) = digests(content);
+        seed_verified(
+            &meta,
+            &key(&artifact, &backend, "east", "peer/loc"),
+            content.len() as u64,
+        );
+    }
+    let copier = CrossDcBlobCopier::http(
+        dc("home"),
+        HashMap::from([("east".to_owned(), format!("http://{address}/"))]),
+        "token",
+        store,
+        backend,
+    )
+    .unwrap()
+    .unwrap();
+    let clock: Clock = Arc::new(|| 42);
+
+    let report = copier
+        .copy_pass(&meta, &clock, 9, &|| false, NonZeroUsize::MIN)
+        .await
+        .unwrap();
+    server.abort();
+
+    assert_eq!((report.changed, connections.load(Ordering::Relaxed)), (2, 1));
 }

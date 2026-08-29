@@ -661,7 +661,7 @@ fn assembly_skips_topologies_without_a_local_member() {
 
     for unresolved in [&missing_identity, &missing_membership, &unknown_identity] {
         assert!(
-            cross_dc_blob_copier(unresolved, "token".to_owned(), store.clone(), backend.clone())
+            cross_dc_blob_copier(unresolved, "token", store.clone(), backend.clone())
                 .unwrap()
                 .is_none()
         );
@@ -682,7 +682,7 @@ fn assembly_rejects_invalid_datacenters() {
         "http://local.internal:4460",
         RuntimeMemberRole::Writer,
     )]);
-    assert!(cross_dc_blob_copier(&invalid_local, "token".to_owned(), store.clone(), backend).is_err());
+    assert!(cross_dc_blob_copier(&invalid_local, "token", store.clone(), backend).is_err());
     assert!(filesystem_placement_reconciler(&invalid_local, store.clone()).is_err());
 
     let invalid_remote = topology(vec![
@@ -690,6 +690,17 @@ fn assembly_rejects_invalid_datacenters() {
         member("remote", "", "http://west.internal:4460", RuntimeMemberRole::Replica),
     ]);
     assert!(filesystem_placement_reconciler(&invalid_remote, store).is_err());
+}
+
+#[test]
+fn assembly_rejects_an_invalid_remote_address() {
+    let (_dir, store, backend) = storage();
+    let topology = topology(vec![
+        member("local", "east", "http://east.internal:4460", RuntimeMemberRole::Writer),
+        member("remote", "west", "west.internal:4460", RuntimeMemberRole::Writer),
+    ]);
+
+    assert!(cross_dc_blob_copier(&topology, "token", store, backend).is_err());
 }
 
 #[test]
@@ -728,6 +739,46 @@ fn worker_assembly_rejects_an_invalid_local_datacenter() {
 }
 
 #[test]
+fn worker_assembly_rejects_an_invalid_remote_address() {
+    let dir = tempfile::tempdir().unwrap();
+    let context = service_context(&dir);
+    let mut config = runtime_config(
+        &dir,
+        DistributedMode::Dc,
+        RuntimeRole::Primary {
+            source: "local".to_owned(),
+            token: "token".to_owned(),
+        },
+    );
+    config.membership.as_mut().unwrap().members.push(member(
+        "remote",
+        "west",
+        "west.internal:4460",
+        RuntimeMemberRole::Writer,
+    ));
+
+    assert!(
+        assemble_workers(
+            &config,
+            DistributedWorkerContext {
+                filesystem: context.blobs.filesystem_store().cloned(),
+                backend: context.blobs.backend_id(),
+                meta: context.meta,
+                blobs: context.blobs,
+                clock: context.clock,
+                authority: None,
+                references: Arc::new(EmptyReferences),
+                frontiers: Arc::new(EmptyFrontiers),
+            },
+        )
+        .err()
+        .unwrap()
+        .to_string()
+        .contains("invalid peer URL")
+    );
+}
+
+#[test]
 fn assembly_builds_multi_datacenter_services() {
     let (_dir, store, backend) = storage();
     let topology = topology(vec![
@@ -753,13 +804,13 @@ fn assembly_builds_multi_datacenter_services() {
         member(
             "north-replica",
             "north",
-            "north.internal:4460",
+            "http://north.internal:4460",
             RuntimeMemberRole::Replica,
         ),
     ]);
 
     assert!(
-        cross_dc_blob_copier(&topology, "token".to_owned(), store.clone(), backend)
+        cross_dc_blob_copier(&topology, "token", store.clone(), backend)
             .unwrap()
             .is_some()
     );
@@ -777,7 +828,7 @@ fn assembly_skips_single_datacenter_copy_but_keeps_reconciliation() {
     )]);
 
     assert!(
-        cross_dc_blob_copier(&topology, "token".to_owned(), store.clone(), backend)
+        cross_dc_blob_copier(&topology, "token", store.clone(), backend)
             .unwrap()
             .is_none()
     );

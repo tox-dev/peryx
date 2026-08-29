@@ -978,11 +978,10 @@ pub fn assemble_workers(
         Some(filesystem) => (
             cross_dc_blob_copier(
                 &topology,
-                config.role.token().to_owned(),
+                config.role.token(),
                 filesystem.clone(),
                 context.backend.clone(),
-            )
-            .expect("local datacenter was validated while binding home placement")
+            )?
             .map(|copier| {
                 Arc::new(BoundCrossDcBlobCopier {
                     copier,
@@ -1236,7 +1235,7 @@ struct ServiceTopology {
 /// Returns an error when a datacenter or peer address is invalid.
 fn cross_dc_blob_copier(
     topology: &ServiceTopology,
-    token: String,
+    token: &str,
     store: BlobStore,
     backend: BackendId,
 ) -> anyhow::Result<Option<CrossDcBlobCopier>> {
@@ -1245,13 +1244,14 @@ fn cross_dc_blob_copier(
     };
     let local_dc =
         DataCenterId::new(&local.datacenter).context("the local datacenter is not a valid placement component")?;
-    Ok(CrossDcBlobCopier::http(
+    CrossDcBlobCopier::http(
         local_dc,
         source_roster(membership, &local.datacenter),
         token,
         store,
         backend,
-    ))
+    )
+    .map_err(Into::into)
 }
 
 /// # Errors
