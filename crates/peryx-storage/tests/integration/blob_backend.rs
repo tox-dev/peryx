@@ -5,6 +5,7 @@ use peryx_storage::blob::{
     BlobBackend, BlobDurability, BlobError, BlobErrorKind, BlobOperation, BlobRead, BlobReadBody, BlobStorage,
     BlobSupport, Digest, DurabilityCapabilities, S3Config, S3Settings,
 };
+use rstest::rstest;
 
 async fn bytes(read: BlobRead) -> Vec<u8> {
     read.collect(u64::MAX).await.unwrap()
@@ -125,16 +126,21 @@ fn test_filesystem_durability_proves_every_guarantee_locally() {
     );
 }
 
-#[test]
-fn test_object_store_durability_mirrors_the_declared_endpoint_guarantees() {
+#[rstest]
+#[case::conditional(true, BlobSupport::Native)]
+#[case::unconditional(false, BlobSupport::Unsupported)]
+fn test_object_store_capabilities_mirror_the_declared_endpoint_guarantees(
+    #[case] conditional_writes: bool,
+    #[case] expected_create_if_absent: BlobSupport,
+) {
     let dir = tempfile::tempdir().unwrap();
+    let storage = s3_storage(conditional_writes, true, dir.path());
     assert_eq!(
-        s3_storage(true, true, dir.path()).durability(),
-        DurabilityCapabilities::object_store(true, true)
-    );
-    assert_eq!(
-        s3_storage(false, false, dir.path()).durability(),
-        DurabilityCapabilities::object_store(false, false)
+        (storage.capabilities().create_if_absent, storage.durability()),
+        (
+            expected_create_if_absent,
+            DurabilityCapabilities::object_store(conditional_writes, true)
+        )
     );
 }
 

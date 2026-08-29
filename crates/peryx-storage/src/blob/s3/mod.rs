@@ -472,7 +472,11 @@ impl BlobBackend for S3Backend {
     fn capabilities(&self) -> BlobCapabilities {
         BlobCapabilities {
             durability: BlobDurability::ObjectStore,
-            create_if_absent: BlobSupport::Native,
+            create_if_absent: if self.client.config().conditional_writes {
+                BlobSupport::Native
+            } else {
+                BlobSupport::Unsupported
+            },
             range: BlobSupport::Native,
             checksum: BlobSupport::Emulated,
             delete: BlobSupport::Native,

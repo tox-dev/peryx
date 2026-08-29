@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::time::Duration;
 
 use peryx_core::Ecosystem;
 use peryx_driver::http_services::{
@@ -17,8 +18,9 @@ use peryx_policy::{
 };
 use peryx_pql::{PqlError, QueryScope, RepoScope, Value, bind, parse};
 use peryx_search::{SearchAccess, SearchParams};
-use peryx_storage::blob::BlobStore;
+use peryx_storage::blob::{BlobStorage, BlobStore, S3Config, S3Settings};
 use peryx_storage::meta::{MetaStore, NewPolicyDecision};
+use rstest::rstest;
 
 struct Fixture {
     _dir: tempfile::TempDir,
@@ -28,10 +30,15 @@ struct Fixture {
 impl Fixture {
     fn new(indexes: Vec<Index>) -> Self {
         let dir = tempfile::tempdir().unwrap();
+        let blobs = BlobStore::new(dir.path().join("blobs"));
+        Self::with_blobs(dir, indexes, blobs)
+    }
+
+    fn with_blobs(dir: tempfile::TempDir, indexes: Vec<Index>, blobs: impl Into<BlobStorage>) -> Self {
         Self {
             state: Arc::new(AppState::with_clock(
                 MetaStore::open(dir.path().join("peryx.redb")).unwrap(),
-                BlobStore::new(dir.path().join("blobs")),
+                blobs,
                 60,
                 indexes,
                 Arc::new(|| 42),
@@ -39,6 +46,27 @@ impl Fixture {
             _dir: dir,
         }
     }
+}
+
+fn s3_storage(conditional_writes: bool, staging: &std::path::Path) -> BlobStorage {
+    BlobStorage::s3(
+        S3Config::new(S3Settings {
+            endpoint: "https://s3.example.com".to_owned(),
+            bucket: "bucket".to_owned(),
+            prefix: String::new(),
+            region: "us-east-1".to_owned(),
+            path_style: true,
+            request_timeout: Duration::from_secs(5),
+            max_retries: 0,
+            multipart_threshold: 16 << 20,
+            part_size: 8 << 20,
+            upload_concurrency: 1,
+            conditional_writes,
+            checksum_writes: true,
+        })
+        .unwrap(),
+        staging.to_path_buf(),
+    )
 }
 
 fn index() -> Index {
@@ -155,6 +183,21 @@ async fn domain_services_read_policy_quota_queries_and_status() {
             .unwrap()
             .is_none()
     );
+}
+
+#[rstest]
+#[case::conditional(true, "native")]
+#[case::unconditional(false, "unsupported")]
+fn status_reports_the_configured_s3_conditional_write_capability(
+    #[case] conditional_writes: bool,
+    #[case] expected: &str,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let staging = dir.path().join("staging");
+    let fixture = Fixture::with_blobs(dir, Vec::new(), s3_storage(conditional_writes, &staging));
+    let services = HttpDomainServices::for_state(&fixture.state);
+
+    assert_eq!(services.status().blob_status().conditional_write, expected);
 }
 
 #[test]
