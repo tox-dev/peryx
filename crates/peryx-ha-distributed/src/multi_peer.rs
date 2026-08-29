@@ -76,6 +76,7 @@ pub struct RoundReport {
     pub outcomes: Vec<MemberOutcome>,
     pub retired: Vec<RetiredPeer>,
     pub fully_retired: bool,
+    pub incompatible: Option<u16>,
 }
 
 impl RoundReport {
@@ -100,9 +101,22 @@ struct Member<T: PeerTransport> {
     frontier: u64,
     attempt: u32,
     channel: BoundedChannel,
+    batch: Option<BatchIdentity>,
     health: Health,
     /// Prevents a fetch between drain and commit from replaying drained changes at the old frontier.
     draining: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BatchIdentity {
+    source: String,
+    version: u16,
+}
+
+pub struct BufferedBatch {
+    pub source: String,
+    pub version: u16,
+    pub changes: Vec<Change>,
 }
 
 impl<T: PeerTransport> Member<T> {
@@ -182,6 +196,7 @@ impl<T: PeerTransport> PeerSet<T> {
             frontier,
             attempt: 0,
             channel: BoundedChannel::new(self.limits.per_peer_budget),
+            batch: None,
             health: Health::Ready,
             draining: false,
         });
@@ -219,15 +234,25 @@ impl<T: PeerTransport> PeerSet<T> {
     /// Returns buffered changes in serial order and suspends fetching until [`commit`](Self::commit).
     /// The hold prevents replay from the unchanged durable frontier.
     pub fn drain(&mut self, source: &str) -> Vec<Change> {
-        let Some(member) = self.member_mut(source) else {
-            return Vec::new();
-        };
+        self.drain_batch(source).map_or_else(Vec::new, |batch| batch.changes)
+    }
+
+    pub(crate) fn drain_batch(&mut self, source: &str) -> Option<BufferedBatch> {
+        let member = self.member_mut(source)?;
         let mut changes = Vec::with_capacity(member.channel.len());
         while let Some(change) = member.channel.pop() {
             changes.push(change);
         }
         member.draining = !changes.is_empty();
-        changes
+        if changes.is_empty() {
+            return None;
+        }
+        let batch = member.batch.take().expect("buffered changes retain their identity");
+        Some(BufferedBatch {
+            source: batch.source,
+            version: batch.version,
+            changes,
+        })
     }
 
     /// Duplicate or stale commits cannot move the frontier backward or alter peer health.
@@ -253,12 +278,18 @@ impl<T: PeerTransport> PeerSet<T> {
         true
     }
 
+    pub(crate) fn bind_source(&mut self, source: &str) {
+        if self.source.is_none() {
+            self.source = Some(source.to_owned());
+        }
+    }
+
     /// Selects due peers round-robin, fetches up to `max_concurrent` in parallel, and isolates each
     /// peer's backoff or retirement.
     pub async fn advance(&mut self, now: Duration) -> RoundReport {
         let selected = self.select(now);
         if selected.is_empty() {
-            return self.report(Vec::new());
+            return self.report(Vec::new(), None);
         }
         let fetches = selected.iter().map(|&index| {
             let member = &self.members[index];
@@ -269,18 +300,25 @@ impl<T: PeerTransport> PeerSet<T> {
         });
         let results = join_all(fetches).await;
         let mut outcomes = Vec::with_capacity(selected.len());
+        let mut incompatible = None;
         for (index, result) in selected.into_iter().zip(results) {
+            if let Ok(frame) = &result
+                && frame.page().version != crate::protocol::PROTOCOL_VERSION
+            {
+                incompatible.get_or_insert_with(|| frame.page().version);
+            }
             outcomes.push(self.settle(index, result, now));
         }
-        self.report(outcomes)
+        self.report(outcomes, incompatible)
     }
 
-    fn report(&self, outcomes: Vec<MemberOutcome>) -> RoundReport {
+    fn report(&self, outcomes: Vec<MemberOutcome>, incompatible: Option<u16>) -> RoundReport {
         let retired: Vec<RetiredPeer> = self.members.iter().filter_map(Member::retirement).collect();
         RoundReport {
             outcomes,
             fully_retired: !self.members.is_empty() && retired.len() == self.members.len(),
             retired,
+            incompatible,
         }
     }
 
@@ -316,20 +354,41 @@ impl<T: PeerTransport> PeerSet<T> {
             Ok(frame) => frame,
             Err(error) => return self.back_off(index, &error, now),
         };
-        // Preserve unsupported versions even when contiguity rejects an empty page first.
-        self.version = frame.page().version;
+        let page = frame.page();
+        if page.version != crate::protocol::PROTOCOL_VERSION {
+            return self.retire(index, "unsupported_version");
+        }
+        if page.source.is_empty() {
+            return self.retire(index, "source_changed");
+        }
+        if let Some(source) = &self.source
+            && source != &page.source
+        {
+            return self.back_off(
+                index,
+                &crate::peer::TransportError::SourceChanged {
+                    expected: source.clone(),
+                    actual: page.source.clone(),
+                },
+                now,
+            );
+        }
         let (reached, caught_up) = match validate_contiguous(after, frame.page()) {
             Ok(progress) => progress,
             Err(error) => return self.back_off(index, &error, now),
         };
-        if !frame.page().source.is_empty() {
-            self.source = Some(frame.page().source.clone());
-        }
-        self.head = self.head.max(frame.page().current_serial);
+        self.source.get_or_insert_with(|| page.source.clone());
+        self.head = self.head.max(page.current_serial);
         let member = &mut self.members[index];
         member.attempt = 0;
         member.health = Health::Ready;
-        let outcome = buffer_batch(&mut member.channel, &frame.page().changes);
+        let outcome = buffer_batch(&mut member.channel, &page.changes);
+        if outcome.accepted > 0 && member.batch.is_none() {
+            member.batch = Some(BatchIdentity {
+                source: page.source.clone(),
+                version: page.version,
+            });
+        }
         let source = member.source.clone();
         if outcome.back_pressure {
             return MemberOutcome::BackPressured {
@@ -343,6 +402,15 @@ impl<T: PeerTransport> PeerSet<T> {
             buffered: outcome.accepted,
             through: reached,
             caught_up,
+        }
+    }
+
+    fn retire(&mut self, index: usize, reason: &'static str) -> MemberOutcome {
+        let member = &mut self.members[index];
+        member.health = Health::Retired { reason };
+        MemberOutcome::GaveUp {
+            source: member.source.clone(),
+            reason,
         }
     }
 

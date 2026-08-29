@@ -152,6 +152,29 @@ async fn test_a_lone_peer_converges_to_its_head() {
 }
 
 #[tokio::test]
+async fn test_a_committed_source_rejects_a_foreign_page() {
+    let mut foreign = LoopbackPeer::new("foreign", "tok", TransferLimits::default());
+    foreign.append(b"event".to_vec());
+    let mut set = PeerSet::new(DEFAULT_SET_LIMITS, policy());
+    set.join("a", LoopbackTransport::connect(&foreign, "tok"), 0);
+
+    let round = pull_round(&mut set, Duration::ZERO, 0, Some(SOURCE), apply_page)
+        .await
+        .unwrap();
+
+    assert_eq!((round.serial, round.applied, round.answered), (0, 0, false));
+    assert_eq!(set.source(), Some(SOURCE));
+    assert_eq!(set.frontier("a"), Some(0));
+    assert_eq!(
+        round.retired,
+        vec![crate::RetiredPeer {
+            source: "a".to_owned(),
+            reason: "source_changed",
+        }]
+    );
+}
+
+#[tokio::test]
 async fn test_two_peers_at_one_head_apply_each_change_once() {
     let (_first_server, first) = http_peer().await;
     let (_second_server, second) = http_peer().await;
@@ -318,6 +341,9 @@ async fn test_a_peer_on_an_unsupported_version_is_reported_not_applied() {
 
     assert_eq!(round.incompatible, Some(PROTOCOL_VERSION + 1));
     assert_eq!((round.serial, round.applied), (0, 0));
+    assert_eq!(set.version(), PROTOCOL_VERSION);
+    assert_eq!(set.buffered("a"), Some(0));
+    assert_eq!(round.retired[0].reason, "unsupported_version");
 }
 
 #[tokio::test]

@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use crate::multi_peer::{MemberOutcome, PeerSet, RetiredPeer};
 use crate::peer::PeerTransport;
-use crate::protocol::{Change, ChangePage, PROTOCOL_VERSION};
+use crate::protocol::ChangePage;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PullRound {
@@ -38,6 +38,9 @@ where
     T: PeerTransport,
     F: FnMut(ChangePage) -> Result<u64, E>,
 {
+    if let Some(source) = committed {
+        set.bind_source(source);
+    }
     let report = set.advance(now).await;
     let answered = report.outcomes.iter().any(|outcome| {
         matches!(
@@ -50,14 +53,12 @@ where
             .outcomes
             .iter()
             .all(|outcome| matches!(outcome, MemberOutcome::Progressed { caught_up: true, .. }));
-    let source = committed.map(str::to_owned).or_else(|| set.source().map(str::to_owned));
-    let incompatible = (set.version() != PROTOCOL_VERSION).then_some(set.version());
+    let incompatible = report.incompatible;
 
-    let mut drained: Vec<(String, Vec<Change>)> = Vec::new();
+    let mut drained = Vec::new();
     for peer in set.sources() {
-        if set.buffered(&peer).is_some_and(|held| held > 0) {
-            let changes = set.drain(&peer);
-            drained.push((peer, changes));
+        if let Some(batch) = set.drain_batch(&peer) {
+            drained.push((peer, batch));
         }
     }
 
@@ -65,25 +66,24 @@ where
     let mut applied = 0;
     let mut failure = None;
     // An unsupported version must not reach `apply`; drained peers still reset below.
-    if incompatible.is_none()
-        && let Some(source) = source.as_deref()
-    {
-        for (_peer, changes) in &drained {
+    if incompatible.is_none() {
+        for (_peer, batch) in &drained {
             if failure.is_some() {
                 break;
             }
-            let fresh: Vec<Change> = changes
+            let fresh = batch
+                .changes
                 .iter()
                 .filter(|change| change.serial > serial)
                 .cloned()
-                .collect();
+                .collect::<Vec<_>>();
             let Some(reached) = fresh.last().map(|change| change.serial) else {
                 continue;
             };
             let count = fresh.len();
             let page = ChangePage {
-                version: PROTOCOL_VERSION,
-                source: source.to_owned(),
+                version: batch.version,
+                source: batch.source.clone(),
                 after: serial,
                 current_serial: reached,
                 changes: fresh,
@@ -99,7 +99,7 @@ where
     }
 
     // Keep drained peers at the committed serial to avoid replaying a change supplied by another peer.
-    for (peer, _changes) in &drained {
+    for (peer, _batch) in &drained {
         set.commit(peer, serial);
     }
 

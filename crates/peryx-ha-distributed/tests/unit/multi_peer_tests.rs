@@ -89,6 +89,36 @@ async fn protocol_recovery_http_peer() -> (TestServer, PeerSet<HttpPeerTransport
     (server, set, calls)
 }
 
+async fn version_change_http_peer() -> (TestServer, PeerSet<HttpPeerTransport>) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let handler_calls = Arc::clone(&calls);
+    let router = Router::new().route(
+        "/+replication/v1/changes",
+        get(move || {
+            let call = handler_calls.fetch_add(1, Ordering::Relaxed);
+            async move {
+                Json(if call == 0 {
+                    change_page(1, 1)
+                } else {
+                    ChangePage {
+                        version: PROTOCOL_VERSION + 1,
+                        source: "writer".to_owned(),
+                        after: 1,
+                        current_serial: 2,
+                        changes: vec![Change {
+                            serial: 2,
+                            event: b"event".to_vec(),
+                            metadata: Vec::new(),
+                            blobs: Vec::new(),
+                        }],
+                    }
+                })
+            }
+        }),
+    );
+    http_peer(router, 8, 3).await
+}
+
 async fn buffered_then_outage() -> (TestServer, PeerSet<HttpPeerTransport>, Arc<AtomicUsize>) {
     let calls = Arc::new(AtomicUsize::new(0));
     let handler_calls = Arc::clone(&calls);
@@ -304,7 +334,7 @@ async fn test_a_backpressured_peer_is_skipped_until_it_is_drained() {
 #[tokio::test]
 async fn test_a_round_advances_no_more_than_the_concurrency_bound() {
     let sources: Vec<String> = (0..5).map(|index| format!("p{index}")).collect();
-    let peers: Vec<LoopbackPeer> = sources.iter().map(|source| peer_with(source, "tok", 1)).collect();
+    let peers: Vec<LoopbackPeer> = sources.iter().map(|_| peer_with("writer", "tok", 1)).collect();
     let mut set = PeerSet::new(limits(2, 8, 8, Duration::ZERO), ReconnectPolicy::default());
     for (source, peer) in sources.iter().zip(&peers) {
         set.join(source.clone(), LoopbackTransport::connect(peer, "tok"), 0);
@@ -328,9 +358,9 @@ async fn test_a_round_advances_no_more_than_the_concurrency_bound() {
 
 #[tokio::test]
 async fn test_a_slow_peer_backs_off_without_blocking_the_others() {
-    let good_a = peer_with("a", "tok", 2);
-    let slow = peer_with("b", "tok", 2);
-    let good_c = peer_with("c", "tok", 2);
+    let good_a = peer_with("writer", "tok", 2);
+    let slow = peer_with("writer", "tok", 2);
+    let good_c = peer_with("writer", "tok", 2);
     slow.inject(PeerFault::Disconnect);
     let mut set = PeerSet::new(limits(3, 8, 8, Duration::ZERO), policy(10));
     set.join("a", LoopbackTransport::connect(&good_a, "tok"), 0);
@@ -527,6 +557,83 @@ async fn test_a_protocol_violation_requires_an_explicit_rearm() {
         [MemberOutcome::Progressed { caught_up: true, .. }]
     ));
     assert_eq!(calls.load(Ordering::Relaxed), 2);
+}
+
+#[tokio::test]
+async fn test_a_foreign_source_cannot_replace_a_buffered_generation() {
+    let writer = peer_with("writer", "tok", 1);
+    let foreign = peer_with("foreign", "tok", 1);
+    let mut set = PeerSet::new(limits(1, 8, 8, Duration::ZERO), policy(3));
+    set.join("writer-peer", LoopbackTransport::connect(&writer, "tok"), 0);
+    set.join("foreign-peer", LoopbackTransport::connect(&foreign, "tok"), 0);
+
+    assert!(matches!(
+        set.advance(Duration::ZERO).await.outcomes.as_slice(),
+        [MemberOutcome::Progressed { source, .. }] if source == "writer-peer"
+    ));
+    let rejected = set.advance(Duration::ZERO).await;
+
+    assert_eq!(set.source(), Some("writer"));
+    assert_eq!(set.head(), 1);
+    assert_eq!(
+        (set.buffered("writer-peer"), set.buffered("foreign-peer")),
+        (Some(1), Some(0))
+    );
+    assert_eq!(
+        rejected.outcomes,
+        vec![MemberOutcome::GaveUp {
+            source: "foreign-peer".to_owned(),
+            reason: "source_changed",
+        }]
+    );
+    assert_eq!(set.drain("writer-peer")[0].event, b"event-0");
+}
+
+#[tokio::test]
+async fn test_an_unsupported_version_cannot_replace_a_buffered_generation() {
+    let (_server, mut set) = version_change_http_peer().await;
+
+    set.advance(Duration::ZERO).await;
+    let rejected = set.advance(Duration::ZERO).await;
+
+    assert_eq!(set.source(), Some("writer"));
+    assert_eq!(
+        (set.version(), set.head(), set.buffered("primary")),
+        (PROTOCOL_VERSION, 1, Some(1))
+    );
+    assert_eq!(rejected.incompatible, Some(PROTOCOL_VERSION + 1));
+    assert_eq!(
+        rejected.outcomes,
+        vec![MemberOutcome::GaveUp {
+            source: "primary".to_owned(),
+            reason: "unsupported_version",
+        }]
+    );
+}
+
+#[tokio::test]
+async fn test_an_empty_source_cannot_initialize_a_generation() {
+    let router = Router::new().route(
+        "/+replication/v1/changes",
+        get(|| async {
+            Json(ChangePage {
+                source: String::new(),
+                ..change_page(1, 1)
+            })
+        }),
+    );
+    let (_server, mut set) = http_peer(router, 8, 3).await;
+
+    let rejected = set.advance(Duration::ZERO).await;
+
+    assert_eq!((set.source(), set.head(), set.buffered("primary")), (None, 0, Some(0)));
+    assert_eq!(
+        rejected.outcomes,
+        vec![MemberOutcome::GaveUp {
+            source: "primary".to_owned(),
+            reason: "source_changed",
+        }]
+    );
 }
 
 #[tokio::test]
