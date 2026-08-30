@@ -35,39 +35,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         }
         let members = policy_serving_members(state, index, repo);
         let response = match reference {
-            Reference::Digest(digest) => {
-                if digest_decision(state, digest)? == DigestDecision::Revoked {
-                    return Ok(error_response(ErrorCode::ManifestUnknown, "manifest unknown"));
-                }
-                let mut served = None;
-                let mut checked = members.len();
-                for (position, member) in members.iter().enumerate() {
-                    if store::manifest_is_trashed(&state.meta, &member.name, repo, digest)? {
-                        return Ok(error_response(ErrorCode::ManifestUnknown, "manifest unknown"));
-                    }
-                    if store::manifest_is_member(&state.meta, &member.name, repo, digest)? {
-                        served = store::get_manifest(&state.meta, digest)?
-                            .map(|manifest| manifest_response(manifest, digest, head));
-                    }
-                    if served.is_none()
-                        && let Some(client) = member.proxy_client()
-                    {
-                        served = self
-                            .pull_manifest_by_digest(state, client, &member.name, repo, digest, head)
-                            .await?;
-                    }
-                    if served.is_some() {
-                        checked = position + 1;
-                        break;
-                    }
-                }
-                for member in members.iter().take(checked) {
-                    if store::manifest_is_trashed(&state.meta, &member.name, repo, digest)? {
-                        return Ok(error_response(ErrorCode::ManifestUnknown, "manifest unknown"));
-                    }
-                }
-                served.unwrap_or_else(|| error_response(ErrorCode::ManifestUnknown, "manifest unknown"))
-            }
+            Reference::Digest(digest) => self.manifest_by_digest(state, &members, repo, digest, head).await?,
             Reference::Tag(tag) => {
                 // A tag is a mutable name→digest resolution, so on a replica it stays hidden until the
                 // search view catches the serial that published it; a by-digest read above is
@@ -167,28 +135,56 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         let Some(child) = store::linux_amd64_child(&list.bytes) else {
             return Ok(error_response(ErrorCode::ManifestUnknown, "manifest unknown"));
         };
-        if digest_decision(state, &child)? == DigestDecision::Revoked {
+        let served = self.manifest_by_digest(state, members, repo, &child, head).await?;
+        Ok(acceptable_manifest_response(served, accept))
+    }
+
+    /// Resolve one manifest by digest across the serving members, hosted-first.
+    ///
+    /// The manifest store is content-addressed across every repository, so holding the bytes is not
+    /// permission to serve them: a member answers only for a digest recorded under `repo`, and a member
+    /// that trashed the digest shadows the members behind it. A proxy member without membership fetches
+    /// the digest from its upstream, which records it for `repo`. The trash check repeats after a serve
+    /// because a delete can land while a proxy member is on the wire.
+    async fn manifest_by_digest(
+        &self,
+        state: &ServingState,
+        members: &[&Index],
+        repo: &str,
+        digest: &str,
+        head: bool,
+    ) -> Result<Response, ServeError> {
+        if digest_decision(state, digest)? == DigestDecision::Revoked {
             return Ok(error_response(ErrorCode::ManifestUnknown, "manifest unknown"));
         }
-        if manifest_trashed_in(state, members, repo, &child)? {
-            return Ok(error_response(ErrorCode::ManifestUnknown, "manifest unknown"));
-        }
-        if let Some(manifest) = store::get_manifest(&state.meta, &child)? {
-            return Ok(acceptable_manifest_response(
-                manifest_response(manifest, &child, head),
-                accept,
-            ));
-        }
-        for member in members {
-            if let Some(client) = member.proxy_client()
-                && let Some(served) = self
-                    .pull_manifest_by_digest(state, client, &member.name, repo, &child, head)
-                    .await?
+        let mut served = None;
+        let mut checked = members.len();
+        for (position, member) in members.iter().enumerate() {
+            if store::manifest_is_trashed(&state.meta, &member.name, repo, digest)? {
+                return Ok(error_response(ErrorCode::ManifestUnknown, "manifest unknown"));
+            }
+            if store::manifest_is_member(&state.meta, &member.name, repo, digest)? {
+                served =
+                    store::get_manifest(&state.meta, digest)?.map(|manifest| manifest_response(manifest, digest, head));
+            }
+            if served.is_none()
+                && let Some(client) = member.proxy_client()
             {
-                return Ok(acceptable_manifest_response(served, accept));
+                served = self
+                    .pull_manifest_by_digest(state, client, &member.name, repo, digest, head)
+                    .await?;
+            }
+            if served.is_some() {
+                checked = position + 1;
+                break;
             }
         }
-        Ok(error_response(ErrorCode::ManifestUnknown, "manifest unknown"))
+        for member in members.iter().take(checked) {
+            if store::manifest_is_trashed(&state.meta, &member.name, repo, digest)? {
+                return Ok(error_response(ErrorCode::ManifestUnknown, "manifest unknown"));
+            }
+        }
+        Ok(served.unwrap_or_else(|| error_response(ErrorCode::ManifestUnknown, "manifest unknown")))
     }
 
     /// Try one member for a manifest by digest. `None` means this member does not have it (a `404`),

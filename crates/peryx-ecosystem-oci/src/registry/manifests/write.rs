@@ -444,9 +444,14 @@ fn is_length_limit(err: &axum::Error) -> bool {
     }
     false
 }
-/// The error response for a pushed manifest that names content the store does not hold: a config or
-/// layer blob, or an image index's child manifest. A resolver would 404 on the missing piece after the
-/// push "succeeded", so the push is rejected up front with `MANIFEST_BLOB_UNKNOWN`.
+/// The error response for a pushed manifest that names content this repository does not hold: a
+/// config or layer blob, or an image index's child manifest. A resolver would 404 on the missing piece
+/// after the push "succeeded", so the push is rejected up front with `MANIFEST_BLOB_UNKNOWN`.
+///
+/// Blobs and manifests are content-addressed across every repository, so presence in the store is not
+/// membership in this one. A writer who can push here but cannot read the repository that owns a
+/// digest must not be able to name it and have the index resolve to those bytes, whatever the index's
+/// quota policy.
 ///
 /// # Errors
 /// Returns a store error if a membership lookup fails.
@@ -477,7 +482,7 @@ async fn missing_manifest_reference(
     }
     for child in children {
         if store::get_manifest(&state.meta, &child)?.is_none()
-            || index.policy.enforces_quota() && !store::manifest_is_member(&state.meta, &index.name, repo, &child)?
+            || !store::manifest_is_member(&state.meta, &index.name, repo, &child)?
         {
             return Ok(Some(error_response(
                 ErrorCode::ManifestBlobUnknown,

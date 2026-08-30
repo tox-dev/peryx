@@ -53,12 +53,37 @@ async fn test_manifest_by_digest_is_scoped_to_the_pushing_repository() {
 }
 
 #[tokio::test]
-async fn test_image_index_child_is_retrievable_where_the_index_is_served() {
+async fn test_image_index_naming_a_child_from_another_index_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let app = two_stores(&dir);
     let child = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}"#;
     let child_digest = oci_digest(child);
     push(&app, "vault/app", &child_digest, MANIFEST_TYPE, child).await;
+    let index = format!(r#"{{"schemaVersion":2,"manifests":[{{"digest":"{child_digest}"}}]}}"#).into_bytes();
+
+    let (status, _, rejected) = send_body(
+        &app,
+        Method::PUT,
+        "/v2/store/app/manifests/latest",
+        &[("authorization", &auth(TOKEN)), ("content-type", INDEX_TYPE)],
+        index,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body_has_code(&rejected, "MANIFEST_BLOB_UNKNOWN"), "{rejected:?}");
+
+    let (status, _, denied) = send(&app, Method::GET, &format!("/v2/store/app/manifests/{child_digest}")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(body_has_code(&denied, "MANIFEST_UNKNOWN"), "{denied:?}");
+}
+
+#[tokio::test]
+async fn test_image_index_child_is_retrievable_where_the_index_is_served() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = two_stores(&dir);
+    let child = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}"#;
+    let child_digest = oci_digest(child);
+    push(&app, "store/app", &child_digest, MANIFEST_TYPE, child).await;
     let index = format!(r#"{{"schemaVersion":2,"manifests":[{{"digest":"{child_digest}"}}]}}"#).into_bytes();
     push(&app, "store/app", "latest", INDEX_TYPE, &index).await;
 
@@ -66,9 +91,11 @@ async fn test_image_index_child_is_retrievable_where_the_index_is_served() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(got, &child[..]);
 
-    let (status, _, denied) = send(&app, Method::GET, &format!("/v2/store/other/manifests/{child_digest}")).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    assert!(body_has_code(&denied, "MANIFEST_UNKNOWN"), "{denied:?}");
+    for name in ["vault/app", "store/other"] {
+        let (status, _, denied) = send(&app, Method::GET, &format!("/v2/{name}/manifests/{child_digest}")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{name}");
+        assert!(body_has_code(&denied, "MANIFEST_UNKNOWN"), "{name}: {denied:?}");
+    }
 }
 
 #[tokio::test]

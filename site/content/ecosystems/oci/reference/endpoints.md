@@ -80,9 +80,10 @@ type (defaulting to `application/vnd.oci.image.manifest.v1+json`); peryx ignores
 with `400 MANIFEST_INVALID`. A media type peryx does not accept as a manifest is `400 MANIFEST_INVALID`. A body over 4
 MiB produces `413 Payload Too Large`, distinct from the `502` a broken transfer returns. For a digest reference, peryx
 returns `400 DIGEST_INVALID` unless the body hashes to that digest. peryx returns `400 MANIFEST_BLOB_UNKNOWN` when the
-manifest names a config or layer that this repository cannot serve. A missing child manifest produces the same error. On
-success, peryx returns `201` with `Location` and `Docker-Content-Digest`. When the manifest declares a `subject`, peryx
-sends its digest in `OCI-Subject` and records it for the referrers API.
+manifest names a config or layer that this repository cannot serve. An image-index child produces the same error when it
+is missing or when it belongs only to another repository, whatever the index's quota policy. On success, peryx returns
+`201` with `Location` and `Docker-Content-Digest`. When the manifest declares a `subject`, peryx sends its digest in
+`OCI-Subject` and records it for the referrers API.
 
 `DELETE /v2/<name>/manifests/<reference>` moves repository metadata to trash. Deleting a tag hides only that tag; the
 manifest remains readable by digest and through its other tags. Deleting a digest hides the digest and every tag in that

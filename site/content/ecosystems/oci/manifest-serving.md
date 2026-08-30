@@ -33,9 +33,15 @@ scoped to the requested repository, so pull-through, referrer, and image-index c
 that no member records and no proxy can fetch returns `404 MANIFEST_UNKNOWN`, the same response as an unknown digest.
 The response does not disclose storage membership in another repository.
 
+Content negotiation resolves an index's `linux/amd64` child through that same by-digest path, so a client that accepts
+only the schema-2 image type receives the substituted child under the requesting repository's membership rather than
+whatever copy the shared pool happens to hold.
+
 The membership record is written wherever peryx stores a manifest: its own digest, plus each child an image index or
-manifest list names. A by-digest delete keeps that record and adds a repository tombstone. The tombstone blocks reads
-while the membership retains the scope needed for restore; another repository's push cannot expose the deleted digest.
+manifest list names. A hosted push rejects an index whose child is not already a member of the target repository, so
+recording the index grants nothing the pusher could not already read. A by-digest delete keeps that record and adds a
+repository tombstone. The tombstone blocks reads while the membership retains the scope needed for restore; another
+repository's push cannot expose the deleted digest.
 
 ## Blob storage and repository links
 

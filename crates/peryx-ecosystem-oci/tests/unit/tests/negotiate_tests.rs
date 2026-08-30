@@ -30,15 +30,26 @@ fn amd64_docker_list(child_digest: &str) -> Vec<u8> {
     amd64_list(LIST_TYPE, IMAGE_ACCEPT, child_digest)
 }
 
-async fn push(app: &axum::Router, reference: &str, media_type: &str, body: &[u8]) {
+async fn push_to(
+    app: &axum::Router,
+    repository: &str,
+    reference: &str,
+    media_type: &str,
+    body: &[u8],
+) -> (StatusCode, bytes::Bytes) {
     let (status, _, body) = send_body(
         app,
         Method::PUT,
-        &format!("/v2/store/app/manifests/{reference}"),
+        &format!("/v2/{repository}/manifests/{reference}"),
         &[("authorization", &auth(TOKEN)), ("content-type", media_type)],
         body.to_vec(),
     )
     .await;
+    (status, body)
+}
+
+async fn push(app: &axum::Router, reference: &str, media_type: &str, body: &[u8]) {
+    let (status, body) = push_to(app, "store/app", reference, media_type, body).await;
     assert_eq!(status, StatusCode::CREATED, "{body:?}");
 }
 
@@ -393,6 +404,58 @@ async fn test_get_propagates_a_docker_list_child_fetch_error() {
     .await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
     assert!(body_has_code(&body, "UNKNOWN"), "{body:?}");
+}
+
+#[tokio::test]
+async fn test_push_rejects_a_docker_list_naming_a_child_from_another_repository() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let child_digest = oci_digest(DOCKER_CHILD);
+    let (status, body) = push_to(&app, "store/private", &child_digest, IMAGE_ACCEPT, DOCKER_CHILD).await;
+    assert_eq!(status, StatusCode::CREATED, "{body:?}");
+
+    let (status, body) = push_to(
+        &app,
+        "store/app",
+        "latest",
+        LIST_TYPE,
+        &amd64_docker_list(&child_digest),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body_has_code(&body, "MANIFEST_BLOB_UNKNOWN"), "{body:?}");
+}
+
+#[tokio::test]
+async fn test_get_does_not_negotiate_a_child_held_only_by_another_repository() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = hosted_writable(&dir, TOKEN);
+    let child_digest = oci_digest(DOCKER_CHILD);
+    let list = amd64_docker_list(&child_digest);
+    let list_digest = oci_digest(&list);
+    // Both the list and its child belong to `private`; only the tag naming the list lands in `app`,
+    // which is the state a cached index reaches when it names a digest peryx already holds elsewhere.
+    for (digest, media_type, bytes) in [
+        (&child_digest, IMAGE_ACCEPT, DOCKER_CHILD.to_vec()),
+        (&list_digest, LIST_TYPE, list),
+    ] {
+        let manifest = crate::store::Manifest {
+            media_type: media_type.to_owned(),
+            bytes,
+        };
+        crate::store::record_manifest(&state.serving.meta, "store", "private", digest, &manifest).unwrap();
+    }
+    crate::store::put_tag(&state.serving.meta, "store", "app", "latest", &list_digest).unwrap();
+
+    let (status, _, body) = send_with(
+        &app,
+        Method::GET,
+        "/v2/store/app/manifests/latest",
+        &[("accept", IMAGE_ACCEPT)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(body_has_code(&body, "MANIFEST_UNKNOWN"), "{body:?}");
 }
 
 #[tokio::test]

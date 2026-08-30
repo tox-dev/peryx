@@ -1597,10 +1597,17 @@ async fn test_manifest_push_rejects_index_with_missing_child() {
 
 #[rstest]
 #[case::metered_same_repository("store/app", true, StatusCode::CREATED, None, StatusCode::OK)]
-#[case::unmetered_other_repository("store/other", false, StatusCode::CREATED, None, StatusCode::OK)]
+#[case::unmetered_same_repository("store/app", false, StatusCode::CREATED, None, StatusCode::OK)]
 #[case::metered_other_repository(
     "store/other",
     true,
+    StatusCode::BAD_REQUEST,
+    Some("MANIFEST_BLOB_UNKNOWN"),
+    StatusCode::NOT_FOUND
+)]
+#[case::unmetered_other_repository(
+    "store/other",
+    false,
     StatusCode::BAD_REQUEST,
     Some("MANIFEST_BLOB_UNKNOWN"),
     StatusCode::NOT_FOUND
