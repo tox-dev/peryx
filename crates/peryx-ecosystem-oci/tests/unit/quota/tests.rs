@@ -113,7 +113,7 @@ fn test_blob_commits_one_of_two_prechecked_reservations() {
     assert_eq!(meta.quota_reservation(second.id).unwrap(), None);
     assert_eq!(meta.upload_record("loser").unwrap(), None);
     assert_eq!(meta.quota_usage("store").unwrap().accounted_bytes.committed, 4);
-    assert!(release_blob_membership(&meta, "store", "app", "sha256:a", None).unwrap());
+    assert!(release_blob_membership(&meta, "store", "app", "sha256:a", None, false).unwrap());
     assert_eq!(meta.quota_usage("store").unwrap(), QuotaUsage::default());
 }
 

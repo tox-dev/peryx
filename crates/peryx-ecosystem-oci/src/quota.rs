@@ -193,12 +193,17 @@ pub fn commit_blob_membership(
 /// charged, in one metadata transaction so a crash cannot leave the repository billed for content it
 /// no longer serves. An unmetered blob has no allocation to release. Reports whether the membership
 /// existed.
+///
+/// The removal journals with the rows it removes, so every replica drops the same repository link and
+/// no datacenter keeps serving a digest the home already deleted. A delete of a membership that is
+/// already gone journals nothing, which is what makes a replayed removal idempotent.
 pub fn release_blob_membership(
     meta: &MetaStore,
     index: &str,
     repo: &str,
     digest: &str,
     webhook: Option<peryx_storage::meta::WebhookEventIntent>,
+    journal: crate::outbox::Outbox,
 ) -> Result<bool, ServeError> {
     let allocation = QuotaAllocation {
         repository: index,
@@ -210,11 +215,18 @@ pub fn release_blob_membership(
         allocation,
         |deleted| *deleted,
         |txn| {
-            let removed = txn.remove(&store::blob_membership_key(index, repo, digest))?;
-            if removed && let Some(webhook) = webhook {
+            if !txn.remove(&store::blob_membership_key(index, repo, digest))? {
+                return Ok((false, Vec::new()));
+            }
+            if let Some(webhook) = webhook {
                 txn.enqueue_webhook_event(webhook);
             }
-            Ok((removed, Vec::new()))
+            let entries = crate::outbox::record(journal, || crate::outbox::OciMutation::UnmountBlob {
+                index: index.to_owned(),
+                repo: repo.to_owned(),
+                digest: digest.to_owned(),
+            });
+            Ok((true, entries))
         },
     )
 }

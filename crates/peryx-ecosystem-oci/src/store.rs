@@ -232,6 +232,11 @@ pub fn blob_membership_key(index: &str, repo: &str, digest: &str) -> String {
     format!("{BLOB_MEMBERSHIP_PREFIX}{index}\u{0}{repo}\u{0}{digest}")
 }
 
+#[must_use]
+pub fn is_blob_membership_key(key: &str) -> bool {
+    key.starts_with(BLOB_MEMBERSHIP_PREFIX)
+}
+
 /// # Errors
 /// Returns a store error if the write fails.
 pub fn put_tag(meta: &MetaStore, index: &str, repo: &str, tag: &str, digest: &str) -> Result<bool, MetaError> {

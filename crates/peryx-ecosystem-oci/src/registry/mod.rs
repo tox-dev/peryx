@@ -24,8 +24,9 @@ use parking_lot::RwLock;
 use peryx_driver::ServingState;
 use peryx_driver::serving::{
     AbsoluteProtocolDriver, BlobReferenceDriver, BrowseDriver, BrowseRequest, EcosystemDriver, FsckDriver,
-    IdleReclaimer, MetricsDriver, PolicyDriver, TrashDriver,
+    IdleReclaimer, MetricsDriver, PolicyDriver, ReplicatedApplyDriver, TrashDriver,
 };
+use peryx_driver::state::ViewBlock;
 use peryx_identity::{Action, ArtifactDigest, Denial, DigestDecision, Identity};
 use peryx_index::{Index, IndexKind};
 use peryx_policy::PolicyAction;
@@ -333,6 +334,23 @@ pub const ABSOLUTE_PREFIXES: &[&str] = &["/v2/"];
 impl<S: BuildHasher + Default + Send + Sync + 'static> MetricsDriver for OciRegistryWithHasher<S> {
     fn metric_families(&self) -> &'static [peryx_events::metrics::MetricFamily] {
         crate::quota::QUOTA_FAMILIES
+    }
+}
+
+impl<S: BuildHasher + Default + Send + Sync + 'static> ReplicatedApplyDriver for OciRegistryWithHasher<S> {
+    /// A replicated blob-membership removal lands as a raw row delete, which the process cache that
+    /// answers blob authorization from memory never sees. Dropping the key here is what stops a replica
+    /// from serving a digest the home datacenter unlinked. Eviction cannot fail, so it blocks no view.
+    fn apply_replicated_changes(&self, _state: &ServingState, changed_keys: &[String]) -> Result<(), ViewBlock> {
+        let mut memberships = self.blob_memberships.write();
+        for key in changed_keys
+            .iter()
+            .filter(|key| crate::store::is_blob_membership_key(key))
+        {
+            memberships.remove(key);
+        }
+        drop(memberships);
+        Ok(())
     }
 }
 

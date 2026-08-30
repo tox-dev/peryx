@@ -20,6 +20,10 @@ A hosted push or delete records one typed operation:
   retargeting a tag changes no bytes but is a mutation a replica applies in order.
 - **mount-blob** records a blob admitted to a repository's membership, whether pushed directly or mounted from another
   repository.
+- **unmount-blob** records a blob deletion removing one repository's membership and releasing its quota allocation. Blob
+  deletion is not soft: the distribution specification drops the repository link outright. The bytes stay, so another
+  repository that links the same digest keeps serving it. A replica that has already dropped the membership applies the
+  entry again without effect.
 - **trash-tag** and **trash-manifest** record a soft delete moving a tag, or a digest and each tag that pointed at it,
   into repository trash. A `trash-manifest` entry names the captured tags so a replica trashes the same set.
 - **restore-tag** and **restore-manifest** record a restore and name the restored tags. A replica restores those whose

@@ -14,7 +14,8 @@ pub type Outbox = bool;
 /// Manifests are content-addressed and immutable, so publishing one and retargeting a tag are
 /// distinct operations: repointing a tag changes no bytes but is a mutation a replica applies in
 /// order. Deletions are soft - a delete moves the reference into repository trash - so the trash and
-/// restore transitions are the deletion vocabulary a replica replays.
+/// restore transitions are the deletion vocabulary a replica replays. A blob delete is the exception:
+/// the distribution spec drops the repository link outright, so it carries its own removal operation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
 pub enum OciMutation {
@@ -27,6 +28,13 @@ pub enum OciMutation {
     },
     /// A blob admitted to `(index, repo)` membership, by a hosted push or a cross-repo mount.
     MountBlob {
+        index: String,
+        repo: String,
+        digest: String,
+    },
+    /// A blob's `(index, repo)` membership removed by a hosted delete. The bytes stay: another
+    /// repository that links the same digest keeps serving it.
+    UnmountBlob {
         index: String,
         repo: String,
         digest: String,

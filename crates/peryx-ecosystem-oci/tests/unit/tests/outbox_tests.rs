@@ -3,7 +3,7 @@ use peryx_storage::meta::{AccountingClass, MetaStore, NewQuotaReservation, Quota
 use rstest::rstest;
 use tempfile::TempDir;
 
-use super::{app_with_journal, auth, oci_digest, send_body, writable_index};
+use super::{app_with_journal, auth, oci_digest, send_body, send_with, writable_index};
 use crate::name::Reference;
 use crate::outbox::OciMutation;
 use crate::store::{self, Manifest};
@@ -116,6 +116,45 @@ fn test_blob_membership_records_a_mount_operation() {
         }
     );
     assert!(store::blob_is_member(&meta, "store", "app", "sha256:layer").unwrap());
+}
+
+#[test]
+fn test_blob_deletion_records_an_unmount_operation() {
+    let (_dir, meta) = store();
+    quota::commit_blob_membership(&meta, "store", "app", "sha256:layer", None, None, false).unwrap();
+
+    assert!(quota::release_blob_membership(&meta, "store", "app", "sha256:layer", None, true).unwrap());
+
+    assert_eq!(
+        only_op(&meta),
+        OciMutation::UnmountBlob {
+            index: "store".to_owned(),
+            repo: "app".to_owned(),
+            digest: "sha256:layer".to_owned(),
+        }
+    );
+    assert!(!store::blob_is_member(&meta, "store", "app", "sha256:layer").unwrap());
+}
+
+#[test]
+fn test_deleting_an_absent_blob_membership_records_no_outbox_entry() {
+    let (_dir, meta) = store();
+
+    let removed = quota::release_blob_membership(&meta, "store", "app", "sha256:layer", None, true).unwrap();
+
+    assert!(!removed, "no membership was present to remove");
+    assert_eq!(meta.current_serial().unwrap(), 0, "a replayed removal records nothing");
+}
+
+#[test]
+fn test_none_mode_blob_deletion_records_no_outbox_entry() {
+    let (_dir, meta) = store();
+    quota::commit_blob_membership(&meta, "store", "app", "sha256:layer", None, None, false).unwrap();
+
+    assert!(quota::release_blob_membership(&meta, "store", "app", "sha256:layer", None, false).unwrap());
+
+    assert_eq!(meta.current_serial().unwrap(), 0, "none mode records nothing");
+    assert!(!store::blob_is_member(&meta, "store", "app", "sha256:layer").unwrap());
 }
 
 #[test]
@@ -302,5 +341,49 @@ async fn test_hosted_push_journals_the_blob_and_manifest() {
         ops.iter()
             .any(|op| matches!(op, OciMutation::PublishManifest { tag: Some(tag), .. } if tag == "1.0")),
         "the pushed manifest records a publish: {ops:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_hosted_blob_delete_journals_the_unmount() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = app_with_journal(&dir, vec![writable_index("store", "store", true, TOKEN)], true);
+    let blob = b"a-layer-that-gets-deleted";
+    let digest = oci_digest(blob);
+    let (status, _, _) = send_body(
+        &app,
+        Method::POST,
+        &format!("/v2/store/app/blobs/uploads/?digest={digest}"),
+        &[("authorization", &auth(TOKEN))],
+        blob.to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let pushed = state.serving.meta.current_serial().unwrap();
+
+    let (status, _, _) = send_with(
+        &app,
+        Method::DELETE,
+        &format!("/v2/store/app/blobs/{digest}"),
+        &[("authorization", &auth(TOKEN))],
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::ACCEPTED, "a standalone delete keeps its 202");
+    let ops: Vec<OciMutation> = state
+        .serving
+        .meta
+        .journal_after(pushed, 100)
+        .unwrap()
+        .iter()
+        .map(|record| serde_json::from_slice(&record.payload).unwrap())
+        .collect();
+    assert_eq!(
+        ops,
+        vec![OciMutation::UnmountBlob {
+            index: "store".to_owned(),
+            repo: "app".to_owned(),
+            digest,
+        }]
     );
 }

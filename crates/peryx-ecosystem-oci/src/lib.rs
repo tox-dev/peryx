@@ -122,9 +122,11 @@ impl OciInstaller {
 }
 
 impl OciInstaller {
-    fn register_driver(&self, context: &mut RuntimeInstallContext<'_>) {
+    /// Returns the installed driver so a distributed install can register the same instance for
+    /// replica apply: its blob-membership cache is per-process state a second instance would not share.
+    fn register_driver(&self, context: &mut RuntimeInstallContext<'_>) -> Option<Arc<OciRegistry>> {
         if !context.has_ecosystem(&ECOSYSTEM) {
-            return;
+            return None;
         }
         let driver = Arc::new(OciRegistry::new(
             self.settings.iter().map(|(name, settings)| (name.clone(), *settings)),
@@ -134,8 +136,9 @@ impl OciInstaller {
         context.register_protocol(ProtocolDriver::Absolute(driver.clone()), Arc::new(OciIndexer));
         context.register_browse(ECOSYSTEM, driver.clone());
         context.register_idle_reclaimer(ECOSYSTEM, driver.clone());
-        context.register_mirror(ECOSYSTEM, driver);
+        context.register_mirror(ECOSYSTEM, driver.clone());
         context.register_lexicon(ECOSYSTEM, &OCI_LEXICON);
+        Some(driver)
     }
 }
 
@@ -202,7 +205,7 @@ impl EcosystemRuntime for OciPlugin {
         context: &mut RuntimeInstallContext<'_>,
         settings: &[(&str, &CompiledEcosystemSettings)],
     ) -> Result<(), String> {
-        install_compiled(context, settings, false)
+        install_compiled(context, settings, false).map(|_| ())
     }
 }
 
@@ -212,7 +215,10 @@ impl DistributedRuntime for OciPlugin {
         context: &mut DistributedInstallContext<'_>,
         settings: &[(&str, &CompiledEcosystemSettings)],
     ) -> Result<(), String> {
-        install_compiled(context.runtime(), settings, true)
+        if let Some(driver) = install_compiled(context.runtime(), settings, true)? {
+            context.register_replicated_apply(ECOSYSTEM, driver);
+        }
+        Ok(())
     }
 }
 
@@ -479,7 +485,7 @@ fn install_compiled(
     context: &mut RuntimeInstallContext<'_>,
     settings: &[(&str, &CompiledEcosystemSettings)],
     journal_outbox: outbox::Outbox,
-) -> Result<(), String> {
+) -> Result<Option<Arc<OciRegistry>>, String> {
     let mut compiled = Vec::with_capacity(settings.len());
     for (name, settings) in settings {
         let Some(settings) = settings.value::<IndexSettings>().copied() else {
@@ -487,8 +493,7 @@ fn install_compiled(
         };
         compiled.push(((*name).to_owned(), settings));
     }
-    OciInstaller::new(compiled, journal_outbox).register_driver(context);
-    Ok(())
+    Ok(OciInstaller::new(compiled, journal_outbox).register_driver(context))
 }
 
 fn register_capabilities(registrar: &mut dyn CapabilityRegistrar, driver: Arc<OciRegistry>) {

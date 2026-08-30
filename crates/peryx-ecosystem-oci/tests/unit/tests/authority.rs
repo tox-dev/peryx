@@ -693,3 +693,71 @@ async fn test_epoch_authority_double_reports_no_group_topology() {
     assert_eq!((status.leader, status.term, status.voters), (None, 4, Vec::new()));
     assert_eq!(group.transfer_home("app", "west").await.unwrap(), None);
 }
+
+const LAYER: &[u8] = b"a-layer-under-authority";
+
+async fn push_blob(app: &axum::Router) -> StatusCode {
+    send_body(
+        app,
+        Method::POST,
+        &format!("/v2/store/app/blobs/uploads/?digest={}", super::oci_digest(LAYER)),
+        &[("authorization", &auth(TOKEN))],
+        LAYER.to_vec(),
+    )
+    .await
+    .0
+}
+
+async fn delete_blob(app: &axum::Router) -> (StatusCode, Bytes) {
+    let (status, _, body) = send_with(
+        app,
+        Method::DELETE,
+        &format!("/v2/store/app/blobs/{}", super::oci_digest(LAYER)),
+        &[("authorization", &auth(TOKEN))],
+    )
+    .await;
+    (status, body)
+}
+
+async fn pull_blob_status(app: &axum::Router) -> StatusCode {
+    send(
+        app,
+        Method::GET,
+        &format!("/v2/store/app/blobs/{}", super::oci_digest(LAYER)),
+    )
+    .await
+    .0
+}
+
+#[tokio::test]
+async fn test_blob_delete_is_fenced_by_the_repository_epoch() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = hosted_writable_distributed(&dir, TOKEN);
+    let group = EpochAuthority::settled(9);
+    bind_ownership(&state, group.clone());
+    assert_eq!(push_blob(&app).await, StatusCode::CREATED);
+
+    group.transfer();
+    let (status, body) = delete_blob(&app).await;
+
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(body_has_code(&body, "UNAVAILABLE"), "{body:?}");
+    assert_no_topology(&body);
+    assert_eq!(pull_blob_status(&app).await, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_blob_delete_at_the_settled_epoch_unlinks_the_digest() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = hosted_writable_distributed(&dir, TOKEN);
+    let group = EpochAuthority::settled(9);
+    bind_ownership(&state, group.clone());
+    assert_eq!(push_blob(&app).await, StatusCode::CREATED);
+    group.transfer();
+    assert_eq!(delete_blob(&app).await.0, StatusCode::SERVICE_UNAVAILABLE);
+
+    group.settle();
+
+    assert_eq!(delete_blob(&app).await.0, StatusCode::ACCEPTED);
+    assert_eq!(pull_blob_status(&app).await, StatusCode::NOT_FOUND);
+}

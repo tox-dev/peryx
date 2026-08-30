@@ -297,7 +297,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         let mutation = commit_epoch(state, &repo, fence, |lease| {
             lease.guard()?;
             self.blob_memberships.write().remove(&membership);
-            crate::quota::release_blob_membership(&state.meta, &index.name, &repo, digest, webhook)
+            crate::quota::release_blob_membership(&state.meta, &index.name, &repo, digest, webhook, self.journal_outbox)
         })
         .await?;
         let deleted = match mutation {
