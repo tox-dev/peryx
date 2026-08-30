@@ -8,6 +8,7 @@ use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt as _;
 use peryx_identity::{Action, ProviderId};
 use peryx_policy::PolicyAction;
+#[cfg(feature = "composition-pypi")]
 use peryx_storage::blob::Digest;
 use peryx_storage::meta::{
     AccountingClass, JobKind, JobState, MetaStore, NewJobRun, NewQuotaReservation, PolicyDecisionQuery, QuotaLimits,
@@ -25,7 +26,9 @@ use crate::server::{
     build_indexes_with_plugins, build_router_with_plugins, build_state_with_plugins, check_config_with_plugins,
     recover_job_attempts,
 };
-use crate::tests::support::{plugins, plugins_with_inactive_owner, plugins_without_retention};
+#[cfg(feature = "composition-pypi")]
+use crate::tests::support::plugins_with_inactive_owner;
+use crate::tests::support::{plugins, plugins_without_retention};
 
 const TOKEN_REALM_SIGNING_KEY: &str = "test-token-realm-signing-key-32-bytes";
 
@@ -147,6 +150,7 @@ fn empty_index_configuration_installs_no_owner_runtime() {
 }
 
 #[test]
+#[cfg(feature = "composition-pypi")]
 fn inactive_owner_migrations_and_ha_references_do_not_run() {
     let plugins = plugins_with_inactive_owner(Some(Arc::new(peryx_ecosystem_pypi::PypiPlugin)));
     let directory = tempfile::tempdir().unwrap();

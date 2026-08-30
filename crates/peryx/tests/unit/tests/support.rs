@@ -78,6 +78,7 @@ pub fn plugins_with_metadata_migration(migration: Arc<dyn peryx_storage::meta::M
     registry_with_migration(&REGISTRATION, Some(migration))
 }
 
+#[cfg(feature = "composition-pypi")]
 pub fn plugins_with_inactive_owner(
     migration: Option<Arc<dyn peryx_storage::meta::MetadataMigration>>,
 ) -> PluginRegistry {
@@ -188,6 +189,7 @@ static FSCK_REGISTRATION: Registration = Registration {
 static PLAIN_REGISTRATION: PlainRegistration = PlainRegistration {
     default_indexes: &PLAIN_DEFAULT_INDEXES,
 };
+#[cfg(feature = "composition-pypi")]
 static INACTIVE_REGISTRATION: PlainRegistration = PlainRegistration { default_indexes: &[] };
 static CORE_DEFAULT_INDEXES: [DefaultIndex; 1] = [DefaultIndex {
     name: "main",
@@ -235,6 +237,7 @@ static FSCK_DRIVER: Driver = Driver {
     ],
 };
 static PLAIN_DRIVER: EcosystemDriverFixture = EcosystemDriverFixture::new(PLAIN, RouteClass::Metadata);
+#[cfg(feature = "composition-pypi")]
 static INACTIVE_DRIVER: Driver = Driver {
     ecosystem: PLAIN,
     capabilities: &[Capability::BrokenBlobReferences],
@@ -247,6 +250,7 @@ static BROKEN_BLOB_RUNTIME: Runtime = Runtime {
 };
 static FSCK_RUNTIME: Runtime = Runtime { driver: &FSCK_DRIVER };
 static PLAIN_RUNTIME: PlainRuntime = PlainRuntime;
+#[cfg(feature = "composition-pypi")]
 static INACTIVE_RUNTIME: Runtime = Runtime {
     driver: &INACTIVE_DRIVER,
 };

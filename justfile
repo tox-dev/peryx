@@ -67,6 +67,17 @@ _mutation-shard-count-contract:
     test "$(just mutation-shard-count 8193 256)" = 33
     test "$(just mutation-shard-count 513 256)" = 3
 
+# Check the zero-feature binary with declared CI tools.
+_features-tool-contract:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export PATH="$(dirname "$(command -v cargo)"):/usr/bin:/bin"
+    if command -v rg >/dev/null; then
+      echo 'ripgrep is present in the feature contract' >&2
+      exit 1
+    fi
+    "{{ just_executable() }}" _zero-feature-binary
+
 # Check Rust formatting.
 format-check: _project-temp
     cargo fmt --all --check --
@@ -89,7 +100,7 @@ lint-docs: _project-temp
     prek run codespell --all-files
 
 # Check workflows and repository automation.
-lint-automation: _project-temp _codspeed-target-contract _coverage-target-contract _mutation-shard-count-contract _sanitizer-target-contract
+lint-automation: _project-temp _codspeed-target-contract _coverage-target-contract _mutation-shard-count-contract _sanitizer-target-contract _features-tool-contract
     SKIP=cargo-fmt,cargo-clippy,mdformat,codespell prek run --all-files
 
 # Check dependency policy.
@@ -199,12 +210,16 @@ simulation filter="all()": _project-temp
 # Check every feature independently.
 features: _project-temp
     cargo check --package peryx --no-default-features --lib
-    @if output="$(cargo check --package peryx --no-default-features --bin peryx 2>&1)"; then \
-      echo 'zero-feature peryx binary compiled' >&2; exit 1; \
-    fi; rg -F 'the peryx binary requires at least one `composition-*` feature' <<< "$output"
+    just _zero-feature-binary
     cargo hack --workspace --exclude peryx --each-feature check --all-targets
     cargo hack --package peryx --each-feature --features composition-pypi check --all-targets
     cargo check --package peryx --no-default-features --features composition-oci --all-targets
+
+# Check that the binary rejects an empty composition.
+_zero-feature-binary:
+    @if output="$(cargo check --package peryx --no-default-features --bin peryx 2>&1)"; then \
+      echo 'zero-feature peryx binary compiled' >&2; exit 1; \
+    fi; printf '%s\n' "$output" | grep -F 'the peryx binary requires at least one `composition-*` feature'
 
 # Build the shipped server with one composition feature.
 _system-test-build feature: _project-temp
