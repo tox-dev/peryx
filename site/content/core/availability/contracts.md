@@ -1,39 +1,54 @@
 +++
 title = "Availability contracts"
-description = "The durability and failure guarantees of none, dc, and ha modes."
+description = "Shipped durability evidence and the remaining HA contract gaps."
 weight = 7
 aliases = [ "/core/availability-contracts/"]
 +++
 
-The binary supports three availability modes. `none` skips distributed setup; `dc` and `ha` activate replication and
-coordination.
+The binary accepts three availability modes. `none` skips distributed setup. `dc` activates primary-to-replica
+replication without an ownership consensus group. `ha` also assembles ownership consensus, but the current release
+cannot route every HA peer protocol through the one address a roster member carries. See the
+[release-status inventory](@/core/availability/_index.md#release-status) before using a mode in production.
 
-| Mode   | Acknowledgement                                                            | Failure domain                 | Coordination                                                |
-| ------ | -------------------------------------------------------------------------- | ------------------------------ | ----------------------------------------------------------- |
-| `none` | Authoritative metadata and required bytes are durable on the local backend | One process and its storage    | No availability assembly                                    |
-| `dc`   | The configured same-datacenter durability requirement is satisfied         | One node within the datacenter | Distributed coordination with same-DC replication           |
-| `ha`   | The configured cross-datacenter durability requirement is satisfied        | Loss of a covered datacenter   | Distributed coordination with cross-DC placement and quorum |
+| Mode   | Current PyPI upload request acknowledgement                                                      | Coordination                                                         |
+| ------ | ------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------- |
+| `none` | Metadata and bytes committed on the local backend                                                | None                                                                 |
+| `dc`   | Metadata committed on the writer and bytes satisfy the configured same-DC node-receipt threshold | Asynchronous metadata and blob replication; no ownership consensus   |
+| `ha`   | Writer bytes plus metadata applied in any one remote datacenter                                  | HA ownership components; no supported end-to-end peer network layout |
+
+The `ha` write-ack policy does not yet change the remote metadata threshold. `local`, `majority`, and `everywhere` all
+accept one remote datacenter. Blob acknowledgements also treat each backend as a filesystem and count node-labelled
+receipts, including for a shared object store. Do not infer stronger evidence from either setting.
+
+A filesystem receipt reports that the blob is present after the store call. The filesystem persistence path ignores a
+parent-directory sync failure, so that receipt can overstate crash durability on an affected filesystem.
 
 ## Mutation contract
 
-An authoritative mutation moves through admission, validation, durable commit, and acknowledgement. A success confirms
-the configured mode's metadata and byte-placement requirements. If peryx cannot prove the requirement, it refuses the
-mutation or leaves it retry-safe without weakening the configured contract.
+The PyPI upload path moves through admission, validation, durable local commit, and acknowledgement. A `200` confirms
+the evidence in the table above. A `202` leaves the upload retry-safe because the deadline expired before the resolver
+proved that evidence. OCI write paths do not yet call this acknowledgement resolver, so the table does not describe an
+OCI success response.
+
+The PyPI crash-recovery finalizer is a separate path. It validates that a placement exists and records the operation as
+`published` without calling the distributed acknowledgement resolver. A retry can therefore replay `200 upload accepted`
+after that recovery path without the same-DC receipt evidence the synchronous request path requires.
 
 Cache fills are reconstructible and do not wait for authoritative durability. They still verify content before local
 commit.
 
 ## Partition behavior {#why-a-partition-refuses-instead-of-accepting}
 
-A node acknowledges only durability it can prove. If required peers or failure domains are unreachable, accepting a
-write would weaken the configured contract and could create two authoritative histories. The node refuses the mutation
-and leaves the client a retry-safe result instead.
+A node reports only durability it can prove. The PyPI path may commit the local blob and metadata before a peer becomes
+unreachable; if evidence is still short at the deadline, it returns `202 Accepted` with the stable operation identity. A
+retry rechecks that operation instead of publishing another copy. Replica mutation requests and writes at a non-home HA
+node return `503 Service Unavailable` before publication.
 
 ## Fencing
 
-Every distributed authority has a monotonic epoch. The current owner may commit under that epoch. The epoch fences a
-former owner or stale background job before its result becomes authoritative. Retrying the same idempotent mutation
-against the current owner returns one result.
+An HA authority has a monotonic epoch. The current owner may commit under that epoch. The epoch fences a former owner or
+stale background job before its result becomes authoritative. `dc` has no ownership epoch; its writer-replacement
+procedure relies on stopping the old writer and replacing the store's writer claim offline.
 
 ## Read contract
 
@@ -54,9 +69,10 @@ backup is required.
 
 ## Recovery objectives {#recovery-objectives}
 
-`none` has the recovery point of its local backend and latest verified backup. `dc` protects acknowledged work against a
-covered node loss in one datacenter. `ha` protects acknowledged work against a covered datacenter loss. Recovery time
-still includes detection, fencing, routing, and catch-up.
+`none` has the recovery point of its local backend and latest verified backup. A `dc` promotion recovers metadata only
+through the selected replica's applied frontier; same-DC byte receipts do not make later metadata synchronous. HA code
+waits for one remote metadata frontier while bytes converge later, but the peer-plane gap prevents a supported HA
+deployment. Recovery time includes detection, operator action, routing, and catch-up.
 
 ## Benchmark method for mode budgets {#benchmark-method-for-mode-budgets}
 

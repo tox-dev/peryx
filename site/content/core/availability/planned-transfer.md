@@ -1,9 +1,13 @@
 +++
 title = "Planned authority transfer"
-description = "Move a healthy authority after its target catches up."
+description = "Describe the HA planned-transfer component and its deployment boundary."
 weight = 8
 aliases = [ "/core/availability-planned-transfer/"]
 +++
+
+The HA control listener exposes the shipped transfer handlers, but public replication routes and the private Raft
+listener cannot share the configured member address. Mode `dc` has no ownership consensus and returns
+`503 Service Unavailable` for transfer requests.
 
 An authority is a repository's write owner in one home datacenter. A planned transfer moves a healthy authority for a
 drain, rebalance, or migration. It commits only after the target has every acknowledged write. A
@@ -32,7 +36,7 @@ authenticated principal, not the body, so the audit records who truly ordered th
 stated justification, carried into the audit.
 
 This is a distinct surface from the raw `transfer_authority` command on
-[`/availability/v1/commands`](@/core/availability/listener.md#membership-and-transfer-commands). That command is the
+[`/availability/v1/commands`](@/core/availability/listener.md#ha-membership-and-transfer-commands). That command is the
 unconditional consensus move a failover commits; the planned-transfer endpoint wraps it in the catch-up gate, the
 barrier, and the audit, so an operator moving a live home does not have to hold the catch-up invariant by hand.
 
@@ -103,9 +107,9 @@ so a former home cannot finalize a write against an authority it no longer owns.
 recorded before the transfer follows the same terminal-disposition rules the
 [failover transfer](@/core/availability/authority-transfer.md#reconciling-old-epoch-operations) uses.
 
-## Operator recovery
+## HA component exercise
 
-To move a live home in an `ha` deployment:
+In a development environment that supplies the missing peer routing outside Peryx:
 
 1. Confirm the target is a reachable member of the datacenter roster; an unknown or unreachable target never catches up,
    so the transfer waits and then times out.

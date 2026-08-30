@@ -33,7 +33,8 @@ peryx resolves a request to the index with the longest matching route prefix. Th
 - `PUT /{route}/{project}/{version}/promote?from=...`: promote uploaded records from another route's hosted layer.
 - `GET /+api`: server discovery, global URLs plus every configured index.
 - `GET /+search`: search cached packages across every configured index.
-- `GET /api-docs/openapi.json`: the server's OpenAPI description.
+- `GET /api-docs/openapi.json`: the public server's OpenAPI description. It excludes private availability-control and
+  peer-replication routes.
 - `GET /+health`: fixed, redacted process liveness for restart probes.
 - `GET /+ready`: redacted local-store readiness for load balancers; add `?writes=true` to require a writer. See
   [load-balancer probes](@/core/availability/high-availability.md#load-balancer-probes) for response and deployment

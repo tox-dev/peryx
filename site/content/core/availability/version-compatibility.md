@@ -1,9 +1,14 @@
 +++
 title = "Version compatibility and rolling upgrades"
-description = "Negotiate mixed-version clusters and enforce rollback limits."
+description = "Record the design for mixed-version negotiation and rollback limits."
 weight = 9
 aliases = [ "/core/availability-version-compatibility/"]
 +++
+
+The negotiation, command barrier, rollout preflight, and irreversible-migration floor on this page are design-only.
+Their types and tests ship, but no startup, command, or HTTP path calls them. Shipped replication rejects an
+incompatible schema through `GET /+replication/v1/ready`; operators must manage compatible DC upgrades themselves. HA
+has no supported end-to-end network layout.
 
 Rolling an availability cluster through an upgrade mixes nodes at different builds. Before two nodes exchange commands
 they must agree on versions both speak, hold a new command until every committed member can apply it, and refuse an
@@ -12,8 +17,8 @@ operation an older member could misread. This contract complements the
 same [authority transfers](@/core/availability/authority-transfer.md) that move a home between datacenters, since a
 transfer must not commit a version a survivor cannot run.
 
-Negotiation occurs during distributed preparation. Activation starts no peer work until version and configuration checks
-pass. A negotiation failure returns a startup error without leaving an active worker or listener.
+The design places negotiation during distributed preparation and would stop activation on a mismatch. The current
+service assembly does not perform that negotiation.
 
 Two dimensions carry a version, each a `u16` where higher is newer: the **wire protocol** two nodes speak on the
 replication channel, and the **replicated state machine** that applies committed operations. A node advertises an

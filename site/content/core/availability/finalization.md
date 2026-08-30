@@ -1,13 +1,18 @@
 +++
 title = "Finalizing admitted content"
-description = "Publish admitted content at its authority home with fencing, validation, and idempotent outcomes."
+description = "Distinguish local PyPI finalization from the cross-datacenter design."
 weight = 8
 aliases = [ "/core/availability-finalization/"]
 +++
 
-An ingress node can admit content before its authority home publishes it. Finalization runs at the
-[home datacenter](@/core/availability/home-assignment.md). It validates the durable intent against current state, then
-commits metadata, replication work, the operation outcome, and the intent transition in one transaction.
+PyPI ships local intent admission and publication in the upload request. Every mode stages an intent, claims the
+operation, performs the HA first-home check when configured, commits blob and metadata state, advances the intent to
+`admitted`, and checks acknowledgement evidence. A request at a non-home HA node returns `503 Service Unavailable`;
+there is no transport that sends its intent to the home for later finalization. OCI mutations do not use this admission
+path.
+
+The recovery finalizer below ships for intents and file rows in the same metadata store. The cross-datacenter extension
+requires a future intent and byte transport to the [home datacenter](@/core/availability/home-assignment.md).
 
 Content owners define admission requests and client responses. Finalization consumes owner-neutral intent, placement,
 authorization, and operation contracts.
@@ -16,10 +21,10 @@ authorization, and operation contracts.
 
 The finalizer reads a durable ingress intent and moves it forward:
 
-| State      | Meaning                                                                          |
-| ---------- | -------------------------------------------------------------------------------- |
-| `pending`  | The ingress accepted and staged the content; publication has not committed.      |
-| `admitted` | Publication metadata, replication work, and the terminal outcome have committed. |
+| State      | Meaning                                                                                           |
+| ---------- | ------------------------------------------------------------------------------------------------- |
+| `pending`  | The ingress staged the intent; local publication may need a retry or crash-recovery sweep.        |
+| `admitted` | Local publication committed; acknowledgement evidence and the operation outcome may still follow. |
 
 A successful publication records an operation outcome under the admission operation ID. A retry reads this record and
 returns the stored acknowledgement. A refusal records no terminal outcome.
@@ -38,11 +43,17 @@ The finalizer runs these checks before publication:
 The authority fence runs first. A former home cannot publish work after an
 [authority transfer](@/core/availability/authority-transfer.md) advances the epoch.
 
-## Commit boundary
+## Shipped PyPI commit boundary
 
-One local transaction writes the published metadata, replication journal entry, `published` outcome, and transition to
-`admitted`. A crash cannot expose metadata without its replication record or leave a successful operation without the
-outcome needed for replay.
+The request path commits blob, metadata, and replication-journal state before it waits for acknowledgement evidence,
+then advances the intent to `admitted`. A `202 Accepted` response means publication committed but the evidence deadline
+elapsed; a retry rechecks the same operation. Recording `published` follows a successful acknowledgement.
+
+The local recovery sweep reads pending intents whose file rows are in the same store. Its finalizer validates the fence,
+identity, placement, and current write grant, then commits the file rows, replication journal, operation outcome, and
+intent advance in one transaction. It does not call the distributed acknowledgement resolver, so its placement check can
+record `published` without the DC receipt evidence required by the request path. It cannot read rows or bytes from
+another datacenter.
 
 This transaction also defines visibility. Pending or refused content remains absent from client views.
 
@@ -58,8 +69,7 @@ Finalization uses the operation ID as its idempotency key:
 A transient refusal can succeed after its cause clears because it creates no terminal outcome. A lost response or a
 restart can trigger another attempt, but one operation ID can produce one committed publication.
 
-## Placement
+## Design: remote placement
 
-Finalization requires a verified placement somewhere in the topology. It does not wait for the content to reach the home
-or each replica. Background replication and [remote read-through](@/core/repositories/remote-read-through.md) make those
-bytes available after metadata publication.
+The design allows finalization from a verified placement elsewhere in the topology. The shipped local PyPI path stores
+the upload before it commits metadata; it does not hand a retained ingress upload to a remote home.

@@ -1,6 +1,6 @@
 +++
 title = "Rolling upgrade and rollback"
-description = "Preflight, order, and recover a rolling availability upgrade."
+description = "Record the design for HA upgrade preflight and rollback."
 weight = 9
 aliases = [ "/core/availability-rolling-upgrade/"]
 +++
@@ -10,6 +10,10 @@ Replacing nodes one at a time requires protocol compatibility and enough healthy
 and downgrade limits. The sections below define drain preconditions, replacement order, and recovery after a failed
 step. For the operator walkthrough against live surfaces, see
 [upgrade and roll back an availability cluster](@/core/availability/upgrade-runbook.md).
+
+Version negotiation, preflight, rollout policy, and the irreversible-migration floor remain design-only. Their types and
+tests ship, but no startup, command, or HTTP path invokes them. Manual process replacement and replication readiness
+ship for `dc`; planned authority transfer is an HA component without a supported HA network layout.
 
 The roll operates the writer model that [failover and recovery](@/core/availability/failover-recovery.md) guide recovers
 and reuses the [planned transfer](@/core/availability/planned-transfer.md) to move the writer's home when its turn

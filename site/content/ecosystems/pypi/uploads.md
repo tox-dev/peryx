@@ -13,12 +13,12 @@ projects. It still rejects inputs that identify a different project, release, or
 
 ## Durability acknowledgement
 
-A successful upload response means the write reached the configured durability, not merely that bytes reached a staging
-file. Under `availability.mode = "none"`, that promise is local durability: once the backend commits the artifact and
-its metadata, peryx answers `200`. Under `dc` and `ha`, the promise is a datacenter quorum, set by
-`[availability.write_ack]`: `local`, `majority` (the default), or `everywhere` over the datacenter's members. A
-filesystem backend proves that quorum from a quorum of independent per-node placement receipts; a datacenter-durable
-object store proves it from its own atomic put and digest confirmation.
+A successful upload response follows the evidence the current handler collects. Under `availability.mode = "none"`,
+peryx answers `200` after the local backend commits the artifact and metadata. Under `dc`, metadata commits on the
+writer while `[availability.write_ack]` controls how many same-datacenter member receipts must report the blob. Under
+`ha`, the current resolver also waits for any one remote datacenter to apply the metadata operation. The HA policy does
+not yet change that remote threshold, and the current release has no supported network layout for all HA peer routes;
+see the [release-status inventory](@/core/availability/_index.md#release-status).
 
 The response follows the evidence. A write that reaches its quorum answers `200 upload accepted`. A write still short of
 its quorum when the client's `write_ack.deadline-secs` window elapses answers `202 Accepted` carrying a stable operation
@@ -27,14 +27,24 @@ be wrong and a blind retry could publish the artifact twice. The client resends 
 original operation by its id, replaying the recorded result rather than mutating a second time. An identical resend of
 an already-published file is the same idempotent success it has always been.
 
-Only proven same-datacenter durability counts toward the quorum. A volatile buffer, a temporary staging file, or a
-provider's asynchronous cross-region replication is not a completed same-datacenter copy and is never counted as one.
-Cross-datacenter artifact replication runs downstream and a write never waits on it.
+Every `dc` and `ha` node serves `GET /+replication/v1/receipts/sha256/{digest}` on its public server. Service assembly
+builds an HTTP receipt client for each other member in the local datacenter and polls those clients during the upload
+deadline. The route requires the replication bearer token; `200` returns the stored byte length, `404` reports no local
+blob, and malformed digests return `400`. This peer route is internal and does not appear in the public OpenAPI
+document.
 
-Gathering placement receipts from other datacenter members travels the replication plane, which is not yet wired, so
-today the only receipt available while the request is open is the ingress node's own. Mode `none`, or a distributed
-configuration with one member per datacenter, reaches its requirement from that receipt and answers `200`; a larger
-same-datacenter quorum is reported retry-safe until the receipt transport lands.
+The receipt body does not identify the process that answered or echo the digest, so the caller labels it with the
+configured member name. Duplicate endpoints can therefore look like independent filesystem copies. The resolver also
+uses this node-receipt model for object stores instead of carrying backend-specific commit evidence. Use a `dc`
+filesystem roster only when each member address reaches one distinct process and storage failure domain.
+Cross-datacenter artifact replication runs after publication; the upload does not wait for those bytes.
+
+Filesystem persistence also ignores a parent-directory sync failure before a receipt can be served. On a filesystem
+where that sync is needed for crash durability, a receipt can overstate what survives a crash.
+
+The scheduled crash-recovery finalizer follows a different evidence path. When it finds a pending intent whose local
+file rows and placement exist, it can record `published` without calling the distributed acknowledgement resolver. A
+later retry can replay `200 upload accepted` without the DC receipts the synchronous request path waits for.
 
 ## Project size under concurrent uploads
 

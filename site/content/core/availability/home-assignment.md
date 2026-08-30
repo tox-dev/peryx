@@ -1,9 +1,13 @@
 +++
 title = "Home assignment on first publish"
-description = "Assign one authority home through the control quorum and fence later writes with its epoch."
+description = "Describe the HA first-home component and its deployment boundary."
 weight = 8
 aliases = [ "/core/availability-home-assignment/"]
 +++
+
+PyPI calls the shipped HA first-home claim during its local upload path. The full flow cannot run while public peer
+routes and private Raft use separate listeners. Mode `dc` has no authority assignment; its configured writer owns
+writes.
 
 An authority owns a set of related writes and has one home datacenter. The first successful publication assigns that
 home and mints its first epoch. Later writes must pass the current epoch fence.

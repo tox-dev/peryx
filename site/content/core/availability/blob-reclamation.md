@@ -1,12 +1,16 @@
 +++
 title = "Blob reclamation"
-description = "Fence deletion of unreferenced content behind placements and replication frontiers."
+description = "Describe the HA reclamation component and its deployment boundary."
 weight = 9
 aliases = [ "/core/availability-blob-reclamation/"]
 +++
 
 Several metadata records can refer to one digest. Distributed reclamation accounts for replicas and backups that have
 not applied the current reference snapshot. It records a durable decision before a storage executor removes bytes.
+
+The selector, ledger, and scheduled job ship as HA components. The job requires a nonzero ownership term, so it performs
+no work in `dc`, which has no ownership consensus. HA has no supported end-to-end peer layout. This page does not
+describe an active reclamation path in a supported deployment.
 
 ## Retained references
 

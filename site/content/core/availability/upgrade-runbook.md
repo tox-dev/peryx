@@ -1,20 +1,20 @@
 +++
 title = "Upgrade and roll back an availability cluster"
-description = "Upgrade or roll back a live dc or ha cluster one build at a time."
+description = "Separate shipped DC replacement from the HA upgrade design."
 weight = 9
 aliases = [ "/core/availability-upgrade-runbook/"]
 +++
 
-This runbook upgrades or rolls back a healthy `dc` or `ha` cluster one adjacent build at a time. Check version ranges
-and the irreversible-migration floor against [version compatibility](@/core/availability/version-compatibility.md).
-Follow the replica-first order and recovery rules in
-[rolling upgrade and rollback](@/core/availability/rolling-upgrade.md). Deploy the cluster first with
-[availability deployment and sizing](@/core/availability/deployment.md).
+The intended HA upgrade procedure is not runnable: version negotiation, preflight, command barriers, and the
+irreversible-migration floor have no runtime caller, and HA has no supported peer network layout. The
+[rolling upgrade design](@/core/availability/rolling-upgrade.md) defines those future contracts.
 
-peryx has no upgrade command. Replace one node at a time and gate each step on the existing readiness and transfer
-surfaces.
+For a shipped `dc` deployment, replace replicas one at a time, wait for `GET /+replication/v1/ready` after each restart,
+and replace the writer only during an operator-controlled outage or after offline
+[writer promotion](@/core/availability/high-availability.md#dc-writer-promotion). Peryx has no upgrade command or
+runtime version preflight.
 
-## Read the two go decisions before each hop
+## Design: go decisions before each hop
 
 A hop moves the cluster one negotiated version, because nodes interoperate one step at a time and a jump past a version
 no peer still advertises has no shared step to land on (see
@@ -45,7 +45,7 @@ group below its durability policy or strand it too far ahead of a promotable rep
   is current and reproven with `peryx backup verify` before you drain (see
   [verify a backup](@/core/operations/backup-restore.md#verify-a-backup)).
 
-## Upgrade the cluster, one version at a time
+## Design: upgrade one version at a time
 
 Replace read replicas first and the writer last, so the one unavoidable authority handoff happens once, at the end,
 rather than repeatedly (see [the order](@/core/availability/rolling-upgrade.md#the-order)). Take the order over the
@@ -77,7 +77,7 @@ configured roster in stable id order, independent of what each member currently 
    advertises support for it, so new behavior turns on once the last node clears the target, not as each node restarts
    (see [the command barrier](@/core/availability/version-compatibility.md#the-command-barrier)).
 
-## Roll back the cluster
+## Design: roll back the cluster
 
 A downgrade uses the same order and decisions as an upgrade: replicas first, then the writer through a planned transfer.
 A rollback is an ordinary target until a migration makes it irreversible: once the state machine has crossed a version
@@ -87,7 +87,7 @@ floor cannot be restored by the older build (see
 [the rollback boundary](@/core/availability/version-compatibility.md#the-rollback-boundary)). Above the floor, downgrade
 one adjacent version at a time exactly as you upgraded.
 
-## When a step fails
+## Design: when a step fails
 
 A drained node that will not come back leaves the rest of the group serving on its survivors, and recovery is bounded by
 the two lag budgets the go decision held: the replication-lag budget kept a promotable replica close to the writer, and
@@ -97,7 +97,7 @@ backup without having acknowledged writes neither holds. The full recovery paths
 [failover and recovery](@/core/availability/failover-recovery.md). Repair or replace the failed node, let it rejoin, and
 re-read both go decisions before the roll continues.
 
-## Confirm the upgrade
+## Design: confirm the upgrade
 
 An upgrade is done when the cluster proves it, not when the last process restarts:
 

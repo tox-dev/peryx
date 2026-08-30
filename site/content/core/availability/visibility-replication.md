@@ -1,9 +1,13 @@
 +++
 title = "Visibility replication"
-description = "Replicate ordered visibility transitions and retain their tombstones."
+description = "Record the design for replicated visibility transitions and tombstones."
 weight = 12
 aliases = [ "/core/availability-visibility-replication/"]
 +++
+
+Visibility replication remains design-only. Operation, feed, minting, and snapshot types ship, but no production owner
+or service-assembly path calls them. Replicas apply the metadata rows in the ordinary change feed; they do not receive
+the typed visibility envelopes or maintain the visibility frontier described below.
 
 Trash, restore, revoke, and lift determine whether a replica may serve an artifact. These reversible transitions must
 retain authority order across duplicate or reordered delivery. Otherwise a replica can serve a revoked artifact or hide
@@ -56,14 +60,14 @@ that cannot restore it refuses to start rather than serve a partial hidden set.
 
 Retention is bounded by frontier, never by wall-clock age. Compaction releases an artifact only once it has returned to
 the visible default _and_ a required-replica-and-backup frontier covers its operations, because the authority never
-resends an operation below a serial acknowledged everywhere. A still-trashed or still-revoked artifact is never released
-\: its tombstone enforces the hidden state. An entry whose high-water sits in a later epoch is kept until every earlier
-epoch has drained too, so a stale lower-epoch operation cannot resurrect an entry the compaction has forgotten.
+resends an operation below a serial acknowledged everywhere. A still-trashed or still-revoked artifact is never
+released: its tombstone enforces the hidden state. An entry whose high-water sits in a later epoch is kept until every
+earlier epoch has drained too, so a stale lower-epoch operation cannot resurrect an entry the compaction has forgotten.
 
 ## Failover
 
 A failover advances the authority epoch. Because the order compares epoch first, every operation the new home mints
-outranks every operation the prior home produced, whatever its serial. A late-arriving operation from the old epoch :
+outranks every operation the prior home produced, whatever its serial. A late-arriving operation from the old epoch,
 still in flight when the transfer completed, is applied against the new epoch's high-water and dropped as stale. Thus,
 **failover preserves the delete, restore, revoke, and lift ordering**: the transition the new authority intends wins,
 and the old home cannot pull a dimension back to a value it already lost. The epoch a home stamps only ever moves

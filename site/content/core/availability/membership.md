@@ -1,12 +1,15 @@
 +++
 title = "Managing voting membership"
-description = "Add, promote, replace, or remove voters in the ownership consensus group."
+description = "Describe HA membership commands and their deployment boundary."
 weight = 9
 aliases = [ "/core/availability-membership/"]
 +++
 
-The ownership consensus group a `dc` or `ha` deployment runs has a voting roster: the datacenters whose acknowledgement
-a committed authority change needs. An administrator changes that roster through the
+HA command handlers and Raft membership storage ship, but public peer routes and the private Raft listener cannot share
+the configured member address. Mode `dc` uses its static roster and runs no ownership consensus.
+
+An HA ownership consensus group has a voting roster: the datacenters whose acknowledgement a committed authority change
+needs. An administrator changes that roster through the
 [availability control listener](@/core/availability/listener.md), never by editing a store. Every change commits as a
 Raft membership entry, so the group applies it in one order and a restart recovers it.
 

@@ -1,19 +1,23 @@
 +++
 title = "Authority transfer and drain"
-description = "Transfer an authority after a confirmed home failure and drain retained writes."
+description = "Separate automatic-failover design from the shipped HA transfer and drain components."
 weight = 8
 aliases = [ "/core/availability-authority-transfer/"]
 +++
 
-An authority gives one datacenter write ownership for a repository. The first publish assigns its home. After a
-permanent home failure, the control quorum moves the authority and retained writes to a survivor. This distributed
-recovery procedure uses [node liveness](@/core/availability/liveness.md) for the failure signal and the
+Automatic failover remains design-only: `FailoverPolicy` and liveness selection have no runtime caller. The HA control
+listener ships a raw `transfer_authority` command and `peryx job drain` ships, but the command does not require a `Dead`
+home and the current HA peer-plane split prevents a supported end-to-end deployment. Mode `dc` has no ownership
+consensus; use offline [writer promotion](@/core/availability/high-availability.md#dc-writer-promotion).
+
+An authority gives one datacenter write ownership for a repository. The design below uses
+[node liveness](@/core/availability/liveness.md) for the failure signal and the
 [availability contracts](@/core/availability/contracts.md) for durability.
 
-Each ecosystem derives authority keys and handles retained operations. Peryx manages epochs, target selection, fencing,
-and drain order.
+Each ecosystem derives authority keys and handles retained operations. Peryx ships epoch storage and drain primitives;
+automatic target selection is not connected to the service runtime.
 
-## Suspicion never moves a home
+## Design: suspicion never moves a home
 
 Liveness aging guides routing. A home that misses heartbeats becomes [`Suspect`](@/core/availability/liveness.md), then
 `Dead` after the configured threshold. Only `Dead` permits failover. The control quorum must commit the transfer before
@@ -22,7 +26,7 @@ any write moves; this prevents a false suspicion from splitting ownership.
 The dead-after threshold and one control-quorum consensus round dominate the failover recovery time. Target selection
 uses a bounded in-memory pass. Tune the failover RTO through the liveness thresholds while retaining confirmation.
 
-## Choosing the target
+## Design: choosing the target
 
 Given a confirmed-dead home, the failover policy picks the datacenter to move it to from the candidates the roster
 offers, each carrying the liveness the tracker holds for it. The choice is a single bounded pass:
@@ -34,12 +38,13 @@ offers, each carrying the liveness the tracker holds for it. The choice is a sin
 
 Without a live candidate, the authority stays put and the old home's writes remain retained until a candidate recovers.
 
-## Committing the move
+## Shipped HA command component
 
-The chosen move commits on the control quorum, which mints the authority's next epoch. That new epoch is the fence: any
-write the old home had in flight under the previous epoch is stale, and the new epoch rejects it. A former home that
-returns cannot finalize a write against an authority it no longer owns. A datacenter in a control-plane minority cannot
-commit the move. It forwards to the leader, so a partition cannot produce two homes.
+`POST /availability/v1/commands` accepts `transfer_authority` and commits the requested move on the control quorum. The
+handler does not inspect liveness or select the target. The new epoch is the fence: any write the old home had in flight
+under the previous epoch is stale, and the new epoch rejects it. A former home that returns cannot finalize a write
+against an authority it no longer owns. A datacenter in a control-plane minority cannot commit the move. It forwards to
+the leader, so a partition cannot produce two homes.
 
 {{<diagram file="authority-transfer" />}}
 
@@ -47,8 +52,9 @@ commit the move. It forwards to the leader, so a partition cannot produce two ho
 
 Moving the home settles ownership; it does not settle the writes the old home was still holding. Before a home finalizes
 a write, the ingress datacenter that received it retains it as an intent (see the ingress staging model in the
-[availability contracts](@/core/availability/contracts.md)). When the home moves, those intents have to be finalized at
-the new home. That is the drain, run with [`peryx job drain`](@/core/operations/cli.md#job-drain):
+[availability contracts](@/core/availability/contracts.md)). The shipped intent store is local to the ingress node; no
+transport moves arbitrary ingress intents to another datacenter. A local drain runs with
+[`peryx job drain`](@/core/operations/cli.md#job-drain):
 
 - **Ordered.** It finalizes retained intents in admission order, held by a durable never-reused sequence that survives a
   restart, so the drain is deterministic and two operators running it reach the same result.
@@ -90,20 +96,28 @@ operations, and rescanning a settled operation does not reset it. The drain and 
 pending backlog depth and drain throughput; a backlog that stops draining means the new home is not settling the old
 home's operations.
 
-## Operator recovery
+## Manual HA component exercise
 
-For a confirmed permanent home loss in an `ha` deployment:
+No supported automatic recovery procedure ships. In a development environment that supplies the missing HA peer routing,
+an administrator can exercise the raw components:
 
-1. Confirm that the home is gone rather than suspect. The transfer proceeds only for a `Dead` home, preventing promotion
-   on a false positive.
-1. Let the control quorum commit the transfer to the selected survivor; a minority cannot, so ensure the quorum is
-   reachable.
+1. Confirm through external operational evidence that the old home is fenced. The server does not enforce the liveness
+   check.
+
+1. Choose the target and submit the raw command to the HA leader:
+
+   ```text
+   POST /availability/v1/commands
+   Idempotency-Key: recover-proj-west
+   { "type": "transfer_authority", "authority": "proj", "new_home": "west" }
+   ```
+
 1. Run `peryx job drain --authority <name>` at the new home to finalize the retained intents. Read the run back with
    `peryx job show` to confirm it succeeded; a run that reports `authority_fenced` raced a further transfer, so re-run
    it at the current home.
 
-Data at risk: nothing acknowledged. The ingress datacenter stores each retained intent, so it survives the home loss and
-the drain finalizes it. The caller must retry an unacknowledged in-flight write that did not become an intent.
+This sequence is not a durability claim. The HA layout is not deployable, and intents stored only on a lost ingress node
+cannot be drained from a survivor.
 
 ## Related
 

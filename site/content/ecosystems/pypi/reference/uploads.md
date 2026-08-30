@@ -31,69 +31,43 @@ status  filename  project  version  reason
 
 Each row has an `imported`, `skipped`, or `rejected` status and a reason. A summary row reports the three counts.
 
-## Distributed ingress admission
+## Ingress admission and publication
 
-A PyPI client uploads to whichever datacenter it reaches. This section applies when `availability.mode` is `dc` or `ha`.
-Mode `none` commits validated bytes and metadata to the local backend without an ingress ledger, authority transfer, or
-replication worker.
+Every PyPI upload uses the ingress ledger, including `mode = "none"`. After form and digest validation, the handler
+records an intent bound to the upload route, normalized project, filename, digest, size, ingress datacenter, and stable
+operation ID. It then claims that operation, resolves an HA home when ownership is active, and commits the blob and
+metadata on the serving node. The handler advances the intent to `admitted` after that local publication.
 
-Before peryx stores the upload, the ingress datacenter records durable admission. It streams the bytes to a staged blob
-and records a durable write intent bound to the tenant (the upload route), the ecosystem authority key (the normalized
-project), the artifact digest, the byte size, the ingress datacenter, and an operation id. Admission succeeds only once
-both the bytes and the intent are durable in that datacenter, so an accepted upload survives a restart near the client.
-Publication, home-datacenter assignment, and cross-datacenter replication run after admission and are not part of it.
+| Situation                                                      | Status | Result                                                                              |
+| -------------------------------------------------------------- | ------ | ----------------------------------------------------------------------------------- |
+| Local publication and required evidence complete               | `200`  | Metadata is visible and the operation records `published`                           |
+| Local publication complete but the evidence deadline expires   | `202`  | Metadata is already committed; retrying the same upload rechecks the same operation |
+| An HA request reaches a node outside the assigned project home | `503`  | `project authority is unavailable; retry the upload`, with `Retry-After: 1`         |
+| The same filename is resent with different content             | `400`  | `File already exists: "<name>" has different content; use a different filename`     |
+| A declared digest does not match the bytes                     | `400`  | `<field> mismatch`, before an intent is recorded                                    |
+| The backend lacks the required write capabilities              | `503`  | `same-datacenter durability unavailable: <guarantee>`                               |
+| The authority reaches either retention ceiling                 | `503`  | The matching `ingress admission retention is full` error, with `Retry-After: 30`    |
 
-| Situation                                           | Status | Result                                                                                          |
-| --------------------------------------------------- | ------ | ----------------------------------------------------------------------------------------------- |
-| A new upload is streamed and staged                 | `200`  | One intent is recorded, bound to the identity above                                             |
-| The same filename and content is resent             | `200`  | The resend resolves the same intent; no bytes are staged twice                                  |
-| The same filename is resent with different content  | `400`  | `File already exists: "<name>" has different content; use a different filename`                 |
-| The declared digest does not match the bytes        | `400`  | `<field> mismatch`, before an intent is recorded                                                |
-| The backend cannot prove same-datacenter durability | `503`  | `same-datacenter durability unavailable: <guarantee>`                                           |
-| The authority is at its retention record ceiling    | `503`  | `ingress admission retention is full: authority is at its record ceiling`, with a `Retry-After` |
-| The next intent would cross the byte ceiling        | `503`  | `ingress admission retention is full: authority is at its byte ceiling`, with a `Retry-After`   |
+**Idempotency.** The intent key uses the tenant, authority, and filename. The operation key also includes the digest. A
+retry of an operation already marked `published` replays its stored response. A pending retry re-enters the idempotent
+store and checks durability again, so a `202` can become `200` after more receipts arrive.
 
-**Idempotency.** The intent is keyed by the upload's file identity within its tenant and authority, so a retried upload
-resolves one intent rather than staging its bytes a second time. A client that loses the response and resends the same
-distribution is admitted again and publishes the same file idempotently; a resend of the same filename carrying
-different bytes is refused with the same error publication returns, so the client-visible upload contract is unchanged.
+**Checksums.** The handler verifies `sha256_digest`, `blake2_256_digest`, and the supported `md5_digest` case before it
+records an intent. See [upload digest fields](#upload-digest-fields).
 
-**Checksums.** The `sha256_digest`, `blake2_256_digest`, and `md5_digest` a client declares are verified against the
-streamed bytes before admission records anything, so a checksum mismatch is rejected with its existing error and leaves
-no staged intent. See [the digest fields peryx verifies](#upload-digest-fields) below.
+**Admission limits.** Each authority can retain 65,536 records and 64 GiB. Crossing 80% logs backpressure; crossing a
+hard bound rejects the next intent. Settled intents become eligible for pruning. Pending intents remain retained, so a
+failure before publication can consume capacity until a later retry or reaper transition resolves it.
 
-**Same-datacenter durability.** Admission requires the configured blob backend to prove race-safe, integrity-checked
-writes. Create-if-absent prevents a concurrent writer from clobbering a staged artifact, and checksum validation rejects
-corrupted writes. A local filesystem proves both. An object store proves them only when its endpoint honors conditional
-writes and checksum validation; one that cannot is refused at admission rather than acknowledging an upload it cannot
-make durable.
+**Current deployment boundary.** The release has no protocol that sends an admitted intent from one datacenter to
+another authority home. In HA code, a first publish can assign the serving datacenter as home; later uploads must reach
+that home or receive `503`. The local finalizer and `peryx job drain` read the node's own metadata store. They cannot
+pull another datacenter's intent. The [finalization contract](@/core/availability/finalization.md) labels the missing
+transport and the design that depends on it.
 
-**Retention limits and backpressure.** The retention buffer is bounded per authority, not globally: each authority
-stages up to a record ceiling and a byte ceiling, so one busy project cannot starve the ledger of every other while a
-home outage holds writes un-finalized. A new intent is refused once its authority holds its record ceiling, or once
-admitting it would cross its byte ceiling. Admission trips backpressure at 80% of either ceiling, one shed signal before
-the hard bound. The node admits an upload that crosses the soft threshold and logs the authority's retained records and
-bytes so an operator sees capacity pressure building before writes are refused. When an authority reaches a hard
-ceiling, a further upload is shed with `503` and a
-[`Retry-After`](https://www.rfc-editor.org/rfc/rfc9110.html#field.retry-after) so the client backs off and retries
-rather than losing the write; the buffer drains as the home finalizes the retained intents.
-
-**Order, retention, and expiry.** Every admission takes the next value of a durable, never-reused sequence, and the
-pending set is keyed by it. After a restart, the node resumes the drain in admission order across interleaved
-authorities instead of key order. The node retains a pending intent because its write may still finalize, so a stalled
-home sheds new load through admission rather than by dropping work in flight. A finalized intent, or one that expired
-without finalizing, is pruned once the retention window has passed since its last transition, which returns its slot to
-the authority's ceiling.
-
-**Partition behavior.** Admission may retain bytes and intent state during a home outage, but it never publishes
-metadata or changes home authority: those run downstream once the home is reachable. A datacenter in a control-plane
-minority therefore keeps admitting and retaining eligible uploads durably near the client, and the retained intents
-drain at the new home once [authority transfers](@/core/availability/authority-transfer.md) to a survivor.
-
-**Finalization.** Admission stages the upload; the authority's home datacenter turns it into a release. That step
-validates the intent against current state and commits the metadata and its journal entry in one transaction. See
-[finalizing admitted uploads](@/core/availability/finalization.md) for the fence, the validation checks, and how a retry
-replays one result.
+**Crash-recovery evidence.** The local finalizer sweep can recover a pending intent after its file rows were stored. It
+checks local placement but does not call the distributed acknowledgement resolver before recording `published`. A retry
+can replay that `200 upload accepted` result without the same-DC receipts used by the synchronous request path.
 
 ## Project size quota
 

@@ -9,6 +9,9 @@ Classify a node failure before changing durable state. Process loss, storage los
 loss require different recovery procedures. The selected [availability contract](@/core/availability/contracts.md)
 determines the recovery bound and whether recovery is local, same-datacenter, or cross-datacenter.
 
+This runbook applies to shipped `none` and `dc` recovery. HA components are present, but the split public and private
+peer planes leave no supported end-to-end HA deployment or cross-datacenter recovery procedure.
+
 Use [high availability](@/core/availability/high-availability.md) for the writer-and-replica model,
 [back up and restore](@/core/operations/backup-restore.md) for offline images, and the
 [command line reference](@/core/operations/cli.md) for command options.
@@ -94,8 +97,8 @@ metadata. Recovering the bucket restores blob bytes only; it does not recreate t
 Use the independent metadata recovery point from the S3 node's recovery plan, then pair it with the recovered bucket.
 See [object storage backends](@/core/operations/backup-restore.md#object-storage-backends).
 
-If the restored node is a replacement writer, promote it as in the [failover](#writer-failover) procedure below. If it
-is a replica, start it in replica mode and let it resync.
+If the restored node is a replacement writer, promote it as in the [failover](#dc-writer-failover) procedure below. If
+it is a replica, start it in replica mode and let it resync.
 
 Validate: `peryx backup verify` passed, `GET /+ready` answers `200`, and for a writer `GET /+ready?writes=true` answers
 `200`.
@@ -132,17 +135,17 @@ still runs starts two writers against copies that can diverge.
 
 Data at risk: none. Reads are stale but bounded and self-correct; mutations continue on the unaffected writer.
 
-## Control-quorum loss
+## HA control-quorum loss
 
-`none` runs no consensus and has no quorum to lose. In `dc` and `ha`, an authoritative mutation that cannot reach the
-required failure domain returns `503 Service Unavailable` rather than committing below its durability contract. Reads
-continue at the local frontier. Restore the required failure domain; do not force the write.
+Modes `none` and `dc` run no ownership consensus and have no control quorum to lose. HA command handlers return
+`503 Service Unavailable` when they cannot reach consensus, but this is component behavior rather than a deployable
+recovery path while HA peer routing remains split.
 
-## Writer failover
+## DC writer failover
 
-In managed `dc` and `ha`, promotion handles permanent writer loss. It changes the metadata store's writer claim; it does
+In managed `dc`, offline promotion handles permanent writer loss. It changes the metadata store's writer claim; it does
 not copy data or stop the old process. Follow
-[manual promotion](@/core/availability/high-availability.md#manual-promotion):
+[DC writer promotion](@/core/availability/high-availability.md#dc-writer-promotion):
 
 1. **Fence the old writer.** Stop it so it cannot accept another mutation. This is the rollback boundary: until you
    promote, you can still abandon the failover and bring the original writer back.
@@ -190,12 +193,10 @@ turns a contained outage into a visible one.
 | Process loss        | none acknowledged                             | restart against the same data directory                  |
 | Storage loss        | everything after the last verified backup     | restore into a fresh directory, then promote if a writer |
 | Network partition   | none; reads stale but bounded by the frontier | heal the link; the replica advances its frontier         |
-| Control-quorum loss | not applicable to `none`                      | `dc` and `ha` refuse the mutation; restore the domain    |
+| Control-quorum loss | not applicable to `none` or `dc`              | HA component has no supported recovery procedure         |
 
-The `dc` and `ha` columns of these bounds are the stronger
-[recovery objectives](@/core/availability/contracts.md#recovery-objectives) the contract states as a serial, not a
-duration: "no acknowledged mutation at or before frontier *n*", so a mode is measured by which serials it can recover,
-not by a stopwatch.
+DC recovery is bounded by the replica's applied metadata and blob frontiers. HA recovery objectives remain design goals
+until HA has a supported network layout.
 
 ## Related
 

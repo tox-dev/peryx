@@ -1,13 +1,14 @@
 +++
 title = "Filesystem placement reconciliation"
-description = "Verify blob placements, retire out-of-policy copies, and schedule repairs."
+description = "Describe the HA placement workers and their deployment boundary."
 weight = 8
 aliases = [ "/core/availability-placement-reconciliation/"]
 +++
 
-Placement records and local files can diverge after crashes, disk loss, or operator repair. Reconciliation runs on a
-filesystem-backed `dc` or `ha` node. It reads the placement ledger, verifies local copies, retires copies outside
-policy, and schedules missing copies through the cross-datacenter copier.
+Placement records and local files can diverge after crashes, disk loss, or operator repair. Reconciliation and copy
+workers ship as HA components, but both require a nonzero ownership term. They perform no work in `dc`, which has no
+ownership consensus, and HA has no supported end-to-end peer layout. The behavior below is not active in a supported
+deployment.
 
 The reconciler reads placement records, applies repair policy, and commits changes with atomic compare-and-write
 operations. Each scan has cancellation and resource limits.

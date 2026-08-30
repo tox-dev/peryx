@@ -1,28 +1,31 @@
 +++
 title = "Availability deployment and sizing"
-description = "Size and deploy none, dc, and ha modes."
+description = "Deploy none and dc modes and inspect the HA peer-plane gap."
 weight = 7
 aliases = [ "/core/availability-deployment/"]
 +++
 
-peryx supports three deployment shapes, one per [availability mode](@/core/operations/configuration.md#availability):
-local (`none`), a single-datacenter group (`dc`), and a geo-distributed group (`ha`). The
+peryx accepts three [availability modes](@/core/operations/configuration.md#availability): local (`none`), a
+single-datacenter group (`dc`), and a geo-distributed group (`ha`). Modes `none` and `dc` have deployable runtime paths.
+HA components ship, but the configured member address cannot reach both the public replication routes and the private
+Raft listener, so `ha` has no supported end-to-end network layout. The
 [availability contracts](@/core/availability/contracts.md) define each mode's acknowledgement and recovery objectives.
 The [`[availability]`](@/core/operations/configuration.md#availability) reference defines the configuration keys. The
 sections below cover hardware sizing, TOML validation, and monitoring.
 
-Mode `none` skips availability setup; `dc` and `ha` prepare and activate replication and coordination services.
+Mode `none` skips availability setup. Mode `dc` starts replication without ownership consensus. Mode `ha` prepares
+replication and ownership-consensus components, subject to the peer-plane gap above.
 
 ## Choose a shape
 
 Choose a shape by the failure it must survive. The selected shape determines durability, recovery point, and recovery
 time. Pick the smallest shape that covers the required failure domain; larger shapes add synchronous write-path cost.
 
-| Shape     | Mode   | Survives                      | Recovery point                                     | Recovery time                        |
-| --------- | ------ | ----------------------------- | -------------------------------------------------- | ------------------------------------ |
-| Unmanaged | `none` | process crash, storage intact | last external backup on storage loss               | operator restore                     |
-| Single DC | `dc`   | loss of one node in the DC    | zero acknowledged metadata and bytes in the DC     | failover to the surviving in-DC node |
-| Geo HA    | `ha`   | loss of a whole datacenter    | zero acknowledged metadata; only unconverged bytes | failover to a surviving datacenter   |
+| Shape     | Mode   | Shipped recovery boundary                                  | Recovery point                                  |
+| --------- | ------ | ---------------------------------------------------------- | ----------------------------------------------- |
+| Unmanaged | `none` | Process restart or operator restore                        | Last external backup on storage loss            |
+| Single DC | `dc`   | Replica recovery; offline writer promotion                 | Replica's applied metadata and blob frontiers   |
+| Geo HA    | `ha`   | No supported end-to-end deployment while peer planes split | Not a deployable recovery contract this release |
 
 The recovery-point and recovery-time columns follow the [contract's RPO and RTO table][rpo]. A recovery point is a
 serial, "no acknowledged mutation at or before frontier *n*". Size a shape by the serials it can recover. A `none`
@@ -78,8 +81,9 @@ converge behind the acknowledgement.
 
 ## Stand up each shape
 
-Each example below is complete and contains no secrets. peryx reads credentials from a mounted file through
-`token_file`; a configuration snapshot preserves the path without the secret.
+The `none` and `dc` examples below are deployable and contain no secrets. The `ha` example describes the intended
+topology and calls out the network contract that prevents deployment. peryx reads credentials from a mounted file
+through `token_file`; a configuration snapshot preserves the path without the secret.
 
 ### Local availability (`none`)
 
@@ -151,14 +155,16 @@ page_size = 100
 
 peryx validates the roster at startup and refuses to serve on a blank or duplicated `group`, `node`, or `address`, a
 writer count other than one, or a group with no replica. It does not probe an `address`; startup accepts an unreachable
-configured peer. Here, quorum means configured group membership. Losing the writer stops new writes until it returns or
-an operator runs the fenced [transfer procedure](@/core/availability/high-availability.md#manual-promotion), because
-peryx runs no automatic election.
+configured peer. Losing the writer stops new writes until it returns or an operator performs the offline
+[writer promotion](@/core/availability/high-availability.md#dc-writer-promotion). Mode `dc` runs no ownership consensus
+or automatic election.
 
-### Geo HA (`ha`)
+### Geo HA design (`ha`)
 
-The `ha` shape extends the `dc` roster across datacenters. Set `mode = "ha"` and give each member a distinct `dc`. The
-roster keys already carry the geography, so the only change from `dc` is the mode and the members' locations.
+The intended `ha` shape extends the `dc` roster across datacenters. Set `mode = "ha"` and give each member a distinct
+`dc`. This configuration passes topology validation, but it cannot form a working cluster in this release: public
+replication and receipt routes run on the content server, Raft runs on the private availability listener, and the one
+member `address` is used for both transports.
 
 ```toml
 data_dir = "/var/lib/peryx"
@@ -185,19 +191,19 @@ address = "https://west.internal:8443"
 role = "replica"
 ```
 
-Under `ha`, a metadata mutation acknowledges after a remote datacenter stores it. Its bytes converge after the
-acknowledgement, so wide-area latency affects the metadata write while byte transfer runs in the background. Place the
-writer in the datacenter whose write latency you most need to protect.
+The assembled HA acknowledgement resolver waits for any one remote metadata frontier. The write-ack policy does not
+raise that threshold, and the split peer planes prevent this from being a deployable durability guarantee.
 
 ## Secure the replication path
 
-Replicas reach a primary over its HTTPS listener, so each member `address` is an `https://` URL and the replication
-stream inherits the node's [TLS configuration](@/core/operations/serve-https.md). Terminate TLS at peryx or at a trusted
-proxy in front of it; do not expose a plaintext replication endpoint. The shared replication credential authenticates a
-follower to the journal and is administrator-managed: mount it as a Docker or Kubernetes secret or a systemd credential
-and point `token_file` at the path. peryx reads it at startup and omits it from logs. A `peryx backup` snapshot records
-the path rather than the secret. Rotate the credential by replacing the mounted file and restarting the members that
-read it.
+DC replicas reach a primary over its public HTTPS server, so each member `address` is an `https://` URL and the
+replication stream inherits the node's [TLS configuration](@/core/operations/serve-https.md). Terminate TLS at peryx or
+at a trusted proxy in front of it; do not expose a plaintext replication endpoint. The shared replication credential
+authenticates a follower to the journal and is administrator-managed: mount it as a Docker or Kubernetes secret or a
+systemd credential and point `token_file` at the path. peryx reads it at startup and omits it from logs. A
+`peryx backup` snapshot records the path rather than the secret. Rotate the credential by replacing the mounted file and
+restarting the members that read it. In HA, Raft uses the private listener while the other peer routes remain public; no
+supported proxy or bind setting joins those route sets behind the single member address.
 
 ## Bootstrap order
 
@@ -240,8 +246,8 @@ than the control that keeps the topology off an unauthenticated response.
 
 The [availability contracts](@/core/availability/contracts.md) define the CAP position, per-mode durability, RPO, and
 RTO. The [benchmark method][method] measures performance against the `none` baseline. Inline references point to the
-storage capability gate, readiness probes, metrics, and promotion command. Use those surfaces for `none` deployments and
-to size a `dc` or `ha` group.
+storage capability gate, readiness probes, metrics, and promotion command. Use those surfaces for `none` and `dc`
+deployments. Treat the HA sizing material as design guidance until its peer network has one deployable contract.
 
 ## Related
 

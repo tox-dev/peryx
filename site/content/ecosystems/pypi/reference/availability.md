@@ -5,26 +5,31 @@ weight = 8
 +++
 
 The PyPI implementation supplies authority keys, replicated-view updates, and blob references to the
-[availability contracts](@/core/availability/contracts.md). Startup configuration selects the coordinator:
+[availability contracts](@/core/availability/contracts.md). The
+[release-status inventory](@/core/availability/_index.md#release-status) separates its running paths from HA design
+material. Startup configuration selects the coordinator:
 
 ```toml
 [availability]
 mode = "none"
 ```
 
-Omitting the table also selects `none`. This mode commits uploads locally and creates no distributed state, listener,
-worker, watcher, or timer. Modes `dc` and `ha` start the distributed coordinator configured under `[availability]`. The
-same binary supports all three modes.
+Omitting the table also selects `none`. This mode commits uploads locally and creates no availability listener, worker,
+watcher, or timer; the upload still uses its local ingress ledger. Mode `dc` starts replication without ownership
+consensus. Mode `ha` assembles replication and ownership components, but its public peer routes and private Raft routes
+cannot share the roster's one member address in this release.
 
 The mode does not change the Simple API or upload form. It changes the durability acknowledgement and failure behavior.
 In `dc` and `ha`:
 
 - A read-only replica refuses uploads and mutations with `503 Service Unavailable` before reading the body.
-- A publication under a superseded authority epoch returns `409 Conflict`. Retry the same request against the current
-  writer.
 - Repeating the same upload bytes converges on one digest result.
 - Hosted and cached project pages remain behind the readable frontier until required views catch up.
 - Ingress saturation returns `503 Service Unavailable` with `Retry-After`.
+
+HA code adds a project-home epoch. A publication under a superseded epoch returns `409 Conflict`, while a request that
+reaches a node outside the assigned home returns `503 Service Unavailable` with `Retry-After`. `dc` has no project-home
+epoch.
 
 ## Authority keys
 
@@ -37,12 +42,13 @@ ecosystems.
 
 ## Admission and finalization
 
-In `dc` and `ha`, the upload endpoint records a durable ingress intent after streaming and validating bytes. The
-authority home finalizes that intent after checking the epoch, digest, size, placement, and write grant. In `none`, the
-local backend commits the validated bytes and metadata without an ingress ledger or authority worker.
+The upload endpoint records an ingress intent in every mode, then publishes bytes and metadata on the serving node. HA
+code assigns the first serving datacenter as the project home and refuses later writes sent elsewhere. No transport
+moves an intent from another ingress datacenter to that home.
 
-See [Distributed ingress admission](@/ecosystems/pypi/reference/uploads.md#distributed-ingress-admission) for request
-behavior and [Finalizing admitted content](@/core/availability/finalization.md) for the coordinator transaction.
+See [ingress admission and publication](@/ecosystems/pypi/reference/uploads.md#ingress-admission-and-publication) for
+request behavior. [Finalizing admitted content](@/core/availability/finalization.md) marks the cross-datacenter intent
+transport as design material.
 
 ## Derived views
 
@@ -56,13 +62,17 @@ which makes replay idempotent.
 
 ## Remote content and reclamation {#reclamation-references}
 
-Under `dc` or `ha`, a project file or metadata sibling that misses local storage can use
-[remote read-through](@/core/repositories/remote-read-through.md) when another datacenter has a verified placement. Mode
-`none` has no remote placements.
+Under `dc`, a project file or metadata sibling that misses local storage can use
+[remote read-through](@/core/repositories/remote-read-through.md) when another configured member has a verified
+placement. HA code can select another datacenter, subject to the HA peer-plane gap. Mode `none` has no remote
+placements.
 
 The PyPI reclamation inventory retains digests named by cached file URL records, PEP 658 metadata siblings, hosted
 upload records, and PEP 740 provenance records. Trash and verified placements add the core references described in
 [Blob reclamation](@/core/availability/blob-reclamation.md).
+
+The reference inventory ships, but distributed reclamation requires an ownership term. It performs no work in `dc`, and
+HA has no supported end-to-end deployment.
 
 ## Logging
 

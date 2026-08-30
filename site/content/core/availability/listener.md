@@ -9,7 +9,10 @@ Availability controls use a private socket, separate from public content routes.
 [availability contract](@/core/availability/contracts.md) requires authentication and server-administrator access for
 every control request. Mode `none` creates no listener, socket, timer, or task.
 
-The listener serves read-only status, membership commands, and transfers under separate scopes.
+The listener serves read-only status in `dc` and `ha`. DC has no ownership consensus, so command and transfer requests
+return `503 Service Unavailable`. HA assembles the command, transfer, and Raft handlers, but one member address cannot
+reach both this listener and the public replication routes. The listener is private and is not part of the public
+OpenAPI document.
 
 ## Enabling the listener
 
@@ -77,7 +80,7 @@ membership under `consensus`, and the recent command latency under `commands`:
 ```json
 {
   "protocol_version": 2,
-  "mode": "dc",
+  "mode": "ha",
   "role": "writer",
   "read_only": false,
   "consensus": {
@@ -96,20 +99,24 @@ membership under `consensus`, and the recent command latency under `commands`:
 }
 ```
 
+A DC response contains the four posture fields and omits `consensus` and `commands` because DC constructs neither
+component. The HA example shows the response shape available when those components are present; it does not remove the
+peer-routing deployment gap.
+
 The `commands.p99_ms` figure is the 99th-percentile command latency over a bounded recent window, so a latency spike
 through a leader change is visible without an external metrics pipeline. The path carries a version segment so a client
 pins the protocol versions it understands and refuses an incompatible peer rather than guessing a wire shape; protocol
 version 2 adds the command endpoint below. An unknown path answers `404 Not Found` without consulting the identity
 store, so an unauthenticated caller cannot probe the surface.
 
-## Membership and transfer commands
+## HA membership and transfer commands
 
 ```
 POST /availability/v1/commands
 ```
 
-An administrator drives the ownership consensus group through this endpoint. Every command commits through the Raft log;
-the handler submits a typed command and never writes the membership or ownership store directly, so a rejected or
+An administrator drives the HA ownership consensus group through this endpoint. Every command commits through the Raft
+log; the handler submits a typed command and never writes the membership or ownership store directly, so a rejected or
 replayed command cannot corrupt the group. The endpoint requires the administration write scope, the write counterpart
 of the read scope the status endpoint gates.
 
@@ -164,14 +171,15 @@ out of the window is submitted again, so a key is a short-lived retry token, not
 A `503` from a non-leader node names the current leader in its body when the group knows one, so a client retries
 against it.
 
-## Planned transfers
+## HA planned transfers
 
 The `transfer_authority` command above is the unconditional consensus move a failover commits. To move a *healthy* home
 on purpose for a drain, rebalance, or migration, the listener also serves a planned-transfer surface at
 `POST /availability/v1/transfers` and `DELETE /availability/v1/transfers/{authority}`, behind the same administration
 write scope. A planned transfer waits for the target to catch up before it commits and records who moved the authority
 and why. See [planned authority transfer](@/core/availability/planned-transfer.md) for the request shape, the catch-up
-gate, cancellation, and the audit record.
+gate, cancellation, and the audit record. These components are not a deployable HA runbook until the public and private
+peer routes have one reachable member address.
 
 ## Request limits and audit
 

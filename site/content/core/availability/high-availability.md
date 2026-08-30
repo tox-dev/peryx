@@ -1,12 +1,14 @@
 +++
 title = "Availability modes"
-description = "Configure and operate none, dc, and ha modes."
+description = "Configure none and dc modes and inspect the HA component boundary."
 weight = 7
 aliases = [ "/core/high-availability/"]
 +++
 
-An omitted `[availability]` table or `mode = "none"` starts no distributed work. `dc` and `ha` start the replication,
-coordination, and recovery services required by the resolved configuration.
+An omitted `[availability]` table or `mode = "none"` starts no distributed work. Mode `dc` starts metadata and blob
+replication without ownership consensus. Mode `ha` assembles ownership-consensus components, but its one configured
+member address cannot reach both the public peer routes and the private Raft listener. See the
+[release-status table](@/core/availability/_index.md#release-status) before choosing a mode.
 
 In distributed modes, send mutation traffic to the writer. Managed workers copy committed metadata and artifact bytes to
 replicas, which reject mutation requests with `503 Service Unavailable`. The
@@ -14,9 +16,9 @@ replicas, which reject mutation requests with `503 Service Unavailable`. The
 
 ## Availability lifecycle
 
-Startup validates settings and reserves listeners before it starts availability work. Modes `dc` and `ha` start
-consensus, replication, and reconciliation as one transition. If one service fails, startup stops the services it
-started and returns an error. The process does not accept artifact requests in this state.
+Startup validates settings and reserves listeners before it starts availability work. Mode `dc` starts replication and
+reconciliation. Mode `ha` also starts ownership consensus, subject to the peer-plane gap above. If one service fails,
+startup stops the services it started and returns an error. The process does not accept artifact requests in this state.
 
 During shutdown, Peryx stops accepting work, cancels background operations, and waits for availability services within a
 bounded deadline. It reports any service that misses the deadline. Mode `none` skips these steps and adds no
@@ -148,10 +150,10 @@ group is ready, otherwise the reason it is not: `writer_lost` when no writer is 
 with the `reporting` and `required` counts when a writer is present but too few members are.
 
 Membership is the fixed configured roster, so a vanished replica reads as one that is not reporting rather than
-shrinking the quorum into a smaller, unsafe one. A single lagging or lost replica never blocks readiness while the rest
+shrinking the required count into a smaller one. A single lagging or lost replica never blocks readiness while the rest
 still meet the policy, and a serial a majority already holds stays durable even when a lost writer stops new writes from
-being acknowledged. Losing the writer stops new writes until it returns or an operator runs the fenced
-[promotion](#manual-promotion); no replica promotes itself on a timeout.
+being acknowledged. Losing a DC writer stops new writes until it returns or an operator performs an offline
+[promotion](#dc-writer-promotion); no replica promotes itself on a timeout.
 
 A replica refuses every client mutation with `503 Service Unavailable` and `{"error":"read_only_replica"}` ahead of any
 handler, so a misrouted write fails closed rather than diverging a copy. A restarted replica resumes from the frontier
@@ -183,6 +185,20 @@ connection drops, so a stalled peer frees capacity for the next without waiting 
 Responses and logs stay clear of peer credentials and internal addresses. The endpoint returns bytes, a status, and the
 size and digest headers a range needs, and nothing about the token, the requesting peer, or the store's filesystem
 paths.
+
+## Peer durability receipt endpoint
+
+A `dc` or `ha` node serves `GET /+replication/v1/receipts/sha256/{digest}` on the public server. The receipt client
+queries the configured addresses of other members in the same datacenter with the replication bearer token. A present
+blob returns `200 OK` with its size, an absent blob returns `404 Not Found`, and a malformed digest returns
+`400 Bad Request`.
+
+The response proves that the selected endpoint has the blob but does not carry a signed node identity or echo the
+digest. The client attributes it to the configured member address, so duplicate addresses must not be configured as
+independent evidence. The current resolver uses this node-receipt path for object stores as well as filesystems; it does
+not construct object-store-specific evidence. The filesystem persistence path also ignores a parent-directory sync
+failure before this receipt can be issued, which can overstate crash durability. This route is an internal peer
+operation and is not part of the public OpenAPI document.
 
 ## Availability topology snapshot
 
@@ -264,25 +280,25 @@ epoch: the run leases the committed epoch when it starts and its success is reje
 it ran, so a former home's late write loses to the new home's. A node-wide node-local job that names no repository holds
 the closed `0` sentinel and is never fenced, and it makes no control-plane call at all.
 
-A **cluster-singleton** job runs on one node cluster-wide and claims a durable control-plane lease on its singleton key
-before it runs. The lease is minted under the ownership group's monotonic term: the run stamps that term as its fence,
-and a claim from a term below the recorded one is a superseded worker that is rejected without taking the lease. A
-partitioned former owner therefore mints a stale term and loses the claim, so its run never starts and is recorded as
-failed with `lease_not_held`. A run that held the lease but was superseded by a higher term while it ran has its success
-rejected with `authority_fenced` rather than counted, and it releases the lease when it finishes so the next run takes
-it cleanly. The token is always read live from the group's term, never replayed from the persisted lease, so a restarted
-node cannot reuse an old token: it mints the current term and a stale one is fenced.
+A **cluster-singleton** job in HA code runs on one node cluster-wide and claims a durable control-plane lease on its
+singleton key before it runs. The lease is minted under the ownership group's monotonic term: the run stamps that term
+as its fence, and a claim from a term below the recorded one is a superseded worker that is rejected without taking the
+lease. A partitioned former owner therefore mints a stale term and loses the claim, so its run never starts and is
+recorded as failed with `lease_not_held`. A run that held the lease but was superseded by a higher term while it ran has
+its success rejected with `authority_fenced` rather than counted, and it releases the lease when it finishes so the next
+run takes it cleanly. The token is always read live from the group's term, never replayed from the persisted lease, so a
+restarted node cannot reuse an old token: it mints the current term and a stale one is fenced.
 
-A `none` deployment runs no group. It executes singleton jobs node-locally without a control-plane lease, lease row,
-renewal, or fence lookup. Durable lease rows exist only in distributed modes; each records its holder, term, and renewal
-deadline.
+Modes `none` and `dc` run no ownership group. They execute singleton jobs node-locally without a control-plane lease,
+lease row, renewal, or fence lookup. HA lease components exist, but no supported HA peer layout can operate them
+end-to-end.
 
 Fenced runs are visible through the ordinary `peryx_jobs_*` lifecycle counters: a fenced-before-start or superseded run
 increments the `failed` outcome for its kind, and its durable run record carries the `lease_not_held` or
 `authority_fenced` reason. To convert a node-local kind to a cluster singleton, return `LeaseScope::ClusterSingleton`
 with the singleton key from the job's `lease_scope`. The runner then leases and fences it with no further wiring.
 
-## Manual promotion
+## DC writer promotion
 
 1. Stop or fence the old writer so it cannot accept another mutation.
 

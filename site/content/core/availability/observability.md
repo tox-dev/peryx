@@ -20,7 +20,7 @@ configured roster with each node's datacenter and role, and this node's own live
 [Availability modes](@/core/availability/high-availability.md#availability-topology-snapshot) documents the snapshot and
 its per-class filtering in full; read it as the
 [availability topology page](@/core/operations/web-ui.md#availability-topology) at `/admin/topology`, or as JSON from
-`GET /+availability/topology`. A peer's liveness stays `unknown` until a consensus layer observes it, so read peer
+`GET /+availability/topology`. The snapshot does not poll peers, so non-local liveness stays `unknown`. Read heartbeat
 health from a `dc` or `ha` writer's replication documents (see [Node liveness](@/core/availability/liveness.md)) rather
 than from the snapshot.
 

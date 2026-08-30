@@ -729,10 +729,10 @@ selection or the metadata that refers to those objects.
 
 ## `[availability]`
 
-The shipped binary contains all availability implementations. Only `[availability].mode` selects one; command-line flags
-and alternate builds do not override it. `mode` accepts `none`, `dc`, or `ha`, with acknowledgement guarantees defined
-by the [availability contracts](@/core/availability/contracts.md). An omitted table and `mode = "none"` resolve to no
-managed availability resources.
+The shipped binary accepts every availability mode. Only `[availability].mode` selects one; command-line flags and
+alternate builds do not override it. The [release-status inventory](@/core/availability/_index.md#release-status)
+separates deployable paths from HA components that still lack peer-plane wiring. An omitted table and `mode = "none"`
+resolve to no managed availability resources.
 
 ```toml
 [availability]
@@ -740,7 +740,7 @@ mode = "none"
 ```
 
 `none` opens no replication client, availability route, listener, metric family, or task. It can serve writes or run
-with `read_only = true`. `dc` and `ha` select distributed coordination; each needs a `[availability.replication]` role.
+with `read_only = true`. `dc` and `ha` select distributed replication; each needs a `[availability.replication]` role.
 Peryx rejects an unknown mode during config resolution. It also rejects a distributed mode without that role or a
 replication role under `none`. The process exits before opening storage or binding a listener; it starts no worker.
 
@@ -785,9 +785,9 @@ metadata and blob frontiers, so a record never appears before the bytes it names
 
 A `dc` or `ha` node may also declare the static replication group it belongs to. The group names one writer and its read
 replicas explicitly; peryx never infers a member from a network broadcast, and no liveness timeout ever promotes a
-replica. Losing the writer stops new writes until the configured writer returns or an operator performs the later fenced
-transfer procedure, so a replacement is an explicit configuration edit, reviewed like any other, rather than an
-automatic election.
+replica. In `dc`, losing the writer stops new writes until it returns or an operator performs an offline writer-claim
+promotion. HA code has authority-transfer commands, but no runtime worker selects a target or starts one after a
+liveness failure.
 
 ```toml
 [availability]
@@ -835,6 +835,51 @@ configured replica. Under `ha`, each member needs a distinct `dc` because the da
 `dc` mode permits several members in one datacenter. peryx never probes a member's `address`, so an unreachable
 configured peer is a valid topology, not a configuration error. A roster requires `dc` or `ha` mode; declaring one under
 `none` is rejected, naming the `availability` field.
+
+### Write acknowledgement
+
+```toml
+[availability.write_ack]
+policy = "majority"
+deadline-secs = 5
+```
+
+| Key             | Meaning                                      | Default                               |
+| --------------- | -------------------------------------------- | ------------------------------------- |
+| `policy`        | `local`, `majority`, or `everywhere`         | `local` under `none`, else `majority` |
+| `deadline-secs` | Seconds to wait for acknowledgement evidence | `5`                                   |
+
+Mode `none` accepts only `local`. A `dc` writer counts receipt responses from configured members in its own datacenter.
+The member address must reach the public server that serves the receipt route. The current resolver applies the same
+node-receipt path to object stores, so it does not use backend-specific object-store evidence. Filesystem persistence
+also ignores a parent-directory sync failure before a receipt can be served.
+
+In HA code, the policy controls the local-datacenter byte threshold. An HA roster permits one member per datacenter, so
+that threshold is one for each policy value. Remote metadata becomes durable when any one other datacenter reports the
+epoch and frontier. `majority` and `everywhere` do not raise that remote threshold in this release.
+
+### Availability listener
+
+The private listener is optional under `dc`, required under `ha`, and rejected under `none`. An empty table binds
+`127.0.0.1:4460`:
+
+```toml
+[availability.listener]
+bind = "127.0.0.1:4460"
+```
+
+| Key                      | Meaning                                           | Default          |
+| ------------------------ | ------------------------------------------------- | ---------------- |
+| `bind`                   | Listener socket                                   | `127.0.0.1:4460` |
+| `allow-remote-plaintext` | Permit plain HTTP on a non-loopback address       | `false`          |
+| `tls.cert`               | PEM certificate chain for the private listener    | (none)           |
+| `tls.key`                | Matching PEM private key for the private listener | (none)           |
+
+The listener serves authenticated status and control operations. HA also serves Raft RPCs there. Metadata, blob,
+receipt, frontier, analytics, and heartbeat peer routes remain on the public server, while one
+`[[availability.member]] address` supplies every peer transport. No address reaches both route sets in the current HA
+layout, so the HA example is not a deployable network contract. See the
+[availability control listener](@/core/availability/listener.md).
 
 ## `[auth]`
 
