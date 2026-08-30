@@ -7,3 +7,4 @@ mod plan_tests;
 mod primitive_tests;
 mod support;
 mod value_tests;
+mod visibility_tests;

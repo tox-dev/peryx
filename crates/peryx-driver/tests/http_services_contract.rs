@@ -16,7 +16,7 @@ use peryx_policy::{
     Policy, PolicyAction, PolicyConfig, PolicyDecisionState, RetentionClass, RetentionConfig, RetentionDecision,
     RetentionOutcome, RetentionPolicy, RetentionSummary, RetentionVisibility,
 };
-use peryx_pql::{PqlError, QueryScope, RepoScope, Value, bind, parse};
+use peryx_pql::{FieldClass, FieldVisibility, PqlError, QueryScope, RepoScope, Value, bind, parse};
 use peryx_search::{SearchAccess, SearchParams};
 use peryx_storage::blob::{BlobStorage, BlobStore, S3Config, S3Settings};
 use peryx_storage::meta::{MetaStore, NewPolicyDecision};
@@ -163,7 +163,7 @@ async fn domain_services_read_policy_quota_queries_and_status() {
         let ast = bind(parse(query).unwrap(), &std::collections::BTreeMap::default()).unwrap();
         let page = services
             .pql()
-            .execute(&ast, &QueryScope::new(RepoScope::All, "all".to_owned()), None)
+            .execute(&ast, &scope(RepoScope::All, "all"), None)
             .unwrap();
         assert!(page.rows.is_empty(), "{query}");
     }
@@ -239,11 +239,14 @@ fn domain_services_page_and_filter_policy_queries() {
     }
     let services = HttpDomainServices::for_state(&fixture.state);
     let all = bind(parse("from policy.decisions").unwrap(), &BTreeMap::new()).unwrap();
-    let scope = QueryScope::new(RepoScope::All, "all".to_owned());
+    let all_repositories = scope(RepoScope::All, "all");
     let mut cursor = None;
     let mut rows = Vec::new();
     loop {
-        let page = services.pql().execute(&all, &scope, cursor.as_deref()).unwrap();
+        let page = services
+            .pql()
+            .execute(&all, &all_repositories, cursor.as_deref())
+            .unwrap();
         rows.extend(page.rows);
         let Some(next) = page.next_cursor else {
             break;
@@ -262,10 +265,7 @@ fn domain_services_page_and_filter_policy_queries() {
             .pql()
             .execute(
                 &filtered,
-                &QueryScope::new(
-                    RepoScope::Only(BTreeSet::from(["source".to_owned()])),
-                    "source".to_owned()
-                ),
+                &scope(RepoScope::Only(BTreeSet::from(["source".to_owned()])), "source"),
                 None,
             )
             .unwrap()
@@ -284,11 +284,7 @@ fn domain_services_page_and_filter_policy_queries() {
     assert_eq!(
         services
             .pql()
-            .execute(
-                &multiple_resources,
-                &QueryScope::new(RepoScope::All, "all".to_owned()),
-                None
-            )
+            .execute(&multiple_resources, &scope(RepoScope::All, "all"), None)
             .unwrap()
             .rows,
         [
@@ -305,7 +301,7 @@ fn domain_services_page_and_filter_policy_queries() {
     assert_eq!(
         services
             .pql()
-            .execute(&scanned, &QueryScope::new(RepoScope::All, "all".to_owned()), None)
+            .execute(&scanned, &scope(RepoScope::All, "all"), None)
             .unwrap()
             .rows
             .len(),
@@ -314,9 +310,7 @@ fn domain_services_page_and_filter_policy_queries() {
 
     let unknown = bind(parse("from missing.domain").unwrap(), &BTreeMap::new()).unwrap();
     assert!(matches!(
-        services
-            .pql()
-            .execute(&unknown, &QueryScope::new(RepoScope::All, "all".to_owned()), None),
+        services.pql().execute(&unknown, &scope(RepoScope::All, "all"), None),
         Err(PqlError::Unauthorized)
     ));
 }
@@ -335,11 +329,24 @@ fn domain_services_preserve_policy_filter_validation() {
     )
     .unwrap();
     assert_eq!(
-        services
-            .pql()
-            .execute(&query, &QueryScope::new(RepoScope::All, "all".to_owned()), None),
+        services.pql().execute(&query, &scope(RepoScope::All, "all"), None),
         Err(PqlError::Validation("resource filter exceeds 512 bytes".to_owned()))
     );
+}
+
+/// An administrator sees every field class, so these contracts exercise the source rather than the
+/// field-visibility boundary.
+fn scope(repositories: RepoScope, fingerprint: &str) -> QueryScope {
+    QueryScope::new(
+        repositories,
+        FieldVisibility::new([
+            FieldClass::Public,
+            FieldClass::Repository,
+            FieldClass::Operator,
+            FieldClass::Administrator,
+        ]),
+        fingerprint.to_owned(),
+    )
 }
 
 struct OneRetentionDriver;

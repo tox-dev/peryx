@@ -561,6 +561,80 @@ async fn test_query_repository_reader_gets_operator_fields_filtered() {
     assert!(first.get("rule").is_none());
 }
 
+#[rstest]
+#[case::usage_bytes_filter("from usage.reads where repository == \"private\" and bytes >= 100 select resource")]
+#[case::usage_bytes_selection("from usage.reads where repository == \"private\" select resource, bytes")]
+#[case::usage_bytes_order("from usage.reads where repository == \"private\" order by bytes desc")]
+#[case::usage_bytes_group("from usage.reads where repository == \"private\" aggregate count() as n by bytes")]
+#[case::usage_bytes_aggregate(
+    "from usage.reads where repository == \"private\" aggregate sum(bytes) as total by resource"
+)]
+#[case::policy_source_filter(
+    "from policy.decisions where repository == \"private\" and source == \"alpha\" select resource"
+)]
+#[case::policy_rule_filter(
+    "from policy.decisions where repository == \"private\" and rule == \"blocked-resource\" select resource"
+)]
+#[case::policy_reason_filter(
+    "from policy.decisions where repository == \"private\" and reason == \"resource is blocked\" select resource"
+)]
+#[case::policy_source_selection("from policy.decisions where repository == \"private\" select resource, source")]
+#[case::policy_source_group("from policy.decisions where repository == \"private\" aggregate count() as n by source")]
+#[tokio::test]
+async fn test_query_repository_reader_cannot_name_an_operator_column(#[case] query: &str) {
+    // Filtering, ordering, grouping, and aggregating on a protected column each disclose its value
+    // through row presence, so the evaluator refuses the query rather than hiding the column after
+    // it has shaped the page.
+    let (_dir, meta, metrics, app) = build(false).await;
+    seed(&meta);
+    seed_usage(&metrics);
+    let (status, _headers, document) = post(&app, json!({ "query": query }), Some(("Rita", PASSWORD))).await;
+    assert_eq!(
+        (status, &document["error"]),
+        (StatusCode::BAD_REQUEST, &json!("the query is not valid"))
+    );
+}
+
+#[tokio::test]
+async fn test_query_operator_still_reads_protected_columns() {
+    let (_dir, meta, metrics, app) = build(false).await;
+    seed(&meta);
+    seed_usage(&metrics);
+    let (usage_status, _headers, usage) = post(
+        &app,
+        json!({"query": "from usage.reads where bytes >= 100 select resource, bytes order by bytes desc"}),
+        Some(("Alice", PASSWORD)),
+    )
+    .await;
+    assert_eq!(
+        (usage_status, &usage["rows"][0]["bytes"]),
+        (StatusCode::OK, &json!(200))
+    );
+    let (policy_status, _headers, policy) = post(
+        &app,
+        json!({"query": "from policy.decisions where source == \"alpha\" aggregate count() as seen by rule"}),
+        Some(("Alice", PASSWORD)),
+    )
+    .await;
+    assert_eq!((policy_status, &policy["rows"][0]["seen"]), (StatusCode::OK, &json!(2)));
+}
+
+#[tokio::test]
+async fn test_query_repository_reader_reads_the_visible_usage_columns() {
+    let (_dir, _meta, metrics, app) = build(false).await;
+    seed_usage(&metrics);
+    let (status, _headers, document) = post(
+        &app,
+        json!({"query": "from usage.reads where repository == \"private\" order by reads desc"}),
+        Some(("Rita", PASSWORD)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(resources(&document), ["alpha", "beta"]);
+    assert_eq!(document["rows"][0]["reads"], json!(2));
+    assert!(document["rows"][0].get("bytes").is_none());
+}
+
 #[tokio::test]
 async fn test_query_legacy_reader_token_reads_its_repository() {
     let (_dir, meta, app) = app(false).await;

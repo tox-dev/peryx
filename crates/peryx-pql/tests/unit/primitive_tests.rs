@@ -100,7 +100,11 @@ fn test_error_display_hides_detail() {
 fn test_repo_scope_permits() {
     use std::collections::BTreeSet;
     assert!(RepoScope::All.permits("anything"));
-    let scope = QueryScope::new(RepoScope::Only(BTreeSet::from(["a".to_owned()])), "fp".to_owned());
+    let scope = QueryScope::new(
+        RepoScope::Only(BTreeSet::from(["a".to_owned()])),
+        super::support::repository_classes(),
+        "fp".to_owned(),
+    );
     assert!(scope.repositories().permits("a"));
     assert!(!scope.repositories().permits("b"));
     assert_eq!(scope.fingerprint(), "fp");

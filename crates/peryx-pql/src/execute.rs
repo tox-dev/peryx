@@ -6,7 +6,9 @@ use crate::catalog::DomainSchema;
 use crate::cursor;
 use crate::error::PqlError;
 use crate::eval::evaluate;
-use crate::plan::{OutputColumn, Plan, gate_join, leading_filter, plan_resolved, resolve_params, validate_resolved};
+use crate::plan::{
+    OutputColumn, Plan, gate_join, leading_filter, plan_resolved, require_column, resolve_params, validate_resolved,
+};
 use crate::scope::{QueryScope, RepoScope};
 use crate::source::DataSource;
 use crate::value::{Row, Value};
@@ -34,23 +36,39 @@ pub fn execute(
         return execute_join(ast, join, scope, cursor_text, source);
     }
     let schema = source.schema(&ast.domain).ok_or(PqlError::Unauthorized)?;
-    let ast = resolve_params(ast, schema)?;
-    let plan = plan_resolved(&ast, schema)?;
+    let visible = visible_schema(schema, scope)?;
+    let ast = resolve_params(ast, &visible)?;
+    let plan = plan_resolved(&ast, &visible)?;
     let filter = ast
         .predicate
         .as_ref()
-        .and_then(|predicate| leading_filter(predicate, schema));
+        .and_then(|predicate| leading_filter(predicate, &visible));
     let offset = decode_offset(cursor_text, &ast.domain, scope)?;
     let candidates = scope_filter(source.fetch(&ast.domain, scope, filter.as_ref())?, scope, schema);
     Ok(finish(
         candidates,
         &ast,
         plan,
-        schema.natural_order,
+        visible.natural_order,
         &ast.domain,
         scope,
         offset,
     ))
+}
+
+/// Planning, the cost gate, and projection all run against the caller's own schema, so a column
+/// above their field class cannot reach a predicate, an order term, a group key, or an aggregate,
+/// and a rejected query fetches no rows. Row scoping keeps the full schema: a hidden `repository`
+/// column must still confine the caller to their repositories.
+///
+/// A domain whose natural order is hidden cannot be paged without disclosing that column's order,
+/// so it reads as a domain the caller cannot see.
+fn visible_schema(schema: &DomainSchema, scope: &QueryScope) -> Result<DomainSchema, PqlError> {
+    let visible = schema.visible_to(scope.visibility());
+    if visible.column(visible.natural_order).is_none() {
+        return Err(PqlError::Unauthorized);
+    }
+    Ok(visible)
 }
 
 fn execute_join(
@@ -62,8 +80,11 @@ fn execute_join(
 ) -> Result<Page, PqlError> {
     let schema_a = source.schema(&ast.domain).ok_or(PqlError::Unauthorized)?;
     let schema_b = source.schema(&join.domain).ok_or(PqlError::Unauthorized)?;
-    validate_join(&join.on, schema_a, schema_b)?;
-    let merged = merge_schemas(schema_a, schema_b);
+    // Merging before hiding is what makes a shared column carry its stricter side's class: hiding
+    // each side first would let the caller keep the laxer copy while the row still holds the
+    // stricter value.
+    let merged = visible_schema(&merge_schemas(schema_a, schema_b), scope)?;
+    validate_join(&join.on, schema_a, schema_b, &merged)?;
     let ast = resolve_params(ast, &merged)?;
     let plan = validate_resolved(&ast, &merged)?;
     gate_join(&ast, schema_a, schema_b)?;
@@ -126,7 +147,12 @@ fn scope_filter(rows: Vec<Row>, scope: &QueryScope, schema: &DomainSchema) -> Ve
         .collect()
 }
 
-fn validate_join(keys: &[String], outer: &DomainSchema, probe: &DomainSchema) -> Result<(), PqlError> {
+fn validate_join(
+    keys: &[String],
+    outer: &DomainSchema,
+    probe: &DomainSchema,
+    visible: &DomainSchema,
+) -> Result<(), PqlError> {
     for key in keys {
         let Some(outer_column) = outer.column(key) else {
             return Err(PqlError::Validation(format!(
@@ -140,6 +166,9 @@ fn validate_join(keys: &[String], outer: &DomainSchema, probe: &DomainSchema) ->
                 probe.name
             )));
         };
+        // Row presence after an inner join discloses the key's value, so a key the caller cannot
+        // read is unknown to them, exactly as it is in every other clause.
+        require_column(key, visible)?;
         if outer_column.value_type != probe_column.value_type {
             return Err(PqlError::Validation(format!(
                 "join key `{key}` type differs: `{}` is `{}`, `{}` is `{}`",

@@ -245,7 +245,7 @@ fn check_literal_type(column: &Column, literal: &Literal) -> Result<(), PqlError
     }
 }
 
-fn require_column<'schema>(field: &str, schema: &'schema DomainSchema) -> Result<&'schema Column, PqlError> {
+pub(crate) fn require_column<'schema>(field: &str, schema: &'schema DomainSchema) -> Result<&'schema Column, PqlError> {
     schema
         .column(field)
         .ok_or_else(|| PqlError::Validation(format!("unknown column `{field}`")))

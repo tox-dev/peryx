@@ -115,7 +115,8 @@ curl -u alice:$PASSWORD \
 ```
 
 The planner admits a join when the joined domain indexes all join keys. It rejects a join that requires an unbounded
-scan with `400`. A field present on either side keeps the stricter visibility class.
+scan with `400`. A field present on either side keeps the stricter visibility class, and a join key above the caller's
+class is refused, since an inner join discloses that key's value through the rows it keeps.
 
 ## Authorization
 
@@ -131,8 +132,12 @@ when its password resolves to a live token holding a `read` grant over the whole
 to no such token receives `401`, whether or not the repository serves artifacts anonymously. The same rule covers
 `/+analytics`, `/+analytics/completeness`, and `/+quota`.
 
-Repository-scoped callers see repository fields. Operator fields such as `source`, `rule`, and `reason` are omitted.
-Responses containing operator fields use `Cache-Control: no-store`; repository-level responses use `private, no-cache`.
+Repository-scoped callers see repository fields. A column above the caller's class is unknown to them: naming it in a
+selection, a predicate, an order term, a group key, or an aggregate is a `400`, with the same error a misspelled column
+gives. Filtering on `usage.reads.bytes` or on `policy.decisions.source`, `rule`, and `reason` therefore cannot disclose
+those values through which rows come back, and a rejected query reads no rows. Operator fields are also omitted from the
+response, so serialization stays a second boundary. Responses containing operator fields use `Cache-Control: no-store`;
+repository-level responses use `private, no-cache`.
 
 ## Pagination
 

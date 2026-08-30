@@ -14,7 +14,7 @@ use peryx_driver::http_services::HttpDomainServices;
 use peryx_driver::state::{AppState, Index};
 use peryx_identity::{Action, Denial, Resource, Scope, UserId, parse_basic};
 use peryx_pql::ast::{CompareOp, Predicate};
-use peryx_pql::catalog::FieldClass;
+use peryx_pql::catalog::{FieldClass, FieldVisibility};
 use peryx_pql::{OutputColumn, Page, PqlError, QueryScope, RepoScope, StatusClass, Value as PqlValue, bind, parse};
 
 use crate::response_security::{
@@ -140,10 +140,7 @@ fn authorize_local(state: &AppState, actor: &UserId, named: Option<String>) -> R
                 .authorize_scoped(actor, Scope::AdministrationRead, &Resource::Operator);
         require_grant(decision)?;
         return Ok(Authorization {
-            scope: QueryScope::new(
-                RepoScope::All,
-                fingerprint(ResponseAuthorization::Scoped(decision), "all"),
-            ),
+            scope: query_scope(RepoScope::All, ResponseAuthorization::Scoped(decision), "all"),
             response: ResponseAuthorization::Scoped(decision),
         });
     };
@@ -206,7 +203,27 @@ fn index_by_name<'state>(state: &'state AppState, repository: &str) -> Result<&'
 fn repository_scope(name: &str, response: ResponseAuthorization) -> QueryScope {
     let mut set = BTreeSet::new();
     set.insert(name.to_owned());
-    QueryScope::new(RepoScope::Only(set), fingerprint(response, name))
+    query_scope(RepoScope::Only(set), response, name)
+}
+
+fn query_scope(repositories: RepoScope, response: ResponseAuthorization, name: &str) -> QueryScope {
+    QueryScope::new(repositories, visibility(response), fingerprint(response, name))
+}
+
+/// The evaluator hides every column the caller may not read before it plans, so a protected column
+/// cannot shape a page through a filter, an order term, a group key, or an aggregate. The class set
+/// comes from the same primitive that filters the response, so the two boundaries cannot disagree.
+fn visibility(response: ResponseAuthorization) -> FieldVisibility {
+    FieldVisibility::new(
+        [
+            FieldClass::Public,
+            FieldClass::Repository,
+            FieldClass::Operator,
+            FieldClass::Administrator,
+        ]
+        .into_iter()
+        .filter(|class| visible(*class, response)),
+    )
 }
 
 /// A stable encoding of everything that decides which rows and fields the caller sees, so a cursor

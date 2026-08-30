@@ -19,7 +19,7 @@ pub mod value;
 mod tests;
 
 pub use ast::{Aggregate, AggregateFunc, AggregateTerm, Ast, CompareOp, Join, Literal, OrderKey, Predicate, Selection};
-pub use catalog::{Column, DomainAuth, DomainSchema, FieldClass, Indexability};
+pub use catalog::{Column, DomainAuth, DomainSchema, FieldClass, FieldVisibility, Indexability};
 pub use cursor::{decode, encode};
 pub use error::{PqlError, StatusClass};
 pub use eval::{evaluate, literal_value};

@@ -979,10 +979,10 @@ fn pql_query() -> OperationBuilder {
              out of band, so a value never changes the query's structure. Two domains are served: `policy.decisions` \
              and `usage.reads`, and a bounded declared join correlates them on their shared `repository` and \
              `resource` keys. The caller's authorized scope is injected by the evaluator and cannot be named or \
-             widened; columns above the caller's classification are dropped, and operator-classified results are \
-             never cached. `next_cursor`, presented back, resumes the next page and is refused if the caller's scope \
-             has changed. Authenticate with an ecosystem credential to read one repository, or a local administrator to \
-             read operator-wide.",
+             widened; a column above the caller's classification is unknown to them in every clause, so it can \
+             shape neither the rows nor the page, and operator-classified results are never cached. `next_cursor`, \
+             presented back, resumes the next page and is refused if the caller's scope has changed. Authenticate \
+             with an ecosystem credential to read one repository, or a local administrator to read operator-wide.",
         ))
         .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
         .request_body(Some(

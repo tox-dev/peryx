@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::sync::Mutex;
 
-use crate::catalog::{Column, DomainAuth, DomainSchema, FieldClass, Indexability};
+use crate::catalog::{Column, DomainAuth, DomainSchema, FieldClass, FieldVisibility, Indexability};
 use crate::error::PqlError;
 use crate::scope::{QueryScope, RepoScope};
 use crate::source::{DataSource, FetchFilter};
@@ -202,16 +202,40 @@ pub fn unpushed_cheap_schema() -> DomainSchema {
     }
 }
 
+/// An operator-wide caller reads every class, matching the administrator audience the HTTP boundary
+/// grants a query over all repositories.
 #[must_use]
 pub fn operator_scope() -> QueryScope {
-    QueryScope::new(RepoScope::All, "operator".to_owned())
+    QueryScope::new(RepoScope::All, all_classes(), "operator".to_owned())
 }
 
 #[must_use]
+pub fn all_classes() -> FieldVisibility {
+    FieldVisibility::new([
+        FieldClass::Public,
+        FieldClass::Repository,
+        FieldClass::Operator,
+        FieldClass::Administrator,
+    ])
+}
+
+#[must_use]
+pub fn repository_classes() -> FieldVisibility {
+    FieldVisibility::new([FieldClass::Public, FieldClass::Repository])
+}
+
+/// A repository-scoped caller reads public and repository columns alone, matching the audience the
+/// HTTP boundary grants a repository reader.
+#[must_use]
 pub fn repository_scope(repository: &str) -> QueryScope {
+    scoped(repository, repository_classes())
+}
+
+#[must_use]
+pub fn scoped(repository: &str, visibility: FieldVisibility) -> QueryScope {
     let mut set = BTreeSet::new();
     set.insert(repository.to_owned());
-    QueryScope::new(RepoScope::Only(set), format!("repo:{repository}"))
+    QueryScope::new(RepoScope::Only(set), visibility, format!("repo:{repository}"))
 }
 
 #[must_use]
