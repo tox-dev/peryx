@@ -1,6 +1,7 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
 project_tmp := justfile_directory() + "/.tox/tmp"
+coverage_target_root := justfile_directory() + "/.tox/coverage-target"
 frontend_root := justfile_directory() + "/.tox/frontend"
 tools_root := justfile_directory() + "/.tox/tools"
 export PERYX_TEST_TMPDIR := project_tmp
@@ -16,6 +17,13 @@ _project-temp:
 # Verify that the Docker daemon is available.
 _docker-ready:
     docker info >/dev/null
+
+# Check frontend coverage target isolation.
+_coverage-target-contract:
+    CARGO_TARGET_DIR="{{ project_tmp }}/coverage-target-contract" just --dry-run coverage-frontend 2>&1 \
+      | rg -F 'export CARGO_TARGET_DIR="{{ project_tmp }}/coverage-target-contract/frontend"'
+    env -u CARGO_TARGET_DIR just --dry-run coverage-frontend 2>&1 \
+      | rg -F 'export CARGO_TARGET_DIR="{{ coverage_target_root }}/frontend"'
 
 # Check Rust formatting.
 format-check: _project-temp
@@ -39,7 +47,7 @@ lint-docs: _project-temp
     prek run codespell --all-files
 
 # Check workflows and repository automation.
-lint-automation: _project-temp
+lint-automation: _project-temp _coverage-target-contract
     SKIP=cargo-fmt,cargo-clippy,mdformat,codespell prek run --all-files
 
 # Check dependency policy.
@@ -63,7 +71,7 @@ semver-shard shard shards base="origin/main": _project-temp
       | xargs -n 1 cargo semver-checks check-release --default-features --baseline-rev "{{ base }}" --package
 
 # Check snapshots, public APIs, and the release plan.
-lint-contracts base="origin/main": snapshots
+lint-contracts base="origin/main": snapshots _coverage-target-contract
     just semver "{{ base }}"
     just release-plan
 
@@ -558,7 +566,7 @@ coverage-frontend native_output=".tox/coverage/frontend-native.lcov" wasm_output
     host=$(rustc +"$toolchain" -vV | awk '/^host:/ { print $2 }')
     export LLVM_COV="$sysroot/lib/rustlib/$host/bin/llvm-cov"
     export LLVM_PROFDATA="$sysroot/lib/rustlib/$host/bin/llvm-profdata"
-    export CARGO_TARGET_DIR="{{ justfile_directory() }}/.tox/coverage-target/frontend"
+    export CARGO_TARGET_DIR="{{ env_var_or_default("CARGO_TARGET_DIR", coverage_target_root) }}/frontend"
     export CARGO_LLVM_COV_BUILD_DIR="$CARGO_TARGET_DIR"
     export CARGO_LLVM_COV_TARGET_DIR="$CARGO_TARGET_DIR"
     eval "$(cargo llvm-cov show-env --sh --no-cfg-coverage)"
