@@ -1,6 +1,7 @@
 //! The UI dashboard and browser.
 use leptos::prelude::*;
 
+use crate::data::LoaderError;
 use crate::model::{UiCounters, UiSnapshot, UiStats};
 
 #[cfg(feature = "ssr")]
@@ -39,18 +40,53 @@ pub use stats::Stats;
 pub use topology::AvailabilityTopology;
 pub use trash::Trash;
 
-/// Refresh the dashboard counters every few seconds once hydrated. Effects never run during server
-/// rendering, so this is inert in SSR output.
+/// Refresh browser data every five seconds after hydration.
 #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
-fn start_refresh(snapshot: Resource<UiSnapshot>) {
+fn start_refresh<T>(resource: Resource<Result<T, LoaderError>>)
+where
+    T: serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static,
+{
     use std::time::Duration;
     Effect::new(move |_| {
-        set_interval(move || snapshot.refetch(), Duration::from_secs(5));
+        set_interval(move || resource.refetch(), Duration::from_secs(5));
     });
 }
 
 #[cfg(any(feature = "ssr", not(feature = "hydrate")))]
-const fn start_refresh(_snapshot: Resource<UiSnapshot>) {}
+const fn start_refresh<T>(_resource: Resource<Result<T, LoaderError>>)
+where
+    T: serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static,
+{
+}
+
+#[derive(Clone)]
+struct LoadState<T> {
+    value: Option<T>,
+    error: Option<String>,
+}
+
+impl<T> Default for LoadState<T> {
+    fn default() -> Self {
+        Self {
+            value: None,
+            error: None,
+        }
+    }
+}
+
+fn retain<T: Clone + Send + Sync + 'static>(
+    state: RwSignal<LoadState<T>>,
+    result: Result<T, LoaderError>,
+) -> LoadState<T> {
+    state.update(|state| match result {
+        Ok(value) => {
+            state.value = Some(value);
+            state.error = None;
+        }
+        Err(error) => state.error = Some(error.to_string()),
+    });
+    state.get_untracked()
+}
 
 /// The per-ecosystem metric groups: one labelled block per ecosystem, so the reader can tell a
 /// ecosystem-scoped counter from the global request count.

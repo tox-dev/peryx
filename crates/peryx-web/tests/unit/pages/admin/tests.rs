@@ -68,13 +68,13 @@ fn admin_status_body_renders_index_states_and_usage() {
                 indexes: vec![cached, hosted, virtual_index],
                 ..UiSnapshot::default()
             }
-            usage=UiStats {
+            usage=Some(UiStats {
                 totals: UiCounters { pages: 1, ..UiCounters::default() },
                 rows: vec![(
                     "root/hosted".to_owned(),
                     UiCounters { pages: 2, reads: 3, bytes: 1_536, ..UiCounters::default() },
                 )],
-            }
+            })
         />
     }
     .to_html();
@@ -91,12 +91,12 @@ fn admin_status_body_renders_index_states_and_usage() {
     let unavailable = view! {
         <AdminStatusBody
             data=UiSnapshot { indexes: vec![unavailable], ..UiSnapshot::default() }
-            usage=UiStats::default()
+            usage=Some(UiStats::default())
         />
     }
     .to_html();
     assert_eq!(unavailable.matches(">unavailable<").count(), 4, "{unavailable}");
-    let empty = view! { <AdminStatusBody data=UiSnapshot::default() usage=UiStats::default() /> }.to_html();
+    let empty = view! { <AdminStatusBody data=UiSnapshot::default() usage=Some(UiStats::default()) /> }.to_html();
     for expected in [
         "No indexes configured.",
         "No writes recorded yet.",
@@ -136,7 +136,7 @@ fn admin_status_body_renders_auth_and_storage_fallbacks() {
                 indexes: vec![bearer, anonymous, volatile, composed],
                 ..UiSnapshot::default()
             }
-            usage=UiStats::default()
+            usage=Some(UiStats::default())
         />
     }
     .to_html();

@@ -1,6 +1,6 @@
 use leptos::prelude::*;
 
-use super::{ecosystem_stats, human_size, optional_counters_for, start_refresh};
+use super::{ErrorMessage, LoadState, ecosystem_stats, human_size, optional_counters_for, retain, start_refresh};
 use crate::data::{load_admin_snapshot, load_stats};
 use crate::model::{UiCounters, UiIndex, UiRecentWrite, UiSnapshot, UiStats, UiSummaryStatus};
 use crate::url::{browse_index_url, stats_index_url};
@@ -9,14 +9,21 @@ use crate::url::{browse_index_url, stats_index_url};
 pub fn AdminStatus() -> impl IntoView {
     let snapshot = Resource::new(|| (), |()| load_admin_snapshot());
     let stats = Resource::new(|| (), |()| load_stats(None, None));
+    let loaded_snapshot = RwSignal::new(LoadState::default());
+    let loaded_stats = RwSignal::new(LoadState::default());
     start_refresh(snapshot);
+    start_refresh(stats);
     view! {
         <section class="page ops-page">
             <Suspense fallback=|| view! { <p class="dim">"loading"</p> }>
                 {move || Suspend::new(async move {
-                    let data = snapshot.await;
-                    let usage = stats.await;
-                    view! { <AdminStatusBody data usage /> }
+                    let snapshot = retain(loaded_snapshot, snapshot.await);
+                    let stats = retain(loaded_stats, stats.await);
+                    view! {
+                        {snapshot.error.map(|message| view! { <ErrorMessage message /> })}
+                        {stats.error.map(|message| view! { <ErrorMessage message /> })}
+                        {snapshot.value.map(|data| view! { <AdminStatusBody data usage=stats.value /> })}
+                    }
                 })}
             </Suspense>
         </section>
@@ -24,8 +31,10 @@ pub fn AdminStatus() -> impl IntoView {
 }
 
 #[component]
-fn AdminStatusBody(data: UiSnapshot, usage: UiStats) -> impl IntoView {
-    let has_usage = usage.totals != UiCounters::default();
+fn AdminStatusBody(data: UiSnapshot, usage: Option<UiStats>) -> impl IntoView {
+    let empty_usage = usage
+        .as_ref()
+        .is_some_and(|usage| usage.totals == UiCounters::default());
     let indexes = data.indexes.clone();
     let empty = indexes.is_empty();
     let resource_count = summary_total(&indexes, |index| index.resource_count);
@@ -57,8 +66,8 @@ fn AdminStatusBody(data: UiSnapshot, usage: UiStats) -> impl IntoView {
         <h2>"Recent writes"</h2>
         <AdminRecentWrites indexes=indexes.clone() />
         <h2>"Usage and health"</h2>
-        <AdminUsageTable indexes usage />
-        {(!has_usage).then(|| view! { <p class="dim">"No usage recorded yet."</p> })}
+        {usage.map(|usage| view! { <AdminUsageTable indexes usage /> })}
+        {empty_usage.then(|| view! { <p class="dim">"No usage recorded yet."</p> })}
     }
 }
 

@@ -13,8 +13,9 @@ mod topology;
 #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
 pub use browse::admin_request;
 pub use browse::load_browse;
+pub use browse::{LoaderEndpoint, LoaderError};
 #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
-use browse::{fetch_json, fetch_json_optional, fetch_json_required};
+use browse::{fetch_json_optional, fetch_json_required};
 pub use login::load_login;
 pub use operations::load_operations;
 #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
@@ -30,3 +31,8 @@ pub use status::{load_admin_snapshot, load_snapshot};
 pub use topology::load_topology;
 #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
 pub use topology::{TopologyStream, subscribe_topology};
+
+#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
+#[derive(serde::Deserialize)]
+#[serde(transparent)]
+struct RequiredOption<T>(Option<T>);

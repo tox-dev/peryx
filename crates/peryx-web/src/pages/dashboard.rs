@@ -1,6 +1,6 @@
 use leptos::prelude::*;
 
-use super::{ecosystem_stats, human_size, optional_counters_for, start_refresh};
+use super::{ErrorMessage, LoadState, ecosystem_stats, human_size, optional_counters_for, retain, start_refresh};
 use crate::data::{load_snapshot, load_stats};
 use crate::model::{UiCounters, UiIndex, UiSnapshot, UiStats};
 use crate::url::{browse_index_url, stats_index_url};
@@ -10,15 +10,22 @@ use crate::url::{browse_index_url, stats_index_url};
 pub fn Dashboard() -> impl IntoView {
     let snapshot = Resource::new(|| (), |()| load_snapshot());
     let stats = Resource::new(|| (), |()| load_stats(None, None));
+    let loaded_snapshot = RwSignal::new(LoadState::default());
+    let loaded_stats = RwSignal::new(LoadState::default());
     start_refresh(snapshot);
+    start_refresh(stats);
     view! {
         <section class="page">
-            <StoopHero snapshot />
+            <StoopHero snapshot=loaded_snapshot />
             <Suspense fallback=|| view! { <StoopLoader /> }>
                 {move || Suspend::new(async move {
-                    let data = snapshot.await;
-                    let usage = stats.await;
-                    view! { <DashboardBody data usage /> }
+                    let snapshot = retain(loaded_snapshot, snapshot.await);
+                    let stats = retain(loaded_stats, stats.await);
+                    view! {
+                        {snapshot.error.map(|message| view! { <ErrorMessage message /> })}
+                        {stats.error.map(|message| view! { <ErrorMessage message /> })}
+                        {snapshot.value.map(|data| view! { <DashboardBody data usage=stats.value /> })}
+                    }
                 })}
             </Suspense>
         </section>
@@ -32,7 +39,7 @@ pub fn Dashboard() -> impl IntoView {
 /// refetch every few seconds would otherwise rebuild this `<svg>`, and a fresh node restarts the
 /// once-on-load dive, so the falcon would re-dive on every poll.
 #[component]
-fn StoopHero(snapshot: Resource<UiSnapshot>) -> impl IntoView {
+fn StoopHero(snapshot: RwSignal<LoadState<UiSnapshot>>) -> impl IntoView {
     view! {
         <div class="hero-brand">
             <span class="stoop-stage">
@@ -43,9 +50,7 @@ fn StoopHero(snapshot: Resource<UiSnapshot>) -> impl IntoView {
                 <span class="wordmark">"peryx"</span>
                 <span class="tagline">
                     "the artifact vault · v"
-                    <Suspense fallback=|| ()>
-                        {move || Suspend::new(async move { snapshot.await.version })}
-                    </Suspense>
+                    {move || snapshot.get().value.map(|snapshot| snapshot.version)}
                 </span>
             </span>
         </div>
@@ -64,7 +69,7 @@ fn StoopLoader() -> impl IntoView {
 }
 
 #[component]
-fn DashboardBody(data: UiSnapshot, usage: UiStats) -> impl IntoView {
+fn DashboardBody(data: UiSnapshot, usage: Option<UiStats>) -> impl IntoView {
     let layered: std::collections::HashSet<String> = data
         .indexes
         .iter()
@@ -77,7 +82,9 @@ fn DashboardBody(data: UiSnapshot, usage: UiStats) -> impl IntoView {
         .filter(|index| !index.layers.is_empty())
         .cloned()
         .map(|index| {
-            let counters = optional_counters_for(&usage, &index.route);
+            let counters = usage
+                .as_ref()
+                .and_then(|usage| optional_counters_for(usage, &index.route));
             view! { <OverlayCard index all=all.clone() counters /> }
         })
         .collect_view();
@@ -94,7 +101,9 @@ fn DashboardBody(data: UiSnapshot, usage: UiStats) -> impl IntoView {
                 {standalone
                     .into_iter()
                     .map(|index| {
-                        let counters = optional_counters_for(&usage, &index.route);
+                        let counters = usage
+                            .as_ref()
+                            .and_then(|usage| optional_counters_for(usage, &index.route));
                         view! { <IndexCard index counters /> }
                     })
                     .collect_view()}

@@ -387,7 +387,7 @@ test("admin table shows upstream and upload state per index", async ({
   await expect(table.locator("[class*='badge upload-']").first()).toBeVisible();
 });
 
-test("admin status is read-only and tolerates failed stats fetches", async ({
+test("admin status is read-only and reports failed stats fetches", async ({
   page,
 }) => {
   await operatorPage(page);
@@ -430,9 +430,10 @@ test("admin status is read-only and tolerates failed stats fetches", async ({
     page.locator(".ops-table", { hasText: "veloxdemo-1.0.0" }),
   ).toBeVisible();
   await expect(page.locator(".ops-table").first()).not.toContainText(TOKEN);
-  await expect(
-    page.locator(".dim", { hasText: "No usage recorded yet." }),
-  ).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveText(
+    "/+stats returned HTTP 503.",
+  );
+  await expect(page.getByText("No usage recorded yet.")).toHaveCount(0);
   await expect(page.locator(".token")).toHaveCount(0);
   await expect(page.locator(".admin-table")).toHaveCount(0);
 });

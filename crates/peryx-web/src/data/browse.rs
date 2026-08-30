@@ -2,52 +2,82 @@ use peryx_core::BrowsePage;
 #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
 use peryx_core::UiActionMethod;
 
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
-pub(super) async fn fetch_json(url: &str) -> Option<serde_json::Value> {
-    fetch_json_required(url).await.ok()
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub enum LoaderEndpoint {
+    Browse,
+    Session,
+    Stats,
+    Status,
+    Topology,
 }
 
+impl std::fmt::Display for LoaderEndpoint {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Browse => "/+ui/browse",
+            Self::Session => "/_/session",
+            Self::Stats => "/+stats",
+            Self::Status => "/+status",
+            Self::Topology => "/+availability/topology",
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub enum LoaderError {
+    Request(LoaderEndpoint),
+    Status { endpoint: LoaderEndpoint, status: u16 },
+    Invalid(LoaderEndpoint),
+}
+
+impl std::fmt::Display for LoaderError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Request(endpoint) => write!(formatter, "Request to {endpoint} failed."),
+            Self::Status { endpoint, status } => write!(formatter, "{endpoint} returned HTTP {status}."),
+            Self::Invalid(endpoint) => write!(formatter, "{endpoint} returned invalid data."),
+        }
+    }
+}
+
+impl std::error::Error for LoaderError {}
+
 #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
-pub(super) async fn fetch_json_required(url: &str) -> Result<serde_json::Value, String> {
-    let Some(value) = fetch_json_optional(url).await? else {
-        return Err(format!("404 from {url}: not found"));
+pub(super) async fn fetch_json_required<T>(url: &str, endpoint: LoaderEndpoint) -> Result<T, LoaderError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let Some(value) = fetch_json_optional(url, endpoint).await? else {
+        return Err(LoaderError::Status { endpoint, status: 404 });
     };
     Ok(value)
 }
 
 #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
-pub(super) async fn fetch_json_optional(url: &str) -> Result<Option<serde_json::Value>, String> {
+pub(super) async fn fetch_json_optional<T>(url: &str, endpoint: LoaderEndpoint) -> Result<Option<T>, LoaderError>
+where
+    T: serde::de::DeserializeOwned,
+{
     send_wrapper::SendWrapper::new(async {
         let response = gloo_net::http::Request::get(url)
             .header("accept", "application/json")
             .send()
             .await
-            .map_err(|error| format!("request failed for {url}: {error}"))?;
+            .map_err(|_| LoaderError::Request(endpoint))?;
         if response.status() == 404 {
             return Ok(None);
         }
         if !response.ok() {
-            return Err(response_error(response, url).await);
+            return Err(LoaderError::Status {
+                endpoint,
+                status: response.status(),
+            });
         }
         response
             .json()
             .await
             .map(Some)
-            .map_err(|error| format!("invalid JSON from {url}: {error}"))
-    })
-    .await
-}
-
-#[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
-async fn response_error(response: gloo_net::http::Response, url: &str) -> String {
-    send_wrapper::SendWrapper::new(async move {
-        let status = response.status();
-        let text = response.text().await.unwrap_or_default();
-        if text.is_empty() {
-            format!("{status} from {url}")
-        } else {
-            format!("{status} from {url}: {text}")
-        }
+            .map_err(|_| LoaderError::Invalid(endpoint))
     })
     .await
 }
@@ -63,12 +93,14 @@ pub async fn load_browse(raw_query: String) -> Result<Option<BrowsePage>, String
     #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
     {
         send_wrapper::SendWrapper::new(async move {
-            let Some(value) = super::fetch_json_optional(&crate::url::ui_browse_url(&raw_query)).await? else {
+            let Some(page) =
+                super::fetch_json_optional(&crate::url::ui_browse_url(&raw_query), super::LoaderEndpoint::Browse)
+                    .await
+                    .map_err(|error| error.to_string())?
+            else {
                 return Ok(None);
             };
-            serde_json::from_value(value)
-                .map(Some)
-                .map_err(|err| format!("invalid browse response: {err}"))
+            Ok(Some(page))
         })
         .await
     }

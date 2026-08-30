@@ -1,5 +1,6 @@
 use leptos::prelude::*;
 
+use super::{ErrorMessage, LoadState, retain, start_refresh};
 use crate::data::load_login;
 use crate::model::UiLoginState;
 
@@ -8,10 +9,18 @@ use crate::model::UiLoginState;
 #[component]
 pub fn Login() -> impl IntoView {
     let state = Resource::new(|| (), |()| load_login());
+    let loaded = RwSignal::new(LoadState::default());
+    start_refresh(state);
     view! {
         <section class="page">
             <Suspense fallback=|| view! { <p class="dim">"loading"</p> }>
-                {move || Suspend::new(async move { login_view(state.await) })}
+                {move || Suspend::new(async move {
+                    let loaded = retain(loaded, state.await);
+                    view! {
+                        {loaded.error.map(|message| view! { <ErrorMessage message /> })}
+                        {loaded.value.map(login_view)}
+                    }
+                })}
             </Suspense>
         </section>
     }

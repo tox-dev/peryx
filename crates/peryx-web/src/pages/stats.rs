@@ -1,7 +1,7 @@
 use leptos::prelude::*;
 use leptos_router::hooks::use_query_map;
 
-use super::{human_size, reactive_value};
+use super::{ErrorMessage, LoadState, human_size, reactive_value, retain, start_refresh};
 use crate::data::load_stats;
 use crate::model::{UiCounters, UiStats};
 use crate::url::{stats_index_url, stats_resource_url};
@@ -46,14 +46,19 @@ fn StatsView(route: Option<String>, resource: Option<String>) -> impl IntoView {
         },
         |(route, resource)| load_stats(route, resource),
     );
+    let loaded = RwSignal::new(LoadState::default());
+    start_refresh(stats);
     view! {
         <Suspense fallback=|| view! { <p class="dim">"loading"</p> }>
             {move || {
                 let route = route.clone();
                 let resource = resource.clone();
                 Suspend::new(async move {
-                    let data = stats.await;
-                    view! { <StatsBody route resource data /> }
+                    let loaded = retain(loaded, stats.await);
+                    view! {
+                        {loaded.error.map(|message| view! { <ErrorMessage message /> })}
+                        {loaded.value.map(|data| view! { <StatsBody route resource data /> })}
+                    }
                 })
             }}
         </Suspense>

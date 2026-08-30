@@ -112,6 +112,18 @@ test("browse renders an empty result for a missing owner document", async ({
   await expect(page.getByText("Nothing matched this browse query.")).toBeVisible();
 });
 
+test("browse reports an owner endpoint failure", async ({ page }) => {
+  await page.route("**/+ui/browse?**", (route) =>
+    route.fulfill({ status: 500, body: "private browse failure" }),
+  );
+  await goto(page, "/");
+  await openClientPath(page, "/browse?index=broken");
+  await expect(page.getByRole("alert")).toHaveText(
+    "/+ui/browse returned HTTP 500.",
+  );
+  await expect(page.locator("body")).not.toContainText("private browse failure");
+});
+
 test("policy decision filters omit credentials and render fields", async ({
   page,
 }) => {
@@ -1195,6 +1207,17 @@ test("topology reports a missing snapshot", async ({ page }) => {
   );
 });
 
+test("topology reports an invalid snapshot", async ({ page }) => {
+  await page.route("**/+availability/topology", (route) =>
+    route.fulfill({ status: 200, body: "{" }),
+  );
+  await goto(page, "/");
+  await page.locator('.nav-links a[href="/admin/topology"]').click();
+  await expect(page.getByRole("alert")).toHaveText(
+    "The availability topology returned invalid data.",
+  );
+});
+
 test("operations render rows and paginate in the hydrated router", async ({ page }) => {
   await operatorPage(page);
   const cursors = [];
@@ -1697,13 +1720,440 @@ test("login renders the current session", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Log out" })).toBeVisible();
 });
 
-test("login falls back when session data is unavailable", async ({ page }) => {
+for (const { label, response, expected } of [
+  {
+    label: "a transport failure",
+    expected: "Request to /+status failed.",
+  },
+  {
+    label: "an HTTP failure",
+    response: { status: 500, body: "private status failure" },
+    expected: "/+status returned HTTP 500.",
+  },
+  {
+    label: "malformed JSON",
+    response: { status: 200, body: "{" },
+    expected: "/+status returned invalid data.",
+  },
+  {
+    label: "a missing required field",
+    response: { json: { version: "missing indexes" } },
+    expected: "/+status returned invalid data.",
+  },
+  {
+    label: "a mistyped required field",
+    response: { json: { version: 7, indexes: [] } },
+    expected: "/+status returned invalid data.",
+  },
+]) {
+  test(`dashboard reports ${label}`, async ({ page }) => {
+    await page.route("**/+status", (route) =>
+      response ? route.fulfill(response) : route.abort("connectionfailed"),
+    );
+    await page.route("**/+stats**", (route) => route.fulfill({ json: {} }));
+    await goto(page, "/login");
+    await openClientPath(page, "/");
+    await expect(page.getByRole("alert")).toHaveText(expected);
+    await expect(page.getByText("Indexes", { exact: true })).toHaveCount(0);
+  });
+}
+
+test("dashboard accepts additive status fields and an empty index list", async ({
+  page,
+}) => {
+  await page.route("**/+status", (route) =>
+    route.fulfill({
+      json: {
+        ...statusDocument(7),
+        indexes: [],
+        future_status_field: { format: 2 },
+      },
+    }),
+  );
+  await page.route("**/+stats**", (route) => route.fulfill({ json: {} }));
+  await goto(page, "/login");
+  await openClientPath(page, "/");
+  await expect(page.getByText("Indexes", { exact: true })).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(page.locator(".tagline")).toContainText("vbrowser-7");
+});
+
+test("admin status reports failures without rendering zero state", async ({
+  page,
+}) => {
+  await page.route("**/+status", (route) => route.fulfill({ status: 503 }));
+  await page.route("**/+stats**", (route) => route.fulfill({ json: {} }));
+  await goto(page, "/login");
+  await openClientPath(page, "/admin/status");
+  await expect(page.getByRole("alert")).toHaveText(
+    "/+status returned HTTP 503.",
+  );
+  await expect(
+    page.getByText("No indexes configured.", { exact: true }),
+  ).toHaveCount(0);
+});
+
+test("admin status renders an unavailable index summary", async ({ page }) => {
+  const document = statusDocument(8);
+  document.indexes[0].summary = {
+    status: "unavailable",
+    error_class: "storage",
+  };
+  await page.route("**/+status", (route) => route.fulfill({ json: document }));
+  await page.route("**/+stats**", (route) => route.fulfill({ json: {} }));
+  await goto(page, "/login");
+  await openClientPath(page, "/admin/status");
+  await expect(page.locator(".metrics-group").first()).toContainText(
+    "unavailable",
+  );
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
+test("dashboard preserves and recovers its last status snapshot", async ({
+  page,
+}) => {
+  await page.clock.install();
+  let phase = "initial";
+  await page.route("**/+status", (route) => {
+    if (phase === "failure")
+      return route.fulfill({ status: 500, body: "private status failure" });
+    return route.fulfill({
+      json: statusDocument(phase === "initial" ? 41 : 42),
+    });
+  });
+  await page.route("**/+stats**", (route) =>
+    route.fulfill({ json: statsRoutes(3) }),
+  );
+  await goto(page, "/login");
+  await openClientPath(page, "/");
+  await expect(page.locator(".metrics-group").first()).toContainText("41");
+  await expect(page.locator(".card-usage")).toContainText("3 reads");
+
+  phase = "failure";
+  await advanceToRequest(page, "/+status");
+  await expect(page.getByRole("alert")).toHaveText(
+    "/+status returned HTTP 500.",
+  );
+  await expect(page.locator(".metrics-group").first()).toContainText("41");
+  await expect(page.locator(".card-usage")).toContainText("3 reads");
+
+  phase = "recovery";
+  await advanceToRequest(page, "/+status");
+  await expect(page.locator(".metrics-group").first()).toContainText("42");
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
+for (const { label, response, expected } of [
+  {
+    label: "missing counter groups",
+    response: { json: { "root/cache": { base: baseCounters(1) } } },
+    expected: "/+stats returned invalid data.",
+  },
+  {
+    label: "a mistyped counter",
+    response: {
+      json: {
+        "root/cache": {
+          ...counterGroups(1),
+          base: { ...baseCounters(1), reads: "one" },
+        },
+      },
+    },
+    expected: "/+stats returned invalid data.",
+  },
+]) {
+  test(`stats reports ${label}`, async ({ page }) => {
+    await page.route("**/+stats**", (route) => route.fulfill(response));
+    await goto(page, "/login");
+    await openClientPath(page, "/stats");
+    await expect(page.getByRole("alert")).toHaveText(expected);
+    await expect(
+      page.getByText("Nothing recorded at this level yet."),
+    ).toHaveCount(0);
+  });
+}
+
+test("stats rejects null drill-down fields", async ({ page }) => {
+  await page.route("**/+stats**", (route) =>
+    route.fulfill({ json: { totals: null, resources: null } }),
+  );
+  await goto(page, "/login");
+  await openClientPath(page, "/stats?index=root%2Fcache");
+  await expect(page.getByRole("alert")).toHaveText(
+    "/+stats returned invalid data.",
+  );
+});
+
+test("stats rejects a partial drill-down document", async ({ page }) => {
+  await page.route("**/+stats**", (route) =>
+    route.fulfill({ json: { totals: counterGroups(1) } }),
+  );
+  await goto(page, "/login");
+  await openClientPath(page, "/stats?index=root%2Fcache");
+  await expect(page.getByRole("alert")).toHaveText(
+    "/+stats returned invalid data.",
+  );
+});
+
+test("stats renders a sorted index document", async ({ page }) => {
+  await page.route("**/+stats**", (route) =>
+    route.fulfill({
+      json: {
+        totals: counterGroups(11),
+        resources: {
+          zebra: counterGroups(1),
+          alpha: counterGroups(5),
+        },
+      },
+    }),
+  );
+  await goto(page, "/login");
+  await openClientPath(page, "/stats?index=root%2Fcache");
+  await expect(page.locator(".stats-table tbody a")).toHaveText([
+    "alpha",
+    "zebra",
+  ]);
+  await expect(page.locator(".stat-row")).toContainText("11");
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
+test("stats renders a resource document", async ({ page }) => {
+  await page.route("**/+stats**", (route) =>
+    route.fulfill({
+      json: {
+        totals: counterGroups(9),
+        artifacts: {
+          "artifact.bin": { reads: 7, bytes: 123, ecosystem: { metadata: 2 } },
+        },
+      },
+    }),
+  );
+  await goto(page, "/login");
+  await openClientPath(
+    page,
+    "/stats?index=root%2Fcache&resource=project",
+  );
+  await expect(page.locator(".stats-table tbody td")).toHaveText([
+    "artifact.bin",
+    "0",
+    "7",
+    "123.0 B",
+    "2",
+    "0",
+  ]);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
+test("stats distinguishes additive and empty documents from failures", async ({
+  page,
+}) => {
+  await page.clock.install();
+  let empty = true;
+  await page.route("**/+stats**", (route) =>
+    route.fulfill({
+      json: empty
+        ? {}
+        : {
+            "root/cache": {
+              ...counterGroups(9),
+              future_counter_group: { requests: 4 },
+            },
+          },
+    }),
+  );
+  await goto(page, "/login");
+  await openClientPath(page, "/stats");
+  await expect(
+    page.getByText("Nothing recorded at this level yet."),
+  ).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+
+  empty = false;
+  await advanceToRequest(page, "/+stats");
+  await expect(page.locator(".stats-table tbody")).toContainText("root/cache");
+  await expect(page.locator(".stat-row")).toContainText("9");
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
+test("stats preserves its last values across a malformed poll", async ({
+  page,
+}) => {
+  await page.clock.install();
+  let phase = "initial";
+  await page.route("**/+stats**", (route) => {
+    if (phase === "failure") return route.fulfill({ body: "{" });
+    return route.fulfill({
+      json: statsRoutes(phase === "initial" ? 4 : 7),
+    });
+  });
+  await goto(page, "/login");
+  await openClientPath(page, "/stats");
+  await expect(page.locator(".stat-row")).toContainText("4");
+
+  phase = "failure";
+  await advanceToRequest(page, "/+stats");
+  await expect(page.getByRole("alert")).toHaveText(
+    "/+stats returned invalid data.",
+  );
+  await expect(page.locator(".stat-row")).toContainText("4");
+
+  phase = "recovery";
+  await advanceToRequest(page, "/+stats");
+  await expect(page.locator(".stat-row")).toContainText("7");
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
+for (const { label, document } of [
+  { label: "a missing provider list", document: { user: null } },
+  {
+    label: "a mistyped provider list",
+    document: { user: null, providers: "work" },
+  },
+]) {
+  test(`login reports ${label} without claiming providers disappeared`, async ({
+    page,
+  }) => {
+    await page.route("**/_/session", (route) =>
+      route.fulfill({ json: document }),
+    );
+    await goto(page, "/");
+    await openClientPath(page, "/login");
+    await expect(page.getByRole("alert")).toHaveText(
+      "/_/session returned invalid data.",
+    );
+    await expect(
+      page.getByText("No login providers are configured."),
+    ).toHaveCount(0);
+  });
+}
+
+test("login accepts an additive document with no providers", async ({ page }) => {
   await page.route("**/_/session", (route) =>
-    route.fulfill({ status: 200, body: "{" }),
+    route.fulfill({
+      json: { user: null, providers: [], future_session_field: true },
+    }),
   );
   await goto(page, "/");
-  await page.locator('a[href="/login"]').click();
+  await openClientPath(page, "/login");
   await expect(
     page.getByText("No login providers are configured."),
   ).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
 });
+
+test("login retains its session without reading an error body and recovers", async ({
+  page,
+}) => {
+  await page.clock.install();
+  await page.addInitScript(() => {
+    window.__sessionErrorBodyReads = 0;
+    const readText = Response.prototype.text;
+    Response.prototype.text = function (...args) {
+      if (!this.ok && new URL(this.url).pathname === "/_/session")
+        window.__sessionErrorBodyReads += 1;
+      return readText.apply(this, args);
+    };
+  });
+  let phase = "initial";
+  await page.route("**/_/session", (route) => {
+    if (phase === "failure")
+      return route.fulfill({
+        status: 500,
+        body: '<script>window.sessionErrorExecuted = true</script>',
+      });
+    return route.fulfill({
+      json:
+        phase === "initial"
+          ? { user: null, providers: ["work"] }
+          : { user: { name: "Recovered User" }, providers: ["work"] },
+    });
+  });
+  await goto(page, "/");
+  await openClientPath(page, "/login");
+  await expect(
+    page.getByRole("link", { name: "Sign in with work" }),
+  ).toBeVisible();
+
+  phase = "failure";
+  await advanceToRequest(page, "/_/session");
+  await expect(page.getByRole("alert")).toHaveText(
+    "/_/session returned HTTP 500.",
+  );
+  await expect(
+    page.getByRole("link", { name: "Sign in with work" }),
+  ).toBeVisible();
+  await expect(page.locator("body")).not.toContainText("sessionErrorExecuted");
+  expect(
+    await page.evaluate(() => [
+      window.__sessionErrorBodyReads,
+      window.sessionErrorExecuted,
+    ]),
+  ).toEqual([0, undefined]);
+
+  phase = "recovery";
+  await advanceToRequest(page, "/_/session");
+  await expect(page.getByText("Signed in as")).toContainText("Recovered User");
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
+async function openClientPath(page, path) {
+  await page.evaluate((href) => {
+    const link = document.createElement("a");
+    link.href = href;
+    document.body.append(link);
+    link.click();
+  }, path);
+}
+
+async function advanceToRequest(page, path) {
+  const request = page.waitForRequest(
+    (request) => new URL(request.url()).pathname === path,
+  );
+  await page.clock.fastForward(5_000);
+  await request;
+}
+
+function statusDocument(serial) {
+  return {
+    version: `browser-${serial}`,
+    serial,
+    requests: 5,
+    by_ecosystem: [],
+    metric_families: [],
+    indexes: [
+      {
+        name: "cache",
+        route: "root/cache",
+        ecosystem: "example",
+        endpoint: "/cache/",
+        kind: "cached",
+        layers: [],
+        uploads: false,
+        upload_to: null,
+        future_index_field: true,
+      },
+    ],
+  };
+}
+
+function statsRoutes(reads) {
+  return { "root/cache": counterGroups(reads) };
+}
+
+function counterGroups(reads) {
+  return {
+    base: baseCounters(reads),
+    cached: {
+      refreshes: 0,
+      changed: 0,
+      stale_served: 0,
+      upstream_errors: 0,
+    },
+    hosted: { writes: 0 },
+    ecosystem: {},
+  };
+}
+
+function baseCounters(reads) {
+  return { pages: 0, reads, bytes: 0, rejected: 0 };
+}

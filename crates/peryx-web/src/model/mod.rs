@@ -35,11 +35,3 @@ pub use topology::{
     role_label, stream_status_label,
 };
 pub use trash::{TrashFilters, UiTrashPage, UiTrashRecord};
-
-fn string_at(value: &serde_json::Value, key: &str) -> String {
-    value[key].as_str().unwrap_or_default().to_owned()
-}
-
-fn u64_at(value: &serde_json::Value, key: &str) -> u64 {
-    value[key].as_u64().unwrap_or_default()
-}

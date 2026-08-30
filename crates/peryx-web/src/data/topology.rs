@@ -28,10 +28,14 @@ pub async fn load_topology() -> Result<TopologySnapshot, String> {
     #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
     {
         let request = async {
-            let value = super::fetch_json_required("/+availability/topology")
+            super::fetch_json_required("/+availability/topology", super::LoaderEndpoint::Topology)
                 .await
-                .map_err(|_| "The availability topology could not be reached.".to_owned())?;
-            serde_json::from_value(value).map_err(|_| "The availability topology returned invalid data.".to_owned())
+                .map_err(|error| match error {
+                    super::LoaderError::Invalid(_) => "The availability topology returned invalid data.".to_owned(),
+                    super::LoaderError::Request(_) | super::LoaderError::Status { .. } => {
+                        "The availability topology could not be reached.".to_owned()
+                    }
+                })
         };
         send_wrapper::SendWrapper::new(request).await
     }

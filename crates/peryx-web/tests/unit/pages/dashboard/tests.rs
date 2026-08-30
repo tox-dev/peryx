@@ -43,13 +43,13 @@ fn dashboard_body_renders_overlay_and_standalone_cards() {
                 indexes: vec![hosted, standalone, quiet, overlay, quiet_overlay],
                 ..UiSnapshot::default()
             }
-            usage=UiStats {
+            usage=Some(UiStats {
                 totals: UiCounters::default(),
                 rows: vec![
                     ("root/public".to_owned(), UiCounters { pages: 2, bytes: 1_536, ..UiCounters::default() }),
                     ("root/standalone".to_owned(), UiCounters { reads: 3, ..UiCounters::default() }),
                 ],
-            }
+            })
         />
     }
     .to_html();
@@ -59,7 +59,7 @@ fn dashboard_body_renders_overlay_and_standalone_cards() {
     assert!(html.contains("listings"), "{html}");
     assert!(html.contains("1.5 kB"), "{html}");
     assert_eq!(html.matches(r#"class="card-usage""#).count(), 2, "{html}");
-    let empty = view! { <DashboardBody data=UiSnapshot::default() usage=UiStats::default() /> }.to_html();
+    let empty = view! { <DashboardBody data=UiSnapshot::default() usage=Some(UiStats::default()) /> }.to_html();
     assert!(empty.contains("Indexes"), "{empty}");
     assert!(!empty.contains("Standalone indexes"), "{empty}");
 }
