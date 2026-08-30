@@ -133,6 +133,25 @@ pub fn wheel_with_invalid_deflated_metadata(metadata: &[u8]) -> Vec<u8> {
     wheel[data_start] = 0x07;
     wheel
 }
+/// A zip tail whose end-of-central-directory record declares `directory_len` bytes at
+/// `directory_offset`, so the caller can drive a span the artifact cannot hold.
+pub fn zip_tail_with_directory_span(len: usize, directory_len: u32, directory_offset: u32) -> Vec<u8> {
+    let mut bytes = vec![0_u8; len];
+    let eocd = len - 22;
+    bytes[eocd..eocd + 4].copy_from_slice(b"PK\x05\x06");
+    bytes[eocd + 12..eocd + 16].copy_from_slice(&directory_len.to_le_bytes());
+    bytes[eocd + 16..eocd + 20].copy_from_slice(&directory_offset.to_le_bytes());
+    bytes
+}
+/// A wheel whose `METADATA` member holds one byte more than its central directory declares.
+pub fn wheel_with_metadata_output_excess(metadata: &[u8], compression: zip::CompressionMethod) -> Vec<u8> {
+    let mut excess = metadata.to_vec();
+    excess.push(b'\n');
+    let mut wheel = fixture_wheel_with_metadata_compression(&excess, compression);
+    let position = metadata_central_directory_position(&wheel);
+    wheel[position + 24..position + 28].copy_from_slice(&u32::try_from(metadata.len()).unwrap().to_le_bytes());
+    wheel
+}
 pub fn wheel_with_metadata_compression_method(metadata: &[u8], compression_method: u16) -> Vec<u8> {
     let mut wheel = fixture_wheel_with_metadata(metadata);
     let position = metadata_central_directory_position(&wheel);

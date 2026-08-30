@@ -2,6 +2,11 @@
 //! resolver can range-read it out of a wheel without downloading the archive. Pure byte parsing.
 
 pub(super) const ZIP_TAIL_BYTES: u64 = 66_000;
+
+/// Largest central directory the ranged reader will request. ZIP32 can declare a directory close to
+/// 4 GiB and the reader buffers whatever it requests, so the declaration alone must never size the
+/// allocation. A wheel that declares more falls back to the full-artifact metadata path.
+pub(super) const MAX_CENTRAL_DIRECTORY_BYTES: u64 = 16 * 1024 * 1024;
 pub(super) const ZIP_EOCD_LEN: usize = 22;
 pub(super) const ZIP_EOCD_SIGNATURE: [u8; 4] = [0x50, 0x4b, 0x05, 0x06];
 pub(super) const ZIP_CENTRAL_SIGNATURE: [u8; 4] = [0x50, 0x4b, 0x01, 0x02];
@@ -24,7 +29,7 @@ pub(super) enum DirectoryEntrySearch {
     Unsupported,
     Invalid,
 }
-pub(super) fn central_directory(tail: &[u8]) -> Option<CentralDirectory> {
+pub(super) fn central_directory(tail: &[u8], artifact_len: u64) -> Option<CentralDirectory> {
     let eocd = (0..=tail.len().checked_sub(ZIP_EOCD_LEN)?)
         .rev()
         .find(|&position| tail[position..].starts_with(&ZIP_EOCD_SIGNATURE))?;
@@ -35,6 +40,9 @@ pub(super) fn central_directory(tail: &[u8]) -> Option<CentralDirectory> {
     let len = u64::from(read_u32(tail, eocd + 12)?);
     let offset = u64::from(read_u32(tail, eocd + 16)?);
     if len == u64::from(u32::MAX) || offset == u64::from(u32::MAX) {
+        return None;
+    }
+    if len > MAX_CENTRAL_DIRECTORY_BYTES || offset + len > artifact_len {
         return None;
     }
     Some(CentralDirectory { offset, len })

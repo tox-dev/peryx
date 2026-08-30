@@ -1,6 +1,6 @@
 //! PEP 658 metadata resolution: cached sidecars, ranged wheel reads, and background backfill.
 
-use std::io::{Cursor, Read as _};
+use std::io::{Cursor, Read};
 use std::sync::{Arc, Mutex};
 
 use crate::store::PypiStore as _;
@@ -12,8 +12,8 @@ use peryx_upstream::{ArtifactClient, RangeError};
 
 mod central_dir;
 use central_dir::{
-    DirectoryEntrySearch, ZIP_COMPRESSION_DEFLATED, ZIP_COMPRESSION_STORED, ZIP_LOCAL_SIGNATURE, ZIP_TAIL_BYTES,
-    central_directory, find_central_directory_entry, read_u16,
+    DirectoryEntrySearch, MAX_CENTRAL_DIRECTORY_BYTES, ZIP_COMPRESSION_DEFLATED, ZIP_COMPRESSION_STORED,
+    ZIP_LOCAL_SIGNATURE, ZIP_TAIL_BYTES, central_directory, find_central_directory_entry, read_u16,
 };
 
 use super::download::file_path;
@@ -22,7 +22,8 @@ use super::{
     upstream_permit,
 };
 
-const _: () = assert!(crate::archive::MAX_WHEEL_METADATA_BYTES <= usize::MAX as u64);
+const _: () = assert!(crate::archive::MAX_WHEEL_METADATA_BYTES < usize::MAX as u64);
+const _: () = assert!(MAX_CENTRAL_DIRECTORY_BYTES <= usize::MAX as u64);
 
 async fn fetch_from_source(
     state: &ServingState,
@@ -202,19 +203,18 @@ async fn wheel_metadata_by_range(
     let tail = client
         .fetch_range(url, tail_start, head.len - 1, usize::try_from(ZIP_TAIL_BYTES).unwrap())
         .await?;
-    let Some(directory) = central_directory(&tail) else {
+    let Some(directory) = central_directory(&tail, head.len) else {
         return Ok(RemoteMetadata::Unsupported);
     };
     if directory.len == 0 {
         return Ok(RemoteMetadata::Unsupported);
     }
-    let directory_end = directory.offset + directory.len - 1;
     let directory_bytes = client
         .fetch_range(
             url,
             directory.offset,
-            directory_end,
-            usize::try_from(directory.len).unwrap_or(usize::MAX),
+            directory.offset + directory.len - 1,
+            usize::try_from(directory.len).expect("the central-directory budget fits in memory"),
         )
         .await?;
     let entry = match find_central_directory_entry(&directory_bytes, &metadata_path) {
@@ -236,25 +236,33 @@ async fn wheel_metadata_by_range(
                 url,
                 data_start,
                 data_start + entry.compressed_size - 1,
-                usize::try_from(entry.compressed_size).unwrap_or(usize::MAX),
+                usize::try_from(entry.compressed_size).expect("the metadata budget fits in memory"),
             )
             .await?
     };
     match entry.compression_method {
-        ZIP_COMPRESSION_STORED => Ok(RemoteMetadata::Found(compressed.to_vec())),
-        ZIP_COMPRESSION_DEFLATED => {
-            let mut decoder = flate2::read::DeflateDecoder::new(Cursor::new(compressed));
-            let mut metadata = Vec::with_capacity(usize::try_from(entry.uncompressed_size).unwrap());
-            if let Err(err) = decoder.read_to_end(&mut metadata) {
-                return Err(RangeError::Invalid(err.to_string()));
-            }
-            if metadata.len() as u64 == entry.uncompressed_size {
-                Ok(RemoteMetadata::Found(metadata))
-            } else {
-                Ok(RemoteMetadata::Unsupported)
-            }
-        }
+        ZIP_COMPRESSION_STORED => read_metadata_output(Cursor::new(compressed), entry.uncompressed_size),
+        ZIP_COMPRESSION_DEFLATED => read_metadata_output(
+            flate2::read::DeflateDecoder::new(Cursor::new(compressed)),
+            entry.uncompressed_size,
+        ),
         _ => Ok(RemoteMetadata::Unsupported),
+    }
+}
+
+/// Reads one byte past the declaration, so a member that produces more than it declares is rejected
+/// on that byte rather than after its whole expansion is buffered. The caller rejects a declaration
+/// above [`crate::archive::MAX_WHEEL_METADATA_BYTES`] first, which bounds this read.
+fn read_metadata_output(reader: impl Read, declared_size: u64) -> Result<RemoteMetadata, RangeError> {
+    let limit = declared_size + 1;
+    let mut metadata = Vec::with_capacity(usize::try_from(limit).expect("the metadata budget fits in memory"));
+    if let Err(err) = reader.take(limit).read_to_end(&mut metadata) {
+        return Err(RangeError::Invalid(err.to_string()));
+    }
+    if metadata.len() as u64 == declared_size {
+        Ok(RemoteMetadata::Found(metadata))
+    } else {
+        Ok(RemoteMetadata::Unsupported)
     }
 }
 

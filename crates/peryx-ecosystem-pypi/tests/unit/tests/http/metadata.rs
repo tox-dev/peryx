@@ -449,6 +449,65 @@ async fn test_metadata_backfill_downloads_when_range_zip_is_unsupported() {
     assert_eq!(body.as_bytes(), metadata);
 }
 #[tokio::test]
+async fn test_metadata_backfill_does_not_request_a_directory_span_outside_the_artifact() {
+    let h = harness().await;
+    let metadata = b"Metadata-Version: 2.1\nName: peryxpkg\nVersion: 1.0\n";
+    let wheel = fixture_wheel_with_metadata(metadata);
+    let digest = Digest::of(&wheel);
+    let filename = "peryxpkg-1.0-py3-none-any.whl";
+    let file_path = format!("/files/{filename}");
+    let (head_len, directory_len, directory_offset) = (200_usize, 100_u32, 150_u32);
+    h.state
+        .serving
+        .meta
+        .put_file_url(digest.as_str(), &format!("{}{file_path}", h.server.uri()), "pypi")
+        .unwrap();
+    Mock::given(method("HEAD"))
+        .and(path(&file_path))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("accept-ranges", "bytes")
+                .insert_header("content-length", head_len),
+        )
+        .mount(&h.server)
+        .await;
+    let directory_end = u64::from(directory_offset) + u64::from(directory_len) - 1;
+    Mock::given(method("GET"))
+        .and(path(&file_path))
+        .and(match_header(
+            "range",
+            format!("bytes={directory_offset}-{directory_end}").as_str(),
+        ))
+        .respond_with(ResponseTemplate::new(416))
+        .expect(0)
+        .with_priority(1)
+        .mount(&h.server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(&file_path))
+        .and(header_regex("range", "^bytes=[0-9]+-[0-9]+$"))
+        .respond_with(range_response(zip_tail_with_directory_span(
+            head_len,
+            directory_len,
+            directory_offset,
+        )))
+        .with_priority(10)
+        .mount(&h.server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(&file_path))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(wheel))
+        .with_priority(20)
+        .mount(&h.server)
+        .await;
+
+    let uri = format!("/pypi/files/{}/{filename}.metadata", digest.as_str());
+    let (status, _, body) = get(&h.state, &uri, None).await;
+
+    assert_eq!((status, body.as_bytes()), (StatusCode::OK, metadata.as_slice()));
+    h.server.verify().await;
+}
+#[tokio::test]
 async fn test_metadata_backfill_downloads_when_range_is_unusable() {
     struct Case {
         label: &'static str,
@@ -501,6 +560,18 @@ async fn test_metadata_backfill_downloads_when_range_is_unusable() {
         Case {
             label: "deflate is invalid",
             build_ranged: |metadata, _wheel| wheel_with_invalid_deflated_metadata(metadata),
+        },
+        Case {
+            label: "deflated output exceeds its declaration",
+            build_ranged: |metadata, _wheel| {
+                wheel_with_metadata_output_excess(metadata, zip::CompressionMethod::Deflated)
+            },
+        },
+        Case {
+            label: "stored output exceeds its declaration",
+            build_ranged: |metadata, _wheel| {
+                wheel_with_metadata_output_excess(metadata, zip::CompressionMethod::Stored)
+            },
         },
         Case {
             label: "compression is unsupported",
