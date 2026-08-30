@@ -121,6 +121,7 @@ fn blob_placement_view_projects_and_orders_states() {
             },
             state: state_value,
             fence: 1,
+            transfer_attempt: 1,
             generation: 1,
             updated_at_unix: updated_at,
         };
