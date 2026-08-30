@@ -1,3 +1,5 @@
+use std::collections::{HashMap, VecDeque};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, AtomicUsize};
 
 use peryx_storage::meta::{MetaStore, NewWebhookDelivery, WebhookEventIntent};
@@ -6,7 +8,7 @@ use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 use tokio::sync::oneshot;
 use wiremock::matchers::method;
-use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 use super::*;
 use crate::webhook::{WebhookEnvelope, WebhookRuntime, WebhookTargetConfig};
@@ -87,7 +89,7 @@ fn test_record_failure_only_reschedules_retriable_responses(
         .unwrap();
     for _ in 0..prior_attempts {
         let delivery = host.meta().get_webhook_delivery(&id).unwrap().unwrap();
-        record_failure(&host, &delivery, host.now(), None, Some(404), "http status 404", true);
+        record_failure(&host, &delivery, host.now(), None, Some(404), "http status 404", true).unwrap();
     }
 
     let delivery = host.meta().get_webhook_delivery(&id).unwrap().unwrap();
@@ -99,7 +101,8 @@ fn test_record_failure_only_reschedules_retriable_responses(
         Some(404),
         "http status 404",
         retriable,
-    );
+    )
+    .unwrap();
 
     let stored = host.meta().get_webhook_delivery(&id).unwrap().unwrap();
     assert_eq!(
@@ -555,26 +558,252 @@ async fn test_worker_discards_malformed_delivery_and_reaches_valid_work() {
     handle.shutdown().await.unwrap();
 }
 
-#[tokio::test]
-async fn test_worker_reports_read_only_store_failure() {
+#[tokio::test(start_paused = true)]
+async fn test_worker_retries_deadline_reads_with_positive_capped_backoff() {
     let dir = tempfile::tempdir().unwrap();
-    let database = dir.path().join("peryx.redb");
-    drop(MetaStore::open(&database).unwrap());
-    let host = Arc::new(TestHost {
-        webhooks: WebhookRuntime::new(vec![target_config("ci", "https://example.invalid/hook")]).unwrap(),
-        meta: MetaStore::open_existing_read_only(database).unwrap(),
-        now: AtomicI64::new(100),
-    });
-    let mut handle = kick(host).unwrap();
-
-    let failure = tokio::time::timeout(Duration::from_secs(1), handle.wait_for_failure())
-        .await
-        .expect("read-only webhook store did not stop its worker");
-
-    assert_eq!(
-        failure.to_string(),
-        "webhook delivery storage failed: I/O error: metadata store is read-only"
+    let (host, mut calls) = faulted_host(
+        WebhookRuntime::new(vec![target_config("ci", "https://example.invalid/hook")]).unwrap(),
+        MetaStore::open(dir.path().join("peryx.redb")).unwrap(),
+        8,
+        0,
     );
+    let handle = kick(Arc::clone(&host)).unwrap();
+
+    assert!(receive_store_call(&mut calls, StoreOperation::Deadline).await.failed);
+    for (index, delay) in [100, 200, 400, 800, 1_600, 3_200, 5_000, 5_000]
+        .into_iter()
+        .map(Duration::from_millis)
+        .enumerate()
+    {
+        tokio::time::advance(delay.checked_sub(Duration::from_millis(1)).unwrap()).await;
+        tokio::task::yield_now().await;
+        assert!(matches!(calls.try_recv(), Err(TryRecvError::Empty)));
+        tokio::time::advance(Duration::from_millis(1)).await;
+        assert_eq!(
+            receive_store_call(&mut calls, StoreOperation::Deadline).await.failed,
+            index < 7
+        );
+    }
+
+    assert!(host.webhooks().running.load(Ordering::Acquire));
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_storage_backoff_log_reports_its_delay() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("webhook.log");
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_max_level(tracing::Level::WARN)
+        .with_writer(std::fs::File::create(&log).unwrap())
+        .finish();
+    let guard = tracing::subscriber::set_default(subscriber);
+    let (host, mut calls) = faulted_host(
+        WebhookRuntime::new(vec![target_config("ci", "https://example.invalid/hook")]).unwrap(),
+        MetaStore::open(dir.path().join("peryx.redb")).unwrap(),
+        1,
+        0,
+    );
+    let handle = kick(Arc::clone(&host)).unwrap();
+
+    assert!(receive_store_call(&mut calls, StoreOperation::Deadline).await.failed);
+    notify(host.as_ref());
+    assert!(!receive_store_call(&mut calls, StoreOperation::Deadline).await.failed);
+    handle.shutdown().await.unwrap();
+    drop(guard);
+
+    let output = std::fs::read_to_string(log).unwrap();
+    assert!(output.contains("retry_after_ms=100"), "{output}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_notification_interrupts_due_scan_backoff() {
+    let dir = tempfile::tempdir().unwrap();
+    let (host, mut calls) = faulted_host(
+        WebhookRuntime::new(vec![target_config("ci", "https://example.invalid/hook")]).unwrap(),
+        MetaStore::open(dir.path().join("peryx.redb")).unwrap(),
+        0,
+        1,
+    );
+    let handle = kick(Arc::clone(&host)).unwrap();
+
+    assert!(receive_store_call(&mut calls, StoreOperation::Due).await.failed);
+    let before = tokio::time::Instant::now();
+    notify(host.as_ref());
+
+    assert!(!receive_store_call(&mut calls, StoreOperation::Due).await.failed);
+    assert_eq!(tokio::time::Instant::now(), before);
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_failed_status_write_suppresses_resend_and_retains_the_attempt() {
+    let unstable = MockServer::start().await;
+    let healthy = MockServer::start().await;
+    let (unstable_sender, mut unstable_requests) = unbounded_channel();
+    Mock::given(method("POST"))
+        .respond_with(ObservedResponseSequence {
+            statuses: Mutex::new(VecDeque::from([500, 200])),
+            requests: unstable_sender,
+        })
+        .expect(2)
+        .mount(&unstable)
+        .await;
+    let (healthy_sender, mut healthy_requests) = unbounded_channel();
+    Mock::given(method("POST"))
+        .respond_with(ObservedResponseSequence {
+            statuses: Mutex::new(VecDeque::from([200])),
+            requests: healthy_sender,
+        })
+        .expect(1)
+        .mount(&healthy)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let unstable_id = enqueue(&meta, "unstable", 10);
+    let healthy_id = enqueue(&meta, "healthy", 10);
+    let (host, mut calls) = faulted_host(
+        WebhookRuntime::new(vec![
+            target_config("unstable", &unstable.uri()),
+            target_config("healthy", &healthy.uri()),
+        ])
+        .unwrap(),
+        meta,
+        0,
+        0,
+    );
+    host.block_update(&unstable_id);
+    let handle = kick(Arc::clone(&host)).unwrap();
+
+    assert_eq!(unstable_requests.recv().await.unwrap(), unstable_id);
+    assert_eq!(healthy_requests.recv().await.unwrap(), healthy_id);
+    let mut initial_updates = receive_updates(&mut calls, [&unstable_id, &healthy_id]).await;
+    assert!(initial_updates.remove(&unstable_id).unwrap().failed);
+    assert!(!initial_updates.remove(&healthy_id).unwrap().failed);
+    assert_eq!(
+        host.meta().get_webhook_delivery(&healthy_id).unwrap().unwrap().status,
+        WebhookDeliveryStatus::Delivered
+    );
+    for _ in 0..2 {
+        notify(host.as_ref());
+        assert!(receive_update(&mut calls, &unstable_id).await.failed);
+        assert_eq!(unstable_requests.try_recv(), Err(TryRecvError::Empty));
+    }
+
+    host.inner.now.store(104, Ordering::SeqCst);
+    host.unblock_update();
+    notify(host.as_ref());
+    assert!(!receive_update(&mut calls, &unstable_id).await.failed);
+    let delivery = host.meta().get_webhook_delivery(&unstable_id).unwrap().unwrap();
+    assert_eq!(
+        (
+            delivery.status,
+            delivery.attempts,
+            delivery.updated_at_unix,
+            delivery.next_attempt_at_unix,
+            delivery.response_status,
+            delivery.last_error.as_deref(),
+        ),
+        (
+            WebhookDeliveryStatus::Pending,
+            1,
+            100,
+            Some(105),
+            Some(500),
+            Some("http status 500"),
+        )
+    );
+    assert_eq!(unstable_requests.try_recv(), Err(TryRecvError::Empty));
+
+    host.inner.now.store(105, Ordering::SeqCst);
+    notify(host.as_ref());
+    assert_eq!(unstable_requests.recv().await.unwrap(), unstable_id);
+    assert!(!receive_update(&mut calls, &unstable_id).await.failed);
+    let delivery = host.meta().get_webhook_delivery(&unstable_id).unwrap().unwrap();
+    assert_eq!(
+        (delivery.status, delivery.attempts),
+        (WebhookDeliveryStatus::Delivered, 2)
+    );
+
+    handle.shutdown().await.unwrap();
+    notify(host.as_ref());
+    tokio::task::yield_now().await;
+    assert_eq!(unstable_requests.try_recv(), Err(TryRecvError::Empty));
+    unstable.verify().await;
+    healthy.verify().await;
+}
+
+#[tokio::test]
+async fn test_delivery_records_a_target_removed_from_configuration() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let id = enqueue(&meta, "removed", 10);
+    let (host, mut calls) = faulted_host(
+        WebhookRuntime::new(vec![target_config("configured", "https://example.invalid/hook")]).unwrap(),
+        meta,
+        0,
+        0,
+    );
+    let handle = kick(Arc::clone(&host)).unwrap();
+
+    let update = receive_update(&mut calls, &id).await;
+    assert!(!update.failed);
+    assert!(!update.missing);
+    let delivery = host.meta().get_webhook_delivery(&id).unwrap().unwrap();
+    assert_eq!(
+        (
+            delivery.status,
+            delivery.attempts,
+            delivery.next_attempt_at_unix,
+            delivery.last_error.as_deref(),
+        ),
+        (
+            WebhookDeliveryStatus::Failed,
+            1,
+            None,
+            Some("webhook target is not configured"),
+        )
+    );
+    handle.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_worker_accepts_a_delivery_removed_before_its_status_write() {
+    let server = MockServer::start().await;
+    let (request_sender, mut requests) = unbounded_channel();
+    Mock::given(method("POST"))
+        .respond_with(ObservedResponseSequence {
+            statuses: Mutex::new(VecDeque::from([200])),
+            requests: request_sender,
+        })
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let id = enqueue(&meta, "ci", 10);
+    let (host, mut calls) = faulted_host(
+        WebhookRuntime::new(vec![target_config("ci", &server.uri())]).unwrap(),
+        meta,
+        0,
+        0,
+    );
+    host.remove_on_update(&id);
+    let handle = kick(Arc::clone(&host)).unwrap();
+
+    assert_eq!(requests.recv().await.unwrap(), id);
+    let update = receive_update(&mut calls, &id).await;
+    assert!(!update.failed);
+    assert!(update.missing);
+    assert!(!receive_store_call(&mut calls, StoreOperation::Deadline).await.failed);
+    notify(host.as_ref());
+    assert!(!receive_store_call(&mut calls, StoreOperation::Deadline).await.failed);
+    assert_eq!(requests.try_recv(), Err(TryRecvError::Empty));
+
+    handle.shutdown().await.unwrap();
+    server.verify().await;
 }
 
 #[tokio::test]
@@ -732,7 +961,7 @@ async fn test_delivery_records_http_failures(
     });
     let id = enqueue(host.meta(), "ci", 10);
 
-    deliver_due(&host).await.unwrap();
+    deliver_due(&host, &mut DeliveryState::default()).await.unwrap();
 
     let delivery = host.meta().get_webhook_delivery(&id).unwrap().unwrap();
     assert_eq!(delivery.status, expected);
@@ -764,8 +993,9 @@ async fn test_retry_after_persists_the_later_deadline(#[case] header: &str, #[ca
     });
     let id = enqueue(host.meta(), "ci", 10);
 
-    deliver_due(&host).await.unwrap();
-    deliver_due(&host).await.unwrap();
+    let mut state = DeliveryState::default();
+    deliver_due(&host, &mut state).await.unwrap();
+    deliver_due(&host, &mut state).await.unwrap();
     server.verify().await;
     drop(host);
 
@@ -802,7 +1032,7 @@ async fn test_retry_after_uses_the_response_time_clock() {
         .await;
     let id = enqueue(host.meta(), "ci", 10);
 
-    deliver_due(&host).await.unwrap();
+    deliver_due(&host, &mut DeliveryState::default()).await.unwrap();
 
     let delivery = host.meta().get_webhook_delivery(&id).unwrap().unwrap();
     assert_eq!(delivery.updated_at_unix, 1_100);
@@ -823,7 +1053,7 @@ async fn test_delivery_retries_network_failures() {
     });
     let id = enqueue(host.meta(), "ci", 10);
 
-    deliver_due(&host).await.unwrap();
+    deliver_due(&host, &mut DeliveryState::default()).await.unwrap();
 
     let delivery = host.meta().get_webhook_delivery(&id).unwrap().unwrap();
     assert_eq!(delivery.status, WebhookDeliveryStatus::Pending);
@@ -894,4 +1124,241 @@ async fn test_in_flight_requests_stay_within_the_global_bound() {
     assert_eq!(slow.accepted.load(Ordering::SeqCst), MAX_CONCURRENT_DELIVERIES);
     assert_eq!(slow.accepted_events.try_recv(), Err(TryRecvError::Empty));
     handle.shutdown().await.unwrap();
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StoreOperation {
+    Deadline,
+    Due,
+    Update,
+}
+
+#[derive(Debug)]
+struct StoreCall {
+    operation: StoreOperation,
+    failed: bool,
+    update: Option<UpdateCall>,
+}
+
+#[derive(Debug)]
+struct UpdateCall {
+    delivery_id: String,
+    failed: bool,
+    missing: bool,
+}
+
+enum UpdateFault {
+    None,
+    Block(String),
+    Vanish { delivery_id: String, removed: bool },
+}
+
+struct FaultHost {
+    inner: TestHost,
+    deadline_failures: AtomicUsize,
+    due_failures: AtomicUsize,
+    update_fault: Mutex<UpdateFault>,
+    calls: tokio::sync::mpsc::UnboundedSender<StoreCall>,
+}
+
+impl FaultHost {
+    fn block_update(&self, delivery_id: &str) {
+        *self.update_fault.lock().unwrap() = UpdateFault::Block(delivery_id.to_owned());
+    }
+
+    fn unblock_update(&self) {
+        *self.update_fault.lock().unwrap() = UpdateFault::None;
+    }
+
+    fn remove_on_update(&self, delivery_id: &str) {
+        *self.update_fault.lock().unwrap() = UpdateFault::Vanish {
+            delivery_id: delivery_id.to_owned(),
+            removed: false,
+        };
+    }
+}
+
+impl WebhookHost for FaultHost {
+    fn webhooks(&self) -> &WebhookRuntime {
+        self.inner.webhooks()
+    }
+
+    fn meta(&self) -> &MetaStore {
+        self.inner.meta()
+    }
+
+    fn now(&self) -> i64 {
+        self.inner.now()
+    }
+
+    fn list_due_webhook_deliveries(
+        &self,
+        now_unix: i64,
+        limit: usize,
+        excluded: &HashSet<(String, String)>,
+    ) -> Result<Vec<WebhookDeliveryRecord>, MetaError> {
+        let failed = take_failure(&self.due_failures);
+        let mut result = if failed {
+            Err(injected_storage_error("due scan"))
+        } else {
+            self.meta().list_due_webhook_deliveries(now_unix, limit, excluded)
+        };
+        if let (
+            Ok(deliveries),
+            UpdateFault::Vanish {
+                delivery_id,
+                removed: true,
+            },
+        ) = (&mut result, &*self.update_fault.lock().unwrap())
+        {
+            deliveries.retain(|delivery| delivery.id != delivery_id.as_str());
+        }
+        let _ = self.calls.send(StoreCall {
+            operation: StoreOperation::Due,
+            failed,
+            update: None,
+        });
+        result
+    }
+
+    fn next_webhook_delivery_at(&self) -> Result<Option<i64>, MetaError> {
+        let failed = take_failure(&self.deadline_failures);
+        let result = if failed {
+            Err(injected_storage_error("deadline read"))
+        } else if matches!(
+            &*self.update_fault.lock().unwrap(),
+            UpdateFault::Vanish { removed: true, .. }
+        ) {
+            Ok(None)
+        } else {
+            self.meta().next_webhook_delivery_at()
+        };
+        let _ = self.calls.send(StoreCall {
+            operation: StoreOperation::Deadline,
+            failed,
+            update: None,
+        });
+        result
+    }
+
+    fn update_webhook_delivery(
+        &self,
+        id: &str,
+        attempt: WebhookDeliveryAttempt<'_>,
+    ) -> Result<Option<WebhookDeliveryRecord>, MetaError> {
+        let result = match &mut *self.update_fault.lock().unwrap() {
+            UpdateFault::Block(delivery_id) if delivery_id == id => Err(injected_storage_error("status write")),
+            UpdateFault::Vanish { delivery_id, removed } if delivery_id == id => {
+                *removed = true;
+                Ok(None)
+            }
+            UpdateFault::None | UpdateFault::Block(_) | UpdateFault::Vanish { .. } => {
+                self.meta().update_webhook_delivery(id, attempt)
+            }
+        };
+        let failed = result.is_err();
+        let missing = matches!(&result, Ok(None));
+        let _ = self.calls.send(StoreCall {
+            operation: StoreOperation::Update,
+            failed,
+            update: Some(UpdateCall {
+                delivery_id: id.to_owned(),
+                failed,
+                missing,
+            }),
+        });
+        result
+    }
+}
+
+struct ObservedResponseSequence {
+    statuses: Mutex<VecDeque<u16>>,
+    requests: tokio::sync::mpsc::UnboundedSender<String>,
+}
+
+impl Respond for ObservedResponseSequence {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        self.requests
+            .send(request.headers["x-peryx-delivery"].to_str().unwrap().to_owned())
+            .unwrap();
+        ResponseTemplate::new(self.statuses.lock().unwrap().pop_front().unwrap())
+    }
+}
+
+fn faulted_host(
+    webhooks: WebhookRuntime,
+    meta: MetaStore,
+    deadline_failures: usize,
+    due_failures: usize,
+) -> (Arc<FaultHost>, UnboundedReceiver<StoreCall>) {
+    let (calls, receiver) = unbounded_channel();
+    (
+        Arc::new(FaultHost {
+            inner: TestHost {
+                webhooks,
+                meta,
+                now: AtomicI64::new(100),
+            },
+            deadline_failures: AtomicUsize::new(deadline_failures),
+            due_failures: AtomicUsize::new(due_failures),
+            update_fault: Mutex::new(UpdateFault::None),
+            calls,
+        }),
+        receiver,
+    )
+}
+
+async fn receive_store_call(calls: &mut UnboundedReceiver<StoreCall>, operation: StoreOperation) -> StoreCall {
+    loop {
+        let call = calls
+            .recv()
+            .await
+            .expect("webhook worker stopped reporting store calls");
+        if call.operation == operation {
+            return call;
+        }
+    }
+}
+
+async fn receive_update(calls: &mut UnboundedReceiver<StoreCall>, delivery_id: &str) -> UpdateCall {
+    loop {
+        if let Some(update) = calls
+            .recv()
+            .await
+            .expect("webhook worker stopped reporting store calls")
+            .update
+            && update.delivery_id == delivery_id
+        {
+            return update;
+        }
+    }
+}
+
+async fn receive_updates<const N: usize>(
+    calls: &mut UnboundedReceiver<StoreCall>,
+    delivery_ids: [&String; N],
+) -> HashMap<String, UpdateCall> {
+    let mut updates = HashMap::new();
+    while updates.len() < delivery_ids.len() {
+        if let Some(update) = calls
+            .recv()
+            .await
+            .expect("webhook worker stopped reporting store calls")
+            .update
+            && delivery_ids.contains(&&update.delivery_id)
+        {
+            updates.insert(update.delivery_id.clone(), update);
+        }
+    }
+    updates
+}
+
+fn take_failure(remaining: &AtomicUsize) -> bool {
+    remaining
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| count.checked_sub(1))
+        .is_ok()
+}
+
+fn injected_storage_error(operation: &str) -> MetaError {
+    redb::StorageError::from(std::io::Error::other(format!("injected webhook {operation} failure"))).into()
 }

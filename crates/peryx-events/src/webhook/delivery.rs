@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, UNIX_EPOCH};
@@ -19,6 +19,8 @@ const INITIAL_BACKOFF_SECS: i64 = 5;
 const MAX_BACKOFF_SECS: i64 = 300;
 const MAX_ATTEMPTS: u16 = 5;
 const MAX_SCHEDULER_SLEEP_SECS: u64 = 60 * 60;
+const INITIAL_STORAGE_BACKOFF: Duration = Duration::from_millis(100);
+const MAX_STORAGE_BACKOFF: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy)]
 enum RetryAfter {
@@ -124,20 +126,71 @@ async fn delivery_loop<H: WebhookHost>(
     mut cancelled: tokio::sync::oneshot::Receiver<()>,
     _running: RunningGuard,
 ) -> Result<(), WebhookLifecycleError> {
+    let mut state = DeliveryState::default();
+    let mut storage_backoff = INITIAL_STORAGE_BACKOFF;
     loop {
-        tokio::select! {
+        let result = tokio::select! {
             biased;
             _ = &mut cancelled => return Ok(()),
-            result = delivery_cycle(&host) => result.map_err(|error| WebhookLifecycleError {
-                message: format!("webhook delivery storage failed: {error}"),
-            })?,
+            result = delivery_cycle(&host, &mut state) => result,
+        };
+        match result {
+            Ok(()) => storage_backoff = INITIAL_STORAGE_BACKOFF,
+            Err(error) => {
+                tracing::warn!(
+                    target: "peryx::webhook",
+                    error = ?error,
+                    retry_after_ms = storage_backoff.as_millis(),
+                    "webhook storage access failed; retrying"
+                );
+                tokio::select! {
+                    biased;
+                    _ = &mut cancelled => return Ok(()),
+                    () = host.webhooks().notify.notified() => {}
+                    () = tokio::time::sleep(storage_backoff) => {}
+                }
+                storage_backoff = next_storage_backoff(storage_backoff);
+            }
         }
     }
 }
 
-async fn delivery_cycle<H: WebhookHost>(host: &Arc<H>) -> Result<(), MetaError> {
+#[derive(Default)]
+struct DeliveryState {
+    pending_updates: HashMap<(String, String), PendingUpdate>,
+}
+
+#[derive(Debug)]
+struct FailedUpdate {
+    pending: PendingUpdate,
+    error: MetaError,
+}
+
+#[derive(Debug)]
+struct PendingUpdate {
+    delivery_id: String,
+    status: WebhookDeliveryStatus,
+    updated_at_unix: i64,
+    next_attempt_at_unix: Option<i64>,
+    response_status: Option<u16>,
+    last_error: Option<String>,
+}
+
+impl PendingUpdate {
+    fn attempt(&self) -> WebhookDeliveryAttempt<'_> {
+        WebhookDeliveryAttempt {
+            status: self.status,
+            updated_at_unix: self.updated_at_unix,
+            next_attempt_at_unix: self.next_attempt_at_unix,
+            response_status: self.response_status,
+            last_error: self.last_error.as_deref(),
+        }
+    }
+}
+
+async fn delivery_cycle<H: WebhookHost>(host: &Arc<H>, state: &mut DeliveryState) -> Result<(), MetaError> {
     recover_webhook_events(host.as_ref())?;
-    deliver_due(host).await?;
+    deliver_due(host, state).await?;
     wait_for_work(host.as_ref()).await
 }
 
@@ -153,7 +206,7 @@ async fn wait_for_work<H: WebhookHost>(host: &H) -> Result<(), MetaError> {
 }
 
 async fn wait_for_work_after<H: WebhookHost>(host: &H, entered_wait: impl FnOnce()) -> Result<(), MetaError> {
-    let next = host.meta().next_webhook_delivery_at()?;
+    let next = host.next_webhook_delivery_at()?;
     entered_wait();
     if let Some(next) = next {
         tokio::select! {
@@ -173,15 +226,30 @@ fn wait_secs(next: i64, now: i64) -> u64 {
         .clamp(1, MAX_SCHEDULER_SLEEP_SECS)
 }
 
+fn next_storage_backoff(current: Duration) -> Duration {
+    current.saturating_mul(2).min(MAX_STORAGE_BACKOFF)
+}
+
 /// Per-target serialization preserves order without letting one target block another.
-async fn deliver_due<H: WebhookHost>(host: &Arc<H>) -> Result<(), MetaError> {
+async fn deliver_due<H: WebhookHost>(host: &Arc<H>, state: &mut DeliveryState) -> Result<(), MetaError> {
+    let mut failure = retry_pending_updates(host.as_ref(), state);
     let mut in_flight = FuturesUnordered::new();
-    let mut busy: HashSet<(String, String)> = HashSet::new();
+    let mut busy = state.pending_updates.keys().cloned().collect::<HashSet<_>>();
+    let mut scan_failed = false;
     loop {
-        loop {
+        while !scan_failed {
             let now = host.now();
             let want = MAX_CONCURRENT_DELIVERIES.saturating_sub(in_flight.len());
-            let deliveries = host.meta().list_due_webhook_deliveries(now, want, &busy)?;
+            let deliveries = match host.list_due_webhook_deliveries(now, want, &busy) {
+                Ok(deliveries) => deliveries,
+                Err(error) => {
+                    if failure.is_none() {
+                        failure = Some(error);
+                    }
+                    scan_failed = true;
+                    break;
+                }
+            };
             if deliveries.is_empty() {
                 break;
             }
@@ -189,16 +257,43 @@ async fn deliver_due<H: WebhookHost>(host: &Arc<H>) -> Result<(), MetaError> {
                 let key = (delivery.index.clone(), delivery.target.clone());
                 busy.insert(key.clone());
                 in_flight.push(async move {
-                    deliver_one(host, delivery).await;
-                    key
+                    let result = deliver_one(host, delivery).await;
+                    (key, result)
                 });
             }
         }
-        let Some(key) = in_flight.next().await else {
-            return Ok(());
+        let Some((key, result)) = in_flight.next().await else {
+            return failure.map_or(Ok(()), Err);
         };
-        busy.remove(&key);
+        match result {
+            Ok(()) => {
+                busy.remove(&key);
+            }
+            Err(update) => {
+                let update = *update;
+                if failure.is_none() {
+                    failure = Some(update.error);
+                }
+                state.pending_updates.insert(key, update.pending);
+            }
+        }
     }
+}
+
+fn retry_pending_updates<H: WebhookHost>(host: &H, state: &mut DeliveryState) -> Option<MetaError> {
+    let mut failure = None;
+    for (key, pending) in std::mem::take(&mut state.pending_updates) {
+        match persist_attempt(host, &pending) {
+            Ok(()) => {}
+            Err(error) => {
+                if failure.is_none() {
+                    failure = Some(error);
+                }
+                state.pending_updates.insert(key, pending);
+            }
+        }
+    }
+    failure
 }
 
 async fn joined_webhook_task(
@@ -211,10 +306,10 @@ async fn joined_webhook_task(
     })
 }
 
-async fn deliver_one<H: WebhookHost>(host: &Arc<H>, delivery: WebhookDeliveryRecord) {
+async fn deliver_one<H: WebhookHost>(host: &Arc<H>, delivery: WebhookDeliveryRecord) -> Result<(), Box<FailedUpdate>> {
     let sent_at = host.now();
     let Some(target) = host.webhooks().target(&delivery.index, &delivery.target) else {
-        record_failure(
+        return record_failure(
             host.as_ref(),
             &delivery,
             sent_at,
@@ -223,7 +318,6 @@ async fn deliver_one<H: WebhookHost>(host: &Arc<H>, delivery: WebhookDeliveryRec
             "webhook target is not configured",
             false,
         );
-        return;
     };
     let result = host
         .webhooks()
@@ -248,7 +342,7 @@ async fn deliver_one<H: WebhookHost>(host: &Arc<H>, delivery: WebhookDeliveryRec
     let completed_at = host.now();
     match result {
         Ok(response) if response.status().is_success() => {
-            record_success(host.as_ref(), &delivery, completed_at, response.status().as_u16());
+            record_success(host.as_ref(), &delivery, completed_at, response.status().as_u16())
         }
         Ok(response) if response.status().is_redirection() => {
             // Retrying a redirect could expose the signed payload outside the configured origin.
@@ -261,7 +355,7 @@ async fn deliver_one<H: WebhookHost>(host: &Arc<H>, delivery: WebhookDeliveryRec
                 Some(status),
                 &format!("webhook target returned redirect {status}; redirects are not followed"),
                 false,
-            );
+            )
         }
         Ok(response) => {
             let status = response.status().as_u16();
@@ -274,35 +368,37 @@ async fn deliver_one<H: WebhookHost>(host: &Arc<H>, delivery: WebhookDeliveryRec
                 Some(status),
                 &format!("http status {status}"),
                 !is_permanent(status),
-            );
+            )
         }
-        Err(err) => {
-            record_failure(
-                host.as_ref(),
-                &delivery,
-                completed_at,
-                None,
-                None,
-                &err.without_url().to_string(),
-                true,
-            );
-        }
+        Err(err) => record_failure(
+            host.as_ref(),
+            &delivery,
+            completed_at,
+            None,
+            None,
+            &err.without_url().to_string(),
+            true,
+        ),
     }
 }
 
-fn record_success<H: WebhookHost>(host: &H, delivery: &WebhookDeliveryRecord, now: i64, status: u16) {
-    let result = host.meta().update_webhook_delivery(
-        &delivery.id,
-        WebhookDeliveryAttempt {
+fn record_success<H: WebhookHost>(
+    host: &H,
+    delivery: &WebhookDeliveryRecord,
+    now: i64,
+    status: u16,
+) -> Result<(), Box<FailedUpdate>> {
+    persist_new_attempt(
+        host,
+        PendingUpdate {
+            delivery_id: delivery.id.clone(),
             status: WebhookDeliveryStatus::Delivered,
             updated_at_unix: now,
             next_attempt_at_unix: None,
             response_status: Some(status),
             last_error: None,
         },
-    );
-    log_update_error(result.as_ref().err());
-    log_delivery_success(result.as_ref().ok().and_then(Option::as_ref), status);
+    )
 }
 
 fn log_delivery_success(record: Option<&WebhookDeliveryRecord>, status: u16) {
@@ -328,7 +424,7 @@ fn record_failure<H: WebhookHost>(
     response_status: Option<u16>,
     error: &str,
     retriable: bool,
-) {
+) -> Result<(), Box<FailedUpdate>> {
     let attempts = delivery.attempts + 1;
     let (status, next_attempt_at_unix) = if retriable && attempts < MAX_ATTEMPTS {
         let local_deadline = now.saturating_add(backoff_secs(attempts));
@@ -346,18 +442,38 @@ fn record_failure<H: WebhookHost>(
     } else {
         (WebhookDeliveryStatus::Failed, None)
     };
-    let result = host.meta().update_webhook_delivery(
-        &delivery.id,
-        WebhookDeliveryAttempt {
+    persist_new_attempt(
+        host,
+        PendingUpdate {
+            delivery_id: delivery.id.clone(),
             status,
             updated_at_unix: now,
             next_attempt_at_unix,
             response_status,
-            last_error: Some(error),
+            last_error: Some(error.to_owned()),
         },
-    );
-    log_update_error(result.as_ref().err());
-    log_delivery_failure(result.as_ref().ok().and_then(Option::as_ref));
+    )
+}
+
+fn persist_new_attempt<H: WebhookHost>(host: &H, pending: PendingUpdate) -> Result<(), Box<FailedUpdate>> {
+    persist_attempt(host, &pending).map_err(|error| Box::new(FailedUpdate { pending, error }))
+}
+
+fn persist_attempt<H: WebhookHost>(host: &H, pending: &PendingUpdate) -> Result<(), MetaError> {
+    let result = host.update_webhook_delivery(&pending.delivery_id, pending.attempt());
+    match result.as_ref() {
+        Ok(record) if pending.status == WebhookDeliveryStatus::Delivered => {
+            log_delivery_success(
+                record.as_ref(),
+                pending
+                    .response_status
+                    .expect("a successful webhook attempt has a response status"),
+            );
+        }
+        Ok(record) => log_delivery_failure(record.as_ref()),
+        Err(error) => log_update_error(Some(error)),
+    }
+    result.map(drop)
 }
 
 fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<RetryAfter> {

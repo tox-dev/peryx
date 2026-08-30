@@ -75,7 +75,9 @@ Redirects are final after the first attempt. peryx neither follows nor retries t
 to a target-selected location could move it outside the configured origin. A `302` stores
 `webhook target returned redirect 302; redirects are not followed` in the delivery log.
 
-Delivery is at least once and does not preserve mutation order. Receivers deduplicate by `X-Peryx-Delivery`.
+Delivery is at least once and does not preserve mutation order. If the receiver accepts a request but peryx loses the
+process before recording its result, the next process may send the request again. Retries keep the same
+`X-Peryx-Delivery` value so receivers can deduplicate them.
 
 The delivery log stores the target name, attempt count, next retry, response status, and bounded error text. It excludes
 secrets, signatures, credentials, URL queries, and response bodies.
