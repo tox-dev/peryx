@@ -20,7 +20,6 @@ env:
   GIT_CONFIG_VALUE_0: main
 
 on:
-  pull_request:
   push:
     tags:
       - "**[0-9]+.[0-9]+.[0-9]+*"
