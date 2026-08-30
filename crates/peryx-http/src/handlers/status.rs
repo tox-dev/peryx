@@ -10,10 +10,11 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
 use super::usage::{ecosystem_summaries, family_descriptors};
+use peryx_driver::access::{HeaderCredential, VerifiedCredential};
 use peryx_driver::http_services::{BlobStorageStatus, HttpDomainServices};
 use peryx_driver::state::AppState;
 use peryx_driver::users::{AuthenticationError, PasswordDerivationError};
-use peryx_identity::{Resource, Scope, parse_basic};
+use peryx_identity::{Resource, Scope, UserId};
 
 use crate::response_security::{
     ClassifiedField, FieldClassification, ProtectedCachePolicy, ResponseAuthorization, filter_fields,
@@ -116,22 +117,8 @@ pub async fn status_authorization(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<ResponseAuthorization, PasswordDerivationError> {
-    let Some(credentials) = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(parse_basic)
-    else {
+    let Some(actor) = status_actor(state, headers).await? else {
         return Ok(ResponseAuthorization::Public);
-    };
-    let actor = match state
-        .serving
-        .users
-        .authenticate(&credentials.user, &credentials.password)
-        .await
-    {
-        Ok(Some(actor)) => actor,
-        Ok(None) | Err(AuthenticationError::Store(_)) => return Ok(ResponseAuthorization::Public),
-        Err(AuthenticationError::Derivation(error)) => return Err(error),
     };
     let administrator =
         state
@@ -149,6 +136,30 @@ pub async fn status_authorization(
         return Ok(ResponseAuthorization::Scoped(operator));
     }
     Ok(ResponseAuthorization::Public)
+}
+
+/// Resolves the account a status-class read speaks for.
+///
+/// Only a request with no `Authorization` header consults the browser session; a header the request
+/// carries decides it, so a rejected credential never falls through to a cookie.
+async fn status_actor(state: &AppState, headers: &HeaderMap) -> Result<Option<UserId>, PasswordDerivationError> {
+    let credentials = match HeaderCredential::from_headers(&state.serving, headers) {
+        HeaderCredential::Absent => {
+            return Ok(peryx_driver::access::session_user(&state.serving, headers).map(|user| user.id));
+        }
+        HeaderCredential::Verified(VerifiedCredential::Basic(credentials)) => credentials,
+        HeaderCredential::Verified(VerifiedCredential::Bearer(_)) | HeaderCredential::Invalid(_) => return Ok(None),
+    };
+    match state
+        .serving
+        .users
+        .authenticate(&credentials.user, &credentials.password)
+        .await
+    {
+        Ok(actor) => Ok(actor),
+        Err(AuthenticationError::Store(_)) => Ok(None),
+        Err(AuthenticationError::Derivation(error)) => Err(error),
+    }
 }
 
 fn unavailable() -> Response {

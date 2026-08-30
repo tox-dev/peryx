@@ -154,6 +154,13 @@ fn set_cookies(response: &Response<Body>) -> Vec<String> {
         .collect()
 }
 
+fn session_cookie(user: &ServerUser) -> String {
+    format!(
+        "{SESSION_COOKIE}={}",
+        SessionSealer::new(KEY).seal_session(user, VALID_UNTIL)
+    )
+}
+
 fn pre_auth_cookie(state: &str) -> String {
     let pending = PendingLogin {
         provider: ProviderId::new("corporate").unwrap(),
@@ -658,17 +665,79 @@ async fn test_session_without_a_configured_sealer_reports_no_user() {
 
 #[tokio::test]
 async fn test_session_with_a_valid_cookie_returns_the_user() {
-    let (dir, mut state) = empty_state();
+    let (_dir, mut state) = empty_state();
     assert!(state.set_session_sealer(SessionSealer::new(KEY)).is_ok());
-    let _keep = dir;
-    let user = user();
-    let sealed = SessionSealer::new(KEY).seal_session(&user, VALID_UNTIL);
-    let cookie = format!("{SESSION_COOKIE}={sealed}");
+    let user = state.serving.users.create("Ada Lovelace").unwrap();
+    let cookie = session_cookie(&user);
+
     let response = send(Arc::new(state), Method::GET, "/_/session", Some(&cookie)).await;
+
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
     assert_eq!(body["user"]["name"], "Ada Lovelace");
     assert_eq!(body["user"]["id"], user.id.as_str());
+}
+
+/// The sealed cookie carries a snapshot of the account, so the stored record has to decide.
+#[tokio::test]
+async fn test_session_ignores_a_cookie_for_a_disabled_account() {
+    let (_dir, mut state) = empty_state();
+    assert!(state.set_session_sealer(SessionSealer::new(KEY)).is_ok());
+    let user = state.serving.users.create("Ada Lovelace").unwrap();
+    let cookie = session_cookie(&user);
+    state.serving.users.disable(&user.id).unwrap();
+
+    let response = send(Arc::new(state), Method::GET, "/_/session", Some(&cookie)).await;
+
+    assert_eq!(body_json(response).await["user"], Value::Null);
+}
+
+#[tokio::test]
+async fn test_session_ignores_a_cookie_for_an_account_this_server_never_stored() {
+    let (_dir, mut state) = empty_state();
+    assert!(state.set_session_sealer(SessionSealer::new(KEY)).is_ok());
+    let cookie = session_cookie(&user());
+
+    let response = send(Arc::new(state), Method::GET, "/_/session", Some(&cookie)).await;
+
+    assert_eq!(body_json(response).await["user"], Value::Null);
+}
+
+/// A browser session authenticates reads only; a management mutation still needs an
+/// `Authorization` credential, which is what keeps the cookie off the CSRF surface.
+#[tokio::test]
+async fn test_a_session_cookie_cannot_authorize_a_management_mutation() {
+    let (_dir, mut state) = empty_state();
+    assert!(state.set_session_sealer(SessionSealer::new(KEY)).is_ok());
+    let administrator = state.serving.users.create("Ada Lovelace").unwrap();
+    state
+        .serving
+        .authorization
+        .grant(&administrator.id, Role::Administrator, GrantScope::Server)
+        .unwrap();
+    let cookie = session_cookie(&administrator);
+
+    let response = crate::router(Arc::new(state))
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/+grants")
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "user": administrator.id.as_str(),
+                        "role": "repository_reader",
+                        "scope": {"kind": "repository", "name": "packages"},
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]

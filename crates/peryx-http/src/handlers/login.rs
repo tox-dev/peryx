@@ -10,8 +10,9 @@ use axum::extract::{Path, RawQuery, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse as _, Response};
 use peryx_driver::AppState;
+use peryx_driver::access::{read_cookie, session_user};
 use peryx_identity::{
-    CallbackResponse, OidcLoginError, OidcProviderError, PRE_AUTH_COOKIE, PendingLogin, SESSION_COOKIE, ServerUser,
+    CallbackResponse, OidcLoginError, OidcProviderError, PRE_AUTH_COOKIE, PendingLogin, SESSION_COOKIE,
 };
 use serde_json::json;
 
@@ -132,23 +133,12 @@ enum CallbackQuery {
 /// Reports the signed-in user (or null) and the OIDC providers a visitor can sign in with. The session
 /// cookie is consulted only for identity here; it authorizes nothing that mutates state.
 pub async fn session(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    let user = session_user(&state, &headers)
+    let user = session_user(&state.serving, &headers)
         .map(|user| json!({ "id": user.id.as_str(), "name": user.name.display(), "state": user.state }));
     json_no_store(
         StatusCode::OK,
         &json!({ "user": user, "providers": state.serving.oidc_providers() }),
     )
-}
-
-/// Returns the session principal for read-only UI routes.
-///
-/// Session cookies never authorize mutations. Mutating routes require `Authorization` credentials.
-#[must_use]
-pub fn session_user(state: &AppState, headers: &HeaderMap) -> Option<ServerUser> {
-    let now = (state.serving.clock)();
-    let sealer = state.serving.session_sealer()?;
-    let value = read_cookie(headers, SESSION_COOKIE)?;
-    sealer.open_session(&value, now)
 }
 
 pub async fn logout() -> Response {
@@ -214,14 +204,6 @@ fn authorization_error_response(error: &str) -> Response {
         }
         _ => (StatusCode::UNAUTHORIZED, "authentication failed").into_response(),
     }
-}
-
-fn read_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
-    let header = headers.get(header::COOKIE)?.to_str().ok()?;
-    header.split(';').find_map(|pair| {
-        let (key, value) = pair.trim().split_once('=')?;
-        (key == name).then(|| value.to_owned())
-    })
 }
 
 fn set_cookie(name: &str, value: &str, path: &str, max_age: i64) -> String {

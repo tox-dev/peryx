@@ -19,7 +19,9 @@ use peryx_driver::serving::{
 };
 use peryx_driver::state::{AppState, Index, IndexDescription, IndexKind, describe_index};
 use peryx_events::metrics::{MetricFamily, MetricKind};
-use peryx_identity::{Action, Glob, Grant, GrantScope, IndexAcl, NamedToken, Role, SESSION_COOKIE, SessionSealer};
+use peryx_identity::{
+    Action, Glob, Grant, GrantScope, IndexAcl, NamedToken, Role, SESSION_COOKIE, ServerUser, SessionSealer,
+};
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
 use peryx_test_support::EcosystemDriverFixture;
@@ -705,4 +707,135 @@ impl IndexSummaryDriver for ContractDriver {
             })
             .collect())
     }
+}
+
+#[tokio::test]
+async fn browse_contract_authorizes_a_private_index_through_a_browser_session() {
+    let (_directory, mut app) = state(vec![private_index()]);
+    register_contract_driver(
+        &mut app,
+        ContractDriver {
+            browse_response: Some(fixture_page()),
+            summary_error: None,
+        },
+    );
+    app.set_session_sealer(SessionSealer::new(SESSION_KEY)).unwrap();
+    let reader = app.serving.users.create("Rita").unwrap();
+    app.serving
+        .authorization
+        .grant(
+            &reader.id,
+            Role::RepositoryReader,
+            GrantScope::Repository {
+                name: "fixture".to_owned(),
+            },
+        )
+        .unwrap();
+    let stranger = app.serving.users.create("Sam").unwrap();
+    let app = Arc::new(app);
+
+    let (_, _, allowed) = render(
+        app.clone(),
+        &format!("/browse?{QUERY}"),
+        &[(header::COOKIE.as_str(), session_cookie(&reader).as_str())],
+    )
+    .await;
+    let (_, _, denied) = render(
+        app,
+        &format!("/browse?{QUERY}"),
+        &[(header::COOKIE.as_str(), session_cookie(&stranger).as_str())],
+    )
+    .await;
+
+    assert!(allowed.contains("Fixture object"), "{allowed}");
+    assert!(denied.contains("read access denied"), "{denied}");
+}
+
+#[tokio::test]
+async fn browse_contract_drops_a_browser_session_once_the_grant_is_revoked() {
+    let (_directory, mut app) = state(vec![private_index()]);
+    register_contract_driver(
+        &mut app,
+        ContractDriver {
+            browse_response: Some(fixture_page()),
+            summary_error: None,
+        },
+    );
+    app.set_session_sealer(SessionSealer::new(SESSION_KEY)).unwrap();
+    let reader = app.serving.users.create("Rita").unwrap();
+    let scope = GrantScope::Repository {
+        name: "fixture".to_owned(),
+    };
+    app.serving
+        .authorization
+        .grant(&reader.id, Role::RepositoryReader, scope.clone())
+        .unwrap();
+    let app = Arc::new(app);
+    let (_, _, allowed) = render(
+        app.clone(),
+        &format!("/browse?{QUERY}"),
+        &[(header::COOKIE.as_str(), session_cookie(&reader).as_str())],
+    )
+    .await;
+
+    app.serving
+        .authorization
+        .revoke(&reader.id, Role::RepositoryReader, &scope)
+        .unwrap();
+    let (_, _, denied) = render(
+        app,
+        &format!("/browse?{QUERY}"),
+        &[(header::COOKIE.as_str(), session_cookie(&reader).as_str())],
+    )
+    .await;
+
+    assert!(allowed.contains("Fixture object"), "{allowed}");
+    assert!(denied.contains("read access denied"), "{denied}");
+}
+
+#[tokio::test]
+async fn status_contract_applies_the_operator_view_to_a_browser_session() {
+    let (_directory, mut app) = state(vec![fixture_index()]);
+    register_contract_driver(
+        &mut app,
+        ContractDriver {
+            browse_response: None,
+            summary_error: None,
+        },
+    );
+    app.set_session_sealer(SessionSealer::new(SESSION_KEY)).unwrap();
+    app.serving.requests.store(7, Ordering::Relaxed);
+    add_user(&app, "Olivia", Role::Operator).await;
+    let operator = app.serving.users.identify("Olivia").unwrap().unwrap();
+    let visitor = app.serving.users.create("Sam").unwrap();
+    let app = Arc::new(app);
+
+    let (_, _, signed_in) = render(
+        app.clone(),
+        "/",
+        &[(header::COOKIE.as_str(), session_cookie(&operator).as_str())],
+    )
+    .await;
+    let (_, _, visiting) = render(
+        app,
+        "/",
+        &[(header::COOKIE.as_str(), session_cookie(&visitor).as_str())],
+    )
+    .await;
+
+    assert!(
+        signed_in.contains("<strong>7</strong><span>accepted requests</span>"),
+        "{signed_in}"
+    );
+    assert!(
+        visiting.contains("<strong>0</strong><span>accepted requests</span>"),
+        "{visiting}"
+    );
+}
+
+fn session_cookie(user: &ServerUser) -> String {
+    format!(
+        "{SESSION_COOKIE}={}",
+        SessionSealer::new(SESSION_KEY).seal_session(user, 4_102_444_800)
+    )
 }

@@ -9,7 +9,9 @@ use peryx_core::Ecosystem;
 use peryx_driver::authz::AuthorizationService;
 use peryx_driver::state::{AppState, Index, IndexKind};
 use peryx_driver::users::UserService;
-use peryx_identity::{Action, Glob, Grant, GrantScope, IndexAcl, NamedToken, PasswordPolicy, Role};
+use peryx_identity::{
+    Action, Glob, Grant, GrantScope, IndexAcl, NamedToken, PasswordPolicy, Role, SESSION_COOKIE, SessionSealer,
+};
 use peryx_policy::Policy;
 use peryx_storage::meta::MetaStore;
 use peryx_upstream::{NamedUpstream, UpstreamRouter};
@@ -33,6 +35,8 @@ fn writer_acl(secret: impl Into<String>) -> IndexAcl {
 
 const UPLOAD_SECRET: &str = "upload-secret";
 const USER_PASSWORD: &str = "local password";
+const SESSION_KEY: &[u8] = b"a-token-realm-signing-secret-here";
+const SESSION_EXPIRY: i64 = 4_102_444_800;
 
 const PUBLIC_KEYS: &[&str] = &["version", "role", "health", "indexes"];
 const OPERATOR_KEYS: &[&str] = &[
@@ -124,6 +128,7 @@ async fn app_with_fault(fault: StoreFault) -> (tempfile::TempDir, Arc<AppState>)
     let serving = Arc::get_mut(&mut state.serving).unwrap();
     serving.upstream_routes.insert("reachable".to_owned(), upstream_route);
     serving.users = UserService::with_password_settings(meta, PasswordPolicy::new(8, 1, 1).unwrap(), 2);
+    state.set_session_sealer(SessionSealer::new(SESSION_KEY)).unwrap();
     (dir, Arc::new(state))
 }
 
@@ -216,6 +221,31 @@ async fn get(
             format!("Basic {}", STANDARD.encode(format!("{user}:{password}"))),
         );
     }
+    send(state, request).await
+}
+
+/// Issues `/+status` for a browser session, optionally alongside an `Authorization` header, so a
+/// test can show which of the two decides the request.
+async fn get_as_signed_in(
+    state: &Arc<AppState>,
+    name: &str,
+    authorization: Option<&str>,
+) -> (StatusCode, axum::http::HeaderMap, serde_json::Value) {
+    let user = state.serving.users.identify(name).unwrap().unwrap();
+    let sealed = SessionSealer::new(SESSION_KEY).seal_session(&user, SESSION_EXPIRY);
+    let mut request = Request::builder()
+        .uri("/+status")
+        .header(header::COOKIE, format!("{SESSION_COOKIE}={sealed}"));
+    if let Some(value) = authorization {
+        request = request.header(header::AUTHORIZATION, value);
+    }
+    send(state, request).await
+}
+
+async fn send(
+    state: &Arc<AppState>,
+    request: axum::http::request::Builder,
+) -> (StatusCode, axum::http::HeaderMap, serde_json::Value) {
     let response = crate::router(state.clone())
         .oneshot(request.body(Body::empty()).unwrap())
         .await
@@ -389,4 +419,68 @@ async fn test_status_fails_closed_to_public_on_store_faults(#[case] fault: Store
     assert_eq!(status, StatusCode::OK);
     assert_keys(&body, &[PUBLIC_KEYS], &[OPERATOR_KEYS]);
     assert!(!indexes_carry_sensitive_fields(&body), "{body}");
+}
+
+#[tokio::test]
+async fn test_status_operator_sees_counters_through_a_browser_session() {
+    let (_dir, state) = app().await;
+
+    let (status, _, body) = get_as_signed_in(&state, "Olivia", None).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_keys(&body, &[PUBLIC_KEYS, OPERATOR_KEYS], &[]);
+    assert!(!indexes_carry_sensitive_fields(&body), "{body}");
+}
+
+#[tokio::test]
+async fn test_status_administrator_sees_sensitive_fields_through_a_browser_session() {
+    let (_dir, state) = app().await;
+
+    let (status, _, body) = get_as_signed_in(&state, "Alice", None).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(indexes_carry_sensitive_fields(&body), "{body}");
+}
+
+#[tokio::test]
+async fn test_status_denies_a_browser_session_without_operator_authority() {
+    let (_dir, state) = app().await;
+
+    let (_, _, body) = get_as_signed_in(&state, "Rita", None).await;
+
+    assert_keys(&body, &[PUBLIC_KEYS], &[OPERATOR_KEYS]);
+}
+
+#[tokio::test]
+async fn test_status_drops_a_browser_session_once_the_account_is_disabled() {
+    let (_dir, state) = app().await;
+    let olivia = state.serving.users.identify("Olivia").unwrap().unwrap();
+    let signed_in = get_as_signed_in(&state, "Olivia", None).await.2;
+    state.serving.users.disable(&olivia.id).unwrap();
+
+    let sealed = SessionSealer::new(SESSION_KEY).seal_session(&olivia, SESSION_EXPIRY);
+    let (_, _, body) = send(
+        &state,
+        Request::builder()
+            .uri("/+status")
+            .header(header::COOKIE, format!("{SESSION_COOKIE}={sealed}")),
+    )
+    .await;
+
+    assert_keys(&signed_in, &[OPERATOR_KEYS], &[]);
+    assert_keys(&body, &[PUBLIC_KEYS], &[OPERATOR_KEYS]);
+}
+
+#[rstest]
+#[case::rejected_password("Basic T2xpdmlhOndyb25n")]
+#[case::unsigned_bearer("Bearer forged")]
+#[case::unknown_scheme("Digest opaque")]
+#[tokio::test]
+async fn test_status_does_not_fall_back_to_a_session_after_a_supplied_credential(#[case] authorization: &str) {
+    let (_dir, state) = app().await;
+
+    let (status, _, body) = get_as_signed_in(&state, "Olivia", Some(authorization)).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_keys(&body, &[PUBLIC_KEYS], &[OPERATOR_KEYS]);
 }

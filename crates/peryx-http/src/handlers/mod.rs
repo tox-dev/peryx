@@ -34,7 +34,7 @@ pub use discover::{api, openapi_spec};
 pub use dispatch::{dispatch_delete, dispatch_get, dispatch_post, dispatch_put, not_found};
 pub use grants::{GrantsQuery, create_grant, inspect_grant, list_grants, revoke_grant};
 pub use jobs::cancel_job;
-pub use login::{login_callback, login_start, logout, session, session_user};
+pub use login::{login_callback, login_start, logout, session};
 pub use policy_decisions::{PolicyDecisionsQuery, policy_decision_error_response, policy_decisions};
 pub use pql::pql_query;
 pub use query::{search, search_error_response, search_response, search_response_offloaded};

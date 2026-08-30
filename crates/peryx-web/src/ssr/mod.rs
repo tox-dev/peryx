@@ -47,7 +47,7 @@ async fn read_access(state: &ServingState) -> Result<peryx_driver::access::ReadA
         Ok(headers) => headers,
         Err(error) => return Err(format!("request headers: {error}")),
     };
-    Ok(peryx_driver::access::ReadAccess::from_headers(state, &headers))
+    Ok(peryx_driver::access::ReadAccess::for_request(state, &headers))
 }
 
 /// The position of the index at `route` and the driver serving its ecosystem.

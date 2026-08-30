@@ -9,7 +9,9 @@ use base64::engine::general_purpose::STANDARD;
 use http_body_util::BodyExt as _;
 use peryx_core::{BrowseLink, BrowsePage, BrowseSection, Ecosystem};
 use peryx_driver::AppState;
-use peryx_identity::{Action, Glob, Grant, IndexAcl, NamedToken};
+use peryx_identity::{
+    Action, Glob, Grant, GrantScope, IndexAcl, NamedToken, Role, SESSION_COOKIE, ServerUser, SessionSealer,
+};
 use peryx_index::{Index, IndexKind};
 use peryx_policy::Policy;
 use peryx_storage::blob::BlobStorage;
@@ -18,6 +20,8 @@ use peryx_upstream::UpstreamClient;
 use rstest::rstest;
 
 use super::browse_http;
+
+const SESSION_KEY: &[u8] = b"a-token-realm-signing-secret-here";
 use crate::store::{CachedIndex, PypiStore as _};
 
 #[tokio::test]
@@ -204,6 +208,17 @@ async fn browse_http_challenges_an_anonymous_private_reader() {
 }
 
 #[tokio::test]
+async fn browse_http_authorizes_a_signed_in_repository_reader() {
+    let (_directory, state, reader, stranger) = browser_app(vec![hosted(reader_acl("other"))]);
+
+    let allowed = send_as_signed_in(state.clone(), "/browse?index=hosted", &reader).await;
+    let denied = send_as_signed_in(state, "/browse?index=hosted", &stranger).await;
+
+    assert_eq!((allowed.0, denied.0), (StatusCode::OK, StatusCode::FORBIDDEN));
+    assert!(allowed.2.contains("hosted"), "{}", allowed.2);
+}
+
+#[tokio::test]
 async fn browse_http_forbids_a_reader_from_an_ungranted_project() {
     let (_directory, state) = app(vec![hosted(reader_acl("other"))]);
     let authorization = format!("Basic {}", STANDARD.encode("reader:secret"));
@@ -231,6 +246,20 @@ async fn send(
             .headers_mut()
             .insert(header::AUTHORIZATION, authorization.parse().unwrap());
     }
+    dispatch(state, request).await
+}
+
+async fn send_as_signed_in(state: Arc<AppState>, uri: &str, cookie: &str) -> (StatusCode, HeaderMap, String) {
+    let mut request = Request::builder()
+        .method(Method::GET)
+        .uri(uri)
+        .body(Body::empty())
+        .unwrap();
+    request.headers_mut().insert(header::COOKIE, cookie.parse().unwrap());
+    dispatch(state, request).await
+}
+
+async fn dispatch(state: Arc<AppState>, request: Request) -> (StatusCode, HeaderMap, String) {
     let response = browse_http(state, request).await;
     let status = response.status();
     let headers = response.headers().clone();
@@ -248,6 +277,42 @@ fn app(indexes: Vec<Index>) -> (tempfile::TempDir, Arc<AppState>) {
     );
     crate::tests::install(&mut state);
     (directory, Arc::new(state))
+}
+
+/// Builds a state with browser sessions enabled, returning the cookies of a user granted
+/// `repository_reader` on `hosted` and of a signed-in user holding no grant at all.
+fn browser_app(indexes: Vec<Index>) -> (tempfile::TempDir, Arc<AppState>, String, String) {
+    let directory = tempfile::tempdir().unwrap();
+    let mut state = AppState::new(
+        MetaStore::open(directory.path().join("peryx.redb")).unwrap(),
+        BlobStorage::filesystem(directory.path().join("blobs")),
+        60,
+        indexes,
+    );
+    crate::tests::install(&mut state);
+    state.set_session_sealer(SessionSealer::new(SESSION_KEY)).unwrap();
+    let reader = state.serving.users.create("Rita").unwrap();
+    state
+        .serving
+        .authorization
+        .grant(
+            &reader.id,
+            Role::RepositoryReader,
+            GrantScope::Repository {
+                name: "hosted".to_owned(),
+            },
+        )
+        .unwrap();
+    let stranger = state.serving.users.create("Sam").unwrap();
+    let cookies = (session_cookie(&reader), session_cookie(&stranger));
+    (directory, Arc::new(state), cookies.0, cookies.1)
+}
+
+fn session_cookie(user: &ServerUser) -> String {
+    format!(
+        "{SESSION_COOKIE}={}",
+        SessionSealer::new(SESSION_KEY).seal_session(user, 4_102_444_800)
+    )
 }
 
 fn cached_app(directory: &tempfile::TempDir, meta: MetaStore) -> Arc<AppState> {

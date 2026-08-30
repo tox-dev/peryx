@@ -61,7 +61,7 @@ pub(super) async fn browse_http(state: Arc<AppState>, request: Request) -> Respo
     else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let access = ReadAccess::from_headers(&state.serving, request.headers());
+    let access = ReadAccess::for_request(&state.serving, request.headers());
     let base = BaseUrl::from_request(
         request.headers(),
         request.uri(),

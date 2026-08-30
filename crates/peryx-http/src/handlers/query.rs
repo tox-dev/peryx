@@ -47,7 +47,7 @@ fn search_access(state: &AppState, headers: &HeaderMap, indexes: &[Index]) -> Op
     if indexes.iter().all(|index| index.acl.anonymous_read) {
         return None;
     }
-    Some(ReadAccess::from_headers(&state.serving, headers).search_access(indexes))
+    Some(ReadAccess::for_request(&state.serving, headers).search_access(indexes))
 }
 
 /// Run [`search_response`] on the blocking pool. A tantivy query is mmap I/O plus CPU scoring, so

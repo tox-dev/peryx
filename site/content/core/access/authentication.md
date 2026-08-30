@@ -244,6 +244,14 @@ state-changing request still authenticates with an `Authorization` header token.
 cookie as authorization for a mutation, which prevents a CSRF surface. `GET /_/session` reports the signed-in user and
 configured providers for the login page. `POST /_/logout` clears the cookie.
 
+**What a session authorizes.** A protected read - a server-rendered page, the UI JSON endpoint behind it, and the status
+classification - accepts the session cookie only when the request carries no `Authorization` header. A header the
+request does carry decides that request on its own: a rejected credential is terminal and never falls back to the
+cookie. Each session-authorized read loads the account and its role grants from metadata, so the cookie contributes an
+identity and never an authority snapshot. A disabled account, a deleted account, and a revoked grant all take effect on
+the next request rather than at cookie expiry, and metadata that cannot be read denies rather than serves the sealed
+copy.
+
 **Outages.** `request_timeout_secs` bounds discovery, key, token, and user-info requests. Once a session exists, no
 request reaches the provider. A provider outage fails an in-progress browser login with a retryable `503` but leaves
 API-token authentication available, so protected operations continue while the identity provider is down. A

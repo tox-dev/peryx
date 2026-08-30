@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{parse_basic, secrets_match};
+use crate::{BasicCredentials, parse_basic, secrets_match};
 
 /// # Errors
 /// Returns [`Denial::Unavailable`] when the index grants the action to no token,
@@ -126,7 +126,14 @@ impl IndexAcl {
     /// passwords that match no live token yield [`Principal::Anonymous`].
     #[must_use]
     pub fn identify(&self, header: Option<&str>, now: i64) -> Identity {
-        let Some(credentials) = header.and_then(parse_basic) else {
+        self.identify_credentials(header.and_then(parse_basic).as_ref(), now)
+    }
+
+    /// Resolves credentials the caller already parsed, so a resolver that classifies the
+    /// `Authorization` header once does not decode it a second time.
+    #[must_use]
+    pub fn identify_credentials(&self, credentials: Option<&BasicCredentials>, now: i64) -> Identity {
+        let Some(credentials) = credentials else {
             return Identity {
                 principal: Principal::Anonymous,
                 user: None,
@@ -141,7 +148,7 @@ impl IndexAcl {
             });
         Identity {
             principal,
-            user: Some(credentials.user),
+            user: Some(credentials.user.clone()),
         }
     }
 

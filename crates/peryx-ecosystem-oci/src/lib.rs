@@ -311,7 +311,7 @@ async fn browse_http(state: Arc<AppState>, request: Request) -> Response {
         Ok(query) => query,
         Err(error) => return (StatusCode::BAD_REQUEST, error).into_response(),
     };
-    let access = ReadAccess::from_headers(&state.serving, request.headers());
+    let access = ReadAccess::for_request(&state.serving, request.headers());
     let Some(driver) = state.serving.plugin_service::<OciRegistry>() else {
         return (StatusCode::SERVICE_UNAVAILABLE, "OCI driver not installed").into_response();
     };

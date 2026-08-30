@@ -1,9 +1,16 @@
 //! Neutral HTTP surfaces share this resolver so presentation routes enforce index ACLs.
+//!
+//! [`ReadAccess::for_request`] adds the browser session to that resolution and is what protected
+//! reads use; [`ReadAccess::from_headers`] stays credential-only for the client protocol routes,
+//! which keeps a session cookie out of uploads and mutations.
 
 use std::borrow::Cow;
 
 use axum::http::{HeaderMap, header};
-use peryx_identity::{Action, Denial, Grant, Principal, ResourceMatch, authorize, authorize_grants, strip_auth_scheme};
+use peryx_identity::{
+    Action, BasicCredentials, Denial, Grant, Principal, Resource, ResourceMatch, RoleGrant, SESSION_COOKIE, Scope,
+    ServerUser, UserState, authorize, authorize_grants, grants_permit, parse_basic, strip_auth_scheme,
+};
 use peryx_search::{SearchAccess, SearchAccessPattern};
 
 use crate::{Index, ServingState};
@@ -13,8 +20,43 @@ pub struct ReadAccess {
 }
 
 enum Credential {
-    Acl { header: Option<String>, now: i64 },
+    Acl {
+        credentials: Option<BasicCredentials>,
+        now: i64,
+    },
     Bearer(Vec<Grant>),
+    /// The signed-in account's role grants as metadata holds them for this request.
+    Session(Vec<RoleGrant>),
+}
+
+/// What a protected read's `Authorization` header carries, before any resource decision.
+///
+/// Only [`Self::Absent`] may fall back to an approved browser session: a credential the request
+/// carries decides that request, and an invalid one stays terminal instead of reaching a second
+/// access path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HeaderCredential {
+    Absent,
+    Verified(VerifiedCredential),
+    Invalid(InvalidCredential),
+}
+
+/// A credential the realm recognized. A `Basic` pair still authenticates against the index ACL's
+/// token secrets or the user store; a bearer token arrives with its signature already checked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VerifiedCredential {
+    Basic(BasicCredentials),
+    Bearer(Vec<Grant>),
+}
+
+/// Why a credential can authorize nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InvalidCredential {
+    /// A bearer token the realm signer did not verify.
+    Bearer,
+    /// A header this server cannot read as a credential: unreadable bytes, an unknown scheme, or
+    /// `Basic` content that does not decode to a `user:password` pair.
+    Unsupported,
 }
 
 pub struct IndexReadAccess<'a> {
@@ -26,24 +68,93 @@ enum IndexCredential<'a> {
     Public,
     Acl(Principal),
     Bearer(&'a [Grant]),
+    /// Whether the session's role grants carry repository read on this index. A role grant covers the
+    /// whole repository, so the answer needs no per-resource match.
+    Session(bool),
+}
+
+impl HeaderCredential {
+    #[must_use]
+    pub fn from_headers(state: &ServingState, headers: &HeaderMap) -> Self {
+        let Some(header) = headers.get(header::AUTHORIZATION) else {
+            return Self::Absent;
+        };
+        let Ok(value) = header.to_str() else {
+            return Self::Invalid(InvalidCredential::Unsupported);
+        };
+        if let Some(token) = strip_auth_scheme(value, "Bearer") {
+            return state
+                .signer
+                .as_ref()
+                .and_then(|signer| signer.verify(token).ok())
+                .map_or(Self::Invalid(InvalidCredential::Bearer), |(_, grants)| {
+                    Self::Verified(VerifiedCredential::Bearer(grants))
+                });
+        }
+        parse_basic(value).map_or(Self::Invalid(InvalidCredential::Unsupported), |credentials| {
+            Self::Verified(VerifiedCredential::Basic(credentials))
+        })
+    }
+}
+
+/// The signed-in account for a browser session, or `None` when the request carries no usable one.
+///
+/// The sealed cookie holds a snapshot up to a session lifetime old, so the stored account decides:
+/// a disabled or removed user has no session, and an unreadable store denies rather than trusts the
+/// snapshot.
+#[must_use]
+pub fn session_user(state: &ServingState, headers: &HeaderMap) -> Option<ServerUser> {
+    let sealer = state.session_sealer()?;
+    let cookie = read_cookie(headers, SESSION_COOKIE)?;
+    let snapshot = sealer.open_session(&cookie, (state.clock)())?;
+    state
+        .users
+        .inspect(&snapshot.id)
+        .ok()
+        .flatten()
+        .filter(|user| user.state == UserState::Active)
+}
+
+/// Returns the value of cookie `name` from the request's `Cookie` header.
+#[must_use]
+pub fn read_cookie(headers: &HeaderMap, name: &str) -> Option<String> {
+    let header = headers.get(header::COOKIE)?.to_str().ok()?;
+    header.split(';').find_map(|pair| {
+        let (key, value) = pair.trim().split_once('=')?;
+        (key == name).then(|| value.to_owned())
+    })
 }
 
 impl ReadAccess {
+    /// Resolves an API credential and nothing else. Client protocol routes use this, so a browser
+    /// session cannot authorize an upload or a management mutation.
     #[must_use]
     pub fn from_headers(state: &ServingState, headers: &HeaderMap) -> Self {
-        let header = headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok());
-        let credential = if let Some(token) = header.and_then(|value| strip_auth_scheme(value, "Bearer"))
-            && let Some(signer) = &state.signer
-            && let Ok((_, grants)) = signer.verify(token)
+        Self {
+            credential: header_credential(state, HeaderCredential::from_headers(state, headers)),
+        }
+    }
+
+    /// The protected-read entry point shared by browser and API credentials.
+    ///
+    /// A present `Authorization` header decides the request on its own. Only an absent header
+    /// consults the browser session, and that path re-reads the account and its role grants from
+    /// metadata, so a disabled user or a revoked grant loses access on the next request rather than
+    /// at cookie expiry.
+    #[must_use]
+    pub fn for_request(state: &ServingState, headers: &HeaderMap) -> Self {
+        let header = HeaderCredential::from_headers(state, headers);
+        if header == HeaderCredential::Absent
+            && let Some(user) = session_user(state, headers)
+            && let Ok(grants) = state.authorization.grants(&user.id)
         {
-            Credential::Bearer(grants)
-        } else {
-            Credential::Acl {
-                header: header.map(str::to_owned),
-                now: (state.clock)(),
-            }
-        };
-        Self { credential }
+            return Self {
+                credential: Credential::Session(grants),
+            };
+        }
+        Self {
+            credential: header_credential(state, header),
+        }
     }
 
     #[must_use]
@@ -52,10 +163,15 @@ impl ReadAccess {
             IndexCredential::Public
         } else {
             match &self.credential {
-                Credential::Acl { header, now } => {
-                    IndexCredential::Acl(index.acl.identify(header.as_deref(), *now).principal)
+                Credential::Acl { credentials, now } => {
+                    IndexCredential::Acl(index.acl.identify_credentials(credentials.as_ref(), *now).principal)
                 }
                 Credential::Bearer(grants) => IndexCredential::Bearer(grants),
+                Credential::Session(grants) => IndexCredential::Session(grants_permit(
+                    grants,
+                    Scope::RepositoryRead,
+                    &Resource::Repository(index.name.clone()),
+                )),
             }
         };
         IndexReadAccess { index, credential }
@@ -67,7 +183,7 @@ impl ReadAccess {
         for index in indexes {
             let access = self.for_index(index);
             match &access.credential {
-                IndexCredential::Public => patterns.push(SearchAccessPattern {
+                IndexCredential::Public | IndexCredential::Session(true) => patterns.push(SearchAccessPattern {
                     route: index.route.clone(),
                     glob: "*".to_owned(),
                 }),
@@ -79,6 +195,7 @@ impl ReadAccess {
                         });
                     }
                 }
+                IndexCredential::Session(false) => {}
                 IndexCredential::Bearer(grants) => {
                     let prefix = resource_prefix(&index.route);
                     for grant in *grants {
@@ -110,6 +227,7 @@ impl IndexReadAccess<'_> {
         match &self.credential {
             IndexCredential::Public => Ok(()),
             IndexCredential::Acl(principal) => authorize(principal, &self.index.acl, ResourceMatch::Any, Action::Read),
+            IndexCredential::Session(permitted) => permitted.then_some(()).ok_or(Denial::Forbidden),
             IndexCredential::Bearer(grants) => {
                 let prefix = resource_prefix(&self.index.route);
                 grants
@@ -130,8 +248,23 @@ impl IndexReadAccess<'_> {
         match &self.credential {
             IndexCredential::Public => Ok(()),
             IndexCredential::Acl(principal) => authorize(principal, &self.index.acl, resource, Action::Read),
+            IndexCredential::Session(permitted) => permitted.then_some(()).ok_or(Denial::Forbidden),
             IndexCredential::Bearer(grants) => authorize_bearer(grants, &self.index.route, resource),
         }
+    }
+}
+
+fn header_credential(state: &ServingState, header: HeaderCredential) -> Credential {
+    match header {
+        HeaderCredential::Verified(VerifiedCredential::Bearer(grants)) => Credential::Bearer(grants),
+        HeaderCredential::Verified(VerifiedCredential::Basic(credentials)) => Credential::Acl {
+            credentials: Some(credentials),
+            now: (state.clock)(),
+        },
+        HeaderCredential::Absent | HeaderCredential::Invalid(_) => Credential::Acl {
+            credentials: None,
+            now: (state.clock)(),
+        },
     }
 }
 
