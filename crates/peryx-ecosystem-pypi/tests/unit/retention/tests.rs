@@ -421,7 +421,7 @@ fn test_evaluate_retention_rejects_a_project_one_byte_over_the_memory_budget() {
         None,
         candidate_footprint("demo", "1.0") - 1,
         |_| Ok(()),
-        |_| Ok(()),
+        reject_decision,
     )
     .unwrap_err();
 
