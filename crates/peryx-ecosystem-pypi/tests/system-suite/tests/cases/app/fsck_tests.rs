@@ -36,7 +36,7 @@ fn test_cache_fsck_reports_metadata_problems() {
         &uploaded_record_json(&Digest::of(b"missing")),
     )
     .unwrap();
-    meta.put_override(true, "", "", "", "bad", 0).unwrap();
+    meta.put_driver_value("pypi\u{0}o\u{0}//", b"bad").unwrap();
     drop(meta);
     let mut out = Vec::new();
     app::cache(&config, &fsck_command(), &mut out).unwrap();
@@ -89,8 +89,15 @@ fn test_cache_fsck_accepts_valid_upload_and_override() {
     let digest = blobs.write(b"pkg").unwrap();
     meta.put_upload("hosted", "pkg", "pkg-1.0.whl", &uploaded_record_json(&digest))
         .unwrap();
-    meta.put_override(true, "hosted", "pkg", "pkg-1.0.whl", "hidden", 0)
-        .unwrap();
+    meta.set_override(
+        true,
+        "hosted",
+        "pkg",
+        "pkg-1.0.whl",
+        peryx_ecosystem_pypi::store::OverrideMutation::Hidden(true),
+        0,
+    )
+    .unwrap();
     drop(meta);
     let mut out = Vec::new();
     app::cache(&config, &fsck_command(), &mut out).unwrap();

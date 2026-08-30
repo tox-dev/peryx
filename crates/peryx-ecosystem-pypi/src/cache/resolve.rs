@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::policy::PypiPolicy as _;
-use crate::store::CachedIndex;
 use crate::store::PypiStore as _;
+use crate::store::{CachedIndex, FileOverride};
 use crate::upload::Uploaded;
-use crate::{CoreMetadata, File, Meta, ProjectDetail, ProjectList, ProjectListEntry, parse_detail};
+use crate::{CoreMetadata, File, Meta, ProjectDetail, ProjectList, ProjectListEntry, Yanked, parse_detail};
 use peryx_core::path::{is_local_artifact_url, local_artifact_url};
 use peryx_driver::state::ServingState;
 use peryx_identity::{ArtifactDigest, DigestDecision};
@@ -308,21 +308,16 @@ fn no_fallback_denial(state: &ServingState, index: &Index, layers: &[usize], pro
 }
 
 fn apply_overrides(state: &ServingState, hosted: &str, project: &str, files: &mut Vec<File>) -> Result<(), CacheError> {
-    let overrides: BTreeMap<String, String> = state.meta.list_overrides(hosted, project)?.into_iter().collect();
+    let overrides = FileOverride::decode_all(state.meta.list_overrides(hosted, project)?);
     if overrides.is_empty() {
         return Ok(());
     }
-    files.retain(|file| {
-        !overrides
-            .get(&file.filename)
-            .is_some_and(|kind| crate::stream::hidden_override(kind))
-    });
+    files.retain(|file| !overrides.get(&file.filename).is_some_and(|record| record.hidden));
     for file in files {
-        if let Some(yanked) = overrides
-            .get(&file.filename)
-            .and_then(|kind| crate::stream::yanked_override(kind))
+        if let Some(record) = overrides.get(&file.filename)
+            && record.yanked != Yanked::No
         {
-            file.yanked = yanked;
+            file.yanked = record.yanked.clone();
         }
     }
     Ok(())

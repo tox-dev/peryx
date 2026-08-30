@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::quota::PendingQuota;
 use crate::store::PypiStore as _;
@@ -203,15 +203,11 @@ fn promote_conflict(filename: &str, digest: &str, existing: Option<&[u8]>) -> Re
     }
 }
 
-/// The two reversible override kinds for files served from read-only layers.
-const YANKED: &str = "yanked";
-
-const HIDDEN: &str = "hidden";
-
 /// Set or clear the yank state of a project's files as served by `index`.
 ///
-/// Uploaded files get their stored record rewritten; read-only upstream files get a `yanked`
-/// override on `hosted`. Returns how many files changed.
+/// Uploaded files get their stored record rewritten; read-only upstream files get the yank field of
+/// their override record on `hosted` rewritten, which leaves an administrative hide in place.
+/// Returns how many files changed.
 ///
 /// # Errors
 /// Returns [`CacheError`] on a store, decode, or resolution failure.
@@ -238,15 +234,15 @@ pub async fn set_yanked_with_webhook(
     let fence = control_epoch(state, normalized).await;
     let uploaded = upload_filenames(state, hosted, normalized)?;
     let served = served_filenames(state, index, normalized, version).await?;
+    // A hidden file is served by no layer, so it has to be named explicitly for a yank to reach it;
+    // the set collapses the layer that still serves a filename hidden on `hosted`.
     let override_filenames = served
         .into_iter()
+        .chain(hidden_filenames(state, hosted, normalized, version)?)
         .filter(|filename| !uploaded.contains(filename))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
         .collect::<Vec<_>>();
-    let override_value = yank_override_value(&yanked)?;
-    let override_mutation = override_value.as_deref().map_or(
-        crate::store::OverrideMutation::Delete,
-        crate::store::OverrideMutation::Put,
-    );
     let submitted_at_unix = (state.clock)();
     let changed = commit_control(state, normalized, fence, |lease| {
         lease.check()?;
@@ -264,7 +260,7 @@ pub async fn set_yanked_with_webhook(
                 action,
                 submitted_at_unix,
                 override_filenames: &override_filenames,
-                override_mutation,
+                override_mutation: crate::store::OverrideMutation::Yanked(&yanked),
             },
             || lease.check(),
             |_filename, bytes| -> Result<Option<Vec<u8>>, CacheError> {
@@ -287,17 +283,6 @@ pub async fn set_yanked_with_webhook(
     Ok(changed)
 }
 
-fn yank_override_value(yanked: &Yanked) -> Result<Option<String>, CacheError> {
-    Ok(match yanked {
-        Yanked::No => None,
-        Yanked::Yes => Some(YANKED.to_owned()),
-        Yanked::Reason(reason) => Some(serde_json::to_string(&serde_json::json!({
-            "kind": YANKED,
-            "reason": reason,
-        }))?),
-    })
-}
-
 /// The provenance a soft-delete records on each file it trashes, threaded from the delete request.
 #[derive(Clone, Copy)]
 pub struct TrashContext<'a> {
@@ -316,8 +301,8 @@ pub struct RemovalContext<'a> {
 ///
 /// Uploaded files are soft-deleted (requires `volatile`): the record is marked trashed and its blob
 /// kept, so the file drops out of every served page but stays recoverable until a restore or a purge.
-/// Read-only upstream files get a reversible `hidden` override on `hosted`. Returns how many files
-/// were affected.
+/// Read-only upstream files get the hidden field of their override record on `hosted` set, which
+/// leaves any yank state the file already carried intact. Returns how many files were affected.
 ///
 /// # Errors
 /// Returns [`CacheError::NotVolatile`] when uploaded files match but the hosted store is not
@@ -370,7 +355,7 @@ pub async fn remove_files_with_webhook(
                 action: "delete-file",
                 submitted_at_unix: removal.trash.deleted_at_unix,
                 override_filenames: &override_filenames,
-                override_mutation: crate::store::OverrideMutation::Put(HIDDEN),
+                override_mutation: crate::store::OverrideMutation::Hidden(true),
             },
             || lease.check(),
             |_filename, bytes| -> Result<Option<Vec<u8>>, CacheError> {
@@ -400,8 +385,11 @@ pub async fn remove_files_with_webhook(
     Ok(affected)
 }
 
-/// Restore a project's files (optionally one version): clear `hidden` overrides so a deleted upstream
-/// file reappears, and un-trash soft-deleted uploaded files. Returns how many files reappeared.
+/// Restore a project's files, optionally one version.
+///
+/// Clears the hidden field of every hidden override so a deleted upstream file reappears - still
+/// yanked when it was yanked before the delete - and un-trashes soft-deleted uploaded files. Returns
+/// how many files reappeared.
 ///
 /// # Errors
 /// Returns [`CacheError`] on a store failure.
@@ -422,15 +410,7 @@ pub async fn restore_files_with_webhook(
     webhook: impl FnOnce(usize) -> Option<peryx_storage::meta::WebhookEventIntent>,
 ) -> Result<usize, CacheError> {
     let fence = control_epoch(state, normalized).await;
-    let override_filenames = state
-        .meta
-        .list_overrides(hosted, normalized)?
-        .into_iter()
-        .filter(|(filename, kind)| {
-            kind == HIDDEN && version.is_none_or(|version| file_matches_version(filename, version))
-        })
-        .map(|(filename, _)| filename)
-        .collect::<Vec<_>>();
+    let override_filenames = hidden_filenames(state, hosted, normalized, version)?;
     let submitted_at_unix = (state.clock)();
     let restored = commit_control(state, normalized, fence, |lease| {
         lease.check()?;
@@ -443,7 +423,7 @@ pub async fn restore_files_with_webhook(
                 action: "restore",
                 submitted_at_unix,
                 override_filenames: &override_filenames,
-                override_mutation: crate::store::OverrideMutation::Delete,
+                override_mutation: crate::store::OverrideMutation::Hidden(false),
             },
             || lease.check(),
             |_filename, bytes| -> Result<Option<Vec<u8>>, CacheError> {
@@ -540,6 +520,27 @@ async fn served_filenames(
         .into_iter()
         .map(|file| file.filename)
         .filter(|filename| version.is_none_or(|version| file_matches_version(filename, version)))
+        .collect())
+}
+
+/// The files a delete withdrew from every served page. A yank still has to reach them: a hide and a
+/// yank are independent states, so an operator must be able to unyank a file while it is hidden, and
+/// a restore has to return it carrying whatever yank it ended up with.
+fn hidden_filenames(
+    state: &ServingState,
+    hosted: &str,
+    normalized: &str,
+    version: Option<&str>,
+) -> Result<Vec<String>, CacheError> {
+    Ok(state
+        .meta
+        .list_overrides(hosted, normalized)?
+        .into_iter()
+        .filter(|(filename, record)| {
+            crate::store::FileOverride::decode(record).is_some_and(|record| record.hidden)
+                && version.is_none_or(|version| file_matches_version(filename, version))
+        })
+        .map(|(filename, _)| filename)
         .collect())
 }
 

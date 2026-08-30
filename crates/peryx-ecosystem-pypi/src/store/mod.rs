@@ -4,6 +4,7 @@ mod attestations;
 mod files;
 mod index;
 mod journal;
+mod overrides;
 mod projects;
 mod record;
 mod summary;
@@ -21,6 +22,7 @@ pub use index::{
 };
 pub(crate) use journal::{ChangelogReadError, read_changelog_page};
 pub use journal::{JournalEntry, JournalSnapshot, read_journal_entries};
+pub use overrides::{FileOverride, OverrideMutation};
 pub use peryx_driver::serving::{IndexSummary, RecentWrite};
 pub use projects::{
     CatalogGeneration, CatalogState, ProjectCachePurgeCounts, abort_catalog_generation, begin_catalog_generation,
@@ -37,11 +39,11 @@ pub(crate) use uploads::publish_file_in_txn;
 pub(crate) use uploads::publish_file_with_commit_if;
 pub(crate) use uploads::scan_upload_policy_snapshot;
 pub use uploads::{
-    Guard, MetadataSibling, PromotedRelease, ProvenanceSibling, PublishedFile, UploadMutation, delete_override,
-    delete_upload, list_overrides, list_upload_entries, mutate_uploads, promote_files_checked, publish_file_if,
-    put_override, put_upload, scan_override_records, scan_upload_records,
+    Guard, MetadataSibling, PromotedRelease, ProvenanceSibling, PublishedFile, UploadMutation, delete_upload,
+    list_overrides, list_upload_entries, mutate_uploads, promote_files_checked, publish_file_if, put_upload,
+    scan_override_records, scan_upload_records, set_override,
 };
-pub(crate) use uploads::{OverrideMutation, UploadMutationPlan, mutate_uploads_and_overrides};
+pub(crate) use uploads::{UploadMutationPlan, mutate_uploads_and_overrides};
 
 /// The former `index_document` table: cached simple-index pages, keyed by the caller's route key.
 const INDEX_PREFIX: &str = "pypi\u{0}i\u{0}";
@@ -514,28 +516,17 @@ pub trait PypiStore {
         visit: impl FnMut(&str, &[u8]) -> Result<(), E>,
     ) -> Result<(), peryx_storage::meta::MetaScanError<E>>;
 
-    /// Record a yanked/hidden override for a file served from a read-only layer.
+    /// Apply one field change to the override record of a file served from a read-only layer.
     ///
     /// # Errors
     /// Returns a store error if the write fails.
-    fn put_override(
+    fn set_override(
         &self,
         outbox: bool,
         index: &str,
         normalized: &str,
         filename: &str,
-        kind: &str,
-        submitted_at_unix: i64,
-    ) -> Result<(), peryx_storage::meta::MetaError>;
-
-    /// # Errors
-    /// Returns a store error if the write fails.
-    fn delete_override(
-        &self,
-        outbox: bool,
-        index: &str,
-        normalized: &str,
-        filename: &str,
+        mutation: OverrideMutation<'_>,
         submitted_at_unix: i64,
     ) -> Result<bool, peryx_storage::meta::MetaError>;
 
@@ -877,27 +868,16 @@ impl PypiStore for peryx_storage::meta::MetaStore {
         uploads::scan_upload_records(self, visit)
     }
 
-    fn put_override(
+    fn set_override(
         &self,
         outbox: bool,
         index: &str,
         normalized: &str,
         filename: &str,
-        kind: &str,
-        submitted_at_unix: i64,
-    ) -> Result<(), peryx_storage::meta::MetaError> {
-        uploads::put_override(self, outbox, index, normalized, filename, kind, submitted_at_unix)
-    }
-
-    fn delete_override(
-        &self,
-        outbox: bool,
-        index: &str,
-        normalized: &str,
-        filename: &str,
+        mutation: OverrideMutation<'_>,
         submitted_at_unix: i64,
     ) -> Result<bool, peryx_storage::meta::MetaError> {
-        uploads::delete_override(self, outbox, index, normalized, filename, submitted_at_unix)
+        uploads::set_override(self, outbox, index, normalized, filename, mutation, submitted_at_unix)
     }
 
     fn list_overrides(

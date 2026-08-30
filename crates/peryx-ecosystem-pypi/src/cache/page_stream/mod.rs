@@ -388,12 +388,10 @@ fn streaming_parts(
             let Some((cached, client, offline)) = cached else {
                 return Ok(None);
             };
-            let overrides: std::collections::BTreeMap<String, String> = match write_target {
-                Some(pos) => state
-                    .meta
-                    .list_overrides(&state.index_at(*pos).name, project)?
-                    .into_iter()
-                    .collect(),
+            let overrides = match write_target {
+                Some(pos) => crate::store::FileOverride::decode_all(
+                    state.meta.list_overrides(&state.index_at(*pos).name, project)?,
+                ),
                 None => std::collections::BTreeMap::new(),
             };
             Ok(Some((

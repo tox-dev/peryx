@@ -1783,8 +1783,15 @@ async fn test_pypi_maintenance_scans_walk_real_records() {
     meta.put_metadata(digest.as_str(), &file_url, sibling.as_str(), "pypi")
         .unwrap();
     meta.put_project("pypi", "flask", "Flask").unwrap();
-    meta.put_override(true, "hosted", "peryxpkg", "peryxpkg-1.0-py3-none-any.whl", "yanked", 0)
-        .unwrap();
+    meta.set_override(
+        true,
+        "hosted",
+        "peryxpkg",
+        "peryxpkg-1.0-py3-none-any.whl",
+        crate::store::OverrideMutation::Yanked(&crate::Yanked::Yes),
+        0,
+    )
+    .unwrap();
 
     assert!(
         !crate::serving::PypiServing

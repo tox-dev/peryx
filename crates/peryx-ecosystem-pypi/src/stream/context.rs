@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use peryx_policy::Policy;
 
 use super::PageContext;
+use crate::store::FileOverride;
 use crate::{File, Yanked};
 
 #[must_use]
@@ -12,21 +13,18 @@ pub fn page_context(
     policy: Policy,
     local_files: Vec<File>,
     local_versions: Vec<String>,
-    overrides: &BTreeMap<String, String>,
+    overrides: &BTreeMap<String, FileOverride>,
 ) -> PageContext {
     let mut skip: BTreeSet<String> = local_files.iter().map(|file| file.filename.clone()).collect();
     let mut hidden = BTreeSet::new();
     let mut yanked = BTreeMap::new();
-    for (filename, kind) in overrides {
-        match kind.as_str() {
-            "hidden" => {
-                skip.insert(filename.clone());
-                hidden.insert(filename.clone());
-            }
-            _ if let Some(marker) = yanked_override(kind) => {
-                yanked.insert(filename.clone(), marker);
-            }
-            _ => {}
+    for (filename, record) in overrides {
+        if record.hidden {
+            skip.insert(filename.clone());
+            hidden.insert(filename.clone());
+        }
+        if record.yanked != Yanked::No {
+            yanked.insert(filename.clone(), record.yanked.clone());
         }
     }
     PageContext {
@@ -41,25 +39,4 @@ pub fn page_context(
         yanked,
         known_metadata: BTreeMap::new(),
     }
-}
-
-pub fn hidden_override(value: &str) -> bool {
-    value == "hidden"
-}
-
-pub fn yanked_override(value: &str) -> Option<Yanked> {
-    if value == "yanked" {
-        return Some(Yanked::Yes);
-    }
-    let record = serde_json::from_str::<StoredYankOverride>(value).ok()?;
-    (record.kind == "yanked").then_some(match record.reason {
-        Some(reason) if !reason.is_empty() => Yanked::Reason(reason),
-        _ => Yanked::Yes,
-    })
-}
-
-#[derive(serde::Deserialize)]
-struct StoredYankOverride {
-    kind: String,
-    reason: Option<String>,
 }

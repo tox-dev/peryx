@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use peryx_storage::meta::{DriverTxn, MetaError, MetaScanError, MetaStore, QuotaError, QuotaReservationRecord};
 
 use super::journal::JournalEntry;
+use super::overrides::{FileOverride, OverrideMutation};
 use super::{
     OVERRIDE_PREFIX, UPLOAD_PREFIX, metadata_key, metadata_value, override_key, project_key, provenance_key,
     provenance_value, upload_key,
@@ -85,12 +86,6 @@ pub enum Guard {
 pub enum UploadMutation {
     Keep,
     Replace(Vec<u8>),
-    Delete,
-}
-
-#[derive(Clone, Copy)]
-pub enum OverrideMutation<'a> {
-    Put(&'a str),
     Delete,
 }
 
@@ -381,21 +376,8 @@ pub fn mutate_uploads_and_overrides<E: From<MetaError>>(
         for filename in plan.override_filenames {
             guard()?;
             let key = override_key(plan.index, plan.normalized, filename);
-            let override_action = match plan.override_mutation {
-                OverrideMutation::Put(kind) => {
-                    if txn.get(&key)?.as_deref() == Some(kind.as_bytes()) {
-                        continue;
-                    }
-                    txn.put(&key, kind.as_bytes())?;
-                    if kind == "hidden" { "hide" } else { "yank" }
-                }
-                OverrideMutation::Delete => {
-                    let Some(prior) = txn.get(&key)? else {
-                        continue;
-                    };
-                    txn.remove(&key)?;
-                    if prior == b"hidden" { "restore" } else { "unyank" }
-                }
+            let Some(override_action) = apply_override(txn, &key, plan.override_mutation)? else {
+                continue;
             };
             changed += 1;
             journal.extend(journal_entries(plan.outbox, || {
@@ -495,70 +477,30 @@ pub fn scan_upload_policy_snapshot<E>(
     meta.visit_driver_policy_snapshot(&prefix, index, start, |key, value| visit(&key[prefix.len()..], value))
 }
 
-/// Record an override for a file served from a read-only layer: `kind` is `yanked` or `hidden`,
-/// keyed like uploads by `{index}/{normalized}/{filename}`.
+/// Apply one field change to a file's override record, keyed like uploads by
+/// `{index}/{normalized}/{filename}`, and return whether the record moved.
 ///
-/// The override and a `hide` (for `hidden`) or `yank` (for anything else) journal entry commit in
-/// one transaction, so a replica observes the change the way it observes a publish, and nothing is
-/// left to reconcile after a crash. Re-recording an identical override is a no-op that allocates no
-/// serial.
+/// The record and its `hide`, `restore`, `yank`, or `unyank` journal entry commit in one
+/// transaction, so a replica observes the change the way it observes a publish, and nothing is left
+/// to reconcile after a crash. Re-recording a value the file already carries is a no-op that
+/// allocates no serial, and a record left imposing nothing is removed rather than stored.
 ///
 /// # Errors
 /// Returns a store error if the write fails.
-pub fn put_override(
+pub fn set_override(
     meta: &MetaStore,
     outbox: bool,
     index: &str,
     normalized: &str,
     filename: &str,
-    kind: &str,
-    submitted_at_unix: i64,
-) -> Result<(), MetaError> {
-    let key = override_key(index, normalized, filename);
-    meta.commit_driver_txn(|txn| {
-        if txn.get(&key)?.as_deref() == Some(kind.as_bytes()) {
-            return Ok(((), Vec::new()));
-        }
-        txn.put(&key, kind.as_bytes())?;
-        let action = if kind == "hidden" { "hide" } else { "yank" };
-        Ok((
-            (),
-            journal_entries(outbox, || {
-                journal_bytes(
-                    action,
-                    normalized,
-                    distribution_version_segment(filename),
-                    Some(filename),
-                    submitted_at_unix,
-                )
-            }),
-        ))
-    })
-}
-
-/// Remove a file's override, journaling the reversal in the same transaction, and return whether
-/// one existed.
-///
-/// A cleared `hidden` override records `restore`; any other (a `yanked` one) records `unyank`, so
-/// the un-hide or un-yank a replica must replay is never lost. A missing override records nothing.
-///
-/// # Errors
-/// Returns a store error if the write fails.
-pub fn delete_override(
-    meta: &MetaStore,
-    outbox: bool,
-    index: &str,
-    normalized: &str,
-    filename: &str,
+    mutation: OverrideMutation<'_>,
     submitted_at_unix: i64,
 ) -> Result<bool, MetaError> {
     let key = override_key(index, normalized, filename);
     meta.commit_driver_txn(|txn| {
-        let Some(prior) = txn.get(&key)? else {
+        let Some(action) = apply_override(txn, &key, mutation)? else {
             return Ok((false, Vec::new()));
         };
-        txn.remove(&key)?;
-        let action = if prior == b"hidden" { "restore" } else { "unyank" };
         Ok((
             true,
             journal_entries(outbox, || {
@@ -572,6 +514,31 @@ pub fn delete_override(
             }),
         ))
     })
+}
+
+/// Read, mutate, and write back one override record inside `txn`, returning the journal action when
+/// the record moved. An unreadable record is treated as absent so an operator can always write a
+/// well-formed one over it; `fsck` is what reports the corruption.
+fn apply_override(
+    txn: &mut DriverTxn,
+    key: &str,
+    mutation: OverrideMutation<'_>,
+) -> Result<Option<&'static str>, MetaError> {
+    let mut record = txn
+        .get(key)?
+        .as_deref()
+        .and_then(|raw| std::str::from_utf8(raw).ok())
+        .and_then(FileOverride::decode)
+        .unwrap_or_default();
+    let Some(action) = mutation.apply(&mut record) else {
+        return Ok(None);
+    };
+    if record.is_empty() {
+        txn.remove(key)?;
+    } else {
+        txn.put(key, record.encode().as_bytes())?;
+    }
+    Ok(Some(action))
 }
 
 /// # Errors

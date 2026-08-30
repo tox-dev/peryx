@@ -173,8 +173,15 @@ fn test_cache_size_counts_uploads_and_overrides() {
         &uploaded_record_json(&Digest::of(b"pkg")),
     )
     .unwrap();
-    meta.put_override(true, "hosted", "pkg", "pkg-1.0.whl", "hidden", 0)
-        .unwrap();
+    meta.set_override(
+        true,
+        "hosted",
+        "pkg",
+        "pkg-1.0.whl",
+        peryx_ecosystem_pypi::store::OverrideMutation::Hidden(true),
+        0,
+    )
+    .unwrap();
     drop(meta);
     let mut out = Vec::new();
     app::cache(&config, &size_command(), &mut out).unwrap();

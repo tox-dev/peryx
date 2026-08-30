@@ -46,6 +46,9 @@ curl -X PUT -u __token__:<secret> http://127.0.0.1:4433/root/pypi/mypkg/1.2.0/re
 curl -X PUT -u __token__:<secret> http://127.0.0.1:4433/root/pypi/mypkg/restore        # whole project
 ```
 
+A hide and a yank are separate states on the same upstream file, so they do not overwrite each other: a file yanked
+before a delete comes back yanked, with its reason, and un-yanking a hidden file leaves it hidden until you restore it.
+
 The content-addressed blob stays on disk after a delete; another index or a re-upload with the same digest reuses it.
 Responses are `200` with the number of files affected, or `404` when nothing matched. The project page's "Manage
 uploads" panel in the [web UI](@/core/operations/web-ui.md) drives these same endpoints.

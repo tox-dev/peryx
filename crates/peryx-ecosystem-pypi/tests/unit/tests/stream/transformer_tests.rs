@@ -7,6 +7,7 @@ use crate::policy::RemoteMetadataMode;
 
 use super::page_context;
 use crate::policy::{PackageType, PypiPolicyConfig, compile_capabilities};
+use crate::store::FileOverride;
 use crate::stream::{
     PageContext, PageSummary, PageTransformer, Registration, TransformError, page_context as build_page_context,
 };
@@ -186,12 +187,27 @@ fn test_policy_filters_upstream_files() {
 #[test]
 fn test_hidden_and_yank_overrides() {
     let overrides = BTreeMap::from([
-        ("demo-1.0-py3-none-any.whl".to_owned(), "hidden".to_owned()),
+        (
+            "demo-1.0-py3-none-any.whl".to_owned(),
+            FileOverride {
+                hidden: true,
+                yanked: Yanked::No,
+            },
+        ),
         (
             "demo-2.0-py3-none-any.whl".to_owned(),
-            r#"{"kind":"yanked","reason":"bad build"}"#.to_owned(),
+            FileOverride {
+                hidden: false,
+                yanked: Yanked::Reason("bad build".to_owned()),
+            },
         ),
-        ("demo-2.0.tar.gz".to_owned(), "yanked".to_owned()),
+        (
+            "demo-2.0.tar.gz".to_owned(),
+            FileOverride {
+                hidden: false,
+                yanked: Yanked::Yes,
+            },
+        ),
     ]);
     let context = page_context("root/pypi", Vec::new(), Vec::new(), &overrides);
     let (out, _) = transform(&upstream_page(), context, 2);
@@ -203,19 +219,22 @@ fn test_hidden_and_yank_overrides() {
         .find(|file| file.filename == "demo-2.0-py3-none-any.whl")
         .unwrap();
     assert_eq!(yanked.yanked, Yanked::Reason("bad build".to_owned()));
-    let legacy_yanked = detail
+    let reasonless = detail
         .files
         .iter()
         .find(|file| file.filename == "demo-2.0.tar.gz")
         .unwrap();
-    assert_eq!(legacy_yanked.yanked, Yanked::Yes);
+    assert_eq!(reasonless.yanked, Yanked::Yes);
 }
 
 #[test]
-fn test_empty_reason_yank_override_yanks_without_reason() {
+fn test_a_hidden_file_keeps_its_yank_when_it_returns() {
     let overrides = BTreeMap::from([(
         "demo-2.0.tar.gz".to_owned(),
-        r#"{"kind":"yanked","reason":""}"#.to_owned(),
+        FileOverride {
+            hidden: false,
+            yanked: Yanked::Reason("CVE-2026-1234".to_owned()),
+        },
     )]);
     let context = page_context("root/pypi", Vec::new(), Vec::new(), &overrides);
     let (out, _) = transform(&upstream_page(), context, 2);
@@ -225,7 +244,7 @@ fn test_empty_reason_yank_override_yanks_without_reason() {
         .iter()
         .find(|file| file.filename == "demo-2.0.tar.gz")
         .unwrap();
-    assert_eq!(file.yanked, Yanked::Yes);
+    assert_eq!(file.yanked, Yanked::Reason("CVE-2026-1234".to_owned()));
 }
 
 #[test]
@@ -847,7 +866,13 @@ fn test_metadata_sibling_lands_on_the_path_not_the_query() {
 
 #[test]
 fn test_local_file_hidden_override_is_dropped_like_the_buffered_path() {
-    let overrides = BTreeMap::from([("demo-1.0-py3-none-any.whl".to_owned(), "hidden".to_owned())]);
+    let overrides = BTreeMap::from([(
+        "demo-1.0-py3-none-any.whl".to_owned(),
+        FileOverride {
+            hidden: true,
+            yanked: Yanked::No,
+        },
+    )]);
     let context = page_context(
         "root/pypi",
         vec![local_wheel("demo-1.0-py3-none-any.whl")],
@@ -863,7 +888,10 @@ fn test_local_file_hidden_override_is_dropped_like_the_buffered_path() {
 fn test_local_file_yank_override_is_applied_like_the_buffered_path() {
     let overrides = BTreeMap::from([(
         "demo-1.0-py3-none-any.whl".to_owned(),
-        r#"{"kind":"yanked","reason":"bad build"}"#.to_owned(),
+        FileOverride {
+            hidden: false,
+            yanked: Yanked::Reason("bad build".to_owned()),
+        },
     )]);
     let context = page_context(
         "root/pypi",

@@ -438,8 +438,8 @@ pub fn fsck_metadata(meta: &MetaStore, blobs: &BlobStorage, out: &mut dyn Write)
         Ok::<(), std::io::Error>(())
     })
     .map_err(crate::error_message)?;
-    meta.scan_override_records(|key, kind| {
-        if !valid_upload_key(key) || !matches!(kind, "hidden" | "yanked") {
+    meta.scan_override_records(|key, record| {
+        if !valid_upload_key(key) || crate::store::FileOverride::decode(record).is_none() {
             problems += 1;
             writeln!(out, "metadata\tpypi\toverride\t{key}\tinvalid record")?;
         }

@@ -1,12 +1,14 @@
 //! Maps `PyPI` records into neutral search documents.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashSet};
 use std::convert::Infallible;
 
 use crate::policy::PypiPolicy;
-use crate::store::CachedIndex;
 use crate::store::PypiStore as _;
-use crate::{CoreMetadata, CoreMetadataDoc, File, Meta, ProjectDetail, ProjectStatus, parse_detail, parse_metadata};
+use crate::store::{CachedIndex, FileOverride};
+use crate::{
+    CoreMetadata, CoreMetadataDoc, File, Meta, ProjectDetail, ProjectStatus, Yanked, parse_detail, parse_metadata,
+};
 use peryx_policy::PolicyAction;
 use peryx_storage::blob::Digest;
 use peryx_storage::meta::{ArtifactSource, MetaScanError};
@@ -350,21 +352,16 @@ fn apply_overrides(
     normalized: &str,
     files: &mut Vec<File>,
 ) -> Result<(), SearchError> {
-    let overrides: BTreeMap<String, String> = ctx.meta.list_overrides(hosted, normalized)?.into_iter().collect();
+    let overrides = FileOverride::decode_all(ctx.meta.list_overrides(hosted, normalized)?);
     if overrides.is_empty() {
         return Ok(());
     }
-    files.retain(|file| {
-        !overrides
-            .get(&file.filename)
-            .is_some_and(|kind| crate::stream::hidden_override(kind))
-    });
+    files.retain(|file| !overrides.get(&file.filename).is_some_and(|record| record.hidden));
     for file in files {
-        if let Some(yanked) = overrides
-            .get(&file.filename)
-            .and_then(|kind| crate::stream::yanked_override(kind))
+        if let Some(record) = overrides.get(&file.filename)
+            && record.yanked != Yanked::No
         {
-            file.yanked = yanked;
+            file.yanked = record.yanked.clone();
         }
     }
     Ok(())

@@ -7,10 +7,11 @@ use peryx_storage::meta::{AccountingClass, NewQuotaReservation, QuotaLimits};
 use rstest::rstest;
 
 use super::{
-    Guard, MetaError, MetaStore, MetadataSibling, OverrideMutation, PromotedRelease, ProvenanceSibling, PublishError,
-    PublishedFile, UploadMutation, UploadMutationPlan, map_publish_error, mutate_uploads_and_overrides, override_key,
-    upload_key,
+    FileOverride, Guard, MetaError, MetaStore, MetadataSibling, OverrideMutation, PromotedRelease, ProvenanceSibling,
+    PublishError, PublishedFile, UploadMutation, UploadMutationPlan, map_publish_error, mutate_uploads_and_overrides,
+    override_key, upload_key,
 };
+use crate::Yanked;
 use crate::store::{PypiStore as _, read_journal_entries};
 use crate::upload::UploadStoreError;
 
@@ -481,8 +482,15 @@ fn test_scan_upload_records_keeps_deleted_row_from_its_snapshot() {
 #[test]
 fn test_scan_override_records_visits_valid_and_skips_non_utf8() {
     let (_dir, meta) = store();
-    meta.put_override(true, "hosted", "flask", "flask-1.0.whl", "hidden", 123)
-        .unwrap();
+    meta.set_override(
+        true,
+        "hosted",
+        "flask",
+        "flask-1.0.whl",
+        OverrideMutation::Hidden(true),
+        123,
+    )
+    .unwrap();
     meta.put_driver_value(&override_key("hosted", "flask", "bad.whl"), &[0xff, 0xfe])
         .unwrap();
     let mut seen = Vec::new();
@@ -493,7 +501,10 @@ fn test_scan_override_records_visits_valid_and_skips_non_utf8() {
     .unwrap();
     assert_eq!(
         seen,
-        vec![("hosted/flask/flask-1.0.whl".to_owned(), "hidden".to_owned())]
+        vec![(
+            "hosted/flask/flask-1.0.whl".to_owned(),
+            r#"{"hidden":true,"yanked":false}"#.to_owned()
+        )]
     );
 }
 
@@ -508,7 +519,14 @@ fn test_list_overrides_reports_a_missing_driver_table() {
 fn test_scan_override_records_propagates_store_errors_after_visiting_healthy_records() {
     let (_valid_directory, valid) = store();
     valid
-        .put_override(true, "hosted", "flask", "flask-1.0.whl", "hidden", 123)
+        .set_override(
+            true,
+            "hosted",
+            "flask",
+            "flask-1.0.whl",
+            OverrideMutation::Hidden(true),
+            123,
+        )
         .unwrap();
     let (_invalid_directory, invalid) = uninitialized_store();
     let mut seen = 0;
@@ -527,8 +545,15 @@ fn test_scan_override_records_propagates_store_errors_after_visiting_healthy_rec
 #[test]
 fn test_scan_override_records_propagates_the_visitor_error() {
     let (_dir, meta) = store();
-    meta.put_override(true, "hosted", "flask", "flask-1.0.whl", "hidden", 123)
-        .unwrap();
+    meta.set_override(
+        true,
+        "hosted",
+        "flask",
+        "flask-1.0.whl",
+        OverrideMutation::Hidden(true),
+        123,
+    )
+    .unwrap();
 
     let error = meta
         .scan_override_records(|_key, _value| Err(std::io::Error::other("stop")))
@@ -714,18 +739,26 @@ fn test_delete_upload_of_a_missing_record_journals_nothing() {
     assert_eq!(meta.current_serial().unwrap(), 0, "a no-op delete records no serial");
 }
 
-#[test]
-fn test_put_override_hidden_journals_hide() {
+#[rstest]
+#[case::hide(OverrideMutation::Hidden(true), r#"{"hidden":true,"yanked":false}"#)]
+#[case::yank(OverrideMutation::Yanked(&Yanked::Yes), r#"{"hidden":false,"yanked":true}"#)]
+#[case::yank_with_a_reason(
+    OverrideMutation::Yanked(&Yanked::Reason(String::from("CVE-2026-1234"))),
+    r#"{"hidden":false,"yanked":"CVE-2026-1234"}"#
+)]
+fn test_set_override_stores_the_record_and_journals_it(#[case] mutation: OverrideMutation<'_>, #[case] stored: &str) {
     let (_dir, meta) = store();
 
-    meta.put_override(true, "hosted", "flask", "flask-1.0.whl", "hidden", 123)
+    let changed = meta
+        .set_override(true, "hosted", "flask", "flask-1.0.whl", mutation, 123)
         .unwrap();
 
+    assert!(changed);
     assert_eq!(
         meta.get_driver_value(&override_key("hosted", "flask", "flask-1.0.whl"))
             .unwrap()
             .as_deref(),
-        Some(b"hidden".as_slice())
+        Some(stored.as_bytes())
     );
     assert_eq!(meta.current_serial().unwrap(), 1, "the override is journaled");
     assert_eq!(
@@ -735,30 +768,30 @@ fn test_put_override_hidden_journals_hide() {
 }
 
 #[test]
-fn test_put_override_yanked_journals_yank() {
+fn test_set_override_that_repeats_the_current_value_journals_nothing() {
     let (_dir, meta) = store();
+    meta.set_override(
+        true,
+        "hosted",
+        "flask",
+        "flask-1.0.whl",
+        OverrideMutation::Yanked(&Yanked::Yes),
+        123,
+    )
+    .unwrap();
 
-    meta.put_override(true, "hosted", "flask", "flask-1.0.whl", "yanked", 123)
+    let changed = meta
+        .set_override(
+            true,
+            "hosted",
+            "flask",
+            "flask-1.0.whl",
+            OverrideMutation::Yanked(&Yanked::Yes),
+            456,
+        )
         .unwrap();
 
-    assert_eq!(
-        meta.get_driver_value(&override_key("hosted", "flask", "flask-1.0.whl"))
-            .unwrap()
-            .as_deref(),
-        Some(b"yanked".as_slice())
-    );
-    assert_eq!(meta.current_serial().unwrap(), 1, "the override is journaled");
-}
-
-#[test]
-fn test_put_override_that_repeats_the_current_value_journals_nothing() {
-    let (_dir, meta) = store();
-    meta.put_override(true, "hosted", "flask", "flask-1.0.whl", "yanked", 123)
-        .unwrap();
-
-    meta.put_override(true, "hosted", "flask", "flask-1.0.whl", "yanked", 456)
-        .unwrap();
-
+    assert!(!changed);
     assert_eq!(
         meta.current_serial().unwrap(),
         1,
@@ -770,64 +803,119 @@ fn test_put_override_that_repeats_the_current_value_journals_nothing() {
     );
 }
 
+#[rstest]
+#[case::restore(OverrideMutation::Hidden(true), OverrideMutation::Hidden(false))]
+#[case::unyank(OverrideMutation::Yanked(&Yanked::Yes), OverrideMutation::Yanked(&Yanked::No))]
+fn test_set_override_removes_a_record_that_imposes_nothing(
+    #[case] impose: OverrideMutation<'_>,
+    #[case] reverse: OverrideMutation<'_>,
+) {
+    let (_dir, meta) = store();
+    meta.set_override(true, "hosted", "flask", "flask-1.0.whl", impose, 123)
+        .unwrap();
+
+    let changed = meta
+        .set_override(true, "hosted", "flask", "flask-1.0.whl", reverse, 456)
+        .unwrap();
+
+    assert!(changed);
+    assert!(
+        meta.get_driver_value(&override_key("hosted", "flask", "flask-1.0.whl"))
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(meta.current_serial().unwrap(), 2, "the reversal is journaled");
+}
+
 #[test]
-fn test_delete_override_of_a_hidden_file_journals_restore() {
+fn test_set_override_keeps_the_yank_of_a_hidden_file() {
+    let (_dir, meta) = store();
+    meta.set_override(
+        true,
+        "hosted",
+        "flask",
+        "flask-1.0.whl",
+        OverrideMutation::Yanked(&Yanked::Reason(String::from("CVE-2026-1234"))),
+        123,
+    )
+    .unwrap();
+    meta.set_override(
+        true,
+        "hosted",
+        "flask",
+        "flask-1.0.whl",
+        OverrideMutation::Hidden(true),
+        124,
+    )
+    .unwrap();
+
+    meta.set_override(
+        true,
+        "hosted",
+        "flask",
+        "flask-1.0.whl",
+        OverrideMutation::Hidden(false),
+        125,
+    )
+    .unwrap();
+
+    let stored = meta.list_overrides("hosted", "flask").unwrap();
+    assert_eq!(
+        FileOverride::decode_all(stored).get("flask-1.0.whl"),
+        Some(&FileOverride {
+            hidden: false,
+            yanked: Yanked::Reason(String::from("CVE-2026-1234")),
+        })
+    );
+}
+
+#[test]
+fn test_set_override_of_an_absent_record_that_changes_nothing_journals_nothing() {
+    let (_dir, meta) = store();
+
+    let changed = meta
+        .set_override(
+            true,
+            "hosted",
+            "flask",
+            "flask-1.0.whl",
+            OverrideMutation::Hidden(false),
+            123,
+        )
+        .unwrap();
+
+    assert!(!changed);
+    assert_eq!(meta.current_serial().unwrap(), 0, "a no-op reversal records no serial");
+}
+
+#[test]
+fn test_set_override_writes_over_a_corrupt_record() {
     let (_dir, meta) = store();
     meta.put_driver_value(&override_key("hosted", "flask", "flask-1.0.whl"), b"hidden")
         .unwrap();
 
-    let existed = meta
-        .delete_override(true, "hosted", "flask", "flask-1.0.whl", 123)
-        .unwrap();
+    meta.set_override(
+        true,
+        "hosted",
+        "flask",
+        "flask-1.0.whl",
+        OverrideMutation::Hidden(true),
+        123,
+    )
+    .unwrap();
 
-    assert!(existed);
-    assert!(
-        meta.get_driver_value(&override_key("hosted", "flask", "flask-1.0.whl"))
-            .unwrap()
-            .is_none()
-    );
-    assert_eq!(meta.current_serial().unwrap(), 1, "the restore is journaled");
     assert_eq!(
-        read_journal_entries(&meta, 0, 1).unwrap().entries[0].version.as_deref(),
-        Some("1.0")
-    );
-}
-
-#[test]
-fn test_delete_override_of_a_yanked_file_journals_unyank() {
-    let (_dir, meta) = store();
-    meta.put_driver_value(&override_key("hosted", "flask", "flask-1.0.whl"), b"yanked")
-        .unwrap();
-
-    let existed = meta
-        .delete_override(true, "hosted", "flask", "flask-1.0.whl", 123)
-        .unwrap();
-
-    assert!(existed);
-    assert!(
         meta.get_driver_value(&override_key("hosted", "flask", "flask-1.0.whl"))
             .unwrap()
-            .is_none()
+            .as_deref(),
+        Some(br#"{"hidden":true,"yanked":false}"#.as_slice())
     );
-    assert_eq!(meta.current_serial().unwrap(), 1, "the un-yank is journaled");
-}
-
-#[test]
-fn test_delete_override_of_a_missing_file_journals_nothing() {
-    let (_dir, meta) = store();
-
-    let existed = meta
-        .delete_override(true, "hosted", "flask", "flask-1.0.whl", 123)
-        .unwrap();
-
-    assert!(!existed);
-    assert_eq!(meta.current_serial().unwrap(), 0, "a no-op reversal records no serial");
 }
 
 #[rstest]
-#[case::unchanged(Some("hidden"), OverrideMutation::Put("hidden"), 0)]
-#[case::missing(None, OverrideMutation::Delete, 0)]
-#[case::changed(None, OverrideMutation::Put("hidden"), 1)]
+#[case::unchanged(Some(r#"{"hidden":true,"yanked":false}"#), OverrideMutation::Hidden(true), 0)]
+#[case::missing(None, OverrideMutation::Hidden(false), 0)]
+#[case::changed(None, OverrideMutation::Hidden(true), 1)]
 fn test_combined_mutation_reports_override_changes(
     #[case] stored: Option<&str>,
     #[case] mutation: OverrideMutation<'_>,

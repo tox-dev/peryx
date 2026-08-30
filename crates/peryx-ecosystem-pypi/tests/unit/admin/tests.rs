@@ -121,8 +121,15 @@ fn test_cache_record_counts_counts_each_record_kind() {
     seed_valid_page(&meta);
     meta.put_upload("pypi", "flask", "flask-1.0.whl", br#"{"version":"1.0"}"#)
         .unwrap();
-    meta.put_override(true, "pypi", "flask", "flask-1.0.whl", "yanked", 0)
-        .unwrap();
+    meta.set_override(
+        true,
+        "pypi",
+        "flask",
+        "flask-1.0.whl",
+        crate::store::OverrideMutation::Yanked(&Yanked::Yes),
+        0,
+    )
+    .unwrap();
     meta.put_provenance(&"a".repeat(64), &"b".repeat(64), 16).unwrap();
     let counts: std::collections::HashMap<String, u64> = cache_record_counts(&meta).unwrap().into_iter().collect();
     assert_eq!(counts["file_url_records"], 1);
@@ -208,7 +215,7 @@ fn test_fsck_metadata_reports_every_invalid_record_kind() {
     meta.put_driver_value("pypi\u{0}d\u{0}not-hex", b"u\nm\npypi").unwrap();
     meta.put_driver_value("pypi\u{0}p\u{0}pypi/flask", b"").unwrap();
     meta.put_upload("pypi", "flask", "flask-1.0.whl", b"not json").unwrap();
-    meta.put_override(true, "pypi", "flask", "flask-1.0.whl", "bogus", 0)
+    meta.put_driver_value("pypi\u{0}o\u{0}pypi/flask/flask-1.0.whl", b"bogus")
         .unwrap();
     meta.put_driver_value("pypi\u{0}a\u{0}not-hex", b"abc\n16").unwrap();
 
@@ -224,7 +231,7 @@ fn test_fsck_metadata_reports_every_invalid_record_kind() {
 #[case::project_index('p', "/flask", "Flask".to_owned(), "project")]
 #[case::project_name('p', "pypi/", "Flask".to_owned(), "project")]
 #[case::project_display('p', "pypi/flask", String::new(), "project")]
-#[case::override_filename('o', "hosted/demo/", "hidden".to_owned(), "override")]
+#[case::override_filename('o', "hosted/demo/", r#"{"hidden":true,"yanked":false}"#.to_owned(), "override")]
 #[case::override_kind('o', "hosted/demo/demo.whl", "invalid".to_owned(), "override")]
 fn test_fsck_metadata_rejects_each_invalid_field(
     #[case] table: char,

@@ -257,6 +257,68 @@ async fn test_delete_and_restore_upstream_file_via_overlay() {
     );
 }
 #[tokio::test]
+async fn test_restore_returns_an_upstream_file_still_yanked() {
+    let h = authority_harness().await;
+    let digest = Digest::of(b"wheel");
+    mount_detail(&h.server, digest.as_str(), "http://x/flask-1.0-py3-none-any.whl", None).await;
+    let status = request(
+        &h.state,
+        "PUT",
+        "/root/pypi/flask/1.0/yank?reason=CVE-2026-1234",
+        Some(&upload_auth()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let status = request(&h.state, "DELETE", "/root/pypi/flask/", Some(&upload_auth())).await;
+    assert_eq!(status, StatusCode::OK);
+    let status = request(&h.state, "PUT", "/root/pypi/flask/restore", Some(&upload_auth())).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (_, _, json) = get(&h.state, "/root/pypi/simple/flask/", Some("application/json")).await;
+    assert!(json.contains(r#""yanked":"CVE-2026-1234""#), "{json}");
+    let (_, _, html) = get(&h.state, "/root/pypi/simple/flask/", Some("text/html")).await;
+    assert!(html.contains(r#"data-yanked="CVE-2026-1234""#), "{html}");
+}
+#[tokio::test]
+async fn test_restore_returns_an_unyanked_upstream_file_unyanked() {
+    let h = authority_harness().await;
+    let digest = Digest::of(b"wheel");
+    mount_detail(&h.server, digest.as_str(), "http://x/flask-1.0-py3-none-any.whl", None).await;
+
+    let status = request(&h.state, "DELETE", "/root/pypi/flask/", Some(&upload_auth())).await;
+    assert_eq!(status, StatusCode::OK);
+    let status = request(&h.state, "PUT", "/root/pypi/flask/restore", Some(&upload_auth())).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (_, _, json) = get(&h.state, "/root/pypi/simple/flask/", Some("application/json")).await;
+    assert!(json.contains("flask-1.0-py3-none-any.whl"), "{json}");
+    assert!(!json.contains(r#""yanked":true"#), "{json}");
+    let (_, _, html) = get(&h.state, "/root/pypi/simple/flask/", Some("text/html")).await;
+    assert!(!html.contains("data-yanked"), "{html}");
+}
+#[tokio::test]
+async fn test_unyanking_a_deleted_upstream_file_leaves_it_hidden() {
+    let h = authority_harness().await;
+    let digest = Digest::of(b"wheel");
+    mount_detail(&h.server, digest.as_str(), "http://x/flask-1.0-py3-none-any.whl", None).await;
+    let status = request(&h.state, "PUT", "/root/pypi/flask/1.0/yank", Some(&upload_auth())).await;
+    assert_eq!(status, StatusCode::OK);
+    let status = request(&h.state, "DELETE", "/root/pypi/flask/", Some(&upload_auth())).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let status = request(&h.state, "DELETE", "/root/pypi/flask/1.0/yank", Some(&upload_auth())).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (_, _, json) = get(&h.state, "/root/pypi/simple/flask/", Some("application/json")).await;
+    assert!(!json.contains("flask-1.0-py3-none-any.whl"), "{json}");
+    let status = request(&h.state, "PUT", "/root/pypi/flask/restore", Some(&upload_auth())).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, _, restored) = get(&h.state, "/root/pypi/simple/flask/", Some("application/json")).await;
+    assert!(restored.contains("flask-1.0-py3-none-any.whl"), "{restored}");
+    assert!(!restored.contains(r#""yanked":true"#), "{restored}");
+}
+#[tokio::test]
 async fn test_delete_one_upstream_version_leaves_other() {
     let h = authority_harness().await;
     let digest = Digest::of(b"wheel");
@@ -390,12 +452,26 @@ async fn test_restore_skips_yanked_overrides_and_other_versions() {
     h.state
         .serving
         .meta
-        .put_override(true, "hosted", "flask", "flask-1.0-py3-none-any.whl", "yanked", 0)
+        .set_override(
+            true,
+            "hosted",
+            "flask",
+            "flask-1.0-py3-none-any.whl",
+            crate::store::OverrideMutation::Yanked(&Yanked::Yes),
+            0,
+        )
         .unwrap();
     h.state
         .serving
         .meta
-        .put_override(true, "hosted", "flask", "flask-2.0-py3-none-any.whl", "hidden", 0)
+        .set_override(
+            true,
+            "hosted",
+            "flask",
+            "flask-2.0-py3-none-any.whl",
+            crate::store::OverrideMutation::Hidden(true),
+            0,
+        )
         .unwrap();
 
     let status = request(&h.state, "PUT", "/root/pypi/flask/1.0/restore", Some(&upload_auth())).await;

@@ -13,7 +13,6 @@ mod types;
 mod validator;
 
 pub use context::page_context;
-pub(crate) use context::{hidden_override, yanked_override};
 pub use transformer::PageTransformer;
 pub(crate) use transformer::{MAX_PAGE_BYTES, metadata_sibling};
 pub use types::{PageContext, PageSummary, Registration, TransformError};
