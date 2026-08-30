@@ -19,6 +19,7 @@ axum = { workspace = true, features = ["matched-path"] }
 base64.workspace = true
 http-body-util.workspace = true
 mediatype.workspace = true
+tower = { workspace = true, features = ["util"] }
 tower-http.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -35,7 +36,6 @@ peryx-upstream.workspace = true
 peryx-test-support.workspace = true
 rstest.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
-tower = { workspace = true, features = ["util"] }
 tracing-subscriber.workspace = true
 wiremock.workspace = true
 redb.workspace = true

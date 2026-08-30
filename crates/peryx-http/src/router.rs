@@ -11,12 +11,13 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse as _, Response};
 use axum::routing::{any, delete, get, post, put};
 use http_body_util::BodyExt as _;
+use tower::{ServiceBuilder, util::MapRequestLayer};
 use tower_http::trace::{DefaultOnResponse, TraceLayer};
 
 use crate::handlers;
 use peryx_driver::http_services::HttpDomainServices;
 use peryx_driver::rate_limit;
-use peryx_driver::state::{AppState, ServingState};
+use peryx_driver::state::AppState;
 use peryx_driver::{
     ProcessRouteMethodNotAllowed, RouteDescriptor, RouteMethod, RoutePosture, RouteRateLimit, RouteSet,
 };
@@ -78,15 +79,17 @@ pub fn router_with_services(state: Arc<AppState>, services: HttpDomainServices) 
     } else {
         router
     };
+    let serving = Arc::clone(&state.serving);
     router
-        .layer(Extension(services))
-        .layer(middleware::from_fn_with_state(state.serving.clone(), count_request))
+        .layer(
+            ServiceBuilder::new()
+                .layer(MapRequestLayer::new(move |request: Request| {
+                    serving.requests.fetch_add(1, Ordering::Relaxed);
+                    request
+                }))
+                .layer(Extension(services)),
+        )
         .with_state(state)
-}
-
-async fn count_request(State(state): State<Arc<ServingState>>, request: Request, next: Next) -> Response {
-    state.requests.fetch_add(1, Ordering::Relaxed);
-    next.run(request).await
 }
 
 fn request_span(request: &Request) -> tracing::Span {
