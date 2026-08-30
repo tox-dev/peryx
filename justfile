@@ -18,6 +18,29 @@ _project-temp:
 _docker-ready:
     docker info >/dev/null
 
+# Check CodSpeed benchmark selections.
+_codspeed-target-contract:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    metadata="$(cargo metadata --no-deps --format-version 1)"
+    jq -e '
+      def benches($package):
+        [.packages[] | select(.name == $package) | .targets[] | select(.kind == ["bench"])];
+      (benches("peryx-ecosystem-oci") | length) == 4 and
+      (benches("peryx-ecosystem-pypi") | map(select(."required-features" | length == 0)) | length) == 7 and
+      (benches("peryx-ecosystem-pypi") | map(select(.name == "serve" or .name == "transform")) | length) == 2
+    ' <<<"$metadata"
+    just --dry-run codspeed-build peryx-ecosystem-oci all 2>&1 \
+      | grep -F 'case "all" in'
+    just --dry-run codspeed-build peryx-ecosystem-pypi parsing 2>&1 \
+      | grep -F 'case "parsing" in'
+    just --dry-run codspeed-build peryx-ecosystem-pypi serving 2>&1 \
+      | grep -F 'case "serving" in'
+    just --dry-run codspeed-run peryx-ecosystem-oci 2>&1 \
+      | grep -F 'cargo codspeed run -m "simulation" --package "peryx-ecosystem-oci"'
+    just --dry-run codspeed-run peryx-ecosystem-pypi 2>&1 \
+      | grep -F 'cargo codspeed run -m "simulation" --package "peryx-ecosystem-pypi"'
+
 # Check frontend coverage target isolation.
 _coverage-target-contract:
     CARGO_TARGET_DIR="{{ project_tmp }}/coverage-target-contract" just --dry-run coverage-frontend 2>&1 \
@@ -47,7 +70,7 @@ lint-docs: _project-temp
     prek run codespell --all-files
 
 # Check workflows and repository automation.
-lint-automation: _project-temp _coverage-target-contract
+lint-automation: _project-temp _codspeed-target-contract _coverage-target-contract
     SKIP=cargo-fmt,cargo-clippy,mdformat,codespell prek run --all-files
 
 # Check dependency policy.
@@ -492,18 +515,29 @@ conformance suite binary="": _project-temp
       OCI_REPO1=store/conformance OCI_REPO2=store/crossmount OCI_USERNAME=_ \
       OCI_PASSWORD=conformance OCI_DATA_SHA512=false "$suite")
 
-# Build one package's CodSpeed benchmarks.
-codspeed-build package mode="simulation": _project-temp
-    cargo codspeed build --locked -m "{{ mode }}" --package "{{ package }}" {{ if package == "peryx-ecosystem-pypi" { "--no-default-features" } else { "" } }}
+# Build one package selection's CodSpeed benchmarks.
+codspeed-build package suite mode="simulation": _project-temp
+    #!/usr/bin/env bash
+    set -euo pipefail
+    flags=()
+    case "{{ suite }}" in
+      parsing) flags=(--no-default-features) ;;
+      serving) flags=(--features bench --bench serve --bench transform) ;;
+    esac
+    cargo codspeed build --locked -m "{{ mode }}" --package "{{ package }}" "${flags[@]}"
 
 # Run one package's built CodSpeed benchmarks.
-codspeed-run package: _project-temp
-    cargo codspeed run --package "{{ package }}"
+codspeed-run package mode="simulation": _project-temp
+    cargo codspeed run -m "{{ mode }}" --package "{{ package }}"
 
 # Build and run one package's CodSpeed benchmarks locally.
 codspeed package mode="simulation": _project-temp
-    just codspeed-build "{{ package }}" "{{ mode }}"
-    codspeed run --mode "{{ mode }}" -- just codspeed-run "{{ package }}"
+    suites=(all); \
+    if [[ "{{ package }}" == peryx-ecosystem-pypi ]]; then suites=(parsing serving); fi; \
+    for suite in "${suites[@]}"; do \
+      just codspeed-build "{{ package }}" "$suite" "{{ mode }}"; \
+      just codspeed-run "{{ package }}" "{{ mode }}"; \
+    done
 
 # Build a local Python wheel.
 package-wheel +args: _project-temp

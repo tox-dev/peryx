@@ -22,8 +22,13 @@ jobs:
         include:
           - ecosystem: OCI
             package: peryx-ecosystem-oci
-          - ecosystem: PyPI
+            suite: all
+          - ecosystem: PyPI parsing
             package: peryx-ecosystem-pypi
+            suite: parsing
+          - ecosystem: PyPI serving
+            package: peryx-ecosystem-pypi
+            suite: serving
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -36,14 +41,15 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           tools: just cargo:cargo-codspeed
-      - run: just codspeed-build "$PACKAGE"
+      - run: just codspeed-build "$PACKAGE" "$SUITE"
         env:
           PACKAGE: ${{ matrix.package }}
+          SUITE: ${{ matrix.suite }}
       - uses: CodSpeedHQ/action@373d6868929f444bc08d901fd0eb0ad52a8875ea # v5.2.1
         with:
           exclude-allocations: true
           mode: simulation
-          run: just codspeed-run "${{ matrix.package }}"
+          run: just codspeed-run "${{ matrix.package }}" simulation
 
   codspeed-gate:
     if: always()

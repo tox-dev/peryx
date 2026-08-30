@@ -62,14 +62,13 @@ CARGO_TARGET_DIR=.tox/target-catalog cargo build --release \
 
 ## CodSpeed
 
-CodSpeed runs owner-selected benchmarks on its stable bare-metal runners:
+CodSpeed runs owner-selected benchmarks in simulation mode on standard GitHub-hosted runners:
 
 ```shell
-just codspeed PACKAGE MODE
+just codspeed PACKAGE
 ```
 
-Package metadata declares the selected targets, job count, label, and change key. Add selection there instead of adding
-package branches to workflow YAML.
+PyPI parsing and serving benchmarks use separate builds so parser measurements exclude serving dependencies. CI runs
+those selections in parallel; the local recipe runs both.
 
-Use `simulation` for in-process compute paths and `walltime` for filesystem or socket paths. Compare walltime revisions
-under the same host conditions; CI uses CodSpeed's bare-metal runners for that reason.
+Use `simulation` for in-process compute paths. Compare wall-time revisions under the same host conditions outside CI.

@@ -25,7 +25,7 @@ required job succeeds.
 
 CodSpeed runs the ecosystem benchmark packages on standard GitHub-hosted runners in
 [simulation mode][codspeed-simulation]. This avoids quota-limited Macro Runners. Run the same benchmark path with
-`just codspeed`.
+`just codspeed PACKAGE`.
 
 ## Test synchronization
 
