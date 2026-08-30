@@ -137,12 +137,7 @@ async fn delivery_loop<H: WebhookHost>(
         match result {
             Ok(()) => storage_backoff = INITIAL_STORAGE_BACKOFF,
             Err(error) => {
-                tracing::warn!(
-                    target: "peryx::webhook",
-                    error = ?error,
-                    retry_after_ms = storage_backoff.as_millis(),
-                    "webhook storage access failed; retrying"
-                );
+                log_storage_error(&error, storage_backoff);
                 tokio::select! {
                     biased;
                     _ = &mut cancelled => return Ok(()),
@@ -224,6 +219,11 @@ fn wait_secs(next: i64, now: i64) -> u64 {
     u64::try_from(next.saturating_sub(now))
         .unwrap_or(0)
         .clamp(1, MAX_SCHEDULER_SLEEP_SECS)
+}
+
+fn log_storage_error(error: &MetaError, retry_after: Duration) {
+    let retry_after_ms = retry_after.as_millis();
+    tracing::warn!(target: "peryx::webhook", ?error, retry_after_ms, "webhook storage access failed; retrying");
 }
 
 fn next_storage_backoff(current: Duration) -> Duration {
@@ -471,7 +471,7 @@ fn persist_attempt<H: WebhookHost>(host: &H, pending: &PendingUpdate) -> Result<
             );
         }
         Ok(record) => log_delivery_failure(record.as_ref()),
-        Err(error) => log_update_error(Some(error)),
+        Err(error) => log_update_error(error),
     }
     result.map(drop)
 }
@@ -505,10 +505,8 @@ fn log_delivery_failure(record: Option<&WebhookDeliveryRecord>) {
     }
 }
 
-fn log_update_error(err: Option<&MetaError>) {
-    if let Some(err) = err {
-        tracing::error!(target: "peryx::webhook", error = ?err, "webhook result update failed");
-    }
+fn log_update_error(error: &MetaError) {
+    tracing::error!(target: "peryx::webhook", error = ?error, "webhook result update failed");
 }
 
 fn backoff_secs(attempts: u16) -> i64 {

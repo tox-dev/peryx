@@ -143,7 +143,7 @@ fn test_delivery_logs_report_results_and_storage_errors() {
         log_delivery_failure(Some(&delivery));
         log_delivery_success(None, 200);
         log_delivery_failure(None);
-        log_update_error(Some(&error));
+        log_update_error(&error);
     });
 
     let output = std::fs::read_to_string(log).unwrap();
