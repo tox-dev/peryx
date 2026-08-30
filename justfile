@@ -2,6 +2,8 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 
 project_tmp := justfile_directory() + "/.tox/tmp"
 coverage_target_root := justfile_directory() + "/.tox/coverage-target"
+native_coverage_target := env_var_or_default("CARGO_TARGET_DIR", justfile_directory() + "/target") + "/llvm-cov-target"
+native_coverage_binary := native_coverage_target + "/debug/peryx" + if os_family() == "windows" { ".exe" } else { "" }
 frontend_root := justfile_directory() + "/.tox/frontend"
 tools_root := justfile_directory() + "/.tox/tools"
 export PERYX_TEST_TMPDIR := project_tmp
@@ -41,12 +43,23 @@ _codspeed-target-contract:
     just --dry-run codspeed-run peryx-ecosystem-pypi 2>&1 \
       | grep -F 'cargo codspeed run -m "simulation" --package "peryx-ecosystem-pypi"'
 
-# Check frontend coverage target isolation.
+# Check coverage target isolation.
 _coverage-target-contract:
     CARGO_TARGET_DIR="{{ project_tmp }}/coverage-target-contract" just --dry-run coverage-frontend 2>&1 \
       | grep -F 'export CARGO_TARGET_DIR="{{ project_tmp }}/coverage-target-contract/frontend"'
     env -u CARGO_TARGET_DIR just --dry-run coverage-frontend 2>&1 \
       | grep -F 'export CARGO_TARGET_DIR="{{ coverage_target_root }}/frontend"'
+    just --dry-run coverage-native 2>&1 \
+      | grep -F 'PERYX_BIN="{{ native_coverage_binary }}"'
+
+# Check that archived sanitizer tests receive the relocated Peryx binary.
+_sanitizer-target-contract:
+    just --dry-run sanitizer-run archive.tar.zst slice:1/8 2>&1 \
+      | grep -F 'tar --extract --to-stdout --file "archive.tar.zst" target/nextest/binaries-metadata.json'
+    just --dry-run sanitizer-run archive.tar.zst slice:1/8 2>&1 \
+      | grep -F 'PERYX_BIN="$scratch/target/$binary"'
+    just --dry-run sanitizer-run archive.tar.zst slice:1/8 2>&1 \
+      | grep -F -- '--extract-to "$scratch"'
 
 # Check mutation shard planning.
 _mutation-shard-count-contract:
@@ -76,7 +89,7 @@ lint-docs: _project-temp
     prek run codespell --all-files
 
 # Check workflows and repository automation.
-lint-automation: _project-temp _codspeed-target-contract _coverage-target-contract _mutation-shard-count-contract
+lint-automation: _project-temp _codspeed-target-contract _coverage-target-contract _mutation-shard-count-contract _sanitizer-target-contract
     SKIP=cargo-fmt,cargo-clippy,mdformat,codespell prek run --all-files
 
 # Check dependency policy.
@@ -141,31 +154,31 @@ platform-test: _project-temp
 
 # Run hermetic PyPI client boundary tests.
 e2e: _project-temp
-    just _system-test-build composition-pypi
-    PERYX_SINGLE_COMPOSITION=1 cargo nextest run -p peryx-pypi-system-tests \
+    PERYX_BIN="$(just _system-test-build composition-pypi)" PERYX_SINGLE_COMPOSITION=1 \
+      cargo nextest run -p peryx-pypi-system-tests \
       --features e2e --test e2e -E 'not(test(e2e_live))'
 
 # Run live PyPI client boundary tests.
 e2e-live: test-deps
-    just _system-test-build composition-pypi
-    PERYX_SINGLE_COMPOSITION=1 PATH="{{ tools_root }}/bin:$PATH" cargo nextest run -p peryx-pypi-system-tests \
+    PERYX_BIN="$(just _system-test-build composition-pypi)" PERYX_SINGLE_COMPOSITION=1 \
+      PATH="{{ tools_root }}/bin:$PATH" cargo nextest run -p peryx-pypi-system-tests \
       --features e2e-live --test e2e -E 'test(e2e_live)'
 
 # Run PyPI system tests without external-service cases.
 pypi-system: _project-temp
-    just _system-test-build composition-pypi
-    PERYX_SINGLE_COMPOSITION=1 cargo nextest run -p peryx-pypi-system-tests --tests \
+    PERYX_BIN="$(just _system-test-build composition-pypi)" PERYX_SINGLE_COMPOSITION=1 \
+      cargo nextest run -p peryx-pypi-system-tests --tests \
       -E 'not(binary(e2e)) & not(binary(availability)) & not(binary(s3_upload))'
 
 # Run OCI system tests without availability cases.
 oci-system: _project-temp
-    just _system-test-build composition-oci
-    PERYX_SINGLE_COMPOSITION=1 cargo nextest run -p peryx-oci-system-tests --tests -E 'not(binary(availability))'
+    PERYX_BIN="$(just _system-test-build composition-oci)" PERYX_SINGLE_COMPOSITION=1 \
+      cargo nextest run -p peryx-oci-system-tests --tests -E 'not(binary(availability))'
 
 # Run the PyPI S3 upload tests.
 s3: _project-temp
-    just _system-test-build composition-pypi
-    PERYX_SINGLE_COMPOSITION=1 cargo nextest run -p peryx-pypi-system-tests --test s3_upload
+    PERYX_BIN="$(just _system-test-build composition-pypi)" PERYX_SINGLE_COMPOSITION=1 \
+      cargo nextest run -p peryx-pypi-system-tests --test s3_upload
 
 # Run storage tests backed by S3 containers.
 storage-s3: _project-temp _docker-ready
@@ -174,10 +187,10 @@ storage-s3: _project-temp _docker-ready
 # Run distributed availability tests.
 availability: _project-temp
     cargo nextest run -p peryx --features availability-e2e --test availability --test cluster --test observability
-    just _system-test-build composition-pypi
-    PERYX_SINGLE_COMPOSITION=1 cargo nextest run -p peryx-pypi-system-tests --test availability
-    just _system-test-build composition-oci
-    PERYX_SINGLE_COMPOSITION=1 cargo nextest run -p peryx-oci-system-tests --test availability
+    PERYX_BIN="$(just _system-test-build composition-pypi)" PERYX_SINGLE_COMPOSITION=1 \
+      cargo nextest run -p peryx-pypi-system-tests --test availability
+    PERYX_BIN="$(just _system-test-build composition-oci)" PERYX_SINGLE_COMPOSITION=1 \
+      cargo nextest run -p peryx-oci-system-tests --test availability
 
 # Run an availability simulation selection.
 simulation filter="all()": _project-temp
@@ -195,7 +208,11 @@ features: _project-temp
 
 # Build the shipped server with one composition feature.
 _system-test-build feature: _project-temp
-    cargo build --package peryx --bin peryx --no-default-features --features "{{ feature }}"
+    cargo build --package peryx --bin peryx --no-default-features --features "{{ feature }}" \
+      --message-format json-render-diagnostics \
+      | jq -er 'if .reason == "compiler-message" then (.message.rendered | stderr | empty) \
+        elif .reason == "compiler-artifact" and .target.kind == ["bin"] and .target.name == "peryx" then .executable \
+        else empty end'
 
 # Check direct dependency lower bounds.
 direct-minimum: _project-temp
@@ -231,8 +248,23 @@ sanitizer-archive archive: _project-temp
 
 # Run a partition from an AddressSanitizer archive.
 sanitizer-run archive partition="slice:1/1": test-deps
-    ASAN_OPTIONS=allow_addr2line=1 PATH="{{ tools_root }}/bin:$PATH" \
-      cargo +nightly nextest run --archive-file "{{ archive }}" \
+    #!/usr/bin/env bash
+    set -euo pipefail
+    scratch=$(mktemp -d "{{ project_tmp }}/sanitizer.XXXXXX")
+    trap 'rm -rf "$scratch"' EXIT
+    binary=$(
+      tar --extract --to-stdout --file "{{ archive }}" target/nextest/binaries-metadata.json \
+        | jq -er '
+            [."rust-build-meta"."non-test-binaries"[][]
+              | select(.name == "peryx" and .kind == "bin-exe")
+              | .path]
+            | unique
+            | if length == 1 then .[0] else error("archive must contain one Peryx server binary") end
+          '
+    )
+    ASAN_OPTIONS=allow_addr2line=1 PERYX_BIN="$scratch/target/$binary" \
+      PATH="{{ tools_root }}/bin:$PATH" cargo +nightly nextest run \
+      --archive-file "{{ archive }}" --extract-to "$scratch" \
       --workspace-remap "{{ justfile_directory() }}" --profile ci --test-threads 1 \
       --partition "{{ partition }}" -E 'not(test(e2e_live))'
 
@@ -570,7 +602,8 @@ coverage-native output=".tox/coverage/native.lcov": test-deps _docker-ready
     mkdir -p "$(dirname "{{ output }}")"
     cargo llvm-cov clean --workspace
     cargo llvm-cov --workspace --all-features --bench '*' --no-report
-    PATH="{{ tools_root }}/bin:$PATH" cargo llvm-cov nextest --workspace \
+    PERYX_BIN="{{ native_coverage_binary }}" \
+      PATH="{{ tools_root }}/bin:$PATH" cargo llvm-cov nextest --workspace \
       --all-features --profile ci --lib --bins --tests --examples \
       -E 'not(test(e2e_live))' --no-report
     cargo llvm-cov report --no-default-ignore-filename-regex \

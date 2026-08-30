@@ -66,14 +66,52 @@ fn cargo_binary_falls_back_to_cargo_metadata() {
 }
 
 #[test]
-fn peryx_binary_uses_the_current_cargo_profile() {
+fn peryx_binary_uses_explicit_sources_in_order() {
     let _lock = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
-    temp_env::with_var("PERYX_BIN", None::<&Path>, || {
+    for (name, variables, expected) in [
+        (
+            "override",
+            [
+                ("PERYX_BIN", Some("override")),
+                ("NEXTEST_BIN_EXE_peryx", Some("nextest")),
+                ("CARGO_BIN_EXE_peryx", Some("cargo")),
+            ],
+            "override",
+        ),
+        (
+            "nextest",
+            [
+                ("PERYX_BIN", None),
+                ("NEXTEST_BIN_EXE_peryx", Some("nextest")),
+                ("CARGO_BIN_EXE_peryx", Some("cargo")),
+            ],
+            "nextest",
+        ),
+        (
+            "cargo",
+            [
+                ("PERYX_BIN", None),
+                ("NEXTEST_BIN_EXE_peryx", None),
+                ("CARGO_BIN_EXE_peryx", Some("cargo")),
+            ],
+            "cargo",
+        ),
+    ] {
+        temp_env::with_vars(variables, || {
+            assert_eq!(peryx_binary(), PathBuf::from(expected), "{name}");
+        });
+    }
+}
+
+#[test]
+fn peryx_binary_falls_back_to_path() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+
+    temp_env::with_vars_unset(["PERYX_BIN", "NEXTEST_BIN_EXE_peryx", "CARGO_BIN_EXE_peryx"], || {
         assert_eq!(
             peryx_binary(),
-            peryx_test_support::cargo_binary("peryx-test-fixture")
-                .with_file_name(format!("peryx{}", std::env::consts::EXE_SUFFIX)),
+            PathBuf::from(format!("peryx{}", std::env::consts::EXE_SUFFIX))
         );
     });
 }

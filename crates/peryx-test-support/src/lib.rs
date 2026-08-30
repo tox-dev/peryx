@@ -1608,23 +1608,16 @@ fn inherited_listener_command(binary: &Path, listeners: NodeListeners, log: std:
     command
 }
 
-/// Resolves the shipped server binary from `PERYX_BIN` or the current Cargo profile directory.
-///
-/// # Panics
-/// Panics if `current_exe` fails or its path has no Cargo profile ancestor.
+/// Resolves the shipped server from runtime metadata, falling back to `PATH`.
 #[must_use]
 pub fn peryx_binary() -> PathBuf {
-    std::env::var_os("PERYX_BIN").map_or_else(
-        || {
-            std::env::current_exe()
-                .expect("current test executable path")
-                .parent()
-                .and_then(Path::parent)
-                .expect("Cargo profile directory")
-                .join(format!("peryx{}", std::env::consts::EXE_SUFFIX))
-        },
-        PathBuf::from,
-    )
+    ["PERYX_BIN", "NEXTEST_BIN_EXE_peryx", "CARGO_BIN_EXE_peryx"]
+        .into_iter()
+        .find_map(std::env::var_os)
+        .map_or_else(
+            || PathBuf::from(format!("peryx{}", std::env::consts::EXE_SUFFIX)),
+            PathBuf::from,
+        )
 }
 
 /// Put a child in its own process group so the harness can signal all descendants.
