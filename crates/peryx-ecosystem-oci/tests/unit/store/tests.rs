@@ -69,6 +69,76 @@ fn test_manifest_round_trips_through_the_store() {
 }
 
 #[test]
+fn test_manifest_media_type_at_the_storage_limit_round_trips() {
+    let (_dir, meta) = store();
+    let manifest = Manifest {
+        media_type: "a".repeat(MAX_MEDIA_TYPE_BYTES),
+        bytes: b"body".to_vec(),
+    };
+    record_manifest(&meta, "hub", "app", "sha256:limit", &manifest).unwrap();
+    assert_eq!(get_manifest(&meta, "sha256:limit").unwrap(), Some(manifest));
+}
+
+#[test]
+fn test_manifest_media_type_over_the_storage_limit_is_not_recorded() {
+    let (_dir, meta) = store();
+    let result = record_manifest(
+        &meta,
+        "hub",
+        "app",
+        "sha256:overflow",
+        &Manifest {
+            media_type: "a".repeat(MAX_MEDIA_TYPE_BYTES + 1),
+            bytes: b"body".to_vec(),
+        },
+    );
+    assert!(matches!(
+        result,
+        Err(ManifestWriteError::MediaTypeTooLong(length)) if length == MAX_MEDIA_TYPE_BYTES + 1
+    ));
+    assert_eq!(
+        (
+            get_manifest(&meta, "sha256:overflow").unwrap(),
+            manifest_is_member(&meta, "hub", "app", "sha256:overflow").unwrap(),
+        ),
+        (None, false)
+    );
+}
+
+#[test]
+fn test_manifest_write_error_names_the_record_limit() {
+    assert_eq!(
+        ManifestWriteError::MediaTypeTooLong(MAX_MEDIA_TYPE_BYTES + 1).to_string(),
+        "manifest media type is 65536 bytes, over the 65535-byte record limit"
+    );
+}
+
+#[test]
+fn test_manifest_write_error_forwards_the_store_message() {
+    let decode = serde_json::from_str::<u8>("nope").unwrap_err();
+    let fault = MetaError::Decode(decode);
+    let expected = fault.to_string();
+    assert_eq!(ManifestWriteError::from(fault).to_string(), expected);
+}
+
+#[test]
+fn test_manifest_decoder_reads_the_existing_record_format() {
+    let (_dir, meta) = store();
+    meta.put_driver_value(
+        "oci\0m\0sha256:existing",
+        &[&4u16.to_be_bytes()[..], &b"type"[..], &b"body"[..]].concat(),
+    )
+    .unwrap();
+    assert_eq!(
+        get_manifest(&meta, "sha256:existing").unwrap(),
+        Some(Manifest {
+            media_type: "type".to_owned(),
+            bytes: b"body".to_vec(),
+        })
+    );
+}
+
+#[test]
 fn test_origin_maps_to_the_neutral_source() {
     assert_eq!(OciArtifactOrigin::Pushed.artifact_source(), ArtifactSource::Hosted);
     assert_eq!(OciArtifactOrigin::Mirrored.artifact_source(), ArtifactSource::Proxy);

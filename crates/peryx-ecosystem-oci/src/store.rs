@@ -86,14 +86,31 @@ pub struct Manifest {
     pub bytes: Vec<u8>,
 }
 
+/// The longest media type a manifest record can carry: its length prefix is two big-endian bytes, so a
+/// longer one would wrap and shift the record boundary, and decode would read header bytes as manifest
+/// content that no longer hashes to the digest the record is keyed under.
+pub const MAX_MEDIA_TYPE_BYTES: usize = u16::MAX as usize;
+
+/// A fault while writing a manifest record: the metadata store failed, or the media type does not fit
+/// the record format.
+#[derive(Debug, thiserror::Error)]
+pub enum ManifestWriteError {
+    #[error(transparent)]
+    Store(#[from] MetaError),
+    #[error("manifest media type is {0} bytes, over the {MAX_MEDIA_TYPE_BYTES}-byte record limit")]
+    MediaTypeTooLong(usize),
+}
+
 impl Manifest {
-    fn encode(&self) -> Vec<u8> {
+    fn encode(&self) -> Result<Vec<u8>, ManifestWriteError> {
         let media_type = self.media_type.as_bytes();
+        let length =
+            u16::try_from(media_type.len()).map_err(|_| ManifestWriteError::MediaTypeTooLong(media_type.len()))?;
         let mut out = Vec::with_capacity(2 + media_type.len() + self.bytes.len());
-        out.extend_from_slice(&u16::try_from(media_type.len()).unwrap_or(u16::MAX).to_be_bytes());
+        out.extend_from_slice(&length.to_be_bytes());
         out.extend_from_slice(media_type);
         out.extend_from_slice(&self.bytes);
-        out
+        Ok(out)
     }
 
     fn decode(raw: &[u8]) -> Option<Self> {
@@ -137,14 +154,14 @@ fn tag_trash_prefix(index: &str, repo: &str) -> String {
 /// manifest one repository cached is not readable by digest under another.
 ///
 /// # Errors
-/// Returns a store error if a write fails.
+/// Returns an error if the media type is too long or a write fails.
 pub fn record_manifest(
     meta: &MetaStore,
     index: &str,
     repo: &str,
     digest: &str,
     manifest: &Manifest,
-) -> Result<(), MetaError> {
+) -> Result<(), ManifestWriteError> {
     meta.commit_driver_txn(|txn| {
         record_manifest_txn(txn, index, repo, digest, manifest)?;
         Ok(((), Vec::new()))
@@ -155,15 +172,15 @@ pub fn record_manifest(
 /// publish it atomically with a quota-reservation commit.
 ///
 /// # Errors
-/// Returns a store error if a write fails.
+/// Returns an error if the media type is too long or a write fails.
 fn record_manifest_txn(
     txn: &mut DriverTxn,
     index: &str,
     repo: &str,
     digest: &str,
     manifest: &Manifest,
-) -> Result<bool, MetaError> {
-    txn.put(&manifest_key(digest), &manifest.encode())?;
+) -> Result<bool, ManifestWriteError> {
+    txn.put(&manifest_key(digest), &manifest.encode()?)?;
     let inserted = txn.upsert(&membership_key(index, repo, digest), &[])?;
     let (children, blobs) = manifest_descriptors(&manifest.bytes);
     for child in children {
@@ -260,7 +277,7 @@ pub fn put_tag_txn(txn: &mut DriverTxn, index: &str, repo: &str, tag: &str, dige
 /// entry for that tag.
 ///
 /// # Errors
-/// Returns a store error if a read or write fails.
+/// Returns an error if the media type is too long or a store operation fails.
 pub fn publish_manifest_txn(
     txn: &mut DriverTxn,
     index: &str,
@@ -268,7 +285,7 @@ pub fn publish_manifest_txn(
     digest: &str,
     manifest: &Manifest,
     tag: Option<&str>,
-) -> Result<ManifestPublication, MetaError> {
+) -> Result<ManifestPublication, ManifestWriteError> {
     let inserted = record_manifest_txn(txn, index, repo, digest, manifest)?;
     let restored_manifest = txn.remove(&manifest_trash_key(index, repo, digest))?;
     let Some(tag) = tag else {

@@ -12,6 +12,7 @@
 use crate::error::{ErrorCode, error_response, gateway_error};
 use crate::name::{OciRoute, Reference, classify, valid_manifest_digest};
 use crate::settings::IndexSettings;
+use crate::store::ManifestWriteError;
 use crate::upload_session::UploadStore as _;
 use crate::upstream::{Upstream, UpstreamError};
 use async_trait::async_trait;
@@ -102,6 +103,16 @@ impl From<Response> for RequestRejection {
 impl From<MetaError> for ServeError {
     fn from(err: MetaError) -> Self {
         Self::Store(err)
+    }
+}
+impl From<ManifestWriteError> for ServeError {
+    fn from(error: ManifestWriteError) -> Self {
+        match error {
+            ManifestWriteError::Store(err) => Self::Store(err),
+            // Only an upstream reaches this: a push declares its media type in a `Content-Type` the
+            // supported-type gate rejects long before a record is written.
+            ManifestWriteError::MediaTypeTooLong(_) => Self::Transport(error.to_string()),
+        }
     }
 }
 impl From<std::io::Error> for ServeError {

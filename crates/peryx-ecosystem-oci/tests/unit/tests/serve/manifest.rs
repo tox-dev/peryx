@@ -1,4 +1,5 @@
 use super::support::*;
+use crate::store::MAX_MEDIA_TYPE_BYTES;
 use crate::tests::observe_pending;
 
 #[tokio::test]
@@ -195,6 +196,53 @@ async fn test_manifest_by_digest_served_from_cache_without_upstream() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(headers["docker-content-digest"], digest);
     assert_eq!(got, &body[..]);
+}
+#[tokio::test]
+async fn test_manifest_at_the_media_type_limit_serves_bytes_matching_its_digest() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = proxy(&dir, "http://127.0.0.1:1/", false);
+    let body = b"body";
+    let digest = oci_digest(body);
+    store::record_manifest(
+        &state.serving.meta,
+        "hub",
+        "app",
+        &digest,
+        &Manifest {
+            media_type: "a".repeat(MAX_MEDIA_TYPE_BYTES),
+            bytes: body.to_vec(),
+        },
+    )
+    .unwrap();
+
+    let (status, headers, got) = send(&app, Method::GET, &format!("/v2/hub/app/manifests/{digest}")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["docker-content-digest"], oci_digest(&got));
+    assert_eq!(got, &body[..]);
+}
+#[tokio::test]
+async fn test_manifest_media_type_over_the_storage_limit_is_not_cached() {
+    let server = MockServer::start().await;
+    let body = b"body";
+    Mock::given(method("GET"))
+        .and(path("/v2/app/manifests/latest"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body.to_vec(), &"a".repeat(MAX_MEDIA_TYPE_BYTES + 1)))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
+
+    let (status, _, _) = send(&app, Method::GET, "/v2/hub/app/manifests/latest").await;
+
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert_eq!(
+        (
+            store::get_manifest(&state.serving.meta, &oci_digest(body)).unwrap(),
+            store::get_tag(&state.serving.meta, "hub", "app", "latest").unwrap(),
+        ),
+        (None, None)
+    );
 }
 #[tokio::test]
 async fn test_manifest_by_digest_pulls_through_and_verifies() {

@@ -389,6 +389,10 @@ Errors use the distribution-spec shape `{"errors": [{"code": "<CODE>", "message"
 An upstream failure or invalid response during pull-through returns `502` with code `UNKNOWN`. An upstream rate limit
 returns `429` with code `TOOMANYREQUESTS` and forwards `Retry-After`.
 
+A manifest record prefixes its media type with a two-byte length, so an upstream `Content-Type` over 65,535 bytes cannot
+be stored without shifting the record boundary and corrupting the bytes a later read would serve. peryx rejects such a
+response as an invalid pull-through, answers `502`, and caches neither the manifest nor its tag.
+
 A manifest push whose body exceeds the 4 MiB cap answers `413 Payload Too Large` with code `SIZE_INVALID`. The
 distribution spec defines no size-specific code, so peryx reuses `SIZE_INVALID` under the overridden status rather than
 add one, and reserves `502` for a genuine transport fault while reading the body.

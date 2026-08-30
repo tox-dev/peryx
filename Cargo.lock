@@ -4888,6 +4888,7 @@ dependencies = [
  "stats_alloc",
  "tar",
  "tempfile",
+ "thiserror 2.0.20",
  "tokio",
  "toml",
  "tower",

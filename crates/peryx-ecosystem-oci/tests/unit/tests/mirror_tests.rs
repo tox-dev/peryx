@@ -6,6 +6,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 use super::{oci_digest, proxy, search_total, send};
 use crate::mirror::{MirrorMode, MirrorRow, mirror as mirror_with};
 use crate::settings::IndexSettings;
+use crate::store::MAX_MEDIA_TYPE_BYTES;
 use peryx_driver::ServingState;
 use peryx_index::Index;
 use std::sync::Arc;
@@ -92,6 +93,40 @@ async fn test_mirror_syncs_a_manifest_and_its_blobs() {
             .all(|row| row.status == "cached")
     );
     assert_eq!(verify.last().unwrap().status, "synced");
+}
+
+#[tokio::test]
+async fn test_mirror_rejects_a_manifest_media_type_over_the_storage_limit() {
+    let server = MockServer::start().await;
+    let body = b"{}";
+    mount_manifest(
+        &server,
+        "library/app",
+        "latest",
+        body,
+        &"a".repeat(MAX_MEDIA_TYPE_BYTES + 1),
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let (state, _app) = proxy(&dir, &format!("{}/", server.uri()), false);
+
+    let error = mirror(
+        &state.serving,
+        &state.serving.indexes[0],
+        &["library/app:latest".to_owned()],
+        MirrorMode::Sync,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(error.to_string().contains("over the 65535-byte record limit"));
+    assert_eq!(
+        (
+            crate::store::get_manifest(&state.serving.meta, &oci_digest(body)).unwrap(),
+            crate::store::get_tag(&state.serving.meta, "hub", "library/app", "latest").unwrap(),
+        ),
+        (None, None)
+    );
 }
 
 #[tokio::test]

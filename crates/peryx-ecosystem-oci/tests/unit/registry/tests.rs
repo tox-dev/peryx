@@ -22,6 +22,15 @@ fn test_serve_error_maps_every_fault_to_a_gateway_error() {
 }
 
 #[test]
+fn test_manifest_write_store_error_remains_a_store_error() {
+    let decode = serde_json::from_str::<u8>("nope").unwrap_err();
+    assert!(matches!(
+        ServeError::from(ManifestWriteError::from(MetaError::Decode(decode))),
+        ServeError::Store(MetaError::Decode(_))
+    ));
+}
+
+#[test]
 fn test_serve_error_message_describes_every_fault() {
     let decode = serde_json::from_str::<u8>("nope").unwrap_err();
     assert!(

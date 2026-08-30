@@ -6,7 +6,7 @@ use super::{
 };
 use crate::name::Reference;
 use crate::registry::ServeError;
-use crate::store::Manifest;
+use crate::store::{MAX_MEDIA_TYPE_BYTES, Manifest};
 use crate::upload_session::UploadStore as _;
 
 fn store() -> (tempfile::TempDir, MetaStore) {
@@ -162,6 +162,37 @@ fn test_manifest_commits_one_of_two_prechecked_reservations() {
             meta.quota_resource_usage("store", "app").unwrap().groups.committed,
         ),
         (4, 1)
+    );
+}
+
+#[test]
+fn test_manifest_media_type_overflow_does_not_publish_the_manifest() {
+    let (_dir, meta) = store();
+    let result = publish_manifest(
+        &meta,
+        ManifestCommit {
+            index: "store",
+            repo: "app",
+            canonical: "sha256:overflow",
+            manifest: &Manifest {
+                media_type: "a".repeat(MAX_MEDIA_TYPE_BYTES + 1),
+                bytes: b"body".to_vec(),
+            },
+            reference: &Reference::Tag("stable".to_owned()),
+            reservation: None,
+            journal: false,
+            webhook: None,
+        },
+    );
+    assert!(
+        matches!(result, Err(ServeError::Transport(message)) if message.contains("over the 65535-byte record limit"))
+    );
+    assert_eq!(
+        (
+            crate::store::get_manifest(&meta, "sha256:overflow").unwrap(),
+            crate::store::get_tag(&meta, "store", "app", "stable").unwrap(),
+        ),
+        (None, None)
     );
 }
 
