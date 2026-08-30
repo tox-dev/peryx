@@ -376,8 +376,9 @@ async fn test_overlay_with_two_mirrors_serves_buffered() {
     let digest = Digest::of(b"wheel");
     let file_url = format!("{}/files/flask.whl", server.uri());
     let page = format!(
-        "{{\"meta\":{{\"api-version\":\"1.4\",\"project-status\":\"archived\",\
-         \"project-status-reason\":\"read only\"}},\"name\":\"flask\",\"versions\":[\"1.0\"],\
+        "{{\"meta\":{{\"api-version\":\"1.4\"}},\
+         \"project-status\":{{\"status\":\"archived\",\"reason\":\"read only\"}},\
+         \"name\":\"flask\",\"versions\":[\"1.0\"],\
          \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"url\":\"{file_url}\",\
          \"hashes\":{{\"sha256\":\"{digest}\"}}}}]}}",
         digest = digest.as_str(),
@@ -421,8 +422,7 @@ async fn test_overlay_with_two_mirrors_serves_buffered() {
     let (status, _, body) = get(&state, "/both/simple/flask/", Some("application/json")).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains(digest.as_str()));
-    assert!(body.contains(r#""project-status":"archived""#));
-    assert!(body.contains(r#""project-status-reason":"read only""#));
+    assert!(body.contains(r#""project-status":{"status":"archived","reason":"read only"}"#));
 }
 #[tokio::test]
 async fn test_overlay_nesting_an_overlay_serves_buffered() {

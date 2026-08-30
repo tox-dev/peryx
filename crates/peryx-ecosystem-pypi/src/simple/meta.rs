@@ -16,9 +16,9 @@ const PEP700_MINOR: u64 = 1;
 pub struct Meta {
     #[serde(rename = "api-version")]
     pub api_version: &'static str,
-    #[serde(rename = "project-status", skip_serializing_if = "Option::is_none")]
+    #[serde(skip)]
     pub project_status: Option<String>,
-    #[serde(rename = "project-status-reason", skip_serializing_if = "Option::is_none")]
+    #[serde(skip)]
     pub project_status_reason: Option<String>,
 }
 
@@ -60,6 +60,35 @@ impl Meta {
             .and_then(ProjectStatus::from_marker)
             .unwrap_or(ProjectStatus::Active)
     }
+
+    pub(super) fn project_status_object(&self) -> Option<ProjectStatusObject<'_>> {
+        (self.project_status.is_some() || self.project_status_reason.is_some()).then_some(ProjectStatusObject {
+            status: self.project_status.as_deref(),
+            reason: self.project_status_reason.as_deref(),
+        })
+    }
+}
+
+#[derive(Serialize)]
+pub struct ProjectStatusObject<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) status: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) reason: Option<&'a str>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct IncomingProjectStatus {
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+impl IncomingProjectStatus {
+    pub(super) fn into_parts(self) -> (Option<String>, Option<String>) {
+        (self.status, self.reason)
+    }
 }
 
 #[derive(Default, Deserialize)]
@@ -79,6 +108,14 @@ impl IncomingMeta {
             self.project_status,
             self.project_status_reason,
         )
+    }
+
+    pub(super) fn into_detail_meta(self, project_status: Option<IncomingProjectStatus>) -> Result<Meta, SimpleError> {
+        let (project_status, project_status_reason) = project_status.map_or(
+            (self.project_status, self.project_status_reason),
+            IncomingProjectStatus::into_parts,
+        );
+        Meta::from_upstream(self.api_version.as_deref(), project_status, project_status_reason)
     }
 }
 
@@ -108,7 +145,7 @@ fn served_version(version: Option<&str>) -> Result<&'static str, SimpleError> {
     })
 }
 
-fn validate_project_status(status: &str) -> Result<(), SimpleError> {
+pub(super) fn validate_project_status(status: &str) -> Result<(), SimpleError> {
     ProjectStatus::from_marker(status)
         .map(|_| ())
         .ok_or_else(|| SimpleError::InvalidProjectStatus(status.to_owned()))

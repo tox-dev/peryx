@@ -4,7 +4,7 @@ use futures_util::TryStreamExt as _;
 use peryx_identity::IndexAcl;
 use rstest::rstest;
 
-fn padded_files_before_meta_page(file_url: &str, digest: &str, len: usize) -> String {
+fn padded_files_without_status_page(file_url: &str, digest: &str, len: usize) -> String {
     let head = format!(
         "{{\"name\":\"flask\",\"versions\":[\"1.0\"],\
          \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"url\":\"{file_url}\",\
@@ -15,11 +15,14 @@ fn padded_files_before_meta_page(file_url: &str, digest: &str, len: usize) -> St
     format!("{head}{pad}{tail}", pad = " ".repeat(pad))
 }
 
-fn files_before_meta_page(file_url: &str, digest: &str, meta: &str) -> String {
+fn files_before_status_page(file_url: &str, digest: &str, status: Option<&str>) -> String {
+    let project_status = status.map_or_else(String::new, |status| {
+        format!(r#","project-status":{{"status":"{status}"}}"#)
+    });
     format!(
         "{{\"name\":\"flask\",\"versions\":[\"1.0\"],\
          \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"url\":\"{file_url}\",\
-         \"hashes\":{{\"sha256\":\"{digest}\"}}}}],\"meta\":{meta}}}"
+         \"hashes\":{{\"sha256\":\"{digest}\"}}}}],\"meta\":{{\"api-version\":\"1.4\"}}{project_status}}}"
     )
 }
 
@@ -38,7 +41,8 @@ fn versions_outrun_preflight_page(file_url: &str, digest: &str) -> String {
         "{{\"name\":\"flask\",\"versions\":[{versions}],\
          \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"url\":\"{file_url}\",\
          \"hashes\":{{\"sha256\":\"{digest}\"}}}}],\
-         \"meta\":{{\"api-version\":\"1.4\",\"project-status\":\"quarantined\"}}}}"
+         \"meta\":{{\"api-version\":\"1.4\"}},\
+         \"project-status\":{{\"status\":\"quarantined\"}}}}"
     )
 }
 
@@ -76,12 +80,13 @@ async fn test_small_json_page_without_meta_completes_during_preflight() {
     assert!(h.state.serving.meta.get_index("pypi/flask").unwrap().is_some());
 }
 #[tokio::test]
-async fn test_json_meta_preflight_streams_remainder() {
+async fn test_json_status_preflight_streams_remainder() {
     let h = harness().await;
     let digest = Digest::of(b"wheel");
     let file_url = format!("{}/files/flask.whl", h.server.uri());
     let page = format!(
-        "{{\"meta\":{{\"api-version\":\"1.4\"}},\"name\":\"flask\",\"versions\":[\"1.0\"],\
+        "{{\"meta\":{{\"api-version\":\"1.4\"}},\"project-status\":{{}},\
+         \"name\":\"flask\",\"versions\":[\"1.0\"],\
          \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"url\":\"{file_url}\",\
          \"hashes\":{{\"sha256\":\"{digest}\"}}}}]}}",
         digest = digest.as_str(),
@@ -99,7 +104,7 @@ async fn test_json_meta_preflight_streams_remainder() {
         .unwrap()
         .concat();
     let expected = concat!(
-            r#"{"meta":{"api-version":"1.4"},"name":"flask","versions":["1.0"],"files":[{"filename":"flask-1.0-py3-none-any.whl","url":"/pypi/files/"#,
+            r#"{"meta":{"api-version":"1.4"},"project-status":{},"name":"flask","versions":["1.0"],"files":[{"filename":"flask-1.0-py3-none-any.whl","url":"/pypi/files/"#,
             r#"DIGEST/flask-1.0-py3-none-any.whl","hashes":{"sha256":"DIGEST"},"yanked":false,"core-metadata":false}]}"#,
         )
         .replace("DIGEST", digest.as_str());
@@ -110,11 +115,12 @@ async fn test_json_meta_preflight_streams_remainder() {
 async fn test_live_stream_records_the_routed_upstream() {
     let server = MockServer::start().await;
     let digest = Digest::of(b"wheel");
-    mount_json_page(
-        &server,
-        &detail_json(digest.as_str(), "https://example.invalid/files/flask.whl"),
-    )
-    .await;
+    let page = detail_json(digest.as_str(), "https://example.invalid/files/flask.whl").replacen(
+        ",\"name\":",
+        ",\"project-status\":{},\"name\":",
+        1,
+    );
+    mount_json_page(&server, &page).await;
     let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
     let router = UpstreamRouter::new(vec![NamedUpstream::new("mirror", client.clone())]).unwrap();
     let dir = tempfile::tempdir().unwrap();
@@ -146,8 +152,11 @@ async fn test_live_stream_records_the_routed_upstream() {
 }
 
 #[tokio::test]
-async fn test_json_meta_preflight_streams_without_remainder() {
-    let upstream = split_project_upstream(br#"{"meta":{"api-version":"1.4"}"#.to_vec(), br"}".to_vec());
+async fn test_json_status_preflight_streams_without_remainder() {
+    let upstream = split_project_upstream(
+        br#"{"meta":{"api-version":"1.4"},"project-status":{}"#.to_vec(),
+        br"}".to_vec(),
+    );
     let dir = tempfile::tempdir().unwrap();
     let state = custom_state(&dir, &upstream.upstream, |client| {
         vec![Index {
@@ -175,7 +184,7 @@ async fn test_json_meta_preflight_streams_without_remainder() {
             body.extend_from_slice(&chunk);
             body
         });
-    assert_eq!(body, br#"{"meta":{"api-version":"1.4"}}"#);
+    assert_eq!(body, br#"{"meta":{"api-version":"1.4"},"project-status":{}}"#);
 }
 #[tokio::test]
 async fn test_materialize_detail_fetches_and_reuses_cached_page() {
@@ -210,7 +219,7 @@ async fn test_materialize_detail_returns_stream_errors() {
     let h = harness().await;
     mount_json_page(
         &h.server,
-        r#"{"meta":{"api-version":"1.4"},"name":"flask","files":[{"bad": }]}"#,
+        r#"{"meta":{"api-version":"1.4"},"project-status":{},"name":"flask","files":[{"bad": }]}"#,
     )
     .await;
 
@@ -225,7 +234,7 @@ async fn test_live_stream_surfaces_malformed_file_objects() {
     let h = harness().await;
     mount_json_page(
         &h.server,
-        r#"{"meta":{"api-version":"1.4"},"name":"flask","files":[{"bad": }]}"#,
+        r#"{"meta":{"api-version":"1.4"},"project-status":{},"name":"flask","files":[{"bad": }]}"#,
     )
     .await;
     let outcome = cache::stream_detail(h.state.serving.clone(), 0, "flask".to_owned())
@@ -237,7 +246,11 @@ async fn test_live_stream_surfaces_malformed_file_objects() {
 #[tokio::test]
 async fn test_live_stream_surfaces_truncated_pages() {
     let h = harness().await;
-    mount_json_page(&h.server, r#"{"meta":{"api-version":"1.4"},"name":"flask","files":["#).await;
+    mount_json_page(
+        &h.server,
+        r#"{"meta":{"api-version":"1.4"},"project-status":{},"name":"flask","files":["#,
+    )
+    .await;
     let outcome = cache::stream_detail(h.state.serving.clone(), 0, "flask".to_owned())
         .await
         .unwrap();
@@ -245,10 +258,12 @@ async fn test_live_stream_surfaces_truncated_pages() {
     assert!(items.last().is_some_and(Result::is_err));
 }
 #[rstest]
-#[case(r#"{"meta":{"api-version":"1.4"},"name":"flask","versions":["1.0"],"files":[]}trailing"#)]
-#[case(r#"{"meta":{"api-version":"1.4"},"name":"flask","versions":["1.0"],"files":[],"unknown":,}"#)]
-#[case("{\"meta\":{\"api-version\":\"1.4\"},\"name\":\"flask\"\u{000b},\"files\":[]}")]
-#[case("{\"meta\":{\"api-version\":\"1.4\"},\"name\":\"flask\"\u{000c},\"files\":[]}")]
+#[case(r#"{"meta":{"api-version":"1.4"},"project-status":{},"name":"flask","versions":["1.0"],"files":[]}trailing"#)]
+#[case(
+    r#"{"meta":{"api-version":"1.4"},"project-status":{},"name":"flask","versions":["1.0"],"files":[],"unknown":,}"#
+)]
+#[case("{\"meta\":{\"api-version\":\"1.4\"},\"project-status\":{},\"name\":\"flask\"\u{000b},\"files\":[]}")]
+#[case("{\"meta\":{\"api-version\":\"1.4\"},\"project-status\":{},\"name\":\"flask\"\u{000c},\"files\":[]}")]
 #[tokio::test]
 async fn test_live_stream_invalid_document_errors_and_never_persists(#[case] page: &str) {
     let h = harness().await;
@@ -278,7 +293,7 @@ async fn test_live_stream_error_releases_the_inflight_entry() {
     let h = harness().await;
     mount_json_page(
         &h.server,
-        r#"{"meta":{"api-version":"1.4"},"name":"flask","files":[{"bad": }]}"#,
+        r#"{"meta":{"api-version":"1.4"},"project-status":{},"name":"flask","files":[{"bad": }]}"#,
     )
     .await;
     let outcome = cache::stream_detail(h.state.serving.clone(), 0, "flask".to_owned())
@@ -295,7 +310,7 @@ async fn test_live_stream_error_releases_the_inflight_entry() {
 #[tokio::test]
 async fn test_client_disconnect_releases_the_inflight_entry() {
     let upstream = split_project_upstream(
-        br#"{"meta":{"api-version":"1.4"},"name":"flask","files":["#.to_vec(),
+        br#"{"meta":{"api-version":"1.4"},"project-status":{},"name":"flask","files":["#.to_vec(),
         br"]}".to_vec(),
     );
     let dir = tempfile::tempdir().unwrap();
@@ -329,7 +344,7 @@ async fn test_client_disconnect_releases_the_inflight_entry() {
 async fn test_live_stream_forwards_a_broken_upstream_transfer() {
     let server = response_server(
         b"HTTP/1.1 200 OK\r\ncontent-type: application/vnd.pypi.simple.v1+json\r\n\
-          content-length: 500\r\n\r\n{\"meta\":{\"api-version\":\"1.4\"},\"name\":\"flask\",\"files\":[",
+          content-length: 500\r\n\r\n{\"meta\":{\"api-version\":\"1.4\"},\"project-status\":{},\"name\":\"flask\",\"files\":[",
     );
     let dir = tempfile::tempdir().unwrap();
     let state = custom_state(&dir, &server.upstream, |client| {
@@ -349,7 +364,7 @@ async fn test_live_stream_forwards_a_broken_upstream_transfer() {
     assert!(items.last().is_some_and(Result::is_err));
 }
 #[tokio::test]
-async fn test_buffered_files_before_meta_surfaces_a_broken_transfer() {
+async fn test_buffered_files_before_status_surfaces_a_broken_transfer() {
     let server = response_server(
         b"HTTP/1.1 200 OK\r\ncontent-type: application/vnd.pypi.simple.v1+json\r\n\
           content-length: 500\r\n\r\n{\"name\":\"flask\",\"files\":[{\"filename\":\"a\",",
@@ -375,12 +390,12 @@ async fn test_buffered_files_before_meta_surfaces_a_broken_transfer() {
     );
 }
 #[tokio::test]
-async fn test_live_stream_buffers_quarantined_files_before_meta() {
+async fn test_live_stream_buffers_quarantined_files_before_status() {
     let h = harness().await;
-    let page = files_before_meta_page(
+    let page = files_before_status_page(
         &format!("{}/files/flask.whl", h.server.uri()),
         Digest::of(b"wheel").as_str(),
-        r#"{"api-version":"1.4","project-status":"quarantined"}"#,
+        Some("quarantined"),
     );
     mount_json_page(&h.server, &page).await;
 
@@ -396,10 +411,10 @@ async fn test_live_stream_buffers_quarantined_files_before_meta() {
     ));
 }
 #[tokio::test]
-async fn test_live_stream_buffers_files_before_meta_exactly_at_the_byte_cap() {
+async fn test_live_stream_buffers_files_without_status_exactly_at_the_byte_cap() {
     let h = harness().await;
     let digest = Digest::of(b"wheel");
-    let page = padded_files_before_meta_page(
+    let page = padded_files_without_status_page(
         &format!("{}/files/flask.whl", h.server.uri()),
         digest.as_str(),
         MAX_PAGE_BYTES,
@@ -418,9 +433,9 @@ async fn test_live_stream_buffers_files_before_meta_exactly_at_the_byte_cap() {
     assert!(h.state.serving.meta.get_index("pypi/flask").unwrap().is_some());
 }
 #[tokio::test]
-async fn test_live_stream_rejects_files_before_meta_past_the_byte_cap() {
+async fn test_live_stream_rejects_files_without_status_past_the_byte_cap() {
     let h = harness().await;
-    let page = padded_files_before_meta_page(
+    let page = padded_files_without_status_page(
         &format!("{}/files/flask.whl", h.server.uri()),
         Digest::of(b"wheel").as_str(),
         MAX_PAGE_BYTES + 1024,
@@ -444,7 +459,7 @@ async fn test_live_stream_withholds_quarantined_files_when_versions_outrun_the_p
     let page = versions_outrun_preflight_page(&format!("{}/files/flask.whl", h.server.uri()), digest.as_str());
     mount_json_page(&h.server, &page).await;
 
-    // Preflight exhaustion must not leak quarantined files before `meta` arrives.
+    // Preflight exhaustion must not leak quarantined files before `project-status` arrives.
     let outcome = cache::stream_detail(h.state.serving.clone(), 0, "flask".to_owned())
         .await
         .unwrap();
@@ -457,7 +472,7 @@ async fn test_live_stream_withholds_quarantined_files_when_versions_outrun_the_p
     ));
 }
 #[tokio::test]
-async fn test_buffered_files_before_meta_surfaces_parse_errors() {
+async fn test_buffered_files_before_status_surfaces_parse_errors() {
     let h = harness().await;
     // Buffered parse failures must release the shared flight.
     mount_json_page(&h.server, r#"{"name":"flask","files":[{"bad": }]}"#).await;
@@ -470,14 +485,10 @@ async fn test_buffered_files_before_meta_surfaces_parse_errors() {
     );
 }
 #[tokio::test]
-async fn test_live_stream_buffers_downloadable_files_before_meta() {
+async fn test_live_stream_buffers_downloadable_files_without_status() {
     let h = harness().await;
     let digest = Digest::of(b"wheel");
-    let page = files_before_meta_page(
-        &format!("{}/files/flask.whl", h.server.uri()),
-        digest.as_str(),
-        r#"{"api-version":"1.4"}"#,
-    );
+    let page = files_before_status_page(&format!("{}/files/flask.whl", h.server.uri()), digest.as_str(), None);
     mount_json_page(&h.server, &page).await;
 
     let outcome = cache::stream_detail(h.state.serving.clone(), 0, "flask".to_owned())
@@ -490,7 +501,7 @@ async fn test_live_stream_buffers_downloadable_files_before_meta() {
     ));
 }
 #[tokio::test]
-async fn test_transform_whole_withholds_quarantined_files_before_meta() {
+async fn test_transform_whole_withholds_quarantined_files_before_status() {
     let dir = tempfile::tempdir().unwrap();
     let state = custom_state(&dir, "https://example.invalid/simple/", |client| {
         vec![Index {
@@ -502,10 +513,10 @@ async fn test_transform_whole_withholds_quarantined_files_before_meta() {
             acl: IndexAcl::default(),
         }]
     });
-    let page = files_before_meta_page(
+    let page = files_before_status_page(
         "https://example.invalid/files/flask.whl",
         Digest::of(b"wheel").as_str(),
-        r#"{"api-version":"1.4","project-status":"quarantined"}"#,
+        Some("quarantined"),
     );
     state
         .serving

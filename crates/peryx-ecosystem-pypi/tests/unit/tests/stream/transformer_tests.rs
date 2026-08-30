@@ -230,8 +230,9 @@ fn test_empty_reason_yank_override_yanks_without_reason() {
 
 #[test]
 fn test_quarantined_project_streams_without_files() {
-    let page = r#"{"meta":{"api-version":"1.4","project-status":"quarantined",
-        "project-status-reason":"malware"},"name":"demo","versions":["1.0"],"files":[
+    let page = r#"{"meta":{"api-version":"1.4"},
+        "project-status":{"status":"quarantined","reason":"malware"},
+        "name":"demo","versions":["1.0"],"files":[
         {"filename":"demo-1.0-py3-none-any.whl","url":"https://up/demo-1.0-py3-none-any.whl",
          "hashes":{"sha256":"aa11"}}
     ]}"#;
@@ -243,37 +244,49 @@ fn test_quarantined_project_streams_without_files() {
 }
 
 #[test]
-fn test_seeded_quarantine_withholds_files_when_meta_follows_files() {
+fn test_seeded_legacy_quarantine_withholds_files_when_meta_follows_files() {
     let page = r#"{"name":"demo","versions":["1.0"],"files":[
         {"filename":"demo-1.0-py3-none-any.whl","url":"https://up/demo-1.0-py3-none-any.whl",
          "hashes":{"sha256":"aa11"}}],
         "meta":{"api-version":"1.4","project-status":"quarantined"}}"#;
     let mut transformer = PageTransformer::new(plain_context());
-    transformer.seed_project_status(Some("quarantined".to_owned()));
+    transformer.seed_project_status(Some("quarantined".to_owned()), Some("malware".to_owned()));
     let out = transformer.push(page.as_bytes()).unwrap();
     let summary = transformer.finish().unwrap();
     let detail = parse_detail(&out).unwrap();
-    assert_eq!(detail.meta.status(), crate::ProjectStatus::Quarantined);
+    assert_eq!(
+        (detail.meta.status(), detail.meta.project_status_reason.as_deref()),
+        (crate::ProjectStatus::Quarantined, Some("malware"))
+    );
+    let json: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(
+        json["project-status"],
+        serde_json::json!({"status": "quarantined", "reason": "malware"})
+    );
+    assert_eq!(json["meta"], serde_json::json!({"api-version": "1.4"}));
     assert!(detail.files.is_empty());
     assert!(summary.registrations.is_empty());
 }
 
-#[test]
-fn test_files_before_meta_ends_preflight_for_buffering() {
+#[rstest::rstest]
+#[case::missing_status(br#"{"meta":{"api-version":"1.4"},"name":"demo","files":["#)]
+#[case::missing_meta(br#"{"project-status":{},"name":"demo","files":["#)]
+fn test_files_before_headers_ends_preflight_for_buffering(#[case] page: &[u8]) {
     let mut transformer = PageTransformer::new(plain_context());
-    transformer.push(br#"{"name":"demo","files":["#).unwrap();
-    assert!(transformer.meta_preflight_done());
-    assert!(transformer.files_precede_meta());
+    transformer.push(page).unwrap();
+    assert!(transformer.header_preflight_done());
+    assert!(transformer.files_precede_headers());
 }
 
 #[test]
-fn test_meta_before_files_keeps_streaming() {
+fn test_status_before_files_keeps_streaming() {
     let mut transformer = PageTransformer::new(plain_context());
     transformer
-        .push(br#"{"meta":{"api-version":"1.4"},"name":"demo","files":["#)
+        .push(br#"{"meta":{"api-version":"1.4"},"project-status":{},"name":"demo","files":["#)
         .unwrap();
-    assert!(transformer.meta_preflight_done());
-    assert!(!transformer.files_precede_meta());
+    assert!(transformer.header_preflight_done());
+    assert!(!transformer.files_precede_headers());
+    assert!(transformer.headers_known());
 }
 
 #[test]
@@ -294,7 +307,8 @@ fn test_escapes_and_braces_inside_strings_survive() {
 fn test_escaped_files_key_withholds_quarantined_files() {
     // RFC 8259 lets `files` be spelled `files`; the decoded key must still reach quarantine
     // withholding, or an escaped upstream key would leak a quarantined project's files.
-    let page = r#"{"m\u0065ta":{"project-status":"quarantined"},"name":"demo","fi\u006ces":[
+    let page = r#"{"m\u0065ta":{},"project-\u0073tatus":{"status":"quarantined"},
+        "name":"demo","fi\u006ces":[
         {"filename":"demo-1.0-py3-none-any.whl","url":"https://up/demo-1.0-py3-none-any.whl",
          "hashes":{"sha256":"aa11"}}
     ]}"#;
@@ -471,8 +485,9 @@ fn test_nested_array_inside_file_object_is_captured() {
 
 #[test]
 fn test_preserves_simple_api_fields_during_streaming() {
-    let page = r#"{"meta":{"api-version":"1.4","project-status":"archived",
-        "project-status-reason":"read only"},"name":"demo","versions":["1.0"],"files":[
+    let page = r#"{"meta":{"api-version":"1.4"},
+        "project-status":{"status":"archived","reason":"read only"},
+        "name":"demo","versions":["1.0"],"files":[
         {"filename":"demo-1.0-py3-none-any.whl","url":"https://up/demo-1.0-py3-none-any.whl",
          "hashes":{"sha256":"aa11"},"size":10,"upload-time":"2024-01-01T00:00:00Z",
          "core-metadata":{"sha256":"bb22"},"dist-info-metadata":{"sha256":"bb22"},
@@ -552,10 +567,10 @@ fn test_streaming_drops_an_insecure_provenance_url() {
 }
 
 #[test]
-fn test_meta_streaming_handles_escaped_and_nested_unknown_values() {
-    let page = r#"{"meta":{"api-version":"1.4","project-status":"archived",
-        "project-status-reason":"read \"only\"",
-        "extra":[{"ignored":"yes"}]},"name":"demo","files":[]}"#;
+fn test_project_status_streaming_handles_escaped_and_unknown_values() {
+    let page = r#"{"meta":{"api-version":"1.4"},
+        "project-status":{"status":"archived","reason":"read \"only\"","extra":[{"ignored":"yes"}]},
+        "name":"demo","files":[]}"#;
     let (out, _) = transform(page, plain_context(), 4096);
     let detail = parse_detail(out.as_bytes()).unwrap();
     assert_eq!(
@@ -565,6 +580,14 @@ fn test_meta_streaming_handles_escaped_and_nested_unknown_values() {
         ),
         (Some("archived"), Some("read \"only\""))
     );
+}
+
+#[test]
+fn test_streaming_rejects_unknown_project_status() {
+    let mut transformer = PageTransformer::new(plain_context());
+    let result = transformer
+        .push(br#"{"meta":{"api-version":"1.4"},"project-status":{"status":"frozen"},"name":"demo","files":[]}"#);
+    assert!(matches!(result, Err(crate::stream::TransformError::Simple(_))));
 }
 
 #[test]

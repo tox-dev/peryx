@@ -9,7 +9,7 @@ use serde::Serialize;
 use super::validator::JsonValidator;
 use super::{PageContext, PageSummary, Registration, TransformError, is_json_whitespace};
 use crate::policy::{PypiPolicy, RemoteMetadataMode};
-use crate::simple::absolutize;
+use crate::simple::{ProjectStatusObject, absolutize, parse_project_status};
 use crate::{CoreMetadata, File, parse_meta};
 
 /// The most raw bytes peryx will read from one upstream Simple page before refusing it. The biggest
@@ -21,7 +21,7 @@ pub const MAX_PAGE_BYTES: usize = 64 * 1024 * 1024;
 /// per-element work: a page of many tiny file objects stays small yet still forces a parse, a policy
 /// check, and a registration each, so the element count is capped on its own.
 const MAX_PAGE_FILES: usize = 500_000;
-const MAX_KEY_BYTES: usize = b"versions".len();
+const MAX_KEY_BYTES: usize = b"project-status".len();
 
 /// The transformer's lexer state, kept across chunk boundaries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +30,7 @@ enum Mode {
     Passthrough,
     /// Capturing the top-level `meta` object so peryx can advertise its supported version.
     Meta,
+    ProjectStatus,
     /// Between `files[` and its matching `]`: elements are captured and rewritten one by one.
     Files,
     /// Between `versions[` and its matching `]`: the whole (small) array is buffered and merged.
@@ -64,14 +65,20 @@ struct StringState {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum MetaState {
+enum StatusState {
     Unseen,
-    FilesFirst,
     Seen,
+    Emitted,
+}
+
+struct HeaderState {
+    meta_seen: bool,
+    status: StatusState,
+    files_precede_headers: bool,
 }
 
 struct DocumentState {
-    meta: MetaState,
+    headers: HeaderState,
     closed: bool,
     trailing: bool,
     emitted_in_array: bool,
@@ -90,7 +97,6 @@ pub struct PageTransformer {
     key_decode: KeyDecode,
     /// The page's top-level `name`, captured in flight so persistence needs no re-parse.
     name: Vec<u8>,
-    /// The top-level `meta` object has been checked.
     project_status: Option<String>,
     project_status_reason: Option<String>,
     document: DocumentState,
@@ -126,7 +132,11 @@ impl PageTransformer {
             key_decode: KeyDecode::Literal,
             name: Vec::new(),
             document: DocumentState {
-                meta: MetaState::Unseen,
+                headers: HeaderState {
+                    meta_seen: false,
+                    status: StatusState::Unseen,
+                    files_precede_headers: false,
+                },
                 closed: false,
                 trailing: false,
                 emitted_in_array: false,
@@ -142,35 +152,31 @@ impl PageTransformer {
         }
     }
 
-    /// Whether a bounded preflight has enough information to leave the streaming loop: either `meta`
-    /// was seen (status known, safe to stream) or `files` opened first (status not yet known, so the
-    /// caller buffers the whole page before emitting any file).
+    /// Whether preflight validated both headers or reached `files` before it could.
     #[must_use]
-    pub const fn meta_preflight_done(&self) -> bool {
-        matches!(self.document.meta, MetaState::FilesFirst | MetaState::Seen)
+    pub const fn header_preflight_done(&self) -> bool {
+        self.document.headers.files_precede_headers || self.headers_known()
     }
 
-    /// Whether streaming reached the `files` array before `meta`, which leaves the project status
-    /// unknown; the caller then buffers the whole page and transforms it with the status seeded, so
-    /// a quarantined project withholds its files regardless of key order.
+    /// Whether streaming reached `files` before validating `meta` and resolving project status.
     #[must_use]
-    pub const fn files_precede_meta(&self) -> bool {
-        matches!(self.document.meta, MetaState::FilesFirst)
+    pub const fn files_precede_headers(&self) -> bool {
+        self.document.headers.files_precede_headers
     }
 
-    /// Whether the streaming preflight resolved the project status. Only `meta` carries the status,
-    /// so until it is parsed the caller cannot know whether a project is quarantined and must not
-    /// emit any file: a preflight that hit its byte cap before either `meta` or `files` leaves the
-    /// status unknown just as `files`-before-`meta` does, and both take the buffer-whole-page path.
+    /// Whether preflight validated the API version and resolved project status.
     #[must_use]
-    pub const fn project_status_known(&self) -> bool {
-        matches!(self.document.meta, MetaState::Seen)
+    pub const fn headers_known(&self) -> bool {
+        self.document.headers.meta_seen
+            && matches!(self.document.headers.status, StatusState::Seen | StatusState::Emitted)
     }
 
-    /// Seed the project status before a whole-page pass so a quarantined page withholds its files
-    /// even when `files` precedes `meta` in the document.
-    pub fn seed_project_status(&mut self, status: Option<String>) {
+    /// Seed a whole-page pass after parsing established the explicit or absent status.
+    pub fn seed_project_status(&mut self, status: Option<String>, reason: Option<String>) {
         self.project_status = status;
+        self.project_status_reason = reason;
+        self.document.headers.meta_seen = true;
+        self.document.headers.status = StatusState::Seen;
     }
 
     /// # Errors
@@ -225,6 +231,7 @@ impl PageTransformer {
                 Ok(())
             }
             Mode::Meta => self.step_meta(byte, out),
+            Mode::ProjectStatus => self.step_project_status(byte, out),
             Mode::Files => self.step_files(byte, out),
             Mode::Versions => self.step_versions(byte, out),
         }
@@ -232,24 +239,7 @@ impl PageTransformer {
 
     fn step_passthrough(&mut self, byte: u8, out: &mut Vec<u8>) {
         if self.string.active {
-            out.push(byte);
-            if self.string.capture == StringCapture::Key && (self.string.escaped || byte != b'"') {
-                self.decode_key_byte(byte);
-            }
-            if self.string.capture == StringCapture::Name {
-                self.name.push(byte);
-            }
-            if self.string.escaped {
-                self.string.escaped = false;
-            } else if byte == b'\\' {
-                self.string.escaped = true;
-            } else if byte == b'"' {
-                self.string.active = false;
-                if self.string.capture == StringCapture::Name {
-                    self.name.pop();
-                }
-                self.string.capture = StringCapture::None;
-            }
+            self.step_passthrough_string(byte, out);
             return;
         }
         // Anything but whitespace once the root has closed is trailing garbage, whatever its kind.
@@ -279,12 +269,21 @@ impl PageTransformer {
                 self.depth += 1;
                 // `"files": [` or `"versions": [` at the top level switches modes; the bracket is
                 // emitted (files) or captured (versions merges into one emission).
-                if byte == b'{' && self.depth == 2 && self.key() == b"meta" {
-                    self.mode = Mode::Meta;
-                    self.array_depth = self.depth;
-                    self.capture.clear();
-                    self.capture.push(byte);
-                    return;
+                if byte == b'{' && self.depth == 2 {
+                    if self.key() == b"meta" {
+                        self.mode = Mode::Meta;
+                        self.array_depth = self.depth;
+                        self.capture.clear();
+                        self.capture.push(byte);
+                        return;
+                    }
+                    if self.key() == b"project-status" {
+                        self.mode = Mode::ProjectStatus;
+                        self.array_depth = self.depth;
+                        self.capture.clear();
+                        self.capture.push(byte);
+                        return;
+                    }
                 }
                 if byte == b'[' && self.depth == 2 {
                     if self.key() == b"files" {
@@ -306,6 +305,9 @@ impl PageTransformer {
                 out.push(byte);
             }
             b'}' | b']' => {
+                if byte == b'}' && self.depth == 1 {
+                    self.emit_seeded_project_status(out);
+                }
                 self.depth = self.depth.saturating_sub(1);
                 if self.depth == 0 {
                     self.document.closed = true;
@@ -314,8 +316,8 @@ impl PageTransformer {
             }
             b':' if self.depth == 1 => {
                 self.string.expect_name = self.key() == b"name";
-                if self.document.meta == MetaState::Unseen && self.key() == b"files" {
-                    self.document.meta = MetaState::FilesFirst;
+                if !self.headers_known() && self.key() == b"files" {
+                    self.document.headers.files_precede_headers = true;
                 }
                 out.push(byte);
             }
@@ -326,6 +328,27 @@ impl PageTransformer {
                 }
                 out.push(byte);
             }
+        }
+    }
+
+    fn step_passthrough_string(&mut self, byte: u8, out: &mut Vec<u8>) {
+        out.push(byte);
+        if self.string.capture == StringCapture::Key && (self.string.escaped || byte != b'"') {
+            self.decode_key_byte(byte);
+        }
+        if self.string.capture == StringCapture::Name {
+            self.name.push(byte);
+        }
+        if self.string.escaped {
+            self.string.escaped = false;
+        } else if byte == b'\\' {
+            self.string.escaped = true;
+        } else if byte == b'"' {
+            self.string.active = false;
+            if self.string.capture == StringCapture::Name {
+                self.name.pop();
+            }
+            self.string.capture = StringCapture::None;
         }
     }
 
@@ -425,6 +448,45 @@ impl PageTransformer {
                 self.capture.push(byte);
                 if self.depth == self.array_depth - 1 {
                     self.emit_meta(out)?;
+                    self.capture.clear();
+                    self.mode = Mode::Passthrough;
+                }
+            }
+            b']' => {
+                self.depth = self.depth.saturating_sub(1);
+                self.capture.push(byte);
+            }
+            _ => self.capture.push(byte),
+        }
+        Ok(())
+    }
+
+    fn step_project_status(&mut self, byte: u8, out: &mut Vec<u8>) -> Result<(), TransformError> {
+        if self.string.active {
+            self.capture.push(byte);
+            if self.string.escaped {
+                self.string.escaped = false;
+            } else if byte == b'\\' {
+                self.string.escaped = true;
+            } else if byte == b'"' {
+                self.string.active = false;
+            }
+            return Ok(());
+        }
+        match byte {
+            b'"' => {
+                self.string.active = true;
+                self.capture.push(byte);
+            }
+            b'{' | b'[' => {
+                self.depth += 1;
+                self.capture.push(byte);
+            }
+            b'}' => {
+                self.depth = self.depth.saturating_sub(1);
+                self.capture.push(byte);
+                if self.depth == self.array_depth - 1 {
+                    self.emit_project_status(out)?;
                     self.capture.clear();
                     self.mode = Mode::Passthrough;
                 }
@@ -651,10 +713,38 @@ impl PageTransformer {
     fn emit_meta(&mut self, out: &mut Vec<u8>) -> Result<(), TransformError> {
         let meta = parse_meta(&self.capture)?;
         write_json(out, &meta);
-        self.project_status = meta.project_status;
-        self.project_status_reason = meta.project_status_reason;
-        self.document.meta = MetaState::Seen;
+        self.document.headers.meta_seen = true;
         Ok(())
+    }
+
+    fn emit_project_status(&mut self, out: &mut Vec<u8>) -> Result<(), TransformError> {
+        (self.project_status, self.project_status_reason) = parse_project_status(&self.capture)?;
+        write_json(
+            out,
+            &ProjectStatusObject {
+                status: self.project_status.as_deref(),
+                reason: self.project_status_reason.as_deref(),
+            },
+        );
+        self.document.headers.status = StatusState::Emitted;
+        Ok(())
+    }
+
+    fn emit_seeded_project_status(&mut self, out: &mut Vec<u8>) {
+        if self.document.headers.status == StatusState::Emitted
+            || (self.project_status.is_none() && self.project_status_reason.is_none())
+        {
+            return;
+        }
+        out.extend_from_slice(b",\"project-status\":");
+        write_json(
+            out,
+            &ProjectStatusObject {
+                status: self.project_status.as_deref(),
+                reason: self.project_status_reason.as_deref(),
+            },
+        );
+        self.document.headers.status = StatusState::Emitted;
     }
 
     fn emit_versions(&self, out: &mut Vec<u8>) -> Result<(), TransformError> {

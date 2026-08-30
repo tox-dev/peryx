@@ -141,8 +141,9 @@ async fn test_buffered_virtual_shadows_upstream_when_cached_layer_is_listed_firs
 
 async fn mount_status(server: &MockServer, status: &str) {
     let body = format!(
-        "{{\"meta\":{{\"api-version\":\"1.1\",\"project-status\":\"{status}\",\
-         \"project-status-reason\":\"upstream {status}\"}},\"name\":\"peryxpkg\",\"versions\":[\"1.0\"],\
+        "{{\"meta\":{{\"api-version\":\"1.1\"}},\
+         \"project-status\":{{\"status\":\"{status}\",\"reason\":\"upstream {status}\"}},\
+         \"name\":\"peryxpkg\",\"versions\":[\"1.0\"],\
          \"files\":[{{\"filename\":\"peryxpkg-1.0-py3-none-any.whl\",\
          \"url\":\"https://upstream.invalid/peryxpkg-1.0-py3-none-any.whl\",\
          \"hashes\":{{\"sha256\":\"{UPSTREAM_DIGEST}\"}}}}]}}"
@@ -198,7 +199,7 @@ async fn assert_quarantine_dominates(layers: Vec<usize>) {
     assert_eq!(status, StatusCode::OK);
     let json: serde_json::Value = serde_json::from_str(&detail).unwrap();
     assert_eq!(
-        json["meta"]["project-status"], "quarantined",
+        json["project-status"]["status"], "quarantined",
         "a quarantined member must dominate the merged status: {detail}"
     );
     assert_eq!(

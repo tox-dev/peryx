@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use super::{sample_detail, sample_list, sha256};
 use crate::{
-    CoreMetadata, File, Meta, ProjectDetail, ProjectList, ProjectListEntry, Provenance, Yanked, parse_index,
-    render_legacy_json, to_json,
+    CoreMetadata, File, Meta, ProjectDetail, ProjectList, ProjectListEntry, ProjectStatus, Provenance, SimpleError,
+    Yanked, parse_index, render_legacy_json, to_json,
 };
 
 #[test]
@@ -103,17 +103,14 @@ fn test_parse_detail_reads_legacy_only_metadata_key() {
 }
 
 #[test]
-fn test_parse_detail_reads_project_status_provenance_gpg_size_upload_time_and_versions() {
-    let json = r#"{"meta":{"api-version":"1.4","project-status":"archived",
-        "project-status-reason":"read only"},"name":"x","versions":["1.0"],
+fn test_parse_detail_reads_provenance_gpg_size_upload_time_and_versions() {
+    let json = r#"{"meta":{"api-version":"1.4"},"name":"x","versions":["1.0"],
         "files":[{"filename":"x-1.whl","url":"u","hashes":{},"size":42,
         "upload-time":"2024-01-01T00:00:00Z","gpg-sig":false,
         "provenance":"https://example.test/x-1.whl.provenance"}]}"#;
     let parsed = crate::parse_detail(json.as_bytes()).unwrap();
     assert_eq!(
         (
-            parsed.meta.project_status.as_deref(),
-            parsed.meta.project_status_reason.as_deref(),
             parsed.versions.as_slice(),
             parsed.files[0].size,
             parsed.files[0].upload_time.as_deref(),
@@ -121,8 +118,6 @@ fn test_parse_detail_reads_project_status_provenance_gpg_size_upload_time_and_ve
             &parsed.files[0].provenance,
         ),
         (
-            Some("archived"),
-            Some("read only"),
             ["1.0".to_owned()].as_slice(),
             Some(42),
             Some("2024-01-01T00:00:00Z"),
@@ -130,6 +125,75 @@ fn test_parse_detail_reads_project_status_provenance_gpg_size_upload_time_and_ve
             &Provenance::Url("https://example.test/x-1.whl.provenance".to_owned()),
         )
     );
+}
+
+#[test]
+fn test_parse_detail_reads_published_pep_792_example() {
+    let parsed = crate::parse_detail(
+        br#"{
+            "meta": {"api-version": "1.4"},
+            "project-status": {"status": "quarantined", "reason": "the project is haunted"},
+            "alternate-locations": [],
+            "files": [],
+            "name": "sampleproject",
+            "versions": ["1.2.0", "1.3.0", "1.3.1", "2.0.0", "3.0.0", "4.0.0"]
+        }"#,
+    )
+    .unwrap();
+    assert_eq!(
+        (
+            parsed.meta.status(),
+            parsed.meta.project_status_reason.as_deref(),
+            parsed.name.as_str(),
+            parsed.versions.as_slice(),
+            parsed.files.as_slice(),
+        ),
+        (
+            ProjectStatus::Quarantined,
+            Some("the project is haunted"),
+            "sampleproject",
+            ["1.2.0", "1.3.0", "1.3.1", "2.0.0", "3.0.0", "4.0.0"]
+                .map(str::to_owned)
+                .as_slice(),
+            [].as_slice(),
+        )
+    );
+}
+
+#[rstest::rstest]
+#[case::active(Some("active"), ProjectStatus::Active)]
+#[case::archived(Some("archived"), ProjectStatus::Archived)]
+#[case::quarantined(Some("quarantined"), ProjectStatus::Quarantined)]
+#[case::deprecated(Some("deprecated"), ProjectStatus::Deprecated)]
+#[case::absent(None, ProjectStatus::Active)]
+fn test_parse_detail_maps_project_status(#[case] marker: Option<&str>, #[case] expected: ProjectStatus) {
+    let mut page = serde_json::json!({"meta": {"api-version": "1.4"}, "name": "demo", "files": []});
+    if let Some(marker) = marker {
+        page["project-status"] = serde_json::json!({"status": marker});
+    }
+    assert_eq!(
+        crate::parse_detail(page.to_string().as_bytes()).unwrap().meta.status(),
+        expected
+    );
+}
+
+#[test]
+fn test_parse_detail_rejects_unknown_project_status() {
+    let error = crate::parse_detail(
+        br#"{"meta":{"api-version":"1.4"},"project-status":{"status":"frozen"},"name":"demo","files":[]}"#,
+    )
+    .unwrap_err();
+    assert!(matches!(&error, SimpleError::InvalidProjectStatus(status) if status == "frozen"));
+}
+
+#[test]
+fn test_parse_detail_prefers_top_level_status_over_legacy_cache_shape() {
+    let parsed = crate::parse_detail(
+        br#"{"meta":{"api-version":"1.4","project-status":"archived"},
+            "project-status":{"status":"deprecated"},"name":"demo","files":[]}"#,
+    )
+    .unwrap();
+    assert_eq!(parsed.meta.status(), ProjectStatus::Deprecated);
 }
 
 #[test]
@@ -446,6 +510,35 @@ fn test_stream_detail_json_collects_files_and_absolutizes_urls() {
     assert_eq!(detail.versions, vec!["1.0".to_owned()]);
     assert_eq!(sink.0.len(), 1);
     assert_eq!(sink.0[0].url, "https://pypi.org/files/flask-1.0.tar.gz");
+}
+
+#[rstest::rstest]
+#[case::active(Some("active"), ProjectStatus::Active)]
+#[case::archived(Some("archived"), ProjectStatus::Archived)]
+#[case::quarantined(Some("quarantined"), ProjectStatus::Quarantined)]
+#[case::deprecated(Some("deprecated"), ProjectStatus::Deprecated)]
+#[case::absent(None, ProjectStatus::Active)]
+fn test_stream_detail_json_maps_project_status(#[case] marker: Option<&str>, #[case] expected: ProjectStatus) {
+    let mut page = serde_json::json!({"meta": {"api-version": "1.4"}, "name": "demo", "files": []});
+    if let Some(marker) = marker {
+        page["project-status"] = serde_json::json!({"status": marker, "reason": "upstream reason"});
+    }
+    let mut sink = Collect::default();
+    let detail =
+        crate::simple::stream_detail_json(std::io::Cursor::new(page.to_string()), &detail_base(), &mut sink).unwrap();
+    assert_eq!(
+        (detail.meta.status(), detail.meta.project_status_reason.as_deref()),
+        (expected, marker.map(|_| "upstream reason"))
+    );
+}
+
+#[test]
+fn test_stream_detail_json_rejects_unknown_project_status() {
+    let body = br#"{"meta":{"api-version":"1.4"},"project-status":{"status":"frozen"},
+        "name":"demo","files":[]}"#;
+    let mut sink = Collect::default();
+    let error = crate::simple::stream_detail_json(std::io::Cursor::new(body), &detail_base(), &mut sink).unwrap_err();
+    assert!(matches!(&error, SimpleError::InvalidProjectStatus(status) if status == "frozen"));
 }
 
 #[test]

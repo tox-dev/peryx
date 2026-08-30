@@ -462,19 +462,19 @@ pub fn ui_project_from_detail(value: &serde_json::Value) -> crate::view::Project
     }
 }
 
-/// The publish status the page flags, drawn from the PEP 792 `project-status` marker in the detail
-/// document's `meta`. Active, absent, and unrecognized markers carry `None`, so the page flags only a
-/// state that departs from serving the project as usual.
+/// The publish status the page flags, drawn from the PEP 792 `project-status` object. Active, absent,
+/// and unrecognized markers carry `None`, so the page flags only a state that departs from serving
+/// the project as usual.
 #[cfg(feature = "serving")]
 fn project_status(value: &serde_json::Value) -> Option<Box<crate::view::ProjectStatusView>> {
-    let meta = &value["meta"];
-    let status = meta["project-status"]
+    let project_status = &value["project-status"];
+    let status = project_status["status"]
         .as_str()
         .and_then(crate::ProjectStatus::from_marker)
         .filter(|status| *status != crate::ProjectStatus::Active)?;
     Some(Box::new(crate::view::ProjectStatusView {
         marker: status.marker().to_owned(),
-        reason: meta["project-status-reason"]
+        reason: project_status["reason"]
             .as_str()
             .filter(|reason| !reason.is_empty())
             .map(str::to_owned),

@@ -3,7 +3,7 @@ use std::error::Error as _;
 use crate::{ProjectStatus, SimpleError, parse_index};
 
 #[test]
-fn test_parse_meta_reads_project_status() {
+fn test_parse_meta_reads_legacy_project_status() {
     let meta =
         crate::parse_meta(br#"{"api-version":"1.4","project-status":"archived","project-status-reason":"read only"}"#)
             .unwrap();
@@ -28,7 +28,7 @@ fn test_parse_meta_advertises_ceiling_only_for_pep700_upstreams() {
 }
 
 #[test]
-fn test_parse_meta_rejects_invalid_project_status() {
+fn test_parse_meta_rejects_invalid_legacy_project_status() {
     let err = crate::parse_meta(br#"{"api-version":"1.4","project-status":"frozen"}"#).unwrap_err();
     assert!(matches!(&err, SimpleError::InvalidProjectStatus(status) if status == "frozen"));
     assert_eq!(err.to_string(), "invalid upstream project status marker \"frozen\"");

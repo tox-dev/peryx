@@ -186,7 +186,7 @@ async fn test_quarantined_project_hides_files_and_blocks_downloads() {
     let (status, _, detail) = get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
     let detail: serde_json::Value = serde_json::from_str(&detail).unwrap();
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(detail["meta"]["project-status"], "quarantined");
+    assert_eq!(detail["project-status"]["status"], "quarantined");
     assert!(detail["files"].as_array().unwrap().is_empty());
 
     let uri = format!("/pypi/files/{}/flask-1.0-py3-none-any.whl", digest.as_str());

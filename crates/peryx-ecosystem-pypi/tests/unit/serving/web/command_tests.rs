@@ -94,9 +94,8 @@ fn cached_project(display: &str, versions: &[&str]) -> (tempfile::TempDir, Arc<A
                 body: serde_json::to_vec(&serde_json::json!({
                     "meta": {
                         "api-version": "1.4",
-                        "project-status": "archived",
-                        "project-status-reason": "read only",
                     },
+                    "project-status": {"status": "archived", "reason": "read only"},
                     "name": display,
                     "versions": versions,
                     "files": [],

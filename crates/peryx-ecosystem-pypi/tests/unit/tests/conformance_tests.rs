@@ -115,8 +115,9 @@ async fn test_mirror_conformance_preserves_simple_fields_and_serves_eggs() {
     let wheel_url = format!("{}/files/flask.whl", harness.server.uri());
     let egg_url = format!("{}/files/flask.egg", harness.server.uri());
     let page = format!(
-        "{{\"meta\":{{\"api-version\":\"1.4\",\"project-status\":\"archived\",\
-         \"project-status-reason\":\"read only\"}},\"name\":\"flask\",\"versions\":[\"1.0\"],\
+        "{{\"meta\":{{\"api-version\":\"1.4\"}},\
+         \"project-status\":{{\"status\":\"archived\",\"reason\":\"read only\"}},\
+         \"name\":\"flask\",\"versions\":[\"1.0\"],\
          \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"url\":\"{wheel_url}\",\
          \"hashes\":{{\"sha256\":\"{}\"}},\"core-metadata\":{{\"sha256\":\"{}\"}},\
          \"dist-info-metadata\":{{\"sha256\":\"{}\"}},\"yanked\":\"bad build\",\
@@ -154,8 +155,10 @@ async fn test_mirror_conformance_preserves_simple_fields_and_serves_eggs() {
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(detail["meta"]["api-version"], "1.4");
-    assert_eq!(detail["meta"]["project-status"], "archived");
-    assert_eq!(detail["meta"]["project-status-reason"], "read only");
+    assert_eq!(
+        detail["project-status"],
+        serde_json::json!({"status": "archived", "reason": "read only"})
+    );
     assert_eq!(wheel["core-metadata"]["sha256"], metadata_digest.as_str());
     assert_eq!(wheel["dist-info-metadata"]["sha256"], metadata_digest.as_str());
     assert_eq!(wheel["yanked"], "bad build");

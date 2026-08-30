@@ -11,9 +11,13 @@ mod render;
 
 pub use error::SimpleError;
 pub use file::{CoreMetadata, File, Provenance, Yanked};
+#[cfg(feature = "serving")]
+pub use meta::ProjectStatusObject;
 pub use meta::{API_VERSION, API_VERSION_BASE, Meta, ProjectStatus};
 #[cfg(feature = "serving")]
 pub use parse::absolutize;
+#[cfg(feature = "serving")]
+pub use parse::parse_project_status;
 pub use parse::{
     DetailSink, ParsedDetail, ProjectDetail, ProjectList, ProjectListEntry, StreamedDetail, parse_detail, parse_index,
     parse_meta, stream_detail_json, to_json,

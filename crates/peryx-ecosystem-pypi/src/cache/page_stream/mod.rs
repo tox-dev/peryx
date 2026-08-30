@@ -424,7 +424,7 @@ fn transform_whole(
     let mut transformer = PageTransformer::new(context);
     // Seed the status so a quarantined page withholds its files whether `meta` precedes or follows
     // `files`; the whole-page pass otherwise learns the status only once it reaches `meta`.
-    transformer.seed_project_status(detail.meta.project_status);
+    transformer.seed_project_status(detail.meta.project_status, detail.meta.project_status_reason);
     let mut out = Vec::with_capacity(record.body.len());
     transformer.push_into(&record.body, &mut out).map_err(transform_error)?;
     transformer.finish().map_err(transform_error)?;

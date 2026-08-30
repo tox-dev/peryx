@@ -119,8 +119,9 @@ pub async fn mount_status_detail(
     file_url: &str,
 ) {
     let body = format!(
-        "{{\"meta\":{{\"api-version\":\"1.4\",\"project-status\":\"{status}\",\
-         \"project-status-reason\":\"{reason}\"}},\"name\":\"{project}\",\"versions\":[\"1.0\"],\
+        "{{\"meta\":{{\"api-version\":\"1.4\"}},\
+         \"project-status\":{{\"status\":\"{status}\",\"reason\":\"{reason}\"}},\
+         \"name\":\"{project}\",\"versions\":[\"1.0\"],\
          \"files\":[{{\"filename\":\"{project}-1.0-py3-none-any.whl\",\"url\":\"{file_url}\",\
          \"hashes\":{{\"sha256\":\"{digest}\"}}}}]}}"
     );

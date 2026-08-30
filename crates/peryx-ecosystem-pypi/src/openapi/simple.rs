@@ -44,7 +44,8 @@ pub(super) fn project_detail() -> OperationBuilder {
             json_response(
                 "The project detail page",
                 json!({
-                    "meta": {"api-version": "1.4", "project-status": "active"},
+                    "meta": {"api-version": "1.4"},
+                    "project-status": {"status": "active"},
                     "name": "peryxpkg",
                     "versions": ["1.0"],
                     "files": [{

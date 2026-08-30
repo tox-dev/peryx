@@ -60,7 +60,7 @@ impl FreshJsonStream {
         let preflight = match preflight {
             JsonPreflight::Streaming {
                 body, transformer, raw, ..
-            } if !transformer.project_status_known() => match buffer_whole_page(body, raw, buffered_context).await {
+            } if !transformer.headers_known() => match buffer_whole_page(body, raw, buffered_context).await {
                 Ok((raw, served, summary)) => JsonPreflight::Complete { raw, served, summary },
                 Err(err) => {
                     release_flight(&self.state, &self.key, self.guard);
@@ -147,7 +147,7 @@ fn build_record(
     }
 }
 
-/// Drain the rest of a page whose `files` preceded `meta`, then transform it whole with the project
+/// Drain the rest of a page whose `files` preceded `project-status`, then transform it whole with the project
 /// status seeded so a quarantined project withholds its files regardless of key order.
 async fn buffer_whole_page(
     mut body: futures_util::stream::BoxStream<'static, Result<Bytes, peryx_upstream::UpstreamError>>,
@@ -155,7 +155,7 @@ async fn buffer_whole_page(
     context: crate::stream::PageContext,
 ) -> Result<(Vec<u8>, Vec<u8>, PageSummary), CacheError> {
     use futures_util::StreamExt as _;
-    // Bound the buffer as the transformer does: a `files`-before-`meta` page whose whole body would
+    // Bound the buffer as the transformer does: a `files`-before-status page whose whole body would
     // pass `MAX_PAGE_BYTES` must fail here, before `raw` grows unbounded, rather than after the second
     // transformer pass allocates a matching output vector from the oversized input.
     while let Some(chunk) = body.next().await {
@@ -165,12 +165,9 @@ async fn buffer_whole_page(
         }
         raw.extend_from_slice(&chunk);
     }
-    let status = crate::parse_detail(&raw)
-        .map_err(CacheError::Simple)?
-        .meta
-        .project_status;
     let mut transformer = PageTransformer::new(context);
-    transformer.seed_project_status(status);
+    let parsed = crate::parse_detail(&raw).map_err(CacheError::Simple)?;
+    transformer.seed_project_status(parsed.meta.project_status, parsed.meta.project_status_reason);
     let mut served = Vec::with_capacity(raw.len());
     transformer.push_into(&raw, &mut served).map_err(transform_error)?;
     let summary = transformer.finish().map_err(transform_error)?;
@@ -217,7 +214,7 @@ async fn preflight_json_stream(
             transformer
                 .push_into(&chunk[position..=position], &mut outgoing)
                 .map_err(transform_error)?;
-            if transformer.meta_preflight_done() || raw.len() >= JSON_META_PREFLIGHT_BYTES {
+            if transformer.header_preflight_done() || raw.len() >= JSON_META_PREFLIGHT_BYTES {
                 pending.push_back(Bytes::copy_from_slice(&outgoing));
                 body = prepend_chunk(body, chunk.slice(position + 1..));
                 return Ok(JsonPreflight::Streaming {

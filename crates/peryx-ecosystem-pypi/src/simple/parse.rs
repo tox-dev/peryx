@@ -4,10 +4,11 @@ use std::fmt;
 use std::io::Read;
 
 use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
+use serde::ser::SerializeMap as _;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use super::meta::IncomingMeta;
+use super::meta::{IncomingMeta, IncomingProjectStatus};
 use super::{File, Meta, SimpleError};
 
 /// Resolve `url` in place against `base`, turning a relative, root-relative, or protocol-relative
@@ -36,6 +37,8 @@ pub struct ParsedDetail {
 #[derive(Deserialize)]
 struct IncomingDetail {
     meta: IncomingMeta,
+    #[serde(rename = "project-status", default, deserialize_with = "deserialize_project_status")]
+    project_status: Option<IncomingProjectStatus>,
     name: String,
     #[serde(default)]
     versions: Vec<String>,
@@ -50,7 +53,7 @@ struct IncomingDetail {
 pub fn parse_detail(bytes: &[u8]) -> Result<ParsedDetail, SimpleError> {
     let detail: IncomingDetail = serde_json::from_slice(bytes)?;
     Ok(ParsedDetail {
-        meta: detail.meta.into_meta()?,
+        meta: detail.meta.into_detail_meta(detail.project_status)?,
         name: detail.name,
         versions: detail.versions,
         files: detail.files,
@@ -94,7 +97,7 @@ pub fn stream_detail_json<S: DetailSink>(
     let header = DetailSeed { base, sink }.deserialize(&mut deserializer)?;
     deserializer.end()?;
     Ok(StreamedDetail {
-        meta: header.meta.into_meta()?,
+        meta: header.meta.into_detail_meta(header.project_status)?,
         name: header.name,
         versions: header.versions,
     })
@@ -102,6 +105,7 @@ pub fn stream_detail_json<S: DetailSink>(
 
 struct IncomingStreamedDetail {
     meta: IncomingMeta,
+    project_status: Option<IncomingProjectStatus>,
     name: String,
     versions: Vec<String>,
 }
@@ -136,12 +140,14 @@ impl<'de, S: DetailSink> Visitor<'de> for DetailVisitor<'_, S> {
 
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
         let mut meta = None;
+        let mut project_status = None;
         let mut name = None;
         let mut versions = Vec::new();
         let mut files = false;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "meta" => meta = Some(map.next_value()?),
+                "project-status" => project_status = Some(map.next_value()?),
                 "name" => name = Some(map.next_value()?),
                 "versions" => versions = map.next_value()?,
                 "files" => {
@@ -161,6 +167,7 @@ impl<'de, S: DetailSink> Visitor<'de> for DetailVisitor<'_, S> {
         }
         Ok(IncomingStreamedDetail {
             meta: meta.ok_or_else(|| serde::de::Error::missing_field("meta"))?,
+            project_status,
             name: name.ok_or_else(|| serde::de::Error::missing_field("name"))?,
             versions,
         })
@@ -214,6 +221,22 @@ pub fn parse_meta(bytes: &[u8]) -> Result<Meta, SimpleError> {
     meta.into_meta()
 }
 
+#[cfg(feature = "serving")]
+pub fn parse_project_status(bytes: &[u8]) -> Result<(Option<String>, Option<String>), SimpleError> {
+    let status: IncomingProjectStatus = serde_json::from_slice(bytes)?;
+    let (status, reason) = status.into_parts();
+    if let Some(status) = status.as_deref() {
+        super::meta::validate_project_status(status)?;
+    }
+    Ok((status, reason))
+}
+
+fn deserialize_project_status<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<IncomingProjectStatus>, D::Error> {
+    IncomingProjectStatus::deserialize(deserializer).map(Some)
+}
+
 #[derive(Deserialize)]
 struct IncomingProjectListEntry {
     name: String,
@@ -245,12 +268,27 @@ pub fn parse_index(bytes: &[u8]) -> Result<ProjectList, SimpleError> {
 }
 
 /// A project's detail response (`/simple/<project>/`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectDetail {
     pub meta: Meta,
     pub name: String,
     pub versions: Vec<String>,
     pub files: Vec<File>,
+}
+
+impl Serialize for ProjectDetail {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let project_status = self.meta.project_status_object();
+        let mut map = serializer.serialize_map(Some(4 + usize::from(project_status.is_some())))?;
+        map.serialize_entry("meta", &self.meta)?;
+        if let Some(project_status) = project_status {
+            map.serialize_entry("project-status", &project_status)?;
+        }
+        map.serialize_entry("name", &self.name)?;
+        map.serialize_entry("versions", &self.versions)?;
+        map.serialize_entry("files", &self.files)?;
+        map.end()
+    }
 }
 
 /// One entry in the root project list.

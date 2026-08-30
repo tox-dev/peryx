@@ -215,14 +215,17 @@ fn test_ui_project_from_detail_carries_project_status(
     #[case] reason: Option<&str>,
     #[case] expected: Option<(&str, Option<&str>)>,
 ) {
-    let mut meta = serde_json::json!({"api-version": "1.4"});
+    let mut project_status = serde_json::json!({});
     if let Some(marker) = marker {
-        meta["project-status"] = marker.into();
+        project_status["status"] = marker.into();
     }
     if let Some(reason) = reason {
-        meta["project-status-reason"] = reason.into();
+        project_status["reason"] = reason.into();
     }
-    let value = serde_json::json!({"name": "veloxdemo", "meta": meta, "files": []});
+    let mut value = serde_json::json!({"name": "veloxdemo", "files": []});
+    if marker.is_some() || reason.is_some() {
+        value["project-status"] = project_status;
+    }
     assert_eq!(
         ui_project_from_detail(&value).status,
         expected.map(|(marker, reason)| Box::new(ProjectStatusView {

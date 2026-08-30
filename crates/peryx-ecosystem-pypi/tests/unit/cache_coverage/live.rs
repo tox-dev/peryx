@@ -34,7 +34,7 @@ async fn test_live_stream_survives_a_persistence_error() {
     crate::tests::install_global_subscriber();
     let dir = tempfile::tempdir().unwrap();
     let server = MockServer::start().await;
-    let page = r#"{"meta":{"api-version":"1.4"},"name":"flask","versions":["1.0"],"files":[]}"#;
+    let page = r#"{"meta":{"api-version":"1.4"},"project-status":{},"name":"flask","versions":["1.0"],"files":[]}"#;
     mount_page(&server, page).await;
     let state = read_only_state(&dir, &server);
     let representation_key = state.representation_key("pypi", "flask", crate::cache::SIMPLE_JSON);

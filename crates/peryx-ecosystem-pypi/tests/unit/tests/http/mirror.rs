@@ -105,14 +105,15 @@ async fn test_mirror_json_already_local_record_round_trips() {
     assert!(body.contains(&local_url));
 }
 #[tokio::test]
-async fn test_mirror_detail_json_preserves_simple_api_fields() {
+async fn test_mirror_detail_round_trips_simple_api_fields() {
     let h = harness().await;
     let digest = Digest::of(b"wheel");
     let meta_digest = Digest::of(b"meta");
     let file_url = format!("{}/files/flask.whl", h.server.uri());
     let json = format!(
-        "{{\"meta\":{{\"api-version\":\"1.4\",\"project-status\":\"archived\",\
-         \"project-status-reason\":\"read only\"}},\"name\":\"flask\",\"versions\":[\"1.0\"],\
+        "{{\"meta\":{{\"api-version\":\"1.4\"}},\
+         \"project-status\":{{\"status\":\"archived\",\"reason\":\"read only\"}},\
+         \"name\":\"flask\",\"versions\":[\"1.0\"],\
          \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"url\":\"{file_url}\",\
          \"hashes\":{{\"sha256\":\"{digest}\"}},\"size\":123,\"upload-time\":\"2024-01-01T00:00:00Z\",\
          \"core-metadata\":{{\"sha256\":\"{meta}\"}},\"dist-info-metadata\":{{\"sha256\":\"{meta}\"}},\
@@ -132,8 +133,10 @@ async fn test_mirror_detail_json_preserves_simple_api_fields() {
     let file = &detail["files"][0];
     assert_eq!(status, StatusCode::OK);
     assert_eq!(detail["meta"]["api-version"], "1.4");
-    assert_eq!(detail["meta"]["project-status"], "archived");
-    assert_eq!(detail["meta"]["project-status-reason"], "read only");
+    assert_eq!(
+        detail["project-status"],
+        serde_json::json!({"status": "archived", "reason": "read only"})
+    );
     assert_eq!(detail["versions"], serde_json::json!(["1.0"]));
     assert_eq!(file["size"], 123);
     assert_eq!(file["upload-time"], "2024-01-01T00:00:00Z");
@@ -143,6 +146,22 @@ async fn test_mirror_detail_json_preserves_simple_api_fields() {
     assert_eq!(file["gpg-sig"], serde_json::Value::Null);
     assert_eq!(file["provenance"], "https://example.test/flask.provenance");
     assert!(file["url"].as_str().unwrap().starts_with("/pypi/files/"));
+    let stored = h
+        .state
+        .serving
+        .meta
+        .get_project_status("pypi", "flask")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (stored.status.as_deref(), stored.reason.as_deref()),
+        (Some("archived"), Some("read only"))
+    );
+
+    let (status, _, html) = get(&h.state, "/pypi/simple/flask/", Some("text/html")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains(r#"<meta name="pypi:project-status" content="archived">"#));
+    assert!(html.contains(r#"<meta name="pypi:project-status-reason" content="read only">"#));
 }
 #[tokio::test]
 async fn test_mirror_detail_html() {
@@ -204,8 +223,10 @@ async fn test_mirror_detail_from_html_keeps_fields_but_drops_gpg_sig() {
     let detail: serde_json::Value = serde_json::from_str(&body).unwrap();
     let file = &detail["files"][0];
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(detail["meta"]["project-status"], "archived");
-    assert_eq!(detail["meta"]["project-status-reason"], "read only");
+    assert_eq!(
+        detail["project-status"],
+        serde_json::json!({"status": "archived", "reason": "read only"})
+    );
     assert_eq!(file["core-metadata"]["sha256"], metadata.as_str());
     assert_eq!(file["dist-info-metadata"]["sha256"], metadata.as_str());
     // The URL is now peryx's route, which cannot serve the `.asc`, so the marker must be gone.
