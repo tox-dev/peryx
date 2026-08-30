@@ -10,7 +10,6 @@ mod external_identity_tests;
 mod finalize_tests;
 mod ingress_intent_tests;
 mod integration_tests;
-mod job_lease_tests;
 mod job_tests;
 mod journal_tests;
 mod operation_outcome_tests;

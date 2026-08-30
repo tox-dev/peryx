@@ -1097,6 +1097,31 @@ async fn ownership_authority_defaults_fail_closed_without_write_lease_support() 
     assert_eq!(authority.transfer_home("proj", "west").await.unwrap(), None);
 }
 
+#[tokio::test]
+async fn ownership_authority_defaults_fail_closed_without_singleton_support() {
+    let authority = AuthorityWithoutWriteLeases;
+    let lease = SingletonLease {
+        job: "reclamation".to_owned(),
+        holder: "node-1".to_owned(),
+        term: 4,
+        generation: 2,
+        expires_at_unix: 100,
+    };
+
+    assert!(matches!(
+        authority.acquire_singleton_lease("reclamation", "node-1").await,
+        Err(OwnershipError::Unavailable(message)) if message == "singleton leasing is unavailable"
+    ));
+    assert!(matches!(
+        authority.renew_singleton_lease(&lease).await,
+        Err(OwnershipError::Unavailable(message)) if message == "singleton leasing is unavailable"
+    ));
+    assert!(matches!(
+        authority.release_singleton_lease(&lease).await,
+        Err(OwnershipError::Unavailable(message)) if message == "singleton leasing is unavailable"
+    ));
+}
+
 #[test]
 fn frontier_reply_serialization_preserves_the_contract() {
     let reply = FrontierReply {

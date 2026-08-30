@@ -691,6 +691,60 @@ pub const AUTHORITY_CLOCK_SKEW_SECS: i64 = 5;
 /// Maximum lifetime of an authority write lease.
 pub const AUTHORITY_WRITE_LEASE_SECS: i64 = 30;
 
+/// A committed grant of one cluster-singleton job to one holder.
+///
+/// The ownership authority decides when the grant lapses, so a stalled worker cannot extend its own
+/// ownership by holding a stale clock reading. A holder carries all three identifiers back on every
+/// renewal, release, and completion check. One leader can grant the same job to two holders in sequence,
+/// which holder and term together cannot separate; `generation` does.
+#[must_use]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SingletonLease {
+    pub job: String,
+    /// The process incarnation that owns the grant.
+    pub holder: String,
+    /// The consensus term the grant committed under.
+    pub term: u64,
+    /// Rises with every grant of `job`, so a delayed request from an earlier acquisition loses even
+    /// when it carries the same term.
+    pub generation: u64,
+    pub expires_at_unix: i64,
+}
+
+/// The committed answer to a singleton claim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SingletonAcquisition {
+    Acquired(SingletonLease),
+    /// Another holder owns an unlapsed grant; the caller must not enter the job body.
+    Held {
+        holder: String,
+    },
+}
+
+/// The committed answer to a singleton renewal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SingletonRenewal {
+    Renewed(SingletonLease),
+    /// The committed grant no longer matches the presented holder, term, and generation.
+    Lost,
+}
+
+/// The committed answer to a singleton release, which doubles as the completion ownership check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SingletonRelease {
+    Released,
+    /// Ownership moved before the release, so anything the run produced is superseded.
+    Lost,
+}
+
+/// Maximum lifetime of a cluster-singleton grant. A run outlives it by renewing, so ownership never
+/// depends on how long the job body takes.
+pub const SINGLETON_LEASE_SECS: i64 = 30;
+
+/// How long a holder waits between renewals. Well inside [`SINGLETON_LEASE_SECS`] so a lost round trip
+/// still leaves attempts before the grant lapses.
+pub const SINGLETON_RENEW_SECS: u64 = 10;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransferOutcome {
     pub from: String,
@@ -745,6 +799,39 @@ pub trait OwnershipAuthority: Send + Sync {
     async fn finish_epoch_write(&self, _lease: &AuthorityWriteLease) -> Result<(), OwnershipError> {
         Err(OwnershipError::Unavailable(
             "ownership write leasing is unavailable".to_owned(),
+        ))
+    }
+
+    /// Commit a claim on the cluster-singleton job `job` for the process incarnation `holder`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OwnershipError`] when the claim cannot commit.
+    async fn acquire_singleton_lease(&self, _job: &str, _holder: &str) -> Result<SingletonAcquisition, OwnershipError> {
+        Err(OwnershipError::Unavailable(
+            "singleton leasing is unavailable".to_owned(),
+        ))
+    }
+
+    /// Extend a grant this holder still owns.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OwnershipError`] when the renewal cannot commit.
+    async fn renew_singleton_lease(&self, _lease: &SingletonLease) -> Result<SingletonRenewal, OwnershipError> {
+        Err(OwnershipError::Unavailable(
+            "singleton leasing is unavailable".to_owned(),
+        ))
+    }
+
+    /// Give up a grant, reporting whether this holder still owned it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OwnershipError`] when the release cannot commit.
+    async fn release_singleton_lease(&self, _lease: &SingletonLease) -> Result<SingletonRelease, OwnershipError> {
+        Err(OwnershipError::Unavailable(
+            "singleton leasing is unavailable".to_owned(),
         ))
     }
 

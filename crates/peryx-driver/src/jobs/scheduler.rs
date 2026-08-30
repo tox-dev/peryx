@@ -7,6 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::panic::AssertUnwindSafe;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 
@@ -21,18 +22,23 @@ use peryx_storage::meta::{JobOutcome, MetaError, NewJobRun};
 use super::attempts::{CancelJobRun, JobAttemptError};
 use super::metrics::{JobMetrics, Outcome, Reject};
 use super::{JobCompletion, JobContext, JobFailure, JobReport, JobRunOutcome, LeaseScope, NodeJob};
-use crate::state::ServingState;
+use crate::state::{
+    OwnershipAuthority, SINGLETON_RENEW_SECS, ServingState, SingletonAcquisition, SingletonLease, SingletonRelease,
+    SingletonRenewal,
+};
 
-/// How long a cluster-singleton lease stays held before it lapses absent a renewal. A run claims at
-/// start and releases at end, so the deadline only flags a holder that crashed mid-run; it is generous
-/// enough to cover a bounded pass without a renewal loop.
-const JOB_LEASE_SECS: i64 = 300;
-
-/// This process's stable lease-holder identity, minted once and reused so a run's release matches its
-/// claim. A restart is a new process and a new holder, which the ownership term supersedes.
+/// This process incarnation's lease-holder identity, minted once so a run's renewal and release match
+/// its claim.
 fn node_holder() -> &'static str {
     static HOLDER: OnceLock<String> = OnceLock::new();
-    HOLDER.get_or_init(|| format!("node-{}", std::process::id()))
+    HOLDER.get_or_init(new_holder)
+}
+
+/// A process ID does not identify an incarnation: two containers are both PID 1, and a restart inherits
+/// its predecessor's PID. The random half makes the token unique per incarnation, and nothing persists
+/// it, so a restarted process cannot replay the identity its predecessor held.
+fn new_holder() -> String {
+    format!("node-{}-{}", std::process::id(), uuid::Uuid::new_v4())
 }
 
 /// The bounds a [`JobScheduler`] runs under.
@@ -307,6 +313,9 @@ async fn run_persisted(
     shared: &Shared,
     cancel: &CancellationToken,
 ) -> (Result<JobRunOutcome, JobError>, Outcome) {
+    // Losing a singleton lease stops the run that lost it through this token, without disturbing the
+    // scheduler's own shutdown signal or any other admitted run.
+    let cancel = &cancel.child_token();
     let run = match job.persist_as() {
         Some(kind) => match shared.state.job_attempts.start(
             NewJobRun {
@@ -325,7 +334,7 @@ async fn run_persisted(
     // Take the run's fence: a per-repository job leases its authority epoch, a cluster-singleton job
     // claims a control-plane lease under the ownership term, and either can be fenced before it runs when
     // a newer holder already owns the work.
-    let (result, panicked) = match acquire_fence(job, shared).await {
+    let (result, panicked) = match acquire_fence(job, shared, cancel).await {
         Acquired::Held(fence) => {
             let context = JobContext {
                 state: shared.state.clone(),
@@ -338,7 +347,7 @@ async fn run_persisted(
             );
             // A run whose authority or lease was superseded while it ran wrote under a stale fence, so its
             // success is rejected rather than counted; the lease is released either way.
-            if let Some(fenced) = finish_fence(&fence, shared, !panicked && result.is_ok()).await {
+            if let Some(fenced) = finish_fence(fence, shared, !panicked && result.is_ok()).await {
                 result = Err(fenced);
             }
             (result, panicked)
@@ -383,15 +392,97 @@ enum RunFence {
     /// A per-repository job fenced by its authority epoch, or a node-local job with no repository at the
     /// closed `0` sentinel, which is never fenced.
     Repository { repository: Option<String>, epoch: u64 },
-    /// A cluster-singleton job holding a control-plane lease on `key` under the ownership term `epoch`.
-    Singleton { key: String, epoch: u64 },
+    /// A cluster-singleton job holding a committed ownership lease.
+    Singleton(SingletonRun),
+    /// A cluster-singleton kind on a process that runs no ownership group. Such a process is the whole
+    /// cluster, so it has nothing to contend with: it takes no lease and runs under the closed `0`
+    /// sentinel.
+    Unowned,
 }
 
 impl RunFence {
     /// The epoch a run stamps onto the records it writes, so a later holder fences it out.
     const fn epoch(&self) -> u64 {
         match self {
-            Self::Repository { epoch, .. } | Self::Singleton { epoch, .. } => *epoch,
+            Self::Repository { epoch, .. } => *epoch,
+            Self::Singleton(run) => run.lease.term,
+            Self::Unowned => 0,
+        }
+    }
+}
+
+/// A held cluster-singleton lease and the renewal that keeps it held for the whole run.
+struct SingletonRun {
+    lease: SingletonLease,
+    authority: Arc<dyn OwnershipAuthority>,
+    /// Set the moment consensus answers that this holder no longer owns the job.
+    lost: Arc<AtomicBool>,
+    renewals: tokio::task::JoinHandle<()>,
+}
+
+impl SingletonRun {
+    fn start(lease: SingletonLease, authority: Arc<dyn OwnershipAuthority>, cancel: &CancellationToken) -> Self {
+        let lost = Arc::new(AtomicBool::new(false));
+        let renewals = tokio::spawn(renew_lease(
+            lease.clone(),
+            authority.clone(),
+            lost.clone(),
+            cancel.clone(),
+        ));
+        Self {
+            lease,
+            authority,
+            lost,
+            renewals,
+        }
+    }
+
+    /// Stop renewing and give the lease back, reporting whether this holder still owned it. The verdict
+    /// comes from the committed answer, never from this process's clock.
+    async fn finish(self) -> bool {
+        self.renewals.abort();
+        if self.lost.load(Ordering::SeqCst) {
+            return false;
+        }
+        match self.authority.release_singleton_lease(&self.lease).await {
+            Ok(SingletonRelease::Released) => true,
+            Ok(SingletonRelease::Lost) => false,
+            // Cleanup that cannot reach consensus leaves the lease to lapse on the authority's own clock.
+            // Renewal confirmed ownership for the whole body, so the body's outcome still stands.
+            Err(error) => {
+                tracing::warn!(job = self.lease.job, %error, "releasing the cluster-singleton lease failed");
+                true
+            }
+        }
+    }
+}
+
+/// Hold the lease for as long as the run needs it. A renewal consensus refuses is ownership loss, and it
+/// cancels the run as cleanup; a renewal that cannot reach consensus is retried, because only the
+/// authority's committed state decides whether the lease has lapsed.
+async fn renew_lease(
+    lease: SingletonLease,
+    authority: Arc<dyn OwnershipAuthority>,
+    lost: Arc<AtomicBool>,
+    cancel: CancellationToken,
+) {
+    let mut renewals = tokio::time::interval(Duration::from_secs(SINGLETON_RENEW_SECS));
+    renewals.tick().await;
+    loop {
+        tokio::select! {
+            () = cancel.cancelled() => return,
+            _ = renewals.tick() => {}
+        }
+        match authority.renew_singleton_lease(&lease).await {
+            Ok(SingletonRenewal::Renewed(_)) => {}
+            Ok(SingletonRenewal::Lost) => {
+                lost.store(true, Ordering::SeqCst);
+                cancel.cancel();
+                return;
+            }
+            Err(error) => {
+                tracing::warn!(job = lease.job, %error, "renewing the cluster-singleton lease failed");
+            }
         }
     }
 }
@@ -400,15 +491,15 @@ impl RunFence {
 enum Acquired {
     /// The fence is held; the run may execute.
     Held(RunFence),
-    /// The cluster-singleton lease could not be claimed - a newer holder owns the term, or the store
-    /// could not be reached - so the run does not start and a later tick re-drives it. Carries the
-    /// reason for the durable run record.
+    /// The cluster-singleton lease could not be claimed - another holder owns it, or the ownership group
+    /// could not be reached - so the run does not start and a later tick re-drives it. Carries the reason
+    /// for the durable run record.
     NotAcquired(String),
 }
 
 /// Take the fence a run executes under: a node-local job leases its repository authority epoch without a
-/// control-plane call, and a cluster-singleton job claims a durable lease under the ownership term.
-async fn acquire_fence(job: &dyn NodeJob, shared: &Shared) -> Acquired {
+/// control-plane call, and a cluster-singleton job commits a claim through ownership consensus.
+async fn acquire_fence(job: &dyn NodeJob, shared: &Shared, cancel: &CancellationToken) -> Acquired {
     match job.lease_scope() {
         LeaseScope::NodeLocal => {
             let epoch = match job.repository() {
@@ -420,46 +511,43 @@ async fn acquire_fence(job: &dyn NodeJob, shared: &Shared) -> Acquired {
                 epoch,
             })
         }
-        LeaseScope::ClusterSingleton(key) => {
-            let epoch = shared.state.cluster_term();
-            let now = (shared.state.clock)();
-            match shared
-                .state
-                .meta
-                .claim_job_lease(&key, node_holder(), epoch, now, JOB_LEASE_SECS)
-            {
-                Ok(_) => Acquired::Held(RunFence::Singleton { key, epoch }),
-                Err(error) => Acquired::NotAcquired(error.to_string()),
-            }
-        }
+        LeaseScope::ClusterSingleton(key) => match shared.state.ownership_authority().cloned() {
+            Some(authority) => claim_singleton(&key, authority, cancel).await,
+            None => Acquired::Held(RunFence::Unowned),
+        },
     }
 }
 
-/// Re-check a finished run's fence and release a singleton lease. Returns the fencing failure when a
-/// newer holder superseded a run that would otherwise have succeeded; `ok` is whether the run produced a
-/// success to fence.
-async fn finish_fence(fence: &RunFence, shared: &Shared, ok: bool) -> Option<JobFailure> {
+async fn claim_singleton(key: &str, authority: Arc<dyn OwnershipAuthority>, cancel: &CancellationToken) -> Acquired {
+    match authority.acquire_singleton_lease(key, node_holder()).await {
+        Ok(SingletonAcquisition::Acquired(lease)) => {
+            Acquired::Held(RunFence::Singleton(SingletonRun::start(lease, authority, cancel)))
+        }
+        Ok(SingletonAcquisition::Held { holder }) => {
+            Acquired::NotAcquired(format!("{holder} holds the {key} cluster-singleton lease"))
+        }
+        Err(error) => Acquired::NotAcquired(error.to_string()),
+    }
+}
+
+/// Re-check a finished run's fence and release a singleton lease. Returns the fencing failure when
+/// ownership moved away from a run that would otherwise have succeeded; `ok` is whether the run produced
+/// an outcome to fence.
+async fn finish_fence(fence: RunFence, shared: &Shared, ok: bool) -> Option<JobFailure> {
     match fence {
         RunFence::Repository {
             repository: Some(repository),
             epoch,
-        } if *epoch != 0 => (ok && !shared.state.admit_authority_epoch(repository, *epoch).await)
+        } if epoch != 0 => (ok && !shared.state.admit_authority_epoch(&repository, epoch).await)
             .then(|| JobFailure::new("authority_fenced", "a newer authority epoch superseded this run")),
-        RunFence::Repository { .. } => None,
-        RunFence::Singleton { key, epoch } => {
-            let superseded = shared
-                .state
-                .meta
-                .job_lease(key)
-                .ok()
-                .flatten()
-                .is_some_and(|lease| lease.epoch > *epoch);
-            // Release at our epoch; a release the supersede already fenced is a harmless stale no-op.
-            let _ = shared.state.meta.release_job_lease(key, node_holder(), *epoch);
-            (ok && superseded).then(|| {
+        RunFence::Repository { .. } | RunFence::Unowned => None,
+        RunFence::Singleton(run) => {
+            // The lease goes back whatever the run produced, so a failed body still frees the job.
+            let owned = run.finish().await;
+            (ok && !owned).then(|| {
                 JobFailure::new(
-                    "authority_fenced",
-                    "a newer holder superseded this cluster-singleton run",
+                    "lease_fenced",
+                    "ownership of this cluster-singleton run moved to another holder",
                 )
             })
         }
@@ -473,3 +561,7 @@ enum JobError {
     #[error(transparent)]
     Attempt(#[from] JobAttemptError),
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/jobs/holder_tests.rs"]
+mod holder_tests;

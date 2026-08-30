@@ -19,7 +19,8 @@ use openraft::{LogId, StoredMembership};
 use peryx_core::Clock;
 use peryx_ha::{
     AUTHORITY_WRITE_LEASE_SECS, AuthorityWriteLease, ClusterStatus, CommandOutcome, CommandReceipt, ControlCommand,
-    ControlError, HomeClaim, MembershipControl, OwnershipAuthority, OwnershipError, TransferOutcome,
+    ControlError, HomeClaim, MembershipControl, OwnershipAuthority, OwnershipError, SINGLETON_LEASE_SECS,
+    SingletonAcquisition, SingletonLease, SingletonRelease, SingletonRenewal, TransferOutcome,
 };
 use url::Url;
 
@@ -393,6 +394,30 @@ impl OwnershipAuthority for OwnershipHandle {
         OwnershipAuthority::finish_epoch_write(group.as_ref(), lease).await
     }
 
+    async fn acquire_singleton_lease(&self, job: &str, holder: &str) -> Result<SingletonAcquisition, OwnershipError> {
+        let group = self
+            .group
+            .upgrade()
+            .ok_or_else(|| OwnershipError::Unavailable("ownership consensus stopped".to_owned()))?;
+        OwnershipAuthority::acquire_singleton_lease(group.as_ref(), job, holder).await
+    }
+
+    async fn renew_singleton_lease(&self, lease: &SingletonLease) -> Result<SingletonRenewal, OwnershipError> {
+        let group = self
+            .group
+            .upgrade()
+            .ok_or_else(|| OwnershipError::Unavailable("ownership consensus stopped".to_owned()))?;
+        OwnershipAuthority::renew_singleton_lease(group.as_ref(), lease).await
+    }
+
+    async fn release_singleton_lease(&self, lease: &SingletonLease) -> Result<SingletonRelease, OwnershipError> {
+        let group = self
+            .group
+            .upgrade()
+            .ok_or_else(|| OwnershipError::Unavailable("ownership consensus stopped".to_owned()))?;
+        OwnershipAuthority::release_singleton_lease(group.as_ref(), lease).await
+    }
+
     async fn claim_home(&self, authority: &str) -> Result<HomeClaim, OwnershipError> {
         let group = self
             .group
@@ -494,6 +519,81 @@ impl OwnershipAuthority for OwnershipGroup {
             OwnershipResponse::Applied(OwnershipEffect::WriteFinished) => Ok(()),
             response => Err(OwnershipError::Unavailable(format!(
                 "ownership write release returned {response:?}"
+            ))),
+        }
+    }
+
+    async fn acquire_singleton_lease(&self, job: &str, holder: &str) -> Result<SingletonAcquisition, OwnershipError> {
+        let now_unix = (self.clock)();
+        let command = OwnershipCommand::AcquireSingletonLease {
+            job: job.to_owned(),
+            holder: holder.to_owned(),
+            now_unix,
+            expires_at_unix: now_unix.saturating_add(SINGLETON_LEASE_SECS),
+        };
+        match self.submit_command(command).await?.data {
+            OwnershipResponse::Applied(OwnershipEffect::SingletonAcquired {
+                holder,
+                term,
+                generation,
+                expires_at_unix,
+            }) => Ok(SingletonAcquisition::Acquired(SingletonLease {
+                job: job.to_owned(),
+                holder,
+                term,
+                generation,
+                expires_at_unix,
+            })),
+            OwnershipResponse::Applied(OwnershipEffect::SingletonHeld { holder }) => {
+                Ok(SingletonAcquisition::Held { holder })
+            }
+            response => Err(OwnershipError::Unavailable(format!(
+                "singleton claim returned {response:?}"
+            ))),
+        }
+    }
+
+    async fn renew_singleton_lease(&self, lease: &SingletonLease) -> Result<SingletonRenewal, OwnershipError> {
+        let now_unix = (self.clock)();
+        let command = OwnershipCommand::RenewSingletonLease {
+            job: lease.job.clone(),
+            holder: lease.holder.clone(),
+            term: lease.term,
+            generation: lease.generation,
+            now_unix,
+            expires_at_unix: now_unix.saturating_add(SINGLETON_LEASE_SECS),
+        };
+        match self.submit_command(command).await?.data {
+            OwnershipResponse::Applied(OwnershipEffect::SingletonRenewed { expires_at_unix }) => {
+                Ok(SingletonRenewal::Renewed(SingletonLease {
+                    expires_at_unix,
+                    ..lease.clone()
+                }))
+            }
+            OwnershipResponse::Applied(OwnershipEffect::Rejected(Rejection::SingletonLost)) => {
+                Ok(SingletonRenewal::Lost)
+            }
+            response => Err(OwnershipError::Unavailable(format!(
+                "singleton renewal returned {response:?}"
+            ))),
+        }
+    }
+
+    async fn release_singleton_lease(&self, lease: &SingletonLease) -> Result<SingletonRelease, OwnershipError> {
+        let command = OwnershipCommand::ReleaseSingletonLease {
+            job: lease.job.clone(),
+            holder: lease.holder.clone(),
+            term: lease.term,
+            generation: lease.generation,
+            now_unix: (self.clock)(),
+        };
+        match self.submit_command(command).await?.data {
+            OwnershipResponse::Applied(OwnershipEffect::SingletonReleased) => Ok(SingletonRelease::Released),
+            OwnershipResponse::Applied(OwnershipEffect::Rejected(Rejection::SingletonLost)) => {
+                Ok(SingletonRelease::Lost)
+            }
+            response => Err(OwnershipError::Unavailable(format!(
+                "singleton release returned {response:?}"
             ))),
         }
     }

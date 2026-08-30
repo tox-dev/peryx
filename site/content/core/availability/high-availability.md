@@ -280,23 +280,38 @@ epoch: the run leases the committed epoch when it starts and its success is reje
 it ran, so a former home's late write loses to the new home's. A node-wide node-local job that names no repository holds
 the closed `0` sentinel and is never fenced, and it makes no control-plane call at all.
 
-A **cluster-singleton** job in HA code runs on one node cluster-wide and claims a durable control-plane lease on its
-singleton key before it runs. The lease is minted under the ownership group's monotonic term: the run stamps that term
-as its fence, and a claim from a term below the recorded one is a superseded worker that is rejected without taking the
-lease. A partitioned former owner therefore mints a stale term and loses the claim, so its run never starts and is
-recorded as failed with `lease_not_held`. A run that held the lease but was superseded by a higher term while it ran has
-its success rejected with `authority_fenced` rather than counted, and it releases the lease when it finishes so the next
-run takes it cleanly. The token is always read live from the group's term, never replayed from the persisted lease, so a
-restarted node cannot reuse an old token: it mints the current term and a stale one is fenced.
+A **cluster-singleton** job runs on one node cluster-wide, and every decision about who owns it commits through the
+ownership group's replicated log before a worker enters the job body. Nodes cannot contend through their own metadata
+stores: each process opens its own `peryx.redb`, so a node-local claim would grant the same job on every node at once.
 
-Modes `none` and `dc` run no ownership group. They execute singleton jobs node-locally without a control-plane lease,
-lease row, renewal, or fence lookup. HA lease components exist, but no supported HA peer layout can operate them
-end-to-end.
+Each process incarnation mints one holder token at startup, from its process ID and a random half. Two containers can
+both be PID 1, and a restart inherits its predecessor's PID, so the process ID by itself names the wrong thing. The
+random half gives each incarnation its own identity, and nothing writes it down, so a restarted process cannot replay
+the token its predecessor held.
+
+A grant carries three identifiers: the **holder** token, the consensus **term** the claim committed under, and a
+**generation** that rises with every grant of that job. One leader can grant the same job to two holders in sequence
+within a single term, which holder and term together cannot separate. The generation does, so a delayed request from the
+first grant is refused even though it carries the current term.
+
+The authority decides when a grant lapses, from committed lease state and the leader's clock; a worker's own clock
+reading cannot extend its ownership. A claim against an unlapsed grant loses, and the run is recorded as failed with
+`lease_not_held` rather than started. The holder renews for as long as the body runs, so a run longer than one lease
+period stays exclusive. A renewal the authority refuses means ownership has moved, and the run is cancelled as cleanup.
+A renewal that cannot reach consensus is retried, since only committed state decides whether the grant has lapsed.
+
+Completion presents holder, term, and generation back to the authority. If any of the three no longer matches, the run's
+outcome is rejected with `lease_fenced` rather than counted. The body's outcome and the lease cleanup stay separate: a
+release that cannot reach the group is logged and the grant is left to lapse, and a finished body keeps the result it
+produced.
+
+Modes `none` and `dc` run no ownership group. One such process is the whole cluster and has nothing to contend with, so
+it runs singleton kinds under the closed `0` sentinel with no lease, renewal, or fence lookup.
 
 Fenced runs are visible through the ordinary `peryx_jobs_*` lifecycle counters: a fenced-before-start or superseded run
-increments the `failed` outcome for its kind, and its durable run record carries the `lease_not_held` or
-`authority_fenced` reason. To convert a node-local kind to a cluster singleton, return `LeaseScope::ClusterSingleton`
-with the singleton key from the job's `lease_scope`. The runner then leases and fences it with no further wiring.
+increments the `failed` outcome for its kind, and its durable run record carries the `lease_not_held` or `lease_fenced`
+reason. To convert a node-local kind to a cluster singleton, return `LeaseScope::ClusterSingleton` with the singleton
+key from the job's `lease_scope`. The runner then leases and fences it with no further wiring.
 
 ## DC writer promotion
 

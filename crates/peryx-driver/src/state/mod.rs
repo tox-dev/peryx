@@ -16,7 +16,8 @@ pub use describe::{
     UpstreamSourceDescription, describe_index, describe_indexes,
 };
 pub use ownership::{
-    AuthorityWriteLease, ClusterStatus, HomeClaim, OwnershipAuthority, OwnershipError, TransferOutcome,
+    AuthorityWriteLease, ClusterStatus, HomeClaim, OwnershipAuthority, OwnershipError, SINGLETON_LEASE_SECS,
+    SINGLETON_RENEW_SECS, SingletonAcquisition, SingletonLease, SingletonRelease, SingletonRenewal, TransferOutcome,
 };
 pub use peryx_core::PrometheusSource;
 pub use peryx_ha::{CommandOutcome, CommandReceipt, ControlCommand, ControlError, MembershipControl, OperationKind};

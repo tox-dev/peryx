@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::authority::AuthorityKey;
 use crate::envelope::AuthorityEpoch;
-use peryx_ha::{AUTHORITY_CLOCK_SKEW_SECS, AUTHORITY_WRITE_LEASE_SECS};
+use peryx_ha::{AUTHORITY_CLOCK_SKEW_SECS, AUTHORITY_WRITE_LEASE_SECS, SINGLETON_LEASE_SECS};
 
 /// The unassigned epoch, which [`AuthorityFence`](crate::AuthorityFence) rejects.
 const UNASSIGNED: AuthorityEpoch = AuthorityEpoch(0);
@@ -75,6 +75,30 @@ pub enum OwnershipCommand {
         new_home: DatacenterId,
         now_unix: i64,
     },
+    /// Grants a cluster-singleton job to one holder at the next generation.
+    AcquireSingletonLease {
+        job: String,
+        holder: String,
+        now_unix: i64,
+        expires_at_unix: i64,
+    },
+    /// Extends a grant the presented holder, term, and generation still own.
+    RenewSingletonLease {
+        job: String,
+        holder: String,
+        term: u64,
+        generation: u64,
+        now_unix: i64,
+        expires_at_unix: i64,
+    },
+    /// Frees a grant the presented holder, term, and generation still own.
+    ReleaseSingletonLease {
+        job: String,
+        holder: String,
+        term: u64,
+        generation: u64,
+        now_unix: i64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,6 +125,20 @@ pub enum OwnershipEffect {
         to: DatacenterId,
         epoch: AuthorityEpoch,
     },
+    SingletonAcquired {
+        holder: String,
+        term: u64,
+        generation: u64,
+        expires_at_unix: i64,
+    },
+    /// The claim lost to an unlapsed grant, which the named holder keeps.
+    SingletonHeld {
+        holder: String,
+    },
+    SingletonRenewed {
+        expires_at_unix: i64,
+    },
+    SingletonReleased,
     /// The command was invalid and left ownership unchanged.
     Rejected(Rejection),
 }
@@ -112,6 +150,8 @@ pub enum Rejection {
     EpochMismatch,
     InvalidLease,
     WritesInFlight,
+    /// The presented holder, term, and generation no longer own the singleton grant.
+    SingletonLost,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -138,10 +178,37 @@ struct WriteLeaseRecord {
     expires_at_unix: i64,
 }
 
-/// Missing authorities are unassigned and read as epoch zero.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+/// Kept after a release so a later grant of the same job never repeats a generation.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct SingletonRecord {
+    generation: u64,
+    held: Option<SingletonHold>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct SingletonHold {
+    holder: String,
+    term: u64,
+    expires_at_unix: i64,
+}
+
+impl SingletonHold {
+    /// A grant stays exclusive a clock-skew margin past its deadline, so the outgoing holder's view of
+    /// the deadline can never overlap the next holder's grant.
+    const fn lapsed(&self, now_unix: i64) -> bool {
+        now_unix >= self.expires_at_unix.saturating_add(AUTHORITY_CLOCK_SKEW_SECS)
+    }
+
+    fn owned_by(&self, holder: &str, term: u64) -> bool {
+        self.term == term && self.holder == holder
+    }
+}
+
+/// Missing authorities are unassigned and read as epoch zero; missing singletons are unheld.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OwnershipState {
     authorities: BTreeMap<String, AuthorityRecord>,
+    singletons: BTreeMap<String, SingletonRecord>,
 }
 
 impl OwnershipState {
@@ -168,7 +235,123 @@ impl OwnershipState {
                 new_home,
                 now_unix,
             } => self.transfer(authority, new_home, *now_unix),
+            OwnershipCommand::AcquireSingletonLease {
+                job,
+                holder,
+                now_unix,
+                expires_at_unix,
+            } => self.acquire_singleton(job, holder, *now_unix, *expires_at_unix, meta),
+            OwnershipCommand::RenewSingletonLease {
+                job,
+                holder,
+                term,
+                generation,
+                now_unix,
+                expires_at_unix,
+            } => self.renew_singleton(job, holder, *term, *generation, *now_unix, *expires_at_unix),
+            OwnershipCommand::ReleaseSingletonLease {
+                job,
+                holder,
+                term,
+                generation,
+                now_unix,
+            } => self.release_singleton(job, holder, *term, *generation, *now_unix),
         }
+    }
+
+    /// Grants `job` to `holder` when no unlapsed grant stands, at a generation above every earlier grant
+    /// of the same job. The term comes from the committed entry, so a claim cannot name its own.
+    fn acquire_singleton(
+        &mut self,
+        job: &str,
+        holder: &str,
+        now_unix: i64,
+        expires_at_unix: i64,
+        meta: AppliedMeta,
+    ) -> OwnershipEffect {
+        if !bounded_singleton_lease(now_unix, expires_at_unix) {
+            return OwnershipEffect::Rejected(Rejection::InvalidLease);
+        }
+        let record = self.singletons.entry(job.to_owned()).or_default();
+        if let Some(held) = &record.held
+            && !held.lapsed(now_unix)
+        {
+            return OwnershipEffect::SingletonHeld {
+                holder: held.holder.clone(),
+            };
+        }
+        record.generation += 1;
+        record.held = Some(SingletonHold {
+            holder: holder.to_owned(),
+            term: meta.term,
+            expires_at_unix,
+        });
+        OwnershipEffect::SingletonAcquired {
+            holder: holder.to_owned(),
+            term: meta.term,
+            generation: record.generation,
+            expires_at_unix,
+        }
+    }
+
+    /// A renewal that arrives after the grant lapsed is refused rather than applied, so a delayed
+    /// keepalive can never revive ownership the authority has already let go.
+    fn renew_singleton(
+        &mut self,
+        job: &str,
+        holder: &str,
+        term: u64,
+        generation: u64,
+        now_unix: i64,
+        expires_at_unix: i64,
+    ) -> OwnershipEffect {
+        if !bounded_singleton_lease(now_unix, expires_at_unix) {
+            return OwnershipEffect::Rejected(Rejection::InvalidLease);
+        }
+        let Some(record) = self.owned_singleton(job, holder, term, generation, now_unix) else {
+            return OwnershipEffect::Rejected(Rejection::SingletonLost);
+        };
+        record.held = Some(SingletonHold {
+            holder: holder.to_owned(),
+            term,
+            expires_at_unix,
+        });
+        OwnershipEffect::SingletonRenewed { expires_at_unix }
+    }
+
+    /// Frees the grant but keeps its generation, so the next holder of the same job under the same term
+    /// still gets a higher one and the released holder's late request stays fenced.
+    fn release_singleton(
+        &mut self,
+        job: &str,
+        holder: &str,
+        term: u64,
+        generation: u64,
+        now_unix: i64,
+    ) -> OwnershipEffect {
+        let Some(record) = self.owned_singleton(job, holder, term, generation, now_unix) else {
+            return OwnershipEffect::Rejected(Rejection::SingletonLost);
+        };
+        record.held = None;
+        OwnershipEffect::SingletonReleased
+    }
+
+    /// The record for `job` when the presented identity still owns an unlapsed grant of it.
+    fn owned_singleton(
+        &mut self,
+        job: &str,
+        holder: &str,
+        term: u64,
+        generation: u64,
+        now_unix: i64,
+    ) -> Option<&mut SingletonRecord> {
+        let record = self.singletons.get_mut(job)?;
+        let owned = record.generation == generation
+            && record
+                .held
+                .as_ref()
+                .is_some_and(|held| held.owned_by(holder, term) && !held.lapsed(now_unix));
+        owned.then_some(record)
     }
 
     fn assign_home(
@@ -316,7 +499,7 @@ impl OwnershipState {
     /// JSON serialization failure, which the state's field types make unreachable.
     #[must_use]
     pub fn snapshot(&self) -> Vec<u8> {
-        serde_json::to_vec(&self.authorities).expect("an ownership state always serializes to JSON")
+        serde_json::to_vec(self).expect("an ownership state always serializes to JSON")
     }
 
     /// Rejects homed authorities at epoch zero because the fence reserves zero for unassigned state.
@@ -325,17 +508,22 @@ impl OwnershipState {
     /// [`OwnershipError::Malformed`] when the bytes are not a valid snapshot, or
     /// [`OwnershipError::ZeroEpoch`] when a homed authority carries the reserved zero epoch.
     pub fn restore(bytes: &[u8]) -> Result<Self, OwnershipError> {
-        let authorities: BTreeMap<String, AuthorityRecord> =
-            serde_json::from_slice(bytes).map_err(OwnershipError::Malformed)?;
-        for (authority, record) in &authorities {
+        let state: Self = serde_json::from_slice(bytes).map_err(OwnershipError::Malformed)?;
+        for (authority, record) in &state.authorities {
             if record.epoch == UNASSIGNED {
                 return Err(OwnershipError::ZeroEpoch {
                     authority: authority.clone(),
                 });
             }
         }
-        Ok(Self { authorities })
+        Ok(state)
     }
+}
+
+/// A grant must end after it starts and may not outlive [`SINGLETON_LEASE_SECS`], so no worker can
+/// propose ownership longer than the authority's policy allows.
+const fn bounded_singleton_lease(now_unix: i64, expires_at_unix: i64) -> bool {
+    expires_at_unix > now_unix && expires_at_unix.saturating_sub(now_unix) <= SINGLETON_LEASE_SECS
 }
 
 fn expire_writes(record: &mut AuthorityRecord, now_unix: i64) -> usize {

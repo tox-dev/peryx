@@ -215,10 +215,6 @@ impl AvailabilityState {
         }
     }
 
-    fn cluster_term(&self) -> u64 {
-        self.distributed.as_ref().map_or(0, |state| state.cluster_term())
-    }
-
     async fn transfer_authority_home(
         &self,
         authority: &str,
@@ -311,13 +307,6 @@ impl DistributedAvailability {
 
     async fn admit_authority_epoch(&self, authority: &str, presented: u64) -> bool {
         crate::state::ownership::admit_authority_epoch(self.capabilities.ownership.as_ref(), authority, presented).await
-    }
-
-    fn cluster_term(&self) -> u64 {
-        self.capabilities
-            .ownership
-            .as_ref()
-            .map_or(0, |group| group.cluster_status().term)
     }
 
     async fn transfer_authority_home(
@@ -538,14 +527,6 @@ impl ServingState {
         lease: &crate::state::AuthorityWriteLease,
     ) -> Result<(), crate::state::OwnershipError> {
         self.availability.finish_authority_epoch_write(lease).await
-    }
-
-    /// The ownership group's monotonic term, the fence a cluster-singleton background job leases under so
-    /// a partitioned former holder mints a stale term and loses its claim. `0` when this process runs no
-    /// consensus group, which a lone node claims every singleton under without contention.
-    #[must_use]
-    pub fn cluster_term(&self) -> u64 {
-        self.availability.cluster_term()
     }
 
     /// # Errors

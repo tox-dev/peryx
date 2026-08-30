@@ -18,7 +18,8 @@ use openraft::{Entry, EntryPayload};
 use peryx_core::Clock;
 use peryx_ha::{
     ClusterStatus, CommandOutcome, ControlCommand, ControlError, HomeClaim, MembershipControl as _,
-    OwnershipAuthority as _, OwnershipError, TransferOutcome,
+    OwnershipAuthority as _, OwnershipError, SingletonAcquisition, SingletonLease, SingletonRelease, SingletonRenewal,
+    TransferOutcome,
 };
 use rstest::rstest;
 use tempfile::TempDir;
@@ -333,6 +334,29 @@ fn east_claim(epoch: u64) -> HomeClaim {
     }
 }
 
+const JOB: &str = "reclamation";
+
+/// The grant a single-node group commits under its first leader term.
+fn granted_lease(holder: &str, generation: u64, now_unix: i64) -> SingletonLease {
+    SingletonLease {
+        job: JOB.to_owned(),
+        holder: holder.to_owned(),
+        term: 1,
+        generation,
+        expires_at_unix: now_unix + peryx_ha::SINGLETON_LEASE_SECS,
+    }
+}
+
+fn stopped_lease() -> SingletonLease {
+    SingletonLease {
+        job: JOB.to_owned(),
+        holder: "node-a".to_owned(),
+        term: 1,
+        generation: 1,
+        expires_at_unix: 10,
+    }
+}
+
 fn adjustable_clock(now: i64) -> (Arc<AtomicI64>, Clock) {
     let now = Arc::new(AtomicI64::new(now));
     let source = now.clone();
@@ -342,10 +366,9 @@ fn adjustable_clock(now: i64) -> (Arc<AtomicI64>, Clock) {
 #[tokio::test]
 async fn test_ownership_handle_delegates_to_a_live_group() {
     let dir = tempfile::tempdir().unwrap();
-    let group = Arc::new(OwnershipGroup::new(
-        leader_node(&dir).await,
-        DatacenterId("east".to_owned()),
-    ));
+    let (_, clock) = adjustable_clock(100);
+    let group =
+        Arc::new(OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned())).with_clock(clock));
     let handle = OwnershipHandle::new(&group);
 
     assert_eq!(handle.claim_home("proj").await.unwrap(), east_claim(1));
@@ -373,6 +396,19 @@ async fn test_ownership_handle_delegates_to_a_live_group() {
     );
     assert_eq!(handle.committed_epoch("proj").await, 3);
     assert_eq!(handle.cluster_status().leader, Some("east".to_owned()));
+    let lease = granted_lease("node-a", 1, 100);
+    assert_eq!(
+        handle.acquire_singleton_lease(JOB, "node-a").await.unwrap(),
+        SingletonAcquisition::Acquired(lease.clone())
+    );
+    assert!(matches!(
+        handle.renew_singleton_lease(&lease).await.unwrap(),
+        SingletonRenewal::Renewed(_)
+    ));
+    assert_eq!(
+        handle.release_singleton_lease(&lease).await.unwrap(),
+        SingletonRelease::Released
+    );
 }
 
 #[tokio::test]
@@ -408,6 +444,18 @@ async fn test_ownership_handle_fails_closed_after_the_group_stops() {
     ));
     assert!(matches!(
         handle.transfer_home("proj", "west").await,
+        Err(OwnershipError::Unavailable(message)) if message == "ownership consensus stopped"
+    ));
+    assert!(matches!(
+        handle.acquire_singleton_lease(JOB, "node-a").await,
+        Err(OwnershipError::Unavailable(message)) if message == "ownership consensus stopped"
+    ));
+    assert!(matches!(
+        handle.renew_singleton_lease(&stopped_lease()).await,
+        Err(OwnershipError::Unavailable(message)) if message == "ownership consensus stopped"
+    ));
+    assert!(matches!(
+        handle.release_singleton_lease(&stopped_lease()).await,
         Err(OwnershipError::Unavailable(message)) if message == "ownership consensus stopped"
     ));
     assert_eq!(
@@ -1059,4 +1107,92 @@ async fn test_advancing_an_assigned_authority_commits() {
         .unwrap();
 
     assert_eq!(receipt.outcome, CommandOutcome::Committed);
+}
+
+#[tokio::test]
+async fn test_one_holder_at_a_time_owns_a_singleton_job() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, clock) = adjustable_clock(100);
+    let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned())).with_clock(clock);
+
+    let acquisition = group.acquire_singleton_lease(JOB, "node-a").await.unwrap();
+
+    assert_eq!(
+        acquisition,
+        SingletonAcquisition::Acquired(granted_lease("node-a", 1, 100))
+    );
+    assert_eq!(
+        group.acquire_singleton_lease(JOB, "node-b").await.unwrap(),
+        SingletonAcquisition::Held {
+            holder: "node-a".to_owned(),
+        }
+    );
+}
+
+#[tokio::test]
+async fn test_renewal_holds_a_singleton_past_its_original_deadline() {
+    let dir = tempfile::tempdir().unwrap();
+    let (now, clock) = adjustable_clock(100);
+    let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned())).with_clock(clock);
+    let lease = granted_lease("node-a", 1, 100);
+    group.acquire_singleton_lease(JOB, "node-a").await.unwrap();
+
+    now.store(100 + peryx_ha::SINGLETON_LEASE_SECS - 1, Ordering::SeqCst);
+    let renewed = group.renew_singleton_lease(&lease).await.unwrap();
+    now.store(
+        100 + peryx_ha::SINGLETON_LEASE_SECS + peryx_ha::AUTHORITY_CLOCK_SKEW_SECS,
+        Ordering::SeqCst,
+    );
+
+    assert!(matches!(renewed, SingletonRenewal::Renewed(_)));
+    assert_eq!(
+        group.acquire_singleton_lease(JOB, "node-b").await.unwrap(),
+        SingletonAcquisition::Held {
+            holder: "node-a".to_owned(),
+        }
+    );
+}
+
+#[tokio::test]
+async fn test_a_lapsed_singleton_passes_to_the_next_holder() {
+    let dir = tempfile::tempdir().unwrap();
+    let (now, clock) = adjustable_clock(100);
+    let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned())).with_clock(clock);
+    let lease = granted_lease("node-a", 1, 100);
+    group.acquire_singleton_lease(JOB, "node-a").await.unwrap();
+
+    let lapsed = 100 + peryx_ha::SINGLETON_LEASE_SECS + peryx_ha::AUTHORITY_CLOCK_SKEW_SECS;
+    now.store(lapsed, Ordering::SeqCst);
+    let next = group.acquire_singleton_lease(JOB, "node-b").await.unwrap();
+
+    assert_eq!(next, SingletonAcquisition::Acquired(granted_lease("node-b", 2, lapsed)));
+    assert_eq!(
+        group.renew_singleton_lease(&lease).await.unwrap(),
+        SingletonRenewal::Lost
+    );
+    assert_eq!(
+        group.release_singleton_lease(&lease).await.unwrap(),
+        SingletonRelease::Lost
+    );
+}
+
+#[tokio::test]
+async fn test_reacquiring_within_one_term_fences_the_previous_holder() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, clock) = adjustable_clock(100);
+    let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned())).with_clock(clock);
+    let first = granted_lease("node-a", 1, 100);
+    group.acquire_singleton_lease(JOB, "node-a").await.unwrap();
+    assert_eq!(
+        group.release_singleton_lease(&first).await.unwrap(),
+        SingletonRelease::Released
+    );
+
+    let second = group.acquire_singleton_lease(JOB, "node-b").await.unwrap();
+
+    assert_eq!(second, SingletonAcquisition::Acquired(granted_lease("node-b", 2, 100)));
+    assert_eq!(
+        group.renew_singleton_lease(&first).await.unwrap(),
+        SingletonRenewal::Lost
+    );
 }

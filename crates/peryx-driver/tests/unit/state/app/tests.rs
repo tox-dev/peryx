@@ -546,7 +546,6 @@ async fn test_none_mode_preserves_single_node_ownership_semantics() {
 
     assert_eq!(serving.committed_authority_epoch("catalog").await, 0);
     assert!(serving.admit_authority_epoch("catalog", 41).await);
-    assert_eq!(serving.cluster_term(), 0);
     assert_eq!(serving.transfer_authority_home("catalog", "west").await.unwrap(), None);
 }
 
@@ -710,7 +709,6 @@ async fn test_distributed_ownership_and_topology_delegate_to_the_capability() {
         .unwrap()
         .unwrap();
     serving.finish_authority_epoch_write(&lease).await.unwrap();
-    assert_eq!(serving.cluster_term(), 7);
     assert_eq!(
         serving.transfer_authority_home("catalog", "west").await.unwrap(),
         Some(peryx_ha::TransferOutcome {

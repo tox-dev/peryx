@@ -97,12 +97,44 @@ impl OwnershipAuthority for StaticAuthority {
         Ok(())
     }
 
+    async fn acquire_singleton_lease(
+        &self,
+        job: &str,
+        holder: &str,
+    ) -> Result<peryx_ha::SingletonAcquisition, OwnershipError> {
+        Ok(peryx_ha::SingletonAcquisition::Acquired(static_lease(job, holder)))
+    }
+
+    async fn renew_singleton_lease(
+        &self,
+        lease: &peryx_ha::SingletonLease,
+    ) -> Result<peryx_ha::SingletonRenewal, OwnershipError> {
+        Ok(peryx_ha::SingletonRenewal::Renewed(lease.clone()))
+    }
+
+    async fn release_singleton_lease(
+        &self,
+        _lease: &peryx_ha::SingletonLease,
+    ) -> Result<peryx_ha::SingletonRelease, OwnershipError> {
+        Ok(peryx_ha::SingletonRelease::Released)
+    }
+
     async fn transfer_home(&self, authority: &str, new_home: &str) -> Result<Option<TransferOutcome>, OwnershipError> {
         Ok(Some(TransferOutcome {
             from: authority.to_owned(),
             to: new_home.to_owned(),
             epoch: 8,
         }))
+    }
+}
+
+fn static_lease(job: &str, holder: &str) -> peryx_ha::SingletonLease {
+    peryx_ha::SingletonLease {
+        job: job.to_owned(),
+        holder: holder.to_owned(),
+        term: 7,
+        generation: 1,
+        expires_at_unix: i64::MAX,
     }
 }
 
@@ -1381,4 +1413,43 @@ async fn process_reaper_survives_panics_and_errors() {
     panic.join().unwrap();
     error.join().unwrap();
     signal.join().unwrap();
+}
+
+#[tokio::test]
+async fn deferred_singleton_leases_fail_closed_until_bound_and_active() {
+    let active = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let ownership = DeferredOwnership::new(active.clone());
+    ownership.bind(Some(Arc::new(StaticAuthority)));
+    let lease = static_lease("reclamation", "node-a");
+
+    assert!(matches!(
+        ownership.acquire_singleton_lease(&lease.job, &lease.holder).await,
+        Err(OwnershipError::Unavailable(_))
+    ));
+    assert!(matches!(
+        ownership.renew_singleton_lease(&lease).await,
+        Err(OwnershipError::Unavailable(_))
+    ));
+    assert!(matches!(
+        ownership.release_singleton_lease(&lease).await,
+        Err(OwnershipError::Unavailable(_))
+    ));
+
+    active.store(true, std::sync::atomic::Ordering::Release);
+
+    assert_eq!(
+        ownership
+            .acquire_singleton_lease(&lease.job, &lease.holder)
+            .await
+            .unwrap(),
+        peryx_ha::SingletonAcquisition::Acquired(lease.clone())
+    );
+    assert_eq!(
+        ownership.renew_singleton_lease(&lease).await.unwrap(),
+        peryx_ha::SingletonRenewal::Renewed(lease.clone())
+    );
+    assert_eq!(
+        ownership.release_singleton_lease(&lease).await.unwrap(),
+        peryx_ha::SingletonRelease::Released
+    );
 }

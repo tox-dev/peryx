@@ -1,12 +1,13 @@
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use peryx_core::Ecosystem;
 use peryx_storage::blob::BlobStore;
-use peryx_storage::meta::{FinishJobRun, JobKind, JobOutcome, JobRunQuery, JobState, LeaseState, MetaStore, NewJobRun};
+use peryx_storage::meta::{FinishJobRun, JobKind, JobOutcome, JobRunQuery, JobState, MetaStore, NewJobRun};
 use rstest::rstest;
 use tokio::sync::{Notify, oneshot};
 use tokio::task::JoinHandle;
@@ -24,7 +25,9 @@ use super::{
     run_schedules, scheduled_job, submit_maintenance,
 };
 use crate::serving::{CacheRefresher, IdleReclaimer, IntentFinalizer, RefreshSweep};
-use crate::state::{AppState, Clock, ServingState};
+use crate::state::{
+    AppState, Clock, ServingState, SingletonAcquisition, SingletonLease, SingletonRelease, SingletonRenewal,
+};
 use peryx_search::{ContentSource, IndexerCtx, SearchDocument, SearchDocumentProvider, SearchError};
 
 fn serving() -> (tempfile::TempDir, Arc<ServingState>) {
@@ -1843,19 +1846,95 @@ async fn test_search_rebuild_surfaces_an_indexer_failure() {
 
     assert_eq!(failure.code(), "search_rebuild");
 }
-
+/// Stands in for the ownership group: the committed epoch every node reads, and one committed grant
+/// table that every node pointing at it contends over, so two serving states with their own data
+/// directories still compete for a single job.
+#[derive(Default)]
 struct TestAuthority {
     epoch: Arc<AtomicU64>,
     term: u64,
     claims: Arc<AtomicUsize>,
+    grants: Mutex<HashMap<String, TestGrant>>,
+    /// Notified after each renewal so a test can wait for one instead of sleeping.
+    renewed: Notify,
+    renewals: AtomicUsize,
+    failure: GroupFailure,
+}
+
+/// Which round trip to the group is partitioned away.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum GroupFailure {
+    #[default]
+    None,
+    Claim,
+    Renew,
+    Release,
+}
+
+#[derive(Clone, Default)]
+struct TestGrant {
+    holder: String,
+    term: u64,
+    generation: u64,
+    held: bool,
 }
 
 fn test_authority(epoch: Arc<AtomicU64>, term: u64) -> Arc<TestAuthority> {
     Arc::new(TestAuthority {
         epoch,
         term,
-        claims: Arc::new(AtomicUsize::new(0)),
+        ..TestAuthority::default()
     })
+}
+
+impl TestAuthority {
+    fn leasing(term: u64) -> Arc<Self> {
+        test_authority(Arc::new(AtomicU64::new(0)), term)
+    }
+
+    fn partitioned(term: u64, failure: GroupFailure) -> Arc<Self> {
+        Arc::new(Self {
+            term,
+            failure,
+            ..Self::default()
+        })
+    }
+
+    fn unreachable_for(&self, call: GroupFailure) -> Option<crate::state::OwnershipError> {
+        (self.failure == call)
+            .then(|| crate::state::OwnershipError::Unavailable("the ownership group is unreachable".to_owned()))
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, TestGrant>> {
+        self.grants.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Commit another holder's claim, as a competing node's acquisition would.
+    fn take_over(&self, job: &str, holder: &str) {
+        let mut grants = self.lock();
+        let grant = grants.entry(job.to_owned()).or_default();
+        grant.holder = holder.to_owned();
+        grant.term = self.term;
+        grant.generation += 1;
+        grant.held = true;
+        drop(grants);
+    }
+
+    fn owns(&self, lease: &SingletonLease) -> bool {
+        self.lock().get(&lease.job).is_some_and(|grant| {
+            grant.held
+                && grant.holder == lease.holder
+                && grant.term == lease.term
+                && grant.generation == lease.generation
+        })
+    }
+
+    fn holder_of(&self, job: &str) -> Option<String> {
+        self.lock()
+            .get(job)
+            .filter(|grant| grant.held)
+            .map(|grant| grant.holder.clone())
+    }
 }
 
 #[async_trait]
@@ -1885,6 +1964,61 @@ impl crate::state::OwnershipAuthority for TestAuthority {
         current != 0 && presented == current
     }
 
+    async fn acquire_singleton_lease(
+        &self,
+        job: &str,
+        holder: &str,
+    ) -> Result<SingletonAcquisition, crate::state::OwnershipError> {
+        if let Some(error) = self.unreachable_for(GroupFailure::Claim) {
+            return Err(error);
+        }
+        if let Some(current) = self.holder_of(job) {
+            return Ok(SingletonAcquisition::Held { holder: current });
+        }
+        self.take_over(job, holder);
+        let grant = self.lock()[job].clone();
+        Ok(SingletonAcquisition::Acquired(SingletonLease {
+            job: job.to_owned(),
+            holder: grant.holder,
+            term: grant.term,
+            generation: grant.generation,
+            expires_at_unix: i64::MAX,
+        }))
+    }
+
+    async fn renew_singleton_lease(
+        &self,
+        lease: &SingletonLease,
+    ) -> Result<SingletonRenewal, crate::state::OwnershipError> {
+        self.renewals.fetch_add(1, Ordering::SeqCst);
+        self.renewed.notify_one();
+        if let Some(error) = self.unreachable_for(GroupFailure::Renew) {
+            return Err(error);
+        }
+        Ok(if self.owns(lease) {
+            SingletonRenewal::Renewed(lease.clone())
+        } else {
+            SingletonRenewal::Lost
+        })
+    }
+
+    async fn release_singleton_lease(
+        &self,
+        lease: &SingletonLease,
+    ) -> Result<SingletonRelease, crate::state::OwnershipError> {
+        if let Some(error) = self.unreachable_for(GroupFailure::Release) {
+            return Err(error);
+        }
+        if !self.owns(lease) {
+            return Ok(SingletonRelease::Lost);
+        }
+        self.lock()
+            .get_mut(&lease.job)
+            .expect("an owned grant is recorded")
+            .held = false;
+        Ok(SingletonRelease::Released)
+    }
+
     async fn transfer_home(
         &self,
         _authority: &str,
@@ -1898,9 +2032,8 @@ impl crate::state::OwnershipAuthority for TestAuthority {
 async fn test_first_publish_home_resolves_the_authority() {
     let claims = Arc::new(AtomicUsize::new(0));
     let (_dir, state) = serving_with_authority(Arc::new(TestAuthority {
-        epoch: Arc::new(AtomicU64::new(0)),
-        term: 0,
         claims: claims.clone(),
+        ..TestAuthority::default()
     }));
 
     state.claim_first_publish_home("proj").await.unwrap();
@@ -2225,30 +2358,44 @@ async fn test_write_ledger_reap_surfaces_a_storage_fault() {
     assert!(failure.message().contains("read-only"), "{}", failure.message());
 }
 
+/// What a singleton run's body does while it holds the grant.
+enum SingletonAction {
+    Succeed,
+    Fail,
+    /// Hold the grant until the test releases the body.
+    Block(Arc<Notify>),
+    /// Wait for the run to be cancelled, which is how losing the grant reaches the body.
+    UntilCancelled,
+    /// Commit a competing holder's claim from inside the body.
+    TakenOver(Arc<TestAuthority>),
+}
+
+#[derive(Default)]
+struct Observed {
+    /// Signalled once the body is running, so a test never has to poll for it.
+    entered: Notify,
+    runs: AtomicUsize,
+    fence: AtomicU64,
+    cancelled: AtomicBool,
+}
+
 struct SingletonJob {
     key: String,
-    leased: Arc<AtomicU64>,
-    ran: Arc<AtomicUsize>,
-    supersede: Option<(String, u64)>,
+    action: SingletonAction,
+    observed: Arc<Observed>,
 }
 
 impl SingletonJob {
-    fn new(key: &str, leased: Arc<AtomicU64>, ran: Arc<AtomicUsize>) -> Arc<Self> {
-        Arc::new(Self {
-            key: key.to_owned(),
-            leased,
-            ran,
-            supersede: None,
-        })
-    }
-
-    fn superseding(key: &str, leased: Arc<AtomicU64>, ran: Arc<AtomicUsize>, holder: &str, epoch: u64) -> Arc<Self> {
-        Arc::new(Self {
-            key: key.to_owned(),
-            leased,
-            ran,
-            supersede: Some((holder.to_owned(), epoch)),
-        })
+    fn new(key: &str, action: SingletonAction) -> (Arc<Self>, Arc<Observed>) {
+        let observed = Arc::new(Observed::default());
+        (
+            Arc::new(Self {
+                key: key.to_owned(),
+                action,
+                observed: observed.clone(),
+            }),
+            observed,
+        )
     }
 }
 
@@ -2271,115 +2418,236 @@ impl NodeJob for SingletonJob {
     }
 
     async fn run(&self, ctx: &JobContext) -> Result<JobRunOutcome, JobFailure> {
-        self.ran.fetch_add(1, Ordering::SeqCst);
-        self.leased.store(ctx.authority_fence(), Ordering::SeqCst);
-        if let Some((holder, epoch)) = &self.supersede {
-            let now = (ctx.state().clock)();
-            ctx.state()
-                .meta
-                .claim_job_lease(&self.key, holder, *epoch, now, 300)
-                .expect("a higher epoch takes the lease");
+        self.observed.runs.fetch_add(1, Ordering::SeqCst);
+        self.observed.fence.store(ctx.authority_fence(), Ordering::SeqCst);
+        self.observed.entered.notify_one();
+        match &self.action {
+            SingletonAction::Succeed => {}
+            SingletonAction::Fail => return Err(JobFailure::new("body", "the work failed")),
+            SingletonAction::Block(release) => release.notified().await,
+            SingletonAction::UntilCancelled => {
+                ctx.cancelled().await;
+                self.observed.cancelled.store(true, Ordering::SeqCst);
+                return Ok(JobRunOutcome::cancelled(JobReport::default()));
+            }
+            SingletonAction::TakenOver(group) => group.take_over(&self.key, "node-other"),
         }
         Ok(JobRunOutcome::succeeded(JobReport::default()))
     }
 }
 
+const SINGLETON: &str = "reclaim";
+
 #[tokio::test]
-async fn test_a_cluster_singleton_leases_the_cluster_term_and_releases() {
-    let (_dir, state) = serving_with_authority(test_authority(Arc::new(AtomicU64::new(0)), 7));
-    assert_eq!(state.cluster_term(), 7);
-    let scheduler = JobScheduler::new(state.clone(), limits(2, 4, 2, 2));
-    let leased = Arc::new(AtomicU64::new(0));
-    let ran = Arc::new(AtomicUsize::new(0));
+async fn test_two_nodes_sharing_one_group_cannot_both_enter_a_singleton_body() {
+    let group = TestAuthority::leasing(7);
+    let (_first_dir, first) = serving_with_authority(group.clone());
+    let (_second_dir, second) = serving_with_authority(group.clone());
+    let holding = Arc::new(JobScheduler::new(first, limits(2, 4, 2, 2)));
+    let contending = JobScheduler::new(second.clone(), limits(2, 4, 2, 2));
+    let release = Arc::new(Notify::new());
+    let (job, held) = SingletonJob::new(SINGLETON, SingletonAction::Block(release.clone()));
+    let running = tokio::spawn({
+        let holding = holding.clone();
+        async move { holding.run(job).await }
+    });
+    held.entered.notified().await;
 
-    scheduler
-        .run(SingletonJob::new("reclaim", leased.clone(), ran.clone()))
-        .await
-        .unwrap();
+    let (job, refused) = SingletonJob::new(SINGLETON, SingletonAction::Succeed);
+    let error = contending.run(job).await.unwrap_err();
 
-    assert_eq!(ran.load(Ordering::SeqCst), 1, "the singleton ran once");
+    assert_eq!(refused.runs.load(Ordering::SeqCst), 0);
     assert_eq!(
-        leased.load(Ordering::SeqCst),
-        7,
-        "the run leased the cluster term as its fence"
+        error,
+        format!(
+            "lease_not_held: {} holds the {SINGLETON} cluster-singleton lease",
+            group.holder_of(SINGLETON).unwrap()
+        )
     );
-    let lease = state.meta.job_lease("reclaim").unwrap().expect("the lease persisted");
-    assert_eq!(lease.epoch, 7);
     assert_eq!(
-        lease.state,
-        LeaseState::Released,
-        "the run released the lease when it finished"
+        job_runs(&second.meta)[0].error.as_deref(),
+        Some(error.as_str()),
+        "the refused claim is recorded in durable history"
+    );
+    release.notify_one();
+    running.await.unwrap().unwrap();
+    holding.shutdown().await;
+    contending.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_a_singleton_run_fences_its_writes_with_the_granted_term() {
+    let group = TestAuthority::leasing(7);
+    let (_dir, state) = serving_with_authority(group);
+    let scheduler = JobScheduler::new(state, limits(2, 4, 2, 2));
+    let (job, observed) = SingletonJob::new(SINGLETON, SingletonAction::Succeed);
+
+    scheduler.run(job).await.unwrap();
+
+    assert_eq!(observed.runs.load(Ordering::SeqCst), 1);
+    assert_eq!(observed.fence.load(Ordering::SeqCst), 7);
+    scheduler.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_a_finished_run_frees_the_singleton_at_a_higher_generation() {
+    let group = TestAuthority::leasing(7);
+    let (_dir, state) = serving_with_authority(group.clone());
+    let scheduler = JobScheduler::new(state, limits(2, 4, 2, 2));
+    let (first, _) = SingletonJob::new(SINGLETON, SingletonAction::Succeed);
+    scheduler.run(first).await.unwrap();
+
+    let (second, observed) = SingletonJob::new(SINGLETON, SingletonAction::Succeed);
+    scheduler.run(second).await.unwrap();
+
+    assert_eq!(observed.runs.load(Ordering::SeqCst), 1);
+    assert_eq!(group.lock()[SINGLETON].generation, 2);
+    scheduler.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_a_failed_body_still_frees_the_singleton() {
+    let group = TestAuthority::leasing(7);
+    let (_dir, state) = serving_with_authority(group.clone());
+    let scheduler = JobScheduler::new(state, limits(2, 4, 2, 2));
+    let (job, _) = SingletonJob::new(SINGLETON, SingletonAction::Fail);
+
+    assert_eq!(scheduler.run(job).await.unwrap_err(), "body: the work failed");
+
+    assert_eq!(group.holder_of(SINGLETON), None, "a failed run gives the grant back");
+    scheduler.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_a_claim_the_group_cannot_commit_records_its_failure() {
+    let (_dir, state) = serving_with_authority(TestAuthority::partitioned(7, GroupFailure::Claim));
+    let scheduler = JobScheduler::new(state, limits(2, 4, 2, 2));
+    let (job, observed) = SingletonJob::new(SINGLETON, SingletonAction::Succeed);
+
+    assert_eq!(
+        scheduler.run(job).await.unwrap_err(),
+        "lease_not_held: ownership claim did not commit: the ownership group is unreachable"
+    );
+
+    assert_eq!(observed.runs.load(Ordering::SeqCst), 0);
+    scheduler.shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_a_run_longer_than_one_lease_period_keeps_renewing_its_grant() {
+    let group = TestAuthority::leasing(7);
+    let (_dir, state) = serving_with_authority(group.clone());
+    let scheduler = JobScheduler::new(state, limits(2, 4, 2, 2));
+    let release = Arc::new(Notify::new());
+    let (job, observed) = SingletonJob::new(SINGLETON, SingletonAction::Block(release.clone()));
+    let running = tokio::spawn({
+        let scheduler = Arc::new(scheduler);
+        let handle = scheduler.clone();
+        async move {
+            let outcome = handle.run(job).await;
+            (scheduler, outcome)
+        }
+    });
+    observed.entered.notified().await;
+
+    group.renewed.notified().await;
+
+    assert!(group.renewals.load(Ordering::SeqCst) >= 1);
+    assert!(
+        group.holder_of(SINGLETON).is_some(),
+        "the grant stays held across renewals"
+    );
+    release.notify_one();
+    let (scheduler, outcome) = running.await.unwrap();
+    outcome.unwrap();
+    scheduler.shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_losing_the_grant_cancels_the_run_and_fences_its_outcome() {
+    let group = TestAuthority::leasing(7);
+    let (_dir, state) = serving_with_authority(group.clone());
+    let scheduler = JobScheduler::new(state, limits(2, 4, 2, 2));
+    let (job, observed) = SingletonJob::new(SINGLETON, SingletonAction::UntilCancelled);
+    let running = tokio::spawn({
+        let scheduler = Arc::new(scheduler);
+        let handle = scheduler.clone();
+        async move {
+            let outcome = handle.run(job).await;
+            (scheduler, outcome)
+        }
+    });
+    observed.entered.notified().await;
+
+    group.take_over(SINGLETON, "node-other");
+    let (scheduler, outcome) = running.await.unwrap();
+
+    assert!(
+        observed.cancelled.load(Ordering::SeqCst),
+        "the run observed cancellation"
+    );
+    assert_eq!(
+        outcome.unwrap_err(),
+        "lease_fenced: ownership of this cluster-singleton run moved to another holder"
     );
     scheduler.shutdown().await;
 }
 
 #[tokio::test]
-async fn test_a_cluster_singleton_behind_a_higher_term_is_fenced_before_it_runs() {
-    let (_dir, state) = serving_with_authority(test_authority(Arc::new(AtomicU64::new(0)), 5));
-    state
-        .meta
-        .claim_job_lease("reclaim", "node-other", 9, 1_000, 300)
-        .unwrap();
+async fn test_a_grant_taken_over_mid_run_fences_a_succeeded_body() {
+    let group = TestAuthority::leasing(7);
+    let (_dir, state) = serving_with_authority(group.clone());
     let scheduler = JobScheduler::new(state.clone(), limits(2, 4, 2, 2));
-    let leased = Arc::new(AtomicU64::new(0));
-    let ran = Arc::new(AtomicUsize::new(0));
+    let (job, observed) = SingletonJob::new(SINGLETON, SingletonAction::TakenOver(group));
 
-    assert_eq!(
-        scheduler
-            .run(SingletonJob::new("reclaim", leased.clone(), ran.clone()))
-            .await
-            .unwrap_err(),
-        "lease_not_held: a newer fence 9 supersedes the applied fence 5"
-    );
+    let error = scheduler.run(job).await.unwrap_err();
 
-    assert_eq!(ran.load(Ordering::SeqCst), 0, "a fenced run never executes its work");
-    let runs = job_runs(&state.meta);
-    assert_eq!(runs.len(), 1);
+    assert_eq!(observed.runs.load(Ordering::SeqCst), 1, "the body ran before it lost");
     assert_eq!(
-        runs[0].error.as_deref(),
-        Some("lease_not_held: a newer fence 9 supersedes the applied fence 5"),
+        error,
+        "lease_fenced: ownership of this cluster-singleton run moved to another holder"
     );
-    let lease = state.meta.job_lease("reclaim").unwrap().unwrap();
-    assert_eq!(lease.holder, "node-other");
-    assert_eq!(lease.epoch, 9);
+    assert_eq!(job_runs(&state.meta)[0].error.as_deref(), Some(error.as_str()));
     scheduler.shutdown().await;
 }
 
 #[tokio::test]
-async fn test_a_cluster_singleton_superseded_mid_run_is_fenced() {
-    let (_dir, state) = serving_with_authority(test_authority(Arc::new(AtomicU64::new(0)), 7));
-    let scheduler = JobScheduler::new(state.clone(), limits(2, 4, 2, 2));
-    let leased = Arc::new(AtomicU64::new(0));
-    let ran = Arc::new(AtomicUsize::new(0));
+async fn test_a_release_the_group_cannot_commit_leaves_the_outcome_alone() {
+    let group = TestAuthority::partitioned(7, GroupFailure::Release);
+    let (_dir, state) = serving_with_authority(group);
+    let scheduler = JobScheduler::new(state, limits(2, 4, 2, 2));
+    let (job, _) = SingletonJob::new(SINGLETON, SingletonAction::Succeed);
 
     assert_eq!(
-        scheduler
-            .run(SingletonJob::superseding(
-                "reclaim",
-                leased.clone(),
-                ran.clone(),
-                "node-other",
-                12,
-            ))
-            .await
-            .unwrap_err(),
-        "authority_fenced: a newer holder superseded this cluster-singleton run"
-    );
-
-    assert_eq!(ran.load(Ordering::SeqCst), 1, "the run executed before it was fenced");
-    assert_eq!(leased.load(Ordering::SeqCst), 7, "the run leased term 7");
-    let runs = job_runs(&state.meta);
-    assert_eq!(
-        runs[0].error.as_deref(),
-        Some("authority_fenced: a newer holder superseded this cluster-singleton run"),
+        scheduler.run(job).await.unwrap(),
+        JobRunOutcome::succeeded(JobReport::default()),
+        "cleanup that cannot reach consensus never rewrites a finished body"
     );
     scheduler.shutdown().await;
 }
 
 #[tokio::test]
-async fn test_a_node_local_job_takes_no_lease() {
-    let (_dir, state) = serving_with_authority(test_authority(Arc::new(AtomicU64::new(0)), 4));
-    let scheduler = JobScheduler::new(state.clone(), limits(2, 4, 2, 2));
+async fn test_a_cluster_singleton_without_a_group_runs_unowned() {
+    let (_dir, state) = serving();
+    let scheduler = JobScheduler::new(state, limits(2, 4, 2, 2));
+    let (job, observed) = SingletonJob::new(SINGLETON, SingletonAction::Succeed);
+
+    scheduler.run(job).await.unwrap();
+
+    assert_eq!(observed.runs.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        observed.fence.load(Ordering::SeqCst),
+        0,
+        "a process with no group runs under the closed sentinel"
+    );
+    scheduler.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_a_node_local_job_takes_no_singleton_grant() {
+    let group = TestAuthority::leasing(4);
+    let (_dir, state) = serving_with_authority(group.clone());
+    let scheduler = JobScheduler::new(state, limits(2, 4, 2, 2));
 
     scheduler
         .run(TestJob::persisting(
@@ -2390,57 +2658,50 @@ async fn test_a_node_local_job_takes_no_lease() {
         .await
         .unwrap();
 
+    assert!(group.lock().is_empty(), "a node-local job claims no grant");
+    scheduler.shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_a_renewal_that_cannot_reach_the_group_keeps_the_run_going() {
+    let group = TestAuthority::partitioned(7, GroupFailure::Renew);
+    let (_dir, state) = serving_with_authority(group.clone());
+    let scheduler = Arc::new(JobScheduler::new(state, limits(2, 4, 2, 2)));
+    let release = Arc::new(Notify::new());
+    let (job, observed) = SingletonJob::new(SINGLETON, SingletonAction::Block(release.clone()));
+    let running = tokio::spawn({
+        let handle = scheduler.clone();
+        async move { handle.run(job).await }
+    });
+    observed.entered.notified().await;
+
+    group.renewed.notified().await;
+    group.renewed.notified().await;
+    release.notify_one();
+
     assert!(
-        state.meta.job_leases().unwrap().is_empty(),
-        "a node-local job records no lease"
+        group.renewals.load(Ordering::SeqCst) >= 2,
+        "a failed renewal is retried rather than treated as lost"
     );
-    scheduler.shutdown().await;
-}
-
-#[tokio::test]
-async fn test_a_restarted_node_leases_the_live_term_not_a_persisted_token() {
-    let (_dir, state) = serving_with_authority(test_authority(Arc::new(AtomicU64::new(0)), 6));
-    state
-        .meta
-        .claim_job_lease("reclaim", "node-old", 5, 1_000, 300)
-        .unwrap();
-    state.meta.release_job_lease("reclaim", "node-old", 5).unwrap();
-    let scheduler = JobScheduler::new(state.clone(), limits(2, 4, 2, 2));
-    let leased = Arc::new(AtomicU64::new(0));
-    let ran = Arc::new(AtomicUsize::new(0));
-
-    scheduler
-        .run(SingletonJob::new("reclaim", leased.clone(), ran.clone()))
-        .await
-        .unwrap();
-
+    assert!(
+        !observed.cancelled.load(Ordering::SeqCst),
+        "a renewal the group cannot answer does not stop the run"
+    );
     assert_eq!(
-        leased.load(Ordering::SeqCst),
-        6,
-        "the run minted the live term, not the persisted token 5"
+        running.await.unwrap().unwrap(),
+        JobRunOutcome::succeeded(JobReport::default()),
+        "only the committed answer fences a run, never a failed round trip"
     );
-    let persisted = state.meta.job_lease("reclaim").unwrap().unwrap();
-    assert_eq!(persisted.epoch, 6);
-    assert_eq!(persisted.state, LeaseState::Released);
     scheduler.shutdown().await;
 }
 
 #[tokio::test]
-async fn test_a_cluster_singleton_without_a_group_leases_the_zero_sentinel() {
-    let (_dir, state) = serving();
-    let scheduler = JobScheduler::new(state.clone(), limits(2, 4, 2, 2));
-    let leased = Arc::new(AtomicU64::new(9));
-    let ran = Arc::new(AtomicUsize::new(0));
+async fn test_the_serving_state_hands_back_the_installed_ownership_group() {
+    let group: Arc<dyn crate::state::OwnershipAuthority> = TestAuthority::leasing(7);
+    let (_dir, state) = serving_with_authority(group.clone());
 
-    scheduler
-        .run(SingletonJob::new("reclaim", leased.clone(), ran.clone()))
-        .await
-        .unwrap();
+    let installed = state.ownership_authority().expect("the group is installed");
 
-    assert_eq!(ran.load(Ordering::SeqCst), 1);
-    assert_eq!(leased.load(Ordering::SeqCst), 0, "no group leases the 0 sentinel");
-    let lease = state.meta.job_lease("reclaim").unwrap().unwrap();
-    assert_eq!(lease.epoch, 0);
-    assert_eq!(lease.state, LeaseState::Released);
-    scheduler.shutdown().await;
+    assert!(Arc::ptr_eq(installed, &group));
+    assert_eq!(installed.cluster_status().term, 7);
 }

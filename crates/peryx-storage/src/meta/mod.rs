@@ -20,7 +20,6 @@ mod frontier;
 mod index;
 mod ingress_intent;
 mod job;
-mod job_lease;
 mod journal;
 mod migration;
 mod operation_outcome;
@@ -55,7 +54,6 @@ pub use job::{
     FinishJobRun, JobKind, JobOutcome, JobRunPage, JobRunQuery, JobRunQueryError, JobRunRecord, JobRunStoreError,
     JobState, NewJobRun,
 };
-pub use job_lease::{ClaimOutcome, JobLease, JobLeaseError, LeaseState};
 pub use journal::{
     DriverBlobReference, DriverCommit, DriverMutation, JournalCommit, JournalEntry, JournalRecord, JournalSnapshot,
 };
@@ -115,7 +113,6 @@ const WEBHOOK_DELIVERY: TableDefinition<&str, &[u8]> = TableDefinition::new("web
 const WEBHOOK_DUE: TableDefinition<&str, &str> = TableDefinition::new("webhook_due");
 const WEBHOOK_EVENT: TableDefinition<&str, &[u8]> = TableDefinition::new("webhook_event");
 const JOB_RUN: TableDefinition<&str, &[u8]> = TableDefinition::new("job_run");
-const JOB_LEASE: TableDefinition<&str, &[u8]> = TableDefinition::new("job_lease");
 /// Operation IDs make admitted-write retries idempotent.
 const OPERATION_OUTCOME: TableDefinition<&str, &[u8]> = TableDefinition::new("operation_outcome");
 /// Client-scoped keys make staged admissions idempotent and restart-safe.
@@ -273,7 +270,6 @@ impl MetaStore {
             txn.open_table(WEBHOOK_DUE)?;
             txn.open_table(WEBHOOK_EVENT)?;
             txn.open_table(JOB_RUN)?;
-            txn.open_table(JOB_LEASE)?;
             txn.open_table(POLICY_DECISION)?;
             txn.open_table(POLICY_DECISION_CURRENT)?;
             txn.open_table(POLICY_DECISION_CURRENT_ID)?;

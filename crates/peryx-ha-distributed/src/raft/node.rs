@@ -17,7 +17,7 @@ use crate::raft::config::RaftConfig;
 use crate::raft::network::{RaftRpc, RaftRpcHandler, RaftRpcRejection};
 use crate::raft::{OwnershipResponse, OwnershipStateMachine, PeryxNode, TypeConfig};
 use peryx_core::Clock;
-use peryx_ha::AUTHORITY_WRITE_LEASE_SECS;
+use peryx_ha::{AUTHORITY_WRITE_LEASE_SECS, SINGLETON_LEASE_SECS};
 
 type NodeId = u64;
 
@@ -193,6 +193,39 @@ fn stamp_leader_time(command: OwnershipCommand, now_unix: i64) -> OwnershipComma
         } => OwnershipCommand::RecordTransfer {
             authority,
             new_home,
+            now_unix,
+        },
+        OwnershipCommand::AcquireSingletonLease { job, holder, .. } => OwnershipCommand::AcquireSingletonLease {
+            job,
+            holder,
+            now_unix,
+            expires_at_unix: now_unix.saturating_add(SINGLETON_LEASE_SECS),
+        },
+        OwnershipCommand::RenewSingletonLease {
+            job,
+            holder,
+            term,
+            generation,
+            ..
+        } => OwnershipCommand::RenewSingletonLease {
+            job,
+            holder,
+            term,
+            generation,
+            now_unix,
+            expires_at_unix: now_unix.saturating_add(SINGLETON_LEASE_SECS),
+        },
+        OwnershipCommand::ReleaseSingletonLease {
+            job,
+            holder,
+            term,
+            generation,
+            ..
+        } => OwnershipCommand::ReleaseSingletonLease {
+            job,
+            holder,
+            term,
+            generation,
             now_unix,
         },
         command => command,

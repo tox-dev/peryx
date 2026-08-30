@@ -164,6 +164,73 @@ async fn test_client_write_rpc_stamps_lease_times_with_the_leader_clock() {
 }
 
 #[tokio::test]
+async fn test_client_write_rpc_stamps_singleton_lease_times_with_the_leader_clock() {
+    let dir = tempfile::tempdir().unwrap();
+    let node = leader_node(&dir).await;
+    let handler = node.rpc_handler_with_clock(std::sync::Arc::new(|| 42));
+
+    let acquired = forward(
+        handler.as_ref(),
+        OwnershipCommand::AcquireSingletonLease {
+            job: "reclamation".to_owned(),
+            holder: "node-a".to_owned(),
+            now_unix: -1_000,
+            expires_at_unix: i64::MAX,
+        },
+    )
+    .await;
+    assert_eq!(
+        acquired,
+        OwnershipResponse::Applied(OwnershipEffect::SingletonAcquired {
+            holder: "node-a".to_owned(),
+            term: 1,
+            generation: 1,
+            expires_at_unix: 42 + peryx_ha::SINGLETON_LEASE_SECS,
+        })
+    );
+
+    let renewed = forward(
+        handler.as_ref(),
+        OwnershipCommand::RenewSingletonLease {
+            job: "reclamation".to_owned(),
+            holder: "node-a".to_owned(),
+            term: 1,
+            generation: 1,
+            now_unix: i64::MIN,
+            expires_at_unix: i64::MAX,
+        },
+    )
+    .await;
+    assert_eq!(
+        renewed,
+        OwnershipResponse::Applied(OwnershipEffect::SingletonRenewed {
+            expires_at_unix: 42 + peryx_ha::SINGLETON_LEASE_SECS,
+        })
+    );
+
+    let released = forward(
+        handler.as_ref(),
+        OwnershipCommand::ReleaseSingletonLease {
+            job: "reclamation".to_owned(),
+            holder: "node-a".to_owned(),
+            term: 1,
+            generation: 1,
+            now_unix: i64::MAX,
+        },
+    )
+    .await;
+    assert_eq!(released, OwnershipResponse::Applied(OwnershipEffect::SingletonReleased));
+}
+
+async fn forward(handler: &dyn crate::raft::network::RaftRpcHandler, command: OwnershipCommand) -> OwnershipResponse {
+    let body = Bytes::from(serde_json::to_vec(&command).unwrap());
+    let reply = handler.handle(RaftRpc::ClientWrite, body).await.unwrap();
+    let response: Result<ClientWriteResponse<TypeConfig>, RaftError<u64, ClientWriteError<u64, PeryxNode>>> =
+        serde_json::from_slice(&reply).unwrap();
+    response.unwrap().data
+}
+
+#[tokio::test]
 async fn test_a_submit_without_a_leader_surfaces_the_error() {
     let dir = tempfile::tempdir().unwrap();
     let node = start_node(&dir, RaftConfig::default()).await.unwrap();

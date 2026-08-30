@@ -1,5 +1,6 @@
 pub use peryx_ha::{
-    AuthorityWriteLease, ClusterStatus, HomeClaim, OwnershipAuthority, OwnershipError, TransferOutcome,
+    AuthorityWriteLease, ClusterStatus, HomeClaim, OwnershipAuthority, OwnershipError, SINGLETON_LEASE_SECS,
+    SINGLETON_RENEW_SECS, SingletonAcquisition, SingletonLease, SingletonRelease, SingletonRenewal, TransferOutcome,
 };
 
 /// Resolve an authority's committed home, assigning this datacenter when it is unowned.

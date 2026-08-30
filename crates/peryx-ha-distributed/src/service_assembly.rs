@@ -1168,6 +1168,43 @@ impl OwnershipAuthority for DeferredOwnership {
         }
     }
 
+    async fn acquire_singleton_lease(
+        &self,
+        job: &str,
+        holder: &str,
+    ) -> Result<peryx_ha::SingletonAcquisition, peryx_ha::OwnershipError> {
+        match self.current() {
+            Some(ownership) => ownership.acquire_singleton_lease(job, holder).await,
+            None => Err(peryx_ha::OwnershipError::Unavailable(
+                "ownership is not active".to_owned(),
+            )),
+        }
+    }
+
+    async fn renew_singleton_lease(
+        &self,
+        lease: &peryx_ha::SingletonLease,
+    ) -> Result<peryx_ha::SingletonRenewal, peryx_ha::OwnershipError> {
+        match self.current() {
+            Some(ownership) => ownership.renew_singleton_lease(lease).await,
+            None => Err(peryx_ha::OwnershipError::Unavailable(
+                "ownership is not active".to_owned(),
+            )),
+        }
+    }
+
+    async fn release_singleton_lease(
+        &self,
+        lease: &peryx_ha::SingletonLease,
+    ) -> Result<peryx_ha::SingletonRelease, peryx_ha::OwnershipError> {
+        match self.current() {
+            Some(ownership) => ownership.release_singleton_lease(lease).await,
+            None => Err(peryx_ha::OwnershipError::Unavailable(
+                "ownership is not active".to_owned(),
+            )),
+        }
+    }
+
     async fn transfer_home(
         &self,
         authority: &str,

@@ -4,6 +4,7 @@ use crate::ownership::{
     AppliedMeta, Assignment, AssignmentCause, DatacenterId, OwnershipCommand, OwnershipEffect, OwnershipError,
     OwnershipState, Rejection, TransferRecord,
 };
+use rstest::rstest;
 
 fn key(name: &str) -> AuthorityKey {
     AuthorityKey(name.to_owned())
@@ -58,6 +59,275 @@ fn finish_write(authority: &str, epoch: u64, id: &str) -> OwnershipCommand {
         epoch: AuthorityEpoch(epoch),
         id: id.to_owned(),
     }
+}
+
+const JOB: &str = "reclamation";
+
+fn acquire(holder: &str, now_unix: i64) -> OwnershipCommand {
+    OwnershipCommand::AcquireSingletonLease {
+        job: JOB.to_owned(),
+        holder: holder.to_owned(),
+        now_unix,
+        expires_at_unix: now_unix + peryx_ha::SINGLETON_LEASE_SECS,
+    }
+}
+
+fn renew(holder: &str, term: u64, generation: u64, now_unix: i64) -> OwnershipCommand {
+    OwnershipCommand::RenewSingletonLease {
+        job: JOB.to_owned(),
+        holder: holder.to_owned(),
+        term,
+        generation,
+        now_unix,
+        expires_at_unix: now_unix + peryx_ha::SINGLETON_LEASE_SECS,
+    }
+}
+
+fn release(holder: &str, term: u64, generation: u64, now_unix: i64) -> OwnershipCommand {
+    OwnershipCommand::ReleaseSingletonLease {
+        job: JOB.to_owned(),
+        holder: holder.to_owned(),
+        term,
+        generation,
+        now_unix,
+    }
+}
+
+fn granted(holder: &str, term: u64, generation: u64, now_unix: i64) -> OwnershipEffect {
+    OwnershipEffect::SingletonAcquired {
+        holder: holder.to_owned(),
+        term,
+        generation,
+        expires_at_unix: now_unix + peryx_ha::SINGLETON_LEASE_SECS,
+    }
+}
+
+/// The point at which a grant taken at `now_unix` stops excluding another holder.
+fn lapse(now_unix: i64) -> i64 {
+    now_unix + peryx_ha::SINGLETON_LEASE_SECS + peryx_ha::AUTHORITY_CLOCK_SKEW_SECS
+}
+
+fn held_singleton(state: &mut OwnershipState, holder: &str, now_unix: i64) -> OwnershipEffect {
+    state.apply(&acquire(holder, now_unix), META)
+}
+
+#[test]
+fn test_a_first_singleton_claim_is_granted_at_generation_one() {
+    let mut state = OwnershipState::new();
+
+    assert_eq!(held_singleton(&mut state, "node-a", 100), granted("node-a", 1, 1, 100));
+}
+
+#[test]
+fn test_the_committed_entry_supplies_the_grant_term() {
+    let mut state = OwnershipState::new();
+
+    let effect = state.apply(&acquire("node-a", 100), AppliedMeta { term: 9, index: 2 });
+
+    assert_eq!(effect, granted("node-a", 9, 1, 100));
+}
+
+#[test]
+fn test_a_second_holder_cannot_take_an_unlapsed_grant() {
+    let mut state = OwnershipState::new();
+    held_singleton(&mut state, "node-a", 100);
+
+    let effect = state.apply(&acquire("node-b", 100 + peryx_ha::SINGLETON_LEASE_SECS), META);
+
+    assert_eq!(
+        effect,
+        OwnershipEffect::SingletonHeld {
+            holder: "node-a".to_owned(),
+        }
+    );
+}
+
+#[test]
+fn test_a_later_leader_term_does_not_steal_an_unlapsed_grant() {
+    let mut state = OwnershipState::new();
+    state.apply(&acquire("node-a", 100), AppliedMeta { term: 1, index: 1 });
+
+    let effect = state.apply(&acquire("node-b", 110), AppliedMeta { term: 2, index: 9 });
+
+    assert_eq!(
+        effect,
+        OwnershipEffect::SingletonHeld {
+            holder: "node-a".to_owned(),
+        }
+    );
+}
+
+#[test]
+fn test_a_lapsed_grant_lets_the_next_holder_in_at_a_higher_generation() {
+    let mut state = OwnershipState::new();
+    held_singleton(&mut state, "node-a", 100);
+
+    let effect = state.apply(&acquire("node-b", lapse(100)), META);
+
+    assert_eq!(effect, granted("node-b", 1, 2, lapse(100)));
+}
+
+#[test]
+fn test_the_owner_renews_its_own_grant() {
+    let mut state = OwnershipState::new();
+    held_singleton(&mut state, "node-a", 100);
+
+    let effect = state.apply(&renew("node-a", 1, 1, 110), META);
+
+    assert_eq!(
+        effect,
+        OwnershipEffect::SingletonRenewed {
+            expires_at_unix: 110 + peryx_ha::SINGLETON_LEASE_SECS,
+        }
+    );
+}
+
+#[test]
+fn test_renewal_extends_the_grant_past_the_original_deadline() {
+    let mut state = OwnershipState::new();
+    held_singleton(&mut state, "node-a", 100);
+    state.apply(&renew("node-a", 1, 1, 110), META);
+
+    let effect = state.apply(&acquire("node-b", lapse(100)), META);
+
+    assert_eq!(
+        effect,
+        OwnershipEffect::SingletonHeld {
+            holder: "node-a".to_owned(),
+        }
+    );
+}
+
+#[rstest]
+#[case::another_holder(renew("node-b", 1, 1, 110))]
+#[case::another_term(renew("node-a", 2, 1, 110))]
+#[case::another_generation(renew("node-a", 1, 2, 110))]
+#[case::after_the_grant_lapsed(renew("node-a", 1, 1, lapse(100)))]
+fn test_a_renewal_that_no_longer_owns_the_grant_is_refused(#[case] command: OwnershipCommand) {
+    let mut state = OwnershipState::new();
+    held_singleton(&mut state, "node-a", 100);
+
+    assert_eq!(
+        state.apply(&command, META),
+        OwnershipEffect::Rejected(Rejection::SingletonLost)
+    );
+}
+
+#[test]
+fn test_a_refused_renewal_leaves_the_grant_with_its_owner() {
+    let mut state = OwnershipState::new();
+    held_singleton(&mut state, "node-a", 100);
+
+    state.apply(&renew("node-b", 1, 1, 110), META);
+
+    assert_eq!(
+        state.apply(&acquire("node-b", 110), META),
+        OwnershipEffect::SingletonHeld {
+            holder: "node-a".to_owned(),
+        }
+    );
+}
+
+#[rstest]
+#[case::acquire(OwnershipCommand::AcquireSingletonLease {
+    job: JOB.to_owned(),
+    holder: "node-a".to_owned(),
+    now_unix: 100,
+    expires_at_unix: 100 + peryx_ha::SINGLETON_LEASE_SECS + 1,
+})]
+#[case::renew(OwnershipCommand::RenewSingletonLease {
+    job: JOB.to_owned(),
+    holder: "node-a".to_owned(),
+    term: 1,
+    generation: 1,
+    now_unix: 100,
+    expires_at_unix: 100,
+})]
+fn test_a_grant_longer_than_the_lease_policy_is_refused(#[case] command: OwnershipCommand) {
+    let mut state = OwnershipState::new();
+
+    assert_eq!(
+        state.apply(&command, META),
+        OwnershipEffect::Rejected(Rejection::InvalidLease)
+    );
+}
+
+#[test]
+fn test_the_owner_releases_its_grant() {
+    let mut state = OwnershipState::new();
+    held_singleton(&mut state, "node-a", 100);
+
+    assert_eq!(
+        state.apply(&release("node-a", 1, 1, 110), META),
+        OwnershipEffect::SingletonReleased
+    );
+}
+
+#[rstest]
+#[case::another_holder(release("node-b", 1, 1, 110))]
+#[case::another_term(release("node-a", 2, 1, 110))]
+#[case::another_generation(release("node-a", 1, 2, 110))]
+#[case::after_the_grant_lapsed(release("node-a", 1, 1, lapse(100)))]
+fn test_a_release_that_no_longer_owns_the_grant_reports_the_loss(#[case] command: OwnershipCommand) {
+    let mut state = OwnershipState::new();
+    held_singleton(&mut state, "node-a", 100);
+
+    assert_eq!(
+        state.apply(&command, META),
+        OwnershipEffect::Rejected(Rejection::SingletonLost)
+    );
+}
+
+#[rstest]
+#[case::renew(renew("node-a", 1, 1, 110))]
+#[case::release(release("node-a", 1, 1, 110))]
+fn test_a_request_against_a_job_that_was_never_granted_reports_the_loss(#[case] command: OwnershipCommand) {
+    let mut state = OwnershipState::new();
+
+    assert_eq!(
+        state.apply(&command, META),
+        OwnershipEffect::Rejected(Rejection::SingletonLost)
+    );
+}
+
+#[test]
+fn test_reacquisition_in_one_term_mints_a_distinct_generation() {
+    let mut state = OwnershipState::new();
+    held_singleton(&mut state, "node-a", 100);
+    state.apply(&release("node-a", 1, 1, 110), META);
+
+    assert_eq!(held_singleton(&mut state, "node-b", 110), granted("node-b", 1, 2, 110));
+}
+
+#[rstest]
+#[case::renew(renew("node-a", 1, 1, 120))]
+#[case::release(release("node-a", 1, 1, 120))]
+fn test_a_delayed_request_from_the_previous_generation_is_refused(#[case] command: OwnershipCommand) {
+    let mut state = OwnershipState::new();
+    held_singleton(&mut state, "node-a", 100);
+    state.apply(&release("node-a", 1, 1, 110), META);
+    held_singleton(&mut state, "node-b", 110);
+
+    assert_eq!(
+        state.apply(&command, META),
+        OwnershipEffect::Rejected(Rejection::SingletonLost)
+    );
+}
+
+#[test]
+fn test_singleton_grants_survive_a_snapshot_round_trip() {
+    let mut state = OwnershipState::new();
+    held_singleton(&mut state, "node-a", 100);
+
+    let mut restored = OwnershipState::restore(&state.snapshot()).unwrap();
+
+    assert_eq!(restored, state);
+    assert_eq!(
+        restored.apply(&acquire("node-b", 110), META),
+        OwnershipEffect::SingletonHeld {
+            holder: "node-a".to_owned(),
+        }
+    );
 }
 
 #[test]
@@ -602,7 +872,7 @@ fn test_restore_rejects_malformed_bytes() {
 
 #[test]
 fn test_restore_rejects_a_record_at_the_reserved_zero_epoch() {
-    let snapshot = br#"{"proj":{"home":"east","epoch":0,"assignment":{"cause":"first-publish","term":1,"index":1,"epoch":1},"transfers":[]}}"#;
+    let snapshot = br#"{"authorities":{"proj":{"home":"east","epoch":0,"assignment":{"cause":"first-publish","term":1,"index":1,"epoch":1},"transfers":[],"writes":{}}},"singletons":{}}"#;
 
     let error = OwnershipState::restore(snapshot).unwrap_err();
 
