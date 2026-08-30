@@ -185,6 +185,7 @@ fn operation_table_row(row: OperationRow) -> AnyView {
     .into_any()
 }
 
-#[cfg(all(test, feature = "ssr"))]
+#[cfg(test)]
+#[cfg(feature = "ssr")]
 #[path = "../../tests/unit/pages/operations/tests.rs"]
 mod tests;

@@ -356,6 +356,7 @@ const fn byte_availability_label(availability: peryx_core::UiByteAvailability) -
     }
 }
 
-#[cfg(all(test, feature = "ssr"))]
+#[cfg(test)]
+#[cfg(feature = "ssr")]
 #[path = "../../tests/unit/pages/placement/tests.rs"]
 mod tests;

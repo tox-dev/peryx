@@ -313,6 +313,7 @@ fn close_topology_stream() {
     drop(TOPOLOGY_STREAM.with(|slot| slot.borrow_mut().take()));
 }
 
-#[cfg(all(test, feature = "ssr"))]
+#[cfg(test)]
+#[cfg(feature = "ssr")]
 #[path = "../../tests/unit/pages/topology/tests.rs"]
 mod tests;

@@ -267,6 +267,7 @@ fn parse_stats(value: &serde_json::Value, index: Option<&str>, resource: Option<
     }
 }
 
-#[cfg(all(test, feature = "ssr"))]
+#[cfg(test)]
+#[cfg(feature = "ssr")]
 #[path = "../../tests/unit/data/stats/tests.rs"]
 mod tests;

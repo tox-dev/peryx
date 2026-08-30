@@ -217,6 +217,7 @@ const fn availability_badge(available: bool) -> (&'static str, &'static str, &'s
     }
 }
 
-#[cfg(all(test, feature = "ssr"))]
+#[cfg(test)]
+#[cfg(feature = "ssr")]
 #[path = "../../tests/unit/pages/search/tests.rs"]
 mod tests;

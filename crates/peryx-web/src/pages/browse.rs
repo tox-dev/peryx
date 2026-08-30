@@ -345,6 +345,7 @@ fn run_action(
     drop((method, endpoint, user, password, refresh));
 }
 
-#[cfg(all(test, feature = "ssr"))]
+#[cfg(test)]
+#[cfg(feature = "ssr")]
 #[path = "../../tests/unit/pages/browse/tests.rs"]
 mod tests;

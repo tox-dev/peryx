@@ -401,7 +401,8 @@ pub fn registration() -> peryx_plugin_registry::PluginRegistration {
     }
 }
 
-#[cfg(all(test, feature = "serving"))]
+#[cfg(test)]
+#[cfg(feature = "serving")]
 #[path = "../tests/unit/plugin_contract_tests.rs"]
 mod plugin_contract_tests;
 
@@ -413,10 +414,12 @@ pub(crate) fn error_message<E: std::fmt::Display>(err: E) -> String {
     err.to_string()
 }
 
-#[cfg(all(test, feature = "serving"))]
+#[cfg(test)]
+#[cfg(feature = "serving")]
 #[path = "../tests/unit/error_message_tests.rs"]
 mod error_message_tests;
 
-#[cfg(all(test, feature = "serving"))]
+#[cfg(test)]
+#[cfg(feature = "serving")]
 #[path = "../tests/unit/tests/mod.rs"]
 mod tests;

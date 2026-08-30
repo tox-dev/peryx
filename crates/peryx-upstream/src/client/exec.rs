@@ -445,6 +445,7 @@ impl HelperResponse {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
+#[cfg(unix)]
 #[path = "../../tests/unit/client/exec/tests.rs"]
 mod tests;

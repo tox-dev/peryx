@@ -363,7 +363,8 @@ impl Drop for AvailabilityRuntime {
     }
 }
 
-#[cfg(all(test, peryx_loom))]
+#[cfg(test)]
+#[cfg(peryx_loom)]
 #[path = "../tests/unit/runtime_worker/loom_tests.rs"]
 mod loom_tests;
 #[cfg(test)]

@@ -287,7 +287,8 @@ pub fn capture_coverage() -> Vec<u8> {
 #[path = "../tests/unit/tests.rs"]
 mod tests;
 
-#[cfg(all(test, feature = "ssr"))]
+#[cfg(test)]
+#[cfg(feature = "ssr")]
 #[path = "../tests/unit/page_contract_tests.rs"]
 mod page_contract_tests;
 
