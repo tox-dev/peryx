@@ -1,8 +1,9 @@
 use leptos::prelude::*;
 
+use crate::data::{LoaderEndpoint, LoaderError};
 use crate::model::{UiCounters, UiEcosystemSummary, UiMetricFamily, UiSnapshot, UiStats};
 
-use super::{ErrorMessage, ecosystem_stats, human_size, optional_counters_for};
+use super::{ErrorMessage, LoadState, ecosystem_stats, human_size, optional_counters_for, retain};
 
 #[test]
 fn ecosystem_stats_render_declared_and_missing_families() {
@@ -55,6 +56,19 @@ fn optional_counters_find_exact_route() {
 fn error_message_escapes_text() {
     let html = view! { <ErrorMessage message="<failure>".to_owned() /> }.to_html();
     assert!(html.contains("&lt;failure&gt;"), "{html}");
+}
+
+#[test]
+fn load_state_retains_value_during_failure() {
+    Owner::new().with(|| {
+        let state = RwSignal::new(LoadState::default());
+        retain(state, Ok("available".to_owned()));
+        let loaded = retain(state, Err(LoaderError::Request(LoaderEndpoint::Status)));
+        assert_eq!(
+            (loaded.value.as_deref(), loaded.error.as_deref()),
+            (Some("available"), Some("Request to /+status failed."))
+        );
+    });
 }
 
 #[test]
