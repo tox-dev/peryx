@@ -1355,7 +1355,7 @@ async fn receive_updates<const N: usize>(
 
 fn take_failure(remaining: &AtomicUsize) -> bool {
     remaining
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| count.checked_sub(1))
+        .try_update(Ordering::SeqCst, Ordering::SeqCst, |count| count.checked_sub(1))
         .is_ok()
 }
 
