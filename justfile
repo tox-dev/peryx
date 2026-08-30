@@ -21,9 +21,9 @@ _docker-ready:
 # Check frontend coverage target isolation.
 _coverage-target-contract:
     CARGO_TARGET_DIR="{{ project_tmp }}/coverage-target-contract" just --dry-run coverage-frontend 2>&1 \
-      | rg -F 'export CARGO_TARGET_DIR="{{ project_tmp }}/coverage-target-contract/frontend"'
+      | grep -F 'export CARGO_TARGET_DIR="{{ project_tmp }}/coverage-target-contract/frontend"'
     env -u CARGO_TARGET_DIR just --dry-run coverage-frontend 2>&1 \
-      | rg -F 'export CARGO_TARGET_DIR="{{ coverage_target_root }}/frontend"'
+      | grep -F 'export CARGO_TARGET_DIR="{{ coverage_target_root }}/frontend"'
 
 # Check Rust formatting.
 format-check: _project-temp
