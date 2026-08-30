@@ -324,7 +324,7 @@ fn test_verify_reports_metadata_read_errors() {
         .output()
         .unwrap();
 
-    assert!(output.status.success());
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -343,17 +343,25 @@ fn assert_metadata_read_error(backup: &std::path::Path) {
     let identity = std::fs::metadata(metadata).unwrap();
     let (ready_send, ready_receive) = mpsc::sync_channel(0);
     let watcher = std::thread::spawn(move || {
+        #[cfg(target_os = "linux")]
+        let descriptor_directory = "/proc/self/fd";
+        #[cfg(target_os = "macos")]
+        let descriptor_directory = "/dev/fd";
+        let disposable = std::fs::File::open("/dev/null").unwrap();
+        let disposable_entry = std::fs::read_dir(descriptor_directory)
+            .unwrap()
+            .map(Result::unwrap)
+            .find(|entry| descriptor_number(entry) == disposable.as_raw_fd())
+            .unwrap();
+        drop(disposable);
+        assert!(existing_descriptor(disposable_entry).is_none());
         ready_send.send(()).unwrap();
         loop {
-            #[cfg(target_os = "linux")]
-            let descriptors = std::fs::read_dir("/proc/self/fd").unwrap();
-            #[cfg(target_os = "macos")]
-            let descriptors = std::fs::read_dir("/dev/fd").unwrap();
-            for entry in descriptors.flatten() {
-                let descriptor = entry.file_name().to_string_lossy().parse::<i32>().unwrap();
-                let Ok(found) = std::fs::metadata(entry.path()) else {
-                    continue;
-                };
+            for (descriptor, found) in std::fs::read_dir(descriptor_directory)
+                .unwrap()
+                .map(Result::unwrap)
+                .filter_map(existing_descriptor)
+            {
                 if descriptor > 2
                     && found.ino() == identity.ino()
                     && (cfg!(target_os = "macos") || found.dev() == identity.dev())
@@ -384,6 +392,26 @@ fn assert_metadata_read_error(backup: &std::path::Path) {
             .to_owned(),
         )
     );
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn existing_descriptor(entry: std::fs::DirEntry) -> Option<(i32, std::fs::Metadata)> {
+    let descriptor = descriptor_number(&entry);
+    match std::fs::metadata(entry.path()) {
+        Ok(found) => Some((descriptor, found)),
+        Err(error) => {
+            #[cfg(target_os = "linux")]
+            assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+            #[cfg(target_os = "macos")]
+            assert_eq!(error.raw_os_error(), Some(nix::libc::EBADF));
+            None
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn descriptor_number(entry: &std::fs::DirEntry) -> i32 {
+    entry.file_name().to_string_lossy().parse().unwrap()
 }
 
 #[rstest]
