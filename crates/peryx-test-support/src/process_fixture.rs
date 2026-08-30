@@ -2,6 +2,8 @@ use std::ffi::OsString;
 use std::fs;
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::thread;
@@ -278,6 +280,11 @@ fn run_toxiproxy(executable: &Path, args: &[String], control_listener: Option<Tc
             TcpStream::connect(("127.0.0.1", port.parse::<u16>().expect("gate port"))).expect("connect startup gate");
         gate.write_all(&[1]).expect("identify startup gate");
     }
+    #[cfg(unix)]
+    if let Some(path) = mode.strip_prefix("external-reap:") {
+        transfer_output_descriptors(path);
+        return Ok(());
+    }
     let mut readiness_gate = mode.strip_prefix("gate:").map(|port| {
         emit_toxiproxy_startup();
         let mut gate =
@@ -343,6 +350,22 @@ fn run_toxiproxy(executable: &Path, args: &[String], control_listener: Option<Tc
         };
         write_response(&mut stream, status, body, body.len());
     }
+}
+
+#[cfg(unix)]
+fn transfer_output_descriptors(path: &str) {
+    use std::os::fd::AsFd as _;
+    use unix_ancillary::UnixStreamExt as _;
+
+    let socket = UnixStream::connect(path).expect("connect output descriptor socket");
+    let stdout = std::io::stdout();
+    let stderr = std::io::stderr();
+    assert_eq!(
+        socket
+            .send_fds(&[1], &[stdout.as_fd(), stderr.as_fd()])
+            .expect("transfer output descriptors"),
+        1,
+    );
 }
 
 fn proxy_name(request: &str) -> String {

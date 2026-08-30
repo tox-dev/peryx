@@ -4,6 +4,11 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
+#[cfg(unix)]
+use std::os::{
+    fd::{AsFd as _, OwnedFd},
+    unix::net::{UnixListener, UnixStream},
+};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, mpsc};
@@ -581,7 +586,7 @@ fn process_ready_reports_an_external_reap() {
             .harness()
             .spawn_until_event("reaped", "", "fixture process started")
             .expect("observe process start");
-        reap_process(node.pid());
+        reap_process(node.pid(), Some(nix::sys::signal::Signal::SIGKILL));
 
         assert!(matches!(
             node.await_ready(),
@@ -813,8 +818,9 @@ fn toxiproxy_startup_reports_process_exit() {
 #[test]
 fn toxiproxy_startup_reports_an_external_reap() {
     with_fixture(|fixture| {
-        let (startup, receiver, _gate) = toxiproxy_start_at_gate(fixture, "silent-gate");
-        reap_process(fixture.toxiproxy_pid());
+        let (startup, receiver, output_descriptors) = externally_reapable_toxiproxy_start(fixture);
+        reap_process(fixture.toxiproxy_pid(), None);
+        drop(output_descriptors);
 
         let error = receiver
             .recv_timeout(TOXIPROXY_FAILURE_TIMEOUT)
@@ -823,7 +829,13 @@ fn toxiproxy_startup_reports_an_external_reap() {
             .expect("an externally reaped process must fail startup");
         startup.join().expect("join startup thread");
 
-        assert!(error.to_string().contains("read control process event"), "{error}");
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "toxiproxy: read control process event: {}",
+                std::io::Error::from_raw_os_error(nix::libc::ECHILD)
+            )
+        );
     });
 }
 
@@ -1283,6 +1295,22 @@ fn silent_toxiproxy_start(
     toxiproxy_start_at_gate(fixture, "event-silent-gate")
 }
 
+#[cfg(unix)]
+fn externally_reapable_toxiproxy_start(
+    fixture: &FixtureEnvironment,
+) -> (
+    thread::JoinHandle<()>,
+    mpsc::Receiver<Result<Toxiproxy, HarnessError>>,
+    [OwnedFd; 2],
+) {
+    let path = fixture.path().join("external-reap.sock");
+    let listener = UnixListener::bind(&path).expect("bind output descriptor socket");
+    fs::write(fixture.toxi_mode(), format!("external-reap:{}", path.display())).expect("configure external reap");
+    let (startup, receiver) = toxiproxy_start(fixture);
+    let stream = accept_unix_within(&listener, FIXTURE_DEADLOCK_GUARD, "output descriptor transfer");
+    (startup, receiver, receive_output_descriptors(&stream))
+}
+
 fn toxiproxy_start_at_gate(
     fixture: &FixtureEnvironment,
     mode: &str,
@@ -1297,6 +1325,14 @@ fn toxiproxy_start_at_gate(
         format!("{mode}:{}", gate.local_addr().expect("readiness gate address").port()),
     )
     .expect("configure readiness gate");
+    let (startup, receiver) = toxiproxy_start(fixture);
+    let connection = accept_within(&gate, FIXTURE_DEADLOCK_GUARD, "toxiproxy startup gate");
+    (startup, receiver, connection)
+}
+
+fn toxiproxy_start(
+    fixture: &FixtureEnvironment,
+) -> (thread::JoinHandle<()>, mpsc::Receiver<Result<Toxiproxy, HarnessError>>) {
     let binary = fixture.toxiproxy();
     let (sender, receiver) = mpsc::sync_channel(1);
     let startup = thread::spawn(move || {
@@ -1308,8 +1344,7 @@ fn toxiproxy_start_at_gate(
             ))
             .expect("return startup result");
     });
-    let connection = accept_within(&gate, FIXTURE_DEADLOCK_GUARD, "toxiproxy startup gate");
-    (startup, receiver, connection)
+    (startup, receiver)
 }
 
 fn accept_within(listener: &TcpListener, timeout: Duration, event: &str) -> TcpStream {
@@ -1332,9 +1367,35 @@ fn accept_within(listener: &TcpListener, timeout: Duration, event: &str) -> TcpS
 }
 
 #[cfg(unix)]
-fn reap_process(pid: u32) {
+fn accept_unix_within(listener: &UnixListener, timeout: Duration, event: &str) -> UnixStream {
+    let mut descriptors = [nix::poll::PollFd::new(listener.as_fd(), nix::poll::PollFlags::POLLIN)];
+    assert_eq!(
+        nix::poll::poll(
+            &mut descriptors,
+            nix::poll::PollTimeout::try_from(timeout).expect("deadlock guard fits poll timeout"),
+        )
+        .expect("poll Unix listener"),
+        1,
+        "{event} not received within {timeout:?}",
+    );
+    listener.accept().expect("accept Unix connection").0
+}
+
+#[cfg(unix)]
+fn receive_output_descriptors(stream: &UnixStream) -> [OwnedFd; 2] {
+    use unix_ancillary::UnixStreamExt as _;
+
+    let message = stream.recv_fds_exact::<2>().expect("receive output descriptors");
+    assert_eq!(message.data, [1]);
+    message.fds.try_into().expect("stdout and stderr descriptors")
+}
+
+#[cfg(unix)]
+fn reap_process(pid: u32, signal: Option<nix::sys::signal::Signal>) {
     let process = nix::unistd::Pid::from_raw(i32::try_from(pid).expect("pid fits an i32"));
-    nix::sys::signal::kill(process, nix::sys::signal::Signal::SIGKILL).expect("kill fixture process");
+    if let Some(signal) = signal {
+        nix::sys::signal::kill(process, signal).expect("kill fixture process");
+    }
     nix::sys::wait::waitpid(process, None).expect("reap fixture process outside its owner");
 }
 

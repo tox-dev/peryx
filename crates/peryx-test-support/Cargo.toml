@@ -36,7 +36,8 @@ tempfile.workspace = true
 thiserror.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.31.3", features = ["fs", "signal"] }
+nix = { version = "0.31.3", features = ["fs", "poll", "signal"] }
+unix-ancillary = "0.4.0"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
