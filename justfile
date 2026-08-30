@@ -48,6 +48,12 @@ _coverage-target-contract:
     env -u CARGO_TARGET_DIR just --dry-run coverage-frontend 2>&1 \
       | grep -F 'export CARGO_TARGET_DIR="{{ coverage_target_root }}/frontend"'
 
+# Check mutation shard planning.
+_mutation-shard-count-contract:
+    test "$(just mutation-shard-count 255 256)" = 1
+    test "$(just mutation-shard-count 8193 256)" = 33
+    test "$(just mutation-shard-count 513 256)" = 3
+
 # Check Rust formatting.
 format-check: _project-temp
     cargo fmt --all --check --
@@ -70,7 +76,7 @@ lint-docs: _project-temp
     prek run codespell --all-files
 
 # Check workflows and repository automation.
-lint-automation: _project-temp _codspeed-target-contract _coverage-target-contract
+lint-automation: _project-temp _codspeed-target-contract _coverage-target-contract _mutation-shard-count-contract
     SKIP=cargo-fmt,cargo-clippy,mdformat,codespell prek run --all-files
 
 # Check dependency policy.
@@ -236,9 +242,9 @@ fuzz package target seconds="60": _project-temp
       --target "$(rustc +nightly --print host-tuple)" "{{ target }}" -- -max_total_time="{{ seconds }}"
 
 # Mutate one workspace shard.
-mutation shard="0/1" in_place="false" jobs="2" baseline="run" timeout="500": test-deps
+mutation shard="0/1" in_place="false" jobs="2" baseline="run" timeout="500" sharding="slice": test-deps
     PATH="{{ tools_root }}/bin:$PATH" cargo mutants --workspace --all-features --test-tool nextest \
-      --no-shuffle --shard "{{ shard }}" --output .tox/mutants \
+      --no-shuffle --shard "{{ shard }}" --sharding "{{ sharding }}" --output .tox/mutants \
       {{ if in_place == "true" { "--in-place" } else { "--jobs " + jobs } }} \
       --jobserver-tasks "{{ jobs }}" --baseline "{{ baseline }}" \
       --timeout "{{ timeout }}" --build-timeout "{{ timeout }}" \
@@ -262,6 +268,18 @@ mutation-baseline-run archive partition="slice:1/1": test-deps
 # Count workspace mutation candidates.
 mutation-count: _project-temp
     cargo mutants --list --workspace --all-features | wc -l
+
+# Calculate the shard count for a mutant total and per-shard target.
+mutation-shard-count mutants target:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mutants={{ quote(mutants) }}
+    target={{ quote(target) }}
+    if ! [[ "$mutants" =~ ^[1-9][0-9]*$ && "$target" =~ ^[1-9][0-9]*$ ]]; then
+      printf 'mutants and target must be positive integers\n' >&2
+      exit 1
+    fi
+    printf '%d\n' "$(( (mutants + target - 1) / target ))"
 
 # Install browser-test dependencies for the shared and owner suites.
 frontend-deps: _project-temp

@@ -107,10 +107,7 @@ jobs:
       - id: shards
         run: |
           mutants=$(just mutation-count)
-          # cargo-mutants recommends 8 to 32 shards to bound clean-build and CI-capacity costs.
-          # https://mutants.rs/shards.html#choosing-a-number-of-shards
-          shards=$(( (mutants + 255) / 256 ))
-          shards=$(( shards < 32 ? shards : 32 ))
+          shards=$(just mutation-shard-count "$mutants" 256)
           echo "Planning $mutants mutants across $shards shards"
           echo "count=$shards" >> "$GITHUB_OUTPUT"
           echo "indices=$(jq --null-input --compact-output --argjson count "$shards" '[range(0; $count)]')" >> "$GITHUB_OUTPUT"
@@ -152,7 +149,9 @@ jobs:
     needs: [mutation-baseline-build, mutation-baseline]
     strategy:
       fail-fast: false
-      max-parallel: 8
+      # GitHub Team runs at most 60 standard hosted jobs concurrently.
+      # https://docs.github.com/en/actions/reference/limits#job-concurrency-limits-for-github-hosted-runners
+      max-parallel: 60
       matrix:
         shard: ${{ fromJSON(needs.mutation-baseline-build.outputs.shards) }}
     runs-on: ubuntu-24.04
@@ -164,7 +163,7 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           tools: ${{ env.MUTATION_TOOLS }}
-      - run: just mutation "$SHARD/$SHARD_COUNT" true 2 skip 500
+      - run: just mutation "$SHARD/$SHARD_COUNT" true 2 skip 500 round-robin
         env:
           SHARD: ${{ matrix.shard }}
           SHARD_COUNT: ${{ needs.mutation-baseline-build.outputs.shard_count }}
