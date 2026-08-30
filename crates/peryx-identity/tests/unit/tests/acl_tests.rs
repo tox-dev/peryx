@@ -2,7 +2,10 @@ use std::collections::BTreeSet;
 
 use rstest::rstest;
 
-use crate::{Action, Denial, Glob, Grant, IndexAcl, NamedToken, Principal, ResourceMatch, authorize, authorize_all};
+use crate::{
+    Action, Denial, Glob, Grant, IndexAcl, NamedToken, Principal, ResourceMatch, authorize, authorize_all,
+    authorize_named_all,
+};
 
 use super::basic;
 
@@ -151,6 +154,24 @@ fn test_authorize_all_requires_a_matching_wildcard_grant(
     };
 
     assert_eq!(authorize_all(&subject(principal), &acl, action), expected);
+}
+
+/// Anonymous readability opens artifact serving to callers who present nothing; it never widens what
+/// a presented credential may reach, so the token's own grants decide either way.
+#[rstest]
+#[case::all_resources("ci", "*", Action::Read, Ok(()))]
+#[case::narrow_grant("ci", "team/*", Action::Read, Err(Denial::Forbidden))]
+#[case::wrong_action("ci", "*", Action::Write, Err(Denial::Forbidden))]
+#[case::unknown_subject("other", "*", Action::Read, Err(Denial::Forbidden))]
+fn test_authorize_named_all_ignores_anonymous_read(
+    #[case] principal: &str,
+    #[case] resources: &str,
+    #[case] action: Action,
+    #[case] expected: Result<(), Denial>,
+) {
+    let acl = acl(vec![token("ci", "s3cret", grant(&[resources], &[Action::Read]))]);
+
+    assert_eq!(authorize_named_all(principal, &acl, action), expected);
 }
 
 #[rstest]

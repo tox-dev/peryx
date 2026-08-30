@@ -18,6 +18,7 @@ use tower::ServiceExt as _;
 
 const ADMIN_SECRET: &str = "admin-secret";
 const READER_SECRET: &str = "reader-secret";
+const PUBLIC_SECRET: &str = "public-secret";
 const USER_PASSWORD: &str = "local password";
 
 #[derive(Clone, Copy)]
@@ -97,7 +98,20 @@ fn indexes() -> Vec<Index> {
         ),
         index("other", Vec::new()),
         index("read-only", Vec::new()),
+        public_index(),
     ]
+}
+
+/// A repository that serves artifacts to callers who present nothing, so its operational analytics
+/// can only be reached by a credential that resolves on its own.
+fn public_index() -> Index {
+    Index {
+        acl: IndexAcl {
+            anonymous_read: true,
+            tokens: vec![token("public-reader", PUBLIC_SECRET, Action::Read)],
+        },
+        ..index("public", Vec::new())
+    }
 }
 
 fn index(route: &str, tokens: Vec<NamedToken>) -> Index {
@@ -372,6 +386,16 @@ async fn test_sources_view_is_operator_only(
     "/+analytics/top-resources?repository=private",
     Some(("external", "invalid")),
     StatusCode::UNAUTHORIZED
+)]
+#[case::invalid_token_on_a_public_repository(
+    "/+analytics/top-resources?repository=public",
+    Some(("external", "invalid")),
+    StatusCode::UNAUTHORIZED
+)]
+#[case::reader_token_on_a_public_repository(
+    "/+analytics/top-resources?repository=public",
+    Some(("external", PUBLIC_SECRET)),
+    StatusCode::OK
 )]
 #[case::token_unknown_repository(
     "/+analytics/top-resources?repository=missing",

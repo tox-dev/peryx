@@ -41,18 +41,32 @@ impl AppState {
             .any(|driver| driver.recognizes(authorization))
     }
 
+    /// An index credential carries authority only once its secret resolves to a live named token:
+    /// RFC 7617 Basic credentials authenticate on the password, so a user id alone proves nothing.
+    /// The index ACL's `anonymous_read` deliberately plays no part here - it opens artifact serving
+    /// to callers who present nothing, and must not promote a credential that failed to resolve.
+    ///
     /// # Errors
-    /// Returns a denial when the index has no credential driver or authorization fails.
+    /// Returns a denial when the index has no credential driver, when the credential is absent,
+    /// unrecognized or unresolved, or when the resolved token lacks `action` over the full catalog.
     pub fn authorize_index_credential(
         &self,
         index: &peryx_index::Index,
         authorization: Option<&str>,
         action: peryx_identity::Action,
     ) -> Result<(), peryx_identity::Denial> {
-        self.drivers
+        let driver = self
+            .drivers
             .get_index_credentials(&index.ecosystem)
-            .ok_or(peryx_identity::Denial::Unauthenticated)?
-            .authorize(index, authorization, action, (self.serving.clock)())
+            .ok_or(peryx_identity::Denial::Unauthenticated)?;
+        let authorization = authorization
+            .filter(|value| driver.recognizes(value))
+            .ok_or(peryx_identity::Denial::Unauthenticated)?;
+        let identity = index.acl.identify(Some(authorization), (self.serving.clock)());
+        let peryx_identity::Principal::Named { subject } = identity.principal else {
+            return Err(peryx_identity::Denial::Unauthenticated);
+        };
+        peryx_identity::authorize_named_all(&subject, &index.acl, action)
     }
 
     pub fn register_lexicon(&mut self, ecosystem: Ecosystem, lexicon: &'static peryx_core::Lexicon) {
@@ -454,6 +468,10 @@ impl AppState {
 fn shared_state_error() -> String {
     "serving state is already shared".to_owned()
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/state/registry/credential_tests.rs"]
+mod credential_tests;
 
 #[cfg(test)]
 #[path = "../../tests/unit/state/registry/tests.rs"]

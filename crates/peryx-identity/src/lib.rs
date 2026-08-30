@@ -26,7 +26,7 @@ use base64::engine::general_purpose::STANDARD;
 
 pub use acl::{
     Action, Denial, Glob, Grant, Identity, IndexAcl, NamedToken, Principal, ResourceMatch, authorize, authorize_all,
-    authorize_grants,
+    authorize_grants, authorize_named_all,
 };
 pub use external::{
     ExternalGroup, ExternalGroupGrant, ExternalIdentity, ExternalIdentityError, ExternalIdentityLinker,

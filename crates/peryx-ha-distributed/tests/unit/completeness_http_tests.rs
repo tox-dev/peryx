@@ -23,6 +23,7 @@ use super::support::EXTERNAL_USER;
 
 const ADMIN_SECRET: &str = "admin-secret";
 const READER_SECRET: &str = "reader-secret";
+const PUBLIC_SECRET: &str = "public-secret";
 const USER_PASSWORD: &str = "local password";
 const SECONDS_PER_DAY: i64 = 86_400;
 const TODAY: i64 = 20_000;
@@ -204,7 +205,20 @@ fn indexes() -> Vec<Index> {
             ],
         ),
         index("other", Vec::new()),
+        public_index(),
     ]
+}
+
+/// A repository that serves artifacts to callers who present nothing, so its completeness report can
+/// only be reached by a credential that resolves on its own.
+fn public_index() -> Index {
+    Index {
+        acl: IndexAcl {
+            anonymous_read: true,
+            tokens: vec![token("public-reader", PUBLIC_SECRET, Action::Read)],
+        },
+        ..index("public", Vec::new())
+    }
 }
 
 fn index(route: &str, tokens: Vec<NamedToken>) -> Index {
@@ -482,6 +496,16 @@ async fn test_an_ecosystem_credential_reads_its_own_repository() {
 #[case::operator_unknown_repository(Some(("Olivia", USER_PASSWORD)), "repository=ghost&", StatusCode::NOT_FOUND)]
 #[case::credential_without_repository(Some((EXTERNAL_USER, READER_SECRET)), "", StatusCode::UNAUTHORIZED)]
 #[case::credential_without_read(Some((EXTERNAL_USER, ADMIN_SECRET)), "repository=private&", StatusCode::FORBIDDEN)]
+#[case::invalid_credential_on_a_public_repository(
+    Some((EXTERNAL_USER, "invalid")),
+    "repository=public&",
+    StatusCode::UNAUTHORIZED
+)]
+#[case::reader_credential_on_a_public_repository(
+    Some((EXTERNAL_USER, PUBLIC_SECRET)),
+    "repository=public&",
+    StatusCode::OK
+)]
 #[tokio::test]
 async fn test_authorization_is_enforced(
     #[case] credential: Option<(&str, &str)>,

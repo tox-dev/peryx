@@ -21,6 +21,7 @@ use tower::ServiceExt as _;
 
 const READER_SECRET: &str = "reader-secret";
 const NOREAD_SECRET: &str = "noread-secret";
+const PUBLIC_SECRET: &str = "public-secret";
 const PASSWORD: &str = "local password";
 
 async fn app(read_only: bool) -> (tempfile::TempDir, MetaStore, axum::Router) {
@@ -56,7 +57,7 @@ async fn build(read_only: bool) -> (tempfile::TempDir, MetaStore, Metrics, axum:
         authorization.grant(&user.id, role, scope).unwrap();
     }
     let blobs = peryx_storage::blob::BlobStore::new(dir.path().join("blobs"));
-    let mut state = AppState::new(meta.clone(), blobs, 60, vec![index(), locked_index()]);
+    let mut state = AppState::new(meta.clone(), blobs, 60, vec![index(), locked_index(), public_index()]);
     super::support::register_example_driver(&mut state);
     Arc::get_mut(&mut state.serving).unwrap().users =
         UserService::with_password_settings(meta.clone(), PasswordPolicy::new(8, 1, 1).unwrap(), 2);
@@ -214,6 +215,30 @@ fn locked_index() -> Index {
                 grants: vec![Grant {
                     resources: vec![Glob::new("*")],
                     actions: BTreeSet::from([Action::Write]),
+                }],
+                expires_at: None,
+            }],
+        },
+    }
+}
+
+/// A repository that serves artifacts to callers who present nothing, so operational reads there can
+/// only be granted by a credential that resolves on its own.
+fn public_index() -> Index {
+    Index {
+        name: "public".to_owned(),
+        route: "public-route".to_owned(),
+        ecosystem: Ecosystem::new("example"),
+        kind: IndexKind::Hosted { volatile: false },
+        policy: Policy::default(),
+        acl: IndexAcl {
+            anonymous_read: true,
+            tokens: vec![NamedToken {
+                name: "public-reader".to_owned(),
+                secret: PUBLIC_SECRET.to_owned(),
+                grants: vec![Grant {
+                    resources: vec![Glob::new("*")],
+                    actions: BTreeSet::from([Action::Read]),
                 }],
                 expires_at: None,
             }],
@@ -931,6 +956,40 @@ async fn test_query_ecosystem_credential_with_wrong_secret_is_unauthorized() {
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[rstest]
+#[case::unknown_secret("wrong-secret")]
+#[case::empty_secret("")]
+#[tokio::test]
+async fn test_query_ecosystem_credential_with_wrong_secret_on_a_public_repository_is_unauthorized(
+    #[case] secret: &str,
+) {
+    let (_dir, meta, app) = app(false).await;
+    meta.record_policy_decision(decision("public", "alpha", PolicyDecisionState::Deny, 30))
+        .unwrap();
+    let (status, _headers, _document) = post(
+        &app,
+        json!({"query": "from policy.decisions where repository == \"public\""}),
+        Some(("external", secret)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_query_ecosystem_credential_reads_a_public_repository() {
+    let (_dir, meta, app) = app(false).await;
+    meta.record_policy_decision(decision("public", "alpha", PolicyDecisionState::Deny, 30))
+        .unwrap();
+    let (status, _headers, document) = post(
+        &app,
+        json!({"query": "from policy.decisions where repository == \"public\""}),
+        Some(("external", PUBLIC_SECRET)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(resources(&document), vec!["alpha".to_owned()]);
 }
 
 #[tokio::test]

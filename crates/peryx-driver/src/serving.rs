@@ -364,17 +364,13 @@ pub trait BrowseDriver: Send + Sync {
     async fn browse(&self, request: BrowseRequest<'_>) -> Result<Option<BrowsePage>, BrowseError>;
 }
 
+/// Only the credential *form* is ecosystem-specific.
+///
+/// An ecosystem recognizes the shape of its own index credential - a reserved Basic user id, say.
+/// Resolving that credential against the index ACL is shared, so
+/// [`crate::state::AppState::authorize_index_credential`] owns it for every ecosystem.
 pub trait IndexCredentialDriver: Send + Sync {
     fn recognizes(&self, authorization: &str) -> bool;
-    /// # Errors
-    /// Returns a denial when credentials are missing, invalid, or lack `action`.
-    fn authorize(
-        &self,
-        index: &peryx_index::Index,
-        authorization: Option<&str>,
-        action: peryx_identity::Action,
-        now: i64,
-    ) -> Result<(), peryx_identity::Denial>;
 }
 
 pub trait CapabilityRegistrar {

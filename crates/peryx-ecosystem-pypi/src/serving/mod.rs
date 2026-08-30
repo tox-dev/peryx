@@ -267,20 +267,6 @@ impl peryx_driver::serving::IndexCredentialDriver for PypiServing {
     fn recognizes(&self, authorization: &str) -> bool {
         parse_basic(authorization).is_some_and(|credentials| credentials.user == "__token__")
     }
-
-    fn authorize(
-        &self,
-        index: &peryx_driver::state::Index,
-        authorization: Option<&str>,
-        action: Action,
-        now: i64,
-    ) -> Result<(), Denial> {
-        if !authorization.is_some_and(|value| self.recognizes(value)) {
-            return Err(Denial::Unauthenticated);
-        }
-        let principal = index.acl.identify(authorization, now).principal;
-        peryx_identity::authorize_all(&principal, &index.acl, action)
-    }
 }
 
 #[async_trait]

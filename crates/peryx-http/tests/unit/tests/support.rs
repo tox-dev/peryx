@@ -3,8 +3,8 @@ use peryx_driver::serving::{
     AbsoluteProtocolDriver, CapabilityRegistrar, ClientDiscovery, EcosystemDriver, IndexCredentialDriver, IndexSummary,
     IndexSummaryDriver, IndexSummaryError, RecentWrite,
 };
-use peryx_driver::state::{AppState, Index, IndexDescription};
-use peryx_identity::{Action, Denial, authorize_all, parse_basic};
+use peryx_driver::state::{AppState, IndexDescription};
+use peryx_identity::parse_basic;
 use peryx_test_support::EcosystemDriverFixture;
 
 pub const EXTERNAL_USER: &str = "external";
@@ -20,13 +20,6 @@ pub struct ExampleCredentials;
 impl IndexCredentialDriver for ExampleCredentials {
     fn recognizes(&self, authorization: &str) -> bool {
         parse_basic(authorization).is_some_and(|credentials| credentials.user == EXTERNAL_USER)
-    }
-
-    fn authorize(&self, index: &Index, authorization: Option<&str>, action: Action, now: i64) -> Result<(), Denial> {
-        if !authorization.is_some_and(|value| self.recognizes(value)) {
-            return Err(Denial::Unauthenticated);
-        }
-        authorize_all(&index.acl.identify(authorization, now).principal, &index.acl, action)
     }
 }
 
@@ -100,20 +93,7 @@ fn test_example_driver_contract() {
         driver.discover_index(description.clone(), None),
         peryx_driver::discovery::minimal_entry(&description)
     );
-    assert_eq!(
-        EXAMPLE_CREDENTIALS.authorize(
-            &Index {
-                name: "example".to_owned(),
-                route: "example".to_owned(),
-                ecosystem: Ecosystem::new("example"),
-                kind: peryx_driver::IndexKind::Hosted { volatile: false },
-                policy: peryx_policy::Policy::default(),
-                acl: peryx_identity::IndexAcl::default(),
-            },
-            None,
-            Action::Read,
-            0,
-        ),
-        Err(Denial::Unauthenticated)
-    );
+    let credential = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, format!("{EXTERNAL_USER}:s"));
+    assert!(EXAMPLE_CREDENTIALS.recognizes(&format!("Basic {credential}")));
+    assert!(!EXAMPLE_CREDENTIALS.recognizes("Bearer secret"));
 }

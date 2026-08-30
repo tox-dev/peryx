@@ -36,19 +36,29 @@ pub fn authorize_all(principal: &Principal, acl: &IndexAcl, action: Action) -> R
     if action == Action::Read && acl.anonymous_read {
         return Ok(());
     }
-    let now = system_now();
     match principal {
-        Principal::Named { subject } => acl.token(subject).ok_or(Denial::Forbidden).and_then(|token| {
-            token
-                .grants
-                .iter()
-                .any(|grant| grant.allows_all(action))
-                .then_some(())
-                .ok_or(Denial::Forbidden)
-        }),
-        Principal::Anonymous if acl.grants_to_anyone_at(action, now) => Err(Denial::Unauthenticated),
+        Principal::Named { subject } => authorize_named_all(subject, acl, action),
+        Principal::Anonymous if acl.grants_to_anyone_at(action, system_now()) => Err(Denial::Unauthenticated),
         Principal::Anonymous => Err(Denial::Unavailable),
     }
+}
+
+/// Authorizes an authenticated token over the full catalog without consulting `anonymous_read`.
+///
+/// Anonymous readability is an artifact-serving policy; a caller that presents a credential is
+/// judged on that credential's grants alone.
+///
+/// # Errors
+/// Returns [`Denial::Forbidden`] when the index holds no such token or none of its grants covers the
+/// full catalog for `action`.
+pub fn authorize_named_all(subject: &str, acl: &IndexAcl, action: Action) -> Result<(), Denial> {
+    acl.token(subject)
+        .ok_or(Denial::Forbidden)?
+        .grants
+        .iter()
+        .any(|grant| grant.allows_all(action))
+        .then_some(())
+        .ok_or(Denial::Forbidden)
 }
 
 /// # Errors

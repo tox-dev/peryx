@@ -126,6 +126,11 @@ Filter `repository` by its configured repository name, which is the value stored
 credential or reader can query its granted repository. An administrator can omit that filter for operator-wide data. A
 caller without domain access receives `404`.
 
+An index's `anonymous_read` setting governs artifact serving alone. A repository credential reaches this endpoint only
+when its password resolves to a live token holding a `read` grant over the whole repository. A credential that resolves
+to no such token receives `401`, whether or not the repository serves artifacts anonymously. The same rule covers
+`/+analytics`, `/+analytics/completeness`, and `/+quota`.
+
 Repository-scoped callers see repository fields. Operator fields such as `source`, `rule`, and `reason` are omitted.
 Responses containing operator fields use `Cache-Control: no-store`; repository-level responses use `private, no-cache`.
 

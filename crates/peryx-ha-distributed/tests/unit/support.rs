@@ -8,8 +8,8 @@ use std::time::Duration;
 use axum::Router;
 use peryx_core::{Ecosystem, TopologyMember, TopologyMode};
 use peryx_driver::serving::{AbsoluteProtocolDriver, IndexCredentialDriver};
-use peryx_driver::state::{AppState, Index};
-use peryx_identity::{Action, Denial, authorize_all, parse_basic};
+use peryx_driver::state::AppState;
+use peryx_identity::parse_basic;
 use peryx_storage::meta::MetaStore;
 use peryx_test_support::EcosystemDriverFixture;
 
@@ -85,13 +85,6 @@ pub struct ExampleCredentials;
 impl IndexCredentialDriver for ExampleCredentials {
     fn recognizes(&self, authorization: &str) -> bool {
         parse_basic(authorization).is_some_and(|credentials| credentials.user == EXTERNAL_USER)
-    }
-
-    fn authorize(&self, index: &Index, authorization: Option<&str>, action: Action, now: i64) -> Result<(), Denial> {
-        if !authorization.is_some_and(|value| self.recognizes(value)) {
-            return Err(Denial::Unauthenticated);
-        }
-        authorize_all(&index.acl.identify(authorization, now).principal, &index.acl, action)
     }
 }
 
@@ -180,27 +173,14 @@ pub fn install_distributed_services_with_capabilities(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use peryx_driver::state::IndexKind;
-    use peryx_identity::IndexAcl;
 
     #[test]
-    fn example_driver_rejects_unknown_credentials_and_classifies_routes() {
-        let index = Index {
-            name: "example".to_owned(),
-            route: "example".to_owned(),
-            ecosystem: Ecosystem::new("example"),
-            kind: IndexKind::Hosted { volatile: false },
-            policy: peryx_policy::Policy::default(),
-            acl: IndexAcl {
-                anonymous_read: false,
-                tokens: Vec::new(),
-            },
-        };
+    fn example_driver_recognizes_its_own_credentials_and_classifies_routes() {
+        let credential =
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, format!("{EXTERNAL_USER}:s"));
 
-        assert_eq!(
-            EXAMPLE_CREDENTIALS.authorize(&index, Some("invalid"), Action::Read, 0),
-            Err(Denial::Unauthenticated)
-        );
+        assert!(EXAMPLE_CREDENTIALS.recognizes(&format!("Basic {credential}")));
+        assert!(!EXAMPLE_CREDENTIALS.recognizes("invalid"));
         assert_eq!(
             EXAMPLE_DRIVER.classify_route("/artifact"),
             peryx_driver::rate_limit::RouteClass::Artifact

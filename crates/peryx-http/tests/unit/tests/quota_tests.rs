@@ -17,6 +17,7 @@ use tower::ServiceExt as _;
 
 const READER_SECRET: &str = "reader-secret";
 const ADMIN_SECRET: &str = "admin-secret";
+const PUBLIC_SECRET: &str = "public-secret";
 const USER_PASSWORD: &str = "local password";
 
 #[derive(Clone, Copy)]
@@ -139,8 +140,20 @@ fn indexes() -> Vec<Index> {
             },
         },
         unlimited("other", "other"),
-        unlimited("public", "public"),
+        public_index(),
     ]
+}
+
+/// A repository that serves artifacts to callers who present nothing, so its quota can only be read
+/// by a credential that resolves on its own.
+fn public_index() -> Index {
+    Index {
+        acl: IndexAcl {
+            anonymous_read: true,
+            tokens: vec![token("public-reader", PUBLIC_SECRET, Action::Read)],
+        },
+        ..unlimited("public", "public")
+    }
 }
 
 fn unlimited(name: &str, route: &str) -> Index {
@@ -317,6 +330,16 @@ async fn test_summary_needs_operator_authority(#[case] credential: Option<(&str,
     "/+quota/repository?repository=root/private",
     Some(("external", "invalid")),
     StatusCode::UNAUTHORIZED
+)]
+#[case::invalid_token_on_a_public_repository(
+    "/+quota/repository?repository=public",
+    Some(("external", "invalid")),
+    StatusCode::UNAUTHORIZED
+)]
+#[case::reader_token_on_a_public_repository(
+    "/+quota/repository?repository=public",
+    Some(("external", PUBLIC_SECRET)),
+    StatusCode::OK
 )]
 #[case::token_unknown_repository(
     "/+quota/repository?repository=missing",

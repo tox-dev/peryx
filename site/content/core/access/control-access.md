@@ -72,6 +72,10 @@ actions = ["read"]
 The flag denies anonymous reads on routes the selected owner protects. A token with the `read` action names the
 resources its principal may read. See the supported client flows above for route coverage.
 
+Leaving `anonymous_read = true` opens artifact reads to callers that present nothing; it never widens what a presented
+credential may reach. The operational endpoints - `/+query`, `/+analytics`, and `/+quota` - answer a repository token
+only when its password resolves to a live token granting `read` over `*`, and answer `401` otherwise.
+
 ## Close a whole server
 
 Setting `anonymous_read = false` on every index is tedious and easy to forget on a new one. The `[auth]` table flips the

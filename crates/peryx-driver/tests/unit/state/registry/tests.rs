@@ -157,18 +157,6 @@ impl IndexCredentialDriver for Driver {
     fn recognizes(&self, authorization: &str) -> bool {
         authorization == "accepted"
     }
-
-    fn authorize(
-        &self,
-        _index: &Index,
-        authorization: Option<&str>,
-        action: peryx_identity::Action,
-        _now: i64,
-    ) -> Result<(), peryx_identity::Denial> {
-        (authorization == Some("accepted") && action == peryx_identity::Action::Read)
-            .then_some(())
-            .ok_or(peryx_identity::Denial::Forbidden)
-    }
 }
 
 impl EcosystemDriver for Driver {
@@ -403,12 +391,8 @@ fn test_registry_installs_neutral_driver_capabilities() {
     assert!(state.recognizes_index_credential("accepted"));
     assert!(!state.recognizes_index_credential("rejected"));
     assert_eq!(
-        state.authorize_index_credential(&index, Some("accepted"), peryx_identity::Action::Read),
-        Ok(())
-    );
-    assert_eq!(
         state.authorize_index_credential(&index, None, peryx_identity::Action::Read),
-        Err(peryx_identity::Denial::Forbidden)
+        Err(peryx_identity::Denial::Unauthenticated)
     );
 }
 

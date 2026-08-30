@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::sync::Arc;
 
@@ -11,7 +11,7 @@ use peryx_driver::serving::{
     NameDriver as _, PolicyDriver as _, ReplicatedApplyDriver as _, TrashDriver as _,
 };
 use peryx_driver::{AppState, ServingState};
-use peryx_identity::{Action, Denial, Glob, Grant, IndexAcl, NamedToken};
+use peryx_identity::IndexAcl;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::Policy;
 use peryx_search::SearchParams;
@@ -106,44 +106,6 @@ fn serving_recognizes_token_basic_credentials() {
     ] {
         assert_eq!(serving.recognizes(&authorization), expected, "{authorization}");
     }
-}
-
-#[test]
-fn serving_authorizes_token_credentials_for_all_resources() {
-    let index = Index {
-        name: "hosted".to_owned(),
-        route: "hosted".to_owned(),
-        ecosystem: crate::ECOSYSTEM,
-        kind: IndexKind::Hosted { volatile: false },
-        policy: Policy::default(),
-        acl: IndexAcl {
-            anonymous_read: true,
-            tokens: vec![NamedToken {
-                name: "publisher".to_owned(),
-                secret: "secret".to_owned(),
-                grants: vec![Grant {
-                    resources: vec![Glob::new("*")],
-                    actions: BTreeSet::from([Action::Write]),
-                }],
-                expires_at: None,
-            }],
-        },
-    };
-    let authorization = format!("Basic {}", STANDARD.encode("__token__:secret"));
-    let serving = PypiServing;
-
-    assert_eq!(
-        serving.authorize(&index, None, Action::Write, 0),
-        Err(Denial::Unauthenticated)
-    );
-    assert_eq!(
-        serving.authorize(&index, Some(&authorization), Action::Write, 0),
-        Ok(())
-    );
-    assert_eq!(
-        serving.authorize(&index, Some(&authorization), Action::Delete, 0),
-        Err(Denial::Forbidden)
-    );
 }
 
 #[test]
