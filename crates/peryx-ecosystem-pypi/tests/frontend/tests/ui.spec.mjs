@@ -78,7 +78,7 @@ test("dashboard shows identity, counters, and the topology", async ({
   await goto(page, "/");
   const globalGroup = page.locator(".metrics-group", { hasText: "Global" });
   await expect(
-    globalGroup.locator(".stat", { hasText: "requests served" }),
+    globalGroup.locator(".stat", { hasText: "accepted requests" }),
   ).toBeVisible();
   const pypiGroup = page.locator(".metrics-group", {
     has: page.locator(".badge.ecosystem-pypi"),
