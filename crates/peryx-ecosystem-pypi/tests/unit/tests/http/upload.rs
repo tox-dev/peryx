@@ -7,6 +7,8 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use blake2::Blake2bVar;
+use blake2::digest::{Update as _, VariableOutput as _};
 use bytes::Bytes;
 use peryx_identity::{Action, Glob, Grant, IndexAcl, NamedToken, Principal, Signer, TokenScope};
 
@@ -1558,6 +1560,40 @@ async fn test_upload_declared_digest_mismatch_is_bad_request() {
         post_upload(&h.state, "/root/pypi/", Some(&upload_auth()), &ct, body).await,
         StatusCode::BAD_REQUEST
     );
+}
+#[tokio::test]
+async fn test_upload_matching_strong_digest_ignores_mismatched_md5() {
+    let wheel = fixture_wheel();
+    let sha256_digest = Digest::of(&wheel);
+    let mut blake2 = Blake2bVar::new(32).unwrap();
+    blake2.update(&wheel);
+    let mut blake2_digest = [0; 32];
+    blake2.finalize_variable(&mut blake2_digest).unwrap();
+    let blake2_digest = blake2_digest.map(|byte| format!("{byte:02x}")).concat();
+
+    for (field, digest) in [
+        ("sha256_digest", sha256_digest.as_str()),
+        ("blake2_256_digest", blake2_digest.as_str()),
+    ] {
+        let fields = vec![
+            (":action", "file_upload"),
+            ("name", "peryxpkg"),
+            ("version", "1.0"),
+            ("filetype", "bdist_wheel"),
+            (field, digest),
+            ("md5_digest", "00000000000000000000000000000000"),
+        ];
+
+        let h = harness().await;
+        assert_upload_response(
+            &h,
+            &fields,
+            Some(("peryxpkg-1.0-py3-none-any.whl", &wheel)),
+            StatusCode::OK,
+            "upload accepted",
+        )
+        .await;
+    }
 }
 #[tokio::test]
 async fn test_upload_with_declared_digest_and_extra_field() {
