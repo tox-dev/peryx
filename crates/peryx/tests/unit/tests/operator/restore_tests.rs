@@ -12,6 +12,8 @@ use super::support::{
 };
 use crate::config::{AvailabilityConfig, DcMember, DcMembership, DcRole, ReplicationConfig, SecretSource};
 use crate::operator;
+#[cfg(unix)]
+use crate::tests::support::with_blob_reference_event;
 
 #[test]
 fn test_restore_public_api_rejects_an_unsupported_manifest() {
@@ -134,6 +136,53 @@ fn test_restore_rejects_verification_failures() {
         ),
         (true, true)
     );
+}
+
+#[cfg(unix)]
+#[rstest]
+#[case::ancestor(SymlinkSwap::Ancestor)]
+#[case::file(SymlinkSwap::File)]
+fn test_restore_rejects_a_symlink_added_after_verification(#[case] swap: SymlinkSwap) {
+    let fixture = valid_backup();
+    let restored = fixture.root.path().join("restored");
+    let external = fixture.root.path().join("outside");
+    let blob = blob_relpath(&fixture.content_digest);
+    let blob = blob.strip_prefix("blobs/").unwrap();
+    let (source, external_file) = match swap {
+        SymlinkSwap::Ancestor => (fixture.backup.join("blobs"), external.join(blob)),
+        SymlinkSwap::File => (fixture.backup.join("config.toml"), external.clone()),
+    };
+    let source_file = match swap {
+        SymlinkSwap::Ancestor => source.join(blob),
+        SymlinkSwap::File => source.clone(),
+    };
+    let expected = std::fs::read(source_file).unwrap();
+
+    let error = with_blob_reference_event(
+        move || {
+            std::fs::rename(&source, &external).unwrap();
+            std::os::unix::fs::symlink(&external, source).unwrap();
+        },
+        || restore(&fixture.backup, &restored, false, &mut Vec::new()),
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        (
+            error.to_string().contains("contains a symbolic link"),
+            std::fs::read(external_file).unwrap(),
+            restored.exists(),
+            fixture.root.path().join("restored.restore-staging").exists(),
+        ),
+        (true, expected, false, false)
+    );
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy)]
+enum SymlinkSwap {
+    Ancestor,
+    File,
 }
 
 #[test]

@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::{BufRead as _, BufReader, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context as _, bail};
 use peryx_driver::BlobReferenceScanError;
@@ -10,8 +10,8 @@ use peryx_storage::blob::Digest;
 use peryx_storage::meta::MetaStore;
 
 use super::{
-    BLOB_INDEX_HEADER, BackupCheck, BackupManifest, BlobIndexEntry, HashedFile, ManifestAvailability, ManifestFile,
-    backup_blob_relpath, backup_config_with_plugins, backup_plugins, hash_existing_file, read_manifest,
+    BLOB_INDEX_HEADER, BackupCheck, BackupManifest, BackupSource, BlobIndexEntry, HashedFile, ManifestAvailability,
+    ManifestFile, backup_blob_relpath, backup_config_with_plugins, backup_plugins, hash_file, read_manifest,
 };
 
 /// # Errors
@@ -23,14 +23,15 @@ pub fn backup_verify(path: &Path, out: &mut dyn Write) -> anyhow::Result<()> {
 /// # Errors
 /// Returns an error when the backup is unreadable or inconsistent.
 pub fn backup_verify_with_plugins(path: &Path, plugins: &PluginRegistry, out: &mut dyn Write) -> anyhow::Result<()> {
-    let manifest = read_manifest(path)?;
+    let backup = BackupSource::open(path)?;
+    let manifest = read_manifest(&backup)?;
     let mut problems = 0;
-    let config = verify_manifest_file(path, &manifest.config, "config", out, &mut problems)?;
+    let config = verify_manifest_file(&backup, &manifest.config, "config", out, &mut problems)?;
     let plugins = match config {
-        ManifestFileCheck::Match => backup_plugins(&backup_config_with_plugins(path, &manifest, plugins)?, plugins)?,
+        ManifestFileCheck::Match => backup_plugins(&backup_config_with_plugins(&backup, &manifest, plugins)?, plugins)?,
         ManifestFileCheck::Mismatch | ManifestFileCheck::Unscannable => plugins.activate([])?,
     };
-    let check = check_backup_contents(path, &manifest, &plugins, out, problems)?;
+    let check = check_backup_contents(&backup, &manifest, &plugins, out, problems)?;
     if check.problems == 0 {
         writeln!(out, "ok")?;
         Ok(())
@@ -48,18 +49,18 @@ pub(super) fn is_missing_file(error: &anyhow::Error) -> bool {
 }
 
 pub(super) fn check_backup_with_plugins(
-    path: &Path,
+    backup: &BackupSource,
     manifest: &BackupManifest,
     plugins: &PluginRegistry,
     out: &mut dyn Write,
 ) -> anyhow::Result<BackupCheck> {
     let mut problems = 0;
-    verify_manifest_file(path, &manifest.config, "config", out, &mut problems)?;
-    check_backup_contents(path, manifest, plugins, out, problems)
+    verify_manifest_file(backup, &manifest.config, "config", out, &mut problems)?;
+    check_backup_contents(backup, manifest, plugins, out, problems)
 }
 
 fn check_backup_contents(
-    path: &Path,
+    backup: &BackupSource,
     manifest: &BackupManifest,
     plugins: &PluginRegistry,
     out: &mut dyn Write,
@@ -67,10 +68,12 @@ fn check_backup_contents(
 ) -> anyhow::Result<BackupCheck> {
     let mut blobs = BTreeMap::new();
     if matches!(
-        verify_manifest_file(path, &manifest.blob_index.file, "blob-index", out, &mut problems)?,
+        verify_manifest_file(backup, &manifest.blob_index.file, "blob-index", out, &mut problems)?,
         ManifestFileCheck::Match | ManifestFileCheck::Mismatch
     ) {
-        blobs = read_blob_index(path.join(&manifest.blob_index.file.path).as_path(), out, &mut problems)?;
+        let path = backup.path.join(&manifest.blob_index.file.path);
+        let file = backup.required_file(&manifest.blob_index.file.path)?;
+        blobs = read_blob_index(file, &path, out, &mut problems)?;
         let indexed_bytes = blobs.values().map(|entry| entry.size_bytes).sum::<u64>();
         if blobs.len() as u64 != manifest.blob_index.count {
             problems += 1;
@@ -85,11 +88,15 @@ fn check_backup_contents(
             out.write_all(message.as_bytes())?;
         }
         for (digest, entry) in &blobs {
-            verify_blob(path, digest, entry, out, &mut problems)?;
+            verify_blob(backup, digest, entry, out, &mut problems)?;
         }
     }
-    if verify_metadata_file(path, &manifest.metadata, out, &mut problems)? == ManifestFileCheck::Match {
-        match crate::metadata::open_existing_copy(&path.join(&manifest.metadata.path), plugins) {
+    if verify_metadata_file(backup, &manifest.metadata, out, &mut problems)? == ManifestFileCheck::Match {
+        match crate::metadata::open_existing_copy(
+            backup.required_file(&manifest.metadata.path)?,
+            &backup.path.join(&manifest.metadata.path),
+            plugins,
+        ) {
             Ok(meta) => {
                 check_metadata_references(plugins.drivers(), &blobs, &meta, out, &mut problems)?;
                 check_availability_state(&manifest.availability, &meta, out, &mut problems)?;
@@ -208,29 +215,39 @@ fn check_membership(
 }
 
 fn verify_manifest_file(
-    root: &Path,
+    backup: &BackupSource,
     expected: &ManifestFile,
     kind: &str,
     out: &mut dyn Write,
     problems: &mut u64,
 ) -> anyhow::Result<ManifestFileCheck> {
-    let Some(path) = existing_manifest_file(root, expected, kind, out, problems)? else {
+    let Some(file) = existing_manifest_file(backup, expected, kind, out, problems)? else {
         return Ok(ManifestFileCheck::Unscannable);
     };
-    let actual = hash_existing_file(&path)?;
+    let actual = hash_file(file)?;
     compare_manifest_file(expected, &actual, kind, out, problems)
 }
 
 fn verify_metadata_file(
-    root: &Path,
+    backup: &BackupSource,
     expected: &ManifestFile,
     out: &mut dyn Write,
     problems: &mut u64,
 ) -> anyhow::Result<ManifestFileCheck> {
-    let Some(path) = existing_manifest_file(root, expected, "metadata", out, problems)? else {
-        return Ok(ManifestFileCheck::Unscannable);
+    let file = match backup.file(&expected.path) {
+        Ok(Some(file)) => file,
+        Ok(None) => {
+            *problems += 1;
+            writeln!(out, "problem\tmetadata\t{}\tmissing", expected.path)?;
+            return Ok(ManifestFileCheck::Unscannable);
+        }
+        Err(error) => {
+            *problems += 1;
+            writeln!(out, "problem\tmetadata\t{}\tI/O error: {error}", expected.path)?;
+            return Ok(ManifestFileCheck::Unscannable);
+        }
     };
-    let actual = match hash_existing_file(&path) {
+    let actual = match hash_file(file) {
         Ok(actual) => actual,
         Err(err) => {
             *problems += 1;
@@ -242,20 +259,18 @@ fn verify_metadata_file(
 }
 
 fn existing_manifest_file(
-    root: &Path,
+    backup: &BackupSource,
     expected: &ManifestFile,
     kind: &str,
     out: &mut dyn Write,
     problems: &mut u64,
-) -> anyhow::Result<Option<PathBuf>> {
-    let path = root.join(&expected.path);
-    if path.is_file() {
-        Ok(Some(path))
-    } else {
+) -> anyhow::Result<Option<File>> {
+    let file = backup.file(&expected.path)?;
+    if file.is_none() {
         *problems += 1;
         writeln!(out, "problem\t{kind}\t{}\tmissing", expected.path)?;
-        Ok(None)
     }
+    Ok(file)
 }
 
 fn compare_manifest_file(
@@ -326,12 +341,12 @@ fn check_metadata_references(
 }
 
 fn read_blob_index(
+    file: File,
     path: &Path,
     out: &mut dyn Write,
     problems: &mut u64,
 ) -> anyhow::Result<BTreeMap<String, BlobIndexEntry>> {
     let mut entries = BTreeMap::new();
-    let file = File::open(path).context(format!("open {}", path.display()))?;
     for (line_number, line) in BufReader::new(file).lines().enumerate() {
         let line = line.context(format!("read {} line {}", path.display(), line_number + 1))?;
         if line_number == 0 {
@@ -383,19 +398,18 @@ fn read_blob_index(
 }
 
 fn verify_blob(
-    root: &Path,
+    backup: &BackupSource,
     digest: &str,
     entry: &BlobIndexEntry,
     out: &mut dyn Write,
     problems: &mut u64,
 ) -> anyhow::Result<()> {
-    let path = root.join(&entry.path);
-    if !path.is_file() {
+    let Some(file) = backup.file(&entry.path)? else {
         *problems += 1;
         writeln!(out, "problem\tblob\t{digest}\tmissing")?;
         return Ok(());
-    }
-    let actual = hash_existing_file(&path)?;
+    };
+    let actual = hash_file(file)?;
     if actual.size_bytes != entry.size_bytes {
         *problems += 1;
         let expected = entry.size_bytes;

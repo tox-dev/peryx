@@ -50,6 +50,7 @@ skip = [
   { crate = "hashbrown@0.16.1", reason = "lru 0.16 requires hashbrown 0.16." },
   { crate = "http@0.2.12", reason = "AWS SDK 1.x retains its HTTP 0.2 compatibility layer." },
   { crate = "http-body@0.4.6", reason = "AWS SDK 1.x retains its HTTP body 0.4 compatibility layer." },
+  { crate = "io-lifetimes@2.0.4", reason = "cap-primitives 4.0.3 requires fs-set-times 0.20, which retains io-lifetimes 2." },
   { crate = "itertools@0.13.0", reason = "pep508_rs 0.9 requires itertools 0.13." },
   { crate = "linux-raw-sys@0.4.15", reason = "rustix 0.38 requires linux-raw-sys 0.4." },
   { crate = "lru@0.16.4", reason = "Tantivy 0.26 requires lru 0.16." },

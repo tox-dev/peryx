@@ -1,3 +1,4 @@
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
@@ -139,7 +140,7 @@ fn copied_open_migrates_the_copy_without_mutating_source() {
     drop(store);
     let plugins = crate::tests::support::plugins_with_metadata_migration(migration(MigrationResult::Move));
 
-    let copy = open_existing_copy(&path, &plugins).unwrap();
+    let copy = open_existing_copy(File::open(&path).unwrap(), &path, &plugins).unwrap();
     assert_eq!(copy.quota_usage("source").unwrap(), QuotaUsage::default());
     assert_eq!(copy.quota_usage("target").unwrap().accounted_bytes.reserved, 1);
     drop(copy);
@@ -153,7 +154,7 @@ fn copied_open_migrates_user_names_without_mutating_source() {
     let path = directory.path().join("peryx.redb");
     legacy_user_store(&path);
 
-    let copy = open_existing_copy(&path, &crate::tests::support::plugins()).unwrap();
+    let copy = open_existing_copy(File::open(&path).unwrap(), &path, &crate::tests::support::plugins()).unwrap();
     assert_eq!(
         copy.get_user_by_name("STRASSE").unwrap().unwrap().name.canonical(),
         "strasse"
@@ -172,18 +173,19 @@ fn copied_open_migrates_user_names_without_mutating_source() {
 }
 
 #[test]
-fn copied_open_keeps_the_probe_beside_the_source_until_drop() {
+fn copied_open_keeps_the_source_directory_unchanged() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("peryx.redb");
     drop(peryx_storage::meta::MetaStore::open(&path).unwrap());
     let before = directory_entries(directory.path());
 
     let copy = open_existing_copy(
+        File::open(&path).unwrap(),
         &path,
         &crate::tests::support::plugins_with_metadata_migration(migration(MigrationResult::Keep)),
     )
     .unwrap();
-    assert_eq!(directory_entries(directory.path()).len(), before.len() + 1);
+    assert_eq!(directory_entries(directory.path()), before);
     drop(copy);
     assert_eq!(directory_entries(directory.path()), before);
 }
@@ -202,7 +204,7 @@ fn metadata_open_without_migration_capability_reads_the_source() {
         QuotaUsage::default()
     );
     assert_eq!(
-        open_existing_copy(&path, &crate::tests::support::plugins())
+        open_existing_copy(File::open(&path).unwrap(), &path, &crate::tests::support::plugins(),)
             .unwrap()
             .quota_usage("source")
             .unwrap(),

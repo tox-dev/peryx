@@ -1,3 +1,4 @@
+use std::fs::File;
 use std::ops::Deref;
 use std::path::Path;
 
@@ -40,8 +41,9 @@ pub fn open_existing_read_only(path: &Path, plugins: &PluginRegistry) -> anyhow:
     Ok(store)
 }
 
-pub fn open_existing_copy(path: &Path, plugins: &PluginRegistry) -> anyhow::Result<OpenedMetadata> {
-    let source = MetaStore::open_existing_read_only(path)
+pub fn open_existing_copy(source: File, path: &Path, plugins: &PluginRegistry) -> anyhow::Result<OpenedMetadata> {
+    let probe = Probe::copy(source, path)?;
+    let source = MetaStore::open_existing_read_only(&probe.path)
         .with_context(|| format!("open metadata store {} read-only", path.display()))?;
     if !source
         .user_names_require_migration()
@@ -50,17 +52,13 @@ pub fn open_existing_copy(path: &Path, plugins: &PluginRegistry) -> anyhow::Resu
     {
         return Ok(OpenedMetadata {
             store: source,
-            _probe: None,
+            _probe: probe,
         });
     }
-    let probe = Probe::copy(path)?;
     drop(source);
     let store = MetaStore::open_existing(&probe.path).context("open copied metadata store")?;
     let store = migrate(store, plugins)?;
-    Ok(OpenedMetadata {
-        store,
-        _probe: Some(probe),
-    })
+    Ok(OpenedMetadata { store, _probe: probe })
 }
 
 fn migrate(store: MetaStore, plugins: &PluginRegistry) -> anyhow::Result<MetaStore> {
@@ -75,7 +73,7 @@ struct Probe {
 
 pub struct OpenedMetadata {
     store: MetaStore,
-    _probe: Option<Probe>,
+    _probe: Probe,
 }
 
 impl Deref for OpenedMetadata {
@@ -87,19 +85,9 @@ impl Deref for OpenedMetadata {
 }
 
 impl Probe {
-    fn copy(source: &Path) -> anyhow::Result<Self> {
-        let current_directory = Path::new(".");
-        let parent = source
-            .parent()
-            .filter(|path| !path.as_os_str().is_empty())
-            .unwrap_or(current_directory);
-        let mut probe = NamedTempFile::with_prefix_in(".peryx-metadata-probe-", parent)
-            .context(format!("create metadata schema probe beside {}", source.display()))?;
-        std::io::copy(
-            &mut std::fs::File::open(source).context("open metadata store for schema inspection")?,
-            probe.as_file_mut(),
-        )
-        .context("copy metadata store for schema inspection")?;
+    fn copy(mut source: File, path: &Path) -> anyhow::Result<Self> {
+        let mut probe = NamedTempFile::new().context(format!("create metadata schema probe for {}", path.display()))?;
+        std::io::copy(&mut source, probe.as_file_mut()).context("copy metadata store for schema inspection")?;
         Ok(Self {
             path: probe.into_temp_path(),
         })

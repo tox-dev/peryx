@@ -7,8 +7,8 @@ use peryx_storage::blob::Digest;
 
 use super::verify::{check_backup_with_plugins, is_missing_file};
 use super::{
-    Access, BackupCheck, BackupManifest, backup_blob_path, backup_config_with_plugins, backup_plugins, copy_hashed,
-    is_empty_dir, read_manifest,
+    Access, BackupCheck, BackupManifest, BackupSource, backup_blob_path, backup_config_with_plugins, backup_plugins,
+    copy_hashed, is_empty_dir, read_manifest,
 };
 use crate::config::Config;
 
@@ -33,12 +33,13 @@ pub fn restore_with_plugins(
     out: &mut dyn Write,
 ) -> anyhow::Result<()> {
     let started = Instant::now();
-    let manifest = read_manifest(backup)?;
-    let backup_config = match backup_config_with_plugins(backup, &manifest, plugins) {
+    let backup = BackupSource::open(backup)?;
+    let manifest = read_manifest(&backup)?;
+    let backup_config = match backup_config_with_plugins(&backup, &manifest, plugins) {
         Ok(config) => config,
         Err(error) if is_missing_file(&error) => {
             let mut verification = Vec::new();
-            let check = check_backup_with_plugins(backup, &manifest, &plugins.activate([])?, &mut verification)?;
+            let check = check_backup_with_plugins(&backup, &manifest, &plugins.activate([])?, &mut verification)?;
             bail!(
                 "backup verification failed with {problems} problem(s): {}",
                 String::from_utf8_lossy(&verification),
@@ -49,7 +50,7 @@ pub fn restore_with_plugins(
     };
     let plugins = backup_plugins(&backup_config, plugins)?;
     let mut verification = Vec::new();
-    let check = check_backup_with_plugins(backup, &manifest, &plugins, &mut verification)?;
+    let check = check_backup_with_plugins(&backup, &manifest, &plugins, &mut verification)?;
     if check.problems != 0 {
         bail!(
             "backup verification failed with {problems} problem(s): {}",
@@ -59,9 +60,9 @@ pub fn restore_with_plugins(
     }
     warn_config_mismatch(&backup_config, data_dir, out)?;
     guard_target_identity(&manifest, data_dir, &plugins, out)?;
-    guard_target(backup, data_dir, force)?;
+    guard_target(&backup.path, data_dir, force)?;
     let staging = staging_path(data_dir)?;
-    let result = match stage_backup(backup, &manifest, check, &staging) {
+    let result = match stage_backup(&backup, &manifest, check, &staging) {
         Ok(()) => crate::metadata::open_existing(&staging.join("peryx.redb"), &plugins).and_then(|store| {
             drop(store);
             publish(&staging, data_dir)
@@ -219,10 +220,15 @@ fn resolve_path(path: &Path) -> anyhow::Result<PathBuf> {
 ///
 /// # Errors
 /// Returns an error if the staging directory cannot be reset or any file cannot be copied.
-fn stage_backup(backup: &Path, manifest: &BackupManifest, check: BackupCheck, staging: &Path) -> anyhow::Result<()> {
+fn stage_backup(
+    backup: &BackupSource,
+    manifest: &BackupManifest,
+    check: BackupCheck,
+    staging: &Path,
+) -> anyhow::Result<()> {
     reset_staging(staging)?;
     let metadata = copy_hashed(
-        &backup.join(&manifest.metadata.path),
+        backup.required_file(&manifest.metadata.path)?,
         &staging.join("peryx.redb"),
         "peryx.redb",
         Access::Private,
@@ -230,7 +236,7 @@ fn stage_backup(backup: &Path, manifest: &BackupManifest, check: BackupCheck, st
     .context("restore metadata store")?;
     ensure_copy_matches(&metadata, &manifest.metadata, "metadata")?;
     let config = copy_hashed(
-        &backup.join(&manifest.config.path),
+        backup.required_file(&manifest.config.path)?,
         &staging.join("config.toml"),
         "config.toml",
         Access::Private,
@@ -240,7 +246,7 @@ fn stage_backup(backup: &Path, manifest: &BackupManifest, check: BackupCheck, st
     for (digest, entry) in check.blobs {
         let digest = Digest::from_hex(&digest).context("backup blob index contained an invalid digest")?;
         let copied = copy_hashed(
-            &backup.join(&entry.path),
+            backup.required_file(&entry.path)?,
             &backup_blob_path(staging, &digest),
             &entry.path,
             Access::Shared,

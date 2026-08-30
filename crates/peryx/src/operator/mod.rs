@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context as _, bail};
+use cap_fs_ext::{DirExt as _, FollowSymlinks, OpenOptionsFollowExt as _};
+use cap_std::fs::{Dir, OpenOptions};
 use peryx_storage::blob::Digest;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -112,6 +114,87 @@ struct BackupCheck {
     blobs: BTreeMap<String, BlobIndexEntry>,
 }
 
+struct BackupSource {
+    dir: Dir,
+    path: PathBuf,
+}
+
+impl BackupSource {
+    fn open(path: &Path) -> anyhow::Result<Self> {
+        Ok(Self {
+            dir: Dir::open_ambient_dir(path, cap_std::ambient_authority())
+                .context(format!("open backup directory {}", path.display()))?,
+            path: path.to_owned(),
+        })
+    }
+
+    fn required_file(&self, relative: &str) -> anyhow::Result<File> {
+        self.file(relative)?.ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("backup member {relative} is missing or is not a regular file"),
+            )
+            .into()
+        })
+    }
+
+    fn file(&self, relative: &str) -> anyhow::Result<Option<File>> {
+        let relative = backup_member_path(relative)?;
+        let member = self.path.join(relative);
+        let mut parent = self.dir.try_clone()?;
+        for component in relative.parent().into_iter().flat_map(Path::components) {
+            let metadata = match parent.symlink_metadata(component.as_os_str()) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                result => result.context(format!("inspect backup member {}", member.display()))?,
+            };
+            if metadata.file_type().is_symlink() {
+                bail!("backup member {} contains a symbolic link", member.display());
+            }
+            if !metadata.file_type().is_dir() {
+                return Ok(None);
+            }
+            let context = format!("open backup member {} without following links", member.display());
+            parent = parent.open_dir_nofollow(component.as_os_str()).context(context)?;
+        }
+        let name = relative
+            .file_name()
+            .context("a validated backup member path has no file name")?;
+        let metadata = match parent.symlink_metadata(name) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            result => result.context(format!("inspect backup member {}", member.display()))?,
+        };
+        if metadata.file_type().is_symlink() {
+            bail!("backup member {} contains a symbolic link", member.display());
+        }
+        if !metadata.file_type().is_file() {
+            return Ok(None);
+        }
+        let mut options = OpenOptions::new();
+        options.read(true).follow(FollowSymlinks::No);
+        let file = match parent.open_with(name, &options) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            result => result.context(format!(
+                "open backup member {} without following links",
+                member.display()
+            ))?,
+        };
+        Ok(file.metadata()?.file_type().is_file().then(|| file.into_std()))
+    }
+}
+
+fn backup_member_path(path: &str) -> anyhow::Result<&Path> {
+    let path = Path::new(path);
+    anyhow::ensure!(
+        !path.as_os_str().is_empty()
+            && path
+                .components()
+                .all(|component| matches!(component, std::path::Component::Normal(_))),
+        "invalid backup member path {}; expected a non-empty relative path with normal components",
+        path.display()
+    );
+    Ok(path)
+}
+
 /// The availability mode and datacenter roster a manifest records from the effective configuration.
 ///
 /// The configuration snapshot carries the mode but omits the static roster, so the manifest is the
@@ -124,12 +207,16 @@ fn config_availability(config: &Config) -> (String, Option<ManifestMembership>) 
 }
 
 fn backup_config_with_plugins(
-    backup: &Path,
+    backup: &BackupSource,
     manifest: &BackupManifest,
     plugins: &peryx_plugin_registry::PluginRegistry,
 ) -> anyhow::Result<Config> {
-    let path = backup.join(&manifest.config.path);
-    let text = std::fs::read_to_string(&path).with_context(|| format!("read backup config {}", path.display()))?;
+    let path = backup.path.join(&manifest.config.path);
+    let mut text = String::new();
+    backup
+        .required_file(&manifest.config.path)?
+        .read_to_string(&mut text)
+        .with_context(|| format!("read backup config {}", path.display()))?;
     Config::with_plugins(plugins)
         .apply_with_plugins(crate::config::from_toml(path, &text)?, plugins)
         .context("parse backup config snapshot")
@@ -212,11 +299,10 @@ fn create_file(path: &Path, access: Access) -> std::io::Result<File> {
     }
 }
 
-fn read_manifest(path: &Path) -> anyhow::Result<BackupManifest> {
-    let manifest_path = path.join("manifest.json");
-    let manifest: BackupManifest =
-        serde_json::from_reader(File::open(&manifest_path).context(format!("open {}", manifest_path.display()))?)
-            .context(format!("parse {}", manifest_path.display()))?;
+fn read_manifest(backup: &BackupSource) -> anyhow::Result<BackupManifest> {
+    let manifest_path = backup.path.join("manifest.json");
+    let manifest: BackupManifest = serde_json::from_reader(backup.required_file("manifest.json")?)
+        .context(format!("parse {}", manifest_path.display()))?;
     if manifest.format != BACKUP_FORMAT {
         bail!("unsupported backup format {}", manifest.format);
     }
@@ -227,8 +313,9 @@ fn read_manifest(path: &Path) -> anyhow::Result<BackupManifest> {
 }
 
 fn ensure_manifest_path(actual: &str, expected: &str, kind: &str) -> anyhow::Result<()> {
+    let valid = backup_member_path(actual).is_ok();
     anyhow::ensure!(
-        actual == expected,
+        valid && actual == expected,
         "invalid {kind} path {actual:?}; expected {expected:?}"
     );
     Ok(())
@@ -242,14 +329,18 @@ fn hashed_parent(path: &Path) -> anyhow::Result<&Path> {
         .context(format!("hashed file {} has no parent directory", path.display()))
 }
 
-fn copy_hashed(source: &Path, dest: &Path, manifest_path: &str, access: Access) -> anyhow::Result<ManifestFile> {
+fn copy_hashed(source: File, dest: &Path, manifest_path: &str, access: Access) -> anyhow::Result<ManifestFile> {
     let parent = hashed_parent(dest)?;
     std::fs::create_dir_all(parent).context(format!("create {}", parent.display()))?;
-    Ok(copy_hashed_file(source, create_file(dest, access)?, manifest_path)?.0)
+    Ok(copy_open_file(source, create_file(dest, access)?, manifest_path)?.0)
 }
 
 fn copy_hashed_file(source: &Path, output: File, manifest_path: &str) -> anyhow::Result<(ManifestFile, File)> {
-    let mut input = BufReader::with_capacity(BUFFER_BYTES, File::open(source)?);
+    copy_open_file(File::open(source)?, output, manifest_path)
+}
+
+fn copy_open_file(source: File, output: File, manifest_path: &str) -> anyhow::Result<(ManifestFile, File)> {
+    let mut input = BufReader::with_capacity(BUFFER_BYTES, source);
     let mut output = BufWriter::with_capacity(BUFFER_BYTES, output);
     let mut hasher = Sha256::new();
     let mut size_bytes = 0;
@@ -283,10 +374,6 @@ fn write_hashed_file(mut file: File, bytes: &[u8], manifest_path: &str) -> anyho
         sha256: hex(&Sha256::digest(bytes)),
         size_bytes: bytes.len() as u64,
     })
-}
-
-fn hash_existing_file(path: &Path) -> anyhow::Result<HashedFile> {
-    hash_file(File::open(path)?)
 }
 
 fn hash_file(mut file: File) -> anyhow::Result<HashedFile> {
