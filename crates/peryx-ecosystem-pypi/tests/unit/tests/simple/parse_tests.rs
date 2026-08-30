@@ -12,6 +12,31 @@ fn test_detail_json_snapshot() {
 }
 
 #[test]
+fn test_detail_json_preserves_partial_project_status() {
+    for (case, status, reason, expected) in [
+        (
+            "status",
+            Some("archived"),
+            None,
+            serde_json::json!({"status": "archived"}),
+        ),
+        (
+            "reason",
+            None,
+            Some("read only"),
+            serde_json::json!({"reason": "read only"}),
+        ),
+    ] {
+        let mut detail = sample_detail();
+        detail.meta.project_status = status.map(str::to_owned);
+        detail.meta.project_status_reason = reason.map(str::to_owned);
+
+        let json: serde_json::Value = serde_json::from_str(&to_json(&detail)).unwrap();
+        assert_eq!(json["project-status"], expected, "{case}");
+    }
+}
+
+#[test]
 fn test_index_json_snapshot() {
     insta::assert_snapshot!("index_json", to_json(&sample_list()));
 }
