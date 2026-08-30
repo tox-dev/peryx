@@ -166,6 +166,17 @@ fn test_prepare_rejects_record_membership_rules() {
     );
 }
 #[test]
+fn test_prepare_rejects_mismatched_record_self_size() {
+    let entries = wheel_record_entries();
+    let record_path = "flask-1.0.dist-info/RECORD";
+    let body = record(&entries, record_path).replace(&format!("{record_path},,\n"), &format!("{record_path},,999\n"));
+
+    assert_wheel_invalid(
+        &wheel_zip(&entries, Some(record_path), Some(body)),
+        "RECORD entry flask-1.0.dist-info/RECORD has size 999, but archive member is",
+    );
+}
+#[test]
 fn test_prepare_accepts_record_entry_without_size() {
     let entries = wheel_record_entries();
     let init = entries[0].1;
