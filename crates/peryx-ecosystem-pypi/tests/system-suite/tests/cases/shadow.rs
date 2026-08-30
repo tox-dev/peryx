@@ -12,7 +12,9 @@ use peryx_ecosystem_pypi::upload::Uploaded;
 use peryx_ecosystem_pypi::{CoreMetadata, File, Provenance, Yanked};
 use peryx_identity::{GrantScope, Role};
 use peryx_policy::{PolicyAction, PolicyDecisionState};
-use peryx_storage::meta::NewPolicyDecision;
+use peryx_storage::meta::{
+    LegacyMetadataSource, MetadataMigration, MetadataRecord, MetadataRecordSet, NewPolicyDecision,
+};
 use tower::ServiceExt as _;
 
 use crate::config::{Config, IndexConfig, IndexKind, SecretSource};
@@ -157,23 +159,6 @@ fn seed_cached(state: &AppState) {
 async fn seeded_state() -> (tempfile::TempDir, Arc<AppState>) {
     let dir = tempfile::tempdir().unwrap();
     let state = build_state(&config(&dir)).unwrap();
-    provision_admin(&state).await;
-    seed_hosted(&state);
-    seed_cached(&state);
-    (dir, state)
-}
-
-async fn seeded_state_named(repository: &str) -> (tempfile::TempDir, Arc<AppState>) {
-    let dir = tempfile::tempdir().unwrap();
-    let mut root = virtual_root();
-    root.name = repository.to_owned();
-    root.route = repository.to_owned();
-    let config = Config {
-        data_dir: dir.path().to_path_buf(),
-        indexes: vec![cached_pypi(), hosted(), root],
-        ..Config::default()
-    };
-    let state = build_state(&config).unwrap();
     provision_admin(&state).await;
     seed_hosted(&state);
     seed_cached(&state);
@@ -339,13 +324,21 @@ async fn test_a_denied_filename_carries_its_decision_on_every_member_row() {
 
 #[tokio::test]
 async fn test_a_failed_decision_read_surfaces_as_a_server_error() {
-    let repository = "r".repeat(513);
-    let (_dir, state) = seeded_state_named(&repository).await;
+    let (_dir, state) = seeded_state().await;
+    record_decision(
+        &state,
+        Some(HOSTED_FILE),
+        PolicyAction::Serve,
+        PolicyDecisionState::Allow,
+        "read-fault",
+        None,
+    );
+    state.serving.meta.migrate_metadata(&UnreadableDecision).unwrap();
     let router = router_for(state);
 
     let (status, _headers, body) = get(
         &router,
-        &format!("/+shadow/candidates?repository={repository}&project=acme-pkg"),
+        "/+shadow/candidates?repository=root/pypi&project=acme-pkg",
         Some(("Alice", PASSWORD)),
     )
     .await;
@@ -353,6 +346,33 @@ async fn test_a_failed_decision_read_surfaces_as_a_server_error() {
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
     let document: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(document["error"], "shadow query failed");
+}
+
+struct UnreadableDecision;
+
+impl MetadataMigration for UnreadableDecision {
+    fn name(&self) -> &'static str {
+        "unreadable-decision"
+    }
+
+    fn record_sets(&self) -> &[MetadataRecordSet] {
+        &[MetadataRecordSet::PolicyDecisionHistory]
+    }
+
+    fn legacy_sources(&self) -> &[LegacyMetadataSource] {
+        &[]
+    }
+
+    fn rewrite(
+        &self,
+        _record_set: MetadataRecordSet,
+        record: &MetadataRecord,
+    ) -> Result<Option<MetadataRecord>, String> {
+        Ok(Some(MetadataRecord {
+            key: record.key.clone(),
+            value: b"{".to_vec(),
+        }))
+    }
 }
 
 #[tokio::test]

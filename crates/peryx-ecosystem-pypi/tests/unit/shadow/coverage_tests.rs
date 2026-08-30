@@ -12,7 +12,9 @@ use peryx_identity::{Action, Glob, Grant, GrantScope, IndexAcl, NamedToken, Role
 use peryx_index::{Index, IndexKind};
 use peryx_policy::{Policy, PolicyAction, PolicyDecisionState};
 use peryx_storage::blob::BlobStorage;
-use peryx_storage::meta::{MetaStore, NewPolicyDecision};
+use peryx_storage::meta::{
+    LegacyMetadataSource, MetaStore, MetadataMigration, MetadataRecord, MetadataRecordSet, NewPolicyDecision,
+};
 use redb::TableDefinition;
 use rstest::rstest;
 use tower::ServiceExt as _;
@@ -347,13 +349,14 @@ async fn shadow_contract_reports_malformed_parameters() {
 
 #[tokio::test]
 async fn shadow_candidates_hide_decision_store_errors() {
-    let repository = "r".repeat(513);
-    let (_directory, state) = seeded_state(&repository, &repository, IndexAcl::default());
-    let authorization = local_reader(&state, &repository).await;
+    let (_directory, state) = seeded_state("root-pypi", "root/pypi", IndexAcl::default());
+    record_decisions(&state);
+    state.serving.meta.migrate_metadata(&UnreadableDecision).unwrap();
+    let authorization = local_reader(&state, "root-pypi").await;
 
     let (status, _, body) = request(
         &state,
-        &format!("/+shadow/candidates?repository={repository}&project={PROJECT}"),
+        "/+shadow/candidates?repository=root/pypi&project=acme-pkg",
         Some(HeaderValue::from_str(&authorization).unwrap()),
     )
     .await;
@@ -363,6 +366,33 @@ async fn shadow_candidates_hide_decision_store_errors() {
         serde_json::from_str::<serde_json::Value>(&body).unwrap(),
         serde_json::json!({"error": "shadow query failed"})
     );
+}
+
+struct UnreadableDecision;
+
+impl MetadataMigration for UnreadableDecision {
+    fn name(&self) -> &'static str {
+        "unreadable-decision"
+    }
+
+    fn record_sets(&self) -> &[MetadataRecordSet] {
+        &[MetadataRecordSet::PolicyDecisionHistory]
+    }
+
+    fn legacy_sources(&self) -> &[LegacyMetadataSource] {
+        &[]
+    }
+
+    fn rewrite(
+        &self,
+        _record_set: MetadataRecordSet,
+        record: &MetadataRecord,
+    ) -> Result<Option<MetadataRecord>, String> {
+        Ok(Some(MetadataRecord {
+            key: record.key.clone(),
+            value: b"{".to_vec(),
+        }))
+    }
 }
 
 #[rstest]
