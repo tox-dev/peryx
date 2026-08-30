@@ -6,10 +6,11 @@ use peryx_core::{
     PlacementHealth, PlacementRow, PlacementView, UiArtifactSource, UiByteAvailability, UiOperationStatus,
 };
 use peryx_ha::{
-    ArtifactPlacementQuery, ArtifactPlacementRow, ArtifactSource, AvailabilityAudience, AvailabilityAuthorizer,
-    AvailabilityPageQuery, AvailabilityViewReader, BlobPlacementRecord, BlobPlacementState, BlobPlacementViewError,
-    ByteAvailability, ControlActor, ControlAuthenticationError, ControlAuthorizer, ControlPermission, FrontierReply,
-    MetadataFrontierProvider, OperationsViewError, PlacementViewError,
+    ArtifactPlacementQuery, ArtifactPlacementRow, ArtifactSource, AvailabilityAudience,
+    AvailabilityAuthenticationError, AvailabilityAuthorizer, AvailabilityPageQuery, AvailabilityViewReader,
+    BlobPlacementRecord, BlobPlacementState, BlobPlacementViewError, ByteAvailability, ControlActor,
+    ControlAuthenticationError, ControlAuthorizer, ControlPermission, FrontierReply, MetadataFrontierProvider,
+    OperationsViewError, PlacementViewError,
 };
 use peryx_identity::{Resource, Scope, UserId, parse_basic};
 use peryx_storage::meta::{
@@ -17,6 +18,7 @@ use peryx_storage::meta::{
 };
 
 use crate::ServingState;
+use crate::users::{AuthenticationError, PasswordDerivationError};
 
 pub struct ServingStateAvailabilityAuthorizer(Arc<ServingState>);
 
@@ -25,21 +27,23 @@ impl ServingStateAvailabilityAuthorizer {
     pub const fn new(state: Arc<ServingState>) -> Self {
         Self(state)
     }
-}
 
-#[async_trait]
-impl AvailabilityAuthorizer for ServingStateAvailabilityAuthorizer {
-    async fn authorize(&self, authorization: Option<&str>) -> AvailabilityAudience {
+    async fn authorize_local(
+        &self,
+        authorization: Option<&str>,
+    ) -> Result<AvailabilityAudience, PasswordDerivationError> {
         let Some(credentials) = authorization.and_then(parse_basic) else {
-            return AvailabilityAudience::Public;
+            return Ok(AvailabilityAudience::Public);
         };
-        let Ok(Some(actor)) = self
+        let actor = match self
             .0
             .users
             .authenticate(&credentials.user, &credentials.password)
             .await
-        else {
-            return AvailabilityAudience::Public;
+        {
+            Ok(Some(actor)) => actor,
+            Ok(None) | Err(AuthenticationError::Store(_)) => return Ok(AvailabilityAudience::Public),
+            Err(AuthenticationError::Derivation(error)) => return Err(error),
         };
         if self
             .0
@@ -48,7 +52,7 @@ impl AvailabilityAuthorizer for ServingStateAvailabilityAuthorizer {
             .decision()
             .is_allowed()
         {
-            AvailabilityAudience::Administrator
+            Ok(AvailabilityAudience::Administrator)
         } else if self
             .0
             .authorization
@@ -56,10 +60,22 @@ impl AvailabilityAuthorizer for ServingStateAvailabilityAuthorizer {
             .decision()
             .is_allowed()
         {
-            AvailabilityAudience::Operator
+            Ok(AvailabilityAudience::Operator)
         } else {
-            AvailabilityAudience::Public
+            Ok(AvailabilityAudience::Public)
         }
+    }
+}
+
+#[async_trait]
+impl AvailabilityAuthorizer for ServingStateAvailabilityAuthorizer {
+    async fn authorize(
+        &self,
+        authorization: Option<&str>,
+    ) -> Result<AvailabilityAudience, AvailabilityAuthenticationError> {
+        self.authorize_local(authorization)
+            .await
+            .map_err(|_| AvailabilityAuthenticationError)
     }
 }
 

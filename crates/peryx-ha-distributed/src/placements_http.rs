@@ -9,7 +9,7 @@ use peryx_ha::{
 };
 use peryx_http::response_security::ProtectedCachePolicy;
 
-use crate::availability_http::availability_audience;
+use crate::availability_http::{AvailabilityRejection, availability_audience};
 
 const DEFAULT_PLACEMENT_LIMIT: usize = 25;
 
@@ -20,7 +20,9 @@ struct PlacementsQuery {
 }
 
 pub async fn placements(State(state): State<Arc<AppState>>, headers: HeaderMap, uri: Uri) -> Response {
-    let audience = availability_audience(state.serving.clone(), &headers).await;
+    let Ok(audience) = availability_audience(state.serving.clone(), &headers).await else {
+        return AvailabilityRejection::response();
+    };
     let mut response = placements_response(&state.serving, audience, &uri);
     ProtectedCachePolicy::NoStore.apply(response.headers_mut());
     response
@@ -58,7 +60,9 @@ pub async fn blob_placements(
     headers: HeaderMap,
     Path(digest): Path<String>,
 ) -> Response {
-    let audience = availability_audience(state.serving.clone(), &headers).await;
+    let Ok(audience) = availability_audience(state.serving.clone(), &headers).await else {
+        return AvailabilityRejection::response();
+    };
     let mut response = blob_placements_response(&state.serving, audience, &digest);
     ProtectedCachePolicy::NoStore.apply(response.headers_mut());
     response

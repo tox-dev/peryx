@@ -51,8 +51,23 @@ async fn availability_authorizer_rejects_missing_or_malformed_credentials(
     assert_eq!(
         ServingStateAvailabilityAuthorizer::new(state)
             .authorize(authorization)
-            .await,
+            .await
+            .unwrap(),
         expected
+    );
+}
+
+#[tokio::test]
+async fn availability_authorizer_rejects_unknown_credentials() {
+    let (_dir, state) = state();
+    let authorization = format!("Basic {}", STANDARD.encode(format!("Unknown:{PASSWORD}")));
+
+    assert_eq!(
+        ServingStateAvailabilityAuthorizer::new(state)
+            .authorize(Some(&authorization))
+            .await
+            .unwrap(),
+        AvailabilityAudience::Public
     );
 }
 
@@ -68,7 +83,8 @@ async fn availability_authorizer_maps_server_roles(#[case] role: Role, #[case] e
     assert_eq!(
         ServingStateAvailabilityAuthorizer::new(state)
             .authorize(Some(&authorization))
-            .await,
+            .await
+            .unwrap(),
         expected
     );
 }

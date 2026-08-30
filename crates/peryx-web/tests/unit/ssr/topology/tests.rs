@@ -6,11 +6,10 @@ use super::{local_status_from_observations, topology_view_for_class};
 #[test]
 fn topology_projects_authority_and_health() {
     for (class, expected) in [
-        (None, TopologyView::Public),
-        (Some(FieldClassification::Public), TopologyView::Public),
-        (Some(FieldClassification::Repository), TopologyView::Public),
-        (Some(FieldClassification::Operator), TopologyView::Operator),
-        (Some(FieldClassification::Administrator), TopologyView::Administrator),
+        (FieldClassification::Public, TopologyView::Public),
+        (FieldClassification::Repository, TopologyView::Public),
+        (FieldClassification::Operator, TopologyView::Operator),
+        (FieldClassification::Administrator, TopologyView::Administrator),
     ] {
         assert_eq!(topology_view_for_class(class), expected);
     }

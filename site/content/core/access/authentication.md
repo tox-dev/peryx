@@ -367,11 +367,13 @@ account from a wrong password by watching how long the answer takes. An identity
 login rather than falling through to success.
 
 A successful login whose verifier no longer matches the current policy re-enrolls it under the same user ID before
-returning, so tightening the parameters upgrades verifiers as their owners sign in. A re-enrollment that cannot be
-stored does not deny the login that already succeeded.
+returning, so tightening the parameters upgrades verifiers as their owners sign in. A concurrent password change makes
+the conditional replacement fail and rejects the login instead of restoring the stale verifier.
 
-Each hash and check runs on the blocking pool because Argon2id uses 19 MiB per derivation. A semaphore caps concurrent
-checks, which bounds login memory without starving request workers.
+Each hash and check runs on the blocking pool because Argon2id uses 19 MiB per derivation. Four jobs may run and four
+may wait. Peryx rejects the next enrollment or authentication request with `503 Service Unavailable` before Argon2
+starts; disconnecting a queued request releases its place. Real checks, decoys, enrollment, and stale-verifier upgrades
+share this process-wide admission bound.
 
 Passwords and verifiers are secrets end to end: neither appears in logs, errors, diagnostics, or any serialized account
 view, and debug rendering redacts a verifier. Enrolling again replaces the verifier; clearing it removes password

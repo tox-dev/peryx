@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::State;
-use axum::http::{HeaderMap, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse as _, Response};
 use axum::routing::get;
@@ -63,7 +63,10 @@ const fn read(path: &'static str) -> RouteDescriptor {
 }
 
 async fn availability_topology(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    let view = topology_view(availability_audience(state.serving.clone(), &headers).await);
+    let view = match availability_audience(state.serving.clone(), &headers).await {
+        Ok(audience) => topology_view(audience),
+        Err(_) => return AvailabilityRejection::response(),
+    };
     let local = local_status(&state.serving).await;
     let snapshot = state
         .serving
@@ -75,7 +78,10 @@ async fn availability_topology(State(state): State<Arc<AppState>>, headers: Head
 }
 
 async fn availability_topology_stream(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    let view = topology_view(availability_audience(state.serving.clone(), &headers).await);
+    let view = match availability_audience(state.serving.clone(), &headers).await {
+        Ok(audience) => topology_view(audience),
+        Err(_) => return AvailabilityRejection::response(),
+    };
     let sse = Sse::new(topology_events(state.serving.clone(), view))
         .keep_alive(KeepAlive::new().interval(TOPOLOGY_HEARTBEAT_INTERVAL).text("heartbeat"));
     let mut response = sse.into_response();
@@ -123,10 +129,28 @@ const fn topology_view(audience: AvailabilityAudience) -> TopologyView {
     }
 }
 
-pub async fn availability_audience(state: Arc<ServingState>, headers: &HeaderMap) -> AvailabilityAudience {
+pub async fn availability_audience(
+    state: Arc<ServingState>,
+    headers: &HeaderMap,
+) -> Result<AvailabilityAudience, AvailabilityRejection> {
     ServingStateAvailabilityAuthorizer::new(state)
         .authorize(headers.get(header::AUTHORIZATION).and_then(|value| value.to_str().ok()))
         .await
+        .map_err(|_| AvailabilityRejection)
+}
+
+pub struct AvailabilityRejection;
+
+impl AvailabilityRejection {
+    pub fn response() -> Response {
+        let mut response = (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(serde_json::json!({"error": "identity service unavailable"})),
+        )
+            .into_response();
+        ProtectedCachePolicy::NoStore.apply(response.headers_mut());
+        response
+    }
 }
 
 async fn local_status(state: &ServingState) -> LocalStatus {

@@ -7,7 +7,7 @@ use peryx_driver::state::{AppState, ServingState};
 use peryx_ha::{AvailabilityAudience, AvailabilityPageQuery, AvailabilityViewReader, OperationsViewError};
 use peryx_http::response_security::ProtectedCachePolicy;
 
-use crate::availability_http::availability_audience;
+use crate::availability_http::{AvailabilityRejection, availability_audience};
 
 const DEFAULT_OPERATION_LIMIT: usize = 25;
 
@@ -18,7 +18,9 @@ struct OperationsQuery {
 }
 
 pub async fn operations(State(state): State<Arc<AppState>>, headers: HeaderMap, uri: Uri) -> Response {
-    let audience = availability_audience(state.serving.clone(), &headers).await;
+    let Ok(audience) = availability_audience(state.serving.clone(), &headers).await else {
+        return AvailabilityRejection::response();
+    };
     let mut response = operations_response(&state.serving, audience, &uri);
     ProtectedCachePolicy::NoStore.apply(response.headers_mut());
     response

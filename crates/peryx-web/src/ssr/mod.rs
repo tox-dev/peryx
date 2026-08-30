@@ -20,7 +20,27 @@ pub use topology::topology;
 
 use std::sync::Arc;
 
+use axum::http::{HeaderValue, StatusCode, header};
 use peryx_driver::{AppState, ServingState};
+use peryx_http::response_security::FieldClassification;
+
+async fn status_class(app: &AppState) -> FieldClassification {
+    let headers = leptos_axum::extract::<axum::http::HeaderMap>()
+        .await
+        .unwrap_or_default();
+    peryx_http::handlers::status_authorization(app, &headers)
+        .await
+        .map_or_else(
+            |_| {
+                if let Some(response) = leptos::prelude::use_context::<leptos_axum::ResponseOptions>() {
+                    response.set_status(StatusCode::SERVICE_UNAVAILABLE);
+                    response.insert_header(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+                }
+                FieldClassification::Public
+            },
+            |authorization| authorization.field_class().unwrap_or(FieldClassification::Public),
+        )
+}
 
 async fn read_access(state: &ServingState) -> Result<peryx_driver::access::ReadAccess, String> {
     let headers = match leptos_axum::extract::<axum::http::HeaderMap>().await {

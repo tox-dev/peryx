@@ -69,6 +69,13 @@ async fn app_with_summary_failure() -> (tempfile::TempDir, Arc<AppState>) {
     (directory, state)
 }
 
+async fn app_with_password_overload() -> (tempfile::TempDir, Arc<AppState>) {
+    let (directory, mut state) = app().await;
+    let serving = Arc::get_mut(&mut Arc::get_mut(&mut state).unwrap().serving).unwrap();
+    serving.users = UserService::with_password_settings(serving.meta.clone(), PasswordPolicy::new(8, 1, 1).unwrap(), 0);
+    (directory, state)
+}
+
 async fn app_with_fault(fault: StoreFault) -> (tempfile::TempDir, Arc<AppState>) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("peryx.redb");
@@ -352,6 +359,22 @@ async fn test_status_administrator_sees_summary_failures() {
     );
     assert_eq!((index.get("resource_count"), index.get("write_count")), (None, None));
     assert!(!body.to_string().contains("summary failed"), "{body}");
+}
+
+#[tokio::test]
+async fn test_status_reports_password_overload() {
+    let (_directory, state) = app_with_password_overload().await;
+
+    let (status, headers, body) = get(&state, Some(("Unknown", USER_PASSWORD))).await;
+
+    assert_eq!(
+        (status, body),
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            serde_json::json!({"error": "identity service unavailable"}),
+        )
+    );
+    assert_eq!(headers[header::CACHE_CONTROL], "no-store");
 }
 
 #[rstest]

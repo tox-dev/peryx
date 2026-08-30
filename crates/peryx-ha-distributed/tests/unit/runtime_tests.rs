@@ -28,6 +28,8 @@ const TOKEN: &str = "replication-secret";
 
 struct StaticAuthorizer(AvailabilityAudience);
 
+struct UnavailableAuthorizer;
+
 struct StaticFrontier(Option<crate::FrontierReply>);
 
 struct EmptyReferences;
@@ -310,8 +312,21 @@ impl crate::MetadataFrontierProvider for StaticFrontier {
 
 #[async_trait::async_trait]
 impl AvailabilityAuthorizer for StaticAuthorizer {
-    async fn authorize(&self, _authorization: Option<&str>) -> AvailabilityAudience {
-        self.0
+    async fn authorize(
+        &self,
+        _authorization: Option<&str>,
+    ) -> Result<AvailabilityAudience, peryx_ha::AvailabilityAuthenticationError> {
+        Ok(self.0)
+    }
+}
+
+#[async_trait::async_trait]
+impl AvailabilityAuthorizer for UnavailableAuthorizer {
+    async fn authorize(
+        &self,
+        _authorization: Option<&str>,
+    ) -> Result<AvailabilityAudience, peryx_ha::AvailabilityAuthenticationError> {
+        Err(peryx_ha::AvailabilityAuthenticationError)
     }
 }
 
@@ -333,6 +348,15 @@ fn runtime_with_frontier(
     audience: AvailabilityAudience,
     frontier: Arc<dyn crate::MetadataFrontierProvider>,
 ) -> anyhow::Result<DistributedRuntime> {
+    runtime_with_authorizer(config, state, frontier, Arc::new(StaticAuthorizer(audience)))
+}
+
+fn runtime_with_authorizer(
+    config: &RuntimeConfig,
+    state: &Arc<AppState>,
+    frontier: Arc<dyn crate::MetadataFrontierProvider>,
+    authorizer: Arc<dyn AvailabilityAuthorizer>,
+) -> anyhow::Result<DistributedRuntime> {
     DistributedRuntime::new(
         config,
         &DistributedRuntimeContext {
@@ -343,7 +367,7 @@ fn runtime_with_frontier(
             analytics: Arc::new(state.serving.metrics.clone()),
             frontier,
         },
-        Arc::new(StaticAuthorizer(audience)),
+        authorizer,
     )
 }
 
@@ -1281,6 +1305,24 @@ async fn primary_runtime_reports_group_readiness_and_ignites_consensus() {
         .unwrap();
     assert_eq!(consensus.authority.cluster_status().voters, vec!["east", "west"]);
     consensus.shutdown().unwrap();
+}
+
+#[tokio::test]
+async fn replication_health_routes_report_password_overload() {
+    let (dir, state) = state();
+    let runtime = runtime_with_authorizer(
+        &primary_config(&dir, DistributedMode::Ha),
+        &state,
+        Arc::new(StaticFrontier(None)),
+        Arc::new(UnavailableAuthorizer),
+    )
+    .unwrap();
+
+    for path in ["/+replication/v1/health", "/+replication/v1/ready"] {
+        let (status, document) = get(&runtime.routes(), path).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{path}");
+        assert_eq!(document, serde_json::json!({"error": "identity service unavailable"}));
+    }
 }
 
 #[tokio::test]

@@ -102,9 +102,19 @@ pub enum AvailabilityAudience {
     Administrator,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("availability identity provider unavailable")]
+pub struct AvailabilityAuthenticationError;
+
 #[async_trait]
 pub trait AvailabilityAuthorizer: Send + Sync {
-    async fn authorize(&self, authorization: Option<&str>) -> AvailabilityAudience;
+    /// # Errors
+    ///
+    /// Returns [`AvailabilityAuthenticationError`] when the identity provider is unavailable.
+    async fn authorize(
+        &self,
+        authorization: Option<&str>,
+    ) -> Result<AvailabilityAudience, AvailabilityAuthenticationError>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

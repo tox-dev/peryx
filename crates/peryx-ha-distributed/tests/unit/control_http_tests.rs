@@ -73,6 +73,14 @@ impl peryx_ha::ControlAuthorizer for TestAuthorizer {
 }
 
 async fn app(break_identity: bool, break_serial: bool) -> (tempfile::TempDir, Arc<AppState>) {
+    app_with_password_limit(break_identity, break_serial, 2).await
+}
+
+async fn app_with_password_limit(
+    break_identity: bool,
+    break_serial: bool,
+    max_concurrent_checks: usize,
+) -> (tempfile::TempDir, Arc<AppState>) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("peryx.redb");
     let meta = MetaStore::open(&path).unwrap();
@@ -111,7 +119,7 @@ async fn app(break_identity: bool, break_serial: bool) -> (tempfile::TempDir, Ar
     let meta = MetaStore::open_existing(path).unwrap();
     let mut state = AppState::new(meta.clone(), BlobStore::new(dir.path().join("blobs")), 60, Vec::new());
     Arc::get_mut(&mut state.serving).unwrap().users =
-        UserService::with_password_settings(meta, PasswordPolicy::new(8, 1, 1).unwrap(), 2);
+        UserService::with_password_settings(meta, PasswordPolicy::new(8, 1, 1).unwrap(), max_concurrent_checks);
     crate::support::install_distributed_services(&mut state);
     (dir, Arc::new(state))
 }
@@ -470,6 +478,24 @@ async fn status_maps_identity_failure_and_skips_auth_for_unknown_routes() {
         .0,
         StatusCode::NOT_FOUND
     );
+}
+
+#[tokio::test]
+async fn status_maps_password_overload_to_unavailable() {
+    let (_dir, state) = app_with_password_limit(false, false, 0).await;
+    let (status, headers, _) = send(
+        &state,
+        coordinator(),
+        Method::GET,
+        "/availability/v1/status",
+        Some(&basic(ADMIN, PASSWORD)),
+        None,
+        None,
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(headers[header::CACHE_CONTROL], "no-store");
 }
 
 #[tokio::test]

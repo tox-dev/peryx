@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use axum::http::HeaderMap;
 use leptos::prelude::*;
 use peryx_driver::AppState;
 use peryx_driver::serving::{IndexSummary, IndexSummaryError};
@@ -23,17 +22,9 @@ pub async fn admin_snapshot() -> UiSnapshot {
     snapshot_with_summaries(Some(5)).await
 }
 
-async fn status_class(app: &AppState) -> FieldClassification {
-    let headers = leptos_axum::extract::<HeaderMap>().await.unwrap_or_default();
-    peryx_http::handlers::status_authorization(app, &headers)
-        .await
-        .field_class()
-        .unwrap_or(FieldClassification::Public)
-}
-
 async fn snapshot_with_summaries(recent_limit: Option<usize>) -> UiSnapshot {
     let app = expect_context::<Arc<AppState>>();
-    let class = status_class(&app).await;
+    let class = super::status_class(&app).await;
     snapshot_for_class(&app, class, recent_limit)
 }
 
@@ -181,7 +172,9 @@ fn redacted_auth(auth: &str) -> Option<String> {
 #[must_use]
 pub async fn stats(route: Option<&str>, resource: Option<&str>) -> serde_json::Value {
     let app = expect_context::<Arc<AppState>>();
-    stats_for_class(status_class(&app).await, || app.serving.metrics.drill(route, resource))
+    stats_for_class(super::status_class(&app).await, || {
+        app.serving.metrics.drill(route, resource)
+    })
 }
 
 fn stats_for_class(class: FieldClassification, drill: impl FnOnce() -> serde_json::Value) -> serde_json::Value {

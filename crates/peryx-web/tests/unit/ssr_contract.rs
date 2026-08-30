@@ -44,6 +44,27 @@ const FIXTURE_METRIC: MetricFamily = MetricFamily {
 static BARE_DRIVER: EcosystemDriverFixture = EcosystemDriverFixture::new(FIXTURE_ECOSYSTEM, RouteClass::Listing);
 
 #[tokio::test]
+async fn server_render_reports_password_overload() {
+    let (_directory, mut app) = state(Vec::new());
+    let meta = app.serving.meta.clone();
+    Arc::get_mut(&mut app.serving).unwrap().users = peryx_driver::users::UserService::with_password_settings(
+        meta,
+        peryx_identity::PasswordPolicy::new(8, 1, 1).unwrap(),
+        0,
+    );
+
+    let (status, headers, _) = render(
+        Arc::new(app),
+        "/",
+        &[(header::AUTHORIZATION.as_str(), "Basic QWxpY2U6cGFzc3dvcmQ=")],
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+}
+
+#[tokio::test]
 async fn neutral_browse_contract_forwards_raw_query() {
     let body = render_browse(Some(fixture_page())).await;
 

@@ -4,7 +4,7 @@ use peryx_identity::{
     PasswordCheck, PasswordError, PasswordPolicy, PasswordVerifier, ServerUser, UserId, UserLifecycleEvent, UserState,
 };
 use peryx_storage::meta::{AdministratorBootstrapError, MetaError, MetaStore, UserStoreError};
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// How many password derivations may run at once by default, chosen well under the request worker
 /// count so a burst of logins cannot starve request serving.
@@ -15,25 +15,60 @@ const DEFAULT_PASSWORD_CHECKS: usize = 4;
 pub struct UserService {
     store: MetaStore,
     policy: PasswordPolicy,
-    verifications: Arc<Semaphore>,
+    password_admission: Arc<Semaphore>,
+    password_workers: Arc<Semaphore>,
+}
+
+struct PasswordAdmission {
+    permit: Arc<OwnedSemaphorePermit>,
+}
+
+/// A password derivation that could not complete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum PasswordDerivationError {
+    #[error("password derivation capacity exhausted")]
+    Overloaded,
+    #[error(transparent)]
+    Hash(#[from] PasswordError),
 }
 
 /// A rejected password enrollment.
 #[derive(Debug, thiserror::Error)]
 pub enum EnrollError {
     #[error(transparent)]
-    Hash(#[from] PasswordError),
+    Derivation(#[from] PasswordDerivationError),
     #[error(transparent)]
     Store(#[from] UserStoreError),
+}
+
+impl From<PasswordError> for EnrollError {
+    fn from(error: PasswordError) -> Self {
+        Self::Derivation(error.into())
+    }
 }
 
 /// A rejected first-administrator bootstrap.
 #[derive(Debug, thiserror::Error)]
 pub enum BootstrapError {
     #[error(transparent)]
-    Hash(#[from] PasswordError),
+    Derivation(#[from] PasswordDerivationError),
     #[error(transparent)]
     Store(#[from] AdministratorBootstrapError),
+}
+
+impl From<PasswordError> for BootstrapError {
+    fn from(error: PasswordError) -> Self {
+        Self::Derivation(error.into())
+    }
+}
+
+/// A password authentication failure that is not a rejected credential.
+#[derive(Debug, thiserror::Error)]
+pub enum AuthenticationError {
+    #[error(transparent)]
+    Derivation(#[from] PasswordDerivationError),
+    #[error(transparent)]
+    Store(#[from] MetaError),
 }
 
 impl UserService {
@@ -47,7 +82,11 @@ impl UserService {
         Self {
             store,
             policy,
-            verifications: Arc::new(Semaphore::new(max_concurrent_checks)),
+            // One waiting batch absorbs scheduling jitter without retaining an open-ended backlog.
+            password_admission: Arc::new(Semaphore::new(
+                max_concurrent_checks.saturating_mul(2).min(Semaphore::MAX_PERMITS),
+            )),
+            password_workers: Arc::new(Semaphore::new(max_concurrent_checks)),
         }
     }
 
@@ -99,23 +138,28 @@ impl UserService {
     }
 
     /// # Errors
-    /// Returns [`EnrollError::Hash`] when derivation fails and [`EnrollError::Store`] for an unknown
-    /// user or a storage failure.
+    /// Returns [`EnrollError::Derivation`] when derivation fails or the password queue is full, and
+    /// [`EnrollError::Store`] for an unknown user or a storage failure.
     pub async fn set_password(&self, id: &UserId, password: &str) -> Result<(), EnrollError> {
-        let verifier = self.hash(password.to_owned()).await?;
+        let admission = self.admit()?;
+        let verifier = self.hash(&admission, password.to_owned()).await?;
+        drop(admission);
         self.store.set_user_password(id, &verifier)?;
         Ok(())
     }
 
     /// # Errors
-    /// Returns [`BootstrapError::Hash`] when derivation fails or [`BootstrapError::Store`] when an
-    /// administrator already exists, the identity conflicts, or the metadata transaction aborts.
+    /// Returns [`BootstrapError::Derivation`] when derivation fails or the password queue is full, and
+    /// [`BootstrapError::Store`] when an administrator exists, the identity conflicts, or the metadata
+    /// transaction aborts.
     pub async fn bootstrap_administrator(
         &self,
         display_name: &str,
         password: &str,
     ) -> Result<ServerUser, BootstrapError> {
-        let verifier = self.hash(password.to_owned()).await?;
+        let admission = self.admit()?;
+        let verifier = self.hash(&admission, password.to_owned()).await?;
+        drop(admission);
         Ok(self.store.bootstrap_administrator(display_name, &verifier)?)
     }
 
@@ -135,58 +179,91 @@ impl UserService {
     /// verifier checked; authentication fails if another request changed it.
     ///
     /// # Errors
-    /// Returns a storage error when lookup or conditional replacement fails.
-    pub async fn authenticate(&self, display_name: &str, password: &str) -> Result<Option<UserId>, MetaError> {
+    /// Returns an unavailable error when lookup, derivation admission, hashing, or conditional
+    /// replacement fails.
+    pub async fn authenticate(
+        &self,
+        display_name: &str,
+        password: &str,
+    ) -> Result<Option<UserId>, AuthenticationError> {
+        let admission = self.admit()?;
         let active = match self.store.get_user_by_name(display_name) {
             Ok(user) => user.filter(|user| user.state == UserState::Active),
-            Err(UserStoreError::Store(error)) => return Err(error),
+            Err(UserStoreError::Store(error)) => return Err(error.into()),
             Err(_) => None,
         };
         let Some(user) = active else {
-            self.spend_decoy(password.to_owned()).await;
+            self.spend_decoy(&admission, password.to_owned()).await;
+            drop(admission);
             return Ok(None);
         };
         let Some(verifier) = self.store.get_user_password(&user.id)? else {
-            self.spend_decoy(password.to_owned()).await;
+            self.spend_decoy(&admission, password.to_owned()).await;
+            drop(admission);
             return Ok(None);
         };
         tracing::trace!(target: "peryx_driver::users::password_verifier_read", user_id = %user.id);
         let (policy, presented, checked) = (self.policy, password.to_owned(), verifier.verifier().clone());
-        match self.gated(move || checked.check(&presented, &policy)).await {
-            PasswordCheck::Rejected => Ok(None),
-            PasswordCheck::Accepted { stale: false } => Ok(Some(user.id)),
+        match self.run(&admission, move || checked.check(&presented, &policy)).await {
+            PasswordCheck::Rejected => {
+                drop(admission);
+                Ok(None)
+            }
+            PasswordCheck::Accepted { stale: false } => {
+                drop(admission);
+                Ok(Some(user.id))
+            }
             PasswordCheck::Accepted { stale: true } => {
-                let replacement = self.hash(password.to_owned()).await.ok();
-                let replaced = replacement
-                    .map(|replacement| {
-                        self.store
-                            .compare_and_set_user_password(&user.id, &verifier, &replacement)
-                    })
-                    .transpose()?
-                    .unwrap_or(false);
+                let replacement = self.hash(&admission, password.to_owned()).await?;
+                drop(admission);
+                let replaced = self
+                    .store
+                    .compare_and_set_user_password(&user.id, &verifier, &replacement)?;
                 Ok(replaced.then_some(user.id))
             }
         }
     }
 
-    async fn hash(&self, password: String) -> Result<PasswordVerifier, PasswordError> {
-        let policy = self.policy;
-        self.gated(move || policy.hash(&password)).await
+    fn admit(&self) -> Result<PasswordAdmission, PasswordDerivationError> {
+        let admission = Arc::clone(&self.password_admission)
+            .try_acquire_owned()
+            .map_err(|_| PasswordDerivationError::Overloaded)?;
+        tracing::trace!(target: "peryx_driver::users::password_derivation_admitted", "admitted");
+        Ok(PasswordAdmission {
+            permit: Arc::new(admission),
+        })
     }
 
-    async fn spend_decoy(&self, password: String) {
+    async fn hash(
+        &self,
+        admission: &PasswordAdmission,
+        password: String,
+    ) -> Result<PasswordVerifier, PasswordDerivationError> {
         let policy = self.policy;
-        self.gated(move || policy.spend_decoy(&password)).await;
+        self.run(admission, move || policy.hash(&password))
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn spend_decoy(&self, admission: &PasswordAdmission, password: String) {
+        let policy = self.policy;
+        self.run(admission, move || policy.spend_decoy(&password)).await;
     }
 
     // Password derivation must not consume async request workers.
-    async fn gated<T: Send + 'static>(&self, work: impl FnOnce() -> T + Send + 'static) -> T {
-        let permit = Arc::clone(&self.verifications)
+    async fn run<T: Send + 'static>(
+        &self,
+        admission: &PasswordAdmission,
+        work: impl FnOnce() -> T + Send + 'static,
+    ) -> T {
+        let admission = Arc::clone(&admission.permit);
+        let worker = Arc::clone(&self.password_workers)
             .acquire_owned()
             .await
-            .expect("the verification semaphore is never closed");
+            .expect("the password worker semaphore is never closed");
         tokio::task::spawn_blocking(move || {
-            let _permit = permit;
+            let (_admission, _worker) = (admission, worker);
+            tracing::trace!(target: "peryx_driver::users::password_derivation_started", "started");
             work()
         })
         .await

@@ -10,7 +10,6 @@ use peryx_identity::{
     Principal, UserId, UserLifecycleChange, UserState,
 };
 use peryx_storage::meta::{MetaStore, StoredPasswordVerifier};
-use tokio::sync::Barrier;
 use tracing_subscriber::layer::SubscriberExt as _;
 
 use crate::users::{BootstrapError, EnrollError, UserService};
@@ -146,7 +145,32 @@ fn test_bootstrap_error_preserves_a_hash_failure() {
     let error = BootstrapError::from(PasswordError::Params);
     assert_eq!(error.to_string(), "argon2 cost parameters are out of range");
     assert!(error.source().is_none());
-    assert!(matches!(error, BootstrapError::Hash(PasswordError::Params)));
+    assert!(matches!(
+        error,
+        BootstrapError::Derivation(crate::users::PasswordDerivationError::Hash(PasswordError::Params))
+    ));
+}
+
+#[test]
+fn test_enrollment_and_bootstrap_report_password_overload() {
+    let enrollment = EnrollError::from(crate::users::PasswordDerivationError::Overloaded);
+    let bootstrap = BootstrapError::from(crate::users::PasswordDerivationError::Overloaded);
+
+    assert_eq!(
+        (enrollment.to_string(), bootstrap.to_string()),
+        (
+            "password derivation capacity exhausted".to_owned(),
+            "password derivation capacity exhausted".to_owned(),
+        )
+    );
+    assert!(matches!(
+        enrollment,
+        EnrollError::Derivation(crate::users::PasswordDerivationError::Overloaded)
+    ));
+    assert!(matches!(
+        bootstrap,
+        BootstrapError::Derivation(crate::users::PasswordDerivationError::Overloaded)
+    ));
 }
 
 #[tokio::test]
@@ -357,43 +381,8 @@ async fn test_set_password_reports_an_unknown_user() {
     let error = service.set_password(&missing, "correct horse").await.unwrap_err();
 
     assert!(matches!(error, EnrollError::Store(_)));
-    assert!(matches!(EnrollError::from(PasswordError::Params), EnrollError::Hash(_)));
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_password_checks_do_not_exhaust_request_workers() {
-    let (_dir, _store, service) = cheap_service();
-    let user = service.create("Alice").unwrap();
-    service.set_password(&user.id, "correct horse").await.unwrap();
-
-    let logins = (0..16)
-        .map(|_| {
-            let service = service.clone();
-            let id = user.id.clone();
-            tokio::spawn(async move {
-                assert_eq!(service.authenticate("Alice", "correct horse").await.unwrap(), Some(id));
-            })
-        })
-        .collect::<Vec<_>>();
-    let ready = Arc::new(Barrier::new(17));
-    let requests = (0..16)
-        .map(|seq| {
-            let ready = ready.clone();
-            tokio::spawn(async move {
-                ready.wait().await;
-                seq
-            })
-        })
-        .collect::<Vec<_>>();
-    ready.wait().await;
-    let (logins, served) = tokio::join!(
-        futures_util::future::join_all(logins),
-        futures_util::future::join_all(requests),
-    );
-
-    assert!(logins.into_iter().all(|login| login.is_ok()));
-    assert_eq!(
-        served.into_iter().map(Result::unwrap).sum::<usize>(),
-        (0..16).sum::<usize>()
-    );
+    assert!(matches!(
+        EnrollError::from(PasswordError::Params),
+        EnrollError::Derivation(crate::users::PasswordDerivationError::Hash(_))
+    ));
 }

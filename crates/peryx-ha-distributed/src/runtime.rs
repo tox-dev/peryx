@@ -267,7 +267,10 @@ async fn availability_health(State(node): State<AvailabilityNode>, headers: Head
     let authorization = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok());
-    let (_ready, body) = node.document(node.authorizer.authorize(authorization).await).await;
+    let Ok(audience) = node.authorizer.authorize(authorization).await else {
+        return unavailable();
+    };
+    let (_ready, body) = node.document(audience).await;
     availability_response(StatusCode::OK, body)
 }
 
@@ -276,7 +279,10 @@ async fn availability_readiness(State(node): State<AvailabilityNode>, headers: H
     let authorization = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok());
-    let (ready, body) = node.document(node.authorizer.authorize(authorization).await).await;
+    let Ok(audience) = node.authorizer.authorize(authorization).await else {
+        return unavailable();
+    };
+    let (ready, body) = node.document(audience).await;
     let status = if ready {
         StatusCode::OK
     } else {
@@ -292,6 +298,13 @@ fn availability_response(status: StatusCode, body: serde_json::Map<String, Value
         axum::http::HeaderValue::from_static("no-store"),
     );
     response
+}
+
+fn unavailable() -> Response {
+    availability_response(
+        StatusCode::SERVICE_UNAVAILABLE,
+        serde_json::Map::from_iter([("error".to_owned(), json!("identity service unavailable"))]),
+    )
 }
 
 /// A timed-out blob request is a retryable transport loss.

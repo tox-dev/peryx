@@ -94,6 +94,15 @@ async fn app_with_completeness(
     snapshot: Snapshot<'_>,
     enabled: bool,
 ) -> (tempfile::TempDir, Arc<AppState>) {
+    app_with_password_limit(members, snapshot, enabled, 2).await
+}
+
+async fn app_with_password_limit(
+    members: Vec<TopologyMember>,
+    snapshot: Snapshot<'_>,
+    enabled: bool,
+    max_concurrent_checks: usize,
+) -> (tempfile::TempDir, Arc<AppState>) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("peryx.redb");
     let meta = MetaStore::open(&path).unwrap();
@@ -150,7 +159,11 @@ async fn app_with_completeness(
     let mut state = AppState::new(meta.clone(), blobs, 60, indexes());
     super::support::register_example_driver(&mut state);
     let serving = Arc::get_mut(&mut state.serving).unwrap();
-    serving.users = UserService::with_password_settings(meta.clone(), PasswordPolicy::new(8, 1, 1).unwrap(), 2);
+    serving.users = UserService::with_password_settings(
+        meta.clone(),
+        PasswordPolicy::new(8, 1, 1).unwrap(),
+        max_concurrent_checks,
+    );
     serving.metrics = if matches!(snapshot, Snapshot::Corrupt) {
         Metrics::start()
     } else {
@@ -608,6 +621,22 @@ async fn test_an_unreadable_authorization_store_is_unavailable() {
     .await;
 
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn test_password_overload_is_unavailable() {
+    let (_dir, state) = app_with_password_limit(two_writers(), Snapshot::Absent, true, 0).await;
+
+    let (status, headers, body) = get(
+        &state,
+        &format!("/+analytics/completeness?{}", window()),
+        Some(("Olivia", USER_PASSWORD)),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+    assert_eq!(body, serde_json::json!({"error": "analytics service unavailable"}));
 }
 
 #[tokio::test]

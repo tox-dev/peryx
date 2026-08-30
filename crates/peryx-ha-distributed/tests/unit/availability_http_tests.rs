@@ -164,6 +164,21 @@ async fn test_distributed_state_mounts_availability_routes() {
     }
 }
 
+#[tokio::test]
+async fn test_availability_routes_report_password_overload() {
+    let (_directory, mut state) = app(false, true, NodeRole::Writer).await;
+    let serving = Arc::get_mut(&mut Arc::get_mut(&mut state).unwrap().serving).unwrap();
+    serving.users = UserService::with_password_settings(serving.meta.clone(), PasswordPolicy::new(8, 1, 1).unwrap(), 0);
+
+    for path in availability_paths() {
+        assert_eq!(
+            route_status(&state, path, Some(("Unknown", USER_PASSWORD))).await,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "{path}",
+        );
+    }
+}
+
 fn availability_paths() -> [&'static str; 5] {
     [
         "/+availability/topology",

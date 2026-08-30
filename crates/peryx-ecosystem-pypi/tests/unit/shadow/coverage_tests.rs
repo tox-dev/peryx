@@ -435,6 +435,38 @@ async fn shadow_candidates_report_identity_store_failures() {
 }
 
 #[tokio::test]
+async fn shadow_candidates_report_password_overload() {
+    let directory = tempfile::tempdir().unwrap();
+    let meta = MetaStore::open(directory.path().join("peryx.redb")).unwrap();
+    let mut state = AppState::new(
+        meta.clone(),
+        BlobStorage::filesystem(directory.path().join("blobs")),
+        60,
+        Vec::new(),
+    );
+    Arc::get_mut(&mut state.serving).unwrap().users = peryx_driver::users::UserService::with_password_settings(
+        meta,
+        peryx_identity::PasswordPolicy::new(8, 1, 1).unwrap(),
+        0,
+    );
+    crate::tests::install(&mut state);
+
+    let (status, headers, body) = request(
+        &Arc::new(state),
+        "/+shadow/candidates?repository=root-pypi&project=acme-pkg",
+        Some(HeaderValue::from_static("Basic QWxpY2U6cGFzc3dvcmQ=")),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&body).unwrap(),
+        serde_json::json!({"error": "shadow inspection service unavailable"})
+    );
+}
+
+#[tokio::test]
 async fn shadow_candidates_report_authorization_store_failures() {
     let (_directory, state) = state_with_corrupt_table("role_grant");
     let authorization = local_user(&state).await;

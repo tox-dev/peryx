@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use axum::http::HeaderMap;
 use leptos::prelude::*;
 use peryx_core::{LocalStatus, NodeLiveness, TopologySnapshot, TopologyView};
 use peryx_driver::AppState;
@@ -17,18 +16,13 @@ pub async fn topology() -> TopologySnapshot {
 }
 
 async fn topology_view(app: &AppState) -> TopologyView {
-    let headers = leptos_axum::extract::<HeaderMap>().await.unwrap_or_default();
-    topology_view_for_class(
-        peryx_http::handlers::status_authorization(app, &headers)
-            .await
-            .field_class(),
-    )
+    topology_view_for_class(super::status_class(app).await)
 }
 
-const fn topology_view_for_class(class: Option<FieldClassification>) -> TopologyView {
+const fn topology_view_for_class(class: FieldClassification) -> TopologyView {
     match class {
-        Some(FieldClassification::Administrator) => TopologyView::Administrator,
-        Some(FieldClassification::Operator) => TopologyView::Operator,
+        FieldClassification::Administrator => TopologyView::Administrator,
+        FieldClassification::Operator => TopologyView::Operator,
         _ => TopologyView::Public,
     }
 }

@@ -12,6 +12,7 @@ use axum::response::{IntoResponse, Response};
 use super::usage::{ecosystem_summaries, family_descriptors};
 use peryx_driver::http_services::{BlobStorageStatus, HttpDomainServices};
 use peryx_driver::state::AppState;
+use peryx_driver::users::{AuthenticationError, PasswordDerivationError};
 use peryx_identity::{Resource, Scope, parse_basic};
 
 use crate::response_security::{
@@ -32,7 +33,9 @@ pub async fn status(
     Extension(services): Extension<HttpDomainServices>,
     headers: HeaderMap,
 ) -> Response {
-    let authorization = status_authorization(&state, &headers).await;
+    let Ok(authorization) = status_authorization(&state, &headers).await else {
+        return unavailable();
+    };
     let mut response = axum::Json(serde_json::Value::Object(
         status_document(&state, &services, authorization).await,
     ))
@@ -107,21 +110,28 @@ async fn status_document(
     filter_fields(authorization, fields).expect("public and allowed scopes classify")
 }
 
-pub async fn status_authorization(state: &AppState, headers: &HeaderMap) -> ResponseAuthorization {
+/// # Errors
+/// Returns the derivation failure when a supplied local credential cannot be checked.
+pub async fn status_authorization(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<ResponseAuthorization, PasswordDerivationError> {
     let Some(credentials) = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(parse_basic)
     else {
-        return ResponseAuthorization::Public;
+        return Ok(ResponseAuthorization::Public);
     };
-    let Ok(Some(actor)) = state
+    let actor = match state
         .serving
         .users
         .authenticate(&credentials.user, &credentials.password)
         .await
-    else {
-        return ResponseAuthorization::Public;
+    {
+        Ok(Some(actor)) => actor,
+        Ok(None) | Err(AuthenticationError::Store(_)) => return Ok(ResponseAuthorization::Public),
+        Err(AuthenticationError::Derivation(error)) => return Err(error),
     };
     let administrator =
         state
@@ -129,16 +139,26 @@ pub async fn status_authorization(state: &AppState, headers: &HeaderMap) -> Resp
             .authorization
             .authorize_scoped(&actor, Scope::AdministrationRead, &Resource::Operator);
     if administrator.decision().is_allowed() {
-        return ResponseAuthorization::Scoped(administrator);
+        return Ok(ResponseAuthorization::Scoped(administrator));
     }
     let operator = state
         .serving
         .authorization
         .authorize_scoped(&actor, Scope::OperatorRead, &Resource::Operator);
     if operator.decision().is_allowed() {
-        return ResponseAuthorization::Scoped(operator);
+        return Ok(ResponseAuthorization::Scoped(operator));
     }
-    ResponseAuthorization::Public
+    Ok(ResponseAuthorization::Public)
+}
+
+fn unavailable() -> Response {
+    let mut response = (
+        StatusCode::SERVICE_UNAVAILABLE,
+        axum::Json(serde_json::json!({"error": "identity service unavailable"})),
+    )
+        .into_response();
+    ProtectedCachePolicy::NoStore.apply(response.headers_mut());
+    response
 }
 
 fn index_documents(state: &AppState, details: bool) -> Vec<serde_json::Value> {

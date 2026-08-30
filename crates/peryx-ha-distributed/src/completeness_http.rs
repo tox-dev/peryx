@@ -346,7 +346,7 @@ enum Rejection {
 
 impl Rejection {
     fn response(self) -> Response {
-        match self {
+        let mut response = match self {
             Self::Forbidden => StatusCode::FORBIDDEN.into_response(),
             Self::NotFound => StatusCode::NOT_FOUND.into_response(),
             Self::Unavailable => (
@@ -359,7 +359,9 @@ impl Rejection {
                 [(header::WWW_AUTHENTICATE, "Basic realm=\"peryx-analytics\"")],
             )
                 .into_response(),
-        }
+        };
+        ProtectedCachePolicy::NoStore.apply(response.headers_mut());
+        response
     }
 }
 

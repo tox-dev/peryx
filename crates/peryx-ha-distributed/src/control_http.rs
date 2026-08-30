@@ -319,7 +319,12 @@ fn forbidden() -> Response {
 }
 
 fn unavailable() -> Response {
-    (StatusCode::SERVICE_UNAVAILABLE, "identity store unavailable").into_response()
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        [(header::CACHE_CONTROL, "no-store")],
+        "identity store unavailable",
+    )
+        .into_response()
 }
 
 #[cfg(test)]

@@ -336,11 +336,13 @@ fn unauthorized() -> Response {
 }
 
 fn unavailable() -> Response {
-    (
+    let mut response = (
         StatusCode::SERVICE_UNAVAILABLE,
         axum::Json(serde_json::json!({"error": "shadow inspection service unavailable"})),
     )
-        .into_response()
+        .into_response();
+    ProtectedCachePolicy::NoStore.apply(response.headers_mut());
+    response
 }
 
 fn invalid_query(message: &'static str) -> Response {
