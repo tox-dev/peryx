@@ -22,6 +22,7 @@ fn test_user_id_rehydrates_a_stored_value_verbatim() {
 #[case::sharp_s("Straße", "STRASSE", "strasse")]
 #[case::sigma("ΟΣ", "οσ", "οσ")]
 #[case::ypogegrammeni("ῃ", "ηι", "ηι")]
+#[case::unicode_16_tje("\u{1c89}", "\u{1c8a}", "\u{1c8a}")]
 fn test_user_name_preserves_display_and_canonicalizes_lookup(
     #[case] display: &str,
     #[case] equivalent: &str,
