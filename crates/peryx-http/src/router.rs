@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use axum::Extension;
@@ -15,7 +16,7 @@ use tower_http::trace::{DefaultOnResponse, TraceLayer};
 use crate::handlers;
 use peryx_driver::http_services::HttpDomainServices;
 use peryx_driver::rate_limit;
-use peryx_driver::state::AppState;
+use peryx_driver::state::{AppState, ServingState};
 use peryx_driver::{
     ProcessRouteMethodNotAllowed, RouteDescriptor, RouteMethod, RoutePosture, RouteRateLimit, RouteSet,
 };
@@ -77,7 +78,16 @@ pub fn router_with_services(state: Arc<AppState>, services: HttpDomainServices) 
     } else {
         router
     };
-    router.layer(Extension(services)).with_state(state)
+    let serving = state.serving.clone();
+    let app = router.layer(Extension(services)).with_state(state);
+    Router::new()
+        .fallback_service(app)
+        .layer(middleware::from_fn_with_state(serving, count_request))
+}
+
+async fn count_request(State(state): State<Arc<ServingState>>, request: Request, next: Next) -> Response {
+    state.requests.fetch_add(1, Ordering::Relaxed);
+    next.run(request).await
 }
 
 fn request_span(request: &Request) -> tracing::Span {

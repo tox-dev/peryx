@@ -257,7 +257,7 @@ longer than 30 seconds returns the same `429` with `Retry-After`.
 
 Peryx writes a security log for each denial with `event = "rate_limit"`, the denied class or index, and the retry delay.
 It never logs credentials. Prometheus includes allowed and denied HTTP request counters by class plus process-wide
-upstream concurrency totals. HTTP request counters stay at zero while the request limiter is disabled.
+upstream concurrency totals. Rate-limiter request counters stay at zero while the request limiter is disabled.
 
 PyPI maps project listings and detail pages to `listing`, `.metadata` siblings to `metadata`, artifact downloads and
 archive inspection to `artifact`, mutations to `upload`, and status or discovery routes to `admin`. A `HEAD` request
@@ -271,7 +271,7 @@ credentialed document:
 - Public (any caller): `version`, `role`, coarse `health`, and the basic index list. Each index includes its `name`,
   `route`, `ecosystem`, `kind`, `endpoint`, `layers`, and upload target so the browser can navigate and pick an upload
   route.
-- `operator:read`: `serial`, `requests`, `blob_storage`, the `by_ecosystem` rollup, and `metric_families`.
+- `operator:read`: `serial`, accepted HTTP `requests`, `blob_storage`, the `by_ecosystem` rollup, and `metric_families`.
 - `administration:read`: each index's sanitized `upstream` (host, auth kind, cached status), `hosted` upload-token
   state, observed project counts, uploaded file counts, and capped recent uploads.
 
@@ -301,7 +301,7 @@ were not cached). Counters reset on restart; scrape `/metrics` for durable time 
 
 `GET /metrics` exposes Prometheus counters and gauges:
 
-- `peryx_requests_total`: HTTP requests served.
+- `peryx_requests_total`: HTTP requests the server accepts, including limiter rejections and unmatched routes.
 - `peryx_rate_limit_allowed_total{class="<class>"}`: HTTP requests the local rate limiter allowed.
 - `peryx_rate_limit_denied_total{class="<class>"}`: HTTP requests the local rate limiter denied.
 - `peryx_upstream_rate_limit_denied_total`: cached-index concurrency cap denials across the process.

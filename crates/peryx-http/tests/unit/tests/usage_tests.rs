@@ -1,9 +1,10 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use axum::body::Body;
 use axum::extract::Request;
-use axum::http::{StatusCode, header};
+use axum::http::{Method, StatusCode, header};
 use axum::response::{IntoResponse as _, Response};
 use axum::routing::get as route_get;
 use base64::Engine as _;
@@ -92,7 +93,7 @@ impl HttpRoutes for OwnerRoutes {
     }
 }
 
-async fn app() -> (tempfile::TempDir, Arc<AppState>) {
+async fn app_with_read_only(read_only: bool) -> (tempfile::TempDir, Arc<AppState>) {
     let dir = tempfile::tempdir().unwrap();
     let meta = peryx_storage::meta::MetaStore::open(dir.path().join("peryx.redb")).unwrap();
     let users = peryx_driver::users::UserService::with_password_settings(
@@ -142,6 +143,7 @@ async fn app() -> (tempfile::TempDir, Arc<AppState>) {
     state
         .register_protocol(ProtocolDriver::Absolute(driver), peryx_search::default_indexer())
         .unwrap();
+    state.set_read_only(read_only).unwrap();
     state.register_driver(bare_driver);
     state.register_prometheus(Arc::new(ProcessMetrics));
     state.register_http_routes(Arc::new(OwnerRoutes));
@@ -165,6 +167,10 @@ async fn app() -> (tempfile::TempDir, Arc<AppState>) {
     }
     state.serving.metrics.flush().unwrap();
     (dir, Arc::new(state))
+}
+
+async fn app() -> (tempfile::TempDir, Arc<AppState>) {
+    app_with_read_only(false).await
 }
 
 fn index(route: &str, ecosystem: &'static str, kind: IndexKind) -> Index {
@@ -205,7 +211,7 @@ async fn test_metrics_renders_neutral_extension_rate_limit_and_process_families(
 
     assert_eq!(status, StatusCode::OK);
     for sample in [
-        "peryx_requests_total 0",
+        "peryx_requests_total 1",
         "peryx_artifacts_uploaded_total{ecosystem=\"example\",role=\"hosted\"} 1",
         "peryx_example_extension_total{ecosystem=\"example\",role=\"hosted\"} 7",
         "peryx_example_extension_total{ecosystem=\"example\",role=\"cached\"} 0",
@@ -215,6 +221,82 @@ async fn test_metrics_renders_neutral_extension_rate_limit_and_process_families(
     ] {
         assert!(body.contains(sample), "missing {sample}: {body}");
     }
+}
+
+#[tokio::test]
+async fn test_requests_count_protocol_process_method_and_unmatched_paths_once() {
+    let (_dir, state) = app().await;
+    let app = crate::router(state.clone());
+    let mut statuses = Vec::new();
+    for (method, uri) in [
+        (Method::GET, "/+owner"),
+        (Method::PUT, "/+usage-fixture/blob"),
+        (Method::GET, "/hosted-a/simple/demo/"),
+        (Method::POST, "/unknown"),
+        (Method::PUT, "/unknown"),
+        (Method::DELETE, "/unknown"),
+        (Method::CONNECT, "/"),
+    ] {
+        statuses.push(send(&app, method, uri).await);
+    }
+
+    assert_eq!(
+        (statuses, state.serving.requests.load(Ordering::Relaxed)),
+        (
+            vec![
+                StatusCode::OK,
+                StatusCode::IM_A_TEAPOT,
+                StatusCode::NOT_FOUND,
+                StatusCode::NOT_FOUND,
+                StatusCode::NOT_FOUND,
+                StatusCode::NOT_FOUND,
+                StatusCode::NOT_FOUND,
+            ],
+            7,
+        )
+    );
+}
+
+#[tokio::test]
+async fn test_requests_count_middleware_rejection() {
+    let (_dir, state) = app_with_read_only(true).await;
+    let app = crate::router(state.clone());
+
+    assert_eq!(
+        (
+            send(&app, Method::POST, "/+repositories").await,
+            state.serving.requests.load(Ordering::Relaxed),
+        ),
+        (StatusCode::SERVICE_UNAVAILABLE, 1)
+    );
+}
+
+#[tokio::test]
+async fn test_requests_count_concurrent_admission() {
+    let (_dir, state) = app().await;
+    let app = crate::router(state.clone());
+    let mut requests = tokio::task::JoinSet::new();
+    for _ in 0..64 {
+        let app = app.clone();
+        requests.spawn(async move { send(&app, Method::GET, "/+health").await });
+    }
+    let mut statuses = Vec::new();
+    while let Some(status) = requests.join_next().await {
+        statuses.push(status.unwrap());
+    }
+
+    assert_eq!(
+        (statuses, state.serving.requests.load(Ordering::Relaxed),),
+        (vec![StatusCode::OK; 64], 64)
+    );
+}
+
+async fn send(app: &axum::Router, method: Method, uri: &str) -> StatusCode {
+    app.clone()
+        .oneshot(Request::builder().method(method).uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+        .status()
 }
 
 #[test]

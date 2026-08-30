@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 use axum::Extension;
 use axum::extract::{OriginalUri, Path, Request, State};
@@ -62,7 +61,6 @@ pub async fn dispatch_get(
     OriginalUri(uri): OriginalUri,
     request: Request,
 ) -> Response {
-    state.serving.requests.fetch_add(1, Ordering::Relaxed);
     let Some((position, rest)) = state.serving.resolve_position(uri.path().trim_start_matches('/')) else {
         return not_found();
     };

@@ -21,6 +21,10 @@ The dashboard and admin pages render these APIs after applying the caller's fiel
 
 ## Request counters
 
+The `requests` field in `GET /+status` and `peryx_requests_total` count requests after the HTTP server accepts them. The
+counter increments before rate limiting and route dispatch, so rejections and unmatched routes count. TLS negotiation
+and HTTP parsing failures happen before this boundary and do not count.
+
 The stats store counts listings, artifacts, artifact bytes, metadata, writes, and implementation-defined operations. It
 updates outside the response path and resets on process restart. `GET /+stats` returns a top-level summary or scopes the
 result with `index` and the implementation's resource key.

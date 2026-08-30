@@ -355,6 +355,7 @@ OCI serving series use `ecosystem="oci"` and the producing `role`. The implement
 
 Process-wide request and limiter families are `peryx_requests_total`, `peryx_rate_limit_allowed_total`,
 `peryx_rate_limit_denied_total`, `peryx_upstream_rate_limit_denied_total`, and `peryx_upstream_inflight_fetches`.
+`peryx_requests_total` counts requests the server accepts, including limiter rejections and unmatched routes.
 
 `availability.mode = "dc"` or `"ha"` adds scheduler, replica frontier, replica apply, availability worker, and
 datacenter durability families. Their names are `peryx_jobs_*`, `peryx_ha_distributed_*`, `peryx_availability_*`, and

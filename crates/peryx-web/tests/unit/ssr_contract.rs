@@ -325,11 +325,11 @@ async fn status_contract_applies_public_operator_and_administrator_views() {
     let app = Arc::new(app);
 
     for (uri, authorization, expected) in [
-        ("/", None, "<strong>0</strong><span>requests served</span>"),
+        ("/", None, "<strong>0</strong><span>accepted requests</span>"),
         (
             "/",
             Some(OPERATOR_AUTHORIZATION),
-            "<strong>7</strong><span>requests served</span>",
+            "<strong>7</strong><span>accepted requests</span>",
         ),
         ("/admin/status", Some(ADMIN_AUTHORIZATION), "fixture-1.bin"),
     ] {

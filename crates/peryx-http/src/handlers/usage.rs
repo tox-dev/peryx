@@ -242,7 +242,7 @@ const NEUTRAL_FAMILIES: &[NeutralFamily] = &[
 pub async fn metrics(State(state): State<Arc<AppState>>) -> Response {
     let requests = state.serving.requests.load(Ordering::Relaxed);
     let mut body = format!(
-        "# HELP peryx_requests_total Total HTTP requests served.\n\
+        "# HELP peryx_requests_total HTTP requests the server accepts.\n\
          # TYPE peryx_requests_total counter\n\
          peryx_requests_total {requests}\n"
     );

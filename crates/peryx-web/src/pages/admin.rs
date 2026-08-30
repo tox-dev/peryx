@@ -52,7 +52,7 @@ fn AdminStatusBody(data: UiSnapshot, usage: Option<UiStats>) -> impl IntoView {
             <div class="stat-row">
                 <div class="stat"><strong>{data.version.clone()}</strong><span>"version"</span></div>
                 <div class="stat"><strong>{data.serial}</strong><span>"change serial"</span></div>
-                <div class="stat"><strong>{data.requests}</strong><span>"requests served"</span></div>
+                <div class="stat"><strong>{data.requests}</strong><span>"accepted requests"</span></div>
                 <div class="stat"><strong>{indexes.len()}</strong><span>"indexes"</span></div>
                 <div class="stat"><strong>{kind_count(&indexes, "virtual")}</strong><span>"virtual"</span></div>
                 <div class="stat"><strong>{resource_count}</strong><span>"observed resources"</span></div>

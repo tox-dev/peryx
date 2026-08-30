@@ -491,7 +491,7 @@ async fn test_management_routes_use_the_admin_limit(#[case] method: Method) {
         ..RateLimitConfig::enabled_defaults()
     });
 
-    let app = crate::router(state);
+    let app = crate::router(state.clone());
     let management = request_statuses(&app, method, "/+repositories").await;
     let package_read = app
         .oneshot(Request::get("/unknown").body(Body::empty()).unwrap())
@@ -499,8 +499,12 @@ async fn test_management_routes_use_the_admin_limit(#[case] method: Method) {
         .unwrap();
 
     assert_eq!(
-        (management[1], package_read.status()),
-        (StatusCode::TOO_MANY_REQUESTS, StatusCode::NOT_FOUND)
+        (
+            management[1],
+            package_read.status(),
+            state.serving.requests.load(std::sync::atomic::Ordering::Relaxed),
+        ),
+        (StatusCode::TOO_MANY_REQUESTS, StatusCode::NOT_FOUND, 3)
     );
 }
 
