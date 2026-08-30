@@ -78,11 +78,10 @@ pub fn router_with_services(state: Arc<AppState>, services: HttpDomainServices) 
     } else {
         router
     };
-    let serving = state.serving.clone();
-    let app = router.layer(Extension(services)).with_state(state);
-    Router::new()
-        .fallback_service(app)
-        .layer(middleware::from_fn_with_state(serving, count_request))
+    router
+        .layer(Extension(services))
+        .layer(middleware::from_fn_with_state(state.serving.clone(), count_request))
+        .with_state(state)
 }
 
 async fn count_request(State(state): State<Arc<ServingState>>, request: Request, next: Next) -> Response {
