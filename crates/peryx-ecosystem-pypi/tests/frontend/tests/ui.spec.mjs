@@ -9,6 +9,7 @@ import {
   goto,
   openUpload,
   operatorPage,
+  verifyBrowser,
 } from "../test-support.mjs";
 
 const PROJECT_URL = "/browse?index=root%2Fpypi&project=veloxdemo";
@@ -22,6 +23,7 @@ const FIXTURE_WHEEL = join(
 );
 
 collectWasmCoverage(test);
+test.beforeAll(async ({ browser }) => verifyBrowser(browser));
 
 function browseSection(page, heading) {
   return page.locator(".browse-section").filter({

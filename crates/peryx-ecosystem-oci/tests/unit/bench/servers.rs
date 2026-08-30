@@ -1,5 +1,3 @@
-use rstest::rstest;
-
 use super::*;
 
 #[cfg(unix)]
@@ -8,24 +6,6 @@ fn write_executable(path: &Path, body: impl AsRef<[u8]>) {
 
     std::fs::write(path, body).unwrap();
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
-}
-
-#[rstest]
-#[case("macos", "aarch64", ("darwin", "arm64"))]
-#[case("linux", "x86_64", ("linux", "amd64"))]
-fn zot_target_maps_supported_hosts(
-    #[case] os: &'static str,
-    #[case] arch: &'static str,
-    #[case] expected: (&str, &str),
-) {
-    assert_eq!(target_for(os, arch).unwrap(), expected);
-}
-
-#[rstest]
-#[case("windows", "x86_64", "no zot binary for windows")]
-#[case("linux", "riscv64", "no zot binary for riscv64")]
-fn zot_target_rejects_unsupported_hosts(#[case] os: &'static str, #[case] arch: &'static str, #[case] expected: &str) {
-    assert_eq!(target_for(os, arch).unwrap_err().to_string(), expected);
 }
 
 #[cfg(unix)]

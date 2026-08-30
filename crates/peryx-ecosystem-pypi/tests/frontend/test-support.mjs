@@ -1,6 +1,25 @@
 import { createHash } from "node:crypto";
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
+
+import { expect } from "@playwright/test";
+
+const require = createRequire(import.meta.url);
+const browserVersion = JSON.parse(
+  readFileSync(
+    join(dirname(require.resolve("playwright-core/package.json")), "browsers.json"),
+  ),
+).browsers.find(({ name }) => name === "chromium-headless-shell").browserVersion;
+
+export const BROWSER_PATH = process.env.PERYX_PLAYWRIGHT_BROWSER_PATH;
+if (!BROWSER_PATH) throw new Error("PERYX_PLAYWRIGHT_BROWSER_PATH is required");
+if (process.env.PERYX_PLAYWRIGHT_BROWSER_VERSION !== browserVersion)
+  throw new Error("Playwright and its browser revision differ");
+
+export async function verifyBrowser(browser) {
+  expect(await browser.version()).toBe(browserVersion);
+}
 
 export const ADMIN_AUTH = `Basic ${Buffer.from("administrator:browser-admin-secret").toString("base64")}`;
 const ERRORS = new WeakMap();

@@ -19,7 +19,8 @@ prek install
 ```
 
 Use `mise install --locked` to require every resolution in `mise.lock`. `rustup` reads `rust-toolchain.toml`. Prek
-installs the commit hooks.
+installs the commit hooks. Browser recipes select their package-compatible Chrome for Testing binary from the locked
+`browser` mise environment.
 
 Recipes keep generated state under `.tox/`. Do not put generated files in `src/` or `tests/`.
 
@@ -130,8 +131,9 @@ benchmark state.
 ## Dependency updates
 
 Renovate checks Cargo, npm, GitHub Actions, container images, mise, pre-commit hooks, and the Rust toolchain each
-Tuesday. Lock maintenance covers `Cargo.lock`, every `package-lock.json`, and `mise.lock`. Update grouped pull requests
-through their manifests; do not edit lockfiles by hand.
+Tuesday. A separate weekly update keeps the Playwright and Puppeteer packages aligned with their verified Chrome for
+Testing archives and regenerates the Mermaid diagrams. Lock maintenance covers `Cargo.lock`, every `package-lock.json`,
+and the mise lockfiles. Update grouped pull requests through their manifests; do not edit lockfiles by hand.
 
 ## Documentation ownership
 
@@ -144,8 +146,8 @@ just site-dev
 ```
 
 Format Markdown with `prek run mdformat --all-files`. Mermaid sources under `site/diagrams/` render through
-`just render-diagrams`; `just docs` rejects stale SVGs. Run `just lint-docs`, `just docs`, and `just site-links` before
-submitting documentation changes.
+`just render-diagrams` with Puppeteer's locked Chrome for Testing revision; `just docs` rejects stale SVGs. Run
+`just lint-docs`, `just docs`, and `just site-links` before submitting documentation changes.
 
 ## Change discipline
 

@@ -13,7 +13,7 @@ env:
   # mise-action hashes the sorted tool arguments into its cache key.
   # https://github.com/jdx/mise-action/blob/3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518/src/index.ts#L1079-L1127
   MUTATION_TOOLS: >-
-    just jq uv cargo:cargo-mutants cargo:cargo-nextest
+    just jq uv cargo:cargo-mutants github:nextest-rs/nextest
     github:Shopify/toxiproxy
 
 concurrency:
@@ -54,7 +54,7 @@ jobs:
         with:
           toolchain: nightly
           components: rust-src
-          tools: just cargo:cargo-nextest
+          tools: just github:nextest-rs/nextest
       - run: just sanitizer-archive .tox/sanitizer-address.tar.zst
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -81,7 +81,7 @@ jobs:
         with:
           toolchain: nightly
           tools: >-
-            just uv cargo:cargo-nextest github:Shopify/toxiproxy
+            just uv github:nextest-rs/nextest github:Shopify/toxiproxy
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: sanitizer-address
@@ -135,7 +135,7 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           tools: >-
-            just uv cargo:cargo-nextest github:Shopify/toxiproxy
+            just uv github:nextest-rs/nextest github:Shopify/toxiproxy
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: mutation-baseline
@@ -210,5 +210,5 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup
         with:
-          tools: just uv cargo:cargo-nextest
+          tools: just uv github:nextest-rs/nextest
       - run: just e2e-live

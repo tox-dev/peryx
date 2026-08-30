@@ -23,51 +23,34 @@ jobs:
       fail-fast: false
       matrix:
         platform:
-          - { os: linux, runner: ubuntu-24.04, target: x86_64, manylinux: "2_28" }
-          - { os: linux, runner: ubuntu-24.04-arm, target: aarch64, manylinux: "2_28" }
-          - { os: linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-musl, manylinux: musllinux_1_2 }
-          - { os: linux, runner: ubuntu-24.04, target: aarch64-unknown-linux-musl, manylinux: musllinux_1_2, zig: true }
-          - { os: macos, runner: macos-26, target: aarch64, host: true, rust_target: aarch64-apple-darwin }
-          - { os: macos, runner: macos-26, target: x86_64 }
-          - { os: windows, runner: windows-2025, target: x64, host: true, rust_target: x86_64-pc-windows-msvc }
-          - { os: windows, runner: windows-11-arm, target: aarch64, host: true, rust_target: aarch64-pc-windows-msvc }
+          - { os: linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, compatibility: "2_28", zig: true }
+          - { os: linux, runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, compatibility: "2_28", zig: true }
+          - { os: linux, runner: ubuntu-24.04, target: x86_64-unknown-linux-musl, compatibility: musllinux_1_2, zig: true }
+          - { os: linux, runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, compatibility: musllinux_1_2, zig: true }
+          - { os: macos, runner: macos-26, target: aarch64, rust_target: aarch64-apple-darwin }
+          - { os: macos, runner: macos-26, target: x86_64, rust_target: x86_64-apple-darwin }
+          - { os: windows, runner: windows-2025, target: x64, rust_target: x86_64-pc-windows-msvc }
+          - { os: windows, runner: windows-11-arm, target: aarch64, rust_target: aarch64-pc-windows-msvc }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Pin sccache on Windows
-        if: matrix.platform.os == 'windows'
-        shell: pwsh
-        run: |
-          python3 -m pip install sccache==0.16.0
-          if ((sccache --version) -ne "sccache 0.16.0") {
-            throw "unexpected sccache version"
-          }
-      - uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10
-        if: matrix.platform.host == true
+      - uses: ./.github/actions/setup
         with:
-          tool: just,maturin
-      - name: Build host wheel
-        if: matrix.platform.host == true
-        env:
-          RUSTC_WRAPPER: sccache
-          RUST_TARGET: ${{ matrix.platform.rust_target }}
-        run: just package-wheel --target "$RUST_TARGET"
+          targets: ${{ matrix.platform.rust_target || matrix.platform.target }}
+          tools: just maturin ${{ matrix.platform.os == 'linux' && 'zig' || '' }}
       - name: Build wheel
-        if: matrix.platform.host != true
-        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
-        with:
-          target: ${{ matrix.platform.target }}
-          args: --release --locked --out dist ${{ matrix.platform.zig && '--zig' || '' }}
-          manylinux: ${{ matrix.platform.manylinux || 'auto' }}
-          sccache: true
-      - name: Verify sccache version
-        if: matrix.platform.os == 'windows'
-        shell: pwsh
+        env:
+          RUST_TARGET: ${{ matrix.platform.rust_target || matrix.platform.target }}
+          COMPATIBILITY: ${{ matrix.platform.compatibility }}
+          RUSTC_WRAPPER: sccache
+          USE_ZIG: ${{ matrix.platform.zig }}
+        shell: bash
         run: |
-          if ((sccache --version) -ne "sccache 0.16.0") {
-            throw "maturin-action replaced the pinned sccache"
-          }
+          args=(--target "$RUST_TARGET")
+          [[ -z $COMPATIBILITY ]] || args+=(--compatibility "$COMPATIBILITY")
+          [[ -z $USE_ZIG ]] || args+=(--zig)
+          just package-wheel "${args[@]}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: wheels-${{ matrix.platform.os }}-${{ matrix.platform.target }}
@@ -82,9 +65,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10
+      - uses: ./.github/actions/setup
         with:
-          tool: just,maturin
+          tools: just maturin
       - name: Build sdist
         run: just package-sdist
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

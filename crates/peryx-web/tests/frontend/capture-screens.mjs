@@ -2,6 +2,8 @@ import { chromium } from "@playwright/test";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
+import { BROWSER_PATH, verifyBrowser } from "./test-support.mjs";
+
 const base = process.argv[2] ?? "http://127.0.0.1:4455";
 const outDir = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -17,7 +19,8 @@ const pages = [
   { name: "status", path: "/admin/status", height: 720 },
 ];
 
-const browser = await chromium.launch();
+const browser = await chromium.launch({ executablePath: BROWSER_PATH });
+await verifyBrowser(browser);
 for (const theme of ["light", "dark"]) {
   const context = await browser.newContext({
     viewport: { width: 1360, height: 1280 },

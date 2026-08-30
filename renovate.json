@@ -32,6 +32,17 @@
       "groupName": "Frontend dependencies"
     },
     {
+      "description": "Update browser packages with their binaries",
+      "matchManagers": ["npm"],
+      "matchPackageNames": ["@playwright/test", "puppeteer-core"],
+      "enabled": false
+    },
+    {
+      "description": "Update the mise installer atomically",
+      "matchDepNames": ["jdx/mise"],
+      "groupName": "mise installer"
+    },
+    {
       "description": "Update compatible container images together",
       "matchManagers": ["dockerfile", "docker-compose"],
       "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
@@ -45,6 +56,24 @@
       "matchStrings": ["cargo-dist-version\\s*=\\s*\"(?<currentValue>[^\"]+)\""],
       "depNameTemplate": "cargo-dist",
       "datasourceTemplate": "crate"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.readthedocs\\.yaml$/"],
+      "matchStrings": ["jdx/mise/releases/download/v(?<currentValue>[^ /]+)"],
+      "depNameTemplate": "jdx/mise",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v?(?<version>.*)$",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.github/actions/setup/action\\.yml$/"],
+      "matchStrings": ["version:\\s*(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)"],
+      "depNameTemplate": "jdx/mise",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v?(?<version>.*)$",
+      "versioningTemplate": "semver"
     }
   ]
 }

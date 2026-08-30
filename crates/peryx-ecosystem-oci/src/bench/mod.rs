@@ -3,7 +3,6 @@ mod servers;
 mod workloads;
 
 use clap::{Arg, ArgAction, Command};
-use peryx_bench_core::report::repo_root;
 use peryx_bench_core::suite::{BenchmarkRun, BenchmarkSuite};
 use std::path::{Path, PathBuf};
 
@@ -17,7 +16,6 @@ static SUITE: OciBenchmarkSuite = OciBenchmarkSuite;
 pub(super) struct BenchEnvironment {
     tools: ToolPaths,
     credentials: Option<(String, String)>,
-    cache: PathBuf,
     mirror: Option<String>,
     startup_timeout: std::time::Duration,
 }
@@ -39,10 +37,6 @@ impl BenchEnvironment {
         Self {
             tools: ToolPaths::from_directory(directory),
             credentials,
-            cache: directory.map_or_else(
-                || repo_root().join("target/bench-oci"),
-                |directory| directory.join("bench-cache"),
-            ),
             mirror: None,
             startup_timeout: std::time::Duration::from_secs(30),
         }
@@ -52,7 +46,6 @@ impl BenchEnvironment {
         Self {
             tools: self.tools.clone(),
             credentials: self.credentials.clone(),
-            cache: self.cache.clone(),
             mirror: Some(mirror),
             startup_timeout: self.startup_timeout,
         }
@@ -62,8 +55,8 @@ impl BenchEnvironment {
 #[derive(Clone)]
 struct ToolPaths {
     crane: PathBuf,
-    curl: PathBuf,
     docker: PathBuf,
+    zot: PathBuf,
 }
 
 impl ToolPaths {
@@ -71,8 +64,8 @@ impl ToolPaths {
         let path = |name: &str| directory.map_or_else(|| name.into(), |directory| directory.join(name));
         Self {
             crane: path("crane"),
-            curl: path("curl"),
             docker: path("docker"),
+            zot: path("zot"),
         }
     }
 }

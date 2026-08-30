@@ -4,10 +4,8 @@ project_tmp := justfile_directory() + "/.tox/tmp"
 coverage_target_root := justfile_directory() + "/.tox/coverage-target"
 native_coverage_target := env_var_or_default("CARGO_TARGET_DIR", justfile_directory() + "/target") + "/llvm-cov-target"
 native_coverage_binary := native_coverage_target + "/debug/peryx" + if os_family() == "windows" { ".exe" } else { "" }
-frontend_root := justfile_directory() + "/.tox/frontend"
 tools_root := justfile_directory() + "/.tox/tools"
 export PERYX_TEST_TMPDIR := project_tmp
-export PLAYWRIGHT_BROWSERS_PATH := frontend_root + "/browsers"
 
 # Run the default test suite.
 default: test
@@ -100,8 +98,67 @@ lint-docs: _project-temp
     prek run codespell --all-files
 
 # Check workflows and repository automation.
-lint-automation: _project-temp _codspeed-target-contract _coverage-target-contract _mutation-shard-count-contract _sanitizer-target-contract _features-tool-contract
+lint-automation: _project-temp _browser-contract _codspeed-target-contract _coverage-target-contract _features-tool-contract _mutation-shard-count-contract _readthedocs-contract _renovate-contract _sanitizer-target-contract
     SKIP=cargo-fmt,cargo-clippy,mdformat,codespell prek run --all-files
+
+# Check that the hosted build commands survive their shell wrapper.
+_readthedocs-contract:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Read the Docs runs each command as /bin/sh -c '<command>' without escaping, so one quote of its
+    # own ends the wrapper and the rest of the line reparses as something else.
+    ! grep -q "'" .readthedocs.yaml
+
+# Check the custom Renovate release matcher.
+_renovate-contract:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    jq --exit-status --rawfile readthedocs .readthedocs.yaml \
+      --rawfile setup .github/actions/setup/action.yml '
+      [.customManagers[] | select(.depNameTemplate == "jdx/mise")] as $rules
+      | [$rules[] | select(.managerFilePatterns[0] | contains("readthedocs"))][0] as $rtd
+      | [$rules[] | select(.managerFilePatterns[0] | contains("actions/setup"))][0] as $action
+      | ($rules | length) == 2
+        and ([$readthedocs | scan($rtd.matchStrings[0])] | length) == 1
+        and ([$setup | scan($action.matchStrings[0])] | length) == 1
+        and ([$readthedocs | capture($rtd.matchStrings[0]).currentValue,
+              $setup | capture($action.matchStrings[0]).currentValue] | unique | length) == 1
+        and ($readthedocs | capture($rtd.matchStrings[0]).currentValue
+          | test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))
+    ' renovate.json > /dev/null
+
+# Check browser package, binary, and updater ownership.
+_browser-contract:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    browser_env=$(MISE_ENV=browser mise env --json)
+    ! env -u MISE_ENV mise config ls | grep -Fq mise.browser.toml
+    MISE_ENV=browser mise config ls | grep -Fq mise.browser.toml
+    ! grep -Eq '^(linux|windows)-arm64' mise.browser.toml mise.browser.lock
+    test "$(grep -Ec '^\[tools\."http:(playwright|puppeteer)-headless-shell"\."platforms\.(linux-x64|macos-arm64|macos-x64|windows-x64)"\]$' mise.browser.lock)" -eq 8
+    playwright=$(jq -r .PERYX_PLAYWRIGHT_PACKAGE_VERSION <<<"$browser_env")
+    puppeteer=$(jq -r .PERYX_PUPPETEER_PACKAGE_VERSION <<<"$browser_env")
+    for directory in \
+      crates/peryx-web/tests/frontend \
+      crates/peryx-ecosystem-pypi/tests/frontend \
+      crates/peryx-ecosystem-oci/tests/frontend; do
+      jq -se --arg version "$playwright" '
+        .[0].devDependencies["@playwright/test"] == $version and
+        .[1].packages[""].devDependencies["@playwright/test"] == $version and
+        .[1].packages["node_modules/@playwright/test"].version == $version and
+        .[1].packages["node_modules/playwright-core"].version == $version
+      ' "$directory/package.json" "$directory/package-lock.json" > /dev/null
+    done
+    jq -se --arg version "$puppeteer" '
+      .[0].devDependencies.puppeteer == "npm:puppeteer-core@\($version)" and
+      .[1].packages[""].devDependencies.puppeteer == "npm:puppeteer-core@\($version)" and
+      .[1].packages["node_modules/puppeteer"].name == "puppeteer-core" and
+      .[1].packages["node_modules/puppeteer"].version == $version
+    ' site/package.json site/package-lock.json > /dev/null
+    jq -e '
+      [.packageRules[] | select(.description == "Update browser packages with their binaries")]
+      | length == 1 and .[0].enabled == false
+    ' renovate.json > /dev/null
 
 # Check dependency policy.
 lint-deps: _project-temp
@@ -378,19 +435,20 @@ mutation-shard-count mutants target:
 
 # Install browser-test dependencies for the shared and owner suites.
 frontend-deps: _project-temp
+    MISE_ENV=browser mise install --locked http:playwright-headless-shell
     npm --prefix crates/peryx-web/tests/frontend ci
     npm --prefix crates/peryx-ecosystem-pypi/tests/frontend ci
     npm --prefix crates/peryx-ecosystem-oci/tests/frontend ci
 
-# Install Chromium and optional host dependencies for browser tests.
-frontend-browser-deps *args: _project-temp
-    npm --prefix crates/peryx-web/tests/frontend exec -- playwright install {{ args }} chromium
-
 # Run the shared and owner browser suites against an existing build.
 frontend-test: _project-temp
-    npm --prefix crates/peryx-web/tests/frontend test
-    npm --prefix crates/peryx-ecosystem-pypi/tests/frontend test
-    npm --prefix crates/peryx-ecosystem-oci/tests/frontend test
+    browser=$(MISE_ENV=browser mise where http:playwright-headless-shell)/chrome-headless-shell; \
+      [[ -f "$browser.exe" ]] && browser="$browser.exe"; \
+      export PERYX_PLAYWRIGHT_BROWSER_PATH="${PERYX_PLAYWRIGHT_BROWSER_PATH:-$browser}"; \
+      export PERYX_PLAYWRIGHT_BROWSER_VERSION="$(MISE_ENV=browser mise current http:playwright-headless-shell)"; \
+      npm --prefix crates/peryx-web/tests/frontend test; \
+      npm --prefix crates/peryx-ecosystem-pypi/tests/frontend test; \
+      npm --prefix crates/peryx-ecosystem-oci/tests/frontend test
 
 # Print tool versions used by local and container validation.
 versions: _project-temp
@@ -405,10 +463,141 @@ versions: _project-temp
 # Refresh locked mise tool versions and checksums.
 mise-lock:
     mise lock --bump
+    MISE_ENV=browser mise lock --bump --platform linux-x64,macos-arm64,macos-x64,windows-x64
+
+# Update browser packages, verified archives, and rendered diagrams.
+browser-update:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    PUPPETEER_SKIP_DOWNLOAD=1 npm --prefix site install --save-dev --save-exact \
+      puppeteer@npm:puppeteer-core@latest
+    for directory in \
+      crates/peryx-web/tests/frontend \
+      crates/peryx-ecosystem-pypi/tests/frontend \
+      crates/peryx-ecosystem-oci/tests/frontend; do
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm --prefix "$directory" install --save-dev --save-exact \
+        @playwright/test@latest
+    done
+    if just _browser-contract >/dev/null 2>&1; then exit; fi
+    just browser-lock
+
+# Rebuild the browser lock from package release metadata.
+browser-lock:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    PUPPETEER_SKIP_DOWNLOAD=1 npm --prefix site ci
+    for directory in \
+      crates/peryx-web/tests/frontend \
+      crates/peryx-ecosystem-pypi/tests/frontend \
+      crates/peryx-ecosystem-oci/tests/frontend; do
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm --prefix "$directory" ci
+    done
+    node --input-type=module <<'NODE'
+    import { createHash } from "node:crypto";
+    import { readFile, writeFile } from "node:fs/promises";
+    import { createRequire } from "node:module";
+    import { dirname, join, resolve } from "node:path";
+    import { pathToFileURL } from "node:url";
+
+    const frontends = [
+      "crates/peryx-web/tests/frontend",
+      "crates/peryx-ecosystem-pypi/tests/frontend",
+      "crates/peryx-ecosystem-oci/tests/frontend",
+    ];
+    const readJson = async (file) => JSON.parse(await readFile(file, "utf8"));
+    const playwrightPackages = await Promise.all(
+      frontends.map(async (directory) => ({
+        manifest: (await readJson(join(directory, "package.json"))).devDependencies[
+          "@playwright/test"
+        ],
+        lock: (await readJson(join(directory, "package-lock.json"))).packages[
+          "node_modules/@playwright/test"
+        ].version,
+      })),
+    );
+    if (new Set(playwrightPackages.flatMap(Object.values)).size !== 1)
+      throw new Error("Playwright package revisions differ");
+    const playwrightPackage = playwrightPackages[0].manifest;
+    const playwrightRequire = createRequire(
+      resolve(frontends[0], "package.json"),
+    );
+    const playwrightBrowser = (await readJson(
+      join(
+        dirname(playwrightRequire.resolve("playwright-core/package.json")),
+        "browsers.json",
+      ),
+    )).browsers.find(({ name }) => name === "chromium-headless-shell").browserVersion;
+    const site = await readJson("site/package.json");
+    const puppeteerPackage = site.devDependencies.puppeteer.replace(
+      "npm:puppeteer-core@",
+      "",
+    );
+    const siteRequire = createRequire(resolve("site/package.json"));
+    const { PUPPETEER_REVISIONS } = await import(
+      pathToFileURL(siteRequire.resolve("puppeteer/internal/revisions.js"))
+    );
+    const puppeteerBrowser = PUPPETEER_REVISIONS.chrome;
+    const platforms = new Map([
+      ["linux-x64", "linux64"],
+      ["macos-arm64", "mac-arm64"],
+      ["macos-x64", "mac-x64"],
+      ["windows-x64", "win64"],
+    ]);
+    async function browser(version) {
+      const metadataResponse = await fetch(
+        `https://googlechromelabs.github.io/chrome-for-testing/${version}.json`,
+      );
+      if (!metadataResponse.ok) throw new Error(`missing Chrome for Testing ${version}`);
+      const metadata = await metadataResponse.json();
+      return Promise.all(
+        [...platforms].map(async ([misePlatform, chromePlatform]) => {
+          const url = metadata.downloads["chrome-headless-shell"].find(
+            ({ platform }) => platform === chromePlatform,
+          )?.url;
+          const prefix = `https://storage.googleapis.com/chrome-for-testing-public/${version}/`;
+          if (!url?.startsWith(prefix)) throw new Error(`unexpected ${chromePlatform} URL`);
+          const response = await fetch(url);
+          if (!response.ok) throw new Error(`failed to download ${url}`);
+          const hash = createHash("sha256");
+          for await (const chunk of response.body) hash.update(chunk);
+          return [misePlatform, url, hash.digest("hex")];
+        }),
+      );
+    }
+    const tools = [
+      ["playwright", playwrightPackage, playwrightBrowser],
+      ["puppeteer", puppeteerPackage, puppeteerBrowser],
+    ];
+    const archives = await Promise.all(tools.map(([, , version]) => browser(version)));
+    const lines = ["[env]"];
+    for (const [name, packageVersion, browserVersion] of tools) {
+      const prefix = `PERYX_${name.toUpperCase()}`;
+      lines.push(`${prefix}_PACKAGE_VERSION = "${packageVersion}"`);
+      lines.push(`${prefix}_BROWSER_VERSION = "${browserVersion}"`);
+    }
+    for (const [index, [name, , version]] of tools.entries()) {
+      const entries = archives[index];
+      lines.push(
+        "",
+        `[tools."http:${name}-headless-shell"]`,
+        `version = "${version}"`,
+        "strip_components = 1",
+        "",
+        `[tools."http:${name}-headless-shell".platforms]`,
+        ...entries.map(
+          ([platform, url, checksum]) =>
+            `${platform} = { url = "${url}", checksum = "sha256:${checksum}" }`,
+        ),
+      );
+    }
+    await writeFile("mise.browser.toml", `${lines.join("\n")}\n`);
+    NODE
+    MISE_ENV=browser mise lock --platform linux-x64,macos-arm64,macos-x64,windows-x64 \
+      http:playwright-headless-shell http:puppeteer-headless-shell
+    just render-diagrams
 
 # Build and test the browser application.
 frontend: frontend-deps _project-temp
-    just frontend-browser-deps
     cargo leptos build
     just frontend-test
 
@@ -452,6 +641,11 @@ render-diagrams output="site/static/diagrams": _project-temp
       site/static/diagrams|.tox/site/diagrams) ;;
       *) printf 'unsupported diagram output: %s\n' "{{ output }}" >&2; exit 1 ;;
     esac
+    MISE_ENV=browser mise install --locked http:puppeteer-headless-shell
+    browser=$(MISE_ENV=browser mise where http:puppeteer-headless-shell)/chrome-headless-shell
+    [[ -f "$browser.exe" ]] && browser="$browser.exe"
+    export PERYX_PUPPETEER_BROWSER_PATH="${PERYX_PUPPETEER_BROWSER_PATH:-$browser}"
+    export PERYX_PUPPETEER_BROWSER_VERSION="$(MISE_ENV=browser mise current http:puppeteer-headless-shell)"
     npm --prefix site ci
     rm -rf "{{ output }}"
     mkdir -p "{{ output }}"
@@ -462,6 +656,7 @@ render-diagrams output="site/static/diagrams": _project-temp
     import { basename, join } from "node:path";
     import { run } from "@mermaid-js/mermaid-cli";
     import puppeteer from "puppeteer";
+    import { PUPPETEER_REVISIONS } from "puppeteer/internal/revisions.js";
 
     const output = process.argv[2];
     const sources = (await readdir("diagrams", { withFileTypes: true }))
@@ -474,8 +669,19 @@ render-diagrams output="site/static/diagrams": _project-temp
         config: JSON.parse(await readFile(`diagrams/${name}.json`, "utf8")),
       })),
     );
-    const browser = await puppeteer.launch({ headless: "shell" });
+    // Ubuntu grants unprivileged user namespaces only to AppArmor-profiled paths, which the locked
+    // browser is not one of, so its zygote sandbox cannot start. Playwright drops the sandbox for the
+    // same reason; both only ever load local files.
+    const browser = await puppeteer.launch({
+      args: ["--no-sandbox"],
+      executablePath: process.env.PERYX_PUPPETEER_BROWSER_PATH,
+      headless: "shell",
+    });
     try {
+      if (PUPPETEER_REVISIONS.chrome !== process.env.PERYX_PUPPETEER_BROWSER_VERSION)
+        throw new Error("Puppeteer and its browser revision differ");
+      if ((await browser.version()) !== `HeadlessChrome/${PUPPETEER_REVISIONS.chrome}`)
+        throw new Error("unexpected browser version");
       for (const source of sources) {
         const name = basename(source, ".mmd");
         for (const theme of themes) {
@@ -503,8 +709,11 @@ render-diagrams output="site/static/diagrams": _project-temp
       name=$(basename "$source" .mmd)
       for theme in light dark; do
         rendered="{{ output }}/$name-$theme.svg"
-        digest=$(shasum -a 256 "$source" "site/diagrams/$theme.json" site/package-lock.json | \
-          shasum -a 256 | cut -d ' ' -f 1)
+        digest=$(
+          shasum -a 256 "$source" "site/diagrams/$theme.json" site/package-lock.json \
+            mise.browser.toml \
+            | shasum -a 256 | cut -d ' ' -f 1
+        )
         { printf '<!-- peryx-mermaid-input-sha256=%s -->\n' "$digest"; awk '1' "$rendered.tmp.svg"; } > "$rendered"
         rm "$rendered.tmp.svg"
       done

@@ -1,5 +1,7 @@
 import { defineConfig } from "@playwright/test";
 
+import { BROWSER_PATH } from "./test-support.mjs";
+
 const port = process.env.PERYX_FRONTEND_PORT ?? "4455";
 const readyPort = process.env.PERYX_READY_PORT ?? "5455";
 
@@ -17,6 +19,7 @@ export default defineConfig({
   timeout: 60_000,
   use: {
     baseURL: `http://127.0.0.1:${port}`,
+    launchOptions: { executablePath: BROWSER_PATH },
   },
   webServer: {
     command: "node serve.mjs",

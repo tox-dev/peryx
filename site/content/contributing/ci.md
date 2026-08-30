@@ -57,10 +57,13 @@ just lint
 just platform-test
 just coverage-native
 just frontend-deps
-just frontend-browser-deps
 just coverage-frontend
 just docs
 ```
+
+Browser recipes install their checksum-verified Chrome for Testing revision from the scoped `browser` mise environment.
+Chrome for Testing ships no Linux ARM or Windows ARM builds, so `mise.browser.lock` covers the four platforms it does
+publish.
 
 `just test` is hermetic. `just storage-s3` and `just coverage-native` require a running Docker daemon for the MinIO
 boundary tests.

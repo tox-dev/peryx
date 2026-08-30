@@ -2,6 +2,8 @@ import { chromium } from "@playwright/test";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { BROWSER_PATH, verifyBrowser } from "./test-support.mjs";
+
 const base = process.argv[2] ?? "http://127.0.0.1:4456";
 const outDir = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -23,7 +25,8 @@ for (let round = 0; round < 3; round += 1) {
 }
 await fetch(`${base}/root/pypi/simple/`);
 
-const browser = await chromium.launch();
+const browser = await chromium.launch({ executablePath: BROWSER_PATH });
+await verifyBrowser(browser);
 for (const theme of ["light", "dark"]) {
   const context = await browser.newContext({
     viewport: { width: 1360, height: 1280 },

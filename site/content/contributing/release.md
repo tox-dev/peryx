@@ -7,9 +7,9 @@ weight = 30
 Cargo-dist generates `.github/workflows/release.yml` from `dist-workspace.toml`. Do not edit the generated workflow by
 hand. Change the distribution configuration and regenerate it through cargo-dist.
 
-`cargo-dist-version` selects the configuration and generator contract. The `cargo:cargo-dist` entry in `mise.toml`
-installs the CLI, and `mise.lock` records its resolved release. Renovate updates the configuration version; weekly mise
-lock maintenance updates the CLI resolution.
+`cargo-dist-version` selects the configuration and generator contract. The `aqua:axodotdev/cargo-dist` entry in
+`mise.toml` installs the CLI, and `mise.lock` records its resolved release with a checksum. Renovate updates the
+configuration version; weekly mise lock maintenance updates the CLI resolution.
 
 Pull requests run the cargo-dist planning path. The plan covers five archive targets, shell and PowerShell installers,
 checksums, CycloneDX manifests, cargo-auditable metadata, GitHub attestations, and the package publication job.

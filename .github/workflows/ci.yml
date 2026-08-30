@@ -29,7 +29,7 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup
         with:
-          tools: just cargo:cargo-deny
+          tools: just aqua:EmbarkStudios/cargo-deny
       - run: just lint-source
       - run: just lint-deps
 
@@ -58,7 +58,7 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           tools: >-
-            just jq uv cargo:cargo-dist cargo:cargo-insta cargo:cargo-nextest
+            just jq uv aqua:axodotdev/cargo-dist aqua:mitsuhiko/insta github:nextest-rs/nextest
       - id: baseline
         env:
           GH_TOKEN: ${{ github.token }}
@@ -87,7 +87,7 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           cache-targets: false
-          tools: just jq cargo:cargo-semver-checks
+          tools: just jq github:obi1kenobi/cargo-semver-checks
       - run: just semver-shard "$SHARD" 7 "$BASE_REV"
         env:
           SHARD: ${{ matrix.shard }}
@@ -109,7 +109,7 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup
         with:
-          tools: just cargo:cargo-nextest
+          tools: just github:nextest-rs/nextest
       - run: just platform-test
 
   coverage:
@@ -122,7 +122,7 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           tools: >-
-            just uv cargo:cargo-llvm-cov cargo:cargo-nextest
+            just uv aqua:taiki-e/cargo-llvm-cov github:nextest-rs/nextest
             github:Shopify/toxiproxy
       - run: just coverage-native
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -144,10 +144,8 @@ jobs:
           components: llvm-tools-preview
           targets: wasm32-unknown-unknown
           tools: >-
-            just jq node cargo:cargo-llvm-cov cargo:cargo-nextest
-            github:leptos-rs/cargo-leptos
+            just jq node aqua:taiki-e/cargo-llvm-cov github:nextest-rs/nextest github:leptos-rs/cargo-leptos
       - run: just frontend-deps
-      - run: just frontend-browser-deps --with-deps
       - name: Install LLVM 22
         run: |
           curl --fail --location --output "$RUNNER_TEMP/llvm.asc" https://apt.llvm.org/llvm-snapshot.gpg.key
@@ -179,9 +177,6 @@ jobs:
           tools: jq just node prek zola
       - run: just lint-docs
       - run: just docs
-        env:
-          PUPPETEER_EXECUTABLE_PATH: /usr/bin/google-chrome
-          PUPPETEER_SKIP_DOWNLOAD: "true"
 
   nightly:
     if: github.event_name == 'workflow_dispatch' && inputs.nightly

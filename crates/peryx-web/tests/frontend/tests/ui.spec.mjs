@@ -5,11 +5,13 @@ import {
   collectWasmCoverage,
   goto,
   operatorPage,
+  verifyBrowser,
 } from "../test-support.mjs";
 
 const ADMIN_AUTH = `Basic ${Buffer.from("administrator:browser-admin-secret").toString("base64")}`;
 
 collectWasmCoverage(test);
+test.beforeAll(async ({ browser }) => verifyBrowser(browser));
 
 test("navigation completes when the application hydrates", async ({ page }) => {
   const assetRequested = Promise.withResolvers();

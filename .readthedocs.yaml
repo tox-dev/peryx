@@ -2,9 +2,24 @@ version: 2
 
 build:
   os: ubuntu-24.04
+  apt_packages:
+    - minisign
   tools:
     rust: latest
-  commands:
-    - curl --fail --location https://mise.run | sh
-    - MISE_SAFE=1 ~/.local/bin/mise install --locked just node zola
-    - MISE_EXEC_AUTO_INSTALL=0 MISE_SAFE=1 ~/.local/bin/mise exec -- just site-readthedocs
+  jobs:
+    build:
+      html:
+        - >-
+          release=https://github.com/jdx/mise/releases/download/v2026.8.14 &&
+          curl --fail --location --output /tmp/SHASUMS256.txt "$release/SHASUMS256.txt" &&
+          curl --fail --location --output /tmp/SHASUMS256.txt.minisig "$release/SHASUMS256.txt.minisig" &&
+          minisign -Vm /tmp/SHASUMS256.txt -x /tmp/SHASUMS256.txt.minisig
+          -P RWTC3g8W3z4RZK3V3qv7fa1QY4JEWyBtqIHW+85QlJpZc5yG+uNYNBSZ &&
+          archive=$(grep -o -m1 "mise-v[^ ]*-linux-x64.tar.xz" /tmp/SHASUMS256.txt) &&
+          curl --fail --location --output "/tmp/$archive" "$release/$archive" &&
+          (cd /tmp && grep -F "$archive" SHASUMS256.txt | sha256sum --check --strict) &&
+          mkdir -p ~/.local/bin &&
+          tar --extract --xz --file "/tmp/$archive" --to-stdout mise/bin/mise > ~/.local/bin/mise &&
+          chmod 0755 ~/.local/bin/mise
+        - MISE_SAFE=1 ~/.local/bin/mise install --locked just node zola
+        - MISE_EXEC_AUTO_INSTALL=0 MISE_SAFE=1 ~/.local/bin/mise exec -- just site-readthedocs

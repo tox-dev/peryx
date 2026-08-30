@@ -245,9 +245,7 @@ async fn zot_server_writes_authenticated_sync_configuration() {
     let directory = tempfile::tempdir().unwrap();
     let tools = Tools::install(directory.path());
     let environment = tools.environment(Some(("user".to_owned(), "token".to_owned())));
-    let zot_binary = environment.cache.join("zot");
-    std::fs::create_dir_all(zot_binary.parent().unwrap()).unwrap();
-    std::fs::write(&zot_binary, "fixture").unwrap();
+    std::fs::write(&environment.tools.zot, "fixture").unwrap();
 
     assert!(
         servers::all()
@@ -274,9 +272,7 @@ async fn zot_server_reports_an_unwritable_state_directory() {
     let directory = tempfile::tempdir().unwrap();
     let tools = Tools::install(directory.path());
     let environment = tools.environment(None);
-    let zot_binary = environment.cache.join("zot");
-    std::fs::create_dir_all(zot_binary.parent().unwrap()).unwrap();
-    std::fs::write(zot_binary, "fixture").unwrap();
+    std::fs::write(&environment.tools.zot, "fixture").unwrap();
 
     assert!(
         servers::all()
@@ -289,28 +285,6 @@ async fn zot_server_reports_an_unwritable_state_directory() {
             .await
             .is_err()
     );
-}
-
-#[cfg(unix)]
-#[rstest]
-#[case("curl-success", true)]
-#[case("curl-fail", false)]
-#[tokio::test(flavor = "current_thread")]
-async fn zot_server_reports_download_outcomes(#[case] mode: &str, #[case] downloaded: bool) {
-    let directory = tempfile::tempdir().unwrap();
-    let tools = Tools::install(directory.path());
-    tools.set_mode(mode);
-    let environment = tools.environment(Some(("user".to_owned(), "token".to_owned())));
-    let zot_binary = environment.cache.join("zot");
-
-    assert!(
-        servers::all()
-            .remove(3)
-            .start(&environment, &context(directory.path()), directory.path())
-            .await
-            .is_err()
-    );
-    assert_eq!(zot_binary.exists(), downloaded);
 }
 
 #[cfg(unix)]
@@ -529,7 +503,6 @@ impl Tools {
     fn set_mode(&self, mode: &str) {
         write_tool(&self.directory.join("crane"), &CRANE_TOOL.replace("__MODE__", mode));
         write_tool(&self.directory.join("docker"), &DOCKER_TOOL.replace("__MODE__", mode));
-        write_tool(&self.directory.join("curl"), &CURL_TOOL.replace("__MODE__", mode));
     }
 }
 
@@ -642,17 +615,6 @@ elif [ "$1" = rm ]; then
   fi
   rm -f "$pidfile"
 fi
-"#;
-
-#[cfg(unix)]
-const CURL_TOOL: &str = r#"#!/bin/sh
-mode=__MODE__
-[ "$mode" != curl-success ] && exit 1
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = --output ]; then output=$2; break; fi
-  shift
-done
-printf '#!/bin/sh\n' >"$output"
 "#;
 
 #[cfg(unix)]

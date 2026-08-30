@@ -1,23 +1,28 @@
 [tools]
 zola = "latest"
 node = "latest"
+zig = "latest"
 uv = "latest"
 prek = "latest"
-cargo-binstall = "latest"
 just = "latest"
 jq = "latest"
+sccache = "latest"
 "cargo:cargo-auditable" = "latest"
 "cargo:cargo-cyclonedx" = "latest"
 "cargo:cargo-codspeed" = "latest"
-"cargo:cargo-deny" = "latest"
-"cargo:cargo-dist" = "latest"
+"aqua:EmbarkStudios/cargo-deny" = "latest"
+"aqua:axodotdev/cargo-dist" = "latest"
 "cargo:cargo-fuzz" = "latest"
 "cargo:cargo-hack" = "latest"
-"cargo:cargo-insta" = "latest"
-"cargo:cargo-nextest" = "latest"
-"cargo:cargo-llvm-cov" = "latest"
+"aqua:mitsuhiko/insta" = "latest"
+"github:nextest-rs/nextest" = { version = "latest", version_prefix = "cargo-nextest-" }
+"aqua:taiki-e/cargo-llvm-cov" = "latest"
 "cargo:cargo-mutants" = "latest"
-"cargo:cargo-semver-checks" = "latest"
-"cargo:maturin" = "latest"
+"github:obi1kenobi/cargo-semver-checks" = "latest"
+maturin = "latest"
 "github:leptos-rs/cargo-leptos" = "latest"
+"github:project-zot/zot" = { version = "latest", os = ["linux", "macos"], matching_regex = "^zot-(darwin|linux)-(amd64|arm64)$", bin = "zot" }
 "github:Shopify/toxiproxy" = { version = "latest", matching = "toxiproxy-server", bin = "toxiproxy-server", github_attestations = false }
+
+[settings]
+cargo.binstall = false

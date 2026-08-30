@@ -61,9 +61,8 @@ pub(super) fn table_name(environment: &BenchEnvironment, base: &str) -> String {
     }
 }
 
-/// The `registry:2` image tag `distribution` runs from, and the pinned `zot` release.
+/// The `registry:2` image tag `distribution` runs from.
 const DISTRIBUTION_IMAGE: &str = "registry:2";
-const ZOT_VERSION: &str = "2.1.2";
 
 /// Log crane in to Docker Hub for the `direct` transfers, when credentials are set. The local
 /// proxies authenticate to the upstream themselves; crane only needs it for the no-proxy baseline.
@@ -677,12 +676,11 @@ fn zot() -> BenchServer {
         },
         base_url: Arc::new(|_, port| local_base(port)),
         command: Some(Arc::new(|environment, _, _, state| {
-            let mut command = Command::new(environment.cache.join("zot"));
+            let mut command = Command::new(&environment.tools.zot);
             command.arg("serve").arg(state.join("zot.json"));
             command
         })),
         setup: Some(Arc::new(|environment, port, state| {
-            ensure_zot(environment)?;
             let url = upstream_for(environment, UPSTREAM);
             let mut sync = serde_json::json!({
                 "registries": [{
@@ -725,59 +723,6 @@ fn remove_container(environment: &BenchEnvironment, port: u16) {
     let _ = Command::new(&environment.tools.docker)
         .args(["rm", "--force", &container(port)])
         .output();
-}
-
-fn target_for(os: &'static str, arch: &'static str) -> anyhow::Result<(&'static str, &'static str)> {
-    let os = match os {
-        "macos" => "darwin",
-        "linux" => "linux",
-        other => bail!("no zot binary for {other}"),
-    };
-    let arch = match arch {
-        "aarch64" => "arm64",
-        "x86_64" => "amd64",
-        other => bail!("no zot binary for {other}"),
-    };
-    Ok((os, arch))
-}
-
-/// Fetch the `zot` registry binary from its release asset, once.
-fn ensure_zot(environment: &BenchEnvironment) -> anyhow::Result<()> {
-    let binary = environment.cache.join("zot");
-    if binary.exists() {
-        return Ok(());
-    }
-    let (os, arch) = target_for(std::env::consts::OS, std::env::consts::ARCH)?;
-    let url = format!("https://github.com/project-zot/zot/releases/download/v{ZOT_VERSION}/zot-{os}-{arch}");
-    println!("[oci] fetching zot {ZOT_VERSION} ({os}/{arch})");
-    std::fs::create_dir_all(&environment.cache)?;
-    download(environment, &url, &binary)?;
-    make_executable(&binary)
-}
-
-fn download(environment: &BenchEnvironment, url: &str, into: &Path) -> anyhow::Result<()> {
-    let mut command = Command::new(&environment.tools.curl);
-    command
-        .args(["--fail", "--location", "--silent", "--show-error", "--output"])
-        .arg(into)
-        .arg(url);
-    let output = command.output().context("curl did not start")?;
-    if !output.status.success() {
-        bail!("downloading {url} failed:\n{}", String::from_utf8_lossy(&output.stderr));
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn make_executable(binary: &Path) -> anyhow::Result<()> {
-    use std::os::unix::fs::PermissionsExt as _;
-    std::fs::set_permissions(binary, std::fs::Permissions::from_mode(0o755))?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn make_executable(_: &Path) -> anyhow::Result<()> {
-    Ok(())
 }
 
 /// A path as a TOML basic string, backslashes and quotes escaped for the config we write.

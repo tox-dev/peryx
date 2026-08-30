@@ -3,11 +3,13 @@ import { expect, test } from "@playwright/test";
 import {
   collectWasmCoverage,
   goto,
+  verifyBrowser,
 } from "../test-support.mjs";
 
 const HOST = `127.0.0.1:${process.env.PERYX_OCI_FRONTEND_PORT ?? 4457}`;
 
 collectWasmCoverage(test);
+test.beforeAll(async ({ browser }) => verifyBrowser(browser));
 
 test("dashboard advertises the OCI registry endpoint", async ({ page }) => {
   await goto(page, "/");
