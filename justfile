@@ -250,6 +250,54 @@ mutation shard="0/1" in_place="false" jobs="2" baseline="run" timeout="500" shar
       --timeout "{{ timeout }}" --build-timeout "{{ timeout }}" \
       -- --profile mutation -E 'not(test(e2e_live))'
 
+# Run one mutation shard with Linux resource telemetry.
+mutation-observed shard="0/1" in_place="false" jobs="2" baseline="run" timeout="500" sharding="slice":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    cgroup_root="/sys/fs/cgroup$(awk -F: '$1 == "0" { print $3 }' /proc/self/cgroup 2>/dev/null)"
+    if [[ ! -r "$cgroup_root/cgroup.controllers" ]]; then
+      printf 'mutation resource telemetry requires Linux cgroup v2\n' >&2
+      exit 2
+    fi
+    sample() {
+      local metric pressure progress
+      if [[ -r .tox/mutants/outcomes.json ]]; then
+        progress="$(jq -c '{
+          completed: (.outcomes | length),
+          last: (.outcomes[-1].scenario.Mutant.name //
+            (if (.outcomes | length) > 0 then (.outcomes[-1].scenario | tostring) else null end))
+        }' .tox/mutants/outcomes.json 2>/dev/null || printf '{"completed":null,"last":null}')"
+      else
+        progress='{"completed":0,"last":null}'
+      fi
+      printf 'mutation-resource timestamp=%s progress=%s' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$progress"
+      for metric in memory.current memory.peak pids.current; do
+        if [[ -r "$cgroup_root/$metric" ]]; then
+          printf ' %s=%s' "$metric" "$(<"$cgroup_root/$metric")"
+        fi
+      done
+      for metric in memory.events pids.events; do
+        if [[ -r "$cgroup_root/$metric" ]]; then
+          printf ' %s=%s' "$metric" "$(awk '{printf "%s%s=%s", NR == 1 ? "" : ",", $1, $2}' "$cgroup_root/$metric")"
+        fi
+      done
+      for pressure in cpu memory io; do
+        if [[ -r "/proc/pressure/$pressure" ]]; then
+          printf ' %s.pressure=%s' "$pressure" "$(paste -sd ';' "/proc/pressure/$pressure")"
+        fi
+      done
+      printf '\n'
+    }
+    sample
+    while sleep 60; do sample; done &
+    monitor_pid=$!
+    trap 'kill "$monitor_pid" 2>/dev/null || :; wait "$monitor_pid" 2>/dev/null || :' EXIT
+    just mutation "{{ shard }}" "{{ in_place }}" "{{ jobs }}" "{{ baseline }}" "{{ timeout }}" "{{ sharding }}"
+    mutation_status=$?
+    sample
+    printf 'mutation-exit status=%d\n' "$mutation_status"
+    exit "$mutation_status"
+
 # Run the mutation baseline suite.
 mutation-baseline: test-deps
     INSTA_UPDATE=no INSTA_FORCE_PASS=0 PATH="{{ tools_root }}/bin:$PATH" cargo nextest run --verbose \

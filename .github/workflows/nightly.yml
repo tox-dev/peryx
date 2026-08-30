@@ -163,7 +163,7 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           tools: ${{ env.MUTATION_TOOLS }}
-      - run: just mutation "$SHARD/$SHARD_COUNT" true 2 skip 500 round-robin
+      - run: just mutation-observed "$SHARD/$SHARD_COUNT" true 2 skip 500 round-robin
         env:
           SHARD: ${{ matrix.shard }}
           SHARD_COUNT: ${{ needs.mutation-baseline-build.outputs.shard_count }}
