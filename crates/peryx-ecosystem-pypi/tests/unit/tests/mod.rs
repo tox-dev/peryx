@@ -135,6 +135,39 @@ fn test_log_writer_writes_and_flushes_the_active_capture() {
     assert_eq!(*bytes.lock().unwrap(), b"event");
 }
 
+#[test]
+fn test_log_capture_detaches_completed_scopes() {
+    let first_capture = LogCapture::default();
+    {
+        let _capture_guard = first_capture.install();
+        tracing::info!(capture_event = "first");
+    }
+    tracing::info!(capture_event = "between");
+
+    let second_capture = LogCapture::default();
+    {
+        let _capture_guard = second_capture.install();
+        tracing::info!(capture_event = "second");
+    }
+    tracing::info!(capture_event = "after");
+
+    let captured_events = |capture: &LogCapture| {
+        capture
+            .text()
+            .lines()
+            .filter_map(|line| {
+                serde_json::from_str::<serde_json::Value>(line).unwrap()["fields"]["capture_event"]
+                    .as_str()
+                    .map(str::to_owned)
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        (captured_events(&first_capture), captured_events(&second_capture)),
+        (vec!["first".to_owned()], vec!["second".to_owned()])
+    );
+}
+
 pub fn field<'a>(event: &'a serde_json::Value, name: &str) -> Option<&'a str> {
     event["fields"][name].as_str()
 }
