@@ -1,7 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use peryx_identity::UserId;
-use peryx_storage::meta::{DesiredRepository, MetaStore};
+use peryx_storage::meta::{DesiredRepository, MetaStore, ReconcileRepositoryError};
 
 use super::IndexConfig;
 
@@ -27,17 +27,19 @@ fn desired(config: &IndexConfig) -> DesiredRepository {
     }
 }
 
-/// Give every configured index a persisted repository record.
+/// Persist repository identities before the server exposes configured routes.
 ///
-/// Each index reconciles by route: a new route mints a record, an existing route reuses its id, so a
-/// restart adds nothing and a later rename never re-homes a reference. Unchanged configuration bumps
-/// no version. A route the store cannot hold as a repository, an over-long one for example, leaves
-/// the batch unwritten and logs rather than failing an otherwise healthy boot.
-pub fn reconcile_configured_repositories(meta: &MetaStore, configs: &[IndexConfig]) {
+/// Route matching keeps IDs stable and advances versions only when a stored definition changes.
+///
+/// # Errors
+/// Returns an error when validation or persistence prevents the atomic batch.
+pub fn reconcile_configured_repositories(
+    meta: &MetaStore,
+    configs: &[IndexConfig],
+) -> Result<(), ReconcileRepositoryError> {
     let desired: Vec<DesiredRepository> = configs.iter().map(desired).collect();
-    if let Err(error) = meta.reconcile_repositories(&desired, &system_actor(), unix_now()) {
-        tracing::warn!(%error, "could not assign stable ids to configured repositories");
-    }
+    meta.reconcile_repositories(&desired, &system_actor(), unix_now())
+        .map(drop)
 }
 
 #[cfg(test)]

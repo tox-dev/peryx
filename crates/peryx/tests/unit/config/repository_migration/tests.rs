@@ -24,13 +24,13 @@ fn test_reconcile_assigns_stable_ids_idempotently_across_boots() {
     let dir = tempfile::tempdir().unwrap();
     let store = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
 
-    reconcile_configured_repositories(&store, &config.indexes);
+    reconcile_configured_repositories(&store, &config.indexes).unwrap();
     let first_boot = routes_to_id_and_version(&store);
 
     assert_eq!(first_boot.len(), config.indexes.len());
     assert!(first_boot.values().all(|(id, version)| !id.is_empty() && *version == 1));
 
-    reconcile_configured_repositories(&store, &config.indexes);
+    reconcile_configured_repositories(&store, &config.indexes).unwrap();
 
     assert_eq!(routes_to_id_and_version(&store), first_boot);
 }
@@ -45,10 +45,10 @@ fn test_reconcile_renames_default_virtual_indexes_without_changing_ids() {
         .name = "root/pypi".to_owned();
     let dir = tempfile::tempdir().unwrap();
     let store = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-    reconcile_configured_repositories(&store, &old.indexes);
+    reconcile_configured_repositories(&store, &old.indexes).unwrap();
     let previous = store.repository_by_route("root/pypi").unwrap().unwrap();
 
-    reconcile_configured_repositories(&store, &Config::default().indexes);
+    reconcile_configured_repositories(&store, &Config::default().indexes).unwrap();
     let current = store.repository_by_route("root/pypi").unwrap().unwrap();
 
     assert_eq!(current.id, previous.id);
@@ -63,7 +63,8 @@ fn test_reconcile_writes_nothing_when_a_route_cannot_be_a_repository() {
     let dir = tempfile::tempdir().unwrap();
     let store = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
 
-    reconcile_configured_repositories(&store, &config.indexes);
+    let error = reconcile_configured_repositories(&store, &config.indexes).unwrap_err();
 
+    assert_eq!(error.to_string(), "repository route exceeds 512 bytes");
     assert!(routes_to_id_and_version(&store).is_empty());
 }

@@ -223,7 +223,7 @@ fn build_state_with_active_backend_and_plugins(
     }
     attach_policy_decision_recorders(&meta, &mut indexes, read_only)?;
     if !read_only {
-        crate::config::reconcile_configured_repositories(&meta, &configs);
+        persist_configured_repositories(&meta, &configs)?;
     }
     let ecosystem_settings = build_index_settings_with_plugins(&configs, plugins)?;
     let webhooks = build_webhooks(&configs, plugins)?;
@@ -255,6 +255,19 @@ fn build_state_with_active_backend_and_plugins(
         plugins,
     )?;
     Ok(Arc::new(state))
+}
+
+fn persist_configured_repositories(meta: &MetaStore, configs: &[IndexConfig]) -> anyhow::Result<()> {
+    crate::config::reconcile_configured_repositories(meta, configs).with_context(|| {
+        format!(
+            "persist configured repositories [{}]",
+            configs
+                .iter()
+                .map(|config| config.route.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    })
 }
 
 fn resolve_signing_key(config: &Config) -> anyhow::Result<Option<String>> {

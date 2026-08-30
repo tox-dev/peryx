@@ -402,6 +402,90 @@ fn test_build_state_opens_configured_data_dir() {
 }
 
 #[test]
+fn test_build_state_reports_configured_repository_persistence_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = config_with_corrupt_repository(&dir);
+
+    let error = build_state(&config)
+        .err()
+        .expect("expected repository persistence error");
+
+    assert_eq!(
+        error.to_string(),
+        format!("persist configured repositories [{}]", config.indexes[0].route)
+    );
+}
+
+#[test]
+fn test_build_state_read_only_skips_repository_reconciliation() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = config_with_corrupt_repository(&dir);
+    config.read_only = true;
+
+    let state = build_state(&config).unwrap();
+
+    assert_eq!(state.serving.indexes[0].route, config.indexes[0].route);
+}
+
+#[test]
+fn test_build_state_preserves_configured_repository_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config {
+        data_dir: dir.path().to_path_buf(),
+        ..neutral_config()
+    };
+    let first = build_state(&config).unwrap();
+    let first_repositories = routes_to_id_and_version(&first.serving.meta);
+    drop(first);
+
+    let second = build_state(&config).unwrap();
+
+    assert_eq!(
+        (routes_to_id_and_version(&second.serving.meta), first_repositories.len()),
+        (first_repositories, config.indexes.len())
+    );
+}
+
+fn config_with_corrupt_repository(dir: &tempfile::TempDir) -> Config {
+    let mut config = Config {
+        data_dir: dir.path().to_path_buf(),
+        ..neutral_config()
+    };
+    config.indexes.truncate(1);
+    let state = build_state(&config).unwrap();
+    let repository = state
+        .serving
+        .meta
+        .repository_by_route(&config.indexes[0].route)
+        .unwrap()
+        .unwrap();
+    drop(state);
+    let database = redb::Database::open(dir.path().join("peryx.redb")).unwrap();
+    let transaction = database.begin_write().unwrap();
+    {
+        let mut repositories = transaction
+            .open_table(redb::TableDefinition::<&str, &[u8]>::new("repository"))
+            .unwrap();
+        repositories.insert(repository.id.as_str(), b"{".as_slice()).unwrap();
+    }
+    transaction.commit().unwrap();
+    config
+}
+
+fn routes_to_id_and_version(store: &MetaStore) -> std::collections::BTreeMap<String, (String, u64)> {
+    store
+        .list_repositories(&peryx_storage::meta::RepositoryQuery {
+            limit: 100,
+            ..peryx_storage::meta::RepositoryQuery::default()
+        })
+        .unwrap()
+        .repositories
+        .into_iter()
+        .map(|record| (record.route, (record.id.as_str().to_owned(), record.version)))
+        .collect()
+}
+
+#[test]
 fn test_build_state_repairs_abandoned_quota_before_admission() {
     let dir = tempfile::tempdir().unwrap();
     let config = Config {
