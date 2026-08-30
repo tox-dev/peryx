@@ -179,6 +179,31 @@ impl ProcessSignal {
     }
 }
 
+fn descendant_state(pid: &str) -> Vec<u8> {
+    Command::new("ps")
+        .args(["-o", "state=", "-p", pid])
+        .output()
+        .unwrap()
+        .stdout
+}
+
+fn has_exited(state: &[u8]) -> bool {
+    state.is_empty() || state.starts_with(b"Z")
+}
+
+// A process group kill signals its members and orders nothing between them, and the kernel releases a member's
+// descriptors before it marks the process a zombie, so one sample after the kill catches a state that has not
+// settled. Starting from the state read while the descendant was still running also stops an unknown pid from
+// reading as an exit that never happened. The caller's deadline bounds only a descendant that outlives its group.
+async fn await_descendant_exit(pid: &str, mut state: Vec<u8>) -> Vec<u8> {
+    assert!(!has_exited(&state));
+    while !has_exited(&state) {
+        tokio::task::yield_now().await;
+        state = descendant_state(pid);
+    }
+    state
+}
+
 fn shell_quote(value: impl Display) -> String {
     format!("'{}'", value.to_string().replace('\'', "'\\''"))
 }
@@ -621,19 +646,20 @@ async fn test_helper_timeout_kills_descendants() {
     let credential = tokio::spawn(async move { provider.credential().await });
     let processes = signal.read().await;
     signal.release_guard();
+    let descendant = processes.split_once(' ').unwrap().1.trim();
+    let running = descendant_state(descendant);
     tokio::time::pause();
     tokio::time::advance(Duration::from_secs(61)).await;
 
     let error = credential.await.unwrap().unwrap_err();
-    let descendant = processes.split_once(' ').unwrap().1;
-    let state = Command::new("ps")
-        .args(["-o", "state=", "-p", descendant.trim()])
-        .output()
-        .unwrap()
-        .stdout;
+    // The paused clock auto-advances past an idle deadline, which would expire the wait below immediately.
+    tokio::time::resume();
+    let state = tokio::time::timeout(Duration::from_secs(5), await_descendant_exit(descendant, running))
+        .await
+        .unwrap();
 
     assert_eq!(error.to_string(), "credential helper timed out");
-    assert!(state.is_empty() || state.starts_with(b"Z"));
+    assert!(has_exited(&state));
 }
 
 #[tokio::test]
@@ -652,22 +678,16 @@ async fn test_helper_cancellation_kills_descendants() {
     let credential = tokio::spawn(async move { provider.credential().await });
     let processes = signal.read().await;
     signal.release_guard();
-    let descendant = processes.split_once(' ').unwrap().1;
-    let mut child_exits = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::child()).unwrap();
+    let descendant = processes.split_once(' ').unwrap().1.trim();
+    let running = descendant_state(descendant);
 
     credential.abort();
     assert!(credential.await.unwrap_err().is_cancelled());
-    tokio::time::timeout(Duration::from_secs(5), child_exits.recv())
+    let state = tokio::time::timeout(Duration::from_secs(5), await_descendant_exit(descendant, running))
         .await
-        .unwrap()
         .unwrap();
-    let state = Command::new("ps")
-        .args(["-o", "state=", "-p", descendant.trim()])
-        .output()
-        .unwrap()
-        .stdout;
 
-    assert!(state.is_empty() || state.starts_with(b"Z"));
+    assert!(has_exited(&state));
 }
 
 #[tokio::test]
