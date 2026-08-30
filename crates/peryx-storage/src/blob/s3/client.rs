@@ -6,7 +6,7 @@ use std::time::Duration;
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client;
 use aws_sdk_s3::config::{Builder, Config, Region, RequestChecksumCalculation, ResponseChecksumValidation};
-use aws_sdk_s3::error::ProvideErrorMetadata as _;
+use aws_sdk_s3::error::{ProvideErrorMetadata as _, SdkError};
 use aws_sdk_s3::primitives::{ByteStream, Length};
 use aws_sdk_s3::types::{ChecksumAlgorithm, CompletedMultipartUpload, CompletedPart};
 use bytes::Bytes;
@@ -164,27 +164,33 @@ impl S3Client {
                 body: futures_util::stream::empty().boxed(),
             });
         }
+        let client = self.client().await;
         let deadline = tokio::time::Instant::now()
             .checked_add(self.config.request_timeout)
             .ok_or_else(|| S3Error::Request("request timeout exceeds the supported duration".to_owned()))?;
-        let mut request = self.client().await.get_object().bucket(&self.config.bucket).key(key);
+        let mut request = client.get_object().bucket(&self.config.bucket).key(key);
         if let Some(range) = &range {
             request = request.range(format!("bytes={}-{}", range.start, range.end.saturating_sub(1)));
         }
         if let Some(etag) = if_match {
             request = request.if_match(etag);
         }
+        let deadline_error = || S3Error::Request("deadline has elapsed".to_owned());
         let output = tokio::time::timeout_at(deadline, request.send())
             .await
-            .map_err(|error| S3Error::Request(error.to_string()))?
-            .map_err(aws_sdk_s3::Error::from)
-            .map_err(|error| {
-                if if_match.is_some() && error.code() == Some("PreconditionFailed") {
-                    S3Error::GenerationChanged
-                } else {
-                    map_sdk_error(&error)
-                }
-            })?;
+            .map_err(|_| deadline_error())?;
+        let output = match output {
+            Err(SdkError::TimeoutError(_)) => return Err(deadline_error()),
+            output => output,
+        }
+        .map_err(aws_sdk_s3::Error::from)
+        .map_err(|error| {
+            if if_match.is_some() && error.code() == Some("PreconditionFailed") {
+                S3Error::GenerationChanged
+            } else {
+                map_sdk_error(&error)
+            }
+        })?;
         let total_bytes = resolve_total_bytes(range.as_ref(), output.content_range(), output.content_length())?;
         let body =
             futures_util::stream::try_unfold((output.body, self.config.request_timeout), next_body_chunk).boxed();

@@ -6,13 +6,13 @@ use std::time::Duration;
 
 use aws_sdk_s3::config::Credentials;
 use aws_sdk_s3::primitives::SdkBody;
-use aws_smithy_http_client::test_util::{CaptureRequestReceiver, capture_request};
+use aws_smithy_http_client::test_util::{CaptureRequestReceiver, NeverClient, capture_request};
 use bytes::Bytes;
 use futures_util::StreamExt as _;
 use http_body::Frame;
 use http_body_util::StreamBody;
 use rstest::rstest;
-use tokio::sync::OnceCell;
+use tokio::sync::{Barrier, OnceCell, oneshot};
 use url::Url;
 
 use super::super::S3Backend;
@@ -414,6 +414,134 @@ async fn test_get_reads_a_whole_object_without_a_range() {
 
     assert_eq!(get.total_bytes, 7);
     assert_eq!(collect_body(get).await, b"package");
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_get_budget_starts_after_lazy_client_initialization() {
+    let timeout = Duration::from_secs(5);
+    let setup_delay = timeout + Duration::from_secs(1);
+    let config = S3Config::new(S3Settings {
+        request_timeout: timeout,
+        ..base_settings()
+    })
+    .unwrap();
+    let (sdk_client, http_client) = never_sdk_client(&config, None);
+    let client = S3Client {
+        config,
+        client: Arc::new(OnceCell::new()),
+    };
+    let initialization = Arc::clone(&client.client);
+    let initialization_gate = Arc::new(Barrier::new(2));
+    let request_gate = Arc::clone(&initialization_gate);
+    let initialize = tokio::spawn(async move {
+        initialization
+            .get_or_init(|| async move {
+                request_gate.wait().await;
+                request_gate.wait().await;
+                sdk_client
+            })
+            .await;
+    });
+    initialization_gate.wait().await;
+    let mut request = Box::pin(client.get("cache/sha256/digest", None, None));
+    assert!(matches!(futures_util::poll!(&mut request), Poll::Pending));
+
+    let started = tokio::time::Instant::now();
+    tokio::time::advance(setup_delay).await;
+    initialization_gate.wait().await;
+    let Err(error) = request.await else {
+        panic!("expected request timeout");
+    };
+    initialize.await.unwrap();
+
+    let S3Error::Request(message) = error else {
+        panic!("expected request error, got {error:?}");
+    };
+    assert_eq!(
+        (started.elapsed(), message, http_client.num_calls()),
+        (setup_delay + timeout, "deadline has elapsed".to_owned(), 1)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_get_normalizes_the_sdk_timeout_at_the_deadline() {
+    let timeout = Duration::from_secs(5);
+    let config = S3Config::new(S3Settings {
+        request_timeout: timeout,
+        ..base_settings()
+    })
+    .unwrap();
+    let (sdk_client, http_client) = never_sdk_client(&config, Some(timeout));
+    let client = S3Client {
+        config,
+        client: Arc::new(OnceCell::from(sdk_client)),
+    };
+    let started = tokio::time::Instant::now();
+
+    let Err(error) = client.get("cache/sha256/digest", None, None).await else {
+        panic!("expected request timeout");
+    };
+
+    let S3Error::Request(message) = error else {
+        panic!("expected request error, got {error:?}");
+    };
+    assert_eq!(
+        (started.elapsed(), message, http_client.num_calls()),
+        (timeout, "deadline has elapsed".to_owned(), 1)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_get_preserves_a_ready_service_error_at_the_deadline() {
+    let timeout = Duration::from_secs(5);
+    let (body_polled_tx, mut body_polled_rx) = oneshot::channel();
+    let (release_response_tx, release_response_rx) = oneshot::channel();
+    let body = StreamBody::new(futures_util::stream::once(async move {
+        body_polled_tx.send(()).unwrap();
+        release_response_rx.await.unwrap();
+        Ok::<_, Infallible>(Frame::data(Bytes::from_static(
+            b"<Error><Code>NoSuchKey</Code></Error>",
+        )))
+    }));
+    let response = http::Response::builder()
+        .status(404)
+        .header(http::header::CONTENT_TYPE, "application/xml")
+        .body(SdkBody::from_body_1_x(body))
+        .unwrap();
+    let client = get_client_with_timeout(response, timeout);
+    let mut request = Box::pin(client.get("cache/sha256/digest", None, None));
+    tokio::select! {
+        polled = &mut body_polled_rx => polled.unwrap(),
+        _ = &mut request => panic!("request completed before releasing the response body"),
+    }
+    release_response_tx.send(()).unwrap();
+    tokio::time::advance(timeout).await;
+
+    let Err(error) = request.await else {
+        panic!("expected service error");
+    };
+    assert!(matches!(error, S3Error::NotFound));
+}
+
+fn never_sdk_client(config: &S3Config, sdk_timeout: Option<Duration>) -> (Client, NeverClient) {
+    let http_client = NeverClient::new();
+    let mut builder = Builder::new()
+        .behavior_version(BehaviorVersion::latest())
+        .credentials_provider(Credentials::new("id", "secret", None, None, "test"))
+        .region(Region::new("us-east-1"))
+        .http_client(http_client.clone());
+    if let Some(timeout) = sdk_timeout {
+        builder = builder.timeout_config(
+            aws_config::timeout::TimeoutConfig::builder()
+                .operation_timeout(timeout)
+                .operation_attempt_timeout(timeout)
+                .build(),
+        );
+    }
+    (
+        Client::from_conf(S3Client::service_config(config, builder)),
+        http_client,
+    )
 }
 
 #[tokio::test]
