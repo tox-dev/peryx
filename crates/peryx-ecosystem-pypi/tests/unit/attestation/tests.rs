@@ -96,6 +96,15 @@ fn test_build_provenance_rejects_too_many_attestations() {
 }
 
 #[test]
+fn test_build_provenance_accepts_thirty_two_attestations() {
+    let attestations = vec![attestation(FILENAME, SHA); 32];
+    let document: Value =
+        serde_json::from_slice(&build_provenance(&field(&attestations), SHA, FILENAME).unwrap().document).unwrap();
+
+    assert_eq!(document["attestation_bundles"][0]["attestations"], json!(attestations));
+}
+
+#[test]
 fn test_build_provenance_rejects_an_oversized_attestation() {
     let mut oversized = attestation(FILENAME, SHA);
     oversized["verification_material"]["certificate"] = json!("A".repeat(MAX_ATTESTATION_BYTES + 1));
@@ -105,6 +114,24 @@ fn test_build_provenance_rejects_an_oversized_attestation() {
         build_provenance(&raw, SHA, FILENAME).unwrap_err(),
         AttestationError::TooLarge { index: 0, .. }
     ));
+}
+
+#[test]
+fn test_build_provenance_accepts_a_262144_byte_attestation() {
+    let mut boundary = attestation(FILENAME, SHA);
+    boundary["verification_material"]["certificate"] = json!("");
+    let base_size = serde_json::to_vec(&boundary).unwrap().len();
+    boundary["verification_material"]["certificate"] = json!("A".repeat(256 * 1024 - base_size));
+    assert_eq!(serde_json::to_vec(&boundary).unwrap().len(), 256 * 1024);
+
+    let document: Value = serde_json::from_slice(
+        &build_provenance(&field(&[boundary.clone()]), SHA, FILENAME)
+            .unwrap()
+            .document,
+    )
+    .unwrap();
+
+    assert_eq!(document["attestation_bundles"][0]["attestations"][0], boundary);
 }
 
 #[test]
@@ -216,6 +243,32 @@ fn test_build_provenance_rejects_an_oversized_statement() {
         build_provenance(&raw, SHA, FILENAME).unwrap_err(),
         AttestationError::MalformedStatement(0)
     );
+}
+
+#[test]
+fn test_build_provenance_accepts_a_65536_byte_statement() {
+    let mut statement = json!({
+        "_type": "https://in-toto.io/Statement/v1",
+        "subject": [{"name": FILENAME, "digest": {"sha256": SHA}}],
+        "predicateType": "https://docs.pypi.org/attestations/publish/v1",
+        "predicate": {},
+        "padding": "",
+    });
+    let base_size = serde_json::to_vec(&statement).unwrap().len();
+    statement["padding"] = json!("A".repeat(64 * 1024 - base_size));
+    let statement = serde_json::to_vec(&statement).unwrap();
+    assert_eq!(statement.len(), 64 * 1024);
+    let mut boundary = attestation(FILENAME, SHA);
+    boundary["envelope"]["statement"] = json!(STANDARD.encode(statement));
+
+    let document: Value = serde_json::from_slice(
+        &build_provenance(&field(&[boundary.clone()]), SHA, FILENAME)
+            .unwrap()
+            .document,
+    )
+    .unwrap();
+
+    assert_eq!(document["attestation_bundles"][0]["attestations"][0], boundary);
 }
 
 #[test]
