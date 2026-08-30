@@ -45,6 +45,39 @@ async fn test_oci_indexer_surfaces_repositories_and_tags() {
 }
 
 #[tokio::test]
+async fn test_oci_search_returns_the_same_repository_for_short_and_long_tag_queries() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = hosted_writable(&dir, TOKEN);
+    // Enough tags to sort the marker tag past 32 KiB of repository text, yet inside the indexed window.
+    for serial in 0..320 {
+        store::put_tag(
+            &state.serving.meta,
+            "store",
+            "library/app",
+            &format!("a{serial:03}-{}", "x".repeat(118)),
+            DIGEST,
+        )
+        .unwrap();
+    }
+    store::put_tag(
+        &state.serving.meta,
+        "store",
+        "library/app",
+        "z-release-candidate-2026",
+        DIGEST,
+    )
+    .unwrap();
+
+    assert_eq!(
+        (
+            search_total(&app, "candidate").await,
+            search_total(&app, "release-candidate-2026").await,
+        ),
+        (1, 1)
+    );
+}
+
+#[tokio::test]
 async fn test_oci_indexer_is_empty_without_tags() {
     let dir = tempfile::tempdir().unwrap();
     let (state, _app) = hosted_writable(&dir, TOKEN);

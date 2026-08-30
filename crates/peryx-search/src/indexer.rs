@@ -1,11 +1,15 @@
 use std::sync::Arc;
 
+use tantivy::tokenizer::MAX_TOKEN_LEN;
+
 use crate::context::IndexerCtx;
 use crate::engine::document_key;
 use crate::error::SearchError;
 use crate::params::ContentSource;
 
-pub const INDEXED_TEXT_BYTES: usize = 65_536;
+/// Tantivy silently drops a token longer than this, and the exact-match field holds one token per
+/// document, so a wider window would cost that document exact verification entirely.
+pub const INDEXED_TEXT_BYTES: usize = MAX_TOKEN_LEN;
 
 #[derive(Default)]
 pub struct ResourceUpdate {
@@ -75,5 +79,7 @@ pub struct SearchDocument {
     /// Precomputed to avoid storage probes while querying.
     pub available_locally: bool,
     pub summary: Option<String>,
+    /// Indexing folds case and truncates this at [`INDEXED_TEXT_BYTES`]; a provider that budgets sections
+    /// chooses what reaches that window rather than widening it.
     pub text: String,
 }

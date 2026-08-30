@@ -9,21 +9,20 @@ use tantivy::directory::MmapDirectory;
 use tantivy::query::{AllQuery, BooleanQuery, EmptyQuery, Query, RegexQuery, TermQuery};
 use tantivy::schema::document::{TantivyDocument, Value as _};
 use tantivy::schema::{FAST, Field, IndexRecordOption, STORED, STRING, Schema, TextFieldIndexing, TextOptions};
-use tantivy::tokenizer::{LowerCaser, NgramTokenizer, TextAnalyzer, TokenizerManager};
+use tantivy::tokenizer::{NgramTokenizer, TextAnalyzer, TokenizerManager};
 use tantivy::{Index as TantivyIndex, IndexReader, Order, Term};
 
 use crate::SEARCH_VIEW;
 use crate::access::{SearchAccess, SearchAccessPattern};
 use crate::context::{IndexerCtx, SearchCtx};
 use crate::error::SearchError;
-use crate::indexer::{CompositeIndexer, SearchDocument, SearchDocumentProvider, default_indexer};
+use crate::indexer::{CompositeIndexer, INDEXED_TEXT_BYTES, SearchDocument, SearchDocumentProvider, default_indexer};
 use crate::params::{ContentSource, SearchParams};
 use crate::response::{SearchResponse, SearchResult};
 
 const SUBSTRING_TOKENIZER: &str = "peryx_substring";
 const MIN_NGRAM: usize = 2;
 const MAX_NGRAM: usize = 12;
-const RAW_REGEX_BYTES: usize = 32 * 1024;
 const WRITER_MEMORY_BYTES: usize = 64 * 1024 * 1024;
 const REGEX_SPECIALS: &str = "\\.+*?()|[]{}^$";
 const AVAILABLE_LOCAL: &str = "local";
@@ -480,6 +479,10 @@ impl SearchIndex {
     }
 
     fn document(&self, resource: &SearchDocument) -> TantivyDocument {
+        // The n-gram prefilter and the exact verifier must see the same window: a match reaching only
+        // the wider field clears the prefilter and then fails verification.
+        let text = fold_lowercase(&resource.text);
+        let text = truncate_to_chars(&text, INDEXED_TEXT_BYTES);
         let sort = format!(
             "{}\u{0}{}\u{0}{}",
             resource.display_label.to_ascii_lowercase(),
@@ -504,11 +507,8 @@ impl SearchIndex {
         doc.add_text(self.fields.ecosystem, &resource.ecosystem);
         doc.add_text(self.fields.summary, resource.summary.as_deref().unwrap_or_default());
         doc.add_text(self.fields.sort, sort);
-        doc.add_text(self.fields.search, &resource.text);
-        doc.add_text(
-            self.fields.raw,
-            truncate_to_chars(&fold_lowercase(&resource.text), RAW_REGEX_BYTES),
-        );
+        doc.add_text(self.fields.search, text);
+        doc.add_text(self.fields.raw, text);
         doc
     }
 }
@@ -604,7 +604,6 @@ fn tokenizers() -> TokenizerManager {
     let tokenizer = TextAnalyzer::builder(
         NgramTokenizer::all_ngrams(MIN_NGRAM, MAX_NGRAM).expect("ngram tokenizer constants are valid"),
     )
-    .filter(LowerCaser)
     .build();
     manager.register(SUBSTRING_TOKENIZER, tokenizer);
     manager

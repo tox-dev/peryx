@@ -5,8 +5,8 @@ use rstest::rstest;
 
 use super::{ALT_WORDS, Stores};
 use crate::{
-    AvailabilityFilter, ContentSource, IndexerCtx, SearchAccess, SearchAccessPattern, SearchDocument,
-    SearchDocumentProvider, SearchError, SearchIndex, SearchParams, SourceFilter,
+    AvailabilityFilter, ContentSource, INDEXED_TEXT_BYTES, IndexerCtx, SearchAccess, SearchAccessPattern,
+    SearchDocument, SearchDocumentProvider, SearchError, SearchIndex, SearchParams, SourceFilter,
 };
 
 struct OneDoc {
@@ -256,27 +256,25 @@ fn test_search_folds_case_for_non_ascii_text() {
     }
 }
 
-struct SubstringDocs;
+struct TextDocs(Vec<(&'static str, String)>);
 
-impl SearchDocumentProvider for SubstringDocs {
+impl SearchDocumentProvider for TextDocs {
     fn documents(&self, _ctx: &IndexerCtx<'_>) -> Result<Vec<SearchDocument>, SearchError> {
-        Ok([
-            ("separated", "abcdefghijkl xx bcdefghijklm"),
-            ("whole", "zzabcdefghijklmzz"),
-        ]
-        .into_iter()
-        .map(|(name, text)| SearchDocument {
-            display_label: name.to_owned(),
-            resource_key: name.to_owned(),
-            route: "root".to_owned(),
-            index: "root".to_owned(),
-            ecosystem: "alpha".to_owned(),
-            source: ContentSource::Cached,
-            available_locally: false,
-            summary: None,
-            text: text.to_owned(),
-        })
-        .collect())
+        Ok(self
+            .0
+            .iter()
+            .map(|(name, text)| SearchDocument {
+                display_label: (*name).to_owned(),
+                resource_key: (*name).to_owned(),
+                route: "root".to_owned(),
+                index: "root".to_owned(),
+                ecosystem: "alpha".to_owned(),
+                source: ContentSource::Cached,
+                available_locally: false,
+                summary: None,
+                text: text.clone(),
+            })
+            .collect())
     }
 }
 
@@ -286,7 +284,10 @@ fn test_long_query_verifies_the_full_substring_after_the_ngram_prefilter() {
     let stores = Stores::open(&dir);
     let lexicons = LexiconRegistry::default();
     let mut search = SearchIndex::in_memory();
-    search.add_indexer(Arc::new(SubstringDocs));
+    search.add_indexer(Arc::new(TextDocs(vec![
+        ("separated", "abcdefghijkl xx bcdefghijklm".to_owned()),
+        ("whole", "zzabcdefghijklmzz".to_owned()),
+    ])));
 
     let response = search
         .search(
@@ -309,6 +310,68 @@ fn test_long_query_verifies_the_full_substring_after_the_ngram_prefilter() {
         ),
         (1, vec!["whole"])
     );
+}
+
+#[rstest]
+#[case::inside_limit(40 * 1024, "abcdefghijklm", 0, &["abcdefghijklm"], &[1])]
+#[case::at_the_limit(INDEXED_TEXT_BYTES - "abcdefghijklm".len(), "abcdefghijklm", 0, &["abcdefghijklm"], &[1])]
+#[case::after_limit(
+    INDEXED_TEXT_BYTES,
+    "release-candidate-2026",
+    0,
+    &["candidate", "release-candidate-2026"],
+    &[0, 0]
+)]
+#[case::cut_through_multibyte(
+    INDEXED_TEXT_BYTES - 1,
+    "éabcdefghijklm",
+    0,
+    &["éabcdef", "éabcdefghijklm"],
+    &[0, 0]
+)]
+#[case::multibyte_before_the_cut(
+    60 * 1024,
+    "éabcdefghijklm",
+    4 * 1024,
+    &["éabcdef", "éabcdefghijklm"],
+    &[1, 1]
+)]
+fn test_search_bounds_both_query_paths_to_the_indexed_window(
+    #[case] prefix_bytes: usize,
+    #[case] marker: &str,
+    #[case] trailing_chars: usize,
+    #[case] queries: &[&str],
+    #[case] expected: &[usize],
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let stores = Stores::open(&dir);
+    let lexicons = LexiconRegistry::default();
+    let mut search = SearchIndex::in_memory();
+    search.add_indexer(Arc::new(TextDocs(vec![(
+        "window",
+        format!("{}{marker}{}", "x".repeat(prefix_bytes), "é".repeat(trailing_chars)),
+    )])));
+
+    assert_eq!(
+        queries
+            .iter()
+            .map(|query| search_total(&search, &stores, &lexicons, query))
+            .collect::<Vec<_>>(),
+        expected
+    );
+}
+
+fn search_total(search: &SearchIndex, stores: &Stores, lexicons: &LexiconRegistry, query: &str) -> usize {
+    search
+        .search(
+            &stores.ctx(lexicons),
+            SearchParams {
+                query: query.to_owned(),
+                ..SearchParams::default()
+            },
+        )
+        .unwrap()
+        .total
 }
 
 #[test]

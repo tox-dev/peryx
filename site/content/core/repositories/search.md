@@ -60,6 +60,9 @@ The ecosystem implementations build searchable text from these fields:
 For example, a PyPI project named `acme` with the summary `Temporary upload` matches `q=temporary`. An OCI repository
 named `team/app` with the tag `release-candidate` matches `q=candidate`.
 
+peryx indexes at most 64 KiB of each search document, and both matching modes read that same window. A query and a
+longer query containing it therefore return the same records; neither matches text past the limit.
+
 ## Response schema
 
 The response echoes `query`, `route`, `type`, `availability`, `page`, and `page_size`. It adds `total` and a `results`
