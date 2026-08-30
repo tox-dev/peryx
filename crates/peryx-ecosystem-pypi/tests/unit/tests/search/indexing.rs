@@ -6,6 +6,20 @@ use peryx_search::{INDEXED_TEXT_BYTES, IndexerCtx, SearchDocumentProvider as _, 
 
 const OVERSIZED_CATALOG_FILES: usize = INDEXED_TEXT_BYTES / "large-catalog-1.0-00000-py3-none-any.whl".len() + 1;
 
+fn hosted_search_text(state: &ServingState) -> String {
+    PypiIndexer
+        .documents(&IndexerCtx {
+            indexes: &state.indexes,
+            meta: &state.meta,
+            blobs: &state.blobs,
+        })
+        .unwrap()
+        .into_iter()
+        .find(|document| document.route == "hosted")
+        .unwrap()
+        .text
+}
+
 #[test]
 fn test_search_indexer_reports_a_metadata_scan_failure() {
     let directory = tempfile::tempdir().unwrap();
@@ -60,6 +74,37 @@ async fn test_search_indexes_uploaded_metadata_and_route_scope() {
     assert_eq!(value["results"][0]["display_label"], "PeryxPkg");
     assert_eq!(value["results"][0]["resource_key"], "peryxpkg");
     assert_eq!(value["results"][0]["type"], "uploaded");
+}
+
+#[tokio::test]
+async fn test_search_document_text_separates_populated_fields() {
+    let h = placement_harness().await;
+    put_uploaded_package_with_metadata(
+        &h.state.serving,
+        "boundary-pkg",
+        "Metadata-Version: 2.4\nName: BoundaryPkg\nVersion: 1.0\nSummary: alpha\nLicense: beta\n",
+        None,
+    );
+
+    let text = hosted_search_text(&h.state.serving);
+
+    assert!(text.contains("alpha beta"), "{text}");
+}
+
+#[tokio::test]
+async fn test_search_document_text_skips_empty_fields() {
+    let h = placement_harness().await;
+    put_uploaded_package_with_metadata(
+        &h.state.serving,
+        "boundary-pkg",
+        "Metadata-Version: 2.4\nName: BoundaryPkg\nVersion: 1.0\n",
+        Some(" "),
+    );
+    put_uploaded_file(&h.state.serving, "boundary-pkg", "2.0");
+
+    let text = hosted_search_text(&h.state.serving);
+
+    assert!(!text.contains("  "), "{text}");
 }
 
 #[rstest::rstest]
