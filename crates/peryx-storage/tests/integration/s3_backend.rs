@@ -16,7 +16,7 @@ use aws_sdk_s3::primitives::ByteStream;
 use peryx_storage::blob::{BlobDurability, BlobStorage, BlobSupport, Digest, S3Config, S3Settings};
 use rstest::rstest;
 #[cfg(feature = "container-tests")]
-use testcontainers::core::wait::{ExitWaitStrategy, HttpWaitStrategy};
+use testcontainers::core::wait::ExitWaitStrategy;
 #[cfg(feature = "container-tests")]
 use testcontainers::core::{CmdWaitFor, ExecCommand, ImageExt as _, IntoContainerPort as _, WaitFor};
 #[cfg(feature = "container-tests")]
@@ -705,13 +705,8 @@ where
 #[cfg(feature = "container-tests")]
 async fn toxiproxy(minio: &Minio) -> Toxiproxy {
     let container = GenericImage::new("ghcr.io/shopify/toxiproxy", "2.12.0")
-        .with_exposed_port(8_474.tcp())
-        .with_exposed_port(8_666.tcp())
-        .with_wait_for(WaitFor::http(
-            HttpWaitStrategy::new("/version")
-                .with_port(8_474.tcp())
-                .with_expected_status_code(200_u16),
-        ))
+        .with_wait_for(WaitFor::message_on_stdout("Starting Toxiproxy HTTP server"))
+        .with_mapped_port(0, 8_666.tcp())
         .with_network(&minio.network)
         .with_cmd(["-host=0.0.0.0", "-proxy-metrics"])
         .start()
@@ -737,6 +732,23 @@ async fn toxiproxy(minio: &Minio) -> Toxiproxy {
         ),
         container,
     }
+}
+
+#[cfg(feature = "container-tests")]
+#[tokio::test]
+async fn test_s3_container_toxiproxy_publishes_only_the_data_port() {
+    let minio = minio().await;
+    let toxiproxy = toxiproxy(&minio).await;
+    let ports = toxiproxy.container.ports().await.unwrap();
+    let data_port = toxiproxy.endpoint.rsplit_once(':').unwrap().1.parse().unwrap();
+
+    assert_eq!(
+        (
+            ports.map_to_host_port_ipv4(8_474.tcp()),
+            ports.map_to_host_port_ipv4(8_666.tcp())
+        ),
+        (None, Some(data_port))
+    );
 }
 
 fn child_command(endpoint: &str, staging: &Path, scenario: &str, access_key: &str, secret_key: &str) -> Command {
