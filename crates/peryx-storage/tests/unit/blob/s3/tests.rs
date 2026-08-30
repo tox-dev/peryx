@@ -1,7 +1,11 @@
 use std::sync::Arc;
 
-use super::{BlobError, S3Backend, S3Config, S3Error, S3Settings, UploadAcquisition};
+use super::{
+    BlobError, MAX_MULTIPART_BYTES, MAX_PART_SIZE, S3Backend, S3Config, S3Error, S3Settings, UploadAcquisition,
+    multipart_part_size,
+};
 use crate::blob::BlobErrorKind;
+use rstest::rstest;
 use tokio::sync::watch;
 
 #[test]
@@ -10,6 +14,29 @@ fn test_blob_error_from_s3_error() {
     assert_eq!(
         BlobError::from(S3Error::Request("reset".to_owned())).kind(),
         BlobErrorKind::Io
+    );
+}
+
+#[rstest]
+#[case::configured(5 << 20, 50_000 << 20, 5 << 20)]
+#[case::rounded(5 << 20, (50_000 << 20) + 1, (5 << 20) + 1)]
+#[case::protocol_max(5 << 20, MAX_MULTIPART_BYTES, MAX_PART_SIZE)]
+fn test_multipart_part_size_stays_within_protocol_bounds(
+    #[case] configured: u64,
+    #[case] len: u64,
+    #[case] expected: u64,
+) {
+    assert_eq!(multipart_part_size(configured, len).unwrap(), expected);
+}
+
+#[test]
+fn test_multipart_part_size_rejects_the_first_byte_above_the_protocol_limit() {
+    let len = MAX_MULTIPART_BYTES + 1;
+    let error = multipart_part_size(5 << 20, len).unwrap_err();
+    assert_eq!(error.kind(), BlobErrorKind::LimitExceeded);
+    assert_eq!(
+        error.to_string(),
+        format!("blob size {len} exceeds {MAX_MULTIPART_BYTES} byte limit")
     );
 }
 

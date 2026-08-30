@@ -28,6 +28,10 @@ use super::{
     BlobReadBody, BlobStaged, BlobSupport, BlobWrite, Digest, DurabilityCapabilities, PlacementReceipt,
 };
 
+const MAX_MULTIPART_PARTS: u64 = 10_000;
+const MAX_PART_SIZE: u64 = 5 << 30;
+const MAX_MULTIPART_BYTES: u64 = MAX_MULTIPART_PARTS * MAX_PART_SIZE;
+
 #[derive(Debug, Clone)]
 pub struct S3Backend {
     client: S3Client,
@@ -200,10 +204,12 @@ impl S3Backend {
         let len = staged.len();
         let path = staged.with_materialized(Path::to_path_buf);
         let key = self.key_for(&digest);
+        let part_size = multipart_part_size(self.client.config().part_size, len)
+            .map_err(|error| error.with_context("s3", BlobOperation::Commit, Some(&digest)))?;
         let result = if len <= self.client.config().multipart_threshold {
             self.put_whole(&key, &digest, &path).await
         } else {
-            self.put_multipart(&key, &digest, len, &path).await
+            self.put_multipart(&key, &digest, len, part_size, &path).await
         };
         match result {
             Ok(()) | Err(S3Error::AlreadyExists) => Ok(()),
@@ -223,8 +229,14 @@ impl S3Backend {
         }
     }
 
-    async fn put_multipart(&self, key: &str, digest: &Digest, len: u64, path: &Path) -> Result<(), S3Error> {
-        let part_size = self.client.config().part_size.max(len.div_ceil(10_000));
+    async fn put_multipart(
+        &self,
+        key: &str,
+        digest: &Digest,
+        len: u64,
+        part_size: u64,
+        path: &Path,
+    ) -> Result<(), S3Error> {
         let journal = self.multipart_journal(digest);
         let mut conflicts = 0;
         let mut recovered_stale_upload = false;
@@ -341,16 +353,14 @@ impl S3Backend {
         part_size: u64,
         path: &Path,
     ) -> Result<Vec<S3Part>, S3Error> {
-        let part_size = usize::try_from(part_size).expect("validated S3 part size fits usize");
-        let part_bytes = u64::try_from(part_size).expect("part size originated as u64");
-        let mut pending = (0..len)
-            .step_by(part_size)
-            .enumerate()
-            .map(|(index, offset)| PartSlice {
+        let mut pending = (0..len.div_ceil(part_size)).map(|index| {
+            let offset = index * part_size;
+            PartSlice {
                 number: i32::try_from(index + 1).expect("multipart part count is bounded to 10,000"),
                 offset,
-                bytes: part_bytes.min(len - offset),
-            });
+                bytes: part_size.min(len - offset),
+            }
+        });
         let mut uploads = FuturesUnordered::new();
         for _ in 0..self.client.config().upload_concurrency {
             let Some(part) = pending.next() else {
@@ -384,6 +394,14 @@ impl S3Backend {
             .upload_part(key, upload_id, part.number, path, part.offset, part.bytes)
             .await
     }
+}
+
+fn multipart_part_size(configured: u64, len: u64) -> Result<u64, BlobError> {
+    let part_size = configured.max(len.div_ceil(MAX_MULTIPART_PARTS));
+    if part_size > MAX_PART_SIZE {
+        return Err(BlobError::limit_exceeded(MAX_MULTIPART_BYTES, len));
+    }
+    Ok(part_size)
 }
 
 async fn create_upload(client: &S3Client, key: &str, journal: &Path) -> Result<String, S3Error> {

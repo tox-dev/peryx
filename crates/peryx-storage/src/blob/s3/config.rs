@@ -5,10 +5,10 @@ use std::time::Duration;
 
 use url::Url;
 
+use super::MAX_PART_SIZE;
 use crate::blob::DurabilityCapabilities;
 
 const MIN_PART_SIZE: u64 = 5 << 20;
-const MAX_PART_SIZE: u64 = 5 << 30;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum S3ConfigError {
