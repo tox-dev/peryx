@@ -354,13 +354,13 @@ fn assert_metadata_read_error(backup: &std::path::Path) {
             .find(|entry| descriptor_number(entry) == disposable.as_raw_fd())
             .unwrap();
         drop(disposable);
-        assert!(existing_descriptor(disposable_entry).is_none());
+        assert!(existing_descriptor(&disposable_entry).is_none());
         ready_send.send(()).unwrap();
         loop {
             for (descriptor, found) in std::fs::read_dir(descriptor_directory)
                 .unwrap()
                 .map(Result::unwrap)
-                .filter_map(existing_descriptor)
+                .filter_map(|entry| existing_descriptor(&entry))
             {
                 if descriptor > 2
                     && found.ino() == identity.ino()
@@ -395,8 +395,8 @@ fn assert_metadata_read_error(backup: &std::path::Path) {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn existing_descriptor(entry: std::fs::DirEntry) -> Option<(i32, std::fs::Metadata)> {
-    let descriptor = descriptor_number(&entry);
+fn existing_descriptor(entry: &std::fs::DirEntry) -> Option<(i32, std::fs::Metadata)> {
+    let descriptor = descriptor_number(entry);
     match std::fs::metadata(entry.path()) {
         Ok(found) => Some((descriptor, found)),
         Err(error) => {
