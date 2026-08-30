@@ -2,8 +2,10 @@ use std::num::{NonZeroU64, NonZeroUsize};
 use std::time::Duration;
 
 use axum::Json;
+use axum::body::Body;
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
+use bytes::Bytes;
 
 use crate::peer::{BatchRequest, PeerTransport, TransferLimits, TransportError};
 use crate::peer_http::{HttpPeerError, HttpPeerTransport};
@@ -93,6 +95,67 @@ async fn test_fetch_parses_a_valid_batch_from_a_nested_base() {
     assert_eq!(frame.frontier(), ("primary-a", 2));
     assert_eq!(frame.page().changes.len(), 2);
     assert_eq!(frame.page().changes[0].serial, 1);
+}
+
+#[tokio::test]
+async fn test_fetch_preserves_wire_length_at_count_and_byte_limits() {
+    let body = format!(" \n{}\t ", serde_json::to_string(&sample_page()).unwrap());
+    let byte_limit = body.len() as u64;
+    let response_body = body.clone();
+    let frame = http_contract::run(
+        http_contract::fixed_get(CHANGES_ROUTE, move || Response::new(Body::from(response_body.clone()))),
+        |base| async move {
+            transport(&base, limits(2, byte_limit))
+                .fetch_batch(request(0, 2))
+                .await
+                .unwrap()
+        },
+    )
+    .await;
+
+    assert_eq!(frame.page(), &sample_page());
+    assert_eq!(frame.encoded_len(), byte_limit);
+}
+
+#[tokio::test]
+async fn test_fetch_rejects_a_page_over_the_requested_count() {
+    http_contract::assert_mapping(
+        http_contract::fixed_get(CHANGES_ROUTE, || Json(sample_page()).into_response()),
+        |base| async move { transport(&base, limits(2, 4096)).fetch_batch(request(0, 1)).await },
+        Err(TransportError::TooManyOperations { limit: 1, actual: 2 }),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn test_fetch_applies_the_streaming_byte_cap_before_decode() {
+    let encoded = serde_json::to_vec(&sample_page()).unwrap();
+    let byte_limit = encoded.len() as u64;
+    let response_body = encoded.clone();
+
+    let error = http_contract::run(
+        http_contract::fixed_get(CHANGES_ROUTE, move || {
+            Response::new(Body::from_stream(futures_util::stream::iter([
+                Ok::<_, std::io::Error>(Bytes::from(response_body.clone())),
+                Ok(Bytes::from_static(b" ")),
+            ])))
+        }),
+        |base| async move {
+            transport(&base, limits(2, byte_limit))
+                .fetch_batch(request(0, 2))
+                .await
+                .unwrap_err()
+        },
+    )
+    .await;
+
+    assert_eq!(
+        error,
+        TransportError::FrameTooLarge {
+            limit: byte_limit,
+            actual: byte_limit + 1,
+        }
+    );
 }
 
 #[tokio::test]

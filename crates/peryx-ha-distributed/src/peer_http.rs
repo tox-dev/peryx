@@ -11,7 +11,7 @@ use reqwest::Url;
 use crate::client_transport::{
     HttpClientConfigError, HttpClientTransport, replication_error, require_replication_success,
 };
-use crate::peer::{BatchFrame, BatchRequest, PeerTransport, TransferLimits, TransportError};
+use crate::peer::{BatchFrame, BatchRequest, PeerTransport, TransferLimits, TransportError, validate_batch_size};
 use crate::protocol::ChangePage;
 
 const CHANGES_PATH: &str = "+replication/v1/changes";
@@ -82,7 +82,8 @@ impl PeerTransport for HttpPeerTransport {
         let cap = self.limits.max_encoded_bytes.get();
         let body = self.http.read_replication_body(response, cap, true).await?;
         let page: ChangePage = serde_json::from_slice(&body).map_err(|_| TransportError::Malformed)?;
-        Ok(BatchFrame::new(page))
+        validate_batch_size(request.max_operations, &page)?;
+        Ok(BatchFrame::from_encoded(page, body.len() as u64))
     }
 }
 

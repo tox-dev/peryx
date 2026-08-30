@@ -974,7 +974,7 @@ pub enum TransportError {
     Malformed,
     #[error("batch frame is {actual} bytes; the transport caps a frame at {limit}")]
     FrameTooLarge { limit: u64, actual: u64 },
-    #[error("request asked for {actual} operations; the peer caps a batch at {limit}")]
+    #[error("batch contains {actual} operations; the operation limit is {limit}")]
     TooManyOperations { limit: usize, actual: usize },
     #[error("peer advertised source {actual:?}; the frontier follows {expected:?}")]
     SourceChanged { expected: String, actual: String },

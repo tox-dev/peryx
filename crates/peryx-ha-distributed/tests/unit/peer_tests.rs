@@ -48,19 +48,26 @@ fn page(source: &str, after: u64, current_serial: u64, serials: &[u64]) -> Chang
 
 struct ScriptedTransport {
     frames: Mutex<std::vec::IntoIter<Result<BatchFrame, TransportError>>>,
+    requests: Mutex<Vec<BatchRequest>>,
 }
 
 impl ScriptedTransport {
     fn new(frames: Vec<Result<BatchFrame, TransportError>>) -> Self {
         Self {
             frames: Mutex::new(frames.into_iter()),
+            requests: Mutex::new(Vec::new()),
         }
+    }
+
+    fn requests(&self) -> Vec<BatchRequest> {
+        self.requests.lock().unwrap().clone()
     }
 }
 
 #[async_trait]
 impl PeerTransport for ScriptedTransport {
-    async fn fetch_batch(&self, _request: BatchRequest) -> Result<BatchFrame, TransportError> {
+    async fn fetch_batch(&self, request: BatchRequest) -> Result<BatchFrame, TransportError> {
+        self.requests.lock().unwrap().push(request);
         self.frames
             .lock()
             .unwrap()
@@ -305,19 +312,47 @@ async fn test_drain_resumes_from_a_mid_frontier() {
 }
 
 #[tokio::test]
-async fn test_drain_stops_at_the_memory_budget() {
+async fn test_drain_limits_the_last_request_to_the_memory_budget() {
     let peer = seeded_peer("primary-a", "secret", 5);
     let transport = LoopbackTransport::connect(&peer, "secret");
     let sync = drain_to_frontier(&transport, 0, ops(2), ops(3)).await.unwrap();
     assert!(!sync.caught_up);
-    assert_eq!(sync.through, 4);
-    assert_eq!(sync.changes.len(), 4);
+    assert_eq!(sync.through, 3);
+    assert_eq!(
+        sync.changes.iter().map(|change| change.serial).collect::<Vec<_>>(),
+        vec![1, 2, 3]
+    );
     let resumed = drain_to_frontier(&transport, sync.through, ops(2), ops(3))
         .await
         .unwrap();
     assert!(resumed.caught_up);
     let serials: Vec<u64> = resumed.changes.iter().map(|change| change.serial).collect();
-    assert_eq!(serials, vec![5]);
+    assert_eq!(serials, vec![4, 5]);
+}
+
+#[tokio::test]
+async fn test_drain_rejects_an_over_count_page_without_a_partial_result() {
+    let transport = ScriptedTransport::new(vec![
+        Ok(BatchFrame::new(page("primary-a", 0, 4, &[1, 2]))),
+        Ok(BatchFrame::new(page("primary-a", 2, 4, &[3, 4]))),
+    ]);
+
+    let error = drain_to_frontier(&transport, 0, ops(2), ops(3)).await.unwrap_err();
+
+    assert_eq!(error, TransportError::TooManyOperations { limit: 1, actual: 2 });
+    assert_eq!(
+        transport.requests(),
+        vec![
+            BatchRequest {
+                after: 0,
+                max_operations: ops(2),
+            },
+            BatchRequest {
+                after: 2,
+                max_operations: ops(1),
+            },
+        ]
+    );
 }
 
 #[tokio::test]

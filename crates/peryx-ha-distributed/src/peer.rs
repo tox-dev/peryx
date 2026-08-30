@@ -45,6 +45,10 @@ impl BatchFrame {
         Self { page, encoded_len }
     }
 
+    pub(crate) const fn from_encoded(page: ChangePage, encoded_len: u64) -> Self {
+        Self { page, encoded_len }
+    }
+
     #[must_use]
     pub const fn page(&self) -> &ChangePage {
         &self.page
@@ -210,15 +214,12 @@ pub async fn drain_to_frontier<T: PeerTransport>(
 ) -> Result<FrontierSync, TransportError> {
     let mut after = from;
     let mut changes: Vec<Change> = Vec::new();
-    let mut frame = transport
-        .fetch_batch(BatchRequest {
-            after,
-            max_operations: request_size,
-        })
-        .await?;
+    let mut max_operations = request_size.min(budget);
+    let mut frame = transport.fetch_batch(BatchRequest { after, max_operations }).await?;
     let source = frame.page().source.clone();
     loop {
         let page = frame.page();
+        validate_batch_size(max_operations, page)?;
         if source != page.source {
             return Err(TransportError::SourceChanged {
                 expected: source,
@@ -236,21 +237,27 @@ pub async fn drain_to_frontier<T: PeerTransport>(
                 caught_up: true,
             });
         }
-        if changes.len() >= budget.get() {
+        let Some(remaining) = budget.get().checked_sub(changes.len()).and_then(NonZeroUsize::new) else {
             return Ok(FrontierSync {
                 source,
                 through: after,
                 changes,
                 caught_up: false,
             });
-        }
-        frame = transport
-            .fetch_batch(BatchRequest {
-                after,
-                max_operations: request_size,
-            })
-            .await?;
+        };
+        max_operations = request_size.min(remaining);
+        frame = transport.fetch_batch(BatchRequest { after, max_operations }).await?;
     }
+}
+
+pub const fn validate_batch_size(limit: NonZeroUsize, page: &ChangePage) -> Result<(), TransportError> {
+    if page.changes.len() > limit.get() {
+        return Err(TransportError::TooManyOperations {
+            limit: limit.get(),
+            actual: page.changes.len(),
+        });
+    }
+    Ok(())
 }
 
 /// Requires `page.after == from`, contiguous change serials, and a nonempty page while the advertised
