@@ -305,6 +305,87 @@ fn test_verify_reports_an_unreadable_metadata_store() {
     );
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn test_verify_reports_metadata_read_errors() {
+    let backup_env = "PERYX_TEST_METADATA_READ_ERROR_BACKUP";
+    if let Some(backup) = std::env::var_os(backup_env) {
+        assert_metadata_read_error(std::path::Path::new(&backup));
+        return;
+    }
+    let fixture = valid_backup();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "operator::tests::verify_tests::test_verify_reports_metadata_read_errors",
+            "--nocapture",
+        ])
+        .env(backup_env, &fixture.backup)
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn assert_metadata_read_error(backup: &std::path::Path) {
+    use std::os::fd::AsRawFd as _;
+    use std::os::unix::fs::MetadataExt as _;
+    use std::sync::mpsc;
+
+    let metadata = backup.join("metadata/peryx.redb");
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&metadata)
+        .unwrap()
+        .set_len(1 << 30)
+        .unwrap();
+    let identity = std::fs::metadata(metadata).unwrap();
+    let (ready_send, ready_receive) = mpsc::sync_channel(0);
+    let watcher = std::thread::spawn(move || {
+        ready_send.send(()).unwrap();
+        loop {
+            #[cfg(target_os = "linux")]
+            let descriptors = std::fs::read_dir("/proc/self/fd").unwrap();
+            #[cfg(target_os = "macos")]
+            let descriptors = std::fs::read_dir("/dev/fd").unwrap();
+            for entry in descriptors.flatten() {
+                let descriptor = entry.file_name().to_string_lossy().parse::<i32>().unwrap();
+                let Ok(found) = std::fs::metadata(entry.path()) else {
+                    continue;
+                };
+                if descriptor > 2
+                    && found.ino() == identity.ino()
+                    && (cfg!(target_os = "macos") || found.dev() == identity.dev())
+                {
+                    nix::unistd::close(descriptor).unwrap();
+                    let replacement = std::fs::OpenOptions::new().write(true).open("/dev/null").unwrap();
+                    assert_eq!(replacement.as_raw_fd(), descriptor);
+                    return replacement;
+                }
+            }
+        }
+    });
+    ready_receive.recv().unwrap();
+    let mut out = Vec::new();
+
+    let error = backup_verify(backup, &mut out).unwrap_err();
+
+    let replacement = watcher.join().unwrap();
+    std::mem::forget(replacement);
+    assert_eq!(
+        (error.to_string(), String::from_utf8(out).unwrap()),
+        (
+            "backup verification failed with 1 problem(s)".to_owned(),
+            concat!(
+                "problem\tmetadata\tmetadata/peryx.redb\tI/O error: Bad file descriptor (os error 9)\n",
+                "problems\t1\n"
+            )
+            .to_owned(),
+        )
+    );
+}
+
 #[rstest]
 #[case::sha("sha256", serde_json::json!("invalid"), "sha256 expected")]
 #[case::size("size_bytes", serde_json::json!(0), "size expected 0")]
