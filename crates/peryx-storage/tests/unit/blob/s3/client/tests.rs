@@ -449,17 +449,16 @@ async fn test_get_budget_starts_after_lazy_client_initialization() {
     let started = tokio::time::Instant::now();
     tokio::time::advance(setup_delay).await;
     initialization_gate.wait().await;
-    let Err(error) = request.await else {
-        panic!("expected request timeout");
-    };
+    let error = request.await.err().expect("expected request timeout");
     initialize.await.unwrap();
 
-    let S3Error::Request(message) = error else {
-        panic!("expected request error, got {error:?}");
-    };
     assert_eq!(
-        (started.elapsed(), message, http_client.num_calls()),
-        (setup_delay + timeout, "deadline has elapsed".to_owned(), 1)
+        (started.elapsed(), error.to_string(), http_client.num_calls()),
+        (
+            setup_delay + timeout,
+            "s3 request failed: deadline has elapsed".to_owned(),
+            1
+        )
     );
 }
 
@@ -478,16 +477,15 @@ async fn test_get_normalizes_the_sdk_timeout_at_the_deadline() {
     };
     let started = tokio::time::Instant::now();
 
-    let Err(error) = client.get("cache/sha256/digest", None, None).await else {
-        panic!("expected request timeout");
-    };
+    let error = client
+        .get("cache/sha256/digest", None, None)
+        .await
+        .err()
+        .expect("expected request timeout");
 
-    let S3Error::Request(message) = error else {
-        panic!("expected request error, got {error:?}");
-    };
     assert_eq!(
-        (started.elapsed(), message, http_client.num_calls()),
-        (timeout, "deadline has elapsed".to_owned(), 1)
+        (started.elapsed(), error.to_string(), http_client.num_calls()),
+        (timeout, "s3 request failed: deadline has elapsed".to_owned(), 1)
     );
 }
 
@@ -517,9 +515,7 @@ async fn test_get_preserves_a_ready_service_error_at_the_deadline() {
     release_response_tx.send(()).unwrap();
     tokio::time::advance(timeout).await;
 
-    let Err(error) = request.await else {
-        panic!("expected service error");
-    };
+    let error = request.await.err().expect("expected service error");
     assert!(matches!(error, S3Error::NotFound));
 }
 
