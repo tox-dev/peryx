@@ -205,54 +205,71 @@ async fn test_verifier_rejects_a_different_expected_audience() {
     );
 }
 
+#[rstest]
+#[case::duplicate(json!({"keys": [jwk("same"), jwk("same")]}))]
+#[case::no_id(json!({"keys": [{"kty": "RSA", "n": MODULUS, "e": "AQAB", "alg": "RS256"}]}))]
+#[case::bad_modulus(json!({"keys": [{"kty": "RSA", "n": "!", "e": "AQAB", "kid": "broken", "alg": "RS256"}]}))]
 #[tokio::test]
-async fn test_duplicate_key_ids_reject_the_refresh() {
+async fn test_unusable_key_sets_reject_the_refresh(#[case] keys: Value) {
     let server = MockServer::start().await;
-    mount_issuer(&server, json!({"keys": [jwk("same"), jwk("same")]})).await;
+    mount_issuer(&server, keys).await;
     let verifier = test_verifier(&server.uri());
     assert_eq!(
         verifier
-            .verify_identity(&identity(&server.uri(), "same", "jti"), NOW)
+            .verify_identity(&identity(&server.uri(), "broken", "jti"), NOW)
             .await,
         Err(OidcVerificationError::InvalidIssuerResponse)
     );
 }
 
 #[tokio::test]
-async fn test_missing_key_id_rejects_the_refresh() {
-    let server = MockServer::start().await;
-    mount_issuer(
-        &server,
-        json!({"keys": [{"kty": "RSA", "n": MODULUS, "e": "AQAB", "alg": "RS256"}]}),
-    )
-    .await;
-    let verifier = test_verifier(&server.uri());
-    assert_eq!(
-        verifier
-            .verify_identity(&identity(&server.uri(), "key-1", "jti"), NOW)
-            .await,
-        Err(OidcVerificationError::InvalidIssuerResponse)
-    );
-}
-
-#[tokio::test]
-async fn test_incompatible_keys_do_not_hide_a_usable_key() {
+async fn test_unusable_entries_do_not_hide_a_usable_key() {
     let server = MockServer::start().await;
     mount_issuer(
         &server,
         json!({"keys": [
             {"kty": "oct", "k": "c2VjcmV0", "kid": "symmetric", "alg": "HS256"},
             {"kty": "RSA", "n": MODULUS, "e": "AQAB", "kid": "signing-only", "alg": "RS256", "use": "sig", "key_ops": ["sign"]},
+            {"kty": "RSA", "n": MODULUS, "e": "AQAB", "alg": "RS256"},
+            {"kty": "RSA", "n": "!", "e": "AQAB", "kid": "key-1", "alg": "RS256", "use": "sig"},
             {"kty": "RSA", "n": MODULUS, "e": "AQAB", "kid": "key-1", "alg": "RS256", "use": "sig", "key_ops": ["verify"]}
         ]}),
     )
     .await;
     let verifier = test_verifier(&server.uri());
-    assert!(
+    assert_eq!(
         verifier
             .verify_identity(&identity(&server.uri(), "key-1", "mixed"), NOW)
             .await
-            .is_ok()
+            .unwrap(),
+        VerifiedOidcIdentity {
+            issuer: secure_origin(&server.uri()),
+            audience: "peryx".to_owned(),
+            subject: "repo:org/app:ref:refs/heads/main".to_owned(),
+            expires_at: NOW + 600,
+            token_id: "mixed".to_owned(),
+            claims: [("repository_id".to_owned(), json!("42"))].into(),
+        }
+    );
+}
+
+#[tokio::test]
+async fn test_unusable_matching_key_remains_unknown() {
+    let server = MockServer::start().await;
+    mount_issuer(
+        &server,
+        json!({"keys": [
+            {"kty": "RSA", "n": "!", "e": "AQAB", "kid": "broken", "alg": "RS256", "use": "sig"},
+            jwk("key-1")
+        ]}),
+    )
+    .await;
+    let verifier = test_verifier(&server.uri());
+    assert_eq!(
+        verifier
+            .verify_identity(&identity(&server.uri(), "broken", "unknown"), NOW)
+            .await,
+        Err(OidcVerificationError::UnknownKey)
     );
 }
 

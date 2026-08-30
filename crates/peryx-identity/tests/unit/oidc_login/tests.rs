@@ -982,13 +982,15 @@ async fn test_unusable_key_sets_are_rejected(#[case] keys: Value) {
 }
 
 #[tokio::test]
-async fn test_verify_only_key_survives_alongside_incompatible_keys() {
+async fn test_usable_key_survives_alongside_unusable_entries() {
     let server = MockServer::start().await;
     mount_metadata(
         &server,
         json!({"keys": [
             {"kty": "oct", "k": "c2VjcmV0", "kid": "sym", "alg": "HS256"},
             {"kty": "RSA", "n": MODULUS, "e": "AQAB", "kid": "sign-only", "alg": "RS256", "use": "sig", "key_ops": ["sign"]},
+            {"kty": "RSA", "n": MODULUS, "e": "AQAB", "alg": "RS256"},
+            {"kty": "RSA", "n": "!", "e": "AQAB", "kid": "key-1", "alg": "RS256", "use": "sig"},
             {"kty": "RSA", "n": MODULUS, "e": "AQAB", "kid": "key-1", "alg": "RS256", "use": "sig", "key_ops": ["verify"]}
         ]}),
     )
@@ -1008,6 +1010,29 @@ async fn test_verify_only_key_survives_alongside_incompatible_keys() {
             login.groups.iter().map(ExternalGroup::as_str).collect::<Vec<_>>(),
         ),
         ("corporate", "subject-123", "Ada Lovelace", vec!["dev", "ops"])
+    );
+}
+
+#[tokio::test]
+async fn test_unusable_matching_key_remains_unknown() {
+    let server = MockServer::start().await;
+    mount_metadata(
+        &server,
+        json!({"keys": [
+            {"kty": "RSA", "n": "!", "e": "AQAB", "kid": "broken", "alg": "RS256", "use": "sig"},
+            jwk("key-1")
+        ]}),
+    )
+    .await;
+    let provider = provider(&server.uri());
+    mount_token(
+        &server,
+        json!({"id_token": mint("broken", &base_claims(&server)), "token_type": "Bearer"}),
+    )
+    .await;
+    assert_eq!(
+        provider.callback(&response(), &pending(), NOW).await,
+        Err(OidcProviderError::UnknownKey)
     );
 }
 

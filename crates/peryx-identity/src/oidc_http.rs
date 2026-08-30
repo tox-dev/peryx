@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use async_trait::async_trait;
 use jsonwebtoken::DecodingKey;
@@ -134,17 +134,6 @@ pub fn freshness(discovery: Option<i64>, jwks: Option<i64>) -> i64 {
 }
 
 pub fn usable_keys(jwks: JwkSet) -> Result<HashMap<String, DecodingKey>, OidcHttpError> {
-    let mut ids = HashSet::new();
-    if jwks.keys.is_empty()
-        || jwks.keys.iter().any(|key| {
-            let Some(id) = key.common.key_id.as_deref().filter(|id| !id.is_empty()) else {
-                return true;
-            };
-            !ids.insert(id)
-        })
-    {
-        return Err(OidcHttpError::InvalidResponse);
-    }
     let mut keys = HashMap::new();
     for key in jwks.keys.into_iter().filter(|key| {
         matches!(key.algorithm, AlgorithmParameters::RSA(_))
@@ -163,11 +152,15 @@ pub fn usable_keys(jwks: JwkSet) -> Result<HashMap<String, DecodingKey>, OidcHtt
                 .as_ref()
                 .is_none_or(|operations| operations.contains(&KeyOperations::Verify))
     }) {
-        let id = key.common.key_id.clone().expect("key IDs were validated");
-        keys.insert(
-            id,
-            DecodingKey::from_jwk(&key).map_err(|_| OidcHttpError::InvalidResponse)?,
-        );
+        let Some(id) = key.common.key_id.as_deref().filter(|id| !id.is_empty()) else {
+            continue;
+        };
+        let Ok(decoding_key) = DecodingKey::from_jwk(&key) else {
+            continue;
+        };
+        if keys.insert(id.to_owned(), decoding_key).is_some() {
+            return Err(OidcHttpError::InvalidResponse);
+        }
     }
     if keys.is_empty() {
         return Err(OidcHttpError::InvalidResponse);
