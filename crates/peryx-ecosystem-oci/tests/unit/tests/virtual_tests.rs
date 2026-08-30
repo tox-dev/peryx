@@ -234,7 +234,12 @@ async fn test_virtual_subject_delete_wins_inflight_referrer_discovery() {
         ResponseTemplate::new(200).set_body_raw(
             serde_json::json!({
                 "schemaVersion": 2,
-                "manifests": [{"digest": referrer}],
+                "mediaType": "application/vnd.oci.image.index.v1+json",
+                "manifests": [{
+                    "mediaType": MANIFEST_TYPE,
+                    "digest": referrer,
+                    "size": 1,
+                }],
             })
             .to_string()
             .into_bytes(),
@@ -268,6 +273,76 @@ async fn test_virtual_subject_delete_wins_inflight_referrer_discovery() {
     assert_eq!(status, StatusCode::OK);
     let index: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert!(index["manifests"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_virtual_referrers_discard_local_results_when_a_proxy_fails() {
+    let server = MockServer::start().await;
+    let subject = format!("sha256:{}", "b".repeat(64));
+    Mock::given(method("GET"))
+        .and(path(format!("/v2/app/referrers/{subject}")))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = virtual_stack(&dir, &format!("{}/", server.uri()));
+    let manifest = serde_json::json!({
+        "schemaVersion": 2,
+        "mediaType": MANIFEST_TYPE,
+        "artifactType": "application/vnd.example.sig",
+        "subject": {"digest": subject},
+    })
+    .to_string();
+    push_to_virtual(&app, "signature", manifest.as_bytes()).await;
+
+    assert_eq!(
+        send(&app, Method::GET, &format!("/v2/reg/app/referrers/{subject}"))
+            .await
+            .0,
+        StatusCode::BAD_GATEWAY
+    );
+}
+
+#[tokio::test]
+async fn test_virtual_referrers_keep_local_results_when_a_proxy_is_empty() {
+    let server = MockServer::start().await;
+    let subject = format!("sha256:{}", "b".repeat(64));
+    Mock::given(method("GET"))
+        .and(path(format!("/v2/app/referrers/{subject}")))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(
+                serde_json::json!({
+                    "schemaVersion": 2,
+                    "mediaType": "application/vnd.oci.image.index.v1+json",
+                    "manifests": [],
+                })
+                .to_string()
+                .into_bytes(),
+                "application/vnd.oci.image.index.v1+json",
+            ),
+        )
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = virtual_stack(&dir, &format!("{}/", server.uri()));
+    let manifest = serde_json::json!({
+        "schemaVersion": 2,
+        "mediaType": MANIFEST_TYPE,
+        "artifactType": "application/vnd.example.sig",
+        "subject": {"digest": subject},
+    })
+    .to_string();
+    let referrer = oci_digest(manifest.as_bytes());
+    push_to_virtual(&app, "signature", manifest.as_bytes()).await;
+
+    let (status, _, body) = send(&app, Method::GET, &format!("/v2/reg/app/referrers/{subject}")).await;
+    assert_eq!(
+        (
+            status,
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap()["manifests"][0]["digest"].clone(),
+        ),
+        (StatusCode::OK, serde_json::json!(referrer))
+    );
 }
 
 #[tokio::test]

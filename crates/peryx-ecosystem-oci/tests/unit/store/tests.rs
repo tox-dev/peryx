@@ -37,6 +37,26 @@ fn test_a_truncated_tag_page_record_reads_as_absent() {
 }
 
 #[test]
+fn test_referrer_page_round_trips() {
+    let (_dir, meta) = store();
+    let manifests = vec![serde_json::json!({"digest": "sha256:ref"})];
+    assert_eq!(referrer_page(&meta, "hub", "app", "sha256:subject").unwrap(), None);
+    set_referrer_page(&meta, "hub", "app", "sha256:subject", 42, &manifests).unwrap();
+    assert_eq!(
+        referrer_page(&meta, "hub", "app", "sha256:subject").unwrap(),
+        Some((42, manifests))
+    );
+}
+
+#[test]
+fn test_truncated_referrer_page_reads_as_absent() {
+    let (_dir, meta) = store();
+    meta.put_driver_value(&referrer_page_key("hub", "app", "sha256:subject"), &[0; 7])
+        .unwrap();
+    assert_eq!(referrer_page(&meta, "hub", "app", "sha256:subject").unwrap(), None);
+}
+
+#[test]
 fn test_manifest_round_trips_through_the_store() {
     let (_dir, meta) = store();
     let manifest = Manifest {

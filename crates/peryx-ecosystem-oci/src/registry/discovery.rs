@@ -4,10 +4,12 @@ use crate::store::{self};
 use axum::body::Body;
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use mediatype::MediaType;
 use peryx_driver::ServingState;
 use peryx_upstream::UpstreamClient;
 
 const TAG_RESOLUTION_CONCURRENCY: usize = 8;
+const OCI_INDEX_TYPE: &str = "application/vnd.oci.image.index.v1+json";
 
 impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> {
     /// Serve the tag list. With no active revocations a lone online proxy passes upstream through;
@@ -279,29 +281,39 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
     /// The referrer descriptors upstream records for `repo`/`digest`. A registry predating the referrers
     /// API answers `404`; the spec then directs a fallback to the referrers tag schema, an image index
     /// tagged after the subject digest, so a signature or SBOM pushed before the API existed stays
-    /// discoverable through the cache. Any other failure yields empty rather than failing the response.
+    /// discoverable through the cache.
     async fn upstream_referrers(
         &self,
+        state: &ServingState,
         index: &str,
         client: &UpstreamClient,
         repo: &str,
         digest: &str,
-    ) -> Vec<serde_json::Value> {
-        let repo = self.upstream_repo(index, client, repo);
-        match self.upstream.referrers(client, &repo, digest).await {
-            Ok(response) => referrer_manifests(response).await,
-            Err(crate::upstream::UpstreamError::Status(StatusCode::NOT_FOUND)) => {
-                let Ok(response) = self
-                    .upstream
-                    .manifest(client, &repo, &crate::name::referrers_tag(digest))
-                    .await
-                else {
-                    return Vec::new();
-                };
-                referrer_manifests(response).await
-            }
-            Err(_) => Vec::new(),
+    ) -> Result<Vec<serde_json::Value>, ReferrerLookupError> {
+        let now = (state.clock)();
+        if let Some((fetched_at, manifests)) = store::referrer_page(&state.meta, index, repo, digest)?
+            && now.saturating_sub(fetched_at) < state.ttl_secs
+        {
+            return Ok(manifests);
         }
+        let upstream_repo = self.upstream_repo(index, client, repo);
+        let manifests = match self.upstream.referrers(client, &upstream_repo, digest).await {
+            Ok(response) => referrer_manifests(response, ReferrerSource::Native).await?,
+            Err(crate::upstream::UpstreamError::Status(StatusCode::NOT_FOUND)) => {
+                match self
+                    .upstream
+                    .manifest(client, &upstream_repo, &crate::name::referrers_tag(digest))
+                    .await
+                {
+                    Ok(response) => referrer_manifests(response, ReferrerSource::Fallback).await?,
+                    Err(crate::upstream::UpstreamError::Status(StatusCode::NOT_FOUND)) => Vec::new(),
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            Err(error) => return Err(error.into()),
+        };
+        store::set_referrer_page(&state.meta, index, repo, digest, now, &manifests)?;
+        Ok(manifests)
     }
 
     /// Serve `GET /v2/<name>/referrers/<digest>`: the manifests that declare the digest their subject,
@@ -342,19 +354,26 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         if manifest_trashed_in(state, &members, repo, digest)? {
             return Ok(referrers_response(&[], filter.as_deref()));
         }
-        let mut seen = std::collections::HashSet::new();
-        let mut manifests = Vec::new();
+        let mut sources = Vec::with_capacity(members.len());
         for member in &members {
+            let mut descriptors = Vec::new();
             for descriptor in store::list_referrers(&state.meta, &member.name, repo, digest)? {
                 if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&descriptor) {
-                    add_referrer(state, &members, repo, active, value, &mut seen, &mut manifests)?;
+                    descriptors.push(value);
                 }
             }
             if let Some(client) = member.proxy_client() {
-                for descriptor in self.upstream_referrers(&member.name, client, repo, digest).await {
-                    add_referrer(state, &members, repo, active, descriptor, &mut seen, &mut manifests)?;
+                match self.upstream_referrers(state, &member.name, client, repo, digest).await {
+                    Ok(upstream) => descriptors.extend(upstream),
+                    Err(error) => return Ok(error.into_response()),
                 }
             }
+            sources.push(descriptors);
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut manifests = Vec::new();
+        for descriptor in sources.into_iter().flatten() {
+            add_referrer(state, &members, repo, active, descriptor, &mut seen, &mut manifests)?;
         }
         if let Some(artifact_type) = &filter {
             manifests.retain(|descriptor| descriptor["artifactType"].as_str() == Some(artifact_type));
@@ -384,13 +403,111 @@ pub(super) fn stored_tag_names(
     Ok(names)
 }
 
-async fn referrer_manifests(response: reqwest::Response) -> Vec<serde_json::Value> {
-    bounded_body(response, MAX_MANIFEST_BYTES)
+enum ReferrerLookupError {
+    Store(peryx_storage::meta::MetaError),
+    Upstream(crate::upstream::UpstreamError),
+}
+
+impl From<peryx_storage::meta::MetaError> for ReferrerLookupError {
+    fn from(error: peryx_storage::meta::MetaError) -> Self {
+        Self::Store(error)
+    }
+}
+
+impl From<crate::upstream::UpstreamError> for ReferrerLookupError {
+    fn from(error: crate::upstream::UpstreamError) -> Self {
+        Self::Upstream(error)
+    }
+}
+
+impl ReferrerLookupError {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Store(error) => ServeError::Store(error).into_response(),
+            Self::Upstream(error) => upstream_error_response(&error, "referrers"),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ReferrerSource {
+    Native,
+    Fallback,
+}
+
+async fn referrer_manifests(
+    response: reqwest::Response,
+    source: ReferrerSource,
+) -> Result<Vec<serde_json::Value>, crate::upstream::UpstreamError> {
+    let is_index = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            MediaType::parse(value).is_ok()
+                && value
+                    .split(';')
+                    .next()
+                    .is_some_and(|value| value.trim().eq_ignore_ascii_case(OCI_INDEX_TYPE))
+        });
+    if !is_index {
+        return match source {
+            ReferrerSource::Native => Err(invalid_referrers("content type is not an OCI image index")),
+            ReferrerSource::Fallback => Ok(Vec::new()),
+        };
+    }
+    let bytes = bounded_body(response, MAX_MANIFEST_BYTES)
         .await
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        .and_then(|document| document["manifests"].as_array().cloned())
-        .unwrap_or_default()
+        .map_err(|error| invalid_referrers(&error.message()))?;
+    let document = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .map_err(|error| invalid_referrers(&format!("body is not valid JSON: {error}")))?;
+    let Some(fields) = document.as_object() else {
+        return Err(invalid_referrers("body is not an object"));
+    };
+    if fields.get("schemaVersion").and_then(serde_json::Value::as_u64) != Some(2) {
+        return Err(invalid_referrers("schemaVersion is not 2"));
+    }
+    if fields.get("mediaType").is_some_and(|value| {
+        value
+            .as_str()
+            .is_none_or(|value| !value.eq_ignore_ascii_case(OCI_INDEX_TYPE))
+    }) {
+        return Err(invalid_referrers("body mediaType is not an OCI image index"));
+    }
+    let Some(manifests) = fields.get("manifests").and_then(serde_json::Value::as_array) else {
+        return Err(invalid_referrers("manifests is not an array"));
+    };
+    if !manifests.iter().all(valid_referrer_descriptor) {
+        return Err(invalid_referrers("manifests contains an invalid descriptor"));
+    }
+    Ok(manifests.clone())
+}
+
+fn valid_referrer_descriptor(descriptor: &serde_json::Value) -> bool {
+    let Some(fields) = descriptor.as_object() else {
+        return false;
+    };
+    fields
+        .get("mediaType")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|value| MediaType::parse(value).is_ok())
+        && fields
+            .get("digest")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(crate::name::valid_content_digest)
+        && fields.get("size").and_then(serde_json::Value::as_u64).is_some()
+        && fields
+            .get("artifactType")
+            .is_none_or(|value| value.as_str().is_some_and(|value| MediaType::parse(value).is_ok()))
+        && fields.get("annotations").is_none_or(|value| {
+            value
+                .as_object()
+                .is_some_and(|annotations| annotations.values().all(serde_json::Value::is_string))
+        })
+}
+
+fn invalid_referrers(reason: &str) -> crate::upstream::UpstreamError {
+    crate::upstream::UpstreamError::Transport(format!("upstream referrers response is invalid: {reason}"))
 }
 
 fn add_referrer(

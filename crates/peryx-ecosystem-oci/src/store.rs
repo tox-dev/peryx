@@ -23,6 +23,7 @@ pub use fsck::fsck_metadata;
 const MANIFEST_PREFIX: &str = "oci\u{0}m\u{0}";
 const TAG_PREFIX: &str = "oci\u{0}t\u{0}";
 const REFERRER_PREFIX: &str = "oci\u{0}r\u{0}";
+const REFERRER_PAGE_PREFIX: &str = "oci\u{0}rp\u{0}";
 const MEMBERSHIP_PREFIX: &str = "oci\u{0}mm\u{0}";
 const BLOB_MEMBERSHIP_PREFIX: &str = "oci\u{0}bm\u{0}";
 const MANIFEST_TRASH_PREFIX: &str = "oci\u{0}mt\u{0}";
@@ -687,6 +688,47 @@ pub fn tag_page(meta: &MetaStore, index: &str, repo: &str, query: &str) -> Resul
     let (link, body) = rest.split_at(length);
     let link = (!link.is_empty()).then(|| String::from_utf8_lossy(link).into_owned());
     Ok(Some((i64::from_be_bytes(*at), link, body.to_vec())))
+}
+
+fn referrer_page_key(index: &str, repo: &str, subject: &str) -> String {
+    format!("{REFERRER_PAGE_PREFIX}{index}\u{0}{repo}\u{0}{subject}")
+}
+
+/// Cache one validated upstream referrers result. Failed revalidation never reaches this write, so it
+/// cannot replace a known result with an inferred empty list.
+///
+/// # Errors
+/// Returns a store error if serialization or the write fails.
+pub fn set_referrer_page(
+    meta: &MetaStore,
+    index: &str,
+    repo: &str,
+    subject: &str,
+    at: i64,
+    manifests: &[serde_json::Value],
+) -> Result<(), MetaError> {
+    let mut value = at.to_be_bytes().to_vec();
+    value.extend_from_slice(&serde_json::to_vec(manifests)?);
+    meta.put_driver_value(&referrer_page_key(index, repo, subject), &value)
+}
+
+/// The last validated upstream referrers result and its fetch time.
+///
+/// # Errors
+/// Returns a store error if the read or decode fails.
+pub fn referrer_page(
+    meta: &MetaStore,
+    index: &str,
+    repo: &str,
+    subject: &str,
+) -> Result<Option<(i64, Vec<serde_json::Value>)>, MetaError> {
+    let Some(raw) = meta.get_driver_value(&referrer_page_key(index, repo, subject))? else {
+        return Ok(None);
+    };
+    let Some((at, manifests)) = raw.split_first_chunk::<8>() else {
+        return Ok(None);
+    };
+    Ok(Some((i64::from_be_bytes(*at), serde_json::from_slice(manifests)?)))
 }
 
 fn tag_freshness_key(index: &str, repo: &str, tag: &str) -> String {

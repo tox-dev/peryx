@@ -418,20 +418,11 @@ async fn test_referrers_merge_upstream_and_filter_by_artifact_type() {
     let server = MockServer::start().await;
     let subject = format!("sha256:{}", "a".repeat(64));
     let sig = format!("sha256:{}", "b".repeat(64));
-    let index = format!(
-        concat!(
-            r#"{{"schemaVersion":2,"manifests":["#,
-            r#"{{"digest":"{sig}","artifactType":"application/vnd.example.sig"}},"#,
-            r#"{{"digest":"{sig}","artifactType":"application/vnd.example.sig"}},"#,
-            r#"{{"artifactType":"application/vnd.example.sig"}}]}}"#,
-        ),
-        sig = sig,
-    );
+    let descriptor = referrer_descriptor(&sig);
+    let index = referrer_index(&[descriptor.clone(), descriptor]);
     Mock::given(method("GET"))
         .and(path(format!("/v2/library/nginx/referrers/{subject}")))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_raw(index.into_bytes(), "application/vnd.oci.image.index.v1+json"),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_raw(index, "application/vnd.oci.image.index.v1+json"))
         .mount(&server)
         .await;
     let dir = tempfile::tempdir().unwrap();
@@ -482,14 +473,10 @@ async fn test_referrers_fall_back_to_the_tag_schema_when_the_api_is_absent() {
         .respond_with(ResponseTemplate::new(404))
         .mount(&server)
         .await;
-    let index = format!(
-        r#"{{"schemaVersion":2,"manifests":[{{"digest":"{sig}","artifactType":"application/vnd.example.sig"}}]}}"#,
-    );
+    let index = referrer_index(&[referrer_descriptor(&sig)]);
     Mock::given(method("GET"))
         .and(path(format!("/v2/library/nginx/manifests/sha256-{}", "a".repeat(64))))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_raw(index.into_bytes(), "application/vnd.oci.image.index.v1+json"),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_raw(index, "application/vnd.oci.image.index.v1+json"))
         .mount(&server)
         .await;
     let dir = tempfile::tempdir().unwrap();
@@ -513,34 +500,352 @@ async fn test_referrers_fall_back_to_the_tag_schema_when_the_api_is_absent() {
     let doc: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(doc["manifests"].as_array().unwrap().len(), 1);
 }
+#[rstest]
+#[case::native_unauthorized(false, 401, StatusCode::UNAUTHORIZED, "UNAUTHORIZED", None)]
+#[case::native_throttled(false, 429, StatusCode::TOO_MANY_REQUESTS, "TOOMANYREQUESTS", Some("19"))]
+#[case::native_server_error(false, 500, StatusCode::BAD_GATEWAY, "UNKNOWN", None)]
+#[case::fallback_unauthorized(true, 401, StatusCode::UNAUTHORIZED, "UNAUTHORIZED", None)]
+#[case::fallback_throttled(true, 429, StatusCode::TOO_MANY_REQUESTS, "TOOMANYREQUESTS", Some("19"))]
+#[case::fallback_server_error(true, 500, StatusCode::BAD_GATEWAY, "UNKNOWN", None)]
 #[tokio::test]
-async fn test_referrers_do_not_fall_back_on_a_non_404_upstream_error() {
+async fn test_referrers_preserve_upstream_status(
+    #[case] fallback: bool,
+    #[case] upstream_status: u16,
+    #[case] expected_status: StatusCode,
+    #[case] expected_code: &str,
+    #[case] expected_retry_after: Option<&str>,
+) {
     let server = MockServer::start().await;
     let subject = format!("sha256:{}", "a".repeat(64));
-    let sig = format!("sha256:{}", "b".repeat(64));
-    // Only `404` permits the OCI referrers tag fallback.
     Mock::given(method("GET"))
         .and(path(format!("/v2/library/nginx/referrers/{subject}")))
-        .respond_with(ResponseTemplate::new(500))
+        .respond_with(if fallback {
+            ResponseTemplate::new(404)
+        } else {
+            referrer_failure(upstream_status)
+        })
+        .expect(1)
         .mount(&server)
         .await;
-    let index = format!(
-        r#"{{"schemaVersion":2,"manifests":[{{"digest":"{sig}","artifactType":"application/vnd.example.sig"}}]}}"#,
+    if fallback {
+        Mock::given(method("GET"))
+            .and(path(format!("/v2/library/nginx/manifests/sha256-{}", "a".repeat(64))))
+            .respond_with(referrer_failure(upstream_status))
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
+
+    let (status, headers, body) = send(&app, Method::GET, &format!("/v2/hub/library/nginx/referrers/{subject}")).await;
+    assert_eq!(
+        (
+            status,
+            body_has_code(&body, expected_code),
+            headers.get(header::RETRY_AFTER).and_then(|value| value.to_str().ok()),
+        ),
+        (expected_status, true, expected_retry_after)
     );
+}
+
+#[rstest]
+#[case::content_type(
+    r#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[]}"#,
+    "application/json"
+)]
+#[case::malformed_content_type(
+    r#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[]}"#,
+    "application/vnd.oci.image.index.v1+json; broken"
+)]
+#[case::json("{", "application/vnd.oci.image.index.v1+json")]
+#[case::document_shape("[]", "application/vnd.oci.image.index.v1+json")]
+#[case::schema_version(
+    r#"{"schemaVersion":1,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[]}"#,
+    "application/vnd.oci.image.index.v1+json"
+)]
+#[case::body_media_type(
+    r#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","manifests":[]}"#,
+    "application/vnd.oci.image.index.v1+json"
+)]
+#[case::manifests_shape(
+    r#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":{}}"#,
+    "application/vnd.oci.image.index.v1+json"
+)]
+#[case::descriptor_shape(
+    r#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}"#,
+    "application/vnd.oci.image.index.v1+json"
+)]
+#[case::descriptor_not_object(
+    r#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[null]}"#,
+    "application/vnd.oci.image.index.v1+json"
+)]
+#[case::annotations_shape(
+    r#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size":1,"annotations":[]}]}"#,
+    "application/vnd.oci.image.index.v1+json"
+)]
+#[case::annotation_value(
+    r#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size":1,"annotations":{"key":1}}]}"#,
+    "application/vnd.oci.image.index.v1+json"
+)]
+#[tokio::test]
+async fn test_native_referrers_reject_malformed_success(#[case] body: &str, #[case] content_type: &str) {
+    let server = MockServer::start().await;
+    let subject = format!("sha256:{}", "a".repeat(64));
     Mock::given(method("GET"))
-        .and(path(format!("/v2/library/nginx/manifests/sha256-{}", "a".repeat(64))))
+        .and(path(format!("/v2/app/referrers/{subject}")))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body.as_bytes().to_vec(), content_type))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
+
+    let (status, _, body) = send(&app, Method::GET, &format!("/v2/hub/app/referrers/{subject}")).await;
+    assert_eq!(
+        (status, body_has_code(&body, "UNKNOWN")),
+        (StatusCode::BAD_GATEWAY, true)
+    );
+}
+
+#[rstest]
+#[case::json("{")]
+#[case::shape(r#"{"schemaVersion":2,"manifests":{}}"#)]
+#[tokio::test]
+async fn test_fallback_referrers_reject_malformed_index(#[case] body: &str) {
+    let server = MockServer::start().await;
+    let subject = format!("sha256:{}", "a".repeat(64));
+    Mock::given(method("GET"))
+        .and(path(format!("/v2/app/referrers/{subject}")))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/v2/app/manifests/sha256-{}", "a".repeat(64))))
         .respond_with(
-            ResponseTemplate::new(200).set_body_raw(index.into_bytes(), "application/vnd.oci.image.index.v1+json"),
+            ResponseTemplate::new(200)
+                .set_body_raw(body.as_bytes().to_vec(), "application/vnd.oci.image.index.v1+json"),
         )
         .mount(&server)
         .await;
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
 
-    let (status, _, body) = send(&app, Method::GET, &format!("/v2/hub/library/nginx/referrers/{subject}")).await;
-    assert_eq!(status, StatusCode::OK);
-    let doc: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert!(doc["manifests"].as_array().unwrap().is_empty());
+    let (status, _, body) = send(&app, Method::GET, &format!("/v2/hub/app/referrers/{subject}")).await;
+    assert_eq!(
+        (status, body_has_code(&body, "UNKNOWN")),
+        (StatusCode::BAD_GATEWAY, true)
+    );
+}
+
+#[tokio::test]
+async fn test_referrers_report_cache_write_failure() {
+    let server = MockServer::start().await;
+    let subject = format!("sha256:{}", "a".repeat(64));
+    Mock::given(method("GET"))
+        .and(path(format!("/v2/app/referrers/{subject}")))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(referrer_index(&[]), "application/vnd.oci.image.index.v1+json"),
+        )
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let database = dir.path().join("peryx.redb");
+    drop(peryx_storage::meta::MetaStore::open(&database).unwrap());
+    let index = crate::tests::oci_index(
+        "hub",
+        "hub",
+        peryx_index::IndexKind::Cached {
+            client: peryx_upstream::UpstreamClient::new(&format!("{}/", server.uri())).unwrap(),
+            offline: false,
+        },
+    );
+    let mut state = peryx_driver::AppState::with_clock(
+        peryx_storage::meta::MetaStore::open_existing_read_only(database).unwrap(),
+        peryx_storage::blob::BlobStore::new(dir.path().join("blobs")),
+        60,
+        vec![index],
+        std::sync::Arc::new(|| 1000),
+    );
+    crate::tests::install_oci(&mut state, std::collections::HashMap::new(), false);
+    let app = peryx_http::router(std::sync::Arc::new(state));
+
+    let (status, _, body) = send(&app, Method::GET, &format!("/v2/hub/app/referrers/{subject}")).await;
+    assert_eq!(
+        (status, body_has_code(&body, "UNKNOWN")),
+        (StatusCode::BAD_GATEWAY, true)
+    );
+}
+
+#[tokio::test]
+async fn test_native_empty_referrers_is_a_successful_empty_index() {
+    let server = MockServer::start().await;
+    let subject = format!("sha256:{}", "a".repeat(64));
+    Mock::given(method("GET"))
+        .and(path(format!("/v2/app/referrers/{subject}")))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            referrer_index(&[]),
+            "application/vnd.oci.image.index.v1+json; charset=utf-8",
+        ))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
+
+    let (status, _, body) = send(&app, Method::GET, &format!("/v2/hub/app/referrers/{subject}")).await;
+    assert_eq!(
+        (
+            status,
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap()["manifests"].clone(),
+        ),
+        (StatusCode::OK, serde_json::json!([]))
+    );
+}
+
+#[tokio::test]
+async fn test_fallback_missing_tag_is_a_successful_empty_index() {
+    let server = MockServer::start().await;
+    let subject = format!("sha256:{}", "a".repeat(64));
+    Mock::given(method("GET"))
+        .and(path(format!("/v2/app/referrers/{subject}")))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/v2/app/manifests/sha256-{}", "a".repeat(64))))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
+
+    let (status, _, body) = send(&app, Method::GET, &format!("/v2/hub/app/referrers/{subject}")).await;
+    assert_eq!(
+        (
+            status,
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap()["manifests"].clone(),
+        ),
+        (StatusCode::OK, serde_json::json!([]))
+    );
+}
+
+#[tokio::test]
+async fn test_fallback_non_index_is_a_successful_empty_index() {
+    let server = MockServer::start().await;
+    let subject = format!("sha256:{}", "a".repeat(64));
+    Mock::given(method("GET"))
+        .and(path(format!("/v2/app/referrers/{subject}")))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/v2/app/manifests/sha256-{}", "a".repeat(64))))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(b"not json".to_vec(), MANIFEST_TYPE))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
+
+    let (status, _, body) = send(&app, Method::GET, &format!("/v2/hub/app/referrers/{subject}")).await;
+    assert_eq!(
+        (
+            status,
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap()["manifests"].clone(),
+        ),
+        (StatusCode::OK, serde_json::json!([]))
+    );
+}
+
+#[rstest]
+#[case::native(false)]
+#[case::fallback(true)]
+#[tokio::test]
+async fn test_referrers_preserve_transport_failure(#[case] fallback: bool) {
+    if !fallback {
+        let dir = tempfile::tempdir().unwrap();
+        let (_state, app) = proxy(&dir, "http://127.0.0.1:1/", false);
+        let subject = format!("sha256:{}", "a".repeat(64));
+        assert_eq!(
+            send(&app, Method::GET, &format!("/v2/hub/app/referrers/{subject}"))
+                .await
+                .0,
+            StatusCode::BAD_GATEWAY
+        );
+        return;
+    }
+    let server = MockServer::start().await;
+    let subject = format!("sha256:{}", "a".repeat(64));
+    Mock::given(method("GET"))
+        .and(path(format!("/v2/app/referrers/{subject}")))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/v2/app/manifests/sha256-{}", "a".repeat(64))))
+        .respond_with(ResponseTemplate::new(307).insert_header("location", "http://127.0.0.1:1/disconnected"))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
+
+    assert_eq!(
+        send(&app, Method::GET, &format!("/v2/hub/app/referrers/{subject}"))
+            .await
+            .0,
+        StatusCode::BAD_GATEWAY
+    );
+}
+
+#[tokio::test]
+async fn test_referrers_keep_a_successful_cache_after_revalidation_fails() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicI64, Ordering};
+
+    let server = MockServer::start().await;
+    let subject = format!("sha256:{}", "a".repeat(64));
+    let descriptor = referrer_descriptor(&format!("sha256:{}", "b".repeat(64)));
+    let upstream_path = format!("/v2/app/referrers/{subject}");
+    Mock::given(method("GET"))
+        .and(path(upstream_path.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            referrer_index(std::slice::from_ref(&descriptor)),
+            "application/vnd.oci.image.index.v1+json",
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let now = Arc::new(AtomicI64::new(1000));
+    let ticking = Arc::clone(&now);
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = crate::tests::proxy_with_clock(
+        &dir,
+        &format!("{}/", server.uri()),
+        Arc::new(move || ticking.load(Ordering::Relaxed)),
+    );
+    let uri = format!("/v2/hub/app/referrers/{subject}");
+    assert_eq!(send(&app, Method::GET, &uri).await.0, StatusCode::OK);
+
+    server.reset().await;
+    Mock::given(method("GET"))
+        .and(path(upstream_path))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(1)
+        .mount(&server)
+        .await;
+    now.store(1061, Ordering::Relaxed);
+    assert_eq!(send(&app, Method::GET, &uri).await.0, StatusCode::BAD_GATEWAY);
+
+    server.reset().await;
+    now.store(1001, Ordering::Relaxed);
+    let (status, _, body) = send(&app, Method::GET, &uri).await;
+    assert_eq!(
+        (
+            status,
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap()["manifests"].clone(),
+        ),
+        (StatusCode::OK, serde_json::json!([descriptor]))
+    );
 }
 #[tokio::test]
 async fn test_manifest_by_digest_does_not_cross_repositories_on_one_proxy() {
@@ -695,4 +1000,32 @@ async fn test_by_digest_member_with_evicted_bytes_refetches() {
     let (status, _, got) = send(&app, Method::GET, &format!("/v2/hub/app/manifests/{digest}")).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(got, &body[..]);
+}
+
+fn referrer_descriptor(digest: &str) -> serde_json::Value {
+    serde_json::json!({
+        "mediaType": MANIFEST_TYPE,
+        "digest": digest,
+        "size": 1,
+        "artifactType": "application/vnd.example.sig",
+    })
+}
+
+fn referrer_index(manifests: &[serde_json::Value]) -> Vec<u8> {
+    serde_json::json!({
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.index.v1+json",
+        "manifests": manifests,
+    })
+    .to_string()
+    .into_bytes()
+}
+
+fn referrer_failure(status: u16) -> ResponseTemplate {
+    let response = ResponseTemplate::new(status);
+    if status == 429 {
+        response.insert_header("retry-after", "19")
+    } else {
+        response
+    }
 }
