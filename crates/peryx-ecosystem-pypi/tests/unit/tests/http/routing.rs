@@ -164,6 +164,7 @@ async fn test_project_list_html() {
     "text/html; charset=utf-8"
 )]
 #[case::text_refusal_leaves_json(Some("text/*;q=0, */*"), "application/vnd.pypi.simple.v1+json")]
+#[case::text_range_outweighs_wildcard(Some("text/*, */*"), "text/html; charset=utf-8")]
 #[case::specific_html_quality_overrides_wildcard(
     Some("application/*, text/html;q=0.5"),
     "application/vnd.pypi.simple.v1+json"
