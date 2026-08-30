@@ -428,6 +428,9 @@ crate-dependency-diagram output="site/diagrams/crate-dependencies.mmd": _project
     {
     printf '%s\n' '---' 'config:' '  layout: elk' '  elk:' '    mergeEdges: true' '---'
     printf 'flowchart TD\n'
+    # LC_ALL=C on the sort below: a UTF-8 collation orders `[` and `_` differently, so a
+    # developer machine regenerates a file that differs from CI's and the staleness check
+    # in `diagrams` fails against a correct committed diagram.
     cargo metadata --format-version 1 --no-deps | jq -r '
       (.packages | map(.name) | unique) as $workspace
       | ($workspace[] | "  \(gsub("-"; "_"))[\(. | @json)]"),
@@ -435,7 +438,7 @@ crate-dependency-diagram output="site/diagrams/crate-dependencies.mmd": _project
           | select(.kind == null and .path != null)
           | select(.name as $dependency | $workspace | index($dependency))
           | "  \($source | gsub("-"; "_")) --> \(.name | gsub("-"; "_"))")
-    ' | sort -u
+    ' | LC_ALL=C sort -u
     printf '  class peryx accent\n'
     printf '  class peryx_ecosystem_oci,peryx_ecosystem_pypi good\n'
     printf '  class peryx_oci_system_tests,peryx_pypi_system_tests warn\n'
