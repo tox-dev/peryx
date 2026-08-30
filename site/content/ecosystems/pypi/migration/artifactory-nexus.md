@@ -1,50 +1,59 @@
 +++
 title = "From Artifactory or Nexus"
-description = "Keep them for the other ecosystems if you must; serve Python from one small binary with the modern protocols first."
+description = "Map PyPI repositories, permissions, identity, availability, and cleanup from Artifactory or Nexus to peryx."
 weight = 6
 [extra]
 logos = [ "logos/jfrog.svg", "logos/sonatype.svg"]
 +++
 
-[Artifactory](https://jfrog.com/artifactory/) and
-[Sonatype Nexus Repository](https://www.sonatype.com/products/nexus-repository) are multi-format repository managers:
-local, remote (proxy), and virtual (group) repositories for every ecosystem at once, with enterprise auth and support
-behind them. Both are sized for that breadth: Artifactory documents a
-[minimum of 8 GB RAM for production](https://docs.jfrog.com/installation/docs/system-requirements), Nexus
-[2 CPUs and 8 GB with Java 21](https://help.sonatype.com/en/sonatype-nexus-repository-system-requirements.html), and
-both gate features by edition: PyPI support is absent from Artifactory's OSS build entirely, and Nexus Community Edition
-caps usage at 40,000 components or 100,000 requests per day.
+[Artifactory](https://docs.jfrog.com/artifactory/docs/pypi-repositories) and
+[Nexus Repository](https://help.sonatype.com/en/configure-pypi-with-nexus.html) are multi-format repository managers.
+Both offer hosted, proxy, and aggregate repository types for PyPI. peryx covers the same repository shapes for the
+ecosystems listed under [Ecosystems](@/ecosystems/_index.md).
 
 ## Peryx differences
 
-For the Python slice of the job, protocol support is the concrete difference. Nexus shipped
-[PEP 658](https://peps.python.org/pep-0658/) metadata and the [PEP 691](https://peps.python.org/pep-0691/) JSON API in
-[3.93.0 (June 2026)](https://help.sonatype.com/en/sonatype-nexus-repository-3-93-0-release-notes.html); Artifactory
-added opt-in PEP 691 in 7.146.7 (April 2026) and still has
-[no PEP 658 support](https://jfrog.atlassian.net/si/jira.issueviews:issue-html/RTFACT-26891/RTFACT-26891.html), with the
-request open since 2022; every resolve against it downloads wheels to read their metadata. peryx serves both by default,
-backfills them for upstreams that lack them, and idles in tens of megabytes of RAM.
+[Nexus](https://help.sonatype.com/en/configure-pypi-with-nexus.html) 3.93 added PEP 658 and PEP 691, and 3.94 added PEP
+700\. [Artifactory](https://docs.jfrog.com/artifactory/docs/pypi-repositories#enable-json-indexing-in-pypi-repositories)
+supports the Simple JSON API when an administrator enables JSON indexing. peryx serves
+[PEP 658, PEP 691, and PEP 700](@/ecosystems/pypi/reference/standards.md) without a feature switch and synthesizes core
+metadata when an upstream does not provide it.
 
-If the rest of the organization stays on Artifactory or Nexus, peryx can also sit in front: configure the existing
-repository as a [cached index with credentials](@/ecosystems/pypi/guides/private-mirror.md), and clients get the JSON
-and metadata fast paths the upstream does not offer.
+[Artifactory permission targets](https://docs.jfrog.com/administration/docs/permissions) and Nexus
+[access control](https://help.sonatype.com/en/access-control.html) bind users or groups to repository permissions. Peryx
+[role grants](@/core/access/role-grants.md) authorize management operations. Artifact clients use
+[configured access grants](@/core/access/control-access.md) or [managed scoped tokens](@/core/access/scoped-tokens.md)
+for `read`, `write`, and `delete` actions.
+
+Check the current product documentation before translating
+[Artifactory LDAP](https://docs.jfrog.com/administration/docs/ldap),
+[Nexus authentication](https://help.sonatype.com/en/authentication.html),
+[Artifactory HA](https://docs.jfrog.com/installation/docs/high-availability),
+[Nexus HA](https://help.sonatype.com/en/high-availability-deployment.html),
+[Artifactory cleanup](https://docs.jfrog.com/administration/docs/cleanup-policies), or
+[Nexus cleanup](https://help.sonatype.com/en/cleanup-policies.html). Editions and deployment requirements differ.
 
 ## Configuration mapping
 
-| Artifactory / Nexus                          | peryx                                                      |
-| -------------------------------------------- | ---------------------------------------------------------- |
-| remote repository                            | cached index                                               |
-| local / hosted repository                    | hosted index                                               |
-| virtual / group repository                   | virtual index                                              |
-| `…/api/pypi/{repo}/simple` (Artifactory)     | `/{route}/simple/`                                         |
-| `…/repository/{repo}/simple` (Nexus)         | `/{route}/simple/`                                         |
-| deploy via UI or REST                        | `twine upload` / `uv publish`                              |
-| access tokens, user tokens (Nexus: Pro only) | a write-granting `[[index.access_token]]` per hosted index |
+| Artifactory / Nexus                          | peryx                                                                                |
+| -------------------------------------------- | ------------------------------------------------------------------------------------ |
+| remote / proxy repository                    | cached index                                                                         |
+| local / hosted repository                    | hosted index                                                                         |
+| virtual / group repository                   | virtual index                                                                        |
+| `…/api/pypi/{repo}/simple` (Artifactory)     | `/{route}/simple/`                                                                   |
+| `…/repository/{repo}/simple` (Nexus)         | `/{route}/simple/`                                                                   |
+| deploy through the UI, REST API, or a client | `twine upload` or `uv publish`                                                       |
+| repository permissions, roles, and users     | role grants for management; configured or managed scoped tokens for artifact clients |
+| directory or OIDC identity                   | [LDAP or OIDC login with group-to-role mappings](@/core/access/authentication.md)    |
+| HA deployment                                | [`[availability]` with `dc` or `ha`](@/core/availability/deployment.md)              |
+| scheduled cleanup policy                     | [retention plan preview and export](@/core/repositories/retention.md)                |
 
 ## Pitfalls
 
-- Fewer ecosystems: peryx serves the ecosystems listed under [Ecosystems](@/ecosystems/_index.md); repositories in an
-  ecosystem peryx does not yet serve stay where they are.
-- No LDAP/SSO, per-user permissions, HA clustering, or lifecycle/cleanup policies.
-- Their virtual repositories can include many members with priority rules; virtual indexes compose the same way, but
-  member-specific routing rules (per-pattern includes) become separate virtual routes.
+- Keep repositories for ecosystems that peryx does not serve in their existing manager.
+- Peryx LDAP and OIDC identities govern management and UI access. They do not replace the scoped credentials used by
+  `pip`, `uv`, and `twine` for artifact requests.
+- Artifactory and Nexus can execute scheduled cleanup policies. Peryx retention evaluates and exports a read-only plan;
+  it does not apply that plan or schedule deletion.
+- Preserve virtual-repository ordering. Map path-specific include or exclude rules to separate peryx routes when layer
+  order is not enough.

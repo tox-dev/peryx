@@ -38,6 +38,8 @@ Inspect the cargo-dist plan for the expected targets, installers, checksums, att
 
 1. Run `just release-plan` and `just all` on the commit to tag.
 1. Confirm that the version, lockfile, release notes, and generated plan refer to that commit.
+1. If the release changes a capability compared in a migration page, verify the Peryx mapping against the shipped
+   configuration, CLI, routes, and tests, then refresh each external claim from a current primary source.
 1. Create the release tag expected by cargo-dist.
 1. Wait for all build, host, and custom publication jobs to pass.
 1. Download each archive and verify its checksum and GitHub attestation.
