@@ -207,6 +207,34 @@ fn test_check_download_applies_distribution_rules_to_metadata_siblings(#[case] s
     assert_eq!(denial.reason.as_ref(), "package type wheel is blocked");
 }
 
+#[rstest]
+#[case::allow_wheel(true, PackageType::Wheel, [true, false])]
+#[case::allow_sdist(true, PackageType::Sdist, [false, true])]
+#[case::block_wheel(false, PackageType::Wheel, [false, true])]
+#[case::block_sdist(false, PackageType::Sdist, [true, false])]
+fn test_package_type_list_duplicates_preserve_policy_behavior(
+    #[case] allow: bool,
+    #[case] package_type: PackageType,
+    #[case] expected: [bool; 2],
+) {
+    let compile = |count| {
+        policy(|_neutral, pypi| {
+            let package_types = vec![package_type; count];
+            if allow {
+                pypi.allow_package_types = package_types;
+            } else {
+                pypi.block_package_types = package_types;
+            }
+        })
+    };
+    let evaluate = |policy: &Policy| {
+        ["demo-1.0-py3-none-any.whl", "demo-1.0.tar.gz"]
+            .map(|filename| policy.check_download(PolicyAction::Serve, filename, None).is_ok())
+    };
+
+    assert_eq!((evaluate(&compile(1)), evaluate(&compile(2))), (expected, expected));
+}
+
 #[test]
 fn test_check_file_denies_by_rule_and_field() {
     struct Case {
