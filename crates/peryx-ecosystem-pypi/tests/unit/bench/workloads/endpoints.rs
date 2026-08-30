@@ -1,3 +1,5 @@
+use std::process::Command;
+
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -12,7 +14,16 @@ use super::*;
 async fn endpoints_records_answered_and_failed_rounds() {
     let good = MockServer::start().await;
     let bad = MockServer::start().await;
-    mount_endpoints(&good).await;
+    mount_endpoints(
+        &good,
+        &[
+            "/simple/",
+            "/boto3/json",
+            "/files/sample.whl.metadata",
+            "/inspect/sample.whl",
+        ],
+    )
+    .await;
     set_endpoints_bases(&good, &bad);
     let (directory, context) = benchmark();
     let client = http_client();
@@ -37,6 +48,40 @@ async fn endpoints_records_answered_and_failed_rounds() {
 }
 
 #[tokio::test]
+async fn endpoints_live_status_counts_answered_endpoints() {
+    const CHILD: &str = "PERYX_ENDPOINTS_STATUS_CHILD";
+
+    if std::env::var_os(CHILD).is_none() {
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "bench::workloads::endpoints::tests::endpoints_live_status_counts_answered_endpoints",
+                "--exact",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert_eq!(
+            (
+                output.status.success(),
+                stdout.lines().find(|line| line.starts_with("[endpoints] peryx: ")),
+            ),
+            (true, Some("[endpoints] peryx: 5/7 endpoints"))
+        );
+        return;
+    }
+
+    let mock = MockServer::start().await;
+    mount_endpoints(&mock, &["/simple/", "/boto3/json"]).await;
+    set_endpoints_bases(&mock, &mock);
+    let (_directory, context) = benchmark();
+    endpoints(&context, &[server("peryx", endpoints_good_base)], 1, &http_client())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn endpoint_helpers_report_absent_and_invalid_pages() {
     let server = MockServer::start().await;
     let client = http_client();
@@ -48,8 +93,6 @@ async fn endpoint_helpers_report_absent_and_invalid_pages() {
             .to_string(),
         "the server's index url does not end in simple/"
     );
-    assert_eq!(served(&[vec![vec![1.0]], vec![Vec::new()]], 0), "1/7 endpoints");
-
     Mock::given(path("/simple/boto3/"))
         .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
         .mount(&server)
@@ -109,15 +152,10 @@ fn inspect_url_maps_artifact_paths(#[case] root: &str, #[case] file: &str, #[cas
     assert_eq!(inspect_url(root, file), expected);
 }
 
-async fn mount_endpoints(server: &MockServer) {
-    for request_path in [
-        "/simple/",
-        "/boto3/json",
-        "/files/sample.whl.metadata",
-        "/inspect/sample.whl",
-    ] {
+async fn mount_endpoints(server: &MockServer, paths: &[&str]) {
+    for request_path in paths {
         Mock::given(method("GET"))
-            .and(path(request_path))
+            .and(path(*request_path))
             .respond_with(ResponseTemplate::new(200).set_body_string("response"))
             .mount(server)
             .await;
