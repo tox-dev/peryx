@@ -1,3 +1,6 @@
+use std::path::Path;
+use std::process::{Command, Stdio};
+
 use peryx_bench_core::report::load as load_report;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -27,7 +30,18 @@ async fn load_workload_records_successful_and_failed_servers() {
         .await;
     set_load_bases(&good, &bad);
     let (directory, context) = benchmark();
-    let servers = [server("good", load_good_base), server("bad", load_bad_base)];
+    let servers = [
+        Server {
+            name: "good",
+            homepage: "https://example.invalid/",
+            base_url: load_good_base,
+            probe: |url| url.to_owned(),
+            command: Some(idle_process),
+            setup: None,
+            teardown: None,
+        },
+        server("bad", load_bad_base),
+    ];
     let windows = LoadWindows {
         capacity: Duration::from_millis(250),
         latency: Duration::from_millis(250),
@@ -39,11 +53,39 @@ async fn load_workload_records_successful_and_failed_servers() {
 
     let report = load_report(&directory.path().join("report.toml")).unwrap();
     let rows = &report.tables["load"].rows;
-    assert_eq!(rows.len(), 6);
+    assert_eq!(
+        rows.iter().map(|row| row.name.as_str()).collect::<Vec<_>>(),
+        [
+            "1 user: requests/s",
+            "1 user: p95 latency",
+            "2 users: requests/s",
+            "2 users: p95 latency",
+            "server CPU per 1k requests",
+            "server peak memory",
+        ]
+    );
     for row in &rows[..4] {
         assert!(row.cells[0].value.is_some());
         assert_eq!(row.cells[1].text, "error");
     }
+    assert!(rows[4].cells[0].value.is_some());
+}
+
+fn idle_process(_: &BenchmarkContext, _: u16, _: &Path) -> Command {
+    #[cfg(unix)]
+    let mut command = {
+        let mut command = Command::new("sh");
+        command.args(["-c", "read value"]);
+        command
+    };
+    #[cfg(windows)]
+    let mut command = {
+        let mut command = Command::new("cmd");
+        command.args(["/C", "set /p value="]);
+        command
+    };
+    command.stdin(Stdio::piped());
+    command
 }
 
 #[tokio::test]
