@@ -1,9 +1,10 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
+use std::mem::size_of;
 
 use peryx_policy::{
-    RetentionClass, RetentionConfig, RetentionDecision, RetentionFrontier, RetentionOutcome, RetentionPolicy,
-    RetentionSelector, RetentionVisibility,
+    RetentionCandidate, RetentionClass, RetentionConfig, RetentionDecision, RetentionFrontier, RetentionOutcome,
+    RetentionPolicy, RetentionSelector, RetentionVisibility,
 };
 use peryx_storage::meta::{MetaError, MetaStore};
 use rstest::rstest;
@@ -92,6 +93,14 @@ fn expire_all_but_latest(count: u64) -> RetentionPolicy {
 
 fn reject_decision(_: RetentionDecision) -> Result<(), String> {
     Err("client hung up".to_owned())
+}
+
+fn candidate_footprint(project: &str, version: &str) -> usize {
+    size_of::<RetentionCandidate>()
+        + project.len()
+        + format!("{project}-{version}.whl").len()
+        + format!("sha-{version}").len()
+        + version.len()
 }
 
 #[rstest]
@@ -373,9 +382,13 @@ fn test_evaluate_retention_rejects_a_project_over_the_memory_budget() {
 }
 
 #[test]
-fn test_evaluate_retention_plans_a_project_within_the_memory_budget() {
+fn test_retention_project_budget_defaults_to_256_mib() {
+    assert_eq!(RETENTION_PROJECT_BUDGET_BYTES, 256 * 1024 * 1024);
+}
+
+#[test]
+fn test_evaluate_retention_accepts_a_project_at_the_memory_budget() {
     let (_dir, meta) = store();
-    seed(&meta, "pypi", "demo", "2.0", Yanked::No, None);
     seed(&meta, "pypi", "demo", "1.0", Yanked::No, None);
 
     let mut decisions = 0_u32;
@@ -384,7 +397,7 @@ fn test_evaluate_retention_plans_a_project_within_the_memory_budget() {
         "pypi",
         &expire_all_but_latest(1),
         None,
-        RETENTION_PROJECT_BUDGET_BYTES,
+        candidate_footprint("demo", "1.0"),
         |_| Ok(()),
         |_| {
             decisions += 1;
@@ -393,7 +406,27 @@ fn test_evaluate_retention_plans_a_project_within_the_memory_budget() {
     )
     .unwrap();
 
-    assert_eq!(decisions, 2);
+    assert_eq!(decisions, 1);
+}
+
+#[test]
+fn test_evaluate_retention_rejects_a_project_one_byte_over_the_memory_budget() {
+    let (_dir, meta) = store();
+    seed(&meta, "pypi", "demo", "1.0", Yanked::No, None);
+
+    let message = evaluate_retention(
+        &meta,
+        "pypi",
+        &expire_all_but_latest(1),
+        None,
+        candidate_footprint("demo", "1.0") - 1,
+        |_| Ok(()),
+        |_| Ok(()),
+    )
+    .unwrap_err();
+
+    assert!(message.contains("project demo"), "{message}");
+    assert!(message.contains("per-project memory budget"), "{message}");
 }
 
 #[test]
