@@ -43,6 +43,8 @@ pub(super) fn valid_zip_sdist(entries: &[(&str, &[u8])]) -> Vec<u8> {
 pub(super) fn raw_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
     let mut out = Vec::new();
     let mut central = Vec::new();
+    let central_extra = [0x99, 0, 0, 0];
+    let file_comment = b"zip";
     for (name, data) in entries {
         let is_dir = name.ends_with('/');
         let data: &[u8] = if is_dir { &[] } else { data };
@@ -68,10 +70,14 @@ pub(super) fn raw_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
         central.extend_from_slice(&size.to_le_bytes());
         central.extend_from_slice(&size.to_le_bytes());
         central.extend_from_slice(&name_len.to_le_bytes());
-        central.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0]);
+        central.extend_from_slice(&u16::try_from(central_extra.len()).unwrap().to_le_bytes());
+        central.extend_from_slice(&u16::try_from(file_comment.len()).unwrap().to_le_bytes());
+        central.extend_from_slice(&[0, 0, 0, 0]);
         central.extend_from_slice(&external.to_le_bytes());
         central.extend_from_slice(&offset.to_le_bytes());
         central.extend_from_slice(name);
+        central.extend_from_slice(&central_extra);
+        central.extend_from_slice(file_comment);
     }
     let central_offset = u32::try_from(out.len()).unwrap();
     let central_size = u32::try_from(central.len()).unwrap();

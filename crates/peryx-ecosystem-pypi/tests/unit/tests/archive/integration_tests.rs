@@ -347,6 +347,10 @@ fn test_list_members_classifies_previewable_archives_and_binary_files() {
         zip.write_all(b"Metadata-Version: 2.1\n").unwrap();
         zip.start_file("data.bin", options).unwrap();
         zip.write_all(&[0xff, 0xfe]).unwrap();
+        zip.start_file("bytecode.pyc", options).unwrap();
+        zip.write_all(b"compiled").unwrap();
+        zip.start_file("native.pyd", options).unwrap();
+        zip.write_all(b"compiled").unwrap();
         zip.start_file("vendor/inner.zip", options).unwrap();
         zip.write_all(&inner).unwrap();
         zip.start_file("payload.dat", options).unwrap();
@@ -364,8 +368,20 @@ fn test_list_members_classifies_previewable_archives_and_binary_files() {
                 previewable: true,
             },
             Member {
+                path: "bytecode.pyc".to_owned(),
+                size: 8,
+                kind: MemberKind::Binary,
+                previewable: false,
+            },
+            Member {
                 path: "data.bin".to_owned(),
                 size: 2,
+                kind: MemberKind::Binary,
+                previewable: false,
+            },
+            Member {
+                path: "native.pyd".to_owned(),
+                size: 8,
                 kind: MemberKind::Binary,
                 previewable: false,
             },
