@@ -20,6 +20,14 @@ pub(super) async fn mount_get(server: &MockServer, request_path: &str, response:
         .await;
 }
 
+pub(super) async fn mount_head(server: &MockServer, request_path: &str, response: ResponseTemplate) {
+    Mock::given(method("HEAD"))
+        .and(path(request_path))
+        .respond_with(response)
+        .mount(server)
+        .await;
+}
+
 pub(super) fn guarded_client(server: &MockServer) -> UpstreamClient {
     UpstreamClient::new(&format!("{}/api/", server.uri())).unwrap()
 }

@@ -5,8 +5,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use bytes::Bytes;
 use futures_util::StreamExt as _;
 
-use crate::client::range_lengths;
-use crate::{RangeError, UpstreamClient, UpstreamError};
+use crate::{RangeError, RangeSession, UpstreamClient, UpstreamError};
 
 #[derive(Debug, Clone)]
 pub struct ArtifactClient {
@@ -56,38 +55,21 @@ impl ArtifactClient {
         Ok(self.origin.stream_bytes(url).await?.boxed())
     }
 
-    /// Tries the mirror before the advertised URL when `fallback` is true.
+    /// Tries the mirror before the advertised URL when `fallback` is true. Source selection happens
+    /// once per session, so every range of one read comes from the representation this call pinned.
     ///
     /// # Errors
-    /// Returns [`RangeError`] if no eligible source provides usable range metadata.
-    pub async fn head_file_for_range(&self, url: &str) -> Result<crate::FileHead, RangeError> {
+    /// Returns [`RangeError`] if no eligible source pins a representation.
+    pub async fn range_session(&self, url: &str) -> Result<RangeSession, RangeError> {
         if let Some(mirror) = &self.mirror {
             let mirror_url = Self::mirror_url(mirror, url)?;
-            match mirror.head_file_for_range(mirror_url.as_str()).await {
-                Ok(head) => return Ok(head),
+            match mirror.range_session(mirror_url.as_str()).await {
+                Ok(session) => return Ok(session),
                 Err(err) if !self.fallback => return Err(err),
                 Err(_) => {}
             }
         }
-        self.origin.head_file_for_range(url).await
-    }
-
-    /// Tries the mirror before the advertised URL when `fallback` is true and rejects ranges above
-    /// `memory_limit` before selecting either source.
-    ///
-    /// # Errors
-    /// Returns [`RangeError`] if no eligible source provides the requested range.
-    pub async fn fetch_range(&self, url: &str, start: u64, end: u64, memory_limit: usize) -> Result<Bytes, RangeError> {
-        range_lengths(start, end, memory_limit)?;
-        if let Some(mirror) = &self.mirror {
-            let mirror_url = Self::mirror_url(mirror, url)?;
-            match mirror.fetch_range(mirror_url.as_str(), start, end, memory_limit).await {
-                Ok(bytes) => return Ok(bytes),
-                Err(err) if !self.fallback => return Err(err),
-                Err(_) => {}
-            }
-        }
-        self.origin.fetch_range(url, start, end, memory_limit).await
+        self.origin.range_session(url).await
     }
 }
 

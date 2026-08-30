@@ -82,10 +82,7 @@ impl RequestKind {
     async fn succeeds(self, client: &UpstreamClient, url: &str) -> bool {
         match self {
             Self::Artifact => client.fetch_bytes(url).await.is_ok(),
-            Self::Metadata => matches!(
-                client.head_file_for_range(url).await,
-                Ok(_) | Err(RangeError::Unsupported)
-            ),
+            Self::Metadata => matches!(client.range_session(url).await, Ok(_) | Err(RangeError::Unsupported)),
         }
     }
 }

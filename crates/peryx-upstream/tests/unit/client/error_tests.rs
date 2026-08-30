@@ -143,13 +143,15 @@ async fn test_stream_bytes_checks_status() {
 #[case::reversed(3, 1, "start 3 is after end 1")]
 #[case::overflow(0, u64::MAX, "requested range length overflowed")]
 #[tokio::test]
-async fn test_fetch_range_rejects_invalid_bounds(#[case] start: u64, #[case] end: u64, #[case] expected: &str) {
-    let client = UpstreamClient::new("https://upstream.example/artifacts/").unwrap();
+async fn test_pinned_range_read_rejects_invalid_bounds(#[case] start: u64, #[case] end: u64, #[case] expected: &str) {
+    let session = crate::client::RangeSession::pinned(
+        UpstreamClient::new("https://upstream.example/artifacts/").unwrap(),
+        url::Url::parse("https://example.invalid/artifact.bin").unwrap(),
+        u64::MAX,
+        "\"generation-a\"",
+    );
 
-    let err = client
-        .fetch_range("https://example.invalid/artifact.bin", start, end, usize::MAX)
-        .await
-        .unwrap_err();
+    let err = session.fetch_range(start, end, usize::MAX).await.unwrap_err();
 
     assert_eq!(
         err.to_string(),
@@ -158,8 +160,13 @@ async fn test_fetch_range_rejects_invalid_bounds(#[case] start: u64, #[case] end
 }
 
 #[tokio::test]
-async fn test_fetch_range_rejects_non_partial_success() {
+async fn test_range_probe_rejects_non_partial_success() {
     let server = MockServer::start().await;
+    Mock::given(method("HEAD"))
+        .and(path("/files/artifact.bin"))
+        .respond_with(ResponseTemplate::new(405))
+        .mount(&server)
+        .await;
     Mock::given(method("GET"))
         .and(path("/files/artifact.bin"))
         .respond_with(ResponseTemplate::new(204))
@@ -168,7 +175,7 @@ async fn test_fetch_range_rejects_non_partial_success() {
     let client = guarded_client(&server);
 
     let err = client
-        .fetch_range(&format!("{}/files/artifact.bin", server.uri()), 1, 3, 3)
+        .range_session(&format!("{}/files/artifact.bin", server.uri()))
         .await
         .unwrap_err();
 

@@ -131,7 +131,10 @@ pub async fn mount_status_detail(
         .mount(server)
         .await;
 }
-pub fn range_response(bytes: Vec<u8>) -> impl wiremock::Respond {
+/// Ranged reads pin one representation, so mocked `HEAD` and range responses share one validator.
+pub const WHEEL_ETAG: &str = "\"wheel-generation\"";
+
+pub fn range_response(bytes: Vec<u8>) -> impl Fn(&wiremock::Request) -> ResponseTemplate + Send + Sync {
     move |request: &wiremock::Request| {
         let Some(range) = request
             .headers
@@ -152,8 +155,24 @@ pub fn range_response(bytes: Vec<u8>) -> impl wiremock::Respond {
         }
         ResponseTemplate::new(206)
             .insert_header("accept-ranges", "bytes")
+            .insert_header("etag", WHEEL_ETAG)
             .insert_header("content-range", format!("bytes {start}-{end}/{}", bytes.len()))
             .set_body_bytes(bytes[start..=end].to_vec())
+    }
+}
+
+/// Answers the first range from the pinned generation and every later one from the next, mimicking
+/// an upstream rotation in the middle of one ranged read.
+pub fn rotating_range_response(bytes: Vec<u8>) -> impl wiremock::Respond {
+    let pinned = range_response(bytes);
+    let served = AtomicUsize::new(0);
+    move |request: &wiremock::Request| {
+        let response = pinned(request);
+        if served.fetch_add(1, Ordering::Relaxed) == 0 {
+            response
+        } else {
+            response.insert_header("etag", "\"next-generation\"")
+        }
     }
 }
 
@@ -201,7 +220,8 @@ pub async fn assert_metadata_range_fallback_preserves_other_resources(
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("accept-ranges", "bytes")
-                .insert_header("content-length", ranged.len()),
+                .insert_header("content-length", ranged.len())
+                .insert_header("etag", WHEEL_ETAG),
         )
         .mount(&h.server)
         .await;
@@ -240,7 +260,11 @@ pub async fn assert_metadata_range_fallback_preserves_other_resources(
         .unwrap();
     Mock::given(method("HEAD"))
         .and(path(format!("/files/{next_filename}")))
-        .respond_with(ResponseTemplate::new(200).insert_header("content-length", next_wheel.len()))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", next_wheel.len())
+                .insert_header("etag", WHEEL_ETAG),
+        )
         .expect(1)
         .mount(&h.server)
         .await;

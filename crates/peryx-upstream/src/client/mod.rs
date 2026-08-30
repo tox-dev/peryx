@@ -16,13 +16,14 @@ use std::time::{Duration, SystemTime};
 use bytes::{Bytes, BytesMut};
 use futures_core::Stream;
 use reqwest::header::{
-    ACCEPT, ACCEPT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE, HeaderMap, IF_MODIFIED_SINCE, IF_NONE_MATCH, RANGE,
+    ACCEPT, ACCEPT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE, HeaderMap, HeaderValue, IF_MODIFIED_SINCE, IF_NONE_MATCH,
+    IF_RANGE, RANGE,
 };
 use url::Url;
 
 use self::guard::OutboundGuard;
 use self::range::RangeSuppressions;
-use self::response::header_str;
+use self::response::{header_str, strong_etag};
 use self::retry::{
     MAX_RETRIES, RETRY_WAIT_BUDGET, retry_after_at, retry_delay, should_retry_error, should_retry_status,
     sleep_before_retry_status, sleep_before_retry_str,
@@ -35,7 +36,6 @@ pub use self::credential::{
 pub use self::error::{RangeError, UpstreamError};
 pub use self::exec::{CredentialScope, ExecCredentialConfig, ExecCredentialConfigError, ExecCredentialProviderError};
 pub use self::netrc::{Netrc, NetrcError};
-pub use self::response::FileHead;
 pub use self::tls::{UpstreamTls, UpstreamTlsError};
 
 const USER_AGENT: &str = concat!("peryx/", env!("CARGO_PKG_VERSION"));
@@ -117,6 +117,89 @@ pub struct UpstreamClient {
     guard: OutboundGuard,
     range_suppressions: Arc<RangeSuppressions>,
     reachability: Arc<AtomicU8>,
+}
+
+/// One representation of one resource, held across a sequence of range reads.
+///
+/// Every read goes back to the client and resolved URL that started the session and carries the
+/// session validator as `If-Range`, so fragments of two upstream generations cannot be combined.
+#[derive(Clone)]
+pub struct RangeSession {
+    client: UpstreamClient,
+    url: Url,
+    len: u64,
+    etag: HeaderValue,
+}
+
+impl std::fmt::Debug for RangeSession {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RangeSession")
+            .field("url", &redact_url(self.url.as_str()))
+            .field("len", &self.len)
+            .finish_non_exhaustive()
+    }
+}
+
+impl RangeSession {
+    /// Pins a session without a live handshake, so tests can drive one range response at a time.
+    #[cfg(test)]
+    pub(crate) const fn pinned(client: UpstreamClient, url: Url, len: u64, etag: &'static str) -> Self {
+        Self {
+            client,
+            url,
+            len,
+            etag: HeaderValue::from_static(etag),
+        }
+    }
+
+    /// The representation length the session is pinned to.
+    #[must_use]
+    pub const fn len(&self) -> u64 {
+        self.len
+    }
+
+    /// Whether the pinned representation carries no bytes.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Fetches the inclusive byte range `start..=end` from the pinned representation within
+    /// `memory_limit`.
+    ///
+    /// # Errors
+    /// Returns [`RangeError::Invalid`] when the range leaves the pinned representation or upstream
+    /// answers with a different one, [`RangeError::Unsupported`] when upstream stops serving
+    /// ranges, and [`RangeError::Upstream`] on other request failures.
+    pub async fn fetch_range(&self, start: u64, end: u64, memory_limit: usize) -> Result<Bytes, RangeError> {
+        let (range_len, expected_len) = range_lengths(start, end, memory_limit)?;
+        if end >= self.len {
+            return Err(RangeError::Invalid(format!(
+                "range {start}-{end} leaves the {}-byte representation",
+                self.len
+            )));
+        }
+        let response = self
+            .client
+            .request_range(&self.url, start, end, Some(&self.etag))
+            .await?;
+        if response.url() != &self.url {
+            return Err(RangeError::Invalid("range response left the pinned URL".to_owned()));
+        }
+        if strong_etag(response.headers()).is_some_and(|etag| etag != self.etag) {
+            return Err(RangeError::Invalid(
+                "range response carries a different entity tag".to_owned(),
+            ));
+        }
+        if validate_content_range(response.headers(), start, end)? != Some(self.len) {
+            return Err(RangeError::Invalid(format!(
+                "range response reports a length other than the pinned {}",
+                self.len
+            )));
+        }
+        read_range_body(response, range_len, expected_len).await
+    }
 }
 
 const REACHABILITY_UNKNOWN: u8 = 0;
@@ -416,12 +499,14 @@ impl UpstreamClient {
         }
     }
 
-    /// Reads the representation length without relying on advisory `Accept-Ranges` metadata.
+    /// Pins one representation for a sequence of range reads, without relying on advisory
+    /// `Accept-Ranges` metadata.
     ///
     /// # Errors
     /// Returns [`RangeError::Unsupported`] when the resource recently ignored a range or cannot
-    /// provide length metadata, and [`RangeError::Upstream`] on other request failures.
-    pub async fn head_file_for_range(&self, url: &str) -> Result<FileHead, RangeError> {
+    /// supply both a length and a strong entity tag, and [`RangeError::Upstream`] on other request
+    /// failures.
+    pub async fn range_session(&self, url: &str) -> Result<RangeSession, RangeError> {
         let url = Url::parse(url).map_err(UpstreamError::from)?;
         self.guard.check_url(&url).map_err(RangeError::from)?;
         if self.range_suppressions.contains(&url) {
@@ -435,16 +520,22 @@ impl UpstreamClient {
             .await
             .map_err(RangeError::from)?;
         if response.status().is_success() {
-            return match header_str(response.headers(), &CONTENT_LENGTH).and_then(|value| value.parse().ok()) {
-                Some(len) => Ok(FileHead { len }),
-                None => self.probe_file_for_range(&url).await,
+            let len = header_str(response.headers(), &CONTENT_LENGTH).and_then(|value| value.parse().ok());
+            return match (len, strong_etag(response.headers())) {
+                (Some(len), Some(etag)) => Ok(RangeSession {
+                    client: self.clone(),
+                    url: response.url().clone(),
+                    len,
+                    etag,
+                }),
+                _ => self.probe_range_session(response.url()).await,
             };
         }
         if matches!(
             response.status(),
             reqwest::StatusCode::METHOD_NOT_ALLOWED | reqwest::StatusCode::NOT_IMPLEMENTED
         ) {
-            return self.probe_file_for_range(&url).await;
+            return self.probe_range_session(&url).await;
         }
         if matches!(
             response.status(),
@@ -456,48 +547,56 @@ impl UpstreamClient {
         Err(RangeError::Invalid("HEAD returned a non-success response".to_owned()))
     }
 
-    /// Fetches the inclusive byte range `start..=end` within `memory_limit`.
-    ///
-    /// # Errors
-    /// Returns [`RangeError::Unsupported`] or [`RangeError::Invalid`] when upstream cannot satisfy
-    /// the requested range or it exceeds `memory_limit`, and [`RangeError::Upstream`] on other
-    /// request failures.
-    pub async fn fetch_range(&self, url: &str, start: u64, end: u64, memory_limit: usize) -> Result<Bytes, RangeError> {
-        let (range_len, expected_len) = range_lengths(start, end, memory_limit)?;
-        let url = Url::parse(url).map_err(UpstreamError::from)?;
-        self.guard.check_url(&url).map_err(RangeError::from)?;
-        let response = self.request_range(&url, start, end).await?;
-        validate_content_range(response.headers(), start, end)?;
-        read_range_body(response, range_len, expected_len).await
-    }
-
-    async fn probe_file_for_range(&self, url: &Url) -> Result<FileHead, RangeError> {
-        let response = self.request_range(url, 0, 0).await?;
+    /// Pins the session on the probe response itself, so a representation change between the `HEAD`
+    /// and the probe cannot leave the session holding a validator it never observed.
+    async fn probe_range_session(&self, url: &Url) -> Result<RangeSession, RangeError> {
+        let response = self.request_range(url, 0, 0, None).await?;
+        let etag = strong_etag(response.headers()).ok_or(RangeError::Unsupported)?;
         let len = validate_content_range(response.headers(), 0, 0)?
             .ok_or_else(|| RangeError::Invalid("range probe returned an unknown representation length".to_owned()))?;
+        let url = response.url().clone();
         read_range_body(response, 1, 1).await?;
-        Ok(FileHead { len })
+        Ok(RangeSession {
+            client: self.clone(),
+            url,
+            len,
+            etag,
+        })
     }
 
-    async fn request_range(&self, url: &Url, start: u64, end: u64) -> Result<reqwest::Response, RangeError> {
+    async fn request_range(
+        &self,
+        url: &Url,
+        start: u64,
+        end: u64,
+        if_range: Option<&HeaderValue>,
+    ) -> Result<reqwest::Response, RangeError> {
+        self.guard.check_url(url).map_err(RangeError::from)?;
         if self.range_suppressions.contains(url) {
             return Err(RangeError::Unsupported);
         }
         let response = self
             .send_with_retry(&mut |auth| {
-                self.authenticate(self.http(url).get(url.clone()), url, auth)
+                let request = self
+                    .authenticate(self.http(url).get(url.clone()), url, auth)
                     .header(ACCEPT_ENCODING, "identity")
-                    .header(RANGE, format!("bytes={start}-{end}"))
+                    .header(RANGE, format!("bytes={start}-{end}"));
+                match if_range {
+                    Some(validator) => request.header(IF_RANGE, validator.clone()),
+                    None => request,
+                }
             })
             .await
             .map_err(RangeError::from)?;
         match response.status() {
             reqwest::StatusCode::PARTIAL_CONTENT => Ok(response),
-            reqwest::StatusCode::OK => {
+            // A 200 to `If-Range` means the validator no longer matches, not that ranges are
+            // unavailable, so it must not suppress ranges for the resource.
+            reqwest::StatusCode::OK if if_range.is_none() => {
                 self.range_suppressions.insert(url.clone());
                 Err(RangeError::Unsupported)
             }
-            reqwest::StatusCode::RANGE_NOT_SATISFIABLE => Err(RangeError::Unsupported),
+            reqwest::StatusCode::OK | reqwest::StatusCode::RANGE_NOT_SATISFIABLE => Err(RangeError::Unsupported),
             _ => {
                 response.error_for_status().map_err(UpstreamError::from)?;
                 Err(RangeError::Invalid(
@@ -724,7 +823,7 @@ pub fn redact_url(value: &str) -> String {
     url.to_string()
 }
 
-pub(crate) fn range_lengths(start: u64, end: u64, memory_limit: usize) -> Result<(u64, usize), RangeError> {
+fn range_lengths(start: u64, end: u64, memory_limit: usize) -> Result<(u64, usize), RangeError> {
     if end < start {
         return Err(RangeError::Invalid(format!("start {start} is after end {end}")));
     }

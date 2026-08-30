@@ -5,12 +5,13 @@ use std::thread::JoinHandle;
 
 use futures_util::TryStreamExt as _;
 use rstest::rstest;
+use url::Url;
 use wiremock::matchers::{header, header_regex, method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use super::{guarded_client, mount_get};
+use super::{guarded_client, mount_get, mount_head};
 use crate::client::{
-    Auth, RANGE_SUPPRESSION_CAPACITY, RANGE_SUPPRESSION_TTL, UpstreamClient, UpstreamError, redact_url,
+    Auth, RANGE_SUPPRESSION_CAPACITY, RANGE_SUPPRESSION_TTL, RangeSession, UpstreamClient, UpstreamError, redact_url,
 };
 
 #[tokio::test]
@@ -149,68 +150,249 @@ async fn test_stream_bytes_streams_file() {
     assert_eq!(bytes, b"artifactbytes");
 }
 
+const PINNED_ETAG: &str = "\"generation-a\"";
+
+async fn mount_pinned_head(server: &MockServer, request_path: &str, len: u64) {
+    Mock::given(method("HEAD"))
+        .and(path(request_path))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", len.to_string())
+                .insert_header("etag", PINNED_ETAG),
+        )
+        .mount(server)
+        .await;
+}
+
+fn partial(content_range: &str, body: &[u8]) -> ResponseTemplate {
+    ResponseTemplate::new(206)
+        .insert_header("content-range", content_range)
+        .insert_header("etag", PINNED_ETAG)
+        .set_body_bytes(body.to_vec())
+}
+
+async fn pinned_session(server: &MockServer, len: u64) -> RangeSession {
+    mount_pinned_head(server, "/files/artifact.bin", len).await;
+    guarded_client(server)
+        .range_session(&format!("{}/files/artifact.bin", server.uri()))
+        .await
+        .unwrap()
+}
+
+fn served_session(server: &RangeServer) -> RangeSession {
+    RangeSession::pinned(
+        UpstreamClient::new(&server.origin()).unwrap(),
+        Url::parse(&server.url()).unwrap(),
+        5,
+        PINNED_ETAG,
+    )
+}
+
 #[tokio::test]
-async fn test_fetch_range_requests_identity_bytes() {
+async fn test_range_session_pins_the_representation_from_head() {
+    let server = MockServer::start().await;
+    mount_pinned_head(&server, "/files/artifact.bin", 10).await;
+    let client = guarded_client(&server);
+
+    let session = client
+        .range_session(&format!("{}/files/artifact.bin", server.uri()))
+        .await
+        .unwrap();
+
+    assert_eq!((session.len(), session.is_empty()), (10, false));
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn test_range_session_reports_an_empty_representation() {
+    let server = MockServer::start().await;
+    mount_pinned_head(&server, "/files/artifact.bin", 0).await;
+    let client = guarded_client(&server);
+
+    let session = client
+        .range_session(&format!("{}/files/artifact.bin", server.uri()))
+        .await
+        .unwrap();
+
+    assert!(session.is_empty());
+}
+
+#[tokio::test]
+async fn test_range_session_reads_identity_bytes_under_the_pinned_validator() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/files/artifact.bin"))
         .and(header("accept-encoding", "identity"))
         .and(header("range", "bytes=1-3"))
-        .respond_with(
-            ResponseTemplate::new(206)
-                .insert_header("content-range", "bytes 1-3/5")
-                .set_body_bytes(b"hee".to_vec()),
-        )
+        .and(header("if-range", PINNED_ETAG))
+        .respond_with(partial("bytes 1-3/5", b"hee"))
+        .expect(1)
         .mount(&server)
         .await;
-    let client = guarded_client(&server);
+    let session = pinned_session(&server, 5).await;
 
-    let bytes = client
-        .fetch_range(&format!("{}/files/artifact.bin", server.uri()), 1, 3, 3)
-        .await
-        .unwrap();
+    assert_eq!(&session.fetch_range(1, 3, 3).await.unwrap()[..], b"hee");
+}
 
-    assert_eq!(&bytes[..], b"hee");
+#[rstest]
+#[case::unknown_total("bytes 1-3/*")]
+#[case::another_length("bytes 1-3/9")]
+#[tokio::test]
+async fn test_range_session_rejects_a_response_length_other_than_the_pinned_one(#[case] content_range: &str) {
+    let server = MockServer::start().await;
+    mount_get(&server, "/files/artifact.bin", partial(content_range, b"hee")).await;
+    let session = pinned_session(&server, 5).await;
+
+    let err = session.fetch_range(1, 3, 3).await.unwrap_err();
+
+    assert_eq!(
+        err.to_string(),
+        "upstream returned an invalid byte range response: range response reports a length other than the pinned 5"
+    );
 }
 
 #[tokio::test]
-async fn test_fetch_range_accepts_unknown_total() {
+async fn test_range_session_rejects_a_changed_entity_tag() {
+    let server = MockServer::start().await;
+    mount_get(
+        &server,
+        "/files/artifact.bin",
+        ResponseTemplate::new(206)
+            .insert_header("content-range", "bytes 1-3/5")
+            .insert_header("etag", "\"generation-b\"")
+            .set_body_bytes(b"hee".to_vec()),
+    )
+    .await;
+    let session = pinned_session(&server, 5).await;
+
+    let err = session.fetch_range(1, 3, 3).await.unwrap_err();
+
+    assert_eq!(
+        err.to_string(),
+        "upstream returned an invalid byte range response: range response carries a different entity tag"
+    );
+}
+
+#[tokio::test]
+async fn test_range_session_rejects_a_response_that_left_the_pinned_url() {
+    let server = MockServer::start().await;
+    mount_get(
+        &server,
+        "/files/artifact.bin",
+        ResponseTemplate::new(302).insert_header("location", "/files/other.bin"),
+    )
+    .await;
+    mount_get(&server, "/files/other.bin", partial("bytes 1-3/5", b"hee")).await;
+    let session = pinned_session(&server, 5).await;
+
+    let err = session.fetch_range(1, 3, 3).await.unwrap_err();
+
+    assert_eq!(
+        err.to_string(),
+        "upstream returned an invalid byte range response: range response left the pinned URL"
+    );
+}
+
+#[tokio::test]
+async fn test_range_session_rejects_a_range_past_the_representation() {
+    let server = MockServer::start().await;
+    let session = pinned_session(&server, 5).await;
+
+    let err = session.fetch_range(3, 5, 3).await.unwrap_err();
+
+    assert_eq!(
+        err.to_string(),
+        "upstream returned an invalid byte range response: range 3-5 leaves the 5-byte representation"
+    );
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn test_range_session_rejects_caller_budget_before_request() {
+    let server = MockServer::start().await;
+    let session = pinned_session(&server, 5).await;
+
+    let err = session.fetch_range(0, 3, 3).await.unwrap_err();
+
+    assert_eq!(
+        err.to_string(),
+        "upstream returned an invalid byte range response: requested range of 4 bytes exceeds the 3-byte memory limit"
+    );
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+}
+
+/// A `200` answer to `If-Range` means the validator no longer matches, so the resource keeps its
+/// ranged reads for the next generation instead of being suppressed.
+#[tokio::test]
+async fn test_range_session_rejects_a_whole_body_answer_without_suppressing_the_resource() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/files/artifact.bin"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"whole".to_vec()))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let session = pinned_session(&server, 5).await;
+
+    for _ in 0..2 {
+        assert!(matches!(
+            session.fetch_range(1, 3, 3).await,
+            Err(crate::RangeError::Unsupported)
+        ));
+    }
+}
+
+/// A resource can stop honoring `Range` while a session is open. The session skips the request
+/// rather than pulling the whole body back for a few bytes.
+#[tokio::test]
+async fn test_pinned_range_read_stops_at_a_suppressed_resource() {
+    let server = MockServer::start().await;
+    Mock::given(method("HEAD"))
+        .and(path("/files/artifact.bin"))
         .respond_with(
-            ResponseTemplate::new(206)
-                .insert_header("content-range", "bytes 1-3/*")
-                .set_body_bytes(b"hee".to_vec()),
+            ResponseTemplate::new(200)
+                .insert_header("content-length", "5")
+                .insert_header("etag", PINNED_ETAG),
         )
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    mount_head(&server, "/files/artifact.bin", ResponseTemplate::new(405)).await;
+    Mock::given(method("GET"))
+        .and(path("/files/artifact.bin"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"whole".to_vec()))
+        .expect(1)
         .mount(&server)
         .await;
     let client = guarded_client(&server);
+    let url = format!("{}/files/artifact.bin", server.uri());
+    let session = client.range_session(&url).await.unwrap();
 
-    let bytes = client
-        .fetch_range(&format!("{}/files/artifact.bin", server.uri()), 1, 3, 3)
-        .await
-        .unwrap();
-
-    assert_eq!(&bytes[..], b"hee");
+    assert!(matches!(
+        client.range_session(&url).await,
+        Err(crate::RangeError::Unsupported)
+    ));
+    assert!(matches!(
+        session.fetch_range(1, 3, 3).await,
+        Err(crate::RangeError::Unsupported)
+    ));
+    assert_eq!(server.received_requests().await.unwrap().len(), 3);
 }
 
 #[tokio::test]
-async fn test_fetch_range_accepts_exact_chunked_body() {
+async fn test_range_session_accepts_an_exact_chunked_body() {
     let server = RangeServer::start(RangeResponse::ExactChunked);
-    let client = UpstreamClient::new(&server.origin()).unwrap();
 
-    let bytes = client.fetch_range(&server.url(), 1, 3, 3).await.unwrap();
+    let bytes = served_session(&server).fetch_range(1, 3, 3).await.unwrap();
 
     assert_eq!(bytes, b"hee".as_slice());
 }
 
 #[tokio::test]
-async fn test_fetch_range_stops_at_first_excess_byte() {
+async fn test_range_session_stops_at_first_excess_byte() {
     let server = RangeServer::start(RangeResponse::ExcessChunked);
-    let client = UpstreamClient::new(&server.origin()).unwrap();
 
-    let err = client.fetch_range(&server.url(), 1, 3, 3).await.unwrap_err();
+    let err = served_session(&server).fetch_range(1, 3, 3).await.unwrap_err();
 
     assert_eq!(
         err.to_string(),
@@ -219,11 +401,10 @@ async fn test_fetch_range_stops_at_first_excess_byte() {
 }
 
 #[tokio::test]
-async fn test_fetch_range_rejects_mismatched_content_length_before_body() {
+async fn test_range_session_rejects_mismatched_content_length_before_body() {
     let server = RangeServer::start(RangeResponse::MismatchedContentLength);
-    let client = UpstreamClient::new(&server.origin()).unwrap();
 
-    let err = client.fetch_range(&server.url(), 1, 3, 3).await.unwrap_err();
+    let err = served_session(&server).fetch_range(1, 3, 3).await.unwrap_err();
 
     assert_eq!(
         err.to_string(),
@@ -232,40 +413,53 @@ async fn test_fetch_range_rejects_mismatched_content_length_before_body() {
 }
 
 #[tokio::test]
-async fn test_fetch_range_rejects_caller_budget_before_request() {
-    let server = MockServer::start().await;
-    let client = guarded_client(&server);
+async fn test_range_session_rejects_short_body() {
+    let server = RangeServer::start(RangeResponse::ShortChunked);
 
-    let err = client
-        .fetch_range(&format!("{}/files/artifact.bin", server.uri()), 0, 3, 3)
-        .await
-        .unwrap_err();
+    let err = served_session(&server).fetch_range(1, 3, 3).await.unwrap_err();
 
     assert_eq!(
         err.to_string(),
-        "upstream returned an invalid byte range response: requested range of 4 bytes exceeds the 3-byte memory limit"
+        "upstream returned an invalid byte range response: expected 3 bytes, received 2"
     );
-    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[test]
+fn test_range_session_debug_redacts_the_pinned_url() {
+    let session = RangeSession::pinned(
+        UpstreamClient::new("https://upstream.example/api/").unwrap(),
+        Url::parse("https://user:hunter2@upstream.example/files/artifact.bin?token=secret").unwrap(),
+        5,
+        PINNED_ETAG,
+    );
+
+    let debug = format!("{session:?}");
+
+    assert!(debug.contains("https://upstream.example/files/artifact.bin"));
+    assert!(!debug.contains("hunter2") && !debug.contains("secret"));
 }
 
 #[rstest]
-#[case::missing_content_range(206, None, b"hee".as_slice())]
-#[case::non_bytes_unit(206, Some("items 1-3/5"), b"hee".as_slice())]
-#[case::missing_total(206, Some("bytes 1-3"), b"hee".as_slice())]
-#[case::missing_span(206, Some("bytes 1/5"), b"hee".as_slice())]
-#[case::offset_mismatch(206, Some("bytes 2-4/5"), b"hee".as_slice())]
-#[case::end_mismatch(206, Some("bytes 1-4/6"), b"hee".as_slice())]
-#[case::non_numeric_total(206, Some("bytes 1-3/not-a-number"), b"hee".as_slice())]
-#[case::total_not_past_end(206, Some("bytes 1-3/3"), b"hee".as_slice())]
+#[case::missing_content_range(206, None, b"a".as_slice())]
+#[case::non_bytes_unit(206, Some("items 0-0/5"), b"a".as_slice())]
+#[case::missing_total(206, Some("bytes 0-0"), b"a".as_slice())]
+#[case::missing_span(206, Some("bytes 0/5"), b"a".as_slice())]
+#[case::span_mismatch(206, Some("bytes 1-1/5"), b"a".as_slice())]
+#[case::non_numeric_total(206, Some("bytes 0-0/not-a-number"), b"a".as_slice())]
+#[case::total_not_past_end(206, Some("bytes 0-0/0"), b"a".as_slice())]
+#[case::unknown_total(206, Some("bytes 0-0/*"), b"a".as_slice())]
 #[case::range_not_satisfiable(416, None, b"".as_slice())]
 #[tokio::test]
-async fn test_fetch_range_does_not_suppress_after_a_bad_range_response(
+async fn test_range_session_does_not_suppress_after_a_bad_probe_response(
     #[case] status: u16,
     #[case] content_range: Option<&str>,
     #[case] body: &[u8],
 ) {
     let server = MockServer::start().await;
-    let mut response = ResponseTemplate::new(status).set_body_bytes(body.to_vec());
+    mount_head(&server, "/files/artifact.bin", ResponseTemplate::new(405)).await;
+    let mut response = ResponseTemplate::new(status)
+        .insert_header("etag", PINNED_ETAG)
+        .set_body_bytes(body.to_vec());
     if let Some(content_range) = content_range {
         response = response.insert_header("content-range", content_range);
     }
@@ -274,84 +468,57 @@ async fn test_fetch_range_does_not_suppress_after_a_bad_range_response(
 
     for _ in 0..2 {
         client
-            .fetch_range(&format!("{}/files/artifact.bin", server.uri()), 1, 3, 3)
+            .range_session(&format!("{}/files/artifact.bin", server.uri()))
             .await
             .unwrap_err();
     }
-    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    assert_eq!(server.received_requests().await.unwrap().len(), 4);
 }
 
 #[tokio::test]
-async fn test_fetch_range_suppresses_only_the_resource_that_ignored_it() {
+async fn test_range_session_suppresses_only_the_resource_that_ignored_ranges() {
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/files/ignored.bin"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"whole-file".to_vec()))
-        .expect(1)
+    Mock::given(method("HEAD"))
+        .respond_with(ResponseTemplate::new(405))
+        .expect(2)
         .mount(&server)
         .await;
-    Mock::given(method("GET"))
-        .and(path("/files/supported.bin"))
-        .respond_with(
-            ResponseTemplate::new(206)
-                .insert_header("content-range", "bytes 1-3/5")
-                .set_body_bytes(b"hee".to_vec()),
-        )
-        .expect(1)
-        .mount(&server)
-        .await;
+    mount_get(
+        &server,
+        "/files/ignored.bin",
+        ResponseTemplate::new(200).set_body_bytes(b"whole-file".to_vec()),
+    )
+    .await;
+    mount_get(&server, "/files/supported.bin", partial("bytes 0-0/5", b"h")).await;
     let client = guarded_client(&server);
     let ignored = format!("{}/files/ignored.bin", server.uri());
 
     for _ in 0..2 {
         assert!(matches!(
-            client.fetch_range(&ignored, 1, 3, 3).await,
+            client.range_session(&ignored).await,
             Err(crate::RangeError::Unsupported)
         ));
     }
 
     assert_eq!(
         client
-            .fetch_range(&format!("{}/files/supported.bin", server.uri()), 1, 3, 3)
+            .range_session(&format!("{}/files/supported.bin", server.uri()))
             .await
-            .unwrap(),
-        b"hee".as_slice()
+            .unwrap()
+            .len(),
+        5
     );
-}
-
-#[tokio::test]
-async fn test_fetch_range_suppression_applies_to_head() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/files/ignored.bin"))
-        .respond_with(ResponseTemplate::new(200))
-        .expect(1)
-        .mount(&server)
-        .await;
-    let client = guarded_client(&server);
-    let url = format!("{}/files/ignored.bin", server.uri());
-
-    client.fetch_range(&url, 0, 0, 1).await.unwrap_err();
-    assert!(matches!(
-        client.head_file_for_range(&url).await,
-        Err(crate::RangeError::Unsupported)
-    ));
-    assert_eq!(server.received_requests().await.unwrap().len(), 1);
 }
 
 #[tokio::test]
 async fn test_range_suppression_debug_omits_resource_urls() {
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/files/ignored.bin"))
-        .respond_with(ResponseTemplate::new(200))
-        .expect(1)
-        .mount(&server)
-        .await;
+    mount_head(&server, "/files/ignored.bin", ResponseTemplate::new(405)).await;
+    mount_get(&server, "/files/ignored.bin", ResponseTemplate::new(200)).await;
     let client = guarded_client(&server);
 
     client
-        .fetch_range(&format!("{}/files/ignored.bin?token=secret", server.uri()), 0, 0, 1)
+        .range_session(&format!("{}/files/ignored.bin?token=secret", server.uri()))
         .await
         .unwrap_err();
 
@@ -361,8 +528,9 @@ async fn test_range_suppression_debug_omits_resource_urls() {
 }
 
 #[tokio::test]
-async fn test_fetch_range_suppression_expires() {
+async fn test_range_suppression_expires() {
     let server = MockServer::start().await;
+    mount_head(&server, "/files/ignored.bin", ResponseTemplate::new(405)).await;
     Mock::given(method("GET"))
         .and(path("/files/ignored.bin"))
         .respond_with(ResponseTemplate::new(200))
@@ -372,26 +540,29 @@ async fn test_fetch_range_suppression_expires() {
     let client = guarded_client(&server);
     let url = format!("{}/files/ignored.bin", server.uri());
 
-    assert!(matches!(
-        client.fetch_range(&url, 0, 0, 1).await,
-        Err(crate::RangeError::Unsupported)
-    ));
-    assert!(matches!(
-        client.fetch_range(&url, 0, 0, 1).await,
-        Err(crate::RangeError::Unsupported)
-    ));
+    for _ in 0..2 {
+        assert!(matches!(
+            client.range_session(&url).await,
+            Err(crate::RangeError::Unsupported)
+        ));
+    }
     tokio::time::pause();
     tokio::time::advance(RANGE_SUPPRESSION_TTL + std::time::Duration::from_nanos(1)).await;
     tokio::time::resume();
     assert!(matches!(
-        client.fetch_range(&url, 0, 0, 1).await,
+        client.range_session(&url).await,
         Err(crate::RangeError::Unsupported)
     ));
 }
 
 #[tokio::test]
-async fn test_fetch_range_suppression_has_fixed_capacity() {
+async fn test_range_suppression_has_fixed_capacity() {
     let server = MockServer::start().await;
+    Mock::given(method("HEAD"))
+        .and(path_regex(r"^/files/[0-9]+\.bin$"))
+        .respond_with(ResponseTemplate::new(405))
+        .mount(&server)
+        .await;
     Mock::given(method("GET"))
         .and(path_regex(r"^/files/[0-9]+\.bin$"))
         .respond_with(ResponseTemplate::new(200))
@@ -402,139 +573,120 @@ async fn test_fetch_range_suppression_has_fixed_capacity() {
     for resource in 0..=RANGE_SUPPRESSION_CAPACITY {
         let url = format!("{}/files/{resource}.bin", server.uri());
         assert!(matches!(
-            client.fetch_range(&url, 0, 0, 1).await,
+            client.range_session(&url).await,
             Err(crate::RangeError::Unsupported)
         ));
     }
     assert!(matches!(
         client
-            .fetch_range(
-                &format!("{}/files/{RANGE_SUPPRESSION_CAPACITY}.bin", server.uri()),
-                0,
-                0,
-                1,
-            )
+            .range_session(&format!("{}/files/{RANGE_SUPPRESSION_CAPACITY}.bin", server.uri()))
             .await,
         Err(crate::RangeError::Unsupported)
     ));
     assert!(matches!(
-        client
-            .fetch_range(&format!("{}/files/0.bin", server.uri()), 0, 0, 1)
-            .await,
+        client.range_session(&format!("{}/files/0.bin", server.uri())).await,
         Err(crate::RangeError::Unsupported)
     ));
 
     assert_eq!(
         server.received_requests().await.unwrap().len(),
-        RANGE_SUPPRESSION_CAPACITY + 2
+        2 * (RANGE_SUPPRESSION_CAPACITY + 1) + 2
     );
 }
 
+#[rstest]
+#[case::missing_length(None, Some(PINNED_ETAG))]
+#[case::missing_entity_tag(Some("10"), None)]
 #[tokio::test]
-async fn test_fetch_range_rejects_short_body() {
-    let server = RangeServer::start(RangeResponse::ShortChunked);
-    let client = UpstreamClient::new(&server.origin()).unwrap();
-
-    let err = client.fetch_range(&server.url(), 1, 3, 3).await.unwrap_err();
-
-    assert_eq!(
-        err.to_string(),
-        "upstream returned an invalid byte range response: expected 3 bytes, received 2"
-    );
-}
-
-#[tokio::test]
-async fn test_head_file_for_range_accepts_length_without_advisory_range_header() {
+async fn test_range_session_probes_when_head_omits_a_pin(
+    #[case] content_length: Option<&str>,
+    #[case] etag: Option<&str>,
+) {
     let server = MockServer::start().await;
-    Mock::given(method("HEAD"))
-        .and(path("/files/artifact.bin"))
-        .respond_with(ResponseTemplate::new(200).insert_header("content-length", "10"))
-        .mount(&server)
-        .await;
-    let client = guarded_client(&server);
-
-    let head = client
-        .head_file_for_range(&format!("{}/files/artifact.bin", server.uri()))
-        .await
-        .unwrap();
-
-    assert_eq!(head.len, 10);
-}
-
-#[tokio::test]
-async fn test_head_file_for_range_probes_when_length_is_missing() {
-    let server = MockServer::start().await;
-    Mock::given(method("HEAD"))
-        .and(path("/files/artifact.bin"))
-        .respond_with(ResponseTemplate::new(200).insert_header("accept-ranges", "bytes"))
-        .mount(&server)
-        .await;
+    let mut response = ResponseTemplate::new(200).insert_header("accept-ranges", "bytes");
+    if let Some(content_length) = content_length {
+        response = response.insert_header("content-length", content_length);
+    }
+    if let Some(etag) = etag {
+        response = response.insert_header("etag", etag);
+    }
+    mount_head(&server, "/files/artifact.bin", response).await;
     Mock::given(method("GET"))
         .and(path("/files/artifact.bin"))
         .and(header("range", "bytes=0-0"))
-        .respond_with(
-            ResponseTemplate::new(206)
-                .insert_header("content-range", "bytes 0-0/10")
-                .set_body_bytes(b"a".to_vec()),
-        )
+        .respond_with(partial("bytes 0-0/10", b"a"))
         .expect(1)
         .mount(&server)
         .await;
     let client = guarded_client(&server);
 
-    let head = client
-        .head_file_for_range(&format!("{}/files/artifact.bin", server.uri()))
+    let session = client
+        .range_session(&format!("{}/files/artifact.bin", server.uri()))
         .await
         .unwrap();
 
-    assert_eq!(head.len, 10);
+    assert_eq!(session.len(), 10);
 }
 
 #[rstest]
 #[case::method_not_allowed(405)]
 #[case::not_implemented(501)]
 #[tokio::test]
-async fn test_head_file_for_range_probes_when_head_is_unsupported(#[case] status: u16) {
+async fn test_range_session_probes_when_head_is_unsupported(#[case] status: u16) {
     let server = MockServer::start().await;
-    Mock::given(method("HEAD"))
-        .and(path("/files/artifact.bin"))
-        .respond_with(ResponseTemplate::new(status))
-        .mount(&server)
-        .await;
+    mount_head(&server, "/files/artifact.bin", ResponseTemplate::new(status)).await;
     Mock::given(method("GET"))
         .and(path("/files/artifact.bin"))
         .and(header("range", "bytes=0-0"))
-        .respond_with(
-            ResponseTemplate::new(206)
-                .insert_header("content-range", "bytes 0-0/10")
-                .set_body_bytes(b"a".to_vec()),
-        )
+        .respond_with(partial("bytes 0-0/10", b"a"))
         .expect(1)
         .mount(&server)
         .await;
     let client = guarded_client(&server);
 
-    let head = client
-        .head_file_for_range(&format!("{}/files/artifact.bin", server.uri()))
+    let session = client
+        .range_session(&format!("{}/files/artifact.bin", server.uri()))
         .await
         .unwrap();
 
-    assert_eq!(head.len, 10);
+    assert_eq!(session.len(), 10);
+}
+
+#[rstest]
+#[case::absent(None)]
+#[case::weak(Some("W/\"generation-a\""))]
+#[case::unquoted(Some("generation-a"))]
+#[case::opening_quote_only(Some("\""))]
+#[case::embedded_quote(Some("\"a\"b\""))]
+#[tokio::test]
+async fn test_range_session_needs_a_strong_entity_tag(#[case] etag: Option<&str>) {
+    let server = MockServer::start().await;
+    mount_head(&server, "/files/artifact.bin", ResponseTemplate::new(405)).await;
+    let mut response = ResponseTemplate::new(206)
+        .insert_header("content-range", "bytes 0-0/10")
+        .set_body_bytes(b"a".to_vec());
+    if let Some(etag) = etag {
+        response = response.insert_header("etag", etag);
+    }
+    mount_get(&server, "/files/artifact.bin", response).await;
+    let client = guarded_client(&server);
+
+    assert!(matches!(
+        client
+            .range_session(&format!("{}/files/artifact.bin", server.uri()))
+            .await,
+        Err(crate::RangeError::Unsupported)
+    ));
 }
 
 #[tokio::test]
-async fn test_head_file_for_range_rejects_non_success_without_an_error_status() {
+async fn test_range_session_rejects_non_success_without_an_error_status() {
     let server = MockServer::start().await;
-    Mock::given(method("HEAD"))
-        .and(path("/files/artifact.bin"))
-        .respond_with(ResponseTemplate::new(304))
-        .expect(1)
-        .mount(&server)
-        .await;
+    mount_head(&server, "/files/artifact.bin", ResponseTemplate::new(304)).await;
     let client = guarded_client(&server);
 
     let err = client
-        .head_file_for_range(&format!("{}/files/artifact.bin", server.uri()))
+        .range_session(&format!("{}/files/artifact.bin", server.uri()))
         .await
         .unwrap_err();
 
@@ -550,31 +702,21 @@ async fn test_head_file_for_range_rejects_non_success_without_an_error_status() 
 #[tokio::test]
 async fn test_head_failure_does_not_suppress_another_resource(#[case] status: u16) {
     let server = MockServer::start().await;
-    Mock::given(method("HEAD"))
-        .and(path("/files/rejected.bin"))
-        .respond_with(ResponseTemplate::new(status))
-        .expect(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("HEAD"))
-        .and(path("/files/supported.bin"))
-        .respond_with(ResponseTemplate::new(200).insert_header("content-length", "10"))
-        .expect(1)
-        .mount(&server)
-        .await;
+    mount_head(&server, "/files/rejected.bin", ResponseTemplate::new(status)).await;
+    mount_pinned_head(&server, "/files/supported.bin", 10).await;
     let client = guarded_client(&server);
 
     client
-        .head_file_for_range(&format!("{}/files/rejected.bin", server.uri()))
+        .range_session(&format!("{}/files/rejected.bin", server.uri()))
         .await
         .unwrap_err();
 
     assert_eq!(
         client
-            .head_file_for_range(&format!("{}/files/supported.bin", server.uri()))
+            .range_session(&format!("{}/files/supported.bin", server.uri()))
             .await
             .unwrap()
-            .len,
+            .len(),
         10
     );
 }

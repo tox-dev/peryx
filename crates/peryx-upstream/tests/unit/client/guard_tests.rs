@@ -350,11 +350,8 @@ async fn test_fetch_bytes_limited_blocks_metadata_address() {
 }
 
 #[tokio::test]
-async fn test_head_file_for_range_blocks_private_literal() {
-    let error = blocked_client()
-        .head_file_for_range("http://127.0.0.1/x")
-        .await
-        .unwrap_err();
+async fn test_range_session_blocks_private_literal() {
+    let error = blocked_client().range_session("http://127.0.0.1/x").await.unwrap_err();
 
     assert!(matches!(
         error,
@@ -362,12 +359,17 @@ async fn test_head_file_for_range_blocks_private_literal() {
     ));
 }
 
+/// Pinning does not carry a session past the outbound policy: every read re-checks its URL.
 #[tokio::test]
-async fn test_fetch_range_blocks_private_literal() {
-    let error = blocked_client()
-        .fetch_range("http://127.0.0.1/x", 0, 10, 11)
-        .await
-        .unwrap_err();
+async fn test_pinned_range_read_blocks_private_literal() {
+    let session = crate::client::RangeSession::pinned(
+        blocked_client(),
+        Url::parse("http://127.0.0.1/x").unwrap(),
+        11,
+        "\"generation-a\"",
+    );
+
+    let error = session.fetch_range(0, 10, 11).await.unwrap_err();
 
     assert!(matches!(
         error,

@@ -3,7 +3,7 @@ pub use std::fmt::Write as _;
 pub use std::io::Write as _;
 pub use std::path::Path;
 pub use std::sync::Arc;
-pub use std::sync::atomic::{AtomicI64, Ordering};
+pub use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 
 pub use crate::store::CachedIndex;
 pub use crate::store::PypiStore as _;

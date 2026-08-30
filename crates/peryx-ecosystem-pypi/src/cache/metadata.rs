@@ -8,7 +8,7 @@ use crate::stream::Registration;
 use bytes::Bytes;
 use peryx_driver::state::ServingState;
 use peryx_storage::blob::Digest;
-use peryx_upstream::{ArtifactClient, RangeError};
+use peryx_upstream::{ArtifactClient, RangeError, RangeSession};
 
 mod central_dir;
 use central_dir::{
@@ -195,23 +195,22 @@ async fn wheel_metadata_by_range(
         Ok(None) => return Ok(RemoteMetadata::Unsupported),
         Err(err) => return Err(RangeError::Invalid(err.to_string())),
     };
-    let head = client.head_file_for_range(url).await?;
-    if head.len == 0 {
+    let session = client.range_session(url).await?;
+    if session.is_empty() {
         return Ok(RemoteMetadata::Unsupported);
     }
-    let tail_start = head.len.saturating_sub(ZIP_TAIL_BYTES);
-    let tail = client
-        .fetch_range(url, tail_start, head.len - 1, usize::try_from(ZIP_TAIL_BYTES).unwrap())
+    let tail_start = session.len().saturating_sub(ZIP_TAIL_BYTES);
+    let tail = session
+        .fetch_range(tail_start, session.len() - 1, usize::try_from(ZIP_TAIL_BYTES).unwrap())
         .await?;
-    let Some(directory) = central_directory(&tail, head.len) else {
+    let Some(directory) = central_directory(&tail, session.len()) else {
         return Ok(RemoteMetadata::Unsupported);
     };
     if directory.len == 0 {
         return Ok(RemoteMetadata::Unsupported);
     }
-    let directory_bytes = client
+    let directory_bytes = session
         .fetch_range(
-            url,
             directory.offset,
             directory.offset + directory.len - 1,
             usize::try_from(directory.len).expect("the central-directory budget fits in memory"),
@@ -227,13 +226,12 @@ async fn wheel_metadata_by_range(
     {
         return Ok(RemoteMetadata::Unsupported);
     }
-    let data_start = zip_data_start(client, url, entry.local_header_offset).await?;
+    let data_start = zip_data_start(&session, entry.local_header_offset).await?;
     let compressed = if entry.compressed_size == 0 {
         Bytes::new()
     } else {
-        client
+        session
             .fetch_range(
-                url,
                 data_start,
                 data_start + entry.compressed_size - 1,
                 usize::try_from(entry.compressed_size).expect("the metadata budget fits in memory"),
@@ -266,9 +264,9 @@ fn read_metadata_output(reader: impl Read, declared_size: u64) -> Result<RemoteM
     }
 }
 
-async fn zip_data_start(client: &ArtifactClient, url: &str, local_header_offset: u64) -> Result<u64, RangeError> {
-    let header = client
-        .fetch_range(url, local_header_offset, local_header_offset + 29, 30)
+async fn zip_data_start(session: &RangeSession, local_header_offset: u64) -> Result<u64, RangeError> {
+    let header = session
+        .fetch_range(local_header_offset, local_header_offset + 29, 30)
         .await?;
     if !header.starts_with(&ZIP_LOCAL_SIGNATURE) {
         return Err(RangeError::Invalid("hosted file header signature mismatch".to_owned()));

@@ -62,7 +62,7 @@ async fn test_private_ipv4_literals_never_reach_transport() {
 }
 
 #[tokio::test]
-async fn test_head_range_parses_byte_tokens_and_lengths() {
+async fn test_range_session_parses_byte_tokens_and_lengths() {
     let server = MockServer::start().await;
     let client = UpstreamClient::new(&format!("{}/api/", server.uri())).unwrap();
 
@@ -78,17 +78,18 @@ async fn test_head_range_parses_byte_tokens_and_lengths() {
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("accept-ranges", accept_ranges)
-                    .insert_header("content-length", length.to_string()),
+                    .insert_header("content-length", length.to_string())
+                    .insert_header("etag", "\"generation-a\""),
             )
             .mount(&server)
             .await;
 
         assert_eq!(
             client
-                .head_file_for_range(&format!("{}{route}", server.uri()))
+                .range_session(&format!("{}{route}", server.uri()))
                 .await
                 .unwrap()
-                .len,
+                .len(),
             length,
             "{case}"
         );
@@ -96,19 +97,17 @@ async fn test_head_range_parses_byte_tokens_and_lengths() {
 }
 
 #[tokio::test]
-async fn test_range_response_round_trips_generated_spans() {
+async fn test_pinned_range_reads_round_trip_generated_spans() {
     let server = MockServer::start().await;
     let client = UpstreamClient::new(&format!("{}/api/", server.uri())).unwrap();
 
-    for (case, start, length, known_total) in [
-        ("first", 0, 1, Some(1)),
-        ("middle", 7, 4, Some(32)),
-        ("large-offset", u64::from(u32::MAX), 8, Some(u64::from(u32::MAX) + 9)),
-        ("unknown-total", 19, 16, None),
+    for (case, start, length, total) in [
+        ("first", 0, 1, 1),
+        ("middle", 7, 4, 32),
+        ("large-offset", u64::from(u32::MAX), 8, u64::from(u32::MAX) + 9),
     ] {
         let route = format!("/files/{case}");
         let end = start + length - 1;
-        let total = known_total.map_or_else(|| "*".to_owned(), |value| value.to_string());
         let body = vec![u8::try_from(length).unwrap(); usize::try_from(length).unwrap()];
         Mock::given(method("GET"))
             .and(path(route.clone()))
@@ -119,15 +118,16 @@ async fn test_range_response_round_trips_generated_spans() {
             )
             .mount(&server)
             .await;
+        let session = crate::client::RangeSession::pinned(
+            client.clone(),
+            Url::parse(&format!("{}{route}", server.uri())).unwrap(),
+            total,
+            "\"generation-a\"",
+        );
 
         assert_eq!(
-            client
-                .fetch_range(
-                    &format!("{}{route}", server.uri()),
-                    start,
-                    end,
-                    usize::try_from(length).unwrap(),
-                )
+            session
+                .fetch_range(start, end, usize::try_from(length).unwrap())
                 .await
                 .unwrap()
                 .as_ref(),

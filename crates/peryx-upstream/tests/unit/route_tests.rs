@@ -3,7 +3,10 @@ use rstest::rstest;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use crate::{ArtifactClient, NamedUpstream, RouteError, UpstreamClient, UpstreamError, UpstreamHealth, UpstreamRouter};
+use crate::{
+    ArtifactClient, NamedUpstream, RangeError, RouteError, UpstreamClient, UpstreamError, UpstreamHealth,
+    UpstreamRouter,
+};
 
 fn upstream(name: &str) -> NamedUpstream {
     NamedUpstream::new(
@@ -134,8 +137,24 @@ fn test_upstream_router_rejects_an_unknown_pin_source() {
     );
 }
 
+const PINNED_ETAG: &str = "\"generation-a\"";
+
+fn pinned_head(len: u64) -> ResponseTemplate {
+    ResponseTemplate::new(200)
+        .insert_header("accept-ranges", "bytes")
+        .insert_header("content-length", len.to_string())
+        .insert_header("etag", PINNED_ETAG)
+}
+
+fn partial(content_range: &str, body: &[u8]) -> ResponseTemplate {
+    ResponseTemplate::new(206)
+        .insert_header("content-range", content_range)
+        .insert_header("etag", PINNED_ETAG)
+        .set_body_bytes(body.to_vec())
+}
+
 #[tokio::test]
-async fn test_artifact_client_falls_back_for_range_reads() {
+async fn test_artifact_client_starts_a_new_session_at_the_origin_when_the_mirror_cannot() {
     let origin = MockServer::start().await;
     let mirror = MockServer::start().await;
     Mock::given(method("HEAD"))
@@ -146,29 +165,14 @@ async fn test_artifact_client_falls_back_for_range_reads() {
         .await;
     Mock::given(method("HEAD"))
         .and(path("/files/artifact.bin"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("accept-ranges", "bytes")
-                .insert_header("content-length", "5"),
-        )
+        .respond_with(pinned_head(5))
         .expect(1)
         .mount(&origin)
         .await;
     Mock::given(method("GET"))
-        .and(path("/mirror/files/artifact.bin"))
-        .and(header("range", "bytes=1-3"))
-        .respond_with(ResponseTemplate::new(404))
-        .expect(1)
-        .mount(&mirror)
-        .await;
-    Mock::given(method("GET"))
         .and(path("/files/artifact.bin"))
         .and(header("range", "bytes=1-3"))
-        .respond_with(
-            ResponseTemplate::new(206)
-                .insert_header("content-range", "bytes 1-3/5")
-                .set_body_bytes(b"hee".to_vec()),
-        )
+        .respond_with(partial("bytes 1-3/5", b"hee"))
         .expect(1)
         .mount(&origin)
         .await;
@@ -180,29 +184,66 @@ async fn test_artifact_client_falls_back_for_range_reads() {
     let artifacts = source.artifacts();
     let url = format!("{}/files/artifact.bin?signature=origin", origin.uri());
 
-    assert_eq!(artifacts.head_file_for_range(&url).await.unwrap().len, 5);
-    assert_eq!(&artifacts.fetch_range(&url, 1, 3, 3).await.unwrap()[..], b"hee");
+    let session = artifacts.range_session(&url).await.unwrap();
+
+    assert_eq!(session.len(), 5);
+    assert_eq!(&session.fetch_range(1, 3, 3).await.unwrap()[..], b"hee");
+    assert_eq!(mirror.received_requests().await.unwrap().len(), 1);
 }
 
+/// A mirror that fails after pinning must not hand the rest of the read to the origin: the two
+/// sources can serve different generations of the same artifact.
 #[tokio::test]
-async fn test_artifact_client_keeps_origin_ranges_after_mirror_ignores_them() {
+async fn test_artifact_client_does_not_finish_a_mirror_session_at_the_origin() {
     let origin = MockServer::start().await;
     let mirror = MockServer::start().await;
-    Mock::given(method("GET"))
+    Mock::given(method("HEAD"))
         .and(path("/mirror/files/artifact.bin"))
-        .and(header("range", "bytes=1-3"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"whole".to_vec()))
+        .respond_with(pinned_head(5))
         .expect(1)
         .mount(&mirror)
         .await;
     Mock::given(method("GET"))
+        .and(path("/mirror/files/artifact.bin"))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(1)
+        .mount(&mirror)
+        .await;
+    let source = NamedUpstream::new(
+        "origin",
+        UpstreamClient::new(&format!("{}/api/", origin.uri())).unwrap(),
+    )
+    .with_artifact_mirror(UpstreamClient::new(&format!("{}/mirror/", mirror.uri())).unwrap(), true);
+    let artifacts = source.artifacts();
+    let url = format!("{}/files/artifact.bin", origin.uri());
+
+    let session = artifacts.range_session(&url).await.unwrap();
+
+    let err = session.fetch_range(1, 3, 3).await.unwrap_err();
+
+    assert!(matches!(&err, RangeError::Upstream(err) if err.status() == Some(404)));
+    assert!(origin.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_artifact_client_keeps_origin_sessions_after_a_mirror_ignores_ranges() {
+    let origin = MockServer::start().await;
+    let mirror = MockServer::start().await;
+    Mock::given(method("HEAD"))
+        .and(path("/mirror/files/artifact.bin"))
+        .respond_with(ResponseTemplate::new(405))
+        .expect(1)
+        .mount(&mirror)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/mirror/files/artifact.bin"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"whole".to_vec()))
+        .expect(1)
+        .mount(&mirror)
+        .await;
+    Mock::given(method("HEAD"))
         .and(path("/files/artifact.bin"))
-        .and(header("range", "bytes=1-3"))
-        .respond_with(
-            ResponseTemplate::new(206)
-                .insert_header("content-range", "bytes 1-3/5")
-                .set_body_bytes(b"hee".to_vec()),
-        )
+        .respond_with(pinned_head(5))
         .expect(2)
         .mount(&origin)
         .await;
@@ -215,34 +256,8 @@ async fn test_artifact_client_keeps_origin_ranges_after_mirror_ignores_them() {
     let url = format!("{}/files/artifact.bin", origin.uri());
 
     for _ in 0..2 {
-        assert_eq!(artifacts.fetch_range(&url, 1, 3, 3).await.unwrap(), b"hee".as_slice());
+        assert_eq!(artifacts.range_session(&url).await.unwrap().len(), 5);
     }
-}
-
-#[tokio::test]
-async fn test_artifact_client_rejects_range_over_budget_before_selecting_source() {
-    let origin = MockServer::start().await;
-    let mirror = MockServer::start().await;
-    let source = NamedUpstream::new("origin", UpstreamClient::new(&origin.uri()).unwrap())
-        .with_artifact_mirror(UpstreamClient::new(&mirror.uri()).unwrap(), true);
-    let artifacts = source.artifacts();
-
-    let err = artifacts
-        .fetch_range(&format!("{}/files/artifact.bin", origin.uri()), 0, 3, 3)
-        .await
-        .unwrap_err();
-
-    assert_eq!(
-        err.to_string(),
-        "upstream returned an invalid byte range response: requested range of 4 bytes exceeds the 3-byte memory limit"
-    );
-    assert_eq!(
-        (
-            origin.received_requests().await.unwrap().len(),
-            mirror.received_requests().await.unwrap().len()
-        ),
-        (0, 0)
-    );
 }
 
 #[tokio::test]
@@ -250,21 +265,13 @@ async fn test_artifact_client_reads_ranges_from_mirror() {
     let mirror = MockServer::start().await;
     Mock::given(method("HEAD"))
         .and(path("/files/artifact.bin"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("accept-ranges", "bytes")
-                .insert_header("content-length", "5"),
-        )
+        .respond_with(pinned_head(5))
         .expect(1)
         .mount(&mirror)
         .await;
     Mock::given(method("GET"))
         .and(path("/files/artifact.bin"))
-        .respond_with(
-            ResponseTemplate::new(206)
-                .insert_header("content-range", "bytes 1-3/5")
-                .set_body_bytes(b"hee".to_vec()),
-        )
+        .respond_with(partial("bytes 1-3/5", b"hee"))
         .expect(1)
         .mount(&mirror)
         .await;
@@ -272,42 +279,34 @@ async fn test_artifact_client_reads_ranges_from_mirror() {
         .with_artifact_mirror(UpstreamClient::new(&mirror.uri()).unwrap(), false);
     let artifacts = source.artifacts();
 
-    assert_eq!(
-        artifacts
-            .head_file_for_range("https://origin.example/files/artifact.bin")
-            .await
-            .unwrap()
-            .len,
-        5
-    );
-    assert_eq!(
-        &artifacts
-            .fetch_range("https://origin.example/files/artifact.bin", 1, 3, 3)
-            .await
-            .unwrap()[..],
-        b"hee"
-    );
+    let session = artifacts
+        .range_session("https://origin.example/files/artifact.bin")
+        .await
+        .unwrap();
+
+    assert_eq!(&session.fetch_range(1, 3, 3).await.unwrap()[..], b"hee");
 }
 
 #[tokio::test]
 async fn test_artifact_client_does_not_fallback_range_reads_when_disabled() {
     let origin = MockServer::start().await;
     let mirror = MockServer::start().await;
-    for request_method in ["HEAD", "GET"] {
-        Mock::given(method(request_method))
-            .and(path("/files/artifact.bin"))
-            .respond_with(ResponseTemplate::new(404))
-            .expect(1)
-            .mount(&mirror)
-            .await;
-    }
+    Mock::given(method("HEAD"))
+        .and(path("/files/artifact.bin"))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(1)
+        .mount(&mirror)
+        .await;
     let source = NamedUpstream::new("origin", UpstreamClient::new(&origin.uri()).unwrap())
         .with_artifact_mirror(UpstreamClient::new(&mirror.uri()).unwrap(), false);
     let artifacts = source.artifacts();
-    let url = format!("{}/files/artifact.bin", origin.uri());
 
-    assert!(artifacts.head_file_for_range(&url).await.is_err());
-    assert!(artifacts.fetch_range(&url, 1, 3, 3).await.is_err());
+    assert!(
+        artifacts
+            .range_session(&format!("{}/files/artifact.bin", origin.uri()))
+            .await
+            .is_err()
+    );
     assert!(origin.received_requests().await.unwrap().is_empty());
 }
 
@@ -424,32 +423,25 @@ async fn test_direct_artifact_client_reads_ranges() {
     let origin = MockServer::start().await;
     Mock::given(method("HEAD"))
         .and(path("/files/artifact.bin"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("accept-ranges", "bytes")
-                .insert_header("content-length", "5"),
-        )
+        .respond_with(pinned_head(5))
         .expect(1)
         .mount(&origin)
         .await;
     Mock::given(method("GET"))
         .and(path("/files/artifact.bin"))
-        .respond_with(
-            ResponseTemplate::new(206)
-                .insert_header("content-range", "bytes 1-3/5")
-                .set_body_bytes(b"hee".to_vec()),
-        )
+        .respond_with(partial("bytes 1-3/5", b"hee"))
         .expect(1)
         .mount(&origin)
         .await;
     let artifacts = ArtifactClient::from(UpstreamClient::new(&origin.uri()).unwrap());
-    let url = format!("{}/files/artifact.bin", origin.uri());
+
+    let session = artifacts
+        .range_session(&format!("{}/files/artifact.bin", origin.uri()))
+        .await
+        .unwrap();
 
     assert_eq!(
-        (
-            artifacts.head_file_for_range(&url).await.unwrap().len,
-            artifacts.fetch_range(&url, 1, 3, 3).await.unwrap(),
-        ),
+        (session.len(), session.fetch_range(1, 3, 3).await.unwrap()),
         (5, bytes::Bytes::from_static(b"hee"))
     );
 }

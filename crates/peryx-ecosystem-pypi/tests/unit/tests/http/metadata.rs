@@ -122,7 +122,8 @@ async fn test_routed_metadata_ranges_use_the_advertising_source_credentials() {
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("accept-ranges", "bytes")
-                .insert_header("content-length", wheel_size),
+                .insert_header("content-length", wheel_size)
+                .insert_header("etag", WHEEL_ETAG),
         )
         .mount(&server)
         .await;
@@ -255,7 +256,8 @@ async fn test_metadata_backfill_reads_wheel_ranges() {
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("accept-ranges", "bytes")
-                    .insert_header("content-length", wheel.len()),
+                    .insert_header("content-length", wheel.len())
+                    .insert_header("etag", WHEEL_ETAG),
             )
             .mount(&h.server)
             .await;
@@ -360,6 +362,50 @@ async fn test_metadata_backfill_downloads_when_ranges_fail() {
     assert_eq!(body.as_bytes(), metadata);
     assert!(h.state.serving.blobs.head(&digest).await.unwrap().is_some());
 }
+/// Ranged extraction must not stitch a directory read of one generation onto a tail read of
+/// another: the mismatch abandons the ranged path for a full verified download.
+#[tokio::test]
+async fn test_metadata_backfill_downloads_when_the_artifact_changes_between_ranges() {
+    let h = harness().await;
+    let metadata = b"Metadata-Version: 2.1\nName: peryxpkg\nVersion: 1.0\n";
+    let wheel = fixture_wheel_with_metadata(metadata);
+    let digest = Digest::of(&wheel);
+    let filename = "peryxpkg-1.0-py3-none-any.whl";
+    h.state
+        .serving
+        .meta
+        .put_file_url(digest.as_str(), &format!("{}/files/{filename}", h.server.uri()), "pypi")
+        .unwrap();
+    Mock::given(method("HEAD"))
+        .and(path(format!("/files/{filename}")))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", wheel.len())
+                .insert_header("etag", WHEEL_ETAG),
+        )
+        .mount(&h.server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/files/{filename}")))
+        .and(header_regex("range", "^bytes=[0-9]+-[0-9]+$"))
+        .respond_with(rotating_range_response(wheel.clone()))
+        .with_priority(1)
+        .mount(&h.server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("/files/{filename}")))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(wheel))
+        .with_priority(10)
+        .expect(1)
+        .mount(&h.server)
+        .await;
+
+    let uri = format!("/pypi/files/{}/{filename}.metadata", digest.as_str());
+    let (status, _, body) = get(&h.state, &uri, None).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body.as_bytes(), metadata);
+}
 #[tokio::test]
 async fn test_metadata_backfill_downloads_sdist_without_ranges() {
     let h = harness().await;
@@ -399,7 +445,8 @@ async fn test_metadata_backfill_missing_wheel_metadata_is_not_found() {
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("accept-ranges", "bytes")
-                .insert_header("content-length", wheel.len()),
+                .insert_header("content-length", wheel.len())
+                .insert_header("etag", WHEEL_ETAG),
         )
         .mount(&h.server)
         .await;
@@ -432,7 +479,8 @@ async fn test_metadata_backfill_downloads_when_range_zip_is_unsupported() {
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("accept-ranges", "bytes")
-                .insert_header("content-length", "0"),
+                .insert_header("content-length", "0")
+                .insert_header("etag", WHEEL_ETAG),
         )
         .mount(&h.server)
         .await;
@@ -467,7 +515,8 @@ async fn test_metadata_backfill_does_not_request_a_directory_span_outside_the_ar
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("accept-ranges", "bytes")
-                .insert_header("content-length", head_len),
+                .insert_header("content-length", head_len)
+                .insert_header("etag", WHEEL_ETAG),
         )
         .mount(&h.server)
         .await;
@@ -644,7 +693,11 @@ async fn test_metadata_backfill_scopes_ignored_ranges_to_one_artifact() {
         .unwrap();
     Mock::given(method("HEAD"))
         .and(path(format!("/files/{second_filename}")))
-        .respond_with(ResponseTemplate::new(200).insert_header("content-length", second.len()))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-length", second.len())
+                .insert_header("etag", WHEEL_ETAG),
+        )
         .expect(1)
         .mount(&h.server)
         .await;
@@ -677,7 +730,8 @@ async fn test_metadata_backfill_reads_empty_stored_range_metadata() {
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("accept-ranges", "bytes")
-                .insert_header("content-length", wheel.len()),
+                .insert_header("content-length", wheel.len())
+                .insert_header("etag", WHEEL_ETAG),
         )
         .mount(&h.server)
         .await;
