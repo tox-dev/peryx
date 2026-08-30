@@ -10,7 +10,7 @@ use peryx_driver::http_services::{
 use peryx_driver::retention::{RetentionExport, RetentionQuery};
 use peryx_driver::serving::RetentionDriver;
 use peryx_driver::trash::{TrashQuery, TrashRef};
-use peryx_driver::{AppState, Index, IndexKind};
+use peryx_driver::{AppState, Index, IndexKind, ScanCancellation};
 use peryx_identity::{IndexAcl, UserId};
 use peryx_policy::{
     Policy, PolicyAction, PolicyConfig, PolicyDecisionState, RetentionClass, RetentionConfig, RetentionDecision,
@@ -163,7 +163,7 @@ async fn domain_services_read_policy_quota_queries_and_status() {
         let ast = bind(parse(query).unwrap(), &std::collections::BTreeMap::default()).unwrap();
         let page = services
             .pql()
-            .execute(&ast, &scope(RepoScope::All, "all"), None)
+            .execute(&ast, &scope(RepoScope::All, "all"), None, &ScanCancellation::new())
             .unwrap();
         assert!(page.rows.is_empty(), "{query}");
     }
@@ -245,7 +245,7 @@ fn domain_services_page_and_filter_policy_queries() {
     loop {
         let page = services
             .pql()
-            .execute(&all, &all_repositories, cursor.as_deref())
+            .execute(&all, &all_repositories, cursor.as_deref(), &ScanCancellation::new())
             .unwrap();
         rows.extend(page.rows);
         let Some(next) = page.next_cursor else {
@@ -267,6 +267,7 @@ fn domain_services_page_and_filter_policy_queries() {
                 &filtered,
                 &scope(RepoScope::Only(BTreeSet::from(["source".to_owned()])), "source"),
                 None,
+                &ScanCancellation::new(),
             )
             .unwrap()
             .rows,
@@ -284,7 +285,12 @@ fn domain_services_page_and_filter_policy_queries() {
     assert_eq!(
         services
             .pql()
-            .execute(&multiple_resources, &scope(RepoScope::All, "all"), None)
+            .execute(
+                &multiple_resources,
+                &scope(RepoScope::All, "all"),
+                None,
+                &ScanCancellation::new(),
+            )
             .unwrap()
             .rows,
         [
@@ -301,16 +307,24 @@ fn domain_services_page_and_filter_policy_queries() {
     assert_eq!(
         services
             .pql()
-            .execute(&scanned, &scope(RepoScope::All, "all"), None)
+            .execute(&scanned, &scope(RepoScope::All, "all"), None, &ScanCancellation::new())
             .unwrap()
             .rows
             .len(),
         25
     );
+}
 
+#[test]
+fn domain_services_reject_unknown_pql_domain() {
+    let fixture = Fixture::new(Vec::new());
+    let services = HttpDomainServices::for_state(&fixture.state);
     let unknown = bind(parse("from missing.domain").unwrap(), &BTreeMap::new()).unwrap();
+
     assert!(matches!(
-        services.pql().execute(&unknown, &scope(RepoScope::All, "all"), None),
+        services
+            .pql()
+            .execute(&unknown, &scope(RepoScope::All, "all"), None, &ScanCancellation::new()),
         Err(PqlError::Unauthorized)
     ));
 }
@@ -329,8 +343,28 @@ fn domain_services_preserve_policy_filter_validation() {
     )
     .unwrap();
     assert_eq!(
-        services.pql().execute(&query, &scope(RepoScope::All, "all"), None),
+        services
+            .pql()
+            .execute(&query, &scope(RepoScope::All, "all"), None, &ScanCancellation::new()),
         Err(PqlError::Validation("resource filter exceeds 512 bytes".to_owned()))
+    );
+}
+
+#[rstest]
+#[case("from policy.decisions")]
+#[case("from usage.reads")]
+fn domain_services_stop_cancelled_pql_scans(#[case] query: &str) {
+    let fixture = Fixture::new(Vec::new());
+    let services = HttpDomainServices::for_state(&fixture.state);
+    let query = bind(parse(query).unwrap(), &BTreeMap::new()).unwrap();
+    let cancellation = ScanCancellation::new();
+    cancellation.cancel();
+
+    assert_eq!(
+        services
+            .pql()
+            .execute(&query, &scope(RepoScope::All, "all"), None, &cancellation),
+        Err(PqlError::Backend("query cancelled".to_owned()))
     );
 }
 
@@ -358,16 +392,13 @@ impl RetentionDriver for OneRetentionDriver {
 
     fn plan_retention(
         &self,
-        _meta: &MetaStore,
-        _index: &str,
-        policy: &RetentionPolicy,
-        _now: Option<i64>,
+        scan: &peryx_driver::serving::RetentionScan<'_>,
         start: &mut dyn FnMut(RetentionSummary) -> Result<(), String>,
         emit: &mut dyn FnMut(RetentionDecision) -> Result<(), String>,
     ) -> Result<(), String> {
-        self.validate_retention(policy)?;
+        self.validate_retention(scan.policy)?;
         start(RetentionSummary {
-            policy_version: policy.version(),
+            policy_version: scan.policy.version(),
             frontier: peryx_policy::RetentionFrontier::default(),
         })?;
         emit(retention_decision())?;
@@ -414,6 +445,7 @@ async fn retention_service_owns_store_access_gating_and_export() {
                 limit: Some(10),
                 expect: Some(summary),
             },
+            &ScanCancellation::new(),
             &mut |_| Ok(()),
             &mut |_| Ok(()),
         )

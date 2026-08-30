@@ -236,6 +236,15 @@ pub trait FsckDriver: Send + Sync {
     ) -> Result<u64, String>;
 }
 
+/// One retention plan's inputs, including the stop signal its scan checks between pages.
+pub struct RetentionScan<'a> {
+    pub meta: &'a peryx_storage::meta::MetaStore,
+    pub index: &'a str,
+    pub policy: &'a peryx_policy::RetentionPolicy,
+    pub now: Option<i64>,
+    pub cancellation: &'a crate::ScanCancellation,
+}
+
 pub trait RetentionDriver: Send + Sync {
     /// # Errors
     /// Returns an error naming a selector the ecosystem cannot evaluate.
@@ -244,13 +253,10 @@ pub trait RetentionDriver: Send + Sync {
     /// # Errors
     /// Returns an error when the policy is unsupported or the plan cannot be read or emitted.
     /// Implementations validate the policy, open the candidate snapshot, invoke `start` once, then
-    /// invoke `emit` for its decisions.
+    /// invoke `emit` for its decisions. They check `scan.cancellation` between bounded scan pages.
     fn plan_retention(
         &self,
-        meta: &peryx_storage::meta::MetaStore,
-        index: &str,
-        policy: &peryx_policy::RetentionPolicy,
-        now: Option<i64>,
+        scan: &RetentionScan<'_>,
         start: &mut dyn FnMut(peryx_policy::RetentionSummary) -> Result<(), String>,
         emit: &mut dyn FnMut(peryx_policy::RetentionDecision) -> Result<(), String>,
     ) -> Result<(), String>;

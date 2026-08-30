@@ -55,29 +55,42 @@ pub async fn retention_plan(
         Ok(prepared) => prepared,
         Err(response) => return response,
     };
-    let Some(_permit) = services.retention().try_enter(&request.repository) else {
+    let Some(permit) = services.retention().try_enter(&request.repository) else {
         return busy();
     };
-    let after = request.after;
-    let mut candidates = Vec::new();
-    let query = RetentionQuery {
-        index: &request.repository,
-        ecosystem: &request.ecosystem,
-        policy: &request.policy,
-        now: request.evaluated_at,
-        after,
-        limit: Some(request.limit),
-        expect: request.expect,
-    };
-    match services
-        .retention()
-        .plan(request.driver.as_ref(), &query, &mut |_| Ok(()), &mut |decision| {
-            candidates.push(decision.clone());
-            Ok(())
-        }) {
-        Ok(RetentionPage {
-            summary, next_cursor, ..
-        }) => {
+    let result = state
+        .blocking_scans
+        .run(move |cancellation| {
+            let _permit = permit;
+            let mut candidates = Vec::new();
+            let page = services.retention().plan(
+                request.driver.as_ref(),
+                &RetentionQuery {
+                    index: &request.repository,
+                    ecosystem: &request.ecosystem,
+                    policy: &request.policy,
+                    now: request.evaluated_at,
+                    after: request.after,
+                    limit: Some(request.limit),
+                    expect: request.expect,
+                },
+                cancellation,
+                &mut |_| Ok(()),
+                &mut |decision| {
+                    candidates.push(decision.clone());
+                    Ok(())
+                },
+            )?;
+            Ok::<_, RetentionPlanError>((page, candidates))
+        })
+        .await;
+    match result {
+        Ok(Ok((
+            RetentionPage {
+                summary, next_cursor, ..
+            },
+            candidates,
+        ))) => {
             let body = PlanResponse {
                 summary,
                 candidates,
@@ -87,7 +100,11 @@ pub async fn retention_plan(
             ProtectedCachePolicy::NoStore.apply(response.headers_mut());
             response
         }
-        Err(error) => plan_error(&error),
+        Ok(Err(error)) => plan_error(&error),
+        Err(error) => problem(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &format!("retention scan worker failed: {error}"),
+        ),
     }
 }
 

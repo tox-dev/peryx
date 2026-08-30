@@ -356,6 +356,10 @@ impl DistributedAvailability {
 /// Process state and installed drivers.
 pub struct AppState {
     pub serving: Arc<ServingState>,
+    /// Shared capacity for the request scans that run on blocking workers, held until each worker
+    /// exits. It bounds HTTP request admission, so it stays out of the serving state the ecosystem
+    /// drivers read.
+    pub blocking_scans: crate::BlockingScanExecutor,
     pub(super) drivers: crate::DriverSet,
     /// Typed HTTP protocol drivers, one per ecosystem.
     pub(super) protocols: HashMap<Ecosystem, crate::serving::ProtocolDriver>,

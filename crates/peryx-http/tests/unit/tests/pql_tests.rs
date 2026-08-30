@@ -1,5 +1,5 @@
 use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
@@ -7,12 +7,15 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 
 use peryx_core::Ecosystem;
+use peryx_driver::ScanCancellation;
 use peryx_driver::authz::AuthorizationService;
+use peryx_driver::http_services::{HttpDomainServices, PqlQueryService};
 use peryx_driver::state::{AppState, Index, IndexKind};
 use peryx_driver::users::UserService;
 use peryx_events::metrics::{Metrics, Observation};
 use peryx_identity::{Action, Glob, Grant, GrantScope, IndexAcl, NamedToken, PasswordPolicy, Role};
 use peryx_policy::{Policy, PolicyAction, PolicyDecisionState};
+use peryx_pql::{Ast, Page, PqlError, QueryScope};
 use peryx_storage::meta::{MetaStore, NewPolicyDecision};
 use redb::TableDefinition;
 use rstest::rstest;
@@ -30,6 +33,11 @@ async fn app(read_only: bool) -> (tempfile::TempDir, MetaStore, axum::Router) {
 }
 
 async fn build(read_only: bool) -> (tempfile::TempDir, MetaStore, Metrics, axum::Router) {
+    let (dir, meta, metrics, state) = build_state(read_only).await;
+    (dir, meta, metrics, crate::router(state))
+}
+
+async fn build_state(read_only: bool) -> (tempfile::TempDir, MetaStore, Metrics, Arc<AppState>) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("peryx.redb");
     let meta = MetaStore::open(&path).unwrap();
@@ -63,7 +71,7 @@ async fn build(read_only: bool) -> (tempfile::TempDir, MetaStore, Metrics, axum:
         UserService::with_password_settings(meta.clone(), PasswordPolicy::new(8, 1, 1).unwrap(), 2);
     state.set_read_only(read_only).unwrap();
     let metrics = state.serving.metrics.clone();
-    (dir, meta, metrics, crate::router(Arc::new(state)))
+    (dir, meta, metrics, Arc::new(state))
 }
 
 fn seed_usage(metrics: &Metrics) {
@@ -279,11 +287,7 @@ fn seed_many(meta: &MetaStore, repository: &str, count: i64) {
     }
 }
 
-async fn post(
-    app: &axum::Router,
-    body: Value,
-    credential: Option<(&str, &str)>,
-) -> (StatusCode, axum::http::HeaderMap, Value) {
+fn query_request(body: &Value, credential: Option<(&str, &str)>) -> Request<Body> {
     let mut request = Request::builder()
         .method("POST")
         .uri("/+query")
@@ -294,15 +298,105 @@ async fn post(
             format!("Basic {}", STANDARD.encode(format!("{user}:{password}"))),
         );
     }
-    let response = app
-        .clone()
-        .oneshot(request.body(Body::from(serde_json::to_vec(&body).unwrap())).unwrap())
-        .await
-        .unwrap();
+    request.body(Body::from(serde_json::to_vec(body).unwrap())).unwrap()
+}
+
+async fn post(
+    app: &axum::Router,
+    body: Value,
+    credential: Option<(&str, &str)>,
+) -> (StatusCode, axum::http::HeaderMap, Value) {
+    let response = app.clone().oneshot(query_request(&body, credential)).await.unwrap();
     let status = response.status();
     let headers = response.headers().clone();
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
     (status, headers, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+}
+
+#[tokio::test]
+async fn test_query_cancellation_reaches_the_next_scan_page() {
+    let (_dir, _meta, _metrics, state) = build_state(false).await;
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let (entered_tx, mut entered_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (observed_tx, mut observed_rx) = tokio::sync::mpsc::unbounded_channel();
+    let services = HttpDomainServices::for_state(&state).with_pql(Arc::new(BoundaryPql {
+        entered: entered_tx,
+        release: Mutex::new(release_rx),
+        observed: observed_tx,
+    }));
+    let app = crate::router_with_services(state, services);
+    let request = tokio::spawn(app.oneshot(query_request(
+        &json!({"query": "from policy.decisions"}),
+        Some(("Alice", PASSWORD)),
+    )));
+    entered_rx.recv().await.unwrap();
+
+    request.abort();
+    let request_result = request.await;
+    release_tx.send(()).unwrap();
+    let observed = observed_rx.recv().await;
+
+    assert!(request_result.unwrap_err().is_cancelled());
+    assert_eq!(observed, Some(true));
+}
+
+#[tokio::test]
+async fn test_query_worker_panic_returns_server_error() {
+    let (_dir, _meta, _metrics, state) = build_state(false).await;
+    let services = HttpDomainServices::for_state(&state).with_pql(Arc::new(PanicPql));
+    let app = crate::router_with_services(state, services);
+
+    let (status, _, document) = post(
+        &app,
+        json!({"query": "from policy.decisions"}),
+        Some(("Alice", PASSWORD)),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(
+        document["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("query scan worker failed:")
+    );
+}
+
+struct PanicPql;
+
+impl PqlQueryService for PanicPql {
+    fn execute(
+        &self,
+        _ast: &Ast,
+        _scope: &QueryScope,
+        _cursor: Option<&str>,
+        _cancellation: &ScanCancellation,
+    ) -> Result<Page, PqlError> {
+        panic!("query scan panic")
+    }
+}
+
+/// Stands in for a paged scan that has reached a page boundary: it reports what the stop signal reads
+/// once the test releases it, so the release orders the read after the request drops.
+struct BoundaryPql {
+    entered: tokio::sync::mpsc::UnboundedSender<()>,
+    release: Mutex<std::sync::mpsc::Receiver<()>>,
+    observed: tokio::sync::mpsc::UnboundedSender<bool>,
+}
+
+impl PqlQueryService for BoundaryPql {
+    fn execute(
+        &self,
+        _ast: &Ast,
+        _scope: &QueryScope,
+        _cursor: Option<&str>,
+        cancellation: &ScanCancellation,
+    ) -> Result<Page, PqlError> {
+        self.entered.send(()).unwrap();
+        self.release.lock().unwrap().recv().unwrap();
+        self.observed.send(cancellation.is_cancelled()).unwrap();
+        Err(PqlError::Backend("scan stopped at a page boundary".to_owned()))
+    }
 }
 
 fn resources(document: &Value) -> Vec<String> {

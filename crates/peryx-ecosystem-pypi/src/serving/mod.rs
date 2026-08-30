@@ -401,22 +401,11 @@ impl RetentionDriver for PypiServing {
 
     fn plan_retention(
         &self,
-        meta: &peryx_storage::meta::MetaStore,
-        index: &str,
-        policy: &peryx_policy::RetentionPolicy,
-        now: Option<i64>,
+        scan: &peryx_driver::serving::RetentionScan<'_>,
         start: &mut dyn FnMut(peryx_policy::RetentionSummary) -> Result<(), String>,
         emit: &mut dyn FnMut(peryx_policy::RetentionDecision) -> Result<(), String>,
     ) -> Result<(), String> {
-        crate::retention::evaluate_retention(
-            meta,
-            index,
-            policy,
-            now,
-            crate::retention::RETENTION_PROJECT_BUDGET_BYTES,
-            start,
-            emit,
-        )
+        crate::retention::evaluate_retention(scan, crate::retention::RETENTION_PROJECT_BUDGET_BYTES, start, emit)
     }
 }
 

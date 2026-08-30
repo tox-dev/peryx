@@ -10,11 +10,11 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
+use peryx_driver::serving::RetentionScan;
 use peryx_policy::{
     RetentionCandidate, RetentionClass, RetentionDecision, RetentionFrontier, RetentionPolicy, RetentionSelector,
     RetentionSummary, RetentionVisibility,
 };
-use peryx_storage::meta::MetaStore;
 
 use crate::policy::parse_upload_time;
 use crate::store::scan_upload_policy_snapshot;
@@ -43,10 +43,7 @@ pub const RETENTION_PROJECT_BUDGET_BYTES: usize = 256 * 1024 * 1024;
 /// Returns a message when the policy contains an unsupported selector, the store cannot be read, an
 /// upload record does not decode, a callback stops the scan, or a project's candidates exceed `budget`.
 pub fn evaluate_retention<S, F>(
-    meta: &MetaStore,
-    index: &str,
-    policy: &RetentionPolicy,
-    now: Option<i64>,
+    scan: &RetentionScan<'_>,
     budget: usize,
     mut start: S,
     mut emit: F,
@@ -55,8 +52,8 @@ where
     S: FnMut(RetentionSummary) -> Result<(), String>,
     F: FnMut(RetentionDecision) -> Result<(), String>,
 {
-    validate_retention(policy)?;
-    evaluate_retention_with(meta, index, policy, now, budget, &mut start, &mut emit)
+    validate_retention(scan.policy)?;
+    evaluate_retention_with(scan, budget, &mut start, &mut emit)
 }
 
 /// # Errors
@@ -79,10 +76,7 @@ pub(crate) fn validate_retention(policy: &RetentionPolicy) -> Result<(), String>
 }
 
 fn evaluate_retention_with(
-    meta: &MetaStore,
-    index: &str,
-    policy: &RetentionPolicy,
-    now: Option<i64>,
+    scan: &RetentionScan<'_>,
     budget: usize,
     start: &mut dyn FnMut(RetentionSummary) -> Result<(), String>,
     emit: &mut dyn FnMut(RetentionDecision) -> Result<(), String>,
@@ -90,12 +84,13 @@ fn evaluate_retention_with(
     let mut current: Option<String> = None;
     let mut group: Vec<RetentionCandidate> = Vec::new();
     let mut used: usize = 0;
+    let mut scanned: usize = 0;
     scan_upload_policy_snapshot(
-        meta,
-        index,
+        scan.meta,
+        scan.index,
         |generation| {
             start(RetentionSummary {
-                policy_version: policy.version(),
+                policy_version: scan.policy.version(),
                 frontier: RetentionFrontier {
                     repository: generation.repository,
                     catalog: generation.catalog,
@@ -104,12 +99,16 @@ fn evaluate_retention_with(
             })
         },
         |key, bytes| {
+            if scanned.is_multiple_of(RETENTION_SCAN_PAGE) && scan.cancellation.is_cancelled() {
+                return Err("retention scan cancelled".to_owned());
+            }
+            scanned += 1;
             let Some((project, _filename)) = key.split_once('/') else {
                 return Ok(());
             };
             if current.as_deref() != Some(project) {
                 if current.is_some() {
-                    plan_group(&mut group, policy, now, emit)?;
+                    plan_group(&mut group, scan.policy, scan.now, emit)?;
                 }
                 current = Some(project.to_owned());
                 used = 0;
@@ -128,11 +127,19 @@ fn evaluate_retention_with(
         },
     )
     .map_err(error_message)?;
+    if scan.cancellation.is_cancelled() {
+        return Err("retention scan cancelled".to_owned());
+    }
     if current.is_some() {
-        plan_group(&mut group, policy, now, emit).map_err(error_message)?;
+        plan_group(&mut group, scan.policy, scan.now, emit).map_err(error_message)?;
     }
     Ok(())
 }
+
+/// How many upload records the scan reads between cancellation checks. Reading an atomic per record
+/// would cost more than it saves, and a page this small still bounds how long a cancelled request keeps
+/// its blocking worker.
+const RETENTION_SCAN_PAGE: usize = 100;
 
 fn plan_group(
     group: &mut Vec<RetentionCandidate>,

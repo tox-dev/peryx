@@ -30,16 +30,13 @@ impl RetentionDriver for InvalidDriver {
 
     fn plan_retention(
         &self,
-        _meta: &MetaStore,
-        _index: &str,
-        policy: &RetentionPolicy,
-        _now: Option<i64>,
+        scan: &crate::serving::RetentionScan<'_>,
         start: &mut dyn FnMut(peryx_policy::RetentionSummary) -> Result<(), String>,
         emit: &mut dyn FnMut(RetentionDecision) -> Result<(), String>,
     ) -> Result<(), String> {
-        self.validate_retention(policy)?;
+        self.validate_retention(scan.policy)?;
         let summary = peryx_policy::RetentionSummary {
-            policy_version: policy.version(),
+            policy_version: scan.policy.version(),
             frontier: peryx_policy::RetentionFrontier::default(),
         };
         match self.0 {
@@ -60,16 +57,13 @@ impl RetentionDriver for StubDriver {
 
     fn plan_retention(
         &self,
-        _meta: &MetaStore,
-        _index: &str,
-        policy: &RetentionPolicy,
-        _now: Option<i64>,
+        scan: &crate::serving::RetentionScan<'_>,
         start: &mut dyn FnMut(peryx_policy::RetentionSummary) -> Result<(), String>,
         emit: &mut dyn FnMut(RetentionDecision) -> Result<(), String>,
     ) -> Result<(), String> {
-        self.validate_retention(policy)?;
+        self.validate_retention(scan.policy)?;
         start(peryx_policy::RetentionSummary {
-            policy_version: policy.version(),
+            policy_version: scan.policy.version(),
             frontier: peryx_policy::RetentionFrontier::default(),
         })?;
         for decision in &self.decisions {
@@ -126,10 +120,17 @@ fn collect(
         limit,
         expect,
     };
-    let page = plan(driver, meta, &query, &mut |_| Ok(()), &mut |decision| {
-        seen.push(decision.artifact.clone());
-        Ok(())
-    })?;
+    let page = plan(
+        driver,
+        meta,
+        &query,
+        &crate::ScanCancellation::new(),
+        &mut |_| Ok(()),
+        &mut |decision| {
+            seen.push(decision.artifact.clone());
+            Ok(())
+        },
+    )?;
     Ok((seen, page))
 }
 
@@ -242,14 +243,58 @@ fn test_plan_reports_interruption_when_the_sink_stops() {
         expect: None,
     };
 
-    let result = plan(&driver, &meta, &query, &mut |_| Ok(()), &mut |_| {
-        Err("client hung up".to_owned())
-    });
+    let result = plan(
+        &driver,
+        &meta,
+        &query,
+        &crate::ScanCancellation::new(),
+        &mut |_| Ok(()),
+        &mut |_| Err("client hung up".to_owned()),
+    );
 
     assert!(
         matches!(&result, Err(RetentionPlanError::Interrupted(reason)) if reason == "client hung up"),
         "{result:?}"
     );
+}
+
+#[test]
+fn test_plan_reports_cooperative_cancellation() {
+    let (_dir, meta) = store();
+    let policy = empty_policy();
+    let query = RetentionQuery {
+        index: "alpha",
+        ecosystem: "example",
+        policy: &policy,
+        now: None,
+        after: 0,
+        limit: None,
+        expect: None,
+    };
+    let cancellation = crate::ScanCancellation::new();
+    let mut seen = Vec::new();
+
+    let result = plan(
+        &StubDriver {
+            decisions: vec![decision("a")],
+            fail: None,
+        },
+        &meta,
+        &query,
+        &cancellation,
+        &mut |_| Ok(()),
+        &mut |decision| {
+            cancellation.cancel();
+            seen.push(decision.artifact.clone());
+            Ok(())
+        },
+    );
+
+    assert!(matches!(
+        &result,
+        Err(RetentionPlanError::Interrupted(reason)) if reason == "request cancelled"
+    ));
+    assert_eq!(seen, ["a".to_owned()]);
 }
 
 #[test]

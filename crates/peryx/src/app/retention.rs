@@ -9,9 +9,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Context as _;
-use peryx_driver::DriverSet;
 use peryx_driver::retention::{RetentionQuery, decode_cursor, plan};
 use peryx_driver::serving::RetentionDriver;
+use peryx_driver::{DriverSet, ScanCancellation};
 use peryx_plugin_registry::PluginRegistry;
 use peryx_policy::{RetentionConfig, RetentionDecision, RetentionPolicy, RetentionSummary};
 
@@ -72,6 +72,7 @@ fn dry_run(
         driver.as_ref(),
         &stores.meta,
         &query,
+        &ScanCancellation::new(),
         &mut |_| Ok(()),
         &mut |decision| write_row(out, decision).map_err(|err| err.to_string()),
     )
@@ -110,6 +111,7 @@ fn export(
         driver.as_ref(),
         &stores.meta,
         &query,
+        &ScanCancellation::new(),
         &mut |summary| {
             let header =
                 serde_json::to_string(&serde_json::json!({ "summary": summary })).map_err(|error| error.to_string())?;

@@ -595,25 +595,25 @@ impl RetentionDriver for Driver {
 
     fn plan_retention(
         &self,
-        meta: &MetaStore,
-        index: &str,
-        policy: &RetentionPolicy,
-        now: Option<i64>,
+        scan: &peryx_driver::serving::RetentionScan<'_>,
         start: &mut dyn FnMut(RetentionSummary) -> Result<(), String>,
         emit: &mut dyn FnMut(RetentionDecision) -> Result<(), String>,
     ) -> Result<(), String> {
-        self.validate_retention(policy)?;
-        let generation = meta.policy_input_generation(index).map_err(|error| error.to_string())?;
+        self.validate_retention(scan.policy)?;
+        let generation = scan
+            .meta
+            .policy_input_generation(scan.index)
+            .map_err(|error| error.to_string())?;
         start(RetentionSummary {
-            policy_version: policy.version(),
+            policy_version: scan.policy.version(),
             frontier: peryx_policy::RetentionFrontier {
                 repository: generation.repository,
                 catalog: generation.catalog,
                 policy: generation.policy,
             },
         })?;
-        for decision in policy.plan_resource(
-            now,
+        for decision in scan.policy.plan_resource(
+            scan.now,
             [("2.0", 0), ("1.0", 1)]
                 .into_iter()
                 .map(|(group, rank)| RetentionCandidate {

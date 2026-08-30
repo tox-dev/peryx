@@ -392,10 +392,13 @@ fn plugin_retention_capability_plans_hosted_uploads() {
         .get_retention(&ECOSYSTEM)
         .unwrap()
         .plan_retention(
-            &state.serving.meta,
-            "hosted",
-            &policy,
-            None,
+            &peryx_driver::serving::RetentionScan {
+                meta: &state.serving.meta,
+                index: "hosted",
+                policy: &policy,
+                now: None,
+                cancellation: &peryx_driver::ScanCancellation::new(),
+            },
             &mut |current| {
                 summary = Some(current);
                 Ok(())

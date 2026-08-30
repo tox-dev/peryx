@@ -4,6 +4,7 @@
 pub mod access;
 pub mod authz;
 pub mod availability;
+mod blocking_scan;
 pub mod body;
 pub mod conditional;
 pub mod discovery;
@@ -27,6 +28,7 @@ pub mod users;
 pub use availability::{
     ServingStateAvailabilityAuthorizer, ServingStateControlAuthorizer, ServingStateMetadataFrontierProvider,
 };
+pub use blocking_scan::{BlockingScanExecutor, ScanCancellation};
 pub use driver_set::{BlobReferenceScan, BlobReferenceScanError, DriverSet};
 pub use http_routes::{
     HttpRoutes, ProcessRouteMethodNotAllowed, RouteDescriptor, RouteMethod, RoutePosture, RouteRateLimit, RouteSet,

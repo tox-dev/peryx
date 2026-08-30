@@ -77,16 +77,13 @@ impl RetentionDriver for Driver {
 
     fn plan_retention(
         &self,
-        _meta: &peryx_storage::meta::MetaStore,
-        _index: &str,
-        policy: &peryx_policy::RetentionPolicy,
-        _now: Option<i64>,
+        scan: &peryx_driver::serving::RetentionScan<'_>,
         start: &mut dyn FnMut(peryx_policy::RetentionSummary) -> Result<(), String>,
         emit: &mut dyn FnMut(peryx_policy::RetentionDecision) -> Result<(), String>,
     ) -> Result<(), String> {
-        self.validate_retention(policy)?;
+        self.validate_retention(scan.policy)?;
         start(peryx_policy::RetentionSummary {
-            policy_version: policy.version(),
+            policy_version: scan.policy.version(),
             frontier: peryx_policy::RetentionFrontier::default(),
         })?;
         emit(peryx_policy::RetentionDecision {
@@ -238,10 +235,13 @@ fn driver_set_registers_and_dispatches_independent_capabilities() {
     );
     let mut decisions = Vec::new();
     let result = set.get_retention(&ecosystem).unwrap().plan_retention(
-        &meta,
-        "catalog",
-        &peryx_policy::RetentionPolicy::compile(&peryx_policy::RetentionConfig::default(), str::to_owned),
-        None,
+        &peryx_driver::serving::RetentionScan {
+            meta: &meta,
+            index: "catalog",
+            policy: &peryx_policy::RetentionPolicy::compile(&peryx_policy::RetentionConfig::default(), str::to_owned),
+            now: None,
+            cancellation: &peryx_driver::ScanCancellation::new(),
+        },
         &mut |_| Ok(()),
         &mut |decision| {
             decisions.push(decision);

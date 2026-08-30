@@ -58,12 +58,25 @@ async fn query_response(state: &AppState, services: &HttpDomainServices, headers
         Ok(authorization) => authorization,
         Err(rejection) => return rejection.response(),
     };
-    match services
-        .pql()
-        .execute(&ast, &authorization.scope, body.cursor.as_deref())
-    {
-        Ok(page) => render(&page, authorization.response),
-        Err(error) => pql_error(&error),
+    let response_authorization = authorization.response;
+    let result = state
+        .blocking_scans
+        .run({
+            let services = services.clone();
+            move |cancellation| {
+                services
+                    .pql()
+                    .execute(&ast, &authorization.scope, body.cursor.as_deref(), cancellation)
+            }
+        })
+        .await;
+    match result {
+        Ok(Ok(page)) => render(&page, response_authorization),
+        Ok(Err(error)) => pql_error(&error),
+        Err(error) => problem(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("query scan worker failed: {error}"),
+        ),
     }
 }
 

@@ -2,6 +2,8 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::mem::size_of;
 
+use peryx_driver::ScanCancellation;
+use peryx_driver::serving::RetentionScan;
 use peryx_policy::{
     RetentionCandidate, RetentionClass, RetentionConfig, RetentionDecision, RetentionFrontier, RetentionOutcome,
     RetentionPolicy, RetentionSelector, RetentionVisibility,
@@ -9,7 +11,7 @@ use peryx_policy::{
 use peryx_storage::meta::{MetaError, MetaStore};
 use rstest::rstest;
 
-use super::{RETENTION_PROJECT_BUDGET_BYTES, evaluate_retention};
+use super::{RETENTION_PROJECT_BUDGET_BYTES, RETENTION_SCAN_PAGE, evaluate_retention};
 use crate::store::PypiStore as _;
 use crate::upload::{TrashInfo, Uploaded};
 use crate::version::version_key;
@@ -56,10 +58,7 @@ fn evaluate(
     let mut decisions = Vec::new();
     let mut summary = None;
     let result = evaluate_retention(
-        meta,
-        index,
-        policy,
-        None,
+        &scan(meta, index, policy, &ScanCancellation::new()),
         RETENTION_PROJECT_BUDGET_BYTES,
         |current| {
             summary = Some(current);
@@ -71,6 +70,21 @@ fn evaluate(
         },
     );
     (result, summary, decisions)
+}
+
+fn scan<'a>(
+    meta: &'a MetaStore,
+    index: &'a str,
+    policy: &'a RetentionPolicy,
+    cancellation: &'a ScanCancellation,
+) -> RetentionScan<'a> {
+    RetentionScan {
+        meta,
+        index,
+        policy,
+        now: None,
+        cancellation,
+    }
 }
 
 fn plan(meta: &MetaStore, index: &str, policy: &RetentionPolicy) -> (Vec<RetentionDecision>, RetentionFrontier) {
@@ -306,10 +320,7 @@ fn test_evaluate_retention_rejects_a_corrupt_upload_record() {
 
     let mut seen = 0_u32;
     let result = evaluate_retention(
-        &meta,
-        "pypi",
-        &expire_all_but_latest(1),
-        None,
+        &scan(&meta, "pypi", &expire_all_but_latest(1), &ScanCancellation::new()),
         RETENTION_PROJECT_BUDGET_BYTES,
         |_| Ok(()),
         |_| {
@@ -329,10 +340,7 @@ fn test_evaluate_retention_stops_the_scan_when_emit_returns_an_error() {
     seed(&meta, "pypi", "demo", "1.0", Yanked::No, None);
 
     let result = evaluate_retention(
-        &meta,
-        "pypi",
-        &expire_all_but_latest(1),
-        None,
+        &scan(&meta, "pypi", &expire_all_but_latest(1), &ScanCancellation::new()),
         RETENTION_PROJECT_BUDGET_BYTES,
         |_| Ok(()),
         reject_decision,
@@ -348,10 +356,7 @@ fn test_evaluate_retention_stops_before_scanning_the_next_project() {
     seed(&meta, "pypi", "demo", "1.0", Yanked::No, None);
 
     let result = evaluate_retention(
-        &meta,
-        "pypi",
-        &expire_all_but_latest(1),
-        None,
+        &scan(&meta, "pypi", &expire_all_but_latest(1), &ScanCancellation::new()),
         RETENTION_PROJECT_BUDGET_BYTES,
         |_| Ok(()),
         reject_decision,
@@ -361,16 +366,61 @@ fn test_evaluate_retention_stops_before_scanning_the_next_project() {
 }
 
 #[test]
+fn test_evaluate_retention_stops_iteration_at_a_scan_page_boundary() {
+    let (_dir, meta) = store();
+    seed(&meta, "pypi", "aaa", "1.0", Yanked::No, None);
+    for version in 0..RETENTION_SCAN_PAGE {
+        seed(&meta, "pypi", "bbb", &version.to_string(), Yanked::No, None);
+    }
+    let cancellation = ScanCancellation::new();
+    let mut decisions = Vec::new();
+
+    let result = evaluate_retention(
+        &scan(&meta, "pypi", &expire_all_but_latest(0), &cancellation),
+        RETENTION_PROJECT_BUDGET_BYTES,
+        |_| Ok(()),
+        |decision| {
+            cancellation.cancel();
+            decisions.push(decision.resource);
+            Ok(())
+        },
+    );
+
+    assert_eq!(result, Err("retention scan cancelled".to_owned()));
+    assert_eq!(decisions, ["aaa".to_owned()]);
+}
+
+#[test]
+fn test_evaluate_retention_stops_after_the_final_scan_page() {
+    let (_dir, meta) = store();
+    seed(&meta, "pypi", "aaa", "1.0", Yanked::No, None);
+    seed(&meta, "pypi", "bbb", "1.0", Yanked::No, None);
+    let cancellation = ScanCancellation::new();
+    let mut decisions = Vec::new();
+
+    let result = evaluate_retention(
+        &scan(&meta, "pypi", &expire_all_but_latest(0), &cancellation),
+        RETENTION_PROJECT_BUDGET_BYTES,
+        |_| Ok(()),
+        |decision| {
+            cancellation.cancel();
+            decisions.push(decision.resource);
+            Ok(())
+        },
+    );
+
+    assert_eq!(result, Err("retention scan cancelled".to_owned()));
+    assert_eq!(decisions, ["aaa".to_owned()]);
+}
+
+#[test]
 fn test_evaluate_retention_rejects_a_project_over_the_memory_budget() {
     let (_dir, meta) = store();
     seed(&meta, "pypi", "demo", "2.0", Yanked::No, None);
     seed(&meta, "pypi", "demo", "1.0", Yanked::No, None);
 
     let result = evaluate_retention(
-        &meta,
-        "pypi",
-        &expire_all_but_latest(1),
-        None,
+        &scan(&meta, "pypi", &expire_all_but_latest(1), &ScanCancellation::new()),
         1,
         |_| Ok(()),
         reject_decision,
@@ -393,10 +443,7 @@ fn test_evaluate_retention_accepts_a_project_at_the_memory_budget() {
 
     let mut decisions = 0_u32;
     evaluate_retention(
-        &meta,
-        "pypi",
-        &expire_all_but_latest(1),
-        None,
+        &scan(&meta, "pypi", &expire_all_but_latest(1), &ScanCancellation::new()),
         candidate_footprint("demo", "1.0"),
         |_| Ok(()),
         |_| {
@@ -415,10 +462,7 @@ fn test_evaluate_retention_rejects_a_project_one_byte_over_the_memory_budget() {
     seed(&meta, "pypi", "demo", "1.0", Yanked::No, None);
 
     let message = evaluate_retention(
-        &meta,
-        "pypi",
-        &expire_all_but_latest(1),
-        None,
+        &scan(&meta, "pypi", &expire_all_but_latest(1), &ScanCancellation::new()),
         candidate_footprint("demo", "1.0") - 1,
         |_| Ok(()),
         reject_decision,
@@ -461,10 +505,7 @@ fn test_evaluate_retention_keeps_the_opened_frontier_during_a_concurrent_commit(
     let mut decisions = Vec::new();
 
     evaluate_retention(
-        &meta,
-        "pypi",
-        &expire_all_but_latest(1),
-        None,
+        &scan(&meta, "pypi", &expire_all_but_latest(1), &ScanCancellation::new()),
         RETENTION_PROJECT_BUDGET_BYTES,
         |current| {
             summary = Some(current);

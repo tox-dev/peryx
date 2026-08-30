@@ -21,7 +21,8 @@ use peryx_policy::{RetentionDecision, RetentionPolicy, RetentionSummary};
 use peryx_storage::meta::MetaStore;
 use serde::{Deserialize, Serialize};
 
-use crate::serving::RetentionDriver;
+use crate::ScanCancellation;
+use crate::serving::{RetentionDriver, RetentionScan};
 
 /// Bounds how many plans one repository may compute at once, so a burst of full-scan previews on a
 /// single repository cannot starve the rest. Shared across handlers; a permit is held for one request.
@@ -157,6 +158,7 @@ pub fn plan(
     driver: &dyn RetentionDriver,
     meta: &MetaStore,
     query: &RetentionQuery<'_>,
+    cancellation: &ScanCancellation,
     start: &mut dyn FnMut(RetentionSummary) -> Result<(), String>,
     emit: &mut dyn FnMut(&RetentionDecision) -> Result<(), String>,
 ) -> Result<RetentionPage, RetentionPlanError> {
@@ -168,10 +170,13 @@ pub fn plan(
     let mut emitted = 0_u64;
     let mut stop: Option<Stop> = None;
     let outcome = driver.plan_retention(
-        meta,
-        query.index,
-        query.policy,
-        query.now,
+        &RetentionScan {
+            meta,
+            index: query.index,
+            policy: query.policy,
+            now: query.now,
+            cancellation,
+        },
         &mut |current| {
             if started.replace(true) {
                 start_stop = Some(StartStop::Store(
@@ -208,6 +213,9 @@ pub fn plan(
             Ok(())
         },
     );
+    if cancellation.is_cancelled() {
+        return Err(RetentionPlanError::Interrupted("request cancelled".to_owned()));
+    }
     match start_stop {
         Some(StartStop::Stale { expected, current }) => {
             return Err(RetentionPlanError::Stale { expected, current });
@@ -275,10 +283,12 @@ fn write_export(
     sink: &mut dyn FnMut(Bytes) -> Result<(), ()>,
 ) -> Result<(), RetentionPlanError> {
     let sink = RefCell::new(sink);
+    let cancellation = ScanCancellation::new();
     plan(
         driver,
         meta,
         query,
+        &cancellation,
         &mut |summary| {
             started(summary)?;
             sink.borrow_mut()(line(&ExportHeader { summary })).map_err(|()| "export client gone".to_owned())

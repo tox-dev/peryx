@@ -9,6 +9,7 @@ use peryx_search::{SearchAccess, SearchError, SearchParams, SearchResponse};
 use peryx_storage::blob::BlobStorage;
 use peryx_storage::meta::{MetaError, MetaStore};
 
+use crate::ScanCancellation;
 use crate::retention::{
     RetentionExport, RetentionPage, RetentionPermit, RetentionPlanError, RetentionQuery, export_body, plan,
 };
@@ -98,6 +99,7 @@ pub trait RetentionPlanningService: Send + Sync {
         &self,
         driver: &dyn RetentionDriver,
         query: &RetentionQuery<'_>,
+        cancellation: &ScanCancellation,
         start: &mut dyn FnMut(peryx_policy::RetentionSummary) -> Result<(), String>,
         emit: &mut dyn FnMut(&peryx_policy::RetentionDecision) -> Result<(), String>,
     ) -> Result<RetentionPage, RetentionPlanError>;
@@ -117,7 +119,14 @@ pub trait PqlQueryService: Send + Sync {
     /// # Errors
     ///
     /// Returns [`PqlError`] when validation, authorization, or data access fails.
-    fn execute(&self, ast: &Ast, scope: &QueryScope, cursor: Option<&str>) -> Result<Page, PqlError>;
+    /// Implementations check `cancellation` between bounded source pages.
+    fn execute(
+        &self,
+        ast: &Ast,
+        scope: &QueryScope,
+        cursor: Option<&str>,
+        cancellation: &ScanCancellation,
+    ) -> Result<Page, PqlError>;
 }
 
 pub trait SearchQueryService: Send + Sync {
@@ -199,6 +208,12 @@ impl HttpDomainServices {
     #[must_use]
     pub fn with_repositories(mut self, repositories: Arc<dyn RepositoryService>) -> Self {
         self.repositories = repositories;
+        self
+    }
+
+    #[must_use]
+    pub fn with_pql(mut self, pql: Arc<dyn PqlQueryService>) -> Self {
+        self.pql = pql;
         self
     }
 
@@ -351,10 +366,11 @@ impl RetentionPlanningService for RetentionServices {
         &self,
         driver: &dyn RetentionDriver,
         query: &RetentionQuery<'_>,
+        cancellation: &ScanCancellation,
         start: &mut dyn FnMut(peryx_policy::RetentionSummary) -> Result<(), String>,
         emit: &mut dyn FnMut(&peryx_policy::RetentionDecision) -> Result<(), String>,
     ) -> Result<RetentionPage, RetentionPlanError> {
-        plan(driver, &self.meta, query, start, emit)
+        plan(driver, &self.meta, query, cancellation, start, emit)
     }
 
     async fn export(
@@ -418,12 +434,20 @@ impl NeutralQuerySource {
         }
     }
 
-    fn fetch_policy(&self, scope: &QueryScope, filter: Option<&FetchFilter>) -> Result<Vec<Row>, PqlError> {
+    fn fetch_policy(
+        &self,
+        scope: &QueryScope,
+        filter: Option<&FetchFilter>,
+        cancellation: &ScanCancellation,
+    ) -> Result<Vec<Row>, PqlError> {
         let repository = single_repository(scope);
         let resource = indexed_resource(filter);
         let mut cursor = None;
         let mut rows = Vec::new();
         loop {
+            if cancellation.is_cancelled() {
+                return Err(PqlError::Backend("query cancelled".to_owned()));
+            }
             let page = self
                 .meta
                 .query_policy_decisions(&PolicyDecisionQuery {
@@ -448,29 +472,50 @@ impl NeutralQuerySource {
 }
 
 impl PqlQueryService for NeutralQuerySource {
-    fn execute(&self, ast: &Ast, scope: &QueryScope, cursor: Option<&str>) -> Result<Page, PqlError> {
-        execute(ast, scope, cursor, self)
+    fn execute(
+        &self,
+        ast: &Ast,
+        scope: &QueryScope,
+        cursor: Option<&str>,
+        cancellation: &ScanCancellation,
+    ) -> Result<Page, PqlError> {
+        execute(
+            ast,
+            scope,
+            cursor,
+            &CancellableQuerySource {
+                source: self,
+                cancellation,
+            },
+        )
     }
 }
 
-impl DataSource for NeutralQuerySource {
+struct CancellableQuerySource<'a> {
+    source: &'a NeutralQuerySource,
+    cancellation: &'a ScanCancellation,
+}
+
+impl DataSource for CancellableQuerySource<'_> {
     fn schema(&self, domain: &str) -> Option<&DomainSchema> {
         match domain {
-            POLICY_DOMAIN => Some(&self.policy),
-            USAGE_DOMAIN => Some(&self.usage),
+            POLICY_DOMAIN => Some(&self.source.policy),
+            USAGE_DOMAIN => Some(&self.source.usage),
             _ => None,
         }
     }
 
     fn fetch(&self, domain: &str, scope: &QueryScope, filter: Option<&FetchFilter>) -> Result<Vec<Row>, PqlError> {
         match domain {
+            USAGE_DOMAIN if self.cancellation.is_cancelled() => Err(PqlError::Backend("query cancelled".to_owned())),
             USAGE_DOMAIN => Ok(self
+                .source
                 .metrics
                 .usage_totals(single_repository(scope).as_deref())
                 .into_iter()
                 .map(usage_row)
                 .collect()),
-            _ => self.fetch_policy(scope, filter),
+            _ => self.source.fetch_policy(scope, filter, self.cancellation),
         }
     }
 }

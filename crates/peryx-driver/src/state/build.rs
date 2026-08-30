@@ -325,6 +325,7 @@ impl AppState {
                 oidc_logins: HashMap::new(),
                 session_sealer: None,
             }),
+            blocking_scans: crate::BlockingScanExecutor::new(REQUEST_SCAN_WORKERS),
             drivers: crate::DriverSet::default(),
             protocols: HashMap::new(),
             idle_reclaimers: HashMap::new(),
@@ -353,6 +354,11 @@ fn system_now() -> i64 {
 /// scan, so a small bound keeps a burst on one repository from starving the others while still letting a
 /// dry-run and an export overlap.
 const RETENTION_PLANS_PER_REPOSITORY: usize = 2;
+
+/// How many request scans may run on blocking workers at once, across every repository and both the
+/// retention-plan and PQL routes. A started worker holds its slot until it returns, so this also bounds
+/// how many threads a burst of cancelled requests can keep busy.
+const REQUEST_SCAN_WORKERS: usize = 2;
 
 /// The minimal `OpenAPI` document a state serves until the binary installs the assembled one. It names
 /// no ecosystem; the real per-ecosystem paths are merged in by the binary at startup.

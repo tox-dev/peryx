@@ -1,6 +1,5 @@
-use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
@@ -8,6 +7,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use http_body_util::BodyExt as _;
 use peryx_core::Ecosystem;
+use peryx_driver::BlockingScanExecutor;
 use peryx_driver::authz::AuthorizationService;
 use peryx_driver::serving::{NameDriver, RetentionDriver};
 use peryx_driver::state::{AppState, Clock, Index, IndexKind, ServingState};
@@ -42,17 +42,17 @@ impl RetentionDriver for StubDriver {
 
     fn plan_retention(
         &self,
-        meta: &MetaStore,
-        index: &str,
-        policy: &peryx_policy::RetentionPolicy,
-        _now: Option<i64>,
+        scan: &peryx_driver::serving::RetentionScan<'_>,
         start: &mut dyn FnMut(RetentionSummary) -> Result<(), String>,
         emit: &mut dyn FnMut(RetentionDecision) -> Result<(), String>,
     ) -> Result<(), String> {
-        self.validate_retention(policy)?;
-        let generation = meta.policy_input_generation(index).map_err(|error| error.to_string())?;
+        self.validate_retention(scan.policy)?;
+        let generation = scan
+            .meta
+            .policy_input_generation(scan.index)
+            .map_err(|error| error.to_string())?;
         start(RetentionSummary {
-            policy_version: policy.version(),
+            policy_version: scan.policy.version(),
             frontier: RetentionFrontier {
                 repository: generation.repository,
                 catalog: generation.catalog,
@@ -81,21 +81,18 @@ impl RetentionDriver for TimestampDriver {
 
     fn plan_retention(
         &self,
-        meta: &MetaStore,
-        index: &str,
-        policy: &peryx_policy::RetentionPolicy,
-        now: Option<i64>,
+        scan: &peryx_driver::serving::RetentionScan<'_>,
         start: &mut dyn FnMut(RetentionSummary) -> Result<(), String>,
         emit: &mut dyn FnMut(RetentionDecision) -> Result<(), String>,
     ) -> Result<(), String> {
-        self.validate_retention(policy)?;
-        self.calls.lock().unwrap().push((index.to_owned(), now));
+        self.validate_retention(scan.policy)?;
+        self.calls.lock().unwrap().push((scan.index.to_owned(), scan.now));
         StubDriver {
             decisions: ["a", "b", "c"].into_iter().map(decision).collect(),
             unsupported: false,
             fail: None,
         }
-        .plan_retention(meta, index, policy, now, start, emit)
+        .plan_retention(scan, start, emit)
     }
 }
 
@@ -163,6 +160,7 @@ enum StoreFault {
 
 struct Fixture {
     _dir: tempfile::TempDir,
+    state: Arc<AppState>,
     serving: Arc<ServingState>,
     app: axum::Router,
 }
@@ -252,7 +250,8 @@ impl Fixture {
         let state = Arc::new(state);
         Self {
             _dir: dir,
-            app: crate::router(state),
+            app: crate::router(state.clone()),
+            state,
             serving,
         }
     }
@@ -292,6 +291,106 @@ impl Fixture {
             status,
             serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
         )
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_status_responds_at_blocking_scan_capacity() {
+    let fixture = Fixture::new(StubDriver {
+        decisions: Vec::new(),
+        unsupported: false,
+        fail: None,
+    })
+    .await;
+    let scans = SaturatedScans::start(fixture.state.blocking_scans.clone()).await;
+
+    let response = fixture
+        .app
+        .clone()
+        .oneshot(Request::builder().uri("/+status").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    let status = response.status();
+    scans.release().await;
+
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_retention_export_keeps_its_existing_blocking_path() {
+    let fixture = Fixture::new(StubDriver {
+        decisions: vec![decision("a")],
+        unsupported: false,
+        fail: None,
+    })
+    .await;
+    let scans = SaturatedScans::start(fixture.state.blocking_scans.clone()).await;
+
+    let response = fixture
+        .post(
+            "/+retention/export",
+            Some(("Alice", ADMIN_PASSWORD)),
+            Body::from(serde_json::to_vec(&plan_body("hosted")).unwrap()),
+            true,
+        )
+        .await;
+
+    let status = response.status();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    scans.release().await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(String::from_utf8(body.to_vec()).unwrap().contains("\"artifact\":\"a\""));
+}
+
+struct SaturatedScans {
+    release: Arc<(Mutex<bool>, Condvar)>,
+    scans: Vec<tokio::task::JoinHandle<Result<(), tokio::task::JoinError>>>,
+}
+
+impl SaturatedScans {
+    async fn start(executor: BlockingScanExecutor) -> Self {
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut scans = Vec::new();
+        for _ in 0..2 {
+            let executor = executor.clone();
+            let release = release.clone();
+            let started_tx = started_tx.clone();
+            scans.push(tokio::spawn(async move {
+                executor
+                    .run(move |_| {
+                        started_tx.send(()).unwrap();
+                        let (released, changed) = &*release;
+                        let mut released = released.lock().unwrap();
+                        while !*released {
+                            released = changed.wait(released).unwrap();
+                        }
+                        drop(released);
+                    })
+                    .await
+            }));
+        }
+        for _ in 0..2 {
+            started_rx.recv().await.unwrap();
+        }
+        Self { release, scans }
+    }
+
+    async fn release(mut self) {
+        *self.release.0.lock().unwrap() = true;
+        self.release.1.notify_all();
+        for scan in self.scans.drain(..) {
+            scan.await.unwrap().unwrap();
+        }
+    }
+}
+
+impl Drop for SaturatedScans {
+    fn drop(&mut self) {
+        *self.release.0.lock().unwrap() = true;
+        self.release.1.notify_all();
     }
 }
 
@@ -593,6 +692,38 @@ async fn test_plan_reports_a_store_failure_as_server_error() {
     let (status, _) = fixture.plan(plan_body("hosted")).await;
 
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[tokio::test]
+async fn test_plan_worker_panic_returns_server_error() {
+    let fixture = Fixture::with_driver(Arc::new(PanicDriver), Arc::new(|| 42)).await;
+
+    let (status, document) = fixture.plan(plan_body("hosted")).await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(
+        document["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("retention scan worker failed:")
+    );
+}
+
+struct PanicDriver;
+
+impl RetentionDriver for PanicDriver {
+    fn validate_retention(&self, _policy: &peryx_policy::RetentionPolicy) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn plan_retention(
+        &self,
+        _scan: &peryx_driver::serving::RetentionScan<'_>,
+        _start: &mut dyn FnMut(RetentionSummary) -> Result<(), String>,
+        _emit: &mut dyn FnMut(RetentionDecision) -> Result<(), String>,
+    ) -> Result<(), String> {
+        panic!("retention scan panic")
+    }
 }
 
 #[tokio::test]
