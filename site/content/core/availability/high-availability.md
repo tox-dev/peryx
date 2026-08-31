@@ -6,9 +6,9 @@ aliases = [ "/core/high-availability/"]
 +++
 
 An omitted `[availability]` table or `mode = "none"` starts no distributed work. Mode `dc` starts metadata and blob
-replication without ownership consensus. Mode `ha` assembles ownership-consensus components, but its one configured
-member address cannot reach both the public peer routes and the private Raft listener. See the
-[release-status table](@/core/availability/_index.md#release-status) before choosing a mode.
+replication without ownership consensus. Mode `ha` assembles ownership-consensus components, which peers reach at the
+one address the roster names for a member. See the [release-status table](@/core/availability/_index.md#release-status)
+before choosing a mode.
 
 In distributed modes, send mutation traffic to the writer. Managed workers copy committed metadata and artifact bytes to
 replicas, which reject mutation requests with `503 Service Unavailable`. The
@@ -17,8 +17,8 @@ replicas, which reject mutation requests with `503 Service Unavailable`. The
 ## Availability lifecycle
 
 Startup validates settings and reserves listeners before it starts availability work. Mode `dc` starts replication and
-reconciliation. Mode `ha` also starts ownership consensus, subject to the peer-plane gap above. If one service fails,
-startup stops the services it started and returns an error. The process does not accept artifact requests in this state.
+reconciliation. Mode `ha` also starts ownership consensus. If one service fails, startup stops the services it started
+and returns an error. The process does not accept artifact requests in this state.
 
 During shutdown, Peryx stops accepting work, cancels background operations, and waits for availability services within a
 bounded deadline. It reports any service that misses the deadline. Mode `none` skips these steps and adds no

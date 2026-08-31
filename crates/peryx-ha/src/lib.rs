@@ -271,9 +271,10 @@ pub trait ActiveAvailabilityHandle: Send {
     async fn shutdown(&mut self) -> Result<(), AvailabilityShutdownError>;
 }
 
+/// The routes a prepared node hands the public server; the control plane binds its own socket when
+/// the node activates.
 pub struct PreparedAvailability<Routes, Handle> {
     pub public_routes: Routes,
-    pub private_routes: Option<Routes>,
     pub metrics: Vec<Arc<dyn PrometheusSource>>,
     pub is_replica: bool,
     pub handle: Handle,

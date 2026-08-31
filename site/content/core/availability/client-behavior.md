@@ -8,9 +8,8 @@ aliases = [ "/core/availability-client-behavior/"]
 Availability mode changes when a mutation can be acknowledged. Content owners map the shared outcome to their client
 boundary.
 
-The local and DC retry behavior below ships. Authority epochs and online transfer apply only to HA components, and HA
-has no supported end-to-end network layout. DC writer replacement uses offline promotion rather than an authority
-transfer.
+The local and DC retry behavior below ships. Authority epochs and online transfer apply only to HA components. DC writer
+replacement uses offline promotion rather than an authority transfer.
 
 ## Writes
 

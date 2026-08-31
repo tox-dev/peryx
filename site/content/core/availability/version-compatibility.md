@@ -7,8 +7,7 @@ aliases = [ "/core/availability-version-compatibility/"]
 
 The negotiation, command barrier, rollout preflight, and irreversible-migration floor on this page are design-only.
 Their types and tests ship, but no startup, command, or HTTP path calls them. Shipped replication rejects an
-incompatible schema through `GET /+replication/v1/ready`; operators must manage compatible DC upgrades themselves. HA
-has no supported end-to-end network layout.
+incompatible schema through `GET /+replication/v1/ready`; operators must manage compatible upgrades themselves.
 
 Rolling an availability cluster through an upgrade mixes nodes at different builds. Before two nodes exchange commands
 they must agree on versions both speak, hold a new command until every committed member can apply it, and refuse an

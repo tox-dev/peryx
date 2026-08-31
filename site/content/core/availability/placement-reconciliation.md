@@ -6,9 +6,8 @@ aliases = [ "/core/availability-placement-reconciliation/"]
 +++
 
 Placement records and local files can diverge after crashes, disk loss, or operator repair. Reconciliation and copy
-workers ship as HA components, but both require a nonzero ownership term. They perform no work in `dc`, which has no
-ownership consensus, and HA has no supported end-to-end peer layout. The behavior below is not active in a supported
-deployment.
+workers ship as HA components, but both require a nonzero ownership term, so they perform no work in `dc`, which has no
+ownership consensus.
 
 The reconciler reads placement records, applies repair policy, and commits changes with atomic compare-and-write
 operations. Each scan has cancellation and resource limits.

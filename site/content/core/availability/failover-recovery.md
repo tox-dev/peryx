@@ -9,8 +9,8 @@ Classify a node failure before changing durable state. Process loss, storage los
 loss require different recovery procedures. The selected [availability contract](@/core/availability/contracts.md)
 determines the recovery bound and whether recovery is local, same-datacenter, or cross-datacenter.
 
-This runbook applies to shipped `none` and `dc` recovery. HA components are present, but the split public and private
-peer planes leave no supported end-to-end HA deployment or cross-datacenter recovery procedure.
+This runbook applies to shipped `none` and `dc` recovery. HA components are present, but no runtime worker selects a
+failed home, so cross-datacenter recovery is an administrator-driven procedure.
 
 Use [high availability](@/core/availability/high-availability.md) for the writer-and-replica model,
 [back up and restore](@/core/operations/backup-restore.md) for offline images, and the

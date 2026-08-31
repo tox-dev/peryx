@@ -7,8 +7,8 @@ aliases = [ "/core/availability-authority-transfer/"]
 
 Automatic failover remains design-only: `FailoverPolicy` and liveness selection have no runtime caller. The HA control
 listener ships a raw `transfer_authority` command and `peryx job drain` ships, but the command does not require a `Dead`
-home and the current HA peer-plane split prevents a supported end-to-end deployment. Mode `dc` has no ownership
-consensus; use offline [writer promotion](@/core/availability/high-availability.md#dc-writer-promotion).
+home, so an operator drives every transfer. Mode `dc` has no ownership consensus; use offline
+[writer promotion](@/core/availability/high-availability.md#dc-writer-promotion).
 
 An authority gives one datacenter write ownership for a repository. The design below uses
 [node liveness](@/core/availability/liveness.md) for the failure signal and the

@@ -286,7 +286,6 @@ async fn active_availability_shutdown_runs_each_stage() {
 fn prepared_availability(handle: LifecycleHandle) -> PreparedAvailability<(), LifecycleHandle> {
     PreparedAvailability {
         public_routes: (),
-        private_routes: None,
         metrics: Vec::new(),
         is_replica: false,
         handle,
@@ -1181,7 +1180,6 @@ async fn availability_runtime_prepares_its_declared_resources() {
     .await
     .unwrap();
     assert_eq!(prepared.public_routes, "availability");
-    assert_eq!(prepared.private_routes, Some("operator"));
     assert!(prepared.metrics.is_empty());
     assert!(prepared.is_replica);
     drop(prepared);
@@ -1394,7 +1392,6 @@ impl AvailabilityRuntime for TestRuntime {
     ) -> Result<PreparedAvailability<Self::Routes, Self::PreparedHandle>, Self::Error> {
         Ok(PreparedAvailability {
             public_routes: "availability",
-            private_routes: Some("operator"),
             metrics: self.metrics(),
             is_replica: true,
             handle,

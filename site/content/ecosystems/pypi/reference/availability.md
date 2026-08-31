@@ -16,8 +16,8 @@ mode = "none"
 
 Omitting the table also selects `none`. This mode commits uploads locally and creates no availability listener, worker,
 watcher, or timer; the upload still uses its local ingress ledger. Mode `dc` starts replication without ownership
-consensus. Mode `ha` assembles replication and ownership components, but its public peer routes and private Raft routes
-cannot share the roster's one member address in this release.
+consensus. Mode `ha` assembles replication and ownership components, which peers reach at the one address the roster
+names for each member.
 
 The mode does not change the Simple API or upload form. It changes the durability acknowledgement and failure behavior.
 In `dc` and `ha`:
@@ -64,15 +64,13 @@ which makes replay idempotent.
 
 Under `dc`, a project file or metadata sibling that misses local storage can use
 [remote read-through](@/core/repositories/remote-read-through.md) when another configured member has a verified
-placement. HA code can select another datacenter, subject to the HA peer-plane gap. Mode `none` has no remote
-placements.
+placement. HA can select another datacenter. Mode `none` has no remote placements.
 
 The PyPI reclamation inventory retains digests named by cached file URL records, PEP 658 metadata siblings, hosted
 upload records, and PEP 740 provenance records. Trash and verified placements add the core references described in
 [Blob reclamation](@/core/availability/blob-reclamation.md).
 
-The reference inventory ships, but distributed reclamation requires an ownership term. It performs no work in `dc`, and
-HA has no supported end-to-end deployment.
+The reference inventory ships, but distributed reclamation requires an ownership term, so it performs no work in `dc`.
 
 ## Logging
 

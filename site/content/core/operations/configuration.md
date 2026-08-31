@@ -769,8 +769,8 @@ age alone and cannot tell an abandoned upload from one still streaming.
 
 The shipped binary accepts every availability mode. Only `[availability].mode` selects one; command-line flags and
 alternate builds do not override it. The [release-status inventory](@/core/availability/_index.md#release-status)
-separates deployable paths from HA components that still lack peer-plane wiring. An omitted table and `mode = "none"`
-resolve to no managed availability resources.
+records what each mode ships and what it still leaves undone. An omitted table and `mode = "none"` resolve to no managed
+availability resources.
 
 ```toml
 [availability]
@@ -919,10 +919,9 @@ bind = "127.0.0.1:4460"
 | `tls.cert`               | PEM certificate chain for the private listener    | (none)           |
 | `tls.key`                | Matching PEM private key for the private listener | (none)           |
 
-The listener serves authenticated status and control operations. HA also serves Raft RPCs there. Metadata, blob,
-receipt, frontier, analytics, and heartbeat peer routes remain on the public server, while one
-`[[availability.member]] address` supplies every peer transport. No address reaches both route sets in the current HA
-layout, so the HA example is not a deployable network contract. See the
+The listener serves authenticated status and control operations, and nothing else. Every peer route — metadata, blob,
+receipt, frontier, analytics, heartbeat, and the ownership Raft RPCs — runs on the public server, so the one
+`[[availability.member]] address` a member advertises reaches every peer transport. See the
 [availability control listener](@/core/availability/listener.md).
 
 ## `[auth]`

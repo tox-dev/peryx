@@ -6,15 +6,15 @@ aliases = [ "/core/availability-contracts/"]
 +++
 
 The binary accepts three availability modes. `none` skips distributed setup. `dc` activates primary-to-replica
-replication without an ownership consensus group. `ha` also assembles ownership consensus, but the current release
-cannot route every HA peer protocol through the one address a roster member carries. See the
+replication without an ownership consensus group. `ha` also assembles ownership consensus, and every HA peer protocol
+runs on the one address a roster member carries. See the
 [release-status inventory](@/core/availability/_index.md#release-status) before using a mode in production.
 
-| Mode   | Current PyPI upload request acknowledgement                                                      | Coordination                                                         |
-| ------ | ------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------- |
-| `none` | Metadata and bytes committed on the local backend                                                | None                                                                 |
-| `dc`   | Metadata committed on the writer and bytes satisfy the configured same-DC node-receipt threshold | Asynchronous metadata and blob replication; no ownership consensus   |
-| `ha`   | Writer bytes plus metadata applied in any one remote datacenter                                  | HA ownership components; no supported end-to-end peer network layout |
+| Mode   | Current PyPI upload request acknowledgement                                                      | Coordination                                                        |
+| ------ | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------- |
+| `none` | Metadata and bytes committed on the local backend                                                | None                                                                |
+| `dc`   | Metadata committed on the writer and bytes satisfy the configured same-DC node-receipt threshold | Asynchronous metadata and blob replication; no ownership consensus  |
+| `ha`   | Writer bytes plus metadata applied in any one remote datacenter                                  | HA ownership components; one remote datacenter regardless of policy |
 
 The `ha` write-ack policy does not yet change the remote metadata threshold. `local`, `majority`, and `everywhere` all
 accept one remote datacenter. Blob acknowledgements also treat each backend as a filesystem and count node-labelled
@@ -70,9 +70,9 @@ backup is required.
 ## Recovery objectives {#recovery-objectives}
 
 `none` has the recovery point of its local backend and latest verified backup. A `dc` promotion recovers metadata only
-through the selected replica's applied frontier; same-DC byte receipts do not make later metadata synchronous. HA code
-waits for one remote metadata frontier while bytes converge later, but the peer-plane gap prevents a supported HA
-deployment. Recovery time includes detection, operator action, routing, and catch-up.
+through the selected replica's applied frontier; same-DC byte receipts do not make later metadata synchronous. HA waits
+for one remote metadata frontier while bytes converge later, so `majority` and `everywhere` do not yet raise that remote
+threshold. Recovery time includes detection, operator action, routing, and catch-up.
 
 ## Benchmark method for mode budgets {#benchmark-method-for-mode-budgets}
 

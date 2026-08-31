@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::raft::network::DeferredRaftRpcHandler;
 use crate::read_through::{DEFAULT_READ_THROUGH_LIMITS, DcTransport, ReadThroughLimits, RemotePlacementReader};
 use crate::{
     AnalyticsPuller, AvailabilityMetrics, AvailabilityRuntime, BeaconSender, CapacityLimited, ConsensusMember,
@@ -567,10 +568,17 @@ pub struct DistributedRuntime {
     replica: Option<(ReplicaLoop, Arc<WorkerShared>)>,
     availability: AvailabilityNode,
     analytics_puller: Option<AnalyticsPuller>,
-    consensus: Option<ConsensusPlan>,
+    consensus: Option<PlannedConsensus>,
     beacon: Option<BeaconSender>,
     prometheus: Vec<Arc<dyn PrometheusSource>>,
     clock: Clock,
+}
+
+/// Pairs the plan with the binding its ignited node fills in, so the mounted peer routes and the
+/// consensus that answers them cannot exist apart.
+struct PlannedConsensus {
+    plan: ConsensusPlan,
+    peer_rpc: Arc<DeferredRaftRpcHandler>,
 }
 
 pub struct PreparedDistributedRuntime {
@@ -599,7 +607,7 @@ pub struct DistributedRuntimeContext {
 pub struct Consensus {
     pub authority: Arc<dyn OwnershipAuthority>,
     pub control: Arc<dyn peryx_ha::ControlExecutor>,
-    pub peer_router: Router,
+    peer_rpc: Arc<DeferredRaftRpcHandler>,
     owner: ConsensusOwner,
 }
 
@@ -611,7 +619,10 @@ enum ConsensusOwner {
 }
 
 impl Consensus {
+    /// Unbinds the peer routes first: they hold the raft handle, and a served RPC after cancellation
+    /// would resurrect work the shutdown is draining.
     pub(crate) fn cancel(&self) {
+        self.peer_rpc.bind(None);
         let ConsensusOwner::Running { executor, .. } = &self.owner;
         executor.cancel();
     }
@@ -778,7 +789,17 @@ impl DistributedRuntime {
             routes
         };
         let analytics_puller = build_analytics_puller(config, context)?;
-        let consensus = consensus_plan(config)?;
+        // A member address names one plane, so the peer RPCs join the routes every other peer
+        // transport dials. The raft node behind them only exists once consensus ignites.
+        let (routes, consensus) = match consensus_plan(config)? {
+            Some(plan) => {
+                let peer_rpc = Arc::new(DeferredRaftRpcHandler::default());
+                let peer = crate::raft::network::raft_rpc_router(plan.local_voter(), plan.token(), peer_rpc.clone())
+                    .context("build the peer raft rpc routes")?;
+                (routes.merge(peer), Some(PlannedConsensus { plan, peer_rpc }))
+            }
+            None => (routes, None),
+        };
         Ok(Self {
             routes,
             replica,
@@ -798,25 +819,22 @@ impl DistributedRuntime {
         lifecycle: crate::lifecycle::Lifecycle,
     ) -> anyhow::Result<Option<Consensus>> {
         match &self.consensus {
-            Some(plan) => {
-                let started = plan.ignite_with_lifecycle(lifecycle).await?;
-                let peer_router = crate::raft::network::raft_rpc_router(
-                    plan.local_voter(),
-                    plan.token(),
-                    started.node().rpc_handler_with_clock(self.clock.clone()),
-                )
-                .expect("the replication token was validated before consensus startup");
+            Some(consensus) => {
+                let started = consensus.plan.ignite_with_lifecycle(lifecycle).await?;
+                consensus
+                    .peer_rpc
+                    .bind(Some(started.node().rpc_handler_with_clock(self.clock.clone())));
                 let (node, executor) = started.commit();
                 let group = Arc::new(
-                    OwnershipGroup::new(node, plan.home())
-                        .with_peer_forwarding(plan.token())
+                    OwnershipGroup::new(node, consensus.plan.home())
+                        .with_peer_forwarding(consensus.plan.token())
                         .with_clock(self.clock.clone()),
                 );
                 let ownership = Arc::new(crate::consensus_runtime::OwnershipHandle::new(&group));
                 Ok(Some(Consensus {
                     authority: ownership.clone(),
                     control: Arc::new(crate::ControlPlane::new(ownership, self.clock.clone())),
-                    peer_router,
+                    peer_rpc: consensus.peer_rpc.clone(),
                     owner: ConsensusOwner::Running { group, executor },
                 }))
             }
@@ -824,7 +842,7 @@ impl DistributedRuntime {
         }
     }
 
-    pub(crate) const fn requires_consensus_listener(&self) -> bool {
+    pub(crate) const fn requires_control_listener(&self) -> bool {
         self.consensus.is_some()
     }
 

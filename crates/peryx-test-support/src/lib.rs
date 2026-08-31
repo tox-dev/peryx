@@ -186,14 +186,12 @@ impl ProcessLimit {
     }
 
     fn acquire(&self) -> ProcessPermit {
-        let mut available = self.inner.available.lock().expect("process limit mutex poisoned");
-        while *available == 0 {
-            available = self
-                .inner
-                .changed
-                .wait(available)
-                .expect("process limit mutex poisoned");
-        }
+        let guard = self.inner.available.lock().expect("process limit mutex poisoned");
+        let mut available = self
+            .inner
+            .changed
+            .wait_while(guard, |available| *available == 0)
+            .expect("process limit mutex poisoned");
         *available -= 1;
         drop(available);
         ProcessPermit { limit: self.clone() }
@@ -530,6 +528,9 @@ impl Topology {
     /// The `[availability]` mode selector and the `[[availability.member]]` roster shared by every
     /// node. The per-process replication role lives in [`node_config`], not here, so a replica follows
     /// the writer rather than every node running as its own primary. Empty for a `none`-mode topology.
+    ///
+    /// Each address names a node's public server, the one plane that serves every peer route, so the
+    /// harness roster has the shape the deployment documentation prescribes.
     fn roster_toml(&self, addresses: &[(u16, u16)]) -> String {
         let mode = match self.mode {
             Mode::None => return String::new(),
@@ -537,10 +538,10 @@ impl Topology {
             Mode::Ha => "ha",
         };
         let mut toml = format!("[availability]\nmode = \"{}\"\ngroup = \"{}\"\n\n", mode, self.group);
-        for (member, &(_, control)) in self.members.iter().zip(addresses) {
+        for (member, &(public, _)) in self.members.iter().zip(addresses) {
             let _ = write!(
                 toml,
-                "[[availability.member]]\nnode = \"{}\"\ndc = \"{}\"\naddress = \"http://127.0.0.1:{control}\"\nrole = \"{}\"\n\n",
+                "[[availability.member]]\nnode = \"{}\"\ndc = \"{}\"\naddress = \"http://127.0.0.1:{public}\"\nrole = \"{}\"\n\n",
                 member.node,
                 member.dc,
                 member.role.as_str(),

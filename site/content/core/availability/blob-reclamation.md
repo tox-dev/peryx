@@ -9,8 +9,7 @@ Several metadata records can refer to one digest. Distributed reclamation accoun
 not applied the current reference snapshot. It records a durable decision before a storage executor removes bytes.
 
 The selector, ledger, and scheduled job ship as HA components. The job requires a nonzero ownership term, so it performs
-no work in `dc`, which has no ownership consensus. HA has no supported end-to-end peer layout. This page does not
-describe an active reclamation path in a supported deployment.
+no work in `dc`, which has no ownership consensus.
 
 ## Retained references
 

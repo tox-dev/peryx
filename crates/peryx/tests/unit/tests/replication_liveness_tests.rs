@@ -88,6 +88,41 @@ async fn prepare(
         .unwrap()
 }
 
+fn basic(credentials: &str) -> String {
+    format!("Basic {}", STANDARD.encode(credentials))
+}
+
+/// The control routes only exist once the node activates, so reaching them means driving the socket
+/// the runtime binds rather than a router handed back from preparation.
+struct ControlListener {
+    client: reqwest::Client,
+    address: std::net::SocketAddr,
+    active:
+        peryx_ha::ActiveAvailability<<peryx_ha_distributed::DistributedHandle as peryx_ha::AvailabilityHandle>::Active>,
+}
+
+impl ControlListener {
+    async fn start(config: &Config, state: &std::sync::Arc<AppState>) -> Self {
+        let prepared = prepare(config, state).await;
+        let address = prepared.handle.listener_address().unwrap();
+        Self {
+            client: reqwest::Client::new(),
+            address,
+            active: crate::process::activate_prepared_availability(prepared).unwrap(),
+        }
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("http://{}{path}", self.address)
+    }
+
+    async fn shutdown(&mut self) {
+        peryx_ha::ActiveAvailabilityHandle::shutdown(&mut self.active.handle)
+            .await
+            .unwrap();
+    }
+}
+
 async fn heartbeat(router: &Router, report: Value) -> StatusCode {
     router
         .clone()
@@ -270,44 +305,51 @@ async fn test_a_rosterless_primary_publishes_no_group_readiness() {
 }
 
 #[tokio::test]
-async fn test_prepared_runtime_serves_authenticated_control_routes() {
+async fn test_the_control_listener_serves_authenticated_status() {
     let dir = tempfile::tempdir().unwrap();
     let config = primary_with_roster(&dir);
     let state = build_state(&config).unwrap();
-    let credentials = administrator(&state).await;
-    let private = prepare(&config, &state).await.private_routes.unwrap();
-    let authorization = format!("Basic {}", STANDARD.encode(credentials));
+    let authorization = basic(&administrator(&state).await);
+    let mut listener = ControlListener::start(&config, &state).await;
 
-    let status = private
-        .clone()
-        .oneshot(
-            Request::get("/availability/v1/status")
-                .header(header::AUTHORIZATION, &authorization)
-                .body(Body::empty())
-                .unwrap(),
-        )
+    let status = listener
+        .client
+        .get(listener.url("/availability/v1/status"))
+        .header(header::AUTHORIZATION, authorization)
+        .send()
         .await
-        .unwrap();
-    assert_eq!(status.status(), StatusCode::OK);
+        .unwrap()
+        .status();
 
-    let command = private
-        .oneshot(
-            Request::post("/availability/v1/commands")
-                .header(header::AUTHORIZATION, authorization)
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    serde_json::to_vec(&json!({
-                        "type": "transfer_authority",
-                        "authority": "resource",
-                        "new_home": "west"
-                    }))
-                    .unwrap(),
-                ))
-                .unwrap(),
-        )
+    assert_eq!(status, StatusCode::OK);
+    listener.shutdown().await;
+}
+
+/// DC runs no consensus, so the command surface is mounted and reachable but has nothing to execute.
+#[tokio::test]
+async fn test_the_control_listener_reports_dc_commands_unavailable() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = primary_with_roster(&dir);
+    let state = build_state(&config).unwrap();
+    let authorization = basic(&administrator(&state).await);
+    let mut listener = ControlListener::start(&config, &state).await;
+
+    let status = listener
+        .client
+        .post(listener.url("/availability/v1/commands"))
+        .header(header::AUTHORIZATION, authorization)
+        .json(&json!({
+            "type": "transfer_authority",
+            "authority": "resource",
+            "new_home": "west"
+        }))
+        .send()
         .await
-        .unwrap();
-    assert_eq!(command.status(), StatusCode::SERVICE_UNAVAILABLE);
+        .unwrap()
+        .status();
+
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    listener.shutdown().await;
 }
 
 #[tokio::test]

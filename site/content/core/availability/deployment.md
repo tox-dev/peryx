@@ -1,31 +1,30 @@
 +++
 title = "Availability deployment and sizing"
-description = "Deploy none and dc modes and inspect the HA peer-plane gap."
+description = "Deploy none, dc, and ha modes and size their nodes."
 weight = 7
 aliases = [ "/core/availability-deployment/"]
 +++
 
 peryx accepts three [availability modes](@/core/operations/configuration.md#availability): local (`none`), a
-single-datacenter group (`dc`), and a geo-distributed group (`ha`). Modes `none` and `dc` have deployable runtime paths.
-HA components ship, but the configured member address cannot reach both the public replication routes and the private
-Raft listener, so `ha` has no supported end-to-end network layout. The
+single-datacenter group (`dc`), and a geo-distributed group (`ha`). A member `address` names one plane in every mode:
+that node's public server, which serves every peer route the group dials, the ownership Raft RPCs included. The
 [availability contracts](@/core/availability/contracts.md) define each mode's acknowledgement and recovery objectives.
 The [`[availability]`](@/core/operations/configuration.md#availability) reference defines the configuration keys. The
 sections below cover hardware sizing, TOML validation, and monitoring.
 
 Mode `none` skips availability setup. Mode `dc` starts replication without ownership consensus. Mode `ha` prepares
-replication and ownership-consensus components, subject to the peer-plane gap above.
+replication and ownership-consensus components.
 
 ## Choose a shape
 
 Choose a shape by the failure it must survive. The selected shape determines durability, recovery point, and recovery
 time. Pick the smallest shape that covers the required failure domain; larger shapes add synchronous write-path cost.
 
-| Shape     | Mode   | Shipped recovery boundary                                  | Recovery point                                  |
-| --------- | ------ | ---------------------------------------------------------- | ----------------------------------------------- |
-| Unmanaged | `none` | Process restart or operator restore                        | Last external backup on storage loss            |
-| Single DC | `dc`   | Replica recovery; offline writer promotion                 | Replica's applied metadata and blob frontiers   |
-| Geo HA    | `ha`   | No supported end-to-end deployment while peer planes split | Not a deployable recovery contract this release |
+| Shape     | Mode   | Shipped recovery boundary                                       | Recovery point                                                  |
+| --------- | ------ | --------------------------------------------------------------- | --------------------------------------------------------------- |
+| Unmanaged | `none` | Process restart or operator restore                             | Last external backup on storage loss                            |
+| Single DC | `dc`   | Replica recovery; offline writer promotion                      | Replica's applied metadata and blob frontiers                   |
+| Geo HA    | `ha`   | Datacenter loss with an administrator-driven authority transfer | Committed ownership entries and each member's applied frontiers |
 
 The recovery-point and recovery-time columns follow the [contract's RPO and RTO table][rpo]. A recovery point is a
 serial, "no acknowledged mutation at or before frontier *n*". Size a shape by the serials it can recover. A `none`
@@ -81,9 +80,8 @@ converge behind the acknowledgement.
 
 ## Stand up each shape
 
-The `none` and `dc` examples below are deployable and contain no secrets. The `ha` example describes the intended
-topology and calls out the network contract that prevents deployment. peryx reads credentials from a mounted file
-through `token_file`; a configuration snapshot preserves the path without the secret.
+The examples below contain no secrets. peryx reads credentials from a mounted file through `token_file`; a configuration
+snapshot preserves the path without the secret.
 
 ### Local availability (`none`)
 
@@ -161,10 +159,9 @@ or automatic election.
 
 ### Geo HA design (`ha`)
 
-The intended `ha` shape extends the `dc` roster across datacenters. Set `mode = "ha"` and give each member a distinct
-`dc`. This configuration passes topology validation, but it cannot form a working cluster in this release: public
-replication and receipt routes run on the content server, Raft runs on the private availability listener, and the one
-member `address` is used for both transports.
+The `ha` shape extends the `dc` roster across datacenters. Set `mode = "ha"` and give each member a distinct `dc`. Every
+peer route a member `address` is dialed for is served by the public content server: the change journal, blobs, receipts,
+frontiers, analytics, heartbeats, and the ownership Raft RPCs. One address per member reaches all of them.
 
 ```toml
 data_dir = "/var/lib/peryx"
@@ -192,7 +189,7 @@ role = "replica"
 ```
 
 The assembled HA acknowledgement resolver waits for any one remote metadata frontier. The write-ack policy does not
-raise that threshold, and the split peer planes prevent this from being a deployable durability guarantee.
+raise that threshold, so `majority` and `everywhere` do not yet make a remote datacenter a durability requirement.
 
 ## Secure the replication path
 
@@ -202,8 +199,9 @@ at a trusted proxy in front of it; do not expose a plaintext replication endpoin
 authenticates a follower to the journal and is administrator-managed: mount it as a Docker or Kubernetes secret or a
 systemd credential and point `token_file` at the path. peryx reads it at startup and omits it from logs. A
 `peryx backup` snapshot records the path rather than the secret. Rotate the credential by replacing the mounted file and
-restarting the members that read it. In HA, Raft uses the private listener while the other peer routes remain public; no
-supported proxy or bind setting joins those route sets behind the single member address.
+restarting the members that read it. HA peers reach that same server, Raft included, so protecting the public listener
+protects every peer route; the private `[availability.listener]` carries administrator control only and no peer ever
+dials it.
 
 ## Bootstrap order
 

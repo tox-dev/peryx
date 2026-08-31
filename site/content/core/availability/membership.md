@@ -5,8 +5,8 @@ weight = 9
 aliases = [ "/core/availability-membership/"]
 +++
 
-HA command handlers and Raft membership storage ship, but public peer routes and the private Raft listener cannot share
-the configured member address. Mode `dc` uses its static roster and runs no ownership consensus.
+HA command handlers and Raft membership storage ship, and a member `address` names the public server that answers every
+peer route the group dials. Mode `dc` uses its static roster and runs no ownership consensus.
 
 An HA ownership consensus group has a voting roster: the datacenters whose acknowledgement a committed authority change
 needs. An administrator changes that roster through the

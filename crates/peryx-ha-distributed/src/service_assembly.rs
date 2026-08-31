@@ -689,7 +689,7 @@ pub fn prepare_runtime(
     let metrics = peryx_ha::AvailabilityRuntime::metrics(&runtime);
     let is_replica = runtime.is_replica();
     anyhow::ensure!(
-        !runtime.requires_consensus_listener() || context.listener.is_some(),
+        !runtime.requires_control_listener() || context.listener.is_some(),
         "HA runtime requires a bound availability listener"
     );
     let frontiers = runtime.reclamation_frontiers();
@@ -704,19 +704,8 @@ pub fn prepare_runtime(
     let runtime = runtime
         .prepare_worker_runtime()
         .context("start the availability worker runtime")?;
-    let private_routes = availability_control_router(
-        &context.config,
-        AvailabilityControlContext {
-            authorizer: context.control_authorizer.clone(),
-            read_only: context.state.serving.read_only,
-            meta: context.state.serving.meta.clone(),
-            control: None,
-            ownership: None,
-        },
-    );
     Ok(peryx_ha::PreparedAvailability {
         public_routes,
-        private_routes: Some(private_routes),
         metrics,
         is_replica,
         handle: DistributedHandle {
@@ -745,7 +734,7 @@ async fn activate_runtime(mut prepared: PreparedDistributed) -> anyhow::Result<A
     };
     let consensus = active.consensus.as_ref();
     let ownership = consensus.map(|value| value.authority.clone());
-    let mut private_routes = availability_control_router(
+    let control_routes = availability_control_router(
         &prepared.context.config,
         AvailabilityControlContext {
             authorizer: prepared.context.control_authorizer,
@@ -755,16 +744,13 @@ async fn activate_runtime(mut prepared: PreparedDistributed) -> anyhow::Result<A
             ownership: ownership.clone(),
         },
     );
-    if let Some(consensus) = consensus {
-        private_routes = private_routes.merge(consensus.peer_router.clone());
-    }
     active.runtime = prepared
         .runtime
         .start_with_lifecycle(prepared.lifecycle.clone())
         .expect("prepared runtime reserves its configured worker slots")
         .into();
     if let Some(listener) = prepared.context.listener.take() {
-        active.listener = match RunningListener::start(listener, private_routes, prepared.lifecycle.clone()).await {
+        active.listener = match RunningListener::start(listener, control_routes, prepared.lifecycle.clone()).await {
             Ok(listener) => OwnedResource::Owned(listener),
             Err(error) => return fail_startup(error.into(), active).await,
         };

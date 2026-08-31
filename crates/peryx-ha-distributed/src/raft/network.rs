@@ -222,14 +222,47 @@ const fn map_client_error(error: HttpClientError) -> RaftRpcError {
 pub enum RaftRpcRejection {
     #[error("raft rpc body could not be decoded")]
     Malformed,
+    #[error("raft consensus has not started on this node")]
+    Unavailable,
 }
 
 /// Uses byte payloads to avoid binding the router to `RaftTypeConfig`.
 #[async_trait]
 pub trait RaftRpcHandler: Send + Sync + 'static {
     /// # Errors
-    /// Returns [`RaftRpcRejection::Malformed`] when `body` is not a valid request for `rpc`.
+    /// Returns [`RaftRpcRejection::Malformed`] when `body` is not a valid request for `rpc`, and
+    /// [`RaftRpcRejection::Unavailable`] when no raft node is serving the route yet.
     async fn handle(&self, rpc: RaftRpc, body: Bytes) -> Result<Vec<u8>, RaftRpcRejection>;
+}
+
+/// The public server mounts the peer routes while the process prepares, and consensus ignites later,
+/// so the route set outlives every raft node bound behind it.
+#[derive(Default)]
+pub struct DeferredRaftRpcHandler {
+    handler: std::sync::RwLock<Option<Arc<dyn RaftRpcHandler>>>,
+}
+
+impl DeferredRaftRpcHandler {
+    pub fn bind(&self, handler: Option<Arc<dyn RaftRpcHandler>>) {
+        *self.handler.write().unwrap_or_else(std::sync::PoisonError::into_inner) = handler;
+    }
+
+    fn current(&self) -> Option<Arc<dyn RaftRpcHandler>> {
+        self.handler
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+#[async_trait]
+impl RaftRpcHandler for DeferredRaftRpcHandler {
+    async fn handle(&self, rpc: RaftRpc, body: Bytes) -> Result<Vec<u8>, RaftRpcRejection> {
+        match self.current() {
+            Some(handler) => handler.handle(rpc, body).await,
+            None => Err(RaftRpcRejection::Unavailable),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -290,6 +323,9 @@ async fn dispatch(state: &RaftRpcState, rpc: RaftRpc, headers: &HeaderMap, body:
     match state.handler.handle(rpc, body).await {
         Ok(bytes) => ([(header::CONTENT_TYPE, "application/json")], bytes).into_response(),
         Err(RaftRpcRejection::Malformed) => (StatusCode::BAD_REQUEST, "malformed raft rpc").into_response(),
+        Err(RaftRpcRejection::Unavailable) => {
+            (StatusCode::SERVICE_UNAVAILABLE, "raft consensus is not active").into_response()
+        }
     }
 }
 

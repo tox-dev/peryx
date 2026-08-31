@@ -54,6 +54,10 @@ fn writer_serial(document: &Value) -> Option<u64> {
     document["serial"].as_u64()
 }
 
+fn durable_upload() -> (u16, String) {
+    (200, "upload accepted".to_owned())
+}
+
 fn pending_upload() -> (u16, String) {
     (
         202,
@@ -174,7 +178,7 @@ fn test_killing_the_writer_stops_writes_and_preserves_the_durable_frontier() {
     let published = cluster.nodes()[writer]
         .publish()
         .expect("the publish reaches the writer");
-    assert_eq!(published, pending_upload());
+    assert_eq!(published, durable_upload());
     let settled = await_readiness(&cluster.nodes()[writer], CONVERGE, |document| {
         group_ready(document) == Some(true)
             && writer_serial(document).is_some_and(|serial| serial > 0)

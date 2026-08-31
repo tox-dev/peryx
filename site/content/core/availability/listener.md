@@ -10,9 +10,9 @@ Availability controls use a private socket, separate from public content routes.
 every control request. Mode `none` creates no listener, socket, timer, or task.
 
 The listener serves read-only status in `dc` and `ha`. DC has no ownership consensus, so command and transfer requests
-return `503 Service Unavailable`. HA assembles the command, transfer, and Raft handlers, but one member address cannot
-reach both this listener and the public replication routes. The listener is private and is not part of the public
-OpenAPI document.
+return `503 Service Unavailable`. HA assembles the command and transfer handlers here; peer traffic never reaches this
+socket, the ownership Raft RPCs included, because a member `address` names the public server that serves every peer
+route. The listener is private and is not part of the public OpenAPI document.
 
 ## Enabling the listener
 
@@ -100,8 +100,7 @@ membership under `consensus`, and the recent command latency under `commands`:
 ```
 
 A DC response contains the four posture fields and omits `consensus` and `commands` because DC constructs neither
-component. The HA example shows the response shape available when those components are present; it does not remove the
-peer-routing deployment gap.
+component. The HA example shows the response shape once those components are present.
 
 The `commands.p99_ms` figure is the 99th-percentile command latency over a bounded recent window, so a latency spike
 through a leader change is visible without an external metrics pipeline. The path carries a version segment so a client

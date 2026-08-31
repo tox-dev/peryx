@@ -5,9 +5,9 @@ weight = 8
 aliases = [ "/core/availability-planned-transfer/"]
 +++
 
-The HA control listener exposes the shipped transfer handlers, but public replication routes and the private Raft
-listener cannot share the configured member address. Mode `dc` has no ownership consensus and returns
-`503 Service Unavailable` for transfer requests.
+The HA control listener exposes the shipped transfer handlers; the peer traffic that commits a transfer runs on the
+public server every member `address` names. Mode `dc` has no ownership consensus and returns `503 Service Unavailable`
+for transfer requests.
 
 An authority is a repository's write owner in one home datacenter. A planned transfer moves a healthy authority for a
 drain, rebalance, or migration. It commits only after the target has every acknowledged write. A

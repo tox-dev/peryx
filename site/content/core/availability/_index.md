@@ -7,9 +7,8 @@ weight = 5
 +++
 
 Start with [Availability modes](@/core/availability/high-availability.md) to configure `none` or `dc`. The binary also
-accepts `ha`, but the current release has no network layout that reaches both its public peer routes and private Raft
-routes through the one address each roster member carries. Treat HA procedures as design material until that peer plane
-has one deployable endpoint model.
+accepts `ha`, where one roster address per member carries the whole peer contract: the public server answers every peer
+route, the ownership Raft RPCs included. The release-status table below lists what HA still leaves undone.
 
 ## Release status
 
@@ -20,11 +19,11 @@ has one deployable endpoint model.
 | Same-datacenter placement receipts                                            | Shipped with limits    | Responses do not bind the serving node; object stores use node receipts; filesystem parent-directory sync failures are ignored                             |
 | Replica heartbeat, liveness, and group readiness                              | Shipped                | These report the static DC roster; they do not elect or promote a writer                                                                                   |
 | Derived-view read frontier                                                    | Shipped                | Replica page application advances the registered view frontiers before reads pass them                                                                     |
-| Filesystem copy, placement reconciliation, and reclamation                    | HA components ship     | Their jobs require a nonzero ownership term; DC supplies zero and HA has no supported peer layout                                                          |
+| Filesystem copy, placement reconciliation, and reclamation                    | HA components ship     | Their jobs require a nonzero ownership term, and DC supplies zero                                                                                          |
 | Public topology, placement, operation, analytics, health, and readiness views | Shipped                | The generated OpenAPI document lists public distributed operations                                                                                         |
-| Private listener status                                                       | Shipped                | `dc` can expose status; `ha` requires the listener for Raft                                                                                                |
+| Private listener status                                                       | Shipped                | `dc` can expose status; `ha` requires the listener for commands                                                                                            |
 | Private listener commands and transfers in `dc`                               | Unavailable by design  | DC runs no ownership consensus, so mutations return `503 Service Unavailable`                                                                              |
-| Voting membership, home assignment, and planned transfer                      | HA components ship     | The handlers and consensus code exist, but the split peer planes prevent a supported multi-node HA deployment                                              |
+| Voting membership, home assignment, and planned transfer                      | HA components ship     | The handlers and consensus code ship, and a group forms and commits over the public peer plane                                                             |
 | Automatic failed-home selection and transfer                                  | Design                 | No runtime worker calls the failover policy or submits the transfer after liveness marks a member dead                                                     |
 | PyPI ingress records and local publication                                    | Shipped                | Uploads publish at the local or assigned HA home; no transport sends an admitted intent from another datacenter to that home                               |
 | PyPI write acknowledgements                                                   | Shipped with limits    | The request path checks DC receipts; the crash-recovery finalizer can record `published` from local placement without calling the acknowledgement resolver |

@@ -420,7 +420,7 @@ fn classify_listener(
     let Some(raw) = raw else {
         return if mode == AvailabilityMode::Ha {
             Err(ConfigError::Availability {
-                reason: "`ha` mode requires `[availability.listener]` for Raft RPC",
+                reason: "`ha` mode requires `[availability.listener]` for ownership control commands",
             })
         } else {
             Ok(None)

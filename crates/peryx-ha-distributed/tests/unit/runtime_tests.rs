@@ -458,6 +458,42 @@ fn membership(members: Vec<RuntimeMember>) -> RuntimeMembership {
     }
 }
 
+/// Addresses the voter `ha_config` gives this node; the router refuses an RPC aimed at another.
+async fn post_vote(router: &Router) -> StatusCode {
+    let request = openraft::raft::VoteRequest::new(openraft::Vote::new(1, 0), None);
+    router
+        .clone()
+        .oneshot(
+            Request::post("/+replication/v1/raft/vote")
+                .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+                .header(
+                    "x-peryx-raft-target",
+                    crate::consensus_runtime::voter_id("east").to_string(),
+                )
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(&request).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+}
+
+async fn status_line(address: std::net::SocketAddr, request: &str) -> String {
+    let mut connection = tokio::net::TcpStream::connect(address).await.unwrap();
+    connection
+        .write_all(format!("{request} HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {TOKEN}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes())
+        .await
+        .unwrap();
+    let mut response = Vec::new();
+    connection.read_to_end(&mut response).await.unwrap();
+    String::from_utf8_lossy(&response)
+        .lines()
+        .next()
+        .expect("the listener answers with a status line")
+        .to_owned()
+}
+
 async fn get(router: &Router, path: &str) -> (StatusCode, Value) {
     let response = router
         .clone()
@@ -903,7 +939,6 @@ async fn prepared_runtime_owns_distributed_startup() {
         .unwrap();
 
     assert!(!prepared.is_replica);
-    assert!(prepared.private_routes.is_some());
     assert!(prepared.metrics.is_empty());
     assert_eq!(
         get(&prepared.public_routes, "/+replication/v1/health").await.0,
@@ -950,7 +985,6 @@ async fn prepared_ha_runtime_binds_consensus_workers_and_shutdown() {
         .unwrap();
 
     assert!(!prepared.is_replica);
-    assert!(prepared.private_routes.is_some());
     assert_ownership_unavailable(&state).await;
     assert_distributed_work_unavailable(&state).await;
     let address = prepared.handle.listener_address().unwrap();
@@ -968,6 +1002,73 @@ async fn prepared_ha_runtime_binds_consensus_workers_and_shutdown() {
         .await
         .unwrap();
     drop(tokio::net::TcpListener::bind(address).await.unwrap());
+}
+
+#[tokio::test]
+async fn ha_public_routes_refuse_peer_votes_until_consensus_ignites() {
+    let (dir, mut state) = state();
+    let config = ha_config(&dir);
+    install_runtime_services(&mut state, &config);
+    let prepared = prepare_with_listener(config, state, listener()).await.unwrap();
+
+    assert_eq!(
+        post_vote(&prepared.public_routes).await,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+
+    prepared.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn ha_public_routes_serve_peer_votes_once_consensus_ignites() {
+    let (dir, mut state) = state();
+    let config = ha_config(&dir);
+    install_runtime_services(&mut state, &config);
+    let prepared = prepare_with_listener(config, state, listener()).await.unwrap();
+    let public = prepared.public_routes.clone();
+    let mut active = prepared.activate().unwrap();
+
+    assert_eq!(post_vote(&public).await, StatusCode::OK);
+
+    peryx_ha::ActiveAvailabilityHandle::shutdown(&mut active.handle)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn ha_public_routes_refuse_peer_votes_after_shutdown() {
+    let (dir, mut state) = state();
+    let config = ha_config(&dir);
+    install_runtime_services(&mut state, &config);
+    let prepared = prepare_with_listener(config, state, listener()).await.unwrap();
+    let public = prepared.public_routes.clone();
+    let mut active = prepared.activate().unwrap();
+    peryx_ha::ActiveAvailabilityHandle::shutdown(&mut active.handle)
+        .await
+        .unwrap();
+
+    assert_eq!(post_vote(&public).await, StatusCode::SERVICE_UNAVAILABLE);
+}
+
+/// The roster names one address per member, so the socket that answers a peer RPC has to be the one
+/// every other peer transport already dials: the public server, never the control listener.
+#[tokio::test]
+async fn the_control_listener_does_not_answer_peer_votes() {
+    let (dir, mut state) = state();
+    let config = ha_config(&dir);
+    install_runtime_services(&mut state, &config);
+    let prepared = prepare_with_listener(config, state, listener()).await.unwrap();
+    let address = prepared.handle.listener_address().unwrap();
+    let mut active = prepared.activate().unwrap();
+
+    assert_eq!(
+        status_line(address, "POST /+replication/v1/raft/vote").await,
+        "HTTP/1.1 404 Not Found"
+    );
+
+    peryx_ha::ActiveAvailabilityHandle::shutdown(&mut active.handle)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
