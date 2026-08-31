@@ -147,6 +147,8 @@ fn posture(mode: DistributedMode, role: AvailabilityPostureRole) -> Availability
     AvailabilityPosture::new(mode, role)
 }
 
+const RETAINED: usize = 4;
+
 fn coordinator() -> Arc<TransferCoordinator> {
     Arc::new(TransferCoordinator::new(Arc::new(RosterFrontierSource::new(
         Vec::new(),
@@ -592,6 +594,7 @@ async fn transfer_commits_a_sealed_audit() {
         Arc::new(FixedFrontier(Ok(Some(10)))),
         Duration::ZERO,
         1,
+        RETAINED,
     ));
 
     let (status, headers, body) = send_with(
@@ -677,6 +680,7 @@ async fn transfer_maps_frontier_timeout_and_commit_failures() {
             Arc::new(frontier),
             Duration::ZERO,
             1,
+            RETAINED,
         ));
         assert_eq!(
             send_with(
@@ -707,6 +711,7 @@ async fn active_transfer_conflicts_then_cancels() {
         }),
         Duration::from_secs(30),
         3,
+        RETAINED,
     ));
     let running = tokio::spawn({
         let state = state.clone();
@@ -793,6 +798,7 @@ async fn cancel_maps_scope_unknown_and_committed_states() {
         Arc::new(FixedFrontier(Ok(Some(10)))),
         Duration::ZERO,
         1,
+        RETAINED,
     ));
     assert_eq!(
         send_with(
@@ -858,6 +864,14 @@ fn response_mappers_cover_each_status_class() {
     assert_eq!(
         cancel_error(&TransferCancelError::AlreadyCommitted("proj".to_owned())).status(),
         StatusCode::CONFLICT
+    );
+    assert_eq!(
+        cancel_error(&TransferCancelError::Durable(
+            "proj".to_owned(),
+            anyhow::anyhow!("unreadable")
+        ))
+        .status(),
+        StatusCode::SERVICE_UNAVAILABLE
     );
     assert_eq!(no_consensus().status(), StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(unauthorized().status(), StatusCode::UNAUTHORIZED);

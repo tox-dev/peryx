@@ -1,9 +1,8 @@
 //! Consensus receives a move after the target reaches the source barrier. Cancellation and commit
 //! resolve against the same plan, preventing a cancelled move from reaching consensus.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::num::NonZeroUsize;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -31,6 +30,23 @@ pub trait FrontierSource: Send + Sync {
 #[async_trait::async_trait]
 pub trait EpochOracle: Send + Sync {
     async fn committed_epoch(&self, authority: &str) -> u64;
+}
+
+/// Answers whether an authority already moved, from state that outlives both the coordinator's
+/// retention window and the process, so a cancellation after a commit is never decided by an
+/// evictable entry.
+#[async_trait::async_trait]
+pub trait CommittedTransfers: Send + Sync {
+    /// # Errors
+    /// Returns an error when the durable record cannot be read.
+    async fn committed(&self, authority: &str) -> anyhow::Result<bool>;
+}
+
+#[async_trait::async_trait]
+impl CommittedTransfers for MetaStore {
+    async fn committed(&self, authority: &str) -> anyhow::Result<bool> {
+        Ok(!self.transfer_audits(authority)?.is_empty())
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -118,6 +134,8 @@ const DEFAULT_POLL: Duration = Duration::from_secs(2);
 
 const DEFAULT_BUDGET: u32 = 150;
 
+const DEFAULT_RETAINED: usize = 256;
+
 #[derive(Debug, thiserror::Error)]
 pub enum TransferRunError {
     #[error("a transfer for {0} is already running")]
@@ -134,38 +152,70 @@ pub enum TransferCancelError {
     Unknown(String),
     #[error("the transfer for {0} already committed and cannot be cancelled")]
     AlreadyCommitted(String),
+    #[error("read the durable transfer record for {0}: {1}")]
+    Durable(String, #[source] anyhow::Error),
 }
 
-struct Registered {
-    plan: Arc<tokio::sync::Mutex<TransferPlan>>,
-    active: Arc<AtomicBool>,
+/// The plans a cancellation can resolve against: the transfers still running, and a bounded window of
+/// the authorities whose most recent transfer resolved without committing.
+#[derive(Default)]
+struct Registry {
+    running: HashMap<String, Arc<tokio::sync::Mutex<TransferPlan>>>,
+    abandoned: VecDeque<String>,
 }
 
-/// Runs one transfer per authority and retains resolved plans so late cancellation observes a commit.
+impl Registry {
+    /// A later transfer supersedes the earlier outcome, so the window never answers for a plan the
+    /// authority has already moved past.
+    fn retire(&mut self, authority: &str, abandoned: bool, retained: usize) {
+        self.running.remove(authority);
+        self.abandoned.retain(|name| name != authority);
+        if abandoned {
+            self.abandoned.push_back(authority.to_owned());
+            while self.abandoned.len() > retained {
+                self.abandoned.pop_front();
+            }
+        }
+    }
+}
+
+enum Registration {
+    Running(Arc<tokio::sync::Mutex<TransferPlan>>),
+    Abandoned,
+    Missing,
+}
+
+/// Runs one transfer per authority. A resolved plan leaves the registry, so retained state is the
+/// transfers in flight plus a fixed abandonment window rather than one plan per authority ever moved.
 pub struct TransferCoordinator {
     frontier: Arc<dyn FrontierSource>,
     poll: Duration,
     budget: u32,
-    registry: Mutex<HashMap<String, Registered>>,
+    retained: usize,
+    registry: Mutex<Registry>,
 }
 
 impl TransferCoordinator {
+    /// Retains the 256 most recently abandoned authorities.
     #[must_use]
     pub fn new(frontier: Arc<dyn FrontierSource>) -> Self {
-        Self::with_schedule(frontier, DEFAULT_POLL, DEFAULT_BUDGET)
+        Self::with_schedule(frontier, DEFAULT_POLL, DEFAULT_BUDGET, DEFAULT_RETAINED)
     }
 
+    /// `retained` bounds the abandonment window; a cancel for an authority evicted from it reads as
+    /// unknown.
     #[must_use]
-    pub fn with_schedule(frontier: Arc<dyn FrontierSource>, poll: Duration, budget: u32) -> Self {
+    pub fn with_schedule(frontier: Arc<dyn FrontierSource>, poll: Duration, budget: u32, retained: usize) -> Self {
         Self {
             frontier,
             poll,
             budget,
-            registry: Mutex::new(HashMap::new()),
+            retained,
+            registry: Mutex::new(Registry::default()),
         }
     }
 
-    /// Runs one transfer per authority. The resolved plan remains registered for later cancellation.
+    /// Runs one transfer per authority. The plan is registered until its drive resolves, then retired.
     ///
     /// # Errors
     /// Returns [`Busy`](TransferRunError::Busy) when a transfer for the authority is already running,
@@ -181,31 +231,35 @@ impl TransferCoordinator {
         key: Option<&str>,
     ) -> Result<TransferAudit, TransferRunError> {
         let authority = request.authority.0.clone();
-        let (plan, active) = {
+        let plan = {
             // A panic cannot corrupt this lookup table, so recover its poisoned guard.
             let mut registry = self.registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            if registry
-                .get(&authority)
-                .is_some_and(|registered| registered.active.load(Ordering::Acquire))
-            {
+            if registry.running.contains_key(&authority) {
                 return Err(TransferRunError::Busy(authority));
             }
             let plan = Arc::new(tokio::sync::Mutex::new(TransferPlan::plan(request)));
-            let active = Arc::new(AtomicBool::new(true));
-            registry.insert(
-                authority,
-                Registered {
-                    plan: plan.clone(),
-                    active: active.clone(),
-                },
-            );
-            drop(registry);
-            (plan, active)
+            registry.running.insert(authority.clone(), plan.clone());
+            plan
         };
         let outcome = self.drive(&plan, control, ownership, meta, key).await;
-        // Keep the resolved plan so a late cancel observes its outcome instead of a missing entry.
-        active.store(false, Ordering::Release);
+        // A committed move is answered from its persisted audit, so only an abandonment needs a window.
+        let abandoned = plan.lock().await.phase() != TransferPhase::Committed;
+        self.retire(&authority, abandoned);
         outcome
+    }
+
+    fn retire(&self, authority: &str, abandoned: bool) {
+        let mut registry = self.registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        registry.retire(authority, abandoned, self.retained);
+    }
+
+    fn registration(&self, authority: &str) -> Registration {
+        let registry = self.registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        match registry.running.get(authority) {
+            Some(plan) => Registration::Running(plan.clone()),
+            None if registry.abandoned.iter().any(|name| name == authority) => Registration::Abandoned,
+            None => Registration::Missing,
+        }
     }
 
     /// A concurrent cancellation reaches `commit_transfer`, which rejects the cancelled plan.
@@ -234,24 +288,28 @@ impl TransferCoordinator {
         Err(TransferRunError::BarrierNotReached)
     }
 
+    /// A cancel of a move that already committed resolves against the persisted audit, so it answers
+    /// the same after the abandonment window evicted the authority and after a restart.
+    ///
     /// # Errors
-    /// Returns [`Unknown`](TransferCancelError::Unknown) when no transfer is registered, or
-    /// [`AlreadyCommitted`](TransferCancelError::AlreadyCommitted) when the move already committed.
-    pub async fn cancel(&self, authority: &str) -> Result<(), TransferCancelError> {
-        let plan = self
-            .registry
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(authority)
-            .map(|registered| registered.plan.clone());
-        let Some(plan) = plan else {
-            return Err(TransferCancelError::Unknown(authority.to_owned()));
-        };
-        // `TransferPlan::cancel` rejects committed plans.
-        plan.lock()
-            .await
-            .cancel()
-            .map_err(|_| TransferCancelError::AlreadyCommitted(authority.to_owned()))
+    /// Returns [`Unknown`](TransferCancelError::Unknown) when no transfer is registered and none
+    /// committed, [`AlreadyCommitted`](TransferCancelError::AlreadyCommitted) when the move already
+    /// committed, or [`Durable`](TransferCancelError::Durable) when the persisted record is unreadable.
+    pub async fn cancel(&self, authority: &str, committed: &dyn CommittedTransfers) -> Result<(), TransferCancelError> {
+        match self.registration(authority) {
+            // `TransferPlan::cancel` rejects committed plans.
+            Registration::Running(plan) => plan
+                .lock()
+                .await
+                .cancel()
+                .map_err(|_| TransferCancelError::AlreadyCommitted(authority.to_owned())),
+            Registration::Abandoned => Ok(()),
+            Registration::Missing => match committed.committed(authority).await {
+                Ok(true) => Err(TransferCancelError::AlreadyCommitted(authority.to_owned())),
+                Ok(false) => Err(TransferCancelError::Unknown(authority.to_owned())),
+                Err(error) => Err(TransferCancelError::Durable(authority.to_owned(), error)),
+            },
+        }
     }
 }
 

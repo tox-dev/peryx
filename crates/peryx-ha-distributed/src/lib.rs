@@ -100,8 +100,8 @@ pub use analytics_transfer::{
 pub use authority::{Admission, AuthorityFence, AuthorityKey, CommitOutcome};
 pub use authority_drain::DistributedAuthorityDrainer;
 pub use authority_transfer::{
-    EpochOracle, FrontierSource, RosterFrontierSource, TransferCancelError, TransferCoordinator, TransferDriveError,
-    TransferRunError, commit_transfer, observe_target,
+    CommittedTransfers, EpochOracle, FrontierSource, RosterFrontierSource, TransferCancelError, TransferCoordinator,
+    TransferDriveError, TransferRunError, commit_transfer, observe_target,
 };
 pub use availability_http::DistributedHttpRoutes;
 pub use backoff::{DEFAULT_RECONNECT_POLICY, RETRY_EXHAUSTED, ReconnectPolicy, Retry};

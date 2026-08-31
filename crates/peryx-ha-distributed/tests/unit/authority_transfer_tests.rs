@@ -10,13 +10,14 @@ use peryx_storage::meta::MetaStore;
 use tokio::sync::Notify;
 
 use super::{
-    EpochOracle, FrontierSource, RosterFrontierSource, TransferCancelError, TransferCoordinator, TransferDriveError,
-    TransferRunError, commit_transfer, observe_target,
+    CommittedTransfers, EpochOracle, FrontierSource, RosterFrontierSource, TransferCancelError, TransferCoordinator,
+    TransferDriveError, TransferRunError, commit_transfer, observe_target,
 };
 use crate::support::TestServer;
 use crate::{AuthorityKey, ControlPlane, DatacenterId, TransferError, TransferPhase, TransferPlan, TransferRequest};
 
 const BARRIER: u64 = 5;
+const RETAINED: usize = 4;
 
 fn request() -> TransferRequest {
     TransferRequest {
@@ -323,7 +324,7 @@ impl FrontierSource for GatedFrontier {
 #[tokio::test]
 async fn test_coordinator_drives_a_ready_transfer_to_a_sealed_audit() {
     let (frontier, _probed) = GatedFrontier::new(Some(BARRIER));
-    let coordinator = TransferCoordinator::with_schedule(frontier, Duration::ZERO, 3);
+    let coordinator = TransferCoordinator::with_schedule(frontier, Duration::ZERO, 3, RETAINED);
     let (_dir, store) = meta();
     let (scripted, plane) = control(Ok(receipt(9)));
 
@@ -340,7 +341,7 @@ async fn test_coordinator_drives_a_ready_transfer_to_a_sealed_audit() {
 #[tokio::test]
 async fn test_coordinator_gives_up_when_the_target_never_reaches_the_barrier() {
     let (frontier, _probed) = GatedFrontier::new(Some(BARRIER - 1));
-    let coordinator = TransferCoordinator::with_schedule(frontier, Duration::ZERO, 3);
+    let coordinator = TransferCoordinator::with_schedule(frontier, Duration::ZERO, 3, RETAINED);
     let (_dir, store) = meta();
     let (scripted, plane) = control(Ok(receipt(9)));
 
@@ -361,6 +362,7 @@ async fn test_coordinator_refuses_a_second_transfer_for_the_same_authority() {
         frontier,
         Duration::from_secs(30),
         10,
+        RETAINED,
     ));
     let (_dir, store) = meta();
     let running = tokio::spawn({
@@ -380,7 +382,7 @@ async fn test_coordinator_refuses_a_second_transfer_for_the_same_authority() {
         .unwrap_err();
 
     assert!(matches!(error, TransferRunError::Busy(authority) if authority == "proj"));
-    coordinator.cancel("proj").await.unwrap();
+    coordinator.cancel("proj", &store).await.unwrap();
     tokio::time::advance(Duration::from_secs(30)).await;
     assert!(matches!(
         running.await.unwrap(),
@@ -397,6 +399,7 @@ async fn test_coordinator_cancel_abandons_an_active_transfer() {
         frontier,
         Duration::from_secs(30),
         10,
+        RETAINED,
     ));
     let (_dir, store) = meta();
     let running = tokio::spawn({
@@ -409,7 +412,7 @@ async fn test_coordinator_cancel_abandons_an_active_transfer() {
     });
     probed.notified().await;
 
-    coordinator.cancel("proj").await.unwrap();
+    coordinator.cancel("proj", &store).await.unwrap();
     tokio::time::advance(Duration::from_secs(30)).await;
     assert!(matches!(
         running.await.unwrap(),
@@ -419,30 +422,198 @@ async fn test_coordinator_cancel_abandons_an_active_transfer() {
     ));
 }
 
-#[tokio::test]
-async fn test_coordinator_cancel_of_a_committed_transfer_is_refused() {
+fn coordinator() -> TransferCoordinator {
     let (frontier, _probed) = GatedFrontier::new(Some(BARRIER));
-    let coordinator = TransferCoordinator::with_schedule(frontier, Duration::ZERO, 3);
-    let (_dir, store) = meta();
+    TransferCoordinator::with_schedule(frontier, Duration::ZERO, 3, RETAINED)
+}
+
+async fn commit(coordinator: &TransferCoordinator, store: &MetaStore, authority: &str) {
     let (_scripted, plane) = control(Ok(receipt(9)));
     coordinator
-        .run(request(), &plane, &FixedEpoch(3), &store, None)
+        .run(
+            TransferRequest {
+                authority: AuthorityKey(authority.to_owned()),
+                ..request()
+            },
+            &plane,
+            &FixedEpoch(3),
+            store,
+            None,
+        )
         .await
         .unwrap();
+}
 
-    let error = coordinator.cancel("proj").await.unwrap_err();
+async fn abandon(coordinator: &TransferCoordinator, store: &MetaStore, authority: &str) {
+    let (_scripted, plane) = control(Ok(receipt(9)));
+    let error = coordinator
+        .run(
+            TransferRequest {
+                authority: AuthorityKey(authority.to_owned()),
+                barrier: BARRIER + 1,
+                ..request()
+            },
+            &plane,
+            &FixedEpoch(3),
+            store,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, TransferRunError::BarrierNotReached));
+}
+
+#[tokio::test]
+async fn test_coordinator_cancel_of_a_committed_transfer_is_refused() {
+    let (_dir, store) = meta();
+    let coordinator = coordinator();
+    commit(&coordinator, &store, "proj").await;
+
+    let error = coordinator.cancel("proj", &store).await.unwrap_err();
+
+    assert!(matches!(error, TransferCancelError::AlreadyCommitted(authority) if authority == "proj"));
+}
+
+/// Holds the plan lock across the commit so a cancel queued behind it resolves against a plan that
+/// committed while it waited.
+struct HeldFrontier {
+    held: Arc<Notify>,
+    release: Arc<Notify>,
+}
+
+#[async_trait::async_trait]
+impl FrontierSource for HeldFrontier {
+    async fn applied_frontier(&self, _datacenter: &str) -> anyhow::Result<Option<u64>> {
+        self.held.notify_one();
+        self.release.notified().await;
+        Ok(Some(BARRIER))
+    }
+}
+
+#[tokio::test]
+async fn test_coordinator_cancel_that_loses_the_race_to_the_commit_is_refused() {
+    let (_dir, store) = meta();
+    let (held, release) = (Arc::new(Notify::new()), Arc::new(Notify::new()));
+    let coordinator = Arc::new(TransferCoordinator::with_schedule(
+        Arc::new(HeldFrontier {
+            held: held.clone(),
+            release: release.clone(),
+        }),
+        Duration::ZERO,
+        1,
+        RETAINED,
+    ));
+    let running = tokio::spawn({
+        let coordinator = coordinator.clone();
+        let store = store.clone();
+        async move {
+            let (_scripted, plane) = control(Ok(receipt(9)));
+            coordinator.run(request(), &plane, &FixedEpoch(3), &store, None).await
+        }
+    });
+    held.notified().await;
+    let queued = Arc::new(Notify::new());
+    let cancelling = tokio::spawn({
+        let coordinator = coordinator.clone();
+        let store = store.clone();
+        let queued = queued.clone();
+        async move {
+            queued.notify_one();
+            coordinator.cancel("proj", &store).await
+        }
+    });
+    queued.notified().await;
+    release.notify_one();
+
+    let error = cancelling.await.unwrap().unwrap_err();
+
+    assert!(matches!(error, TransferCancelError::AlreadyCommitted(authority) if authority == "proj"));
+    assert_eq!(running.await.unwrap().unwrap().commit_index, 9);
+}
+
+/// A coordinator that never ran the move stands in for the process that restarted after it.
+#[tokio::test]
+async fn test_coordinator_cancel_after_a_commit_reads_the_persisted_audit() {
+    let (_dir, store) = meta();
+    commit(&coordinator(), &store, "proj").await;
+
+    let error = coordinator().cancel("proj", &store).await.unwrap_err();
 
     assert!(matches!(error, TransferCancelError::AlreadyCommitted(authority) if authority == "proj"));
 }
 
 #[tokio::test]
 async fn test_coordinator_cancel_of_an_unregistered_authority_is_unknown() {
+    let (_dir, store) = meta();
     let (frontier, _probed) = GatedFrontier::new(Some(BARRIER));
     let coordinator = TransferCoordinator::new(frontier);
 
-    let error = coordinator.cancel("ghost").await.unwrap_err();
+    let error = coordinator.cancel("ghost", &store).await.unwrap_err();
 
     assert!(matches!(error, TransferCancelError::Unknown(authority) if authority == "ghost"));
+}
+
+#[tokio::test]
+async fn test_coordinator_cancel_of_an_abandoned_transfer_still_in_the_window_is_idempotent() {
+    let (_dir, store) = meta();
+    let coordinator = coordinator();
+    abandon(&coordinator, &store, "proj").await;
+
+    coordinator.cancel("proj", &store).await.unwrap();
+}
+
+#[tokio::test]
+async fn test_coordinator_cancel_of_an_abandoned_transfer_evicted_from_the_window_is_unknown() {
+    let (_dir, store) = meta();
+    let (frontier, _probed) = GatedFrontier::new(Some(BARRIER));
+    let coordinator = TransferCoordinator::with_schedule(frontier, Duration::ZERO, 3, 1);
+    abandon(&coordinator, &store, "proj").await;
+    abandon(&coordinator, &store, "other").await;
+
+    let error = coordinator.cancel("proj", &store).await.unwrap_err();
+
+    assert!(matches!(error, TransferCancelError::Unknown(authority) if authority == "proj"));
+}
+
+#[tokio::test]
+async fn test_coordinator_forgets_an_abandonment_once_the_authority_moves() {
+    let (_dir, store) = meta();
+    let coordinator = coordinator();
+    abandon(&coordinator, &store, "proj").await;
+    commit(&coordinator, &store, "proj").await;
+
+    let error = coordinator.cancel("proj", &store).await.unwrap_err();
+
+    assert!(matches!(error, TransferCancelError::AlreadyCommitted(authority) if authority == "proj"));
+}
+
+struct UnreadableAudits;
+
+#[async_trait::async_trait]
+impl CommittedTransfers for UnreadableAudits {
+    async fn committed(&self, _authority: &str) -> anyhow::Result<bool> {
+        Err(anyhow::anyhow!("the metadata store is unreadable"))
+    }
+}
+
+#[tokio::test]
+async fn test_coordinator_cancel_surfaces_an_unreadable_durable_record() {
+    let (frontier, _probed) = GatedFrontier::new(Some(BARRIER));
+    let coordinator = TransferCoordinator::new(frontier);
+
+    let error = coordinator.cancel("proj", &UnreadableAudits).await.unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "read the durable transfer record for proj: the metadata store is unreadable"
+    );
+}
+
+#[tokio::test]
+async fn test_a_store_without_the_audit_table_reports_no_committed_transfer() {
+    let (_dir, store) = meta();
+
+    assert!(!CommittedTransfers::committed(&store, "proj").await.unwrap());
 }
 
 #[tokio::test]

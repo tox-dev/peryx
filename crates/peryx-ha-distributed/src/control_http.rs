@@ -239,7 +239,8 @@ async fn start_transfer(
     }
 }
 
-/// Rejects cancellation after commit. Unknown authorities return `404`; committed transfers return `409`.
+/// Rejects cancellation after commit, resolving a commit the coordinator no longer retains against the
+/// persisted audit. Unknown authorities return `404`; committed transfers return `409`.
 async fn cancel_transfer(
     State(state): State<ListenerState>,
     Extension(actor): Extension<ControlActor>,
@@ -248,7 +249,7 @@ async fn cancel_transfer(
     if let Some(denied) = scope_denied(&state, &actor, ControlPermission::Write) {
         return denied;
     }
-    match state.coordinator.cancel(&authority).await {
+    match state.coordinator.cancel(&authority, &state.meta).await {
         Ok(()) => (StatusCode::NO_CONTENT, [(header::CACHE_CONTROL, "no-store")]).into_response(),
         Err(error) => cancel_error(&error),
     }
@@ -298,6 +299,7 @@ fn cancel_error(error: &TransferCancelError) -> Response {
     let status = match error {
         TransferCancelError::Unknown(_) => StatusCode::NOT_FOUND,
         TransferCancelError::AlreadyCommitted(_) => StatusCode::CONFLICT,
+        TransferCancelError::Durable(..) => StatusCode::SERVICE_UNAVAILABLE,
     };
     (status, error.to_string()).into_response()
 }

@@ -69,9 +69,16 @@ DELETE /availability/v1/transfers/proj
 
 - A cancel of a **waiting** transfer abandons its plan and answers `204 No Content`. Its run then observes the abandoned
   plan and resolves as a `409 Conflict` rather than committing a move the operator called off.
-- A cancel of a transfer that **already committed** answers `409 Conflict`: the move stands, and the node keeps the
-  committed plan registered so the cancel resolves against the sealed record rather than a lost lookup.
+- A cancel of a transfer that **already committed** answers `409 Conflict`: the move stands, and the node reads the
+  durable audit rather than a retained plan, so it answers the same after a restart.
 - A cancel for an authority with **no registered transfer** answers `404 Not Found`.
+
+A resolved plan leaves the registry, so a node that has moved half a million authorities holds the transfers in flight
+rather than one plan per authority it ever moved. What outlives a run is the durable audit, plus the 256 most recently
+abandoned authorities, which is what lets a repeated cancel of a transfer that timed out or was called off stay
+idempotent. A cancel for an authority whose abandoned transfer has aged out of that window answers `404 Not Found`; a
+cancel after a commit does not age out, because it is answered from the audit. A node that cannot read its metadata
+store answers `503 Service Unavailable` rather than guessing which of the two it was.
 
 One transfer runs per authority at a time. A second `POST` for an authority whose transfer is still running answers
 `409 Conflict`, so two moves never race toward the same home.
