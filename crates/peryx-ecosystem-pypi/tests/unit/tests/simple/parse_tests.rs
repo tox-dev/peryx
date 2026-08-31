@@ -105,13 +105,17 @@ fn test_parse_detail_rejects_a_missing_required_member(#[case] body: &[u8], #[ca
 #[test]
 fn test_parse_detail_reads_both_metadata_spellings() {
     let json = r#"{"meta":{},"name":"x","files":[{"filename":"x-1.whl","url":"u",
-        "core-metadata":{"sha256":"abc"},"dist-info-metadata":{"sha256":"abc"}}]}"#;
+        "core-metadata":{"sha256":"d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35"},"dist-info-metadata":{"sha256":"d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35"}}]}"#;
     let parsed = crate::parse_detail(json.as_bytes()).unwrap();
     assert_eq!(
         (&parsed.files[0].core_metadata, &parsed.files[0].dist_info_metadata),
         (
-            &CoreMetadata::Hashes(sha256("abc")),
-            &CoreMetadata::Hashes(sha256("abc"))
+            &CoreMetadata::Hashes(sha256(
+                "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35"
+            )),
+            &CoreMetadata::Hashes(sha256(
+                "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35"
+            ))
         )
     );
 }
@@ -272,7 +276,7 @@ fn test_legacy_project_json_maps_simple_fields() {
         legacy["urls"][0],
         serde_json::json!({
             "comment_text": "",
-            "digests": {"sha256": "aaaa"},
+            "digests": {"sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"},
             "downloads": -1,
             "filename": "proj&<>-2.0-py3-none-any.whl",
             "has_sig": true,
@@ -524,7 +528,7 @@ fn detail_base() -> url::Url {
 #[test]
 fn test_stream_detail_json_collects_files_and_absolutizes_urls() {
     let body = br#"{"meta":{"api-version":"1.1"},"name":"flask","versions":["1.0"],
-        "files":[{"filename":"flask-1.0.tar.gz","url":"../../files/flask-1.0.tar.gz","hashes":{"sha256":"abc"}}],
+        "files":[{"filename":"flask-1.0.tar.gz","url":"../../files/flask-1.0.tar.gz","hashes":{"sha256":"6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"}}],
         "alternate-locations":["ignored"]}"#;
     let mut sink = Collect::default();
 
@@ -641,4 +645,48 @@ fn test_stream_detail_json_surfaces_a_sink_error() {
     let body = br#"{"meta":{},"name":"flask","files":[{"filename":"f","url":"u","hashes":{}}]}"#;
     let mut sink = Boom;
     assert!(crate::simple::stream_detail_json(std::io::Cursor::new(&body[..]), &detail_base(), &mut sink).is_err());
+}
+
+#[test]
+fn test_parse_detail_folds_an_upper_case_upstream_sha256() {
+    let json = serde_json::json!({"meta": {}, "name": "x", "files": [
+        {"filename": "x-1.whl", "url": "u",
+         "hashes": {"sha256": "9F86D081884C7D659A2FEAA0C55AD015A3BF4F1B2B0B822CD15D6C15B0F00A08"}}
+    ]});
+
+    let parsed = crate::parse_detail(json.to_string().as_bytes()).unwrap();
+
+    assert_eq!(
+        parsed.files[0].sha256(),
+        Some("9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08")
+    );
+}
+
+#[rstest::rstest]
+#[case::not_hex("not-a-digest")]
+#[case::truncated("9f86d081")]
+#[case::newline("9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a0\n")]
+fn test_parse_detail_drops_a_sha256_that_cannot_content_address(#[case] value: &str) {
+    let json = serde_json::json!({"meta": {}, "name": "x", "files": [
+        {"filename": "x-1.whl", "url": "u", "hashes": {"sha256": value, "md5": "deadbeef"}}
+    ]});
+
+    let parsed = crate::parse_detail(json.to_string().as_bytes()).unwrap();
+
+    assert_eq!(
+        parsed.files[0].hashes,
+        BTreeMap::from([("md5".to_owned(), "deadbeef".to_owned())])
+    );
+}
+
+#[test]
+fn test_parse_detail_drops_a_sidecar_digest_carrying_a_record_delimiter() {
+    let json = serde_json::json!({"meta": {}, "name": "x", "files": [
+        {"filename": "x-1.whl", "url": "u",
+         "core-metadata": {"sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a\nu"}}
+    ]});
+
+    let parsed = crate::parse_detail(json.to_string().as_bytes()).unwrap();
+
+    assert_eq!(parsed.files[0].core_metadata, CoreMetadata::Hashes(BTreeMap::new()));
 }

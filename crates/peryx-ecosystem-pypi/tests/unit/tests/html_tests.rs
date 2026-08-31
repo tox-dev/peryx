@@ -36,9 +36,9 @@ fn test_parse_full_anchor() {
         <meta name="pypi:project-status" content="archived">
         <meta name="pypi:project-status-reason" content="read only">
         </head><body>
-        <a href="../../packages/flask-2.0-py3-none-any.whl#sha256=abc123"
+        <a href="../../packages/flask-2.0-py3-none-any.whl#sha256=9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
            data-requires-python="&gt;=3.7" data-yanked="broken"
-           data-core-metadata="sha256=deadbeef" data-gpg-sig="true"
+           data-core-metadata="sha256=2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae" data-gpg-sig="true"
            data-size="123" data-upload-time="2024-01-01T00:00:00Z"
            data-provenance="https://example.test/provenance">flask-2.0-py3-none-any.whl</a>
         </body></html>"#;
@@ -52,7 +52,10 @@ fn test_parse_full_anchor() {
     assert_eq!(file.url, "https://pypi.org/packages/flask-2.0-py3-none-any.whl");
     assert_eq!(
         file.hashes,
-        BTreeMap::from([("sha256".to_owned(), "abc123".to_owned())])
+        BTreeMap::from([(
+            "sha256".to_owned(),
+            "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08".to_owned()
+        )])
     );
     assert_eq!(file.requires_python.as_deref(), Some(">=3.7"));
     assert_eq!(file.size, Some(123));
@@ -60,7 +63,10 @@ fn test_parse_full_anchor() {
     assert_eq!(file.yanked, Yanked::Reason("broken".to_owned()));
     assert_eq!(
         file.core_metadata,
-        CoreMetadata::Hashes(BTreeMap::from([("sha256".to_owned(), "deadbeef".to_owned())]))
+        CoreMetadata::Hashes(BTreeMap::from([(
+            "sha256".to_owned(),
+            "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae".to_owned()
+        )]))
     );
     assert_eq!(file.gpg_sig, Some(true));
     assert_eq!(
@@ -80,13 +86,16 @@ fn test_parse_anchor_drops_an_insecure_provenance_url() {
 
 #[test]
 fn test_fragment_keeps_every_supported_hash_including_sha256() {
-    let html = r#"<a href="pkg-1.0.whl#md5=deadbeef&sha256=abc123">pkg-1.0.whl</a>"#;
+    let html = r#"<a href="pkg-1.0.whl#md5=deadbeef&sha256=9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08">pkg-1.0.whl</a>"#;
     let file = &parse_detail_html("pkg", html, &base()).unwrap().files[0];
     assert_eq!(
         file.hashes,
         BTreeMap::from([
             ("md5".to_owned(), "deadbeef".to_owned()),
-            ("sha256".to_owned(), "abc123".to_owned()),
+            (
+                "sha256".to_owned(),
+                "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08".to_owned()
+            ),
         ])
     );
 }
@@ -114,12 +123,15 @@ fn test_parse_yanked_empty_and_core_metadata_values() {
 
 #[test]
 fn test_parse_legacy_dist_info_metadata_and_no_hash() {
-    let html = r#"<a href="x-1.tar.gz" data-dist-info-metadata="sha256=aa">x-1.tar.gz</a>"#;
+    let html = r#"<a href="x-1.tar.gz" data-dist-info-metadata="sha256=fcde2b2edba56bf408601fb721fe9b5c338d10ee429ea04fae5511b68fbf8fb9">x-1.tar.gz</a>"#;
     let file = &parse_detail_html("x", html, &base()).unwrap().files[0];
     assert!(file.hashes.is_empty());
     assert_eq!(
         file.dist_info_metadata,
-        CoreMetadata::Hashes(BTreeMap::from([("sha256".to_owned(), "aa".to_owned())]))
+        CoreMetadata::Hashes(BTreeMap::from([(
+            "sha256".to_owned(),
+            "fcde2b2edba56bf408601fb721fe9b5c338d10ee429ea04fae5511b68fbf8fb9".to_owned()
+        )]))
     );
     assert_eq!(file.core_metadata, CoreMetadata::Absent);
     assert_eq!(file.yanked, Yanked::No);
@@ -159,11 +171,11 @@ fn test_parse_html_case_base_filename_and_encoded_hashes() {
         <META NAME="pypi:repository-version" CONTENT="1.4">
         <META NAME="pypi:project-status" CONTENT="archived">
         </HEAD><BODY>
-        <A HREF="pkg-1.0%2Bcpu-py3-none-any.whl?download=1#sha256%3Dabc123"
+        <A HREF="pkg-1.0%2Bcpu-py3-none-any.whl?download=1#sha256%3D9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
            DATA-REQUIRES-PYTHON="&gt;=3.11">wrong name</A>
-        <a href="pkg-1.0.tar%2egz#sha256%3dabc%zz">encoded</a>
+        <a href="pkg-1.0.tar%2egz#md5%3dabc%zz">encoded</a>
         <a href="pkg-1.0.tar.gz#main">pkg-1.0.tar.gz</a>
-        <a href="pkg-1.0.zip#egg=pkg&sha256=def456">pkg-1.0.zip</a>
+        <a href="pkg-1.0.zip#egg=pkg&sha256=fcde2b2edba56bf408601fb721fe9b5c338d10ee429ea04fae5511b68fbf8fb9">pkg-1.0.zip</a>
         </BODY></HTML>"#;
 
     let parsed = parse_detail_html("pkg", html, &base()).unwrap();
@@ -184,13 +196,13 @@ fn test_parse_html_case_base_filename_and_encoded_hashes() {
             (
                 "pkg-1.0+cpu-py3-none-any.whl",
                 "https://files.example/packages/pkg-1.0%2Bcpu-py3-none-any.whl?download=1",
-                Some("abc123"),
+                Some("9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"),
                 Some(">=3.11"),
             ),
             (
                 "pkg-1.0.tar.gz",
                 "https://files.example/packages/pkg-1.0.tar%2egz",
-                Some("abc%zz"),
+                None,
                 None,
             ),
             (
@@ -202,10 +214,14 @@ fn test_parse_html_case_base_filename_and_encoded_hashes() {
             (
                 "pkg-1.0.zip",
                 "https://files.example/packages/pkg-1.0.zip",
-                Some("def456"),
+                Some("fcde2b2edba56bf408601fb721fe9b5c338d10ee429ea04fae5511b68fbf8fb9"),
                 None,
             ),
         ]
+    );
+    assert_eq!(
+        parsed.files[1].hashes,
+        BTreeMap::from([("md5".to_owned(), "abc%zz".to_owned())])
     );
 }
 
@@ -338,7 +354,7 @@ fn test_parse_index_html_decodes_semicolonless_named_references_in_text() {
 #[test]
 fn test_parse_detail_html_decodes_named_references_in_links_and_attributes() {
     let html = r#"<!DOCTYPE html><html><body>
-        <a href="pkg&sol;dist&lowbar;1&period;0.tar.gz#sha256=deadbeef"
+        <a href="pkg&sol;dist&lowbar;1&period;0.tar.gz#sha256=2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae"
            data-requires-python="&gt;=3.8" data-yanked="see&period;notes">file</a>
         </body></html>"#;
     let parsed = parse_detail_html("flask", html, &base()).unwrap();
@@ -347,7 +363,10 @@ fn test_parse_detail_html_decodes_named_references_in_links_and_attributes() {
     assert_eq!(file.url, "https://pypi.org/simple/flask/pkg/dist_1.0.tar.gz");
     assert_eq!(
         file.hashes,
-        BTreeMap::from([("sha256".to_owned(), "deadbeef".to_owned())]),
+        BTreeMap::from([(
+            "sha256".to_owned(),
+            "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae".to_owned()
+        )]),
     );
     assert_eq!(file.requires_python.as_deref(), Some(">=3.8"));
     assert_eq!(file.yanked, Yanked::Reason("see.notes".to_owned()));
@@ -380,4 +399,55 @@ fn test_parse_detail_html_applies_attribute_context_to_semicolonless_references(
             &Yanked::Reason("x&ampyz".to_owned()),
         ],
     );
+}
+
+#[test]
+fn test_fragment_folds_an_upper_case_sha256_to_the_served_content_address() {
+    let html = r#"<a href="pkg-1.0.whl#sha256=9F86D081884C7D659A2FEAA0C55AD015A3BF4F1B2B0B822CD15D6C15B0F00A08">pkg-1.0.whl</a>"#;
+
+    let file = &parse_detail_html("pkg", html, &base()).unwrap().files[0];
+
+    assert_eq!(
+        file.hashes,
+        BTreeMap::from([(
+            "sha256".to_owned(),
+            "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08".to_owned()
+        )])
+    );
+}
+
+#[rstest::rstest]
+#[case::truncated("9f86d081")]
+#[case::overlong("9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a081")]
+#[case::not_hex("9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00azz")]
+fn test_fragment_drops_a_sha256_that_cannot_content_address(#[case] value: &str) {
+    let html = format!(r#"<a href="pkg-1.0.whl#md5=deadbeef&sha256={value}">pkg-1.0.whl</a>"#);
+
+    let file = &parse_detail_html("pkg", &html, &base()).unwrap().files[0];
+
+    assert_eq!(file.hashes, BTreeMap::from([("md5".to_owned(), "deadbeef".to_owned())]));
+}
+
+#[test]
+fn test_metadata_attr_folds_an_upper_case_sibling_digest() {
+    let html = r#"<a href="pkg-1.0.whl" data-core-metadata="sha256=2C26B46B68FFC68FF99B453C1D30413413422D706483BFA0F98A5E886266E7AE">pkg-1.0.whl</a>"#;
+
+    let file = &parse_detail_html("pkg", html, &base()).unwrap().files[0];
+
+    assert_eq!(
+        file.core_metadata,
+        CoreMetadata::Hashes(BTreeMap::from([(
+            "sha256".to_owned(),
+            "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae".to_owned()
+        )]))
+    );
+}
+
+#[test]
+fn test_metadata_attr_drops_a_sibling_digest_that_cannot_content_address() {
+    let html = r#"<a href="pkg-1.0.whl" data-core-metadata="sha256=deadbeef">pkg-1.0.whl</a>"#;
+
+    let file = &parse_detail_html("pkg", html, &base()).unwrap().files[0];
+
+    assert_eq!(file.core_metadata, CoreMetadata::Hashes(BTreeMap::new()));
 }

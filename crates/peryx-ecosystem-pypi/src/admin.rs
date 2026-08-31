@@ -384,21 +384,15 @@ fn preserved_refs(meta: &MetaStore, target_key: &str) -> Result<CacheRefs, Strin
 
 fn add_index_refs(refs: &mut CacheRefs, record: &CachedIndex) -> Result<(), String> {
     for file in parse_detail(&record.body).map_err(crate::error_message)?.files {
+        // Parsing the page canonicalizes every advertised digest, so a `sha256` that survives here is
+        // already the content address peryx keys its blobs by.
         let Some(sha256) = file.hashes.get("sha256") else {
             continue;
         };
-        if Digest::from_hex(sha256).is_none() {
-            return Err(format!("cached page contains invalid sha256 digest {sha256:?}"));
-        }
         refs.files.insert(sha256.to_owned());
         if let CoreMetadata::Hashes(hashes) = file.core_metadata
-            && let Some(metadata_digest) = hashes.get("sha256")
+            && hashes.contains_key("sha256")
         {
-            if Digest::from_hex(metadata_digest).is_none() {
-                return Err(format!(
-                    "cached page contains invalid metadata digest {metadata_digest:?}"
-                ));
-            }
             refs.metadata_wheels.insert(sha256.to_owned());
         }
     }

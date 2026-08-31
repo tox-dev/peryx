@@ -117,51 +117,6 @@ fn test_cache_purge_project_reports_corrupt_upload_record() {
 }
 
 #[test]
-fn test_cache_purge_project_rejects_invalid_cached_file_digest() {
-    let (_dir, meta, config) = store_and_config();
-    meta.put_index(
-        "pypi/flask",
-        &CachedIndex {
-            body: br#"{"meta":{"api-version":"1.1"},"name":"flask","versions":["1.0"],"files":[{"filename":"flask-1.0.whl","url":"https://files.example/flask.whl","hashes":{"sha256":"bad"},"core-metadata":false,"yanked":false}]}"#.to_vec(),
-            ..cache_record(b"")
-        },
-    )
-    .unwrap();
-    drop(meta);
-    let mut out = Vec::new();
-    let err = app::cache(&config, &purge_resource_command(false), &mut out).unwrap_err();
-    assert!(
-        err.chain()
-            .any(|cause| cause.to_string().contains("invalid sha256 digest"))
-    );
-}
-
-#[test]
-fn test_cache_purge_project_rejects_invalid_cached_metadata_digest() {
-    let (_dir, meta, config) = store_and_config();
-    let digest = Digest::of(b"wheel");
-    meta.put_index(
-        "pypi/flask",
-        &CachedIndex {
-            body: format!(
-                r#"{{"meta":{{"api-version":"1.1"}},"name":"flask","versions":["1.0"],"files":[{{"filename":"flask-1.0.whl","url":"https://files.example/flask.whl","hashes":{{"sha256":"{}"}},"core-metadata":{{"sha256":"bad"}},"yanked":false}}]}}"#,
-                digest.as_str()
-            )
-            .into_bytes(),
-            ..cache_record(b"")
-        },
-    )
-    .unwrap();
-    drop(meta);
-    let mut out = Vec::new();
-    let err = app::cache(&config, &purge_resource_command(false), &mut out).unwrap_err();
-    assert!(
-        err.chain()
-            .any(|cause| cause.to_string().contains("invalid metadata digest"))
-    );
-}
-
-#[test]
 fn test_cache_purge_project_ignores_files_without_sha256() {
     let (_dir, meta, config) = store_and_config();
     meta.put_index(

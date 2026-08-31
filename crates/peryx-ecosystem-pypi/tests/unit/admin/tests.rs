@@ -380,6 +380,16 @@ fn test_purge_project_reports_a_corrupt_preserved_page() {
 }
 
 #[test]
+fn test_purge_project_reports_a_target_page_that_is_not_a_detail() {
+    let (_dir, meta) = store();
+    seed_undecodable_detail(&meta, "pypi/flask");
+
+    let error = purge_project(&meta, "pypi", "flask", false).unwrap_err();
+
+    assert!(error.contains("read cached project pypi/flask"), "{error}");
+}
+
+#[test]
 fn test_purge_project_scopes_a_corrupt_target_record() {
     let (_dir, meta) = store();
     meta.put_driver_value("pypi\u{0}i\u{0}pypi/flask", b"not json").unwrap();
@@ -401,31 +411,6 @@ fn test_purge_project_handles_missing_and_applied_targets() {
     let report = purge_project(&meta, "pypi", "Flask", true).unwrap();
     assert_eq!(report.resource, "flask");
     assert!(meta.get_index("pypi/flask").unwrap().is_none());
-}
-
-#[test]
-fn test_purge_project_rejects_invalid_target_and_preserved_references() {
-    for (key, body) in [
-        (
-            "pypi/flask",
-            br#"{"meta":{"api-version":"1.1"},"name":"flask","versions":[],"files":[{"filename":"x.whl","url":"u","hashes":{"sha256":"bad"},"yanked":false}]}"#.as_slice(),
-        ),
-        (
-            "pypi/other",
-            br#"{"meta":{"api-version":"1.1"},"name":"other","versions":[],"files":[{"filename":"x.whl","url":"u","hashes":{"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"core-metadata":{"sha256":"bad"},"yanked":false}]}"#.as_slice(),
-        ),
-    ] {
-        let (_dir, meta) = store();
-        meta.put_index(key, &CachedIndex {
-            etag: None,
-            last_serial: None,
-            fetched_at_unix: 0,
-            content_type: Some("application/json".to_owned()),
-            fresh_secs: None,
-            body: body.to_vec(),
-        }).unwrap();
-        assert!(purge_project(&meta, "pypi", "flask", false).is_err());
-    }
 }
 
 #[test]

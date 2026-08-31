@@ -358,6 +358,10 @@ async fn plugin_browse_dispatch_ignores_unknown_fields_and_links_archive_members
     );
 }
 
+fn version_digest(version: &str) -> String {
+    Digest::of(version.as_bytes()).as_str().to_owned()
+}
+
 #[test]
 fn plugin_retention_capability_plans_hosted_uploads() {
     let (_temp_dir, state) = state();
@@ -370,7 +374,7 @@ fn plugin_retention_capability_plans_hosted_uploads() {
                 "hosted",
                 "demo",
                 &filename,
-                &serde_json::to_vec(&uploaded(&filename, version, &format!("sha-{version}"), 1)).unwrap(),
+                &serde_json::to_vec(&uploaded(&filename, version, &version_digest(version), 1)).unwrap(),
             )
             .unwrap();
     }
@@ -420,7 +424,7 @@ fn plugin_retention_capability_plans_hosted_uploads() {
                     resource: "demo".to_owned(),
                     group: Some("2.0".to_owned()),
                     artifact: "demo-2.0.whl".to_owned(),
-                    digest: "sha-2.0".to_owned(),
+                    digest: version_digest("2.0"),
                     class: RetentionClass::Hosted,
                     visibility: RetentionVisibility::Active,
                     source: None,
@@ -433,7 +437,7 @@ fn plugin_retention_capability_plans_hosted_uploads() {
                     resource: "demo".to_owned(),
                     group: Some("1.0".to_owned()),
                     artifact: "demo-1.0.whl".to_owned(),
-                    digest: "sha-1.0".to_owned(),
+                    digest: version_digest("1.0"),
                     class: RetentionClass::Hosted,
                     visibility: RetentionVisibility::Active,
                     source: None,

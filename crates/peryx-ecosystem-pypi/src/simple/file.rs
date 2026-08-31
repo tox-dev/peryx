@@ -181,6 +181,37 @@ impl File {
         self.core_metadata = metadata.clone();
         self.dist_info_metadata = metadata;
     }
+
+    /// Fold the digests an upstream advertised to the one spelling peryx serves back, dropping a
+    /// `sha256` that is not 64 hex characters.
+    ///
+    /// Neither PEP 503 nor PEP 691 fixes the case of an advertised digest, while peryx
+    /// content-addresses on the lowercase form its own download route parses, so an upper-case digest
+    /// has to be folded rather than published as a URL peryx would then refuse. A value that is not a
+    /// sha256 at all addresses nothing, so dropping it here puts it under every rule that already
+    /// skips a file without a `sha256` — the sibling digest included, which then cannot carry the
+    /// newline that delimits a stored publication record.
+    pub(crate) fn retain_canonical_digests(&mut self) {
+        retain_canonical_sha256(&mut self.hashes);
+        for metadata in [&mut self.core_metadata, &mut self.dist_info_metadata] {
+            if let CoreMetadata::Hashes(hashes) = metadata {
+                retain_canonical_sha256(hashes);
+            }
+        }
+    }
+}
+
+const SHA256_HEX_LEN: usize = 64;
+
+fn retain_canonical_sha256(hashes: &mut BTreeMap<String, String>) {
+    let Some(sha256) = hashes.get_mut("sha256") else {
+        return;
+    };
+    if sha256.len() == SHA256_HEX_LEN && sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        sha256.make_ascii_lowercase();
+    } else {
+        hashes.remove("sha256");
+    }
 }
 
 #[derive(Deserialize)]
@@ -209,7 +240,7 @@ struct IncomingFile {
 
 impl From<IncomingFile> for File {
     fn from(file: IncomingFile) -> Self {
-        Self {
+        let mut file = Self {
             filename: file.filename,
             url: file.url,
             hashes: file.hashes,
@@ -221,7 +252,9 @@ impl From<IncomingFile> for File {
             dist_info_metadata: file.dist_info_metadata,
             gpg_sig: file.gpg_sig,
             provenance: file.provenance,
-        }
+        };
+        file.retain_canonical_digests();
+        file
     }
 }
 

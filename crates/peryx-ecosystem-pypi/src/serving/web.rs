@@ -725,8 +725,11 @@ pub(super) async fn project_page(
         Some(version) => metadata_file(&ui, version),
         None => ui.files.iter().rev().find(|file| file.has_metadata),
     };
-    let mut meta = match sibling {
-        Some(file) => metadata_for(&state, index, &route, file).await?,
+    // The view model carries the digest as text for the UI, so the sibling is only reachable once
+    // that text parses back into the content address the blob store is keyed by.
+    let addressed = sibling.and_then(|file| Digest::from_hex(&file.sha256).map(|digest| (file, digest)));
+    let mut meta = match addressed {
+        Some((file, digest)) => metadata_for(&state, index, &route, file, digest).await?,
         None => MetadataView::default(),
     };
     meta.version = default.or(meta.version);
@@ -987,13 +990,8 @@ async fn metadata_for(
     index: &Index,
     route: &str,
     file: &FileView,
+    digest: Digest,
 ) -> Result<MetadataView, String> {
-    let Some(digest) = Digest::from_hex(&file.sha256) else {
-        return Err(format!(
-            "metadata fetch on index {route:?} for file {:?}: invalid sha256 digest {:?}",
-            file.filename, file.sha256
-        ));
-    };
     let metadata_filename = format!("{}.metadata", file.filename);
     let bytes = cache::metadata_bytes(state, index, &digest, route, &metadata_filename)
         .await

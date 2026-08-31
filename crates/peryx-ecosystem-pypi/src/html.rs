@@ -148,6 +148,7 @@ fn anchor_to_file(tag: &HTMLTag, base: &Url) -> Option<File> {
         provenance: attr_string(tag, "data-provenance").map_or(Provenance::Absent, Provenance::Url),
     };
     file.provenance.retain_secure_url();
+    file.retain_canonical_digests();
     Some(file)
 }
 

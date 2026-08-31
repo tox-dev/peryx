@@ -9,15 +9,16 @@ use crate::cli::{RetentionCommand, RetentionDryRunArgs, RetentionExportArgs};
 
 const RETENTION_HEADER: &str = "action\tresource\tgroup\tartifact\tdigest\tclass\tvisibility\tbytes\trule\n";
 
-fn seed_upload(config: &Config, project: &str, version: &str) {
+fn seed_upload(config: &Config, project: &str, version: &str) -> Digest {
     let meta = MetaStore::open(config.data_dir.join("peryx.redb")).unwrap();
     let filename = format!("{project}-{version}.whl");
+    let digest = Digest::of(filename.as_bytes());
     let record = serde_json::to_vec(&Uploaded {
         version: version.to_owned(),
         file: File {
             filename: filename.clone(),
             url: format!("http://localhost/files/{filename}"),
-            hashes: BTreeMap::from([("sha256".to_owned(), format!("sha-{version}"))]),
+            hashes: BTreeMap::from([("sha256".to_owned(), digest.as_str().to_owned())]),
             requires_python: None,
             size: Some(1024),
             upload_time: Some("2020-01-01T00:00:00Z".to_owned()),
@@ -31,6 +32,7 @@ fn seed_upload(config: &Config, project: &str, version: &str) {
     })
     .unwrap();
     meta.put_upload("hosted", project, &filename, &record).unwrap();
+    digest
 }
 
 fn rules_file(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
@@ -58,18 +60,24 @@ fn dry_run_args(index: &str) -> RetentionDryRunArgs {
 #[test]
 fn test_retention_dry_run_lists_every_candidate_with_the_plan_identity() {
     let (_dir, config, _digest) = cache_fixture();
-    seed_upload(&config, "pkg", "1.0");
-    seed_upload(&config, "pkg", "2.0");
+    let one = seed_upload(&config, "pkg", "1.0");
+    let two = seed_upload(&config, "pkg", "2.0");
 
     let text = dry_run(&config, dry_run_args("hosted"));
 
     assert!(text.starts_with(RETENTION_HEADER));
     assert!(
-        text.contains("retain\tpkg\t2.0\tpkg-2.0.whl\tsha-2.0\thosted\tactive\t1024\t\n"),
+        text.contains(&format!(
+            "retain\tpkg\t2.0\tpkg-2.0.whl\t{}\thosted\tactive\t1024\t\n",
+            two.as_str()
+        )),
         "{text}"
     );
     assert!(
-        text.contains("retain\tpkg\t1.0\tpkg-1.0.whl\tsha-1.0\thosted\tactive\t1024\t\n"),
+        text.contains(&format!(
+            "retain\tpkg\t1.0\tpkg-1.0.whl\t{}\thosted\tactive\t1024\t\n",
+            one.as_str()
+        )),
         "{text}"
     );
     assert!(text.contains("summary\tpolicy_version="), "{text}");
@@ -78,7 +86,7 @@ fn test_retention_dry_run_lists_every_candidate_with_the_plan_identity() {
 #[test]
 fn test_retention_dry_run_applies_rules_from_a_file() {
     let (dir, config, _digest) = cache_fixture();
-    seed_upload(&config, "pkg", "1.0");
+    let one = seed_upload(&config, "pkg", "1.0");
     seed_upload(&config, "pkg", "2.0");
     let rules = rules_file(
         dir.path(),
@@ -91,7 +99,10 @@ fn test_retention_dry_run_applies_rules_from_a_file() {
 
     assert!(text.contains("retain\tpkg\t2.0\tpkg-2.0.whl"), "{text}");
     assert!(
-        text.contains("remove\tpkg\t1.0\tpkg-1.0.whl\tsha-1.0\thosted\tactive\t1024\tresource-prefix\n"),
+        text.contains(&format!(
+            "remove\tpkg\t1.0\tpkg-1.0.whl\t{}\thosted\tactive\t1024\tresource-prefix\n",
+            one.as_str()
+        )),
         "{text}"
     );
 }

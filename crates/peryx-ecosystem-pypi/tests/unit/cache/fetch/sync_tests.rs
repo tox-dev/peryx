@@ -15,8 +15,8 @@ use crate::SimpleClientExt as _;
 use crate::simple::{CoreMetadata, File, Provenance, Yanked};
 use crate::store::PypiStore as _;
 use crate::store::{
-    ProjectGeneration, active_project_generation, begin_project_generation, list_project_files, project_meta_state,
-    publish_project_generation, put_project_files,
+    FilePublication, MetadataClaim, ProjectGeneration, active_project_generation, begin_project_generation,
+    get_file_publication, list_project_files, project_meta_state, publish_project_generation, put_project_files,
 };
 
 const JSON: &str = "application/vnd.pypi.simple.v1+json";
@@ -668,4 +668,126 @@ fn test_parse_project_flushes_at_the_batch_limit() {
     .unwrap();
 
     assert_eq!(admitted, PROJECT_FILE_BATCH as u64);
+}
+
+#[tokio::test]
+async fn test_sync_folds_an_upper_case_html_digest_into_the_stored_file_row() {
+    let sha = "a1b2".repeat(16);
+    let body = format!(
+        r#"<!DOCTYPE html><html><body><a href="https://files.example/flask-1.0.tar.gz#sha256={}">flask-1.0.tar.gz</a></body></html>"#,
+        sha.to_ascii_uppercase()
+    );
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body, "application/vnd.pypi.simple.v1+html"))
+        .mount(&server)
+        .await;
+    let client = client_for(&server);
+    let (_dir, meta) = store();
+
+    sync_project_files(
+        &client,
+        &Inflight::default(),
+        &meta,
+        "pypi",
+        &Policy::default(),
+        "flask",
+        client.base_url(),
+    )
+    .await
+    .unwrap();
+
+    assert!(meta.get_file_url(&sha).unwrap().is_some());
+}
+
+#[tokio::test]
+async fn test_sync_drops_a_file_whose_digest_cannot_content_address() {
+    let body = r#"{"meta":{"api-version":"1.1"},"name":"flask","versions":["1.0"],"files":[
+        {"filename":"flask-1.0-py3-none-any.whl","url":"https://files.example/flask-1.0-py3-none-any.whl",
+         "hashes":{"sha256":"not-a-digest"}}]}"#;
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body, JSON))
+        .mount(&server)
+        .await;
+    let client = client_for(&server);
+    let (_dir, meta) = store();
+
+    let outcome = sync_project_files(
+        &client,
+        &Inflight::default(),
+        &meta,
+        "pypi",
+        &Policy::default(),
+        "flask",
+        client.base_url(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        (outcome, list_project_files(&meta, "pypi", "flask").unwrap()),
+        (ProjectSyncOutcome::Published { files: 0 }, Vec::new())
+    );
+}
+
+#[rstest::rstest]
+#[case::claimed(
+    "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35",
+    Some(FilePublication::Claimed(MetadataClaim {
+        url: "https://files.example/flask-1.0-py3-none-any.whl.metadata".to_owned(),
+        metadata_sha256: "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35".to_owned(),
+        source: "pypi".to_owned(),
+        upstream: None,
+    }))
+)]
+#[case::delimiter(
+    "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab\nu",
+    Some(FilePublication::Unclaimed)
+)]
+#[tokio::test]
+async fn test_sync_stores_a_sidecar_claim_only_for_a_digest_that_content_addresses(
+    #[case] advertised: &str,
+    #[case] expected: Option<FilePublication>,
+) {
+    let sha = "a1b2".repeat(16);
+    let body = serde_json::json!({
+        "meta": {"api-version": "1.1"},
+        "name": "flask",
+        "versions": ["1.0"],
+        "files": [{
+            "filename": "flask-1.0-py3-none-any.whl",
+            "url": "https://files.example/flask-1.0-py3-none-any.whl",
+            "hashes": {"sha256": sha},
+            "core-metadata": {"sha256": advertised},
+        }],
+    })
+    .to_string();
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body, JSON))
+        .mount(&server)
+        .await;
+    let client = client_for(&server);
+    let (_dir, meta) = store();
+
+    sync_project_files(
+        &client,
+        &Inflight::default(),
+        &meta,
+        "pypi",
+        &Policy::default(),
+        "flask",
+        client.base_url(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        get_file_publication(&meta, "pypi", "flask", &sha, "flask-1.0-py3-none-any.whl").unwrap(),
+        expected
+    );
 }

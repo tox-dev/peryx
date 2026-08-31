@@ -19,7 +19,10 @@ fn seed(meta: &MetaStore, index: &str, project: &str, filename: &str, trashed: O
         file: File {
             filename: filename.to_owned(),
             url: format!("https://files/{filename}"),
-            hashes: BTreeMap::from([("sha256".to_owned(), "deadbeef".to_owned())]),
+            hashes: BTreeMap::from([(
+                "sha256".to_owned(),
+                peryx_core::Digest::of(filename.as_bytes()).as_str().to_owned(),
+            )]),
             requires_python: None,
             size: Some(1_024),
             upload_time: Some("2020-01-01T00:00:00Z".to_owned()),
@@ -60,7 +63,10 @@ fn test_trash_records_returns_only_soft_deleted_files() {
         record.artifact.as_ref().map(peryx_core::ArtifactKey::as_str),
         Some("flask-1.0.whl")
     );
-    assert_eq!(record.digest.as_deref(), Some("sha256:deadbeef"));
+    assert_eq!(
+        record.digest,
+        Some(format!("sha256:{}", peryx_core::Digest::of(b"flask-1.0.whl").as_str()))
+    );
     assert_eq!(record.reason.as_deref(), Some("bad build"));
     assert_eq!(record.actor.as_deref(), Some("alice"));
     assert_eq!(record.deleted_at_unix, 100);

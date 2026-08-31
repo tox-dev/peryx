@@ -795,25 +795,26 @@ const ARTIFACT_FILENAME: &str = "veloxdemo-1.0.tar.bz2";
 const ARCHIVE_DIGEST: &str = "5a105e8b9d40e1329780d62ea2265d8a4d4ef6a0d4b2f6c0c1a5b9a0f0d1c2e3";
 
 #[rstest]
-#[case::wheel("veloxdemo-1.0-py3-none-any.whl", ARCHIVE_DIGEST, true)]
-#[case::zip("veloxdemo-1.0.zip", ARCHIVE_DIGEST, true)]
-#[case::egg("veloxdemo-1.0.egg", ARCHIVE_DIGEST, true)]
-#[case::tar("veloxdemo-1.0.tar", ARCHIVE_DIGEST, true)]
-#[case::tar_gz("veloxdemo-1.0.tar.gz", ARCHIVE_DIGEST, true)]
-#[case::tgz("veloxdemo-1.0.tgz", ARCHIVE_DIGEST, true)]
-#[case::unsupported_format("veloxdemo-1.0.tar.bz2", ARCHIVE_DIGEST, false)]
-#[case::digest_free_wheel("veloxdemo-1.0-py3-none-any.whl", "", true)]
-#[case::truncated_digest_wheel("veloxdemo-1.0-py3-none-any.whl", "5a105e8b9d40e132", true)]
+#[case::wheel("veloxdemo-1.0-py3-none-any.whl", ARCHIVE_DIGEST, ARCHIVE_DIGEST, true)]
+#[case::zip("veloxdemo-1.0.zip", ARCHIVE_DIGEST, ARCHIVE_DIGEST, true)]
+#[case::egg("veloxdemo-1.0.egg", ARCHIVE_DIGEST, ARCHIVE_DIGEST, true)]
+#[case::tar("veloxdemo-1.0.tar", ARCHIVE_DIGEST, ARCHIVE_DIGEST, true)]
+#[case::tar_gz("veloxdemo-1.0.tar.gz", ARCHIVE_DIGEST, ARCHIVE_DIGEST, true)]
+#[case::tgz("veloxdemo-1.0.tgz", ARCHIVE_DIGEST, ARCHIVE_DIGEST, true)]
+#[case::unsupported_format("veloxdemo-1.0.tar.bz2", ARCHIVE_DIGEST, ARCHIVE_DIGEST, false)]
+#[case::digest_free_wheel("veloxdemo-1.0-py3-none-any.whl", "", "", true)]
+#[case::truncated_digest_wheel("veloxdemo-1.0-py3-none-any.whl", "5a105e8b9d40e132", "", true)]
 #[tokio::test]
 async fn test_ui_project_page_links_contents_only_for_browsable_archives(
     #[case] filename: &str,
-    #[case] sha256: &str,
+    #[case] advertised: &str,
+    #[case] served: &str,
     #[case] browsable: bool,
 ) {
-    let hashes = if sha256.is_empty() {
+    let hashes = if advertised.is_empty() {
         serde_json::json!({})
     } else {
-        serde_json::json!({"sha256": sha256})
+        serde_json::json!({"sha256": advertised})
     };
     let (_dir, router) = file_router(&serde_json::json!({
         "filename": filename,
@@ -825,7 +826,7 @@ async fn test_ui_project_page_links_contents_only_for_browsable_archives(
     assert!(body.contains(filename), "{body}");
     assert_eq!(
         body.contains(&format!(
-            r#"href="/browse?index=pypi&amp;project=veloxdemo&amp;sha256={sha256}&amp;file={filename}""#
+            r#"href="/browse?index=pypi&amp;project=veloxdemo&amp;sha256={served}&amp;file={filename}""#
         )),
         browsable,
         "{body}"

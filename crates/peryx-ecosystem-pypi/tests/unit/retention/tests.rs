@@ -23,6 +23,10 @@ fn store() -> (tempfile::TempDir, MetaStore) {
     (dir, meta)
 }
 
+fn version_digest(version: &str) -> String {
+    peryx_core::Digest::of(version.as_bytes()).as_str().to_owned()
+}
+
 fn seed(meta: &MetaStore, index: &str, project: &str, version: &str, yanked: Yanked, trashed: Option<TrashInfo>) {
     let filename = format!("{project}-{version}.whl");
     let uploaded = Uploaded {
@@ -30,7 +34,7 @@ fn seed(meta: &MetaStore, index: &str, project: &str, version: &str, yanked: Yan
         file: File {
             filename: filename.clone(),
             url: format!("https://files/{filename}"),
-            hashes: BTreeMap::from([("sha256".to_owned(), format!("sha-{version}"))]),
+            hashes: BTreeMap::from([("sha256".to_owned(), version_digest(version))]),
             requires_python: None,
             size: Some(1024),
             upload_time: Some("2020-01-01T00:00:00Z".to_owned()),
@@ -113,7 +117,7 @@ fn candidate_footprint(project: &str, version: &str) -> usize {
     size_of::<RetentionCandidate>()
         + project.len()
         + format!("{project}-{version}.whl").len()
-        + format!("sha-{version}").len()
+        + version_digest(version).len()
         + version.len()
 }
 

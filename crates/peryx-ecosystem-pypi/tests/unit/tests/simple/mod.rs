@@ -25,13 +25,17 @@ pub(super) fn sample_detail() -> ProjectDetail {
             File {
                 filename: "proj&<>-2.0-py3-none-any.whl".to_owned(),
                 url: "https://files.example/a?b=1&c=2".to_owned(),
-                hashes: sha256("aaaa"),
+                hashes: sha256("6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"),
                 requires_python: Some(">=3.8,<4".to_owned()),
                 size: Some(1234),
                 upload_time: Some("2024-03-24T00:00:00.000000Z".to_owned()),
                 yanked: Yanked::No,
-                core_metadata: CoreMetadata::Hashes(sha256("bbbb")),
-                dist_info_metadata: CoreMetadata::Hashes(sha256("bbbb")),
+                core_metadata: CoreMetadata::Hashes(sha256(
+                    "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35",
+                )),
+                dist_info_metadata: CoreMetadata::Hashes(sha256(
+                    "d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35",
+                )),
                 gpg_sig: Some(true),
                 provenance: Provenance::Url("https://files.example/a.provenance".to_owned()),
             },
@@ -51,7 +55,7 @@ pub(super) fn sample_detail() -> ProjectDetail {
             File {
                 filename: "proj-1.0-py3-none-any.whl".to_owned(),
                 url: "https://files.example/c.whl".to_owned(),
-                hashes: sha256("cccc"),
+                hashes: sha256("4e07408562bedb8b60ce05c1decfe3ad16b72230967de01f640b7e4729b49fce"),
                 requires_python: None,
                 size: Some(9),
                 upload_time: None,

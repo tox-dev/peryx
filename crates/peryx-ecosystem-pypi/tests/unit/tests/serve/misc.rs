@@ -398,13 +398,62 @@ async fn test_project_page_surfaces_a_resolve_error() {
 }
 
 #[tokio::test]
-async fn test_project_page_rejects_a_bad_metadata_wheel_digest() {
+async fn test_an_upper_case_upstream_digest_serves_a_downloadable_file() {
+    let h = harness().await;
+    let wheel = b"wheel bytes";
+    let digest = Digest::of(wheel);
+    let file_url = format!("{}/files/flask.whl", h.server.uri());
+    mount_json_page(
+        &h.server,
+        &detail_json(&digest.as_str().to_ascii_uppercase(), &file_url),
+    )
+    .await;
+    Mock::given(method("GET"))
+        .and(path("/files/flask.whl"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(wheel.to_vec(), "application/octet-stream"))
+        .mount(&h.server)
+        .await;
+    let (_, _, page) = get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
+    let served = serde_json::from_str::<serde_json::Value>(&page).unwrap()["files"][0]["url"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let (status, _, body) = get(&h.state, &served, None).await;
+
+    assert_eq!((status, body.as_str()), (StatusCode::OK, "wheel bytes"));
+}
+
+#[tokio::test]
+async fn test_served_page_drops_a_wheel_digest_that_is_not_a_content_address() {
+    let h = harness().await;
+    let file_url = format!("{}/files/flask.whl", h.server.uri());
+    mount_json_page(&h.server, &detail_with_metadata("not-a-digest", &file_url, "also-bad")).await;
+
+    let (_, _, body) = get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
+
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&body).unwrap()["files"],
+        serde_json::json!([{
+            "filename": "flask-1.0-py3-none-any.whl",
+            "url": file_url,
+            "hashes": {},
+            "yanked": false,
+            "core-metadata": false,
+        }])
+    );
+}
+
+#[tokio::test]
+async fn test_project_page_renders_a_wheel_digest_that_is_not_a_content_address() {
     let h = harness().await;
     let file_url = format!("{}/files/flask.whl", h.server.uri());
     mount_json_page(&h.server, &detail_with_metadata("not-a-digest", &file_url, "also-bad")).await;
     get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
-    let err = browse_project(h.state.serving.clone(), 0, "pypi").await.unwrap_err();
-    assert!(err.to_string().contains("invalid sha256 digest"), "{err}");
+
+    let page = browse_project(h.state.serving.clone(), 0, "pypi").await.unwrap();
+
+    assert!(page.is_some());
 }
 
 #[tokio::test]

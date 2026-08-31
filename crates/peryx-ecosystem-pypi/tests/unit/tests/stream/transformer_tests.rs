@@ -16,11 +16,11 @@ use crate::{CoreMetadata, File, Provenance, Yanked, parse_detail, to_json};
 fn upstream_page() -> String {
     r#"{"meta":{"api-version":"1.1"},"name":"demo","versions":["1.0","2.0"],"files":[
         {"filename":"demo-1.0-py3-none-any.whl","url":"https://up/demo-1.0-py3-none-any.whl",
-         "hashes":{"sha256":"aa11"},"size":10,
-         "core-metadata":{"sha256":"bb22"},"yanked":false},
+         "hashes":{"sha256":"aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11"},"size":10,
+         "core-metadata":{"sha256":"bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22"},"yanked":false},
         {"filename":"demo-2.0.tar.gz","url":"https://up/demo-2.0.tar.gz","hashes":{},"yanked":false},
         {"filename":"demo-2.0-py3-none-any.whl","url":"https://up/demo-2.0-py3-none-any.whl",
-         "hashes":{"sha256":"cc33"},"yanked":false}
+         "hashes":{"sha256":"cc33cc33cc33cc33cc33cc33cc33cc33cc33cc33cc33cc33cc33cc33cc33cc33"},"yanked":false}
     ]}"#
     .to_owned()
 }
@@ -54,8 +54,11 @@ fn policy(configure: impl FnOnce(&mut PypiPolicyConfig)) -> Policy {
 fn local_wheel(filename: &str) -> File {
     File {
         filename: filename.to_owned(),
-        url: format!("/root/pypi/files/dd44/{filename}"),
-        hashes: std::collections::BTreeMap::from([("sha256".to_owned(), "dd44".to_owned())]),
+        url: format!("/root/pypi/files/dd44dd44dd44dd44dd44dd44dd44dd44dd44dd44dd44dd44dd44dd44dd44dd44/{filename}"),
+        hashes: std::collections::BTreeMap::from([(
+            "sha256".to_owned(),
+            "dd44dd44dd44dd44dd44dd44dd44dd44dd44dd44dd44dd44dd44dd44dd44dd44".to_owned(),
+        )]),
         requires_python: None,
         size: Some(5),
         upload_time: None,
@@ -73,18 +76,24 @@ fn test_rewrites_urls_and_registers_sources() {
         let (out, registrations) = transform(&upstream_page(), plain_context(), chunk);
         let detail = parse_detail(out.as_bytes()).unwrap();
         assert_eq!(detail.files.len(), 3, "chunk size {chunk}");
-        assert_eq!(detail.files[0].url, "/root/pypi/files/aa11/demo-1.0-py3-none-any.whl");
+        assert_eq!(
+            detail.files[0].url,
+            "/root/pypi/files/aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11/demo-1.0-py3-none-any.whl"
+        );
         // The file without a sha keeps its upstream URL and loses the metadata claim.
         assert_eq!(detail.files[1].url, "https://up/demo-2.0.tar.gz");
         assert_eq!(registrations.len(), 2);
         assert_eq!(registrations[0].filename, "demo-1.0-py3-none-any.whl");
-        assert_eq!(registrations[0].sha256, "aa11");
+        assert_eq!(
+            registrations[0].sha256,
+            "aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11"
+        );
         assert_eq!(registrations[0].url, "https://up/demo-1.0-py3-none-any.whl");
         assert_eq!(
             registrations[0].metadata,
             Some((
                 "https://up/demo-1.0-py3-none-any.whl.metadata".to_owned(),
-                "bb22".to_owned()
+                "bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22".to_owned()
             ))
         );
         assert_eq!(registrations[1].metadata, None);
@@ -95,10 +104,13 @@ fn test_rewrites_urls_and_registers_sources() {
 fn test_rewrites_cached_generated_metadata() {
     let page = r#"{"meta":{"api-version":"1.1"},"name":"demo","files":[{
         "filename":"demo-1.0-py3-none-any.whl","url":"https://up/demo-1.0-py3-none-any.whl",
-        "hashes":{"sha256":"aa11"},"yanked":false
+        "hashes":{"sha256":"aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11"},"yanked":false
     }]}"#;
     let mut context = plain_context();
-    context.known_metadata.insert("aa11".to_owned(), "bb22".to_owned());
+    context.known_metadata.insert(
+        "aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11".to_owned(),
+        "bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22".to_owned(),
+    );
 
     let (out, registrations) = transform(page, context, 7);
 
@@ -107,7 +119,7 @@ fn test_rewrites_cached_generated_metadata() {
         detail.files[0].metadata(),
         &CoreMetadata::Hashes(std::collections::BTreeMap::from([(
             "sha256".to_owned(),
-            "bb22".to_owned()
+            "bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22".to_owned()
         )]))
     );
     assert_eq!(registrations[0].metadata, None);
@@ -117,11 +129,14 @@ fn test_rewrites_cached_generated_metadata() {
 fn test_rewrites_egg_urls_without_advertising_metadata() {
     let page = r#"{"meta":{"api-version":"1.1"},"name":"demo","files":[{
         "filename":"demo-1.0.egg","url":"https://up/demo-1.0.egg",
-        "hashes":{"sha256":"aa11"},"core-metadata":{"sha256":"bb22"},"yanked":false
+        "hashes":{"sha256":"aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11"},"core-metadata":{"sha256":"bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22"},"yanked":false
     }]}"#;
     let (out, registrations) = transform(page, plain_context(), 7);
     let detail = parse_detail(out.as_bytes()).unwrap();
-    assert_eq!(detail.files[0].url, "/root/pypi/files/aa11/demo-1.0.egg");
+    assert_eq!(
+        detail.files[0].url,
+        "/root/pypi/files/aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11/demo-1.0.egg"
+    );
     assert_eq!(detail.files[0].core_metadata, CoreMetadata::Absent);
     assert_eq!(detail.files[0].dist_info_metadata, CoreMetadata::Absent);
     assert_eq!(registrations[0].metadata, None);
@@ -134,7 +149,10 @@ fn test_injects_local_files_and_shadows_upstream() {
     let (out, _) = transform(&upstream_page(), context, 1);
     let detail = parse_detail(out.as_bytes()).unwrap();
 
-    assert_eq!(detail.files[0].hashes["sha256"], "dd44");
+    assert_eq!(
+        detail.files[0].hashes["sha256"],
+        "dd44dd44dd44dd44dd44dd44dd44dd44dd44dd44dd44dd44dd44dd44dd44dd44"
+    );
     assert_eq!(detail.files.len(), 3);
     assert_eq!(
         detail
@@ -253,7 +271,7 @@ fn test_quarantined_project_streams_without_files() {
         "project-status":{"status":"quarantined","reason":"malware"},
         "name":"demo","versions":["1.0"],"files":[
         {"filename":"demo-1.0-py3-none-any.whl","url":"https://up/demo-1.0-py3-none-any.whl",
-         "hashes":{"sha256":"aa11"}}
+         "hashes":{"sha256":"aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11"}}
     ]}"#;
     let (out, registrations) = transform(page, plain_context(), 5);
     let detail = parse_detail(out.as_bytes()).unwrap();
@@ -266,7 +284,7 @@ fn test_quarantined_project_streams_without_files() {
 fn test_seeded_legacy_quarantine_withholds_files_when_meta_follows_files() {
     let page = r#"{"name":"demo","versions":["1.0"],"files":[
         {"filename":"demo-1.0-py3-none-any.whl","url":"https://up/demo-1.0-py3-none-any.whl",
-         "hashes":{"sha256":"aa11"}}],
+         "hashes":{"sha256":"aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11"}}],
         "meta":{"api-version":"1.4","project-status":"quarantined"}}"#;
     let mut transformer = PageTransformer::new(plain_context());
     transformer.seed_project_status(Some("quarantined".to_owned()), Some("malware".to_owned()));
@@ -312,12 +330,15 @@ fn test_status_before_files_keeps_streaming() {
 fn test_escapes_and_braces_inside_strings_survive() {
     let page = r#"{"meta":{},"name":"de\"mo}{","versions":[],"files":[
         {"filename":"a{1}-1.0.whl","url":"https://up/a\"b[",
-         "hashes":{"sha256":"ee55"},"yanked":false}
+         "hashes":{"sha256":"ee55ee55ee55ee55ee55ee55ee55ee55ee55ee55ee55ee55ee55ee55ee55ee55"},"yanked":false}
     ]}"#;
     for chunk in [1, 5] {
         let (out, registrations) = transform(page, plain_context(), chunk);
         let detail = parse_detail(out.as_bytes()).unwrap();
-        assert_eq!(detail.files[0].url, "/root/pypi/files/ee55/a%7B1%7D-1.0.whl");
+        assert_eq!(
+            detail.files[0].url,
+            "/root/pypi/files/ee55ee55ee55ee55ee55ee55ee55ee55ee55ee55ee55ee55ee55ee55ee55ee55/a%7B1%7D-1.0.whl"
+        );
         assert_eq!(registrations[0].url, "https://up/a\"b[");
     }
 }
@@ -329,7 +350,7 @@ fn test_escaped_files_key_withholds_quarantined_files() {
     let page = r#"{"m\u0065ta":{},"project-\u0073tatus":{"status":"quarantined"},
         "name":"demo","fi\u006ces":[
         {"filename":"demo-1.0-py3-none-any.whl","url":"https://up/demo-1.0-py3-none-any.whl",
-         "hashes":{"sha256":"aa11"}}
+         "hashes":{"sha256":"aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11"}}
     ]}"#;
     for chunk in [1, page.len()] {
         let (out, registrations) = transform(page, plain_context(), chunk);
@@ -350,7 +371,7 @@ fn test_escaped_keys_dispatch_like_plain_spellings() {
     let page = r#"{"m\u0065ta":{"api-version":"1.1"},"\u006eame":"demo",
         "v\u0065rsions":["1.0"],"fi\u006ces":[
         {"filename":"demo-1.0-py3-none-any.whl","url":"https://up/demo-1.0-py3-none-any.whl",
-         "hashes":{"sha256":"aa11"},"yanked":false}
+         "hashes":{"sha256":"aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11"},"yanked":false}
     ]}"#;
     for chunk in [1, 6, page.len()] {
         let (out, summary) = transform_summary(page, plain_context(), chunk);
@@ -358,10 +379,14 @@ fn test_escaped_keys_dispatch_like_plain_spellings() {
         assert_eq!(summary.name.as_deref(), Some("demo"), "chunk size {chunk}");
         assert_eq!(detail.versions, ["1.0"], "chunk size {chunk}");
         assert_eq!(
-            detail.files[0].url, "/root/pypi/files/aa11/demo-1.0-py3-none-any.whl",
+            detail.files[0].url,
+            "/root/pypi/files/aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11/demo-1.0-py3-none-any.whl",
             "chunk size {chunk}"
         );
-        assert_eq!(summary.registrations[0].sha256, "aa11", "chunk size {chunk}");
+        assert_eq!(
+            summary.registrations[0].sha256, "aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11",
+            "chunk size {chunk}"
+        );
     }
 }
 
@@ -496,10 +521,12 @@ fn test_unrelated_top_level_arrays_pass_through() {
 #[test]
 fn test_nested_array_inside_file_object_is_captured() {
     let page = r#"{"files":[{"filename":"demo-1.0-py3-none-any.whl","url":"https://up/d.whl",
-        "hashes":{"sha256":"aa11"},"extra":["sig1","sig2"]}]}"#;
+        "hashes":{"sha256":"aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11"},"extra":["sig1","sig2"]}]}"#;
     let (out, registrations) = transform(page, plain_context(), 5);
     assert_eq!(registrations.len(), 1);
-    assert!(out.contains("/root/pypi/files/aa11/demo-1.0-py3-none-any.whl"));
+    assert!(out.contains(
+        "/root/pypi/files/aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11/demo-1.0-py3-none-any.whl"
+    ));
 }
 
 #[test]
@@ -508,8 +535,8 @@ fn test_preserves_simple_api_fields_during_streaming() {
         "project-status":{"status":"archived","reason":"read only"},
         "name":"demo","versions":["1.0"],"files":[
         {"filename":"demo-1.0-py3-none-any.whl","url":"https://up/demo-1.0-py3-none-any.whl",
-         "hashes":{"sha256":"aa11"},"size":10,"upload-time":"2024-01-01T00:00:00Z",
-         "core-metadata":{"sha256":"bb22"},"dist-info-metadata":{"sha256":"bb22"},
+         "hashes":{"sha256":"aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11"},"size":10,"upload-time":"2024-01-01T00:00:00Z",
+         "core-metadata":{"sha256":"bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22"},"dist-info-metadata":{"sha256":"bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22"},
          "gpg-sig":false,"provenance":"https://up/demo-1.0-py3-none-any.whl.provenance"}
     ]}"#;
     for chunk in [1, 11, 4096] {
@@ -533,11 +560,11 @@ fn test_preserves_simple_api_fields_during_streaming() {
                 Some("2024-01-01T00:00:00Z"),
                 &CoreMetadata::Hashes(std::collections::BTreeMap::from([(
                     "sha256".to_owned(),
-                    "bb22".to_owned(),
+                    "bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22".to_owned(),
                 )])),
                 &CoreMetadata::Hashes(std::collections::BTreeMap::from([(
                     "sha256".to_owned(),
-                    "bb22".to_owned(),
+                    "bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22".to_owned(),
                 )])),
                 None,
                 &Provenance::Url("https://up/demo-1.0-py3-none-any.whl.provenance".to_owned()),
@@ -554,7 +581,7 @@ fn test_preserves_simple_api_fields_during_streaming() {
 #[test]
 fn test_proxy_mode_rewrites_a_secure_provenance_url() {
     let page = r#"{"meta":{},"name":"demo","files":[{"filename":"demo-1.0-py3-none-any.whl",
-        "url":"https://up/demo.whl","hashes":{"sha256":"aa11"},
+        "url":"https://up/demo.whl","hashes":{"sha256":"aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11"},
         "provenance":"https://up/demo.whl.provenance"}]}"#;
     let mut context = plain_context();
     context.policy = policy(|config| config.upstream_attestations = RemoteMetadataMode::Proxy);
@@ -564,7 +591,7 @@ fn test_proxy_mode_rewrites_a_secure_provenance_url() {
 
     assert_eq!(
         detail.files[0].provenance,
-        Provenance::Url("/root/pypi/files/aa11/demo-1.0-py3-none-any.whl.provenance".to_owned())
+        Provenance::Url("/root/pypi/files/aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11/demo-1.0-py3-none-any.whl.provenance".to_owned())
     );
     assert_eq!(
         registrations[0].provenance.as_deref(),
@@ -575,7 +602,7 @@ fn test_proxy_mode_rewrites_a_secure_provenance_url() {
 #[test]
 fn test_streaming_drops_an_insecure_provenance_url() {
     let page = r#"{"meta":{},"name":"demo","files":[{"filename":"demo-1.0-py3-none-any.whl",
-        "url":"https://up/demo.whl","hashes":{"sha256":"aa11"},
+        "url":"https://up/demo.whl","hashes":{"sha256":"aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11"},
         "provenance":"http://up/demo.whl.provenance"}]}"#;
 
     let (out, registrations) = transform(page, plain_context(), 5);
@@ -672,20 +699,20 @@ fn one_file_page(url: &str, hashes: &str) -> String {
 #[rstest]
 #[case::relative(
     "demo-1.0-py3-none-any.whl",
-    r#"{"sha256":"aa11"}"#,
-    "/root/pypi/files/aa11/demo-1.0-py3-none-any.whl",
+    r#"{"sha256":"aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11"}"#,
+    "/root/pypi/files/aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11/demo-1.0-py3-none-any.whl",
     Some("https://mirror.test/simple/demo/demo-1.0-py3-none-any.whl")
 )]
 #[case::root_relative(
     "/packages/demo-1.0-py3-none-any.whl",
-    r#"{"sha256":"aa11"}"#,
-    "/root/pypi/files/aa11/demo-1.0-py3-none-any.whl",
+    r#"{"sha256":"aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11"}"#,
+    "/root/pypi/files/aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11/demo-1.0-py3-none-any.whl",
     Some("https://mirror.test/packages/demo-1.0-py3-none-any.whl")
 )]
 #[case::protocol_relative(
     "//cdn.test/demo-1.0-py3-none-any.whl",
-    r#"{"sha256":"aa11"}"#,
-    "/root/pypi/files/aa11/demo-1.0-py3-none-any.whl",
+    r#"{"sha256":"aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11"}"#,
+    "/root/pypi/files/aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11/demo-1.0-py3-none-any.whl",
     Some("https://cdn.test/demo-1.0-py3-none-any.whl")
 )]
 #[case::absolute(
@@ -720,12 +747,21 @@ fn test_resolves_file_url_against_the_response_url(
 
 #[rstest]
 #[case::route_prefix("/root/pypi/files/releases/demo-1.0-py3-none-any.whl")]
-#[case::different_digest("/root/pypi/files/bb22/demo-1.0-py3-none-any.whl")]
-#[case::different_filename("/root/pypi/files/aa11/other.whl")]
-#[case::extra_path_segment("/root/pypi/files/aa11/releases/demo-1.0-py3-none-any.whl")]
+#[case::different_digest(
+    "/root/pypi/files/bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22/demo-1.0-py3-none-any.whl"
+)]
+#[case::different_filename(
+    "/root/pypi/files/aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11/other.whl"
+)]
+#[case::extra_path_segment(
+    "/root/pypi/files/aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11/releases/demo-1.0-py3-none-any.whl"
+)]
 fn test_incomplete_local_urls_resolve_register_and_rewrite(#[case] source_url: &str) {
     let (out, registrations) = transform(
-        &one_file_page(source_url, r#"{"sha256":"aa11"}"#),
+        &one_file_page(
+            source_url,
+            r#"{"sha256":"aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11"}"#,
+        ),
         based_context("https://mirror.test/simple/demo/"),
         6,
     );
@@ -733,10 +769,10 @@ fn test_incomplete_local_urls_resolve_register_and_rewrite(#[case] source_url: &
     assert_eq!(
         (detail.files[0].url.as_str(), registrations),
         (
-            "/root/pypi/files/aa11/demo-1.0-py3-none-any.whl",
+            "/root/pypi/files/aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11/demo-1.0-py3-none-any.whl",
             vec![Registration {
                 filename: "demo-1.0-py3-none-any.whl".to_owned(),
-                sha256: "aa11".to_owned(),
+                sha256: "aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11".to_owned(),
                 url: format!("https://mirror.test{source_url}"),
                 size: None,
                 metadata: None,
@@ -748,9 +784,13 @@ fn test_incomplete_local_urls_resolve_register_and_rewrite(#[case] source_url: &
 
 #[test]
 fn test_complete_legacy_record_url_passes_through_unregistered() {
-    let source_url = "/root/pypi/files/aa11/demo-1.0-py3-none-any.whl";
+    let source_url =
+        "/root/pypi/files/aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11/demo-1.0-py3-none-any.whl";
     let (out, registrations) = transform(
-        &one_file_page(source_url, r#"{"sha256":"aa11"}"#),
+        &one_file_page(
+            source_url,
+            r#"{"sha256":"aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11"}"#,
+        ),
         based_context("https://mirror.test/simple/demo/"),
         6,
     );
@@ -761,7 +801,7 @@ fn test_complete_legacy_record_url_passes_through_unregistered() {
 #[test]
 fn test_streaming_drops_gpg_sig_on_a_legacy_local_record() {
     let page = r#"{"meta":{},"name":"demo","files":[{"filename":"demo-1.0-py3-none-any.whl",
-        "url":"/root/pypi/files/aa11/demo-1.0-py3-none-any.whl","hashes":{"sha256":"aa11"},"gpg-sig":true}]}"#;
+        "url":"/root/pypi/files/aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11/demo-1.0-py3-none-any.whl","hashes":{"sha256":"aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11"},"gpg-sig":true}]}"#;
     let (out, _) = transform(page, plain_context(), 8);
     let detail = parse_detail(out.as_bytes()).unwrap();
     assert_eq!(detail.files[0].gpg_sig, None);
@@ -781,9 +821,9 @@ fn test_streaming_keeps_gpg_sig_when_the_url_stays_upstream() {
 fn test_legacy_record_after_a_rewritten_file_keeps_separators() {
     let page = r#"{"meta":{},"name":"demo","files":[
         {"filename":"demo-1.0-py3-none-any.whl","url":"https://up/demo-1.0-py3-none-any.whl",
-         "hashes":{"sha256":"aa11"}},
-        {"filename":"demo-2.0-py3-none-any.whl","url":"/root/pypi/files/bb22/demo-2.0-py3-none-any.whl",
-         "hashes":{"sha256":"bb22"}}]}"#;
+         "hashes":{"sha256":"aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11"}},
+        {"filename":"demo-2.0-py3-none-any.whl","url":"/root/pypi/files/bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22/demo-2.0-py3-none-any.whl",
+         "hashes":{"sha256":"bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22"}}]}"#;
     let (out, registrations) = transform(page, plain_context(), 9);
     let detail = parse_detail(out.as_bytes()).unwrap();
     assert_eq!(detail.files.len(), 2);
@@ -836,12 +876,12 @@ fn test_non_string_top_level_name_keeps_rewriting_files() {
         let page = format!(
             r#"{{"name":{name},"files":[
                 {{"filename":"demo-1.0-py3-none-any.whl","url":"https://up/demo-1.0-py3-none-any.whl",
-                 "hashes":{{"sha256":"aa11"}}}}]}}"#
+                 "hashes":{{"sha256":"aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11"}}}}]}}"#
         );
         for chunk in [1, 5, 4096] {
             let (out, registrations) = transform(&page, plain_context(), chunk);
             assert!(
-                out.contains("/root/pypi/files/aa11/demo-1.0-py3-none-any.whl"),
+                out.contains("/root/pypi/files/aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11/demo-1.0-py3-none-any.whl"),
                 "name {name} chunk {chunk}"
             );
             assert_eq!(registrations.len(), 1, "name {name} chunk {chunk}");
@@ -853,13 +893,13 @@ fn test_non_string_top_level_name_keeps_rewriting_files() {
 fn test_metadata_sibling_lands_on_the_path_not_the_query() {
     let page = r#"{"name":"demo","files":[{"filename":"demo-1.0-py3-none-any.whl",
         "url":"https://files.test/demo-1.0-py3-none-any.whl?token=abc",
-        "hashes":{"sha256":"aa11"},"core-metadata":{"sha256":"bb22"}}]}"#;
+        "hashes":{"sha256":"aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11"},"core-metadata":{"sha256":"bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22"}}]}"#;
     let (_, registrations) = transform(page, plain_context(), 6);
     assert_eq!(
         registrations[0].metadata,
         Some((
             "https://files.test/demo-1.0-py3-none-any.whl.metadata?token=abc".to_owned(),
-            "bb22".to_owned()
+            "bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22".to_owned()
         ))
     );
 }
@@ -1050,7 +1090,7 @@ fn test_grammar_guard_accepts_every_json_scalar_shape() {
     let page = r#"{"meta":{"api-version":"1.4"},"name":"demo","versions":["1.0"],
         "extra":[null,true,false,0,-0,0e1,12,3.14,-1.5e10,1E+3,-0.0e-2,"a\t\f\u000cbé","",{}],
         "files":[{"filename":"demo-1.0-py3-none-any.whl","url":"https://up/demo.whl",
-         "hashes":{"sha256":"aa11"},"gpg-sig":true,"yanked":false}]}"#;
+         "hashes":{"sha256":"aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11"},"gpg-sig":true,"yanked":false}]}"#;
     for chunk in [1, 5, page.len()] {
         assert!(stream_result(page, chunk).is_ok(), "chunk {chunk}");
     }

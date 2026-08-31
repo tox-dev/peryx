@@ -10,6 +10,7 @@ use peryx_ecosystem_pypi::store::PypiStore as _;
 use peryx_ecosystem_pypi::upload::{TrashInfo, Uploaded};
 use peryx_ecosystem_pypi::{CoreMetadata, File, Provenance, Yanked};
 use peryx_identity::{GrantScope, Role};
+use peryx_storage::blob::Digest;
 use tower::ServiceExt as _;
 
 use crate::config::{Config, IndexConfig, IndexKind, SecretSource};
@@ -66,7 +67,7 @@ fn seed_pypi_trash(state: &ServingState, filename: &str, deleted_at_unix: i64) {
         file: File {
             filename: filename.to_owned(),
             url: format!("https://files/{filename}"),
-            hashes: BTreeMap::from([("sha256".to_owned(), "deadbeef".to_owned())]),
+            hashes: BTreeMap::from([("sha256".to_owned(), Digest::of(filename.as_bytes()).as_str().to_owned())]),
             requires_python: None,
             size: Some(1_024),
             upload_time: Some("2020-01-01T00:00:00Z".to_owned()),
@@ -215,9 +216,13 @@ async fn test_pagination_is_stable_across_pages() {
 async fn test_inspect_returns_one_record() {
     let (_dir, router) = app().await;
 
+    let digest = Digest::of(b"flask-1.0.whl");
     let (status, _, document) = get(
         &router,
-        "/+trash/record?ecosystem=pypi&repository=hosted&resource=flask&artifact=flask-1.0.whl&digest=sha256:deadbeef",
+        &format!(
+            "/+trash/record?ecosystem=pypi&repository=hosted&resource=flask&artifact=flask-1.0.whl&digest=sha256:{}",
+            digest.as_str()
+        ),
         ("Alice", PASSWORD),
     )
     .await;
