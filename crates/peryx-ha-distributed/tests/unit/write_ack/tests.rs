@@ -241,3 +241,80 @@ async fn elapsed_remote_frontier_is_unknown() {
 
     assert_eq!(durability.confirm(write(&digest)).await, WriteDurability::Unavailable);
 }
+
+/// One member per datacenter, the only roster shape `ha` accepts.
+fn ha_topology() -> TopologyConfig {
+    TopologyConfig {
+        members: vec![
+            member("node-a", "east"),
+            member("node-b", "west"),
+            member("node-c", "south"),
+            member("node-d", "north"),
+        ],
+        local_node: Some("node-a".to_owned()),
+        ..TopologyConfig::default()
+    }
+}
+
+fn remotes(reporting: &[&str], silent: &[&str], serial: u64) -> Vec<Arc<dyn RemoteFrontierSource + Send + Sync>> {
+    let reporting = reporting.iter().map(|dc| {
+        Arc::new(LoopbackRemoteFrontierSource::reporting(*dc, 2, serial)) as Arc<dyn RemoteFrontierSource + Send + Sync>
+    });
+    let silent = silent
+        .iter()
+        .map(|dc| Arc::new(LoopbackRemoteFrontierSource::silent(*dc)) as Arc<dyn RemoteFrontierSource + Send + Sync>);
+    reporting.chain(silent).collect()
+}
+
+#[rstest::rstest]
+#[case::everywhere_short_of_the_quorum(DurabilityPolicy::Everywhere, &["west", "south"], &["north"], WriteDurability::Unavailable)]
+#[case::everywhere_at_the_quorum(DurabilityPolicy::Everywhere, &["west", "south", "north"], &[], WriteDurability::Confirmed { scope: BlobDurability::Filesystem })]
+#[case::majority_over_half(DurabilityPolicy::Majority, &["west", "south"], &["north"], WriteDurability::Confirmed { scope: BlobDurability::Filesystem })]
+#[case::majority_below_half(DurabilityPolicy::Majority, &["west"], &["south", "north"], WriteDurability::Unavailable)]
+#[case::local_from_one_remote(DurabilityPolicy::Local, &["west"], &["south", "north"], WriteDurability::Confirmed { scope: BlobDurability::Filesystem })]
+#[tokio::test(start_paused = true)]
+async fn write_ack_policy_sets_the_remote_datacenter_quorum(
+    #[case] policy: DurabilityPolicy,
+    #[case] reporting: &[&str],
+    #[case] silent: &[&str],
+    #[case] expected: WriteDurability,
+) {
+    let digest = digest();
+    let committed = write(&digest);
+    let serial = committed.commit().unwrap().serial();
+    let durability = DistributedBlobDurability::new(
+        ha_topology(),
+        policy,
+        Vec::new(),
+        remotes(reporting, silent, serial),
+        Duration::from_secs(5),
+        Arc::new(Observer::default()),
+    );
+
+    assert_eq!(durability.confirm(committed).await, expected);
+}
+
+#[test]
+fn a_pending_remote_quorum_reports_the_frontier_it_has_applied() {
+    let durability = RemoteDurability::Pending {
+        holders: vec!["west".to_owned()],
+        durable_frontier: 70,
+    };
+
+    assert_eq!(
+        remote_decision(&durability, 100),
+        AckDecision::NotYetDurable {
+            target: 100,
+            durable_frontier: 70,
+        }
+    );
+}
+
+#[test]
+fn a_met_remote_quorum_acknowledges_the_metadata_dimension() {
+    let durability = RemoteDurability::Durable {
+        holders: vec!["west".to_owned()],
+    };
+
+    assert_eq!(remote_decision(&durability, 100), AckDecision::Acknowledged);
+}

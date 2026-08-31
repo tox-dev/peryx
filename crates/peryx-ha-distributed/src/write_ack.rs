@@ -77,17 +77,14 @@ impl DistributedBlobDurability {
             authority,
             &operation,
             &mut acknowledgements,
+            self.policy,
             self.budget,
             DEFAULT_FRONTIER_POLL,
         )
         .await;
-        (
-            remote_decision(
-                &assess_remote_metadata_durability(&operation, &acknowledgements),
-                operation.frontier,
-            ),
-            deadline,
-        )
+        let durability =
+            assess_remote_metadata_durability(&operation, &acknowledgements, self.remote_sources.len(), self.policy);
+        (remote_decision(&durability, operation.frontier), deadline)
     }
 }
 
@@ -139,13 +136,12 @@ impl BlobWriteDurability for DistributedBlobDurability {
 }
 
 const fn remote_decision(durability: &RemoteDurability, frontier: u64) -> AckDecision {
-    if durability.is_durable() {
-        AckDecision::Acknowledged
-    } else {
-        AckDecision::NotYetDurable {
+    match durability {
+        RemoteDurability::Durable { .. } => AckDecision::Acknowledged,
+        RemoteDurability::Pending { durable_frontier, .. } => AckDecision::NotYetDurable {
             target: frontier,
-            durable_frontier: 0,
-        }
+            durable_frontier: *durable_frontier,
+        },
     }
 }
 

@@ -16,9 +16,10 @@ projects. It still rejects inputs that identify a different project, release, or
 A successful upload response follows the evidence the current handler collects. Under `availability.mode = "none"`,
 peryx answers `200` after the local backend commits the artifact and metadata. Under `dc`, metadata commits on the
 writer while `[availability.write_ack]` controls how many same-datacenter member receipts must report the blob. Under
-`ha`, the current resolver also waits for any one remote datacenter to apply the metadata operation. The HA policy does
-not yet change that remote threshold, and the current release has no supported network layout for all HA peer routes;
-see the [release-status inventory](@/core/availability/_index.md#release-status).
+`ha`, the resolver also waits for the metadata operation to apply in the share of the remote datacenters the same policy
+names: one under `local`, a strict majority of them under `majority`, and all of them under `everywhere`. The current
+release has no supported network layout for all HA peer routes; see the
+[release-status inventory](@/core/availability/_index.md#release-status).
 
 The response follows the evidence. A write that reaches its quorum answers `200 upload accepted`. A write still short of
 its quorum when the client's `write_ack.deadline-secs` window elapses answers `202 Accepted` carrying a stable operation

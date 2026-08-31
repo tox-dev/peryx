@@ -906,9 +906,12 @@ The member address must reach the public server that serves the receipt route. T
 node-receipt path to object stores, so it does not use backend-specific object-store evidence. Filesystem persistence
 also ignores a parent-directory sync failure before a receipt can be served.
 
-In HA code, the policy controls the local-datacenter byte threshold. An HA roster permits one member per datacenter, so
-that threshold is one for each policy value. Remote metadata becomes durable when any one other datacenter reports the
-epoch and frontier. `majority` and `everywhere` do not raise that remote threshold in this release.
+Under `ha` the policy resolves on both durability dimensions separately. The byte threshold spans the members in the
+writer's own datacenter; an HA roster permits one member per datacenter, so that threshold is one for every policy
+value. The metadata threshold spans the other datacenters, because the writer's own copy is what the byte threshold
+proves: `local` requires one of them to report the operation epoch and a covering frontier, `majority` a strict majority
+of them, and `everywhere` all of them. A four-datacenter group under `everywhere` acknowledges only once all three
+remote datacenters have applied the operation, and one under `local` acknowledges from the first.
 
 ### Availability listener
 

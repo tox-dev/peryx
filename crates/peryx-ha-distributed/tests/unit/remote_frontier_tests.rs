@@ -5,7 +5,7 @@ use async_trait::async_trait;
 
 use crate::dc_ack::Deadline;
 use crate::peer::TransportError;
-use crate::remote_durability::{MetadataOperation, RemoteAck, assess_remote_metadata_durability};
+use crate::remote_durability::{DurabilityPolicy, MetadataOperation, RemoteAck, assess_remote_metadata_durability};
 use crate::remote_frontier::{LoopbackRemoteFrontierSource, RemoteFrontierSource, gather_remote_acks};
 use crate::support::RequestBlocker;
 
@@ -27,9 +27,21 @@ async fn gather(
     sources: &[Arc<dyn RemoteFrontierSource + Send + Sync>],
     operation: &MetadataOperation,
 ) -> (Deadline, Vec<RemoteAck>) {
+    gather_under(sources, operation, DurabilityPolicy::Local).await
+}
+
+async fn gather_under(
+    sources: &[Arc<dyn RemoteFrontierSource + Send + Sync>],
+    operation: &MetadataOperation,
+    policy: DurabilityPolicy,
+) -> (Deadline, Vec<RemoteAck>) {
     let mut acks = Vec::new();
-    let deadline = gather_remote_acks(sources, AUTHORITY, operation, &mut acks, BUDGET, POLL).await;
+    let deadline = gather_remote_acks(sources, AUTHORITY, operation, &mut acks, policy, BUDGET, POLL).await;
     (deadline, acks)
+}
+
+fn durable(operation: &MetadataOperation, acks: &[RemoteAck], configured: usize) -> bool {
+    assess_remote_metadata_durability(operation, acks, configured, DurabilityPolicy::Local).is_durable()
 }
 
 struct BlockedRemoteFrontierSource {
@@ -64,7 +76,16 @@ async fn test_gather_returns_live_without_a_query_when_already_durable() {
     source.inject(TransportError::Disconnected);
     let sources = sources(vec![source]);
 
-    let deadline = gather_remote_acks(&sources, AUTHORITY, &op(3, 100), &mut acks, BUDGET, POLL).await;
+    let deadline = gather_remote_acks(
+        &sources,
+        AUTHORITY,
+        &op(3, 100),
+        &mut acks,
+        DurabilityPolicy::Local,
+        BUDGET,
+        POLL,
+    )
+    .await;
 
     assert_eq!(deadline, Deadline::Live);
 }
@@ -79,7 +100,7 @@ async fn test_gather_reaches_durability_from_one_eligible_remote() {
     let (deadline, acks) = gather(&sources, &op(3, 100)).await;
 
     assert_eq!(deadline, Deadline::Live);
-    assert!(assess_remote_metadata_durability(&op(3, 100), &acks).is_durable());
+    assert!(durable(&op(3, 100), &acks, sources.len()));
 }
 
 #[tokio::test(start_paused = true)]
@@ -96,20 +117,23 @@ async fn test_gather_queries_a_healthy_remote_while_the_first_remote_is_stalled(
     ];
     let mut acks = Vec::new();
     let gather = tokio::spawn(async move {
-        let deadline = gather_remote_acks(&sources, AUTHORITY, &op(3, 100), &mut acks, BUDGET, POLL).await;
+        let deadline = gather_remote_acks(
+            &sources,
+            AUTHORITY,
+            &op(3, 100),
+            &mut acks,
+            DurabilityPolicy::Local,
+            BUDGET,
+            POLL,
+        )
+        .await;
         (deadline, acks)
     });
 
     started.await.unwrap();
     let (deadline, acks) = gather.await.unwrap();
 
-    assert_eq!(
-        (
-            deadline,
-            assess_remote_metadata_durability(&op(3, 100), &acks).is_durable()
-        ),
-        (Deadline::Live, true)
-    );
+    assert_eq!((deadline, durable(&op(3, 100), &acks, 2)), (Deadline::Live, true));
     assert_eq!(cancelled.await, Ok(()));
 }
 
@@ -125,15 +149,18 @@ async fn test_gather_returns_before_a_later_remote_finishes() {
     ];
     let mut acks = Vec::new();
 
-    let deadline = gather_remote_acks(&sources, AUTHORITY, &op(3, 100), &mut acks, BUDGET, POLL).await;
+    let deadline = gather_remote_acks(
+        &sources,
+        AUTHORITY,
+        &op(3, 100),
+        &mut acks,
+        DurabilityPolicy::Local,
+        BUDGET,
+        POLL,
+    )
+    .await;
 
-    assert_eq!(
-        (
-            deadline,
-            assess_remote_metadata_durability(&op(3, 100), &acks).is_durable()
-        ),
-        (Deadline::Live, true)
-    );
+    assert_eq!((deadline, durable(&op(3, 100), &acks, 2)), (Deadline::Live, true));
 }
 
 #[tokio::test(start_paused = true)]
@@ -150,7 +177,7 @@ async fn test_gather_expires_when_no_remote_applies() {
         Deadline::Expired,
         "a short gather is retry-safe, never durable"
     );
-    assert!(!assess_remote_metadata_durability(&op(3, 100), &acks).is_durable());
+    assert!(!durable(&op(3, 100), &acks, sources.len()));
 }
 
 #[tokio::test(start_paused = true)]
@@ -186,7 +213,7 @@ async fn test_gather_never_counts_a_remote_at_a_stale_epoch() {
     let (deadline, acks) = gather(&sources, &op(3, 100)).await;
 
     assert_eq!(deadline, Deadline::Expired);
-    assert!(!assess_remote_metadata_durability(&op(3, 100), &acks).is_durable());
+    assert!(!durable(&op(3, 100), &acks, sources.len()));
 }
 
 #[tokio::test(start_paused = true)]
@@ -227,4 +254,70 @@ async fn test_gather_sorts_retained_reports_by_datacenter() {
             },
         ]
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_gather_keeps_polling_until_the_policy_quorum_reports() {
+    let sources = sources(vec![
+        LoopbackRemoteFrontierSource::reporting("east", 3, 100),
+        LoopbackRemoteFrontierSource::reporting("west", 3, 100).available_after(3),
+    ]);
+
+    let (deadline, acks) = gather_under(&sources, &op(3, 100), DurabilityPolicy::Everywhere).await;
+
+    assert_eq!(deadline, Deadline::Live);
+    assert_eq!(acks.len(), 2, "everywhere waits for the second datacenter");
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_gather_expires_when_only_part_of_the_policy_quorum_reports() {
+    let sources = sources(vec![
+        LoopbackRemoteFrontierSource::reporting("east", 3, 100),
+        LoopbackRemoteFrontierSource::silent("west"),
+    ]);
+
+    let (deadline, acks) = gather_under(&sources, &op(3, 100), DurabilityPolicy::Everywhere).await;
+
+    assert_eq!(deadline, Deadline::Expired);
+    assert_eq!(
+        acks,
+        vec![RemoteAck {
+            datacenter: "east".to_owned(),
+            epoch: 3,
+            applied_frontier: 100
+        }]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_gather_accepts_seeded_evidence_that_already_meets_the_quorum() {
+    let mut acks = vec![
+        RemoteAck {
+            datacenter: "east".to_owned(),
+            epoch: 3,
+            applied_frontier: 100,
+        },
+        RemoteAck {
+            datacenter: "west".to_owned(),
+            epoch: 3,
+            applied_frontier: 100,
+        },
+    ];
+    let sources = sources(vec![
+        LoopbackRemoteFrontierSource::silent("east"),
+        LoopbackRemoteFrontierSource::silent("west"),
+    ]);
+
+    let deadline = gather_remote_acks(
+        &sources,
+        AUTHORITY,
+        &op(3, 100),
+        &mut acks,
+        DurabilityPolicy::Everywhere,
+        BUDGET,
+        POLL,
+    )
+    .await;
+
+    assert_eq!(deadline, Deadline::Live);
 }

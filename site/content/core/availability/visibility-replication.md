@@ -83,9 +83,9 @@ mode, and never waits on byte convergence.
   can lose every transition committed after the latest verified backup; recovery restores that backup.
 - **`dc`** makes the transition durable in a second failure domain within the datacenter before it acknowledges. It
   survives the loss of one node's storage with no lost transition; it does not survive the loss of the datacenter.
-- **`ha`** makes the transition durable in a remote datacenter before it acknowledges. A trash, restore, revoke, or lift
-  survives the loss of the writing datacenter, and a reader in the surviving datacenter serves the same hidden set the
-  transition intended.
+- **`ha`** makes the transition durable in the write-ack policy's share of the remote datacenters before it
+  acknowledges. A trash, restore, revoke, or lift survives the loss of the writing datacenter, and a reader in the
+  surviving datacenter serves the same hidden set the transition intended.
 
 **Consistency across modes is the same:** a replica exposes the projection only up to its readable frontier, and it
 advertises the operation frontier only once the projection behind it is durable. A reader never sees a transition half

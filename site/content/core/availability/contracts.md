@@ -10,15 +10,16 @@ replication without an ownership consensus group. `ha` also assembles ownership 
 runs on the one address a roster member carries. See the
 [release-status inventory](@/core/availability/_index.md#release-status) before using a mode in production.
 
-| Mode   | Current PyPI upload request acknowledgement                                                      | Coordination                                                        |
-| ------ | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------- |
-| `none` | Metadata and bytes committed on the local backend                                                | None                                                                |
-| `dc`   | Metadata committed on the writer and bytes satisfy the configured same-DC node-receipt threshold | Asynchronous metadata and blob replication; no ownership consensus  |
-| `ha`   | Writer bytes plus metadata applied in any one remote datacenter                                  | HA ownership components; one remote datacenter regardless of policy |
+| Mode   | Current PyPI upload request acknowledgement                                                      | Coordination                                                            |
+| ------ | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
+| `none` | Metadata and bytes committed on the local backend                                                | None                                                                    |
+| `dc`   | Metadata committed on the writer and bytes satisfy the configured same-DC node-receipt threshold | Asynchronous metadata and blob replication; no ownership consensus      |
+| `ha`   | Writer bytes plus metadata applied in the policy's share of the remote datacenters               | HA ownership components; remote datacenters set by the write-ack policy |
 
-The `ha` write-ack policy does not yet change the remote metadata threshold. `local`, `majority`, and `everywhere` all
-accept one remote datacenter. Blob acknowledgements also treat each backend as a filesystem and count node-labelled
-receipts, including for a shared object store. Do not infer stronger evidence from either setting.
+The `ha` write-ack policy sets the remote metadata threshold over the datacenters other than the writer's own: `local`
+accepts one, `majority` a strict majority of them, and `everywhere` all of them. Blob acknowledgements still treat each
+backend as a filesystem and count node-labelled receipts, including for a shared object store, so do not infer stronger
+byte evidence from an object store.
 
 A filesystem receipt reports that the blob is present after the store call. The filesystem persistence path ignores a
 parent-directory sync failure, so that receipt can overstate crash durability on an affected filesystem.
@@ -71,8 +72,8 @@ backup is required.
 
 `none` has the recovery point of its local backend and latest verified backup. A `dc` promotion recovers metadata only
 through the selected replica's applied frontier; same-DC byte receipts do not make later metadata synchronous. HA waits
-for one remote metadata frontier while bytes converge later, so `majority` and `everywhere` do not yet raise that remote
-threshold. Recovery time includes detection, operator action, routing, and catch-up.
+for the policy's share of remote metadata frontiers while bytes converge later. Recovery time includes detection,
+operator action, routing, and catch-up.
 
 ## Benchmark method for mode budgets {#benchmark-method-for-mode-budgets}
 

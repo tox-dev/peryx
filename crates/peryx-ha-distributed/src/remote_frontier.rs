@@ -1,6 +1,6 @@
-//! Polls remote metadata frontiers until one eligible datacenter proves the operation durable. Missing,
-//! failed, or wrong-epoch reports leave durability unproven. Deadline expiry remains retry-safe because
-//! a remote may commit after polling stops.
+//! Polls remote metadata frontiers until the configured write-ack policy's share of datacenters proves
+//! the operation durable. Missing, failed, or wrong-epoch reports leave durability unproven. Deadline
+//! expiry remains retry-safe because a remote may commit after polling stops.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -12,11 +12,12 @@ use peryx_ha::{RemoteAck, TransportError};
 
 use crate::dc_ack::Deadline;
 use crate::evidence_gather::{Attempt, Observation, gather};
-use crate::remote_durability::{MetadataOperation, assess_remote_metadata_durability};
+use crate::remote_durability::{DurabilityPolicy, MetadataOperation, assess_remote_metadata_durability};
 
 pub const DEFAULT_FRONTIER_POLL: Duration = Duration::from_millis(50);
 
-/// Returns [`Deadline::Live`] once `acks` prove remote durability, including evidence present on entry.
+/// Returns [`Deadline::Live`] once `acks` prove remote durability under `policy`, including evidence
+/// present on entry. `sources` is the configured remote datacenter set the policy resolves against.
 ///
 /// Otherwise polls until `budget` expires and returns [`Deadline::Expired`]. Each datacenter's latest
 /// report replaces its prior report, so duplicates cannot inflate durability.
@@ -25,10 +26,12 @@ pub async fn gather_remote_acks(
     authority: &str,
     operation: &MetadataOperation,
     acks: &mut Vec<RemoteAck>,
+    policy: DurabilityPolicy,
     budget: Duration,
     poll: Duration,
 ) -> Deadline {
-    if assess_remote_metadata_durability(operation, acks).is_durable() {
+    let configured = sources.len();
+    if assess_remote_metadata_durability(operation, acks, configured, policy).is_durable() {
         sort_acks(acks);
         return Deadline::Live;
     }
@@ -50,7 +53,7 @@ pub async fn gather_remote_acks(
         |ack| {
             acks.retain(|held| held.datacenter != ack.datacenter);
             acks.push(ack);
-            if assess_remote_metadata_durability(operation, acks).is_durable() {
+            if assess_remote_metadata_durability(operation, acks, configured, policy).is_durable() {
                 Observation::Durable
             } else {
                 Observation::Pending

@@ -188,8 +188,9 @@ address = "https://west.internal:8443"
 role = "replica"
 ```
 
-The assembled HA acknowledgement resolver waits for any one remote metadata frontier. The write-ack policy does not
-raise that threshold, so `majority` and `everywhere` do not yet make a remote datacenter a durability requirement.
+The assembled HA acknowledgement resolver waits for the number of remote metadata frontiers the write-ack policy
+requires: one under `local`, a strict majority of the remote datacenters under `majority`, and all of them under
+`everywhere`.
 
 ## Secure the replication path
 
