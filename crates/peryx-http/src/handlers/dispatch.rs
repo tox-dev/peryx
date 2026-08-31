@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::Extension;
-use axum::extract::{OriginalUri, Path, Request, State};
+use axum::extract::{OriginalUri, Request, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 
@@ -82,19 +82,28 @@ pub async fn dispatch_get(
     }
 }
 
-pub async fn dispatch_post(State(state): State<Arc<AppState>>, Path(path): Path<String>, request: Request) -> Response {
+/// The path travels raw, as it does for the other methods.
+///
+/// The read-only guard and the rate limiter classify a POST from the request path, so a decoded
+/// capture would let one encoded character give the three of them different answers.
+pub async fn dispatch_post(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(uri): OriginalUri,
+    request: Request,
+) -> Response {
+    let path = uri.path().trim_start_matches('/');
     if let Some(serving) = state
         .driver_set()
         .services()
-        .find_map(|(_, serving)| serving.classify_service_post(&path, request.headers()).map(|_| serving))
+        .find_map(|(_, serving)| serving.classify_service_post(path, request.headers()).map(|_| serving))
     {
         return serving.service_post(state.serving.clone(), request).await;
     }
-    let serving = match driver_for(&state, &path) {
+    let serving = match driver_for(&state, path) {
         Ok(serving) => serving.clone(),
         Err(reason) => return reason.response(),
     };
-    serving.post(state.serving.clone(), path, request).await
+    serving.post(state.serving.clone(), path.to_owned(), request).await
 }
 
 pub async fn dispatch_put(State(state): State<Arc<AppState>>, request: Request) -> Response {

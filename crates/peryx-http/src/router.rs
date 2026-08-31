@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -6,7 +7,8 @@ use std::time::Duration;
 use axum::Extension;
 use axum::Router;
 use axum::body::Body;
-use axum::extract::{DefaultBodyLimit, MatchedPath, Request, State};
+use axum::extract::{DefaultBodyLimit, MatchedPath, OriginalUri, Request, State};
+use axum::http::Uri;
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse as _, Response};
 use axum::routing::{any, delete, get, post, put};
@@ -95,12 +97,38 @@ pub fn router_with_ui(state: Arc<AppState>, services: HttpDomainServices, ui: Mo
     };
     router.layer(
         ServiceBuilder::new()
+            .layer(MapRequestLayer::new(canonicalize_request_path))
             .layer(MapRequestLayer::new(move |request: Request| {
                 serving.requests.fetch_add(1, Ordering::Relaxed);
                 request
             }))
             .layer(Extension(services)),
     )
+}
+
+/// The four dispatchers, the read-only guard and the rate limiter each read the request path for
+/// themselves, so a path spelled two equivalent ways would otherwise split one request into two
+/// verdicts. Canonicalizing here, ahead of all of them, leaves them one spelling to agree on.
+fn canonicalize_request_path(mut request: Request) -> Request {
+    let Cow::Owned(path) = peryx_core::path::canonicalize_path(request.uri().path()) else {
+        return request;
+    };
+    let target = match request.uri().query() {
+        Some(query) => format!("{path}?{query}"),
+        None => path,
+    };
+    let mut parts = request.uri().clone().into_parts();
+    parts.path_and_query = Some(
+        target
+            .parse()
+            .expect("unescaping unreserved octets leaves a valid target"),
+    );
+    let uri = Uri::from_parts(parts).expect("only the path and query changed");
+    // axum stamps `OriginalUri` while it routes, ahead of every layer, so the handlers reading it
+    // would otherwise resolve the spelling the middlewares below have already left behind.
+    request.extensions_mut().insert(OriginalUri(uri.clone()));
+    *request.uri_mut() = uri;
+    request
 }
 
 fn request_span(request: &Request) -> tracing::Span {

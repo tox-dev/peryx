@@ -60,6 +60,40 @@ pub fn decode_path(path: &str) -> Result<Cow<'_, str>, PathSafetyError> {
     decode_percent(path)
 }
 
+/// The equivalent spelling of `path` that peryx itself would emit.
+///
+/// A percent-escaped unreserved octet denotes the same character as the octet itself (RFC 3986
+/// §6.2.2.2), so unescaping one can only name something the client could have spelled literally.
+/// Reserved and excluded octets keep their escapes, so segment boundaries and every value a
+/// consumer later decodes are left exactly as they arrived. Malformed escapes are left alone for
+/// the consumer that decodes them to reject.
+#[must_use]
+pub fn canonicalize_path(path: &str) -> Cow<'_, str> {
+    if !path.contains('%') {
+        return Cow::Borrowed(path);
+    }
+    let mut canonical = String::with_capacity(path.len());
+    let mut rest = path;
+    while let Some(escape) = rest.find('%') {
+        canonical.push_str(&rest[..escape]);
+        let escape = &rest[escape..];
+        let unreserved = escape
+            .as_bytes()
+            .get(1..3)
+            .and_then(|digits| hex_byte(digits[0], digits[1]))
+            .filter(|byte| is_unreserved(*byte));
+        if let Some(byte) = unreserved {
+            canonical.push(char::from(byte));
+            rest = &escape[3..];
+        } else {
+            canonical.push('%');
+            rest = &escape[1..];
+        }
+    }
+    canonical.push_str(rest);
+    Cow::Owned(canonical)
+}
+
 /// # Errors
 /// Returns [`PathSafetyError::InvalidRoute`] for empty, traversal, encoded, or control-containing
 /// routes, and [`PathSafetyError::ReservedRoute`] for supplied reserved prefixes.
@@ -127,12 +161,11 @@ pub fn validate_path_segment(kind: &'static str, value: &str) -> Result<(), Path
 }
 
 fn valid_route_segment(segment: &str) -> bool {
-    !segment.is_empty()
-        && segment != "."
-        && segment != ".."
-        && segment
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~'))
+    !segment.is_empty() && segment != "." && segment != ".." && segment.bytes().all(is_unreserved)
+}
+
+const fn is_unreserved(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
 }
 
 /// Borrow unescaped input to avoid an allocation on the common path.

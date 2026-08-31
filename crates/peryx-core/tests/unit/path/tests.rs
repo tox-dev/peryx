@@ -1,6 +1,6 @@
 use super::{
-    CORE_ROUTE_PREFIXES, PathSafetyError, decode_path, decode_path_segment, is_local_artifact_url, local_artifact_url,
-    validate_artifact_name, validate_path_segment, validate_route,
+    CORE_ROUTE_PREFIXES, PathSafetyError, canonicalize_path, decode_path, decode_path_segment, is_local_artifact_url,
+    local_artifact_url, validate_artifact_name, validate_path_segment, validate_route,
 };
 use rstest::rstest;
 
@@ -50,6 +50,20 @@ fn test_path_segments_decode_percent_encoding() {
 #[test]
 fn test_paths_decode_member_separators() {
     assert_eq!(decode_path("artifact%2Fmetadata").unwrap(), "artifact/metadata");
+}
+
+#[rstest]
+#[case::unescaped("/alpha/simple/", "/alpha/simple/")]
+#[case::unreserved_letter("/%52PC2", "/RPC2")]
+#[case::unreserved_run("/%61%6Cpha%2Done%2E%5F%7E", "/alpha-one._~")]
+#[case::separator_kept("/alpha%2F", "/alpha%2F")]
+#[case::excluded_kept("/alpha/pkg%201.0%23x%3F.bin", "/alpha/pkg%201.0%23x%3F.bin")]
+#[case::double_escape_kept("/alpha/pkg%252Fname", "/alpha/pkg%252Fname")]
+#[case::malformed_digits_kept("/alpha%xx/tail", "/alpha%xx/tail")]
+#[case::truncated_escape_kept("/alpha%2", "/alpha%2")]
+#[case::bare_percent_kept("/alpha%", "/alpha%")]
+fn test_canonical_paths_unescape_only_unreserved_octets(#[case] path: &str, #[case] expected: &str) {
+    assert_eq!(canonicalize_path(path), expected);
 }
 
 #[test]
