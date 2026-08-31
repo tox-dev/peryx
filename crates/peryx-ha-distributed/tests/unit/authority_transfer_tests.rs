@@ -2,8 +2,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use peryx_driver::state::{
-    ClusterStatus, CommandOutcome, CommandReceipt, ControlCommand, ControlError, HomeClaim, MembershipControl,
-    OwnershipAuthority, OwnershipError, TransferOutcome,
+    ClusterStatus, CommandOutcome, CommandReceipt, ControlCommand, ControlCommit, ControlError, HomeClaim,
+    MembershipControl, OwnershipAuthority, OwnershipError, TransferOutcome,
 };
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
@@ -111,13 +111,14 @@ impl ScriptedControl {
 
 #[async_trait::async_trait]
 impl MembershipControl for ScriptedControl {
-    async fn submit(&self, command: ControlCommand) -> Result<CommandReceipt, ControlError> {
+    async fn submit(&self, _key: Option<&str>, command: ControlCommand) -> Result<ControlCommit, ControlError> {
         self.submissions.lock().unwrap().push(command);
         self.result
             .lock()
             .unwrap()
             .take()
             .expect("the scripted control was submitted twice")
+            .map(ControlCommit::committed)
     }
 }
 

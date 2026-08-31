@@ -100,9 +100,11 @@ pub struct CommandMetrics {
     pub p99_ms: i64,
 }
 
+/// Holds the canonical command rather than a digest of it, so a replay compares what was asked for
+/// instead of a hash whose output no toolchain promises to keep stable.
 struct KeyEntry {
     key: String,
-    fingerprint: u64,
+    command: ControlCommand,
     state: KeyState,
 }
 
@@ -190,8 +192,9 @@ impl ControlPlane {
         }
     }
 
-    /// Binds `key` to the command fingerprint before submission. Concurrent retries wait and replay the
-    /// committed receipt; reuse with a different command fails.
+    /// Binds `key` to the command before submission. Concurrent retries wait and replay the committed
+    /// receipt; reuse with a different command fails. This binding only spares one process a round trip:
+    /// the replicated window behind [`MembershipControl`] is what survives restart and failover.
     ///
     /// # Errors
     /// Returns [`ControlError::KeyReuse`] when `key` was already claimed for a different command,
@@ -204,11 +207,10 @@ impl ControlPlane {
         command: ControlCommand,
     ) -> Result<CommandReceipt, ControlError> {
         let Some(key) = key else {
-            return self.run(actor, &command).await;
+            return self.run(actor, None, &command).await;
         };
-        let fingerprint = fingerprint(&command);
         loop {
-            match self.claim(key, fingerprint) {
+            match self.claim(key, &command) {
                 Claim::Replay(receipt) => {
                     AuditRecord::replayed(actor, &command, &receipt).emit((self.unix_clock)());
                     return Ok(receipt);
@@ -224,7 +226,7 @@ impl ControlPlane {
                         key,
                         sender: Some(sender),
                     };
-                    let result = self.run(actor, &command).await;
+                    let result = self.run(actor, Some(key), &command).await;
                     claim.settle(&result);
                     return result;
                 }
@@ -235,7 +237,14 @@ impl ControlPlane {
         }
     }
 
-    async fn run(&self, actor: &str, command: &ControlCommand) -> Result<CommandReceipt, ControlError> {
+    /// A receipt the replicated window replayed is audited as a replay and left out of the completion
+    /// count, so a retry answered after a failover is not reported as a second command.
+    async fn run(
+        &self,
+        actor: &str,
+        key: Option<&str>,
+        command: &ControlCommand,
+    ) -> Result<CommandReceipt, ControlError> {
         let Ok(_permit) = self.permits.try_acquire() else {
             let error = ControlError::Overloaded;
             AuditRecord::failed(actor, command, &error).emit((self.unix_clock)());
@@ -243,14 +252,18 @@ impl ControlPlane {
         };
         let timestamp_unix = (self.unix_clock)();
         let started = (self.duration_source)();
-        let result = self.control.submit(command.clone()).await;
+        let result = self.control.submit(key, command.clone()).await;
         let elapsed = (self.duration_source)().saturating_sub(started);
-        self.record(i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX));
+        let replayed = matches!(&result, Ok(commit) if commit.replayed);
+        if !replayed {
+            self.record(i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX));
+        }
         match &result {
-            Ok(receipt) => AuditRecord::committed(actor, command, receipt).emit(timestamp_unix),
+            Ok(commit) if replayed => AuditRecord::replayed(actor, command, &commit.receipt).emit(timestamp_unix),
+            Ok(commit) => AuditRecord::committed(actor, command, &commit.receipt).emit(timestamp_unix),
             Err(error) => AuditRecord::failed(actor, command, error).emit(timestamp_unix),
         }
-        result
+        result.map(|commit| commit.receipt)
     }
 
     #[must_use]
@@ -269,10 +282,10 @@ impl ControlPlane {
     }
 
     /// Claims and inserts under one lock so concurrent requests cannot submit the same key twice.
-    fn claim(&self, key: &str, fingerprint: u64) -> Claim {
+    fn claim(&self, key: &str, command: &ControlCommand) -> Claim {
         let mut history = self.lock();
         if let Some(entry) = history.receipts.iter().find(|entry| entry.key == key) {
-            if entry.fingerprint != fingerprint {
+            if entry.command != *command {
                 return Claim::Conflict;
             }
             return match &entry.state {
@@ -283,7 +296,7 @@ impl ControlPlane {
         let (sender, receiver) = watch::channel(());
         history.receipts.push_back(KeyEntry {
             key: key.to_owned(),
-            fingerprint,
+            command: command.clone(),
             state: KeyState::Pending(receiver),
         });
         evict_committed(&mut history.receipts, self.retained);
@@ -336,13 +349,6 @@ impl ControlExecutor for ControlPlane {
             p99_ms: metrics.p99_ms,
         }
     }
-}
-
-fn fingerprint(command: &ControlCommand) -> u64 {
-    use std::hash::{Hash as _, Hasher as _};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    command.hash(&mut hasher);
-    hasher.finish()
 }
 
 fn push_bounded<T>(queue: &mut VecDeque<T>, item: T, cap: usize) {

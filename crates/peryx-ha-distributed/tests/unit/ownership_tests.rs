@@ -872,7 +872,7 @@ fn test_restore_rejects_malformed_bytes() {
 
 #[test]
 fn test_restore_rejects_a_record_at_the_reserved_zero_epoch() {
-    let snapshot = br#"{"authorities":{"proj":{"home":"east","epoch":0,"assignment":{"cause":"first-publish","term":1,"index":1,"epoch":1},"transfers":[],"writes":{}}},"singletons":{}}"#;
+    let snapshot = br#"{"authorities":{"proj":{"home":"east","epoch":0,"assignment":{"cause":"first-publish","term":1,"index":1,"epoch":1},"transfers":[],"writes":{}}},"singletons":{},"controls":{}}"#;
 
     let error = OwnershipState::restore(snapshot).unwrap_err();
 

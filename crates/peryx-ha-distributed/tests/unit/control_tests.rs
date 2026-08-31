@@ -8,7 +8,7 @@ use std::time::Duration;
 use futures_util::poll;
 use tokio::sync::{Notify, oneshot, watch};
 
-use peryx_ha::CommandOutcome;
+use peryx_ha::{CommandOutcome, ControlCommit};
 
 use super::{
     AuditRecord, CommandMetrics, CommandReceipt, ControlCommand, ControlError, ControlPlane, DurationSource, KeyEntry,
@@ -26,13 +26,21 @@ fn receipt(index: u64) -> CommandReceipt {
     }
 }
 
+fn committed(index: u64) -> Result<ControlCommit, ControlError> {
+    Ok(ControlCommit::committed(receipt(index)))
+}
+
+fn replayed(index: u64) -> Result<ControlCommit, ControlError> {
+    Ok(ControlCommit::replayed(receipt(index)))
+}
+
 struct ScriptedControl {
-    results: Mutex<VecDeque<Result<CommandReceipt, ControlError>>>,
-    submissions: Mutex<Vec<ControlCommand>>,
+    results: Mutex<VecDeque<Result<ControlCommit, ControlError>>>,
+    submissions: Mutex<Vec<(Option<String>, ControlCommand)>>,
 }
 
 impl ScriptedControl {
-    fn new(results: impl IntoIterator<Item = Result<CommandReceipt, ControlError>>) -> Arc<Self> {
+    fn new(results: impl IntoIterator<Item = Result<ControlCommit, ControlError>>) -> Arc<Self> {
         Arc::new(Self {
             results: Mutex::new(results.into_iter().collect()),
             submissions: Mutex::new(Vec::new()),
@@ -42,8 +50,8 @@ impl ScriptedControl {
 
 #[async_trait::async_trait]
 impl MembershipControl for ScriptedControl {
-    async fn submit(&self, command: ControlCommand) -> Result<CommandReceipt, ControlError> {
-        self.submissions.lock().unwrap().push(command);
+    async fn submit(&self, key: Option<&str>, command: ControlCommand) -> Result<ControlCommit, ControlError> {
+        self.submissions.lock().unwrap().push((key.map(str::to_owned), command));
         self.results
             .lock()
             .unwrap()
@@ -67,11 +75,11 @@ struct GatedPlane {
 
 #[async_trait::async_trait]
 impl MembershipControl for GatedControl {
-    async fn submit(&self, _command: ControlCommand) -> Result<CommandReceipt, ControlError> {
+    async fn submit(&self, _key: Option<&str>, _command: ControlCommand) -> Result<ControlCommit, ControlError> {
         self.submissions.fetch_add(1, Ordering::SeqCst);
         self.entered.notify_one();
         self.release.notified().await;
-        Ok(receipt(1))
+        Ok(ControlCommit::committed(receipt(1)))
     }
 }
 
@@ -123,7 +131,7 @@ fn transfer() -> ControlCommand {
 
 #[tokio::test]
 async fn test_execute_returns_the_committed_receipt() {
-    let control = ScriptedControl::new([Ok(receipt(7))]);
+    let control = ScriptedControl::new([committed(7)]);
     let plane = ControlPlane::new(control.clone(), fixed_unix_clock());
 
     let committed = plane.execute("alice", Some("k1"), transfer()).await.unwrap();
@@ -133,8 +141,36 @@ async fn test_execute_returns_the_committed_receipt() {
 }
 
 #[tokio::test]
+async fn test_the_idempotency_key_reaches_the_replicated_window() {
+    let control = ScriptedControl::new([committed(7), committed(8)]);
+    let plane = ControlPlane::new(control.clone(), fixed_unix_clock());
+
+    plane.execute("alice", Some("k1"), transfer()).await.unwrap();
+    plane.execute("alice", None, transfer()).await.unwrap();
+
+    let submissions = control.submissions.lock().unwrap();
+    assert_eq!(submissions[0].0.as_deref(), Some("k1"));
+    assert_eq!(submissions[1].0, None, "a keyless command carries no window entry");
+}
+
+#[tokio::test]
+async fn test_a_receipt_the_window_replayed_is_audited_as_a_replay() {
+    let control = ScriptedControl::new([replayed(4)]);
+    let plane = ControlPlane::with_duration_source(control, fixed_unix_clock(), fixed_duration_source());
+
+    let committed = plane.execute("alice", Some("k1"), transfer()).await.unwrap();
+
+    assert_eq!(committed, receipt(4));
+    assert_eq!(
+        plane.metrics().completed,
+        0,
+        "a receipt recorded before this process started is not a command it completed"
+    );
+}
+
+#[tokio::test]
 async fn test_a_repeated_key_returns_one_committed_result_without_resubmitting() {
-    let control = ScriptedControl::new([Ok(receipt(7)), Err(ControlError::Unavailable("gone".to_owned()))]);
+    let control = ScriptedControl::new([committed(7), Err(ControlError::Unavailable("gone".to_owned()))]);
     let plane = ControlPlane::new(control.clone(), fixed_unix_clock());
 
     let first = plane.execute("alice", Some("k1"), transfer()).await.unwrap();
@@ -150,7 +186,7 @@ async fn test_a_repeated_key_returns_one_committed_result_without_resubmitting()
 
 #[tokio::test]
 async fn test_a_replay_survives_a_leader_loss_after_commit() {
-    let control = ScriptedControl::new([Ok(receipt(3)), Err(ControlError::NotLeader { leader: None })]);
+    let control = ScriptedControl::new([committed(3), Err(ControlError::NotLeader { leader: None })]);
     let plane = ControlPlane::new(control, fixed_unix_clock());
 
     let committed = plane.execute("alice", Some("k1"), transfer()).await.unwrap();
@@ -161,7 +197,7 @@ async fn test_a_replay_survives_a_leader_loss_after_commit() {
 
 #[tokio::test]
 async fn test_a_keyless_command_never_deduplicates() {
-    let control = ScriptedControl::new([Ok(receipt(1)), Ok(receipt(2))]);
+    let control = ScriptedControl::new([committed(1), committed(2)]);
     let plane = ControlPlane::new(control.clone(), fixed_unix_clock());
 
     plane.execute("alice", None, transfer()).await.unwrap();
@@ -172,7 +208,7 @@ async fn test_a_keyless_command_never_deduplicates() {
 
 #[tokio::test]
 async fn test_a_failure_is_returned_and_not_cached() {
-    let control = ScriptedControl::new([Err(ControlError::Invalid("same home".to_owned())), Ok(receipt(5))]);
+    let control = ScriptedControl::new([Err(ControlError::Invalid("same home".to_owned())), committed(5)]);
     let plane = ControlPlane::new(control, fixed_unix_clock());
 
     let failed = plane.execute("alice", Some("k1"), transfer()).await;
@@ -276,7 +312,7 @@ async fn test_a_waiter_reclaims_an_idempotency_key_after_its_owner_is_dropped() 
 
 #[tokio::test]
 async fn test_a_key_reused_for_a_different_command_is_rejected() {
-    let control = ScriptedControl::new([Ok(receipt(7))]);
+    let control = ScriptedControl::new([committed(7)]);
     let plane = ControlPlane::new(control.clone(), fixed_unix_clock());
 
     plane.execute("alice", Some("k1"), transfer()).await.unwrap();
@@ -291,6 +327,27 @@ async fn test_a_key_reused_for_a_different_command_is_rejected() {
         1,
         "the reused key never reached a second command"
     );
+}
+
+#[tokio::test]
+async fn test_a_key_reused_for_the_same_command_shape_with_a_different_body_is_rejected() {
+    let control = ScriptedControl::new([committed(7)]);
+    let plane = ControlPlane::new(control.clone(), fixed_unix_clock());
+    let learner = |address: &str| ControlCommand::AddLearner {
+        datacenter: "west".to_owned(),
+        address: address.to_owned(),
+    };
+
+    plane
+        .execute("alice", Some("k1"), learner("west-a.internal:4460"))
+        .await
+        .unwrap();
+    let reused = plane
+        .execute("alice", Some("k1"), learner("west-b.internal:4460"))
+        .await;
+
+    assert_eq!(reused, Err(ControlError::KeyReuse));
+    assert_eq!(control.submissions.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -323,7 +380,7 @@ async fn test_the_concurrency_bound_rejects_an_excess_command() {
 
 #[tokio::test]
 async fn test_metrics_report_the_completed_count_and_latency_percentiles() {
-    let control = ScriptedControl::new([Ok(receipt(1)), Ok(receipt(2)), Ok(receipt(3)), Ok(receipt(4))]);
+    let control = ScriptedControl::new([committed(1), committed(2), committed(3), committed(4)]);
     let plane = ControlPlane::with_duration_source(
         control,
         fixed_unix_clock(),
@@ -363,7 +420,7 @@ async fn test_metrics_use_monotonic_milliseconds(
     });
     let observed_wall = wall.clone();
     let plane = ControlPlane::with_duration_source(
-        ScriptedControl::new([Ok(receipt(1))]),
+        ScriptedControl::new([committed(1)]),
         Arc::new(move || observed_wall.load(Ordering::SeqCst)),
         duration_source,
     );
@@ -382,7 +439,7 @@ async fn test_metrics_use_monotonic_milliseconds(
 
 #[tokio::test]
 async fn test_the_idempotency_window_evicts_the_oldest_receipt() {
-    let results = (0..3).map(|index| Ok(receipt(index))).chain([Ok(receipt(99))]);
+    let results = (0..3).map(committed).chain([committed(99)]);
     let control = ScriptedControl::new(results);
     let plane = ControlPlane::with_limits(control.clone(), fixed_unix_clock(), fixed_duration_source(), 4, 2);
 
@@ -405,7 +462,7 @@ fn test_eviction_keeps_in_flight_slots_over_cap() {
         let (_sender, receiver) = watch::channel(());
         KeyEntry {
             key: key.to_owned(),
-            fingerprint: 0,
+            command: transfer(),
             state: KeyState::Pending(receiver),
         }
     };
@@ -434,13 +491,13 @@ fn test_plan_voter_roster_is_a_no_op_for_a_present_add_or_absent_remove() {
 
 #[test]
 fn test_audit_records_name_the_command_without_the_body() {
-    let committed = AuditRecord::committed("alice", &transfer(), &receipt(4));
-    assert_eq!(committed.actor, "alice");
-    assert_eq!(committed.command, "transfer_authority");
-    assert_eq!(committed.target, "proj");
-    assert_eq!(committed.result, "committed");
-    assert_eq!(committed.term, Some(1));
-    assert_eq!(committed.index, Some(4));
+    let record = AuditRecord::committed("alice", &transfer(), &receipt(4));
+    assert_eq!(record.actor, "alice");
+    assert_eq!(record.command, "transfer_authority");
+    assert_eq!(record.target, "proj");
+    assert_eq!(record.result, "committed");
+    assert_eq!(record.term, Some(1));
+    assert_eq!(record.index, Some(4));
 
     let learner = ControlCommand::AddLearner {
         datacenter: "west".to_owned(),

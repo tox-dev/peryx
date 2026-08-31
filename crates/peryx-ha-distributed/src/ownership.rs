@@ -8,7 +8,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::authority::AuthorityKey;
 use crate::envelope::AuthorityEpoch;
-use peryx_ha::{AUTHORITY_CLOCK_SKEW_SECS, AUTHORITY_WRITE_LEASE_SECS, SINGLETON_LEASE_SECS};
+use peryx_ha::{
+    AUTHORITY_CLOCK_SKEW_SECS, AUTHORITY_WRITE_LEASE_SECS, CONTROL_IDEMPOTENCY_SECS, CommandOutcome, CommandReceipt,
+    ControlCommand, SINGLETON_LEASE_SECS,
+};
 
 /// The unassigned epoch, which [`AuthorityFence`](crate::AuthorityFence) rejects.
 const UNASSIGNED: AuthorityEpoch = AuthorityEpoch(0);
@@ -99,6 +102,36 @@ pub enum OwnershipCommand {
         generation: u64,
         now_unix: i64,
     },
+    /// Binds `key` to `command` and, when consensus itself carries the mutation, applies it and records
+    /// its receipt in the same decision.
+    AttemptControl {
+        key: String,
+        command: ControlCommand,
+        now_unix: i64,
+    },
+    /// Records the receipt of a control command whose mutation is a consensus membership change, which
+    /// no ownership decision can carry.
+    SettleControl {
+        key: String,
+        command: ControlCommand,
+        receipt: CommandReceipt,
+        now_unix: i64,
+    },
+}
+
+/// What the replicated idempotency window says about one keyed control attempt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ControlResolution {
+    /// The mutation applied in this decision and its receipt is now durable.
+    Committed(CommandReceipt),
+    /// An earlier attempt under this key already recorded a receipt.
+    Replayed(CommandReceipt),
+    /// The key is bound; the caller owes the membership change and its settlement.
+    Claimed,
+    /// The mutation left ownership unchanged, so nothing was recorded.
+    Rejected(ControlRejection),
+    /// The key already stands for a different command.
+    KeyReuse,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -139,6 +172,9 @@ pub enum OwnershipEffect {
         expires_at_unix: i64,
     },
     SingletonReleased,
+    Control(ControlResolution),
+    /// The receipt that stands for the key, which is the first one recorded under it.
+    ControlSettled(CommandReceipt),
     /// The command was invalid and left ownership unchanged.
     Rejected(Rejection),
 }
@@ -204,11 +240,22 @@ impl SingletonHold {
     }
 }
 
+/// One idempotency key's binding. A record without a receipt is a claim whose membership change has not
+/// settled yet; a retry of the same command re-runs it, which membership changes converge on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ControlRecord {
+    command: ControlCommand,
+    /// The window is anchored at the first claim, so settlement never extends it.
+    claimed_at_unix: i64,
+    receipt: Option<CommandReceipt>,
+}
+
 /// Missing authorities are unassigned and read as epoch zero; missing singletons are unheld.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OwnershipState {
     authorities: BTreeMap<String, AuthorityRecord>,
     singletons: BTreeMap<String, SingletonRecord>,
+    controls: BTreeMap<String, ControlRecord>,
 }
 
 impl OwnershipState {
@@ -256,7 +303,114 @@ impl OwnershipState {
                 generation,
                 now_unix,
             } => self.release_singleton(job, holder, *term, *generation, *now_unix),
+            OwnershipCommand::AttemptControl { key, command, now_unix } => {
+                OwnershipEffect::Control(self.attempt_control(key, command, *now_unix, meta))
+            }
+            OwnershipCommand::SettleControl {
+                key,
+                command,
+                receipt,
+                now_unix,
+            } => OwnershipEffect::ControlSettled(self.settle_control(key, command, receipt, *now_unix)),
         }
+    }
+
+    /// Resolves `key` against the idempotency window and, for the commands ownership itself carries,
+    /// applies the mutation and records its receipt in this same decision. Fusing the two is what stops
+    /// a replacement leader from committing a second mutation for a request it never answered.
+    fn attempt_control(
+        &mut self,
+        key: &str,
+        command: &ControlCommand,
+        now_unix: i64,
+        meta: AppliedMeta,
+    ) -> ControlResolution {
+        self.prune_controls(now_unix);
+        if let Some(record) = self.controls.get(key) {
+            if record.command != *command {
+                return ControlResolution::KeyReuse;
+            }
+            return record
+                .receipt
+                .clone()
+                .map_or(ControlResolution::Claimed, ControlResolution::Replayed);
+        }
+        let Some(effect) = self.apply_control(command, now_unix) else {
+            self.bind_control(key, command, now_unix, None);
+            return ControlResolution::Claimed;
+        };
+        let outcome = match control_outcome(&effect) {
+            Ok(outcome) => outcome,
+            Err(rejection) => return ControlResolution::Rejected(rejection),
+        };
+        let receipt = CommandReceipt {
+            term: meta.term,
+            index: meta.index,
+            outcome,
+            old_voters: Vec::new(),
+            new_voters: Vec::new(),
+        };
+        self.bind_control(key, command, now_unix, Some(receipt.clone()));
+        ControlResolution::Committed(receipt)
+    }
+
+    /// The ownership mutation `command` performs, or `None` when a consensus membership change carries
+    /// it instead.
+    fn apply_control(&mut self, command: &ControlCommand, now_unix: i64) -> Option<OwnershipEffect> {
+        match command {
+            ControlCommand::TransferAuthority { authority, new_home } => Some(self.transfer(
+                &AuthorityKey(authority.clone()),
+                &DatacenterId(new_home.clone()),
+                now_unix,
+            )),
+            ControlCommand::AdvanceEpoch { authority } => {
+                Some(self.advance_epoch(&AuthorityKey(authority.clone()), now_unix))
+            }
+            ControlCommand::AddLearner { .. }
+            | ControlCommand::PromoteVoter { .. }
+            | ControlCommand::RemoveVoter { .. }
+            | ControlCommand::ReplaceVoter { .. } => None,
+        }
+    }
+
+    /// Keeps the receipt of the first attempt, so a settlement that arrives after a retry already
+    /// committed one cannot overwrite the answer the caller was given.
+    fn settle_control(
+        &mut self,
+        key: &str,
+        command: &ControlCommand,
+        receipt: &CommandReceipt,
+        now_unix: i64,
+    ) -> CommandReceipt {
+        self.prune_controls(now_unix);
+        self.controls
+            .entry(key.to_owned())
+            .or_insert_with(|| ControlRecord {
+                command: command.clone(),
+                claimed_at_unix: now_unix,
+                receipt: None,
+            })
+            .receipt
+            .get_or_insert_with(|| receipt.clone())
+            .clone()
+    }
+
+    fn bind_control(&mut self, key: &str, command: &ControlCommand, now_unix: i64, receipt: Option<CommandReceipt>) {
+        self.controls.insert(
+            key.to_owned(),
+            ControlRecord {
+                command: command.clone(),
+                claimed_at_unix: now_unix,
+                receipt,
+            },
+        );
+    }
+
+    /// Every replica prunes from the `now_unix` of the same committed entry, so the window stays
+    /// identical across the group.
+    fn prune_controls(&mut self, now_unix: i64) {
+        self.controls
+            .retain(|_, record| now_unix.saturating_sub(record.claimed_at_unix) < CONTROL_IDEMPOTENCY_SECS);
     }
 
     /// Grants `job` to `holder` when no unlapsed grant stands, at a generation above every earlier grant
@@ -517,6 +671,26 @@ impl OwnershipState {
             }
         }
         Ok(state)
+    }
+}
+
+/// Why a transfer or epoch advance left ownership unchanged. A rejected command records no receipt, so
+/// its idempotency key stays open to a retry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ControlRejection {
+    NotAssigned,
+    WritesInFlight,
+}
+
+/// The outcome a transfer or epoch-advance effect commits. Moving an authority to its current home is
+/// the requested end state, so it commits as a no-op rather than failing.
+#[must_use]
+pub const fn control_outcome(effect: &OwnershipEffect) -> Result<CommandOutcome, ControlRejection> {
+    match effect {
+        OwnershipEffect::Rejected(Rejection::SameHome) => Ok(CommandOutcome::NoChange),
+        OwnershipEffect::Rejected(Rejection::NotAssigned) => Err(ControlRejection::NotAssigned),
+        OwnershipEffect::Rejected(Rejection::WritesInFlight) => Err(ControlRejection::WritesInFlight),
+        _ => Ok(CommandOutcome::Committed),
     }
 }
 

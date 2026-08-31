@@ -481,7 +481,9 @@ pub trait AnalyticsCompleteness: Send + Sync {
     ) -> Result<CompletenessReport, CompletenessError>;
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
+/// Replicated alongside its idempotency key, so a replacement leader compares the canonical command
+/// rather than a process-local digest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ControlCommand {
     AddLearner {
@@ -533,7 +535,7 @@ impl ControlCommand {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommandReceipt {
     pub term: u64,
     pub index: u64,
@@ -542,7 +544,7 @@ pub struct CommandReceipt {
     pub new_voters: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CommandOutcome {
     Committed,
@@ -586,12 +588,46 @@ impl ControlError {
     }
 }
 
+/// The committed answer to a control command, distinguishing a fresh commit from the receipt an
+/// earlier attempt recorded under the same idempotency key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControlCommit {
+    pub receipt: CommandReceipt,
+    pub replayed: bool,
+}
+
+impl ControlCommit {
+    #[must_use]
+    pub const fn committed(receipt: CommandReceipt) -> Self {
+        Self {
+            receipt,
+            replayed: false,
+        }
+    }
+
+    #[must_use]
+    pub const fn replayed(receipt: CommandReceipt) -> Self {
+        Self {
+            receipt,
+            replayed: true,
+        }
+    }
+}
+
+/// How long a committed control receipt stays replayable. Age alone bounds the durable window: a count
+/// bound could evict a key still inside its window and let a retry commit the command a second time.
+pub const CONTROL_IDEMPOTENCY_SECS: i64 = 900;
+
 #[async_trait]
 pub trait MembershipControl: Send + Sync {
+    /// Resolves `key` against the replicated idempotency window before committing, so a restart or
+    /// leadership move still answers a retry with the receipt of the first attempt.
+    ///
     /// # Errors
     ///
-    /// Returns [`ControlError`] when the command is invalid, rejected, overloaded, or cannot commit.
-    async fn submit(&self, command: ControlCommand) -> Result<CommandReceipt, ControlError>;
+    /// Returns [`ControlError`] when the command is invalid, rejected, overloaded, cannot commit, or
+    /// when `key` already stands for a different command.
+    async fn submit(&self, key: Option<&str>, command: ControlCommand) -> Result<ControlCommit, ControlError>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

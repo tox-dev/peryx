@@ -20,7 +20,9 @@ pub use ownership::{
     SINGLETON_RENEW_SECS, SingletonAcquisition, SingletonLease, SingletonRelease, SingletonRenewal, TransferOutcome,
 };
 pub use peryx_core::PrometheusSource;
-pub use peryx_ha::{CommandOutcome, CommandReceipt, ControlCommand, ControlError, MembershipControl, OperationKind};
+pub use peryx_ha::{
+    CommandOutcome, CommandReceipt, ControlCommand, ControlCommit, ControlError, MembershipControl, OperationKind,
+};
 pub use peryx_index::{Index, IndexKind};
 
 impl peryx_ha::ReplicaViewApplier for AppState {

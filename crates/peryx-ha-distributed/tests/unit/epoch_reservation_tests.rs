@@ -49,6 +49,8 @@ fn minted(effect: &OwnershipEffect) -> Option<AuthorityEpoch> {
         | OwnershipEffect::SingletonHeld { .. }
         | OwnershipEffect::SingletonRenewed { .. }
         | OwnershipEffect::SingletonReleased
+        | OwnershipEffect::Control(_)
+        | OwnershipEffect::ControlSettled(_)
         | OwnershipEffect::Rejected(_) => None,
     }
 }

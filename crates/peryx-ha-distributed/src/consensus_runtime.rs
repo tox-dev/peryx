@@ -9,8 +9,8 @@ use crate::raft::network::{PeerRaftNetworkFactory, RaftRpc, RaftRpcClient};
 use crate::raft::persistence::RaftLogStore;
 use crate::raft::{OwnershipResponse, OwnershipStateMachine, PeryxNode, RaftConfig, RaftNode, TypeConfig};
 use crate::{
-    Admission, AssignmentCause, AuthorityEpoch, AuthorityKey, DatacenterId, OwnershipCommand, OwnershipEffect,
-    Rejection,
+    Admission, AssignmentCause, AuthorityEpoch, AuthorityKey, ControlRejection, ControlResolution, DatacenterId,
+    OwnershipCommand, OwnershipEffect, Rejection, control_outcome,
 };
 use anyhow::{Context as _, bail};
 use openraft::error::{CheckIsLeaderError, ClientWriteError, RaftError};
@@ -19,7 +19,7 @@ use openraft::{LogId, StoredMembership};
 use peryx_core::Clock;
 use peryx_ha::{
     AUTHORITY_WRITE_LEASE_SECS, AuthorityWriteLease, ClusterStatus, CommandOutcome, CommandReceipt, ControlCommand,
-    ControlError, HomeClaim, MemberEndpoint, MembershipControl, OwnershipAuthority, OwnershipError,
+    ControlCommit, ControlError, HomeClaim, MemberEndpoint, MembershipControl, OwnershipAuthority, OwnershipError,
     SINGLETON_LEASE_SECS, SingletonAcquisition, SingletonLease, SingletonRelease, SingletonRenewal, TransferOutcome,
 };
 
@@ -447,12 +447,12 @@ impl OwnershipAuthority for OwnershipHandle {
 
 #[async_trait::async_trait]
 impl MembershipControl for OwnershipHandle {
-    async fn submit(&self, command: ControlCommand) -> Result<CommandReceipt, ControlError> {
+    async fn submit(&self, key: Option<&str>, command: ControlCommand) -> Result<ControlCommit, ControlError> {
         let group = self
             .group
             .upgrade()
             .ok_or_else(|| ControlError::Unavailable("ownership consensus stopped".to_owned()))?;
-        MembershipControl::submit(group.as_ref(), command).await
+        MembershipControl::submit(group.as_ref(), key, command).await
     }
 }
 
@@ -675,7 +675,40 @@ impl OwnershipAuthority for OwnershipGroup {
 
 #[async_trait::async_trait]
 impl MembershipControl for OwnershipGroup {
-    async fn submit(&self, command: ControlCommand) -> Result<CommandReceipt, ControlError> {
+    /// A keyed command resolves against the replicated window first. Consensus applies a transfer or
+    /// epoch advance and records its receipt in that one decision, so a replacement leader answering a
+    /// retry reads the committed result instead of mutating again. A membership change belongs to a
+    /// consensus decision that cannot carry the receipt, so its key is bound first and settled after.
+    async fn submit(&self, key: Option<&str>, command: ControlCommand) -> Result<ControlCommit, ControlError> {
+        let Some(key) = key else {
+            return self.execute(command).await.map(ControlCommit::committed);
+        };
+        let attempt = OwnershipCommand::AttemptControl {
+            key: key.to_owned(),
+            command: command.clone(),
+            now_unix: (self.clock)(),
+        };
+        match applied_resolution(self.submit_ownership_command(attempt).await?)? {
+            ControlResolution::Committed(receipt) => Ok(ControlCommit::committed(receipt)),
+            ControlResolution::Replayed(receipt) => Ok(ControlCommit::replayed(receipt)),
+            ControlResolution::Rejected(rejection) => Err(reject_control(rejection)),
+            ControlResolution::KeyReuse => Err(ControlError::KeyReuse),
+            ControlResolution::Claimed => {
+                let receipt = self.execute(command.clone()).await?;
+                let settlement = OwnershipCommand::SettleControl {
+                    key: key.to_owned(),
+                    command,
+                    receipt,
+                    now_unix: (self.clock)(),
+                };
+                applied_receipt(self.submit_ownership_command(settlement).await?).map(ControlCommit::committed)
+            }
+        }
+    }
+}
+
+impl OwnershipGroup {
+    async fn execute(&self, command: ControlCommand) -> Result<CommandReceipt, ControlError> {
         match command {
             ControlCommand::AddLearner { datacenter, address } => self.add_learner(&datacenter, address).await,
             ControlCommand::PromoteVoter { datacenter } => self.change_voters(Some(&datacenter), None).await,
@@ -705,9 +738,7 @@ impl MembershipControl for OwnershipGroup {
             }
         }
     }
-}
 
-impl OwnershipGroup {
     async fn submit_command(
         &self,
         command: OwnershipCommand,
@@ -783,29 +814,58 @@ impl OwnershipGroup {
 
     /// Returns an unchanged transfer as a committed no-op so a retry receives a receipt.
     async fn submit_ownership(&self, command: OwnershipCommand) -> Result<CommandReceipt, ControlError> {
+        let response = self.submit_ownership_command(command).await?;
+        let outcome = applied_outcome(&response.data)?;
+        // Transfer and epoch commands have no voter transition to audit.
+        Ok(committed_receipt(&response.log_id, outcome, Vec::new(), Vec::new()))
+    }
+
+    async fn submit_ownership_command(
+        &self,
+        command: OwnershipCommand,
+    ) -> Result<ClientWriteResponse<TypeConfig>, ControlError> {
         match self.submit_command(command).await {
-            Ok(response) => {
-                let outcome = match response.data {
-                    OwnershipResponse::Applied(OwnershipEffect::Rejected(Rejection::SameHome)) => {
-                        CommandOutcome::NoChange
-                    }
-                    OwnershipResponse::Applied(OwnershipEffect::Rejected(Rejection::NotAssigned)) => {
-                        return Err(ControlError::Invalid(
-                            "the authority is not assigned a home to move or fence".to_owned(),
-                        ));
-                    }
-                    OwnershipResponse::Applied(OwnershipEffect::Rejected(Rejection::WritesInFlight)) => {
-                        return Err(ControlError::Invalid("the authority has a live write lease".to_owned()));
-                    }
-                    _ => CommandOutcome::Committed,
-                };
-                // Transfer and epoch commands have no voter transition to audit.
-                Ok(committed_receipt(&response.log_id, outcome, Vec::new(), Vec::new()))
-            }
+            Ok(response) => Ok(response),
             Err(OwnershipError::NotLeader { leader }) => Err(ControlError::NotLeader { leader }),
             Err(error) => Err(ControlError::Unavailable(error.to_string())),
         }
     }
+}
+
+fn reject_control(rejection: ControlRejection) -> ControlError {
+    match rejection {
+        ControlRejection::NotAssigned => {
+            ControlError::Invalid("the authority is not assigned a home to move or fence".to_owned())
+        }
+        ControlRejection::WritesInFlight => ControlError::Invalid("the authority has a live write lease".to_owned()),
+    }
+}
+
+/// A normal ownership entry always reaches the state machine, so a non-mutating answer means the
+/// committed entry and its response disagree.
+fn applied_outcome(response: &OwnershipResponse) -> Result<CommandOutcome, ControlError> {
+    match response {
+        OwnershipResponse::Applied(effect) => control_outcome(effect).map_err(reject_control),
+        OwnershipResponse::NonMutating => Err(unapplied("authority command")),
+    }
+}
+
+fn applied_resolution(response: ClientWriteResponse<TypeConfig>) -> Result<ControlResolution, ControlError> {
+    match response.data {
+        OwnershipResponse::Applied(OwnershipEffect::Control(resolution)) => Ok(resolution),
+        _ => Err(unapplied("control claim")),
+    }
+}
+
+fn applied_receipt(response: ClientWriteResponse<TypeConfig>) -> Result<CommandReceipt, ControlError> {
+    match response.data {
+        OwnershipResponse::Applied(OwnershipEffect::ControlSettled(receipt)) => Ok(receipt),
+        _ => Err(unapplied("control settlement")),
+    }
+}
+
+fn unapplied(what: &str) -> ControlError {
+    ControlError::Unavailable(format!("the {what} committed without applying"))
 }
 
 fn map_ownership_write_error(error: RaftError<VoterId, ClientWriteError<VoterId, PeryxNode>>) -> OwnershipError {

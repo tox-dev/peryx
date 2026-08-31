@@ -8,7 +8,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use peryx_driver::authz::{AuthorizationService, Decision};
 use peryx_driver::state::{
-    AppState, ClusterStatus, CommandOutcome, CommandReceipt, ControlCommand, ControlError, HomeClaim,
+    AppState, ClusterStatus, CommandOutcome, CommandReceipt, ControlCommand, ControlCommit, ControlError, HomeClaim,
     MembershipControl, OwnershipAuthority, OwnershipError, TransferOutcome,
 };
 use peryx_driver::users::UserService;
@@ -286,9 +286,9 @@ struct FixedControl {
 
 #[async_trait::async_trait]
 impl MembershipControl for FixedControl {
-    async fn submit(&self, _command: ControlCommand) -> Result<CommandReceipt, ControlError> {
+    async fn submit(&self, _key: Option<&str>, _command: ControlCommand) -> Result<ControlCommit, ControlError> {
         *self.calls.lock().unwrap() += 1;
-        self.result.clone()
+        self.result.clone().map(ControlCommit::committed)
     }
 }
 

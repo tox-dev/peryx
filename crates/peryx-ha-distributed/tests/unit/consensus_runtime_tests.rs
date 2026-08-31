@@ -404,11 +404,15 @@ async fn test_ownership_handle_delegates_to_a_live_group() {
     );
     assert_eq!(
         handle
-            .submit(ControlCommand::AdvanceEpoch {
-                authority: "proj".to_owned(),
-            })
+            .submit(
+                None,
+                ControlCommand::AdvanceEpoch {
+                    authority: "proj".to_owned(),
+                }
+            )
             .await
             .unwrap()
+            .receipt
             .outcome,
         CommandOutcome::Committed
     );
@@ -478,9 +482,12 @@ async fn test_ownership_handle_fails_closed_after_the_group_stops() {
     ));
     assert_eq!(
         handle
-            .submit(ControlCommand::AdvanceEpoch {
-                authority: "proj".to_owned(),
-            })
+            .submit(
+                None,
+                ControlCommand::AdvanceEpoch {
+                    authority: "proj".to_owned(),
+                }
+            )
             .await,
         Err(ControlError::Unavailable("ownership consensus stopped".to_owned()))
     );
@@ -678,7 +685,10 @@ async fn test_control_transfer_and_epoch_advance_reject_a_live_writer() {
             authority: "proj".to_owned(),
         },
     ] {
-        assert!(matches!(group.submit(command).await, Err(ControlError::Invalid(_))));
+        assert!(matches!(
+            group.submit(None, command).await,
+            Err(ControlError::Invalid(_))
+        ));
     }
     group.finish_epoch_write(&lease).await.unwrap();
 }
@@ -763,7 +773,7 @@ async fn test_cluster_status_excludes_a_committed_learner() {
     let node = leader_node(&dir).await;
     let group = OwnershipGroup::new(node.clone(), DatacenterId("east".to_owned()));
 
-    group.submit(add_learner("west")).await.unwrap();
+    group.submit(None, add_learner("west")).await.unwrap();
 
     assert_eq!(
         (
@@ -830,7 +840,7 @@ async fn test_add_learner_commits_on_the_leader() {
     let dir = tempfile::tempdir().unwrap();
     let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned()));
 
-    let receipt = group.submit(add_learner("west")).await.unwrap();
+    let receipt = group.submit(None, add_learner("west")).await.unwrap().receipt;
 
     assert_eq!(receipt.outcome, CommandOutcome::Committed);
     assert!(
@@ -891,7 +901,7 @@ async fn test_a_membership_command_without_a_leader_reports_the_forward_target()
     let group = OwnershipGroup::new(started_node(&dir).await, DatacenterId("east".to_owned()));
 
     assert!(matches!(
-        group.submit(add_learner("west")).await,
+        group.submit(None, add_learner("west")).await,
         Err(ControlError::NotLeader { leader: None })
     ));
 }
@@ -904,7 +914,7 @@ async fn test_a_command_on_a_stopped_group_is_unavailable() {
     let group = OwnershipGroup::new(node, DatacenterId("east".to_owned()));
 
     assert!(matches!(
-        group.submit(add_learner("west")).await,
+        group.submit(None, add_learner("west")).await,
         Err(ControlError::Unavailable(_))
     ));
 }
@@ -918,9 +928,12 @@ async fn test_an_authority_command_on_a_stopped_group_is_unavailable() {
 
     assert!(matches!(
         group
-            .submit(ControlCommand::AdvanceEpoch {
-                authority: "proj".to_owned(),
-            })
+            .submit(
+                None,
+                ControlCommand::AdvanceEpoch {
+                    authority: "proj".to_owned(),
+                }
+            )
             .await,
         Err(ControlError::Unavailable(_))
     ));
@@ -932,11 +945,15 @@ async fn test_promoting_a_current_voter_is_a_no_op() {
     let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned()));
 
     let receipt = group
-        .submit(ControlCommand::PromoteVoter {
-            datacenter: "east".to_owned(),
-        })
+        .submit(
+            None,
+            ControlCommand::PromoteVoter {
+                datacenter: "east".to_owned(),
+            },
+        )
         .await
-        .unwrap();
+        .unwrap()
+        .receipt;
 
     assert_eq!(receipt.outcome, CommandOutcome::NoChange);
 }
@@ -948,21 +965,29 @@ async fn test_a_membership_receipt_names_the_voter_roster() {
 
     // A real promotion needs a second voter; the control layer covers that transition.
     let added = group
-        .submit(ControlCommand::AddLearner {
-            datacenter: "west".to_owned(),
-            address: "http://west.internal:4470".to_owned(),
-        })
+        .submit(
+            None,
+            ControlCommand::AddLearner {
+                datacenter: "west".to_owned(),
+                address: "http://west.internal:4470".to_owned(),
+            },
+        )
         .await
-        .unwrap();
+        .unwrap()
+        .receipt;
     assert_eq!(added.old_voters, ["east"]);
     assert_eq!(added.new_voters, ["east"]);
 
     let promoted = group
-        .submit(ControlCommand::PromoteVoter {
-            datacenter: "east".to_owned(),
-        })
+        .submit(
+            None,
+            ControlCommand::PromoteVoter {
+                datacenter: "east".to_owned(),
+            },
+        )
         .await
-        .unwrap();
+        .unwrap()
+        .receipt;
     assert_eq!(promoted.outcome, CommandOutcome::NoChange);
     assert_eq!(promoted.old_voters, ["east"]);
     assert_eq!(promoted.new_voters, ["east"]);
@@ -975,9 +1000,12 @@ async fn test_a_roster_rewrite_of_an_unknown_learner_is_rejected() {
 
     assert!(matches!(
         group
-            .submit(ControlCommand::PromoteVoter {
-                datacenter: "west".to_owned(),
-            })
+            .submit(
+                None,
+                ControlCommand::PromoteVoter {
+                    datacenter: "west".to_owned(),
+                }
+            )
             .await,
         Err(ControlError::Unavailable(_))
     ));
@@ -989,11 +1017,15 @@ async fn test_removing_an_absent_voter_is_a_no_op() {
     let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned()));
 
     let receipt = group
-        .submit(ControlCommand::RemoveVoter {
-            datacenter: "west".to_owned(),
-        })
+        .submit(
+            None,
+            ControlCommand::RemoveVoter {
+                datacenter: "west".to_owned(),
+            },
+        )
         .await
-        .unwrap();
+        .unwrap()
+        .receipt;
 
     assert_eq!(receipt.outcome, CommandOutcome::NoChange);
 }
@@ -1004,13 +1036,17 @@ async fn test_replacing_a_voter_adds_the_learner_then_rewrites_the_roster() {
     let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned()));
 
     let receipt = group
-        .submit(ControlCommand::ReplaceVoter {
-            remove: "west".to_owned(),
-            datacenter: "west".to_owned(),
-            address: "http://west.internal:4470".to_owned(),
-        })
+        .submit(
+            None,
+            ControlCommand::ReplaceVoter {
+                remove: "west".to_owned(),
+                datacenter: "west".to_owned(),
+                address: "http://west.internal:4470".to_owned(),
+            },
+        )
         .await
-        .unwrap();
+        .unwrap()
+        .receipt;
 
     assert_eq!(receipt.outcome, CommandOutcome::NoChange);
 }
@@ -1022,11 +1058,14 @@ async fn test_replacing_a_voter_without_a_leader_forwards_from_the_learner_add()
 
     assert!(matches!(
         group
-            .submit(ControlCommand::ReplaceVoter {
-                remove: "east".to_owned(),
-                datacenter: "west".to_owned(),
-                address: "http://west.internal:4470".to_owned(),
-            })
+            .submit(
+                None,
+                ControlCommand::ReplaceVoter {
+                    remove: "east".to_owned(),
+                    datacenter: "west".to_owned(),
+                    address: "http://west.internal:4470".to_owned(),
+                }
+            )
             .await,
         Err(ControlError::NotLeader { .. })
     ));
@@ -1039,12 +1078,16 @@ async fn test_transferring_an_assigned_authority_commits() {
     assert_eq!(group.claim_home("proj").await.unwrap(), east_claim(1));
 
     let receipt = group
-        .submit(ControlCommand::TransferAuthority {
-            authority: "proj".to_owned(),
-            new_home: "west".to_owned(),
-        })
+        .submit(
+            None,
+            ControlCommand::TransferAuthority {
+                authority: "proj".to_owned(),
+                new_home: "west".to_owned(),
+            },
+        )
         .await
-        .unwrap();
+        .unwrap()
+        .receipt;
 
     assert_eq!(receipt.outcome, CommandOutcome::Committed);
 }
@@ -1056,19 +1099,27 @@ async fn test_repeating_a_transfer_returns_the_committed_no_op() {
     assert_eq!(group.claim_home("proj").await.unwrap(), east_claim(1));
 
     let committed = group
-        .submit(ControlCommand::TransferAuthority {
-            authority: "proj".to_owned(),
-            new_home: "west".to_owned(),
-        })
+        .submit(
+            None,
+            ControlCommand::TransferAuthority {
+                authority: "proj".to_owned(),
+                new_home: "west".to_owned(),
+            },
+        )
         .await
-        .unwrap();
+        .unwrap()
+        .receipt;
     let repeated = group
-        .submit(ControlCommand::TransferAuthority {
-            authority: "proj".to_owned(),
-            new_home: "west".to_owned(),
-        })
+        .submit(
+            None,
+            ControlCommand::TransferAuthority {
+                authority: "proj".to_owned(),
+                new_home: "west".to_owned(),
+            },
+        )
         .await
-        .unwrap();
+        .unwrap()
+        .receipt;
 
     assert_eq!(
         repeated,
@@ -1095,10 +1146,13 @@ async fn test_transferring_an_unassigned_authority_is_invalid() {
     let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned()));
 
     let result = group
-        .submit(ControlCommand::TransferAuthority {
-            authority: "ghost".to_owned(),
-            new_home: "west".to_owned(),
-        })
+        .submit(
+            None,
+            ControlCommand::TransferAuthority {
+                authority: "ghost".to_owned(),
+                new_home: "west".to_owned(),
+            },
+        )
         .await;
 
     assert_eq!(
@@ -1115,9 +1169,12 @@ async fn test_advancing_an_unassigned_authority_is_invalid() {
     let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned()));
 
     let result = group
-        .submit(ControlCommand::AdvanceEpoch {
-            authority: "ghost".to_owned(),
-        })
+        .submit(
+            None,
+            ControlCommand::AdvanceEpoch {
+                authority: "ghost".to_owned(),
+            },
+        )
         .await;
 
     assert!(matches!(result, Err(ControlError::Invalid(_))));
@@ -1149,9 +1206,12 @@ async fn test_an_authority_command_without_a_leader_reports_the_forward_target()
 
     assert!(matches!(
         group
-            .submit(ControlCommand::AdvanceEpoch {
-                authority: "proj".to_owned(),
-            })
+            .submit(
+                None,
+                ControlCommand::AdvanceEpoch {
+                    authority: "proj".to_owned(),
+                }
+            )
             .await,
         Err(ControlError::NotLeader { .. })
     ));
@@ -1164,11 +1224,15 @@ async fn test_advancing_an_assigned_authority_commits() {
     assert_eq!(group.claim_home("proj").await.unwrap(), east_claim(1));
 
     let receipt = group
-        .submit(ControlCommand::AdvanceEpoch {
-            authority: "proj".to_owned(),
-        })
+        .submit(
+            None,
+            ControlCommand::AdvanceEpoch {
+                authority: "proj".to_owned(),
+            },
+        )
         .await
-        .unwrap();
+        .unwrap()
+        .receipt;
 
     assert_eq!(receipt.outcome, CommandOutcome::Committed);
 }
