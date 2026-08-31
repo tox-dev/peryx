@@ -171,6 +171,11 @@ durable dedup ledger.
 Reusing a key for a different command is refused with `409 Conflict` for as long as the key stays in the window,
 including after a restart.
 
+Only a committed receipt holds a key. A command that fails releases its key in the same replicated decision that would
+have recorded the receipt, whether the roster refused the address, the authority was unassigned, or the node lost
+leadership mid-command. Correct such a command and reissue it under the same key; it runs afresh rather than reading
+back a failure or waiting out the 15-minute window.
+
 ### Failure statuses
 
 | Status                    | Cause                                                                                        |

@@ -117,6 +117,13 @@ pub enum OwnershipCommand {
         receipt: CommandReceipt,
         now_unix: i64,
     },
+    /// Frees the claim of a membership change that failed, so the key answers a retry immediately
+    /// instead of standing until it ages out.
+    ReleaseControl {
+        key: String,
+        command: ControlCommand,
+        now_unix: i64,
+    },
 }
 
 /// What the replicated idempotency window says about one keyed control attempt.
@@ -175,6 +182,9 @@ pub enum OwnershipEffect {
     Control(ControlResolution),
     /// The receipt that stands for the key, which is the first one recorded under it.
     ControlSettled(CommandReceipt),
+    /// The key no longer holds an unfinished claim, whether this decision freed one or a retry had
+    /// already settled it.
+    ControlReleased,
     /// The command was invalid and left ownership unchanged.
     Rejected(Rejection),
 }
@@ -240,8 +250,10 @@ impl SingletonHold {
     }
 }
 
-/// One idempotency key's binding. A record without a receipt is a claim whose membership change has not
-/// settled yet; a retry of the same command re-runs it, which membership changes converge on.
+/// One idempotency key's binding. A record without a receipt is a claim whose membership change is
+/// still running; a retry of the same command re-runs it, which membership changes converge on. An
+/// attempt that fails releases its record instead of leaving it to age out, so a failed key is open to
+/// any command a retry carries.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct ControlRecord {
     command: ControlCommand,
@@ -312,6 +324,10 @@ impl OwnershipState {
                 receipt,
                 now_unix,
             } => OwnershipEffect::ControlSettled(self.settle_control(key, command, receipt, *now_unix)),
+            OwnershipCommand::ReleaseControl { key, command, now_unix } => {
+                self.release_control(key, command, *now_unix);
+                OwnershipEffect::ControlReleased
+            }
         }
     }
 
@@ -393,6 +409,20 @@ impl OwnershipState {
             .receipt
             .get_or_insert_with(|| receipt.clone())
             .clone()
+    }
+
+    /// Drops the claim `command` failed to complete. A record carrying a receipt belongs to an attempt
+    /// that succeeded, and one bound to another command belongs to a key that was rebound after the
+    /// prune, so neither is freed by a release that arrives late.
+    fn release_control(&mut self, key: &str, command: &ControlCommand, now_unix: i64) {
+        self.prune_controls(now_unix);
+        if self
+            .controls
+            .get(key)
+            .is_some_and(|record| record.receipt.is_none() && record.command == *command)
+        {
+            self.controls.remove(key);
+        }
     }
 
     fn bind_control(&mut self, key: &str, command: &ControlCommand, now_unix: i64, receipt: Option<CommandReceipt>) {

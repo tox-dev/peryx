@@ -621,7 +621,9 @@ pub const CONTROL_IDEMPOTENCY_SECS: i64 = 900;
 #[async_trait]
 pub trait MembershipControl: Send + Sync {
     /// Resolves `key` against the replicated idempotency window before committing, so a restart or
-    /// leadership move still answers a retry with the receipt of the first attempt.
+    /// leadership move still answers a retry with the receipt of the first attempt. Only a committed
+    /// receipt holds a key: an attempt that fails releases it, so the next use of that key is resolved
+    /// by the command it carries rather than by an attempt that changed nothing.
     ///
     /// # Errors
     ///

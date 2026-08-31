@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use crate::consensus_runtime::{OwnershipGroup, applied_outcome, applied_receipt, applied_resolution, voter_id};
 use crate::raft::log_store::RaftLogStoreAdapter;
-use crate::raft::network::PeerRaftNetworkFactory;
+use crate::raft::network::{PeerRaftNetworkFactory, raft_rpc_router};
 use crate::raft::persistence::RaftLogStore;
 use crate::raft::{OwnershipResponse, OwnershipStateMachine, PeryxNode, RaftConfig, RaftNode};
 use crate::{ControlPlane, DatacenterId, OwnershipEffect};
@@ -240,6 +240,178 @@ async fn test_a_membership_command_settles_its_key_for_a_later_retry() {
 
     assert_eq!(replayed, first);
     assert_eq!(group.cluster_status().voters, ["east"], "a learner is not a voter");
+}
+
+/// An address the roster refuses, so the attempt fails after its key is claimed and before consensus
+/// is asked to change anything.
+fn malformed_learner() -> ControlCommand {
+    ControlCommand::AddLearner {
+        datacenter: "west".to_owned(),
+        address: "west.internal:4470".to_owned(),
+    }
+}
+
+fn refused_address() -> ControlError {
+    ControlError::Invalid("member address \"west.internal:4470\" must use the http or https scheme".to_owned())
+}
+
+/// Promoting a datacenter the roster has never seen is refused by consensus rather than by validation.
+fn promote_unknown() -> ControlCommand {
+    ControlCommand::PromoteVoter {
+        datacenter: "south".to_owned(),
+    }
+}
+
+#[tokio::test]
+async fn test_a_failed_membership_command_frees_its_key_for_a_corrected_retry() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_node, group) = homed_group(store(&dir)).await;
+    let refused = ControlPlane::new(group.clone(), clock())
+        .execute("alice", Some("k1"), malformed_learner())
+        .await;
+
+    let corrected = ControlPlane::new(group.clone(), clock())
+        .execute("alice", Some("k1"), add_learner())
+        .await
+        .unwrap();
+
+    assert_eq!(refused, Err(refused_address()));
+    assert_eq!(corrected.outcome, CommandOutcome::Committed);
+}
+
+#[tokio::test]
+async fn test_each_failure_under_one_key_frees_it_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_node, group) = homed_group(store(&dir)).await;
+    ControlPlane::new(group.clone(), clock())
+        .execute("alice", Some("k1"), malformed_learner())
+        .await
+        .unwrap_err();
+
+    let rejected = ControlPlane::new(group.clone(), clock())
+        .execute("alice", Some("k1"), promote_unknown())
+        .await;
+    let corrected = ControlPlane::new(group.clone(), clock())
+        .execute("alice", Some("k1"), add_learner())
+        .await
+        .unwrap();
+
+    assert!(matches!(rejected, Err(ControlError::Unavailable(_))));
+    assert_eq!(corrected.outcome, CommandOutcome::Committed);
+}
+
+#[tokio::test]
+async fn test_a_freed_key_stays_free_after_the_node_that_freed_it_restarts() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store(&dir);
+    let (node, group) = homed_group(store.clone()).await;
+    ControlPlane::new(group.clone(), clock())
+        .execute("alice", Some("k1"), malformed_learner())
+        .await
+        .unwrap_err();
+    stop(node, group).await;
+
+    let node = leader_over(store).await;
+    let restarted = group_over(&node);
+    let corrected = ControlPlane::new(restarted.clone(), clock())
+        .execute("alice", Some("k1"), add_learner())
+        .await
+        .unwrap();
+
+    assert_eq!(corrected.outcome, CommandOutcome::Committed);
+}
+
+type Server = tokio::task::JoinHandle<std::io::Result<()>>;
+
+/// A live three-voter group over mounted RPC endpoints, so shutting a leader down elects a real
+/// replacement instead of standing one in.
+async fn live_group(dirs: &[TempDir]) -> (Vec<RaftNode>, Vec<Server>) {
+    let mut nodes = Vec::new();
+    let mut servers = Vec::new();
+    let mut roster = BTreeMap::new();
+    for (index, dir) in dirs.iter().enumerate() {
+        let id = u64::try_from(index).unwrap() + 1;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let node = RaftNode::start(
+            id,
+            RaftConfig::default(),
+            "ownership",
+            PeerRaftNetworkFactory::new(TOKEN, Duration::from_secs(1)),
+            RaftLogStoreAdapter::new(RaftLogStore::open(dir.path().join("raft.redb")).unwrap()),
+            OwnershipStateMachine::default(),
+        )
+        .await
+        .unwrap();
+        servers.push(tokio::spawn(std::future::IntoFuture::into_future(axum::serve(
+            listener,
+            raft_rpc_router(id, TOKEN, node.rpc_handler()).unwrap(),
+        ))));
+        roster.insert(
+            id,
+            PeryxNode {
+                datacenter: DatacenterId(format!("dc{id}")),
+                endpoint: format!("http://{address}/"),
+            },
+        );
+        nodes.push(node);
+    }
+    nodes[0].bootstrap(roster).await.unwrap();
+    (nodes, servers)
+}
+
+/// Waits until `node` follows a leader that is not `excluded`, and names it.
+async fn leader_other_than(node: &RaftNode, excluded: Option<u64>) -> u64 {
+    let mut metrics = node.metrics();
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        metrics.wait_for(|metrics| matches!(metrics.current_leader, Some(leader) if Some(leader) != excluded)),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .current_leader
+    .unwrap()
+}
+
+fn group_on(node: &RaftNode, id: u64) -> Arc<OwnershipGroup> {
+    Arc::new(
+        OwnershipGroup::new(node.clone(), DatacenterId(format!("dc{id}")))
+            .with_peer_forwarding(TOKEN)
+            .with_clock(clock()),
+    )
+}
+
+#[tokio::test]
+async fn test_a_key_freed_by_a_lost_leader_is_free_for_its_replacement() {
+    let dirs: Vec<TempDir> = (0..3).map(|_| tempfile::tempdir().unwrap()).collect();
+    let (nodes, servers) = live_group(&dirs).await;
+    let elected = leader_other_than(&nodes[0], None).await;
+    let index = usize::try_from(elected).unwrap() - 1;
+    let refused = ControlPlane::new(group_on(&nodes[index], elected), clock())
+        .execute("alice", Some("k1"), malformed_learner())
+        .await;
+    nodes[index].raft().shutdown().await.unwrap();
+
+    let survivor = (0..3).find(|candidate| *candidate != index).unwrap();
+    let replacement = leader_other_than(&nodes[survivor], Some(elected)).await;
+    let corrected = ControlPlane::new(
+        group_on(&nodes[usize::try_from(replacement).unwrap() - 1], replacement),
+        clock(),
+    )
+    .execute("alice", Some("k1"), add_learner())
+    .await
+    .unwrap();
+
+    assert_eq!(refused, Err(refused_address()));
+    assert_eq!(corrected.outcome, CommandOutcome::Committed);
+    for (_, node) in nodes.iter().enumerate().filter(|(position, _)| *position != index) {
+        node.raft().shutdown().await.unwrap();
+    }
+    for server in servers {
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
+    }
 }
 
 #[tokio::test]

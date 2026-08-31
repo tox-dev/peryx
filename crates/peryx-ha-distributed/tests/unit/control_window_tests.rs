@@ -43,6 +43,12 @@ fn add_learner() -> ControlCommand {
     }
 }
 
+fn promote() -> ControlCommand {
+    ControlCommand::PromoteVoter {
+        datacenter: "west".to_owned(),
+    }
+}
+
 fn attempt_at(name: &str, command: ControlCommand, now_unix: i64) -> OwnershipCommand {
     OwnershipCommand::AttemptControl {
         key: name.to_owned(),
@@ -53,6 +59,14 @@ fn attempt_at(name: &str, command: ControlCommand, now_unix: i64) -> OwnershipCo
 
 fn attempt(name: &str, command: ControlCommand) -> OwnershipCommand {
     attempt_at(name, command, 0)
+}
+
+fn release(name: &str, command: ControlCommand) -> OwnershipCommand {
+    OwnershipCommand::ReleaseControl {
+        key: name.to_owned(),
+        command,
+        now_unix: 0,
+    }
 }
 
 fn settle_at(name: &str, receipt: CommandReceipt, now_unix: i64) -> OwnershipCommand {
@@ -241,15 +255,7 @@ fn test_a_membership_claim_bound_to_another_command_is_refused_before_it_settles
     let mut state = OwnershipState::new();
     state.apply(&attempt("k1", add_learner()), META);
 
-    let reused = state.apply(
-        &attempt(
-            "k1",
-            ControlCommand::PromoteVoter {
-                datacenter: "west".to_owned(),
-            },
-        ),
-        META,
-    );
+    let reused = state.apply(&attempt("k1", promote()), META);
 
     assert_eq!(reused, resolved(ControlResolution::KeyReuse));
 }
@@ -287,6 +293,77 @@ fn test_a_settlement_of_a_pruned_claim_rebinds_the_key() {
 
     assert_eq!(settled, OwnershipEffect::ControlSettled(membership_receipt(11)));
     assert_eq!(replayed, resolved(ControlResolution::Replayed(membership_receipt(11))));
+}
+
+#[test]
+fn test_a_released_claim_leaves_its_key_open_to_a_different_command() {
+    let mut state = OwnershipState::new();
+    state.apply(&attempt("k1", add_learner()), META);
+
+    let released = state.apply(&release("k1", add_learner()), META);
+    let reused = state.apply(&attempt("k1", promote()), META);
+
+    assert_eq!(released, OwnershipEffect::ControlReleased);
+    assert_eq!(
+        reused,
+        resolved(ControlResolution::Claimed),
+        "a failed attempt holds nothing, so the key stands for whatever the retry carries"
+    );
+}
+
+#[test]
+fn test_a_release_keeps_the_receipt_a_retry_already_settled() {
+    let mut state = OwnershipState::new();
+    state.apply(&attempt("k1", add_learner()), META);
+    state.apply(&settle_at("k1", membership_receipt(11), 0), META);
+
+    state.apply(&release("k1", add_learner()), META);
+
+    assert_eq!(
+        state.apply(&attempt("k1", add_learner()), META),
+        resolved(ControlResolution::Replayed(membership_receipt(11)))
+    );
+}
+
+#[test]
+fn test_a_release_leaves_a_claim_bound_to_another_command_alone() {
+    let mut state = OwnershipState::new();
+    state.apply(&attempt("k1", add_learner()), META);
+
+    state.apply(&release("k1", promote()), META);
+
+    assert_eq!(
+        state.apply(&attempt("k1", promote()), META),
+        resolved(ControlResolution::KeyReuse),
+        "the claim the release named had already been rebound, so it is not the one to free"
+    );
+}
+
+#[test]
+fn test_releasing_an_unbound_key_binds_nothing() {
+    let mut state = OwnershipState::new();
+
+    let released = state.apply(&release("k1", add_learner()), META);
+
+    assert_eq!(released, OwnershipEffect::ControlReleased);
+    assert_eq!(
+        state.apply(&attempt("k1", promote()), META),
+        resolved(ControlResolution::Claimed)
+    );
+}
+
+#[test]
+fn test_a_released_key_stays_open_across_a_snapshot_round_trip() {
+    let mut state = OwnershipState::new();
+    state.apply(&attempt("k1", add_learner()), META);
+    state.apply(&release("k1", add_learner()), META);
+
+    let mut restored = OwnershipState::restore(&state.snapshot()).unwrap();
+
+    assert_eq!(
+        restored.apply(&attempt("k1", promote()), META),
+        resolved(ControlResolution::Claimed)
+    );
 }
 
 #[rstest]

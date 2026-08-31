@@ -684,7 +684,8 @@ impl MembershipControl for OwnershipGroup {
     /// A keyed command resolves against the replicated window first. Consensus applies a transfer or
     /// epoch advance and records its receipt in that one decision, so a replacement leader answering a
     /// retry reads the committed result instead of mutating again. A membership change belongs to a
-    /// consensus decision that cannot carry the receipt, so its key is bound first and settled after.
+    /// consensus decision that cannot carry the receipt, so its key is bound first and settled after. A
+    /// failed attempt settles too, releasing its claim rather than stranding the key for the window.
     async fn submit(&self, key: Option<&str>, command: ControlCommand) -> Result<ControlCommit, ControlError> {
         let Some(key) = key else {
             return self.execute(command).await.map(ControlCommit::committed);
@@ -700,14 +701,25 @@ impl MembershipControl for OwnershipGroup {
             ControlResolution::Rejected(rejection) => Err(reject_control(rejection)),
             ControlResolution::KeyReuse => Err(ControlError::KeyReuse),
             ControlResolution::Claimed => {
-                let receipt = self.execute(command.clone()).await?;
-                let settlement = OwnershipCommand::SettleControl {
-                    key: key.to_owned(),
-                    command,
-                    receipt,
-                    now_unix: (self.clock)(),
+                let executed = self.execute(command.clone()).await;
+                let now_unix = (self.clock)();
+                let key = key.to_owned();
+                // Both outcomes settle through the window, so a failed key resolves a retry by the
+                // command it carries instead of by how long its claim has left to age out.
+                let settlement = match &executed {
+                    Ok(receipt) => OwnershipCommand::SettleControl {
+                        key,
+                        command,
+                        receipt: receipt.clone(),
+                        now_unix,
+                    },
+                    Err(_) => OwnershipCommand::ReleaseControl { key, command, now_unix },
                 };
-                applied_receipt(self.submit_ownership_command(settlement).await?.data).map(ControlCommit::committed)
+                let settled = self.submit_ownership_command(settlement).await;
+                // An execution failure is what the caller must act on, so it outranks a settlement
+                // that could not commit; the age-only prune stays the backstop for a claim left behind.
+                executed?;
+                applied_receipt(settled?.data).map(ControlCommit::committed)
             }
         }
     }

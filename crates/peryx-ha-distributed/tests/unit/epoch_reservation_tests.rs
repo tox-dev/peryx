@@ -51,6 +51,7 @@ fn minted(effect: &OwnershipEffect) -> Option<AuthorityEpoch> {
         | OwnershipEffect::SingletonReleased
         | OwnershipEffect::Control(_)
         | OwnershipEffect::ControlSettled(_)
+        | OwnershipEffect::ControlReleased
         | OwnershipEffect::Rejected(_) => None,
     }
 }
