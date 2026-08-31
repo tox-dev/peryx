@@ -6,6 +6,7 @@ mod describe;
 mod operation;
 mod ownership;
 mod registry;
+mod revocation;
 mod traces;
 
 pub use app::{AppState, Clock, ServingState};

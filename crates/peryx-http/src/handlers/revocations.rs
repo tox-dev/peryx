@@ -56,11 +56,7 @@ pub async fn put_revocation(
     let Ok(reason) = RevocationReason::new(body.reason) else {
         return problem(StatusCode::BAD_REQUEST, "invalid revocation reason");
     };
-    match state
-        .serving
-        .revocations
-        .put(&digest, &reason, &actor, (state.serving.clock)())
-    {
+    match state.serving.put_digest_revocation(&digest, &reason, &actor) {
         Ok(outcome) => {
             let status = if matches!(outcome, PutRevocationOutcome::Unchanged(_)) {
                 StatusCode::OK
@@ -136,7 +132,7 @@ pub async fn lift_revocation(
     let Ok(digest) = ArtifactDigest::from_str(&digest) else {
         return problem(StatusCode::BAD_REQUEST, "invalid digest");
     };
-    match state.serving.revocations.lift(&digest, &actor, (state.serving.clock)()) {
+    match state.serving.lift_digest_revocation(&digest, &actor) {
         Ok(Some(LiftRevocationOutcome::Lifted(record) | LiftRevocationOutcome::Unchanged(record))) => {
             record_response(StatusCode::OK, &record, authorization, None)
         }

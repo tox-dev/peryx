@@ -20,6 +20,7 @@ visible for exact pins, while a revoked file is not offered to an installer.
 | Request                                               | Active revocation response |
 | ----------------------------------------------------- | -------------------------- |
 | Project discovery and package views                   | Omits the file             |
+| Repository search                                     | Omits the file             |
 | Artifact `GET`, `HEAD`, conditional request, or range | `404 Not Found`            |
 | PEP 658 `.metadata` or PEP 740 `.provenance` sibling  | `404 Not Found`            |
 | Archive member listing or preview under `inspect/`    | `404 Not Found`            |
@@ -27,6 +28,11 @@ visible for exact pins, while a revoked file is not offered to an installer.
 The `404` does not expose the administrator's reason. A metadata-store failure prevents discovery from advertising
 candidate files and prevents a direct route from returning bytes. Peryx resolves a file URL to its SHA-256 before it
 checks local storage or opens an upstream connection. It does not scan projects or aliases on a download.
+
+A search record describes only the files that survive the decision, so a revoked file contributes neither its filename
+nor its local bytes to a match, and a project whose every file is revoked returns no record at all. Creating or lifting
+a revocation retires the search view, so the next query re-derives it without an operator running `peryx job reindex`.
+The project's declared version list is unchanged, matching the Simple page.
 
 Lifting a revocation removes only this decision. A yanked file stays yanked, a trashed file stays absent, repository
 policy still applies, and a missing blob stays missing.

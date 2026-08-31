@@ -13,7 +13,7 @@ pub(super) use peryx_storage::meta::MetaStore;
 pub(super) use peryx_upstream::UpstreamClient;
 
 pub(super) use crate::cache;
-pub(super) use crate::tests::http::{get, harness, harness_with_policies};
+pub(super) use crate::tests::http::{get, harness, harness_with_policies, lift_digest, revoke_digest};
 pub(super) use crate::upload::Uploaded;
 pub(super) use peryx_core::TrashInfo;
 pub(super) use peryx_core::path::local_artifact_url;

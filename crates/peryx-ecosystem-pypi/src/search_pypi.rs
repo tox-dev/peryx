@@ -9,9 +9,10 @@ use crate::store::{CachedIndex, FileOverride};
 use crate::{
     CoreMetadata, CoreMetadataDoc, File, Meta, ProjectDetail, ProjectStatus, Yanked, parse_detail, parse_metadata,
 };
+use peryx_identity::ArtifactDigest;
 use peryx_policy::PolicyAction;
 use peryx_storage::blob::Digest;
-use peryx_storage::meta::{ArtifactSource, MetaScanError};
+use peryx_storage::meta::{ArtifactSource, DigestRevocationState, MetaScanError};
 
 use crate::upload::Uploaded;
 use peryx_core::path::local_artifact_url;
@@ -104,7 +105,8 @@ pub(crate) fn package_document(
     index: &Index,
     normalized: &str,
 ) -> Result<Option<SearchDocument>, SearchError> {
-    let detail = cached_detail(ctx, index, normalized, &index.route)?;
+    let mut detail = cached_detail(ctx, index, normalized, &index.route)?;
+    drop_revoked_files(ctx, &mut detail)?;
     if detail.files.is_empty() {
         return Ok(None);
     }
@@ -133,6 +135,43 @@ pub(crate) fn package_document(
         available_locally,
         summary,
     }))
+}
+
+/// Removes every file the served page hides, mirroring `cache::resolve::filter_revoked_files`, so
+/// emptiness, local availability, and the indexed text all describe only files an installer can still
+/// fetch. Leaving the project's version list alone keeps the document in step with the page, which also
+/// reports the versions upstream declares rather than the ones its surviving files carry.
+///
+/// The transactional active count answers a repository with no revocation in one read, so the common
+/// crawl pays a single lookup per project rather than one per file.
+fn drop_revoked_files(ctx: &IndexerCtx<'_>, detail: &mut ProjectDetail) -> Result<(), SearchError> {
+    if !ctx.meta.has_active_digest_revocation()? {
+        return Ok(());
+    }
+    let mut kept = Vec::with_capacity(detail.files.len());
+    for file in std::mem::take(&mut detail.files) {
+        if !is_revoked(ctx, &file)? {
+            kept.push(file);
+        }
+    }
+    detail.files = kept;
+    Ok(())
+}
+
+/// A file without a usable SHA-256 has nothing a digest revocation can name, so it survives; the byte
+/// routes cannot serve it under a revocation either, since they resolve the same digest first.
+fn is_revoked(ctx: &IndexerCtx<'_>, file: &File) -> Result<bool, SearchError> {
+    let Some(digest) = file
+        .hashes
+        .get("sha256")
+        .and_then(|sha256| ArtifactDigest::from_sha256(sha256).ok())
+    else {
+        return Ok(false);
+    };
+    Ok(ctx
+        .meta
+        .digest_revocation(&digest)?
+        .is_some_and(|record| matches!(record.state, DigestRevocationState::Active)))
 }
 
 /// Whether any of the project's distributions can be served from local storage right now, decided

@@ -89,6 +89,10 @@ Startup discards an incompatible derived index and rebuilds it from metadata. Re
 records stale. The next query refreshes them before returning a page. Each implementation documents its manual reindex
 command with its client workflows.
 
+Creating or lifting a digest revocation retires every record instead of a named one, because a digest identifies bytes
+rather than a repository resource and no index maps it back to the resources that publish it. An operation that changes
+no decision retires nothing.
+
 ## Implementations
 
 - [Ecosystem owner documentation](@/ecosystems/_index.md)

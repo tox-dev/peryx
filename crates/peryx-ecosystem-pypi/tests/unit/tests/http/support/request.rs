@@ -66,23 +66,19 @@ pub async fn request_response(
 pub fn revoke_digest(state: &AppState, digest: &Digest) {
     state
         .serving
-        .revocations
-        .put(
+        .put_digest_revocation(
             &ArtifactDigest::from_sha256(digest.as_str()).unwrap(),
             &RevocationReason::new("compromised builder").unwrap(),
             &UserId::random(),
-            1_000,
         )
         .unwrap();
 }
 pub fn lift_digest(state: &AppState, digest: &Digest) {
     state
         .serving
-        .revocations
-        .lift(
+        .lift_digest_revocation(
             &ArtifactDigest::from_sha256(digest.as_str()).unwrap(),
             &UserId::random(),
-            1_001,
         )
         .unwrap();
 }
