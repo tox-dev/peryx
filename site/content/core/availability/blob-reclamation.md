@@ -54,6 +54,10 @@ tombstone when the ownership term and reference scan still match, using one atom
 Each fenced transition increments `attempts`. Selecting the digest again raises its required frontier and returns it to
 pending, including after it reached `Ready`. Selection runs in bounded batches outside request handling.
 
+Each pass reads at most one batch of stored digests and one batch of tombstones, both in digest order, and records where
+each scan stopped. The next pass resumes from those positions and wraps to the first row once a scan reaches the end, so
+the configured batch bounds the rows a pass reads rather than only the rows it changes.
+
 ## Backups
 
 A completed backup captures the reference set at its recovery point. It does not retain future content. Reclamation
@@ -62,8 +66,9 @@ candidate serial.
 
 ## Recovery and metrics
 
-Durable tombstones and attempt counts survive restart, snapshot, and restore. A resumed pass continues from stored
-state. A bounded prune removes terminal tombstones.
+Durable tombstones and attempt counts survive restart, snapshot, and restore. A resumed pass continues from the recorded
+scan positions; a crash before a position advances repeats a page rather than skipping one. A bounded prune removes
+terminal tombstones.
 
 Metrics expose low-cardinality counts for pending, ready, and skipped tombstones.
 

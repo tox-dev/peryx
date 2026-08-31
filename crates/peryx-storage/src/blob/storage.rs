@@ -6,8 +6,8 @@ use futures_util::{StreamExt as _, TryStreamExt as _};
 use super::backend::filesystem_worker;
 use super::s3::S3Backend;
 use super::{
-    BlobBackend, BlobCapabilities, BlobEntry, BlobError, BlobLease, BlobMetadata, BlobOperation, BlobRead,
-    BlobScanError, BlobStaged, BlobStore, BlobWrite, Digest, DurabilityCapabilities, S3Config, StageUsage,
+    BlobBackend, BlobCapabilities, BlobDigestPage, BlobEntry, BlobError, BlobLease, BlobMetadata, BlobOperation,
+    BlobRead, BlobScanError, BlobStaged, BlobStore, BlobWrite, Digest, DurabilityCapabilities, S3Config, StageUsage,
 };
 
 /// Object-store metadata requests a bulk presence check may hold in flight. S3 serves a batch far
@@ -543,6 +543,22 @@ impl BlobBlocking<'_> {
     pub fn stage_usage(&self) -> Result<StageUsage, BlobError> {
         match self.backend {
             Backend::Filesystem(store) => filesystem_context(store.stage_usage(), BlobOperation::List, None),
+            Backend::S3(_) => Err(unsupported_blocking(BlobOperation::List)),
+        }
+    }
+
+    /// Reads one bounded, ordered page of stored digests above `cursor` so a maintenance pass resumes
+    /// where the previous one stopped instead of rewalking the whole store.
+    ///
+    /// # Errors
+    /// Returns a contextual listing error.
+    pub fn digest_page(
+        &self,
+        cursor: Option<&str>,
+        limit: std::num::NonZeroUsize,
+    ) -> Result<BlobDigestPage, BlobError> {
+        match self.backend {
+            Backend::Filesystem(store) => filesystem_context(store.scan_page(cursor, limit), BlobOperation::List, None),
             Backend::S3(_) => Err(unsupported_blocking(BlobOperation::List)),
         }
     }

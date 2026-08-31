@@ -29,6 +29,7 @@ mod policy_decision;
 mod quota;
 mod reclaim_guard;
 mod reclamation;
+mod reclamation_cursor;
 mod reconcile;
 mod repository;
 mod revocation;
@@ -74,8 +75,8 @@ pub use peryx_ha::{
     BlobPlacementRouting, BlobPlacementState, BlobPlacementStatus, BlobPlacementTransition, ByteAvailability,
     CompareWrite, DataCenterId, MAX_PLACEMENTS_PER_DIGEST, MAX_REPAIR_BATCH, NewReconcileEntry, PlacementEvent,
     PlacementKeyError, PlacementRepairPage, ReadyOutcome, ReclamationDecisionError, ReclamationProgress,
-    ReclamationSnapshot, ReclamationState, ReclamationStatus, ReclamationTombstone, ReconcileEnqueue, ReconcileEntry,
-    ReconcilePage, SelectOutcome, SkipReason, TransferAudit,
+    ReclamationSnapshot, ReclamationState, ReclamationStatus, ReclamationTombstone, ReclamationTombstonePage,
+    ReconcileEnqueue, ReconcileEntry, ReconcilePage, SelectOutcome, SkipReason, TransferAudit,
 };
 pub use placement::ArtifactPlacementQueryError;
 pub use policy_decision::{
@@ -86,6 +87,7 @@ pub use quota::{
     AccountingClass, NewQuotaReservation, QuotaAllocation, QuotaError, QuotaLimit, QuotaLimits, QuotaRepairReport,
     QuotaReservationRecord, QuotaReservationState, QuotaResourceUsage, QuotaUsage, QuotaValue,
 };
+pub use reclamation_cursor::ReclamationPhase;
 pub use repository::{
     CreateRepositoryError, DesiredRepository, NewRepository, ReconcileAction, ReconcileRepositoryError,
     ReconciledRepository, RepositoryFieldError, RepositoryId, RepositoryPage, RepositoryQuery, RepositoryQueryError,
@@ -165,6 +167,9 @@ const BLOB_PLACEMENT: TableDefinition<&str, &[u8]> = TableDefinition::new("blob_
 const BLOB_COPY_CURSOR: TableDefinition<&str, &str> = TableDefinition::new("blob_copy_cursor");
 const BLOB_CHUNK_DIGEST: TableDefinition<&str, &[u8]> = TableDefinition::new("blob_chunk_digest");
 const RECLAMATION_TOMBSTONE: TableDefinition<&str, &[u8]> = TableDefinition::new("reclamation_tombstone");
+/// Where each reclamation phase's last pass stopped scanning, so the next pass resumes instead of
+/// reselecting the first page.
+const RECLAMATION_CURSOR: TableDefinition<&str, &str> = TableDefinition::new("reclamation_cursor");
 const BLOB_RECLAIM_GUARD: TableDefinition<&str, i64> = TableDefinition::new("blob_reclaim_guard");
 const REPOSITORY: TableDefinition<&str, &[u8]> = TableDefinition::new("repository");
 const REPOSITORY_ROUTE: TableDefinition<&str, &str> = TableDefinition::new("repository_route");

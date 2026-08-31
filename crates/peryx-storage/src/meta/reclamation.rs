@@ -1,6 +1,9 @@
-use std::ops::Bound::{Excluded, Included};
+use std::num::NonZeroUsize;
+use std::ops::Bound::{Excluded, Included, Unbounded};
 
-use peryx_ha::{BlobPlacementRecord, ReclamationSnapshot, ReclamationStore, ReclamationTombstone};
+use peryx_ha::{
+    BlobPlacementRecord, ReclamationSnapshot, ReclamationStore, ReclamationTombstone, ReclamationTombstonePage,
+};
 use peryx_identity::ArtifactDigest;
 use redb::ReadableTable as _;
 
@@ -98,6 +101,33 @@ impl ReclamationStore for MetaStore {
             records.push(serde_json::from_slice(value.value())?);
         }
         Ok(records)
+    }
+
+    fn scan_reclamation_tombstones(
+        &self,
+        cursor: Option<&str>,
+        limit: NonZeroUsize,
+    ) -> Result<ReclamationTombstonePage, Self::Error> {
+        let txn = self.db.begin_read()?;
+        let Some(table) = open_optional_table(&txn, RECLAMATION_TOMBSTONE)? else {
+            return Ok(ReclamationTombstonePage::default());
+        };
+        let entries = match cursor {
+            Some(after) => table.range::<&str>((Excluded(after), Unbounded))?,
+            None => table.iter()?,
+        };
+        let mut page = ReclamationTombstonePage::default();
+        let mut last_key = None;
+        for entry in entries {
+            let (key, value) = entry?;
+            if page.records.len() == limit.get() {
+                page.next_cursor = last_key;
+                break;
+            }
+            page.records.push(serde_json::from_slice(value.value())?);
+            last_key = Some(key.value().to_owned());
+        }
+        Ok(page)
     }
 }
 

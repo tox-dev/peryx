@@ -23,7 +23,7 @@ pub use range::{RangeRequest, parse_range};
 pub use s3::{S3Addressing, S3Backend, S3Client, S3Config, S3ConfigError, S3Error, S3Settings};
 pub use stage::StageUsage;
 pub use storage::{BlobBlocking, BlobStorage};
-pub use store::{BlobEntry, BlobStore, PendingBlob, StagedBlob};
+pub use store::{BlobDigestPage, BlobEntry, BlobStore, PendingBlob, StagedBlob};
 
 fn to_hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";

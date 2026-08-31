@@ -87,6 +87,13 @@ impl ReclamationTombstone {
     }
 }
 
+/// One page of tombstones in digest order, plus the exclusive cursor a later pass resumes from.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReclamationTombstonePage {
+    pub records: Vec<ReclamationTombstone>,
+    pub next_cursor: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReclamationSnapshot {
     pub tombstone: Option<ReclamationTombstone>,

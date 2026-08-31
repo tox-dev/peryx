@@ -23,8 +23,8 @@ pub use placement::{
 };
 pub use reclamation::{
     ReadyOutcome, ReclaimGuard, ReclaimGuardArm, ReclamationDecisionError, ReclamationProgress, ReclamationSnapshot,
-    ReclamationState, ReclamationStatus, ReclamationTombstone, SelectOutcome, SkipReason, decide_reclamation_readiness,
-    decide_reclamation_selection,
+    ReclamationState, ReclamationStatus, ReclamationTombstone, ReclamationTombstonePage, SelectOutcome, SkipReason,
+    decide_reclamation_readiness, decide_reclamation_selection,
 };
 pub use reconcile::{NewReconcileEntry, ReconcileEnqueue, ReconcileEntry, ReconcilePage};
 pub use store::{

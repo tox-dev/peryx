@@ -1,4 +1,3 @@
-use std::convert::Infallible;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Instant;
@@ -12,7 +11,7 @@ use peryx_ha::{
 };
 use peryx_identity::ArtifactDigest;
 use peryx_storage::blob::BlobStorage;
-use peryx_storage::meta::MetaStore;
+use peryx_storage::meta::{MetaStore, ReclamationPhase};
 
 mod candidate_policy;
 mod fence_policy;
@@ -78,17 +77,12 @@ impl BlobReclamationSelector {
         };
         let mut report = AvailabilityTaskReport::default();
 
-        let mut stored = Vec::new();
-        let scan = blobs.blocking().visit(|entry| {
-            if let Some(digest) = entry.digest {
-                stored.push(digest);
-            }
-            Ok::<(), Infallible>(())
-        });
-        if let Err(error) = scan {
-            return Err(task_error("reclamation_scan", error));
-        }
-        for digest in stored.into_iter().take(batch.get()) {
+        let selection = read_cursor(meta, ReclamationPhase::Selection)?;
+        let stored = match blobs.blocking().digest_page(selection.as_deref(), batch) {
+            Ok(page) => page,
+            Err(error) => return Err(task_error("reclamation_scan", error)),
+        };
+        for digest in stored.digests {
             if cancelled() {
                 return Ok(report);
             }
@@ -104,15 +98,17 @@ impl BlobReclamationSelector {
                 Err(error) => return Err(task_error("reclamation_select", error)),
             }
         }
+        advance_cursor(meta, ReclamationPhase::Selection, stored.next_cursor.as_deref())?;
 
         let Some(observed) = self.frontiers.observe() else {
             return Ok(report);
         };
-        let tombstones = match meta.reclamation_tombstones() {
-            Ok(tombstones) => tombstones,
+        let finalize = read_cursor(meta, ReclamationPhase::Finalize)?;
+        let tombstones = match meta.scan_reclamation_tombstones(finalize.as_deref(), batch) {
+            Ok(page) => page,
             Err(error) => return Err(task_error("reclamation_read", error)),
         };
-        for tombstone in tombstones {
+        for tombstone in tombstones.records {
             if cancelled() {
                 return Ok(report);
             }
@@ -126,8 +122,25 @@ impl BlobReclamationSelector {
                 Err(error) => return Err(task_error("reclamation_mark", error)),
             }
         }
+        advance_cursor(meta, ReclamationPhase::Finalize, tombstones.next_cursor.as_deref())?;
         Ok(report)
     }
+}
+
+fn read_cursor(meta: &MetaStore, phase: ReclamationPhase) -> Result<Option<String>, AvailabilityTaskError> {
+    meta.reclamation_cursor(phase)
+        .map_err(|error| task_error("reclamation_cursor_read", error))
+}
+
+/// A page without a successor ends the scan, and clearing the cursor wraps the next pass back to the
+/// first row. Writing after the page is processed may repeat a page after a crash, never skip one.
+fn advance_cursor(
+    meta: &MetaStore,
+    phase: ReclamationPhase,
+    cursor: Option<&str>,
+) -> Result<(), AvailabilityTaskError> {
+    meta.set_reclamation_cursor(phase, cursor)
+        .map_err(|error| task_error("reclamation_cursor_write", error))
 }
 
 #[async_trait]

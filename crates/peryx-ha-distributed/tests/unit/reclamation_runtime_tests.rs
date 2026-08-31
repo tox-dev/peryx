@@ -784,3 +784,202 @@ fn test_reclamation_retention_counts_and_prunes_only_skipped_records() {
         }
     );
 }
+
+fn covered() -> ObservedFrontier {
+    ObservedFrontier {
+        replica: Some(0),
+        backup: Some(0),
+    }
+}
+
+/// Digests follow from blob content, so the caller learns the scan order rather than choosing it.
+fn ordered_blobs(state: &Runtime, count: usize) -> Vec<(Digest, ArtifactDigest)> {
+    let mut blobs = (0..count)
+        .map(|index| store_blob(state, format!("blob-{index}").as_bytes()))
+        .collect::<Vec<_>>();
+    blobs.sort_by(|(left, _), (right, _)| left.as_str().cmp(right.as_str()));
+    blobs
+}
+
+fn tombstoned(meta: &MetaStore) -> Vec<ArtifactDigest> {
+    meta.reclamation_tombstones()
+        .unwrap()
+        .into_iter()
+        .map(|record| record.digest)
+        .collect()
+}
+
+fn pass(state: &Runtime, batch: NonZeroUsize, cancelled: &(dyn Fn() -> bool + Send + Sync)) {
+    selector(&[], covered())
+        .reclaim_pass(&state.meta, &state.blobs, &state.clock, cancelled, 9, batch)
+        .unwrap();
+}
+
+#[test]
+fn test_successive_passes_cover_the_digests_beyond_the_first_batch() {
+    let (_meta_dir, meta) = meta();
+    let (_app_dir, state) = app(meta);
+    let blobs = ordered_blobs(&state, 5);
+    let artifacts = blobs.iter().map(|(_, artifact)| artifact.clone()).collect::<Vec<_>>();
+    let two = NonZeroUsize::new(2).unwrap();
+
+    let covered = (0..3)
+        .map(|_| {
+            pass(&state, two, &|| false);
+            tombstoned(&state.meta)
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        covered,
+        vec![artifacts[..2].to_vec(), artifacts[..4].to_vec(), artifacts.clone()]
+    );
+}
+
+#[test]
+fn test_a_restarted_pass_resumes_from_the_recorded_cursor() {
+    let meta_dir = tempfile::tempdir().unwrap();
+    let path = meta_dir.path().join("peryx.redb");
+    let blob_dir = tempfile::tempdir().unwrap();
+    let blobs = BlobStorage::filesystem(blob_dir.path().join("blobs"));
+    let clock: Clock = Arc::new(|| 42);
+    let started = Runtime {
+        meta: crate::support::distributed_meta(&path),
+        blobs: blobs.clone(),
+        clock: Arc::clone(&clock),
+    };
+    let artifacts = ordered_blobs(&started, 3)
+        .into_iter()
+        .map(|(_, artifact)| artifact)
+        .collect::<Vec<_>>();
+    pass(&started, NonZeroUsize::MIN, &|| false);
+    drop(started);
+
+    let restarted = Runtime {
+        meta: MetaStore::open_existing(&path).unwrap(),
+        blobs,
+        clock,
+    };
+    pass(&restarted, NonZeroUsize::MIN, &|| false);
+
+    assert_eq!(tombstoned(&restarted.meta), artifacts[..2].to_vec());
+}
+
+#[test]
+fn test_a_completed_scan_wraps_back_to_the_first_digest() {
+    let (_meta_dir, meta) = meta();
+    let (_app_dir, state) = app(meta);
+    let blobs = ordered_blobs(&state, 2);
+    pass(&state, NonZeroUsize::MIN, &|| false);
+    pass(&state, NonZeroUsize::MIN, &|| false);
+    let first = state.meta.reclamation_tombstone(&blobs[0].1).unwrap().unwrap();
+    assert!(state.meta.compare_and_remove_reclamation_tombstone(&first).unwrap());
+
+    pass(&state, NonZeroUsize::MIN, &|| false);
+
+    assert_eq!(
+        tombstoned(&state.meta),
+        vec![blobs[0].1.clone(), blobs[1].1.clone()],
+        "the wrapped pass reselects the digest the scan started from"
+    );
+}
+
+#[test]
+fn test_deleting_the_cursor_blob_does_not_block_selection() {
+    let (_meta_dir, meta) = meta();
+    let (_app_dir, state) = app(meta);
+    let blobs = ordered_blobs(&state, 3);
+    pass(&state, NonZeroUsize::MIN, &|| false);
+    assert!(state.blobs.blocking().delete(&blobs[0].0).unwrap());
+
+    pass(&state, NonZeroUsize::MIN, &|| false);
+
+    assert_eq!(tombstoned(&state.meta), vec![blobs[0].1.clone(), blobs[1].1.clone()]);
+}
+
+#[test]
+fn test_a_cancelled_pass_leaves_the_cursor_where_it_was() {
+    let (_meta_dir, meta) = meta();
+    let (_app_dir, state) = app(meta);
+    let blobs = ordered_blobs(&state, 2);
+    pass(&state, NonZeroUsize::MIN, &|| true);
+
+    pass(&state, NonZeroUsize::MIN, &|| false);
+
+    assert_eq!(
+        tombstoned(&state.meta),
+        vec![blobs[0].1.clone()],
+        "the abandoned page is retried rather than skipped"
+    );
+}
+
+#[test]
+fn test_finalization_advances_one_page_per_pass() {
+    let (_meta_dir, meta) = meta();
+    let artifacts = ["a", "b", "c"].map(|seed| ArtifactDigest::from_sha256(seed.repeat(64)).unwrap());
+    for artifact in &artifacts {
+        select_reclamation_candidate(&meta, artifact, false, 0, 9, 10).unwrap();
+    }
+    let (_app_dir, state) = app(meta);
+
+    let statuses = (0..2)
+        .map(|_| {
+            pass(&state, NonZeroUsize::MIN, &|| false);
+            artifacts
+                .iter()
+                .map(|artifact| tombstone_status(&state.meta, artifact))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        statuses,
+        vec![
+            vec![
+                Some(ReclamationStatus::Ready),
+                Some(ReclamationStatus::Pending),
+                Some(ReclamationStatus::Pending),
+            ],
+            vec![
+                Some(ReclamationStatus::Ready),
+                Some(ReclamationStatus::Ready),
+                Some(ReclamationStatus::Pending),
+            ],
+        ]
+    );
+}
+
+#[test]
+fn test_reclaim_pass_surfaces_a_cursor_read_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peryx.redb");
+    crate::support::distributed_meta(&path);
+    let database = Database::open(&path).unwrap();
+    let write = database.begin_write().unwrap();
+    write
+        .open_table(TableDefinition::<&str, u64>::new("reclamation_cursor"))
+        .unwrap();
+    write.commit().unwrap();
+    drop(database);
+    let (_app_dir, state) = app(MetaStore::open_existing(&path).unwrap());
+
+    let error = selector(&[], covered())
+        .reclaim_pass(&state.meta, &state.blobs, &state.clock, &|| false, 9, batch())
+        .unwrap_err();
+
+    assert_eq!(error.code(), "reclamation_cursor_read");
+}
+
+#[test]
+fn test_reclaim_pass_surfaces_a_cursor_write_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peryx.redb");
+    crate::support::distributed_meta(&path);
+    let (_app_dir, state) = app(MetaStore::open_existing_read_only(&path).unwrap());
+
+    let error = selector(&[], covered())
+        .reclaim_pass(&state.meta, &state.blobs, &state.clock, &|| false, 9, batch())
+        .unwrap_err();
+
+    assert_eq!(error.code(), "reclamation_cursor_write");
+}

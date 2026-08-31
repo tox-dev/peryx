@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     ArtifactPlacement, ArtifactPlacementHealth, ArtifactPlacementPage, ArtifactPlacementQuery, BlobPlacementGroupPage,
     BlobPlacementKey, BlobPlacementPage, BlobPlacementRecord, NewReconcileEntry, ReclaimGuard, ReclaimGuardArm,
-    ReclamationSnapshot, ReclamationTombstone, ReconcileEnqueue, ReconcileEntry, ReconcilePage,
+    ReclamationSnapshot, ReclamationTombstone, ReclamationTombstonePage, ReconcileEnqueue, ReconcileEntry,
+    ReconcilePage,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +76,13 @@ pub trait ReclamationStore {
     fn compare_and_remove_reclamation_tombstone(&self, expected: &ReclamationTombstone) -> Result<bool, Self::Error>;
     fn reclamation_tombstone(&self, digest: &ArtifactDigest) -> Result<Option<ReclamationTombstone>, Self::Error>;
     fn reclamation_tombstones(&self) -> Result<Vec<ReclamationTombstone>, Self::Error>;
+    /// Returns the last emitted digest as a cursor only when another row exists; passing it back starts at the
+    /// following tombstone.
+    fn scan_reclamation_tombstones(
+        &self,
+        cursor: Option<&str>,
+        limit: NonZeroUsize,
+    ) -> Result<ReclamationTombstonePage, Self::Error>;
 }
 
 #[expect(clippy::missing_errors_doc, reason = "implementations define backend errors")]

@@ -1,4 +1,5 @@
 use std::io::{ErrorKind, Read as _, Seek as _, SeekFrom, Write as _};
+use std::num::NonZeroUsize;
 use std::ops::Range;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -143,12 +144,56 @@ fn remove_pending_with(
     }
 }
 
+/// Subdirectories of `dir` in name order, dropping those whose digests all sort at or below `cursor`.
+/// Names accumulate because each level contributes only two hex characters of the digest.
+fn sorted_directories(dir: &Path, prefix: &[u8], cursor: &[u8]) -> Result<Vec<(Vec<u8>, PathBuf)>, BlobError> {
+    let mut rows = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let mut name = prefix.to_vec();
+        name.extend_from_slice(entry.file_name().as_encoded_bytes());
+        let width = name.len().min(cursor.len());
+        if name[..width] < cursor[..width] {
+            continue;
+        }
+        rows.push((name, entry.path()));
+    }
+    rows.sort_unstable();
+    Ok(rows)
+}
+
+/// Entries of `dir` in name order, dropping those at or below the exclusive `cursor`.
+fn sorted_files(dir: &Path, cursor: &[u8]) -> Result<Vec<PathBuf>, BlobError> {
+    let mut rows = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if name.as_encoded_bytes() <= cursor {
+            continue;
+        }
+        rows.push((name, entry.path()));
+    }
+    rows.sort_unstable();
+    Ok(rows.into_iter().map(|(_, path)| path).collect())
+}
+
 fn lease_lock_available(result: Result<(), fs4::TryLockError>) -> Result<bool, std::io::Error> {
     match result {
         Ok(()) => Ok(true),
         Err(fs4::TryLockError::WouldBlock) => Ok(false),
         Err(fs4::TryLockError::Error(error)) => Err(error),
     }
+}
+
+/// One page of stored digests in lexicographic order, plus the exclusive cursor a later page resumes
+/// from. `read_dir` order is unspecified, so a resumable walk has to impose the order itself.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BlobDigestPage {
+    pub digests: Vec<Digest>,
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -429,6 +474,37 @@ impl BlobStore {
             }
         }
         Ok(())
+    }
+
+    /// Reads at most `limit` digests above `cursor` plus one lookahead, so a pass that resumes from the
+    /// returned cursor covers the whole store instead of reselecting the first slice every time.
+    ///
+    /// # Errors
+    /// Returns a listing error if directory walking fails.
+    pub fn scan_page(&self, cursor: Option<&str>, limit: NonZeroUsize) -> Result<BlobDigestPage, BlobError> {
+        let root = self.root.join("sha256");
+        let mut page = BlobDigestPage::default();
+        if !root.exists() {
+            return Ok(page);
+        }
+        let bound = cursor.unwrap_or_default().as_bytes();
+        let mut last = None;
+        for (prefix, first) in sorted_directories(&root, &[], bound)? {
+            for (_, second) in sorted_directories(&first, &prefix, bound)? {
+                for path in sorted_files(&second, bound)? {
+                    let Some(digest) = self.digest_from_path(&path) else {
+                        continue;
+                    };
+                    if page.digests.len() == limit.get() {
+                        page.next_cursor = last;
+                        return Ok(page);
+                    }
+                    last = Some(digest.as_str().to_owned());
+                    page.digests.push(digest);
+                }
+            }
+        }
+        Ok(page)
     }
 
     /// # Errors
