@@ -8,7 +8,7 @@ use peryx_storage::blob::Digest;
 use super::verify::{check_backup_with_plugins, is_missing_file};
 use super::{
     Access, BackupCheck, BackupManifest, BackupSource, backup_blob_path, backup_config_with_plugins, backup_plugins,
-    copy_hashed, is_empty_dir, read_manifest,
+    copy_hashed, is_empty_dir, read_manifest, sync_parent, sync_tree,
 };
 use crate::config::Config;
 
@@ -361,37 +361,4 @@ fn cleanup_restore_failure(staging: &Path, error: anyhow::Error) -> anyhow::Erro
             staging.display()
         )),
     }
-}
-
-/// Flush the staged directory tree before publication.
-fn sync_tree(path: &Path) -> anyhow::Result<()> {
-    for entry in std::fs::read_dir(path).context(format!("read restored directory {}", path.display()))? {
-        let child = entry
-            .context(format!("read restored directory entry in {}", path.display()))?
-            .path();
-        if child.is_dir() {
-            sync_tree(&child)?;
-        }
-    }
-    sync_dir(path)
-}
-
-fn sync_parent(path: &Path) -> anyhow::Result<()> {
-    let parent = path
-        .parent()
-        .context(format!("restored target {} has no parent", path.display()))?;
-    sync_dir(parent)
-}
-
-#[cfg(unix)]
-fn sync_dir(path: &Path) -> anyhow::Result<()> {
-    std::fs::File::open(path)
-        .context(format!("open directory {} for sync", path.display()))?
-        .sync_all()
-        .context(format!("sync directory {}", path.display()))
-}
-
-#[cfg(not(unix))]
-fn sync_dir(_path: &Path) -> anyhow::Result<()> {
-    Ok(())
 }

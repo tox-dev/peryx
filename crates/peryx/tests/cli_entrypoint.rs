@@ -200,6 +200,43 @@ fn backup_create_and_verify_round_trip() {
 }
 
 #[test]
+fn backup_create_publishes_into_a_target_the_caller_reserved() {
+    let store = Store::new();
+    let dir = tempfile::tempdir().unwrap();
+    let backup = output_path(dir.path(), "backup");
+    std::fs::create_dir(&backup).unwrap();
+
+    let create = store
+        .command([OsStr::new("backup"), OsStr::new("create"), backup.as_os_str()])
+        .output()
+        .unwrap();
+
+    assert_success(&create);
+    assert_success(&run([OsStr::new("backup"), OsStr::new("verify"), backup.as_os_str()]));
+}
+
+#[test]
+fn backup_create_leaves_a_published_backup_intact() {
+    let store = Store::new();
+    let dir = tempfile::tempdir().unwrap();
+    let backup = output_path(dir.path(), "backup");
+    assert_success(
+        &store
+            .command([OsStr::new("backup"), OsStr::new("create"), backup.as_os_str()])
+            .output()
+            .unwrap(),
+    );
+
+    let second = store
+        .command([OsStr::new("backup"), OsStr::new("create"), backup.as_os_str()])
+        .output()
+        .unwrap();
+
+    assert_failure(&second, "is not empty");
+    assert_success(&run([OsStr::new("backup"), OsStr::new("verify"), backup.as_os_str()]));
+}
+
+#[test]
 fn restore_recovers_a_backup_into_an_empty_directory() {
     let store = Store::new();
     let dir = tempfile::tempdir().unwrap();

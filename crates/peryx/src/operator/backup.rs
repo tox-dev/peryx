@@ -1,8 +1,6 @@
 use std::fs::File;
 use std::io::{BufWriter, Write};
-use std::path::Path;
-#[cfg(not(unix))]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, bail};
 use peryx_plugin_registry::PluginRegistry;
@@ -14,10 +12,14 @@ use super::is_empty_dir;
 use super::snapshot::config_snapshot;
 use super::{
     Access, BACKUP_FORMAT, BLOB_INDEX_HEADER, BackupManifest, HashedFile, ManifestAvailability, ManifestBlobIndex,
-    ManifestFile, backup_blob_relpath, config_availability, copy_hashed_file, create_private_dir_all, hash_file,
-    unix_now, write_hashed_file, write_manifest,
+    ManifestFile, STAGING_PREFIX, backup_blob_relpath, config_availability, copy_hashed_file, create_private_dir_all,
+    hash_file, sync_parent, sync_tree, unix_now, write_hashed_file, write_manifest,
 };
 use crate::config::Config;
+
+#[cfg(test)]
+#[path = "../../tests/unit/tests/operator/backup_publish_tests.rs"]
+mod backup_publish_tests;
 
 /// # Errors
 /// Returns an error if the repository uses an object-store blob backend, the source metadata store
@@ -38,17 +40,13 @@ pub fn backup_create_with_plugins(
     crate::app::reject_object_store_blob(config, "creating an offline backup")?;
     let distributed = config.availability.mode().is_distributed();
     let source_metadata = config.data_dir.join("peryx.redb");
-    let target = BackupTarget::prepare_existing(path)?;
+    let target = BackupTarget::reserve(path)?;
     let source_meta = quiesce_source(&source_metadata)?;
     let plugins = crate::server::activate_plugins(config, plugins)?;
     let references = plugins
         .drivers()
         .scan_blob_references(&source_meta)
         .context("scan metadata blob references")?;
-    let target = match target {
-        Some(target) => target,
-        None => BackupTarget::prepare_new(path)?,
-    };
     let config_snapshot = config_snapshot(config)?;
     let metadata_context = format!("copy metadata store {}", source_metadata.display());
     let (_, metadata_file) = copy_hashed_file(
@@ -118,9 +116,9 @@ pub fn backup_create_with_plugins(
         },
         availability,
     };
-    target.ensure_path(path)?;
     let manifest_file = target.create_file(Path::new("manifest.json"), Access::Private)?;
     write_manifest(manifest_file, &manifest)?;
+    target.publish()?;
     writeln!(out, "created\t{}", path.display())?;
     writeln!(out, "metadata\t{}", config.data_dir.join("peryx.redb").display())?;
     writeln!(out, "ecosystems\t{}", references.ecosystems.join(","))?;
@@ -203,59 +201,88 @@ fn copy_referenced_blobs(
     Ok((blob_count, blob_bytes))
 }
 
+/// A backup under construction in a private randomized sibling of the path it will be published at.
+///
+/// Nothing is ever written into the final path: the whole tree is built in the sibling and swapped in
+/// with a single rename, so a copy, hash, or synchronization failure leaves the final path exactly as
+/// the attempt found it — absent, or the empty directory the caller reserved — rather than a partial
+/// tree the next attempt would refuse. The sibling shares the final path's parent, which keeps the
+/// publishing rename a same-filesystem operation.
+#[derive(Debug)]
 struct BackupTarget {
     #[cfg(unix)]
     dir: File,
-    #[cfg(not(unix))]
+    staging: tempfile::TempDir,
     path: PathBuf,
 }
 
 impl BackupTarget {
-    #[cfg(unix)]
-    fn prepare_existing(path: &Path) -> anyhow::Result<Option<Self>> {
-        match std::fs::symlink_metadata(path) {
-            Ok(metadata) => {
-                anyhow::ensure!(
-                    !metadata.file_type().is_symlink(),
-                    "backup path {} is a symbolic link",
-                    path.display()
-                );
-                anyhow::ensure!(
-                    metadata.is_dir(),
-                    "backup path {} exists and is not a directory",
-                    path.display()
-                );
-                Self::open(path).map(Some)
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error).context(format!("inspect backup path {}", path.display())),
-        }
+    /// Refuse an occupied target and reserve a staging sibling to build the backup in.
+    ///
+    /// The target is inspected first so an occupied one is reported as such rather than as a staging
+    /// failure; the reservation is created with create-new semantics, so two concurrent attempts on
+    /// one target build in separate trees and only the publishing rename arbitrates between them.
+    fn reserve(path: &Path) -> anyhow::Result<Self> {
+        let path = std::path::absolute(path).context(format!("resolve backup path {}", path.display()))?;
+        Self::inspect_target(&path)?;
+        let parent = staging_parent(&path)?;
+        create_private_dir_all(parent)?;
+        let mut builder = tempfile::Builder::new();
+        builder.prefix(STAGING_PREFIX);
+        #[cfg(unix)]
+        builder.permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700));
+        let staging = builder
+            .tempdir_in(parent)
+            .context(format!("create backup staging directory in {}", parent.display()))?;
+        Ok(Self {
+            #[cfg(unix)]
+            dir: open_dir(staging.path())?,
+            staging,
+            path,
+        })
+    }
+
+    /// Make the staged tree durable and link it at the final path.
+    ///
+    /// Directories are flushed from the leaves up so every member's directory entry is durable before
+    /// the tree gains a name a reader follows, and the final path's parent is flushed after the rename
+    /// so the backup's own name survives a power loss. A rename onto a directory that gained an entry
+    /// after it was inspected fails, so a backup another attempt already published is never replaced.
+    fn publish(self) -> anyhow::Result<()> {
+        let Self { mut staging, path, .. } = self;
+        sync_tree(staging.path())?;
+        rename_into_place(staging.path(), &path)?;
+        // The staged tree now lives at the final path; leaving cleanup armed would aim it at a name
+        // another attempt is free to reserve.
+        staging.disable_cleanup(true);
+        sync_parent(&path)
     }
 
     #[cfg(unix)]
-    fn prepare_new(path: &Path) -> anyhow::Result<Self> {
-        create_private_dir_all(path)?;
-        Self::open(path)
-    }
+    fn inspect_target(path: &Path) -> anyhow::Result<()> {
+        use rustix::fs::Dir;
 
-    #[cfg(unix)]
-    fn open(path: &Path) -> anyhow::Result<Self> {
-        use rustix::fs::{Dir, Mode, OFlags};
-
-        let dir = File::from(
-            rustix::fs::open(
-                path,
-                OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-                Mode::empty(),
-            )
-            .context(format!("open backup directory {}", path.display()))?,
+        let metadata = match std::fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error).context(format!("inspect backup path {}", path.display())),
+        };
+        anyhow::ensure!(
+            !metadata.file_type().is_symlink(),
+            "backup path {} is a symbolic link",
+            path.display()
         );
+        anyhow::ensure!(
+            metadata.is_dir(),
+            "backup path {} exists and is not a directory",
+            path.display()
+        );
+        let dir = open_dir(path)?;
         anyhow::ensure!(
             rustix::fs::fstat(&dir)?.st_uid == rustix::process::geteuid().as_raw(),
             "backup path {} is owned by another user",
             path.display()
         );
-        rustix::fs::fchmod(&dir, Mode::RWXU).context(format!("tighten backup directory {}", path.display()))?;
         for entry in Dir::read_from(&dir).context(format!("read directory {}", path.display()))? {
             let entry = entry.context(format!("read directory {}", path.display()))?;
             anyhow::ensure!(
@@ -264,13 +291,13 @@ impl BackupTarget {
                 path.display()
             );
         }
-        Ok(Self { dir })
+        Ok(())
     }
 
     #[cfg(not(unix))]
-    fn prepare_existing(path: &Path) -> anyhow::Result<Option<Self>> {
+    fn inspect_target(path: &Path) -> anyhow::Result<()> {
         if !path.exists() {
-            return Ok(None);
+            return Ok(());
         }
         anyhow::ensure!(
             path.is_dir(),
@@ -278,32 +305,6 @@ impl BackupTarget {
             path.display()
         );
         anyhow::ensure!(is_empty_dir(path)?, "backup path {} is not empty", path.display());
-        Ok(Some(Self { path: path.to_owned() }))
-    }
-
-    #[cfg(not(unix))]
-    fn prepare_new(path: &Path) -> anyhow::Result<Self> {
-        create_private_dir_all(path)?;
-        Ok(Self { path: path.to_owned() })
-    }
-
-    #[cfg(unix)]
-    fn ensure_path(&self, path: &Path) -> anyhow::Result<()> {
-        use rustix::fs::{AtFlags, CWD};
-
-        let held = rustix::fs::fstat(&self.dir)?;
-        let current = rustix::fs::statat(CWD, path, AtFlags::SYMLINK_NOFOLLOW)
-            .context(format!("inspect backup directory {}", path.display()))?;
-        anyhow::ensure!(
-            (current.st_dev, current.st_ino) == (held.st_dev, held.st_ino),
-            "backup path {} was replaced while creating the backup",
-            path.display()
-        );
-        Ok(())
-    }
-
-    #[cfg(not(unix))]
-    fn ensure_path(&self, _: &Path) -> anyhow::Result<()> {
         Ok(())
     }
 
@@ -332,7 +333,7 @@ impl BackupTarget {
 
     #[cfg(not(unix))]
     fn create_file(&self, path: &Path, access: Access) -> anyhow::Result<File> {
-        let path = self.path.join(path);
+        let path = self.staging.path().join(path);
         let parent = path
             .parent()
             .context(format!("backup member {} has no parent", path.display()))?;
@@ -368,4 +369,44 @@ impl BackupTarget {
         }
         Ok(parent)
     }
+}
+
+/// Name the directory the staging sibling is reserved in. A filesystem root holds no sibling of
+/// itself, so it surfaces a structured error rather than an unwrap.
+fn staging_parent(path: &Path) -> anyhow::Result<&Path> {
+    path.parent()
+        .context(format!("backup path {} has no parent directory", path.display()))
+}
+
+#[cfg(unix)]
+fn open_dir(path: &Path) -> anyhow::Result<File> {
+    use rustix::fs::{Mode, OFlags};
+
+    Ok(File::from(
+        rustix::fs::open(
+            path,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .context(format!("open backup directory {}", path.display()))?,
+    ))
+}
+
+/// Rename replaces an empty directory and refuses a populated one, so the caller-supplied empty target
+/// is handed over in one step while a backup another attempt completed there stays untouched.
+#[cfg(unix)]
+fn rename_into_place(staging: &Path, path: &Path) -> anyhow::Result<()> {
+    std::fs::rename(staging, path).context(format!("publish backup to {}", path.display()))
+}
+
+/// Windows refuses a rename onto an existing directory, so the caller-supplied empty target is removed
+/// first and the staged tree moved to an absent destination. `remove_dir` refuses a directory holding
+/// entries, so a backup another attempt completed there is never cleared; an interruption between the
+/// two steps leaves the target absent, which the next attempt reserves from scratch.
+#[cfg(not(unix))]
+fn rename_into_place(staging: &Path, path: &Path) -> anyhow::Result<()> {
+    if path.exists() {
+        std::fs::remove_dir(path).context(format!("clear reserved backup target {}", path.display()))?;
+    }
+    std::fs::rename(staging, path).context(format!("publish backup to {}", path.display()))
 }

@@ -37,6 +37,10 @@ pub use writer::{claim_writer, claim_writer_with_plugins, promote_writer, promot
 const BACKUP_FORMAT: u32 = 2;
 const BUFFER_BYTES: usize = 1024 * 1024;
 const BLOB_INDEX_HEADER: &str = "sha256\tsize_bytes\tpath";
+/// Prefix every backup staging sibling carries, so an attempt killed before it could clean up leaves a
+/// name an operator recognizes and can delete. A retry reserves a fresh randomized name, so one left
+/// behind never blocks it.
+const STAGING_PREFIX: &str = ".peryx-backup-";
 
 #[derive(Debug, Serialize, Deserialize)]
 struct BackupManifest {
@@ -403,6 +407,43 @@ fn backup_blob_path(root: &Path, digest: &Digest) -> PathBuf {
 fn backup_blob_relpath(digest: &Digest) -> String {
     let hex = digest.as_str();
     format!("blobs/sha256/{}/{}/{}", &hex[0..2], &hex[2..4], hex)
+}
+
+/// Flush a directory tree from the leaves up, so every entry written below `path` is durable before
+/// the tree itself is linked under a name a reader will follow.
+fn sync_tree(path: &Path) -> anyhow::Result<()> {
+    for entry in std::fs::read_dir(path).context(format!("read directory {}", path.display()))? {
+        let child = entry
+            .context(format!("read directory entry in {}", path.display()))?
+            .path();
+        if child.is_dir() {
+            sync_tree(&child)?;
+        }
+    }
+    sync_dir(path)
+}
+
+/// Flush the directory a path is named in. Synchronizing a file does not make the directory entry
+/// that names it durable, so a publication survives a power loss only once its parent is flushed too.
+fn sync_parent(path: &Path) -> anyhow::Result<()> {
+    let parent = path
+        .parent()
+        .context(format!("path {} has no parent directory", path.display()))?;
+    sync_dir(parent)
+}
+
+#[cfg(unix)]
+fn sync_dir(path: &Path) -> anyhow::Result<()> {
+    File::open(path)
+        .context(format!("open directory {} for sync", path.display()))?
+        .sync_all()
+        .context(format!("sync directory {}", path.display()))
+}
+
+/// Windows offers no directory-entry flush, so publication relies on the rename alone.
+#[cfg(not(unix))]
+fn sync_dir(_path: &Path) -> anyhow::Result<()> {
+    Ok(())
 }
 
 fn is_empty_dir(path: &Path) -> anyhow::Result<bool> {

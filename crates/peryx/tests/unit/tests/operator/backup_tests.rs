@@ -13,6 +13,8 @@ use crate::operator;
 use crate::tests::support::with_blob_reference_event;
 use crate::tests::support::{fixture_job, plugins, store_repositories};
 
+#[cfg(unix)]
+use super::support::staging_dir;
 use super::support::{
     backup_create, backup_create_with_references, backup_fixture, bounded_before, s3_blob_config, valid_backup,
 };
@@ -126,18 +128,20 @@ fn test_backup_rejects_a_target_owned_by_another_user() {
 
 #[cfg(unix)]
 #[test]
-fn test_backup_rejects_a_manifest_symlink_added_after_acceptance() {
+fn test_backup_rejects_a_manifest_symlink_planted_in_the_staging_tree() {
     let (_source, config, _content, _metadata) = backup_fixture();
     let root = tempfile::tempdir().unwrap();
     let backup = root.path().join("backup");
-    std::fs::create_dir(&backup).unwrap();
     let victim = root.path().join("victim");
     std::fs::write(&victim, b"unchanged").unwrap();
-    let event_backup = backup.clone();
+    let event_root = root.path().to_owned();
     let event_victim = victim.clone();
 
     let error = with_blob_reference_event(
-        move || std::os::unix::fs::symlink(event_victim, event_backup.join("manifest.json")).unwrap(),
+        move || {
+            let staging = staging_dir(&event_root);
+            std::os::unix::fs::symlink(event_victim, staging.join("manifest.json")).unwrap();
+        },
         || backup_create_with_references(&config, &backup, &mut Vec::new()),
     )
     .unwrap_err();
@@ -146,25 +150,28 @@ fn test_backup_rejects_a_manifest_symlink_added_after_acceptance() {
         (
             error.to_string().contains("create backup member manifest.json"),
             std::fs::read(victim).unwrap(),
+            backup.exists(),
         ),
-        (true, b"unchanged".to_vec())
+        (true, b"unchanged".to_vec(), false)
     );
 }
 
 #[cfg(unix)]
 #[test]
-fn test_backup_rejects_a_directory_symlink_added_after_acceptance() {
+fn test_backup_rejects_a_directory_symlink_planted_in_the_staging_tree() {
     let (_source, config, _content, _metadata) = backup_fixture();
     let root = tempfile::tempdir().unwrap();
     let backup = root.path().join("backup");
-    std::fs::create_dir(&backup).unwrap();
     let victim = root.path().join("victim");
     std::fs::create_dir(&victim).unwrap();
-    let event_backup = backup.clone();
+    let event_root = root.path().to_owned();
     let event_victim = victim.clone();
 
     let error = with_blob_reference_event(
-        move || std::os::unix::fs::symlink(event_victim, event_backup.join("metadata")).unwrap(),
+        move || {
+            let staging = staging_dir(&event_root);
+            std::os::unix::fs::symlink(event_victim, staging.join("metadata")).unwrap();
+        },
         || backup_create_with_references(&config, &backup, &mut Vec::new()),
     )
     .unwrap_err();
@@ -173,22 +180,22 @@ fn test_backup_rejects_a_directory_symlink_added_after_acceptance() {
         (
             error.to_string().contains("open backup directory metadata"),
             std::fs::read_dir(victim).unwrap().next().is_none(),
+            backup.exists(),
         ),
-        (true, true)
+        (true, true, false)
     );
 }
 
 #[cfg(unix)]
 #[test]
-fn test_backup_reports_an_unlinked_accepted_directory() {
+fn test_backup_reports_an_unlinked_staging_directory() {
     let (_source, config, _content, _metadata) = backup_fixture();
     let root = tempfile::tempdir().unwrap();
     let backup = root.path().join("backup");
-    std::fs::create_dir(&backup).unwrap();
-    let event_backup = backup.clone();
+    let event_root = root.path().to_owned();
 
     let error = with_blob_reference_event(
-        move || std::fs::remove_dir(event_backup).unwrap(),
+        move || std::fs::remove_dir(staging_dir(&event_root)).unwrap(),
         || backup_create_with_references(&config, &backup, &mut Vec::new()),
     )
     .unwrap_err();
@@ -202,33 +209,33 @@ fn test_backup_reports_an_unlinked_accepted_directory() {
     );
 }
 
+/// A concurrent attempt that publishes first owns the target; this one must fail rather than replace
+/// the completed backup sitting there.
 #[cfg(unix)]
 #[test]
-fn test_backup_rejects_target_replacement_after_acceptance() {
+fn test_backup_refuses_to_replace_a_target_populated_after_it_was_reserved() {
     let (_source, config, _content, _metadata) = backup_fixture();
     let root = tempfile::tempdir().unwrap();
     let backup = root.path().join("backup");
-    std::fs::create_dir(&backup).unwrap();
-    let accepted = root.path().join("accepted");
     let event_backup = backup.clone();
-    let event_accepted = accepted.clone();
+    let mut out = Vec::new();
 
     let error = with_blob_reference_event(
         move || {
-            std::fs::rename(&event_backup, &event_accepted).unwrap();
-            std::fs::create_dir(event_backup).unwrap();
+            std::fs::create_dir(&event_backup).unwrap();
+            std::fs::write(event_backup.join("manifest.json"), b"published").unwrap();
         },
-        || backup_create_with_references(&config, &backup, &mut Vec::new()),
+        || backup_create_with_references(&config, &backup, &mut out),
     )
     .unwrap_err();
 
     assert_eq!(
         (
-            error.to_string().contains("was replaced while creating the backup"),
-            std::fs::read_dir(&backup).unwrap().next().is_none(),
-            accepted.join("manifest.json").exists(),
+            error.to_string().contains("publish backup to"),
+            std::fs::read(backup.join("manifest.json")).unwrap(),
+            out,
         ),
-        (true, true, false)
+        (true, b"published".to_vec(), Vec::new())
     );
 }
 
@@ -331,6 +338,49 @@ fn test_backup_rejects_unusable_referenced_blobs(#[case] tamper: bool, #[case] e
     let error = backup_create_with_references(&config, &root.path().join("backup"), &mut Vec::new()).unwrap_err();
 
     assert!(error.to_string().contains(expected), "{error:#}");
+}
+
+/// A failed attempt must leave the target the way it found it, so the operator retries the same
+/// command instead of first cleaning up a partial tree the next attempt would refuse.
+#[rstest]
+#[case::absent(false)]
+#[case::reserved(true)]
+fn test_backup_leaves_a_retryable_target_after_a_failure(#[case] reserved: bool) {
+    let (_source, config, content, _metadata) = backup_fixture();
+    let blob = BlobStore::new(config.data_dir.join("blobs")).path_for(&content);
+    let bytes = std::fs::read(&blob).unwrap();
+    std::fs::write(&blob, b"tampered").unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let backup = root.path().join("backup");
+    if reserved {
+        std::fs::create_dir(&backup).unwrap();
+    }
+
+    let error = backup_create_with_references(&config, &backup, &mut Vec::new()).unwrap_err();
+    let left_behind = std::fs::read_dir(root.path()).unwrap().count();
+    std::fs::write(&blob, &bytes).unwrap();
+    let retried = backup_create_with_references(&config, &backup, &mut Vec::new());
+
+    assert_eq!(
+        (
+            error.to_string().contains("hashed as"),
+            left_behind,
+            retried.is_ok(),
+            backup.join("manifest.json").is_file(),
+        ),
+        (true, usize::from(reserved), true, true)
+    );
+}
+
+#[test]
+fn test_backup_creates_missing_parent_directories() {
+    let (_source, config, _content, _metadata) = backup_fixture();
+    let root = tempfile::tempdir().unwrap();
+    let backup = root.path().join("nested").join("archive").join("backup");
+
+    backup_create_with_references(&config, &backup, &mut Vec::new()).unwrap();
+
+    assert!(backup.join("manifest.json").is_file());
 }
 
 #[test]

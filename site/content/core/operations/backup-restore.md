@@ -45,13 +45,14 @@ the contained credentials, and preserve the same protections when copying or arc
 unauthorized recipient, rotate every inline credential it contains and create a new backup. Deleting the disclosed copy
 does not invalidate credentials that someone may already have read.
 
-On Unix, `backup create` enforces that itself. It creates the backup root `0700` and the secret-bearing files it writes
-there, the configuration snapshot, the metadata store, and the manifest, `0600`, regardless of the process umask. A
-pre-created target must belong to the effective user. The command opens that directory without following a symlink,
-tightens the open directory to `0700`, and creates each member relative to the same descriptor. It confirms the target
-still names that directory before writing the manifest. Exclusive, no-follow opens make a member symlink or replaced
-directory fail before manifest publication. `restore` applies the same `0600` to the `config.toml` and `peryx.redb` it
-lays down. Other platforms carry no Unix mode bits, so protect the directory with the filesystem's own access controls.
+On Unix, `backup create` enforces that itself. It builds the backup in a `0700` staging directory and writes the
+secret-bearing files it puts there, the configuration snapshot, the metadata store, and the manifest, `0600`, regardless
+of the process umask. A pre-created target must belong to the effective user. Each member is created relative to a
+descriptor on the staging directory with an exclusive, no-follow open, so a symlink or directory planted underneath
+during the copy fails the command rather than redirecting a write. [Publication](#atomic-publication) renames the
+staging directory into place, so a published backup carries the mode the command set rather than the one a pre-created
+target happened to have. `restore` applies the same `0600` to the `config.toml` and `peryx.redb` it lays down. Other
+platforms carry no Unix mode bits, so protect the directory with the filesystem's own access controls.
 
 ## Availability state
 
@@ -99,6 +100,21 @@ database, so an image captured while the writer commits can be inconsistent. Sto
 against one you have switched to `read_only`. A [read replica](@/core/availability/high-availability.md) rejects
 mutations and runs no background maintenance, so its metadata holds still while you copy it. Blobs need no such care:
 they are content-addressed and immutable once written, so copying them alongside a live reader is safe.
+
+### Atomic publication
+
+Nothing is written into the target itself. `backup create` builds the whole tree in a randomized `.peryx-backup-…`
+sibling of the target, synchronizes every file and every directory that contains one, and then renames the finished tree
+onto the target in a single step, synchronizing the target's own parent afterwards. A file synchronization does not make
+the directory entry naming it durable, which is why the containing directories are flushed too. `created` prints only
+once all of that has succeeded.
+
+That makes the target all-or-nothing. An unreadable blob, a full disk, or a killed process leaves it exactly as the
+attempt found it, absent or the empty directory you pre-created, so the same command retries against the same path with
+no cleanup first. An interruption never exposes a half-written backup: the path holds either no backup or one that
+`backup verify` accepts. Because a rename cannot replace a directory that holds entries, two creates racing for one
+target cannot overwrite each other, and a backup already published there survives. A process killed outright may leave
+its `.peryx-backup-…` sibling behind; it blocks nothing and is safe to delete.
 
 ## Verify a backup
 

@@ -110,6 +110,24 @@ pub(super) fn claimed_data_dir(identity: &str, mutations: usize) -> tempfile::Te
     dir
 }
 
+/// Locate the staging sibling a running `backup create` reserved, so a test can act on the tree the
+/// command is actually writing into rather than on the target it has not published to yet.
+#[cfg(unix)]
+pub(super) fn staging_dir(parent: &Path) -> PathBuf {
+    let mut staged: Vec<PathBuf> = std::fs::read_dir(parent)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(crate::operator::STAGING_PREFIX)
+        })
+        .collect();
+    assert_eq!(staged.len(), 1);
+    staged.remove(0)
+}
+
 pub(super) fn blob_relpath(digest: &Digest) -> String {
     let hex = digest.as_str();
     format!("blobs/sha256/{}/{}/{}", &hex[0..2], &hex[2..4], hex)

@@ -70,14 +70,14 @@ fn test_blob_copy_rejects_changes_after_verification(#[case] sha256: &str, #[cas
 fn test_sync_tree_reports_a_missing_directory() {
     let error = sync_tree(Path::new("/peryx/no/such/staging")).unwrap_err();
 
-    assert_eq!(error.to_string(), "read restored directory /peryx/no/such/staging");
+    assert_eq!(error.to_string(), "read directory /peryx/no/such/staging");
 }
 
 #[test]
 fn test_sync_parent_reports_a_parentless_path() {
     let error = sync_parent(Path::new("/")).unwrap_err();
 
-    assert_eq!(error.to_string(), "restored target / has no parent");
+    assert_eq!(error.to_string(), "path / has no parent directory");
 }
 
 #[test]
