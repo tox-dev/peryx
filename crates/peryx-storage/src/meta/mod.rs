@@ -157,6 +157,7 @@ const EXTERNAL_IDENTITY: TableDefinition<&[u8], &[u8]> = TableDefinition::new("e
 const EXTERNAL_ROLE_GRANT: TableDefinition<&str, &[u8]> = TableDefinition::new("external_role_grant");
 const DIGEST_REVOCATION: TableDefinition<&str, &[u8]> = TableDefinition::new("digest_revocation");
 const DIGEST_REVOCATION_STATE: TableDefinition<&str, u64> = TableDefinition::new("digest_revocation_state");
+const DIGEST_REVOCATION_BY_STATUS: TableDefinition<&str, ()> = TableDefinition::new("digest_revocation_by_status");
 /// Combines source and byte availability to avoid content-store probes during reads.
 const ARTIFACT_PLACEMENT: TableDefinition<&str, &[u8]> = TableDefinition::new("artifact_placement");
 const BLOB_PLACEMENT: TableDefinition<&str, &[u8]> = TableDefinition::new("blob_placement");
@@ -297,6 +298,7 @@ impl MetaStore {
             txn.open_table(EXTERNAL_ROLE_GRANT)?;
             txn.open_table(DIGEST_REVOCATION)?;
             txn.open_table(DIGEST_REVOCATION_STATE)?;
+            txn.open_table(DIGEST_REVOCATION_BY_STATUS)?;
             txn.open_table(OPERATION_OUTCOME)?;
             txn.open_table(REPOSITORY)?;
             txn.open_table(REPOSITORY_ROUTE)?;

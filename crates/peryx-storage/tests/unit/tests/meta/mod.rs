@@ -21,6 +21,7 @@ mod reclaim_guard_tests;
 mod reclamation_tests;
 mod replica_tests;
 mod repository_tests;
+mod revocation_scan_tests;
 mod revocation_tests;
 mod role_grant_tests;
 mod scoped_token_tests;

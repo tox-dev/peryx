@@ -1,10 +1,12 @@
-use std::ops::Bound::{Excluded, Unbounded};
+use std::ops::Bound::{Excluded, Included, Unbounded};
 
 use peryx_identity::{ArtifactDigest, RevocationReason, UserId};
-use redb::ReadableTable as _;
+use redb::{ReadableTable as _, ReadableTableMetadata as _};
 use serde::{Deserialize, Serialize};
 
-use super::{DIGEST_REVOCATION, DIGEST_REVOCATION_STATE, MetaError, MetaStore};
+use super::{
+    DIGEST_REVOCATION, DIGEST_REVOCATION_BY_STATUS, DIGEST_REVOCATION_STATE, MetaError, MetaStore, open_optional_table,
+};
 
 const MAX_QUERY_LIMIT: usize = 100;
 const ACTIVE_COUNT_KEY: &str = "active_count";
@@ -31,6 +33,17 @@ impl DigestRevocationState {
 pub enum DigestRevocationStatus {
     Active,
     Lifted,
+}
+
+impl DigestRevocationStatus {
+    /// The separator sorts below every canonical digest character, so each status owns a contiguous
+    /// key range that a prefix test can close.
+    const fn index_prefix(self) -> &'static str {
+        match self {
+            Self::Active => "active\0",
+            Self::Lifted => "lifted\0",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -113,28 +126,50 @@ pub enum DigestRevocationQueryError {
     InvalidLimit,
 }
 
-/// Rebuilds the derived count for legacy or drifted stores.
+/// Rebuilds the derived count and the status index for legacy or drifted stores.
+///
+/// An undecodable row aborts before any derived table is written, so a corrupt store never gains an
+/// index that claims to describe it.
 ///
 /// # Errors
 /// Returns a store error when the tables cannot be opened, read, or written.
 pub(super) fn backfill_digest_revocation_state(txn: &redb::WriteTransaction) -> Result<(), MetaError> {
-    let active = {
-        let records = txn.open_table(DIGEST_REVOCATION)?;
-        let mut active: u64 = 0;
-        for entry in records.iter()? {
-            let (_key, value) = entry?;
-            let record = serde_json::from_slice::<DigestRevocation>(value.value())?;
-            if record.state == DigestRevocationState::Active {
-                active += 1;
-            }
+    let records = txn.open_table(DIGEST_REVOCATION)?;
+    let mut index = txn.open_table(DIGEST_REVOCATION_BY_STATUS)?;
+    let mut active: u64 = 0;
+    let mut rows: u64 = 0;
+    let mut indexed = true;
+    for entry in records.iter()? {
+        let (key, value) = entry?;
+        let record = serde_json::from_slice::<DigestRevocation>(value.value())?;
+        if record.state == DigestRevocationState::Active {
+            active += 1;
         }
-        active
-    };
+        rows += 1;
+        if index
+            .get(index_key(record.state.status(), key.value()).as_str())?
+            .is_none()
+        {
+            indexed = false;
+        }
+    }
+    if !indexed || index.len()? != rows {
+        while index.pop_first()?.is_some() {}
+        for entry in records.iter()? {
+            let (key, value) = entry?;
+            let record = serde_json::from_slice::<DigestRevocation>(value.value())?;
+            index.insert(index_key(record.state.status(), key.value()).as_str(), ())?;
+        }
+    }
     let mut state = txn.open_table(DIGEST_REVOCATION_STATE)?;
     if state.get(ACTIVE_COUNT_KEY)?.map_or(0, |count| count.value()) != active {
         state.insert(ACTIVE_COUNT_KEY, active)?;
     }
     Ok(())
+}
+
+fn index_key(status: DigestRevocationStatus, digest: &str) -> String {
+    format!("{}{digest}", status.index_prefix())
 }
 
 impl MetaStore {
@@ -194,6 +229,17 @@ impl MetaStore {
             .map_err(MetaError::from)?
             .insert(key.as_str(), encoded.as_slice())
             .map_err(MetaError::from)?;
+        {
+            let mut index = txn.open_table(DIGEST_REVOCATION_BY_STATUS).map_err(MetaError::from)?;
+            if matches!(outcome, PutRevocationOutcome::Reopened(_)) {
+                index
+                    .remove(index_key(DigestRevocationStatus::Lifted, &key).as_str())
+                    .map_err(MetaError::from)?;
+            }
+            index
+                .insert(index_key(DigestRevocationStatus::Active, &key).as_str(), ())
+                .map_err(MetaError::from)?;
+        }
         let active_count = txn
             .open_table(DIGEST_REVOCATION_STATE)
             .map_err(MetaError::from)?
@@ -243,6 +289,11 @@ impl MetaStore {
         let encoded = serde_json::to_vec(&record)?;
         txn.open_table(DIGEST_REVOCATION)?
             .insert(key.as_str(), encoded.as_slice())?;
+        {
+            let mut index = txn.open_table(DIGEST_REVOCATION_BY_STATUS)?;
+            index.remove(index_key(DigestRevocationStatus::Active, &key).as_str())?;
+            index.insert(index_key(DigestRevocationStatus::Lifted, &key).as_str(), ())?;
+        }
         let active_count = txn
             .open_table(DIGEST_REVOCATION_STATE)?
             .get(ACTIVE_COUNT_KEY)?
@@ -297,9 +348,12 @@ impl MetaStore {
 
     /// Returns rows in canonical digest order after an exclusive cursor.
     ///
+    /// A status filter walks the status index instead of the primary table, so the page costs work
+    /// proportional to its limit rather than to the number of rows in the other status.
+    ///
     /// # Errors
-    /// Returns a validation error for an out-of-range limit, or a store error when rows cannot be read
-    /// or decoded.
+    /// Returns a validation error for an out-of-range limit, or a store error when the status index is
+    /// absent or inconsistent, or when rows cannot be read or decoded.
     pub fn query_digest_revocations(
         &self,
         query: &DigestRevocationQuery,
@@ -308,36 +362,17 @@ impl MetaStore {
             return Err(DigestRevocationQueryError::InvalidLimit);
         }
         let txn = self.db.begin_read().map_err(MetaError::from)?;
-        let table = match txn.open_table(DIGEST_REVOCATION) {
-            Ok(table) => table,
-            Err(redb::TableError::TableDoesNotExist(_)) => {
-                return Ok(DigestRevocationPage {
-                    revocations: Vec::new(),
-                    next_cursor: None,
-                });
-            }
-            Err(error) => return Err(MetaError::from(error).into()),
+        let Some(table) = open_optional_table(&txn, DIGEST_REVOCATION)? else {
+            return Ok(DigestRevocationPage {
+                revocations: Vec::new(),
+                next_cursor: None,
+            });
         };
         let cursor = query.cursor.as_ref().map(ArtifactDigest::canonical);
-        let entries = cursor
-            .as_ref()
-            .map_or_else(
-                || table.iter(),
-                |cursor| table.range::<&str>((Excluded(cursor.as_str()), Unbounded)),
-            )
-            .map_err(MetaError::from)?;
-        let mut records = Vec::with_capacity(query.limit + 1);
-        for entry in entries {
-            let (_key, value) = entry.map_err(MetaError::from)?;
-            let record: DigestRevocation = serde_json::from_slice(value.value()).map_err(MetaError::from)?;
-            if query.status.is_some_and(|status| record.state.status() != status) {
-                continue;
-            }
-            records.push(record);
-            if records.len() > query.limit {
-                break;
-            }
-        }
+        let mut records = match query.status {
+            Some(status) => status_page(&txn, &table, status, cursor.as_deref(), query.limit)?,
+            None => digest_page(&table, cursor.as_deref(), query.limit)?,
+        };
         let next_cursor = (records.len() > query.limit).then(|| records[query.limit - 1].digest.canonical());
         records.truncate(query.limit);
         Ok(DigestRevocationPage {
@@ -345,4 +380,62 @@ impl MetaStore {
             next_cursor,
         })
     }
+}
+
+/// Reads at most `limit + 1` index entries, each resolved by a point lookup, so rows carrying the
+/// other status are never visited.
+fn status_page(
+    txn: &redb::ReadTransaction,
+    table: &redb::ReadOnlyTable<&'static str, &'static [u8]>,
+    status: DigestRevocationStatus,
+    cursor: Option<&str>,
+    limit: usize,
+) -> Result<Vec<DigestRevocation>, DigestRevocationQueryError> {
+    let Some(index) = open_optional_table(txn, DIGEST_REVOCATION_BY_STATUS)? else {
+        return Err(MetaError::DriverPrecondition("digest revocation index is incomplete".to_owned()).into());
+    };
+    let prefix = status.index_prefix();
+    let start = cursor.map(|cursor| index_key(status, cursor));
+    let lower = start
+        .as_ref()
+        .map_or(Included(prefix), |start| Excluded(start.as_str()));
+    let mut records = Vec::with_capacity(limit + 1);
+    for entry in index.range::<&str>((lower, Unbounded)).map_err(MetaError::from)? {
+        let (key, _) = entry.map_err(MetaError::from)?;
+        let Some(digest) = key.value().strip_prefix(prefix) else {
+            break;
+        };
+        let Some(value) = table.get(digest).map_err(MetaError::from)? else {
+            return Err(
+                MetaError::DriverPrecondition("digest revocation index references a missing row".to_owned()).into(),
+            );
+        };
+        records.push(serde_json::from_slice(value.value()).map_err(MetaError::from)?);
+        if records.len() > limit {
+            break;
+        }
+    }
+    Ok(records)
+}
+
+fn digest_page(
+    table: &redb::ReadOnlyTable<&'static str, &'static [u8]>,
+    cursor: Option<&str>,
+    limit: usize,
+) -> Result<Vec<DigestRevocation>, DigestRevocationQueryError> {
+    let entries = cursor
+        .map_or_else(
+            || table.iter(),
+            |cursor| table.range::<&str>((Excluded(cursor), Unbounded)),
+        )
+        .map_err(MetaError::from)?;
+    let mut records = Vec::with_capacity(limit + 1);
+    for entry in entries {
+        let (_key, value) = entry.map_err(MetaError::from)?;
+        records.push(serde_json::from_slice(value.value()).map_err(MetaError::from)?);
+        if records.len() > limit {
+            break;
+        }
+    }
+    Ok(records)
 }
