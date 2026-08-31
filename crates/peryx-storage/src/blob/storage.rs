@@ -1,12 +1,18 @@
 use std::collections::HashSet;
 use std::ops::Range;
 
+use futures_util::{StreamExt as _, TryStreamExt as _};
+
 use super::backend::filesystem_worker;
 use super::s3::S3Backend;
 use super::{
     BlobBackend, BlobCapabilities, BlobEntry, BlobError, BlobLease, BlobMetadata, BlobOperation, BlobRead,
     BlobScanError, BlobStaged, BlobStore, BlobWrite, Digest, DurabilityCapabilities, S3Config, StageUsage,
 };
+
+/// Object-store metadata requests a bulk presence check may hold in flight. S3 serves a batch far
+/// faster when the requests overlap, while an unbounded fan-out would open one connection per digest.
+const S3_PRESENCE_CONCURRENCY: usize = 32;
 
 #[derive(Debug, Clone)]
 pub struct BlobStorage {
@@ -134,12 +140,14 @@ impl BlobStorage {
         }
     }
 
-    /// Keeps filesystem metadata calls off the async executor.
+    /// Looks each distinct digest up once. The filesystem keeps its metadata calls off the async
+    /// executor; S3 overlaps up to 32 `HEAD` requests and abandons the rest of the batch as soon as one
+    /// fails.
     ///
     /// # Errors
     /// Returns a contextual metadata error.
-    ///
     pub async fn present(&self, digests: Vec<Digest>) -> Result<HashSet<Digest>, BlobError> {
+        let digests: HashSet<Digest> = digests.into_iter().collect();
         match &self.backend {
             Backend::Filesystem(store) => {
                 let store = store.clone();
@@ -158,18 +166,16 @@ impl BlobStorage {
                 )
                 .await
             }
-            Backend::S3(backend) => {
-                Box::pin(async {
-                    let mut present = HashSet::with_capacity(digests.len());
-                    for digest in digests {
-                        if backend.head(digest.clone()).await?.is_some() {
-                            present.insert(digest);
-                        }
-                    }
-                    Ok(present)
-                })
-                .await
-            }
+            Backend::S3(backend) => Box::pin(
+                futures_util::stream::iter(digests)
+                    .map(
+                        |digest| async move { Ok::<_, BlobError>(backend.head(digest.clone()).await?.map(|_| digest)) },
+                    )
+                    .buffer_unordered(S3_PRESENCE_CONCURRENCY)
+                    .try_filter_map(|found| std::future::ready(Ok(found)))
+                    .try_collect(),
+            )
+            .await,
         }
     }
 

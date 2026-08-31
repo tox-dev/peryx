@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use peryx_storage::blob::{
-    BlobErrorKind, BlobScanError, BlobStaged, BlobStorage, Digest, S3Config, S3Settings, WriteEvidence,
+    BlobErrorKind, BlobOperation, BlobScanError, BlobStaged, BlobStorage, Digest, S3Config, S3Settings, WriteEvidence,
 };
 #[cfg(feature = "container-tests")]
 use tracing::{Event, Subscriber};
@@ -104,6 +104,8 @@ async fn run_integration(scenario_name: String, endpoint: String, staging_dir: P
             | "wire_conflict_exhausted"
             | "wire_create_failure"
             | "wire_interrupted_multipart"
+            | "wire_present_bound"
+            | "wire_present_failure"
             | "recover_none"
             | "recover_one"
             | "recover_error"
@@ -716,10 +718,18 @@ async fn run_wire_write_child(storage: &BlobStorage, scenario: WireWriteScenario
             let present = Digest::of(b"present");
             assert_eq!(
                 storage
-                    .present(vec![present.clone(), Digest::of(b"missing")])
+                    .present(vec![present.clone(), Digest::of(b"missing"), present.clone()])
                     .await
                     .unwrap(),
                 std::collections::HashSet::from([present])
+            );
+        }
+        WireWriteScenario::PresentBound => assert!(storage.present(presence_batch()).await.unwrap().is_empty()),
+        WireWriteScenario::PresentFailure => {
+            let error = storage.present(presence_batch()).await.unwrap_err();
+            assert_eq!(
+                (error.kind(), error.context().unwrap().operation),
+                (BlobErrorKind::Io, BlobOperation::Head)
             );
         }
         WireWriteScenario::SmallPut => {
@@ -881,9 +891,20 @@ enum WireReadScenario {
 enum WireWriteScenario {
     Delete,
     Present,
+    PresentBound,
+    PresentFailure,
     SmallPut,
     Immutable,
     ImmutableMismatch,
+}
+
+/// Twice the bulk presence concurrency bound, so the batch cannot be served in a single round.
+const PRESENCE_BATCH: usize = 64;
+
+fn presence_batch() -> Vec<Digest> {
+    (0..PRESENCE_BATCH)
+        .map(|index| Digest::of(&index.to_le_bytes()))
+        .collect()
 }
 
 #[derive(Clone, Copy)]
@@ -955,6 +976,8 @@ impl ChildScenario {
             "wire_materialize" => Ok(Self::Read(WireReadScenario::Materialize)),
             "wire_delete" => Ok(Self::Write(WireWriteScenario::Delete)),
             "wire_present" => Ok(Self::Write(WireWriteScenario::Present)),
+            "wire_present_bound" => Ok(Self::Write(WireWriteScenario::PresentBound)),
+            "wire_present_failure" => Ok(Self::Write(WireWriteScenario::PresentFailure)),
             "wire_small_put" => Ok(Self::Write(WireWriteScenario::SmallPut)),
             "wire_immutable" => Ok(Self::Write(WireWriteScenario::Immutable)),
             "wire_immutable_mismatch" => Ok(Self::Write(WireWriteScenario::ImmutableMismatch)),

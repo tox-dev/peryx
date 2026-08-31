@@ -4,7 +4,7 @@ use std::process::Output;
 use std::process::Stdio;
 #[cfg(feature = "container-tests")]
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Barrier};
+use std::sync::{Arc, Barrier, Mutex};
 use std::time::Duration;
 
 #[cfg(feature = "container-tests")]
@@ -61,7 +61,6 @@ enum WireBehavior {
     VerifyMismatch,
     Materialize,
     Delete,
-    Present,
     SmallPut,
     Immutable,
     ImmutableMismatch,
@@ -148,7 +147,6 @@ impl WireBehavior {
             Self::VerifyMismatch => "wire_verify_mismatch",
             Self::Materialize => "wire_materialize",
             Self::Delete => "wire_delete",
-            Self::Present => "wire_present",
             Self::SmallPut => "wire_small_put",
             Self::Immutable => "wire_immutable",
             Self::ImmutableMismatch => "wire_immutable_mismatch",
@@ -325,7 +323,6 @@ async fn mount_wire_behavior(server: &MockServer, behavior: WireBehavior) {
         WireBehavior::VerifyMismatch => mount_wire_reads(server, WireReadBehavior::VerifyMismatch).await,
         WireBehavior::Materialize => mount_wire_reads(server, WireReadBehavior::Materialize).await,
         WireBehavior::Delete => mount_wire_writes(server, WireWriteBehavior::Delete).await,
-        WireBehavior::Present => mount_wire_writes(server, WireWriteBehavior::Present).await,
         WireBehavior::SmallPut => mount_wire_writes(server, WireWriteBehavior::SmallPut).await,
         WireBehavior::Immutable => mount_wire_writes(server, WireWriteBehavior::Immutable).await,
         WireBehavior::ImmutableMismatch => {
@@ -843,7 +840,6 @@ fn assert_child_succeeded(output: &Output) {
 #[case::verify_mismatch(WireBehavior::VerifyMismatch)]
 #[case::materialize(WireBehavior::Materialize)]
 #[case::delete(WireBehavior::Delete)]
-#[case::present(WireBehavior::Present)]
 #[case::small_put(WireBehavior::SmallPut)]
 #[case::immutable(WireBehavior::Immutable)]
 #[case::immutable_mismatch(WireBehavior::ImmutableMismatch)]
@@ -885,6 +881,124 @@ async fn test_s3_wire_behavior_uses_the_public_backend(#[case] behavior: WireBeh
         assert!(!requests.iter().any(|request| request.method.as_str() == "DELETE"));
         assert!(!multipart_journal(staging.path()).exists());
     }
+}
+
+/// Mirrors the bulk presence bound of the blob storage facade.
+const PRESENCE_CONCURRENCY: usize = 32;
+
+#[derive(Default)]
+struct InFlight {
+    current: usize,
+    peak: usize,
+}
+
+impl InFlight {
+    fn enter(&mut self) {
+        self.current += 1;
+        self.peak = self.peak.max(self.current);
+    }
+
+    const fn leave(&mut self) {
+        self.current -= 1;
+    }
+}
+
+/// Answers one `HEAD` per connection, and only once a bound's worth of requests are parked together, so
+/// a caller that waited for each response would never see the first one.
+async fn hold_at_the_gate(
+    mut connection: tokio::net::TcpStream,
+    gate: Arc<tokio::sync::Barrier>,
+    observed: Arc<Mutex<InFlight>>,
+) {
+    assert_ne!(connection.read(&mut [0; 4096]).await.unwrap(), 0);
+    observed.lock().unwrap().enter();
+    gate.wait().await;
+    connection
+        .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    observed.lock().unwrap().leave();
+}
+
+#[tokio::test]
+async fn test_s3_bulk_presence_requests_each_distinct_object_once() {
+    let server = MockServer::start().await;
+    mount_wire_writes(&server, WireWriteBehavior::Present).await;
+    let staging = tempfile::tempdir().unwrap();
+
+    assert_child_succeeded(
+        &child(
+            &server.uri(),
+            staging.path(),
+            "wire_present",
+            ROOT_ACCESS_KEY,
+            ROOT_SECRET_KEY,
+        )
+        .await,
+    );
+    let mut requested = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|request| request.url.path().to_owned())
+        .collect::<Vec<_>>();
+    requested.sort();
+    let mut expected = vec![object_path(b"missing"), object_path(b"present")];
+    expected.sort();
+    assert_eq!(requested, expected);
+}
+
+#[tokio::test]
+async fn test_s3_bulk_presence_keeps_head_requests_at_the_concurrency_bound() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let gate = Arc::new(tokio::sync::Barrier::new(PRESENCE_CONCURRENCY));
+    let observed = Arc::new(Mutex::new(InFlight::default()));
+    let staging = tempfile::tempdir().unwrap();
+    let client = child(
+        &endpoint,
+        staging.path(),
+        "wire_present_bound",
+        ROOT_ACCESS_KEY,
+        ROOT_SECRET_KEY,
+    );
+    tokio::pin!(client);
+
+    let output = loop {
+        tokio::select! {
+            accepted = listener.accept() => {
+                tokio::spawn(hold_at_the_gate(
+                    accepted.unwrap().0,
+                    Arc::clone(&gate),
+                    Arc::clone(&observed),
+                ));
+            }
+            output = &mut client => break output,
+        }
+    };
+    assert_child_succeeded(&output);
+    assert_eq!(observed.lock().unwrap().peak, PRESENCE_CONCURRENCY);
+}
+
+#[tokio::test]
+async fn test_s3_bulk_presence_leaves_the_tail_unrequested_after_a_failure() {
+    let server = MockServer::start().await;
+    mount_wire_failures(&server, WireFailureBehavior::Head).await;
+    let staging = tempfile::tempdir().unwrap();
+
+    assert_child_succeeded(
+        &child(
+            &server.uri(),
+            staging.path(),
+            "wire_present_failure",
+            ROOT_ACCESS_KEY,
+            ROOT_SECRET_KEY,
+        )
+        .await,
+    );
+    let requested = server.received_requests().await.unwrap().len();
+    assert!(requested <= PRESENCE_CONCURRENCY);
 }
 
 #[test]
