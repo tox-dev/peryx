@@ -106,7 +106,11 @@ stands for any run of characters, including `/`; other characters match themselv
 | `team/*`        | `team/api`, `team/api/edge`  | `team`, `teamwork/api` |
 | `acme-internal` | `acme-internal` only         | `acme-public`          |
 
-Because `*` crosses `/`, `team/*` covers a resource subtree at any nesting depth. Supported identity rules:
+Because `*` crosses `/`, `team/*` covers a resource subtree at any nesting depth.
+
+Matching is byte-for-byte against the ecosystem's normalized resource name, not the spelling the URL carried. Write PyPI
+grants as PEP 503 normalized project names: `flask` covers the `Flask`, `FLASK` and `flask` spellings of that project,
+whereas a grant spelled `Flask` covers none of them. Supported identity rules:
 
 - [Ecosystem owner documentation](@/ecosystems/_index.md)
 

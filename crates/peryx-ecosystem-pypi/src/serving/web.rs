@@ -28,7 +28,8 @@ use crate::view::{
     AttestationView, FileView, MetadataBlock, MetadataView, ProjectView, ProvenanceSource, ProvenanceView, SubjectMatch,
 };
 use crate::{
-    ProjectDetail, file_matches_version, normalize_name, parse_version, to_json, ui_meta, ui_project_from_detail,
+    ProjectDetail, file_matches_version, normalize_name, normalize_name_cow, parse_version, to_json, ui_meta,
+    ui_project_from_detail,
 };
 
 pub(super) const BROWSE_PATHS: &[&str] = &[
@@ -95,9 +96,11 @@ pub(super) async fn browse(
 ) -> Result<Option<BrowsePage>, BrowseError> {
     let query = BrowseQuery::parse(raw_query)?;
     let index_access = access.for_index(state.index_at(position));
+    // An ACL resource pattern names a PEP 503 normalized project, as upload and mutation authorize;
+    // the raw spelling stays for the display name the store resolves.
     query.project.as_deref().map_or_else(
         || index_access.authorize_any_resource(),
-        |project| index_access.authorize_resource(ResourceMatch::Pattern(project)),
+        |project| index_access.authorize_resource(ResourceMatch::Pattern(&normalize_name_cow(project))),
     )?;
     if let Some(project) = query.project.clone() {
         if let Some((digest, filename)) = query.archive()? {

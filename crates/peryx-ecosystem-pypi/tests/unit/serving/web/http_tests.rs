@@ -1,4 +1,5 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write as _;
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -7,6 +8,7 @@ use axum::http::{HeaderMap, Method, StatusCode, header};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use http_body_util::BodyExt as _;
+use peryx_core::path::local_artifact_url;
 use peryx_core::{BrowseLink, BrowsePage, BrowseSection, Ecosystem};
 use peryx_driver::AppState;
 use peryx_identity::{
@@ -14,7 +16,7 @@ use peryx_identity::{
 };
 use peryx_index::{Index, IndexKind};
 use peryx_policy::Policy;
-use peryx_storage::blob::BlobStorage;
+use peryx_storage::blob::{BlobStorage, Digest};
 use peryx_storage::meta::MetaStore;
 use peryx_upstream::UpstreamClient;
 use rstest::rstest;
@@ -23,6 +25,8 @@ use super::browse_http;
 
 const SESSION_KEY: &[u8] = b"a-token-realm-signing-secret-here";
 use crate::store::{CachedIndex, PypiStore as _};
+use crate::upload::Uploaded;
+use crate::{CoreMetadata, File, Provenance, Yanked};
 
 #[tokio::test]
 async fn upload_form_lists_escaped_writable_pypi_indexes() {
@@ -125,7 +129,7 @@ async fn browse_http_reports_a_source_record_decode_failure(#[case] record: &[u8
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("peryx.redb");
     let meta = MetaStore::open(&path).unwrap();
-    let digest = peryx_storage::blob::Digest::of(b"remote wheel");
+    let digest = Digest::of(b"remote wheel");
     seed_cached_project(&meta, digest.as_str());
     meta.put_driver_value(&format!("pypi\0f\0{}", digest.as_str()), record)
         .unwrap();
@@ -142,7 +146,7 @@ async fn browse_http_reports_a_placement_record_read_failure() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("peryx.redb");
     let meta = MetaStore::open(&path).unwrap();
-    let digest = peryx_storage::blob::Digest::of(b"remote wheel");
+    let digest = Digest::of(b"remote wheel");
     seed_cached_project(&meta, digest.as_str());
     drop(meta);
     let database = redb::Database::open(&path).unwrap();
@@ -232,6 +236,139 @@ async fn browse_http_forbids_a_reader_from_an_ungranted_project() {
     .await;
 
     assert_eq!((status, body), (StatusCode::FORBIDDEN, String::new()));
+}
+
+#[tokio::test]
+async fn browse_http_reads_either_spelling_of_a_project_under_a_normalized_grant() {
+    let (_directory, state, _digest, authorization) = display_named_app();
+
+    let display = send(
+        state.clone(),
+        Method::GET,
+        "/browse?index=hosted&project=Flask",
+        Some(&authorization),
+    )
+    .await;
+    let normalized = send(
+        state.clone(),
+        Method::GET,
+        "/browse?index=hosted&project=flask",
+        Some(&authorization),
+    )
+    .await;
+
+    assert_eq!(
+        (display.0, normalized.0, display.2.as_str()),
+        (StatusCode::OK, StatusCode::OK, normalized.2.as_str())
+    );
+}
+
+#[tokio::test]
+async fn browse_http_forbids_an_ungranted_project_that_normalizes_elsewhere() {
+    let (_directory, state, _digest, authorization) = display_named_app();
+
+    let (status, _, body) = send(
+        state,
+        Method::GET,
+        "/browse?index=hosted&project=Other",
+        Some(&authorization),
+    )
+    .await;
+
+    assert_eq!((status, body), (StatusCode::FORBIDDEN, String::new()));
+}
+
+#[tokio::test]
+async fn browse_http_authorizes_the_project_link_the_index_listing_renders() {
+    let (_directory, state, _digest, authorization) = display_named_app();
+
+    let (_, _, listing) = send(state.clone(), Method::GET, "/browse?index=hosted", Some(&authorization)).await;
+    let (status, _, body) = send(
+        state,
+        Method::GET,
+        "/browse?index=hosted&project=Flask",
+        Some(&authorization),
+    )
+    .await;
+
+    assert_eq!(
+        serde_json::from_str::<BrowsePage>(&listing).unwrap().sections,
+        vec![BrowseSection::Links {
+            heading: "Projects".to_owned(),
+            entries: vec![BrowseLink {
+                label: "Flask".to_owned(),
+                href: "/browse?index=hosted&project=Flask".to_owned(),
+            }],
+            empty: "No projects observed on this index yet.".to_owned(),
+        }]
+    );
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
+async fn browse_http_authorizes_the_archive_link_a_file_row_renders() {
+    let (_directory, state, digest, authorization) = display_named_app();
+    let archive = format!("/browse?index=hosted&project=Flask&sha256={digest}&file={WHEEL}");
+
+    let (_, _, project) = send(
+        state.clone(),
+        Method::GET,
+        "/browse?index=hosted&project=Flask",
+        Some(&authorization),
+    )
+    .await;
+    let (status, _, body) = send(state, Method::GET, &archive, Some(&authorization)).await;
+
+    assert!(project.contains(&archive), "{project}");
+    assert_eq!(
+        (status, serde_json::from_str::<BrowsePage>(&body).unwrap().title),
+        (StatusCode::OK, WHEEL.to_owned())
+    );
+}
+
+const WHEEL: &str = "flask-1.0-py3-none-any.whl";
+
+/// A hosted index holding one project stored as `Flask` and normalized to `flask`, read by a token
+/// whose grant names only the normalized spelling. Returns the wheel's digest and that token's
+/// `Authorization` header.
+fn display_named_app() -> (tempfile::TempDir, Arc<AppState>, String, String) {
+    let (directory, state) = app(vec![hosted(reader_acl("flask"))]);
+    let mut bytes = Vec::new();
+    {
+        let mut archive = zip::ZipWriter::new(std::io::Cursor::new(&mut bytes));
+        archive
+            .start_file("README.txt", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        archive.write_all(b"read me\n").unwrap();
+        archive.finish().unwrap();
+    }
+    let digest = Digest::of(&bytes);
+    state.serving.blobs.blocking().put_bytes_as(&bytes, &digest).unwrap();
+    let record = Uploaded {
+        version: "1.0".to_owned(),
+        file: File {
+            filename: WHEEL.to_owned(),
+            url: local_artifact_url("hosted", digest.as_str(), WHEEL),
+            hashes: BTreeMap::from([("sha256".to_owned(), digest.as_str().to_owned())]),
+            requires_python: None,
+            size: Some(bytes.len() as u64),
+            upload_time: None,
+            yanked: Yanked::No,
+            core_metadata: CoreMetadata::Absent,
+            dist_info_metadata: CoreMetadata::Absent,
+            gpg_sig: None,
+            provenance: Provenance::Absent,
+        },
+        trashed: None,
+    };
+    state
+        .serving
+        .meta
+        .put_upload("hosted", "flask", WHEEL, &serde_json::to_vec(&record).unwrap())
+        .unwrap();
+    state.serving.meta.put_project("hosted", "flask", "Flask").unwrap();
+    let authorization = format!("Basic {}", STANDARD.encode("reader:secret"));
+    (directory, state, digest.as_str().to_owned(), authorization)
 }
 
 async fn send(
