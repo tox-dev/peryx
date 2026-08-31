@@ -3,7 +3,7 @@ use peryx_storage::blob::Digest;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use super::{oci_digest, proxy, search_total, send};
+use super::{oci_digest, proxy, proxy_pair, search_total, send};
 use crate::mirror::{MirrorMode, MirrorRow, mirror as mirror_with};
 use crate::settings::IndexSettings;
 use crate::store::{MAX_MEDIA_TYPE_BYTES, Manifest};
@@ -1247,4 +1247,193 @@ async fn test_mirror_pulls_a_single_segment_name_under_the_library_prefix() {
     let (status, _, got) = send(&app, Method::GET, "/v2/hub/app/manifests/latest").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(got, manifest);
+}
+
+const SHARED_CONFIG: &[u8] = b"{}";
+const SHARED_LAYER: &[u8] = b"a-layer-two-repositories-name";
+
+/// Mirror one image by digest into `library/app` so its manifest and blobs land in the
+/// content-addressed store every repository shares, and hand back the digest a second repository can
+/// name without mirroring anything.
+async fn cache_under_app(server: &MockServer, state: &Arc<ServingState>, index: &Index) -> String {
+    let manifest = image_manifest(SHARED_CONFIG, SHARED_LAYER);
+    let digest = oci_digest(&manifest);
+    mount_manifest(server, "library/app", &digest, &manifest, MANIFEST_TYPE).await;
+    mount_blob(server, "library/app", SHARED_CONFIG).await;
+    mount_blob(server, "library/app", SHARED_LAYER).await;
+    let rows = mirror(state, index, &[format!("library/app@{digest}")], MirrorMode::Sync)
+        .await
+        .unwrap();
+    assert_eq!(rows.last().unwrap().status, "synced");
+    digest
+}
+
+fn unscoped_rows(index: &str, repo: &str, digest: &str) -> Vec<MirrorRow> {
+    vec![
+        MirrorRow {
+            kind: "manifest",
+            index: index.to_owned(),
+            repo: repo.to_owned(),
+            reference: digest.to_owned(),
+            digest: digest.to_owned(),
+            status: "error",
+            bytes: 0,
+            reason: "manifest not mirrored for this repository".to_owned(),
+        },
+        MirrorRow {
+            kind: "summary",
+            index: index.to_owned(),
+            repo: String::new(),
+            reference: String::new(),
+            digest: String::new(),
+            status: "error",
+            bytes: 0,
+            reason: "0 synced, 0 cached, 1 errors".to_owned(),
+        },
+    ]
+}
+
+#[tokio::test]
+async fn test_verify_rejects_a_digest_cached_under_another_repository() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (state, _app) = proxy(&dir, &format!("{}/", server.uri()), false);
+    let digest = cache_under_app(&server, &state.serving, &state.serving.indexes[0]).await;
+
+    let rows = mirror(
+        &state.serving,
+        &state.serving.indexes[0],
+        &[format!("library/other@{digest}")],
+        MirrorMode::Verify,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(rows, unscoped_rows("hub", "library/other", &digest));
+}
+
+#[tokio::test]
+async fn test_verify_rejects_a_digest_cached_under_another_index() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (state, _app) = proxy_pair(&dir, &format!("{}/", server.uri()), "http://127.0.0.1:1/");
+    let digest = cache_under_app(&server, &state.serving, &state.serving.indexes[0]).await;
+
+    let rows = mirror(
+        &state.serving,
+        &state.serving.indexes[1],
+        &[format!("library/app@{digest}")],
+        MirrorMode::Verify,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(rows, unscoped_rows("vault", "library/app", &digest));
+}
+
+#[tokio::test]
+async fn test_sync_links_shared_bytes_to_a_second_repository() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let (state, _app) = proxy(&dir, &format!("{}/", server.uri()), false);
+    let digest = cache_under_app(&server, &state.serving, &state.serving.indexes[0]).await;
+    let manifest = image_manifest(SHARED_CONFIG, SHARED_LAYER);
+    mount_manifest(&server, "library/other", "latest", &manifest, MANIFEST_TYPE).await;
+
+    let synced = mirror(
+        &state.serving,
+        &state.serving.indexes[0],
+        &["library/other:latest".to_owned()],
+        MirrorMode::Sync,
+    )
+    .await
+    .unwrap();
+    // `library/other` mounts no blobs upstream, so the two cached blob rows are bytes `library/app`
+    // already pulled and the second repository links rather than refetches.
+    let pulled: Vec<_> = synced
+        .iter()
+        .filter(|row| row.kind != "summary")
+        .map(|row| (row.kind, row.status))
+        .collect();
+    assert_eq!(pulled, [("manifest", "synced"), ("blob", "cached"), ("blob", "cached")]);
+
+    let verified = mirror(
+        &state.serving,
+        &state.serving.indexes[0],
+        &[format!("library/other@{digest}")],
+        MirrorMode::Verify,
+    )
+    .await
+    .unwrap();
+
+    let statuses: Vec<_> = verified.iter().map(|row| row.status).collect();
+    assert_eq!(statuses, ["cached", "cached", "cached", "synced"]);
+}
+
+#[tokio::test]
+async fn test_verify_rejects_a_child_manifest_cached_under_another_repository() {
+    let server = MockServer::start().await;
+    let child = image_manifest(SHARED_CONFIG, SHARED_LAYER);
+    let child_digest = oci_digest(&child);
+    let inner = index_over(&[child_digest.as_str()], "inner");
+    let inner_digest = oci_digest(&inner);
+    let outer = index_over(&[inner_digest.as_str()], "outer");
+    mount_manifest(&server, "library/app", "latest", &outer, INDEX_TYPE).await;
+    mount_manifest(&server, "library/app", &inner_digest, &inner, INDEX_TYPE).await;
+    mount_manifest(&server, "library/app", &child_digest, &child, MANIFEST_TYPE).await;
+    mount_blob(&server, "library/app", SHARED_CONFIG).await;
+    mount_blob(&server, "library/app", SHARED_LAYER).await;
+    // `library/other` serves only the outer index, so its own run stops before the grandchild and
+    // never grants membership for it, though the shared store already holds its bytes.
+    mount_manifest(&server, "library/other", "latest", &outer, INDEX_TYPE).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (state, _app) = proxy(&dir, &format!("{}/", server.uri()), false);
+    let index = &state.serving.indexes[0];
+    let cached = mirror(
+        &state.serving,
+        index,
+        &["library/app:latest".to_owned()],
+        MirrorMode::Sync,
+    )
+    .await
+    .unwrap();
+    assert_eq!(cached.last().unwrap().status, "synced");
+    let partial = mirror(
+        &state.serving,
+        index,
+        &["library/other:latest".to_owned()],
+        MirrorMode::Sync,
+    )
+    .await
+    .unwrap();
+    assert_eq!(partial.last().unwrap().status, "error");
+
+    let rows = mirror(
+        &state.serving,
+        index,
+        &["library/other:latest".to_owned()],
+        MirrorMode::Verify,
+    )
+    .await
+    .unwrap();
+
+    let seen: Vec<_> = rows
+        .iter()
+        .map(|row| (row.kind, row.reference.as_str(), row.status, row.reason.as_str()))
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            ("manifest", "latest", "cached", ""),
+            ("manifest", inner_digest.as_str(), "cached", ""),
+            (
+                "manifest",
+                child_digest.as_str(),
+                "error",
+                "manifest not mirrored for this repository"
+            ),
+            ("summary", "", "error", "0 synced, 2 cached, 1 errors"),
+        ]
+    );
 }

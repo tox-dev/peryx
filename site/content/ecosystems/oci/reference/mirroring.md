@@ -36,3 +36,14 @@ is stored as it came and names no dependencies.
 A body that breaks a rule is reported as an error row naming the rule, and neither the manifest nor its tag is cached.
 `verify` applies the same check to what the store already holds, so a run never calls an image complete when its layers
 could not be read.
+
+## Repository scope
+
+Manifest bytes are content-addressed, so two repositories mirroring the same image share one copy. The right to serve
+them is recorded per repository. peryx answers a pull by digest only under a repository the manifest was recorded for,
+and `verify` reads by the same rule. A digest another repository cached reports
+`manifest not mirrored for this repository`, including a child manifest reached from an index, so a run never calls an
+image ready for offline use that a pull rejects.
+
+Mirroring the image under the second repository with `sync` records that membership and reuses the manifest and blobs
+already stored, so nothing downloads twice.

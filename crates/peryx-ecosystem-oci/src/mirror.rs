@@ -108,7 +108,7 @@ impl MirrorRow {
 }
 
 /// What a mirror run does with each reference. `Sync` pulls anything missing; `Verify` only reports
-/// whether the store already holds the manifest and every blob it names.
+/// whether the target repository already holds the manifest and every blob it names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MirrorMode {
     Sync,
@@ -367,6 +367,20 @@ impl Mirror<'_> {
             ));
             return Ok(None);
         };
+        // Manifest bytes dedupe into one content-addressed store, so holding them is not proof this
+        // repository serves them. A tag read is already keyed by repository; a digest names the shared
+        // store, and a by-digest pull authorizes against membership, so counting another repository's
+        // cached bytes would call an image ready for offline use that a pull answers `manifest unknown`.
+        if tag.is_none() && !store::manifest_is_member(&self.state.meta, self.index, repo, &digest)? {
+            rows.push(MirrorRow::error(
+                "manifest",
+                repo,
+                reference,
+                &digest,
+                "manifest not mirrored for this repository".to_owned(),
+            ));
+            return Ok(None);
+        }
         // A stored manifest that no longer parses cannot be reported cached: its empty descriptor list
         // would pass verification for an image whose layers were never mirrored.
         let Some(descriptors) = descriptors_of(&manifest, repo, reference, &digest, rows) else {
