@@ -1,3 +1,5 @@
+use std::ops::ControlFlow;
+
 use crate::meta::{JournalRecord, MetaError, MetaStore};
 
 use super::store;
@@ -92,6 +94,21 @@ fn test_journal_snapshot_reads_the_head_and_ordered_values() {
             records: vec![record(1, b"first"), record(2, b"second"), record(3, b"third")],
         }
     );
+}
+
+#[test]
+fn test_visit_journal_page_stops_before_the_next_record_and_still_reports_the_head() {
+    let (_dir, store) = journaled(&[b"one", b"two", b"three"]);
+    let mut visited = Vec::new();
+
+    let current_serial = store
+        .visit_journal_page(0, 10, |record| {
+            visited.push(record);
+            ControlFlow::Break(())
+        })
+        .unwrap();
+
+    assert_eq!((current_serial, visited), (3, vec![record(1, b"one")]));
 }
 
 #[test]

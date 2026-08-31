@@ -160,6 +160,18 @@ handler, so a misrouted write fails closed rather than diverging a copy. A resta
 it durably stored, re-applying only the pages past it, and beats its recovered frontier on its next beacon, so a restart
 rejoins the group's readiness without re-copying the journal.
 
+## Peer change feed endpoint
+
+A `dc` or `ha` node serves change pages to authenticated peers at `GET /+replication/v1/changes`. Building a page reads
+the metadata journal and encodes every record in it, so the node runs that work on a blocking worker rather than on the
+request loop, and bounds how many pages it builds at once. A replica relaying the feed reads its own applied source
+identity on the same worker, under the same bound.
+
+A request that arrives while every slot is held receives `503 Service Unavailable` with `Retry-After` before the node
+opens the store, so a fan-in of catching-up peers costs a refusal rather than a queue of waiting reads. A build that has
+already started keeps its slot until it returns, because a started blocking task cannot be cancelled; a peer that
+disconnects instead stops that build at the next record boundary rather than paying for the rest of the page.
+
 ## Peer artifact byte endpoint
 
 A `dc` or `ha` writer serves artifact bytes to authenticated peers at `GET /+replication/v1/blobs/sha256/{digest}`. The

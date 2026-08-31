@@ -4,13 +4,14 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use axum::Router;
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse as _, Response};
 use axum::routing::get;
-use axum::{Json, Router};
 use futures_util::Stream;
+use peryx_driver::BlockingScanExecutor;
 use peryx_storage::blob::{BlobErrorKind, BlobRead, BlobReadBody, BlobStorage, Digest, RangeRequest, parse_range};
 use peryx_storage::meta::MetaStore;
 use reqwest::Url;
@@ -20,7 +21,11 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::io::ReaderStream;
 
 use crate::blob_http::{BLOB_MISS_HEADER, BLOB_MISS_VALUE};
-use crate::protocol::{Change, ChangePage, PROTOCOL_VERSION, Primary};
+use crate::change_page::{
+    ChangePageBody, DEFAULT_MAX_CONCURRENT_CHANGE_PAGES, build_change_page, change_page_response,
+    change_pages_at_capacity,
+};
+use crate::protocol::{ChangePage, Primary};
 use crate::replica::Replica;
 
 /// Reads replica state without fetching journal records.
@@ -185,6 +190,7 @@ struct PrimaryHttpState {
     meta: MetaStore,
     blobs: BlobStorage,
     stream_permits: Arc<Semaphore>,
+    change_pages: BlockingScanExecutor,
 }
 
 #[derive(Deserialize)]
@@ -193,7 +199,16 @@ struct ChangesQuery {
     limit: usize,
 }
 
-/// Bounds concurrent artifact streams at [`DEFAULT_MAX_CONCURRENT_BLOB_STREAMS`].
+impl ChangesQuery {
+    /// Rejects an unusable limit before a permit or a store read is spent on it.
+    fn rejection(&self) -> Option<Response> {
+        (self.limit == 0 || self.limit > DEFAULT_MAX_CHANGE_PAGE_SIZE)
+            .then(|| (StatusCode::BAD_REQUEST, "change page limit is out of range").into_response())
+    }
+}
+
+/// Bounds concurrent artifact streams at [`DEFAULT_MAX_CONCURRENT_BLOB_STREAMS`] and concurrent
+/// change-page builds at [`DEFAULT_MAX_CONCURRENT_CHANGE_PAGES`].
 ///
 /// # Errors
 /// Returns an error when the source identity or bearer token is empty.
@@ -203,19 +218,28 @@ pub fn primary_router(
     meta: MetaStore,
     blobs: impl Into<BlobStorage>,
 ) -> Result<Router, PrimaryHttpConfigError> {
-    primary_router_with_stream_limit(source, token, meta, blobs, DEFAULT_MAX_CONCURRENT_BLOB_STREAMS)
+    primary_router_with_limits(
+        source,
+        token,
+        meta,
+        blobs,
+        DEFAULT_MAX_CONCURRENT_BLOB_STREAMS,
+        BlockingScanExecutor::new(DEFAULT_MAX_CONCURRENT_CHANGE_PAGES),
+    )
 }
 
-/// Bounds concurrent artifact streams at `max_concurrent_streams`.
+/// Bounds concurrent artifact streams at `max_concurrent_streams` and runs change-page builds on
+/// `change_pages`.
 ///
 /// # Errors
 /// Returns an error when the source identity or bearer token is empty.
-pub fn primary_router_with_stream_limit(
+pub fn primary_router_with_limits(
     source: impl Into<String>,
     token: impl Into<String>,
     meta: MetaStore,
     blobs: impl Into<BlobStorage>,
     max_concurrent_streams: NonZeroUsize,
+    change_pages: BlockingScanExecutor,
 ) -> Result<Router, PrimaryHttpConfigError> {
     let source = source.into();
     if source.is_empty() {
@@ -234,6 +258,7 @@ pub fn primary_router_with_stream_limit(
             meta,
             blobs: blobs.into(),
             stream_permits: Arc::new(Semaphore::new(max_concurrent_streams.get())),
+            change_pages,
         }))
 }
 
@@ -245,7 +270,16 @@ async fn serve_changes(
     if !authorized(&headers, &state.token) {
         return unauthorized();
     }
-    serve_change_page(&state.meta, &state.source, &query)
+    if let Some(rejection) = query.rejection() {
+        return rejection;
+    }
+    let meta = state.meta.clone();
+    let source = state.source.clone();
+    let built = state
+        .change_pages
+        .try_run(move |cancellation| build_change_page(&meta, &source, query.after, query.limit, cancellation))
+        .await;
+    built.map_or_else(change_pages_at_capacity, change_page_response)
 }
 
 /// Relays the authoritative writer's identity from durable replica state, preserving the single-source
@@ -254,22 +288,46 @@ async fn serve_changes(
 struct FollowerHttpState {
     token: String,
     meta: MetaStore,
+    change_pages: BlockingScanExecutor,
 }
 
-/// Relays the writer's stream and identity through the replica's durable frontier.
+/// Relays the writer's stream and identity through the replica's durable frontier, bounding
+/// concurrent change-page builds at [`DEFAULT_MAX_CONCURRENT_CHANGE_PAGES`].
 ///
 /// # Errors
 /// Returns an error when the bearer token is empty.
 pub fn follower_router(token: impl Into<String>, meta: MetaStore) -> Result<Router, PrimaryHttpConfigError> {
+    follower_router_with_change_pages(
+        token,
+        meta,
+        BlockingScanExecutor::new(DEFAULT_MAX_CONCURRENT_CHANGE_PAGES),
+    )
+}
+
+/// Runs the relayed change-page builds, including the replica state read they depend on, on
+/// `change_pages`.
+///
+/// # Errors
+/// Returns an error when the bearer token is empty.
+pub fn follower_router_with_change_pages(
+    token: impl Into<String>,
+    meta: MetaStore,
+    change_pages: BlockingScanExecutor,
+) -> Result<Router, PrimaryHttpConfigError> {
     let token = token.into();
     if token.is_empty() {
         return Err(PrimaryHttpConfigError::EmptyToken);
     }
     Ok(Router::new()
         .route("/+replication/v1/changes", get(serve_follower_changes))
-        .with_state(FollowerHttpState { token, meta }))
+        .with_state(FollowerHttpState {
+            token,
+            meta,
+            change_pages,
+        }))
 }
 
+/// Replica journals end at their durable frontier, so relayed pages need no separate frontier clamp.
 async fn serve_follower_changes(
     State(state): State<FollowerHttpState>,
     headers: HeaderMap,
@@ -278,39 +336,20 @@ async fn serve_follower_changes(
     if !authorized(&headers, &state.token) {
         return unauthorized();
     }
-    let source = match Replica::new(&state.meta, ONE).state() {
-        Ok(Some(applied)) => applied.source,
-        // Without a durable source identity, fail over instead of relaying an ambiguous stream.
-        Ok(None) => return (StatusCode::SERVICE_UNAVAILABLE, "replica has not synced a source yet").into_response(),
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-    serve_change_page(&state.meta, &source, &query)
-}
-
-/// Replica journals end at their durable frontier, so relayed pages need no separate frontier clamp.
-fn serve_change_page(meta: &MetaStore, source: &str, query: &ChangesQuery) -> Response {
-    if query.limit == 0 || query.limit > DEFAULT_MAX_CHANGE_PAGE_SIZE {
-        return (StatusCode::BAD_REQUEST, "change page limit is out of range").into_response();
+    if let Some(rejection) = query.rejection() {
+        return rejection;
     }
-    match meta.journal_page_after(query.after, query.limit) {
-        Ok((current_serial, records)) => Json(ChangePage {
-            version: PROTOCOL_VERSION,
-            source: source.to_owned(),
-            after: query.after,
-            current_serial,
-            changes: records
-                .into_iter()
-                .map(|record| Change {
-                    serial: record.serial,
-                    event: record.payload,
-                    metadata: record.mutations.into_iter().map(Into::into).collect(),
-                    blobs: record.blobs.into_iter().map(Into::into).collect(),
-                })
-                .collect(),
+    let meta = state.meta.clone();
+    let built = state
+        .change_pages
+        .try_run(move |cancellation| match Replica::new(&meta, ONE).state() {
+            Ok(Some(applied)) => build_change_page(&meta, &applied.source, query.after, query.limit, cancellation),
+            // Without a durable source identity, fail over instead of relaying an ambiguous stream.
+            Ok(None) => ChangePageBody::Unsynced,
+            Err(_) => ChangePageBody::Failed,
         })
-        .into_response(),
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    }
+        .await;
+    built.map_or_else(change_pages_at_capacity, change_page_response)
 }
 
 async fn serve_blob(

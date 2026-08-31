@@ -98,3 +98,31 @@ async fn test_request_cancellation_holds_capacity_until_the_worker_exits() {
     assert!(!admitted_before_exit);
     assert_eq!(third_start, Some(2));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_a_full_executor_refuses_work_until_a_slot_frees() {
+    let executor = BlockingScanExecutor::new(1);
+    let control = Arc::new(WorkerControl::default());
+    let (started_tx, mut started_rx) = async_mpsc::unbounded_channel();
+    let holder = tokio::spawn({
+        let executor = executor.clone();
+        let control = control.clone();
+        async move {
+            executor
+                .try_run(move |_| {
+                    started_tx.send(()).unwrap();
+                    control.page.wait();
+                })
+                .await
+        }
+    });
+    started_rx.recv().await.unwrap();
+
+    let refused = executor.try_run(|_| ()).await.is_none();
+
+    control.page.open();
+    holder.await.unwrap().unwrap().unwrap();
+    let readmitted = executor.try_run(|_| ()).await.is_some();
+
+    assert_eq!((refused, readmitted), (true, true));
+}

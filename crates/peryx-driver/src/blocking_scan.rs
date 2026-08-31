@@ -10,7 +10,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// A cooperative stop signal handed to a scan running on a blocking worker.
 #[derive(Clone, Default)]
@@ -42,13 +42,13 @@ pub struct BlockingScanExecutor {
 
 impl BlockingScanExecutor {
     #[must_use]
-    pub(crate) fn new(capacity: usize) -> Self {
+    pub fn new(capacity: usize) -> Self {
         Self {
             permits: Arc::new(Semaphore::new(capacity)),
         }
     }
 
-    /// Runs synchronous scan work without occupying an async worker.
+    /// Runs synchronous scan work without occupying an async worker, waiting for a free slot.
     ///
     /// The closure's cancellation signal changes when the awaiting request drops. A started worker
     /// keeps its permit until `work` returns because Tokio cannot abort a started [`spawn_blocking`]
@@ -73,6 +73,31 @@ impl BlockingScanExecutor {
             .acquire_owned()
             .await
             .expect("the blocking scan semaphore remains open");
+        Self::dispatch(permit, work).await
+    }
+
+    /// Runs synchronous scan work only if a slot is free right now, and reports `None` otherwise.
+    ///
+    /// Waiting for a slot lets an unbounded queue of callers build up ahead of the bound, which for a
+    /// request that a peer will retry costs more than refusing it. Refusing also keeps the caller's
+    /// work — the store reads `work` would perform — from starting at all.
+    ///
+    /// # Errors
+    /// Returns a join error if the blocking task panics or the runtime stops it before it starts.
+    pub async fn try_run<T, F>(&self, work: F) -> Option<Result<T, tokio::task::JoinError>>
+    where
+        T: Send + 'static,
+        F: FnOnce(&ScanCancellation) -> T + Send + 'static,
+    {
+        let permit = self.permits.clone().try_acquire_owned().ok()?;
+        Some(Self::dispatch(permit, work).await)
+    }
+
+    async fn dispatch<T, F>(permit: OwnedSemaphorePermit, work: F) -> Result<T, tokio::task::JoinError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&ScanCancellation) -> T + Send + 'static,
+    {
         let cancellation = ScanCancellation::new();
         let cancel_on_drop = CancelOnDrop(cancellation.clone());
         let result = tokio::task::spawn_blocking(move || {

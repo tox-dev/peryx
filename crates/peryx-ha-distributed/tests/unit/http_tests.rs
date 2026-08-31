@@ -7,6 +7,7 @@ use axum::http::{Request, StatusCode, header};
 use bytes::Bytes;
 use futures_util::StreamExt as _;
 use http_body_util::BodyExt as _;
+use peryx_driver::BlockingScanExecutor;
 use peryx_storage::blob::{BlobMetadata, BlobRead, BlobReadBody, BlobStorage, Digest};
 use peryx_storage::meta::MetaStore;
 use tokio::sync::Semaphore;
@@ -16,9 +17,9 @@ use crate::protocol::Change;
 use crate::replica::Replica;
 use crate::support::TestServer;
 use crate::{
-    BlobReference, ChangePage, DEFAULT_MAX_CHANGE_PAGE_SIZE, HttpPrimary, HttpPrimaryError, MetadataMutation,
-    PROTOCOL_VERSION, Primary, PrimaryHttpConfigError, follower_router, primary_router,
-    primary_router_with_stream_limit,
+    BlobReference, ChangePage, DEFAULT_MAX_CHANGE_PAGE_SIZE, DEFAULT_MAX_CONCURRENT_CHANGE_PAGES, HttpPrimary,
+    HttpPrimaryError, MetadataMutation, PROTOCOL_VERSION, Primary, PrimaryHttpConfigError, follower_router,
+    primary_router, primary_router_with_limits,
 };
 
 const TOKEN: &str = "replica-secret";
@@ -258,12 +259,13 @@ impl TestStores {
     }
 
     fn router_with_limit(&self, streams: usize) -> Router {
-        primary_router_with_stream_limit(
+        primary_router_with_limits(
             "primary-a",
             TOKEN,
             self.meta.clone(),
             self.blobs.clone(),
             NonZeroUsize::new(streams).unwrap(),
+            BlockingScanExecutor::new(DEFAULT_MAX_CONCURRENT_CHANGE_PAGES),
         )
         .unwrap()
     }

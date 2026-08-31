@@ -1,4 +1,5 @@
 use std::ops::Bound::{Excluded, Unbounded};
+use std::ops::ControlFlow;
 
 use redb::ReadableTable as _;
 use serde::{Deserialize, Serialize};
@@ -60,11 +61,22 @@ impl MetaStore {
         Ok(table.get(SERIAL_KEY)?.map_or(0, |value| value.value()))
     }
 
-    /// Reads at most `limit` values after `after` with the head serial from the same snapshot.
+    /// Decodes at most `limit` records after `after` one at a time and returns the head serial read
+    /// from the same snapshot.
+    ///
+    /// `visit` returns [`ControlFlow::Break`] to stop before the next record is decoded, which lets a
+    /// caller cap the work it pays for without holding the whole page in memory first. The head serial
+    /// describes the journal rather than the delivered records, so a stopped walk still reports a page
+    /// that is a prefix of the snapshot.
     ///
     /// # Errors
     /// Returns a store error if the read fails.
-    pub fn journal_snapshot(&self, after: u64, limit: usize) -> Result<JournalSnapshot, MetaError> {
+    pub fn visit_journal_page(
+        &self,
+        after: u64,
+        limit: usize,
+        mut visit: impl FnMut(JournalRecord) -> ControlFlow<()>,
+    ) -> Result<u64, MetaError> {
         let txn = self.db.begin_read()?;
         let current_serial = txn
             .open_table(SERIAL)?
@@ -72,12 +84,7 @@ impl MetaStore {
             .map_or(0, |value| value.value());
         let table = match txn.open_table(JOURNAL) {
             Ok(table) => table,
-            Err(redb::TableError::TableDoesNotExist(_)) => {
-                return Ok(JournalSnapshot {
-                    current_serial,
-                    records: Vec::new(),
-                });
-            }
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(current_serial),
             Err(error) => return Err(error.into()),
         };
         let mutations = match txn.open_table(JOURNAL_MUTATIONS) {
@@ -90,32 +97,44 @@ impl MetaStore {
             Err(redb::TableError::TableDoesNotExist(_)) => None,
             Err(error) => return Err(error.into()),
         };
-        let records = table
-            .range((Excluded(after), Unbounded))?
-            .take(limit)
-            .map(|entry| -> Result<JournalRecord, MetaError> {
-                let (serial, payload) = entry?;
-                let serial = serial.value();
-                Ok(JournalRecord {
-                    serial,
-                    payload: payload.value().to_vec(),
-                    mutations: mutations
-                        .as_ref()
-                        .and_then(|table| table.get(serial).transpose())
-                        .transpose()?
-                        .map(|value| serde_json::from_slice(value.value()))
-                        .transpose()?
-                        .unwrap_or_default(),
-                    blobs: blobs
-                        .as_ref()
-                        .and_then(|table| table.get(serial).transpose())
-                        .transpose()?
-                        .map(|value| serde_json::from_slice(value.value()))
-                        .transpose()?
-                        .unwrap_or_default(),
-                })
-            })
-            .collect::<Result<_, _>>()?;
+        for entry in table.range((Excluded(after), Unbounded))?.take(limit) {
+            let (serial, payload) = entry?;
+            let serial = serial.value();
+            let record = JournalRecord {
+                serial,
+                payload: payload.value().to_vec(),
+                mutations: mutations
+                    .as_ref()
+                    .and_then(|table| table.get(serial).transpose())
+                    .transpose()?
+                    .map(|value| serde_json::from_slice(value.value()))
+                    .transpose()?
+                    .unwrap_or_default(),
+                blobs: blobs
+                    .as_ref()
+                    .and_then(|table| table.get(serial).transpose())
+                    .transpose()?
+                    .map(|value| serde_json::from_slice(value.value()))
+                    .transpose()?
+                    .unwrap_or_default(),
+            };
+            if visit(record).is_break() {
+                break;
+            }
+        }
+        Ok(current_serial)
+    }
+
+    /// Reads at most `limit` values after `after` with the head serial from the same snapshot.
+    ///
+    /// # Errors
+    /// Returns a store error if the read fails.
+    pub fn journal_snapshot(&self, after: u64, limit: usize) -> Result<JournalSnapshot, MetaError> {
+        let mut records = Vec::new();
+        let current_serial = self.visit_journal_page(after, limit, |record| {
+            records.push(record);
+            ControlFlow::Continue(())
+        })?;
         Ok(JournalSnapshot {
             current_serial,
             records,
