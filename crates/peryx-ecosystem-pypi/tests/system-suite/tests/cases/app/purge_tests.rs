@@ -48,7 +48,7 @@ fn test_cache_purge_project_preserves_shared_and_uploaded_blobs() {
         "pypi/other",
         &CachedIndex {
             body: format!(
-                r#"{{"meta":{{"api-version":"1.1"}},"name":"other","versions":["1.0"],"files":[{{"filename":"other-1.0.whl","url":"https://files.example/other.whl","hashes":{{"sha256":"{}"}},"core-metadata":false,"yanked":false}}]}}"#,
+                r#"{{"meta":{{"api-version":"1.1"}},"name":"other","versions":["1.0"],"files":[{{"filename":"other-1.0.whl","size":11,"url":"https://files.example/other.whl","hashes":{{"sha256":"{}"}},"core-metadata":false,"yanked":false}}]}}"#,
                 digest.as_str()
             )
             .into_bytes(),
@@ -122,7 +122,7 @@ fn test_cache_purge_project_ignores_files_without_sha256() {
     meta.put_index(
         "pypi/flask",
         &CachedIndex {
-            body: br#"{"meta":{"api-version":"1.1"},"name":"flask","versions":["1.0"],"files":[{"filename":"flask-1.0.whl","url":"https://files.example/flask.whl","hashes":{},"core-metadata":false,"yanked":false}]}"#.to_vec(),
+            body: br#"{"meta":{"api-version":"1.1"},"name":"flask","versions":["1.0"],"files":[{"filename":"flask-1.0.whl","size":11,"url":"https://files.example/flask.whl","hashes":{},"core-metadata":false,"yanked":false}]}"#.to_vec(),
             ..cache_record(b"")
         },
     )

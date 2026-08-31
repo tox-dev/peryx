@@ -20,18 +20,25 @@ field that the re-served payload can omit.
 
 peryx assigns hosted pages its ceiling and maps upstream declarations as follows:
 
-| Page source                                                        | peryx serves | Why                                                         |
-| ------------------------------------------------------------------ | ------------ | ----------------------------------------------------------- |
-| hosted by peryx                                                    | `1.4`        | peryx supplies every required field                         |
-| upstream declares `1.1`, `1.2`, `1.3`, `1.4`, `1.5`, … (minor ≥ 1) | `1.4`        | PEP 700 makes `versions` and per-file `size` mandatory here |
-| upstream declares `1.0`                                            | `1.0`        | PEP 691 mandates neither field                              |
-| bare PEP 503 HTML, or JSON that omits `api-version`                | `1.0`        | the upstream promises neither field                         |
-| upstream declares a major other than `1` (`2.0`, …)                | rejected     | peryx does not support the major version                    |
-| upstream declares a version that does not parse (`1.x`, `abc`)     | rejected     | peryx rejects the invalid version                           |
+| Page source                                                             | peryx serves | Why                                                         |
+| ----------------------------------------------------------------------- | ------------ | ----------------------------------------------------------- |
+| hosted by peryx                                                         | `1.4`        | peryx supplies every required field                         |
+| upstream JSON declares `1.1`, `1.2`, `1.3`, `1.4`, `1.5`, … (minor ≥ 1) | `1.4`        | PEP 700 makes `versions` and per-file `size` mandatory here |
+| upstream JSON declares `1.0`, or omits `api-version`                    | `1.0`        | PEP 691 mandates neither field                              |
+| a PEP 503 HTML detail page, whatever version it declares                | `1.0`        | PEP 700 leaves the HTML form unchanged from `1.0`           |
+| upstream declares a major other than `1` (`2.0`, …)                     | rejected     | peryx does not support the major version                    |
+| upstream declares a version that does not parse (`1.x`, `abc`)          | rejected     | peryx rejects the invalid version                           |
+| upstream JSON declares `1.1+` and omits `versions` or a file `size`     | rejected     | the page contradicts the version it declared                |
 
 A hosted page and a versioned JSON upstream that declares 1.1 both serve 1.4, but for different reasons: peryx supplies
-the hosted fields, while the upstream promises the PEP 700 fields. peryx returns 1.0 for a bare HTML upstream because it
-makes no version promise.
+the hosted fields, while the upstream promises the PEP 700 fields.
+
+### Incomplete PEP 700 payloads
+
+A JSON page that declares `1.1` or newer and then omits the `versions` array, or leaves any file without a `size`,
+breaks its own contract. peryx does not repair it and does not quietly lower its version: it rejects the response, so
+the previously published generation stays serviceable and the client keeps reading the page it already had. `versions`
+is a set, so a repeated version string is rejected the same way, at every version that carries the field.
 
 `1.4` is peryx's own ceiling: the highest version it implements. The threshold that decides between the ceiling and the
 base is [PEP 700](https://peps.python.org/pep-0700/)'s, minor version `1`. Above it, every guarantee through `1.4` is
@@ -59,12 +66,12 @@ guarantee `versions` and `size` for every file.
 The cap is per project. A layer only lowers the version when it returns a page for the requested project; a layer that
 does not carry the project has no say in its version.
 
-### JSON only; HTML is unaffected
+### An HTML upstream cannot reach 1.1
 
-PEP 700 changes the JSON serialization alone. The HTML serialization defines no `versions` array and no per-file `size`,
-so it carries none of PEP 700's guarantees at any version number. The derivation sets the version on the served `meta`,
-which both serializations render, but the honesty concern is JSON-only: an HTML page has no PEP 700 field to
-over-advertise.
+PEP 700 changes the JSON serialization alone; it leaves the HTML form unchanged from `1.0`. The HTML serialization
+defines no `versions` array, so a page in that form carries none of PEP 700's guarantees however high its
+`pypi:repository-version` reads. peryx re-serves an HTML upstream as JSON, where that promise would become peryx's own,
+so an HTML detail page is held at `1.0` rather than promoted on the strength of a `<meta>` tag.
 
 ### Version-derivation scope
 

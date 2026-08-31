@@ -41,23 +41,63 @@ struct IncomingDetail {
     project_status: Option<IncomingProjectStatus>,
     name: String,
     #[serde(default)]
-    versions: Vec<String>,
+    versions: Option<Vec<String>>,
     files: Vec<File>,
 }
 
 /// Parse an upstream PEP 691 JSON project detail.
 ///
 /// # Errors
-/// Returns an error when `bytes` is not a valid PEP 691 project detail document, or when the
-/// upstream advertises a Simple API major version peryx does not support.
+/// Returns an error when `bytes` is not a valid PEP 691 project detail document, when the upstream
+/// advertises a Simple API major version peryx does not support, or when a page that declared
+/// Simple API 1.1 or newer omits the PEP 700 fields peryx would then re-advertise.
 pub fn parse_detail(bytes: &[u8]) -> Result<ParsedDetail, SimpleError> {
     let detail: IncomingDetail = serde_json::from_slice(bytes)?;
+    let meta = detail.meta.into_detail_meta(detail.project_status)?;
+    check_pep700(&meta, detail.versions.as_deref(), sizeless_file(&detail.files))?;
     Ok(ParsedDetail {
-        meta: detail.meta.into_detail_meta(detail.project_status)?,
+        meta,
         name: detail.name,
-        versions: detail.versions,
+        versions: detail.versions.unwrap_or_default(),
         files: detail.files,
     })
+}
+
+fn sizeless_file(files: &[File]) -> Option<&str> {
+    files
+        .iter()
+        .find(|file| file.size.is_none())
+        .map(|file| file.filename.as_str())
+}
+
+/// Enforce what the advertised version promises: [PEP 700](https://peps.python.org/pep-0700/) makes
+/// `versions` and every file's `size` mandatory from Simple API 1.1, and defines `versions` as a set.
+/// peryx re-serves an upstream 1.1 page under its own 1.4 ceiling, so a page missing either field
+/// would turn an upstream's broken promise into peryx's, and is rejected instead.
+///
+/// `sizeless` names the first file that carried no `size`. The check runs once the whole document is
+/// read because PEP 691 fixes no member order, so `meta` may arrive after `files`.
+fn check_pep700(meta: &Meta, versions: Option<&[String]>, sizeless: Option<&str>) -> Result<(), SimpleError> {
+    if let Some(duplicate) = versions.and_then(first_duplicate) {
+        return Err(SimpleError::DuplicateVersion(duplicate.to_owned()));
+    }
+    if !meta.promises_pep700() {
+        return Ok(());
+    }
+    if versions.is_none() {
+        return Err(SimpleError::MissingVersions);
+    }
+    sizeless.map_or(Ok(()), |filename| {
+        Err(SimpleError::MissingFileSize(filename.to_owned()))
+    })
+}
+
+fn first_duplicate(versions: &[String]) -> Option<&str> {
+    let mut seen = std::collections::HashSet::with_capacity(versions.len());
+    versions
+        .iter()
+        .map(String::as_str)
+        .find(|version| !seen.insert(*version))
 }
 
 /// A receiver for files decoded during a streaming detail parse.
@@ -87,7 +127,8 @@ pub struct StreamedDetail {
 ///
 /// # Errors
 /// Returns [`SimpleError`] when the body is not a valid PEP 691 detail, advertises an unsupported
-/// Simple API version, or the sink rejects a file.
+/// Simple API version, omits a PEP 700 field the declared version promises, or the sink rejects a
+/// file.
 pub fn stream_detail_json<S: DetailSink>(
     reader: impl Read,
     base: &Url,
@@ -96,10 +137,12 @@ pub fn stream_detail_json<S: DetailSink>(
     let mut deserializer = serde_json::Deserializer::from_reader(reader);
     let header = DetailSeed { base, sink }.deserialize(&mut deserializer)?;
     deserializer.end()?;
+    let meta = header.meta.into_detail_meta(header.project_status)?;
+    check_pep700(&meta, header.versions.as_deref(), header.sizeless.as_deref())?;
     Ok(StreamedDetail {
-        meta: header.meta.into_detail_meta(header.project_status)?,
+        meta,
         name: header.name,
-        versions: header.versions,
+        versions: header.versions.unwrap_or_default(),
     })
 }
 
@@ -107,7 +150,9 @@ struct IncomingStreamedDetail {
     meta: IncomingMeta,
     project_status: Option<IncomingProjectStatus>,
     name: String,
-    versions: Vec<String>,
+    versions: Option<Vec<String>>,
+    /// The first file that carried no `size`, checked once `meta` settles the promised version.
+    sizeless: Option<String>,
 }
 
 struct DetailSeed<'a, S: DetailSink> {
@@ -142,18 +187,20 @@ impl<'de, S: DetailSink> Visitor<'de> for DetailVisitor<'_, S> {
         let mut meta = None;
         let mut project_status = None;
         let mut name = None;
-        let mut versions = Vec::new();
+        let mut versions = None;
+        let mut sizeless = None;
         let mut files = false;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "meta" => meta = Some(map.next_value()?),
                 "project-status" => project_status = Some(map.next_value()?),
                 "name" => name = Some(map.next_value()?),
-                "versions" => versions = map.next_value()?,
+                "versions" => versions = Some(map.next_value()?),
                 "files" => {
                     map.next_value_seed(FilesSeed {
                         base: self.base,
                         sink: self.sink,
+                        sizeless: &mut sizeless,
                     })?;
                     files = true;
                 }
@@ -170,6 +217,7 @@ impl<'de, S: DetailSink> Visitor<'de> for DetailVisitor<'_, S> {
             project_status,
             name: name.ok_or_else(|| serde::de::Error::missing_field("name"))?,
             versions,
+            sizeless,
         })
     }
 }
@@ -177,6 +225,7 @@ impl<'de, S: DetailSink> Visitor<'de> for DetailVisitor<'_, S> {
 struct FilesSeed<'a, S: DetailSink> {
     base: &'a Url,
     sink: &'a mut S,
+    sizeless: &'a mut Option<String>,
 }
 
 impl<'de, S: DetailSink> DeserializeSeed<'de> for FilesSeed<'_, S> {
@@ -186,6 +235,7 @@ impl<'de, S: DetailSink> DeserializeSeed<'de> for FilesSeed<'_, S> {
         deserializer.deserialize_seq(FilesVisitor {
             base: self.base,
             sink: self.sink,
+            sizeless: self.sizeless,
         })
     }
 }
@@ -193,6 +243,7 @@ impl<'de, S: DetailSink> DeserializeSeed<'de> for FilesSeed<'_, S> {
 struct FilesVisitor<'a, S: DetailSink> {
     base: &'a Url,
     sink: &'a mut S,
+    sizeless: &'a mut Option<String>,
 }
 
 impl<'de, S: DetailSink> Visitor<'de> for FilesVisitor<'_, S> {
@@ -206,6 +257,9 @@ impl<'de, S: DetailSink> Visitor<'de> for FilesVisitor<'_, S> {
         while let Some(mut file) = sequence.next_element::<File>()? {
             absolutize(self.base, &mut file.url);
             file.provenance.retain_secure_url();
+            if file.size.is_none() && self.sizeless.is_none() {
+                *self.sizeless = Some(file.filename.clone());
+            }
             self.sink.file(file).map_err(serde::de::Error::custom)?;
         }
         Ok(())

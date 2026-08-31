@@ -53,6 +53,13 @@ impl Meta {
         })
     }
 
+    /// Whether the served version carries PEP 700's `versions` and per-file `size` guarantees. The
+    /// derivation collapses every upstream minor to one of two values, so the ceiling means 1.1+.
+    #[must_use]
+    pub fn promises_pep700(&self) -> bool {
+        self.api_version == API_VERSION
+    }
+
     #[must_use]
     pub fn status(&self) -> ProjectStatus {
         self.project_status

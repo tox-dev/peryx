@@ -15,6 +15,12 @@ pub enum SimpleError {
     InvalidApiVersion(String),
     /// The upstream advertised an unknown project status marker.
     InvalidProjectStatus(String),
+    /// The upstream declared Simple API 1.1 or newer without PEP 700's `versions` array.
+    MissingVersions,
+    /// The upstream declared Simple API 1.1 or newer without PEP 700's `size` on the named file.
+    MissingFileSize(String),
+    /// The upstream repeated a version, which PEP 700 defines as a set.
+    DuplicateVersion(String),
 }
 
 impl fmt::Display for SimpleError {
@@ -35,6 +41,17 @@ impl fmt::Display for SimpleError {
             Self::InvalidProjectStatus(status) => {
                 write!(f, "invalid upstream project status marker {status:?}")
             }
+            Self::MissingVersions => write!(
+                f,
+                "upstream Simple API 1.1 or newer omits the mandatory PEP 700 \"versions\" array"
+            ),
+            Self::MissingFileSize(filename) => write!(
+                f,
+                "upstream Simple API 1.1 or newer omits the mandatory PEP 700 \"size\" of file {filename:?}"
+            ),
+            Self::DuplicateVersion(version) => {
+                write!(f, "upstream Simple API repeats version {version:?} in \"versions\"")
+            }
         }
     }
 }
@@ -44,7 +61,12 @@ impl std::error::Error for SimpleError {
         match self {
             Self::Json(err) => Some(err),
             Self::Html(err) => Some(err),
-            Self::UnsupportedApiVersion(_) | Self::InvalidApiVersion(_) | Self::InvalidProjectStatus(_) => None,
+            Self::UnsupportedApiVersion(_)
+            | Self::InvalidApiVersion(_)
+            | Self::InvalidProjectStatus(_)
+            | Self::MissingVersions
+            | Self::MissingFileSize(_)
+            | Self::DuplicateVersion(_) => None,
         }
     }
 }

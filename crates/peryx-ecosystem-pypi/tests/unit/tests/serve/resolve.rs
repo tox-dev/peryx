@@ -7,7 +7,7 @@ use peryx_identity::IndexAcl;
 fn nested_flask_page(digest: &str) -> String {
     format!(
         "{{\"meta\":{{\"api-version\":\"1.1\"}},\"name\":\"flask\",\"versions\":[\"1.0\"],\
-         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\
+         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"size\":11,\
          \"url\":\"https://upstream.invalid/flask-1.0-py3-none-any.whl\",\
          \"hashes\":{{\"sha256\":\"{digest}\"}}}}]}}"
     )
@@ -388,7 +388,7 @@ async fn test_overlay_with_two_mirrors_serves_buffered() {
         "{{\"meta\":{{\"api-version\":\"1.4\"}},\
          \"project-status\":{{\"status\":\"archived\",\"reason\":\"read only\"}},\
          \"name\":\"flask\",\"versions\":[\"1.0\"],\
-         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"url\":\"{file_url}\",\
+         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"size\":11,\"url\":\"{file_url}\",\
          \"hashes\":{{\"sha256\":\"{digest}\"}}}}]}}",
         digest = digest.as_str(),
     );
@@ -550,7 +550,7 @@ async fn test_upstream_metadata_error_is_bad_gateway() {
     let file_url = format!("{}/files/flask.whl", h.server.uri());
     let page = format!(
         "{{\"meta\":{{\"api-version\":\"1.1\"}},\"name\":\"flask\",\"versions\":[\"1.0\"],\
-         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"url\":\"{file_url}\",\
+         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"size\":11,\"url\":\"{file_url}\",\
          \"hashes\":{{\"sha256\":\"{digest}\"}},\"core-metadata\":{{\"sha256\":\"{meta}\"}}}}]}}",
         digest = digest.as_str(),
         meta = Digest::of(b"meta").as_str(),
@@ -573,7 +573,7 @@ async fn test_upstream_metadata_404_is_negative_cached() {
     let file_url = format!("{}/files/flask.whl", h.server.uri());
     let page = format!(
         "{{\"meta\":{{\"api-version\":\"1.1\"}},\"name\":\"flask\",\"versions\":[\"1.0\"],\
-         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"url\":\"{file_url}\",\
+         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"size\":11,\"url\":\"{file_url}\",\
          \"hashes\":{{\"sha256\":\"{digest}\"}},\"core-metadata\":{{\"sha256\":\"{meta}\"}}}}]}}",
         digest = digest.as_str(),
         meta = Digest::of(b"meta").as_str(),

@@ -55,7 +55,7 @@ fn cache_fixture() -> (tempfile::TempDir, Config, Digest) {
         "pypi/flask",
         &CachedIndex {
             body: format!(
-                r#"{{"meta":{{"api-version":"1.1"}},"name":"flask","versions":["1.0"],"files":[{{"filename":"flask-1.0.whl","url":"https://files.example/flask.whl","hashes":{{"sha256":"{}"}},"core-metadata":{{"sha256":"{}"}},"yanked":false}}]}}"#,
+                r#"{{"meta":{{"api-version":"1.1"}},"name":"flask","versions":["1.0"],"files":[{{"filename":"flask-1.0.whl","size":11,"url":"https://files.example/flask.whl","hashes":{{"sha256":"{}"}},"core-metadata":{{"sha256":"{}"}},"yanked":false}}]}}"#,
                 digest.as_str(),
                 metadata_digest.as_str()
             )

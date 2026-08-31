@@ -135,6 +135,9 @@ impl From<crate::SimpleError> for CacheError {
             err @ (crate::SimpleError::UnsupportedApiVersion(_)
             | crate::SimpleError::InvalidApiVersion(_)
             | crate::SimpleError::InvalidProjectStatus(_)
+            | crate::SimpleError::MissingVersions
+            | crate::SimpleError::MissingFileSize(_)
+            | crate::SimpleError::DuplicateVersion(_)
             | crate::SimpleError::Html(_)) => Self::Simple(err),
         }
     }

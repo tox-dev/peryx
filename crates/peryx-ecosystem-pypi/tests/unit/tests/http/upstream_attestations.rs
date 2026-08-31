@@ -41,7 +41,7 @@ async fn mount_upstream_attestation_page(harness: &Harness, digest: &str) {
 
 pub(super) async fn mount_upstream_attestation_page_at(harness: &Harness, digest: &str, provenance: &str) {
     let body = format!(
-        r#"{{"meta":{{"api-version":"1.4"}},"name":"peryxpkg","versions":["1.0"],"files":[{{"filename":"{FILENAME}","url":"{server}/files/{FILENAME}","hashes":{{"sha256":"{digest}"}},"provenance":"{provenance}"}}]}}"#,
+        r#"{{"meta":{{"api-version":"1.4"}},"name":"peryxpkg","versions":["1.0"],"files":[{{"filename":"{FILENAME}","size":11,"url":"{server}/files/{FILENAME}","hashes":{{"sha256":"{digest}"}},"provenance":"{provenance}"}}]}}"#,
         server = harness.server.uri(),
     );
     Mock::given(method("GET"))
@@ -57,7 +57,7 @@ pub(super) async fn mount_upstream_attestation_page_at(harness: &Harness, digest
 
 pub(super) fn put_cached_attestation_page(harness: &Harness, digest: &str) {
     let body = format!(
-        r#"{{"meta":{{"api-version":"1.4"}},"name":"peryxpkg","versions":["1.0"],"files":[{{"filename":"{FILENAME}","url":"https://files.example/{FILENAME}","hashes":{{"sha256":"{digest}"}},"provenance":"https://files.example/{FILENAME}.provenance"}}]}}"#,
+        r#"{{"meta":{{"api-version":"1.4"}},"name":"peryxpkg","versions":["1.0"],"files":[{{"filename":"{FILENAME}","size":11,"url":"https://files.example/{FILENAME}","hashes":{{"sha256":"{digest}"}},"provenance":"https://files.example/{FILENAME}.provenance"}}]}}"#,
     );
     harness
         .state
@@ -98,7 +98,7 @@ fn published_file(digest: &str) -> crate::store::PublishedFileWrite {
 
 async fn mount_upstream_page_without_attestation(harness: &Harness, digest: &str) {
     let body = format!(
-        r#"{{"meta":{{"api-version":"1.4"}},"name":"peryxpkg","versions":["1.0"],"files":[{{"filename":"{FILENAME}","url":"{server}/files/{FILENAME}","hashes":{{"sha256":"{digest}"}}}}]}}"#,
+        r#"{{"meta":{{"api-version":"1.4"}},"name":"peryxpkg","versions":["1.0"],"files":[{{"filename":"{FILENAME}","size":11,"url":"{server}/files/{FILENAME}","hashes":{{"sha256":"{digest}"}}}}]}}"#,
         server = harness.server.uri(),
     );
     Mock::given(method("GET"))
@@ -434,7 +434,7 @@ async fn test_virtual_provenance_without_a_registered_layer_source_is_not_found(
     let harness = virtual_upstream_harness(RemoteMetadataMode::Proxy).await;
     let digest = "15".repeat(32);
     let body = format!(
-        r#"{{"meta":{{"api-version":"1.4"}},"name":"peryxpkg","versions":["1.0"],"files":[{{"filename":"{FILENAME}","url":"https://files.example/{FILENAME}","hashes":{{"sha256":"{digest}"}},"provenance":"https://files.example/{FILENAME}.provenance"}}]}}"#,
+        r#"{{"meta":{{"api-version":"1.4"}},"name":"peryxpkg","versions":["1.0"],"files":[{{"filename":"{FILENAME}","size":11,"url":"https://files.example/{FILENAME}","hashes":{{"sha256":"{digest}"}},"provenance":"https://files.example/{FILENAME}.provenance"}}]}}"#,
     );
     harness
         .state

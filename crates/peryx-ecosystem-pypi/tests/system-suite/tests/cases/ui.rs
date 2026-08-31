@@ -452,12 +452,12 @@ async fn test_ui_project_page_shows_source_and_availability_cells() {
         "files": [
             {
                 "filename": "veloxdemo-1.0-py3-none-any.whl",
-                "url": "https://files.example/veloxdemo-1.0-py3-none-any.whl",
+                "size":11,"url": "https://files.example/veloxdemo-1.0-py3-none-any.whl",
                 "hashes": {"sha256": cached.as_str()},
             },
             {
                 "filename": "veloxdemo-1.0.tar.gz",
-                "url": "https://files.example/veloxdemo-1.0.tar.gz",
+                "size":11,"url": "https://files.example/veloxdemo-1.0.tar.gz",
                 "hashes": {"sha256": remote.as_str()},
             },
         ],
@@ -551,12 +551,12 @@ async fn test_ui_project_page_groups_each_file_under_one_ordered_release() {
         "name": "veloxdemo",
         "versions": ["1.0", "2.0rc1", "2.0", "2.0+local.1", "legacy"],
         "files": [
-            {"filename": "veloxdemo-1.0-py3-none-any.whl", "url": "/files/1.0.whl"},
-            {"filename": "veloxdemo-2.0rc1-py3-none-any.whl", "url": "/files/2.0rc1.whl"},
-            {"filename": "veloxdemo-2.0-py3-none-any.whl", "url": "/files/2.0.whl"},
-            {"filename": "veloxdemo-2.0+local.1-py3-none-any.whl", "url": "/files/2.0-local.whl"},
-            {"filename": "veloxdemo-legacy-py3-none-any.whl", "url": "/files/legacy.whl"},
-            {"filename": "notes.txt", "url": "/files/notes.txt"},
+            {"filename": "veloxdemo-1.0-py3-none-any.whl", "size":11,"url": "/files/1.0.whl"},
+            {"filename": "veloxdemo-2.0rc1-py3-none-any.whl", "size":11,"url": "/files/2.0rc1.whl"},
+            {"filename": "veloxdemo-2.0-py3-none-any.whl", "size":11,"url": "/files/2.0.whl"},
+            {"filename": "veloxdemo-2.0+local.1-py3-none-any.whl", "size":11,"url": "/files/2.0-local.whl"},
+            {"filename": "veloxdemo-legacy-py3-none-any.whl", "size":11,"url": "/files/legacy.whl"},
+            {"filename": "notes.txt", "size":11,"url": "/files/notes.txt"},
         ],
     }));
 
@@ -597,7 +597,7 @@ async fn test_ui_project_page_keeps_ambiguous_equivalent_releases_unassociated()
         "meta": {"api-version": "1.1"},
         "name": "veloxdemo",
         "versions": ["1.0", "1.0.0"],
-        "files": [{"filename": "veloxdemo-1.0-py3-none-any.whl", "url": "/files/demo.whl"}],
+        "files": [{"filename": "veloxdemo-1.0-py3-none-any.whl", "size":11,"url": "/files/demo.whl"}],
     }));
 
     let (status, body) = get(&router, "/browse?index=pypi&project=veloxdemo").await;
@@ -626,7 +626,7 @@ async fn test_ui_project_page_selects_an_empty_declared_release() {
         "meta": {"api-version": "1.1"},
         "name": "veloxdemo",
         "versions": ["1.0", "2.0"],
-        "files": [{"filename": "veloxdemo-1.0-py3-none-any.whl", "url": "/files/demo.whl"}],
+        "files": [{"filename": "veloxdemo-1.0-py3-none-any.whl", "size":11,"url": "/files/demo.whl"}],
     }));
 
     let (status, body) = get(&router, "/browse?index=pypi&project=veloxdemo&version=2.0").await;
@@ -818,6 +818,7 @@ async fn test_ui_project_page_links_contents_only_for_browsable_archives(
     };
     let (_dir, router) = file_router(&serde_json::json!({
         "filename": filename,
+        "size": 11,
         "url": format!("https://example.com/{filename}"),
         "hashes": hashes,
     }));
@@ -837,6 +838,7 @@ async fn test_ui_project_page_links_contents_only_for_browsable_archives(
 fn artifact_router(url: &str) -> (tempfile::TempDir, axum::Router) {
     file_router(&serde_json::json!({
         "filename": ARTIFACT_FILENAME,
+        "size": 11,
         "url": url,
         "hashes": {"sha256": ARCHIVE_DIGEST},
     }))

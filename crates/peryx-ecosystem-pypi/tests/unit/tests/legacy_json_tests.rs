@@ -11,7 +11,7 @@ fn info_version(versions: &[&str], files: &[(&str, bool)]) -> String {
         .enumerate()
         .map(|(index, (filename, yanked))| {
             format!(
-                "{{\"filename\":\"{filename}\",\"url\":\"https://example.test/{filename}\",\
+                "{{\"filename\":\"{filename}\",\"size\":11,\"url\":\"https://example.test/{filename}\",\
                  \"hashes\":{{\"sha256\":\"{index:064x}\"}},\"yanked\":{yanked}}}"
             )
         })

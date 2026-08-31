@@ -101,7 +101,7 @@ async fn mount_project(server: &MockServer, project: &str, expected: u64) {
     Mock::given(method("GET"))
         .and(path(format!("/simple/{project}/")))
         .respond_with(ResponseTemplate::new(200).set_body_raw(
-            format!(r#"{{"meta":{{"api-version":"1.4"}},"name":"{project}","files":[]}}"#),
+            format!(r#"{{"meta":{{"api-version":"1.4"}},"versions":[],"name":"{project}","files":[]}}"#),
             JSON,
         ))
         .expect(expected)
@@ -521,7 +521,10 @@ async fn test_public_job_revalidates_root_and_project_generations_and_tolerates_
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("etag", "stable-v1")
-                .set_body_raw(r#"{"meta":{"api-version":"1.4"},"name":"stable","files":[]}"#, JSON),
+                .set_body_raw(
+                    r#"{"meta":{"api-version":"1.4"},"versions":[],"name":"stable","files":[]}"#,
+                    JSON,
+                ),
         )
         .with_priority(10)
         .expect(1)
@@ -910,7 +913,7 @@ async fn test_public_job_categorizes_project_status_content_type_and_data_failur
         (ResponseTemplate::new(503), "retryable_upstream"),
         (
             ResponseTemplate::new(200)
-                .set_body_bytes(br#"{"meta":{"api-version":"1.4"},"name":"flask","files":[]}"#.to_vec()),
+                .set_body_bytes(br#"{"meta":{"api-version":"1.4"},"versions":[],"name":"flask","files":[]}"#.to_vec()),
             "upstream:",
         ),
         (ResponseTemplate::new(200).set_body_raw("{", JSON), "project_sync:"),

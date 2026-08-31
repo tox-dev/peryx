@@ -612,7 +612,7 @@ async fn test_mirror_html_refetches_when_the_cached_record_is_undecodable() {
 async fn test_mirror_file_without_sha_is_kept() {
     let h = harness().await;
     let json = "{\"meta\":{\"api-version\":\"1.1\"},\"name\":\"flask\",\"versions\":[\"1.0\"],\
-                \"files\":[{\"filename\":\"flask-1.0.tar.gz\",\"url\":\"http://x/flask-1.0.tar.gz\",\"hashes\":{}}]}";
+                \"files\":[{\"filename\":\"flask-1.0.tar.gz\",\"size\":11,\"url\":\"http://x/flask-1.0.tar.gz\",\"hashes\":{}}]}";
     Mock::given(method("GET"))
         .and(path("/simple/flask/"))
         .respond_with(

@@ -69,8 +69,9 @@ async fn test_policy_filters_files_without_declared_size() {
     let small = Digest::of(b"small");
     let missing_size = Digest::of(b"missing-size");
     let file_url = h.server.uri();
+    // Only a pre-PEP 700 page may leave a file without a size; 1.1 and newer are rejected for it.
     let json = format!(
-        "{{\"meta\":{{\"api-version\":\"1.4\"}},\"name\":\"flask\",\"versions\":[\"1.0\"],\"files\":[\
+        "{{\"meta\":{{\"api-version\":\"1.0\"}},\"name\":\"flask\",\"versions\":[\"1.0\"],\"files\":[\
          {{\"filename\":\"flask-1.0-py3-none-any.whl\",\"url\":\"{file_url}/files/small.whl\",\
          \"hashes\":{{\"sha256\":\"{}\"}},\"size\":10}},\
          {{\"filename\":\"flask-1.0.tar.gz\",\"url\":\"{file_url}/files/missing.tar.gz\",\

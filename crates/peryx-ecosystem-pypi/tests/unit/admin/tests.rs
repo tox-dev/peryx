@@ -25,7 +25,7 @@ fn seed_valid_page(meta: &MetaStore) {
     let digest = Digest::of(b"wheel");
     let metadata_digest = Digest::of(b"metadata");
     let body = format!(
-        r#"{{"meta":{{"api-version":"1.1"}},"name":"flask","versions":["1.0"],"files":[{{"filename":"flask-1.0.whl","url":"https://files/flask.whl","hashes":{{"sha256":"{d}"}},"core-metadata":{{"sha256":"{m}"}},"yanked":false}}]}}"#,
+        r#"{{"meta":{{"api-version":"1.1"}},"name":"flask","versions":["1.0"],"files":[{{"filename":"flask-1.0.whl","size":11,"url":"https://files/flask.whl","hashes":{{"sha256":"{d}"}},"core-metadata":{{"sha256":"{m}"}},"yanked":false}}]}}"#,
         d = digest.as_str(),
         m = metadata_digest.as_str(),
     );
@@ -589,7 +589,7 @@ fn test_purge_project_covers_preserved_reference_shapes() {
     let (_dir, meta) = store();
     seed_valid_page(&meta);
     let body = format!(
-        r#"{{"meta":{{"api-version":"1.1"}},"name":"other","versions":["1.0"],"files":[{{"filename":"no-hash.whl","url":"u","hashes":{{}},"yanked":false}},{{"filename":"other.whl","url":"u","hashes":{{"sha256":"{}"}},"core-metadata":{{"sha256":"{}"}},"yanked":false}}]}}"#,
+        r#"{{"meta":{{"api-version":"1.1"}},"name":"other","versions":["1.0"],"files":[{{"filename":"no-hash.whl","size":11,"url":"u","hashes":{{}},"yanked":false}},{{"filename":"other.whl","size":11,"url":"u","hashes":{{"sha256":"{}"}},"core-metadata":{{"sha256":"{}"}},"yanked":false}}]}}"#,
         "c".repeat(64),
         "d".repeat(64),
     );
@@ -614,7 +614,7 @@ fn test_purge_project_covers_preserved_reference_shapes() {
         content_type: Some("application/json".to_owned()),
         fresh_secs: None,
         body: format!(
-            r#"{{"meta":{{"api-version":"1.1"}},"name":"plain","versions":["1.0"],"files":[{{"filename":"plain.whl","url":"u","hashes":{{"sha256":"{}"}},"yanked":false}}]}}"#,
+            r#"{{"meta":{{"api-version":"1.1"}},"name":"plain","versions":["1.0"],"files":[{{"filename":"plain.whl","size":11,"url":"u","hashes":{{"sha256":"{}"}},"yanked":false}}]}}"#,
             "e".repeat(64)
         ).into_bytes(),
     }).unwrap();

@@ -168,7 +168,7 @@ async fn test_proxy_mode_preserves_provenance_when_the_file_has_no_sha256() {
     let harness = upstream_harness(RemoteMetadataMode::Proxy).await;
     let provenance = format!("{}/integrity/{FILENAME}.provenance", harness.server.uri());
     let body = format!(
-        r#"{{"meta":{{"api-version":"1.4"}},"name":"peryxpkg","files":[{{"filename":"{FILENAME}","url":"{server}/files/{FILENAME}","hashes":{{"md5":"abcd"}},"provenance":"{provenance}"}}]}}"#,
+        r#"{{"meta":{{"api-version":"1.4"}},"versions":[],"name":"peryxpkg","files":[{{"filename":"{FILENAME}","size":11,"url":"{server}/files/{FILENAME}","hashes":{{"md5":"abcd"}},"provenance":"{provenance}"}}]}}"#,
         server = harness.server.uri(),
     );
     Mock::given(method("GET"))

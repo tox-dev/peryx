@@ -140,9 +140,9 @@ fn seed_hosted(state: &AppState) {
 fn seed_cached(state: &AppState) {
     let body = format!(
         "{{\"meta\":{{\"api-version\":\"1.1\"}},\"name\":\"acme-pkg\",\"versions\":[\"1.0\",\"2.0\"],\"files\":[\
-         {{\"filename\":\"{HOSTED_FILE}\",\"url\":\"https://upstream.invalid/{HOSTED_FILE}\",\
+         {{\"filename\":\"{HOSTED_FILE}\",\"size\":11,\"url\":\"https://upstream.invalid/{HOSTED_FILE}\",\
          \"hashes\":{{\"sha256\":\"{UPSTREAM_DIGEST}\"}}}},\
-         {{\"filename\":\"{CACHED_FILE}\",\"url\":\"https://upstream.invalid/{CACHED_FILE}\",\
+         {{\"filename\":\"{CACHED_FILE}\",\"size\":11,\"url\":\"https://upstream.invalid/{CACHED_FILE}\",\
          \"hashes\":{{\"sha256\":\"{CACHED_DIGEST}\"}}}}]}}"
     );
     let record = CachedIndex {

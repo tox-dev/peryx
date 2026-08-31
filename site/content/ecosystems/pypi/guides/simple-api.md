@@ -41,12 +41,12 @@ curl -s -H "Accept: application/vnd.pypi.simple.v1+json" \
 curl -s https://upstream.example/simple/{project}/ | grep -i pypi:repository-version
 ```
 
-If the JSON prints `None` or `1.0`, or the HTML carries no `pypi:repository-version` tag, the upstream promises neither
-field, and peryx is right to serve `1.0`. peryx does not invent `versions` or `size` to reach `1.4`; it advertises the
-version the upstream's bytes satisfy.
+If the JSON prints `None` or `1.0`, the upstream promises neither field, and peryx is right to serve `1.0`. peryx does
+not invent `versions` or `size` to reach `1.4`; it advertises the version the upstream's bytes satisfy. An HTML upstream
+prints `1.0` whatever its `pypi:repository-version` says, because PEP 700 leaves the HTML form unchanged from `1.0`.
 
-To serve `1.4`, front an upstream that declares `1.1` or higher. pypi.org does; a bare HTML mirror or an older
-Artifactory may not.
+To serve `1.4`, front an upstream that serves PEP 691 JSON declaring `1.1` or higher. pypi.org does; an HTML-only mirror
+or an older Artifactory does not.
 
 ### Cause 2: a virtual layer caps the merged page
 

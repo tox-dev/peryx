@@ -35,7 +35,7 @@ async fn mount_upstream(harness: &Harness, project: &str, files: [(&str, &str); 
         .iter()
         .map(|(filename, _)| {
             format!(
-                "{{\"filename\":\"{filename}\",\"url\":\"https://upstream.invalid/{filename}\",\
+                "{{\"filename\":\"{filename}\",\"size\":11,\"url\":\"https://upstream.invalid/{filename}\",\
                  \"hashes\":{{\"sha256\":\"{UPSTREAM_DIGEST}\"}}}}"
             )
         })

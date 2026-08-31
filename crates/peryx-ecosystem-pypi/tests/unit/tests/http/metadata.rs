@@ -9,7 +9,7 @@ async fn test_metadata_served_verified_and_counted() {
     let wheel_url = format!("{}/files/flask.whl", h.server.uri());
     let json = format!(
         "{{\"meta\":{{\"api-version\":\"1.1\"}},\"name\":\"flask\",\"versions\":[\"1.0\"],\
-         \"files\":[{{\"filename\":\"flask-1.0.whl\",\"url\":\"{}\",\"hashes\":{{\"sha256\":\"{}\"}},\
+         \"files\":[{{\"filename\":\"flask-1.0.whl\",\"size\":11,\"url\":\"{}\",\"hashes\":{{\"sha256\":\"{}\"}},\
          \"core-metadata\":{{\"sha256\":\"{}\"}}}}]}}",
         wheel_url,
         wheel_digest.as_str(),
@@ -66,7 +66,7 @@ async fn test_routed_metadata_sidecar_uses_the_advertising_source_credentials() 
     let wheel_url = format!("{}/files/flask.whl", second.uri());
     let page = format!(
         "{{\"meta\":{{\"api-version\":\"1.1\"}},\"name\":\"flask\",\"versions\":[\"1.0\"],\
-         \"files\":[{{\"filename\":\"flask-1.0.whl\",\"url\":\"{wheel_url}\",\
+         \"files\":[{{\"filename\":\"flask-1.0.whl\",\"size\":11,\"url\":\"{wheel_url}\",\
          \"hashes\":{{\"sha256\":\"{}\"}},\"core-metadata\":{{\"sha256\":\"{}\"}}}}]}}",
         wheel_digest.as_str(),
         metadata_digest.as_str(),

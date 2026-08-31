@@ -74,7 +74,7 @@ async fn test_third_request_hits_the_hot_cache() {
 async fn test_file_without_sha256_keeps_its_upstream_url() {
     let h = harness().await;
     let page = r#"{"meta":{"api-version":"1.1"},"name":"flask","versions":["1.0"],
-        "files":[{"filename":"flask-1.0.tar.gz","url":"https://up.example/flask-1.0.tar.gz","hashes":{}}]}"#;
+        "files":[{"filename":"flask-1.0.tar.gz","size":11,"url":"https://up.example/flask-1.0.tar.gz","hashes":{}}]}"#;
     mount_json_page(&h.server, page).await;
     let (status, _, body) = get(&h.state, "/pypi/simple/flask/", None).await;
     assert_eq!(status, StatusCode::OK);

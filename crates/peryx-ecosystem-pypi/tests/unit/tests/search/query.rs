@@ -54,7 +54,7 @@ async fn test_search_reports_cached_detail_parse_errors() {
         .meta
         .put_index(
             "pypi/broken",
-            &cached_index("{\"meta\":{\"api-version\":\"1.1\"},\"files\":"),
+            &cached_index("{\"meta\":{\"api-version\":\"1.1\"},\"versions\":[],\"files\":"),
         )
         .unwrap();
     h.state.serving.bump_search_epoch();

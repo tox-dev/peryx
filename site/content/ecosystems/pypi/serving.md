@@ -42,6 +42,13 @@ fields, peryx passes them through, and it keeps its `1.4` ceiling. An upstream a
 version, promises neither, so peryx serves `1.0`, and a client reads that page knowing `size` and `versions` may be
 absent. The number now matches the guarantees of the bytes underneath it.
 
+Derivation answers the upstream that promises little. The opposite case is an upstream that promises `1.1` and then
+sends a page without `versions`, or with a file that carries no `size`. Lowering that page's version would launder a
+broken upstream into a well-formed peryx page and hide the fault; peryx rejects the response instead, leaves the
+previously published generation in place, and the client keeps reading the page it already had. The HTML form is held at
+`1.0` for the same reason: PEP 700 leaves it unchanged from `1.0`, so its `pypi:repository-version` promises nothing
+about the JSON peryx re-serves from it.
+
 The alternative, always satisfying `1.4` by synthesizing the missing fields, was a heavier contract than a cache should
 sign. Deriving `size` for every file means knowing every file's length, which a cold cache does not; deriving `versions`
 means the merged list is authoritative even when a layer was skipped. Lowering the version instead keeps peryx honest

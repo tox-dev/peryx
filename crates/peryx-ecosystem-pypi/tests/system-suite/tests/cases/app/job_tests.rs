@@ -37,7 +37,7 @@ fn catalog_server() -> (String, std::thread::JoinHandle<()>) {
                 r#"{"meta":{"api-version":"1.4"},"projects":[{"name":"Flask"}]}"#
             } else {
                 assert!(request.starts_with("GET /simple/flask/ "), "{request}");
-                r#"{"meta":{"api-version":"1.4"},"name":"flask","files":[]}"#
+                r#"{"meta":{"api-version":"1.4"},"versions":[],"name":"flask","files":[]}"#
             };
             write!(
                 socket,

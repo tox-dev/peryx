@@ -18,7 +18,7 @@ const UPSTREAM_DIGEST: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 async fn mount_peryxpkg(server: &MockServer) {
     let body = format!(
         "{{\"meta\":{{\"api-version\":\"1.1\"}},\"name\":\"peryxpkg\",\"versions\":[\"1.0\"],\
-         \"files\":[{{\"filename\":\"peryxpkg-1.0-py3-none-any.whl\",\
+         \"files\":[{{\"filename\":\"peryxpkg-1.0-py3-none-any.whl\",\"size\":11,\
          \"url\":\"https://upstream.invalid/peryxpkg-1.0-py3-none-any.whl\",\
          \"hashes\":{{\"sha256\":\"{UPSTREAM_DIGEST}\"}}}}]}}"
     );
@@ -144,7 +144,7 @@ async fn mount_status(server: &MockServer, status: &str) {
         "{{\"meta\":{{\"api-version\":\"1.1\"}},\
          \"project-status\":{{\"status\":\"{status}\",\"reason\":\"upstream {status}\"}},\
          \"name\":\"peryxpkg\",\"versions\":[\"1.0\"],\
-         \"files\":[{{\"filename\":\"peryxpkg-1.0-py3-none-any.whl\",\
+         \"files\":[{{\"filename\":\"peryxpkg-1.0-py3-none-any.whl\",\"size\":11,\
          \"url\":\"https://upstream.invalid/peryxpkg-1.0-py3-none-any.whl\",\
          \"hashes\":{{\"sha256\":\"{UPSTREAM_DIGEST}\"}}}}]}}"
     );

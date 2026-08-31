@@ -124,7 +124,7 @@ async fn test_artifact_mirror_honors_repository_fallback(
     let metadata_digest = Digest::of(b"flask metadata");
     let detail = format!(
         "{{\"meta\":{{\"api-version\":\"1.1\"}},\"name\":\"flask\",\"versions\":[\"1.0\"],\
-         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"url\":\"{file_url}\",\
+         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"size\":11,\"url\":\"{file_url}\",\
          \"hashes\":{{\"sha256\":\"{}\"}},\"core-metadata\":{{\"sha256\":\"{}\"}}}}]}}",
         digest.as_str(),
         metadata_digest.as_str()
@@ -708,9 +708,11 @@ async fn test_if_range_without_a_range_is_ignored() {
 async fn uncached_wheel_uri(h: &Harness, published_size: Option<usize>) -> String {
     let digest = Digest::of(WHEEL);
     let size = published_size.map_or_else(String::new, |size| format!(",\"size\":{size}"));
+    // PEP 700 makes `size` mandatory from 1.1, so a page that publishes none declares 1.0.
+    let api_version = if published_size.is_some() { "1.1" } else { "1.0" };
     let metadata_digest = Digest::of(b"flask metadata");
     let detail = format!(
-        "{{\"meta\":{{\"api-version\":\"1.1\"}},\"name\":\"flask\",\"versions\":[\"1.0\"],\
+        "{{\"meta\":{{\"api-version\":\"{api_version}\"}},\"name\":\"flask\",\"versions\":[\"1.0\"],\
          \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"url\":\"{}/files/flask.whl\",\
          \"hashes\":{{\"sha256\":\"{}\"}},\"core-metadata\":{{\"sha256\":\"{}\"}}{size}}}]}}",
         h.server.uri(),

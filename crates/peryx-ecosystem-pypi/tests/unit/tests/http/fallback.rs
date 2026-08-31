@@ -19,7 +19,7 @@ async fn fallback_harness(mode: FallbackMode, protected: bool) -> Harness {
 async fn mount_upstream(harness: &Harness) {
     let body = format!(
         "{{\"meta\":{{\"api-version\":\"1.1\"}},\"name\":\"acme-pkg\",\"versions\":[\"2.0\"],\
-         \"files\":[{{\"filename\":\"{UPSTREAM_FILE}\",\
+         \"files\":[{{\"filename\":\"{UPSTREAM_FILE}\",\"size\":11,\
          \"url\":\"https://upstream.invalid/{UPSTREAM_FILE}\",\
          \"hashes\":{{\"sha256\":\"{UPSTREAM_DIGEST}\"}}}}]}}"
     );

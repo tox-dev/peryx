@@ -81,7 +81,7 @@ async fn test_sync_publishes_a_json_detail() {
     let body = format!(
         r#"{{"meta":{{"api-version":"1.1"}},"name":"flask","versions":["1.0"],"files":[
             {{"filename":"flask-1.0-py3-none-any.whl","url":"flask-1.0-py3-none-any.whl","hashes":{{"sha256":"{a}"}},"size":10}},
-            {{"filename":"flask-1.0.tar.gz","url":"flask-1.0.tar.gz","hashes":{{"sha256":"{b}"}}}}]}}"#,
+            {{"filename":"flask-1.0.tar.gz","url":"flask-1.0.tar.gz","hashes":{{"sha256":"{b}"}},"size":20}}]}}"#,
         a = "a".repeat(64),
         b = "b".repeat(64),
     );
@@ -122,7 +122,7 @@ async fn test_sync_publishes_a_json_detail() {
 async fn test_sync_html_and_json_agree_on_shared_fields() {
     let sha = "a".repeat(64);
     let json = format!(
-        r#"{{"meta":{{"api-version":"1.1"}},"name":"flask","files":[
+        r#"{{"meta":{{"api-version":"1.1"}},"versions":[],"name":"flask","files":[
             {{"filename":"flask-1.0.tar.gz","url":"https://files.example/flask-1.0.tar.gz","hashes":{{"sha256":"{sha}"}},"requires-python":">=3.8","size":10}}]}}"#,
     );
     let html = format!(
@@ -307,9 +307,9 @@ async fn test_sync_incomplete_detail_preserves_the_active_generation() {
 async fn test_sync_replaces_the_active_generation_and_sweeps_the_retired_one() {
     let server = MockServer::start().await;
     let body = format!(
-        r#"{{"meta":{{"api-version":"1.1"}},"name":"flask","files":[
-            {{"filename":"flask-2.0.tar.gz","url":"flask-2.0.tar.gz","hashes":{{"sha256":"{b}"}}}},
-            {{"filename":"flask-2.0-py3-none-any.whl","url":"flask-2.0-py3-none-any.whl","hashes":{{"sha256":"{c}"}}}}]}}"#,
+        r#"{{"meta":{{"api-version":"1.1"}},"versions":[],"name":"flask","files":[
+            {{"filename":"flask-2.0.tar.gz","size":11,"url":"flask-2.0.tar.gz","hashes":{{"sha256":"{b}"}}}},
+            {{"filename":"flask-2.0-py3-none-any.whl","size":11,"url":"flask-2.0-py3-none-any.whl","hashes":{{"sha256":"{c}"}}}}]}}"#,
         b = "b".repeat(64),
         c = "c".repeat(64),
     );
@@ -354,9 +354,9 @@ async fn test_sync_replaces_the_active_generation_and_sweeps_the_retired_one() {
 async fn test_sync_skips_a_file_without_a_hash() {
     let server = MockServer::start().await;
     let body = format!(
-        r#"{{"meta":{{"api-version":"1.1"}},"name":"flask","files":[
-            {{"filename":"flask-1.0.tar.gz","url":"flask-1.0.tar.gz","hashes":{{"sha256":"{a}"}}}},
-            {{"filename":"unhashed.tar.gz","url":"unhashed.tar.gz","hashes":{{}}}}]}}"#,
+        r#"{{"meta":{{"api-version":"1.1"}},"versions":[],"name":"flask","files":[
+            {{"filename":"flask-1.0.tar.gz","size":11,"url":"flask-1.0.tar.gz","hashes":{{"sha256":"{a}"}}}},
+            {{"filename":"unhashed.tar.gz","size":11,"url":"unhashed.tar.gz","hashes":{{}}}}]}}"#,
         a = "a".repeat(64),
     );
     Mock::given(method("GET"))
@@ -389,7 +389,7 @@ async fn test_sync_registers_upstream_provenance_with_the_cached_index() {
     let filename = "flask-1.0.tar.gz";
     let provenance = format!("{}/integrity/{filename}.provenance", server.uri());
     let body = format!(
-        r#"{{"meta":{{"api-version":"1.4"}},"name":"flask","files":[{{"filename":"{filename}","url":"{filename}","hashes":{{"sha256":"{digest}"}},"provenance":"{provenance}"}}]}}"#,
+        r#"{{"meta":{{"api-version":"1.4"}},"versions":[],"name":"flask","files":[{{"filename":"{filename}","size":11,"url":"{filename}","hashes":{{"sha256":"{digest}"}},"provenance":"{provenance}"}}]}}"#,
     );
     Mock::given(method("GET"))
         .and(path("/simple/flask/"))
@@ -450,8 +450,8 @@ async fn test_sync_returns_the_upstream_status() {
 async fn test_sync_coalesces_concurrent_fetches() {
     let server = MockServer::start().await;
     let body = format!(
-        r#"{{"meta":{{"api-version":"1.1"}},"name":"flask","files":[
-            {{"filename":"flask-1.0.tar.gz","url":"flask-1.0.tar.gz","hashes":{{"sha256":"{a}"}}}}]}}"#,
+        r#"{{"meta":{{"api-version":"1.1"}},"versions":[],"name":"flask","files":[
+            {{"filename":"flask-1.0.tar.gz","size":11,"url":"flask-1.0.tar.gz","hashes":{{"sha256":"{a}"}}}}]}}"#,
         a = "a".repeat(64),
     );
     Mock::given(method("GET"))
@@ -644,12 +644,12 @@ fn test_parse_project_flushes_at_the_batch_limit() {
     let files = (0..PROJECT_FILE_BATCH)
         .map(|index| {
             format!(
-                r#"{{"filename":"pkg-{index}.tar.gz","url":"pkg-{index}.tar.gz","hashes":{{"sha256":"{index:064}"}}}}"#
+                r#"{{"filename":"pkg-{index}.tar.gz","url":"pkg-{index}.tar.gz","hashes":{{"sha256":"{index:064}"}},"size":11}}"#
             )
         })
         .collect::<Vec<_>>()
         .join(",");
-    let body = format!(r#"{{"meta":{{"api-version":"1.1"}},"name":"flask","files":[{files}]}}"#);
+    let body = format!(r#"{{"meta":{{"api-version":"1.1"}},"versions":[],"name":"flask","files":[{files}]}}"#);
 
     let (admitted, _) = parse_project(
         &mut std::io::Cursor::new(body),
@@ -704,7 +704,7 @@ async fn test_sync_folds_an_upper_case_html_digest_into_the_stored_file_row() {
 #[tokio::test]
 async fn test_sync_drops_a_file_whose_digest_cannot_content_address() {
     let body = r#"{"meta":{"api-version":"1.1"},"name":"flask","versions":["1.0"],"files":[
-        {"filename":"flask-1.0-py3-none-any.whl","url":"https://files.example/flask-1.0-py3-none-any.whl",
+        {"filename":"flask-1.0-py3-none-any.whl","size":11,"url":"https://files.example/flask-1.0-py3-none-any.whl",
          "hashes":{"sha256":"not-a-digest"}}]}"#;
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -759,6 +759,7 @@ async fn test_sync_stores_a_sidecar_claim_only_for_a_digest_that_content_address
         "versions": ["1.0"],
         "files": [{
             "filename": "flask-1.0-py3-none-any.whl",
+            "size": 11,
             "url": "https://files.example/flask-1.0-py3-none-any.whl",
             "hashes": {"sha256": sha},
             "core-metadata": {"sha256": advertised},

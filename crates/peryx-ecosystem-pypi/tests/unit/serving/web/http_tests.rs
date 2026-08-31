@@ -474,7 +474,7 @@ fn cached_app(directory: &tempfile::TempDir, meta: MetaStore) -> Arc<AppState> {
 
 fn seed_cached_project(meta: &MetaStore, digest: &str) {
     let body = format!(
-        r#"{{"meta":{{"api-version":"1.1"}},"name":"flask","versions":["1.0"],"files":[{{"filename":"flask-1.0-py3-none-any.whl","url":"https://files.example/flask.whl","hashes":{{"sha256":"{digest}"}}}}]}}"#
+        r#"{{"meta":{{"api-version":"1.1"}},"name":"flask","versions":["1.0"],"files":[{{"filename":"flask-1.0-py3-none-any.whl","size":11,"url":"https://files.example/flask.whl","hashes":{{"sha256":"{digest}"}}}}]}}"#
     );
     meta.put_index(
         "pypi/flask",

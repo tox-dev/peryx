@@ -271,7 +271,7 @@ async fn test_simple_detail_for_project_named_json_is_not_claimed_by_legacy_json
     // the shadowing bug would fetch `/simple/simple/` and 404.
     let body = format!(
         "{{\"meta\":{{\"api-version\":\"1.1\"}},\"name\":\"json\",\"versions\":[\"1.0\"],\
-         \"files\":[{{\"filename\":\"json-1.0-py3-none-any.whl\",\"url\":\"{}/files/json.whl\",\
+         \"files\":[{{\"filename\":\"json-1.0-py3-none-any.whl\",\"size\":11,\"url\":\"{}/files/json.whl\",\
          \"hashes\":{{\"sha256\":\"{}\"}}}}]}}",
         h.server.uri(),
         Digest::of(b"json-wheel").as_str(),

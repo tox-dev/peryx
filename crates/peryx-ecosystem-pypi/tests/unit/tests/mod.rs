@@ -83,7 +83,7 @@ pub fn register_publication(
                 )]))
             }),
             requires_python: None,
-            size: None,
+            size: Some(11),
             upload_time: None,
             yanked: crate::Yanked::No,
             dist_info_metadata: crate::CoreMetadata::Absent,

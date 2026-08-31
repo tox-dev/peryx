@@ -11,9 +11,9 @@ async fn test_revoked_digest_is_removed_from_each_project_representation() {
     let page = format!(
         "{{\"meta\":{{\"api-version\":\"1.1\"}},\"name\":\"flask\",\
          \"versions\":[\"1.0\",\"2.0\",\"3.0\"],\"files\":[\
-         {{\"filename\":\"flask-1.0.whl\",\"url\":\"{file_url}\",\"hashes\":{{\"sha256\":\"{revoked}\"}}}},\
-         {{\"filename\":\"flask-2.0.whl\",\"url\":\"{file_url}\",\"hashes\":{{\"sha256\":\"{clear}\"}}}},\
-         {{\"filename\":\"flask-3.0.whl\",\"url\":\"{file_url}\",\"hashes\":{{}}}}]}}",
+         {{\"filename\":\"flask-1.0.whl\",\"size\":11,\"url\":\"{file_url}\",\"hashes\":{{\"sha256\":\"{revoked}\"}}}},\
+         {{\"filename\":\"flask-2.0.whl\",\"size\":11,\"url\":\"{file_url}\",\"hashes\":{{\"sha256\":\"{clear}\"}}}},\
+         {{\"filename\":\"flask-3.0.whl\",\"size\":11,\"url\":\"{file_url}\",\"hashes\":{{}}}}]}}",
         revoked = revoked.as_str(),
         clear = clear.as_str(),
     );

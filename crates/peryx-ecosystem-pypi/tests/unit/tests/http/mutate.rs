@@ -324,9 +324,9 @@ async fn test_delete_one_upstream_version_leaves_other() {
     let digest = Digest::of(b"wheel");
     let json = format!(
         "{{\"meta\":{{\"api-version\":\"1.1\"}},\"name\":\"flask\",\"versions\":[\"1.0\",\"2.0\"],\
-         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"url\":\"http://x/a.whl\",\
+         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"size\":11,\"url\":\"http://x/a.whl\",\
          \"hashes\":{{\"sha256\":\"{digest}\"}}}},\
-         {{\"filename\":\"flask-2.0-py3-none-any.whl\",\"url\":\"http://x/b.whl\",\
+         {{\"filename\":\"flask-2.0-py3-none-any.whl\",\"size\":11,\"url\":\"http://x/b.whl\",\
          \"hashes\":{{\"sha256\":\"{digest}\"}}}}]}}",
         digest = digest.as_str()
     );

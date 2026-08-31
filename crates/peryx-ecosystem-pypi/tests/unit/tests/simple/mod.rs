@@ -44,7 +44,7 @@ pub(super) fn sample_detail() -> ProjectDetail {
                 url: "https://files.example/q\"uote".to_owned(),
                 hashes: BTreeMap::new(),
                 requires_python: None,
-                size: None,
+                size: Some(4096),
                 upload_time: None,
                 yanked: Yanked::Reason("broken build".to_owned()),
                 core_metadata: CoreMetadata::Available,

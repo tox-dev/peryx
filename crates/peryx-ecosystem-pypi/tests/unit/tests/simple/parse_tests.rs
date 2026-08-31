@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::error::Error as _;
 
 use super::{sample_detail, sample_list, sha256};
 use crate::{
@@ -196,7 +197,7 @@ fn test_parse_detail_reads_published_pep_792_example() {
 #[case::deprecated(Some("deprecated"), ProjectStatus::Deprecated)]
 #[case::absent(None, ProjectStatus::Active)]
 fn test_parse_detail_maps_project_status(#[case] marker: Option<&str>, #[case] expected: ProjectStatus) {
-    let mut page = serde_json::json!({"meta": {"api-version": "1.4"}, "name": "demo", "files": []});
+    let mut page = serde_json::json!({"meta": {"api-version": "1.4"}, "versions":[],"name": "demo", "files": []});
     if let Some(marker) = marker {
         page["project-status"] = serde_json::json!({"status": marker});
     }
@@ -209,7 +210,7 @@ fn test_parse_detail_maps_project_status(#[case] marker: Option<&str>, #[case] e
 #[test]
 fn test_parse_detail_rejects_unknown_project_status() {
     let error = crate::parse_detail(
-        br#"{"meta":{"api-version":"1.4"},"project-status":{"status":"frozen"},"name":"demo","files":[]}"#,
+        br#"{"meta":{"api-version":"1.4"},"versions":[],"project-status":{"status":"frozen"},"name":"demo","files":[]}"#,
     )
     .unwrap_err();
     assert!(matches!(&error, SimpleError::InvalidProjectStatus(status) if status == "frozen"));
@@ -219,7 +220,7 @@ fn test_parse_detail_rejects_unknown_project_status() {
 fn test_parse_detail_prefers_top_level_status_over_legacy_cache_shape() {
     let parsed = crate::parse_detail(
         br#"{"meta":{"api-version":"1.4","project-status":"archived"},
-            "project-status":{"status":"deprecated"},"name":"demo","files":[]}"#,
+            "project-status":{"status":"deprecated"},"name":"demo","versions":[],"files":[]}"#,
     )
     .unwrap();
     assert_eq!(parsed.meta.status(), ProjectStatus::Deprecated);
@@ -304,7 +305,7 @@ fn test_legacy_project_json_maps_simple_fields() {
             "packagetype": "sdist",
             "python_version": "source",
             "requires_python": null,
-            "size": null,
+            "size": 4096,
             "upload_time": null,
             "upload_time_iso_8601": null,
             "url": "https://files.example/q\"uote",
@@ -528,7 +529,7 @@ fn detail_base() -> url::Url {
 #[test]
 fn test_stream_detail_json_collects_files_and_absolutizes_urls() {
     let body = br#"{"meta":{"api-version":"1.1"},"name":"flask","versions":["1.0"],
-        "files":[{"filename":"flask-1.0.tar.gz","url":"../../files/flask-1.0.tar.gz","hashes":{"sha256":"6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"}}],
+        "files":[{"filename":"flask-1.0.tar.gz","size":11,"url":"../../files/flask-1.0.tar.gz","hashes":{"sha256":"6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"}}],
         "alternate-locations":["ignored"]}"#;
     let mut sink = Collect::default();
 
@@ -548,7 +549,7 @@ fn test_stream_detail_json_collects_files_and_absolutizes_urls() {
 #[case::deprecated(Some("deprecated"), ProjectStatus::Deprecated)]
 #[case::absent(None, ProjectStatus::Active)]
 fn test_stream_detail_json_maps_project_status(#[case] marker: Option<&str>, #[case] expected: ProjectStatus) {
-    let mut page = serde_json::json!({"meta": {"api-version": "1.4"}, "name": "demo", "files": []});
+    let mut page = serde_json::json!({"meta": {"api-version": "1.4"}, "versions":[],"name": "demo", "files": []});
     if let Some(marker) = marker {
         page["project-status"] = serde_json::json!({"status": marker, "reason": "upstream reason"});
     }
@@ -563,7 +564,7 @@ fn test_stream_detail_json_maps_project_status(#[case] marker: Option<&str>, #[c
 
 #[test]
 fn test_stream_detail_json_rejects_unknown_project_status() {
-    let body = br#"{"meta":{"api-version":"1.4"},"project-status":{"status":"frozen"},
+    let body = br#"{"meta":{"api-version":"1.4"},"versions":[],"project-status":{"status":"frozen"},
         "name":"demo","files":[]}"#;
     let mut sink = Collect::default();
     let error = crate::simple::stream_detail_json(std::io::Cursor::new(body), &detail_base(), &mut sink).unwrap_err();
@@ -689,4 +690,84 @@ fn test_parse_detail_drops_a_sidecar_digest_carrying_a_record_delimiter() {
     let parsed = crate::parse_detail(json.to_string().as_bytes()).unwrap();
 
     assert_eq!(parsed.files[0].core_metadata, CoreMetadata::Hashes(BTreeMap::new()));
+}
+
+const NO_VERSIONS: &str = "upstream Simple API 1.1 or newer omits the mandatory PEP 700 \"versions\" array";
+const NO_SIZE: &str =
+    "upstream Simple API 1.1 or newer omits the mandatory PEP 700 \"size\" of file \"demo-1.0.tar.gz\"";
+const DUPLICATE: &str = "upstream Simple API repeats version \"1.0\" in \"versions\"";
+
+#[rstest::rstest]
+#[case::no_versions(br#"{"meta":{"api-version":"1.1"},"name":"demo","files":[]}"#, NO_VERSIONS)]
+#[case::no_file_size(
+    br#"{"meta":{"api-version":"1.1"},"name":"demo","versions":["1.0"],
+        "files":[{"filename":"demo-1.0.tar.gz","url":"u"}]}"#,
+    NO_SIZE
+)]
+#[case::duplicate_version(
+    br#"{"meta":{"api-version":"1.1"},"name":"demo","versions":["1.0","1.0"],"files":[]}"#,
+    DUPLICATE
+)]
+// PEP 700 defines `versions` as a set wherever the field appears, so a repeat is rejected even
+// below the version that makes the field mandatory.
+#[case::duplicate_version_below_pep700(
+    br#"{"meta":{"api-version":"1.0"},"name":"demo","versions":["1.0","1.0"],"files":[]}"#,
+    DUPLICATE
+)]
+fn test_parse_detail_rejects_an_incomplete_pep700_page(#[case] body: &[u8], #[case] expected: &str) {
+    let error = crate::parse_detail(body).unwrap_err();
+
+    assert_eq!(error.to_string(), expected);
+    assert!(error.source().is_none());
+}
+
+#[test]
+fn test_parse_detail_accepts_a_pre_pep700_page_without_versions_or_sizes() {
+    let parsed = crate::parse_detail(
+        br#"{"meta":{"api-version":"1.0"},"name":"demo","files":[{"filename":"demo-1.0.tar.gz","url":"u"}]}"#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        (parsed.versions.as_slice(), parsed.files[0].size),
+        ([].as_slice(), None)
+    );
+}
+
+#[test]
+fn test_parse_detail_names_the_first_file_missing_a_size() {
+    let error = crate::parse_detail(
+        br#"{"meta":{"api-version":"1.1"},"name":"demo","versions":["1.0"],
+            "files":[{"filename":"demo-1.0-py3-none-any.whl","url":"u","size":4},
+                     {"filename":"demo-1.0.tar.gz","url":"u"},
+                     {"filename":"demo-2.0.tar.gz","url":"u"}]}"#,
+    )
+    .unwrap_err();
+
+    assert_eq!(error.to_string(), NO_SIZE);
+}
+
+#[rstest::rstest]
+#[case::no_versions(br#"{"meta":{"api-version":"1.1"},"name":"demo","files":[]}"#, NO_VERSIONS)]
+#[case::no_file_size(
+    br#"{"meta":{"api-version":"1.1"},"name":"demo","versions":["1.0"],
+        "files":[{"filename":"demo-1.0.tar.gz","url":"u"}]}"#,
+    NO_SIZE
+)]
+#[case::duplicate_version(
+    br#"{"meta":{"api-version":"1.1"},"name":"demo","versions":["1.0","1.0"],"files":[]}"#,
+    DUPLICATE
+)]
+// A PEP 691 document fixes no member order, so the size check must survive `meta` arriving last.
+#[case::no_file_size_before_meta(
+    br#"{"name":"demo","versions":["1.0"],"files":[{"filename":"demo-1.0.tar.gz","url":"u"}],
+        "meta":{"api-version":"1.1"}}"#,
+    NO_SIZE
+)]
+fn test_stream_detail_json_rejects_an_incomplete_pep700_page(#[case] body: &[u8], #[case] expected: &str) {
+    let mut sink = Collect::default();
+
+    let error = crate::simple::stream_detail_json(std::io::Cursor::new(body), &detail_base(), &mut sink).unwrap_err();
+
+    assert_eq!(error.to_string(), expected);
 }

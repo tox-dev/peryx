@@ -18,9 +18,9 @@ fn upstream_page() -> String {
         {"filename":"demo-1.0-py3-none-any.whl","url":"https://up/demo-1.0-py3-none-any.whl",
          "hashes":{"sha256":"aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11"},"size":10,
          "core-metadata":{"sha256":"bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22"},"yanked":false},
-        {"filename":"demo-2.0.tar.gz","url":"https://up/demo-2.0.tar.gz","hashes":{},"yanked":false},
+        {"filename":"demo-2.0.tar.gz","url":"https://up/demo-2.0.tar.gz","hashes":{},"size":20,"yanked":false},
         {"filename":"demo-2.0-py3-none-any.whl","url":"https://up/demo-2.0-py3-none-any.whl",
-         "hashes":{"sha256":"cc33cc33cc33cc33cc33cc33cc33cc33cc33cc33cc33cc33cc33cc33cc33cc33"},"yanked":false}
+         "hashes":{"sha256":"cc33cc33cc33cc33cc33cc33cc33cc33cc33cc33cc33cc33cc33cc33cc33cc33"},"size":30,"yanked":false}
     ]}"#
     .to_owned()
 }
@@ -102,8 +102,8 @@ fn test_rewrites_urls_and_registers_sources() {
 
 #[test]
 fn test_rewrites_cached_generated_metadata() {
-    let page = r#"{"meta":{"api-version":"1.1"},"name":"demo","files":[{
-        "filename":"demo-1.0-py3-none-any.whl","url":"https://up/demo-1.0-py3-none-any.whl",
+    let page = r#"{"meta":{"api-version":"1.1"},"versions":[],"name":"demo","files":[{
+        "filename":"demo-1.0-py3-none-any.whl","size":11,"url":"https://up/demo-1.0-py3-none-any.whl",
         "hashes":{"sha256":"aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11"},"yanked":false
     }]}"#;
     let mut context = plain_context();
@@ -127,8 +127,8 @@ fn test_rewrites_cached_generated_metadata() {
 
 #[test]
 fn test_rewrites_egg_urls_without_advertising_metadata() {
-    let page = r#"{"meta":{"api-version":"1.1"},"name":"demo","files":[{
-        "filename":"demo-1.0.egg","url":"https://up/demo-1.0.egg",
+    let page = r#"{"meta":{"api-version":"1.1"},"versions":[],"name":"demo","files":[{
+        "filename":"demo-1.0.egg","size":11,"url":"https://up/demo-1.0.egg",
         "hashes":{"sha256":"aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11"},"core-metadata":{"sha256":"bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22bb22"},"yanked":false
     }]}"#;
     let (out, registrations) = transform(page, plain_context(), 7);
@@ -180,7 +180,11 @@ fn test_policy_filters_local_files() {
         &BTreeMap::new(),
     );
 
-    let (out, registrations) = transform(r#"{"meta":{"api-version":"1.1"},"name":"demo","files":[]}"#, context, 8);
+    let (out, registrations) = transform(
+        r#"{"meta":{"api-version":"1.1"},"versions":[],"name":"demo","files":[]}"#,
+        context,
+        8,
+    );
 
     let detail = parse_detail(out.as_bytes()).unwrap();
     assert!(detail.files.is_empty());
@@ -270,7 +274,7 @@ fn test_quarantined_project_streams_without_files() {
     let page = r#"{"meta":{"api-version":"1.4"},
         "project-status":{"status":"quarantined","reason":"malware"},
         "name":"demo","versions":["1.0"],"files":[
-        {"filename":"demo-1.0-py3-none-any.whl","url":"https://up/demo-1.0-py3-none-any.whl",
+        {"filename":"demo-1.0-py3-none-any.whl","size":11,"url":"https://up/demo-1.0-py3-none-any.whl",
          "hashes":{"sha256":"aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11"}}
     ]}"#;
     let (out, registrations) = transform(page, plain_context(), 5);
@@ -306,7 +310,7 @@ fn test_seeded_legacy_quarantine_withholds_files_when_meta_follows_files() {
 }
 
 #[rstest::rstest]
-#[case::missing_status(br#"{"meta":{"api-version":"1.4"},"name":"demo","files":["#)]
+#[case::missing_status(br#"{"meta":{"api-version":"1.4"},"versions":[],"name":"demo","files":["#)]
 #[case::missing_meta(br#"{"project-status":{},"name":"demo","files":["#)]
 fn test_files_before_headers_ends_preflight_for_buffering(#[case] page: &[u8]) {
     let mut transformer = PageTransformer::new(plain_context());
@@ -319,7 +323,7 @@ fn test_files_before_headers_ends_preflight_for_buffering(#[case] page: &[u8]) {
 fn test_status_before_files_keeps_streaming() {
     let mut transformer = PageTransformer::new(plain_context());
     transformer
-        .push(br#"{"meta":{"api-version":"1.4"},"project-status":{},"name":"demo","files":["#)
+        .push(br#"{"meta":{"api-version":"1.4"},"versions":[],"project-status":{},"name":"demo","files":["#)
         .unwrap();
     assert!(transformer.header_preflight_done());
     assert!(!transformer.files_precede_headers());
@@ -370,7 +374,7 @@ fn test_escaped_files_key_withholds_quarantined_files() {
 fn test_escaped_keys_dispatch_like_plain_spellings() {
     let page = r#"{"m\u0065ta":{"api-version":"1.1"},"\u006eame":"demo",
         "v\u0065rsions":["1.0"],"fi\u006ces":[
-        {"filename":"demo-1.0-py3-none-any.whl","url":"https://up/demo-1.0-py3-none-any.whl",
+        {"filename":"demo-1.0-py3-none-any.whl","size":11,"url":"https://up/demo-1.0-py3-none-any.whl",
          "hashes":{"sha256":"aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11"},"yanked":false}
     ]}"#;
     for chunk in [1, 6, page.len()] {
@@ -410,8 +414,8 @@ fn test_chunk_boundaries_preserve_corpus_output_and_summary() {
             "démo",
         ),
         (
-            r#"{"meta":{"api-version":"1.4","extra":{"nested":["}\"["]}},"name":"demo","files":[]}"#,
-            r#"{"meta":{"api-version":"1.4"},"name":"demo","files":[]}"#,
+            r#"{"meta":{"api-version":"1.4","extra":{"nested":["}\"["]}},"name":"demo","versions":[],"files":[]}"#,
+            r#"{"meta":{"api-version":"1.4"},"name":"demo","versions":[],"files":[]}"#,
             "demo",
         ),
         (
@@ -444,13 +448,16 @@ fn test_push_into_appends_without_replacing_existing_bytes() {
     let mut out = b"prefix:".to_vec();
 
     transformer
-        .push_into(br#"{"meta":{"api-version":"1.4"},"name":"demo","files":[]}"#, &mut out)
+        .push_into(
+            br#"{"meta":{"api-version":"1.4"},"versions":[],"name":"demo","files":[]}"#,
+            &mut out,
+        )
         .unwrap();
     transformer.finish().unwrap();
 
     assert_eq!(
         out,
-        br#"prefix:{"meta":{"api-version":"1.4"},"name":"demo","files":[]}"#
+        br#"prefix:{"meta":{"api-version":"1.4"},"versions":[],"name":"demo","files":[]}"#
     );
 }
 
@@ -615,7 +622,7 @@ fn test_streaming_drops_an_insecure_provenance_url() {
 #[test]
 fn test_project_status_streaming_handles_escaped_and_unknown_values() {
     let page = r#"{"meta":{"api-version":"1.4"},
-        "project-status":{"status":"archived","reason":"read \"only\"","extra":[{"ignored":"yes"}]},
+        "versions":[],"project-status":{"status":"archived","reason":"read \"only\"","extra":[{"ignored":"yes"}]},
         "name":"demo","files":[]}"#;
     let (out, _) = transform(page, plain_context(), 4096);
     let detail = parse_detail(out.as_bytes()).unwrap();
@@ -632,7 +639,7 @@ fn test_project_status_streaming_handles_escaped_and_unknown_values() {
 fn test_streaming_rejects_unknown_project_status() {
     let mut transformer = PageTransformer::new(plain_context());
     let result = transformer
-        .push(br#"{"meta":{"api-version":"1.4"},"project-status":{"status":"frozen"},"name":"demo","files":[]}"#);
+        .push(br#"{"meta":{"api-version":"1.4"},"versions":[],"project-status":{"status":"frozen"},"name":"demo","files":[]}"#);
     assert!(matches!(result, Err(crate::stream::TransformError::Simple(_))));
 }
 
@@ -1089,7 +1096,7 @@ fn test_grammar_guard_accepts_every_json_scalar_shape() {
     // by an unrecognized member the structural lexer copies through untouched.
     let page = r#"{"meta":{"api-version":"1.4"},"name":"demo","versions":["1.0"],
         "extra":[null,true,false,0,-0,0e1,12,3.14,-1.5e10,1E+3,-0.0e-2,"a\t\f\u000cbé","",{}],
-        "files":[{"filename":"demo-1.0-py3-none-any.whl","url":"https://up/demo.whl",
+        "files":[{"filename":"demo-1.0-py3-none-any.whl","size":11,"url":"https://up/demo.whl",
          "hashes":{"sha256":"aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11aa11"},"gpg-sig":true,"yanked":false}]}"#;
     for chunk in [1, 5, page.len()] {
         assert!(stream_result(page, chunk).is_ok(), "chunk {chunk}");
@@ -1153,4 +1160,33 @@ fn test_rejects_a_page_with_too_many_files() {
         transformer.push(page.as_bytes()).unwrap_err(),
         TransformError::TooLarge
     ));
+}
+
+#[rstest]
+#[case::no_versions(r#"{"meta":{"api-version":"1.1"},"name":"demo","files":[]}"#)]
+#[case::no_file_size(
+    r#"{"meta":{"api-version":"1.1"},"name":"demo","versions":["1.0"],
+        "files":[{"filename":"demo-1.0.tar.gz","url":"https://up/demo-1.0.tar.gz"}]}"#
+)]
+#[case::duplicate_version(r#"{"meta":{"api-version":"1.1"},"name":"demo","versions":["1.0","1.0"],"files":[]}"#)]
+fn test_streaming_rejects_an_incomplete_pep700_page(#[case] page: &str) {
+    let mut transformer = PageTransformer::new(plain_context());
+    let mut out = Vec::new();
+
+    let outcome = transformer
+        .push_into(page.as_bytes(), &mut out)
+        .and_then(|()| transformer.finish().map(|_| ()));
+
+    assert!(matches!(outcome, Err(TransformError::Simple(_))), "{outcome:?}");
+}
+
+#[test]
+fn test_streaming_keeps_a_size_less_file_on_a_pre_pep700_page() {
+    let page = r#"{"meta":{"api-version":"1.0"},"name":"demo","files":[
+        {"filename":"demo-1.0.tar.gz","url":"https://up/demo-1.0.tar.gz","hashes":{"sha256":"aa11"}}]}"#;
+
+    let (out, _) = transform(page, plain_context(), 9);
+
+    let detail = parse_detail(out.as_bytes()).unwrap();
+    assert_eq!((detail.files.len(), detail.files[0].size), (1, None));
 }

@@ -451,3 +451,27 @@ fn test_metadata_attr_drops_a_sibling_digest_that_cannot_content_address() {
 
     assert_eq!(file.core_metadata, CoreMetadata::Hashes(BTreeMap::new()));
 }
+
+#[rstest::rstest]
+#[case::pep700("1.4")]
+#[case::base("1.0")]
+#[case::absent("")]
+fn test_parse_detail_html_never_promises_the_pep700_fields(#[case] declared: &str) {
+    let version = if declared.is_empty() {
+        String::new()
+    } else {
+        format!(r#"<meta name="pypi:repository-version" content="{declared}">"#)
+    };
+    let html = format!(r#"{version}<a href="pkg-1.0.tar.gz">pkg-1.0.tar.gz</a>"#);
+
+    let parsed = parse_detail_html("pkg", &html, &base()).unwrap();
+
+    assert_eq!(
+        parsed.meta,
+        Meta {
+            api_version: crate::API_VERSION_BASE,
+            ..Meta::default()
+        }
+    );
+    assert!(parsed.versions.is_empty());
+}

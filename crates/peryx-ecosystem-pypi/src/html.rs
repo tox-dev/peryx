@@ -8,7 +8,8 @@ use tl::{HTMLTag, ParserOptions};
 use url::Url;
 
 use super::simple::{
-    CoreMetadata, File, Meta, ParsedDetail, ProjectList, ProjectListEntry, Provenance, SimpleError, Yanked,
+    API_VERSION_BASE, CoreMetadata, File, Meta, ParsedDetail, ProjectList, ProjectListEntry, Provenance, SimpleError,
+    Yanked,
 };
 
 /// # Errors
@@ -26,7 +27,7 @@ pub fn parse_detail_html(project: &str, html: &str, base: &Url) -> Result<Parsed
         }
     }
     Ok(ParsedDetail {
-        meta: meta.build()?,
+        meta: meta.build_detail()?,
         name: project.to_owned(),
         versions: Vec::new(),
         files,
@@ -89,6 +90,21 @@ impl UpstreamMeta {
             self.project_status,
             self.project_status_reason,
         )
+    }
+
+    /// A detail page's metadata, held at the pre-PEP 700 base whatever version the page declared.
+    ///
+    /// PEP 700 changes the JSON serialization alone: the HTML form defines no `versions` array and
+    /// no per-file `size`, so an HTML page promises neither however high its `pypi:repository-version`
+    /// reads. peryx re-serves that page as JSON, where the promise would become peryx's own.
+    ///
+    /// # Errors
+    /// Returns an error when the page advertises an unsupported Simple API major version.
+    fn build_detail(self) -> Result<Meta, SimpleError> {
+        Ok(Meta {
+            api_version: API_VERSION_BASE,
+            ..self.build()?
+        })
     }
 }
 

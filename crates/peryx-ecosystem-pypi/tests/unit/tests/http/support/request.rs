@@ -87,7 +87,7 @@ pub fn detail_json(digest: &str, file_url: &str) -> String {
     let metadata = Digest::of(b"flask metadata");
     format!(
         "{{\"meta\":{{\"api-version\":\"1.1\"}},\"name\":\"flask\",\"versions\":[\"1.0\"],\
-         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"url\":\"{file_url}\",\
+         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"size\":11,\"url\":\"{file_url}\",\
          \"hashes\":{{\"sha256\":\"{digest}\"}},\"core-metadata\":{{\"sha256\":\"{metadata}\"}}}}]}}",
         metadata = metadata.as_str(),
     )
@@ -118,7 +118,7 @@ pub async fn mount_status_detail(
         "{{\"meta\":{{\"api-version\":\"1.4\"}},\
          \"project-status\":{{\"status\":\"{status}\",\"reason\":\"{reason}\"}},\
          \"name\":\"{project}\",\"versions\":[\"1.0\"],\
-         \"files\":[{{\"filename\":\"{project}-1.0-py3-none-any.whl\",\"url\":\"{file_url}\",\
+         \"files\":[{{\"filename\":\"{project}-1.0-py3-none-any.whl\",\"size\":11,\"url\":\"{file_url}\",\
          \"hashes\":{{\"sha256\":\"{digest}\"}}}}]}}"
     );
     Mock::given(method("GET"))

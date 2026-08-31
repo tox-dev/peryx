@@ -118,11 +118,11 @@ async fn test_mirror_conformance_preserves_simple_fields_and_serves_eggs() {
         "{{\"meta\":{{\"api-version\":\"1.4\"}},\
          \"project-status\":{{\"status\":\"archived\",\"reason\":\"read only\"}},\
          \"name\":\"flask\",\"versions\":[\"1.0\"],\
-         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"url\":\"{wheel_url}\",\
+         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"size\":11,\"url\":\"{wheel_url}\",\
          \"hashes\":{{\"sha256\":\"{}\"}},\"core-metadata\":{{\"sha256\":\"{}\"}},\
          \"dist-info-metadata\":{{\"sha256\":\"{}\"}},\"yanked\":\"bad build\",\
          \"provenance\":\"https://example.test/flask.provenance\"}},\
-         {{\"filename\":\"flask-1.0-py3-none-any.egg\",\"url\":\"{egg_url}\",\
+         {{\"filename\":\"flask-1.0-py3-none-any.egg\",\"size\":11,\"url\":\"{egg_url}\",\
          \"hashes\":{{\"sha256\":\"{}\"}}}}]}}",
         wheel_digest.as_str(),
         metadata_digest.as_str(),

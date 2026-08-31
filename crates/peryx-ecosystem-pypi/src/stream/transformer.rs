@@ -10,7 +10,7 @@ use super::validator::JsonValidator;
 use super::{PageContext, PageSummary, Registration, TransformError, is_json_whitespace};
 use crate::policy::{PypiPolicy, RemoteMetadataMode};
 use crate::simple::{ProjectStatusObject, absolutize, parse_project_status};
-use crate::{CoreMetadata, File, parse_meta};
+use crate::{CoreMetadata, File, SimpleError, parse_meta};
 
 /// The most raw bytes peryx will read from one upstream Simple page before refusing it. The biggest
 /// real project pages (botocore and friends) sit in the low single-digit MiB; a page an order of
@@ -82,6 +82,15 @@ struct DocumentState {
     closed: bool,
     trailing: bool,
     emitted_in_array: bool,
+    pep700: Pep700State,
+}
+
+/// PEP 700's promise as the page streams: whether `meta` declared a version that owes `versions` and
+/// a per-file `size`, and whether the array has arrived. PEP 691 fixes no member order, so either
+/// half may be learned first.
+struct Pep700State {
+    promised: bool,
+    versions_seen: bool,
 }
 
 /// A chunk-at-a-time rewriter for one upstream page.
@@ -140,6 +149,10 @@ impl PageTransformer {
                 closed: false,
                 trailing: false,
                 emitted_in_array: false,
+                pep700: Pep700State {
+                    promised: false,
+                    versions_seen: false,
+                },
             },
             capture: Vec::new(),
             array_depth: 0,
@@ -206,8 +219,10 @@ impl PageTransformer {
 
     /// # Errors
     /// Returns [`TransformError::Truncated`] when the document ended inside a token,
-    /// [`TransformError::Trailing`] when bytes followed the document root, or
-    /// [`TransformError::Malformed`] when the bytes were not a single well-formed JSON object.
+    /// [`TransformError::Trailing`] when bytes followed the document root,
+    /// [`TransformError::Malformed`] when the bytes were not a single well-formed JSON object, or
+    /// [`TransformError::Simple`] when a page declaring Simple API 1.1 or newer carried no
+    /// `versions` array.
     pub fn finish(self) -> Result<PageSummary, TransformError> {
         if self.depth != 0 || self.string.active || self.mode != Mode::Passthrough {
             return Err(TransformError::Truncated);
@@ -216,6 +231,9 @@ impl PageTransformer {
             return Err(TransformError::Trailing);
         }
         self.validator.result()?;
+        if self.document.pep700.promised && !self.document.pep700.versions_seen {
+            return Err(SimpleError::MissingVersions.into());
+        }
         Ok(PageSummary {
             registrations: self.registrations,
             name: String::from_utf8(self.name).ok().filter(|name| !name.is_empty()),
@@ -621,6 +639,11 @@ impl PageTransformer {
         }
         let mut file: File = serde_json::from_slice(&self.capture)?;
         file.provenance.retain_secure_url();
+        // Checked before the skip and policy filters: the page's conformance is a property of what
+        // the upstream sent, not of the subset peryx would re-serve.
+        if self.document.pep700.promised && file.size.is_none() {
+            return Err(SimpleError::MissingFileSize(file.filename).into());
+        }
         if self.project_is_quarantined() {
             return Ok(());
         }
@@ -714,6 +737,7 @@ impl PageTransformer {
         let meta = parse_meta(&self.capture)?;
         write_json(out, &meta);
         self.document.headers.meta_seen = true;
+        self.document.pep700.promised = meta.promises_pep700();
         Ok(())
     }
 
@@ -747,14 +771,17 @@ impl PageTransformer {
         self.document.headers.status = StatusState::Emitted;
     }
 
-    fn emit_versions(&self, out: &mut Vec<u8>) -> Result<(), TransformError> {
+    fn emit_versions(&mut self, out: &mut Vec<u8>) -> Result<(), TransformError> {
         let upstream: Vec<String> = serde_json::from_slice(&self.capture)?;
-        let merged: BTreeSet<&str> = upstream
-            .iter()
-            .chain(&self.context.local_versions)
-            .map(String::as_str)
-            .collect();
+        let mut merged: BTreeSet<&str> = BTreeSet::new();
+        // PEP 700 defines `versions` as a set, so an upstream repeat is a broken page rather than
+        // something to silently collapse into the merge with peryx's own versions.
+        if let Some(duplicate) = upstream.iter().find(|version| !merged.insert(version)) {
+            return Err(SimpleError::DuplicateVersion(duplicate.clone()).into());
+        }
+        merged.extend(self.context.local_versions.iter().map(String::as_str));
         write_json(out, &merged);
+        self.document.pep700.versions_seen = true;
         Ok(())
     }
 

@@ -152,7 +152,7 @@ async fn test_router_paths_feed_stats_and_prometheus_metrics() {
     let filename = "flask-1.0-py3-none-any.whl";
     let page = format!(
         "{{\"meta\":{{\"api-version\":\"1.1\"}},\"name\":\"flask\",\"versions\":[\"1.0\"],\
-         \"files\":[{{\"filename\":\"{filename}\",\"url\":\"{}/files/flask.whl\",\
+         \"files\":[{{\"filename\":\"{filename}\",\"size\":11,\"url\":\"{}/files/flask.whl\",\
          \"hashes\":{{\"sha256\":\"{}\"}},\"core-metadata\":{{\"sha256\":\"{}\"}}}}]}}",
         harness.server.uri(),
         wheel_digest.as_str(),

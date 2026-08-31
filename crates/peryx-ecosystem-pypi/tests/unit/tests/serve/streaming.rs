@@ -7,7 +7,7 @@ use rstest::rstest;
 fn padded_files_without_status_page(file_url: &str, digest: &str, len: usize) -> String {
     let head = format!(
         "{{\"name\":\"flask\",\"versions\":[\"1.0\"],\
-         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"url\":\"{file_url}\",\
+         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"size\":11,\"url\":\"{file_url}\",\
          \"hashes\":{{\"sha256\":\"{digest}\"}}}}]"
     );
     let tail = r#","meta":{"api-version":"1.4"}}"#;
@@ -21,7 +21,7 @@ fn files_before_status_page(file_url: &str, digest: &str, status: Option<&str>) 
     });
     format!(
         "{{\"name\":\"flask\",\"versions\":[\"1.0\"],\
-         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"url\":\"{file_url}\",\
+         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"size\":11,\"url\":\"{file_url}\",\
          \"hashes\":{{\"sha256\":\"{digest}\"}}}}],\"meta\":{{\"api-version\":\"1.4\"}}{project_status}}}"
     )
 }
@@ -39,7 +39,7 @@ fn versions_outrun_preflight_page(file_url: &str, digest: &str) -> String {
     }
     format!(
         "{{\"name\":\"flask\",\"versions\":[{versions}],\
-         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"url\":\"{file_url}\",\
+         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"size\":11,\"url\":\"{file_url}\",\
          \"hashes\":{{\"sha256\":\"{digest}\"}}}}],\
          \"meta\":{{\"api-version\":\"1.4\"}},\
          \"project-status\":{{\"status\":\"quarantined\"}}}}"
@@ -87,7 +87,7 @@ async fn test_json_status_preflight_streams_remainder() {
     let page = format!(
         "{{\"meta\":{{\"api-version\":\"1.4\"}},\"project-status\":{{}},\
          \"name\":\"flask\",\"versions\":[\"1.0\"],\
-         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"url\":\"{file_url}\",\
+         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"size\":11,\"url\":\"{file_url}\",\
          \"hashes\":{{\"sha256\":\"{digest}\"}}}}]}}",
         digest = digest.as_str(),
     );
@@ -105,7 +105,7 @@ async fn test_json_status_preflight_streams_remainder() {
         .concat();
     let expected = concat!(
             r#"{"meta":{"api-version":"1.4"},"project-status":{},"name":"flask","versions":["1.0"],"files":[{"filename":"flask-1.0-py3-none-any.whl","url":"/pypi/files/"#,
-            r#"DIGEST/flask-1.0-py3-none-any.whl","hashes":{"sha256":"DIGEST"},"yanked":false,"core-metadata":false}]}"#,
+            r#"DIGEST/flask-1.0-py3-none-any.whl","hashes":{"sha256":"DIGEST"},"size":11,"yanked":false,"core-metadata":false}]}"#,
         )
         .replace("DIGEST", digest.as_str());
     assert_eq!(body, expected.as_bytes());
@@ -154,7 +154,7 @@ async fn test_live_stream_records_the_routed_upstream() {
 #[tokio::test]
 async fn test_json_status_preflight_streams_without_remainder() {
     let upstream = split_project_upstream(
-        br#"{"meta":{"api-version":"1.4"},"project-status":{}"#.to_vec(),
+        br#"{"meta":{"api-version":"1.4"},"versions":[],"project-status":{}"#.to_vec(),
         br"}".to_vec(),
     );
     let dir = tempfile::tempdir().unwrap();
@@ -184,7 +184,10 @@ async fn test_json_status_preflight_streams_without_remainder() {
             body.extend_from_slice(&chunk);
             body
         });
-    assert_eq!(body, br#"{"meta":{"api-version":"1.4"},"project-status":{}}"#);
+    assert_eq!(
+        body,
+        br#"{"meta":{"api-version":"1.4"},"versions":[],"project-status":{}}"#
+    );
 }
 #[tokio::test]
 async fn test_materialize_detail_fetches_and_reuses_cached_page() {
@@ -219,7 +222,7 @@ async fn test_materialize_detail_returns_stream_errors() {
     let h = harness().await;
     mount_json_page(
         &h.server,
-        r#"{"meta":{"api-version":"1.4"},"project-status":{},"name":"flask","files":[{"bad": }]}"#,
+        r#"{"meta":{"api-version":"1.4"},"versions":[],"project-status":{},"name":"flask","files":[{"bad": }]}"#,
     )
     .await;
 
@@ -234,7 +237,7 @@ async fn test_live_stream_surfaces_malformed_file_objects() {
     let h = harness().await;
     mount_json_page(
         &h.server,
-        r#"{"meta":{"api-version":"1.4"},"project-status":{},"name":"flask","files":[{"bad": }]}"#,
+        r#"{"meta":{"api-version":"1.4"},"versions":[],"project-status":{},"name":"flask","files":[{"bad": }]}"#,
     )
     .await;
     let outcome = cache::stream_detail(h.state.serving.clone(), 0, "flask".to_owned())
@@ -248,7 +251,7 @@ async fn test_live_stream_surfaces_truncated_pages() {
     let h = harness().await;
     mount_json_page(
         &h.server,
-        r#"{"meta":{"api-version":"1.4"},"project-status":{},"name":"flask","files":["#,
+        r#"{"meta":{"api-version":"1.4"},"versions":[],"project-status":{},"name":"flask","files":["#,
     )
     .await;
     let outcome = cache::stream_detail(h.state.serving.clone(), 0, "flask".to_owned())
@@ -262,8 +265,12 @@ async fn test_live_stream_surfaces_truncated_pages() {
 #[case(
     r#"{"meta":{"api-version":"1.4"},"project-status":{},"name":"flask","versions":["1.0"],"files":[],"unknown":,}"#
 )]
-#[case("{\"meta\":{\"api-version\":\"1.4\"},\"project-status\":{},\"name\":\"flask\"\u{000b},\"files\":[]}")]
-#[case("{\"meta\":{\"api-version\":\"1.4\"},\"project-status\":{},\"name\":\"flask\"\u{000c},\"files\":[]}")]
+#[case(
+    "{\"meta\":{\"api-version\":\"1.4\"},\"versions\":[],\"project-status\":{},\"name\":\"flask\"\u{000b},\"files\":[]}"
+)]
+#[case(
+    "{\"meta\":{\"api-version\":\"1.4\"},\"versions\":[],\"project-status\":{},\"name\":\"flask\"\u{000c},\"files\":[]}"
+)]
 #[tokio::test]
 async fn test_live_stream_invalid_document_errors_and_never_persists(#[case] page: &str) {
     let h = harness().await;
@@ -293,7 +300,7 @@ async fn test_live_stream_error_releases_the_inflight_entry() {
     let h = harness().await;
     mount_json_page(
         &h.server,
-        r#"{"meta":{"api-version":"1.4"},"project-status":{},"name":"flask","files":[{"bad": }]}"#,
+        r#"{"meta":{"api-version":"1.4"},"versions":[],"project-status":{},"name":"flask","files":[{"bad": }]}"#,
     )
     .await;
     let outcome = cache::stream_detail(h.state.serving.clone(), 0, "flask".to_owned())
@@ -310,7 +317,7 @@ async fn test_live_stream_error_releases_the_inflight_entry() {
 #[tokio::test]
 async fn test_client_disconnect_releases_the_inflight_entry() {
     let upstream = split_project_upstream(
-        br#"{"meta":{"api-version":"1.4"},"project-status":{},"name":"flask","files":["#.to_vec(),
+        br#"{"meta":{"api-version":"1.4"},"versions":[],"project-status":{},"name":"flask","files":["#.to_vec(),
         br"]}".to_vec(),
     );
     let dir = tempfile::tempdir().unwrap();
@@ -344,7 +351,7 @@ async fn test_client_disconnect_releases_the_inflight_entry() {
 async fn test_live_stream_forwards_a_broken_upstream_transfer() {
     let server = response_server(
         b"HTTP/1.1 200 OK\r\ncontent-type: application/vnd.pypi.simple.v1+json\r\n\
-          content-length: 500\r\n\r\n{\"meta\":{\"api-version\":\"1.4\"},\"project-status\":{},\"name\":\"flask\",\"files\":[",
+          content-length: 500\r\n\r\n{\"meta\":{\"api-version\":\"1.4\"},\"versions\":[],\"project-status\":{},\"name\":\"flask\",\"files\":[",
     );
     let dir = tempfile::tempdir().unwrap();
     let state = custom_state(&dir, &server.upstream, |client| {

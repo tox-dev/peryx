@@ -108,7 +108,7 @@ async fn test_buffered_fetch_registers_metadata_siblings() {
     let file_url = format!("{}/files/flask.whl", h.server.uri());
     let page = format!(
         "{{\"meta\":{{\"api-version\":\"1.1\"}},\"name\":\"flask\",\"versions\":[\"1.0\"],\
-         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"url\":\"{file_url}\",\
+         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"size\":11,\"url\":\"{file_url}\",\
          \"hashes\":{{\"sha256\":\"{digest}\"}},\"core-metadata\":{{\"sha256\":\"{meta}\"}}}}]}}",
         digest = digest.as_str(),
         meta = meta_digest.as_str(),
@@ -137,7 +137,7 @@ async fn test_buffered_fetch_registers_metadata_siblings() {
 fn detail_with_metadata(wheel: &str, url: &str, meta: &str) -> String {
     format!(
         "{{\"meta\":{{\"api-version\":\"1.1\"}},\"name\":\"flask\",\"versions\":[\"1.0\"],\
-         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"url\":\"{url}\",\
+         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"size\":11,\"url\":\"{url}\",\
          \"hashes\":{{\"sha256\":\"{wheel}\"}},\"core-metadata\":{{\"sha256\":\"{meta}\"}}}}]}}"
     )
 }
@@ -157,7 +157,7 @@ async fn test_artifact_path_rejects_a_digest_that_is_not_a_project_member() {
     let listed = Digest::of(b"listed wheel");
     let page = format!(
         "{{\"meta\":{{\"api-version\":\"1.1\"}},\"name\":\"flask\",\"versions\":[\"1.0\"],\
-         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"url\":\"{}/files/flask.whl\",\
+         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"size\":11,\"url\":\"{}/files/flask.whl\",\
          \"hashes\":{{\"sha256\":\"{}\"}}}}]}}",
         h.server.uri(),
         listed.as_str(),
@@ -184,7 +184,7 @@ async fn test_artifact_path_reports_an_unfetchable_member_file() {
     let digest = Digest::of(b"never stored");
     let page = format!(
         "{{\"meta\":{{\"api-version\":\"1.1\"}},\"name\":\"flask\",\"versions\":[\"1.0\"],\
-         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"url\":\"{}/files/flask.whl\",\
+         \"files\":[{{\"filename\":\"flask-1.0-py3-none-any.whl\",\"size\":11,\"url\":\"{}/files/flask.whl\",\
          \"hashes\":{{\"sha256\":\"{}\"}}}}]}}",
         h.server.uri(),
         digest.as_str(),
@@ -252,6 +252,7 @@ fn detail_with_yanks(versions: &[&str], files: &[(&str, bool)]) -> String {
             serde_json::json!({
                 "filename": format!("flask-{version}-py3-none-any.whl"),
                 "url": format!("/files/flask-{version}-py3-none-any.whl"),
+                "size": 11,
                 "hashes": {"sha256": Digest::of(version.as_bytes()).as_str()},
                 "yanked": yanked,
             })
@@ -307,6 +308,7 @@ fn detail_with_release_metadata(server: &MockServer, versions: &[&str], files: &
             let mut file = serde_json::json!({
                 "filename": wheel,
                 "url": format!("{}/files/{wheel}", server.uri()),
+                "size": 11,
                 "hashes": {"sha256": Digest::of(wheel.as_bytes()).as_str()},
                 "yanked": yanked,
             });
@@ -436,6 +438,7 @@ async fn test_served_page_drops_a_wheel_digest_that_is_not_a_content_address() {
         serde_json::from_str::<serde_json::Value>(&body).unwrap()["files"],
         serde_json::json!([{
             "filename": "flask-1.0-py3-none-any.whl",
+            "size": 11,
             "url": file_url,
             "hashes": {},
             "yanked": false,
@@ -528,12 +531,12 @@ async fn test_project_page_reads_cached_and_remote_only_placements() {
         "files": [
             {
                 "filename": "flask-1.0-py3-none-any.whl",
-                "url": "https://files.example/flask-1.0-py3-none-any.whl",
+                "size":11,"url": "https://files.example/flask-1.0-py3-none-any.whl",
                 "hashes": {"sha256": cached.as_str()},
             },
             {
                 "filename": "flask-2.0-py3-none-any.whl",
-                "url": "https://files.example/flask-2.0-py3-none-any.whl",
+                "size":11,"url": "https://files.example/flask-2.0-py3-none-any.whl",
                 "hashes": {"sha256": remote.as_str()},
             },
         ],
@@ -579,9 +582,9 @@ async fn test_project_page_maps_each_placement_source_and_availability() {
         "name": "flask",
         "versions": ["1.0"],
         "files": [
-            {"filename": "flask-1.0.tar.gz", "url": "https://files.example/flask-1.0.tar.gz", "hashes": {"sha256": generated.as_str()}},
-            {"filename": "flask-1.0-py3-none-any.whl", "url": "https://files.example/flask-1.0-py3-none-any.whl", "hashes": {"sha256": remote.as_str()}},
-            {"filename": "flask-1.0-py2-none-any.whl", "url": "https://files.example/flask-1.0-py2-none-any.whl", "hashes": {"sha256": orphan.as_str()}},
+            {"filename": "flask-1.0.tar.gz", "size":11,"url": "https://files.example/flask-1.0.tar.gz", "hashes": {"sha256": generated.as_str()}},
+            {"filename": "flask-1.0-py3-none-any.whl", "size":11,"url": "https://files.example/flask-1.0-py3-none-any.whl", "hashes": {"sha256": remote.as_str()}},
+            {"filename": "flask-1.0-py2-none-any.whl", "size":11,"url": "https://files.example/flask-1.0-py2-none-any.whl", "hashes": {"sha256": orphan.as_str()}},
         ],
     }));
     mount_json_page(&h.server, &page).await;
