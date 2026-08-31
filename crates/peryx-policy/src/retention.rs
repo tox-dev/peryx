@@ -129,45 +129,37 @@ impl RetentionPolicy {
         self.keep.iter().chain(&self.expire)
     }
 
-    /// Uses rank, artifact, and digest order for deterministic plans.
+    /// Classifies one resource in rank, artifact, and digest order for deterministic plans.
+    ///
+    /// The returned plan holds compact state, not decisions: expanding every decision up front costs
+    /// the product of removals and surviving groups, because each removal repeats the whole surviving
+    /// set. [`RetentionPlan::decisions`] expands one decision at a time instead.
     #[must_use]
-    pub fn plan_resource(&self, now: Option<i64>, mut candidates: Vec<RetentionCandidate>) -> Vec<RetentionDecision> {
+    pub fn plan_resource(&self, now: Option<i64>, mut candidates: Vec<RetentionCandidate>) -> RetentionPlan {
         candidates.sort_by(|left, right| {
             (left.rank, &left.artifact, &left.digest).cmp(&(right.rank, &right.artifact, &right.digest))
         });
-        let mut decisions: Vec<RetentionDecision> = candidates
-            .into_iter()
-            .map(|candidate| {
-                let (outcome, rule) = self.classify(&candidate, now);
-                RetentionDecision {
-                    resource: candidate.resource,
-                    group: candidate.group,
-                    artifact: candidate.artifact,
-                    digest: candidate.digest,
-                    class: candidate.class,
-                    visibility: candidate.visibility,
-                    source: candidate.source,
-                    bytes: candidate.bytes,
-                    outcome,
-                    rule,
-                    retained_groups: Vec::new(),
-                }
-            })
-            .collect();
-        let retained: BTreeSet<String> = decisions
+        let verdicts: Vec<Verdict> = candidates
             .iter()
-            .filter(|decision| decision.outcome == RetentionOutcome::Retain)
-            .filter_map(|decision| decision.group.clone())
+            .map(|candidate| self.classify(candidate, now))
             .collect();
-        for decision in &mut decisions {
-            if decision.outcome == RetentionOutcome::Remove {
-                decision.retained_groups = retained.iter().cloned().collect();
-            }
+        let retained: Vec<String> = candidates
+            .iter()
+            .zip(&verdicts)
+            .filter(|(_, (outcome, _))| *outcome == RetentionOutcome::Retain)
+            .filter_map(|(candidate, _)| candidate.group.as_deref())
+            .collect::<BTreeSet<&str>>()
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        RetentionPlan {
+            candidates,
+            verdicts,
+            retained,
         }
-        decisions
     }
 
-    fn classify(&self, candidate: &RetentionCandidate, now: Option<i64>) -> (RetentionOutcome, Option<&'static str>) {
+    fn classify(&self, candidate: &RetentionCandidate, now: Option<i64>) -> Verdict {
         if let Some(rule) = self.keep.iter().find(|rule| rule.matches(candidate, now)) {
             return (RetentionOutcome::Retain, Some(rule.name()));
         }
@@ -175,6 +167,69 @@ impl RetentionPolicy {
             return (RetentionOutcome::Remove, Some(rule.name()));
         }
         (RetentionOutcome::Retain, None)
+    }
+}
+
+/// What a policy decided about one candidate, before that decision is expanded. Sixteen-odd bytes per
+/// candidate, so a whole project's verdicts stay negligible beside its candidates.
+type Verdict = (RetentionOutcome, Option<&'static str>);
+
+/// One resource classified against a policy, ready to stream.
+///
+/// Every removal decision repeats the surviving groups, so a fully materialized plan costs removals
+/// times survivors in owned strings — a project with ten thousand versions, half of them retained,
+/// reaches twenty-five million. This holds the survivors once and expands them into a decision only as
+/// [`decisions`](Self::decisions) yields it, so the caller's live set is the candidates, the verdicts,
+/// the surviving-group index, and one decision.
+pub struct RetentionPlan {
+    candidates: Vec<RetentionCandidate>,
+    verdicts: Vec<Verdict>,
+    retained: Vec<String>,
+}
+
+impl RetentionPlan {
+    /// The heap this plan holds while it streams, over and above the candidates it was handed: the
+    /// verdicts, the surviving-group index, and the one expanded decision in flight.
+    ///
+    /// A caller that budgets a resource's peak footprint adds this to what it counted for the
+    /// candidates, before it starts streaming. The plan's total output stays unbounded by design —
+    /// the contract repeats the surviving groups in every removal — so a budget must not be read as a
+    /// cap on the response.
+    #[must_use]
+    pub fn live_bytes(&self) -> usize {
+        let index: usize = self
+            .retained
+            .iter()
+            .map(|group| size_of::<String>() + group.len())
+            .sum();
+        // One expanded decision clones the whole index, which is why it counts twice.
+        self.verdicts.len() * size_of::<Verdict>() + index * 2
+    }
+
+    /// Expands each decision as it is yielded, in the plan's deterministic order. A consumer that
+    /// stops early leaves the rest of the resource unexpanded.
+    #[must_use]
+    pub fn decisions(self) -> impl ExactSizeIterator<Item = RetentionDecision> {
+        let retained = self.retained;
+        self.candidates
+            .into_iter()
+            .zip(self.verdicts)
+            .map(move |(candidate, (outcome, rule))| RetentionDecision {
+                resource: candidate.resource,
+                group: candidate.group,
+                artifact: candidate.artifact,
+                digest: candidate.digest,
+                class: candidate.class,
+                visibility: candidate.visibility,
+                source: candidate.source,
+                bytes: candidate.bytes,
+                outcome,
+                rule,
+                retained_groups: match outcome {
+                    RetentionOutcome::Remove => retained.clone(),
+                    RetentionOutcome::Retain => Vec::new(),
+                },
+            })
     }
 }
 

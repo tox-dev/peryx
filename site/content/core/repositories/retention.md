@@ -88,8 +88,14 @@ An apply step can reject a plan after either input changes.
 
 ## Read-only execution
 
-Evaluation opens read transactions and does not enumerate backend blobs. It groups and emits one subject at a time. A
-cancelled request or process exit leaves repository state unchanged.
+Evaluation opens read transactions and does not enumerate backend blobs. It groups and emits one subject at a time, and
+within a subject it expands one decision at a time: `retained_groups` repeats every surviving group in every removal, so
+holding the whole subject's decisions at once would cost removals times survivors. A cancelled request or process exit
+leaves repository state unchanged.
+
+An ecosystem's per-subject memory budget bounds that live set — the candidates, the classified state, the
+surviving-group index, and the one decision being expanded — not what the plan serializes to. A subject whose response
+is far larger than the budget still streams.
 
 ## HTTP preview
 

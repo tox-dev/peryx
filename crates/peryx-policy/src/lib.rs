@@ -10,7 +10,7 @@ mod retention;
 
 pub use retention::{
     RetentionCandidate, RetentionClass, RetentionConfig, RetentionDecision, RetentionFrontier, RetentionOutcome,
-    RetentionPolicy, RetentionSelector, RetentionSummary, RetentionVisibility,
+    RetentionPlan, RetentionPolicy, RetentionSelector, RetentionSummary, RetentionVisibility,
 };
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]

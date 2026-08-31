@@ -4,12 +4,26 @@ use crate::{
 };
 use rstest::rstest;
 
+use super::Verdict;
+
+/// Most cases here assert on a whole resource's decisions, which the planner deliberately no longer
+/// materializes; the bounded-expansion cases below drive the plan itself.
+trait PlanDecisions {
+    fn plan_decisions(&self, now: Option<i64>, candidates: Vec<RetentionCandidate>) -> Vec<RetentionDecision>;
+}
+
+impl PlanDecisions for RetentionPolicy {
+    fn plan_decisions(&self, now: Option<i64>, candidates: Vec<RetentionCandidate>) -> Vec<RetentionDecision> {
+        self.plan_resource(now, candidates).decisions().collect()
+    }
+}
+
 #[test]
 fn an_empty_policy_retains_every_candidate_with_no_rule() {
     let policy = RetentionPolicy::compile(&RetentionConfig::default(), str::to_owned);
     assert!(policy.is_empty());
 
-    let decisions = policy.plan_resource(None, vec![candidate("resource", "group-a", 0)]);
+    let decisions = policy.plan_decisions(None, vec![candidate("resource", "group-a", 0)]);
 
     assert_eq!(
         decisions,
@@ -54,7 +68,7 @@ fn keep_latest_protects_the_newest_groups_and_expires_the_rest() {
         str::to_owned,
     );
 
-    let decisions = policy.plan_resource(
+    let decisions = policy.plan_decisions(
         None,
         vec![
             candidate("resource", "group-a", 2),
@@ -103,7 +117,7 @@ fn a_keep_rule_wins_over_a_matching_expire_rule() {
     let mut cached = candidate("resource", "group-a", 0);
     cached.class = RetentionClass::Cached;
 
-    let decisions = policy.plan_resource(None, vec![cached]);
+    let decisions = policy.plan_decisions(None, vec![cached]);
 
     assert_eq!(
         decisions,
@@ -129,7 +143,7 @@ fn a_removed_artifact_reports_its_retained_sibling_group() {
     removed.digest = "sha256:source".to_owned();
     removed.class = RetentionClass::Trash;
 
-    let decisions = policy.plan_resource(None, vec![removed, retained]);
+    let decisions = policy.plan_decisions(None, vec![removed, retained]);
 
     assert_eq!(
         decisions
@@ -151,7 +165,7 @@ fn a_group_is_absent_when_every_artifact_is_removed() {
     source.digest = "sha256:source".to_owned();
     source.class = RetentionClass::Trash;
 
-    let decisions = policy.plan_resource(None, vec![wheel, source]);
+    let decisions = policy.plan_decisions(None, vec![wheel, source]);
 
     assert!(decisions.iter().all(|decision| decision.retained_groups.is_empty()));
 }
@@ -167,7 +181,7 @@ fn retained_groups_are_deduplicated_and_ordered() {
     let mut removed = candidate("resource", "group-m", 0);
     removed.class = RetentionClass::Trash;
 
-    let decisions = policy.plan_resource(None, vec![retained, sibling, other, removed]);
+    let decisions = policy.plan_decisions(None, vec![retained, sibling, other, removed]);
 
     assert_eq!(
         decisions
@@ -189,7 +203,7 @@ fn an_age_rule_expires_only_candidates_older_than_its_bound() {
     let mut fresh = candidate("resource", "group-b", 1);
     fresh.upload_time_unix = Some(950);
 
-    let decisions = policy.plan_resource(Some(1_000), vec![old, fresh]);
+    let decisions = policy.plan_decisions(Some(1_000), vec![old, fresh]);
 
     assert_eq!(
         decisions,
@@ -213,13 +227,13 @@ fn an_age_rule_ages_nothing_without_a_clock_or_a_publish_time() {
     dated.upload_time_unix = Some(0);
 
     assert_eq!(
-        policy.plan_resource(None, vec![dated]),
+        policy.plan_decisions(None, vec![dated]),
         [decision("resource", "group-a", RetentionOutcome::Retain, None, &[],)]
     );
 
     let undated = candidate("resource", "group-b", 0);
     assert_eq!(
-        policy.plan_resource(Some(10_000), vec![undated]),
+        policy.plan_decisions(Some(10_000), vec![undated]),
         [decision("resource", "group-b", RetentionOutcome::Retain, None, &[],)]
     );
 }
@@ -231,7 +245,7 @@ fn an_age_rule_does_not_expire_a_future_upload() {
     future.upload_time_unix = Some(i64::MAX);
 
     assert_eq!(
-        policy.plan_resource(Some(i64::MIN), vec![future]),
+        policy.plan_decisions(Some(i64::MIN), vec![future]),
         [decision("resource", "group-a", RetentionOutcome::Retain, None, &[],)]
     );
 }
@@ -246,7 +260,7 @@ fn a_source_rule_matches_the_named_routed_source() {
     let mut other = candidate("resource", "group-b", 1);
     other.source = Some("mirror".to_owned());
 
-    let decisions = policy.plan_resource(None, vec![routed, other]);
+    let decisions = policy.plan_decisions(None, vec![routed, other]);
 
     assert_eq!(
         decisions,
@@ -275,7 +289,7 @@ fn a_resource_prefix_rule_matches_by_name() {
         prefix: "team-".to_owned(),
     });
 
-    let decisions = policy.plan_resource(
+    let decisions = policy.plan_decisions(
         None,
         vec![
             candidate("team-tool", "group-a", 0),
@@ -305,14 +319,14 @@ fn a_trash_rule_matches_soft_deleted_candidates() {
     trashed.class = RetentionClass::Trash;
 
     assert_eq!(
-        policy.plan_resource(None, vec![trashed]),
+        policy.plan_decisions(None, vec![trashed]),
         [RetentionDecision {
             class: RetentionClass::Trash,
             ..decision("resource", "group-a", RetentionOutcome::Remove, Some("trash"), &[],)
         }]
     );
     assert_eq!(
-        policy.plan_resource(None, vec![candidate("resource", "group-a", 0)]),
+        policy.plan_decisions(None, vec![candidate("resource", "group-a", 0)]),
         [decision("resource", "group-a", RetentionOutcome::Retain, None, &[],)]
     );
 }
@@ -324,7 +338,7 @@ fn an_orphan_rule_matches_unreferenced_candidates() {
     orphan.orphan = true;
 
     assert_eq!(
-        policy.plan_resource(None, vec![orphan]),
+        policy.plan_decisions(None, vec![orphan]),
         [decision(
             "resource",
             "group-a",
@@ -334,7 +348,7 @@ fn an_orphan_rule_matches_unreferenced_candidates() {
         )]
     );
     assert_eq!(
-        policy.plan_resource(None, vec![candidate("resource", "group-a", 0)]),
+        policy.plan_decisions(None, vec![candidate("resource", "group-a", 0)]),
         [decision("resource", "group-a", RetentionOutcome::Retain, None, &[],)]
     );
 }
@@ -347,7 +361,7 @@ fn a_visibility_rule_matches_only_candidates_in_the_named_state() {
     let mut withdrawn = candidate("resource", "group-a", 0);
     withdrawn.visibility = RetentionVisibility::Withdrawn;
 
-    let decisions = policy.plan_resource(None, vec![withdrawn, candidate("resource", "group-b", 1)]);
+    let decisions = policy.plan_decisions(None, vec![withdrawn, candidate("resource", "group-b", 1)]);
 
     assert_eq!(
         decisions,
@@ -381,7 +395,7 @@ fn a_visibility_keep_rule_protects_hidden_candidates_from_an_expire_sweep() {
     let mut hidden = candidate("resource", "group-a", 0);
     hidden.visibility = RetentionVisibility::Hidden;
 
-    let decisions = policy.plan_resource(None, vec![hidden]);
+    let decisions = policy.plan_decisions(None, vec![hidden]);
 
     assert_eq!(
         decisions,
@@ -398,7 +412,7 @@ fn a_cached_keep_rule_protects_cached_candidates() {
     let mut cached = candidate("resource", "group-a", 0);
     cached.class = RetentionClass::Cached;
 
-    let decisions = policy.plan_resource(None, vec![cached]);
+    let decisions = policy.plan_decisions(None, vec![cached]);
 
     assert_eq!(
         decisions,
@@ -420,7 +434,7 @@ fn decisions_order_by_rank_then_artifact_then_digest() {
     tie_b.artifact = "resource:group-a:variant".to_owned();
     tie_b.digest = "sha256:bbb".to_owned();
 
-    let decisions = policy.plan_resource(None, vec![tie_b, candidate("resource", "group-b", 1), tie_a]);
+    let decisions = policy.plan_decisions(None, vec![tie_b, candidate("resource", "group-b", 1), tie_a]);
 
     assert_eq!(
         decisions,
@@ -445,7 +459,7 @@ fn repeating_a_plan_produces_byte_identical_output() {
     let policy = expiring(RetentionSelector::Trash);
     let mut trashed = candidate("resource", "group-a", 1);
     trashed.class = RetentionClass::Trash;
-    let build = || policy.plan_resource(None, vec![candidate("resource", "group-b", 0), trashed.clone()]);
+    let build = || policy.plan_decisions(None, vec![candidate("resource", "group-b", 0), trashed.clone()]);
 
     let expected = concat!(
         r#"[{"resource":"resource","group":"group-b","artifact":"resource:group-b","digest":"sha256:resourcegroup-b","class":"hosted","visibility":"active","bytes":10,"outcome":"retain"},"#,
@@ -469,7 +483,7 @@ fn a_removal_decision_serializes_every_recorded_field() {
     trashed.visibility = RetentionVisibility::Withdrawn;
     trashed.source = Some("upstream".to_owned());
 
-    let decisions = policy.plan_resource(None, vec![candidate("resource", "group-b", 0), trashed]);
+    let decisions = policy.plan_decisions(None, vec![candidate("resource", "group-b", 0), trashed]);
     let removed = decisions
         .iter()
         .find(|decision| decision.outcome == RetentionOutcome::Remove)
@@ -501,7 +515,7 @@ fn a_hidden_generated_candidate_serializes_its_class_and_visibility() {
     generated.class = RetentionClass::Generated;
     generated.visibility = RetentionVisibility::Hidden;
 
-    let json = serde_json::to_value(&policy.plan_resource(None, vec![generated])[0]).unwrap();
+    let json = serde_json::to_value(&policy.plan_decisions(None, vec![generated])[0]).unwrap();
 
     assert_eq!(
         json,
@@ -588,7 +602,7 @@ fn identity_normalization_preserves_case_sensitive_prefixes() {
     });
 
     assert_eq!(
-        policy.plan_resource(None, vec![candidate("acme-tools", "1.0", 0)])[0].outcome,
+        policy.plan_decisions(None, vec![candidate("acme-tools", "1.0", 0)])[0].outcome,
         RetentionOutcome::Retain
     );
 }
@@ -685,6 +699,82 @@ fn a_summary_serializes_the_policy_version_and_metadata_frontier() {
             "frontier": {"repository": 7, "catalog": 3, "policy": 2},
         })
     );
+}
+
+/// Groups per resource in the bounding cases, and how many of them the policy keeps.
+const GROUPS: usize = 200;
+const RETAINED: usize = 100;
+
+#[test]
+fn a_plan_holds_the_surviving_groups_once_not_once_per_removal() {
+    let plan = keep_latest(RETAINED).plan_resource(None, ranked_candidates(GROUPS));
+    let live = plan.live_bytes();
+
+    let expanded: usize = plan
+        .decisions()
+        .map(|decision| owned_bytes(&decision.retained_groups))
+        .sum();
+
+    assert_eq!(live, GROUPS * size_of::<Verdict>() + 2 * index_bytes());
+    assert_eq!(expanded, (GROUPS - RETAINED) * index_bytes());
+}
+
+#[test]
+fn adding_removals_does_not_grow_the_group_index_a_plan_holds() {
+    let policy = keep_latest(RETAINED);
+    let few = policy.plan_resource(None, ranked_candidates(GROUPS));
+
+    let many = policy.plan_resource(None, ranked_candidates(RETAINED + 10 * (GROUPS - RETAINED)));
+
+    assert_eq!(
+        many.live_bytes() - few.live_bytes(),
+        9 * (GROUPS - RETAINED) * size_of::<Verdict>()
+    );
+}
+
+#[test]
+fn a_plan_counts_its_decisions_without_expanding_them() {
+    let mut decisions = keep_latest(1).plan_resource(None, ranked_candidates(4)).decisions();
+
+    let first = decisions.next();
+
+    assert_eq!(
+        first,
+        Some(decision(
+            "resource",
+            "group-0000",
+            RetentionOutcome::Retain,
+            Some("keep-latest-groups"),
+            &[],
+        ))
+    );
+    assert_eq!(decisions.len(), 3);
+}
+
+/// One candidate per group, ranked newest first, so `keep-latest-n` retains the first `n`.
+fn ranked_candidates(groups: usize) -> Vec<RetentionCandidate> {
+    (0..groups)
+        .map(|rank| candidate("resource", &format!("group-{rank:04}"), rank as u64))
+        .collect()
+}
+
+/// The surviving-version index one [`ranked_candidates`] plan holds, which each removal repeats.
+fn index_bytes() -> usize {
+    RETAINED * (size_of::<String>() + "group-0000".len())
+}
+
+fn owned_bytes(groups: &[String]) -> usize {
+    groups.iter().map(|group| size_of::<String>() + group.len()).sum()
+}
+
+fn keep_latest(count: usize) -> RetentionPolicy {
+    RetentionPolicy::compile(
+        &RetentionConfig {
+            keep: vec![RetentionSelector::KeepLatestGroups { count: count as u64 }],
+            expire: vec![RetentionSelector::ResourcePrefix { prefix: String::new() }],
+        },
+        str::to_owned,
+    )
 }
 
 fn candidate(resource: &str, group: &str, rank: u64) -> RetentionCandidate {

@@ -12,6 +12,7 @@ serde.workspace = true
 
 [dev-dependencies]
 rstest.workspace = true
+stats_alloc.workspace = true
 serde_json.workspace = true
 
 [lints]

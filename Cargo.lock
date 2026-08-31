@@ -5202,6 +5202,7 @@ dependencies = [
  "rstest",
  "serde",
  "serde_json",
+ "stats_alloc",
 ]
 
 [[package]]

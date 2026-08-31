@@ -1,11 +1,16 @@
 //! Evaluates `PyPI` retention one project at a time to bound memory.
 //!
 //! Global version ranking and cross-referenced alternatives need one project's candidates in memory at
-//! once, so the scan cannot stream within a project. It bounds that peak two ways: each raw
+//! once, so the scan cannot stream within a project. It bounds that peak three ways: each raw
 //! [`Uploaded`] record is projected to a compact [`RetentionCandidate`] and dropped as it is read,
-//! never held alongside its decoded form; and a per-project byte budget over the surviving candidates'
-//! footprint aborts a project that would exceed it, so one oversized project rejects its run instead of
-//! allocating without limit.
+//! never held alongside its decoded form; decisions expand one at a time out of a
+//! [`RetentionPlan`](peryx_policy::RetentionPlan), so the surviving versions every removal repeats are
+//! stored once rather than per row; and a per-project byte budget over that whole live set aborts a
+//! project that would exceed it, so one oversized project rejects its run instead of allocating without
+//! limit.
+//!
+//! The budget bounds live memory, not output. A project whose decisions serialize to far more than the
+//! budget still streams, because no more than one of them is expanded at a time.
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -22,8 +27,10 @@ use crate::upload::Uploaded;
 use crate::version::{VersionKey, version_key};
 use crate::{Yanked, error_message};
 
-/// Default ceiling on the candidate footprint one project may accumulate before a retention scan
-/// rejects it, counting each candidate's struct plus its owned string bytes.
+/// Default ceiling on the live footprint one project may hold before a retention scan rejects it.
+///
+/// That footprint is each candidate's struct plus its owned string bytes, the plan's verdicts and
+/// surviving-version index, and the one decision expanded at a time.
 ///
 /// It bounds a run's peak memory independent of one project's artifact count; a project past it aborts
 /// with a message rather than exhausting the process. 256 MiB leaves room for the largest realistic
@@ -35,13 +42,14 @@ pub const RETENTION_PROJECT_BUDGET_BYTES: usize = 256 * 1024 * 1024;
 /// `start` receives the plan identity after the read snapshot opens and before `emit` receives the first
 /// artifact decision. Either callback may stop the read-only scan by returning an error.
 ///
-/// `budget` caps the candidate footprint one project may hold at once (see
-/// [`RETENTION_PROJECT_BUDGET_BYTES`]); a project whose surviving candidates exceed it aborts the scan
-/// so peak memory stays bounded regardless of any one project's artifact count.
+/// `budget` caps the memory one project may hold at once (see [`RETENTION_PROJECT_BUDGET_BYTES`]): its
+/// candidates, its plan's compact state, and the single decision in flight. A project whose live set
+/// would exceed it aborts the scan before that decision is expanded, so peak memory stays bounded
+/// regardless of any one project's artifact count. What the plan serializes to is not capped.
 ///
 /// # Errors
 /// Returns a message when the policy contains an unsupported selector, the store cannot be read, an
-/// upload record does not decode, a callback stops the scan, or a project's candidates exceed `budget`.
+/// upload record does not decode, a callback stops the scan, or a project's live set exceeds `budget`.
 pub fn evaluate_retention<S, F>(
     scan: &RetentionScan<'_>,
     budget: usize,
@@ -107,8 +115,8 @@ fn evaluate_retention_with(
                 return Ok(());
             };
             if current.as_deref() != Some(project) {
-                if current.is_some() {
-                    plan_group(&mut group, scan.policy, scan.now, emit)?;
+                if let Some(previous) = current.as_deref() {
+                    plan_group(&mut group, previous, used, budget, scan.policy, scan.now, emit)?;
                 }
                 current = Some(project.to_owned());
                 used = 0;
@@ -118,9 +126,7 @@ fn evaluate_retention_with(
             let candidate = candidate(project, uploaded);
             used = used.saturating_add(footprint(&candidate));
             if used > budget {
-                return Err(format!(
-                    "retention plan for project {project} exceeds the {budget}-byte per-project memory budget"
-                ));
+                return Err(over_budget(project, budget));
             }
             group.push(candidate);
             Ok::<(), String>(())
@@ -130,8 +136,8 @@ fn evaluate_retention_with(
     if scan.cancellation.is_cancelled() {
         return Err("retention scan cancelled".to_owned());
     }
-    if current.is_some() {
-        plan_group(&mut group, scan.policy, scan.now, emit).map_err(error_message)?;
+    if let Some(previous) = current.as_deref() {
+        plan_group(&mut group, previous, used, budget, scan.policy, scan.now, emit).map_err(error_message)?;
     }
     Ok(())
 }
@@ -143,16 +149,27 @@ const RETENTION_SCAN_PAGE: usize = 100;
 
 fn plan_group(
     group: &mut Vec<RetentionCandidate>,
+    project: &str,
+    used: usize,
+    budget: usize,
     policy: &RetentionPolicy,
     now: Option<i64>,
     emit: &mut dyn FnMut(RetentionDecision) -> Result<(), String>,
 ) -> Result<(), String> {
     let mut group = std::mem::take(group);
     assign_ranks(&mut group);
-    for decision in policy.plan_resource(now, group) {
+    let plan = policy.plan_resource(now, group);
+    if used.saturating_add(plan.live_bytes()) > budget {
+        return Err(over_budget(project, budget));
+    }
+    for decision in plan.decisions() {
         emit(decision)?;
     }
     Ok(())
+}
+
+fn over_budget(project: &str, budget: usize) -> String {
+    format!("retention plan for project {project} exceeds the {budget}-byte per-project memory budget")
 }
 
 /// Project one raw upload record to its compact candidate, moving the fields retention keeps out of the

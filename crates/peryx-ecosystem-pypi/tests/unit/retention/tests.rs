@@ -121,6 +121,22 @@ fn candidate_footprint(project: &str, version: &str) -> usize {
         + version.len()
 }
 
+/// Versions in the project whose alternatives outweigh its budget, half of them kept.
+const WIDE_PROJECT_VERSIONS: usize = 120;
+
+/// What a plan holds live beyond its candidates: a verdict per candidate, plus the surviving-version
+/// index counted twice, once as the index and once as the decision expanded from it.
+fn plan_footprint(candidates: usize, retained: &[&str]) -> usize {
+    candidates * size_of::<(RetentionOutcome, Option<&'static str>)>() + 2 * owned_bytes(retained)
+}
+
+fn owned_bytes(groups: &[impl AsRef<str>]) -> usize {
+    groups
+        .iter()
+        .map(|group| size_of::<String>() + group.as_ref().len())
+        .sum()
+}
+
 #[rstest]
 #[case::source(RetentionSelector::Source { name: "origin".to_owned() }, true)]
 #[case::cached(RetentionSelector::Cached, false)]
@@ -448,7 +464,7 @@ fn test_evaluate_retention_accepts_a_project_at_the_memory_budget() {
     let mut decisions = 0_u32;
     evaluate_retention(
         &scan(&meta, "pypi", &expire_all_but_latest(1), &ScanCancellation::new()),
-        candidate_footprint("demo", "1.0"),
+        candidate_footprint("demo", "1.0") + plan_footprint(1, &["1.0"]),
         |_| Ok(()),
         |_| {
             decisions += 1;
@@ -467,7 +483,7 @@ fn test_evaluate_retention_rejects_a_project_one_byte_over_the_memory_budget() {
 
     let message = evaluate_retention(
         &scan(&meta, "pypi", &expire_all_but_latest(1), &ScanCancellation::new()),
-        candidate_footprint("demo", "1.0") - 1,
+        candidate_footprint("demo", "1.0") + plan_footprint(1, &["1.0"]) - 1,
         |_| Ok(()),
         reject_decision,
     )
@@ -475,6 +491,70 @@ fn test_evaluate_retention_rejects_a_project_one_byte_over_the_memory_budget() {
 
     assert!(message.contains("project demo"), "{message}");
     assert!(message.contains("per-project memory budget"), "{message}");
+}
+
+#[test]
+fn test_evaluate_retention_rejects_a_plan_whose_expansion_crosses_the_budget() {
+    let (_dir, meta) = store();
+    let versions = ["1.0", "2.0", "3.0", "4.0"];
+    for version in versions {
+        seed(&meta, "pypi", "demo", version, Yanked::No, None);
+    }
+    let candidates: usize = versions
+        .iter()
+        .map(|version| candidate_footprint("demo", version))
+        .sum();
+
+    let message = evaluate_retention(
+        &scan(&meta, "pypi", &expire_all_but_latest(1), &ScanCancellation::new()),
+        candidates + plan_footprint(versions.len(), &["4.0"]) - 1,
+        |_| Ok(()),
+        reject_decision,
+    )
+    .unwrap_err();
+
+    assert!(message.contains("project demo"), "{message}");
+    assert!(message.contains("per-project memory budget"), "{message}");
+}
+
+#[test]
+fn test_evaluate_retention_streams_a_plan_whose_output_exceeds_the_budget() {
+    let (_dir, meta) = store();
+    let versions: Vec<String> = (1..=WIDE_PROJECT_VERSIONS)
+        .map(|release| format!("{release}.0"))
+        .collect();
+    for version in &versions {
+        seed(&meta, "pypi", "demo", version, Yanked::No, None);
+    }
+    let surviving: Vec<&str> = versions[WIDE_PROJECT_VERSIONS / 2..]
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let budget = versions
+        .iter()
+        .map(|version| candidate_footprint("demo", version))
+        .sum::<usize>()
+        + plan_footprint(versions.len(), &surviving);
+    let mut streamed = 0_usize;
+
+    evaluate_retention(
+        &scan(
+            &meta,
+            "pypi",
+            &expire_all_but_latest(WIDE_PROJECT_VERSIONS as u64 / 2),
+            &ScanCancellation::new(),
+        ),
+        budget,
+        |_| Ok(()),
+        |decision| {
+            streamed += owned_bytes(&decision.retained_groups);
+            Ok(())
+        },
+    )
+    .unwrap();
+
+    assert_eq!(streamed, surviving.len() * owned_bytes(&surviving));
+    assert!(streamed > budget, "the plan emitted {streamed} bytes of alternatives");
 }
 
 #[test]
