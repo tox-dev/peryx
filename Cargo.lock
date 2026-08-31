@@ -4932,6 +4932,7 @@ dependencies = [
  "peryx-bench-core",
  "peryx-core",
  "peryx-driver",
+ "peryx-ecosystem-oci",
  "peryx-events",
  "peryx-ha",
  "peryx-http",

@@ -16,8 +16,13 @@ pub type Outbox = bool;
 /// order. Deletions are soft - a delete moves the reference into repository trash - so the trash and
 /// restore transitions are the deletion vocabulary a replica replays. A blob delete is the exception:
 /// the distribution spec drops the repository link outright, so it carries its own removal operation.
+///
+/// The `oci-op` tag names the vocabulary rather than only the operation, because the journal is
+/// shared: every driver and peryx itself append to the same log, and a reader takes the records
+/// carrying its own tag. A tag key any writer could plausibly choose would let a reader claim another
+/// writer's records, which is the failure this naming rules out.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "op", rename_all = "kebab-case")]
+#[serde(tag = "oci-op", rename_all = "kebab-case")]
 pub enum OciMutation {
     /// A manifest published under `(index, repo)`, retargeting `tag` when the push named one.
     PublishManifest {
@@ -72,7 +77,11 @@ pub enum OciMutation {
 impl OciMutation {
     /// Serialize as the outbox entry bytes. The store allocates the authoritative serial when it
     /// commits, so the payload carries only the operation.
-    fn encode(&self) -> Vec<u8> {
+    ///
+    /// # Panics
+    /// Panics if the mutation does not serialize, which no variant's fields can refuse.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
         serde_json::to_vec(self).expect("an OCI mutation always serializes")
     }
 }

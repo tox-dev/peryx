@@ -13,6 +13,10 @@ themselves, see the [distribution specification](https://github.com/opencontaine
 
 ## Journal contents
 
+One journal serves the whole node, so each record names the vocabulary that wrote it: an OCI mutation carries the
+`oci-op` tag, and a reader takes the records carrying its own tag and passes over the rest. A tag key another writer
+could plausibly choose would let a reader claim records it cannot apply.
+
 A hosted push or delete records one typed operation:
 
 - **publish-manifest** records a manifest stored under a repository and includes the tag when the push named one.

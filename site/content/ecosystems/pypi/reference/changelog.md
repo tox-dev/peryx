@@ -28,6 +28,18 @@ The endpoint reads the journal key as the authoritative serial; the placeholder 
 serial. Each record includes its mutation timestamp. The journal write commits that timestamp; readers do not
 reconstruct it.
 
+One journal serves the whole node. peryx's own core operations and every other ecosystem write to it, so each record
+names the vocabulary that wrote it with a tag key: `pypi-op` here, `server-op` for a core operation, `oci-op` for a
+container registry mutation. The changelog returns the records tagged `pypi-op` and passes over the rest, which is a
+normal condition on a shared log rather than a fault. Identifying its own records instead of recognizing foreign ones
+keeps that decision total: an ecosystem this build has never heard of writes records the changelog passes over without
+knowing anything about them.
+
+A record that carries the `pypi-op` tag and then does not describe an entry is an error, not a record to pass over.
+Dropping it would lose a mutation a mirror needs and never say so. A page bounds the entries it returns rather than the
+records it reads, so a run of foreign records longer than one page cannot hide the publishes behind it, and a request
+that reads only foreign records returns no rows while resuming past them.
+
 Local actions use Warehouse's human-readable form while retaining peryx's per-file precision:
 
 | Mutation                   | Changelog action                          |

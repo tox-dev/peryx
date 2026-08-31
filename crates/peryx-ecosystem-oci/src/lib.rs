@@ -99,6 +99,7 @@ mod tests;
 
 pub use error::{ErrorCode, error_response, gateway_error};
 pub use mirror::{MirrorMode, MirrorRow, mirror};
+pub use outbox::OciMutation;
 pub use quota::quota_reservation;
 pub use registry::OciRegistry;
 #[doc(hidden)]

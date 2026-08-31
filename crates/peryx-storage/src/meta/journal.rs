@@ -28,6 +28,13 @@ pub enum DriverMutation {
     Delete { key: String },
 }
 
+/// One appended record: an opaque `payload` and the rows and blobs it describes.
+///
+/// Every writer shares this log, so a `payload` is a JSON object carrying a tag key that names the
+/// vocabulary that wrote it. A reader takes the records carrying its own tag, passes over the rest, and
+/// treats a payload carrying its tag that it cannot decode as an error. Naming its own records rather
+/// than recognizing foreign ones is what makes that decision total: a vocabulary added later needs no
+/// cooperation from the readers that came before it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JournalEntry {
     pub payload: Vec<u8>,

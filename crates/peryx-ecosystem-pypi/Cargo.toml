@@ -126,6 +126,8 @@ html5ever = { version = "0.39", optional = true }
 regex = { workspace = true, optional = true }
 
 [dev-dependencies]
+# The changelog reader shares one journal with every other driver, so its tests read what a real one writes.
+peryx-ecosystem-oci.workspace = true
 peryx-events = { workspace = true, features = ["test-util"] }
 peryx-test-support.workspace = true
 httpdate.workspace = true
