@@ -296,6 +296,10 @@ fn configure_state(
         .map_err(anyhow::Error::msg)
         .context("configure read-only state")?;
     state
+        .set_tls_terminated(config.tls.is_some())
+        .map_err(anyhow::Error::msg)
+        .context("configure TLS termination state")?;
+    state
         .set_read_only_retry_after(match config.availability.replication() {
             Some(crate::config::ReplicationConfig::Replica { poll_interval, .. }) => Some(*poll_interval),
             Some(crate::config::ReplicationConfig::Primary { .. }) | None => None,
@@ -575,8 +579,12 @@ fn make_replica_configs(configs: &mut [IndexConfig]) {
 
 pub fn router_for(state: Arc<AppState>) -> Router {
     let services = peryx_driver::http_services::HttpDomainServices::for_state(&state);
-    peryx_http::router_with_ui(Arc::clone(&state), services, peryx_web::ssr::ui_pages(state))
-        .merge(peryx_web::ssr::ui_assets())
+    peryx_http::router_with_ui(
+        Arc::clone(&state),
+        services,
+        peryx_web::ssr::ui_pages(state),
+        peryx_web::ssr::ui_assets(),
+    )
 }
 
 type CredentialProviders = HashMap<(String, String), CredentialProvider>;

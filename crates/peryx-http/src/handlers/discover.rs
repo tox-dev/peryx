@@ -51,7 +51,7 @@ pub async fn api(State(state): State<Arc<AppState>>, OriginalUri(uri): OriginalU
     axum::Json(peryx_driver::discovery::root_envelope(base.as_ref(), indexes)).into_response()
 }
 
-pub(super) fn trusts_proxy(state: &AppState, request: &Request) -> bool {
+pub fn trusts_proxy(state: &AppState, request: &Request) -> bool {
     request
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()

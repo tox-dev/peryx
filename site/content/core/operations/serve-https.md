@@ -89,6 +89,19 @@ For a proxy chain, each proxy must append its immediate peer after the edge repl
 `trusted_proxies`, but keep client networks out. Prevent direct access to the peryx listener from outside the private
 network.
 
+## Browser response headers
+
+Every response carries `X-Content-Type-Options: nosniff`, so a browser reads an artifact as the type peryx declared
+rather than one it guesses from the bytes. A rendered page also carries
+`Content-Security-Policy: frame-ancestors 'none'; base-uri 'none'; object-src 'none'`, `X-Frame-Options: DENY` and
+`Referrer-Policy: no-referrer`, which keep another origin from framing a management page and clicking through it. A
+handler that sets one of these itself keeps its own value, and no cache header changes.
+
+peryx adds `Strict-Transport-Security: max-age=31536000` only when the connection is HTTPS: either peryx terminates TLS
+under `[tls]`, or a proxy listed in `trusted_proxies` forwarded `X-Forwarded-Proto: https`. An `X-Forwarded-Proto` from
+any other peer is ignored, so an untrusted caller cannot pin a host that peryx serves over cleartext. The header claims
+only the host the client dialled; add `includeSubDomains` at the proxy when you own every name below it.
+
 ## Configure clients
 
 Each [ecosystem guide](@/ecosystems/_index.md) lists its client URLs and certificate-store requirements.

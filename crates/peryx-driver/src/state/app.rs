@@ -46,6 +46,9 @@ pub struct ServingState {
     pub requests: AtomicU64,
     /// Whether this process serves as a replica and rejects client mutations.
     pub read_only: bool,
+    /// Whether this process terminates TLS itself. A response may only claim HSTS over a connection
+    /// that is actually secure, and behind a reverse proxy only that proxy knows the client's scheme.
+    pub tls_terminated: bool,
     pub(super) read_only_retry_after: Option<Duration>,
     pub(super) availability: AvailabilityState,
     /// Immutable repository-route positions for request dispatch.

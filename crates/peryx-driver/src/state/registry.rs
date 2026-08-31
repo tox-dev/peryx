@@ -349,6 +349,15 @@ impl AppState {
         Ok(())
     }
 
+    /// Record that this process terminates TLS, so responses may claim HSTS without a proxy header.
+    ///
+    /// # Errors
+    /// Returns an error after request-serving code has cloned the serving state.
+    pub fn set_tls_terminated(&mut self, tls_terminated: bool) -> Result<(), String> {
+        self.serving_mut()?.tls_terminated = tls_terminated;
+        Ok(())
+    }
+
     /// Set the retry cadence exposed when this process rejects a mutation as read-only.
     ///
     /// # Errors

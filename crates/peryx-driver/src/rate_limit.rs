@@ -201,6 +201,13 @@ impl RateLimiter {
         self.config.enabled
     }
 
+    /// Whether any proxy is trusted at all, so a caller can drop forwarded-header work that could
+    /// never apply from its hot path.
+    #[must_use]
+    pub const fn trusts_any_proxy(&self) -> bool {
+        !self.config.trusted_proxies.is_empty()
+    }
+
     #[must_use]
     pub fn trusts_proxy(&self, address: IpAddr) -> bool {
         let address = address.to_canonical();

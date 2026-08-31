@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 mod acl;
 mod analytics;
-mod discover;
+pub(crate) mod discover;
 mod dispatch;
 mod grants;
 mod jobs;
