@@ -5,9 +5,9 @@ use std::sync::Arc;
 use peryx_core::Ecosystem;
 
 use crate::serving::{
-    BlobReferenceDriver, BrowseDriver, CacheDriver, CapabilityRegistrar, EcosystemDriver, FsckDriver, ImportDriver,
-    IndexCredentialDriver, IndexSummaryDriver, JobDriver, MetricsDriver, NameDriver, PolicyDriver, PolicyDryRunDriver,
-    RetentionDriver, ServiceDriver, TrashDriver,
+    BlobReferenceDriver, BrowseDriver, CacheDriver, CachePurgeDriver, CapabilityRegistrar, EcosystemDriver, FsckDriver,
+    ImportDriver, IndexCredentialDriver, IndexSummaryDriver, JobDriver, MetricsDriver, NameDriver, PolicyDriver,
+    PolicyDryRunDriver, RetentionDriver, ServiceDriver, TrashDriver,
 };
 
 #[derive(Clone, Default)]
@@ -22,6 +22,7 @@ pub struct DriverSet {
     fsck: HashMap<Ecosystem, Arc<dyn FsckDriver>>,
     retention: HashMap<Ecosystem, Arc<dyn RetentionDriver>>,
     cache: HashMap<Ecosystem, Arc<dyn CacheDriver>>,
+    cache_purges: HashMap<Ecosystem, Arc<dyn CachePurgeDriver>>,
     index_summaries: HashMap<Ecosystem, Arc<dyn IndexSummaryDriver>>,
     trash: HashMap<Ecosystem, Arc<dyn TrashDriver>>,
     imports: HashMap<Ecosystem, Arc<dyn ImportDriver>>,
@@ -191,6 +192,10 @@ impl DriverSet {
         self.cache.get(ecosystem)
     }
     #[must_use]
+    pub fn get_cache_purge(&self, ecosystem: &Ecosystem) -> Option<&Arc<dyn CachePurgeDriver>> {
+        self.cache_purges.get(ecosystem)
+    }
+    #[must_use]
     pub fn get_retention(&self, ecosystem: &Ecosystem) -> Option<&Arc<dyn RetentionDriver>> {
         self.retention.get(ecosystem)
     }
@@ -243,6 +248,9 @@ impl CapabilityRegistrar for DriverSet {
     }
     fn register_cache(&mut self, ecosystem: Ecosystem, driver: Arc<dyn CacheDriver>) {
         self.cache.insert(ecosystem, driver);
+    }
+    fn register_cache_purge(&mut self, ecosystem: Ecosystem, driver: Arc<dyn CachePurgeDriver>) {
+        self.cache_purges.insert(ecosystem, driver);
     }
     fn register_index_summary(&mut self, ecosystem: Ecosystem, driver: Arc<dyn IndexSummaryDriver>) {
         self.index_summaries.insert(ecosystem, driver);

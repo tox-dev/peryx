@@ -14,7 +14,7 @@ pub(super) use wiremock::matchers::{method, path};
 pub(super) use wiremock::{Mock, MockServer, ResponseTemplate};
 
 pub(super) use crate::cache::{self, PageOutcome};
-pub(super) use crate::tests::http::{detail_json, get, harness};
+pub(super) use crate::tests::http::{Harness, detail_json, get, harness};
 pub(super) use peryx_driver::state::AppState;
 pub(super) use peryx_index::{Index, IndexKind};
 pub(super) use peryx_policy::{Policy, PolicyAction, PolicyConfig};

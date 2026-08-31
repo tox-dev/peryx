@@ -383,6 +383,12 @@ pub(super) fn service_paths(paths: PathsBuilder) -> PathsBuilder {
                 .build(),
         )
         .path(
+            "/+cache/purge",
+            PathItemBuilder::new()
+                .operation(HttpMethod::Post, cache_purge())
+                .build(),
+        )
+        .path(
             "/+retention/plan",
             PathItemBuilder::new()
                 .operation(HttpMethod::Post, retention_plan())
@@ -1656,6 +1662,70 @@ fn revoke_grant() -> OperationBuilder {
                 ),
             ),
     )
+}
+
+fn cache_purge() -> OperationBuilder {
+    OperationBuilder::new()
+        .tag("operations")
+        .summary(Some("Purge one cached resource"))
+        .description(Some(
+            "Removes a resource's cached metadata and the implementation records no other resource \
+             shares, from a server that keeps running. Blob files are untouched; reclaim them with \
+             `peryx cache purge orphaned-blobs`. `apply` false previews the removal and changes nothing, \
+             and needs only administration read. The removal is fenced against the server's own cache \
+             writers, so a refresh in flight for the same resource cannot republish what it removed and \
+             `removed` reports the rows that actually went.",
+        ))
+        .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
+        .request_body(Some(cache_purge_request_body()))
+        .response(
+            "200",
+            api_json_response(
+                "The removed record counts, or the counts a preview would remove",
+                json!({
+                    "repository": "pypi",
+                    "resource": "flask",
+                    "applied": true,
+                    "removed": {"file_url_records": 12, "index_pages": 1, "metadata_records": 4, "project_records": 1}
+                }),
+            ),
+        )
+        .response(
+            "401",
+            ResponseBuilder::new().description("No valid local administrator credential was presented"),
+        )
+        .response(
+            "404",
+            ResponseBuilder::new().description("The caller cannot inspect the repository, or it purges no cache"),
+        )
+        .response(
+            "413",
+            ResponseBuilder::new().description("The request exceeds the fixed body limit"),
+        )
+        .response("415", ResponseBuilder::new().description("The request is not JSON"))
+        .response(
+            "422",
+            ResponseBuilder::new().description("The JSON request body is invalid"),
+        )
+        .response(
+            "500",
+            api_json_response(
+                "The cached records could not be read or removed",
+                json!({"error": "cache purge failed: read cached project \"pypi/flask\""}),
+            ),
+        )
+}
+
+fn cache_purge_request_body() -> utoipa::openapi::request_body::RequestBody {
+    RequestBodyBuilder::new()
+        .required(Some(Required::True))
+        .content(
+            "application/json",
+            ContentBuilder::new()
+                .example(Some(json!({"repository": "pypi", "resource": "flask", "apply": false})))
+                .build(),
+        )
+        .build()
 }
 
 fn retention_request_body() -> utoipa::openapi::request_body::RequestBody {

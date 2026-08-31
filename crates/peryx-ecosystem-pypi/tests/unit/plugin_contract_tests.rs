@@ -45,6 +45,7 @@ fn plugin_exposes_capabilities_and_validates_snippet_formats() {
     assert!(registry.drivers().get_policy(&ECOSYSTEM).is_some());
     assert!(registry.drivers().get_policy_dry_run(&ECOSYSTEM).is_some());
     assert!(registry.drivers().get_retention(&ECOSYSTEM).is_some());
+    assert!(registry.drivers().get_cache_purge(&ECOSYSTEM).is_some());
     assert!(plugin.text(&base, "pypi", true, "unknown").is_err());
 }
 

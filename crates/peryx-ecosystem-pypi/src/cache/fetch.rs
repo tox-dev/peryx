@@ -189,7 +189,9 @@ pub struct RefreshSummary {
 ///
 /// Each page is revalidated under that project's flight, the one the request path and background
 /// revalidation already take, so the sweep cannot fetch alongside them and commit an older body over
-/// their result. A page a writer published while the sweep queued is left alone.
+/// their result. A page a writer published while the sweep queued is left alone, and so is one a
+/// writer removed: the listing is a snapshot, and refetching a row an operator purged would put the
+/// project back.
 ///
 /// # Errors
 /// Returns [`CacheError`] when the hosted store fails; upstream failures do not error (a page with
@@ -217,19 +219,21 @@ pub async fn refresh_stale_pages(state: &Arc<ServingState>) -> Result<RefreshSum
         let (before, result) = {
             let gate = flight_gate(state, &key);
             let guard = gate.lock_owned().await;
-            let current = cached_record(state, &key)?;
-            if current.as_ref().is_some_and(|record| super::is_fresh(state, record)) {
+            let Some(current) = cached_record(state, &key)? else {
+                release_flight(state, &key, guard);
+                continue;
+            };
+            if super::is_fresh(state, &current) {
                 release_flight(state, &key, guard);
                 continue;
             }
-            let before = current.map(|record| record.body);
             let result = fetch_and_store(state, &key, &index.name, &project, client).await;
-            release_then(state, &key, guard, || (before, result))
+            release_then(state, &key, guard, || (current.body, result))
         };
         summary.checked += 1;
         match &result {
             Ok(Some(record)) => {
-                let changed = before.as_ref() != Some(&record.body);
+                let changed = before != record.body;
                 if changed {
                     summary.changed += 1;
                 }

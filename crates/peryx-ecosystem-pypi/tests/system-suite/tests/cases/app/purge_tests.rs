@@ -297,6 +297,44 @@ fn test_cache_purge_orphaned_blobs_yes_removes_blob() {
     assert!(!blobs.exists(&orphan));
 }
 
+#[rstest]
+#[case::resource(purge_resource_command(false), "dry-run\tresource\tpypi\tflask\t1\t1\t1\t1\n")]
+#[case::orphaned_blobs(purge_orphaned_blobs_command(false), "summary\tdry-run\torphaned-blobs\t0\t0\n")]
+fn test_cache_purge_dry_run_reads_a_store_it_cannot_write(#[case] command: CacheCommand, #[case] expected: &str) {
+    let (_dir, config, _digest) = cache_fixture();
+    let path = config.data_dir.join("peryx.redb");
+    set_writable(&path, false);
+
+    let mut out = Vec::new();
+    let purged = app::cache(&config, &command, &mut out);
+
+    set_writable(&path, true);
+    purged.unwrap();
+    assert!(String::from_utf8(out).unwrap().contains(expected));
+}
+
+#[test]
+fn test_cache_purge_confirmation_still_takes_the_writable_handle() {
+    let (_dir, config, _digest) = cache_fixture();
+    let path = config.data_dir.join("peryx.redb");
+    set_writable(&path, false);
+
+    let purged = app::cache(&config, &purge_resource_command(true), &mut Vec::new());
+
+    set_writable(&path, true);
+    let reported = format!("{:#}", purged.unwrap_err());
+    assert!(reported.contains("open metadata store"), "{reported}");
+}
+
+/// `Permissions::set_readonly` is the one write bit every platform agrees on: it clears the mode's
+/// write bits on unix and sets the read-only attribute on Windows, and either one stops redb taking
+/// the read-write handle while leaving the read-only one open.
+fn set_writable(path: &std::path::Path, writable: bool) {
+    let mut permissions = std::fs::metadata(path).unwrap().permissions();
+    permissions.set_readonly(!writable);
+    std::fs::set_permissions(path, permissions).unwrap();
+}
+
 fn purge_resource_command(yes: bool) -> CacheCommand {
     CacheCommand::Purge(CachePurgeCommand::Resource(CachePurgeResourceArgs {
         runtime: runtime_args(),

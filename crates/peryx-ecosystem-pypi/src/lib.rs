@@ -287,6 +287,7 @@ fn register_capabilities(registrar: &mut dyn CapabilityRegistrar, driver: Arc<Py
     registrar.register_fsck(ECOSYSTEM, driver.clone());
     registrar.register_retention(ECOSYSTEM, driver.clone());
     registrar.register_cache(ECOSYSTEM, driver.clone());
+    registrar.register_cache_purge(ECOSYSTEM, driver.clone());
     registrar.register_index_summary(ECOSYSTEM, driver.clone());
     registrar.register_trash(ECOSYSTEM, driver.clone());
     registrar.register_import(ECOSYSTEM, driver.clone());

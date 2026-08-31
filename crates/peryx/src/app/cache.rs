@@ -30,7 +30,7 @@ pub fn cache_with_plugins(
     if matches!(command, CacheCommand::Purge(CachePurgeCommand::OrphanedBlobs(_))) {
         validate_orphan_purge_mode(config.availability.mode())?;
     }
-    let writable = matches!(command, CacheCommand::Purge(_));
+    let writable = matches!(command, CacheCommand::Purge(purge) if purge.confirmed());
     let stores = CacheStores::open(config, &plugins, writable)?;
     let drivers = plugins.drivers();
     match command {

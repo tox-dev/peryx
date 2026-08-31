@@ -53,6 +53,7 @@ fn test_openapi_document_covers_every_endpoint() {
             "/+availability/placements/{digest}",
             "/+availability/topology",
             "/+availability/topology/stream",
+            "/+cache/purge",
             "/+grants",
             "/+grants/{id}",
             "/+health",

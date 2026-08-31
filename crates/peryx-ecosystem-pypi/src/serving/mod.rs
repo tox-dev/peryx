@@ -19,9 +19,10 @@ use peryx_driver::AppState;
 use peryx_driver::not_found;
 use peryx_driver::rate_limit::RouteClass;
 use peryx_driver::serving::{
-    BlobReferenceDriver, BrowseDriver, BrowseRequest, CacheDriver, CacheRefresher, EcosystemDriver, FsckDriver,
-    ImportDriver, IndexSummaryDriver, IndexedProtocolDriver, IntentFinalizer, JobDriver, MetricsDriver, NameDriver,
-    PolicyDriver, PolicyDryRunDriver, RefreshSweep, ReplicatedApplyDriver, RetentionDriver, ServiceDriver, TrashDriver,
+    BlobReferenceDriver, BrowseDriver, BrowseRequest, CacheDriver, CachePurgeDriver, CacheRefresher, EcosystemDriver,
+    FsckDriver, ImportDriver, IndexSummaryDriver, IndexedProtocolDriver, IntentFinalizer, JobDriver, MetricsDriver,
+    NameDriver, PolicyDriver, PolicyDryRunDriver, RefreshSweep, ReplicatedApplyDriver, RetentionDriver, ServiceDriver,
+    TrashDriver,
 };
 use peryx_driver::state::{SEARCH_VIEW, ServingState, ViewBlock};
 use peryx_events::metrics::MetricFamily;
@@ -430,6 +431,19 @@ impl CacheDriver for PypiServing {
 
     fn cache_record_counts(&self, meta: &peryx_storage::meta::MetaStore) -> Result<Vec<(String, u64)>, String> {
         crate::admin::cache_record_counts(meta)
+    }
+}
+
+#[async_trait]
+impl CachePurgeDriver for PypiServing {
+    async fn purge_served_resource(
+        &self,
+        state: Arc<ServingState>,
+        index: &str,
+        resource: &str,
+        apply: bool,
+    ) -> Result<peryx_driver::serving::PurgeReport, String> {
+        cache::purge_served_project(&state, index, resource, apply).await
     }
 }
 

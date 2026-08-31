@@ -71,6 +71,19 @@ pub enum CachePurgeCommand {
     OrphanedBlobs(CachePurgeOrphanedBlobsArgs),
 }
 
+impl CachePurgeCommand {
+    /// Whether this purge will write. A purge without `--yes` only reports what it would remove, and
+    /// the metadata store is exclusive, so demanding a read-write handle for the preview would put it
+    /// out of reach whenever the server is up.
+    #[must_use]
+    pub const fn confirmed(&self) -> bool {
+        match self {
+            Self::Resource(args) => args.yes,
+            Self::OrphanedBlobs(args) => args.yes,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct CachePurgeResourceArgs {
     #[command(flatten)]

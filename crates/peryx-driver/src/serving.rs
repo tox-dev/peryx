@@ -284,6 +284,27 @@ pub trait CacheDriver: Send + Sync {
     fn cache_record_counts(&self, meta: &peryx_storage::meta::MetaStore) -> Result<Vec<(String, u64)>, String>;
 }
 
+/// The purge [`CacheDriver::purge_resource`] cannot do: one against a store the server is still
+/// serving from.
+///
+/// The offline purge takes a bare [`MetaStore`](peryx_storage::meta::MetaStore) so `peryx cache purge`
+/// runs with no server and no serving state at all, which also means it never meets a concurrent
+/// writer - the store is exclusive, so the CLI only ever holds it when the server does not. In-process
+/// the opposite is true: a refresh may be fetching the very page being removed, so an implementation
+/// fences the deletion against its own cache writers and reports the counts it actually removed.
+#[async_trait]
+pub trait CachePurgeDriver: Send + Sync {
+    /// # Errors
+    /// Returns an error when cached resource state cannot be read or removed.
+    async fn purge_served_resource(
+        &self,
+        state: Arc<ServingState>,
+        index: &str,
+        resource: &str,
+        apply: bool,
+    ) -> Result<PurgeReport, String>;
+}
+
 pub trait IndexSummaryDriver: Send + Sync {
     /// # Errors
     /// Returns an error when index state cannot be summarized.
@@ -396,6 +417,7 @@ pub trait CapabilityRegistrar {
     fn register_fsck(&mut self, ecosystem: Ecosystem, driver: Arc<dyn FsckDriver>);
     fn register_retention(&mut self, ecosystem: Ecosystem, driver: Arc<dyn RetentionDriver>);
     fn register_cache(&mut self, ecosystem: Ecosystem, driver: Arc<dyn CacheDriver>);
+    fn register_cache_purge(&mut self, ecosystem: Ecosystem, driver: Arc<dyn CachePurgeDriver>);
     fn register_index_summary(&mut self, ecosystem: Ecosystem, driver: Arc<dyn IndexSummaryDriver>);
     fn register_trash(&mut self, ecosystem: Ecosystem, driver: Arc<dyn TrashDriver>);
     fn register_import(&mut self, ecosystem: Ecosystem, driver: Arc<dyn ImportDriver>);

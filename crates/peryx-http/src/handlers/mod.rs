@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 
 mod acl;
 mod analytics;
+mod cache;
 pub(crate) mod discover;
 mod dispatch;
 mod grants;
@@ -30,6 +31,7 @@ use peryx_identity::{Action, Denial};
 
 pub use acl::{AclQuery, acl};
 pub use analytics::{analytics_groups, analytics_sources, analytics_timeline, analytics_top, analytics_unused};
+pub use cache::purge_cached_resource;
 pub use discover::{api, openapi_spec};
 pub use dispatch::{dispatch_delete, dispatch_get, dispatch_post, dispatch_put, not_found};
 pub use grants::{GrantsQuery, create_grant, inspect_grant, list_grants, revoke_grant};

@@ -287,6 +287,10 @@ fn repository_routes() -> RouteSet {
             post(handlers::enable_repository),
         )
         .route(
+            admin_mutation(RouteMethod::Post, "/+cache/purge"),
+            post(handlers::purge_cached_resource),
+        )
+        .route(
             admin_mutation(RouteMethod::Post, "/+retention/plan"),
             post(handlers::retention_plan),
         )
@@ -501,13 +505,13 @@ mod route_tests {
     fn process_routes_declare_complete_semantics() {
         let (_, descriptors) = service_routes().into_parts();
 
-        assert_eq!(descriptors.len(), 48);
+        assert_eq!(descriptors.len(), 49);
         assert_eq!(
             descriptors
                 .iter()
                 .filter(|descriptor| descriptor.posture() == RoutePosture::Mutation)
                 .count(),
-            15
+            16
         );
         assert_eq!(
             [
@@ -522,7 +526,7 @@ mod route_tests {
                     .filter(|descriptor| descriptor.rate_limit() == rate_limit)
                     .count()
             }),
-            [2, 2, 40, 4]
+            [2, 2, 41, 4]
         );
     }
 }
