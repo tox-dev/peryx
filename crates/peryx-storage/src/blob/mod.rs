@@ -8,6 +8,7 @@ mod durability;
 mod error;
 mod range;
 mod s3;
+mod stage;
 mod storage;
 mod store;
 
@@ -20,6 +21,7 @@ pub use error::{BlobError, BlobErrorContext, BlobErrorKind, BlobOperation, BlobS
 pub use peryx_core::{BlobDurability, BlobMetadata, Digest, DurabilityRequirement};
 pub use range::{RangeRequest, parse_range};
 pub use s3::{S3Addressing, S3Backend, S3Client, S3Config, S3ConfigError, S3Error, S3Settings};
+pub use stage::StageUsage;
 pub use storage::{BlobBlocking, BlobStorage};
 pub use store::{BlobEntry, BlobStore, PendingBlob, StagedBlob};
 
@@ -41,3 +43,7 @@ fn sync_parent(path: &Path) {
         let _ = directory.sync_all();
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/blob/sweep_tests.rs"]
+mod sweep_tests;

@@ -86,8 +86,8 @@ async fn test_recovery_leaves_a_journal_every_owner_has_not_released() {
     let journal = backend.multipart_journal(&Digest::of(b"package"));
     std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
     std::fs::write(&journal, []).unwrap();
-    let first = backend.owners.own(journal.clone());
-    let second = backend.owners.own(journal.clone());
+    let first = backend.staging().own(journal.clone());
+    let second = backend.staging().own(journal.clone());
 
     drop(second);
     assert_eq!(backend.recover_multipart_uploads().await.unwrap(), 0);

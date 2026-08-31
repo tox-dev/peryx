@@ -5,7 +5,7 @@ use super::backend::filesystem_worker;
 use super::s3::S3Backend;
 use super::{
     BlobBackend, BlobCapabilities, BlobEntry, BlobError, BlobLease, BlobMetadata, BlobOperation, BlobRead,
-    BlobScanError, BlobStaged, BlobStore, BlobWrite, Digest, DurabilityCapabilities, S3Config,
+    BlobScanError, BlobStaged, BlobStore, BlobWrite, Digest, DurabilityCapabilities, S3Config, StageUsage,
 };
 
 #[derive(Debug, Clone)]
@@ -173,16 +173,31 @@ impl BlobStorage {
         }
     }
 
-    /// Aborts the object-store uploads a previous process left unfinished. The filesystem backend
-    /// publishes through an atomic rename and journals no remote upload, so it recovers nothing.
+    /// Reclaims what a previous process abandoned, reporting how many items it recovered: the
+    /// object-store uploads it journaled and never finished, and the stage files it never published.
+    /// A stage a live write owns is kept. The filesystem backend publishes through an atomic rename
+    /// and journals no remote upload, so it only sweeps stages.
     ///
     /// # Errors
-    /// Returns a contextual backend error when the unfinished uploads cannot be listed.
+    /// Returns a contextual backend error when the journals or the store cannot be listed.
     pub async fn recover_incomplete_uploads(&self) -> Result<usize, BlobError> {
-        match &self.backend {
-            Backend::Filesystem(_) => Ok(0),
-            Backend::S3(backend) => Box::pin(backend.recover_multipart_uploads()).await,
+        let (store, aborted) = match &self.backend {
+            Backend::Filesystem(store) => (store.clone(), 0),
+            Backend::S3(backend) => (
+                backend.staging().clone(),
+                Box::pin(backend.recover_multipart_uploads()).await?,
+            ),
+        };
+        let swept = filesystem_worker(
+            tokio::task::spawn_blocking(move || store.sweep_stages()),
+            BlobOperation::Delete,
+            None,
+        )
+        .await?;
+        if swept > 0 {
+            tracing::info!(swept, "swept abandoned blob stages");
         }
+        Ok(aborted + swept)
     }
 
     /// # Errors
@@ -511,6 +526,18 @@ impl BlobBlocking<'_> {
         match self.backend {
             Backend::Filesystem(store) => filesystem_context(store.remove(digest), BlobOperation::Delete, Some(digest)),
             Backend::S3(_) => Err(unsupported_blocking(BlobOperation::Delete)),
+        }
+    }
+
+    /// Counts the stage files no write published, which [`Self::visit`] leaves out because they hold
+    /// no content-addressed blob.
+    ///
+    /// # Errors
+    /// Returns a contextual listing error.
+    pub fn stage_usage(&self) -> Result<StageUsage, BlobError> {
+        match self.backend {
+            Backend::Filesystem(store) => filesystem_context(store.stage_usage(), BlobOperation::List, None),
+            Backend::S3(_) => Err(unsupported_blocking(BlobOperation::List)),
         }
     }
 

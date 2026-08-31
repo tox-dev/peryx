@@ -38,53 +38,11 @@ pub struct S3Backend {
     client: S3Client,
     staging: BlobStore,
     acquisitions: Arc<Mutex<HashMap<PathBuf, Arc<UploadAcquisition>>>>,
-    owners: Arc<MultipartOwners>,
 }
 
 #[derive(Debug)]
 struct UploadAcquisition {
     result: watch::Receiver<Option<Result<String, String>>>,
-}
-
-/// Journals that commits in this process still drive, counted because concurrent commits of one
-/// digest share a journal. Recovery aborts only the uploads nothing here owns.
-#[derive(Debug, Default)]
-struct MultipartOwners(std::sync::Mutex<HashMap<PathBuf, usize>>);
-
-impl MultipartOwners {
-    fn own(self: &Arc<Self>, journal: PathBuf) -> OwnedJournal {
-        *self.owned().entry(journal.clone()).or_default() += 1;
-        OwnedJournal {
-            owners: Arc::clone(self),
-            journal,
-        }
-    }
-
-    fn owns(&self, journal: &Path) -> bool {
-        self.owned().contains_key(journal)
-    }
-
-    fn owned(&self) -> std::sync::MutexGuard<'_, HashMap<PathBuf, usize>> {
-        self.0.lock().expect("multipart ownership is never held across a panic")
-    }
-}
-
-struct OwnedJournal {
-    owners: Arc<MultipartOwners>,
-    journal: PathBuf,
-}
-
-impl Drop for OwnedJournal {
-    fn drop(&mut self) {
-        let mut owned = self.owners.owned();
-        let remaining = owned
-            .get_mut(&self.journal)
-            .expect("an owned journal stays registered until its guard drops");
-        *remaining -= 1;
-        if *remaining == 0 {
-            owned.remove(&self.journal);
-        }
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -101,8 +59,12 @@ impl S3Backend {
             client: S3Client::new(config),
             staging: BlobStore::new(staging_dir),
             acquisitions: Arc::default(),
-            owners: Arc::default(),
         }
+    }
+
+    /// The local store the backend stages writes, downloads, and multipart journals through.
+    pub(crate) const fn staging(&self) -> &BlobStore {
+        &self.staging
     }
 
     /// Aborts the multipart uploads a previous process journaled and never finished, and removes each
@@ -138,7 +100,7 @@ impl S3Backend {
             tracing::warn!(path = %journal.display(), "ignored a multipart journal not named for a digest");
             return false;
         };
-        if self.owners.owns(&journal) {
+        if self.staging.owns(&journal) {
             return false;
         }
         match self.abort_journaled_upload(&digest, &journal).await {
@@ -283,18 +245,15 @@ impl S3Backend {
         };
         let dir = self.staging.staging_dir();
         std::fs::create_dir_all(&dir).map_err(BlobError::from)?;
-        let (file, temp_path) = tempfile::Builder::new()
-            .prefix(".peryx-s3-")
-            .tempfile_in(&dir)
-            .map_err(BlobError::from)?
-            .into_parts();
+        let (file, temp_path) = super::store::stage_file(&dir).map_err(BlobError::from)?.into_parts();
+        let owned = self.staging.own(temp_path.to_path_buf());
         let mut file = tokio::fs::File::from_std(file);
         let mut body = stream_body(response);
         while let Some(chunk) = body.try_next().await? {
             file.write_all(&chunk).await.map_err(BlobError::from)?;
         }
         file.flush().await.map_err(BlobError::from)?;
-        Ok(BlobLease::downloaded(temp_path))
+        Ok(BlobLease::downloaded(temp_path, owned))
     }
 
     async fn upload(&self, staged: &BlobStaged) -> Result<(), BlobError> {
@@ -337,7 +296,7 @@ impl S3Backend {
     ) -> Result<(), S3Error> {
         let journal = self.multipart_journal(digest);
         // Recovery treats an unowned journal as abandoned, so hold this one for the whole commit.
-        let _owned = self.owners.own(journal.clone());
+        let _owned = self.staging.own(journal.clone());
         let mut conflicts = 0;
         let mut recovered_stale_upload = false;
         loop {

@@ -388,11 +388,13 @@ pub fn recover_job_attempts(state: &AppState) -> Result<usize, peryx_storage::me
     }
 }
 
-/// Abort the blob uploads a prior process left unfinished before this writer serves traffic. A
-/// read-only replica commits no blob of its own, so it journals none to recover.
+/// Reclaim what a prior process abandoned before this writer serves traffic.
+///
+/// Abort the blob uploads it left unfinished and sweep the stage files it never published. A
+/// read-only replica commits no blob of its own, so it journals and stages none to recover.
 ///
 /// # Errors
-/// Returns a blob error when the unfinished uploads cannot be listed.
+/// Returns a blob error when the unfinished uploads or the store cannot be listed.
 pub async fn recover_blob_uploads(state: &AppState) -> Result<usize, peryx_storage::blob::BlobError> {
     if state.serving.read_only {
         Ok(0)

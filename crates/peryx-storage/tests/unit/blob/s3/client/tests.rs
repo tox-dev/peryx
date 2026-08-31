@@ -587,7 +587,6 @@ async fn test_progressing_downloads_renew_the_body_timeout(#[case] operation: St
         client: get_client_with_timeout(streamed_response(b"package", Duration::from_secs(4)), timeout),
         staging: BlobStore::new(staging.path()),
         acquisitions: Arc::default(),
-        owners: Arc::default(),
     };
     let digest = Digest::of(b"package");
     let started = tokio::time::Instant::now();

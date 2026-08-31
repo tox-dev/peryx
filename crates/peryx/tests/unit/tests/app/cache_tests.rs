@@ -183,6 +183,7 @@ fn test_cache_size_reports_driver_and_blob_totals() {
         .write(b"payload")
         .unwrap();
     write_invalid_blob_path(directory.path());
+    write_abandoned_stage(directory.path());
     let mut output = Vec::new();
 
     cache_with_plugins(
@@ -204,6 +205,8 @@ fn test_cache_size_reports_driver_and_blob_totals() {
             ("index_pages".to_owned(), 2),
             ("invalid_blob_paths".to_owned(), 1),
             ("resource_records".to_owned(), 3),
+            ("stage_bytes".to_owned(), 6),
+            ("stage_files".to_owned(), 1),
             ("stale_index_pages".to_owned(), 1),
         ])
     );
@@ -423,6 +426,13 @@ fn write_invalid_blob_path(root: &std::path::Path) {
     let path = root.join("blobs/sha256/aa/bb/not-a-digest");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, b"x").unwrap();
+}
+
+/// The prefix a killed process leaves behind is the on-disk contract the sweep and this report share.
+fn write_abandoned_stage(root: &std::path::Path) {
+    let path = root.join("blobs/.peryx-stage-abandoned");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, b"staged").unwrap();
 }
 
 fn plugins() -> PluginRegistry {

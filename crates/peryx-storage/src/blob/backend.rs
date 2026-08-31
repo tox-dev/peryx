@@ -599,15 +599,19 @@ enum LeaseGuard {
     },
     Downloaded {
         _temporary: tempfile::TempPath,
+        _owned: super::stage::OwnedPath,
     },
 }
 
 impl BlobLease {
-    /// Keeps the downloaded file until the lease drops.
-    pub(crate) fn downloaded(temporary: tempfile::TempPath) -> Self {
+    /// Keeps the downloaded file until the lease drops, and a sweep off it for the same span.
+    pub(crate) fn downloaded(temporary: tempfile::TempPath, owned: super::stage::OwnedPath) -> Self {
         Self {
             path: temporary.to_path_buf(),
-            guard: LeaseGuard::Downloaded { _temporary: temporary },
+            guard: LeaseGuard::Downloaded {
+                _temporary: temporary,
+                _owned: owned,
+            },
         }
     }
 

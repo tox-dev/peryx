@@ -198,6 +198,7 @@ fn size_cache(
             Ok::<(), std::io::Error>(())
         })
         .context("scan blob files")?;
+    let stages = stores.blobs.blocking().stage_usage().context("scan blob stages")?;
 
     writeln!(out, "index_pages\t{index_pages}")?;
     writeln!(out, "stale_index_pages\t{stale_index_pages}")?;
@@ -205,6 +206,8 @@ fn size_cache(
     writeln!(out, "blob_files\t{blob_files}")?;
     writeln!(out, "blob_bytes\t{blob_bytes}")?;
     writeln!(out, "invalid_blob_paths\t{invalid_blob_paths}")?;
+    writeln!(out, "stage_files\t{}", stages.files)?;
+    writeln!(out, "stage_bytes\t{}", stages.bytes)?;
     for (label, count) in record_counts {
         writeln!(out, "{label}\t{count}")?;
     }

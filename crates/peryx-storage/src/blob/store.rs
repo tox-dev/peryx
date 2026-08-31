@@ -7,6 +7,7 @@ use std::time::Duration;
 use sha2::{Digest as _, Sha256};
 
 use super::error::{BlobError, BlobScanError};
+use super::stage::{OwnedPath, PathOwners, STAGE_MAX_AGE, STAGE_PREFIX, StageUsage, is_stage};
 use super::{BlobMetadata, Digest, DurabilityCapabilities, PlacementReceipt, sync_parent};
 
 /// An occupied digest path may contain corrupt bytes, so a failed no-clobber move verifies the resident
@@ -161,6 +162,7 @@ pub struct BlobEntry {
 pub struct BlobStore {
     root: PathBuf,
     workers: std::sync::Arc<tokio::sync::Semaphore>,
+    owners: std::sync::Arc<PathOwners>,
 }
 
 impl BlobStore {
@@ -170,7 +172,17 @@ impl BlobStore {
         Self {
             root: root.into(),
             workers: std::sync::Arc::new(tokio::sync::Semaphore::new(8)),
+            owners: std::sync::Arc::default(),
         }
+    }
+
+    /// Keeps a sweep off `path` until the returned guard drops.
+    pub(crate) fn own(&self, path: PathBuf) -> OwnedPath {
+        self.owners.own(path)
+    }
+
+    pub(crate) fn owns(&self, path: &Path) -> bool {
+        self.owners.owns(path)
     }
 
     pub(crate) async fn worker_permit(&self) -> tokio::sync::OwnedSemaphorePermit {
@@ -248,6 +260,67 @@ impl BlobStore {
         Ok(())
     }
 
+    /// Reclaims the stage files a process that died without running destructors left behind. A stage a
+    /// live write owns is kept, and so is one young enough to belong to a write another process on this
+    /// store is still streaming. Run this before the store serves traffic.
+    ///
+    /// # Errors
+    /// Returns [`super::BlobErrorKind::Io`] when the store cannot be walked.
+    pub(crate) fn sweep_stages(&self) -> Result<usize, BlobError> {
+        let now = std::time::SystemTime::now();
+        let mut swept = 0;
+        self.visit_stages(&mut |path, metadata| {
+            if self.owns(path) || now.duration_since(metadata.modified()?).unwrap_or_default() < STAGE_MAX_AGE {
+                return Ok(());
+            }
+            match std::fs::remove_file(path) {
+                Ok(()) => swept += 1,
+                // One stranded stage must not strand the rest; the next sweep retries it.
+                Err(error) => tracing::warn!(%error, path = %path.display(), "retained an abandoned blob stage"),
+            }
+            Ok(())
+        })?;
+        Ok(swept)
+    }
+
+    /// # Errors
+    /// Returns [`super::BlobErrorKind::Io`] when the store cannot be walked.
+    pub(crate) fn stage_usage(&self) -> Result<StageUsage, BlobError> {
+        let mut usage = StageUsage::default();
+        self.visit_stages(&mut |_, metadata| {
+            usage.files += 1;
+            usage.bytes += metadata.len();
+            Ok(())
+        })?;
+        Ok(usage)
+    }
+
+    /// Walks the whole store because a stage sits either in the root or in the fan-out directory its
+    /// write was addressed to.
+    fn visit_stages(
+        &self,
+        visit: &mut dyn FnMut(&Path, &std::fs::Metadata) -> Result<(), BlobError>,
+    ) -> Result<(), BlobError> {
+        let mut dirs = vec![self.root.clone()];
+        while let Some(dir) = dirs.pop() {
+            let entries = match std::fs::read_dir(&dir) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+            };
+            for entry in entries {
+                let entry = entry?;
+                let file_type = entry.file_type()?;
+                if file_type.is_dir() {
+                    dirs.push(entry.path());
+                } else if file_type.is_file() && is_stage(&entry.file_name()) {
+                    visit(&entry.path(), &entry.metadata()?)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Leaves a matching resident untouched and repairs a corrupt resident from `bytes`.
     ///
     /// # Errors
@@ -261,7 +334,8 @@ impl BlobStore {
             return Ok(digest);
         }
         std::fs::create_dir_all(&parent)?;
-        let mut tmp = tempfile::NamedTempFile::new_in(&parent)?;
+        let mut tmp = stage_file(&parent)?;
+        let _owned = self.own(tmp.path().to_owned());
         tmp.write_all(bytes)?;
         tmp.as_file().sync_all()?;
         publish(&dest, tmp.into_temp_path(), &digest, bytes.len() as u64)?;
@@ -343,7 +417,7 @@ impl BlobStore {
                 let file_type = entry.file_type().map_err(BlobError::from)?;
                 if file_type.is_dir() {
                     dirs.push(entry.path());
-                } else if file_type.is_file() {
+                } else if file_type.is_file() && !is_stage(&entry.file_name()) {
                     let path = entry.path();
                     visit(BlobEntry {
                         bytes: entry.metadata().map_err(BlobError::from)?.len(),
@@ -480,6 +554,11 @@ impl BlobStore {
     }
 }
 
+/// Names every unpublished temporary alike so a sweep can recognize an abandoned one.
+pub fn stage_file(directory: &Path) -> Result<tempfile::NamedTempFile, std::io::Error> {
+    tempfile::Builder::new().prefix(STAGE_PREFIX).tempfile_in(directory)
+}
+
 fn open_lease(path: &Path) -> Result<Option<std::fs::File>, BlobError> {
     match std::fs::File::open(path) {
         Ok(file) => Ok(Some(file)),
@@ -493,6 +572,7 @@ pub struct PendingBlob {
     /// Buffering avoids one syscall per network chunk.
     file: std::io::BufWriter<std::fs::File>,
     path: tempfile::TempPath,
+    owned: OwnedPath,
     hasher: Sha256,
     len: u64,
 }
@@ -500,6 +580,8 @@ pub struct PendingBlob {
 #[derive(Debug)]
 pub struct StagedBlob {
     path: tempfile::TempPath,
+    /// Held until the stage is published or discarded, so a concurrent sweep leaves it alone.
+    _owned: OwnedPath,
     digest: Digest,
     len: u64,
 }
@@ -509,10 +591,10 @@ impl BlobStore {
     /// Returns [`super::BlobErrorKind::Io`] if the store directory or temp file cannot be created.
     pub fn begin(&self) -> Result<PendingBlob, BlobError> {
         std::fs::create_dir_all(&self.root)?;
-        let temp = tempfile::NamedTempFile::new_in(&self.root)?;
-        let (file, path) = temp.into_parts();
+        let (file, path) = stage_file(&self.root)?.into_parts();
         Ok(PendingBlob {
             file: std::io::BufWriter::with_capacity(1 << 20, file),
+            owned: self.own(path.to_path_buf()),
             path,
             hasher: Sha256::new(),
             len: 0,
@@ -592,6 +674,7 @@ impl PendingBlob {
         file.sync_all()?;
         Ok(StagedBlob {
             path: self.path,
+            _owned: self.owned,
             digest: Digest::from_sha256(self.hasher.finalize().into()),
             len: self.len,
         })

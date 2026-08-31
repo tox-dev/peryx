@@ -940,6 +940,13 @@ impl Node {
         &self.identity
     }
 
+    /// The store the node serves from, which a restart keeps, so a test can plant or inspect state a
+    /// prior process would have left behind.
+    #[must_use]
+    pub fn data_dir(&self) -> &std::path::Path {
+        self.data.path()
+    }
+
     #[must_use]
     pub fn is_running(&mut self) -> bool {
         self.child

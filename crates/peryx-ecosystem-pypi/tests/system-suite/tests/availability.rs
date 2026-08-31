@@ -1,5 +1,7 @@
 use peryx_test_support as harness;
 
+#[path = "cases/blob_stage_sweep.rs"]
+mod blob_stage_sweep;
 #[path = "cases/dc_group_readiness.rs"]
 mod dc_group_readiness;
 #[path = "cases/failover.rs"]

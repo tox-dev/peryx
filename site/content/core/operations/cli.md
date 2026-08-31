@@ -174,7 +174,8 @@ peryx cache purge orphaned-blobs --yes
 digest filter applies to blob files. Age and size filters apply before output.
 
 `cache size` reports cached page counts, stale page counts, page record bytes, blob counts and bytes, invalid blob-path
-counts, and metadata table row counts.
+counts, unpublished stage counts and bytes, and metadata table row counts. Stage bytes belong to writes that never
+finished; a restart sweeps the ones no live write owns.
 
 `cache fsck` checks shared cache records and blob hashes, then dispatches implementation-owned records to the selected
 ecosystem checker. It prints `ok` when it finds no problem; otherwise it prints one row per problem and a `problems`
