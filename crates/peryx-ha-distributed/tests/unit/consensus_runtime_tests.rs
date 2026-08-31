@@ -859,10 +859,13 @@ async fn test_add_learner_rejects_an_address_static_membership_would_refuse(#[ca
     let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned()));
 
     let error = group
-        .submit(ControlCommand::AddLearner {
-            datacenter: "west".to_owned(),
-            address: address.to_owned(),
-        })
+        .submit(
+            None,
+            ControlCommand::AddLearner {
+                datacenter: "west".to_owned(),
+                address: address.to_owned(),
+            },
+        )
         .await
         .unwrap_err();
 
@@ -879,10 +882,13 @@ async fn test_add_learner_records_the_canonical_endpoint() {
     let group = OwnershipGroup::new(node.clone(), DatacenterId("east".to_owned()));
 
     group
-        .submit(ControlCommand::AddLearner {
-            datacenter: "west".to_owned(),
-            address: "https://WEST.internal:443".to_owned(),
-        })
+        .submit(
+            None,
+            ControlCommand::AddLearner {
+                datacenter: "west".to_owned(),
+                address: "https://WEST.internal:443".to_owned(),
+            },
+        )
         .await
         .unwrap();
 

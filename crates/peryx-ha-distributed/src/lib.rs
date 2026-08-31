@@ -317,6 +317,12 @@ mod completeness_tests;
 #[path = "../tests/unit/consensus_runtime_tests.rs"]
 mod consensus_runtime_tests;
 #[cfg(test)]
+#[path = "../tests/unit/control_recovery_tests.rs"]
+mod control_recovery_tests;
+#[cfg(test)]
+#[path = "../tests/unit/control_window_tests.rs"]
+mod control_window_tests;
+#[cfg(test)]
 #[path = "../tests/unit/dc_ack_tests.rs"]
 mod dc_ack_tests;
 #[cfg(test)]

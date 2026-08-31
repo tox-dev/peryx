@@ -160,8 +160,16 @@ promoting a datacenter that is already a voter, so a repeat is safe.
 
 A client stamps an `Idempotency-Key` header to make a command retry-safe. A repeat carrying a key that already committed
 reads back the first receipt without submitting a second command, so a client retry across a leader change, common for a
-membership command, mints one command rather than two. The node retains a bounded window of recent keys; a key that ages
-out of the window is submitted again, so a key is a short-lived retry token, not a durable dedup ledger.
+membership command, mints one command rather than two.
+
+The group replicates the key and the command it stands for, and an authority transfer or epoch advance records its
+receipt in the consensus decision that applies it. A retry served by a replacement leader, or by a node that has since
+restarted, therefore reads back the committed result rather than mutating a second time. A key stays replayable for 15
+minutes from its first use; a key that ages out of that window is submitted again, so a key is a retry token, not a
+durable dedup ledger.
+
+Reusing a key for a different command is refused with `409 Conflict` for as long as the key stays in the window,
+including after a restart.
 
 ### Failure statuses
 

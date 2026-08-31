@@ -688,7 +688,7 @@ impl MembershipControl for OwnershipGroup {
             command: command.clone(),
             now_unix: (self.clock)(),
         };
-        match applied_resolution(self.submit_ownership_command(attempt).await?)? {
+        match applied_resolution(self.submit_ownership_command(attempt).await?.data)? {
             ControlResolution::Committed(receipt) => Ok(ControlCommit::committed(receipt)),
             ControlResolution::Replayed(receipt) => Ok(ControlCommit::replayed(receipt)),
             ControlResolution::Rejected(rejection) => Err(reject_control(rejection)),
@@ -701,7 +701,7 @@ impl MembershipControl for OwnershipGroup {
                     receipt,
                     now_unix: (self.clock)(),
                 };
-                applied_receipt(self.submit_ownership_command(settlement).await?).map(ControlCommit::committed)
+                applied_receipt(self.submit_ownership_command(settlement).await?.data).map(ControlCommit::committed)
             }
         }
     }
@@ -815,7 +815,7 @@ impl OwnershipGroup {
     /// Returns an unchanged transfer as a committed no-op so a retry receives a receipt.
     async fn submit_ownership(&self, command: OwnershipCommand) -> Result<CommandReceipt, ControlError> {
         let response = self.submit_ownership_command(command).await?;
-        let outcome = applied_outcome(&response.data)?;
+        let outcome = applied_outcome(response.data)?;
         // Transfer and epoch commands have no voter transition to audit.
         Ok(committed_receipt(&response.log_id, outcome, Vec::new(), Vec::new()))
     }
@@ -842,23 +842,23 @@ fn reject_control(rejection: ControlRejection) -> ControlError {
 }
 
 /// A normal ownership entry always reaches the state machine, so a non-mutating answer means the
-/// committed entry and its response disagree.
-fn applied_outcome(response: &OwnershipResponse) -> Result<CommandOutcome, ControlError> {
+/// committed entry and the response to it disagree.
+pub fn applied_outcome(response: OwnershipResponse) -> Result<CommandOutcome, ControlError> {
     match response {
-        OwnershipResponse::Applied(effect) => control_outcome(effect).map_err(reject_control),
+        OwnershipResponse::Applied(effect) => control_outcome(&effect).map_err(reject_control),
         OwnershipResponse::NonMutating => Err(unapplied("authority command")),
     }
 }
 
-fn applied_resolution(response: ClientWriteResponse<TypeConfig>) -> Result<ControlResolution, ControlError> {
-    match response.data {
+pub fn applied_resolution(response: OwnershipResponse) -> Result<ControlResolution, ControlError> {
+    match response {
         OwnershipResponse::Applied(OwnershipEffect::Control(resolution)) => Ok(resolution),
         _ => Err(unapplied("control claim")),
     }
 }
 
-fn applied_receipt(response: ClientWriteResponse<TypeConfig>) -> Result<CommandReceipt, ControlError> {
-    match response.data {
+pub fn applied_receipt(response: OwnershipResponse) -> Result<CommandReceipt, ControlError> {
+    match response {
         OwnershipResponse::Applied(OwnershipEffect::ControlSettled(receipt)) => Ok(receipt),
         _ => Err(unapplied("control settlement")),
     }

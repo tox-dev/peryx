@@ -684,7 +684,10 @@ pub enum ControlRejection {
 
 /// The outcome a transfer or epoch-advance effect commits. Moving an authority to its current home is
 /// the requested end state, so it commits as a no-op rather than failing.
-#[must_use]
+///
+/// # Errors
+/// Returns the [`ControlRejection`] for an effect that left ownership unchanged and so recorded no
+/// receipt.
 pub const fn control_outcome(effect: &OwnershipEffect) -> Result<CommandOutcome, ControlRejection> {
     match effect {
         OwnershipEffect::Rejected(Rejection::SameHome) => Ok(CommandOutcome::NoChange),
