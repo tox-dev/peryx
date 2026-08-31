@@ -5084,6 +5084,7 @@ dependencies = [
  "peryx-storage",
  "peryx-test-support",
  "peryx-upstream",
+ "pin-project-lite",
  "redb",
  "reqwest",
  "rstest",

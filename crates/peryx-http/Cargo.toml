@@ -19,6 +19,7 @@ axum = { workspace = true, features = ["matched-path"] }
 base64.workspace = true
 http-body-util.workspace = true
 mediatype.workspace = true
+pin-project-lite.workspace = true
 tower = { workspace = true, features = ["util"] }
 tower-http.workspace = true
 serde.workspace = true

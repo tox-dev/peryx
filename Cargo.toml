@@ -50,7 +50,7 @@ peryx-web = { version = "0.0.1", path = "crates/peryx-web" }
 peryx-test-support = { version = "0.0.1", path = "crates/peryx-test-support" }
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "original-uri", "query", "tokio", "tower-log", "tracing"] }
 tower = "0.5.3"
-tower-http = { version = "0.7.0", features = ["set-header", "trace"] }
+tower-http = { version = "0.7.0", features = ["trace"] }
 http = "1.5"
 http-body = "1.1"
 http-body-util = "0.1.5"
@@ -81,6 +81,7 @@ cap-fs-ext = "4.0.3"
 cap-std = "4.0.3"
 httpdate = "1"
 futures-core = "0.3.34"
+pin-project-lite = "0.2.17"
 futures-util = "0.3"
 fs4 = "1.1.0"
 getrandom = "0.4"
