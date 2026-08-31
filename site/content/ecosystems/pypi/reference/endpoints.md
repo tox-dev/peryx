@@ -254,6 +254,11 @@ sha256 hash, but they do not get PEP 658 metadata. A download-only archive still
 reads a `.tar.bz2`, `.tar.xz`, `.tar.Z`, `.tgz`, or `.egg` version from its filename in the JSON views, rather than
 carrying the extension into the version string.
 
+Inspection releases the same bytes a download does, so it runs the file route's gates before it opens an archive: the
+index serve policy at the `serve` action, then the project's stored status. A quarantined project or a filename the
+policy denies answers `403` through `inspect` and through the archive browser exactly as it does through `files`, and
+the refusal lands before peryx fetches the artifact from upstream.
+
 ## Rate limits
 
 When `[rate_limit] enabled = true` and a client exceeds a configured route-class window, peryx returns

@@ -328,6 +328,13 @@ pub trait ServiceDriver: Send + Sync {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BrowseError {
     Denied(peryx_identity::Denial),
+    /// The ecosystem's own serving gates withhold this resource - a policy or project-status
+    /// decision rather than a credential question - carrying the media type and body the same
+    /// ecosystem's download route answers with, so browsing cannot reach what downloading refuses.
+    Refused {
+        content_type: String,
+        body: String,
+    },
     Internal(String),
 }
 
@@ -335,7 +342,7 @@ impl std::fmt::Display for BrowseError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Denied(_) => formatter.write_str("read access denied"),
-            Self::Internal(message) => formatter.write_str(message),
+            Self::Refused { body, .. } | Self::Internal(body) => formatter.write_str(body),
         }
     }
 }

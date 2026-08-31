@@ -462,6 +462,9 @@ fn browse_values(raw_query: &str) -> HashMap<String, String> {
 fn browse_driver_error(error: BrowseError) -> Response {
     match error {
         BrowseError::Denied(denial) => browse_denial(denial),
+        BrowseError::Refused { content_type, body } => {
+            (StatusCode::FORBIDDEN, [(header::CONTENT_TYPE, content_type)], body).into_response()
+        }
         BrowseError::Internal(message) => browse_error(message),
     }
 }

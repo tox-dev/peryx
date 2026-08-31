@@ -9,7 +9,7 @@ use peryx_storage::blob::BlobLease;
 
 use crate::cache::{self};
 
-use super::response::{CacheContext, file_response};
+use super::response::{CacheContext, cache_error_response, file_response};
 use super::{HttpResult, path_error_response, safe_filename};
 
 const MEMBER_SIZE_HEADER: &str = "x-peryx-member-size";
@@ -20,10 +20,12 @@ const MEMBER_NEXT_OFFSET_HEADER: &str = "x-peryx-next-offset";
 
 pub(super) async fn inspect_route(
     state: Arc<ServingState>,
-    route: String,
+    position: usize,
     target: &str,
     query: Option<&str>,
 ) -> Response {
+    let index = state.index_at(position);
+    let route = index.route.clone();
     let Some((sha256, rest)) = target.split_once('/') else {
         return not_found();
     };
@@ -50,6 +52,11 @@ pub(super) async fn inspect_route(
         Ok(filename) => filename,
         Err(err) => return path_error_response(&err),
     };
+    match super::get::download_refusal(&state, index, &filename, &digest).await {
+        Ok(Some(refusal)) => return refusal.into_response(),
+        Ok(None) => {}
+        Err(err) => return cache_error_response(&err, CacheContext::file(&route, sha256, &filename)),
+    }
     let path = match cache::file_path(state, digest, route.clone(), filename.clone()).await {
         Ok(path) => path,
         Err(err) => {

@@ -24,7 +24,7 @@ use rstest::rstest;
 use super::browse_http;
 
 const SESSION_KEY: &[u8] = b"a-token-realm-signing-secret-here";
-use crate::store::{CachedIndex, PypiStore as _};
+use crate::store::{CachedIndex, CachedPageWrite, PublishedFileWrite, PypiStore as _};
 use crate::upload::Uploaded;
 use crate::{CoreMetadata, File, Provenance, Yanked};
 
@@ -333,15 +333,7 @@ const WHEEL: &str = "flask-1.0-py3-none-any.whl";
 /// `Authorization` header.
 fn display_named_app() -> (tempfile::TempDir, Arc<AppState>, String, String) {
     let (directory, state) = app(vec![hosted(reader_acl("flask"))]);
-    let mut bytes = Vec::new();
-    {
-        let mut archive = zip::ZipWriter::new(std::io::Cursor::new(&mut bytes));
-        archive
-            .start_file("README.txt", zip::write::SimpleFileOptions::default())
-            .unwrap();
-        archive.write_all(b"read me\n").unwrap();
-        archive.finish().unwrap();
-    }
+    let bytes = readme_zip();
     let digest = Digest::of(&bytes);
     state.serving.blobs.blocking().put_bytes_as(&bytes, &digest).unwrap();
     let record = Uploaded {
@@ -539,4 +531,100 @@ fn writer_acl() -> IndexAcl {
             expires_at: None,
         }],
     }
+}
+
+/// The archive browser reaches an artifact's bytes by digest, so the file route's download gate has
+/// to stand in front of it as well: a quarantined project answers the browser with the same refusal
+/// the file route writes, for the member listing and for a member's contents alike. See #1524.
+#[rstest]
+#[case::listing("")]
+#[case::member("&member=README.txt")]
+#[tokio::test]
+async fn browse_http_refuses_the_archive_of_a_quarantined_project(#[case] suffix: &str) {
+    let (_directory, state, archive) = archive_browser_app(Some("quarantined"));
+
+    let (status, headers, body) = send(state, Method::GET, &format!("{archive}{suffix}"), None).await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        body,
+        "project for file \"flask-1.0-py3-none-any.whl\" is quarantined; downloads are disabled"
+    );
+    assert_eq!(headers[header::CONTENT_TYPE], "text/plain; charset=utf-8");
+}
+
+/// The gate leaves an active project's archive exactly where it was.
+#[rstest]
+#[case::listing("", "Archive members")]
+#[case::member("&member=README.txt", "README.txt")]
+#[tokio::test]
+async fn browse_http_browses_the_archive_of_an_active_project(#[case] suffix: &str, #[case] expected: &str) {
+    let (_directory, state, archive) = archive_browser_app(None);
+
+    let (status, _, body) = send(state, Method::GET, &format!("{archive}{suffix}"), None).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains(expected));
+}
+
+/// A cached index publishing one wheel of `flask` at `status`, its bytes already in the blob store,
+/// and the `/browse` URL of that wheel's archive.
+fn archive_browser_app(status: Option<&str>) -> (tempfile::TempDir, Arc<AppState>, String) {
+    let directory = tempfile::tempdir().unwrap();
+    let meta = MetaStore::open(directory.path().join("peryx.redb")).unwrap();
+    let bytes = readme_zip();
+    let digest = Digest::of(&bytes);
+    let url = "https://files.example/flask.whl";
+    let body = format!(
+        r#"{{"meta":{{"api-version":"1.1"}},"name":"flask","versions":["1.0"],"files":[{{"filename":"{WHEEL}","size":{},"url":"{url}","hashes":{{"sha256":"{}"}}}}]}}"#,
+        bytes.len(),
+        digest.as_str(),
+    );
+    meta.put_cached_page(CachedPageWrite {
+        key: "pypi/flask",
+        record: &CachedIndex {
+            etag: None,
+            last_serial: None,
+            fetched_at_unix: 900,
+            content_type: Some("application/vnd.pypi.simple.v1+json".to_owned()),
+            fresh_secs: None,
+            body: body.into_bytes(),
+        },
+        index: "pypi",
+        normalized: "flask",
+        display: "flask",
+        source: "pypi",
+        upstream: None,
+        project_status: status,
+        project_status_reason: status.map(|_| "malware"),
+        files: &[PublishedFileWrite {
+            sha256: digest.as_str().to_owned(),
+            filename: WHEEL.to_owned(),
+            url: url.to_owned(),
+            size: Some(bytes.len() as u64),
+            metadata: None,
+        }],
+        attestations: &[],
+    })
+    .unwrap();
+    let state = cached_app(&directory, meta);
+    state.serving.blobs.blocking().put_bytes_as(&bytes, &digest).unwrap();
+    let archive = format!(
+        "/browse?index=pypi&project=flask&sha256={}&file={WHEEL}",
+        digest.as_str()
+    );
+    (directory, state, archive)
+}
+
+fn readme_zip() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    {
+        let mut archive = zip::ZipWriter::new(std::io::Cursor::new(&mut bytes));
+        archive
+            .start_file("README.txt", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        archive.write_all(b"read me\n").unwrap();
+        archive.finish().unwrap();
+    }
+    bytes
 }

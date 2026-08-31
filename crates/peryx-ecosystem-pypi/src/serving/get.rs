@@ -13,7 +13,7 @@ use peryx_driver::state::ServingState;
 use peryx_events::metrics::Observation;
 use peryx_identity::{Denial, ResourceMatch};
 use peryx_index::{Index, IndexKind};
-use peryx_policy::PolicyAction;
+use peryx_policy::{PolicyAction, PolicyDenial};
 use peryx_storage::blob::{Digest, RangeRequest, parse_range};
 
 use crate::cache::{self, CacheError, PageOutcome};
@@ -22,9 +22,9 @@ use crate::policy::PypiPolicy;
 
 use super::inspect::inspect_route;
 use super::response::{
-    CacheContext, PageSerial, cache_error_response, detail_response, file_response, html_bytes_response,
-    index_response, json_bytes_response, legacy_bytes_response, legacy_json_response, page_serial,
-    policy_denial_response, provenance_response,
+    CacheContext, DownloadRefusal, PageSerial, cache_error_response, detail_response, file_response,
+    html_bytes_response, index_response, json_bytes_response, legacy_bytes_response, legacy_json_response, page_serial,
+    provenance_response,
 };
 use super::{Format, HttpResult, METADATA_FAMILY, PROVENANCE_FAMILY, negotiate, path_error_response, safe_filename};
 use crate::attestation;
@@ -249,7 +249,7 @@ async fn pypi_get(
         return file_route(state, index, file, headers, head).boxed().await;
     }
     if let Some(target) = rest.strip_prefix("inspect/") {
-        return inspect_route(state.clone(), index.route.clone(), target, uri.query())
+        return inspect_route(state.clone(), position, target, uri.query())
             .boxed()
             .await;
     }
@@ -386,26 +386,10 @@ async fn file_route(state: &Arc<ServingState>, index: &Index, file: &str, header
     if let Err(err) = cache::ensure_digest_clear(state, &digest) {
         return cache_error_response(&err, CacheContext::file(&route, digest.as_str(), &filename));
     }
-    match download_policy_response(state, index, &filename, &digest).await {
-        Ok(Some(response)) => return response,
+    match download_refusal(state, index, &filename, &digest).await {
+        Ok(Some(refusal)) => return refusal.into_response(),
         Ok(None) => {}
         Err(err) => return cache_error_response(&err, CacheContext::file(&route, digest.as_str(), &filename)),
-    }
-    match cache::download_status(state, index, &filename) {
-        Ok(status) if !status.offers_downloads() => {
-            return (
-                StatusCode::FORBIDDEN,
-                format!(
-                    "project for file {filename:?} is {}; downloads are disabled",
-                    status.marker()
-                ),
-            )
-                .into_response();
-        }
-        Ok(_) => {}
-        Err(err) => {
-            return cache_error_response(&err, CacheContext::file(&route, digest.as_str(), &filename));
-        }
     }
     if filename.ends_with(".metadata") {
         state.metrics.record(Observation::Ecosystem {
@@ -515,12 +499,31 @@ fn unchanged(etag: &str, modified: Option<SystemTime>) -> Response {
         .expect("not-modified response builds from validated header parts")
 }
 
-async fn download_policy_response(
+/// The gate every route that releases an artifact's bytes runs first: the index's serve policy,
+/// then the project's stored status.
+///
+/// Archive inspection and the UI archive browser share it with the file route, so quarantining a
+/// project or denying its files at [`PolicyAction::Serve`] cannot be walked around by asking for an
+/// archive's members instead of its bytes. See #1524.
+pub(super) async fn download_refusal(
     state: &ServingState,
     index: &Index,
     filename: &str,
     digest: &Digest,
-) -> Result<Option<Response>, cache::CacheError> {
+) -> Result<Option<DownloadRefusal>, cache::CacheError> {
+    if let Some(denial) = download_policy_denial(state, index, filename, digest).await? {
+        return Ok(Some(DownloadRefusal::policy(&denial)));
+    }
+    let status = cache::download_status(state, index, filename)?;
+    Ok((!status.offers_downloads()).then(|| DownloadRefusal::withheld(filename, status)))
+}
+
+async fn download_policy_denial(
+    state: &ServingState,
+    index: &Index,
+    filename: &str,
+    digest: &Digest,
+) -> Result<Option<PolicyDenial>, cache::CacheError> {
     // No configured policy can deny a download, so skip the two blocking stats it would take to
     // learn the file size. This is the zero-config default and keeps the warm wheel path off the
     // filesystem until the byte stream itself opens the file.
@@ -532,11 +535,7 @@ async fn download_policy_response(
     } else {
         cache::registered_file_size(state, digest)?
     };
-    Ok(index
-        .policy
-        .check_download(PolicyAction::Serve, filename, size)
-        .err()
-        .map(|denial| policy_denial_response(&denial)))
+    Ok(index.policy.check_download(PolicyAction::Serve, filename, size).err())
 }
 
 struct LegacyJsonTarget {

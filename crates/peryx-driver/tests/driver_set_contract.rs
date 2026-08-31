@@ -367,6 +367,13 @@ fn browse_errors_preserve_public_messages() {
             BrowseError::Denied(peryx_identity::Denial::Forbidden),
             "read access denied",
         ),
+        (
+            BrowseError::Refused {
+                content_type: "text/plain; charset=utf-8".to_owned(),
+                body: "quarantined".to_owned(),
+            },
+            "quarantined",
+        ),
         (BrowseError::Internal("browse".to_owned()), "browse"),
     ] {
         assert_eq!(error.to_string(), expected);

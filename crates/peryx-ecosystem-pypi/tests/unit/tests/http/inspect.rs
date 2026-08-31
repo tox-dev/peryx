@@ -1,4 +1,5 @@
 use super::support::*;
+use peryx_identity::IndexAcl;
 
 #[tokio::test]
 async fn test_inspect_lists_wheel_members() {
@@ -341,4 +342,138 @@ async fn test_inspect_bad_digest_and_missing_paths() {
     let uri = format!("/hosted/inspect/{}/ghost.whl", "a".repeat(64));
     let (status, ..) = get(&h.state, &uri, None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+/// The file route's download gate stands in front of archive inspection too, or quarantining a
+/// project would leave every text member of its artifacts readable. The refusal is the file route's
+/// own, and it lands before the wheel is pulled from upstream. See #1524.
+#[tokio::test]
+async fn test_inspect_refuses_a_quarantined_project_without_fetching_it() {
+    let h = harness().await;
+    let wheel = fixture_wheel();
+    let digest = Digest::of(&wheel);
+    mount_inspectable_project(&h, "quarantined", &wheel, &digest, 0).await;
+    get(&h.state, "/pypi/simple/peryxpkg/", Some("application/json")).await;
+
+    let uri = format!("/pypi/inspect/{}/peryxpkg-1.0-py3-none-any.whl", digest.as_str());
+    let (status, headers, body) = get(&h.state, &uri, None).await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        body,
+        "project for file \"peryxpkg-1.0-py3-none-any.whl\" is quarantined; downloads are disabled"
+    );
+    assert_eq!(headers.get(header::CONTENT_TYPE).unwrap(), "text/plain; charset=utf-8");
+    assert!(h.state.serving.blobs.head(&digest).await.unwrap().is_none());
+}
+/// The same refusal answers a member read, not only the listing: `?member=` is the form that hands
+/// back the artifact's contents.
+#[tokio::test]
+async fn test_inspect_refuses_a_quarantined_project_member_read() {
+    let h = harness().await;
+    let wheel = fixture_wheel();
+    let digest = Digest::of(&wheel);
+    mount_inspectable_project(&h, "quarantined", &wheel, &digest, 0).await;
+    get(&h.state, "/pypi/simple/peryxpkg/", Some("application/json")).await;
+
+    let uri = format!(
+        "/pypi/inspect/{}/peryxpkg-1.0-py3-none-any.whl?member=peryxpkg-1.0.dist-info%2FMETADATA",
+        digest.as_str()
+    );
+    let (status, _, body) = get(&h.state, &uri, None).await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        body,
+        "project for file \"peryxpkg-1.0-py3-none-any.whl\" is quarantined; downloads are disabled"
+    );
+}
+/// The refusal says nothing about whether the digest names anything: an unknown artifact on a
+/// quarantined project answers exactly what a cached one does.
+#[tokio::test]
+async fn test_inspect_refusal_does_not_disclose_whether_the_artifact_exists() {
+    let h = harness().await;
+    let wheel = fixture_wheel();
+    let digest = Digest::of(&wheel);
+    mount_inspectable_project(&h, "quarantined", &wheel, &digest, 0).await;
+    get(&h.state, "/pypi/simple/peryxpkg/", Some("application/json")).await;
+
+    let known = format!("/pypi/inspect/{}/peryxpkg-1.0-py3-none-any.whl", digest.as_str());
+    let unknown = format!("/pypi/inspect/{}/peryxpkg-1.0-py3-none-any.whl", "b".repeat(64));
+
+    assert_eq!(get(&h.state, &known, None).await, get(&h.state, &unknown, None).await);
+}
+/// The gate is a gate, not a wall: the same project inspects normally while its status is active.
+#[tokio::test]
+async fn test_inspect_lists_members_of_an_active_project() {
+    let h = harness().await;
+    let wheel = fixture_wheel();
+    let digest = Digest::of(&wheel);
+    mount_inspectable_project(&h, "active", &wheel, &digest, 1).await;
+    get(&h.state, "/pypi/simple/peryxpkg/", Some("application/json")).await;
+
+    let uri = format!("/pypi/inspect/{}/peryxpkg-1.0-py3-none-any.whl", digest.as_str());
+    let (status, _, body) = get(&h.state, &uri, None).await;
+
+    let listing: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(listing["members"][0]["path"], "peryxpkg-1.0.dist-info/METADATA");
+}
+/// A cached `peryxpkg` whose upstream page carries `status`, with its wheel downloadable exactly
+/// `fetches` times - `0` proves the gate refuses before reaching for the bytes.
+async fn mount_inspectable_project(h: &Harness, status: &str, wheel: &[u8], digest: &Digest, fetches: u64) {
+    let file_url = format!("{}/files/peryxpkg.whl", h.server.uri());
+    let page = format!(
+        "{{\"meta\":{{\"api-version\":\"1.4\"}},\
+         \"project-status\":{{\"status\":\"{status}\",\"reason\":\"malware\"}},\
+         \"name\":\"peryxpkg\",\"versions\":[\"1.0\"],\
+         \"files\":[{{\"filename\":\"peryxpkg-1.0-py3-none-any.whl\",\"size\":{},\"url\":\"{file_url}\",\
+         \"hashes\":{{\"sha256\":\"{}\"}}}}]}}",
+        wheel.len(),
+        digest.as_str(),
+    );
+    Mock::given(method("GET"))
+        .and(path("/simple/peryxpkg/"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(page.into_bytes(), "application/vnd.pypi.simple.v1+json"))
+        .mount(&h.server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/files/peryxpkg.whl"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(wheel.to_vec()))
+        .expect(fetches)
+        .mount(&h.server)
+        .await;
+}
+/// A store that cannot answer the project's status refuses inspection rather than falling through
+/// to the archive.
+#[tokio::test]
+async fn test_inspect_download_status_store_error_is_server_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("peryx.redb");
+    MetaStore::open(&db_path).unwrap();
+    put_raw_project_status(&db_path, "pypi/peryxpkg", b"not json");
+    let meta = MetaStore::open(&db_path).unwrap();
+    let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
+    let upstream = UpstreamClient::new("http://127.0.0.1:0/simple/").unwrap();
+    let indexes = vec![Index {
+        name: "pypi".to_owned(),
+        route: "pypi".to_owned(),
+        ecosystem: crate::ECOSYSTEM,
+        kind: IndexKind::Cached {
+            client: upstream,
+            offline: false,
+        },
+        policy: Policy::default(),
+        acl: IndexAcl::default(),
+    }];
+    let state = crate::tests::wired(AppState::new(meta, blobs, 60, indexes));
+
+    let uri = format!(
+        "/pypi/inspect/{}/peryxpkg-1.0-py3-none-any.whl",
+        Digest::of(b"wheel").as_str()
+    );
+    let (status, _, body) = get(&state, &uri, None).await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(body.contains("file download on index \"pypi\""));
+    assert!(body.contains("metadata store error"));
 }

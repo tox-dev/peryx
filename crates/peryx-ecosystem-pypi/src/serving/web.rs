@@ -84,6 +84,9 @@ pub(super) async fn browse_http(state: Arc<AppState>, request: Request) -> Respo
         Ok(Some(page)) => no_store(Json(page).into_response()),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(BrowseError::Denied(denial)) => denial_response(denial),
+        Err(BrowseError::Refused { content_type, body }) => {
+            (StatusCode::FORBIDDEN, [(header::CONTENT_TYPE, content_type)], body).into_response()
+        }
         Err(BrowseError::Internal(message)) => (StatusCode::INTERNAL_SERVER_ERROR, message).into_response(),
     }
 }
@@ -106,8 +109,7 @@ pub(super) async fn browse(
         if let Some((digest, filename)) = query.archive()? {
             return archive_page(state, position, project, digest, filename, query)
                 .await
-                .map(Some)
-                .map_err(BrowseError::from);
+                .map(Some);
         }
         return project_page(state, position, project)
             .await?
@@ -477,12 +479,13 @@ async fn archive_page(
     digest: String,
     filename: String,
     query: BrowseQuery,
-) -> Result<BrowsePage, String> {
+) -> Result<BrowsePage, BrowseError> {
     let lease = artifact_path_in_project(state, position, project.clone(), digest.clone(), filename.clone()).await?;
     match query.member.clone() {
         Some(member) => archive_member_page(query, project, digest, filename, member, lease).await,
         None => archive_listing_page(query, project, digest, filename, lease).await,
     }
+    .map_err(BrowseError::from)
 }
 
 async fn archive_listing_page(
@@ -1039,29 +1042,44 @@ async fn metadata_for(
 /// fetching it through the proxy on a miss. The file must be a member of `project`: the archive
 /// browser reaches this by digest, so the membership check keeps one project's digest from resolving
 /// another's blob past the caller's already-authorized read of `project`.
+///
+/// The download gate runs ahead of both, so the browser refuses a quarantined or policy-denied
+/// artifact exactly as the file route does, and refuses it before resolving a page upstream. A
+/// quarantine withholds the project's files from that page, so a membership check running first
+/// would answer a quarantine with a missing-member error instead.
 pub(super) async fn artifact_path_in_project(
     state: Arc<ServingState>,
     position: usize,
     project: String,
     digest_hex: String,
     filename: String,
-) -> Result<BlobLease, String> {
+) -> Result<BlobLease, BrowseError> {
     let index = state.index_at(position);
     let route = index.route.clone();
     let normalized = normalize_name(&project);
     let Some(digest) = Digest::from_hex(&digest_hex) else {
-        return Err(format!(
+        return Err(BrowseError::Internal(format!(
             "artifact on index {route:?} for file {filename:?}: invalid sha256 digest {digest_hex:?}"
-        ));
+        )));
     };
+    let context = |err: cache::CacheError| {
+        BrowseError::Internal(format!(
+            "artifact on index {route:?} for project {normalized:?} file {filename:?}: {}",
+            err.user_message()
+        ))
+    };
+    if let Some(refusal) = super::get::download_refusal(&state, index, &filename, &digest)
+        .await
+        .map_err(context)?
+    {
+        return Err(BrowseError::Refused {
+            content_type: refusal.content_type.to_owned(),
+            body: refusal.body,
+        });
+    }
     let belongs = cache::resolve_detail(&state, index, &normalized, &route)
         .await
-        .map_err(|err| {
-            format!(
-                "artifact on index {route:?} for project {normalized:?} file {filename:?}: {}",
-                err.user_message()
-            )
-        })?
+        .map_err(context)?
         .is_some_and(|detail| {
             detail
                 .files
@@ -1069,16 +1087,16 @@ pub(super) async fn artifact_path_in_project(
                 .any(|file| file.filename == filename && file.sha256() == Some(digest.as_str()))
         });
     if !belongs {
-        return Err(format!(
+        return Err(BrowseError::Internal(format!(
             "artifact on index {route:?}: file {filename:?} with digest {digest_hex} is not a member of project {normalized:?}"
-        ));
+        )));
     }
     cache::file_path(state, digest, route.clone(), filename.clone())
         .await
         .map_err(|err| {
-            format!(
+            BrowseError::Internal(format!(
                 "artifact on index {route:?} for file {filename:?} with digest {digest_hex}: {}",
                 err.user_message()
-            )
+            ))
         })
 }

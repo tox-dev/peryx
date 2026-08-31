@@ -709,3 +709,26 @@ async fn test_browse_manifest_on_root_route_uses_bare_repository_name() {
     let (state, _app) = super::app_with(&dir, index);
     assert!(browse(&state, 0, "project=library%2Fnginx&ref=1.0").await.is_none());
 }
+
+/// A browse driver may withhold a resource on its own serving gates rather than on the credential.
+/// The refusal carries the body and media type the driver's download route answers with, and the
+/// registry hands both back unchanged.
+#[tokio::test]
+async fn test_browse_driver_error_answers_a_refusal_with_the_drivers_own_body() {
+    let response = crate::browse_driver_error(peryx_driver::serving::BrowseError::Refused {
+        content_type: "text/plain; charset=utf-8".to_owned(),
+        body: "repository is quarantined".to_owned(),
+    });
+
+    let status = response.status();
+    let content_type = response.headers()[axum::http::header::CONTENT_TYPE].clone();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(
+        (status, content_type.to_str().unwrap(), body.as_ref()),
+        (
+            StatusCode::FORBIDDEN,
+            "text/plain; charset=utf-8",
+            b"repository is quarantined".as_slice()
+        )
+    );
+}

@@ -284,12 +284,48 @@ pub(super) fn cache_error_response(err: &CacheError, context: CacheContext<'_>) 
 }
 
 pub(super) fn policy_denial_response(denial: &PolicyDenial) -> Response {
-    (
-        StatusCode::FORBIDDEN,
-        [(header::CONTENT_TYPE, "application/json")],
-        serde_json::to_vec(&PypiPolicyDenial::from(denial)).expect("policy denial always serializes"),
-    )
-        .into_response()
+    DownloadRefusal::policy(denial).into_response()
+}
+
+/// A refusal to release an artifact's bytes: the index policy denied the file, or the project's
+/// stored status withholds downloads.
+///
+/// It carries the body rather than a finished response because the archive browser answers through
+/// [`peryx_driver::serving::BrowseError`] rather than a [`Response`], and has to hand back exactly
+/// what the file route writes.
+pub(super) struct DownloadRefusal {
+    pub(super) content_type: &'static str,
+    pub(super) body: String,
+}
+
+impl DownloadRefusal {
+    pub(super) fn policy(denial: &PolicyDenial) -> Self {
+        Self {
+            content_type: "application/json",
+            body: serde_json::to_string(&PypiPolicyDenial::from(denial)).expect("policy denial always serializes"),
+        }
+    }
+
+    pub(super) fn withheld(filename: &str, status: crate::ProjectStatus) -> Self {
+        Self {
+            content_type: "text/plain; charset=utf-8",
+            body: format!(
+                "project for file {filename:?} is {}; downloads are disabled",
+                status.marker()
+            ),
+        }
+    }
+}
+
+impl IntoResponse for DownloadRefusal {
+    fn into_response(self) -> Response {
+        (
+            StatusCode::FORBIDDEN,
+            [(header::CONTENT_TYPE, self.content_type)],
+            self.body,
+        )
+            .into_response()
+    }
 }
 
 #[derive(serde::Serialize)]

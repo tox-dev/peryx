@@ -588,3 +588,23 @@ fn committed_projects(meta: &MetaStore) -> u64 {
 fn committed_versions(meta: &MetaStore) -> u64 {
     meta.quota_resource_usage("hosted", "alpha").unwrap().groups.committed
 }
+/// Inspection releases an artifact's members, so the serve policy that refuses its bytes has to
+/// refuse them too, with the denial body the file route answers with. See #1524.
+#[tokio::test]
+async fn test_policy_rejects_archive_inspection() {
+    let overlay_policy = policy(|_neutral, pypi| {
+        pypi.block_wheel_pythons = vec!["py3".to_owned()];
+    });
+    let h = harness_with_policies(true, true, Policy::default(), Policy::default(), overlay_policy).await;
+    let digest = Digest::of(b"wheel");
+    let uri = format!("/root/pypi/inspect/{}/flask-1.0-py3-none-any.whl", digest.as_str());
+
+    let (status, headers, body) = get(&h.state, &uri, None).await;
+
+    let denial: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(headers.get(header::CONTENT_TYPE).unwrap(), "application/json");
+    assert_eq!(denial["action"], "serve");
+    assert_eq!(denial["project"], "flask");
+    assert_eq!(denial["rule"], "wheel-python-block-list");
+}
