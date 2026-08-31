@@ -118,14 +118,16 @@ impl ReplicaLoop {
         let meta = &self.meta;
         let page_size = self.page_size;
         let apply = move |page: ChangePage| -> Result<u64, SyncError> {
-            let (outcome, changed, _referenced) = Replica::new(meta, page_size).apply_page(page)?;
+            let applied = Replica::new(meta, page_size).apply_page(page)?;
+            let outcome = applied.outcome;
             views.apply(
                 ReplicaPage {
                     changes: outcome.changes,
                     serial: outcome.serial,
                     primary_serial: outcome.primary_serial,
+                    revocations: applied.revocations,
                 },
-                &changed,
+                &applied.changed_keys,
             );
             views.publish_applied_frontier(outcome.serial);
             Ok(outcome.serial)

@@ -1,7 +1,9 @@
+use std::str::FromStr as _;
 use std::sync::Arc;
 
 use peryx_core::Ecosystem;
 use peryx_ha::{ReplicaPage, ReplicaViewApplier as _};
+use peryx_identity::{ArtifactDigest, DigestDecision, RevocationReason, UserId};
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
 
@@ -39,6 +41,7 @@ fn test_empty_replica_page_changes_nothing() {
             changes: 0,
             serial: 1,
             primary_serial: 1,
+            revocations: Vec::new(),
         },
         &[],
     );
@@ -55,6 +58,7 @@ fn test_replica_page_advances_search_view() {
             changes: 1,
             serial: 1,
             primary_serial: 1,
+            revocations: Vec::new(),
         },
         &["resource".to_owned()],
     );
@@ -72,6 +76,7 @@ fn test_replica_page_advances_the_readable_frontier() {
             changes: 1,
             serial: 1,
             primary_serial: 1,
+            revocations: Vec::new(),
         },
         &["resource".to_owned()],
     );
@@ -89,6 +94,7 @@ fn test_blocked_replica_view_does_not_advance_the_frontier() {
             changes: 1,
             serial: 1,
             primary_serial: 1,
+            revocations: Vec::new(),
         },
         &["resource".to_owned()],
     );
@@ -115,6 +121,7 @@ fn test_replica_apply_surfaces_a_frontier_write_failure_without_advancing() {
             changes: 1,
             serial: 1,
             primary_serial: 1,
+            revocations: Vec::new(),
         },
         &[],
     );
@@ -125,5 +132,72 @@ fn test_replica_apply_surfaces_a_frontier_write_failure_without_advancing() {
             .view_frontiers()
             .unwrap()
             .is_empty()
+    );
+}
+
+fn revoked_digest(meta: &MetaStore) -> ArtifactDigest {
+    let digest = ArtifactDigest::from_str(&format!("sha256:{:064x}", 1)).unwrap();
+    meta.put_digest_revocation(
+        &digest,
+        &RevocationReason::new("incident").unwrap(),
+        &UserId::random(),
+        10,
+    )
+    .unwrap();
+    digest
+}
+
+/// The replica commits the row before the page reaches the applier, so the cached decision the node
+/// formed under the old rows is what stands between a follower and the bytes the writer revoked.
+#[test]
+fn test_replica_page_retires_the_decision_it_revoked() {
+    let (_dir, state, meta) = state();
+    let digest = ArtifactDigest::from_str(&format!("sha256:{:064x}", 1)).unwrap();
+    assert_eq!(
+        state.serving.revocations.decision(&digest).unwrap(),
+        DigestDecision::Clear
+    );
+    revoked_digest(&meta);
+
+    state.apply(
+        ReplicaPage {
+            changes: 1,
+            serial: 1,
+            primary_serial: 1,
+            revocations: vec![digest.clone()],
+        },
+        &[],
+    );
+
+    assert_eq!(
+        state.serving.revocations.decision(&digest).unwrap(),
+        DigestDecision::Revoked
+    );
+}
+
+/// Every page would otherwise pay a full decision-cache flush on the download path.
+#[test]
+fn test_replica_page_without_revocations_keeps_the_decision_cache() {
+    let (_dir, state, meta) = state();
+    let digest = revoked_digest(&meta);
+    assert_eq!(
+        state.serving.revocations.decision(&digest).unwrap(),
+        DigestDecision::Revoked
+    );
+    meta.lift_digest_revocation(&digest, &UserId::random(), 11).unwrap();
+
+    state.apply(
+        ReplicaPage {
+            changes: 1,
+            serial: 1,
+            primary_serial: 1,
+            revocations: Vec::new(),
+        },
+        &[],
+    );
+
+    assert_eq!(
+        state.serving.revocations.decision(&digest).unwrap(),
+        DigestDecision::Revoked
     );
 }

@@ -20,6 +20,7 @@ fn replicated_registry_keys_do_not_block_the_shared_frontier() {
             changes: 1,
             serial: 1,
             primary_serial: 1,
+            revocations: Vec::new(),
         },
         &[key],
     );
@@ -69,6 +70,7 @@ fn replay_keys(state: &AppState, changed_keys: &[String]) {
             changes: 1,
             serial,
             primary_serial: serial,
+            revocations: Vec::new(),
         },
         changed_keys,
     );

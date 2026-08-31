@@ -38,6 +38,7 @@ impl peryx_ha::ReplicaViewApplier for AppState {
             "replica page applied"
         );
         self.serving.bump_search_epoch();
+        self.serving.revocations.invalidate_replicated(&page.revocations);
         let mut blocked = None;
         for driver in self.replicated_apply_drivers() {
             if let Err(block) = driver.apply_replicated_changes(&self.serving, changed_keys) {

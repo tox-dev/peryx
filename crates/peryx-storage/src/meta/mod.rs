@@ -34,6 +34,7 @@ mod repository;
 mod revocation;
 mod role_grant;
 mod scoped_token;
+mod server_mutation;
 mod transfer_audit;
 mod user;
 mod version;
@@ -103,6 +104,7 @@ pub use scoped_token::{
     NewScopedToken, RevokeScopedTokenOutcome, ScopedTokenPage, ScopedTokenQuery, ScopedTokenQueryError,
     ScopedTokenRecord, ScopedTokenWriteError,
 };
+pub use server_mutation::ServerMutation;
 pub use user::{StoredPasswordVerifier, UserStoreError};
 pub use version::VersionPrecondition;
 pub use webhook::{

@@ -62,18 +62,24 @@ pub fn read_changelog_page(meta: &MetaStore, after: i64, limit: usize) -> Result
 ///
 /// Storage owns the serial, so this replaces the serialized placeholder with the record key.
 ///
+/// The log is shared: peryx writes its own core changes to it, a digest revocation among them, so a
+/// changelog page skips the entries that carry a core operation rather than failing on them. Warehouse
+/// consumers already resume from a serial rather than a count, and [`ChangelogPage`] only requires the
+/// serials it returns to increase, so a page with core entries left out stays a valid snapshot.
+///
 /// # Errors
-/// Returns a store error if the snapshot cannot be read or an entry cannot be decoded.
+/// Returns a store error if the snapshot cannot be read or a `PyPI` entry cannot be decoded.
 pub fn read_journal_entries(meta: &MetaStore, after: u64, limit: usize) -> Result<JournalSnapshot, MetaError> {
     let (current_serial, records) = meta.journal_page_after(after, limit)?;
-    let entries = records
-        .into_iter()
-        .map(|record| {
-            let mut entry = serde_json::from_slice::<JournalEntry>(&record.payload)?;
-            entry.serial = record.serial;
-            Ok(entry)
-        })
-        .collect::<Result<_, serde_json::Error>>()?;
+    let mut entries = Vec::with_capacity(records.len());
+    for record in records {
+        if peryx_storage::meta::ServerMutation::decode(&record.payload)?.is_some() {
+            continue;
+        }
+        let mut entry = serde_json::from_slice::<JournalEntry>(&record.payload)?;
+        entry.serial = record.serial;
+        entries.push(entry);
+    }
     Ok(JournalSnapshot {
         current_serial,
         entries,

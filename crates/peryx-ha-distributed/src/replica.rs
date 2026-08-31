@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
 
+use peryx_identity::ArtifactDigest;
 use peryx_storage::blob::Digest;
-use peryx_storage::meta::{DriverBlobReference, DriverMutation, JournalEntry, MetaStore};
+use peryx_storage::meta::{DriverBlobReference, DriverMutation, JournalEntry, MetaStore, ServerMutation};
 use serde::{Deserialize, Serialize};
 
 use crate::error::SyncError;
@@ -38,8 +39,16 @@ pub struct Replica<'store> {
     page_limit: NonZeroUsize,
 }
 
-/// Sync result, changed metadata keys, and referenced `(digest, size)` pairs.
-pub type AppliedPage = (SyncOutcome, Vec<String>, Vec<(Digest, u64)>);
+/// What one applied page changed locally, for the views that have to catch up with it.
+pub struct AppliedPage {
+    pub outcome: SyncOutcome,
+    /// Driver rows the page wrote or removed.
+    pub changed_keys: Vec<String>,
+    /// `(digest, size)` pairs the page's entries reference, for the blob plane to fetch.
+    pub referenced: Vec<(Digest, u64)>,
+    /// Digests whose revocation row the page rewrote, whose cached serving decisions are now stale.
+    pub revocations: Vec<ArtifactDigest>,
+}
 
 impl<'store> Replica<'store> {
     #[must_use]
@@ -96,21 +105,23 @@ impl<'store> Replica<'store> {
         } = ValidatedPage::new(page, after, self.page_limit.get(), state.as_ref())?;
         let referenced = referenced.into_values().collect();
         if changes.is_empty() {
-            return Ok((
-                SyncOutcome {
+            return Ok(AppliedPage {
+                outcome: SyncOutcome {
                     changes: 0,
                     serial: after,
                     primary_serial,
                 },
-                Vec::new(),
+                changed_keys: Vec::new(),
                 referenced,
-            ));
+                revocations: Vec::new(),
+            });
         }
         let next_state = serde_json::to_vec(&ReplicaState {
             source,
             serial: through,
         })?;
         let change_count = changes.len();
+        let mut revocations = Vec::new();
         self.meta.commit_replica_txn(after, |txn| {
             let mut journal = Vec::with_capacity(changes.len());
             for change in changes {
@@ -126,6 +137,11 @@ impl<'store> Replica<'store> {
                             mutations.push(DriverMutation::Delete { key });
                         }
                     }
+                }
+                if let Some(server) = change.server {
+                    let ServerMutation::DigestRevocation { record } = &server;
+                    revocations.push(record.digest.clone());
+                    txn.apply_server_mutation(&server)?;
                 }
                 journal.push(JournalEntry {
                     payload: change.event,
@@ -143,15 +159,16 @@ impl<'store> Replica<'store> {
             txn.put_local(REPLICA_STATE_KEY, &next_state)?;
             Ok::<_, SyncError>(((), journal))
         })?;
-        Ok((
-            SyncOutcome {
+        Ok(AppliedPage {
+            outcome: SyncOutcome {
                 changes: change_count,
                 serial: through,
                 primary_serial,
             },
-            changed_keys.into_iter().collect(),
+            changed_keys: changed_keys.into_iter().collect(),
             referenced,
-        ))
+            revocations,
+        })
     }
 }
 
@@ -166,6 +183,9 @@ struct ValidatedPage {
 
 struct ValidatedChange {
     event: Vec<u8>,
+    /// The core change the entry carries, decoded before the commit so a payload that claims a core
+    /// operation it does not describe rejects the page instead of silently skipping the change.
+    server: Option<ServerMutation>,
     metadata: Vec<MetadataMutation>,
     blobs: Vec<(Digest, u64)>,
 }
@@ -233,6 +253,7 @@ impl ValidatedPage {
                 blobs.push((digest, blob.size));
             }
             changes.push(ValidatedChange {
+                server: ServerMutation::decode(&change.event)?,
                 event: change.event,
                 metadata: change.metadata,
                 blobs,

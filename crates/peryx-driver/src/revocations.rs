@@ -116,6 +116,28 @@ impl RevocationService {
         Ok(outcome)
     }
 
+    /// Retires the state a replicated page invalidated, after its transaction committed the rows.
+    ///
+    /// The gate is what makes commit-then-retire safe. A serving read holds it while it reads the store
+    /// *and* publishes what it read, so this exclusive section cannot land between those two steps: a
+    /// reader that observed the pre-commit rows has already published by the time the retirement runs,
+    /// and the retirement wins. Without it that reader could publish `ACTIVE_NONE` afterwards and pin the
+    /// follower to serving a digest the writer revoked.
+    pub fn invalidate_replicated(&self, digests: &[ArtifactDigest]) {
+        if digests.is_empty() {
+            return;
+        }
+        let guard = self
+            .cache_gate
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.active.store(ACTIVE_UNKNOWN, Ordering::Release);
+        for digest in digests {
+            self.decisions.invalidate(digest);
+        }
+        drop(guard);
+    }
+
     /// # Errors
     /// Returns a store error when the row cannot be read.
     pub fn inspect(&self, digest: &ArtifactDigest) -> Result<Option<DigestRevocation>, MetaError> {

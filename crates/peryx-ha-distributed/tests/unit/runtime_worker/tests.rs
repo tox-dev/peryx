@@ -73,6 +73,7 @@ fn test_views_apply_pages_and_publish_the_frontier() {
             changes: 2,
             serial: 7,
             primary_serial: 9,
+            revocations: Vec::new(),
         },
         &["a".to_owned(), "b".to_owned()],
     );

@@ -216,6 +216,7 @@ async fn test_apply_replicated_changes_retires_only_the_changed_projects() {
             changes: changed.len(),
             serial: 1,
             primary_serial: 1,
+            revocations: Vec::new(),
         },
         &changed,
     );
@@ -255,6 +256,7 @@ async fn test_apply_replicated_changes_ignores_a_change_on_an_unknown_index() {
             changes: 1,
             serial: 1,
             primary_serial: 1,
+            revocations: Vec::new(),
         },
         &["pypi\u{0}p\u{0}ghost/alpha".to_owned()],
     );
@@ -338,6 +340,7 @@ async fn test_a_replicated_per_file_removal_retires_the_project_view() {
             changes: 1,
             serial,
             primary_serial: serial,
+            revocations: Vec::new(),
         },
         &[format!("pypi\u{0}u\u{0}hosted/peryxpkg/{PERYXPKG_WHEEL}")],
     );
@@ -369,6 +372,7 @@ async fn test_apply_reports_a_block_when_a_project_view_cannot_rebuild() {
             changes: 1,
             serial,
             primary_serial: serial,
+            revocations: Vec::new(),
         },
         &[format!("pypi\u{0}u\u{0}hosted/peryxpkg/{PERYXPKG_WHEEL}")],
     );

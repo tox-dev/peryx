@@ -72,5 +72,17 @@ The serving service caches clear and revoked decisions for 60 seconds with a fix
 the changed digest before releasing the write gate, which prevents an older clear decision from replacing the new state.
 
 The cache does not retain metadata errors. A failed metadata read returns unavailable, so an ecosystem owner can deny
-the content. Cross-process invalidation is outside this lifecycle. Ecosystem responses apply the same 60-second bound to
-compliant client and proxy caches.
+the content. Ecosystem responses apply the same 60-second bound to compliant client and proxy caches.
+
+## Replicas
+
+A revocation is a write like any other: it takes a serial and appends a journal entry carrying the whole row, which a
+replica applies in the transaction that advances its cursor. The row, its status index, and the active count therefore
+land together, so a status-filtered list on a replica returns what the same list returns on the writer.
+
+The replica retires the cached decisions for the digests a page changed before it publishes the new serial. A follower
+that reports a serial has already stopped serving what the writer revoked at it.
+
+A revocation carries no ecosystem event, so it does not appear in an ecosystem changelog such as the PyPI
+`changelog_since_serial` feed. Its serial is still consumed, so a consumer resuming from that feed skips it rather than
+stalling on it.

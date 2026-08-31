@@ -5,7 +5,8 @@ use redb::{ReadableTable as _, ReadableTableMetadata as _};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    DIGEST_REVOCATION, DIGEST_REVOCATION_BY_STATUS, DIGEST_REVOCATION_STATE, MetaError, MetaStore, open_optional_table,
+    DIGEST_REVOCATION, DIGEST_REVOCATION_BY_STATUS, DIGEST_REVOCATION_STATE, JournalEntry, MetaError, MetaStore,
+    ServerMutation, open_optional_table,
 };
 
 const MAX_QUERY_LIMIT: usize = 100;
@@ -172,6 +173,69 @@ fn index_key(status: DigestRevocationStatus, digest: &str) -> String {
     format!("{}{digest}", status.index_prefix())
 }
 
+/// Writes the row, the status index, and the active count together in the caller's transaction.
+///
+/// Every writer goes through here: an operator action on the primary, and journal replay on a replica.
+/// A replica that maintained the index at its own write site could drift from the primary silently,
+/// because a status-filtered page reads the index alone and would simply omit the rows it lacks.
+///
+/// # Errors
+/// Returns a store error when the row cannot be read, decoded, encoded, or written, or when the active
+/// count would leave `u64`.
+pub(super) fn apply_digest_revocation(
+    txn: &redb::WriteTransaction,
+    record: &DigestRevocation,
+) -> Result<(), MetaError> {
+    let key = record.digest.canonical();
+    let status = record.state.status();
+    let mut records = txn.open_table(DIGEST_REVOCATION)?;
+    let previous = records
+        .get(key.as_str())?
+        .map(|value| serde_json::from_slice::<DigestRevocation>(value.value()))
+        .transpose()?
+        .map(|stored| stored.state.status());
+    records.insert(key.as_str(), serde_json::to_vec(record)?.as_slice())?;
+    drop(records);
+    if previous == Some(status) {
+        return Ok(());
+    }
+    let mut index = txn.open_table(DIGEST_REVOCATION_BY_STATUS)?;
+    if let Some(previous) = previous {
+        index.remove(index_key(previous, &key).as_str())?;
+    }
+    index.insert(index_key(status, &key).as_str(), ())?;
+    drop(index);
+    let mut state = txn.open_table(DIGEST_REVOCATION_STATE)?;
+    let active = state.get(ACTIVE_COUNT_KEY)?.map_or(0, |count| count.value());
+    let active = match status {
+        DigestRevocationStatus::Active => active
+            .checked_add(1)
+            .ok_or_else(|| MetaError::DriverPrecondition("digest revocation active count overflow".to_owned()))?,
+        DigestRevocationStatus::Lifted => active
+            .checked_sub(1)
+            .ok_or_else(|| MetaError::DriverPrecondition("digest revocation active count underflow".to_owned()))?,
+    };
+    state.insert(ACTIVE_COUNT_KEY, active)?;
+    Ok(())
+}
+
+/// Appends the change to the journal so replicas replay it in serial order with everything else.
+///
+/// A revocation is a security response, so it is the writer's state that has to reach the followers:
+/// the entry carries the whole row rather than a hint to re-read, which no follower could act on
+/// without querying the primary it is trying to stay independent of.
+fn journal_digest_revocation(txn: &redb::WriteTransaction, record: &DigestRevocation) -> Result<(), MetaError> {
+    super::index::commit_journal::<MetaError>(
+        txn,
+        &[JournalEntry {
+            payload: ServerMutation::DigestRevocation { record: record.clone() }.encode(),
+            mutations: Vec::new(),
+            blobs: Vec::new(),
+        }],
+    )
+    .map(|_| ())
+}
+
 impl MetaStore {
     /// # Errors
     /// Returns a conflict when an active row has another reason, or a store error when the row cannot
@@ -224,34 +288,8 @@ impl MetaStore {
                 (created.clone(), PutRevocationOutcome::Created(created))
             }
         };
-        let encoded = serde_json::to_vec(&record).map_err(MetaError::from)?;
-        txn.open_table(DIGEST_REVOCATION)
-            .map_err(MetaError::from)?
-            .insert(key.as_str(), encoded.as_slice())
-            .map_err(MetaError::from)?;
-        {
-            let mut index = txn.open_table(DIGEST_REVOCATION_BY_STATUS).map_err(MetaError::from)?;
-            if matches!(outcome, PutRevocationOutcome::Reopened(_)) {
-                index
-                    .remove(index_key(DigestRevocationStatus::Lifted, &key).as_str())
-                    .map_err(MetaError::from)?;
-            }
-            index
-                .insert(index_key(DigestRevocationStatus::Active, &key).as_str(), ())
-                .map_err(MetaError::from)?;
-        }
-        let active_count = txn
-            .open_table(DIGEST_REVOCATION_STATE)
-            .map_err(MetaError::from)?
-            .get(ACTIVE_COUNT_KEY)
-            .map_err(MetaError::from)?
-            .map_or(0, |count| count.value())
-            .checked_add(1)
-            .ok_or_else(|| MetaError::DriverPrecondition("digest revocation active count overflow".to_owned()))?;
-        txn.open_table(DIGEST_REVOCATION_STATE)
-            .map_err(MetaError::from)?
-            .insert(ACTIVE_COUNT_KEY, active_count)
-            .map_err(MetaError::from)?;
+        apply_digest_revocation(&txn, &record)?;
+        journal_digest_revocation(&txn, &record)?;
         txn.commit().map_err(MetaError::from)?;
         Ok(outcome)
     }
@@ -286,22 +324,8 @@ impl MetaStore {
             lifted_at_unix: now,
         };
         record.revision += 1;
-        let encoded = serde_json::to_vec(&record)?;
-        txn.open_table(DIGEST_REVOCATION)?
-            .insert(key.as_str(), encoded.as_slice())?;
-        {
-            let mut index = txn.open_table(DIGEST_REVOCATION_BY_STATUS)?;
-            index.remove(index_key(DigestRevocationStatus::Active, &key).as_str())?;
-            index.insert(index_key(DigestRevocationStatus::Lifted, &key).as_str(), ())?;
-        }
-        let active_count = txn
-            .open_table(DIGEST_REVOCATION_STATE)?
-            .get(ACTIVE_COUNT_KEY)?
-            .map_or(0, |count| count.value())
-            .checked_sub(1)
-            .ok_or_else(|| MetaError::DriverPrecondition("digest revocation active count underflow".to_owned()))?;
-        txn.open_table(DIGEST_REVOCATION_STATE)?
-            .insert(ACTIVE_COUNT_KEY, active_count)?;
+        apply_digest_revocation(&txn, &record)?;
+        journal_digest_revocation(&txn, &record)?;
         txn.commit()?;
         Ok(Some(LiftRevocationOutcome::Lifted(record)))
     }

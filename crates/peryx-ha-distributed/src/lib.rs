@@ -405,6 +405,9 @@ mod remote_frontier_http_tests;
 #[path = "../tests/unit/remote_frontier_tests.rs"]
 mod remote_frontier_tests;
 #[cfg(test)]
+#[path = "../tests/unit/revocation_replication_tests.rs"]
+mod revocation_replication_tests;
+#[cfg(test)]
 #[path = "../tests/unit/rollout_tests.rs"]
 mod rollout_tests;
 #[cfg(test)]

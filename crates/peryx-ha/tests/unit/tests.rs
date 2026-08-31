@@ -598,11 +598,13 @@ fn generated_value_contracts_distinguish_fields_and_variants() {
             changes: 1,
             serial: 2,
             primary_serial: 3,
+            revocations: Vec::new(),
         },
         &ReplicaPage {
             changes: 2,
             serial: 2,
             primary_serial: 3,
+            revocations: Vec::new(),
         },
     );
     assert_derived_contract(&DurabilityPolicy::Local, &DurabilityPolicy::Majority);
@@ -1288,8 +1290,12 @@ fn replica_page_and_operation_observer_preserve_replication_context() {
         changes: 3,
         serial: 11,
         primary_serial: 13,
+        revocations: vec![reclamation_digest(7)],
     };
-    assert_eq!((page.changes, page.serial, page.primary_serial), (3, 11, 13));
+    assert_eq!(
+        (page.changes, page.serial, page.primary_serial, page.revocations),
+        (3, 11, 13, vec![reclamation_digest(7)])
+    );
 
     let observer = TestOperationObserver::default();
     let operation = OperationObservation {

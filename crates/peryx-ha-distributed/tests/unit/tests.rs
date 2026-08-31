@@ -117,7 +117,8 @@ async fn test_sync_commits_metadata_journal_and_cursor_without_fetching_bytes() 
         )],
     )]);
 
-    let (outcome, changed_keys, referenced) = replica(&meta).sync(&source).await.unwrap();
+    let applied = replica(&meta).sync(&source).await.unwrap();
+    let (outcome, changed_keys, referenced) = (applied.outcome, applied.changed_keys, applied.referenced);
 
     assert_eq!(outcome.changes, 1);
     assert!(outcome.caught_up());
@@ -158,7 +159,8 @@ async fn test_sync_on_an_empty_page_commits_nothing() {
     let (_dir, meta) = stores();
     let source = primary_at(0, page("primary-a", 0, 0, vec![]));
 
-    let (outcome, changed_keys, referenced) = replica(&meta).sync(&source).await.unwrap();
+    let applied = replica(&meta).sync(&source).await.unwrap();
+    let (outcome, changed_keys, referenced) = (applied.outcome, applied.changed_keys, applied.referenced);
 
     assert_eq!(outcome.changes, 0);
     assert!(outcome.caught_up());
@@ -176,8 +178,8 @@ async fn test_sync_resumes_from_the_committed_serial() {
     ]);
     let replica = replica(&meta);
 
-    let (first, ..) = replica.sync(&source).await.unwrap();
-    let (second, ..) = replica.sync(&source).await.unwrap();
+    let first = replica.sync(&source).await.unwrap().outcome;
+    let second = replica.sync(&source).await.unwrap().outcome;
 
     assert!(!first.caught_up());
     assert!(second.caught_up());
@@ -242,7 +244,8 @@ async fn test_sync_accepts_an_empty_page_at_the_primary_serial() {
     let (_dir, meta) = stores();
     let source = primary(vec![page("primary-a", 0, 0, Vec::new())]);
 
-    let (outcome, changed_keys, referenced) = replica(&meta).sync(&source).await.unwrap();
+    let applied = replica(&meta).sync(&source).await.unwrap();
+    let (outcome, changed_keys, referenced) = (applied.outcome, applied.changed_keys, applied.referenced);
 
     assert_eq!(outcome.changes, 0);
     assert_eq!(outcome.serial, 0);

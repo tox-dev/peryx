@@ -41,6 +41,7 @@ fn replicated_project_change_retires_cached_pages() {
             changes: 1,
             serial: 1,
             primary_serial: 1,
+            revocations: Vec::new(),
         },
         &["pypi\0p\0hosted/flask".to_owned()],
     );
@@ -76,6 +77,7 @@ fn invalid_replicated_upload_holds_the_search_frontier() {
             changes: 1,
             serial: 1,
             primary_serial: 1,
+            revocations: Vec::new(),
         },
         &["pypi\0u\0hosted/flask/flask-1.0-py3-none-any.whl".to_owned()],
     );

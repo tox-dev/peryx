@@ -46,6 +46,7 @@ pub use peryx_core::{
     AnalyticsSnapshotStore, AvailabilityReadError, BlobDurability, BlobMetadata, Digest, DurabilityRequirement,
     JournalCommit, NodeRole, ObservedFrontier, PrometheusSource, TopologyConfig, WriteEvidence,
 };
+use peryx_identity::ArtifactDigest;
 use serde::{Deserialize, Serialize};
 
 pub const AVAILABILITY_BLOB_VIEW: &str = "blob";
@@ -982,11 +983,15 @@ pub trait ReclamationFrontiers: Send + Sync {
     fn observe(&self) -> Option<ObservedFrontier>;
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplicaPage {
     pub changes: usize,
     pub serial: u64,
     pub primary_serial: u64,
+    /// Digests whose revocation state the page changed. The applier retires their cached serving
+    /// decisions before the frontier advances, so a follower cannot answer at the new serial with a
+    /// decision it formed under the old one.
+    pub revocations: Vec<ArtifactDigest>,
 }
 
 #[derive(Clone)]

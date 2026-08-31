@@ -360,6 +360,7 @@ impl MetaStore {
         check_replica_serial(&txn, expected_serial)?;
         let (value, journal, webhooks, placements) = {
             let mut driver = DriverTxn {
+                txn: &txn,
                 table: txn.open_table(DRIVER_KV).map_err(MetaError::from)?,
                 touched: std::collections::BTreeSet::new(),
                 blobs: std::collections::BTreeSet::new(),
@@ -475,7 +476,7 @@ fn check_replica_serial<E: From<MetaError>>(txn: &redb::WriteTransaction, expect
     Ok(())
 }
 
-fn commit_journal<E: From<MetaError>>(
+pub(super) fn commit_journal<E: From<MetaError>>(
     txn: &redb::WriteTransaction,
     journal: &[JournalEntry],
 ) -> Result<Option<super::JournalCommit>, E> {
@@ -512,6 +513,7 @@ fn commit_journal<E: From<MetaError>>(
 
 /// Gives a [`MetaStore::commit_driver_txn`] body atomic access to opaque driver rows.
 pub struct DriverTxn<'txn> {
+    txn: &'txn redb::WriteTransaction,
     table: redb::Table<'txn, &'static str, &'static [u8]>,
     touched: std::collections::BTreeSet<String>,
     blobs: std::collections::BTreeSet<DriverBlobReference>,
@@ -564,6 +566,22 @@ impl DriverReadTxn {
 }
 
 impl DriverTxn<'_> {
+    /// Applies a core metadata change in the transaction that carries the page's driver rows and journal
+    /// entries, so a replica cannot advance past a serial whose core state it has not written.
+    ///
+    /// Core state lives in its own tables rather than in the opaque driver rows, so it reaches a replica
+    /// as a journal payload the replay engine hands back here instead of as a key-value mutation.
+    ///
+    /// # Errors
+    /// Returns a store error when the change cannot be read, decoded, encoded, or written.
+    pub fn apply_server_mutation(&self, mutation: &super::ServerMutation) -> Result<(), MetaError> {
+        match mutation {
+            super::ServerMutation::DigestRevocation { record } => {
+                super::revocation::apply_digest_revocation(self.txn, record)
+            }
+        }
+    }
+
     /// Persist this event only if the surrounding driver mutation commits.
     pub fn enqueue_webhook_event(&mut self, event: WebhookEventIntent) {
         self.webhooks.push(event);

@@ -161,3 +161,69 @@ fn test_changelog_read_error_keeps_page_validation_typed() {
     assert!(matches!(error, ChangelogReadError::InvalidPage(_)));
     assert!(error.to_string().contains("50001"));
 }
+
+/// peryx writes its own changes to the same log, so the changelog reports the `PyPI` events around
+/// them instead of failing on a payload that was never a `PyPI` entry.
+#[test]
+fn test_read_journal_entries_skips_a_core_entry() {
+    let (_dir, store) = store();
+    store
+        .commit_driver_txn(|_| Ok::<_, MetaError>(((), vec![value("first")])))
+        .unwrap();
+    store
+        .put_digest_revocation(
+            &peryx_identity::ArtifactDigest::from_sha256(format!("{:064x}", 1)).unwrap(),
+            &peryx_identity::RevocationReason::new("incident").unwrap(),
+            &peryx_identity::UserId::random(),
+            10,
+        )
+        .unwrap();
+    store
+        .commit_driver_txn(|_| Ok::<_, MetaError>(((), vec![value("second")])))
+        .unwrap();
+
+    assert_eq!(
+        read_journal_entries(&store, 0, 10).unwrap(),
+        JournalSnapshot {
+            current_serial: 3,
+            entries: vec![
+                JournalEntry {
+                    serial: 1,
+                    submitted_at_unix: 123,
+                    action: "add-file".to_owned(),
+                    project: "first".to_owned(),
+                    version: Some("1.0".to_owned()),
+                    filename: Some("first-1.0.whl".to_owned()),
+                },
+                JournalEntry {
+                    serial: 3,
+                    submitted_at_unix: 123,
+                    action: "add-file".to_owned(),
+                    project: "second".to_owned(),
+                    version: Some("1.0".to_owned()),
+                    filename: Some("second-1.0.whl".to_owned()),
+                },
+            ],
+        }
+    );
+}
+
+#[test]
+fn test_read_changelog_page_resumes_past_a_trailing_core_entry() {
+    let (_dir, store) = store();
+    store
+        .commit_driver_txn(|_| Ok::<_, MetaError>(((), vec![value("first")])))
+        .unwrap();
+    store
+        .put_digest_revocation(
+            &peryx_identity::ArtifactDigest::from_sha256(format!("{:064x}", 2)).unwrap(),
+            &peryx_identity::RevocationReason::new("incident").unwrap(),
+            &peryx_identity::UserId::random(),
+            10,
+        )
+        .unwrap();
+
+    let page = read_changelog_page(&store, 1, 10).unwrap();
+
+    assert_eq!((page.entries().len(), page.resume_serial()), (0, 2));
+}
