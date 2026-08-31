@@ -25,6 +25,13 @@ The finalizer reads a durable ingress intent and moves it forward:
 | ---------- | ------------------------------------------------------------------------------------------------- |
 | `pending`  | The ingress staged the intent; local publication may need a retry or crash-recovery sweep.        |
 | `admitted` | Local publication committed; acknowledgement evidence and the operation outcome may still follow. |
+| `expired`  | No upload can finalize the intent; it holds capacity only until the reaper prunes it.             |
+
+An intent reaches `expired` only on the sweep's own evidence. Each pass that finds no stored file rows to finalize
+counts against the intent; after three the sweep stops offering it, and the write-ledger reaper expires it once its
+staging deadline has also passed. Age alone never expires a pending intent, so a home that is slow to finalize does not
+lose a write whose bytes are durable. An upload that fails before storing anything releases its intent as it returns
+rather than waiting for that deadline.
 
 A successful publication records an operation outcome under the admission operation ID. A retry reads this record and
 returns the stored acknowledgement. A refusal records no terminal outcome.

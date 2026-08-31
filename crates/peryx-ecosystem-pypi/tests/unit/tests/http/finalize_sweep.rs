@@ -1,3 +1,4 @@
+use peryx_driver::jobs::MAX_INTENT_REFUSALS;
 use peryx_driver::serving::IntentFinalizer as _;
 use peryx_ha::{ArtifactPlacement, ArtifactSource};
 use peryx_storage::meta::{IntentAdmission, IntentLimits, IntentPhase, OperationState};
@@ -230,6 +231,58 @@ async fn test_a_sweep_skips_an_intent_whose_rows_are_not_stored_here() {
             .unwrap()
             .phase,
         IntentPhase::Pending,
+    );
+}
+
+fn refusals(state: &peryx_driver::state::ServingState, key: &str) -> u32 {
+    state.meta.staged_intent(key).unwrap().unwrap().refusals
+}
+
+#[tokio::test]
+async fn test_a_sweep_refuses_an_intent_whose_rows_are_not_stored_here() {
+    let harness = harness_with(true, true).await;
+    stage(&harness.state.serving.meta, INTENT_KEY, AUTHORITY);
+    place(&harness.state.serving.meta);
+
+    finalize_admitted(&harness.state.serving).await;
+
+    assert_eq!(
+        refusals(&harness.state.serving, INTENT_KEY),
+        1,
+        "no upload can ever finalize an intent whose rows were never stored",
+    );
+}
+
+#[tokio::test]
+async fn test_a_sweep_stops_offering_an_intent_it_has_refused_to_the_ceiling() {
+    let harness = harness_with(true, true).await;
+    stage(&harness.state.serving.meta, INTENT_KEY, AUTHORITY);
+    place(&harness.state.serving.meta);
+
+    for _ in 0..=MAX_INTENT_REFUSALS {
+        finalize_admitted(&harness.state.serving).await;
+    }
+
+    assert_eq!(
+        refusals(&harness.state.serving, INTENT_KEY),
+        MAX_INTENT_REFUSALS,
+        "the pass after the ceiling no longer reads the intent, so an unfinalizable head cannot fill the batch",
+    );
+}
+
+#[tokio::test]
+async fn test_a_sweep_does_not_refuse_an_intent_an_acl_change_could_still_finalize() {
+    let harness = harness_with(false, true).await;
+    stage(&harness.state.serving.meta, INTENT_KEY, AUTHORITY);
+    place(&harness.state.serving.meta);
+    put_upload(&harness.state.serving.meta, INDEX, AUTHORITY, FILENAME, RECORD).unwrap();
+
+    finalize_admitted(&harness.state.serving).await;
+
+    assert_eq!(
+        refusals(&harness.state.serving, INTENT_KEY),
+        0,
+        "the rows are stored, so this skip is transient and the intent stays offered",
     );
 }
 

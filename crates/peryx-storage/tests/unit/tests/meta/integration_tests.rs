@@ -57,7 +57,7 @@ fn test_open_omits_distributed_domain_tables() {
     assert_eq!(store.reclaim_guard(digest.canonical().as_str()).unwrap(), None);
     assert_eq!(store.blob_chunk_digest(&digest).unwrap(), None);
     assert_eq!(store.staged_intent_usage("repo").unwrap(), IntentUsage::default());
-    assert!(store.list_pending_intents(1).unwrap().is_empty());
+    assert!(store.list_pending_intents(1, u32::MAX).unwrap().is_empty());
     assert!(store.pending_reconcile(1).unwrap().is_empty());
     assert_eq!(store.reconcile_entry("west:1:1").unwrap(), None);
     assert_eq!(store.count_reconcile().unwrap(), 0);

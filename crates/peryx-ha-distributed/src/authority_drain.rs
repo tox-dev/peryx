@@ -7,6 +7,10 @@ use peryx_storage::meta::{IntentPhase, IntentTransition, MetaError, MetaStore};
 
 const DRAIN_BATCH: NonZeroUsize = NonZeroUsize::new(128).expect("literal is non-zero");
 
+/// An operator drain settles every pending intent, including the ones an ecosystem's finalize sweep has
+/// given up on, so it walks the pending order without a refusal ceiling.
+const DRAIN_REFUSAL_CEILING: u32 = u32::MAX;
+
 pub struct DistributedAuthorityDrainer {
     meta: MetaStore,
     batch: NonZeroUsize,
@@ -45,7 +49,7 @@ fn drain_pending(
         if cancelled() {
             return Ok(report);
         }
-        let pending = meta.list_pending_intents(batch.get())?;
+        let pending = meta.list_pending_intents(batch.get(), DRAIN_REFUSAL_CEILING)?;
         let count = pending.len();
         if count == 0 {
             return Ok(report);

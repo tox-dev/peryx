@@ -59,8 +59,16 @@ after more receipts arrive.
 records an intent. See [upload digest fields](#upload-digest-fields).
 
 **Admission limits.** Each authority can retain 65,536 records and 64 GiB. Crossing 80% logs backpressure; crossing a
-hard bound rejects the next intent. Settled intents become eligible for pruning. Pending intents remain retained, so a
-failure before publication can consume capacity until a later retry or reaper transition resolves it.
+hard bound rejects the next intent. Settled intents become eligible for pruning.
+
+**Reclaiming a pending intent.** An upload that fails before it stores anything - a replayed operation, an unreadable
+claim, an unavailable authority home, a quota block, or a store fault - releases the intent it staged as it returns, so
+the authority's capacity is back before the client reads the error. A request that deduplicated onto an intent another
+upload staged does not release it. A client that hangs up mid-store leaves no code to run that release, so the recovery
+sweep instead records each pass that finds no stored rows to finalize; after three such passes the intent stops
+occupying a sweep batch, and the write-ledger reaper expires it an hour past staging so pruning returns its record and
+bytes. A pending intent the sweep has not given up on is never expired, so a home datacenter that is slow to finalize
+keeps a write whose bytes are durable.
 
 **Current deployment boundary.** The release has no protocol that sends an admitted intent from one datacenter to
 another authority home. In HA code, a first publish can assign the serving datacenter as home; later uploads must reach

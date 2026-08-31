@@ -45,6 +45,7 @@ fn pending(seq: u64, digest: &str, size: u64, payload: &[u8], now: i64) -> Stage
         digest: digest.to_owned(),
         size,
         payload: payload.to_vec(),
+        refusals: 0,
         updated_at_unix: now,
     }
 }
@@ -307,6 +308,7 @@ fn test_advance_moves_the_phase_forward_and_keeps_the_slot() {
             digest: "digest-a".to_owned(),
             size: 10,
             payload: b"intent".to_vec(),
+            refusals: 0,
             updated_at_unix: 2,
         })
     );
@@ -334,6 +336,7 @@ fn test_advance_to_expired() {
             digest: "digest-a".to_owned(),
             size: 10,
             payload: b"intent".to_vec(),
+            refusals: 0,
             updated_at_unix: 9,
         })
     );
@@ -362,6 +365,7 @@ fn test_advance_ignores_a_backward_or_equal_transition() {
             digest: "digest-a".to_owned(),
             size: 10,
             payload: b"intent".to_vec(),
+            refusals: 0,
             updated_at_unix: 2,
         })
     );
@@ -398,7 +402,7 @@ fn test_list_pending_intents_honors_limit_in_admission_order(#[case] limit: usiz
 
     assert_eq!(
         store
-            .list_pending_intents(limit)
+            .list_pending_intents(limit, u32::MAX)
             .unwrap()
             .iter()
             .map(|(key, _)| key.as_str())
@@ -413,7 +417,7 @@ fn test_list_pending_intents_is_empty_without_pending_work() {
     stage(&store, "key-1", "digest", 1, b"x", 1);
     store.advance_intent("key-1", IntentPhase::Admitted, 2).unwrap();
 
-    assert!(store.list_pending_intents(10).unwrap().is_empty());
+    assert!(store.list_pending_intents(10, u32::MAX).unwrap().is_empty());
 }
 
 #[test]
@@ -437,7 +441,7 @@ fn test_pending_order_survives_a_restart() {
     }
 
     let store = MetaStore::open_existing(&path).unwrap();
-    let pending = store.list_pending_intents(10).unwrap();
+    let pending = store.list_pending_intents(10, u32::MAX).unwrap();
 
     assert_eq!(
         pending,
@@ -451,6 +455,7 @@ fn test_pending_order_survives_a_restart() {
                     digest: "d".to_owned(),
                     size: 1,
                     payload: b"x".to_vec(),
+                    refusals: 0,
                     updated_at_unix: 1,
                 },
             ),
@@ -463,6 +468,7 @@ fn test_pending_order_survives_a_restart() {
                     digest: "d".to_owned(),
                     size: 1,
                     payload: b"x".to_vec(),
+                    refusals: 0,
                     updated_at_unix: 1,
                 },
             ),
@@ -475,6 +481,7 @@ fn test_pending_order_survives_a_restart() {
                     digest: "d".to_owned(),
                     size: 1,
                     payload: b"x".to_vec(),
+                    refusals: 0,
                     updated_at_unix: 1,
                 },
             ),
@@ -487,6 +494,7 @@ fn test_pending_order_survives_a_restart() {
                     digest: "d".to_owned(),
                     size: 1,
                     payload: b"x".to_vec(),
+                    refusals: 0,
                     updated_at_unix: 1,
                 },
             ),
@@ -525,7 +533,7 @@ fn test_prune_releases_the_authority_usage_and_reuses_no_sequence() {
 
     assert_eq!(store.prune_ingress_intents(70, 60, 100).unwrap(), 1);
     assert_eq!(store.staged_intent_usage("auth").unwrap(), IntentUsage::default());
-    assert!(store.list_pending_intents(10).unwrap().is_empty());
+    assert!(store.list_pending_intents(10, u32::MAX).unwrap().is_empty());
 
     stage(&store, "key-2", "digest-b", 3, b"x", 80);
     assert_eq!(
@@ -562,6 +570,7 @@ fn test_prune_keeps_a_settled_intent_within_retention() {
             digest: "digest-a".to_owned(),
             size: 10,
             payload: b"intent".to_vec(),
+            refusals: 0,
             updated_at_unix: 10,
         })
     );

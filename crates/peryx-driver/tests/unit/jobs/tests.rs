@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -2257,6 +2257,92 @@ async fn test_write_ledger_reap_drains_settled_rows_and_keeps_pending() {
             "",
             Some(JobKind::new("write_ledger_reap").unwrap()),
         )
+    );
+}
+
+fn serving_at(now: &Arc<AtomicI64>) -> (tempfile::TempDir, Arc<ServingState>) {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let ticking = Arc::clone(now);
+    let clock: Clock = Arc::new(move || ticking.load(Ordering::Relaxed));
+    let mut state = AppState::with_clock(meta, blobs, 60, Vec::new(), clock);
+    install_distributed(&mut state, peryx_ha::AvailabilityCapabilities::default());
+    (dir, state.serving)
+}
+
+fn stage_refused_intent(state: &ServingState, key: &str, staged_at: i64, refusals: u32) {
+    state
+        .meta
+        .stage_intent(
+            peryx_storage::meta::IntentAdmission {
+                authority: "auth",
+                key,
+                digest: "digest-a",
+                size: 10,
+                payload: b"x",
+            },
+            peryx_storage::meta::IntentLimits {
+                max_records: 1_000,
+                max_bytes: 1 << 20,
+                backpressure_percent: 80,
+            },
+            staged_at,
+        )
+        .unwrap();
+    for _ in 0..refusals {
+        state.meta.refuse_intent(key).unwrap();
+    }
+}
+
+async fn reap(state: &Arc<ServingState>) -> JobRunOutcome {
+    super::WriteLedgerReap::default()
+        .run(&context(state.clone(), CancellationToken::new()))
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn test_write_ledger_reap_reclaims_an_intent_no_upload_can_finalize() {
+    let now = Arc::new(AtomicI64::new(1_000));
+    let (_dir, state) = serving_at(&now);
+    stage_refused_intent(
+        &state,
+        "stranded",
+        1_000 - super::INGRESS_STAGING_DEADLINE_SECS,
+        super::MAX_INTENT_REFUSALS,
+    );
+
+    reap(&state).await;
+    now.fetch_add(super::INGRESS_INTENT_RETENTION_SECS, Ordering::Relaxed);
+    reap(&state).await;
+
+    assert_eq!(state.meta.staged_intent("stranded").unwrap(), None);
+    assert_eq!(
+        state.meta.staged_intent_usage("auth").unwrap(),
+        peryx_storage::meta::IntentUsage::default(),
+        "the authority gets its admission capacity back"
+    );
+}
+
+#[tokio::test]
+async fn test_write_ledger_reap_keeps_an_intent_the_sweep_has_not_given_up_on() {
+    let now = Arc::new(AtomicI64::new(1_000));
+    let (_dir, state) = serving_at(&now);
+    stage_refused_intent(
+        &state,
+        "slow",
+        1_000 - super::INGRESS_STAGING_DEADLINE_SECS,
+        super::MAX_INTENT_REFUSALS - 1,
+    );
+
+    let report = reap(&state).await;
+
+    assert_eq!(report.report().changed, 0);
+    assert_eq!(
+        state.meta.staged_intent("slow").unwrap().unwrap().phase,
+        peryx_storage::meta::IntentPhase::Pending,
+        "an upload a later sweep can still finalize outlives the staging deadline"
     );
 }
 

@@ -50,7 +50,7 @@ pub use finalize::{FinalizeOutcome, FinalizedWrite};
 pub use index::{DriverEntries, DriverReadTxn, DriverTxn};
 pub use ingress_intent::{
     BackpressureState, IntentAdmission, IntentLimits, IntentPhase, IntentStageOutcome, IntentStageResult,
-    IntentTransition, IntentUsage, StagedIntent,
+    IntentTransition, IntentUpdate, IntentUsage, StagedIntent,
 };
 pub use job::{
     FinishJobRun, JobKind, JobOutcome, JobRunPage, JobRunQuery, JobRunQueryError, JobRunRecord, JobRunStoreError,

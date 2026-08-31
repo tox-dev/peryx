@@ -44,7 +44,7 @@ async fn test_drain_finalizes_every_pending_intent_across_batches() {
             changed: 130
         }
     );
-    assert!(store.list_pending_intents(256).unwrap().is_empty());
+    assert!(store.list_pending_intents(256, u32::MAX).unwrap().is_empty());
     for serial in 0..130 {
         let record = store.staged_intent(&format!("key-{serial}")).unwrap().unwrap();
         assert_eq!(record.phase, IntentPhase::Admitted);
@@ -103,7 +103,7 @@ async fn test_drain_stops_between_batches_when_cancelled() {
             changed: 128
         }
     );
-    assert_eq!(store.list_pending_intents(256).unwrap().len(), 2);
+    assert_eq!(store.list_pending_intents(256, u32::MAX).unwrap().len(), 2);
 }
 
 #[tokio::test]

@@ -79,6 +79,10 @@ pub(super) struct AdmittedIntent {
     pub intent_key: String,
     /// The operation id a retry replays under, so the mutation runs once.
     pub operation: String,
+    /// Whether this request staged the intent rather than deduplicating onto one already staged. Only
+    /// the request that staged an intent may release it on a failure: releasing a deduplicated one would
+    /// strip the record out from under the upload still storing its bytes.
+    pub fresh: bool,
 }
 
 /// Admit `request` for durable ingress staging into `meta`, retaining at most `limits` un-finalized
@@ -145,6 +149,7 @@ fn admit_staged(
             Admission::Admitted(AdmittedIntent {
                 intent_key: key,
                 operation,
+                fresh: result.outcome == IntentStageOutcome::Admitted,
             })
         }
         Err(reject) => reject,

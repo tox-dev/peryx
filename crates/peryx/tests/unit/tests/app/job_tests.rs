@@ -388,7 +388,7 @@ fn test_job_drain_finalizes_retained_intents() {
         (
             meta.staged_intent("group\0resource\0key-1").unwrap().unwrap().phase,
             meta.staged_intent("group\0resource\0key-2").unwrap().unwrap().phase,
-            meta.list_pending_intents(10).unwrap(),
+            meta.list_pending_intents(10, u32::MAX).unwrap(),
         ),
         (IntentPhase::Admitted, IntentPhase::Admitted, Vec::new())
     );

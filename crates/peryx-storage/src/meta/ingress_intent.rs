@@ -34,6 +34,9 @@ pub struct StagedIntent {
     pub size: u64,
     /// Replayed verbatim without interpretation.
     pub payload: Vec<u8>,
+    /// Finalization attempts the owning ecosystem refused because nothing it could finalize was ever
+    /// stored. Storage never interprets the reason, only the count.
+    pub refusals: u32,
     pub updated_at_unix: i64,
 }
 
@@ -105,6 +108,14 @@ pub enum IntentTransition {
     Ignored,
 }
 
+/// The result of a write that only a still-pending intent accepts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntentUpdate {
+    Applied,
+    /// The intent is missing or has already settled, so its record stands.
+    Ignored,
+}
+
 impl MetaStore {
     /// Atomically deduplicates by key, enforces per-authority hard limits, and reports post-admission
     /// backpressure. A key bound to different content returns [`IntentStageOutcome::Conflict`].
@@ -124,10 +135,7 @@ impl MetaStore {
             let mut counts = txn.open_table(INGRESS_INTENT_COUNT)?;
             let mut order = txn.open_table(INGRESS_INTENT_ORDER)?;
             let mut sequence = txn.open_table(INGRESS_INTENT_SEQ)?;
-            let existing = table
-                .get(admission.key)?
-                .map(|value| serde_json::from_slice::<StagedIntent>(value.value()))
-                .transpose()?;
+            let existing = read_intent(&table, admission.key)?;
             let usage = read_usage(&counts, admission.authority)?;
             let outcome = match existing {
                 Some(record) if record.digest == admission.digest && record.size == admission.size => {
@@ -148,6 +156,7 @@ impl MetaStore {
                         digest: admission.digest.to_owned(),
                         size: admission.size,
                         payload: admission.payload.to_vec(),
+                        refusals: 0,
                         updated_at_unix: now,
                     };
                     table.insert(admission.key, serde_json::to_vec(&record)?.as_slice())?;
@@ -188,10 +197,7 @@ impl MetaStore {
         let outcome;
         {
             let mut table = txn.open_table(INGRESS_INTENT)?;
-            let existing = table
-                .get(intent_key)?
-                .map(|value| serde_json::from_slice::<StagedIntent>(value.value()))
-                .transpose()?;
+            let existing = read_intent(&table, intent_key)?;
             outcome = match existing {
                 Some(mut record) if to > record.phase => {
                     record.phase = to;
@@ -204,6 +210,108 @@ impl MetaStore {
         }
         txn.commit()?;
         Ok(outcome)
+    }
+
+    /// Records that the owning ecosystem refused to finalize the pending intent under `intent_key`
+    /// because nothing it could finalize was ever stored here. The count is what
+    /// [`list_pending_intents`](Self::list_pending_intents) skips on and
+    /// [`expire_stale_intents`](Self::expire_stale_intents) requires, and a refusal deliberately leaves
+    /// `updated_at_unix` untouched so a refused intent keeps ageing towards its staging deadline.
+    ///
+    /// # Errors
+    /// Returns a store error when the row cannot be read, encoded, or committed.
+    pub fn refuse_intent(&self, intent_key: &str) -> Result<IntentUpdate, MetaError> {
+        let txn = self.db.begin_write()?;
+        let outcome;
+        {
+            let mut table = txn.open_table(INGRESS_INTENT)?;
+            let existing = read_intent(&table, intent_key)?;
+            outcome = match existing {
+                Some(mut record) if record.phase == IntentPhase::Pending => {
+                    record.refusals = record.refusals.saturating_add(1);
+                    table.insert(intent_key, serde_json::to_vec(&record)?.as_slice())?;
+                    IntentUpdate::Applied
+                }
+                _ => IntentUpdate::Ignored,
+            };
+        }
+        txn.commit()?;
+        Ok(outcome)
+    }
+
+    /// Drops the pending intent under `intent_key` and refunds its authority capacity, for a write that
+    /// failed before it stored anything and so left an intent no upload can ever finalize. Only the
+    /// caller that staged the intent may release it: releasing one a concurrent identical resend
+    /// deduplicated onto would strip the record out from under an upload still storing its bytes. A
+    /// settled intent is retained, since its result stays replayable until pruning.
+    ///
+    /// # Errors
+    /// Returns a store error when a row cannot be read, encoded, or committed.
+    pub fn release_intent(&self, intent_key: &str) -> Result<IntentUpdate, MetaError> {
+        let txn = self.db.begin_write()?;
+        let outcome;
+        {
+            let mut table = txn.open_table(INGRESS_INTENT)?;
+            let mut counts = txn.open_table(INGRESS_INTENT_COUNT)?;
+            let mut order = txn.open_table(INGRESS_INTENT_ORDER)?;
+            let existing = read_intent(&table, intent_key)?;
+            outcome = match existing {
+                Some(record) if record.phase == IntentPhase::Pending => {
+                    table.remove(intent_key)?;
+                    order.remove(record.seq)?;
+                    refund_capacity(&mut counts, &record)?;
+                    IntentUpdate::Applied
+                }
+                _ => IntentUpdate::Ignored,
+            };
+        }
+        txn.commit()?;
+        Ok(outcome)
+    }
+
+    /// Advances up to `limit` pending intents no upload can finalize to [`IntentPhase::Expired`], where
+    /// [`prune_ingress_intents`](Self::prune_ingress_intents) reclaims the record and its bytes. An
+    /// intent qualifies once the owning ecosystem has refused it at least `min_refusals` times and
+    /// `deadline_secs` have passed since it was staged. The refusal floor is what keeps a still
+    /// finalizable intent alive: age alone never expires one, so a home datacenter that is slow to
+    /// finalize does not lose a write whose bytes are durable.
+    ///
+    /// # Errors
+    /// Returns a store error when a row cannot be read, encoded, or committed.
+    pub fn expire_stale_intents(
+        &self,
+        now: i64,
+        deadline_secs: i64,
+        min_refusals: u32,
+        limit: usize,
+    ) -> Result<usize, MetaError> {
+        let txn = self.db.begin_write()?;
+        let expired;
+        {
+            let mut table = txn.open_table(INGRESS_INTENT)?;
+            let mut stale = Vec::new();
+            for entry in table.iter()? {
+                if stale.len() >= limit {
+                    break;
+                }
+                let (key, value) = entry?;
+                let record: StagedIntent = serde_json::from_slice(value.value())?;
+                if record.phase == IntentPhase::Pending
+                    && record.refusals >= min_refusals
+                    && now >= record.updated_at_unix + deadline_secs
+                {
+                    stale.push((key.value().to_owned(), record));
+                }
+            }
+            expired = stale.len();
+            for (key, mut record) in stale {
+                record.phase = IntentPhase::Expired;
+                record.updated_at_unix = now;
+                table.insert(key.as_str(), serde_json::to_vec(&record)?.as_slice())?;
+            }
+        }
+        txn.commit()?;
+        Ok(expired)
     }
 
     /// Returns `None` when no intent is retained under `intent_key`.
@@ -231,12 +339,18 @@ impl MetaStore {
         read_usage(&counts, authority)
     }
 
-    /// Returns up to `limit` pending intents in durable admission order. Settled order entries remain
-    /// indexed until pruning but do not appear.
+    /// Returns up to `limit` pending intents in durable admission order, skipping those refused
+    /// `max_refusals` times or more so a head of intents no upload can finalize cannot fill the batch
+    /// and starve the recoverable work behind it. Settled order entries remain indexed until pruning but
+    /// do not appear. Pass [`u32::MAX`] to walk every pending intent regardless of refusals.
     ///
     /// # Errors
     /// Returns a store error when a table cannot be read or a record decoded.
-    pub fn list_pending_intents(&self, limit: usize) -> Result<Vec<(String, StagedIntent)>, MetaError> {
+    pub fn list_pending_intents(
+        &self,
+        limit: usize,
+        max_refusals: u32,
+    ) -> Result<Vec<(String, StagedIntent)>, MetaError> {
         if limit == 0 {
             return Ok(Vec::new());
         }
@@ -251,7 +365,7 @@ impl MetaStore {
             let key = key.value();
             let Some(value) = table.get(key)? else { continue };
             let record: StagedIntent = serde_json::from_slice(value.value())?;
-            if record.phase == IntentPhase::Pending {
+            if record.phase == IntentPhase::Pending && record.refusals < max_refusals {
                 pending.push((key.to_owned(), record));
                 if pending.len() == limit {
                     break;
@@ -299,22 +413,42 @@ impl MetaStore {
             for (key, record) in &doomed {
                 table.remove(key.as_str())?;
                 order.remove(record.seq)?;
-                let usage = read_usage(&counts, &record.authority)?;
-                let remaining = IntentUsage {
-                    records: usage.records.saturating_sub(1),
-                    bytes: usage.bytes.saturating_sub(record.size),
-                };
-                if remaining.records == 0 {
-                    counts.remove(record.authority.as_str())?;
-                } else {
-                    counts.insert(record.authority.as_str(), serde_json::to_vec(&remaining)?.as_slice())?;
-                }
+                refund_capacity(&mut counts, record)?;
             }
             pruned = doomed.len();
         }
         txn.commit()?;
         Ok(pruned)
     }
+}
+
+fn read_intent(
+    table: &impl redb::ReadableTable<&'static str, &'static [u8]>,
+    intent_key: &str,
+) -> Result<Option<StagedIntent>, MetaError> {
+    Ok(table
+        .get(intent_key)?
+        .map(|value| serde_json::from_slice(value.value()))
+        .transpose()?)
+}
+
+/// Gives an authority back the record slot and bytes a removed intent held, dropping the counter row
+/// once nothing of the authority remains so an idle authority costs no storage.
+fn refund_capacity(
+    counts: &mut redb::Table<'_, &'static str, &'static [u8]>,
+    record: &StagedIntent,
+) -> Result<(), MetaError> {
+    let usage = read_usage(counts, &record.authority)?;
+    let remaining = IntentUsage {
+        records: usage.records.saturating_sub(1),
+        bytes: usage.bytes.saturating_sub(record.size),
+    };
+    if remaining.records == 0 {
+        counts.remove(record.authority.as_str())?;
+    } else {
+        counts.insert(record.authority.as_str(), serde_json::to_vec(&remaining)?.as_slice())?;
+    }
+    Ok(())
 }
 
 fn read_usage(

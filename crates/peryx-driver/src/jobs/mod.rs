@@ -432,6 +432,20 @@ impl NodeJob for JobHistoryCleanup {
 /// How long a settled ingress intent is kept before the reaper prunes it, so a brief home-DC
 /// finalization lag never drops an intent a slow duplicate retry still resolves against.
 pub const INGRESS_INTENT_RETENTION_SECS: i64 = 3600;
+/// How long a pending ingress intent may hold its authority's admission capacity once the owning
+/// ecosystem has given up on finalizing it.
+///
+/// It bounds the one failure no request-side code can clean up: a client that hangs up mid-store drops
+/// the request future outright, so nothing runs to release the intent. It is set well past any single
+/// upload's storing time, and expiry additionally requires the ecosystem's own evidence that nothing
+/// finalizable was ever stored.
+pub const INGRESS_STAGING_DEADLINE_SECS: i64 = 3600;
+/// Finalization refusals after which an ecosystem's sweep stops offering a pending intent.
+///
+/// Repeating the attempt leaves a node that crashed between storing an upload's rows and advancing its
+/// intent room to recover on a later tick, while still bounding how long an unfinalizable head occupies
+/// a sweep batch.
+pub const MAX_INTENT_REFUSALS: u32 = 3;
 /// Pending quota owners get this long to finish before node maintenance may reclaim their reservation.
 pub const QUOTA_RESERVATION_GRACE_SECS: i64 = 3600;
 /// Batching caps the metadata write set during startup and recurring repair.
@@ -444,7 +458,13 @@ pub const QUOTA_REPAIR_BATCH: usize = 128;
 /// would fill to its admission cap and refuse new writes, and the operation-outcome ledger would keep
 /// every terminal result. This drains the settled rows of both - an [`Admitted`] or [`Expired`] intent
 /// past its retention, and a terminal operation past its own expiry - so the idempotency guarantees stay
-/// bounded. A [`Pending`] intent is never dropped, since its write may still finalize.
+/// bounded.
+///
+/// A [`Pending`] intent whose write may still finalize is never dropped. One the owning ecosystem has
+/// repeatedly refused, because nothing it could finalize was ever stored, is a different row: it can
+/// only have come from a write that died before storing anything, most often a client that hung up
+/// mid-store and dropped the request future before any release could run. Those advance to [`Expired`]
+/// past their staging deadline, which is what returns the authority's admission capacity.
 ///
 /// [`Admitted`]: peryx_storage::meta::IntentPhase::Admitted
 /// [`Expired`]: peryx_storage::meta::IntentPhase::Expired
@@ -490,14 +510,20 @@ impl NodeJob for WriteLedgerReap {
                 }));
             }
             let now = (ctx.state().clock)();
+            let expired = reap_storage_result(ctx.state().meta.expire_stale_intents(
+                now,
+                INGRESS_STAGING_DEADLINE_SECS,
+                MAX_INTENT_REFUSALS,
+                self.batch,
+            ))?;
             let intents = reap_storage_result(ctx.state().meta.prune_ingress_intents(
                 now,
                 INGRESS_INTENT_RETENTION_SECS,
                 self.batch,
             ))?;
             let outcomes = reap_storage_result(ctx.state().meta.prune_operation_outcomes(now, self.batch))?;
-            reaped += reaped_count(intents) + reaped_count(outcomes);
-            if intents == 0 && outcomes == 0 {
+            reaped += reaped_count(expired) + reaped_count(intents) + reaped_count(outcomes);
+            if expired == 0 && intents == 0 && outcomes == 0 {
                 break;
             }
         }

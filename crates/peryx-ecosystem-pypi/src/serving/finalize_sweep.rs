@@ -10,6 +10,7 @@
 
 use std::sync::Arc;
 
+use peryx_driver::jobs::MAX_INTENT_REFUSALS;
 use peryx_driver::state::ServingState;
 use peryx_identity::{Action, Principal, authorize};
 use peryx_index::Index;
@@ -33,10 +34,13 @@ const OUTCOME_RETENTION_SECS: i64 = 24 * 3600;
 
 /// Finalize every `PyPI` upload this node admitted whose intent is still pending, returning how many
 /// finalized. A read failure, a non-`PyPI` intent, an upload whose rows are not stored here, an index
-/// with no live write token, or a fence rejection each skips the intent rather than failing the pass,
-/// so one unfinalizable intent never blocks the backlog behind it.
+/// with no live write token, or a fence rejection each skips the intent rather than failing the pass.
+/// An upload whose rows are not stored here can never finalize, so that skip is recorded against the
+/// intent and drops it out of later batches once it reaches
+/// [`MAX_INTENT_REFUSALS`]: one unfinalizable head cannot occupy the batch and starve the backlog
+/// behind it. The other skips are transient and leave the intent offered on every pass.
 pub async fn finalize_admitted(state: &Arc<ServingState>) -> u64 {
-    let pending = match state.meta.list_pending_intents(SWEEP_BATCH) {
+    let pending = match state.meta.list_pending_intents(SWEEP_BATCH, MAX_INTENT_REFUSALS) {
         Ok(pending) => pending,
         Err(error) => {
             tracing::error!(%error, "finalize sweep could not read pending intents");
@@ -60,6 +64,10 @@ async fn finalize_one(state: &Arc<ServingState>, key: &str, intent: &StagedInten
         return false;
     };
     let Some((index, record)) = locate(state, route, &intent.authority, filename) else {
+        // The upload's rows are absent, so no upload can finalize this intent here. Record the refusal
+        // so later batches skip it and the reaper can expire it; a failed record only costs another
+        // refused attempt on the next tick.
+        let _ = state.meta.refuse_intent(key);
         return false;
     };
     let Some(principal) = write_principal(index, &intent.authority) else {

@@ -222,7 +222,7 @@ async fn accept_upload(context: UploadContext<'_>, multipart: Multipart) -> Resp
         emit_upload_status_event(&audit, &block);
         return block.response;
     }
-    admit_and_store(state, index, hosted, &project, prepared, &audit).await
+    admit_and_store(state, index, hosted, prepared, &audit).await
 }
 
 /// Durably admit the upload into the ingress datacenter, store it, and acknowledge it against the
@@ -232,27 +232,29 @@ async fn accept_upload(context: UploadContext<'_>, multipart: Multipart) -> Resp
 /// datacenter acknowledgement decides the response: a proven-durable write is `200` and finalizes, while
 /// one still short of quorum is reported retry-safe rather than failed. A refused admission returns its
 /// response unchanged and nothing is stored.
+///
+/// Every exit that stores nothing releases the intent this request staged, so a failed upload gives its
+/// authority's admission capacity straight back instead of leaving a pending record only the staging
+/// deadline could clear. An intent a concurrent identical resend deduplicated onto is left alone: that
+/// record belongs to the upload still storing its bytes.
 async fn admit_and_store(
     state: &Arc<ServingState>,
     index: &Index,
     hosted: &Index,
-    project: &str,
     prepared: upload::PreparedUpload,
     audit: &UploadAudit<'_>,
 ) -> Response {
-    let digest = prepared.digest.clone();
-    let incoming = prepared
-        .record
-        .file
-        .size
-        .expect("a prepared upload carries its byte size");
     let bundle = prepared.provenance.as_deref().map(Digest::of);
     let request = admission::AdmissionRequest {
         tenant: &index.route,
-        authority: project,
+        authority: audit.project,
         filename: &prepared.filename,
         digest: prepared.digest.as_str(),
-        size: incoming,
+        size: prepared
+            .record
+            .file
+            .size
+            .expect("a prepared upload carries its byte size"),
         ingress_dc: &admission::ingress_dc(state.availability_topology()),
         provenance: bundle.as_ref().map(Digest::as_str),
     };
@@ -270,6 +272,36 @@ async fn admit_and_store(
             return *response;
         }
     };
+    match store_admitted(state, index, hosted, prepared, audit, &intent, now).await {
+        Ok(response) => response,
+        Err(response) => {
+            if intent.fresh {
+                let _ = state.meta.release_intent(&intent.intent_key);
+            }
+            response
+        }
+    }
+}
+
+/// Store the admitted upload and acknowledge it. `Err` carries the response for every exit that leaves
+/// nothing durable behind - a replayed operation, an unreadable claim, an unavailable authority home, a
+/// quota block, or a store fault - so the caller reclaims the intent those exits would otherwise strand.
+async fn store_admitted(
+    state: &Arc<ServingState>,
+    index: &Index,
+    hosted: &Index,
+    prepared: upload::PreparedUpload,
+    audit: &UploadAudit<'_>,
+    intent: &admission::AdmittedIntent,
+    now: i64,
+) -> Result<Response, Response> {
+    let project = audit.project;
+    let digest = prepared.digest.clone();
+    let incoming = prepared
+        .record
+        .file
+        .size
+        .expect("a prepared upload carries its byte size");
     // Claim the operation before mutating: a retry of a write that already published replays its stored
     // result rather than running the mutation a second time.
     if let Some(response) = claim_short_circuit(state.meta.claim_operation(
@@ -277,20 +309,14 @@ async fn admit_and_store(
         Some(now + OPERATION_RETENTION_SECS),
         now,
     )) {
-        return response;
+        return Err(response);
     }
     let authority = crate::name::authority_key(project);
-    let fence = match first_publish_fence(state, &authority).await {
-        Ok(fence) => fence,
-        Err(response) => return response,
-    };
-    let quota = match project_quota_reservation(state, index, hosted, project, audit, incoming) {
-        Ok(quota) => quota,
-        Err(block) => {
-            emit_upload_status_event(audit, &block);
-            return block.response;
-        }
-    };
+    let fence = first_publish_fence(state, &authority).await?;
+    let quota = project_quota_reservation(state, index, hosted, project, audit, incoming).map_err(|block| {
+        emit_upload_status_event(audit, &block);
+        block.response
+    })?;
     let upload_webhook = webhook::prepare(
         state,
         PypiWebhook {
@@ -311,7 +337,7 @@ async fn admit_and_store(
     let stored = match cache::store_upload(state, &hosted.name, project, prepared, quota, fence, upload_webhook).await {
         Ok(stored) => stored,
         // A store fault stays a 5xx and leaves the operation pending, so a retry re-drives it.
-        Err(err) => return upload_store_error_response(audit, err),
+        Err(err) => return Err(upload_store_error_response(audit, err)),
     };
     // The bytes are durable whether this stored fresh content or deduplicated an identical resend, so the
     // intent advances to admitted either way, which lets the reaper reclaim it.
@@ -342,7 +368,7 @@ async fn admit_and_store(
             (state.clock)(),
         );
     }
-    (response.status, response.body).into_response()
+    Ok((response.status, response.body).into_response())
 }
 
 async fn first_publish_fence(state: &ServingState, authority: &str) -> Result<u64, Response> {

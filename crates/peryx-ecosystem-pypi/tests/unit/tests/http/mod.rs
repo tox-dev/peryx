@@ -11,6 +11,7 @@ mod finalize;
 mod finalize_sweep;
 mod frontier;
 mod inspect;
+mod intent_release;
 mod legacy_json;
 mod metadata;
 mod mirror;
