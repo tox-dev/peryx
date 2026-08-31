@@ -1,6 +1,5 @@
 //! PEP 658 metadata resolution: cached sidecars, ranged wheel reads, and background backfill.
 
-use std::io::{Cursor, Read};
 use std::sync::{Arc, Mutex};
 
 use crate::store::PypiStore as _;
@@ -12,10 +11,8 @@ use peryx_index::{Index, IndexKind};
 use peryx_storage::blob::Digest;
 use peryx_upstream::{ArtifactClient, RangeError, RangeSession};
 
-mod central_dir;
-use central_dir::{
-    DirectoryEntrySearch, MAX_CENTRAL_DIRECTORY_BYTES, ZIP_COMPRESSION_DEFLATED, ZIP_COMPRESSION_STORED,
-    ZIP_LOCAL_SIGNATURE, ZIP_TAIL_BYTES, central_directory, find_central_directory_entry, read_u16,
+use crate::archive::{
+    MAX_ZIP_CENTRAL_DIRECTORY_BYTES, ZIP_TAIL_BYTES, ZipEntry, ZipEntrySearch, find_zip_entry, zip_central_directory,
 };
 
 use super::download::file_path;
@@ -25,7 +22,7 @@ use super::{
 };
 
 const _: () = assert!(crate::archive::MAX_WHEEL_METADATA_BYTES < usize::MAX as u64);
-const _: () = assert!(MAX_CENTRAL_DIRECTORY_BYTES <= usize::MAX as u64);
+const _: () = assert!(MAX_ZIP_CENTRAL_DIRECTORY_BYTES <= usize::MAX as u64);
 
 async fn fetch_from_source(
     state: &ServingState,
@@ -302,7 +299,7 @@ async fn wheel_metadata_by_range(
     let tail = session
         .fetch_range(tail_start, session.len() - 1, usize::try_from(ZIP_TAIL_BYTES).unwrap())
         .await?;
-    let Some(directory) = central_directory(&tail, session.len()) else {
+    let Some(directory) = zip_central_directory(&tail, session.len()) else {
         return Ok(RemoteMetadata::Unsupported);
     };
     if directory.len == 0 {
@@ -315,17 +312,17 @@ async fn wheel_metadata_by_range(
             usize::try_from(directory.len).expect("the central-directory budget fits in memory"),
         )
         .await?;
-    let entry = match find_central_directory_entry(&directory_bytes, &metadata_path) {
-        DirectoryEntrySearch::Found(entry) => entry,
-        DirectoryEntrySearch::Missing => return Ok(RemoteMetadata::Missing),
-        DirectoryEntrySearch::Unsupported | DirectoryEntrySearch::Invalid => return Ok(RemoteMetadata::Unsupported),
+    let entry = match find_zip_entry(&directory_bytes, &metadata_path) {
+        ZipEntrySearch::Found(entry) => entry,
+        ZipEntrySearch::Missing => return Ok(RemoteMetadata::Missing),
+        ZipEntrySearch::Unsupported | ZipEntrySearch::Invalid => return Ok(RemoteMetadata::Unsupported),
     };
     if entry.uncompressed_size > crate::archive::MAX_WHEEL_METADATA_BYTES
         || entry.compressed_size > crate::archive::MAX_WHEEL_METADATA_BYTES
     {
         return Ok(RemoteMetadata::Unsupported);
     }
-    let data_start = zip_data_start(&session, entry.local_header_offset).await?;
+    let data_start = zip_data_start(&session, &entry).await?;
     let compressed = if entry.compressed_size == 0 {
         Bytes::new()
     } else {
@@ -337,42 +334,27 @@ async fn wheel_metadata_by_range(
             )
             .await?
     };
-    match entry.compression_method {
-        ZIP_COMPRESSION_STORED => read_metadata_output(Cursor::new(compressed), entry.uncompressed_size),
-        ZIP_COMPRESSION_DEFLATED => read_metadata_output(
-            flate2::read::DeflateDecoder::new(Cursor::new(compressed)),
-            entry.uncompressed_size,
-        ),
-        _ => Ok(RemoteMetadata::Unsupported),
-    }
+    // A wheel whose own ZIP records contradict each other, or whose member does not hash to the
+    // CRC-32 it declares, says nothing trustworthy about its metadata: give up the ranged read for
+    // the digest-verified full download rather than publish what the range returned.
+    entry
+        .decode(&compressed)
+        .map(RemoteMetadata::Found)
+        .map_err(|err| RangeError::Invalid(err.to_string()))
 }
 
-/// Reads one byte past the declaration, so a member that produces more than it declares is rejected
-/// on that byte rather than after its whole expansion is buffered. The caller rejects a declaration
-/// above [`crate::archive::MAX_WHEEL_METADATA_BYTES`] first, which bounds this read.
-fn read_metadata_output(reader: impl Read, declared_size: u64) -> Result<RemoteMetadata, RangeError> {
-    let limit = declared_size + 1;
-    let mut metadata = Vec::with_capacity(usize::try_from(limit).expect("the metadata budget fits in memory"));
-    if let Err(err) = reader.take(limit).read_to_end(&mut metadata) {
-        return Err(RangeError::Invalid(err.to_string()));
-    }
-    if metadata.len() as u64 == declared_size {
-        Ok(RemoteMetadata::Found(metadata))
-    } else {
-        Ok(RemoteMetadata::Unsupported)
-    }
-}
-
-async fn zip_data_start(session: &RangeSession, local_header_offset: u64) -> Result<u64, RangeError> {
+async fn zip_data_start(session: &RangeSession, entry: &ZipEntry) -> Result<u64, RangeError> {
+    let len = entry.local_header_len();
     let header = session
-        .fetch_range(local_header_offset, local_header_offset + 29, 30)
+        .fetch_range(
+            entry.local_header_offset,
+            entry.local_header_offset + len - 1,
+            usize::try_from(len).expect("a local header fits in memory"),
+        )
         .await?;
-    if !header.starts_with(&ZIP_LOCAL_SIGNATURE) {
-        return Err(RangeError::Invalid("hosted file header signature mismatch".to_owned()));
-    }
-    let name_len = u64::from(read_u16(&header, 26).expect("fixed hosted header range is complete"));
-    let extra_len = u64::from(read_u16(&header, 28).expect("fixed hosted header range is complete"));
-    Ok(local_header_offset + 30 + name_len + extra_len)
+    entry
+        .data_start(&header)
+        .map_err(|err| RangeError::Invalid(err.to_string()))
 }
 
 /// Queue wheel metadata generation without delaying the page response.

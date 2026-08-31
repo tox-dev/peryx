@@ -10,8 +10,9 @@ mod wheel;
 
 pub use peryx_archive::{
     ArchiveError, DEFAULT_MEMBER_CHUNK, MAX_CONTAINER_DEPTH, MAX_LISTED_ENTRIES, MAX_MEMBER_CHUNK,
-    MAX_NESTED_ARCHIVE_SIZE, Member, MemberChunk, MemberKind, read_error, safe_member_name,
-    strip_ascii_suffix_ignore_case,
+    MAX_NESTED_ARCHIVE_SIZE, MAX_ZIP_CENTRAL_DIRECTORY_BYTES, Member, MemberChunk, MemberKind, ZIP_TAIL_BYTES,
+    ZipEntry, ZipEntrySearch, find_zip_entry, read_error, safe_member_name, strip_ascii_suffix_ignore_case,
+    zip_central_directory,
 };
 use peryx_archive::{ArchiveFormat, ArchiveProfile, generic_format, generic_member_kind};
 

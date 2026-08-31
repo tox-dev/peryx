@@ -170,6 +170,70 @@ pub fn wheel_with_metadata_central_u32(metadata: &[u8], field_offset: usize, val
     wheel[position + field_offset..position + field_offset + 4].copy_from_slice(&value.to_le_bytes());
     wheel
 }
+/// Rewrites a `u16` field of the METADATA local header, leaving the central-directory entry to
+/// declare something else about the same member.
+pub fn wheel_with_metadata_local_u16(metadata: &[u8], field_offset: usize, value: u16) -> Vec<u8> {
+    let mut wheel = fixture_wheel_with_metadata(metadata);
+    let position = metadata_local_header_position(&wheel);
+    wheel[position + field_offset..position + field_offset + 2].copy_from_slice(&value.to_le_bytes());
+    wheel
+}
+/// Rewrites a `u32` field of the METADATA local header, leaving the central-directory entry to
+/// declare something else about the same member.
+pub fn wheel_with_metadata_local_u32(metadata: &[u8], field_offset: usize, value: u32) -> Vec<u8> {
+    let mut wheel = fixture_wheel_with_metadata(metadata);
+    let position = metadata_local_header_position(&wheel);
+    wheel[position + field_offset..position + field_offset + 4].copy_from_slice(&value.to_le_bytes());
+    wheel
+}
+/// Renames the member in its local header only, so the two records describe different files.
+pub fn wheel_with_metadata_local_name(metadata: &[u8]) -> Vec<u8> {
+    let mut wheel = fixture_wheel_with_metadata(metadata);
+    let position = metadata_local_header_position(&wheel);
+    wheel[position + 30] = b'X';
+    wheel
+}
+/// Declares the METADATA member streamed: general-purpose bit 3 in both records, and the local CRC
+/// and sizes left as the placeholders a writer that cannot seek back emits.
+pub fn wheel_with_streamed_metadata(metadata: &[u8]) -> Vec<u8> {
+    let mut wheel = fixture_wheel_with_metadata(metadata);
+    let central = metadata_central_directory_position(&wheel);
+    let local = metadata_local_header_position(&wheel);
+    wheel[central + 8..central + 10].copy_from_slice(&8_u16.to_le_bytes());
+    wheel[local + 6..local + 8].copy_from_slice(&8_u16.to_le_bytes());
+    wheel[local + 14..local + 26].fill(0);
+    wheel
+}
+/// Moves the METADATA member's declared compressed span by `adjust` bytes in both records, so they
+/// still agree on a span that is not exactly the member's compression stream.
+pub fn wheel_with_metadata_compressed_span(metadata: &[u8], adjust: i64) -> Vec<u8> {
+    let mut wheel = fixture_wheel_with_metadata(metadata);
+    let central = metadata_central_directory_position(&wheel);
+    let local = metadata_local_header_position(&wheel);
+    let declared = u32::from_le_bytes(wheel[central + 20..central + 24].try_into().unwrap());
+    let span = u32::try_from(i64::from(declared) + adjust).unwrap().to_le_bytes();
+    wheel[central + 20..central + 24].copy_from_slice(&span);
+    wheel[local + 18..local + 22].copy_from_slice(&span);
+    wheel
+}
+/// Declares a stored METADATA member's uncompressed size, in both records, as something other than
+/// its compressed size. No stored member can have two.
+pub fn wheel_with_stored_metadata_uncompressed_size(metadata: &[u8], size: u32) -> Vec<u8> {
+    let mut wheel = fixture_wheel_with_metadata_compression(metadata, zip::CompressionMethod::Stored);
+    let central = metadata_central_directory_position(&wheel);
+    let local = metadata_local_header_position(&wheel);
+    wheel[central + 24..central + 28].copy_from_slice(&size.to_le_bytes());
+    wheel[local + 22..local + 26].copy_from_slice(&size.to_le_bytes());
+    wheel
+}
+/// Flips one byte of the stored METADATA payload. Every record still describes the member the wheel
+/// was built with, and only the member's CRC-32 betrays the change.
+pub fn wheel_with_corrupt_stored_metadata(metadata: &[u8]) -> Vec<u8> {
+    let mut wheel = fixture_wheel_with_metadata_compression(metadata, zip::CompressionMethod::Stored);
+    let data_start = metadata_local_data_start(&wheel);
+    wheel[data_start] ^= 0xFF;
+    wheel
+}
 pub fn wheel_with_encrypted_metadata(metadata: &[u8]) -> Vec<u8> {
     let mut wheel = fixture_wheel_with_metadata(metadata);
     let position = metadata_central_directory_position(&wheel);

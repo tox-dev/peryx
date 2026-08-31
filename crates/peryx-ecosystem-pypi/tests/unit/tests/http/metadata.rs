@@ -255,6 +255,7 @@ async fn test_metadata_backfill_reads_wheel_ranges() {
             "encrypted nonmetadata entry",
             wheel_with_encrypted_nonmetadata(metadata),
         ),
+        ("streamed metadata entry", wheel_with_streamed_metadata(metadata)),
     ] {
         let h = harness().await;
         let digest = Digest::of(&wheel);
@@ -572,14 +573,24 @@ async fn test_metadata_backfill_does_not_request_a_directory_span_outside_the_ar
     assert_eq!((status, body.as_bytes()), (StatusCode::OK, metadata.as_slice()));
     h.server.verify().await;
 }
-#[tokio::test]
-async fn test_metadata_backfill_downloads_when_range_is_unusable() {
-    struct Case {
-        label: &'static str,
-        build_ranged: fn(&[u8], &[u8]) -> Vec<u8>,
-    }
+struct Case {
+    label: &'static str,
+    build_ranged: fn(&[u8], &[u8]) -> Vec<u8>,
+}
+
+async fn assert_every_case_falls_back(cases: &[Case]) {
     let metadata = b"Metadata-Version: 2.1\nName: peryxpkg\nVersion: 1.0\n";
     let wheel = fixture_wheel_with_metadata(metadata);
+    for case in cases {
+        let h = harness().await;
+        let ranged = (case.build_ranged)(metadata, &wheel);
+
+        assert_metadata_range_fallback_preserves_other_resources(&h, case.label, ranged, wheel.clone(), metadata).await;
+    }
+}
+
+#[tokio::test]
+async fn test_metadata_backfill_downloads_when_range_is_unusable() {
     let cases = [
         Case {
             label: "tail is not zip",
@@ -658,12 +669,60 @@ async fn test_metadata_backfill_downloads_when_range_is_unusable() {
         },
     ];
 
-    for case in cases {
-        let h = harness().await;
-        let ranged = (case.build_ranged)(metadata, &wheel);
+    assert_every_case_falls_back(&cases).await;
+}
+#[tokio::test]
+async fn test_metadata_backfill_downloads_when_the_zip_records_disagree() {
+    let cases = [
+        Case {
+            label: "local header names another member",
+            build_ranged: |metadata, _wheel| wheel_with_metadata_local_name(metadata),
+        },
+        Case {
+            label: "local header declares another compression method",
+            build_ranged: |metadata, _wheel| wheel_with_metadata_local_u16(metadata, 8, 0),
+        },
+        Case {
+            label: "local header declares another name length",
+            build_ranged: |metadata, _wheel| wheel_with_metadata_local_u16(metadata, 26, 3),
+        },
+        Case {
+            label: "local header declares flags the directory does not",
+            build_ranged: |metadata, _wheel| wheel_with_metadata_local_u16(metadata, 6, 1 << 3),
+        },
+        Case {
+            label: "local header declares another CRC-32",
+            build_ranged: |metadata, _wheel| wheel_with_metadata_local_u32(metadata, 14, 1),
+        },
+        Case {
+            label: "local header declares another compressed size",
+            build_ranged: |metadata, _wheel| wheel_with_metadata_local_u32(metadata, 18, 1),
+        },
+        Case {
+            label: "local header declares another uncompressed size",
+            build_ranged: |metadata, _wheel| wheel_with_metadata_local_u32(metadata, 22, 1),
+        },
+        Case {
+            label: "stored member declares unequal sizes",
+            build_ranged: |metadata, _wheel| {
+                wheel_with_stored_metadata_uncompressed_size(metadata, u32::try_from(metadata.len()).unwrap() - 1)
+            },
+        },
+        Case {
+            label: "compressed span holds more than its stream",
+            build_ranged: |metadata, _wheel| wheel_with_metadata_compressed_span(metadata, 8),
+        },
+        Case {
+            label: "compressed span cuts its stream short",
+            build_ranged: |metadata, _wheel| wheel_with_metadata_compressed_span(metadata, -2),
+        },
+        Case {
+            label: "stored metadata bytes are corrupt",
+            build_ranged: |metadata, _wheel| wheel_with_corrupt_stored_metadata(metadata),
+        },
+    ];
 
-        assert_metadata_range_fallback_preserves_other_resources(&h, case.label, ranged, wheel.clone(), metadata).await;
-    }
+    assert_every_case_falls_back(&cases).await;
 }
 #[tokio::test]
 async fn test_metadata_backfill_scopes_ignored_ranges_to_one_artifact() {

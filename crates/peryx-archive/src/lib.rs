@@ -1,12 +1,17 @@
 mod engine;
 mod model;
 mod source;
+mod zip_range;
 
 pub use engine::{
     list_members, list_members_nested_path, list_members_path, read_member, read_member_chunk, read_member_chunk_path,
     read_text_member_chunk_nested_path,
 };
 pub use model::{ArchiveError, ArchiveFormat, ArchiveProfile, Member, MemberChunk, MemberKind};
+pub use zip_range::{
+    MAX_ZIP_CENTRAL_DIRECTORY_BYTES, ZIP_TAIL_BYTES, ZipCentralDirectory, ZipEntry, ZipEntrySearch, ZipRecordError,
+    find_zip_entry, zip_central_directory,
+};
 
 pub const DEFAULT_MEMBER_CHUNK: u64 = 256 * 1024;
 
