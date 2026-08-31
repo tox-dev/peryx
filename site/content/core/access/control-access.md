@@ -72,6 +72,9 @@ actions = ["read"]
 The flag denies anonymous reads on routes the selected owner protects. A token with the `read` action names the
 resources its principal may read. See the supported client flows above for route coverage.
 
+A virtual index serves what its layers hold, so a route is readable only by a credential every index it composes admits.
+Closing one layer closes every virtual route that surfaces it, whatever those routes set for themselves.
+
 Leaving `anonymous_read = true` opens artifact reads to callers that present nothing; it never widens what a presented
 credential may reach. The operational endpoints - `/+query`, `/+analytics`, and `/+quota` - answer a repository token
 only when its password resolves to a live token granting `read` over `*`, and answer `401` otherwise.

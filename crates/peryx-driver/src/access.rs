@@ -157,6 +157,27 @@ impl ReadAccess {
         }
     }
 
+    /// Authorizes a read of `resource` served by the route at `position`.
+    ///
+    /// A virtual route serves what its layers hold, so it is readable only by a credential every one
+    /// of them admits: the named route and each index it composes judge `resource` against their own
+    /// ACL. Refusing the whole route is what keeps two teams' private layers behind one virtual route
+    /// from reading each other, and it leaves the merged page whole - dropping the layers a caller
+    /// cannot read would answer a listing that silently omits half its projects.
+    ///
+    /// # Errors
+    /// Returns the first index ACL denial along that composition.
+    pub fn authorize_read(
+        &self,
+        state: &ServingState,
+        position: usize,
+        resource: ResourceMatch<'_>,
+    ) -> Result<(), Denial> {
+        peryx_index::composed_indexes(&state.indexes, position)
+            .into_iter()
+            .try_for_each(|position| self.for_index(state.index_at(position)).authorize_resource(resource))
+    }
+
     #[must_use]
     pub fn for_index<'a>(&'a self, index: &'a Index) -> IndexReadAccess<'a> {
         let credential = if index.acl.anonymous_read {

@@ -583,6 +583,18 @@ fn promoter_auth() -> String {
     format!("Basic {}", STANDARD.encode("__token__:pr0m0te"))
 }
 
+/// Reads the target listing as `promoter`, the only credential `prod` grants a read to. Anonymously
+/// the closed index answers `401` to promoted and absent alike, which would not tell the two apart.
+async fn promoted_listing(state: &Arc<AppState>) -> (StatusCode, String) {
+    let auth = promoter_auth();
+    get_with_headers(
+        state,
+        "/prod/simple/peryxpkg/",
+        &[("accept", "application/json"), ("authorization", &auth)],
+    )
+    .await
+}
+
 async fn stage_peryxpkg(state: &Arc<AppState>) {
     upload_wheel_to(
         state,
@@ -608,12 +620,7 @@ async fn test_promote_denies_a_source_the_caller_cannot_read() {
     .await;
 
     assert_eq!((status, body.as_str()), (StatusCode::NOT_FOUND, "not found"));
-    assert_eq!(
-        get(&h.state, "/prod/simple/peryxpkg/", Some("application/json"))
-            .await
-            .0,
-        StatusCode::NOT_FOUND
-    );
+    assert_eq!(promoted_listing(&h.state).await.0, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -630,8 +637,9 @@ async fn test_promote_accepts_a_source_the_caller_can_read() {
     .await;
 
     assert_eq!((status, body.as_str()), (StatusCode::OK, "promoted 1 file(s)"));
-    let (_, _, listing) = get(&h.state, "/prod/simple/peryxpkg/", Some("application/json")).await;
+    let (listing_status, listing) = promoted_listing(&h.state).await;
     let detail: serde_json::Value = serde_json::from_str(&listing).unwrap();
+    assert_eq!(listing_status, StatusCode::OK);
     assert_eq!(detail["files"][0]["filename"], "peryxpkg-1.0-py3-none-any.whl");
 }
 

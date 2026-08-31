@@ -80,6 +80,30 @@ pub fn reaches_cached(indexes: &[Index], position: usize) -> bool {
     layers_reach(indexes, &[position], |kind| matches!(kind, IndexKind::Cached { .. }))
 }
 
+/// The index at `position` followed by every index it composes, nested layers included.
+///
+/// A virtual index answers with whatever its layers hold, so a decision that must hold for the
+/// content a route can serve - an access check, say - has to consider all of them, not just the
+/// route the request named. A layer already visited is not revisited, so a mis-declared cycle
+/// yields a finite set instead of looping.
+#[must_use]
+pub fn composed_indexes(indexes: &[Index], position: usize) -> Vec<usize> {
+    let mut composed = vec![position];
+    let mut pending = 0;
+    while let Some(&position) = composed.get(pending) {
+        pending += 1;
+        let IndexKind::Virtual { layers, .. } = &indexes[position].kind else {
+            continue;
+        };
+        for &layer in layers {
+            if !composed.contains(&layer) {
+                composed.push(layer);
+            }
+        }
+    }
+    composed
+}
+
 fn layers_reach(indexes: &[Index], layers: &[usize], target: fn(&IndexKind) -> bool) -> bool {
     fn walk(indexes: &[Index], position: usize, path: &mut Vec<usize>, target: fn(&IndexKind) -> bool) -> bool {
         if path.contains(&position) {

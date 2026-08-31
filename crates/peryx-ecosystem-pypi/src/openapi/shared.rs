@@ -48,6 +48,19 @@ pub(super) fn policy_denial_response(description: &str, action: &str) -> Respons
     )
 }
 
+/// What the index ACL refuses a read with. Every read route answers these, and says the same thing
+/// whether or not the resource exists.
+pub(super) fn unauthorized_read_response() -> ResponseBuilder {
+    ResponseBuilder::new().description(
+        "The index does not allow anonymous reads and the request carried no usable credential; the \
+         reply carries `WWW-Authenticate: Basic realm=\"peryx\"`",
+    )
+}
+
+pub(super) fn forbidden_read_response() -> ResponseBuilder {
+    ResponseBuilder::new().description("The presented credential grants no read of this resource")
+}
+
 pub(super) fn sha256_param() -> ParameterBuilder {
     parameter(
         "sha256",

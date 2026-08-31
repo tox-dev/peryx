@@ -5,11 +5,13 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use futures_util::FutureExt;
 use peryx_core::path::{self};
+use peryx_driver::access::ReadAccess;
 use peryx_driver::conditional::{applicable_range, http_date, if_modified_since, if_none_match, last_modified};
 use peryx_driver::not_found;
 use peryx_driver::range::unsatisfiable_range;
 use peryx_driver::state::ServingState;
 use peryx_events::metrics::Observation;
+use peryx_identity::{Denial, ResourceMatch};
 use peryx_index::{Index, IndexKind};
 use peryx_policy::PolicyAction;
 use peryx_storage::blob::{Digest, RangeRequest, parse_range};
@@ -70,14 +72,76 @@ pub async fn pypi_dispatch_get(
     head: bool,
 ) -> Response {
     let authenticated = headers.contains_key(header::AUTHORIZATION);
-    let mut response = pypi_get(&state, position, rest, &headers, &uri, head).boxed().await;
-    if let Some(PageSerial(last_serial)) = page_serial(&response)
-        && holds_below_readable_frontier(&state, state.index_at(position), last_serial)
-    {
-        response = not_found();
-    }
+    let mut response = if let Some(denial) = read_denial(&state, position, rest, &headers) {
+        denial
+    } else {
+        let mut response = pypi_get(&state, position, rest, &headers, &uri, head).boxed().await;
+        if let Some(PageSerial(last_serial)) = page_serial(&response)
+            && holds_below_readable_frontier(&state, state.index_at(position), last_serial)
+        {
+            response = not_found();
+        }
+        response
+    };
     apply_revocation_cache_policy(&mut response, authenticated);
     response
+}
+
+/// The refusal to answer with when the index ACL does not grant this read, or `None` when it does.
+///
+/// The Simple API is a client protocol, so the `Authorization` header decides the request on its own
+/// and a browser session does not stand in for a credential here, matching the upload and mutation
+/// routes. An index left `anonymous_read` - the default - authorizes every caller, so a public index
+/// answers exactly as it did.
+fn read_denial(state: &ServingState, position: usize, rest: &str, headers: &HeaderMap) -> Option<Response> {
+    let project = requested_project(rest);
+    ReadAccess::from_headers(state, headers)
+        .authorize_read(
+            state,
+            position,
+            project.as_deref().map_or(ResourceMatch::Any, ResourceMatch::Pattern),
+        )
+        .err()
+        .map(read_denial_response)
+}
+
+/// The project a `GET` addresses, so a token scoped to some of an index's projects reaches those and
+/// no others.
+///
+/// A path this dispatch cannot read as a project is authorized as [`ResourceMatch::Any`]: the routes
+/// that carry no project ask only whether the caller may read the index at all, and a malformed one
+/// is refused on a closed index rather than answering its own `400` to a caller with no read.
+fn requested_project(rest: &str) -> Option<String> {
+    if let Ok(Some(target)) = legacy_json_target(rest) {
+        return Some(target.project);
+    }
+    if let Ok(Some(project)) = simple_project(rest) {
+        return Some(project.normalized);
+    }
+    let filename = ["files/", "inspect/"]
+        .into_iter()
+        .find_map(|prefix| rest.strip_prefix(prefix))?
+        .split('/')
+        .nth(1)?;
+    safe_filename(filename)
+        .ok()
+        .map(|filename| crate::project_of_filename(&filename))
+}
+
+/// What a refused read is told. The answer is the same whether or not the resource exists, so a
+/// caller without a read learns nothing about the index's contents from probing it.
+fn read_denial_response(denial: Denial) -> Response {
+    match denial {
+        Denial::Forbidden => (StatusCode::FORBIDDEN, "credential does not grant this read").into_response(),
+        // No credential can read an index that grants `read` to no token, but saying so would report
+        // on its ACL; an unauthenticated caller gets the challenge either way.
+        Denial::Unauthenticated | Denial::Unavailable => (
+            StatusCode::UNAUTHORIZED,
+            [(header::WWW_AUTHENTICATE, "Basic realm=\"peryx\"")],
+            "unauthorized",
+        )
+            .into_response(),
+    }
 }
 
 /// `PyPI` GET routing within an index: the Simple index and project detail (HTML, PEP 691 JSON, legacy

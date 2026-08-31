@@ -3,6 +3,7 @@
 use super::shared::{
     ContentBuilder, OperationBuilder, ResponseBuilder, filename_param, if_modified_since_param, if_none_match_param,
     if_range_param, policy_denial_response, range_param, route_param, sha256_param, text_response,
+    unauthorized_read_response,
 };
 
 pub(super) fn file_download() -> OperationBuilder {
@@ -55,6 +56,7 @@ pub(super) fn file_download() -> OperationBuilder {
             ResponseBuilder::new()
                 .description("The digest is not 64 lowercase hex, or the filename is not a safe path segment"),
         )
+        .response("401", unauthorized_read_response())
         .response(
             "404",
             ResponseBuilder::new().description("No file with this digest is known"),
@@ -89,6 +91,7 @@ pub(super) fn metadata_download() -> OperationBuilder {
                 "Metadata-Version: 2.1\nName: peryxpkg\nVersion: 1.0\nRequires-Python: >=3.8\n",
             ),
         )
+        .response("401", unauthorized_read_response())
         .response(
             "404",
             ResponseBuilder::new().description("The artifact has no known metadata sibling"),

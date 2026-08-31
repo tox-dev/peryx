@@ -397,8 +397,10 @@ async fn promotion_harness_with(distributed: bool) -> Harness {
 /// Promotion where source read and target write are held by different credentials.
 ///
 /// `s3cret` uploads to `staging` and writes `prod` but reads nothing; `pr0m0te` reads `staging` and
-/// writes `prod`. The two virtual routes share `staging` as their write target while carrying the
-/// opposite `anonymous_read` to it, so a test can tell the named route's ACL from its layer's.
+/// reads and writes `prod`. The two virtual routes share `staging` as their write target while
+/// carrying the opposite `anonymous_read` to it, so a test can tell the named route's ACL from its
+/// layer's. Every index here is closed to anonymous reads, so a test that inspects the target has to
+/// present `pr0m0te` and a `404` from it means the release is absent rather than hidden.
 pub async fn private_promotion_harness() -> Harness {
     let dir = tempfile::tempdir().unwrap();
     let server = MockServer::start().await;
@@ -442,7 +444,7 @@ pub async fn private_promotion_harness() -> Harness {
                 anonymous_read: false,
                 tokens: vec![
                     named_token("writer", "s3cret", [Action::Write, Action::Delete]),
-                    named_token("promoter", "pr0m0te", [Action::Write, Action::Delete]),
+                    named_token("promoter", "pr0m0te", [Action::Read, Action::Write, Action::Delete]),
                 ],
             },
         },

@@ -1,4 +1,4 @@
-use super::{RouteResolver, layers_include_hosted, reaches_cached, remainder, shadow_order};
+use super::{RouteResolver, composed_indexes, layers_include_hosted, reaches_cached, remainder, shadow_order};
 use crate::index::{Index, IndexKind};
 use peryx_core::Ecosystem;
 use peryx_identity::IndexAcl;
@@ -194,6 +194,44 @@ fn test_reaches_cached_terminates_on_a_virtual_cycle() {
         index("b", "b", virtual_layers(&[0])),
     ];
     assert!(!reaches_cached(&indexes, 0));
+}
+
+#[test]
+fn test_composed_indexes_is_a_leaf_route_alone() {
+    let indexes = vec![index("hosted", "h", hosted()), index("alpha", "c", cached())];
+    assert_eq!(composed_indexes(&indexes, 0), vec![0]);
+    assert_eq!(composed_indexes(&indexes, 1), vec![1]);
+}
+
+#[test]
+fn test_composed_indexes_follows_nested_layers() {
+    let indexes = vec![
+        index("hosted", "h", hosted()),
+        index("alpha", "c", cached()),
+        index("inner", "inner", virtual_layers(&[0])),
+        index("outer", "outer", virtual_layers(&[2, 1])),
+    ];
+    assert_eq!(composed_indexes(&indexes, 3), vec![3, 2, 1, 0]);
+}
+
+#[test]
+fn test_composed_indexes_lists_a_shared_descendant_once() {
+    let indexes = vec![
+        index("hosted", "hosted", hosted()),
+        index("left", "left", virtual_layers(&[0])),
+        index("right", "right", virtual_layers(&[0])),
+        index("root", "root", virtual_layers(&[1, 2])),
+    ];
+    assert_eq!(composed_indexes(&indexes, 3), vec![3, 1, 2, 0]);
+}
+
+#[test]
+fn test_composed_indexes_terminates_on_a_virtual_cycle() {
+    let indexes = vec![
+        index("a", "a", virtual_layers(&[1])),
+        index("b", "b", virtual_layers(&[0])),
+    ];
+    assert_eq!(composed_indexes(&indexes, 0), vec![0, 1]);
 }
 
 fn index(name: &str, route: &str, kind: IndexKind) -> Index {

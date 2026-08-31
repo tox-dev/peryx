@@ -1,6 +1,7 @@
 use super::shared::{
-    ContentBuilder, OperationBuilder, ParameterIn, ResponseBuilder, bounded_integer_parameter, filename_param, json,
-    parameter, route_param, sha256_param, string_array_parameter, text_response,
+    ContentBuilder, OperationBuilder, ParameterIn, ResponseBuilder, bounded_integer_parameter, filename_param,
+    forbidden_read_response, json, parameter, route_param, sha256_param, string_array_parameter, text_response,
+    unauthorized_read_response,
 };
 
 pub(super) fn inspect_listing() -> OperationBuilder {
@@ -88,6 +89,8 @@ pub(super) fn inspect_listing() -> OperationBuilder {
             "416",
             ResponseBuilder::new().description("The requested member offset is beyond the member size"),
         )
+        .response("401", unauthorized_read_response())
+        .response("403", forbidden_read_response())
         .response("422", ResponseBuilder::new().description("The archive cannot be read"))
 }
 pub(super) fn inspect_member() -> OperationBuilder {
@@ -118,6 +121,8 @@ pub(super) fn inspect_member() -> OperationBuilder {
                 "Metadata-Version: 2.1\nName: peryxpkg\nVersion: 1.0\n",
             ),
         )
+        .response("401", unauthorized_read_response())
+        .response("403", forbidden_read_response())
         .response("404", ResponseBuilder::new().description("Unknown digest or member"))
         .response(
             "415",

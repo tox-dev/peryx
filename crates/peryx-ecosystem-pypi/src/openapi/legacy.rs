@@ -1,7 +1,8 @@
 //! The pypi.org-shaped legacy JSON API.
 
 use super::shared::{
-    OperationBuilder, ResponseBuilder, api_json_response, json, project_param, route_param, version_param,
+    OperationBuilder, ResponseBuilder, api_json_response, forbidden_read_response, json, project_param, route_param,
+    unauthorized_read_response, version_param,
 };
 
 pub(super) fn legacy_project_json() -> OperationBuilder {
@@ -72,6 +73,8 @@ pub(super) fn legacy_project_json() -> OperationBuilder {
                 }),
             ),
         )
+        .response("401", unauthorized_read_response())
+        .response("403", forbidden_read_response())
         .response("404", ResponseBuilder::new().description("No layer has the project"))
         .response("502", ResponseBuilder::new().description("The upstream failed and nothing is cached"))
 }
@@ -123,6 +126,8 @@ pub(super) fn legacy_release_json() -> OperationBuilder {
                 }),
             ),
         )
+        .response("401", unauthorized_read_response())
+        .response("403", forbidden_read_response())
         .response("404", ResponseBuilder::new().description("No layer has the project or version"))
         .response("502", ResponseBuilder::new().description("The upstream failed and nothing is cached"))
 }

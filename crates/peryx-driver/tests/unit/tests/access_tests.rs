@@ -663,3 +663,122 @@ fn private_index_app(meta: MetaStore, root: &std::path::Path) -> AppState {
         }],
     )
 }
+
+/// A virtual route at position 1 layering the index at position 0.
+fn layered(named: IndexAcl, layer: IndexAcl) -> (tempfile::TempDir, Arc<ServingState>) {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = peryx_storage::meta::MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let blobs = peryx_storage::blob::BlobStore::new(dir.path().join("blobs"));
+    let state = AppState::new(
+        meta,
+        blobs,
+        60,
+        vec![
+            Index {
+                name: "layer".to_owned(),
+                route: "layer".to_owned(),
+                ecosystem: Ecosystem::new("other"),
+                kind: IndexKind::Hosted { volatile: true },
+                policy: peryx_policy::Policy::default(),
+                acl: layer,
+            },
+            Index {
+                name: "root".to_owned(),
+                route: "root".to_owned(),
+                ecosystem: Ecosystem::new("other"),
+                kind: IndexKind::Virtual {
+                    layers: vec![0],
+                    write_target: None,
+                },
+                policy: peryx_policy::Policy::default(),
+                acl: named,
+            },
+        ],
+    );
+    (dir, state.serving)
+}
+
+fn public_acl() -> IndexAcl {
+    IndexAcl {
+        anonymous_read: true,
+        tokens: Vec::new(),
+    }
+}
+
+fn reader_acl(resource: &str) -> IndexAcl {
+    IndexAcl {
+        anonymous_read: false,
+        tokens: vec![NamedToken {
+            name: "reader".to_owned(),
+            secret: "read-secret".to_owned(),
+            grants: vec![Grant {
+                resources: vec![Glob::new(resource)],
+                actions: BTreeSet::from([Action::Read]),
+            }],
+            expires_at: None,
+        }],
+    }
+}
+
+fn basic_headers(secret: &str) -> HeaderMap {
+    use base64::Engine as _;
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::AUTHORIZATION,
+        HeaderValue::from_str(&format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(format!("_:{secret}"))
+        ))
+        .unwrap(),
+    );
+    headers
+}
+
+#[rstest]
+#[case::open_route_and_layer(public_acl(), public_acl(), Ok(()))]
+#[case::closed_layer(public_acl(), reader_acl("app"), Err(Denial::Unauthenticated))]
+#[case::closed_route(reader_acl("app"), public_acl(), Err(Denial::Unauthenticated))]
+fn test_anonymous_route_read_needs_every_composed_index_open(
+    #[case] named: IndexAcl,
+    #[case] layer: IndexAcl,
+    #[case] expected: Result<(), Denial>,
+) {
+    let (_dir, state) = layered(named, layer);
+    let access = ReadAccess::from_headers(&state, &HeaderMap::new());
+
+    assert_eq!(
+        access.authorize_read(&state, 1, ResourceMatch::Pattern("app")),
+        expected
+    );
+}
+
+#[test]
+fn test_route_read_admits_a_credential_every_composed_index_grants() {
+    let (_dir, state) = layered(reader_acl("app"), reader_acl("app"));
+    let access = ReadAccess::from_headers(&state, &basic_headers("read-secret"));
+
+    assert_eq!(access.authorize_read(&state, 1, ResourceMatch::Pattern("app")), Ok(()));
+}
+
+#[test]
+fn test_route_read_refuses_a_credential_a_layer_scopes_elsewhere() {
+    let (_dir, state) = layered(reader_acl("app"), reader_acl("other"));
+    let access = ReadAccess::from_headers(&state, &basic_headers("read-secret"));
+
+    assert_eq!(
+        access.authorize_read(&state, 1, ResourceMatch::Pattern("app")),
+        Err(Denial::Forbidden)
+    );
+}
+
+#[test]
+fn test_route_read_judges_a_leaf_route_on_its_own_acl() {
+    let (_dir, state) = layered(public_acl(), reader_acl("app"));
+    let access = ReadAccess::from_headers(&state, &HeaderMap::new());
+
+    assert_eq!(
+        access.authorize_read(&state, 0, ResourceMatch::Pattern("app")),
+        Err(Denial::Unauthenticated)
+    );
+}

@@ -119,16 +119,22 @@ public repository route and project; a token for a virtual route cannot write th
 direct route. Promotion authenticates against the target route. The write proceeds when the grant covers the normalized
 project and action.
 
-Simple API, legacy JSON, metadata, and artifact reads do not consult `anonymous_read` or read grants in this release.
-Server-rendered project pages, the browser, and search apply read ACLs.
+Simple API, legacy JSON, metadata, artifact, and archive-inspection reads consult the index ACL. An index left
+`anonymous_read = true`, the default, serves every caller. An index with `anonymous_read = false` needs a credential
+whose `read` grant covers the normalized project; the list and redirect routes name no project and ask only for a read
+of something in the index. A refusal answers `401` with `WWW-Authenticate: Basic realm="peryx"` when the request carries
+no usable credential and `403` when the one it carries does not reach the resource, and it says the same thing whether
+or not the project exists. A virtual route serves what its layers hold, so it is readable only by a credential every
+index it composes admits: closing a layer closes the routes that surface it. Server-rendered project pages, the browser,
+and search apply the same read ACLs, and additionally accept a signed-in browser session.
 
 Responses:
 
 - `200`: accepted; removal responses state how many files changed.
 - `400`: malformed upload, bad promotion query, or unsafe path segment.
-- `401`: missing or wrong token.
-- `403`: uploads disabled, target project status rejects writes, index policy denies the request, or the index is not
-  volatile.
+- `401`: missing or wrong token, including a read of an index that does not allow anonymous reads.
+- `403`: uploads disabled, target project status rejects writes, index policy denies the request, the presented
+  credential's grants do not reach the resource, or the index is not volatile.
 - `404`: unknown route, project, or nothing matched.
 - `405`: the route's index does not accept writes.
 - `409`: promotion target already has the filename with different bytes.
