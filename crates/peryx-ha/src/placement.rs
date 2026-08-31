@@ -234,6 +234,8 @@ pub enum BlobPlacementFailure {
     SourceUnavailable,
     DigestMismatch,
     BackendRejected,
+    /// A byte cap this node applies to its own transfers, so retrying the same source repeats it.
+    TransferLimit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

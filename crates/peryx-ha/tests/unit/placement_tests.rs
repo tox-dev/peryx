@@ -89,6 +89,23 @@ fn test_placement_without_an_attempt_reads_as_legacy_state() {
     );
 }
 
+#[rstest]
+#[case::source_unavailable(BlobPlacementFailure::SourceUnavailable, "SourceUnavailable", "source_unavailable")]
+#[case::digest_mismatch(BlobPlacementFailure::DigestMismatch, "DigestMismatch", "digest_mismatch")]
+#[case::backend_rejected(BlobPlacementFailure::BackendRejected, "BackendRejected", "backend_rejected")]
+#[case::transfer_limit(BlobPlacementFailure::TransferLimit, "TransferLimit", "transfer_limit")]
+fn test_failure_class_round_trips_under_its_wire_name(
+    #[case] class: BlobPlacementFailure,
+    #[case] name: &str,
+    #[case] wire: &str,
+) {
+    let encoded = serde_json::to_string(&class).unwrap();
+
+    assert_eq!(format!("{class:?}"), name);
+    assert_eq!(encoded, format!("\"{wire}\""));
+    assert_eq!(serde_json::from_str::<BlobPlacementFailure>(&encoded).unwrap(), class);
+}
+
 #[test]
 fn test_restaging_pending_is_unchanged() {
     let prior = record(BlobPlacementState::Pending, 3, 1);

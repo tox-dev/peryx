@@ -946,12 +946,14 @@ fn durability_policy_name_contract(#[case] policy: DurabilityPolicy, #[case] exp
 #[case(TransportError::FrontierGap { expected: 1, actual: 2 }, false, Some("frontier_gap"))]
 #[case(TransportError::EmptyBatch { frontier: 2, after: 1 }, false, Some("empty_batch"))]
 #[case(TransportError::DigestMismatch { expected: "a".into(), actual: "b".into() }, false, Some("digest_mismatch"))]
+#[case(TransportError::RangeMismatch { expected: "bytes 0-7".into(), actual: "bytes 0-99".into() }, false, Some("range_mismatch"))]
 #[case(TransportError::BlobNotFound { digest: "a".into() }, false, Some("blob_not_found"))]
 fn transport_error_contract(
     #[case] error: TransportError,
     #[case] retryable: bool,
     #[case] terminal_reason: Option<&str>,
 ) {
+    assert_eq!(error.clone(), error);
     assert_eq!(error.is_retryable(), retryable);
     assert_eq!(error.terminal_reason(), terminal_reason);
     assert!(!error.to_string().is_empty());

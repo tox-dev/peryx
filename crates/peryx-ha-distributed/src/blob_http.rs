@@ -9,7 +9,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use peryx_storage::blob::Digest;
 use reqwest::Url;
-use reqwest::header::{ACCEPT_ENCODING, CONTENT_LENGTH, RANGE};
+use reqwest::header::{ACCEPT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE, RANGE};
 
 use crate::blob::{BlobRequest, BlobTransport, ByteRange};
 use crate::client_transport::{
@@ -71,9 +71,34 @@ impl HttpBlobTransport {
     }
 }
 
+const fn last_byte(range: ByteRange) -> usize {
+    range.offset.saturating_add(range.length).saturating_sub(1)
+}
+
 fn range_header(range: ByteRange) -> String {
-    let last = range.offset.saturating_add(range.length).saturating_sub(1);
-    format!("bytes={}-{last}", range.offset)
+    format!("bytes={}-{}", range.offset, last_byte(range))
+}
+
+/// A peer that answers a ranged request with the whole blob, or with a different window, would
+/// otherwise land at the wrong offset in the caller's stage and only surface as a whole-digest
+/// mismatch after the entire transfer.
+fn require_served_range(response: &reqwest::Response, range: ByteRange) -> Result<(), TransportError> {
+    let expected = format!("bytes {}-{}", range.offset, last_byte(range));
+    let served = (response.status() == reqwest::StatusCode::PARTIAL_CONTENT)
+        .then(|| response.headers().get(CONTENT_RANGE))
+        .flatten()
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    if served
+        .strip_prefix(expected.as_str())
+        .is_some_and(|total| total.starts_with('/'))
+    {
+        return Ok(());
+    }
+    Err(TransportError::RangeMismatch {
+        expected,
+        actual: served.to_owned(),
+    })
 }
 
 #[async_trait]
@@ -133,6 +158,9 @@ impl BlobTransport for HttpBlobTransport {
             };
         }
         require_replication_success(response.status())?;
+        if let Some(range) = request.range {
+            require_served_range(&response, range)?;
+        }
         let cap = self.limits.max_encoded_bytes.get();
         let body = self.http.read_replication_body(response, cap, true).await?;
         if request.range.is_none() {

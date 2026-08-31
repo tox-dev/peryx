@@ -1122,6 +1122,8 @@ pub enum TransportError {
     EmptyBatch { frontier: u64, after: u64 },
     #[error("peer blob content hashes to {actual}; the request asked for {expected}")]
     DigestMismatch { expected: String, actual: String },
+    #[error("peer served range {actual:?}; the request asked for {expected:?}")]
+    RangeMismatch { expected: String, actual: String },
     #[error("peer holds no blob for digest {digest}")]
     BlobNotFound { digest: String },
     #[error("peer blob transport is at its concurrent-stream limit")]
@@ -1147,6 +1149,7 @@ impl TransportError {
             Self::Disconnected | Self::Timeout | Self::ServerError { .. } | Self::AtCapacity => None,
             Self::Unauthenticated => Some("unauthenticated"),
             Self::DigestMismatch { .. } => Some("digest_mismatch"),
+            Self::RangeMismatch { .. } => Some("range_mismatch"),
             Self::BlobNotFound { .. } => Some("blob_not_found"),
             Self::BadStatus { .. } => Some("bad_status"),
             Self::Malformed => Some("malformed"),

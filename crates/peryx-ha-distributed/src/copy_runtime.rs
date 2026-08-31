@@ -9,6 +9,7 @@ use futures_util::StreamExt as _;
 use futures_util::stream::FuturesUnordered;
 
 use crate::copy_planning::{CrossDcCopy, copy_backlog_entry, plan_cross_dc_copy};
+use crate::peer::DEFAULT_TRANSFER_LIMITS;
 use crate::placement_policy::apply_blob_placement;
 use crate::{BlobTransport, CopyError, HttpBlobTransport, TransferLimits, TransportError, copy_blob_to_target};
 use peryx_core::Clock;
@@ -16,10 +17,20 @@ use peryx_ha::{
     AvailabilityTaskError, AvailabilityTaskReport, BackendId, BlobPlacementFailure, BlobPlacementKey,
     BlobPlacementOutcome, BlobPlacementTransition, DataCenterId,
 };
-use peryx_storage::blob::{BlobStore, Digest};
+use peryx_storage::blob::{BlobErrorKind, BlobStore, Digest};
 use peryx_storage::meta::MetaStore;
 
 const SOURCE_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+/// Artifacts move range by range rather than as one framed body, so their per-fetch cap is the copy
+/// range size and is independent of the 4 MiB metadata frame limit. Building both the source transport
+/// and the copy plan from this one value keeps a range from ever exceeding what the transport accepts.
+const COPY_RANGE_BYTES: NonZeroUsize = NonZeroUsize::new(8 * 1024 * 1024).unwrap();
+/// `max_operations` stays at the metadata default because it bounds change batches, which a blob
+/// transport never carries.
+const COPY_TRANSFER_LIMITS: TransferLimits = TransferLimits {
+    max_operations: DEFAULT_TRANSFER_LIMITS.max_operations,
+    max_encoded_bytes: NonZeroU64::new(COPY_RANGE_BYTES.get() as u64).unwrap(),
+};
 /// A pass stops planning at the first page boundary that reaches `limit`, so it holds one page of
 /// planned copies at a time and attempts at most `limit + batch - 1` of them before it yields.
 const PASS_PACING: PassPacing = PassPacing {
@@ -76,7 +87,7 @@ impl RosterTransports {
         let transports = roster
             .into_iter()
             .map(|(data_center, base)| {
-                HttpBlobTransport::new(&base, token.to_owned(), TransferLimits::default(), SOURCE_FETCH_TIMEOUT)
+                HttpBlobTransport::new(&base, token.to_owned(), COPY_TRANSFER_LIMITS, SOURCE_FETCH_TIMEOUT)
                     .map(|transport| (data_center, transport))
             })
             .collect::<Result<_, _>>()?;
@@ -174,7 +185,9 @@ impl CrossDcBlobCopier {
             return false;
         };
         let digest = Digest::from_hex(copy.target.digest.sha256()).expect("artifact digests are validated SHA-256");
-        let outcome = copy_blob_to_target(transport, &self.store, &digest).await;
+        // The verified source placement carries the size, so no peer advertisement bounds the transfer.
+        let total_length = usize::try_from(copy.size).expect("a blob fits addressable memory");
+        let outcome = copy_blob_to_target(transport, &self.store, &digest, total_length, COPY_RANGE_BYTES).await;
         let transition = match &outcome {
             Ok(()) => BlobPlacementTransition::Verify {
                 attempt: staged.transfer_attempt,
@@ -277,12 +290,18 @@ fn record(
     }
 }
 
-/// Records source failures as digest mismatch or unavailability. Records publish failures as target
-/// backend rejection.
+/// Records corrupt or mis-sized source bytes as a digest mismatch and every other source failure as
+/// unavailability. A byte cap is applied by this node against its own policy, so it is recorded apart
+/// from an unreachable source: retrying the source repeats it unchanged.
 const fn failure_class(error: &CopyError) -> BlobPlacementFailure {
     match error {
-        CopyError::Fetch(TransportError::DigestMismatch { .. }) => BlobPlacementFailure::DigestMismatch,
+        CopyError::Fetch(TransportError::FrameTooLarge { .. }) => BlobPlacementFailure::TransferLimit,
+        CopyError::Fetch(TransportError::DigestMismatch { .. } | TransportError::RangeMismatch { .. })
+        | CopyError::RangeLength { .. } => BlobPlacementFailure::DigestMismatch,
         CopyError::Fetch(_) => BlobPlacementFailure::SourceUnavailable,
+        CopyError::Publish(error) if matches!(error.kind(), BlobErrorKind::DigestMismatch) => {
+            BlobPlacementFailure::DigestMismatch
+        }
         CopyError::Publish(_) => BlobPlacementFailure::BackendRejected,
     }
 }

@@ -227,25 +227,37 @@ fn test_record_reports_a_rejected_transition() {
     assert!(recorded.is_none());
 }
 
-#[test]
-fn test_failure_class_maps_each_loss_to_its_evidence() {
-    assert_eq!(
-        failure_class(&CopyError::Fetch(TransportError::DigestMismatch {
-            expected: "a".to_owned(),
-            actual: "b".to_owned(),
-        })),
-        BlobPlacementFailure::DigestMismatch
-    );
-    assert_eq!(
-        failure_class(&CopyError::Fetch(TransportError::BlobNotFound {
-            digest: "x".to_owned(),
-        })),
-        BlobPlacementFailure::SourceUnavailable
-    );
-    assert_eq!(
-        failure_class(&CopyError::Publish(peryx_storage::blob::BlobError::unsupported("no"))),
-        BlobPlacementFailure::BackendRejected
-    );
+#[rstest::rstest]
+#[case::corrupt_whole_blob(
+    CopyError::Fetch(TransportError::DigestMismatch { expected: "a".to_owned(), actual: "b".to_owned() }),
+    BlobPlacementFailure::DigestMismatch
+)]
+#[case::wrong_window(
+    CopyError::Fetch(TransportError::RangeMismatch { expected: "bytes 0-7".to_owned(), actual: String::new() }),
+    BlobPlacementFailure::DigestMismatch
+)]
+#[case::wrong_length(
+    CopyError::RangeLength { offset: 0, expected: 8, actual: 6 },
+    BlobPlacementFailure::DigestMismatch
+)]
+#[case::absent_blob(
+    CopyError::Fetch(TransportError::BlobNotFound { digest: "x".to_owned() }),
+    BlobPlacementFailure::SourceUnavailable
+)]
+#[case::local_byte_cap(
+    CopyError::Fetch(TransportError::FrameTooLarge { limit: 4, actual: 8 }),
+    BlobPlacementFailure::TransferLimit
+)]
+#[case::corrupt_stage(
+    CopyError::Publish(peryx_storage::blob::BlobError::digest_mismatch(&Digest::of(b"a"), &Digest::of(b"b"))),
+    BlobPlacementFailure::DigestMismatch
+)]
+#[case::backend_refusal(
+    CopyError::Publish(peryx_storage::blob::BlobError::unsupported("no")),
+    BlobPlacementFailure::BackendRejected
+)]
+fn test_failure_class_maps_each_loss_to_its_evidence(#[case] error: CopyError, #[case] expected: BlobPlacementFailure) {
+    assert_eq!(failure_class(&error), expected);
 }
 
 fn roster_transports() -> RosterTransports {
@@ -650,6 +662,44 @@ async fn test_copy_one_records_a_source_loss() {
         local_state(&meta, &target),
         BlobPlacementState::Failed {
             class: BlobPlacementFailure::SourceUnavailable
+        }
+    );
+}
+
+#[tokio::test]
+async fn test_copy_one_records_a_local_byte_cap_apart_from_an_unreachable_source() {
+    let (_dir, meta) = meta();
+    let (_store_dir, store, backend) = filesystem();
+    let (blob, artifact) = digests(CONTENT);
+    let clock: Clock = Arc::new(|| 7);
+    // A source cap below the planned range makes every attempt fail identically, whatever the peer does.
+    let copier = copier_with(
+        "home",
+        backend.clone(),
+        store,
+        Arc::new(FakePeers {
+            peers: HashMap::from([(
+                "east".to_owned(),
+                LoopbackBlobSource::new(
+                    HashMap::from([(blob, Bytes::from_static(CONTENT))]),
+                    TransferLimits {
+                        max_encoded_bytes: NonZeroU64::new(4).unwrap(),
+                        ..TransferLimits::default()
+                    },
+                ),
+            )]),
+        }),
+    );
+    let copy = plan(&artifact, &backend, "east", "home", CONTENT.len() as u64);
+    let target = copy.target.clone();
+
+    let recorded = copier.copy_one(&meta, &clock, copy).await;
+
+    assert!(!recorded);
+    assert_eq!(
+        local_state(&meta, &target),
+        BlobPlacementState::Failed {
+            class: BlobPlacementFailure::TransferLimit
         }
     );
 }

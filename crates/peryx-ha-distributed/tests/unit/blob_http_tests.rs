@@ -1,7 +1,7 @@
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::time::Duration;
 
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use peryx_storage::blob::{BlobStorage, Digest};
 
@@ -105,23 +105,68 @@ async fn test_fetch_rejects_a_whole_blob_that_does_not_match_its_digest() {
     );
 }
 
+const SLICE: &[u8] = b"a slice of it";
+
+fn slice_range() -> ByteRange {
+    ByteRange { offset: 4, length: 13 }
+}
+
+fn ranged(digest: Digest) -> BlobRequest {
+    BlobRequest {
+        digest,
+        range: Some(slice_range()),
+    }
+}
+
+fn range_response(status: StatusCode, content_range: Option<&'static str>) -> axum::Router {
+    http_contract::fixed_get(BLOB_ROUTE, move || {
+        let mut response = (status, SLICE).into_response();
+        if let Some(value) = content_range {
+            response
+                .headers_mut()
+                .insert(header::CONTENT_RANGE, value.parse().unwrap());
+        }
+        response
+    })
+}
+
 #[tokio::test]
 async fn test_fetch_returns_a_range_unverified() {
     // Partial ranges cannot verify the whole digest; commit verifies the reassembled blob.
     let requested = Digest::of(b"the whole blob is longer than this");
-    let partial = b"a slice of it";
-    let fetched = http_contract::run(bytes_response(partial), |base| async move {
-        transport(&base, 1024)
-            .fetch_blob(BlobRequest {
-                digest: requested,
-                range: Some(ByteRange { offset: 4, length: 13 }),
-            })
-            .await
-            .unwrap()
+    let fetched = http_contract::run(
+        range_response(StatusCode::PARTIAL_CONTENT, Some("bytes 4-16/34")),
+        |base| async move { transport(&base, 1024).fetch_blob(ranged(requested)).await.unwrap() },
+    )
+    .await;
+
+    assert_eq!(fetched, SLICE);
+}
+
+#[rstest::rstest]
+#[case::whole_response(StatusCode::OK, Some("bytes 4-16/34"), "")]
+#[case::other_window(StatusCode::PARTIAL_CONTENT, Some("bytes 0-12/34"), "bytes 0-12/34")]
+#[case::absent_header(StatusCode::PARTIAL_CONTENT, None, "")]
+#[case::no_complete_length(StatusCode::PARTIAL_CONTENT, Some("bytes 4-16"), "bytes 4-16")]
+#[tokio::test]
+async fn test_fetch_rejects_a_range_the_peer_did_not_serve(
+    #[case] status: StatusCode,
+    #[case] content_range: Option<&'static str>,
+    #[case] actual: &str,
+) {
+    let requested = Digest::of(b"the whole blob is longer than this");
+    let error = http_contract::run(range_response(status, content_range), |base| async move {
+        transport(&base, 1024).fetch_blob(ranged(requested)).await.unwrap_err()
     })
     .await;
 
-    assert_eq!(fetched, partial);
+    assert_eq!(
+        error,
+        TransportError::RangeMismatch {
+            expected: "bytes 4-16".to_owned(),
+            actual: actual.to_owned(),
+        }
+    );
 }
 
 #[tokio::test]
