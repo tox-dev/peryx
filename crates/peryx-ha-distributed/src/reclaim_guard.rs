@@ -55,15 +55,17 @@ pub fn purge_orphaned_blobs(
     let guard = ReclaimGuard {
         expires_at_unix: now.saturating_add(RECLAIM_GUARD_LEASE_SECS),
     };
+    // A reference commit between the scan and the arm moves the revision, which retires the scan
+    // rather than guarding a digest that is no longer orphaned.
     let armed = loop {
-        let serial = meta.reclaim_guard_serial()?;
+        let revision = meta.reference_revision()?;
         let live_digests = scan_references().map_err(OrphanPurgeError::References)?;
         let digests = candidates
             .iter()
             .filter(|candidate| !live_digests.contains(candidate.digest.as_str()))
             .map(|candidate| candidate.digest.as_str())
             .collect::<Vec<_>>();
-        let ReclaimGuardArm::Armed(armed) = meta.compare_and_arm_reclaim_guards(&digests, serial, now, guard)? else {
+        let ReclaimGuardArm::Armed(armed) = meta.compare_and_arm_reclaim_guards(&digests, revision, now, guard)? else {
             continue;
         };
         break armed.into_iter().collect::<BTreeSet<_>>();

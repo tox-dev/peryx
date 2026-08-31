@@ -100,11 +100,11 @@ pub trait ReclamationStore {
 pub trait ReclaimGuardStore {
     type Error;
 
-    fn reclaim_guard_serial(&self) -> Result<u64, Self::Error>;
+    /// Arms only while the store's reference revision still equals `revision`.
     fn compare_and_arm_reclaim_guards(
         &self,
         digests: &[&str],
-        expected_serial: u64,
+        revision: u64,
         now: i64,
         replacement: ReclaimGuard,
     ) -> Result<ReclaimGuardArm, Self::Error>;

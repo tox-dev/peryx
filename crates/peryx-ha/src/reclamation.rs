@@ -16,9 +16,11 @@ impl ReclaimGuard {
     }
 }
 
+/// Arming carries the reference revision the unreferenced verdict was proved against, so a digest
+/// that gained a reference after the proof cannot be guarded for deletion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReclaimGuardArm {
-    SerialChanged,
+    ReferencesMoved,
     Armed(Vec<String>),
 }
 

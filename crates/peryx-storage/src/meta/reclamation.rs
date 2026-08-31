@@ -8,10 +8,8 @@ use peryx_ha::{
 use peryx_identity::ArtifactDigest;
 use redb::ReadableTable as _;
 
-use super::{
-    BLOB_PLACEMENT, MetaError, MetaStore, RECLAMATION_TOMBSTONE, REFERENCE_REVISION, REFERENCE_REVISION_KEY,
-    open_optional_table,
-};
+use super::index::write_reference_revision;
+use super::{BLOB_PLACEMENT, MetaError, MetaStore, RECLAMATION_TOMBSTONE, open_optional_table};
 
 impl ReclamationStore for MetaStore {
     type Error = MetaError;
@@ -136,11 +134,6 @@ impl ReclamationStore for MetaStore {
         }
         Ok(page)
     }
-}
-
-fn write_reference_revision(txn: &redb::WriteTransaction) -> Result<u64, MetaError> {
-    let table = txn.open_table(REFERENCE_REVISION)?;
-    Ok(table.get(REFERENCE_REVISION_KEY)?.map_or(0, |value| value.value()))
 }
 
 fn write_snapshot_matches(

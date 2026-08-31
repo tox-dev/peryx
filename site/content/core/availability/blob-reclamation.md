@@ -51,13 +51,24 @@ cannot reclaim content.
 The first reclamation write creates its ledger; reads return an empty result before that write. Peryx advances a
 tombstone when the ownership term and reference scan still match, using one atomic update.
 
+## Reference guard
+
+A delete and a reference commit race, so the collector that purges orphaned blobs arms a per-digest reference guard
+around its delete. Arming carries the reference revision the collector's unreferenced verdict came from, and the store
+re-reads that revision inside the arming transaction. A reference committed while the inventory was being scanned moves
+the revision, the arm is refused, and the collector re-scans rather than guarding a digest that is no longer orphaned.
+
+While a guard is armed, a commit that names the digest as a blob reference is rejected, whether or not it appends a
+replication journal entry. A replica applying the primary's journal is admitted, because the primary fenced that write
+against its own guards before journaling it. The guard is released once the bytes are gone.
+
 ## Tombstone states
 
-| State     | Meaning                                                                                     |
-| --------- | ------------------------------------------------------------------------------------------- |
-| `Pending` | No current reference or serveable placement exists; required frontiers have not cleared.    |
-| `Ready`   | Frontiers cleared and final reference checks passed; the backend executor may delete bytes. |
-| `Skipped` | A reference or serveable placement returned.                                                |
+| State     | Meaning                                                                                              |
+| --------- | ---------------------------------------------------------------------------------------------------- |
+| `Pending` | No current reference or serveable placement exists; required frontiers have not cleared.             |
+| `Ready`   | Frontiers cleared and final reference checks passed. Bytes stay until a collector claims the digest. |
+| `Skipped` | A reference or serveable placement returned.                                                         |
 
 Each fenced transition increments `attempts`. Selecting the digest again raises its required frontier and returns it to
 pending, including after it reached `Ready`. Selection runs in bounded batches outside request handling.

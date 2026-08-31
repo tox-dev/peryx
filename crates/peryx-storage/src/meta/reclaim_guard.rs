@@ -1,31 +1,23 @@
 use peryx_ha::{ReclaimGuard, ReclaimGuardArm, ReclaimGuardStore};
 use redb::ReadableTable as _;
 
-use super::{BLOB_RECLAIM_GUARD, MetaError, MetaStore, SERIAL, SERIAL_KEY, open_optional_table};
+use super::index::write_reference_revision;
+use super::{BLOB_RECLAIM_GUARD, MetaError, MetaStore, open_optional_table};
 
 impl ReclaimGuardStore for MetaStore {
     type Error = MetaError;
 
-    fn reclaim_guard_serial(&self) -> Result<u64, Self::Error> {
-        self.current_serial()
-    }
-
     fn compare_and_arm_reclaim_guards(
         &self,
         digests: &[&str],
-        expected_serial: u64,
+        revision: u64,
         now: i64,
         replacement: ReclaimGuard,
     ) -> Result<ReclaimGuardArm, Self::Error> {
         let txn = self.db.begin_write()?;
-        let serial = {
-            let table = txn.open_table(SERIAL)?;
-            let value = table.get(SERIAL_KEY)?;
-            value.map_or(0, |value| value.value())
-        };
-        if serial != expected_serial {
+        if write_reference_revision(&txn)? != revision {
             txn.commit()?;
-            return Ok(ReclaimGuardArm::SerialChanged);
+            return Ok(ReclaimGuardArm::ReferencesMoved);
         }
         let mut armed = Vec::new();
         if !digests.is_empty() {

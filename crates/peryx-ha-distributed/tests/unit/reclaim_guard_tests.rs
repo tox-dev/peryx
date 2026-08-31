@@ -54,8 +54,10 @@ fn confirmed_purge_deletes_and_disarms_owned_candidates() {
     assert_eq!(meta.reclaim_guard(orphan.as_str()).unwrap(), None);
 }
 
+/// The racing publication appends no replication entry, as every publication does on a deployment
+/// without replication, so the journal serial the arm compared against stays where it was.
 #[test]
-fn serial_change_retries_before_arming() {
+fn reference_committed_during_the_scan_retries_before_arming() {
     let (_directory, _path, meta, blobs) = stores();
     let orphan = blobs.blocking().put_bytes(b"orphan").unwrap();
     let raced = blobs.blocking().put_bytes(b"raced").unwrap();
@@ -67,8 +69,9 @@ fn serial_change_retries_before_arming() {
         match scans.cmp(&2) {
             std::cmp::Ordering::Equal => {
                 meta.commit_driver_txn(|txn| {
+                    txn.put_local(&format!("file/{raced_digest}"), b"points-here")?;
                     txn.reference_blob(&raced_digest, 5);
-                    Ok::<_, MetaError>(((), vec![b"{}".to_vec()]))
+                    Ok::<_, MetaError>(((), Vec::new()))
                 })
                 .unwrap();
                 Ok(BTreeSet::new())
@@ -79,6 +82,11 @@ fn serial_change_retries_before_arming() {
     })
     .unwrap();
 
+    assert_eq!(
+        meta.current_serial().unwrap(),
+        0,
+        "the racing publication moved no serial"
+    );
     assert_eq!(scans, 3);
     assert_eq!(report.blobs.len(), 1);
     assert_eq!(report.blobs[0].digest, orphan.as_str());

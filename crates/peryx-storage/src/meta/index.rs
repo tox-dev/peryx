@@ -379,7 +379,7 @@ impl MetaStore {
         let mut txn = self.db.begin_write().map_err(MetaError::from)?;
         set_durability(&mut txn, durable);
         check_replica_serial(&txn, expected_serial)?;
-        let (value, journal, webhooks, placements, policy_inputs, wrote_rows) = {
+        let (value, journal, webhooks, placements, policy_inputs, wrote_rows, blobs) = {
             let mut driver = DriverTxn {
                 txn: &txn,
                 table: txn.open_table(DRIVER_KV).map_err(MetaError::from)?,
@@ -394,16 +394,17 @@ impl MetaStore {
             let webhooks = std::mem::take(&mut driver.webhooks);
             let placements = std::mem::take(&mut driver.placements);
             let policy_inputs = std::mem::take(&mut driver.policy_inputs);
+            let blobs = std::mem::take(&mut driver.blobs);
             let wrote_rows = driver.wrote_rows;
-            let journal = finish_journal(journal, driver).map_err(E::from)?;
-            (value, journal, webhooks, placements, policy_inputs, wrote_rows)
+            let journal = finish_journal(journal, &driver, &blobs).map_err(E::from)?;
+            (value, journal, webhooks, placements, policy_inputs, wrote_rows, blobs)
         };
         if wrote_rows {
             advance_reference_revision(&txn).map_err(E::from)?;
         }
         Self::enqueue_webhook_events(&txn, &webhooks).map_err(E::from)?;
         Self::write_artifact_placements(&txn, &placements).map_err(E::from)?;
-        check_blob_reclaim_guard(&txn, expected_serial, &journal, &self.clock).map_err(E::from)?;
+        check_blob_reclaim_guard(&txn, expected_serial, &blobs, &self.clock).map_err(E::from)?;
         let journal_commit = commit_journal(&txn, &journal)?;
         advance_repository_generations(&txn, &policy_inputs).map_err(E::from)?;
         if let Some((repository, catalog)) = catalog_generation {
@@ -430,7 +431,11 @@ fn set_durability(txn: &mut redb::WriteTransaction, durable: bool) {
     }
 }
 
-fn finish_journal(journal: PendingJournal, driver: DriverTxn<'_>) -> Result<Vec<JournalEntry>, MetaError> {
+fn finish_journal(
+    journal: PendingJournal,
+    driver: &DriverTxn<'_>,
+    blobs: &std::collections::BTreeSet<DriverBlobReference>,
+) -> Result<Vec<JournalEntry>, MetaError> {
     match journal {
         PendingJournal::Payloads(payloads) => {
             let mut entries: Vec<_> = payloads
@@ -443,7 +448,7 @@ fn finish_journal(journal: PendingJournal, driver: DriverTxn<'_>) -> Result<Vec<
                 .collect();
             if let Some(last) = entries.last_mut() {
                 last.mutations = driver.mutations()?;
-                last.blobs = driver.blobs.into_iter().collect();
+                last.blobs = blobs.iter().cloned().collect();
             }
             Ok(entries)
         }
@@ -454,16 +459,20 @@ fn finish_journal(journal: PendingJournal, driver: DriverTxn<'_>) -> Result<Vec<
 /// Rejects a reference only while a collector still holds the blob's lease. A lapsed guard is the
 /// residue of a purge that died between arming and disarming, so it is dropped here rather than left
 /// to reject every later publication of that digest.
+///
+/// The declared blob set is the check's input rather than the journal's, because a transaction can
+/// reference a blob without appending a replication entry and would otherwise commit straight through
+/// an armed guard.
+///
+/// A replica applying the primary's journal passes an expected serial and is admitted: the primary
+/// already fenced the write against its own guards before journaling it.
 fn check_blob_reclaim_guard(
     txn: &redb::WriteTransaction,
     expected_serial: Option<u64>,
-    journal: &[JournalEntry],
+    blobs: &std::collections::BTreeSet<DriverBlobReference>,
     clock: &Clock,
 ) -> Result<(), MetaError> {
-    let Some(last) = journal.last() else {
-        return Ok(());
-    };
-    if expected_serial.is_some() || last.blobs.is_empty() {
+    if expected_serial.is_some() || blobs.is_empty() {
         return Ok(());
     }
     if !table_exists(txn, &BLOB_RECLAIM_GUARD)? {
@@ -471,7 +480,7 @@ fn check_blob_reclaim_guard(
     }
     let now = clock();
     let mut guards = txn.open_table(BLOB_RECLAIM_GUARD)?;
-    for blob in &last.blobs {
+    for blob in blobs {
         let held = guards.get(blob.sha256.as_str())?.map(|value| ReclaimGuard {
             expires_at_unix: value.value(),
         });
@@ -560,6 +569,13 @@ fn advance_reference_revision(txn: &redb::WriteTransaction) -> Result<(), MetaEr
     let next = revisions.get(REFERENCE_REVISION_KEY)?.map_or(0, |value| value.value()) + 1;
     revisions.insert(REFERENCE_REVISION_KEY, next)?;
     Ok(())
+}
+
+/// Reads the revision inside a write transaction so a compare-and-swap can prove the references did
+/// not move between the reader's proof and its own commit.
+pub(super) fn write_reference_revision(txn: &redb::WriteTransaction) -> Result<u64, MetaError> {
+    let revisions = txn.open_table(REFERENCE_REVISION)?;
+    Ok(revisions.get(REFERENCE_REVISION_KEY)?.map_or(0, |value| value.value()))
 }
 
 /// Gives a [`MetaStore::commit_driver_txn`] body atomic access to opaque driver rows.

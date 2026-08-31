@@ -126,25 +126,31 @@ fn test_default_store_clock_judges_a_blob_reclaim_guard_against_wall_time() {
 }
 
 #[test]
-fn test_arm_blob_reclaim_guards_fences_on_an_advanced_serial() {
+fn test_arm_blob_reclaim_guards_refuses_a_reference_that_appends_no_journal_entry() {
     let (_dir, store) = super::store();
     store
         .commit_driver_txn(|txn| {
+            txn.put("ref/kept", b"points-here")?;
             txn.reference_blob("kept", 1);
-            Ok::<_, MetaError>(((), vec![b"{}".to_vec()]))
+            Ok::<_, MetaError>(((), Vec::new()))
         })
         .unwrap();
     assert_eq!(
         store.current_serial().unwrap(),
+        0,
+        "a publication without a replication entry advances no serial"
+    );
+    assert_eq!(
+        store.reference_revision().unwrap(),
         1,
-        "a reference publication advances the serial"
+        "the same publication advances the reference revision"
     );
 
     assert_eq!(
         store
             .compare_and_arm_reclaim_guards(&["kept"], 0, 5, guard(10))
             .unwrap(),
-        ReclaimGuardArm::SerialChanged
+        ReclaimGuardArm::ReferencesMoved
     );
     assert_eq!(store.reclaim_guard("kept").unwrap(), None);
 
@@ -155,6 +161,35 @@ fn test_arm_blob_reclaim_guards_fences_on_an_advanced_serial() {
         ReclaimGuardArm::Armed(vec!["orphan".to_owned()])
     );
     assert_eq!(store.reclaim_guard("orphan").unwrap(), Some(guard(10)));
+}
+
+#[test]
+fn test_blob_reclaim_guard_blocks_a_reference_that_appends_no_journal_entry() {
+    let (_dir, store, now) = stepped_store();
+    now.store(10, Ordering::Relaxed);
+    let digest = "orphaned-blob-digest";
+    store
+        .compare_and_arm_reclaim_guards(&[digest], 0, 10, guard(11))
+        .unwrap();
+
+    let error = store
+        .commit_driver_txn(|txn| {
+            txn.put("ref/1", b"points-here")?;
+            txn.reference_blob(digest, 6);
+            Ok::<_, MetaError>(((), Vec::new()))
+        })
+        .unwrap_err();
+
+    assert!(matches!(error, MetaError::BlobReclaiming { digest: rejected } if rejected == digest));
+    assert!(
+        store.get_driver_value("ref/1").unwrap().is_none(),
+        "the rejected commit published nothing"
+    );
+    assert_eq!(
+        store.reference_revision().unwrap(),
+        0,
+        "the rejected commit advanced no reference revision"
+    );
 }
 
 #[test]
@@ -190,9 +225,8 @@ fn test_disarm_blob_reclaim_guard_reports_an_absent_guard() {
 }
 
 #[test]
-fn test_reclaim_guard_trait_reports_serial_and_armed_guards() {
+fn test_reclaim_guard_trait_reports_armed_guards() {
     let (_dir, store) = super::store();
-    assert_eq!(store.reclaim_guard_serial().unwrap(), 0);
     store
         .compare_and_arm_reclaim_guards(&["digest"], 0, 1, guard(2))
         .unwrap();
@@ -225,6 +259,7 @@ fn test_replica_apply_bypasses_a_reclaim_guard() {
     store
         .commit_replica_txn(0, |txn| {
             txn.put("mirror/ref", b"v")?;
+            txn.reference_blob("mirror", 4);
             Ok::<_, MetaError>((
                 (),
                 vec![JournalEntry {
