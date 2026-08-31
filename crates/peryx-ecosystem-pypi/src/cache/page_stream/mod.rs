@@ -23,7 +23,7 @@ use live::FreshJsonStream;
 
 use super::{
     CacheError, NEGATIVE_TTL_SECS, cached_record, flight_gate, fresh_cached, freshness, is_json, mirror_route,
-    project_negative_key, release_flight, upstream_permit,
+    project_negative_key, release_flight, release_then, upstream_permit,
 };
 
 fn persist_streamed(
@@ -220,16 +220,6 @@ pub async fn stream_detail(
         }
         _ => release_then(&state, &key, guard, || Ok(PageOutcome::Fallback)),
     }
-}
-
-fn release_then<T>(
-    state: &ServingState,
-    key: &str,
-    guard: peryx_index::serving::FlightGuard,
-    next: impl FnOnce() -> T,
-) -> T {
-    release_flight(state, key, guard);
-    next()
 }
 
 fn retire_missing_project(

@@ -24,7 +24,8 @@ use url::Url;
 use crate::simple_client::{SimpleClientExt as _, SimpleHead, SimpleResponse};
 
 use super::{
-    CacheError, NEGATIVE_TTL_SECS, cached_record, is_json, mirror_route, project_negative_key, upstream_permit,
+    CacheError, NEGATIVE_TTL_SECS, cached_record, flight_gate, is_json, mirror_route, project_negative_key,
+    release_flight, release_then, upstream_permit,
 };
 
 pub(super) async fn fetch_and_store(
@@ -186,6 +187,10 @@ pub struct RefreshSummary {
 /// answer 304 with no body) instead of a burst against upstream. Each revalidation is logged and
 /// counted through the same events as the on-demand path.
 ///
+/// Each page is revalidated under that project's flight, the one the request path and background
+/// revalidation already take, so the sweep cannot fetch alongside them and commit an older body over
+/// their result. A page a writer published while the sweep queued is left alone.
+///
 /// # Errors
 /// Returns [`CacheError`] when the hosted store fails; upstream failures do not error (a page with
 /// a cached copy serves stale and is retried next sweep).
@@ -206,9 +211,22 @@ pub async fn refresh_stale_pages(state: &Arc<ServingState>) -> Result<RefreshSum
             log_cache_sync(&index.route, &project, "denied", false, Some(&denial.reason));
             continue;
         }
+        // Re-read under the flight: a sweep that queued behind another writer has to revalidate the
+        // page that writer published, not the row it read before queueing, whose older body would
+        // otherwise win the commit ordering.
+        let (before, result) = {
+            let gate = flight_gate(state, &key);
+            let guard = gate.lock_owned().await;
+            let current = cached_record(state, &key)?;
+            if current.as_ref().is_some_and(|record| super::is_fresh(state, record)) {
+                release_flight(state, &key, guard);
+                continue;
+            }
+            let before = current.map(|record| record.body);
+            let result = fetch_and_store(state, &key, &index.name, &project, client).await;
+            release_then(state, &key, guard, || (before, result))
+        };
         summary.checked += 1;
-        let before = state.meta.get_index(&key)?.map(|record| record.body);
-        let result = fetch_and_store(state, &key, &index.name, &project, client).await;
         match &result {
             Ok(Some(record)) => {
                 let changed = before.as_ref() != Some(&record.body);
@@ -694,6 +712,10 @@ impl DetailSink for FileBatcher<'_> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/cache/fetch/fence_tests.rs"]
+mod fence_tests;
 
 #[cfg(test)]
 #[path = "../../tests/unit/cache/fetch/sync_tests.rs"]

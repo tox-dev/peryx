@@ -226,6 +226,18 @@ fn release_flight(state: &ServingState, key: &str, guard: peryx_index::serving::
     peryx_index::serving::release_flight(&state.cache.inflight, key, guard);
 }
 
+/// Release `key`'s flight, then produce the value the caller returns, so one hold pairs with one
+/// release whichever way the caller answers.
+fn release_then<T>(
+    state: &ServingState,
+    key: &str,
+    guard: peryx_index::serving::FlightGuard,
+    next: impl FnOnce() -> T,
+) -> T {
+    release_flight(state, key, guard);
+    next()
+}
+
 /// The stored cached record for `key`, or `None` when there is none or when its bytes no longer decode.
 ///
 /// Corrupt bytes (a torn write, a format from a version that never shipped) leave a cache entry the
@@ -245,11 +257,12 @@ fn cached_record(state: &ServingState, key: &str) -> Result<Option<CachedIndex>,
 /// The cached raw page, when it is still within its freshness window: upstream's `Cache-Control`
 /// lifetime when it granted one, the configured fallback otherwise.
 pub(crate) fn fresh_cached(state: &ServingState, key: &str) -> Result<Option<CachedIndex>, CacheError> {
-    let now = (state.clock)();
-    match cached_record(state, key)? {
-        Some(record) if now - record.fetched_at_unix < freshness(state, &record) => Ok(Some(record)),
-        _ => Ok(None),
-    }
+    Ok(cached_record(state, key)?.filter(|record| is_fresh(state, record)))
+}
+
+/// Whether a record read from the store is still inside its freshness window.
+pub(crate) fn is_fresh(state: &ServingState, record: &CachedIndex) -> bool {
+    (state.clock)() - record.fetched_at_unix < freshness(state, record)
 }
 
 /// The cached raw page that is past its freshness window but still inside the stale bound, so it can
