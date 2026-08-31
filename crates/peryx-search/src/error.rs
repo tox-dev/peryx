@@ -24,6 +24,12 @@ pub enum SearchError {
     ResultWindowTooLarge { page: usize, page_size: usize, max: usize },
     #[error("invalid indexed ecosystem {0:?}")]
     InvalidEcosystem(String),
+    #[error("search query must be at least {minimum} characters")]
+    QueryTooShort { minimum: usize },
+    #[error("invalid search pattern: {0}")]
+    InvalidPattern(String),
+    #[error("pattern search requires operator authority")]
+    PatternSearchDenied,
 }
 
 impl SearchError {
@@ -35,8 +41,16 @@ impl SearchError {
             Self::InvalidSource(_)
                 | Self::InvalidAvailability(_)
                 | Self::ResultWindowTooLarge { .. }
+                | Self::QueryTooShort { .. }
+                | Self::InvalidPattern(_)
                 | Self::Tantivy(tantivy::TantivyError::InvalidArgument(_))
         )
+    }
+
+    /// Distinguishes a query the caller may not run from one it stated wrongly.
+    #[must_use]
+    pub const fn is_forbidden(&self) -> bool {
+        matches!(self, Self::PatternSearchDenied)
     }
 }
 

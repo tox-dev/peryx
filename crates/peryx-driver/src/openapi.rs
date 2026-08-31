@@ -138,13 +138,15 @@ pub fn artifact_search(scoped: bool) -> OperationBuilder {
         }))
         .description(Some(
             "Searches the derived artifact index built from cached listings, local writes, \
-             and cached metadata. `q` uses substring matching; prefix it with `re:` for a \
-             regex. Index policy removes denied entries before indexing. Results are sorted \
-             by display name and paged without collecting every match.",
+             and cached metadata. `q` uses substring matching and needs at least two \
+             characters; prefix it with `re:` for a regex, which reads every indexed \
+             document and is restricted to operators. Index policy removes denied entries \
+             before indexing. Results are sorted by display name and paged without \
+             collecting every match.",
         ))
         .parameter(query_param(
             "q",
-            "Search text. Prefix with `re:` to use a regex.",
+            "Search text of at least two characters. Prefix with `re:` to use a regex, which operators alone may run.",
             json!("widget"),
         ))
         .parameter(enum_parameter(
@@ -207,6 +209,13 @@ pub fn artifact_search(scoped: bool) -> OperationBuilder {
             api_json_response(
                 "Invalid search parameters",
                 json!({"error": "invalid resource source type"}),
+            ),
+        )
+        .response(
+            "403",
+            api_json_response(
+                "Pattern search without operator authority",
+                json!({"error": "pattern search requires operator authority"}),
             ),
         );
     if scoped {

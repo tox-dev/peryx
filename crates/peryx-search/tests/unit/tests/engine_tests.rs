@@ -163,7 +163,7 @@ fn test_rebuild_publishes_new_documents_without_an_epoch_bump() {
     search.add_indexer(Arc::new(NamedDocs(names.clone())));
     assert_eq!(total(&search, &stores, &lexicons), 1);
 
-    *names.lock().unwrap() = vec!["a".to_owned(), "b".to_owned(), "c".to_owned()];
+    *names.lock().unwrap() = vec!["aa".to_owned(), "bb".to_owned(), "cc".to_owned()];
     let outcome = search
         .rebuild(&stores.indexer_ctx(), NonZeroUsize::new(2).unwrap(), &mut no_cancel)
         .unwrap();
@@ -196,12 +196,12 @@ fn test_rebuild_cancelled_before_the_first_chunk_keeps_the_served_index() {
     let dir = tempfile::tempdir().unwrap();
     let stores = Stores::open(&dir);
     let lexicons = LexiconRegistry::default();
-    let names = Arc::new(Mutex::new(vec!["x".to_owned(), "y".to_owned()]));
+    let names = Arc::new(Mutex::new(vec!["xx".to_owned(), "yy".to_owned()]));
     let mut search = SearchIndex::in_memory();
     search.add_indexer(Arc::new(NamedDocs(names.clone())));
     assert_eq!(total(&search, &stores, &lexicons), 2);
 
-    *names.lock().unwrap() = vec!["a".to_owned(), "b".to_owned(), "c".to_owned()];
+    *names.lock().unwrap() = vec!["aa".to_owned(), "bb".to_owned(), "cc".to_owned()];
     let outcome = search
         .rebuild(&stores.indexer_ctx(), NonZeroUsize::new(1).unwrap(), &mut |_| {
             ControlFlow::Break(())
@@ -217,12 +217,12 @@ fn test_rebuild_cancelled_after_a_chunk_does_not_expose_partial_results() {
     let dir = tempfile::tempdir().unwrap();
     let stores = Stores::open(&dir);
     let lexicons = LexiconRegistry::default();
-    let names = Arc::new(Mutex::new(vec!["x".to_owned(), "y".to_owned()]));
+    let names = Arc::new(Mutex::new(vec!["xx".to_owned(), "yy".to_owned()]));
     let mut search = SearchIndex::in_memory();
     search.add_indexer(Arc::new(NamedDocs(names.clone())));
     assert_eq!(total(&search, &stores, &lexicons), 2);
 
-    *names.lock().unwrap() = vec!["a".to_owned(), "b".to_owned(), "c".to_owned()];
+    *names.lock().unwrap() = vec!["aa".to_owned(), "bb".to_owned(), "cc".to_owned()];
     let mut chunks = 0;
     let outcome = search
         .rebuild(&stores.indexer_ctx(), NonZeroUsize::new(1).unwrap(), &mut |_| {
@@ -244,12 +244,12 @@ fn test_cancelled_rebuild_does_not_leak_into_a_later_scoped_update() {
     let dir = tempfile::tempdir().unwrap();
     let stores = Stores::open(&dir);
     let lexicons = LexiconRegistry::default();
-    let names = Arc::new(Mutex::new(vec!["x".to_owned(), "y".to_owned()]));
+    let names = Arc::new(Mutex::new(vec!["xx".to_owned(), "yy".to_owned()]));
     let mut search = SearchIndex::in_memory();
     search.add_indexer(Arc::new(NamedDocs(names.clone())));
     assert_eq!(total(&search, &stores, &lexicons), 2);
 
-    *names.lock().unwrap() = vec!["a".to_owned(), "b".to_owned(), "c".to_owned()];
+    *names.lock().unwrap() = vec!["aa".to_owned(), "bb".to_owned(), "cc".to_owned()];
     let mut chunks = 0;
     let outcome = search
         .rebuild(&stores.indexer_ctx(), NonZeroUsize::new(1).unwrap(), &mut |_| {
@@ -264,13 +264,17 @@ fn test_cancelled_rebuild_does_not_leak_into_a_later_scoped_update() {
     assert_eq!(outcome, RebuildOutcome::Aborted { documents: 1 });
 
     search
-        .update_resource(&[artifact_doc("x", "x")], &crate::document_key("root", "x"))
+        .update_resource(&[artifact_doc("xx", "xx")], &crate::document_key("root", "xx"))
         .unwrap();
 
-    assert_eq!(hits(&search, &stores, &lexicons, "x"), 1, "the scoped update keeps x");
-    assert_eq!(hits(&search, &stores, &lexicons, "y"), 1, "the prior y is still served");
+    assert_eq!(hits(&search, &stores, &lexicons, "xx"), 1, "the scoped update keeps xx");
     assert_eq!(
-        hits(&search, &stores, &lexicons, "a"),
+        hits(&search, &stores, &lexicons, "yy"),
+        1,
+        "the prior yy is still served"
+    );
+    assert_eq!(
+        hits(&search, &stores, &lexicons, "aa"),
         0,
         "the cancelled chunk stays hidden"
     );
@@ -360,12 +364,12 @@ fn test_search_during_a_rebuild_serves_the_prior_index() {
     let dir = tempfile::tempdir().unwrap();
     let stores = Stores::open(&dir);
     let lexicons = LexiconRegistry::default();
-    let names = Arc::new(Mutex::new(vec!["x".to_owned(), "y".to_owned()]));
+    let names = Arc::new(Mutex::new(vec!["xx".to_owned(), "yy".to_owned()]));
     let mut search = SearchIndex::in_memory();
     search.add_indexer(Arc::new(NamedDocs(names.clone())));
     assert_eq!(total(&search, &stores, &lexicons), 2);
 
-    *names.lock().unwrap() = vec!["a".to_owned(), "b".to_owned(), "c".to_owned()];
+    *names.lock().unwrap() = vec!["aa".to_owned(), "bb".to_owned(), "cc".to_owned()];
     let served = std::cell::Cell::new(None);
     search
         .rebuild(&stores.indexer_ctx(), NonZeroUsize::new(1).unwrap(), &mut |_| {

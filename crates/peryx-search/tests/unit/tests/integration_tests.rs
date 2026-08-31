@@ -126,8 +126,10 @@ fn test_search_applies_source_and_route_filters() {
     }
 }
 
-#[test]
-fn test_search_handles_empty_and_escaped_regex_queries() {
+#[rstest]
+#[case::empty_pattern("re:", 1)]
+#[case::regex_special("++", 0)]
+fn test_search_answers_an_empty_pattern_and_a_regex_special_literal(#[case] query: &str, #[case] expected: usize) {
     let dir = tempfile::tempdir().unwrap();
     let stores = Stores::open(&dir);
     let lexicons = LexiconRegistry::default();
@@ -137,22 +139,20 @@ fn test_search_handles_empty_and_escaped_regex_queries() {
         ecosystem: "alpha",
     }));
 
-    for (query, expected) in [("re:", 1), ("+", 0)] {
-        assert_eq!(
-            search
-                .search(
-                    &stores.ctx(&lexicons),
-                    SearchParams {
-                        query: query.to_owned(),
-                        ..SearchParams::default()
-                    },
-                )
-                .unwrap()
-                .total,
-            expected,
-            "{query}"
-        );
-    }
+    assert_eq!(
+        search
+            .search(
+                &stores.ctx(&lexicons),
+                SearchParams {
+                    query: query.to_owned(),
+                    pattern_authority: true,
+                    ..SearchParams::default()
+                },
+            )
+            .unwrap()
+            .total,
+        expected
+    );
 }
 
 #[test]
@@ -167,10 +167,61 @@ fn test_search_rejects_invalid_regex_queries() {
             &stores.ctx(&lexicons),
             SearchParams {
                 query: "re:[".to_owned(),
+                pattern_authority: true,
                 ..SearchParams::default()
             },
         )
         .expect_err("an invalid regular expression should be rejected");
+
+    assert!(error.is_bad_request());
+}
+
+#[test]
+fn test_search_refuses_a_pattern_without_operator_authority() {
+    let dir = tempfile::tempdir().unwrap();
+    let stores = Stores::open(&dir);
+    let lexicons = LexiconRegistry::default();
+    let mut search = SearchIndex::in_memory();
+    search.add_indexer(Arc::new(OneDoc {
+        name: "demo",
+        ecosystem: "alpha",
+    }));
+
+    let error = search
+        .search(
+            &stores.ctx(&lexicons),
+            SearchParams {
+                query: "re:demo".to_owned(),
+                ..SearchParams::default()
+            },
+        )
+        .expect_err("a pattern reads every document, so it needs operator authority");
+
+    assert!(error.is_forbidden() && !error.is_bad_request());
+}
+
+#[rstest]
+#[case::single_character("a")]
+#[case::single_character_after_trimming("  b  ")]
+fn test_search_refuses_a_query_below_the_ngram_width(#[case] query: &str) {
+    let dir = tempfile::tempdir().unwrap();
+    let stores = Stores::open(&dir);
+    let lexicons = LexiconRegistry::default();
+    let mut search = SearchIndex::in_memory();
+    search.add_indexer(Arc::new(OneDoc {
+        name: "demo",
+        ecosystem: "alpha",
+    }));
+
+    let error = search
+        .search(
+            &stores.ctx(&lexicons),
+            SearchParams {
+                query: query.to_owned(),
+                ..SearchParams::default()
+            },
+        )
+        .expect_err("a query with no n-gram names no candidate documents");
 
     assert!(error.is_bad_request());
 }
@@ -199,6 +250,7 @@ fn test_search_preserves_regex_source(#[case] query: &str, #[case] expected: &[&
             &stores.ctx(&lexicons),
             SearchParams {
                 query: query.to_owned(),
+                pattern_authority: true,
                 ..SearchParams::default()
             },
         )
@@ -239,6 +291,7 @@ fn test_search_folds_case_for_non_ascii_text() {
                 &stores.ctx(&lexicons),
                 SearchParams {
                     query: query.to_owned(),
+                    pattern_authority: true,
                     ..SearchParams::default()
                 },
             )
@@ -358,6 +411,101 @@ fn test_search_bounds_both_query_paths_to_the_indexed_window(
             .map(|query| search_total(&search, &stores, &lexicons, query))
             .collect::<Vec<_>>(),
         expected
+    );
+}
+
+/// The verified clause must survive being the seeked side of an intersection, which happens when a
+/// cheaper filter leads it.
+#[test]
+fn test_a_long_query_intersects_with_a_narrower_filter() {
+    let dir = tempfile::tempdir().unwrap();
+    let stores = Stores::open(&dir);
+    let lexicons = LexiconRegistry::default();
+    let mut search = SearchIndex::in_memory();
+    search.add_indexer(Arc::new(SourcedDocs));
+
+    let response = search
+        .search(
+            &stores.ctx(&lexicons),
+            SearchParams {
+                query: "abcdefghijklm".to_owned(),
+                source: SourceFilter::Uploaded,
+                ..SearchParams::default()
+            },
+        )
+        .unwrap();
+
+    assert_eq!(
+        (
+            response.total,
+            response
+                .results
+                .iter()
+                .map(|result| result.display_label.as_str())
+                .collect::<Vec<_>>()
+        ),
+        (1, vec!["uploaded"])
+    );
+}
+
+/// Five documents share the verified substring; one of them carries the narrower source.
+struct SourcedDocs;
+
+impl SearchDocumentProvider for SourcedDocs {
+    fn documents(&self, _ctx: &IndexerCtx<'_>) -> Result<Vec<SearchDocument>, SearchError> {
+        Ok((0..5)
+            .map(|position| SearchDocument {
+                display_label: if position == 4 {
+                    "uploaded".to_owned()
+                } else {
+                    format!("cached-{position}")
+                },
+                resource_key: format!("resource-{position}"),
+                route: "root".to_owned(),
+                index: "root".to_owned(),
+                ecosystem: "alpha".to_owned(),
+                source: if position == 4 {
+                    ContentSource::Uploaded
+                } else {
+                    ContentSource::Cached
+                },
+                available_locally: false,
+                summary: None,
+                text: "zzabcdefghijklmzz".to_owned(),
+            })
+            .collect())
+    }
+}
+
+#[test]
+fn test_authorized_search_matches_a_glob_metacharacter_literally() {
+    let dir = tempfile::tempdir().unwrap();
+    let stores = Stores::open(&dir);
+    let lexicons = LexiconRegistry::default();
+    let mut search = SearchIndex::in_memory();
+    search.add_indexer(Arc::new(TextDocs(vec![
+        ("team.app", "team.app".to_owned()),
+        ("teamxapp", "teamxapp".to_owned()),
+    ])));
+
+    let response = search
+        .search_authorized(
+            &stores.ctx(&lexicons),
+            SearchParams::default(),
+            &SearchAccess::new(vec![SearchAccessPattern {
+                route: "root".to_owned(),
+                glob: "team.app".to_owned(),
+            }]),
+        )
+        .unwrap();
+
+    assert_eq!(
+        response
+            .results
+            .iter()
+            .map(|result| result.resource_key.as_str())
+            .collect::<Vec<_>>(),
+        ["team.app"]
     );
 }
 

@@ -7,8 +7,10 @@ use crate::engine::document_key;
 use crate::error::SearchError;
 use crate::params::ContentSource;
 
-/// Tantivy silently drops a token longer than this, and the exact-match field holds one token per
-/// document, so a wider window would cost that document exact verification entirely.
+/// The window every document is folded and truncated to.
+///
+/// Both matching paths read exactly it: the n-gram prefilter over the window, exact verification
+/// over its columnar copy. Tantivy's token ceiling sets the width, since the prefilter tokenizes it.
 pub const INDEXED_TEXT_BYTES: usize = MAX_TOKEN_LEN;
 
 #[derive(Default)]

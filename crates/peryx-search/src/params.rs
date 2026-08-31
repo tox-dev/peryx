@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::SearchError;
 
+/// Selects the regular-expression dialect instead of substring matching.
+pub const PATTERN_PREFIX: &str = "re:";
 const DEFAULT_PAGE_SIZE: usize = 25;
 const PAGE_SIZES: [usize; 3] = [25, 50, 100];
 
@@ -16,6 +18,9 @@ pub struct SearchParams {
     pub availability: AvailabilityFilter,
     pub page: usize,
     pub page_size: usize,
+    /// A pattern query names no candidate documents and therefore reads all of them, so a caller
+    /// sets this only once it has established operator authority for the request.
+    pub pattern_authority: bool,
 }
 
 impl Default for SearchParams {
@@ -27,6 +32,7 @@ impl Default for SearchParams {
             availability: AvailabilityFilter::All,
             page: 1,
             page_size: DEFAULT_PAGE_SIZE,
+            pattern_authority: false,
         }
     }
 }
@@ -69,6 +75,12 @@ impl SearchParams {
         }
         params.offset()?;
         Ok(params)
+    }
+
+    /// Whether `q` selects the regular-expression dialect.
+    #[must_use]
+    pub fn is_pattern(&self) -> bool {
+        self.query.trim().starts_with(PATTERN_PREFIX)
     }
 
     /// # Errors

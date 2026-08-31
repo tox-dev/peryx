@@ -5,6 +5,7 @@ mod error;
 mod indexer;
 mod params;
 mod response;
+mod verify;
 
 pub use access::{SearchAccess, SearchAccessPattern};
 

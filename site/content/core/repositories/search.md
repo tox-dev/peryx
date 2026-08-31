@@ -35,18 +35,21 @@ Both endpoints return one response schema and accept the same query fields.
 
 ## Query fields
 
-| Field          | Values                                  | Default | Contract                                     |
-| -------------- | --------------------------------------- | ------- | -------------------------------------------- |
-| `q`            | Text or `re:<expression>`               | Empty   | Matches the ecosystem's search document      |
-| `route`        | Configured route                        | Any     | Restricts a global query                     |
-| `type`         | `all`, `uploaded`, `cached`, `override` | `all`   | Restricts record source                      |
-| `availability` | `all`, `local`                          | `all`   | Restricts records by local byte availability |
-| `page`         | Positive integer                        | `1`     | Selects a result page                        |
-| `page_size`    | `25`, `50`, or `100`                    | `25`    | Sets the result count                        |
+| Field          | Values                                                      | Default | Contract                                     |
+| -------------- | ----------------------------------------------------------- | ------- | -------------------------------------------- |
+| `q`            | Text of 2+ characters, or `re:<expression>` for an operator | Empty   | Matches the ecosystem's search document      |
+| `route`        | Configured route                                            | Any     | Restricts a global query                     |
+| `type`         | `all`, `uploaded`, `cached`, `override`                     | `all`   | Restricts record source                      |
+| `availability` | `all`, `local`                                              | `all`   | Restricts records by local byte availability |
+| `page`         | Positive integer                                            | `1`     | Selects a result page                        |
+| `page_size`    | `25`, `50`, or `100`                                        | `25`    | Sets the result count                        |
 
-Plain text uses case-insensitive substring matching. The `re:` prefix selects a case-insensitive regular expression in
-the search engine's dialect. Both modes inspect an ecosystem-provided search document, so a match does not need to
-appear in `display_label` or `resource_key`. An invalid expression or availability value returns `400 Bad Request`.
+Plain text uses case-insensitive substring matching and needs at least two characters: a shorter query names no indexed
+n-gram, so answering it would mean reading every indexed document. The `re:` prefix selects a case-insensitive regular
+expression, which has no n-gram to seek on and therefore does read every indexed document; it is restricted to a caller
+the request authenticates as an operator, and anyone else receives `403 Forbidden`. Both modes inspect an
+ecosystem-provided search document, so a match does not need to appear in `display_label` or `resource_key`. A
+one-character query, an invalid expression, or an unknown availability value returns `400 Bad Request`.
 
 The ecosystem implementations build searchable text from these fields:
 

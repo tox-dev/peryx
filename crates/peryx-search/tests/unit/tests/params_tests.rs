@@ -15,8 +15,17 @@ fn test_query_parameters_parse_all_fields() {
             availability: AvailabilityFilter::Local,
             page: 2,
             page_size: 50,
+            pattern_authority: false,
         }
     );
+}
+
+#[rstest]
+#[case::substring("q=widget", false)]
+#[case::pattern("q=re%3Awidget", true)]
+#[case::padded_pattern("q=+re%3Awidget+", true)]
+fn test_query_parameters_recognize_the_pattern_dialect(#[case] query: &str, #[case] expected: bool) {
+    assert_eq!(SearchParams::from_query(Some(query)).unwrap().is_pattern(), expected);
 }
 
 #[rstest]

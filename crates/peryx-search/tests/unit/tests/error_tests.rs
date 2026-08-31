@@ -19,10 +19,23 @@ fn test_bad_request_classification() {
             SearchError::Tantivy(tantivy::TantivyError::InvalidArgument("bad".to_owned())),
             true,
         ),
+        (SearchError::QueryTooShort { minimum: 2 }, true),
+        (SearchError::InvalidPattern("unclosed class".to_owned()), true),
+        (SearchError::PatternSearchDenied, false),
         (SearchError::Indexer("failed".to_owned()), false),
         (SearchError::InvalidEcosystem("Invalid".to_owned()), false),
     ] {
         assert_eq!(error.is_bad_request(), expected, "{error}");
+    }
+}
+
+#[test]
+fn test_only_a_refused_pattern_is_forbidden() {
+    for (error, expected) in [
+        (SearchError::PatternSearchDenied, true),
+        (SearchError::QueryTooShort { minimum: 2 }, false),
+    ] {
+        assert_eq!(error.is_forbidden(), expected, "{error}");
     }
 }
 

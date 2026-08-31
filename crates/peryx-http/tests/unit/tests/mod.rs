@@ -12,6 +12,7 @@ mod repositories_tests;
 mod response_security_tests;
 mod retention_tests;
 mod revocation_tests;
+mod search_tests;
 mod stats_tests;
 mod status_tests;
 mod support;

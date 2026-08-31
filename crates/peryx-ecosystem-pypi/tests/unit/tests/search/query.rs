@@ -40,11 +40,11 @@ async fn test_search_reports_invalid_type_filters() {
     }
 }
 #[tokio::test]
-async fn test_search_reports_invalid_regex() {
+async fn test_search_refuses_a_pattern_without_operator_authority() {
     let h = harness().await;
     let (status, _headers, body) = get(&h.state, "/+search?q=re:(broken&page_size=25", Some("application/json")).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(body.contains("RegexQueryError"));
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(body.contains("pattern search requires operator authority"), "{body}");
 }
 #[tokio::test]
 async fn test_search_reports_cached_detail_parse_errors() {
@@ -65,11 +65,11 @@ async fn test_search_reports_cached_detail_parse_errors() {
     assert!(body.contains("EOF while parsing"));
 }
 #[tokio::test]
-async fn test_search_matches_single_character_literal_queries() {
+async fn test_search_matches_a_literal_regex_metacharacter() {
     let h = harness().await;
     put_uploaded_package(&h.state.serving, "Peryx.Core", "peryx-core", "literal dot package");
 
-    let (status, _headers, body) = get(&h.state, "/hosted/+search?q=.&page_size=25", Some("application/json")).await;
+    let (status, _headers, body) = get(&h.state, "/hosted/+search?q=.c&page_size=25", Some("application/json")).await;
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(serde_json::from_str::<serde_json::Value>(&body).unwrap()["total"], 1);

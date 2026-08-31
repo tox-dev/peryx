@@ -5265,6 +5265,7 @@ dependencies = [
  "peryx-index",
  "peryx-policy",
  "peryx-storage",
+ "regex",
  "rstest",
  "serde",
  "serde_json",

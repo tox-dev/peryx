@@ -4,6 +4,7 @@ mod error_tests;
 mod frontier_tests;
 mod integration_tests;
 mod params_tests;
+mod verify_tests;
 
 use peryx_core::{Lexicon, LexiconRegistry};
 use peryx_index::Index;

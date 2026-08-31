@@ -23,6 +23,8 @@ pub async fn search(
         route: None,
         source: SourceFilter::from_value(source_type).unwrap_or(SourceFilter::All),
         availability: AvailabilityFilter::from_value(availability).unwrap_or(AvailabilityFilter::All),
+        // The browser surface authenticates nobody, so it never carries pattern authority.
+        pattern_authority: false,
         page: page.max(1),
         page_size: match page_size {
             25 | 50 | 100 => page_size,

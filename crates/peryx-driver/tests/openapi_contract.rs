@@ -92,9 +92,10 @@ fn artifact_search_matches_contract(#[case] scoped: bool, #[case] summary: &str,
             "tags": ["search"],
             "summary": summary,
             "description": "Searches the derived artifact index built from cached listings, local writes, and cached \
-                            metadata. `q` uses substring matching; prefix it with `re:` for a regex. Index policy \
-                            removes denied entries before indexing. Results are sorted by display name and paged \
-                            without collecting every match.",
+                            metadata. `q` uses substring matching and needs at least two characters; prefix it with \
+                            `re:` for a regex, which reads every indexed document and is restricted to operators. \
+                            Index policy removes denied entries before indexing. Results are sorted by display name \
+                            and paged without collecting every match.",
             "parameters": parameters,
             "responses": {
                 "200": {
@@ -128,6 +129,14 @@ fn artifact_search_matches_contract(#[case] scoped: bool, #[case] summary: &str,
                     "content": {
                         "application/json": {
                             "example": {"error": "invalid resource source type"},
+                        },
+                    },
+                },
+                "403": {
+                    "description": "Pattern search without operator authority",
+                    "content": {
+                        "application/json": {
+                            "example": {"error": "pattern search requires operator authority"},
                         },
                     },
                 },
@@ -166,7 +175,8 @@ fn search_parameters() -> Vec<Value> {
         json!({
             "name": "q",
             "in": "query",
-            "description": "Search text. Prefix with `re:` to use a regex.",
+            "description": "Search text of at least two characters. Prefix with `re:` to use a regex, which operators \
+                            alone may run.",
             "required": false,
             "schema": {"type": "string"},
             "example": "widget",

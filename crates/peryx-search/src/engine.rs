@@ -17,10 +17,13 @@ use crate::access::{SearchAccess, SearchAccessPattern};
 use crate::context::{IndexerCtx, SearchCtx};
 use crate::error::SearchError;
 use crate::indexer::{CompositeIndexer, INDEXED_TEXT_BYTES, SearchDocument, SearchDocumentProvider, default_indexer};
-use crate::params::{ContentSource, SearchParams};
+use crate::params::{ContentSource, PATTERN_PREFIX, SearchParams};
 use crate::response::{SearchResponse, SearchResult};
+use crate::verify::{VerifiedQuery, Verifier};
 
 const SUBSTRING_TOKENIZER: &str = "peryx_substring";
+/// Verification reads this field per candidate document, so it is columnar rather than indexed.
+const VERIFY_FIELD: &str = "verify";
 const MIN_NGRAM: usize = 2;
 const MAX_NGRAM: usize = 12;
 const WRITER_MEMORY_BYTES: usize = 64 * 1024 * 1024;
@@ -375,7 +378,7 @@ impl SearchIndex {
     }
 
     fn query(&self, params: &SearchParams, access: Option<&SearchAccess>) -> Result<Box<dyn Query>, SearchError> {
-        let mut queries = vec![self.text_query(params.query.trim())?];
+        let mut queries = vec![self.text_query(params.query.trim(), params.pattern_authority)?];
         if let Some(source) = params.source.content_source() {
             queries.push(Box::new(TermQuery::new(
                 Term::from_field_text(self.fields.source, source.as_str()),
@@ -427,40 +430,41 @@ impl SearchIndex {
         })
     }
 
-    fn text_query(&self, query: &str) -> Result<Box<dyn Query>, SearchError> {
+    /// Every accepted query names its candidates through the n-gram index, so no clause has to walk
+    /// the term dictionary end to end. A query too short to produce an n-gram cannot name any.
+    fn text_query(&self, query: &str, pattern_authority: bool) -> Result<Box<dyn Query>, SearchError> {
         if query.is_empty() {
             return Ok(Box::new(AllQuery));
         }
-        if let Some(pattern) = query.strip_prefix("re:") {
-            if pattern.is_empty() {
-                return Ok(Box::new(AllQuery));
-            }
-            return Ok(Box::new(RegexQuery::from_pattern(
-                &format!("(?i:.*(?:{pattern}).*)"),
-                self.fields.raw,
-            )?));
+        if let Some(pattern) = query.strip_prefix(PATTERN_PREFIX) {
+            return pattern_query(pattern, pattern_authority);
         }
         let query = fold_lowercase(query);
-        let terms = query_terms(&query);
-        if terms.is_empty() {
-            let pattern = format!(".*{}.*", escape_regex(&query));
-            return Ok(Box::new(RegexQuery::from_pattern(&pattern, self.fields.raw)?));
+        let length = query.chars().count();
+        if length < MIN_NGRAM {
+            return Err(SearchError::QueryTooShort { minimum: MIN_NGRAM });
         }
-        let mut queries = terms
-            .into_iter()
-            .map(|term| {
-                Box::new(TermQuery::new(
-                    Term::from_field_text(self.fields.search, &term),
-                    IndexRecordOption::Basic,
-                )) as Box<dyn Query>
-            })
-            .collect::<Vec<_>>();
+        let candidates = BooleanQuery::intersection(
+            query_terms(&query)
+                .into_iter()
+                .map(|term| {
+                    Box::new(TermQuery::new(
+                        Term::from_field_text(self.fields.search, &term),
+                        IndexRecordOption::Basic,
+                    )) as Box<dyn Query>
+                })
+                .collect(),
+        );
         // N-grams do not preserve adjacency, so long queries require exact substring verification.
-        if query.chars().count() > MAX_NGRAM {
-            let pattern = format!(".*{}.*", escape_regex(&query));
-            queries.push(Box::new(RegexQuery::from_pattern(&pattern, self.fields.raw)?));
-        }
-        Ok(Box::new(BooleanQuery::intersection(queries)))
+        Ok(if length > MAX_NGRAM {
+            Box::new(VerifiedQuery::new(
+                Arc::new(candidates),
+                VERIFY_FIELD,
+                Verifier::Substring(query),
+            ))
+        } else {
+            Box::new(candidates)
+        })
     }
 
     fn result_from_doc(&self, doc: &TantivyDocument) -> SearchResult {
@@ -508,7 +512,7 @@ impl SearchIndex {
         doc.add_text(self.fields.summary, resource.summary.as_deref().unwrap_or_default());
         doc.add_text(self.fields.sort, sort);
         doc.add_text(self.fields.search, text);
-        doc.add_text(self.fields.raw, text);
+        doc.add_text(self.fields.verify, text);
         doc
     }
 }
@@ -540,7 +544,7 @@ struct SearchFields {
     summary: Field,
     sort: Field,
     search: Field,
-    raw: Field,
+    verify: Field,
 }
 
 /// Indexing and scoped replacement must derive the same key.
@@ -576,12 +580,6 @@ fn search_schema() -> (Schema, SearchFields) {
             .set_index_option(IndexRecordOption::Basic)
             .set_fieldnorms(false),
     );
-    let raw = TextOptions::default().set_indexing_options(
-        TextFieldIndexing::default()
-            .set_tokenizer("raw")
-            .set_index_option(IndexRecordOption::Basic)
-            .set_fieldnorms(false),
-    );
     let fields = SearchFields {
         key: builder.add_text_field("key", exact.clone()),
         route: builder.add_text_field("route", exact.clone()),
@@ -594,7 +592,7 @@ fn search_schema() -> (Schema, SearchFields) {
         summary: builder.add_text_field("summary", stored),
         sort: builder.add_text_field("sort", sort),
         search: builder.add_text_field("search", search),
-        raw: builder.add_text_field("raw", raw),
+        verify: builder.add_text_field(VERIFY_FIELD, FAST),
     };
     (builder.build(), fields)
 }
@@ -613,18 +611,31 @@ fn fold_lowercase(value: &str) -> String {
     value.chars().flat_map(char::to_lowercase).collect()
 }
 
+/// A query up to the n-gram width is itself an indexed term; a longer one decomposes into the widest
+/// windows it contains, which the verifier then confirms are adjacent in the document.
 fn query_terms(query: &str) -> Vec<String> {
     let chars: Vec<char> = query.chars().collect();
-    match chars.len() {
-        0 | 1 => Vec::new(),
-        len if len <= MAX_NGRAM => vec![query.to_owned()],
-        _ => chars
-            .windows(MAX_NGRAM)
-            .map(|term| term.iter().collect::<String>())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect(),
+    if chars.len() <= MAX_NGRAM {
+        return vec![query.to_owned()];
     }
+    chars
+        .windows(MAX_NGRAM)
+        .map(|term| term.iter().collect::<String>())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+/// A pattern names no candidates, so it reads every indexed document and stays operator-only.
+fn pattern_query(pattern: &str, authority: bool) -> Result<Box<dyn Query>, SearchError> {
+    if pattern.is_empty() {
+        return Ok(Box::new(AllQuery));
+    }
+    if !authority {
+        return Err(SearchError::PatternSearchDenied);
+    }
+    let verifier = Verifier::pattern(pattern).map_err(|err| SearchError::InvalidPattern(err.to_string()))?;
+    Ok(Box::new(VerifiedQuery::new(Arc::new(AllQuery), VERIFY_FIELD, verifier)))
 }
 
 fn stored_text(doc: &TantivyDocument, field: Field) -> String {
@@ -648,12 +659,6 @@ pub fn truncate_to_chars(value: &str, max_bytes: usize) -> &str {
         end -= 1;
     }
     &value[..end]
-}
-
-fn escape_regex(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    push_escaped_regex(&mut escaped, value);
-    escaped
 }
 
 fn glob_regex(value: &str) -> String {

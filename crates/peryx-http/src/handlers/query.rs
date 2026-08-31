@@ -2,12 +2,14 @@ use std::sync::Arc;
 
 use axum::Extension;
 use axum::extract::{OriginalUri, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
 use peryx_driver::access::ReadAccess;
+use peryx_driver::authz::Decision;
 use peryx_driver::http_services::HttpDomainServices;
 use peryx_driver::state::{AppState, Index};
+use peryx_identity::{Resource, Scope, parse_basic};
 use peryx_search::{SearchAccess, SearchError, SearchParams};
 
 use crate::response_security::ProtectedCachePolicy;
@@ -24,6 +26,7 @@ pub(super) async fn index_search(
         Err(err) => return search_error_response(&err),
     };
     params.route = Some(state.serving.index_at(position).route.clone());
+    params.pattern_authority = pattern_authority(&state, &params, headers).await;
     let access = search_access(&state, headers, std::slice::from_ref(state.serving.index_at(position)));
     search_response_offloaded(services, params, access).await
 }
@@ -35,12 +38,46 @@ pub async fn search(
     headers: HeaderMap,
 ) -> Response {
     match SearchParams::from_query(uri.query()) {
-        Ok(params) => {
+        Ok(mut params) => {
+            params.pattern_authority = pattern_authority(&state, &params, &headers).await;
             let access = search_access(&state, &headers, &state.serving.indexes);
             search_response_offloaded(services, params, access).await
         }
         Err(err) => search_error_response(&err),
     }
+}
+
+/// A pattern query has no prefilter to seek into, so it reads every indexed document and stays
+/// operator-only. Only a pattern query pays for authentication; ordinary search keeps answering
+/// without a credential round trip.
+async fn pattern_authority(state: &AppState, params: &SearchParams, headers: &HeaderMap) -> bool {
+    params.is_pattern() && operator_reads(state, headers).await
+}
+
+async fn operator_reads(state: &AppState, headers: &HeaderMap) -> bool {
+    let Some(credentials) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(parse_basic)
+    else {
+        return false;
+    };
+    let Ok(Some(actor)) = state
+        .serving
+        .users
+        .authenticate(&credentials.user, &credentials.password)
+        .await
+    else {
+        return false;
+    };
+    matches!(
+        state
+            .serving
+            .authorization
+            .authorize_scoped(&actor, Scope::OperatorRead, &Resource::Operator)
+            .decision(),
+        Decision::Allow
+    )
 }
 
 fn search_access(state: &AppState, headers: &HeaderMap, indexes: &[Index]) -> Option<SearchAccess> {
@@ -80,7 +117,9 @@ pub fn search_response(services: &HttpDomainServices, params: SearchParams, acce
 
 #[must_use]
 pub fn search_error_response(err: &SearchError) -> Response {
-    let status = if err.is_bad_request() {
+    let status = if err.is_forbidden() {
+        StatusCode::FORBIDDEN
+    } else if err.is_bad_request() {
         StatusCode::BAD_REQUEST
     } else {
         StatusCode::INTERNAL_SERVER_ERROR
