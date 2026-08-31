@@ -552,9 +552,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         let result = match route {
             OciRoute::Manifest { name, reference } => {
                 if read {
-                    let accept = combined_accept(headers);
-                    self.serve_manifest(&state, &name, &reference, head, accept.as_deref())
-                        .await
+                    self.serve_manifest(&state, &name, &reference, head, headers).await
                 } else if method == Method::PUT {
                     put_manifest(&state, headers, body, &name, &reference, self.journal_outbox).await
                 } else {
@@ -626,7 +624,10 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         let Some(parsed) = crate::name::parse_reference(&reference) else {
             return Ok(None);
         };
-        let response = self.serve_manifest(&state, &name, &parsed, false, None).await?;
+        // The web UI renders the manifest itself, so it negotiates nothing and conditions on nothing.
+        let response = self
+            .serve_manifest(&state, &name, &parsed, false, &HeaderMap::new())
+            .await?;
         if response.status() != StatusCode::OK {
             return Ok(None);
         }
@@ -742,7 +743,9 @@ fn digest_decision(state: &ServingState, digest: &str) -> Result<DigestDecision,
 }
 
 fn apply_revocation_cache_policy(response: &mut Response, authenticated: bool) {
-    let value = if response.status().is_success() {
+    // A `304` validated a stored representation, so it keeps the policy of the `200` it refreshes;
+    // `no-store` would make the client drop the bytes it just revalidated.
+    let value = if response.status().is_success() || response.status() == StatusCode::NOT_MODIFIED {
         format!(
             "{}, max-age={}, must-revalidate, no-transform",
             if authenticated { "private" } else { "public" },
@@ -1009,6 +1012,30 @@ fn combined_accept(headers: &HeaderMap) -> Option<String> {
         .collect::<Vec<_>>()
         .join(", ");
     (!joined.is_empty()).then_some(joined)
+}
+/// The entity tag for content addressed by `digest`: the digest itself, quoted. It is a strong
+/// validator, since the bytes are what the digest names.
+fn digest_etag(digest: &str) -> String {
+    format!("\"{digest}\"")
+}
+/// Whether the request's `If-None-Match` names the representation `etag` identifies.
+///
+/// The field is a list and repeats across field lines, so every line has its say (RFC 9110 s13.1.2).
+/// A pull is a `GET` or a `HEAD`, the two methods that compare weakly, so a `W/` prefix still matches.
+fn if_none_match_holds(headers: &HeaderMap, etag: &str) -> bool {
+    headers
+        .get_all(header::IF_NONE_MATCH)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .any(|field| peryx_driver::conditional::if_none_match(field, etag))
+}
+/// The bodyless `304` a matched `If-None-Match` answers with, carrying the validators the `200` would
+/// have. Callers add whatever else a cache needs to reuse the stored response.
+fn not_modified(etag: &str, digest: &str) -> axum::http::response::Builder {
+    Response::builder()
+        .status(StatusCode::NOT_MODIFIED)
+        .header(header::ETAG, etag)
+        .header(DOCKER_CONTENT_DIGEST, digest)
 }
 /// Whether something fetched at `fetched_at` may still answer while the upstream cannot confirm it.
 ///

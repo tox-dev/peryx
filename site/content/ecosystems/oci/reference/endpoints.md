@@ -62,8 +62,13 @@ index or manifest list it serves, or a referrer pushed here. A proxy member stil
 upstream under this repository, so a legitimate pull-through stays intact, but a digest that no member records and no
 proxy can fetch is `404 MANIFEST_UNKNOWN`, even when the same bytes sit in the store under another repository. See
 [how peryx scopes and serves manifest reads](@/ecosystems/oci/manifest-serving.md) for the reasoning. The response
-carries the stored `Content-Type`, `Docker-Content-Digest`, and `Content-Length`; a `HEAD` returns those headers with an
-empty body. A reference no member can serve is `404 MANIFEST_UNKNOWN`.
+carries the stored `Content-Type`, `Docker-Content-Digest`, `Content-Length`, and the quoted digest as `ETag`; a `HEAD`
+returns those headers with an empty body. A reference no member can serve is `404 MANIFEST_UNKNOWN`.
+
+An `If-None-Match` naming that entity tag answers `304 Not Modified` with an empty body, `ETag`,
+`Docker-Content-Digest`, and `Vary: Accept`. peryx evaluates it after resolving the reference and negotiating `Accept`,
+because those two decide which digest the tag names, and it compares weakly, so a `W/`-prefixed tag and a `*` both
+match. A tag that names other bytes serves the manifest.
 
 When a resolved manifest is an image index or manifest list and the request's `Accept` names neither list media type,
 peryx serves the index's `linux/amd64` child image manifest instead, the substitution that lets legacy Docker (below
@@ -124,6 +129,11 @@ download. peryx sends `Content-Type: application/octet-stream` and `Accept-Range
 headers. A `Range: bytes=…` request produces `206` with `Content-Range`. peryx returns `416` with
 `Content-Range: bytes */<size>` for an unsatisfiable or malformed `bytes` range, and it ignores other range units. A
 missing digest produces `404 BLOB_UNKNOWN`; a non-`sha256` digest produces `400 DIGEST_INVALID`.
+
+The quoted digest is the blob's `ETag`. An `If-None-Match` naming it answers `304 Not Modified` with an empty body,
+`ETag`, `Docker-Content-Digest`, and `Accept-Ranges`, ahead of any `Range` the same request carried, as RFC 9110 section
+13.1.2 requires. peryx evaluates it once the blob is known to exist and to be readable under `<name>`, so an absent or
+unlinked digest still answers `404 BLOB_UNKNOWN` rather than `304`.
 
 peryx removes this repository's link for `DELETE /v2/<name>/blobs/<digest>` and returns `202`. A missing link produces
 `404 BLOB_UNKNOWN`. peryx leaves the payload in the shared content store. `cache purge orphaned-blobs` removes it after

@@ -1,5 +1,7 @@
 mod authority;
 mod bearer_tests;
+mod conditional_blob_tests;
+mod conditional_manifest_tests;
 mod conformance_tests;
 mod contents_tests;
 mod discovery_tests;

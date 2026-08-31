@@ -99,6 +99,15 @@ fn digest_param() -> ParameterBuilder {
     )
 }
 
+fn if_none_match_param() -> ParameterBuilder {
+    parameter(
+        "If-None-Match",
+        ParameterIn::Header,
+        "Entity tags the client already holds; a match answers `304` before any body or range is read",
+        json!("\"sha256:2c3e...\""),
+    )
+}
+
 fn session_param() -> ParameterBuilder {
     parameter(
         "session",
@@ -128,11 +137,17 @@ fn oci_manifest_pull() -> OperationBuilder {
         .summary(Some("Pull a manifest"))
         .description(Some(
             "Resolves the reference hosted-first through the index's members and serves the manifest, \
-             pulling it through an online proxy member on a miss.",
+             pulling it through an online proxy member on a miss. The negotiated manifest's quoted \
+             digest is the `ETag`, so a client can revalidate the document it holds.",
         ))
         .parameter(name_param())
         .parameter(reference_param())
+        .parameter(if_none_match_param())
         .response("200", ResponseBuilder::new().description("Negotiated manifest body"))
+        .response(
+            "304",
+            ResponseBuilder::new().description("The client already holds the negotiated manifest"),
+        )
         .response("404", ResponseBuilder::new().description("`MANIFEST_UNKNOWN`"))
 }
 
@@ -198,6 +213,7 @@ fn oci_blob_pull() -> OperationBuilder {
         ))
         .parameter(name_param())
         .parameter(digest_param())
+        .parameter(if_none_match_param())
         .parameter(parameter(
             "If-Range",
             ParameterIn::Header,
@@ -206,6 +222,10 @@ fn oci_blob_pull() -> OperationBuilder {
         ))
         .response("200", ResponseBuilder::new().description("Blob body"))
         .response("206", ResponseBuilder::new().description("A requested byte range"))
+        .response(
+            "304",
+            ResponseBuilder::new().description("The client already holds the blob"),
+        )
         .response("404", ResponseBuilder::new().description("`BLOB_UNKNOWN`"))
 }
 

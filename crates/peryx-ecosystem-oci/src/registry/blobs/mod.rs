@@ -52,11 +52,12 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
             return Ok(error_response(ErrorCode::BlobUnknown, "blob unknown"));
         }
         // A blob is content-addressed, so its digest is the strong validator for its bytes.
-        let etag = format!("\"{digest}\"");
+        let etag = digest_etag(digest);
         let asked = BlobRequest {
             // A `HEAD` transfers no body, so a `Range` (and the `If-Range` that guards it) never
             // applies to it (RFC 9110 s14.2); only a `GET` resolves one.
             range: if head { None } else { applicable_range(headers, &etag) },
+            unchanged: if_none_match_holds(headers, &etag),
             etag: &etag,
             head,
         };
@@ -667,6 +668,8 @@ struct BlobRequest<'a> {
     etag: &'a str,
     /// The single range to serve, or `None` for the whole blob.
     range: Option<&'a str>,
+    /// Whether an `If-None-Match` field already named this blob, so the client holds its bytes.
+    unchanged: bool,
     head: bool,
 }
 
@@ -677,6 +680,11 @@ async fn serve_stored_blob(
     size: u64,
     asked: &BlobRequest<'_>,
 ) -> Result<Response, ServeError> {
+    // RFC 9110 s13.1.2 evaluates `If-None-Match` ahead of `Range`, so a client that already holds
+    // these bytes gets the validators back rather than the body or a slice of it.
+    if asked.unchanged {
+        return Ok(blob_not_modified(digest, asked));
+    }
     let common = [
         (header::CONTENT_TYPE, HeaderValue::from_static(OCTET_STREAM)),
         (header::ACCEPT_RANGES, HeaderValue::from_static("bytes")),
@@ -725,6 +733,9 @@ async fn serve_stored_blob(
 /// no body. A `HEAD` transfers no content, so a `Range` never applies (RFC 9110 s14.2) and an existing
 /// blob always answers `200` with its full representation size (OCI distribution spec).
 fn blob_head_response(digest: &str, size: Option<u64>, asked: &BlobRequest<'_>) -> Response {
+    if asked.unchanged {
+        return blob_not_modified(digest, asked);
+    }
     let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, OCTET_STREAM)
@@ -741,6 +752,15 @@ fn blob_head_response(digest: &str, size: Option<u64>, asked: &BlobRequest<'_>) 
     builder
         .body(body)
         .expect("blob head response builds from validated parts")
+}
+
+/// The `304` for a blob the client already holds: the validators plus the range capability a `200`
+/// would have carried, so its next conditional or partial pull has everything it needs.
+fn blob_not_modified(digest: &str, asked: &BlobRequest<'_>) -> Response {
+    not_modified(asked.etag, digest)
+        .header(header::ACCEPT_RANGES, "bytes")
+        .body(Body::empty())
+        .expect("not-modified response builds from validated header parts")
 }
 
 fn header_value(value: &str) -> HeaderValue {

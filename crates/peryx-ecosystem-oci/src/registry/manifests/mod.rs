@@ -25,8 +25,9 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         name: &str,
         reference: &Reference,
         head: bool,
-        accept: Option<&str>,
+        headers: &HeaderMap,
     ) -> Result<Response, ServeError> {
+        let accept = combined_accept(headers);
         let Some((index, repo)) = resolve(&state.indexes, name) else {
             return Ok(error_response(ErrorCode::NameUnknown, "repository name unknown"));
         };
@@ -73,7 +74,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
             }
         };
         let mut response = self
-            .negotiate_manifest(state, &members, repo, accept, response, head)
+            .negotiate_manifest(state, &members, repo, accept.as_deref(), response, head)
             .await?;
         if response.status() == StatusCode::OK {
             // The same tag can hand back the index or its child depending on Accept, so a shared cache
@@ -81,6 +82,9 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
             response
                 .headers_mut()
                 .insert(header::VARY, HeaderValue::from_static("accept"));
+            if let Some(unchanged) = manifest_not_modified(headers, &response) {
+                return Ok(unchanged);
+            }
             // Manifest bodies count as page traffic; metadata-only HEAD responses do not.
             if !head {
                 state.metrics.record(Observation::Page {
@@ -339,6 +343,26 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
     }
 }
 
+/// The `304` for a manifest whose `If-None-Match` named the representation this request settled on.
+///
+/// Judged after tag resolution and `Accept` negotiation, because those pick which digest the entity
+/// tag names: one tag answers an image index or its `linux/amd64` child depending on the client.
+fn manifest_not_modified(headers: &HeaderMap, response: &Response) -> Option<Response> {
+    let digest = response
+        .headers()
+        .get(DOCKER_CONTENT_DIGEST)
+        .and_then(|value| value.to_str().ok())
+        .expect("a served manifest carries its content digest");
+    let etag = digest_etag(digest);
+    if_none_match_holds(headers, &etag).then(|| {
+        not_modified(&etag, digest)
+            // A cache stores the `304` against the entry it refreshes, so it must key it the same way.
+            .header(header::VARY, "accept")
+            .body(Body::empty())
+            .expect("not-modified response builds from validated header parts")
+    })
+}
+
 fn acceptable_manifest_response(response: Response, accept: &str) -> Response {
     if response.status() != StatusCode::OK {
         return response;
@@ -559,6 +583,9 @@ fn manifest_response(manifest: Manifest, digest: &str, head: bool) -> Response {
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, &manifest.media_type)
         .header(DOCKER_CONTENT_DIGEST, digest)
+        // The bytes hash to the digest, so it is the validator a client revalidates the document with;
+        // `Docker-Content-Digest` alone is content metadata no HTTP cache knows how to condition on.
+        .header(header::ETAG, digest_etag(digest))
         .header(header::CONTENT_LENGTH, manifest.bytes.len());
     let body = if head {
         Body::empty()
