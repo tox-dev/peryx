@@ -221,13 +221,29 @@ enum SelectionSource {
     Cache,
 }
 
+/// The counters a prefetch action reports. Each task fills in the subset its action collects and the
+/// run merges them, so concurrent tasks never share report state.
 #[derive(Default)]
-struct SyncSummary {
+struct PrefetchCounts {
     projects: u64,
+    files: u64,
     downloaded: u64,
     bytes: u64,
     skipped: u64,
     failures: u64,
+    problems: u64,
+}
+
+impl PrefetchCounts {
+    const fn merge(&mut self, other: &Self) {
+        self.projects += other.projects;
+        self.files += other.files;
+        self.downloaded += other.downloaded;
+        self.bytes += other.bytes;
+        self.skipped += other.skipped;
+        self.failures += other.failures;
+        self.problems += other.problems;
+    }
 }
 
 struct Selection {

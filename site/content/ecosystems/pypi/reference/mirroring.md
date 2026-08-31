@@ -48,3 +48,10 @@ Operators can narrow one run with `--option 'no_wheels=true'`, `--option 'no_sdi
 `--option 'metadata_only=true'`, or `--option 'max_file_size_bytes=524288000'`. They use `packages` or `requirements` to
 add selectors to configured lists, and each `*_tags` override adds wheel tags. `mode` and `max_file_size_bytes` replace
 their configured values. Setting the three boolean examples to `true` narrows the selection.
+
+`peryx mirror plan` and `peryx mirror sync` overlap project pages and artifact transfers rather than waiting for each
+one. The ceiling is the index's `upstream_concurrency`, or eight when the index is uncapped, and project pages and
+artifact transfers spend it together, so one project with many artifacts costs the same budget as many projects with
+one. Each task carries its own report rows and counters, so a stalled transfer holds back only the rows behind it and
+the report still reads in selection order. `peryx mirror verify` reaches no upstream and rehashes up to eight cached
+blobs at once.

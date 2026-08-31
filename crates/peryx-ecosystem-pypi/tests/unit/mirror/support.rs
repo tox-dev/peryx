@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use peryx_driver::AppState;
+use peryx_driver::rate_limit::RateLimitConfig;
 use peryx_identity::IndexAcl;
 use peryx_index::{Index, IndexKind};
 use peryx_policy::Policy;
@@ -14,6 +15,10 @@ pub struct StateFixture {
 }
 
 pub fn state(indexes: Vec<Index>) -> StateFixture {
+    limited_state(indexes, None)
+}
+
+pub fn limited_state(indexes: Vec<Index>, upstream_concurrency: Option<usize>) -> StateFixture {
     let dir = tempfile::tempdir().unwrap();
     let routes = indexes
         .iter()
@@ -22,11 +27,21 @@ pub fn state(indexes: Vec<Index>) -> StateFixture {
             IndexKind::Hosted { .. } | IndexKind::Virtual { .. } => None,
         })
         .collect::<Vec<_>>();
-    let mut state = AppState::new(
+    let limits = upstream_concurrency
+        .map(|limit| {
+            indexes
+                .iter()
+                .map(|index| (index.name.clone(), limit))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let mut state = AppState::with_rate_limits(
         MetaStore::open(dir.path().join("peryx.redb")).unwrap(),
         BlobStorage::filesystem(dir.path().join("blobs")),
         60,
         indexes,
+        RateLimitConfig::default(),
+        limits,
     );
     let upstream_routes = &mut Arc::get_mut(&mut state.serving).unwrap().upstream_routes;
     for (name, client) in routes {

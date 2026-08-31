@@ -1,21 +1,28 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
+use std::sync::{Arc, Mutex};
 
 use peryx_driver::serving::{MirrorAction, MirrorDriver as _, MirrorRequest};
 use peryx_storage::blob::Digest;
 use rstest::rstest;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{Barrier, Semaphore};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::{
-    cached_detail, parse_response_detail, pypi_plan, pypi_sync, pypi_verify, raw_detail, sync_file, sync_files,
-    sync_metadata, verify_blob,
+    DEFAULT_PREFETCH_CONCURRENCY, SyncRun, cached_detail, parse_response_detail, pypi_plan, pypi_sync, pypi_verify,
+    raw_detail, sync_file, sync_metadata, upstream_ceiling, verify_blob,
 };
 use crate::mirror::test_support::{self, cached_index};
 use crate::mirror::{
-    ArtifactFilters, BlobCheck, PrefetchConfig, PrefetchMode, PrefetchOptions, ProjectRule, Selection, SyncSummary,
+    ArtifactFilters, BlobCheck, PrefetchConfig, PrefetchCounts, PrefetchMode, PrefetchOptions, Selection,
 };
 use crate::store::{CachedIndex, PypiStore as _};
 use crate::{CoreMetadata, File, Meta, ProjectDetail, Provenance, SimpleResponse, Yanked, to_json};
+
+const SIMPLE_JSON: &str = "application/vnd.pypi.simple.v1+json";
 
 fn config(mode: PrefetchMode, packages: &[&str]) -> PrefetchConfig {
     PrefetchConfig {
@@ -538,7 +545,27 @@ async fn sync_files_reports_cached_metadata_only_and_filtered_files() {
     }
     let configured = config(PrefetchMode::Selected, &[]);
     let target = crate::mirror::selection::target(&configured, &fixture.state.serving, "pypi").unwrap();
-    let mut selection = Selection {
+    let mut selection = one_project_selection(false);
+    let detail = artifact_detail("https://example.test");
+    let (output, counts) = collect_files(&fixture.state.serving, &target, &selection, &detail).await;
+    assert_eq!(
+        reported_sizes(&output, "cached"),
+        [
+            ("metadata", "demo-1.0-py3-none-any.whl.metadata", "8"),
+            ("file", "demo-1.0-py3-none-any.whl", "8"),
+            ("file", "demo-1.0.zip", "5"),
+        ]
+    );
+    assert_eq!(counts.skipped, 1);
+
+    selection.filters.metadata_only = true;
+    let (output, counts) = collect_files(&fixture.state.serving, &target, &selection, &detail).await;
+    assert_eq!(counts.skipped, 3);
+    assert!(output.contains("metadata-only"));
+}
+
+fn one_project_selection(metadata_only: bool) -> Selection {
+    Selection {
         projects: vec!["demo".to_owned()],
         rules: BTreeMap::new(),
         filters: ArtifactFilters {
@@ -548,50 +575,28 @@ async fn sync_files_reports_cached_metadata_only_and_filtered_files() {
             abi_tags: BTreeSet::new(),
             platform_tags: BTreeSet::new(),
             max_file_size_bytes: None,
-            metadata_only: false,
+            metadata_only,
         },
-    };
-    let detail = artifact_detail("https://example.test");
-    let mut summary = SyncSummary::default();
-    let mut output = Vec::new();
-    sync_files(
-        &mut output,
-        &fixture.state.serving,
-        &target,
-        "demo",
-        &detail,
-        &selection,
-        &mut summary,
-    )
-    .await
-    .unwrap();
-    let output = String::from_utf8(output).unwrap();
-    assert_eq!(
-        reported_sizes(&output, "cached"),
-        [
-            ("metadata", "demo-1.0-py3-none-any.whl.metadata", "8"),
-            ("file", "demo-1.0-py3-none-any.whl", "8"),
-            ("file", "demo-1.0.zip", "5"),
-        ]
-    );
-    assert_eq!(summary.skipped, 1);
+    }
+}
 
-    selection.filters.metadata_only = true;
-    let mut summary = SyncSummary::default();
-    let mut output = Vec::new();
-    sync_files(
-        &mut output,
-        &fixture.state.serving,
-        &target,
-        "demo",
-        &detail,
-        &selection,
-        &mut summary,
-    )
-    .await
-    .unwrap();
-    assert_eq!(summary.skipped, 3);
-    assert!(String::from_utf8(output).unwrap().contains("metadata-only"));
+async fn collect_files(
+    state: &Arc<peryx_driver::ServingState>,
+    target: &crate::mirror::Target,
+    selection: &Selection,
+    detail: &ProjectDetail,
+) -> (String, PrefetchCounts) {
+    let run = SyncRun {
+        state,
+        target,
+        selection,
+        transfers: Semaphore::new(2),
+        concurrency: 2,
+    };
+    let mut rows = Vec::new();
+    let mut counts = PrefetchCounts::default();
+    run.files("demo", detail, &mut rows, &mut counts).await.unwrap();
+    (String::from_utf8(rows).unwrap(), counts)
 }
 
 #[tokio::test]
@@ -632,6 +637,7 @@ async fn blob_verification_distinguishes_invalid_missing_and_present() {
                 digest_hex: &digest,
                 url: "https://example.test/demo.whl",
             },
+            &Semaphore::new(1),
         )
         .await
         .unwrap();
@@ -674,6 +680,7 @@ async fn blob_verification_reports_mismatches_and_backend_errors() {
                     digest_hex: digest.as_str(),
                     url: "https://example.test/demo.whl",
                 },
+                &Semaphore::new(1),
             )
             .await
             .unwrap(),
@@ -781,36 +788,12 @@ async fn sync_files_reports_invalid_metadata_and_artifact_digests() {
         versions: vec!["1.0".to_owned()],
         files: vec![file],
     };
-    let selection = Selection {
-        projects: vec!["demo".to_owned()],
-        rules: BTreeMap::<String, ProjectRule>::new(),
-        filters: ArtifactFilters {
-            include_wheels: true,
-            include_sdists: true,
-            python_tags: BTreeSet::new(),
-            abi_tags: BTreeSet::new(),
-            platform_tags: BTreeSet::new(),
-            max_file_size_bytes: None,
-            metadata_only: false,
-        },
-    };
-    let mut summary = SyncSummary::default();
-    let mut output = Vec::new();
+    let selection = one_project_selection(false);
 
-    sync_files(
-        &mut output,
-        &fixture.state.serving,
-        &target,
-        "demo",
-        &detail,
-        &selection,
-        &mut summary,
-    )
-    .await
-    .unwrap();
+    let (output, counts) = collect_files(&fixture.state.serving, &target, &selection, &detail).await;
 
-    assert_eq!(summary.failures, 2);
-    assert_eq!(String::from_utf8(output).unwrap().matches("\tfailure\t").count(), 2);
+    assert_eq!(counts.failures, 2);
+    assert_eq!(output.matches("\tfailure\t").count(), 2);
     assert!(
         sync_metadata(&fixture.state.serving, &target, "demo.metadata", "bad", &"a".repeat(64),)
             .await
@@ -881,4 +864,240 @@ fn reported_sizes<'output>(output: &'output str, status: &str) -> Vec<(&'output 
             (cells.get(7) == Some(&status)).then(|| (cells[0], cells[3], cells[6]))
         })
         .collect()
+}
+
+#[derive(Default)]
+struct InFlight {
+    current: usize,
+    peak: usize,
+}
+
+impl InFlight {
+    fn enter(&mut self) {
+        self.current += 1;
+        self.peak = self.peak.max(self.current);
+    }
+
+    const fn leave(&mut self) {
+        self.current -= 1;
+    }
+}
+
+/// The parts of an upstream request the fixtures answer on: the artifact probe peryx sends before a
+/// transfer is a `HEAD` and a one-byte ranged `GET`, and neither is the transfer being counted.
+struct UpstreamRequest {
+    method: String,
+    path: String,
+    ranged: bool,
+}
+
+impl UpstreamRequest {
+    fn is_transfer(&self) -> bool {
+        self.method == "GET" && !self.ranged
+    }
+}
+
+async fn read_request(connection: &mut TcpStream) -> UpstreamRequest {
+    let mut request = Vec::new();
+    while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+        let mut chunk = [0; 1024];
+        let read = connection.read(&mut chunk).await.unwrap();
+        assert_ne!(read, 0, "the request ended before its headers");
+        request.extend_from_slice(&chunk[..read]);
+    }
+    let head = String::from_utf8_lossy(&request).to_ascii_lowercase();
+    let mut line = head.split_whitespace();
+    UpstreamRequest {
+        method: line.next().unwrap().to_ascii_uppercase(),
+        path: line.next().unwrap().to_owned(),
+        ranged: head.contains("\r\nrange:"),
+    }
+}
+
+async fn write_response(connection: &mut TcpStream, request: &UpstreamRequest, content_type: &str, body: &[u8]) {
+    let head = format!(
+        "HTTP/1.1 200 OK\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+        body.len()
+    );
+    connection.write_all(head.as_bytes()).await.unwrap();
+    if request.method != "HEAD" {
+        connection.write_all(body).await.unwrap();
+    }
+}
+
+/// Parks a transfer until a ceiling's worth of them are held together, counting the overlap. A run
+/// that transferred one at a time would never fill the barrier, and one that ignored the ceiling
+/// would park more than the barrier releases.
+async fn hold_at_the_ceiling(gate: &Barrier, observed: &Mutex<InFlight>) {
+    observed.lock().unwrap().enter();
+    gate.wait().await;
+    observed.lock().unwrap().leave();
+}
+
+async fn hold_project_page(mut connection: TcpStream, gate: Arc<Barrier>, observed: Arc<Mutex<InFlight>>) {
+    let request = read_request(&mut connection).await;
+    let project = request.path.trim_start_matches("/simple/").trim_end_matches('/');
+    let page = format!(r#"{{"meta":{{"api-version":"1.4"}},"versions":[],"name":"{project}","files":[]}}"#);
+    hold_at_the_ceiling(&gate, &observed).await;
+    write_response(&mut connection, &request, SIMPLE_JSON, page.as_bytes()).await;
+}
+
+async fn hold_artifact(
+    mut connection: TcpStream,
+    gate: Arc<Barrier>,
+    observed: Arc<Mutex<InFlight>>,
+    page: Arc<String>,
+) {
+    let request = read_request(&mut connection).await;
+    let Some(number) = request.path.strip_prefix("/files/") else {
+        write_response(&mut connection, &request, SIMPLE_JSON, page.as_bytes()).await;
+        return;
+    };
+    let body = artifact_body(number.parse().unwrap());
+    if request.is_transfer() {
+        hold_at_the_ceiling(&gate, &observed).await;
+    }
+    write_response(&mut connection, &request, "application/octet-stream", body.as_bytes()).await;
+}
+
+/// Serves `listener` for as long as `run` needs it, so the fixture leaves no accept loop behind.
+async fn serve_until_done<H, F>(
+    listener: TcpListener,
+    run: impl Future<Output = anyhow::Result<()>>,
+    handle: H,
+) -> anyhow::Result<()>
+where
+    H: Fn(TcpStream) -> F,
+    F: Future<Output = ()> + Send + 'static,
+{
+    let mut run = Box::pin(run);
+    loop {
+        tokio::select! {
+            accepted = listener.accept() => {
+                tokio::spawn(handle(accepted.unwrap().0));
+            }
+            outcome = &mut run => return outcome,
+        }
+    }
+}
+
+fn artifact_body(number: usize) -> String {
+    format!("artifact-{number}")
+}
+
+fn page_rows(output: &str) -> Vec<&str> {
+    output
+        .lines()
+        .filter(|line| line.starts_with("page\t"))
+        .map(|line| line.split('\t').nth(2).unwrap())
+        .collect()
+}
+
+#[rstest]
+#[case::index_ceiling(Some(3), 3)]
+#[case::default_ceiling(None, DEFAULT_PREFETCH_CONCURRENCY)]
+#[tokio::test]
+async fn sync_overlaps_project_pages_up_to_the_upstream_ceiling(
+    #[case] configured: Option<usize>,
+    #[case] ceiling: usize,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/simple/", listener.local_addr().unwrap());
+    let fixture = test_support::limited_state(vec![cached_index(&base, false)], configured);
+    let projects = (0..ceiling * 3)
+        .map(|slot| format!("demo{slot:03}"))
+        .collect::<Vec<_>>();
+    let selected = projects.iter().map(String::as_str).collect::<Vec<_>>();
+    let gate = Arc::new(Barrier::new(ceiling));
+    let observed = Arc::new(Mutex::new(InFlight::default()));
+    let mut output = Vec::new();
+
+    serve_until_done(
+        listener,
+        pypi_sync(
+            &config(PrefetchMode::Selected, &selected),
+            &fixture.state,
+            "pypi",
+            &options(),
+            &mut output,
+        ),
+        |connection| hold_project_page(connection, Arc::clone(&gate), Arc::clone(&observed)),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(observed.lock().unwrap().peak, ceiling);
+    let output = String::from_utf8(output).unwrap();
+    assert_eq!(page_rows(&output), selected);
+    assert!(output.contains(&format!("packages_seen\t\t\t{}\tpackages_seen", ceiling * 3)));
+}
+
+#[tokio::test]
+async fn sync_overlaps_artifact_transfers_up_to_the_upstream_ceiling() {
+    const CEILING: usize = 3;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let fixture = test_support::limited_state(
+        vec![cached_index(&format!("http://{address}/simple/"), false)],
+        Some(CEILING),
+    );
+    let files = (0..CEILING * 3)
+        .map(|slot| {
+            let body = artifact_body(slot);
+            File {
+                filename: format!("demo-1.{slot}-py3-none-any.whl"),
+                url: format!("http://{address}/files/{slot}"),
+                hashes: BTreeMap::from([("sha256".to_owned(), Digest::of(body.as_bytes()).as_str().to_owned())]),
+                requires_python: None,
+                size: Some(body.len() as u64),
+                upload_time: None,
+                yanked: Yanked::No,
+                core_metadata: CoreMetadata::Absent,
+                dist_info_metadata: CoreMetadata::Absent,
+                gpg_sig: None,
+                provenance: Provenance::Absent,
+            }
+        })
+        .collect::<Vec<_>>();
+    let page = Arc::new(to_json(&ProjectDetail {
+        meta: Meta::default(),
+        name: "demo".to_owned(),
+        versions: (0..CEILING * 3).map(|slot| format!("1.{slot}")).collect(),
+        files,
+    }));
+    let gate = Arc::new(Barrier::new(CEILING));
+    let observed = Arc::new(Mutex::new(InFlight::default()));
+    let mut output = Vec::new();
+
+    serve_until_done(
+        listener,
+        pypi_sync(
+            &config(PrefetchMode::Selected, &["demo"]),
+            &fixture.state,
+            "pypi",
+            &options(),
+            &mut output,
+        ),
+        |connection| hold_artifact(connection, Arc::clone(&gate), Arc::clone(&observed), Arc::clone(&page)),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(observed.lock().unwrap().peak, CEILING);
+    let output = String::from_utf8(output).unwrap();
+    assert!(output.contains(&format!("files_downloaded\t\t\t{}\tfiles_downloaded", CEILING * 3)));
+    assert_eq!(
+        output.matches("\tdownloaded\t").count(),
+        CEILING * 3,
+        "every selected artifact is transferred once"
+    );
+}
+
+#[tokio::test]
+async fn an_index_without_a_configured_ceiling_falls_back_to_the_prefetch_default() {
+    let fixture = test_support::state(vec![cached_index("https://example.test/simple/", true)]);
+    let limits = &fixture.state.serving.upstream_limits;
+
+    assert_eq!(upstream_ceiling(limits, "pypi"), DEFAULT_PREFETCH_CONCURRENCY);
+    assert_eq!(upstream_ceiling(limits, "absent"), DEFAULT_PREFETCH_CONCURRENCY);
 }

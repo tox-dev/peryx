@@ -390,6 +390,9 @@ process admits 1024 upstream fetches that are active or queued across every inde
 refused with `429 Too Many Requests` before it joins the queue, because an admitted waiter retains its whole request for
 the 30-second wait horizon. An uncapped index never queues and so spends no admission.
 
+`peryx mirror` takes the same cap: a `plan` or `sync` run keeps that many upstream fetches in flight, counting project
+pages and artifact transfers together. An uncapped index runs eight.
+
 A `route` is a raw URL path prefix. It must be one or more non-empty path segments separated by `/`; each segment may
 contain only ASCII letters, digits, `-`, `.`, `_`, and `~`. Startup rejects routes with a leading or trailing `/`, empty
 segments, percent encoding, traversal segments, control characters, spaces, and routes whose first segment is reserved
