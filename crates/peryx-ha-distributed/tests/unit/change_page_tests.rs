@@ -10,11 +10,14 @@ use peryx_storage::blob::BlobStorage;
 use peryx_storage::meta::{MetaError, MetaStore};
 use tower::ServiceExt as _;
 
-use super::{ChangePageBody, build_change_page, change_page_response};
+use super::{ChangePageBody, MAX_CHANGE_PAGE_BYTES, build_change_page, change_page_response};
 use crate::protocol::{Change, ChangePage, PROTOCOL_VERSION};
 use crate::{DEFAULT_MAX_CONCURRENT_BLOB_STREAMS, follower_router_with_change_pages, primary_router_with_limits};
 
 const TOKEN: &str = "replica-secret";
+
+/// Two records this size cannot share a page under [`MAX_CHANGE_PAGE_BYTES`]; one leaves room.
+const HALF_PAGE_EVENT: usize = 2 * 1024 * 1024;
 
 #[tokio::test]
 async fn test_a_page_carries_the_records_after_its_cursor() {
@@ -33,6 +36,52 @@ async fn test_a_page_carries_the_records_after_its_cursor() {
                 current_serial: 3,
                 changes: vec![change(2, b"two"), change(3, b"three"),],
             }
+        )
+    );
+}
+
+#[tokio::test]
+async fn test_a_page_stops_before_the_record_that_would_pass_the_byte_bound() {
+    let event = vec![b'x'; HALF_PAGE_EVENT];
+    let (_dir, meta) = journaled(&[&event, &event]);
+
+    let (status, body) = served(build_change_page(&meta, "primary-a", 0, 10, &ScanCancellation::new())).await;
+
+    let within_bound = body.len() as u64 <= MAX_CHANGE_PAGE_BYTES;
+    let page: ChangePage = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        (status, within_bound, page.current_serial, serials(&page)),
+        (StatusCode::OK, true, 2, vec![1])
+    );
+}
+
+#[tokio::test]
+async fn test_a_truncated_page_resumes_at_the_record_it_stopped_before() {
+    let event = vec![b'x'; HALF_PAGE_EVENT];
+    let (_dir, meta) = journaled(&[&event, &event]);
+
+    let (status, body) = served(build_change_page(&meta, "primary-a", 1, 10, &ScanCancellation::new())).await;
+
+    let page: ChangePage = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        (status, page.current_serial, serials(&page)),
+        (StatusCode::OK, 2, vec![2])
+    );
+}
+
+#[tokio::test]
+async fn test_a_record_that_fills_a_page_alone_is_named_instead_of_served() {
+    let event = vec![b'x'; usize::try_from(MAX_CHANGE_PAGE_BYTES).unwrap()];
+    let (_dir, meta) = journaled(&[&event]);
+    let encoded = serde_json::to_vec(&change(1, &event)).unwrap().len();
+
+    let (status, body) = served(build_change_page(&meta, "primary-a", 0, 10, &ScanCancellation::new())).await;
+
+    assert_eq!(
+        (status, String::from_utf8(body).unwrap()),
+        (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!("journal record 1 encodes to {encoded} bytes; a change page holds {MAX_CHANGE_PAGE_BYTES}")
         )
     );
 }
@@ -172,6 +221,10 @@ async fn test_a_saturated_change_feed_still_serves_an_artifact() {
     saturated.release().await;
 
     assert_eq!((status, body.as_ref()), (StatusCode::OK, b"artifact bytes".as_slice()));
+}
+
+fn serials(page: &ChangePage) -> Vec<u64> {
+    page.changes.iter().map(|change| change.serial).collect()
 }
 
 fn change(serial: u64, event: &[u8]) -> Change {

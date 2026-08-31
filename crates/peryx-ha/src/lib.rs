@@ -1112,6 +1112,8 @@ pub enum TransportError {
     Malformed,
     #[error("batch frame is {actual} bytes; the transport caps a frame at {limit}")]
     FrameTooLarge { limit: u64, actual: u64 },
+    #[error("peer cannot fit change {serial} in a frame of {limit} bytes, so no request size advances")]
+    RecordTooLarge { serial: u64, limit: u64 },
     #[error("batch contains {actual} operations; the operation limit is {limit}")]
     TooManyOperations { limit: usize, actual: usize },
     #[error("peer advertised source {actual:?}; the frontier follows {expected:?}")]
@@ -1154,6 +1156,7 @@ impl TransportError {
             Self::BadStatus { .. } => Some("bad_status"),
             Self::Malformed => Some("malformed"),
             Self::FrameTooLarge { .. } => Some("frame_too_large"),
+            Self::RecordTooLarge { .. } => Some("record_too_large"),
             Self::TooManyOperations { .. } => Some("too_many_operations"),
             Self::SourceChanged { .. } => Some("source_changed"),
             Self::FrontierGap { .. } => Some("frontier_gap"),

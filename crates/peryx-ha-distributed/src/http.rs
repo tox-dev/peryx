@@ -22,8 +22,8 @@ use tokio_util::io::ReaderStream;
 
 use crate::blob_http::{BLOB_MISS_HEADER, BLOB_MISS_VALUE};
 use crate::change_page::{
-    ChangePageBody, DEFAULT_MAX_CONCURRENT_CHANGE_PAGES, build_change_page, change_page_response,
-    change_pages_at_capacity,
+    ChangePageBody, DEFAULT_MAX_CONCURRENT_CHANGE_PAGES, MAX_CHANGE_PAGE_BYTES, build_change_page,
+    change_page_response, change_pages_at_capacity,
 };
 use crate::protocol::{ChangePage, Primary};
 use crate::replica::Replica;
@@ -35,19 +35,6 @@ const CHANGES_PATH: &str = "+replication/v1/changes";
 const USER_AGENT: &str = concat!("peryx-ha-distributed/", env!("CARGO_PKG_VERSION"));
 
 pub const DEFAULT_MAX_CHANGE_PAGE_SIZE: usize = 1_000;
-
-/// A 32 KiB budget covers a base64-encoded 24 KiB event and its JSON metadata. This per-change bound
-/// lets followers cap a page before decoding variable-length fields.
-const MAX_CHANGE_ENCODED_BYTES: u64 = 32 * 1024;
-
-/// Headroom for page fields and JSON framing outside the change array.
-const CHANGE_PAGE_ENVELOPE_BYTES: u64 = 4 * 1024;
-
-/// [`HttpPrimary::changes`] buffers JSON before validating record count, so it must cap fixed-length
-/// and chunked bodies separately. The bound covers a full page at the per-change limit plus JSON
-/// framing.
-pub const DEFAULT_MAX_CHANGE_PAGE_BYTES: u64 =
-    MAX_CHANGE_ENCODED_BYTES * DEFAULT_MAX_CHANGE_PAGE_SIZE as u64 + CHANGE_PAGE_ENVELOPE_BYTES;
 
 /// Bounds file handles, sockets, and buffers held by slow artifact readers. Requests receive `503`
 /// while all slots are occupied; completion, cancellation, and disconnect release a slot.
@@ -96,7 +83,7 @@ impl HttpPrimary {
     /// # Panics
     /// Panics if reqwest rejects the static user agent.
     pub fn new(base: &str, token: impl Into<String>) -> Result<Self, HttpPrimaryError> {
-        Self::build(base, token, DEFAULT_MAX_CHANGE_PAGE_BYTES)
+        Self::build(base, token, MAX_CHANGE_PAGE_BYTES)
     }
 
     fn build(base: &str, token: impl Into<String>, max_page_bytes: u64) -> Result<Self, HttpPrimaryError> {

@@ -159,6 +159,18 @@ async fn test_fetch_applies_the_streaming_byte_cap_before_decode() {
 }
 
 #[tokio::test]
+async fn test_fetch_names_the_record_the_writer_could_not_page() {
+    http_contract::assert_mapping(
+        http_contract::fixed_get(CHANGES_ROUTE, || {
+            (StatusCode::PAYLOAD_TOO_LARGE, "journal record 4 fills a page alone").into_response()
+        }),
+        |base| async move { transport(&base, limits(256, 4096)).fetch_batch(request(3, 10)).await },
+        Err(TransportError::RecordTooLarge { serial: 4, limit: 4096 }),
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn test_fetch_maps_a_non_page_body_to_malformed() {
     http_contract::assert_mapping(
         http_contract::fixed_get(CHANGES_ROUTE, || (StatusCode::OK, "not a change page").into_response()),

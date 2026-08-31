@@ -22,15 +22,35 @@ use crate::protocol::{Change, ChangePage, PROTOCOL_VERSION};
 /// what a node should spend on peers that are catching up, not by how many peers there are.
 pub const DEFAULT_MAX_CONCURRENT_CHANGE_PAGES: usize = 4;
 
+/// Caps the encoded bytes of one change page.
+///
+/// Every client of the change feed reads the reply under this bound and rejects a larger one whole,
+/// so a page built above it stops replication at that serial rather than costing a retry. The count
+/// limit alone does not bound it: one journal record carries every driver row its transaction
+/// touched.
+pub const MAX_CHANGE_PAGE_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Headroom for the page fields and JSON framing outside the change array.
+const CHANGE_PAGE_ENVELOPE_BYTES: u64 = 4 * 1024;
+
 /// The result of a page build, still inside the blocking worker's return value.
 pub enum ChangePageBody {
     Encoded(Vec<u8>),
+    /// The record after the cursor fills a page on its own, so no request size makes progress.
+    RecordTooLarge {
+        serial: u64,
+        bytes: u64,
+    },
     Unsynced,
     Cancelled,
     Failed,
 }
 
-/// Reads and encodes one page, stopping between records once `cancellation` is raised.
+/// Reads and encodes one page, stopping between records once `cancellation` is raised or the next
+/// record would carry the page past [`MAX_CHANGE_PAGE_BYTES`].
+///
+/// A page truncated by the byte budget still reports the snapshot's head serial, so it stays a prefix
+/// the reader resumes from instead of a short page that reads as caught up.
 pub fn build_change_page(
     meta: &MetaStore,
     source: &str,
@@ -38,17 +58,32 @@ pub fn build_change_page(
     limit: usize,
     cancellation: &ScanCancellation,
 ) -> ChangePageBody {
-    let mut changes = Vec::new();
+    let mut changes: Vec<Change> = Vec::new();
+    let mut used = CHANGE_PAGE_ENVELOPE_BYTES;
+    let mut oversized = None;
+    let mut encoded = Vec::new();
     let walked = meta.visit_journal_page(after, limit, |record| {
         if cancellation.is_cancelled() {
             return ControlFlow::Break(());
         }
-        changes.push(Change {
+        let change = Change {
             serial: record.serial,
             event: record.payload,
             metadata: record.mutations.into_iter().map(Into::into).collect(),
             blobs: record.blobs.into_iter().map(Into::into).collect(),
-        });
+        };
+        encoded.clear();
+        serde_json::to_writer(&mut encoded, &change).expect("a stored journal record serializes");
+        let bytes = encoded.len() as u64;
+        // One more byte for the separator this change needs once it joins the array.
+        if used + bytes + 1 > MAX_CHANGE_PAGE_BYTES {
+            if changes.is_empty() {
+                oversized = Some((change.serial, bytes));
+            }
+            return ControlFlow::Break(());
+        }
+        used += bytes + 1;
+        changes.push(change);
         ControlFlow::Continue(())
     });
     let Ok(current_serial) = walked else {
@@ -56,6 +91,9 @@ pub fn build_change_page(
     };
     if cancellation.is_cancelled() {
         return ChangePageBody::Cancelled;
+    }
+    if let Some((serial, bytes)) = oversized {
+        return ChangePageBody::RecordTooLarge { serial, bytes };
     }
     let page = ChangePage {
         version: PROTOCOL_VERSION,
@@ -70,6 +108,11 @@ pub fn build_change_page(
 pub fn change_page_response(built: Result<ChangePageBody, JoinError>) -> Response {
     match built {
         Ok(ChangePageBody::Encoded(body)) => ([(header::CONTENT_TYPE, "application/json")], body).into_response(),
+        Ok(ChangePageBody::RecordTooLarge { serial, bytes }) => (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!("journal record {serial} encodes to {bytes} bytes; a change page holds {MAX_CHANGE_PAGE_BYTES}"),
+        )
+            .into_response(),
         Ok(ChangePageBody::Unsynced) => {
             (StatusCode::SERVICE_UNAVAILABLE, "replica has not synced a source yet").into_response()
         }

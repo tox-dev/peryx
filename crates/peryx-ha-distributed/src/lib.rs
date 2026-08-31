@@ -126,7 +126,7 @@ pub use blob_pull::{
 pub use blob_reassembly::{BlobPiece, ReassemblyError, reassemble_verified};
 pub use blob_routing::RoutingBlobTransport;
 pub use byte_ack::{ByteAckDecision, decide_byte_ack};
-pub use change_page::DEFAULT_MAX_CONCURRENT_CHANGE_PAGES;
+pub use change_page::{DEFAULT_MAX_CONCURRENT_CHANGE_PAGES, MAX_CHANGE_PAGE_BYTES};
 pub use channel::{BoundedChannel, BufferOutcome, ChannelFull, buffer_batch};
 pub use circuit::{CircuitBreaker, CircuitClock, CircuitConfig, CircuitPermit, DEFAULT_CIRCUIT};
 pub use completeness::{ProducerCoverage, assess};
@@ -147,8 +147,8 @@ pub use error::SyncError;
 pub use failover::{Candidate, Failover, FailoverPolicy};
 pub use filesystem_ack::{FilesystemAck, ReceiptOutcome};
 pub use http::{
-    DEFAULT_MAX_CHANGE_PAGE_BYTES, DEFAULT_MAX_CHANGE_PAGE_SIZE, DEFAULT_MAX_CONCURRENT_BLOB_STREAMS, HttpPrimary,
-    HttpPrimaryError, PrimaryHttpConfigError, follower_router, follower_router_with_change_pages, primary_router,
+    DEFAULT_MAX_CHANGE_PAGE_SIZE, DEFAULT_MAX_CONCURRENT_BLOB_STREAMS, HttpPrimary, HttpPrimaryError,
+    PrimaryHttpConfigError, follower_router, follower_router_with_change_pages, primary_router,
     primary_router_with_limits,
 };
 pub use ingress_intent::{IngressIntent, IntentKey, IntentLedger, IntentState, StageOutcome, TransitionOutcome};

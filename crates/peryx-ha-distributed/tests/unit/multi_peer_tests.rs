@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::num::{NonZeroU32, NonZeroUsize};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::response::IntoResponse as _;
@@ -11,7 +11,9 @@ use axum::{Json, Router, http::StatusCode};
 use crate::HttpPeerTransport;
 use crate::backoff::ReconnectPolicy;
 use crate::multi_peer::{DEFAULT_SET_LIMITS, MemberOutcome, PeerSet, RoundReport, SetLimits};
-use crate::peer::{LoopbackPeer, LoopbackTransport, PeerFault, TransferLimits};
+use crate::peer::{
+    BatchFrame, BatchRequest, LoopbackPeer, LoopbackTransport, PeerFault, PeerTransport, TransferLimits, TransportError,
+};
 use crate::protocol::{Change, ChangePage, PROTOCOL_VERSION};
 use crate::support::TestServer;
 
@@ -148,6 +150,39 @@ async fn http_peer(router: Router, request_size: usize, max_attempts: u32) -> (T
         0,
     );
     (server, set)
+}
+
+/// Frames a page only when the request asks for at most `fits` records, so a peer makes progress
+/// only once it asks for less.
+struct FrameBoundPeer {
+    fits: usize,
+    asked: Arc<Mutex<Vec<usize>>>,
+}
+
+#[async_trait::async_trait]
+impl PeerTransport for FrameBoundPeer {
+    async fn fetch_batch(&self, request: BatchRequest) -> Result<BatchFrame, TransportError> {
+        let asked = request.max_operations.get();
+        self.asked.lock().unwrap().push(asked);
+        if asked > self.fits {
+            return Err(TransportError::FrameTooLarge { limit: 64, actual: 65 });
+        }
+        Ok(BatchFrame::new(change_page(1, 1)))
+    }
+}
+
+fn frame_bound_set(fits: usize, request_size: usize) -> (PeerSet<FrameBoundPeer>, Arc<Mutex<Vec<usize>>>) {
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let mut set = PeerSet::new(limits(1, request_size, 8, Duration::ZERO), policy(10));
+    set.join(
+        "primary",
+        FrameBoundPeer {
+            fits,
+            asked: Arc::clone(&asked),
+        },
+        0,
+    );
+    (set, asked)
 }
 
 fn change_page(current_serial: u64, change_serial: u64) -> ChangePage {
@@ -408,6 +443,56 @@ async fn test_a_backed_off_peer_is_due_again_only_after_its_delay() {
             buffered: 2,
             through: 2,
             caught_up: true,
+        }
+    );
+}
+
+#[tokio::test]
+async fn test_an_overrunning_frame_is_retried_with_a_smaller_request() {
+    let (mut set, asked) = frame_bound_set(1, 4);
+
+    let mut outcomes = Vec::new();
+    for _ in 0..3 {
+        outcomes.push(set.advance(Duration::ZERO).await.outcomes[0].clone());
+    }
+
+    assert_eq!(asked.lock().unwrap().as_slice(), [4, 2, 1]);
+    assert_eq!(
+        outcomes.last(),
+        Some(&MemberOutcome::Progressed {
+            source: "primary".to_owned(),
+            buffered: 1,
+            through: 1,
+            caught_up: true,
+        })
+    );
+}
+
+#[tokio::test]
+async fn test_a_page_that_frames_restores_the_full_request_size() {
+    let (mut set, asked) = frame_bound_set(1, 4);
+
+    for _ in 0..4 {
+        set.advance(Duration::ZERO).await;
+    }
+
+    assert_eq!(asked.lock().unwrap().as_slice(), [4, 2, 1, 4]);
+}
+
+#[tokio::test]
+async fn test_a_peer_that_cannot_frame_one_record_is_quarantined() {
+    let (mut set, asked) = frame_bound_set(0, 2);
+
+    set.advance(Duration::ZERO).await;
+    let report = set.advance(Duration::ZERO).await;
+
+    assert_eq!(asked.lock().unwrap().as_slice(), [2, 1]);
+    assert_eq!(
+        report.outcomes[0],
+        MemberOutcome::Quarantined {
+            source: "primary".to_owned(),
+            reason: "frame_too_large",
+            delay: Duration::from_secs(30),
         }
     );
 }

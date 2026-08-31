@@ -4,6 +4,7 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 pub use peryx_ha::TransportError;
 
+use crate::change_page::MAX_CHANGE_PAGE_BYTES;
 use crate::http::constant_time_eq;
 use crate::protocol::{Change, ChangePage, PROTOCOL_VERSION};
 
@@ -13,9 +14,11 @@ pub struct TransferLimits {
     pub max_encoded_bytes: NonZeroU64,
 }
 
+/// The change feed's byte bound is the writer's own, so a page it builds is never one this client
+/// rejects whole.
 pub const DEFAULT_TRANSFER_LIMITS: TransferLimits = TransferLimits {
     max_operations: NonZeroUsize::new(256).expect("256 is non-zero"),
-    max_encoded_bytes: NonZeroU64::new(4 * 1024 * 1024).expect("4 MiB is non-zero"),
+    max_encoded_bytes: NonZeroU64::new(MAX_CHANGE_PAGE_BYTES).expect("the change page bound is non-zero"),
 };
 
 impl Default for TransferLimits {

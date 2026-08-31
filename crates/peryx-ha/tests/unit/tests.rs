@@ -666,6 +666,10 @@ fn control_error_derives_distinguish_payloads(#[case] value: ControlError, #[cas
     TransportError::TooManyOperations { limit: 1, actual: 3 }
 )]
 #[case(
+    TransportError::RecordTooLarge { serial: 4, limit: 2 },
+    TransportError::RecordTooLarge { serial: 5, limit: 2 }
+)]
+#[case(
     TransportError::SourceChanged { expected: "one".into(), actual: "two".into() },
     TransportError::SourceChanged { expected: "one".into(), actual: "three".into() }
 )]
@@ -942,6 +946,7 @@ fn durability_policy_name_contract(#[case] policy: DurabilityPolicy, #[case] exp
 #[case(TransportError::Malformed, false, Some("malformed"))]
 #[case(TransportError::FrameTooLarge { limit: 1, actual: 2 }, false, Some("frame_too_large"))]
 #[case(TransportError::TooManyOperations { limit: 1, actual: 2 }, false, Some("too_many_operations"))]
+#[case(TransportError::RecordTooLarge { serial: 4, limit: 2 }, false, Some("record_too_large"))]
 #[case(TransportError::SourceChanged { expected: "a".into(), actual: "b".into() }, false, Some("source_changed"))]
 #[case(TransportError::FrontierGap { expected: 1, actual: 2 }, false, Some("frontier_gap"))]
 #[case(TransportError::EmptyBatch { frontier: 2, after: 1 }, false, Some("empty_batch"))]

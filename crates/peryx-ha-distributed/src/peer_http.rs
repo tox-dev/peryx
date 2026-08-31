@@ -6,7 +6,7 @@ use std::fmt;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use reqwest::Url;
+use reqwest::{StatusCode, Url};
 
 use crate::client_transport::{
     HttpClientConfigError, HttpClientTransport, replication_error, require_replication_success,
@@ -78,8 +78,16 @@ impl PeerTransport for HttpPeerTransport {
             .append_pair("after", &request.after.to_string())
             .append_pair("limit", &request.max_operations.get().to_string());
         let response = self.http.send(self.http.get(url)).await.map_err(replication_error)?;
-        require_replication_success(response.status())?;
         let cap = self.limits.max_encoded_bytes.get();
+        // The writer refuses a page it cannot build under its byte bound, and the record it stopped
+        // at is the one after the cursor.
+        if response.status() == StatusCode::PAYLOAD_TOO_LARGE {
+            return Err(TransportError::RecordTooLarge {
+                serial: request.after + 1,
+                limit: cap,
+            });
+        }
+        require_replication_success(response.status())?;
         let body = self.http.read_replication_body(response, cap, true).await?;
         let page: ChangePage = serde_json::from_slice(&body).map_err(|_| TransportError::Malformed)?;
         validate_batch_size(request.max_operations, &page)?;

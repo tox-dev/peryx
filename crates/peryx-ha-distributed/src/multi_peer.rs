@@ -11,7 +11,7 @@ use futures_util::future::join_all;
 
 use crate::backoff::{ReconnectPolicy, Retry};
 use crate::channel::{BoundedChannel, buffer_batch};
-use crate::peer::{BatchRequest, PeerTransport, validate_contiguous};
+use crate::peer::{BatchRequest, PeerTransport, TransportError, validate_contiguous};
 use crate::protocol::Change;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,6 +101,9 @@ struct Member<T: PeerTransport> {
     frontier: u64,
     attempt: u32,
     channel: BoundedChannel,
+    /// Shrinks when a reply overruns the frame bound so the peer is asked for less before it is
+    /// given up on, and returns to the roster's size once a page fits.
+    request_size: NonZeroUsize,
     batch: Option<BatchIdentity>,
     health: Health,
     /// Prevents a fetch between drain and commit from replaying drained changes at the old frontier.
@@ -196,6 +199,7 @@ impl<T: PeerTransport> PeerSet<T> {
             frontier,
             attempt: 0,
             channel: BoundedChannel::new(self.limits.per_peer_budget),
+            request_size: self.limits.request_size,
             batch: None,
             health: Health::Ready,
             draining: false,
@@ -295,7 +299,7 @@ impl<T: PeerTransport> PeerSet<T> {
             let member = &self.members[index];
             member.transport.fetch_batch(BatchRequest {
                 after: member.next_serial(),
-                max_operations: self.limits.request_size,
+                max_operations: member.request_size,
             })
         });
         let results = join_all(fetches).await;
@@ -346,12 +350,19 @@ impl<T: PeerTransport> PeerSet<T> {
     fn settle(
         &mut self,
         index: usize,
-        result: Result<crate::peer::BatchFrame, crate::peer::TransportError>,
+        result: Result<crate::peer::BatchFrame, TransportError>,
         now: Duration,
     ) -> MemberOutcome {
         let after = self.members[index].next_serial();
         let frame = match result {
             Ok(frame) => frame,
+            // A frame the reader could not hold is a request-size problem, not a peer fault, so the
+            // peer is asked for fewer records until one record is all that is left to ask for.
+            Err(error @ TransportError::FrameTooLarge { .. }) => {
+                return self
+                    .halve_request(index, now)
+                    .unwrap_or_else(|| self.back_off(index, &error, now));
+            }
             Err(error) => return self.back_off(index, &error, now),
         };
         let page = frame.page();
@@ -366,7 +377,7 @@ impl<T: PeerTransport> PeerSet<T> {
         {
             return self.back_off(
                 index,
-                &crate::peer::TransportError::SourceChanged {
+                &TransportError::SourceChanged {
                     expected: source.clone(),
                     actual: page.source.clone(),
                 },
@@ -382,6 +393,7 @@ impl<T: PeerTransport> PeerSet<T> {
         let member = &mut self.members[index];
         member.attempt = 0;
         member.health = Health::Ready;
+        member.request_size = self.limits.request_size;
         let outcome = buffer_batch(&mut member.channel, &page.changes);
         if outcome.accepted > 0 && member.batch.is_none() {
             member.batch = Some(BatchIdentity {
@@ -414,7 +426,18 @@ impl<T: PeerTransport> PeerSet<T> {
         }
     }
 
-    fn back_off(&mut self, index: usize, error: &crate::peer::TransportError, now: Duration) -> MemberOutcome {
+    /// Halves this peer's next request, or returns `None` when it already asks for one record.
+    fn halve_request(&mut self, index: usize, now: Duration) -> Option<MemberOutcome> {
+        let member = &mut self.members[index];
+        let smaller = NonZeroUsize::new(member.request_size.get() / 2)?;
+        member.request_size = smaller;
+        let source = member.source.clone();
+        let delay = jitter(&source, member.attempt, self.limits.jitter);
+        member.health = Health::BackingOff { until: now + delay };
+        Some(MemberOutcome::RetryAfter { source, delay })
+    }
+
+    fn back_off(&mut self, index: usize, error: &TransportError, now: Duration) -> MemberOutcome {
         let member = &mut self.members[index];
         member.attempt = member.attempt.saturating_add(1);
         let source = member.source.clone();

@@ -172,6 +172,14 @@ opens the store, so a fan-in of catching-up peers costs a refusal rather than a 
 already started keeps its slot until it returns, because a started blocking task cannot be cancelled; a peer that
 disconnects instead stops that build at the next record boundary rather than paying for the rest of the page.
 
+A page is bounded in bytes as well as in records. The node stops adding records once the next one would carry the
+encoded page past 4 MiB and reports the journal head serial for the records it did include, so a short page reads as a
+prefix and the peer resumes from its last delivered serial rather than treating the page as caught up. Every client of
+the feed reads a reply under that same bound, so a page the node builds is never one its peers reject whole. A record
+that fills a page on its own fits no request size: the node answers `413 Content Too Large` naming that record's serial
+and its encoded length, and the peer reports `record_too_large` instead of stalling with no diagnosis. A peer reading
+under a tighter bound than the writer builds under halves its request and asks again before it gives up on the node.
+
 ## Peer artifact byte endpoint
 
 A `dc` or `ha` writer serves artifact bytes to authenticated peers at `GET /+replication/v1/blobs/sha256/{digest}`. The
