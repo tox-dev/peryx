@@ -104,10 +104,19 @@ async fn test_filesystem_storage_stages_resumes_and_finishes_an_upload() {
     assert_eq!(storage.stage_upload_chunk("s", 9, b"content").await.unwrap(), 16);
     assert_eq!(storage.staged_upload_len("s").await.unwrap(), Some(16));
 
-    storage
+    let receipt = storage
         .finish_upload("s", &Digest::of(b"streamed content"))
         .await
         .unwrap();
+    assert_eq!(
+        receipt,
+        PlacementReceipt {
+            digest: Digest::of(b"streamed content"),
+            size: 16,
+            durability: DurabilityCapabilities::FILESYSTEM,
+            evidence: WriteEvidence::NodeLocal,
+        }
+    );
     assert_eq!(storage.staged_upload_len("s").await.unwrap(), None);
     assert_eq!(
         storage
@@ -118,6 +127,21 @@ async fn test_filesystem_storage_stages_resumes_and_finishes_an_upload() {
     );
 
     storage.discard_upload("s").await.unwrap();
+}
+
+/// A write that adds no bytes still has to acknowledge, and the evidence it presents is what the
+/// backend proves about the object already at that address.
+#[test]
+fn test_resident_evidence_reports_what_the_backend_proves_about_an_object_already_there() {
+    let dir = tempfile::tempdir().unwrap();
+
+    assert_eq!(
+        (
+            BlobStorage::filesystem(dir.path().join("blobs")).resident_evidence(),
+            dummy_s3(dir.path()).resident_evidence(),
+        ),
+        (WriteEvidence::NodeLocal, WriteEvidence::ObjectStoreVerified)
+    );
 }
 
 #[tokio::test]

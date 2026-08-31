@@ -1,9 +1,10 @@
 use super::blobs::{
-    BlobCommitContext, authority_moved, blob_created, commit_blob, commit_staged_upload, release_reservation,
-    upload_epoch,
+    BlobCommitContext, authority_moved, blob_created, blob_operation, commit_blob, commit_staged_upload,
+    publish_acknowledged, release_reservation, upload_epoch,
 };
 use super::*;
 use crate::error::{ErrorCode, error_response};
+use crate::registry::acknowledge::BlobAck;
 use crate::registry::authority::{EpochCommit, commit_epoch};
 use crate::store::{self};
 use crate::upload_session::UploadRecord;
@@ -13,6 +14,8 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
 use http_body::Body as _;
 use peryx_driver::ServingState;
+use peryx_storage::blob::Digest;
+use peryx_storage::meta::OperationResult;
 
 impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> {
     /// Begin a blob upload: cross-repo mount when the blob is already stored, a monolithic write when
@@ -42,48 +45,19 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
                 && let Some(metadata) = state.blobs.head(&storage).await.map_err(ServeError::from)?
                 && self.blob_authorized(state, source_index, source_repo, mount)?
             {
-                if policy_blocks(index, PolicyAction::Upload, &repo) {
-                    return Ok(error_response(ErrorCode::Denied, "image name is blocked by policy"));
-                }
-                if let Some(response) = policy_size_denial(index, &repo, metadata.bytes) {
-                    return Ok(response);
-                }
-                let fence = match upload_epoch(state, &repo).await {
-                    Ok(fence) => fence,
-                    Err(response) => return Ok(response),
-                };
-                // A mount publishes an existing blob into this repository without a transfer, so it
-                // reserves the mounted digest's bytes exactly as an upload of them would; a digest
-                // already served here is not reserved again.
-                let reservation = if store::blob_is_member(&state.meta, &index.name, &repo, mount)? {
-                    None
-                } else {
-                    match crate::quota::admit_push(state, index, &repo, None, mount, metadata.bytes)? {
-                        crate::quota::Admission::Rejected(response) => return Ok(response),
-                        crate::quota::Admission::Unmetered => None,
-                        crate::quota::Admission::Reserved(record) => Some(record),
-                    }
-                };
-                let mutation = commit_epoch(state, &repo, fence, |lease| {
-                    lease.guard()?;
-                    crate::quota::commit_blob_membership(
-                        &state.meta,
-                        &index.name,
-                        &repo,
+                return mount_blob(
+                    state,
+                    MountRequest {
+                        index,
+                        repo: &repo,
+                        name,
                         mount,
-                        reservation.clone(),
-                        None,
+                        storage: &storage,
+                        bytes: metadata.bytes,
                         journal,
-                    )
-                })
-                .await?;
-                return match mutation {
-                    EpochCommit::Committed(()) => Ok(blob_created(name, mount)),
-                    EpochCommit::Fenced => {
-                        release_reservation(state, reservation)?;
-                        Ok(authority_moved())
-                    }
-                };
+                    },
+                )
+                .await;
             }
         }
         if let Some(digest) = params.get("digest") {
@@ -215,6 +189,93 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         self.session_gate.release(session);
         outcome
     }
+}
+
+struct MountRequest<'a> {
+    index: &'a Index,
+    repo: &'a str,
+    /// The repository path the client pushed to, which the created response echoes.
+    name: &'a str,
+    /// The mounted digest in its `sha256:` wire form.
+    mount: &'a str,
+    /// The same digest as the blob store addresses it.
+    storage: &'a Digest,
+    bytes: u64,
+    journal: crate::outbox::Outbox,
+}
+
+/// Publish an already-stored blob into `repo` without transferring its bytes (spec end-11).
+///
+/// A mount is a terminal write like any push: it claims an operation, records membership under the
+/// repository's authority, and answers `201` only once the configured policy proves the copy it
+/// published durable. The bytes are already resident, so the evidence it presents is what the backend
+/// proves about the object already at that address.
+async fn mount_blob(state: &ServingState, request: MountRequest<'_>) -> Result<Response, ServeError> {
+    let MountRequest {
+        index,
+        repo,
+        name,
+        mount,
+        storage,
+        bytes,
+        journal,
+    } = request;
+    if policy_blocks(index, PolicyAction::Upload, repo) {
+        return Ok(error_response(ErrorCode::Denied, "image name is blocked by policy"));
+    }
+    if let Some(response) = policy_size_denial(index, repo, bytes) {
+        return Ok(response);
+    }
+    let fence = match upload_epoch(state, repo).await {
+        Ok(fence) => fence,
+        Err(response) => return Ok(response),
+    };
+    // A mount publishes an existing blob into this repository without a transfer, so it reserves the
+    // mounted digest's bytes exactly as an upload of them would; a digest already served here is not
+    // reserved again.
+    let reservation = if store::blob_is_member(&state.meta, &index.name, repo, mount)? {
+        None
+    } else {
+        match crate::quota::admit_push(state, index, repo, None, mount, bytes)? {
+            crate::quota::Admission::Rejected(response) => return Ok(response),
+            crate::quota::Admission::Unmetered => None,
+            crate::quota::Admission::Reserved(record) => Some(record),
+        }
+    };
+    let operation = blob_operation(&index.name, repo, mount);
+    state.claim_admitted_write(&operation);
+    let mutation = commit_epoch(state, repo, fence, |lease| {
+        lease.guard()?;
+        crate::quota::commit_blob_membership(
+            &state.meta,
+            &index.name,
+            repo,
+            mount,
+            reservation.clone(),
+            None,
+            journal,
+        )
+    })
+    .await?;
+    let EpochCommit::Committed(commit) = mutation else {
+        release_reservation(state, reservation)?;
+        state.finalize_admitted_write(&operation, OperationResult::Failed, b"");
+        return Ok(authority_moved());
+    };
+    publish_acknowledged(
+        state,
+        &operation,
+        fence,
+        BlobAck {
+            repo,
+            digest: storage,
+            bytes,
+            commit,
+            evidence: state.blobs.resident_evidence(),
+        },
+        || blob_created(name, mount),
+    )
+    .await
 }
 
 async fn patch_locked(

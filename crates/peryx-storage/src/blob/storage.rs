@@ -7,7 +7,8 @@ use super::backend::filesystem_worker;
 use super::s3::S3Backend;
 use super::{
     BlobBackend, BlobCapabilities, BlobDigestPage, BlobEntry, BlobError, BlobLease, BlobMetadata, BlobOperation,
-    BlobRead, BlobScanError, BlobStaged, BlobStore, BlobWrite, Digest, DurabilityCapabilities, S3Config, StageUsage,
+    BlobRead, BlobScanError, BlobStaged, BlobStore, BlobWrite, Digest, DurabilityCapabilities, PlacementReceipt,
+    Publication, S3Config, StageUsage, WriteEvidence,
 };
 
 /// Object-store metadata requests a bulk presence check may hold in flight. S3 serves a batch far
@@ -90,6 +91,23 @@ impl BlobStorage {
         match &self.backend {
             Backend::Filesystem(_) => DurabilityCapabilities::FILESYSTEM,
             Backend::S3(backend) => backend.durability(),
+        }
+    }
+
+    /// The evidence a blob already resident at its content address presents.
+    ///
+    /// A write that adds no bytes - a cross-repository mount, say - still has to acknowledge under the
+    /// configured policy, and the copy it publishes is the one already here. A filesystem holds that
+    /// copy on this node alone, so a second copy has to come from another node's receipt. An object
+    /// store's resident object was measured at its address, which is exactly what
+    /// [`Publication::VerifiedResident`] describes.
+    #[must_use]
+    pub fn resident_evidence(&self) -> WriteEvidence {
+        match &self.backend {
+            Backend::Filesystem(_) => WriteEvidence::NodeLocal,
+            Backend::S3(backend) => backend
+                .durability()
+                .object_store_evidence(Publication::VerifiedResident),
         }
     }
 
@@ -293,11 +311,14 @@ impl BlobStorage {
 
     /// Publishes only staged bytes that hash to `expected`; S3 returns `Unsupported`.
     ///
+    /// The receipt reports what the commit proved, so a caller acknowledging the write weighs the
+    /// earned evidence rather than the backend's advertised guarantees.
+    ///
     /// # Errors
     /// Returns a contextual digest mismatch, not-found, or commit error, or an unsupported-operation
     /// error on the object store.
     ///
-    pub async fn finish_upload(&self, session: &str, expected: &Digest) -> Result<(), BlobError> {
+    pub async fn finish_upload(&self, session: &str, expected: &Digest) -> Result<PlacementReceipt, BlobError> {
         match &self.backend {
             Backend::Filesystem(store) => {
                 let store = store.clone();

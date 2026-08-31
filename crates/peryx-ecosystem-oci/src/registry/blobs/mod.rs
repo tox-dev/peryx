@@ -9,6 +9,7 @@ use peryx_driver::range::unsatisfiable_range;
 use super::uploads::created;
 use super::*;
 use crate::error::{ErrorCode, error_response, gateway_error};
+use crate::registry::acknowledge::{BlobAck, acknowledge_blob};
 use crate::registry::authority::{EpochCommit, claim_repository_home, commit_epoch};
 use crate::store::{self};
 use crate::upstream::UpstreamError;
@@ -544,10 +545,10 @@ pub(super) async fn commit_blob(context: BlobCommitContext<'_>, pending: BlobWri
     let operation = blob_operation(&index.name, repo, digest);
     state.claim_admitted_write(&operation);
     match pending.commit(&storage).await {
-        Ok(_receipt) => {
+        Ok(receipt) => {
             let mutation = commit_epoch(state, repo, fence, |lease| {
                 lease.guard()?;
-                crate::quota::commit_blob_membership(
+                let commit = crate::quota::commit_blob_membership(
                     &state.meta,
                     &index.name,
                     repo,
@@ -558,17 +559,28 @@ pub(super) async fn commit_blob(context: BlobCommitContext<'_>, pending: BlobWri
                 )?;
                 lease.guard()?;
                 state.record_home_placement(storage.as_str(), bytes, fence);
-                Ok(())
+                Ok(commit)
             })
             .await?;
-            if matches!(mutation, EpochCommit::Fenced) {
+            let EpochCommit::Committed(commit) = mutation else {
                 release_reservation(state, reservation)?;
                 state.finalize_admitted_write(&operation, OperationResult::Failed, b"");
                 return Ok(authority_moved());
-            }
-            state.finalize_admitted_write(&operation, OperationResult::Published, b"");
-            state.record_operation_trace(peryx_driver::state::OperationKind::Publish, fence);
-            Ok(blob_created(name, digest))
+            };
+            publish_acknowledged(
+                state,
+                &operation,
+                fence,
+                BlobAck {
+                    repo,
+                    digest: &receipt.digest,
+                    bytes: receipt.size,
+                    commit,
+                    evidence: receipt.evidence,
+                },
+                || blob_created(name, digest),
+            )
+            .await
         }
         Err(err) => {
             release_reservation(state, reservation)?;
@@ -578,10 +590,34 @@ pub(super) async fn commit_blob(context: BlobCommitContext<'_>, pending: BlobWri
     }
 }
 
+/// Publish an admitted write and answer its success response, but only once the configured
+/// acknowledgement policy proves the write durable.
+///
+/// A policy the deadline leaves unproven answers the retry response and leaves the operation pending,
+/// so the client's identical retry re-drives the same content-addressed commit and membership upsert
+/// and finishes the same operation rather than starting a second one.
+pub(super) async fn publish_acknowledged(
+    state: &ServingState,
+    operation: &str,
+    fence: u64,
+    ack: BlobAck<'_>,
+    success: impl FnOnce() -> Response,
+) -> Result<Response, ServeError> {
+    match acknowledge_blob(state, ack).await {
+        Ok(()) => {
+            state.finalize_admitted_write(operation, OperationResult::Published, b"");
+            state.record_operation_trace(peryx_driver::state::OperationKind::Publish, fence);
+            Ok(success())
+        }
+        Err(response) => Ok(response),
+    }
+}
+
 /// The operation id an admitted blob write records under, stable across a client's retries: a re-push of
 /// the same digest to the same repository resolves to one id, so its outcome dedups to a single ledger
-/// record. The id keys only the recording; the commit itself always runs, so a re-push stays retrievable.
-fn blob_operation(index: &str, repo: &str, digest: &str) -> String {
+/// record. A mount shares that id, since it makes the same repository serve the same digest. The id keys
+/// only the recording; the commit itself always runs, so a re-push stays retrievable.
+pub(super) fn blob_operation(index: &str, repo: &str, digest: &str) -> String {
     format!("oci:{index}:{repo}:{digest}")
 }
 
@@ -625,10 +661,10 @@ pub(super) async fn commit_staged_upload(
     let operation = blob_operation(&index.name, repo, digest);
     state.claim_admitted_write(&operation);
     match state.blobs.finish_upload(session, &storage).await {
-        Ok(()) => {
+        Ok(receipt) => {
             let mutation = commit_epoch(state, repo, fence, |lease| {
                 lease.guard()?;
-                crate::quota::commit_blob_membership(
+                let commit = crate::quota::commit_blob_membership(
                     &state.meta,
                     &index.name,
                     repo,
@@ -639,17 +675,28 @@ pub(super) async fn commit_staged_upload(
                 )?;
                 lease.guard()?;
                 state.record_home_placement(storage.as_str(), bytes, fence);
-                Ok(())
+                Ok(commit)
             })
             .await?;
-            if matches!(mutation, EpochCommit::Fenced) {
+            let EpochCommit::Committed(commit) = mutation else {
                 release_reservation(state, reservation)?;
                 state.finalize_admitted_write(&operation, OperationResult::Failed, b"");
                 return Ok(authority_moved());
-            }
-            state.finalize_admitted_write(&operation, OperationResult::Published, b"");
-            state.record_operation_trace(peryx_driver::state::OperationKind::Publish, fence);
-            Ok(blob_created(name, digest))
+            };
+            publish_acknowledged(
+                state,
+                &operation,
+                fence,
+                BlobAck {
+                    repo,
+                    digest: &receipt.digest,
+                    bytes: receipt.size,
+                    commit,
+                    evidence: receipt.evidence,
+                },
+                || blob_created(name, digest),
+            )
+            .await
         }
         Err(err) => {
             release_reservation(state, reservation)?;

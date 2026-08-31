@@ -15,6 +15,17 @@ use super::{
 
 /// An occupied digest path may contain corrupt bytes, so a failed no-clobber move verifies the resident
 /// file before discarding the trusted source.
+/// Evidence that `len` bytes of `digest` crossed this node's filesystem boundary. One node holds one
+/// copy, so any further copy has to come from another node's receipt.
+fn local_receipt(digest: &Digest, len: u64) -> PlacementReceipt {
+    PlacementReceipt {
+        digest: digest.clone(),
+        size: len,
+        durability: DurabilityCapabilities::FILESYSTEM,
+        evidence: WriteEvidence::NodeLocal,
+    }
+}
+
 fn publish(dest: &Path, source: tempfile::TempPath, digest: &Digest, len: u64) -> Result<(), BlobError> {
     match source.persist_noclobber(dest) {
         Ok(()) => sync_parent(dest).map_err(BlobError::from),
@@ -578,11 +589,14 @@ impl BlobStore {
 
     /// Publishes only bytes that hash to `expected`; an existing verified blob deduplicates the stage.
     ///
+    /// The receipt reports the bytes this node proved durable, so a caller that must acknowledge the
+    /// write weighs the evidence the commit earned instead of assuming the backend's guarantees.
+    ///
     /// # Errors
     /// Returns [`super::BlobErrorKind::DigestMismatch`] when the staged bytes hash differently,
     /// [`super::BlobErrorKind::NotFound`] when no stage exists, or [`super::BlobErrorKind::Io`] on a filesystem failure.
     ///
-    pub fn finish_upload(&self, session: &str, expected: &Digest) -> Result<(), BlobError> {
+    pub fn finish_upload(&self, session: &str, expected: &Digest) -> Result<PlacementReceipt, BlobError> {
         let stage = self.upload_dir().join(session);
         let published = self.path_for(expected);
         let mut file = match std::fs::File::open(&stage) {
@@ -590,7 +604,9 @@ impl BlobStore {
             // A retry after a lost response succeeds when the published blob outlived its stage, and
             // completes the flush the interrupted attempt may never have finished.
             Err(err) if err.kind() == std::io::ErrorKind::NotFound && published.is_file() => {
-                return sync_parent(&published).map_err(BlobError::from);
+                let len = std::fs::metadata(&published)?.len();
+                sync_parent(&published)?;
+                return Ok(local_receipt(expected, len));
             }
             Err(err) => return Err(absent_or_io(err, expected)),
         };
@@ -601,7 +617,8 @@ impl BlobStore {
         }
         drop(file);
         let dest = self.create_path_for(expected)?;
-        publish(&dest, tempfile::TempPath::try_from_path(&stage)?, expected, len)
+        publish(&dest, tempfile::TempPath::try_from_path(&stage)?, expected, len)?;
+        Ok(local_receipt(expected, len))
     }
 
     /// Treats an absent stage as a successful discard.
@@ -707,12 +724,7 @@ impl BlobStore {
     /// known to have crossed the boundary the receipt would claim.
     ///
     pub fn commit_staged(&self, staged: StagedBlob) -> Result<PlacementReceipt, BlobError> {
-        let receipt = PlacementReceipt {
-            digest: staged.digest.clone(),
-            size: staged.len,
-            durability: DurabilityCapabilities::FILESYSTEM,
-            evidence: WriteEvidence::NodeLocal,
-        };
+        let receipt = local_receipt(&staged.digest, staged.len);
         let dest = self.create_path_for(&staged.digest)?;
         publish(&dest, staged.path, &staged.digest, staged.len)?;
         Ok(receipt)

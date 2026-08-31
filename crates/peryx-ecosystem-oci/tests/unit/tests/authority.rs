@@ -317,7 +317,7 @@ async fn test_a_remote_home_winner_commits_no_manifest_effects() {
         ..oci_index("store", "store", IndexKind::Hosted { volatile: true })
     };
     let (state, app) = super::app_with_setup(&dir, vec![index], true, |state| {
-        super::install_test_distributed(state, None);
+        super::install_test_distributed(state, None, std::sync::Arc::new(super::LocalDurability));
     });
     bind_ownership(&state, RecordingAuthority::remote());
     let canonical = format!("sha256:{}", peryx_storage::blob::Digest::of(MANIFEST).as_str());

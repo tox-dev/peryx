@@ -41,6 +41,28 @@ receives `503 UNAVAILABLE` and may retry after topology converges.
 The fence applies to manifest publication and deletion, blob finalization and deletion, cross-repository mounts, and
 restore. Cache fills remain derived state and do not enter the authoritative mutation journal.
 
+## Durability acknowledgement
+
+The Distribution specification fixes which status code a push answers; it says nothing about how many copies stand
+behind it. `[availability.write_ack]` does, and a blob push answers `201 Created` only after that policy passes. A
+monolithic `PUT`, a resumable finalize, and a cross-repository mount all resolve through the same acknowledgement the
+PyPI upload path uses, so a `201` here and a `200` there mean the same thing about how much of the cluster holds the
+content.
+
+Under `availability.mode = "none"` the local commit is the whole policy and pushes answer exactly as before. Under `dc`
+the policy counts same-datacenter member receipts for the blob; under `ha` it also waits for the membership write to
+apply in the share of remote datacenters the policy names.
+
+A push still short of its policy when `write_ack.deadline-secs` elapses answers `503 UNAVAILABLE` with `Retry-After`
+rather than a success code, because the durable completion may land after the client stops waiting. The content and its
+repository membership are committed either way, which is what gives the metadata frontier something to acknowledge, so
+what the deadline withholds is the promise, not the write. The push records a pending operation keyed by index,
+repository, and digest; the client resends the identical request, and the content-addressed commit and the membership
+upsert replay onto the same operation without a second effect.
+
+Manifest publication is a metadata-only write with no blob bytes and does not yet take part in this acknowledgement;
+that gap needs a metadata-only durability contract in the shared availability crates.
+
 ## Details
 
 - [Registry behavior reference](@/ecosystems/oci/reference/registry-behavior.md) lists exact headers, status codes, and

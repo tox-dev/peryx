@@ -1,3 +1,4 @@
+mod acknowledge;
 mod authority;
 mod bearer_tests;
 mod conditional_blob_tests;
@@ -268,8 +269,27 @@ fn app_with_journal(dir: &TempDir, indexes: Vec<Index>, journal: bool) -> (Arc<A
 
 fn app_with_distributed(dir: &TempDir, index: Index) -> (Arc<AppState>, axum::Router) {
     app_with_setup(dir, vec![index], false, |state| {
-        install_test_distributed(state, None);
+        install_test_distributed(state, None, Arc::new(LocalDurability));
     })
+}
+
+/// A distributed app whose write-acknowledgement resolver answers `verdict`, so a test drives the
+/// acknowledged and unproven arms of a push without a cluster or a wall-clock deadline.
+fn hosted_writable_distributed_with_durability(
+    dir: &TempDir,
+    token: &str,
+    verdict: peryx_ha::WriteDurability,
+) -> (Arc<AppState>, Arc<ScriptedDurability>, axum::Router) {
+    let durability = Arc::new(ScriptedDurability::new(verdict));
+    let (state, app) = app_with_setup(
+        dir,
+        vec![writable_index("store", "store", true, token)],
+        true,
+        |state| {
+            install_test_distributed(state, None, durability.clone());
+        },
+    );
+    (state, durability, app)
 }
 
 fn app_with_setup(
@@ -316,13 +336,17 @@ fn install_oci(state: &mut AppState, settings: HashMap<String, IndexSettings>, d
     }
 }
 
-fn install_test_distributed(state: &mut AppState, availability: Option<Arc<dyn peryx_ha::BlobAvailability>>) {
+fn install_test_distributed(
+    state: &mut AppState,
+    availability: Option<Arc<dyn peryx_ha::BlobAvailability>>,
+    durability: Arc<dyn peryx_ha::BlobWriteDurability>,
+) {
     let ownership = Arc::new(TestOwnership::default());
     state
         .install_distributed_availability(peryx_ha::AvailabilityStateInstall {
             role: peryx_core::NodeRole::Writer,
             topology: local_topology(),
-            blobs: peryx_ha::BlobServices::new(availability, Arc::new(LocalDurability)),
+            blobs: peryx_ha::BlobServices::new(availability, durability),
             analytics: Arc::new(UnavailableCompleteness),
             capabilities: peryx_ha::AvailabilityCapabilities {
                 ownership: Some(ownership.clone()),
@@ -357,6 +381,59 @@ impl peryx_ha::BlobWriteDurability for LocalDurability {
         peryx_ha::WriteDurability::Confirmed {
             scope: write.evidence().scope(),
         }
+    }
+}
+
+/// Answers every acknowledgement with one scripted verdict and keeps the writes it was asked about, so
+/// a test asserts on what the push presented as evidence as well as on the response it produced.
+struct ScriptedDurability {
+    verdict: Mutex<peryx_ha::WriteDurability>,
+    seen: Mutex<Vec<ObservedWrite>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ObservedWrite {
+    digest: String,
+    size: u64,
+    authority: String,
+    journaled: bool,
+    evidence: peryx_core::WriteEvidence,
+}
+
+impl ScriptedDurability {
+    const fn new(verdict: peryx_ha::WriteDurability) -> Self {
+        Self {
+            verdict: Mutex::new(verdict),
+            seen: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Answer every later acknowledgement with `verdict`.
+    fn answer(&self, verdict: peryx_ha::WriteDurability) {
+        *self.verdict.lock().unwrap() = verdict;
+    }
+
+    /// Drop the writes recorded so far, so a fixture push does not appear in what the test asserts on.
+    fn forget(&self) {
+        self.seen.lock().unwrap().clear();
+    }
+
+    fn observed(&self) -> Vec<ObservedWrite> {
+        self.seen.lock().unwrap().clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl peryx_ha::BlobWriteDurability for ScriptedDurability {
+    async fn confirm(&self, write: peryx_ha::CommittedBlob<'_>) -> peryx_ha::WriteDurability {
+        self.seen.lock().unwrap().push(ObservedWrite {
+            digest: write.digest().as_str().to_owned(),
+            size: write.size(),
+            authority: write.authority().to_owned(),
+            journaled: write.commit().is_some(),
+            evidence: write.evidence(),
+        });
+        *self.verdict.lock().unwrap()
     }
 }
 
@@ -577,7 +654,7 @@ fn hosted_writable_distributed_with_clock(
         clock,
     );
     install_oci(&mut state, HashMap::new(), false);
-    install_test_distributed(&mut state, None);
+    install_test_distributed(&mut state, None, Arc::new(LocalDurability));
     let state = Arc::new(state);
     (state.clone(), router(state))
 }

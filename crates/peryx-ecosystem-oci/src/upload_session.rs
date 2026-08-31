@@ -1,4 +1,4 @@
-use peryx_storage::meta::{DriverTxn, MetaError, MetaStore, QuotaError};
+use peryx_storage::meta::{DriverCommit, DriverTxn, MetaError, MetaStore, QuotaError};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -18,18 +18,20 @@ pub trait UploadStore {
     fn upload_record(&self, session: &str) -> Result<Option<UploadRecord>, MetaError>;
     fn remove_upload(&self, session: &str) -> Result<bool, MetaError>;
     fn reclaim_uploads(&self, cutoff: i64, limit: usize) -> Result<Vec<String>, MetaError>;
+    /// Reports the journal serial the transaction committed at, which a write acknowledgement waits on
+    /// as its metadata evidence.
     fn commit_driver_txn_closing_upload<T, E: From<MetaError>>(
         &self,
         session: Option<&str>,
         body: impl FnOnce(&mut DriverTxn) -> Result<(T, Vec<Vec<u8>>), E>,
-    ) -> Result<T, E>;
+    ) -> Result<DriverCommit<T>, E>;
     fn commit_driver_txn_with_quota_if_closing_upload<T, E>(
         &self,
         id: Uuid,
         session: Option<&str>,
         commit: impl FnOnce(&T) -> bool,
         body: impl FnOnce(&mut DriverTxn) -> Result<(T, Vec<Vec<u8>>), E>,
-    ) -> Result<T, E>
+    ) -> Result<DriverCommit<T>, E>
     where
         E: From<MetaError> + From<QuotaError>;
 }
@@ -84,8 +86,8 @@ impl UploadStore for MetaStore {
         &self,
         session: Option<&str>,
         body: impl FnOnce(&mut DriverTxn) -> Result<(T, Vec<Vec<u8>>), E>,
-    ) -> Result<T, E> {
-        self.commit_driver_txn(close_session(session, body))
+    ) -> Result<DriverCommit<T>, E> {
+        self.commit_driver_txn_with_commit(close_session(session, body))
     }
 
     fn commit_driver_txn_with_quota_if_closing_upload<T, E>(
@@ -94,11 +96,11 @@ impl UploadStore for MetaStore {
         session: Option<&str>,
         commit: impl FnOnce(&T) -> bool,
         body: impl FnOnce(&mut DriverTxn) -> Result<(T, Vec<Vec<u8>>), E>,
-    ) -> Result<T, E>
+    ) -> Result<DriverCommit<T>, E>
     where
         E: From<MetaError> + From<QuotaError>,
     {
-        self.commit_driver_txn_with_quota_if(id, commit, close_session(session, body))
+        self.commit_driver_txn_with_quota_if_commit(id, commit, close_session(session, body))
     }
 }
 

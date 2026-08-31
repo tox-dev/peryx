@@ -11,8 +11,8 @@ use peryx_events::metrics::{MetricFamily, Observation};
 use peryx_index::Index;
 use peryx_policy::Policy;
 use peryx_storage::meta::{
-    AccountingClass, DriverTxn, MetaStore, NewQuotaReservation, QuotaAllocation, QuotaError, QuotaLimit, QuotaLimits,
-    QuotaReservationRecord,
+    AccountingClass, DriverCommit, DriverTxn, JournalCommit, MetaStore, NewQuotaReservation, QuotaAllocation,
+    QuotaError, QuotaLimit, QuotaLimits, QuotaReservationRecord,
 };
 
 use crate::upload_session::UploadStore as _;
@@ -162,6 +162,10 @@ fn describe(violations: &[QuotaLimit]) -> String {
 /// transaction inserts that membership. A finalizing resumable upload names its `session`, closed in
 /// that same transaction so membership never lands while the client's recovery handle lingers; a
 /// mount or a monolithic push passes `None`.
+///
+/// Reports the journal serial the membership committed at, which the write's acknowledgement waits on
+/// as its metadata evidence. A membership that journaled nothing - a re-push of a digest this
+/// repository already serves - reports `None`, leaving only the byte dimension to prove.
 pub fn commit_blob_membership(
     meta: &MetaStore,
     index: &str,
@@ -170,7 +174,7 @@ pub fn commit_blob_membership(
     reservation: Option<QuotaReservationRecord>,
     session: Option<&str>,
     journal: crate::outbox::Outbox,
-) -> Result<(), ServeError> {
+) -> Result<Option<JournalCommit>, ServeError> {
     finalize(
         meta,
         reservation,
@@ -185,8 +189,8 @@ pub fn commit_blob_membership(
             });
             Ok((inserted, entries))
         },
-    )?;
-    Ok(())
+    )
+    .map(|committed| committed.journal)
 }
 
 /// Delete a blob's `(index, repo)` membership and release the committed quota allocation its push
@@ -281,21 +285,24 @@ pub fn publish_manifest(meta: &MetaStore, commit: ManifestCommit<'_>) -> Result<
         });
         Ok::<_, ServeError>((publication, entries))
     };
-    finalize(meta, reservation, None, |publication| publication.allocated, body).map(|publication| publication.changed)
+    finalize(meta, reservation, None, |publication| publication.allocated, body)
+        .map(|committed| committed.value.changed)
 }
 
+/// Commit the mutation and report the journal serial it landed at, so a caller that must acknowledge
+/// the write has the metadata frontier its policy waits on.
 fn finalize<T>(
     meta: &MetaStore,
     reservation: Option<QuotaReservationRecord>,
     session: Option<&str>,
     commit: impl FnOnce(&T) -> bool,
     body: impl FnOnce(&mut DriverTxn) -> Result<(T, Vec<Vec<u8>>), ServeError>,
-) -> Result<T, ServeError> {
+) -> Result<DriverCommit<T>, ServeError> {
     let Some(record) = reservation else {
         return meta.commit_driver_txn_closing_upload(session, body);
     };
     match meta.commit_driver_txn_with_quota_if_closing_upload(record.id, session, commit, body) {
-        Ok(value) => Ok(value),
+        Ok(committed) => Ok(committed),
         Err(err) => {
             meta.release_quota_reservation(record.id)?;
             Err(err)

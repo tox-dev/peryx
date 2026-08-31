@@ -481,10 +481,22 @@ fn test_finish_upload_publishes_the_blob_and_clears_the_stage() {
     store.stage_upload_chunk("sess-1", 9, b"content").unwrap();
     let digest = Digest::of(b"streamed content");
 
-    store.finish_upload("sess-1", &digest).unwrap();
+    let receipt = store.finish_upload("sess-1", &digest).unwrap();
 
+    assert_eq!(receipt, local_receipt(&digest, b"streamed content".len() as u64));
     assert_eq!(store.read(&digest).unwrap(), b"streamed content");
     assert_eq!(store.staged_upload_len("sess-1").unwrap(), None);
+}
+
+/// The evidence a resumable finish reports: this node's filesystem holds the verified bytes, and no
+/// further copy is claimed.
+fn local_receipt(digest: &Digest, size: u64) -> crate::blob::PlacementReceipt {
+    crate::blob::PlacementReceipt {
+        digest: digest.clone(),
+        size,
+        durability: crate::blob::DurabilityCapabilities::FILESYSTEM,
+        evidence: crate::blob::WriteEvidence::NodeLocal,
+    }
 }
 
 #[test]
@@ -532,7 +544,10 @@ fn test_finish_upload_is_idempotent_after_a_successful_finish() {
     let digest = Digest::of(b"streamed content");
     store.finish_upload("sess-1", &digest).unwrap();
 
-    store.finish_upload("sess-1", &digest).unwrap();
+    // The stage is gone, so the retry re-flushes the published blob and measures it there.
+    let receipt = store.finish_upload("sess-1", &digest).unwrap();
+
+    assert_eq!(receipt, local_receipt(&digest, b"streamed content".len() as u64));
     assert_eq!(store.read(&digest).unwrap(), b"streamed content");
 }
 

@@ -41,6 +41,7 @@ use std::hash::BuildHasher;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+mod acknowledge;
 mod auth;
 mod authority;
 mod blobs;

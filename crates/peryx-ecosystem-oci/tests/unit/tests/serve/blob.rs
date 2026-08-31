@@ -663,7 +663,11 @@ fn hosted_with_availability(
         )],
         false,
         move |state| {
-            install_test_distributed(state, Some(availability));
+            install_test_distributed(
+                state,
+                Some(availability),
+                std::sync::Arc::new(super::super::LocalDurability),
+            );
         },
     )
 }
