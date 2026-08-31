@@ -111,6 +111,8 @@ mod simple;
 #[cfg(feature = "serving")]
 mod simple_client;
 #[cfg(feature = "serving")]
+mod source_policy;
+#[cfg(feature = "serving")]
 pub mod store;
 #[cfg(feature = "serving")]
 pub mod stream;

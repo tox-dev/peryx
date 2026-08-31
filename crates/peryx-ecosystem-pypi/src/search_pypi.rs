@@ -4,6 +4,7 @@ use std::collections::{BTreeSet, HashSet};
 use std::convert::Infallible;
 
 use crate::policy::PypiPolicy;
+use crate::source_policy::SourceSelection;
 use crate::store::PypiStore as _;
 use crate::store::{CachedIndex, FileOverride};
 use crate::{
@@ -249,7 +250,7 @@ fn cached_detail(
         IndexKind::Cached { .. } => mirror_detail(ctx, index, normalized, serve_route),
         IndexKind::Hosted { .. } => local_detail(ctx, &index.name, normalized, serve_route),
         IndexKind::Virtual { layers, write_target } => {
-            virtual_detail(ctx, layers, *write_target, normalized, serve_route)
+            virtual_detail(ctx, index, layers, *write_target, normalized, serve_route)
         }
     }?;
     Ok(index
@@ -335,19 +336,32 @@ fn local_detail(
 /// Merge a virtual index's layers for the search document, resolving cached layers last so an
 /// indexed project describes the hosted file that shadows upstream rather than the file it shadows.
 /// The served page merges by the same precedence.
+///
+/// [`SourceSelection`] decides which members contribute, so a document never advertises a name,
+/// version, or summary the route's source policy withholds from the served page. Resolution logs the
+/// private-first collision when it serves one; the indexer would repeat that entry on every crawl.
 fn virtual_detail(
     ctx: &IndexerCtx<'_>,
+    index: &Index,
     layers: &[usize],
     upload: Option<usize>,
     normalized: &str,
     serve_route: &str,
 ) -> Result<ProjectDetail, SearchError> {
+    let selection = SourceSelection::new(index, normalized);
+    let mut members = Vec::new();
+    for position in selection.candidates(ctx.indexes, layers) {
+        members.push((
+            position,
+            cached_detail(ctx, ctx.index_at(position), normalized, serve_route)?,
+        ));
+    }
+    selection.retain_selected(ctx.indexes, &mut members, |detail| !detail.files.is_empty());
     let mut files = Vec::new();
     let mut seen = BTreeSet::new();
     let mut versions = BTreeSet::new();
     let mut meta = Meta::default();
-    for position in peryx_index::shadow_order(ctx.indexes, layers) {
-        let detail = cached_detail(ctx, ctx.index_at(position), normalized, serve_route)?;
+    for (_, detail) in members {
         // Merge status before skipping empty members; quarantine must dominate member order.
         if detail.meta.status().severity() > meta.status().severity() {
             meta.project_status = detail.meta.project_status;
