@@ -1,7 +1,7 @@
 use std::sync::Mutex;
 
 use peryx_core::{NodeRole, TopologyMember};
-use peryx_ha::{AuthorityEpoch, ByteAckDecision, CommittedBlob, WriteDurability};
+use peryx_ha::{AuthorityEpoch, ByteAckDecision, ByteEvidence, CommittedBlob, WriteDurability, WriteEvidence};
 use peryx_storage::blob::{BlobDurability, Digest};
 use peryx_storage::meta::{MetaError, MetaStore};
 
@@ -9,14 +9,14 @@ use super::*;
 use crate::{LoopbackReceiptSource, LoopbackRemoteFrontierSource};
 
 #[derive(Default)]
-struct Observer(Mutex<Vec<(DcAck, ByteAckDecision)>>);
+struct Observer(Mutex<Vec<(DcAck, ByteEvidence)>>);
 
 impl WriteAckObserver for Observer {
-    fn record(&self, outcome: DcAck, byte_decision: &ByteAckDecision) {
+    fn record(&self, outcome: DcAck, evidence: &ByteEvidence) {
         self.0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push((outcome, byte_decision.clone()));
+            .push((outcome, evidence.clone()));
     }
 }
 
@@ -36,6 +36,10 @@ fn member(node: &str, dc: &str) -> TopologyMember {
 }
 
 fn write(digest: &Digest) -> CommittedBlob<'_> {
+    committed(digest, WriteEvidence::NodeLocal)
+}
+
+fn committed(digest: &Digest, evidence: WriteEvidence) -> CommittedBlob<'_> {
     let directory = tempfile::tempdir().unwrap();
     let commit = MetaStore::open(directory.path().join("peryx.redb"))
         .unwrap()
@@ -52,7 +56,7 @@ fn write(digest: &Digest) -> CommittedBlob<'_> {
         "repository:alpha",
         AuthorityEpoch(2),
         Some(commit),
-        BlobDurability::Filesystem,
+        evidence,
     )
 }
 
@@ -80,10 +84,10 @@ async fn rosterless_local_write_is_durable_without_peer_work() {
             DcAck::Durable {
                 scope: BlobDurability::Filesystem
             },
-            ByteAckDecision::Acknowledged {
+            ByteEvidence::Filesystem(ByteAckDecision::Acknowledged {
                 nodes: vec!["local".to_owned()],
                 required: 1,
-            }
+            })
         )]
     );
 }
@@ -107,7 +111,7 @@ async fn unjournaled_local_write_needs_no_metadata_acknowledgement() {
             "repository:alpha",
             AuthorityEpoch(2),
             None,
-            BlobDurability::Filesystem,
+            WriteEvidence::NodeLocal,
         ))
         .await;
 
@@ -193,11 +197,11 @@ async fn elapsed_two_member_quorum_is_unknown(#[case] policy: DurabilityPolicy) 
         observer.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)[0],
         (
             DcAck::Unknown,
-            ByteAckDecision::Pending {
+            ByteEvidence::Filesystem(ByteAckDecision::Pending {
                 nodes: vec!["node-a".to_owned()],
                 required: 2,
                 remaining: 1,
-            }
+            })
         )
     );
 }
@@ -317,4 +321,97 @@ fn a_met_remote_quorum_acknowledges_the_metadata_dimension() {
     };
 
     assert_eq!(remote_decision(&durability, 100), AckDecision::Acknowledged);
+}
+
+/// One object store behind every member holds one copy of the bytes, so a receipt from each member
+/// would count that copy once per member. The write acknowledges on the store's own evidence and never
+/// asks: with these peers silent, a byte quorum could only expire.
+#[tokio::test(start_paused = true)]
+async fn a_published_object_acknowledges_without_asking_the_datacenter_for_receipts() {
+    let digest = digest();
+    let observer = Arc::new(Observer::default());
+    let durability = DistributedBlobDurability::new(
+        TopologyConfig {
+            members: vec![member("node-a", "east"), member("node-b", "east")],
+            local_node: Some("node-a".to_owned()),
+            ..TopologyConfig::default()
+        },
+        DurabilityPolicy::Everywhere,
+        vec![Arc::new(LoopbackReceiptSource::absent("node-b"))],
+        Vec::new(),
+        Duration::from_secs(30),
+        observer.clone(),
+    );
+
+    assert_eq!(
+        durability
+            .confirm(committed(&digest, WriteEvidence::ObjectStoreVerified))
+            .await,
+        WriteDurability::Confirmed {
+            scope: BlobDurability::ObjectStore
+        }
+    );
+    assert_eq!(
+        *observer.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+        [(
+            DcAck::Durable {
+                scope: BlobDurability::ObjectStore
+            },
+            ByteEvidence::ObjectStore { acknowledged: true }
+        )]
+    );
+}
+
+/// A store whose guarantees cannot say whose bytes sit at an address proves nothing by holding it.
+/// Falling back to node receipts would count readers of that unverified object as copies, so the write
+/// stays retry-safe instead.
+#[tokio::test(start_paused = true)]
+async fn an_unverified_object_never_acknowledges_on_peer_receipts() {
+    let digest = digest();
+    let observer = Arc::new(Observer::default());
+    let durability = DistributedBlobDurability::new(
+        TopologyConfig {
+            members: vec![member("node-a", "east"), member("node-b", "east")],
+            local_node: Some("node-a".to_owned()),
+            ..TopologyConfig::default()
+        },
+        DurabilityPolicy::Local,
+        vec![Arc::new(LoopbackReceiptSource::holding("node-b", digest.clone(), SIZE))],
+        Vec::new(),
+        Duration::from_secs(30),
+        observer.clone(),
+    );
+
+    assert_eq!(
+        durability
+            .confirm(committed(&digest, WriteEvidence::ObjectStoreUnverified))
+            .await,
+        WriteDurability::Pending
+    );
+    assert_eq!(
+        *observer.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+        [(DcAck::Pending, ByteEvidence::ObjectStore { acknowledged: false })]
+    );
+}
+
+/// The bytes are already proven, so an object-store write waits only on the metadata dimension and
+/// reports the expired deadline as unknown rather than as a failure.
+#[tokio::test]
+async fn an_expired_metadata_deadline_leaves_an_object_store_write_unknown() {
+    let digest = digest();
+    let durability = DistributedBlobDurability::new(
+        TopologyConfig::default(),
+        DurabilityPolicy::Local,
+        Vec::new(),
+        vec![Arc::new(LoopbackRemoteFrontierSource::silent("west"))],
+        Duration::ZERO,
+        Arc::new(Observer::default()),
+    );
+
+    assert_eq!(
+        durability
+            .confirm(committed(&digest, WriteEvidence::ObjectStoreVerified))
+            .await,
+        WriteDurability::Unavailable
+    );
 }

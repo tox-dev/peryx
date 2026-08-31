@@ -44,7 +44,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 pub use peryx_core::{
     AnalyticsSnapshotStore, AvailabilityReadError, BlobDurability, BlobMetadata, Digest, DurabilityRequirement,
-    JournalCommit, NodeRole, ObservedFrontier, PrometheusSource, TopologyConfig,
+    JournalCommit, NodeRole, ObservedFrontier, PrometheusSource, TopologyConfig, WriteEvidence,
 };
 use serde::{Deserialize, Serialize};
 
@@ -1289,6 +1289,11 @@ impl ByteAckDecision {
     }
 }
 
+/// The proof a write earned for its bytes.
+///
+/// The variants are not interchangeable: a filesystem write is one copy per node and needs a receipt from
+/// each counted node, while an object store that published the bytes is itself the durable copy and no
+/// node can add to it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ByteEvidence {
     Filesystem(ByteAckDecision),
@@ -1327,7 +1332,7 @@ pub enum DcAck {
 }
 
 pub trait WriteAckObserver: Send + Sync {
-    fn record(&self, outcome: DcAck, byte_decision: &ByteAckDecision);
+    fn record(&self, outcome: DcAck, evidence: &ByteEvidence);
 }
 
 #[cfg(test)]

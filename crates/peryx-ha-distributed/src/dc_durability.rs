@@ -2,7 +2,7 @@ use std::fmt::Write as _;
 use std::sync::{Mutex, PoisonError};
 
 use peryx_core::PrometheusSource;
-use peryx_ha::{ByteAckDecision, DcAck};
+use peryx_ha::{ByteAckDecision, ByteEvidence, DcAck};
 use peryx_storage::blob::BlobDurability;
 
 // Fixed labels cap Prometheus series cardinality.
@@ -62,9 +62,13 @@ impl DcDurabilityMetrics {
 }
 
 impl peryx_ha::WriteAckObserver for DcDurabilityMetrics {
-    fn record(&self, outcome: DcAck, byte_decision: &ByteAckDecision) {
+    /// The quorum gauges count node receipts, which only a filesystem write earns; an object-store write
+    /// leaves the last filesystem write's gauges standing rather than reporting a quorum it never ran.
+    fn record(&self, outcome: DcAck, evidence: &ByteEvidence) {
         self.record(outcome);
-        self.record_quorum(byte_decision);
+        if let ByteEvidence::Filesystem(decision) = evidence {
+            self.record_quorum(decision);
+        }
     }
 }
 

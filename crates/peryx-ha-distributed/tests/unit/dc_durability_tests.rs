@@ -115,16 +115,36 @@ fn test_write_ack_observer_records_outcome_and_quorum() {
     peryx_ha::WriteAckObserver::record(
         &metrics,
         DcAck::Pending,
-        &ByteAckDecision::Pending {
+        &ByteEvidence::Filesystem(ByteAckDecision::Pending {
             nodes: vec!["east".to_owned()],
             required: 2,
             remaining: 1,
-        },
+        }),
     );
 
     let body = rendered(&metrics);
     assert!(body.contains("peryx_dc_ack_pending_total 1\n"), "{body}");
     assert!(body.contains("peryx_dc_ack_quorum_required 2\n"), "{body}");
+}
+
+/// An object store answers for the bytes itself, so no node quorum ran and the gauges must not claim one.
+#[test]
+fn test_an_object_store_write_reports_its_scope_without_a_node_quorum() {
+    let metrics = DcDurabilityMetrics::default();
+    peryx_ha::WriteAckObserver::record(
+        &metrics,
+        DcAck::Durable {
+            scope: BlobDurability::ObjectStore,
+        },
+        &ByteEvidence::ObjectStore { acknowledged: true },
+    );
+
+    let body = rendered(&metrics);
+    assert!(
+        body.contains("peryx_dc_ack_durable_total{scope=\"object-store\"} 1\n"),
+        "{body}"
+    );
+    assert!(body.contains("peryx_dc_ack_quorum_required 0\n"), "{body}");
 }
 
 fn byte_decision(receipt_nodes: &[&str]) -> ByteAckDecision {

@@ -77,6 +77,7 @@ impl ControlLease<'_> {
 pub struct StoredUpload {
     pub stored: bool,
     pub commit: Option<peryx_storage::meta::JournalCommit>,
+    pub evidence: peryx_storage::blob::WriteEvidence,
 }
 
 /// Stage and publish an upload under the exact authority epoch its caller resolved.
@@ -117,6 +118,7 @@ pub async fn store_upload(
     Ok(StoredUpload {
         stored: published.stored,
         commit: published.commit,
+        evidence: published.evidence,
     })
 }
 

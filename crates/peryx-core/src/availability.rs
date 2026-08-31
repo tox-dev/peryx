@@ -18,6 +18,33 @@ impl BlobDurability {
     }
 }
 
+/// What one commit proved about its own bytes.
+///
+/// Configured guarantees make a write eligible for a class of evidence; only the commit itself earns it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteEvidence {
+    /// The bytes crossed a node-local durability boundary. This node holds one copy, so any further copy
+    /// has to come from another node's receipt.
+    NodeLocal,
+    /// A shared object store holds these bytes and proved it, either by publishing them under a
+    /// create-if-absent precondition it accepted with the checksum it validated, or by reading back the
+    /// object resident at that address and matching its length and digest. The store is the durable
+    /// copy; peer receipts would count that one object once per node that can read it.
+    ObjectStoreVerified,
+    /// A shared object store holds the address under guarantees too weak to say whose bytes are there.
+    ObjectStoreUnverified,
+}
+
+impl WriteEvidence {
+    #[must_use]
+    pub const fn scope(self) -> BlobDurability {
+        match self {
+            Self::NodeLocal => BlobDurability::Filesystem,
+            Self::ObjectStoreVerified | Self::ObjectStoreUnverified => BlobDurability::ObjectStore,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlobMetadata {
     pub bytes: u64,

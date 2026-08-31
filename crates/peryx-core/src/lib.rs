@@ -15,7 +15,7 @@ pub mod view;
 
 pub use availability::{
     AnalyticsSnapshotStore, AvailabilityReadError, BlobDurability, BlobMetadata, Digest, DurabilityRequirement,
-    JournalCommit, ObservedFrontier,
+    JournalCommit, ObservedFrontier, WriteEvidence,
 };
 pub use ecosystem::{Ecosystem, InvalidEcosystem};
 pub use lexicon::{Lexicon, LexiconRegistry};

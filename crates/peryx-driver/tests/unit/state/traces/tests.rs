@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use peryx_core::{NodeRole, TopologyConfig, TopologyMember, TopologyMode};
 use peryx_ha::{AuthorityEpoch, OperationKind, OperationObservation, OperationObserver};
-use peryx_storage::blob::{BlobDurability, BlobStore, Digest};
+use peryx_storage::blob::{BlobStore, Digest, WriteEvidence};
 use peryx_storage::meta::MetaStore;
 
 use crate::state::{AppState, ServingState};
@@ -86,7 +86,7 @@ async fn test_trace_state_reports_write_durability_unavailable() {
                 "catalog",
                 AuthorityEpoch(4),
                 None,
-                BlobDurability::Filesystem,
+                WriteEvidence::NodeLocal,
             ))
             .await,
         peryx_ha::WriteDurability::Unavailable

@@ -16,9 +16,9 @@ pub use backend::{
     BlobBackend, BlobCapabilities, BlobLease, BlobRead, BlobReadBody, BlobStaged, BlobSupport, BlobTail, BlobWrite,
 };
 pub use chunked::{CHUNK_BYTES, ChunkedDigest, ChunkedDigestBuilder};
-pub use durability::{DurabilityCapabilities, DurabilityShortfall, PlacementReceipt};
+pub use durability::{DurabilityCapabilities, DurabilityShortfall, PlacementReceipt, Publication};
 pub use error::{BlobError, BlobErrorContext, BlobErrorKind, BlobOperation, BlobScanError};
-pub use peryx_core::{BlobDurability, BlobMetadata, Digest, DurabilityRequirement};
+pub use peryx_core::{BlobDurability, BlobMetadata, Digest, DurabilityRequirement, WriteEvidence};
 pub use range::{RangeRequest, parse_range};
 pub use s3::{S3Addressing, S3Backend, S3Client, S3Config, S3ConfigError, S3Error, S3Settings};
 pub use stage::StageUsage;

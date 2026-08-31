@@ -327,7 +327,7 @@ async fn admit_and_store(
                 &authority,
                 AuthorityEpoch(state.committed_authority_epoch(&authority).await),
                 stored.commit,
-                state.blobs.durability().domain,
+                stored.evidence,
             ))
             .await,
         &intent.operation,

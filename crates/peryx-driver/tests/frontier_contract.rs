@@ -3,9 +3,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use peryx_driver::AppState;
 use peryx_ha::{
-    AnalyticsCompleteness, AnalyticsSnapshotStore, AuthorityEpoch, BlobDurability, BlobServices, BlobWriteDurability,
-    CommittedBlob, CompletenessError, CompletenessQuery, CompletenessReport, Digest, ExpectedProducer,
-    ReplicaViewApplier as _, WriteDurability,
+    AnalyticsCompleteness, AnalyticsSnapshotStore, AuthorityEpoch, BlobServices, BlobWriteDurability, CommittedBlob,
+    CompletenessError, CompletenessQuery, CompletenessReport, Digest, ExpectedProducer, ReplicaViewApplier as _,
+    WriteDurability, WriteEvidence,
 };
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
@@ -42,7 +42,7 @@ async fn distributed_frontier_publishes_to_current_and_late_observers() {
                 "repository",
                 AuthorityEpoch(1),
                 None,
-                BlobDurability::Filesystem,
+                WriteEvidence::NodeLocal,
             ))
             .await,
         WriteDurability::Unavailable

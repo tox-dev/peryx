@@ -8,7 +8,7 @@ use peryx_identity::{
     LdapBindMode, LdapLoginService, LdapProvider, LdapProviderSettings, OidcLoginProvider, OidcLoginService,
     OidcProviderSettings, ProviderId,
 };
-use peryx_storage::blob::{BlobDurability, BlobMetadata, BlobStore, Digest};
+use peryx_storage::blob::{BlobDurability, BlobMetadata, BlobStore, Digest, WriteEvidence};
 use peryx_storage::meta::MetaStore;
 use tracing_subscriber::layer::SubscriberExt as _;
 use url::Url;
@@ -288,7 +288,7 @@ struct ObservedWrite {
     digest: String,
     authority: String,
     epoch: peryx_ha::AuthorityEpoch,
-    local_durability: BlobDurability,
+    evidence: WriteEvidence,
 }
 
 struct Durability {
@@ -312,7 +312,7 @@ impl peryx_ha::BlobWriteDurability for Durability {
             digest: write.digest().as_str().to_owned(),
             authority: write.authority().to_owned(),
             epoch: write.epoch(),
-            local_durability: write.local_durability(),
+            evidence: write.evidence(),
         });
         self.outcome
     }
@@ -347,7 +347,7 @@ async fn test_none_mode_has_no_distributed_runtime() {
                 "catalog",
                 peryx_ha::AuthorityEpoch(3),
                 None,
-                BlobDurability::Filesystem,
+                WriteEvidence::NodeLocal,
             ))
             .await,
         peryx_ha::WriteDurability::Confirmed {
@@ -466,7 +466,7 @@ async fn test_configured_blob_services_receive_requests() {
                 "catalog",
                 peryx_ha::AuthorityEpoch(7),
                 None,
-                BlobDurability::ObjectStore,
+                WriteEvidence::ObjectStoreVerified,
             ))
             .await,
         peryx_ha::WriteDurability::Pending
@@ -477,7 +477,7 @@ async fn test_configured_blob_services_receive_requests() {
             digest: digest.as_str().to_owned(),
             authority: "catalog".to_owned(),
             epoch: peryx_ha::AuthorityEpoch(7),
-            local_durability: BlobDurability::ObjectStore,
+            evidence: WriteEvidence::ObjectStoreVerified,
         })
     );
 }

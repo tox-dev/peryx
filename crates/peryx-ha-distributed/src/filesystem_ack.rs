@@ -5,9 +5,8 @@ use std::collections::BTreeSet;
 
 use peryx_storage::blob::Digest;
 
-use crate::ack::AckDecision;
-use crate::byte_ack::{ByteAckDecision, decide_byte_ack};
-use crate::dc_ack::{ByteEvidence, DcAck, Deadline, decide_dc_ack};
+use crate::byte_ack::decide_byte_ack;
+use crate::dc_ack::ByteEvidence;
 use crate::readiness::DurabilityPolicy;
 use crate::receipt_quorum::ReceiptAck;
 
@@ -59,20 +58,19 @@ impl FilesystemAck {
         self.receipts.iter().any(|held| held.node == node)
     }
 
+    /// The receipts gathered so far, as the evidence a datacenter acknowledgement weighs.
     #[must_use]
-    pub fn byte_decision(&self) -> ByteAckDecision {
-        decide_byte_ack(&self.digest, &self.receipts, &self.members, self.policy)
+    pub fn evidence(&self) -> ByteEvidence {
+        ByteEvidence::Filesystem(decide_byte_ack(
+            &self.digest,
+            &self.receipts,
+            &self.members,
+            self.policy,
+        ))
     }
 
     #[must_use]
     pub fn is_byte_durable(&self) -> bool {
-        self.byte_decision().is_acknowledged()
-    }
-
-    /// Combines metadata and byte evidence. Expiry without proof yields an unknown result.
-    #[must_use]
-    pub fn decide(&self, metadata: AckDecision, deadline: Deadline) -> DcAck {
-        let byte_ack = decide_byte_ack(&self.digest, &self.receipts, &self.members, self.policy);
-        decide_dc_ack(metadata, &ByteEvidence::Filesystem(byte_ack), deadline)
+        self.evidence().is_durable()
     }
 }

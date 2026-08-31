@@ -40,7 +40,7 @@ async fn test_durability_reports_unavailable() {
                 "repository",
                 peryx_ha::AuthorityEpoch(1),
                 None,
-                peryx_ha::BlobDurability::Filesystem,
+                peryx_ha::WriteEvidence::NodeLocal,
             ))
             .await,
         WriteDurability::Unavailable

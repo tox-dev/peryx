@@ -11,7 +11,7 @@ use std::hint::black_box;
 use criterion::{Criterion, criterion_group, criterion_main};
 use peryx_ha_distributed::{
     AckDecision, Deadline, DurabilityPolicy, FilesystemAck, MetadataOperation, ReceiptAck, RemoteAck, RemoteDurability,
-    assess_remote_metadata_durability,
+    assess_remote_metadata_durability, decide_dc_ack,
 };
 use peryx_storage::blob::Digest;
 
@@ -102,7 +102,7 @@ fn resolve(posture: &Posture, digest: &Digest) -> peryx_ha_distributed::DcAck {
     let metadata = posture.remote.as_ref().map_or(AckDecision::Acknowledged, |remote| {
         metadata_decision(remote, posture.policy)
     });
-    ack.decide(metadata, DEADLINE)
+    decide_dc_ack(metadata, &ack.evidence(), DEADLINE)
 }
 
 fn metadata_decision(remote: &Remote, policy: DurabilityPolicy) -> AckDecision {

@@ -3,7 +3,7 @@
 
 use std::fmt;
 
-use peryx_core::{BlobDurability, DurabilityRequirement};
+use peryx_core::{BlobDurability, DurabilityRequirement, WriteEvidence};
 
 use super::Digest;
 
@@ -14,6 +14,17 @@ pub struct PlacementReceipt {
     pub digest: Digest,
     pub size: u64,
     pub durability: DurabilityCapabilities,
+    /// What this commit proved, which a later acknowledgement weighs instead of re-deriving evidence
+    /// from the backend's configured guarantees.
+    pub evidence: WriteEvidence,
+}
+
+/// Whether a commit published the bytes at its address or matched them against the object already
+/// resident there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Publication {
+    Created,
+    VerifiedResident,
 }
 
 /// Static guarantees that a backend can provide for completed writes.
@@ -44,6 +55,24 @@ impl DurabilityCapabilities {
             atomic_publish: true,
             conditional_create,
             checksum_verified,
+        }
+    }
+
+    /// The evidence an object-store commit earns.
+    ///
+    /// A store speaks for a write it published only under both guarantees: without the precondition the
+    /// service may have overwritten another writer, and without the validated checksum it never
+    /// confirmed the bytes it stored are the ones addressed. A commit that lost the precondition and
+    /// then read the resident object back needs neither, because the read measured the bytes at that
+    /// address directly.
+    #[must_use]
+    pub const fn object_store_evidence(self, publication: Publication) -> WriteEvidence {
+        match publication {
+            Publication::VerifiedResident => WriteEvidence::ObjectStoreVerified,
+            Publication::Created if self.conditional_create && self.checksum_verified => {
+                WriteEvidence::ObjectStoreVerified
+            }
+            Publication::Created => WriteEvidence::ObjectStoreUnverified,
         }
     }
 

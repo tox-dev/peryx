@@ -8,7 +8,7 @@ use peryx_ha::{
     AnalyticsCompleteness, BlobAvailability, BlobAvailabilityError, BlobAvailabilityFailure, BlobServices,
     BlobWriteDurability, CommittedBlob, CompletenessError, CompletenessQuery, CompletenessReport, WriteDurability,
 };
-use peryx_storage::blob::{BlobDurability, BlobStore, BlobTail, Digest};
+use peryx_storage::blob::{BlobStore, BlobTail, Digest, WriteEvidence};
 use peryx_storage::meta::MetaStore;
 use rstest::rstest;
 use tokio::sync::watch;
@@ -49,7 +49,7 @@ async fn test_fill_remote_degrades_an_availability_failure() {
             "pypi",
             peryx_ha::AuthorityEpoch(1),
             None,
-            BlobDurability::Filesystem,
+            WriteEvidence::NodeLocal,
         ))
         .await;
     let completeness = state.analytics_completeness().unwrap().assess(

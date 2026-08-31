@@ -13,7 +13,7 @@ use peryx_policy::Policy;
 use peryx_search::{
     ContentSource, IndexerCtx, SearchDocument, SearchDocumentProvider, SearchError, SearchParams, default_indexer,
 };
-use peryx_storage::blob::{BlobDurability, BlobStore};
+use peryx_storage::blob::{BlobStore, WriteEvidence};
 use peryx_storage::meta::MetaStore;
 use rstest::rstest;
 
@@ -685,7 +685,7 @@ async fn test_registry_runtime_settings_replace_defaults() {
                 "catalog",
                 peryx_ha::AuthorityEpoch(1),
                 None,
-                BlobDurability::Filesystem,
+                WriteEvidence::NodeLocal,
             ))
             .await,
         peryx_ha::WriteDurability::Unavailable

@@ -100,7 +100,7 @@ async fn test_distributed_blob_confirmation_uses_the_installed_durability() {
                 "repository",
                 peryx_ha::AuthorityEpoch(7),
                 None,
-                peryx_ha::BlobDurability::Filesystem,
+                peryx_ha::WriteEvidence::NodeLocal,
             ))
             .await,
         peryx_ha::WriteDurability::Unavailable

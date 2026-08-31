@@ -355,7 +355,7 @@ struct LocalDurability;
 impl peryx_ha::BlobWriteDurability for LocalDurability {
     async fn confirm(&self, write: peryx_ha::CommittedBlob<'_>) -> peryx_ha::WriteDurability {
         peryx_ha::WriteDurability::Confirmed {
-            scope: write.local_durability(),
+            scope: write.evidence().scope(),
         }
     }
 }

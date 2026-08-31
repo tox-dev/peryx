@@ -109,22 +109,32 @@ fn test_holds_reports_a_recorded_node() {
 }
 
 #[test]
-fn test_byte_decision_is_pending_below_quorum() {
+fn test_byte_evidence_is_pending_below_quorum() {
     let ack = local_ack(DurabilityPolicy::Majority, &["a", "b", "c"], "a");
 
     assert!(!ack.is_byte_durable());
-    assert!(matches!(
-        ack.byte_decision(),
-        crate::byte_ack::ByteAckDecision::Pending { remaining: 1, .. }
-    ));
+    assert_eq!(
+        ack.evidence(),
+        crate::dc_ack::ByteEvidence::Filesystem(crate::byte_ack::ByteAckDecision::Pending {
+            nodes: vec!["a".to_owned()],
+            required: 2,
+            remaining: 1,
+        })
+    );
 }
 
 #[test]
-fn test_byte_decision_is_acknowledged_at_quorum() {
+fn test_byte_evidence_is_acknowledged_at_quorum() {
     let ack = local_ack(DurabilityPolicy::Local, &["a"], "a");
 
     assert!(ack.is_byte_durable());
-    assert!(ack.byte_decision().is_acknowledged());
+    assert_eq!(
+        ack.evidence(),
+        crate::dc_ack::ByteEvidence::Filesystem(crate::byte_ack::ByteAckDecision::Acknowledged {
+            nodes: vec!["a".to_owned()],
+            required: 1,
+        })
+    );
 }
 
 #[tokio::test(start_paused = true)]

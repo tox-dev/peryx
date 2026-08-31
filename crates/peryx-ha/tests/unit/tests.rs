@@ -875,7 +875,7 @@ async fn blob_services_dispatches_durability(#[case] outcome: WriteDurability) {
         "repository",
         AuthorityEpoch(7),
         None,
-        BlobDurability::Filesystem,
+        WriteEvidence::NodeLocal,
     );
     assert_eq!(
         BlobServices::new(None, Arc::new(Durability(outcome)))
@@ -895,7 +895,7 @@ fn committed_blob_exposes_write_context() {
         "repository",
         AuthorityEpoch(7),
         None,
-        BlobDurability::ObjectStore,
+        WriteEvidence::ObjectStoreVerified,
     );
 
     assert_eq!(write.digest(), &digest);
@@ -903,7 +903,7 @@ fn committed_blob_exposes_write_context() {
     assert_eq!(write.authority(), "repository");
     assert_eq!(write.epoch(), AuthorityEpoch(7));
     assert_eq!(write.commit(), None);
-    assert_eq!(write.local_durability(), BlobDurability::ObjectStore);
+    assert_eq!(write.evidence(), WriteEvidence::ObjectStoreVerified);
 }
 
 #[rstest]

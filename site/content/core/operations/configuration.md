@@ -901,10 +901,15 @@ deadline-secs = 5
 | `policy`        | `local`, `majority`, or `everywhere`         | `local` under `none`, else `majority` |
 | `deadline-secs` | Seconds to wait for acknowledgement evidence | `5`                                   |
 
-Mode `none` accepts only `local`. A `dc` writer counts receipt responses from configured members in its own datacenter.
-The member address must reach the public server that serves the receipt route. The current resolver applies the same
-node-receipt path to object stores, so it does not use backend-specific object-store evidence. Filesystem persistence
-also ignores a parent-directory sync failure before a receipt can be served.
+Mode `none` accepts only `local`. A `dc` writer counts receipt responses from configured members in its own datacenter
+when the bytes landed on a node-local filesystem. The member address must reach the public server that serves the
+receipt route. An object-store backend answers for the bytes itself. A write the store published under an accepted
+create-if-absent precondition with a validated checksum acknowledges on that evidence alone and polls no member, since
+every member reads the one object a receipt would count again. A create that lost the precondition acknowledges the same
+way once it reads the resident object back and matches its length and digest against the stage; a mismatch fails the
+write outright. A backend configured without `conditional-writes` or `checksum-writes` earns no byte evidence, so such a
+write reports pending rather than falling back to counting readers of one unverified object. Filesystem persistence also
+ignores a parent-directory sync failure before a receipt can be served.
 
 Under `ha` the policy resolves on both durability dimensions separately. The byte threshold spans the members in the
 writer's own datacenter; an HA roster permits one member per datacenter, so that threshold is one for every policy

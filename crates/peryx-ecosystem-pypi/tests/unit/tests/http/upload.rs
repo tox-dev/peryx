@@ -23,6 +23,7 @@ const BROWSER_HEADERS: &[(&str, &str)] = &[
 
 struct DurableAcknowledger {
     calls: Arc<AtomicUsize>,
+    evidence: Arc<std::sync::Mutex<Vec<peryx_storage::blob::WriteEvidence>>>,
 }
 
 #[tokio::test]
@@ -46,8 +47,12 @@ async fn test_upload_rejects_non_multipart_body() {
 
 #[async_trait::async_trait]
 impl peryx_ha::BlobWriteDurability for DurableAcknowledger {
-    async fn confirm(&self, _write: peryx_ha::CommittedBlob<'_>) -> peryx_ha::WriteDurability {
+    async fn confirm(&self, write: peryx_ha::CommittedBlob<'_>) -> peryx_ha::WriteDurability {
         self.calls.fetch_add(1, Ordering::Relaxed);
+        self.evidence
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(write.evidence());
         peryx_ha::WriteDurability::Confirmed {
             scope: peryx_storage::blob::BlobDurability::Filesystem,
         }
@@ -58,6 +63,7 @@ impl peryx_ha::BlobWriteDurability for DurableAcknowledger {
 async fn test_upload_uses_the_configured_write_acknowledger() {
     let mut h = harness().await;
     let calls = Arc::new(AtomicUsize::new(0));
+    let evidence = Arc::new(std::sync::Mutex::new(Vec::new()));
     Arc::get_mut(&mut h.state)
         .unwrap()
         .install_distributed_availability(peryx_ha::AvailabilityStateInstall {
@@ -67,6 +73,7 @@ async fn test_upload_uses_the_configured_write_acknowledger() {
                 None,
                 Arc::new(DurableAcknowledger {
                     calls: Arc::clone(&calls),
+                    evidence: Arc::clone(&evidence),
                 }),
             ),
             analytics: Arc::new(UnavailableCompleteness),
@@ -88,6 +95,11 @@ async fn test_upload_uses_the_configured_write_acknowledger() {
 
     assert_eq!((status, body.as_str()), (StatusCode::OK, "upload accepted"));
     assert_eq!(calls.load(Ordering::Relaxed), 1);
+    // The acknowledgement weighs what the commit proved, not what the configured backend could prove.
+    assert_eq!(
+        *evidence.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+        [peryx_storage::blob::WriteEvidence::NodeLocal]
+    );
 }
 
 #[tokio::test]

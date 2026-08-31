@@ -1,17 +1,18 @@
 use std::collections::BTreeSet;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use peryx_core::TopologyConfig;
 use peryx_ha::{
-    BlobWriteDurability, CommittedBlob, DcAck, MetadataOperation, ReceiptRequest, ReceiptSource, RemoteFrontierSource,
-    WriteAckObserver, WriteDurability,
+    BlobWriteDurability, ByteEvidence, CommittedBlob, DcAck, MetadataOperation, ReceiptRequest, ReceiptSource,
+    RemoteFrontierSource, WriteAckObserver, WriteDurability, WriteEvidence,
 };
 
 use crate::{
     AckDecision, DEFAULT_FRONTIER_POLL, DEFAULT_RECEIPT_POLL, Deadline, DurabilityPolicy, FilesystemAck, ReceiptAck,
-    RemoteDurability, assess_remote_metadata_durability, gather_receipts, gather_remote_acks,
+    RemoteDurability, assess_remote_metadata_durability, decide_dc_ack, gather_receipts, gather_remote_acks,
 };
 
 const STANDALONE_NODE: &str = "local";
@@ -67,6 +68,35 @@ impl DistributedBlobDurability {
         )
     }
 
+    /// Counts this node's copy, then asks the datacenter's other members for theirs while the metadata
+    /// dimension resolves.
+    async fn gather_node_copies(
+        &self,
+        write: &CommittedBlob<'_>,
+        local_members: BTreeSet<String>,
+        metadata: impl Future<Output = (AckDecision, Deadline)>,
+    ) -> (ByteEvidence, Deadline, (AckDecision, Deadline)) {
+        let mut filesystem = FilesystemAck::new(write.digest().clone(), local_members, self.policy);
+        filesystem.record(ReceiptAck {
+            node: self.local_node(),
+            digest: write.digest().clone(),
+        });
+        let (byte_deadline, metadata) = tokio::join!(
+            gather_receipts(
+                &self.receipt_sources,
+                ReceiptRequest {
+                    digest: write.digest(),
+                    size: write.size(),
+                },
+                &mut filesystem,
+                self.budget,
+                DEFAULT_RECEIPT_POLL,
+            ),
+            metadata,
+        );
+        (filesystem.evidence(), byte_deadline, metadata)
+    }
+
     async fn metadata_decision(&self, authority: &str, operation: MetadataOperation) -> (AckDecision, Deadline) {
         if self.remote_sources.is_empty() {
             return (AckDecision::Acknowledged, Deadline::Live);
@@ -94,11 +124,6 @@ impl BlobWriteDurability for DistributedBlobDurability {
         let Some(local_members) = self.local_members() else {
             return WriteDurability::Unavailable;
         };
-        let mut filesystem = FilesystemAck::new(write.digest().clone(), local_members, self.policy);
-        filesystem.record(ReceiptAck {
-            node: self.local_node(),
-            digest: write.digest().clone(),
-        });
         let metadata = async {
             let Some(commit) = write.commit() else {
                 return (AckDecision::Acknowledged, Deadline::Live);
@@ -112,21 +137,20 @@ impl BlobWriteDurability for DistributedBlobDurability {
             )
             .await
         };
-        let (byte_deadline, (metadata, metadata_deadline)) = tokio::join!(
-            gather_receipts(
-                &self.receipt_sources,
-                ReceiptRequest {
-                    digest: write.digest(),
-                    size: write.size(),
+        let (evidence, byte_deadline, (metadata, metadata_deadline)) = match write.evidence() {
+            WriteEvidence::NodeLocal => self.gather_node_copies(&write, local_members, metadata).await,
+            // The store holds the one copy these nodes share, so polling them for receipts would count
+            // that object once per reader rather than finding a second copy.
+            evidence => (
+                ByteEvidence::ObjectStore {
+                    acknowledged: evidence == WriteEvidence::ObjectStoreVerified,
                 },
-                &mut filesystem,
-                self.budget,
-                DEFAULT_RECEIPT_POLL,
+                Deadline::Live,
+                metadata.await,
             ),
-            metadata,
-        );
-        let outcome = filesystem.decide(metadata, combined_deadline(byte_deadline, metadata_deadline));
-        self.observer.record(outcome, &filesystem.byte_decision());
+        };
+        let outcome = decide_dc_ack(metadata, &evidence, combined_deadline(byte_deadline, metadata_deadline));
+        self.observer.record(outcome, &evidence);
         match outcome {
             DcAck::Durable { scope } => WriteDurability::Confirmed { scope },
             DcAck::Pending => WriteDurability::Pending,

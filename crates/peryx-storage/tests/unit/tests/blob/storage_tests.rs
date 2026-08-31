@@ -2,7 +2,7 @@ use futures_util::StreamExt as _;
 
 use crate::blob::{
     BlobBackend, BlobErrorKind, BlobMetadata, BlobOperation, BlobRead, BlobReadBody, BlobScanError, BlobStorage,
-    Digest, DurabilityCapabilities, PlacementReceipt, S3Config, S3Settings,
+    Digest, DurabilityCapabilities, PlacementReceipt, S3Config, S3Settings, WriteEvidence,
 };
 
 #[test]
@@ -69,6 +69,7 @@ async fn test_filesystem_commit_returns_a_durable_receipt_and_serves_the_bytes()
             digest: digest.clone(),
             size: content.len() as u64,
             durability: DurabilityCapabilities::FILESYSTEM,
+            evidence: WriteEvidence::NodeLocal,
         }
     );
     assert_eq!(storage.read_bytes(&digest, u64::MAX).await.unwrap(), content);

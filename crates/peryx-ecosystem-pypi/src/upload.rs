@@ -17,7 +17,7 @@ use crate::{
     MetadataError, Provenance, Yanked, is_valid_name, normalize_name, normalize_name_cow, parse_distribution_filename,
     parse_metadata, parse_version, parse_version_specifiers, to_json,
 };
-use peryx_storage::blob::{BlobError, BlobStaged, BlobStorage, Digest};
+use peryx_storage::blob::{BlobError, BlobStaged, BlobStorage, Digest, WriteEvidence};
 use peryx_storage::meta::{MetaError, MetaStore};
 
 use crate::store::PypiStore as _;
@@ -359,6 +359,7 @@ pub(crate) struct PreparedPublish {
     record: PreparedRecord,
     metadata_digest: Digest,
     provenance: Option<(Digest, u64)>,
+    evidence: WriteEvidence,
 }
 
 /// Stage and commit an upload's blobs, leaving only the metadata write. This is the async, I/O-bound
@@ -379,7 +380,7 @@ pub(crate) async fn stage_publish(
     };
     let provenance_ref = provenance.as_ref().map(staged_reference);
     let (content, record) = split_prepared(prepared);
-    content.commit().await?;
+    let evidence = content.commit().await?.evidence;
     metadata.commit().await?;
     if let Some(provenance) = provenance {
         provenance.commit().await?;
@@ -388,6 +389,7 @@ pub(crate) async fn stage_publish(
         record,
         metadata_digest,
         provenance: provenance_ref,
+        evidence,
     })
 }
 
@@ -401,6 +403,8 @@ pub(crate) struct Published {
     /// same content, so recording each placement stays correct on a re-push.
     pub placements: Vec<(Digest, u64)>,
     pub commit: Option<peryx_storage::meta::JournalCommit>,
+    /// What the backend proved when it committed the artifact's bytes.
+    pub evidence: WriteEvidence,
 }
 
 /// Write the store record that publishes a staged upload, bumping the serial. Reports a same-bytes
@@ -418,6 +422,7 @@ pub(crate) fn commit_publish(
     webhook: Option<peryx_storage::meta::WebhookEventIntent>,
 ) -> Result<Published, UploadStoreError> {
     let record = &publish.record;
+    let evidence = publish.evidence;
     let mut placements = vec![
         (record.digest.clone(), record.content_size),
         (publish.metadata_digest.clone(), record.metadata.len() as u64),
@@ -433,6 +438,7 @@ pub(crate) fn commit_publish(
         stored: committed.value,
         placements,
         commit: committed.journal,
+        evidence,
     })
 }
 
@@ -563,6 +569,7 @@ fn store_record_with_commit(
         record: prepared,
         metadata_digest,
         provenance,
+        evidence: _,
     } = publish;
     let PreparedRecord {
         normalized,

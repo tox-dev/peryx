@@ -205,7 +205,7 @@ async fn shared_distributed_test_services_expose_their_contracts() {
             "store/app",
             peryx_ha::AuthorityEpoch(1),
             None,
-            peryx_core::BlobDurability::Filesystem,
+            peryx_core::WriteEvidence::NodeLocal,
         ))
         .await;
     assert_eq!(

@@ -220,10 +220,14 @@ rest of the write. Two configured addresses that reach one process therefore yie
 replaced node stops contributing under its predecessor's name until the roster names it. The shared bearer token proves
 group membership, not which member answered, so only this binding keeps one process out of two receipt slots.
 
-The current resolver uses this node-receipt path for object stores as well as filesystems; it does not construct
-object-store-specific evidence. The filesystem persistence path also ignores a parent-directory sync failure before this
-receipt can be issued, which can overstate crash durability. This route is an internal peer operation and is not part of
-the public OpenAPI document.
+This node-receipt path serves writes whose bytes crossed a node-local filesystem boundary. An object store is one copy
+shared by every member, so a write it published under an accepted create-if-absent precondition with a validated
+checksum carries its own evidence and queries no member. A create that lost that precondition earns the same evidence
+once it reads the resident object back and matches its length and digest, and fails the commit when they differ. Only a
+store configured without those guarantees leaves a write short of byte evidence, which reports pending rather than
+counting members that read one unverified object. The filesystem persistence path still ignores a parent-directory sync
+failure before this receipt can be issued, which can overstate crash durability. This route is an internal peer
+operation and is not part of the public OpenAPI document.
 
 ## Availability topology snapshot
 

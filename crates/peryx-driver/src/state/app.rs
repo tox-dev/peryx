@@ -156,7 +156,7 @@ impl AvailabilityState {
         match &self.distributed {
             Some(state) => state.confirm_blob_write(write).await,
             None => peryx_ha::WriteDurability::Confirmed {
-                scope: write.local_durability(),
+                scope: write.evidence().scope(),
             },
         }
     }

@@ -8,7 +8,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::error::{BlobError, BlobScanError};
 use super::stage::{OwnedPath, PathOwners, STAGE_MAX_AGE, STAGE_PREFIX, StageUsage, is_stage};
-use super::{BlobMetadata, Digest, DurabilityCapabilities, PlacementReceipt, sync_parent};
+use super::{BlobMetadata, Digest, DurabilityCapabilities, PlacementReceipt, WriteEvidence, sync_parent};
 
 /// An occupied digest path may contain corrupt bytes, so a failed no-clobber move verifies the resident
 /// file before discarding the trusted source.
@@ -612,6 +612,7 @@ impl BlobStore {
             digest: staged.digest.clone(),
             size: staged.len,
             durability: DurabilityCapabilities::FILESYSTEM,
+            evidence: WriteEvidence::NodeLocal,
         };
         let dest = self.create_path_for(&staged.digest)?;
         publish(&dest, staged.path, &staged.digest, staged.len)?;

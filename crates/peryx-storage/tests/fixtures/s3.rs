@@ -7,7 +7,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use bytes::Bytes;
-use peryx_storage::blob::{BlobErrorKind, BlobScanError, BlobStaged, BlobStorage, Digest, S3Config, S3Settings};
+use peryx_storage::blob::{
+    BlobErrorKind, BlobScanError, BlobStaged, BlobStorage, Digest, S3Config, S3Settings, WriteEvidence,
+};
 #[cfg(feature = "container-tests")]
 use tracing::{Event, Subscriber};
 #[cfg(feature = "container-tests")]
@@ -721,10 +723,18 @@ async fn run_wire_write_child(storage: &BlobStorage, scenario: WireWriteScenario
             );
         }
         WireWriteScenario::SmallPut => {
-            assert_eq!(storage.put_bytes(b"package").await.unwrap(), Digest::of(b"package"));
+            assert_eq!(
+                commit_bytes(storage, b"package").await,
+                WriteEvidence::ObjectStoreVerified
+            );
         }
         WireWriteScenario::Immutable => {
-            assert_eq!(storage.put_bytes(b"expected").await.unwrap(), Digest::of(b"expected"));
+            // The create lost the precondition, so reading the resident object back is what proves these
+            // bytes are the ones at that address.
+            assert_eq!(
+                commit_bytes(storage, b"expected").await,
+                WriteEvidence::ObjectStoreVerified
+            );
         }
         WireWriteScenario::ImmutableMismatch => {
             let error = storage.put_bytes(b"expected").await.unwrap_err();
@@ -735,6 +745,12 @@ async fn run_wire_write_child(storage: &BlobStorage, scenario: WireWriteScenario
             );
         }
     }
+}
+
+async fn commit_bytes(storage: &BlobStorage, bytes: &'static [u8]) -> WriteEvidence {
+    let mut write = storage.begin().await.unwrap();
+    write.write_chunk(Bytes::from_static(bytes)).await.unwrap();
+    write.commit(&Digest::of(bytes)).await.unwrap().evidence
 }
 
 async fn run_wire_failure_child(storage: &BlobStorage, scenario: WireFailureScenario) {

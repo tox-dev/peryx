@@ -25,7 +25,7 @@ pub use self::config::{S3Addressing, S3Config, S3ConfigError, S3Settings};
 use super::store::BlobStore;
 use super::{
     BlobBackend, BlobCapabilities, BlobDurability, BlobError, BlobLease, BlobMetadata, BlobOperation, BlobRead,
-    BlobReadBody, BlobStaged, BlobSupport, BlobWrite, Digest, DurabilityCapabilities, PlacementReceipt,
+    BlobReadBody, BlobStaged, BlobSupport, BlobWrite, Digest, DurabilityCapabilities, PlacementReceipt, Publication,
 };
 
 const MAX_MULTIPART_PARTS: u64 = 10_000;
@@ -256,7 +256,7 @@ impl S3Backend {
         Ok(BlobLease::downloaded(temp_path, owned))
     }
 
-    async fn upload(&self, staged: &BlobStaged) -> Result<(), BlobError> {
+    async fn upload(&self, staged: &BlobStaged) -> Result<Publication, BlobError> {
         let digest = staged.digest().clone();
         let len = staged.len();
         let path = staged.with_materialized(Path::to_path_buf);
@@ -269,8 +269,11 @@ impl S3Backend {
             self.put_multipart(&key, &digest, len, part_size, &path).await
         };
         match result {
-            Ok(()) => Ok(()),
-            Err(S3Error::AlreadyExists) => self.verify_resident(&key, &digest, len).await,
+            Ok(()) => Ok(Publication::Created),
+            Err(S3Error::AlreadyExists) => self
+                .verify_resident(&key, &digest, len)
+                .await
+                .map(|()| Publication::VerifiedResident),
             Err(error) => Err(blob_error(error, Some(&digest))),
         }
         .map_err(|error| error.with_context("s3", BlobOperation::Commit, Some(&digest)))
@@ -716,11 +719,13 @@ impl S3Staged {
     }
 
     pub(crate) async fn commit(self) -> Result<PlacementReceipt, BlobError> {
-        self.backend.upload(&self.inner).await?;
+        let publication = self.backend.upload(&self.inner).await?;
+        let durability = self.backend.durability();
         let receipt = PlacementReceipt {
             digest: self.inner.digest().clone(),
             size: self.inner.len(),
-            durability: self.backend.durability(),
+            durability,
+            evidence: durability.object_store_evidence(publication),
         };
         Box::pin(self.inner.abort()).await?;
         Ok(receipt)

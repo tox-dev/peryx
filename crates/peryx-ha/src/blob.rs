@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::{AuthorityEpoch, BlobDurability, BlobMetadata, Digest, JournalCommit};
+use crate::{AuthorityEpoch, BlobDurability, BlobMetadata, Digest, JournalCommit, WriteEvidence};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlobAvailabilityFailure {
@@ -46,7 +46,7 @@ pub struct CommittedBlob<'a> {
     authority: &'a str,
     epoch: AuthorityEpoch,
     commit: Option<JournalCommit>,
-    local_durability: BlobDurability,
+    evidence: WriteEvidence,
 }
 
 impl<'a> CommittedBlob<'a> {
@@ -57,7 +57,7 @@ impl<'a> CommittedBlob<'a> {
         authority: &'a str,
         epoch: AuthorityEpoch,
         commit: Option<JournalCommit>,
-        local_durability: BlobDurability,
+        evidence: WriteEvidence,
     ) -> Self {
         Self {
             digest,
@@ -65,7 +65,7 @@ impl<'a> CommittedBlob<'a> {
             authority,
             epoch,
             commit,
-            local_durability,
+            evidence,
         }
     }
 
@@ -95,9 +95,11 @@ impl<'a> CommittedBlob<'a> {
         self.commit
     }
 
+    /// What the storage backend proved about these bytes, which decides the class of evidence the write
+    /// acknowledgement may count.
     #[must_use]
-    pub const fn local_durability(&self) -> BlobDurability {
-        self.local_durability
+    pub const fn evidence(&self) -> WriteEvidence {
+        self.evidence
     }
 }
 

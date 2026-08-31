@@ -803,7 +803,7 @@ pub struct LocalDurability;
 impl peryx_ha::BlobWriteDurability for LocalDurability {
     async fn confirm(&self, write: peryx_ha::CommittedBlob<'_>) -> peryx_ha::WriteDurability {
         peryx_ha::WriteDurability::Confirmed {
-            scope: write.local_durability(),
+            scope: write.evidence().scope(),
         }
     }
 }
@@ -886,7 +886,7 @@ async fn test_local_durability_confirms_the_committed_scope() {
                 "pypi",
                 peryx_ha::AuthorityEpoch(7),
                 None,
-                peryx_storage::blob::BlobDurability::Filesystem,
+                peryx_storage::blob::WriteEvidence::NodeLocal,
             ))
             .await,
         peryx_ha::WriteDurability::Confirmed {
