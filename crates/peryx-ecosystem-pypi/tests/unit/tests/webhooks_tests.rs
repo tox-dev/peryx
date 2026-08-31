@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -7,7 +7,7 @@ use axum::body::Body;
 use axum::http::StatusCode;
 use axum::http::{HeaderValue, header};
 use peryx_storage::blob::{BlobStorage, Digest};
-use peryx_storage::meta::{MetaStore, NewWebhookDelivery, WebhookDeliveryRecord, WebhookDeliveryStatus};
+use peryx_storage::meta::{MetaStore, NewWebhookDelivery, WebhookDeliveryStatus};
 use rstest::rstest;
 use serde_json::json;
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
@@ -34,30 +34,72 @@ struct Harness {
     _webhook: webhook::WebhookHandle,
     state: Arc<AppState>,
     clock: Arc<AtomicI64>,
+    observed: Arc<Mutex<Vec<ObservedDelivery>>>,
     delivery_updates: AsyncMutex<mpsc::UnboundedReceiver<()>>,
 }
 
-struct DeliveryLayer(mpsc::UnboundedSender<()>);
+/// A terminal delivery leaves no row behind, so its outcome is read back from the structured log.
+#[derive(Clone, Debug)]
+struct ObservedDelivery {
+    id: String,
+    event: String,
+    attempts: u16,
+    status: WebhookDeliveryStatus,
+    response_status: Option<u16>,
+    next_attempt_at_unix: Option<i64>,
+    last_error: Option<String>,
+}
+
+struct DeliveryLayer {
+    observed: Arc<Mutex<Vec<ObservedDelivery>>>,
+    updates: mpsc::UnboundedSender<()>,
+}
 
 impl<S: Subscriber> Layer<S> for DeliveryLayer {
     fn on_event(&self, event: &Event<'_>, _context: Context<'_, S>) {
         if event.metadata().target() != "peryx::webhook" {
             return;
         }
-        let mut visitor = DeliveryVisitor(false);
+        let mut visitor = DeliveryVisitor(HashMap::new());
         event.record(&mut visitor);
-        if visitor.0 {
-            let _ = self.0.send(());
+        if let Some(delivery) = observed_delivery(&visitor.0) {
+            self.observed.lock().expect("observed deliveries").push(delivery);
+            let _ = self.updates.send(());
         }
     }
 }
 
-struct DeliveryVisitor(bool);
+struct DeliveryVisitor(HashMap<&'static str, String>);
 
 impl tracing::field::Visit for DeliveryVisitor {
-    fn record_debug(&mut self, field: &tracing::field::Field, _value: &dyn std::fmt::Debug) {
-        self.0 |= field.name() == "delivery";
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        self.0.insert(field.name(), format!("{value:?}"));
     }
+
+    fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+        self.0.insert(field.name(), value.to_string());
+    }
+}
+
+fn observed_delivery(fields: &HashMap<&'static str, String>) -> Option<ObservedDelivery> {
+    Some(ObservedDelivery {
+        id: fields.get("delivery")?.clone(),
+        event: fields["event"].clone(),
+        attempts: fields["attempts"].parse().expect("attempt count"),
+        status: match fields["status"].as_str() {
+            "Pending" => WebhookDeliveryStatus::Pending,
+            "Delivered" => WebhookDeliveryStatus::Delivered,
+            _ => WebhookDeliveryStatus::Failed,
+        },
+        response_status: logged_some(&fields["response_status"]).map(|value| value.parse().expect("http status")),
+        next_attempt_at_unix: logged_some(&fields["next_attempt_at_unix"])
+            .map(|value| value.parse().expect("retry deadline")),
+        last_error: logged_some(&fields["last_error"]).map(|value| value.trim_matches('"').to_owned()),
+    })
+}
+
+fn logged_some(value: &str) -> Option<&str> {
+    value.strip_prefix("Some(").and_then(|inner| inner.strip_suffix(')'))
 }
 
 impl Harness {
@@ -74,8 +116,11 @@ impl Harness {
         }])
         .unwrap();
         let (delivery_updates, delivery_receiver) = mpsc::unbounded_channel();
-        let delivery_observer =
-            tracing::subscriber::set_default(tracing_subscriber::registry().with(DeliveryLayer(delivery_updates)));
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let delivery_observer = tracing::subscriber::set_default(tracing_subscriber::registry().with(DeliveryLayer {
+            observed: Arc::clone(&observed),
+            updates: delivery_updates,
+        }));
         let state = webhook_state(&dir, &clock, webhooks);
         let webhook = webhook::kick(state.serving.clone()).expect("configured webhook worker");
         Self {
@@ -84,6 +129,7 @@ impl Harness {
             _webhook: webhook,
             state,
             clock,
+            observed,
             delivery_updates: AsyncMutex::new(delivery_receiver),
         }
     }
@@ -132,53 +178,39 @@ impl Respond for ResponseSequence {
     }
 }
 
-async fn wait_for_delivery(harness: &Harness, status: WebhookDeliveryStatus, attempts: u16) -> WebhookDeliveryRecord {
-    let mut updates = harness.delivery_updates.lock().await;
-    let delivery = tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            if let Some(delivery) = harness
-                .state
-                .serving
-                .meta
-                .list_webhook_deliveries()
-                .unwrap()
-                .into_iter()
-                .find(|delivery| delivery.status == status && delivery.attempts == attempts)
-            {
-                return delivery;
-            }
-            updates.recv().await.expect("delivery observer remains open");
-        }
+async fn wait_for_delivery(harness: &Harness, status: WebhookDeliveryStatus, attempts: u16) -> ObservedDelivery {
+    wait_for_outcome(harness, |delivery| {
+        delivery.status == status && delivery.attempts == attempts
     })
-    .await;
-    assert!(
-        delivery.is_ok(),
-        "expected delivery with status {status:?} and {attempts} attempts"
-    );
-    delivery.unwrap()
+    .await
 }
 
-async fn wait_for_delivery_id(harness: &Harness, id: &str, status: WebhookDeliveryStatus) -> WebhookDeliveryRecord {
+async fn wait_for_delivery_id(harness: &Harness, id: &str, status: WebhookDeliveryStatus) -> ObservedDelivery {
+    wait_for_outcome(harness, |delivery| delivery.id == id && delivery.status == status).await
+}
+
+async fn wait_for_outcome(
+    harness: &Harness,
+    matches: impl Fn(&ObservedDelivery) -> bool + Send + Sync,
+) -> ObservedDelivery {
     let mut updates = harness.delivery_updates.lock().await;
-    let delivery = tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            if let Some(delivery) = harness
-                .state
-                .serving
-                .meta
-                .list_webhook_deliveries()
-                .unwrap()
-                .into_iter()
-                .find(|delivery| delivery.id == id && delivery.status == status)
-            {
+            let found = harness
+                .observed
+                .lock()
+                .expect("observed deliveries")
+                .iter()
+                .find(|delivery| matches(delivery))
+                .cloned();
+            if let Some(delivery) = found {
                 return delivery;
             }
             updates.recv().await.expect("delivery observer remains open");
         }
     })
-    .await;
-    assert!(delivery.is_ok(), "expected delivery {id} with status {status:?}");
-    delivery.unwrap()
+    .await
+    .expect("no webhook delivery outcome matched")
 }
 
 #[tokio::test]
@@ -214,7 +246,7 @@ async fn test_upload_webhook_is_signed_and_skips_duplicate_upload() {
     );
 
     assert_eq!(upload_peryxpkg(&h.state, "/hosted/", &wheel).await, StatusCode::OK);
-    assert_eq!(h.state.serving.meta.list_webhook_deliveries().unwrap().len(), 1);
+    assert!(h.state.serving.meta.list_webhook_deliveries().unwrap().is_empty());
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
 }
 

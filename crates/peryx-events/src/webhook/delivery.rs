@@ -401,19 +401,32 @@ fn record_success<H: WebhookHost>(
     )
 }
 
-fn log_delivery_success(record: Option<&WebhookDeliveryRecord>, status: u16) {
-    if let Some(record) = record {
-        tracing::info!(
-            target: "peryx::webhook",
-            delivery = %record.id,
-            index = %record.index,
-            target = %record.target,
-            event = %record.event,
-            attempts = record.attempts,
-            status,
-            "webhook delivery succeeded"
-        );
+/// The queue drops a terminal row, so this log is the only durable record of the outcome.
+fn log_delivery_outcome(record: Option<&WebhookDeliveryRecord>) {
+    let Some(record) = record else {
+        return;
+    };
+    if record.status == WebhookDeliveryStatus::Delivered {
+        log_delivery_success(record);
+    } else {
+        log_delivery_failure(record);
     }
+}
+
+fn log_delivery_success(record: &WebhookDeliveryRecord) {
+    tracing::info!(
+        target: "peryx::webhook",
+        delivery = %record.id,
+        index = %record.index,
+        target = %record.target,
+        event = %record.event,
+        attempts = record.attempts,
+        status = ?record.status,
+        response_status = ?record.response_status,
+        next_attempt_at_unix = ?record.next_attempt_at_unix,
+        last_error = ?record.last_error,
+        "webhook delivery succeeded"
+    );
 }
 
 fn record_failure<H: WebhookHost>(
@@ -460,20 +473,16 @@ fn persist_new_attempt<H: WebhookHost>(host: &H, pending: PendingUpdate) -> Resu
 }
 
 fn persist_attempt<H: WebhookHost>(host: &H, pending: &PendingUpdate) -> Result<(), MetaError> {
-    let result = host.update_webhook_delivery(&pending.delivery_id, pending.attempt());
-    match result.as_ref() {
-        Ok(record) if pending.status == WebhookDeliveryStatus::Delivered => {
-            log_delivery_success(
-                record.as_ref(),
-                pending
-                    .response_status
-                    .expect("a successful webhook attempt has a response status"),
-            );
+    match host.update_webhook_delivery(&pending.delivery_id, pending.attempt()) {
+        Ok(record) => {
+            log_delivery_outcome(record.as_ref());
+            Ok(())
         }
-        Ok(record) => log_delivery_failure(record.as_ref()),
-        Err(error) => log_update_error(error),
+        Err(error) => {
+            log_update_error(&error);
+            Err(error)
+        }
     }
-    result.map(drop)
 }
 
 fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<RetryAfter> {
@@ -488,21 +497,20 @@ fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<RetryAfter> {
     })
 }
 
-fn log_delivery_failure(record: Option<&WebhookDeliveryRecord>) {
-    if let Some(record) = record {
-        tracing::warn!(
-            target: "peryx::webhook",
-            delivery = %record.id,
-            index = %record.index,
-            target = %record.target,
-            event = %record.event,
-            attempts = record.attempts,
-            response_status = ?record.response_status,
-            next_attempt_at_unix = ?record.next_attempt_at_unix,
-            status = ?record.status,
-            "webhook delivery failed"
-        );
-    }
+fn log_delivery_failure(record: &WebhookDeliveryRecord) {
+    tracing::warn!(
+        target: "peryx::webhook",
+        delivery = %record.id,
+        index = %record.index,
+        target = %record.target,
+        event = %record.event,
+        attempts = record.attempts,
+        status = ?record.status,
+        response_status = ?record.response_status,
+        next_attempt_at_unix = ?record.next_attempt_at_unix,
+        last_error = ?record.last_error,
+        "webhook delivery failed"
+    );
 }
 
 fn log_update_error(error: &MetaError) {

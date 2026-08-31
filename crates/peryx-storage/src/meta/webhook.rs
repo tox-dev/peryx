@@ -104,21 +104,16 @@ impl MetaStore {
     }
 
     /// Materializes an event's target deliveries without changing identities already committed by an
-    /// earlier attempt.
+    /// earlier attempt, and reports whether the event existed.
     ///
     /// # Errors
     /// Returns a store error if a queue write fails or a stored event cannot be decoded.
     pub fn fan_out_webhook_event(&self, id: &str) -> Result<bool, MetaError> {
-        let Some(event) = self.webhook_event(id)? else {
-            return Ok(false);
-        };
-        for delivery in &event.deliveries {
-            self.enqueue_webhook_event_delivery(delivery)?;
+        let mut materialized = false;
+        while self.enqueue_next_webhook_event_delivery(id)? {
+            materialized = true;
         }
-        let txn = self.db.begin_write()?;
-        txn.open_table(WEBHOOK_EVENT)?.remove(id)?;
-        txn.commit()?;
-        Ok(true)
+        Ok(materialized)
     }
 
     /// Returns the oldest event whose target fan-out has not completed.
@@ -131,31 +126,39 @@ impl MetaStore {
         Ok(events.first()?.map(|(id, _)| id.value().to_owned()))
     }
 
-    fn webhook_event(&self, id: &str) -> Result<Option<WebhookEventRecord>, MetaError> {
-        let txn = self.db.begin_read()?;
-        let events = txn.open_table(WEBHOOK_EVENT)?;
-        Ok(events
-            .get(id)?
-            .map(|value| serde_json::from_slice(value.value()))
-            .transpose()?)
-    }
-
-    fn enqueue_webhook_event_delivery(&self, delivery: &WebhookDeliveryRecord) -> Result<(), MetaError> {
+    /// Moves one target out of the outbox record and into the queue, so a fan-out replayed after a
+    /// crash sees only the targets that never committed and terminal cleanup cannot resurrect one.
+    fn enqueue_next_webhook_event_delivery(&self, event_id: &str) -> Result<bool, MetaError> {
         let txn = self.db.begin_write()?;
-        {
-            let mut deliveries = txn.open_table(WEBHOOK_DELIVERY)?;
-            if deliveries.get(delivery.id.as_str())?.is_some() {
-                return Ok(());
+        let delivery = {
+            let mut events = txn.open_table(WEBHOOK_EVENT)?;
+            let stored = events
+                .get(event_id)?
+                .map(|value| serde_json::from_slice::<WebhookEventRecord>(value.value()))
+                .transpose()?;
+            let Some(mut event) = stored else {
+                return Ok(false);
+            };
+            let delivery = event.deliveries.remove(0);
+            if event.deliveries.is_empty() {
+                events.remove(event_id)?;
+            } else {
+                let bytes = serde_json::to_vec(&event)?;
+                events.insert(event_id, bytes.as_slice())?;
             }
-            let bytes = serde_json::to_vec(delivery)?;
-            deliveries.insert(delivery.id.as_str(), bytes.as_slice())?;
+            delivery
+        };
+        {
+            let bytes = serde_json::to_vec(&delivery)?;
+            txn.open_table(WEBHOOK_DELIVERY)?
+                .insert(delivery.id.as_str(), bytes.as_slice())?;
             txn.open_table(WEBHOOK_DUE)?.insert(
                 due_key(delivery.created_at_unix, &delivery.id).as_str(),
                 delivery.id.as_str(),
             )?;
         }
         txn.commit()?;
-        Ok(())
+        Ok(true)
     }
 
     /// Returns due deliveries in due-time order, at most one per `(index, target)`, excluding active
@@ -203,7 +206,7 @@ impl MetaStore {
                     damaged_due_keys.push(key.value().to_owned());
                     continue;
                 };
-                if record.status != WebhookDeliveryStatus::Pending || record.next_attempt_at_unix != Some(due_at) {
+                if record.next_attempt_at_unix != Some(due_at) {
                     cleanup.dangling_due_rows += 1;
                     damaged_due_keys.push(key.value().to_owned());
                     continue;
@@ -250,7 +253,7 @@ impl MetaStore {
             let Ok(record) = serde_json::from_slice::<WebhookDeliveryRecord>(value.value()) else {
                 continue;
             };
-            if record.status == WebhookDeliveryStatus::Pending && record.next_attempt_at_unix == Some(due_at) {
+            if record.next_attempt_at_unix == Some(due_at) {
                 return Ok(Some(due_at));
             }
         }
@@ -258,6 +261,9 @@ impl MetaStore {
     }
 
     /// Returns the updated record or `None` when the delivery no longer exists.
+    ///
+    /// A terminal attempt drops the row: only the returned record carries the outcome, so the queue
+    /// stays proportional to outstanding work rather than to lifetime event volume.
     ///
     /// # Errors
     /// Returns a store error if the write fails or the record cannot be decoded or encoded.
@@ -286,14 +292,18 @@ impl MetaStore {
         record.next_attempt_at_unix = attempt.next_attempt_at_unix;
         record.response_status = attempt.response_status;
         record.last_error = attempt.last_error.map(str::to_owned);
+        let pending = record.status == WebhookDeliveryStatus::Pending;
         {
-            let bytes = serde_json::to_vec(&record)?;
-            txn.open_table(WEBHOOK_DELIVERY)?.insert(id, bytes.as_slice())?;
-            if record.status == WebhookDeliveryStatus::Pending
-                && let Some(next) = record.next_attempt_at_unix
-            {
-                txn.open_table(WEBHOOK_DUE)?.insert(due_key(next, id).as_str(), id)?;
+            let mut deliveries = txn.open_table(WEBHOOK_DELIVERY)?;
+            if pending {
+                let bytes = serde_json::to_vec(&record)?;
+                deliveries.insert(id, bytes.as_slice())?;
+            } else {
+                deliveries.remove(id)?;
             }
+        }
+        if pending && let Some(next) = record.next_attempt_at_unix {
+            txn.open_table(WEBHOOK_DUE)?.insert(due_key(next, id).as_str(), id)?;
         }
         txn.commit()?;
         Ok(Some(record))
@@ -310,7 +320,7 @@ impl MetaStore {
             .transpose()?)
     }
 
-    /// Returns deliveries in ID order.
+    /// Returns the deliveries still awaiting an outcome, in ID order.
     ///
     /// # Errors
     /// Returns a store error if the read fails or a record cannot be decoded.

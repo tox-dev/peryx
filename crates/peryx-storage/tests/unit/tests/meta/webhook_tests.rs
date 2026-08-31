@@ -164,6 +164,7 @@ fn test_webhook_delivery_update_reschedules_and_finishes() {
 
     assert_eq!(delivered.attempts, 2);
     assert_eq!(delivered.status, WebhookDeliveryStatus::Delivered);
+    assert_eq!(store.get_webhook_delivery(&id).unwrap(), None);
     assert_eq!(store.next_webhook_delivery_at().unwrap(), None);
     assert!(store.list_due_webhook_deliveries(100, 10, &none()).unwrap().is_empty());
 }
@@ -171,28 +172,22 @@ fn test_webhook_delivery_update_reschedules_and_finishes() {
 #[test]
 fn test_webhook_delivery_update_handles_record_without_due_key() {
     let (_dir, store) = store();
-    let id = store
-        .enqueue_webhook_delivery(NewWebhookDelivery {
-            index: "hosted",
-            target: "ci",
-            event: "upload",
-            payload: r#"{"event":"upload"}"#,
-            created_at_unix: 10,
-        })
-        .unwrap();
-
+    let id = enqueue(&store, "hosted", "ci", 10);
     store
         .update_webhook_delivery(
             &id,
             WebhookDeliveryAttempt {
-                status: WebhookDeliveryStatus::Delivered,
+                status: WebhookDeliveryStatus::Pending,
                 updated_at_unix: 11,
                 next_attempt_at_unix: None,
-                response_status: Some(204),
-                last_error: None,
+                response_status: Some(500),
+                last_error: Some("http status 500"),
             },
         )
+        .unwrap()
         .unwrap();
+    assert_eq!(store.next_webhook_delivery_at().unwrap(), None);
+
     let failed = store
         .update_webhook_delivery(
             &id,
@@ -211,7 +206,77 @@ fn test_webhook_delivery_update_handles_record_without_due_key() {
     assert_eq!(failed.status, WebhookDeliveryStatus::Failed);
     assert_eq!(failed.next_attempt_at_unix, None);
     assert_eq!(failed.last_error.as_deref(), Some("manual terminal update"));
+    assert_eq!(store.get_webhook_delivery(&id).unwrap(), None);
+}
+
+#[test]
+fn test_completed_deliveries_never_return_to_the_fan_out() {
+    let (_dir, store) = store();
+    let event_id = enqueue_event(
+        &store,
+        WebhookEventIntent {
+            index: "hosted".to_owned(),
+            targets: vec!["audit".to_owned(), "deploy".to_owned()],
+            event: "upload".to_owned(),
+            payload: r#"{"event":"upload"}"#.to_owned(),
+            created_at_unix: 10,
+        },
+    )
+    .unwrap();
+    assert!(store.fan_out_webhook_event(&event_id).unwrap());
+    for delivery in store.list_webhook_deliveries().unwrap() {
+        finish(&store, &delivery.id);
+    }
+
+    assert!(!store.fan_out_webhook_event(&event_id).unwrap());
+
+    assert!(store.list_webhook_deliveries().unwrap().is_empty());
     assert_eq!(store.next_webhook_delivery_at().unwrap(), None);
+}
+
+#[test]
+fn test_completed_deliveries_leave_only_outstanding_work_across_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peryx.redb");
+    let store = MetaStore::open(&path).unwrap();
+    let outstanding = enqueue(&store, "hosted", "slow", 10);
+    for round in 0..64 {
+        finish(&store, &enqueue(&store, "hosted", "fast", 11 + round));
+    }
+    drop(store);
+
+    let store = MetaStore::open_existing(&path).unwrap();
+
+    assert_eq!(
+        store
+            .list_webhook_deliveries()
+            .unwrap()
+            .into_iter()
+            .map(|delivery| delivery.id)
+            .collect::<Vec<_>>(),
+        vec![outstanding.clone()]
+    );
+    assert_eq!(store.next_webhook_delivery_at().unwrap(), Some(10));
+    assert_eq!(
+        store.list_due_webhook_deliveries(100, 10, &none()).unwrap()[0].id,
+        outstanding
+    );
+}
+
+fn finish(store: &MetaStore, id: &str) {
+    store
+        .update_webhook_delivery(
+            id,
+            WebhookDeliveryAttempt {
+                status: WebhookDeliveryStatus::Delivered,
+                updated_at_unix: 20,
+                next_attempt_at_unix: None,
+                response_status: Some(204),
+                last_error: None,
+            },
+        )
+        .unwrap()
+        .unwrap();
 }
 
 #[test]
@@ -264,34 +329,17 @@ enum QueueDamage {
     MalformedTimestamp,
     MissingRecord,
     InvalidJson,
-    FinishedRecord,
 }
 
 #[rstest]
 #[case::malformed_timestamp(QueueDamage::MalformedTimestamp, "malformed_due_keys")]
 #[case::missing_record(QueueDamage::MissingRecord, "dangling_due_rows")]
 #[case::invalid_json(QueueDamage::InvalidJson, "malformed_delivery_records")]
-#[case::finished_record(QueueDamage::FinishedRecord, "dangling_due_rows")]
 fn test_webhook_queue_scan_skips_and_cleans_damaged_rows(#[case] damage: QueueDamage, #[case] count: &str) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("peryx.redb");
     let store = MetaStore::open(&path).unwrap();
-    let damaged = matches!(damage, QueueDamage::InvalidJson | QueueDamage::FinishedRecord)
-        .then(|| enqueue(&store, "hosted", "broken", 10));
-    if matches!(damage, QueueDamage::FinishedRecord) {
-        store
-            .update_webhook_delivery(
-                damaged.as_deref().unwrap(),
-                WebhookDeliveryAttempt {
-                    status: WebhookDeliveryStatus::Delivered,
-                    updated_at_unix: 10,
-                    next_attempt_at_unix: None,
-                    response_status: Some(200),
-                    last_error: None,
-                },
-            )
-            .unwrap();
-    }
+    let damaged = matches!(damage, QueueDamage::InvalidJson).then(|| enqueue(&store, "hosted", "broken", 10));
     let healthy = enqueue(&store, "hosted", "healthy", 20);
     drop(store);
     damage_queue(&path, damage, damaged.as_deref());
@@ -351,12 +399,6 @@ fn damage_queue(path: &std::path::Path, damage: QueueDamage, damaged: Option<&st
             txn.open_table(redb::TableDefinition::<&str, &[u8]>::new("webhook_delivery"))
                 .unwrap()
                 .insert(damaged.unwrap(), b"{".as_slice())
-                .unwrap();
-        }
-        QueueDamage::FinishedRecord => {
-            txn.open_table(redb::TableDefinition::<&str, &str>::new("webhook_due"))
-                .unwrap()
-                .insert("09223372036854775818/stale", damaged.unwrap())
                 .unwrap();
         }
     }

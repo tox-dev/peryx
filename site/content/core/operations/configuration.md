@@ -1009,11 +1009,13 @@ HTTP `5xx` responses retry up to five attempts with capped backoff of 5, 15, 45,
 and `429 Too Many Requests` use the same retry path. Other `4xx` responses fail after one attempt.
 
 Redirects also fail after one attempt. Peryx neither follows nor retries a `3xx` response because sending the signed
-payload to a target-selected location could move it outside the configured origin. A `302` stores
+payload to a target-selected location could move it outside the configured origin. A `302` reports
 `webhook target returned redirect 302; redirects are not followed` as its last error.
 
-The delivery log stores the payload, target name, attempt count, next retry time, response status, and last error. It
-does not store webhook secrets.
+A delivery that succeeds or exhausts its attempts leaves the metadata database, so it holds outstanding work rather than
+lifetime event volume. Each outcome goes to the `peryx::webhook` tracing target with the target name, attempt count,
+next retry time, response status, and last error. Neither the database nor the log stores webhook secrets. See the
+[webhook guide](@/core/operations/webhooks.md) for the full retention contract.
 
 ## `[log]`
 

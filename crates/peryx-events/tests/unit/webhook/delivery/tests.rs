@@ -61,38 +61,55 @@ impl WebhookHost for TestHost {
     }
 }
 
-#[rstest]
-#[case::permanent(0, false, WebhookDeliveryStatus::Failed, None)]
-#[case::transient(0, true, WebhookDeliveryStatus::Pending, Some(1_005))]
-#[case::attempt_limit(4, true, WebhookDeliveryStatus::Failed, None)]
-fn test_record_failure_only_reschedules_retriable_responses(
-    #[case] prior_attempts: u16,
-    #[case] retriable: bool,
-    #[case] expected: WebhookDeliveryStatus,
-    #[case] next_attempt_at_unix: Option<i64>,
-) {
+#[test]
+fn test_record_failure_reschedules_a_retriable_response() {
     let dir = tempfile::tempdir().unwrap();
     let host = TestHost {
         webhooks: WebhookRuntime::disabled(),
         meta: MetaStore::open(dir.path().join("peryx.redb")).unwrap(),
         now: AtomicI64::new(1_000),
     };
-    let id = host
-        .meta()
-        .enqueue_webhook_delivery(NewWebhookDelivery {
-            index: "hosted",
-            target: "ci",
-            event: "resource-write",
-            payload: "{}",
-            created_at_unix: 10,
+    let id = enqueue(host.meta(), "ci", 10);
+    let delivery = host.meta().get_webhook_delivery(&id).unwrap().unwrap();
+
+    record_failure(&host, &delivery, host.now(), None, Some(404), "http status 404", true).unwrap();
+
+    assert_eq!(
+        host.meta().get_webhook_delivery(&id).unwrap(),
+        Some(WebhookDeliveryRecord {
+            status: WebhookDeliveryStatus::Pending,
+            attempts: 1,
+            updated_at_unix: 1_000,
+            next_attempt_at_unix: Some(1_005),
+            response_status: Some(404),
+            last_error: Some("http status 404".to_owned()),
+            ..delivery
         })
-        .unwrap();
+    );
+}
+
+#[rstest]
+#[case::permanent(0, false)]
+#[case::attempt_limit(4, true)]
+fn test_record_failure_drops_a_terminal_delivery_after_logging_it(
+    #[case] prior_attempts: u16,
+    #[case] retriable: bool,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("webhook.log");
+    let host = TestHost {
+        webhooks: WebhookRuntime::disabled(),
+        meta: MetaStore::open(dir.path().join("peryx.redb")).unwrap(),
+        now: AtomicI64::new(1_000),
+    };
+    let id = enqueue(host.meta(), "ci", 10);
     for _ in 0..prior_attempts {
         let delivery = host.meta().get_webhook_delivery(&id).unwrap().unwrap();
         record_failure(&host, &delivery, host.now(), None, Some(404), "http status 404", true).unwrap();
     }
-
     let delivery = host.meta().get_webhook_delivery(&id).unwrap().unwrap();
+
+    let guard = tracing::subscriber::set_default(log_subscriber(&log));
     record_failure(
         &host,
         &delivery,
@@ -103,24 +120,19 @@ fn test_record_failure_only_reschedules_retriable_responses(
         retriable,
     )
     .unwrap();
+    drop(guard);
 
-    let stored = host.meta().get_webhook_delivery(&id).unwrap().unwrap();
-    assert_eq!(
-        (
-            stored.status,
-            stored.attempts,
-            stored.next_attempt_at_unix,
-            stored.response_status,
-            stored.last_error.as_deref(),
-        ),
-        (
-            expected,
-            prior_attempts + 1,
-            next_attempt_at_unix,
-            Some(404),
-            Some("http status 404")
-        )
-    );
+    assert_eq!(host.meta().get_webhook_delivery(&id).unwrap(), None);
+    assert_eq!(host.meta().next_webhook_delivery_at().unwrap(), None);
+    let output = std::fs::read_to_string(&log).unwrap();
+    for field in [
+        "status=Failed".to_owned(),
+        format!("attempts={}", prior_attempts + 1),
+        "response_status=Some(404)".to_owned(),
+        r#"last_error=Some("http status 404")"#.to_owned(),
+    ] {
+        assert!(output.contains(&field), "{output}");
+    }
 }
 
 #[test]
@@ -135,14 +147,18 @@ fn test_delivery_logs_report_results_and_storage_errors() {
         .finish();
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
     let id = enqueue(&meta, "ci", 10);
-    let delivery = meta.get_webhook_delivery(&id).unwrap().unwrap();
+    let pending = meta.get_webhook_delivery(&id).unwrap().unwrap();
+    let delivered = WebhookDeliveryRecord {
+        status: WebhookDeliveryStatus::Delivered,
+        response_status: Some(200),
+        ..pending.clone()
+    };
     let error = MetaStore::open(dir.path()).expect_err("opening a directory as a database succeeded");
 
     tracing::subscriber::with_default(subscriber, || {
-        log_delivery_success(Some(&delivery), 200);
-        log_delivery_failure(Some(&delivery));
-        log_delivery_success(None, 200);
-        log_delivery_failure(None);
+        log_delivery_outcome(Some(&delivered));
+        log_delivery_outcome(Some(&pending));
+        log_delivery_outcome(None);
         log_update_error(&error);
     });
 
@@ -154,6 +170,17 @@ fn test_delivery_logs_report_results_and_storage_errors() {
     ] {
         assert_eq!(output.matches(message).count(), 1, "unexpected log count: {message}");
     }
+    assert_eq!(output.matches("status=Pending").count(), 1, "{output}");
+    assert_eq!(output.matches("status=Delivered").count(), 1, "{output}");
+}
+
+fn log_subscriber(path: &std::path::Path) -> impl tracing::Subscriber + Send + Sync + use<> {
+    tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_max_level(tracing::Level::TRACE)
+        .with_writer(std::fs::File::create(path).unwrap())
+        .finish()
 }
 
 fn target_config(name: &str, url: &str) -> WebhookTargetConfig {
@@ -207,6 +234,48 @@ fn test_prepare_skips_targets_not_subscribed_to_the_event() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_committed_event_is_delivered_with_the_signed_payload() {
+    let server = MockServer::start().await;
+    let (request_sender, mut requests) = unbounded_channel();
+    Mock::given(method("POST"))
+        .respond_with(ObservedResponseSequence {
+            statuses: Mutex::new(VecDeque::from([200, 200])),
+            requests: request_sender,
+        })
+        .expect(2)
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let host = Arc::new(TestHost {
+        webhooks: WebhookRuntime::new(vec![target_config("ci", &server.uri())]).unwrap(),
+        meta: MetaStore::open(dir.path().join("peryx.redb")).unwrap(),
+        now: AtomicI64::new(100),
+    });
+
+    let handle = kick(Arc::clone(&host)).unwrap();
+    commit_event(host.as_ref(), &event());
+    let first = requests.recv().await.unwrap();
+    commit_event(host.as_ref(), &event());
+    let second = requests.recv().await.unwrap();
+
+    assert_ne!(first, second);
+    let received = server.received_requests().await.unwrap();
+    assert_eq!(received.len(), 2);
+    assert_eq!(received[0].headers["x-peryx-event"], "resource-write");
+    assert_eq!(received[0].headers["x-peryx-timestamp"], "100");
+    assert_eq!(
+        received[0].headers["x-peryx-signature"],
+        signature("test-webhook-signing-secret-32-bytes", 100, &first, &received[0].body)
+    );
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&received[0].body).unwrap(),
+        serde_json::json!({"key": "value"})
+    );
+    handle.shutdown().await.unwrap();
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn test_sustained_delivery_keeps_only_outstanding_work() {
     let mut healthy = observed_status_server(200);
     let dir = tempfile::tempdir().unwrap();
     let host = Arc::new(TestHost {
@@ -214,39 +283,25 @@ async fn test_committed_event_is_delivered_with_the_signed_payload() {
         meta: MetaStore::open(dir.path().join("peryx.redb")).unwrap(),
         now: AtomicI64::new(100),
     });
+    let outstanding = enqueue(host.meta(), "later", 10_000);
+    let mut state = DeliveryState::default();
 
-    let handle = kick(Arc::clone(&host)).unwrap();
-    commit_event(host.as_ref(), &event());
-    healthy.requests.recv().await.unwrap();
-    let id = host.meta().list_webhook_deliveries().unwrap()[0].id.clone();
-    commit_event(host.as_ref(), &event());
-    healthy.requests.recv().await.unwrap();
+    for _ in 0..32 {
+        enqueue(host.meta(), "ci", 10);
+        deliver_due(&host, &mut state).await.unwrap();
+        healthy.requests.recv().await.unwrap();
+        assert_eq!(
+            host.meta()
+                .list_webhook_deliveries()
+                .unwrap()
+                .into_iter()
+                .map(|delivery| delivery.id)
+                .collect::<Vec<_>>(),
+            vec![outstanding.clone()]
+        );
+    }
 
-    let delivered = host.meta().get_webhook_delivery(&id).unwrap().unwrap();
-
-    assert_eq!(
-        (
-            delivered.target.as_str(),
-            delivered.event.as_str(),
-            delivered.status,
-            delivered.attempts,
-            delivered.response_status,
-            delivered.last_error.as_deref(),
-        ),
-        (
-            "ci",
-            "resource-write",
-            WebhookDeliveryStatus::Delivered,
-            1,
-            Some(200),
-            None,
-        )
-    );
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&delivered.payload).unwrap(),
-        serde_json::json!({"key": "value"})
-    );
-    handle.shutdown().await.unwrap();
+    assert_eq!(host.meta().next_webhook_delivery_at().unwrap(), Some(10_000));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -272,29 +327,25 @@ async fn test_worker_recovers_an_event_intent_after_store_reopen() {
     assert_eq!(audit.requests.try_recv(), Err(TryRecvError::Empty));
     assert_eq!(deploy.requests.try_recv(), Err(TryRecvError::Empty));
     drop(meta);
-    let host = Arc::new(TestHost {
-        webhooks: WebhookRuntime::new(vec![
+    let (host, mut calls) = faulted_host(
+        WebhookRuntime::new(vec![
             target_config("audit", &audit.url),
             target_config("deploy", &deploy.url),
         ])
         .unwrap(),
-        meta: MetaStore::open_existing(path).unwrap(),
-        now: AtomicI64::new(100),
-    });
+        MetaStore::open_existing(path).unwrap(),
+        0,
+        0,
+    );
 
     let handle = kick(Arc::clone(&host)).unwrap();
     audit.requests.recv().await.unwrap();
     deploy.requests.recv().await.unwrap();
-    let deliveries = host.meta().list_webhook_deliveries().unwrap();
+    for _ in 0..2 {
+        assert!(!receive_store_call(&mut calls, StoreOperation::Update).await.failed);
+    }
 
-    assert_eq!(deliveries.len(), 2);
-    assert_eq!(
-        deliveries
-            .iter()
-            .map(|delivery| delivery.target.as_str())
-            .collect::<std::collections::HashSet<_>>(),
-        std::collections::HashSet::from(["audit", "deploy"])
-    );
+    assert!(host.meta().list_webhook_deliveries().unwrap().is_empty());
     assert_eq!(host.meta().next_webhook_event_id().unwrap(), None);
     handle.shutdown().await.unwrap();
 }
@@ -682,10 +733,7 @@ async fn test_failed_status_write_suppresses_resend_and_retains_the_attempt() {
     let mut initial_updates = receive_updates(&mut calls, [&unstable_id, &healthy_id]).await;
     assert!(initial_updates.remove(&unstable_id).unwrap().failed);
     assert!(!initial_updates.remove(&healthy_id).unwrap().failed);
-    assert_eq!(
-        host.meta().get_webhook_delivery(&healthy_id).unwrap().unwrap().status,
-        WebhookDeliveryStatus::Delivered
-    );
+    assert_eq!(host.meta().get_webhook_delivery(&healthy_id).unwrap(), None);
     for _ in 0..2 {
         notify(host.as_ref());
         assert!(receive_update(&mut calls, &unstable_id).await.failed);
@@ -721,11 +769,7 @@ async fn test_failed_status_write_suppresses_resend_and_retains_the_attempt() {
     notify(host.as_ref());
     assert_eq!(unstable_requests.recv().await.unwrap(), unstable_id);
     assert!(!receive_update(&mut calls, &unstable_id).await.failed);
-    let delivery = host.meta().get_webhook_delivery(&unstable_id).unwrap().unwrap();
-    assert_eq!(
-        (delivery.status, delivery.attempts),
-        (WebhookDeliveryStatus::Delivered, 2)
-    );
+    assert!(host.meta().list_webhook_deliveries().unwrap().is_empty());
 
     handle.shutdown().await.unwrap();
     notify(host.as_ref());
@@ -738,6 +782,7 @@ async fn test_failed_status_write_suppresses_resend_and_retains_the_attempt() {
 #[tokio::test]
 async fn test_delivery_records_a_target_removed_from_configuration() {
     let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("webhook.log");
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
     let id = enqueue(&meta, "removed", 10);
     let (host, mut calls) = faulted_host(
@@ -746,27 +791,22 @@ async fn test_delivery_records_a_target_removed_from_configuration() {
         0,
         0,
     );
+    let guard = tracing::subscriber::set_default(log_subscriber(&log));
     let handle = kick(Arc::clone(&host)).unwrap();
 
     let update = receive_update(&mut calls, &id).await;
     assert!(!update.failed);
     assert!(!update.missing);
-    let delivery = host.meta().get_webhook_delivery(&id).unwrap().unwrap();
-    assert_eq!(
-        (
-            delivery.status,
-            delivery.attempts,
-            delivery.next_attempt_at_unix,
-            delivery.last_error.as_deref(),
-        ),
-        (
-            WebhookDeliveryStatus::Failed,
-            1,
-            None,
-            Some("webhook target is not configured"),
-        )
-    );
     handle.shutdown().await.unwrap();
+    drop(guard);
+
+    assert_eq!(host.meta().get_webhook_delivery(&id).unwrap(), None);
+    assert_eq!(host.meta().next_webhook_delivery_at().unwrap(), None);
+    let output = std::fs::read_to_string(&log).unwrap();
+    assert!(
+        output.contains(r#"last_error=Some("webhook target is not configured")"#),
+        "{output}"
+    );
 }
 
 #[tokio::test]
@@ -939,20 +979,9 @@ async fn test_scheduled_wait_resumes_early_on_notification() {
         .unwrap();
 }
 
-#[rstest]
-#[case::redirect(
-    302,
-    WebhookDeliveryStatus::Failed,
-    "webhook target returned redirect 302; redirects are not followed"
-)]
-#[case::transient(500, WebhookDeliveryStatus::Pending, "http status 500")]
 #[tokio::test]
-async fn test_delivery_records_http_failures(
-    #[case] status: u16,
-    #[case] expected: WebhookDeliveryStatus,
-    #[case] message: &str,
-) {
-    let server = observed_status_server(status);
+async fn test_delivery_reschedules_a_transient_http_failure() {
+    let server = observed_status_server(500);
     let dir = tempfile::tempdir().unwrap();
     let host = Arc::new(TestHost {
         webhooks: WebhookRuntime::new(vec![target_config("ci", &server.url)]).unwrap(),
@@ -964,9 +993,33 @@ async fn test_delivery_records_http_failures(
     deliver_due(&host, &mut DeliveryState::default()).await.unwrap();
 
     let delivery = host.meta().get_webhook_delivery(&id).unwrap().unwrap();
-    assert_eq!(delivery.status, expected);
-    assert_eq!(delivery.response_status, Some(status));
-    assert_eq!(delivery.last_error.as_deref(), Some(message));
+    assert_eq!(delivery.status, WebhookDeliveryStatus::Pending);
+    assert_eq!(delivery.response_status, Some(500));
+    assert_eq!(delivery.last_error.as_deref(), Some("http status 500"));
+}
+
+#[tokio::test]
+async fn test_delivery_drops_a_redirect_after_logging_its_reason() {
+    let server = observed_status_server(302);
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("webhook.log");
+    let host = Arc::new(TestHost {
+        webhooks: WebhookRuntime::new(vec![target_config("ci", &server.url)]).unwrap(),
+        meta: MetaStore::open(dir.path().join("peryx.redb")).unwrap(),
+        now: AtomicI64::new(100),
+    });
+    let id = enqueue(host.meta(), "ci", 10);
+
+    let guard = tracing::subscriber::set_default(log_subscriber(&log));
+    deliver_due(&host, &mut DeliveryState::default()).await.unwrap();
+    drop(guard);
+
+    assert_eq!(host.meta().get_webhook_delivery(&id).unwrap(), None);
+    let output = std::fs::read_to_string(&log).unwrap();
+    assert!(
+        output.contains(r#"last_error=Some("webhook target returned redirect 302; redirects are not followed")"#),
+        "{output}"
+    );
 }
 
 #[rstest]

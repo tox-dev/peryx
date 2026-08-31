@@ -72,15 +72,23 @@ same retry path. A valid `Retry-After` response delays the next attempt when it 
 the stored deadline survives a process restart. Other `4xx` responses are final.
 
 Redirects are final after the first attempt. peryx neither follows nor retries them because sending the signed payload
-to a target-selected location could move it outside the configured origin. A `302` stores
-`webhook target returned redirect 302; redirects are not followed` in the delivery log.
+to a target-selected location could move it outside the configured origin. A `302` reports
+`webhook target returned redirect 302; redirects are not followed` as its outcome.
 
 Delivery is at least once and does not preserve mutation order. If the receiver accepts a request but peryx loses the
 process before recording its result, the next process may send the request again. Retries keep the same
 `X-Peryx-Delivery` value so receivers can deduplicate them.
 
-The delivery log stores the target name, attempt count, next retry, response status, and bounded error text. It excludes
-secrets, signatures, credentials, URL queries, and response bodies.
+## Retention
+
+The metadata database holds a row only while a delivery is outstanding: queued, in flight, or waiting on a retry
+deadline. A delivery that succeeds or exhausts its attempts leaves no row, so the database tracks pending work rather
+than lifetime event volume.
+
+Each attempt's outcome goes to the `peryx::webhook` tracing target instead: delivery identifier, index, target name,
+event name, attempt count, final status, response status, next retry, and bounded error text. It excludes payloads,
+secrets, signatures, credentials, URL queries, and response bodies. Collect that target to keep delivery history for as
+long as your operations require.
 
 ## Related
 

@@ -97,15 +97,31 @@ fn assert_targets(deliveries: &[WebhookDeliveryRecord]) {
     );
 }
 
-fn assert_recovered(store: &MetaStore, event_id: &str, retained: &[String]) {
+/// A completed target leaves the queue, so recovery must reach both targets exactly once across the
+/// rows it still holds and the one already finished.
+fn assert_recovered(store: &MetaStore, event_id: &str, retained: &[String], completed: Option<&WebhookDeliveryRecord>) {
     assert!(store.fan_out_webhook_event(event_id).unwrap());
     assert_eq!(store.next_webhook_event_id().unwrap(), None);
     let deliveries = store.list_webhook_deliveries().unwrap();
-    assert_targets(&deliveries);
+    let queued = deliveries
+        .iter()
+        .map(|delivery| delivery.id.as_str())
+        .collect::<HashSet<_>>();
+    let done = completed.map(|delivery| delivery.id.as_str());
     assert!(
         retained
             .iter()
-            .all(|id| deliveries.iter().any(|delivery| &delivery.id == id))
+            .all(|id| queued.contains(id.as_str()) || done == Some(id.as_str()))
+    );
+    assert!(done.is_none_or(|id| !queued.contains(id)));
+    assert_eq!(queued.len() + usize::from(done.is_some()), 2);
+    assert_eq!(
+        deliveries
+            .iter()
+            .chain(completed)
+            .map(|delivery| delivery.target.as_str())
+            .collect::<HashSet<_>>(),
+        HashSet::from(["audit", "deploy"])
     );
 }
 
@@ -116,19 +132,20 @@ fn test_webhook_event_recovers_first_and_later_queue_write_failures_without_dupl
     for fail_after in 0..256 {
         let (store, inner, fault, event_id) = seeded_store();
         fault.arm(fail_after);
-        store.fan_out_webhook_event(&event_id).unwrap_err();
+        let outcome = store.fan_out_webhook_event(&event_id);
         fault.disable();
         drop(store);
         let store = fault::reopen(&inner, &fault);
         let deliveries = store.list_webhook_deliveries().unwrap();
         if let Some(pending) = store.next_webhook_event_id().unwrap() {
+            assert!(outcome.is_err());
             assert_eq!(pending, event_id);
             let retained = deliveries
                 .iter()
                 .map(|delivery| delivery.id.clone())
                 .collect::<Vec<_>>();
             recovered_counts.insert(deliveries.len());
-            if let Some(delivery) = deliveries.first() {
+            let completed = deliveries.first().map(|delivery| {
                 store
                     .update_webhook_delivery(
                         &delivery.id,
@@ -140,17 +157,20 @@ fn test_webhook_event_recovers_first_and_later_queue_write_failures_without_dupl
                             last_error: None,
                         },
                     )
-                    .unwrap();
-            }
-            assert_recovered(&store, &event_id, &retained);
+                    .unwrap()
+                    .expect("a queued delivery accepts its outcome")
+            });
+            assert_recovered(&store, &event_id, &retained, completed.as_ref());
         } else {
             assert_targets(&deliveries);
-            committed_after_error = true;
+            committed_after_error |= outcome.is_err();
         }
-        if recovered_counts == HashSet::from([0, 1, 2]) && committed_after_error {
+        if recovered_counts == HashSet::from([0, 1]) && committed_after_error {
             break;
         }
     }
-    assert_eq!(recovered_counts, HashSet::from([0, 1, 2]));
+    // Draining the outbox in each delivery's own transaction rules out a pending event whose targets
+    // are all already queued, so a replay can never enqueue one twice.
+    assert_eq!(recovered_counts, HashSet::from([0, 1]));
     assert!(committed_after_error);
 }
