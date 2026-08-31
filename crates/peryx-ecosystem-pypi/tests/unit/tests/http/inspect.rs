@@ -41,9 +41,9 @@ async fn test_inspect_reads_member_content() {
 #[tokio::test]
 async fn test_inspect_reads_query_member_content() {
     let h = harness().await;
-    let digest = put_local_file(&h.state, "peryxpkg 1.0#x?.whl", &fixture_wheel(), "1.0");
+    let digest = put_local_file(&h.state, "peryxpkg-1.0 x#?.whl", &fixture_wheel(), "1.0");
     let uri = format!(
-        "/hosted/inspect/{}/peryxpkg%201.0%23x%3F.whl?member=peryxpkg-1.0.dist-info%2FMETADATA",
+        "/hosted/inspect/{}/peryxpkg-1.0%20x%23%3F.whl?member=peryxpkg-1.0.dist-info%2FMETADATA",
         digest.as_str()
     );
     let (status, headers, body) = get(&h.state, &uri, None).await;

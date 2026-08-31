@@ -260,11 +260,7 @@ async fn test_metadata_backfill_reads_wheel_ranges() {
         let digest = Digest::of(&wheel);
         let filename = "peryxpkg-1.0-py3-none-any.whl";
         let file_url = format!("{}/files/{filename}", h.server.uri());
-        h.state
-            .serving
-            .meta
-            .put_file_url(digest.as_str(), &file_url, "pypi")
-            .unwrap();
+        publish_file(&h.state, "pypi", filename, &digest, &file_url);
         Mock::given(method("HEAD"))
             .and(path(format!("/files/{filename}")))
             .respond_with(
@@ -305,11 +301,13 @@ async fn test_metadata_backfill_upstream_range_error_is_bad_gateway() {
     let wheel = fixture_wheel_with_metadata(b"Metadata-Version: 2.1\nName: peryxpkg\nVersion: 1.0\n");
     let digest = Digest::of(&wheel);
     let filename = "peryxpkg-1.0-py3-none-any.whl";
-    h.state
-        .serving
-        .meta
-        .put_file_url(digest.as_str(), &format!("{}/files/{filename}", h.server.uri()), "pypi")
-        .unwrap();
+    publish_file(
+        &h.state,
+        "pypi",
+        filename,
+        &digest,
+        &format!("{}/files/{filename}", h.server.uri()),
+    );
     Mock::given(method("HEAD"))
         .and(path(format!("/files/{filename}")))
         .respond_with(ResponseTemplate::new(500))
@@ -329,11 +327,13 @@ async fn test_metadata_backfill_reads_cached_wheel_blob() {
     let wheel = fixture_wheel_with_metadata(metadata);
     let digest = h.state.serving.blobs.put_bytes(&wheel).await.unwrap();
     let filename = "peryxpkg-1.0-py3-none-any.whl";
-    h.state
-        .serving
-        .meta
-        .put_file_url(digest.as_str(), &format!("{}/files/{filename}", h.server.uri()), "pypi")
-        .unwrap();
+    publish_file(
+        &h.state,
+        "pypi",
+        filename,
+        &digest,
+        &format!("{}/files/{filename}", h.server.uri()),
+    );
 
     let uri = format!("/pypi/files/{}/{filename}.metadata", digest.as_str());
     let (status, _, body) = get(&h.state, &uri, None).await;
@@ -349,11 +349,7 @@ async fn test_metadata_backfill_downloads_when_ranges_fail() {
     let digest = Digest::of(&wheel);
     let filename = "peryxpkg-1.0-py3-none-any.whl";
     let file_url = format!("{}/files/{filename}", h.server.uri());
-    h.state
-        .serving
-        .meta
-        .put_file_url(digest.as_str(), &file_url, "pypi")
-        .unwrap();
+    publish_file(&h.state, "pypi", filename, &digest, &file_url);
     Mock::given(method("HEAD"))
         .and(path(format!("/files/{filename}")))
         .respond_with(ResponseTemplate::new(405))
@@ -381,11 +377,13 @@ async fn test_metadata_backfill_downloads_when_the_artifact_changes_between_rang
     let wheel = fixture_wheel_with_metadata(metadata);
     let digest = Digest::of(&wheel);
     let filename = "peryxpkg-1.0-py3-none-any.whl";
-    h.state
-        .serving
-        .meta
-        .put_file_url(digest.as_str(), &format!("{}/files/{filename}", h.server.uri()), "pypi")
-        .unwrap();
+    publish_file(
+        &h.state,
+        "pypi",
+        filename,
+        &digest,
+        &format!("{}/files/{filename}", h.server.uri()),
+    );
     Mock::given(method("HEAD"))
         .and(path(format!("/files/{filename}")))
         .respond_with(
@@ -422,11 +420,13 @@ async fn test_metadata_backfill_downloads_sdist_without_ranges() {
     let sdist = fixture_sdist();
     let digest = Digest::of(&sdist);
     let filename = "peryxpkg-1.0.tar.gz";
-    h.state
-        .serving
-        .meta
-        .put_file_url(digest.as_str(), &format!("{}/files/{filename}", h.server.uri()), "pypi")
-        .unwrap();
+    publish_file(
+        &h.state,
+        "pypi",
+        filename,
+        &digest,
+        &format!("{}/files/{filename}", h.server.uri()),
+    );
     Mock::given(method("GET"))
         .and(path(format!("/files/{filename}")))
         .respond_with(ResponseTemplate::new(200).set_body_bytes(sdist))
@@ -445,11 +445,13 @@ async fn test_metadata_backfill_missing_wheel_metadata_is_not_found() {
     let wheel = fixture_wheel_without_metadata();
     let digest = Digest::of(&wheel);
     let filename = "peryxpkg-1.0-py3-none-any.whl";
-    h.state
-        .serving
-        .meta
-        .put_file_url(digest.as_str(), &format!("{}/files/{filename}", h.server.uri()), "pypi")
-        .unwrap();
+    publish_file(
+        &h.state,
+        "pypi",
+        filename,
+        &digest,
+        &format!("{}/files/{filename}", h.server.uri()),
+    );
     Mock::given(method("HEAD"))
         .and(path(format!("/files/{filename}")))
         .respond_with(
@@ -479,11 +481,13 @@ async fn test_metadata_backfill_downloads_when_range_zip_is_unsupported() {
     let wheel = fixture_wheel_with_metadata(metadata);
     let digest = Digest::of(&wheel);
     let filename = "peryxpkg-1.0-py3-none-any.whl";
-    h.state
-        .serving
-        .meta
-        .put_file_url(digest.as_str(), &format!("{}/files/{filename}", h.server.uri()), "pypi")
-        .unwrap();
+    publish_file(
+        &h.state,
+        "pypi",
+        filename,
+        &digest,
+        &format!("{}/files/{filename}", h.server.uri()),
+    );
     Mock::given(method("HEAD"))
         .and(path(format!("/files/{filename}")))
         .respond_with(
@@ -515,11 +519,13 @@ async fn test_metadata_backfill_does_not_request_a_directory_span_outside_the_ar
     let filename = "peryxpkg-1.0-py3-none-any.whl";
     let file_path = format!("/files/{filename}");
     let (head_len, directory_len, directory_offset) = (200_usize, 100_u32, 150_u32);
-    h.state
-        .serving
-        .meta
-        .put_file_url(digest.as_str(), &format!("{}{file_path}", h.server.uri()), "pypi")
-        .unwrap();
+    publish_file(
+        &h.state,
+        "pypi",
+        filename,
+        &digest,
+        &format!("{}{file_path}", h.server.uri()),
+    );
     Mock::given(method("HEAD"))
         .and(path(&file_path))
         .respond_with(
@@ -665,15 +671,13 @@ async fn test_metadata_backfill_scopes_ignored_ranges_to_one_artifact() {
     let first = fixture_wheel_with_metadata(b"Metadata-Version: 2.1\nName: peryxpkg\nVersion: 1.0\n");
     let first_digest = Digest::of(&first);
     let first_filename = "peryxpkg-1.0-py3-none-any.whl";
-    h.state
-        .serving
-        .meta
-        .put_file_url(
-            first_digest.as_str(),
-            &format!("{}/files/{first_filename}", h.server.uri()),
-            "pypi",
-        )
-        .unwrap();
+    publish_file(
+        &h.state,
+        "pypi",
+        first_filename,
+        &first_digest,
+        &format!("{}/files/{first_filename}", h.server.uri()),
+    );
     Mock::given(method("HEAD"))
         .and(path(format!("/files/{first_filename}")))
         .respond_with(ResponseTemplate::new(405))
@@ -692,15 +696,13 @@ async fn test_metadata_backfill_scopes_ignored_ranges_to_one_artifact() {
     let second = fixture_wheel_with_body_and_metadata("2.0", b"VALUE = 2\n", Some(second_metadata));
     let second_digest = Digest::of(&second);
     let second_filename = "peryxpkg-2.0-py3-none-any.whl";
-    h.state
-        .serving
-        .meta
-        .put_file_url(
-            second_digest.as_str(),
-            &format!("{}/files/{second_filename}", h.server.uri()),
-            "pypi",
-        )
-        .unwrap();
+    publish_file(
+        &h.state,
+        "pypi",
+        second_filename,
+        &second_digest,
+        &format!("{}/files/{second_filename}", h.server.uri()),
+    );
     Mock::given(method("HEAD"))
         .and(path(format!("/files/{second_filename}")))
         .respond_with(
@@ -730,11 +732,13 @@ async fn test_metadata_backfill_reads_empty_stored_range_metadata() {
     let wheel = fixture_wheel_with_metadata_compression(b"", zip::CompressionMethod::Stored);
     let digest = Digest::of(&wheel);
     let filename = "peryxpkg-1.0-py3-none-any.whl";
-    h.state
-        .serving
-        .meta
-        .put_file_url(digest.as_str(), &format!("{}/files/{filename}", h.server.uri()), "pypi")
-        .unwrap();
+    publish_file(
+        &h.state,
+        "pypi",
+        filename,
+        &digest,
+        &format!("{}/files/{filename}", h.server.uri()),
+    );
     Mock::given(method("HEAD"))
         .and(path(format!("/files/{filename}")))
         .respond_with(

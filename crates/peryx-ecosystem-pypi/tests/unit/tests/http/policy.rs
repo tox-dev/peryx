@@ -131,6 +131,7 @@ async fn test_policy_rejects_direct_download() {
     });
     let h = harness_with_policies(true, true, Policy::default(), Policy::default(), overlay_policy).await;
     let digest = Digest::of(b"wheel");
+    publish_flask_wheel(&h, &digest);
     let uri = format!("/root/pypi/files/{}/flask-1.0-py3-none-any.whl", digest.as_str());
 
     let (status, _, body) = get(&h.state, &uri, Some("application/json")).await;
@@ -149,6 +150,7 @@ async fn test_policy_sizes_a_cached_download_from_the_stored_blob() {
     let h = harness_with_policies(true, true, Policy::default(), Policy::default(), overlay_policy).await;
     let wheel = b"wheelcontent";
     let digest = h.state.serving.blobs.put_bytes(wheel).await.unwrap();
+    publish_flask_wheel(&h, &digest);
     let uri = format!("/root/pypi/files/{}/flask-1.0-py3-none-any.whl", digest.as_str());
 
     let (status, _, body) = get(&h.state, &uri, None).await;
@@ -163,6 +165,7 @@ async fn test_policy_denies_a_cached_download_over_the_size_limit() {
     });
     let h = harness_with_policies(true, true, Policy::default(), Policy::default(), overlay_policy).await;
     let digest = h.state.serving.blobs.put_bytes(b"wheelcontent").await.unwrap();
+    publish_flask_wheel(&h, &digest);
     let uri = format!("/root/pypi/files/{}/flask-1.0-py3-none-any.whl", digest.as_str());
 
     let (status, _, body) = get(&h.state, &uri, Some("application/json")).await;
@@ -597,6 +600,7 @@ async fn test_policy_rejects_archive_inspection() {
     });
     let h = harness_with_policies(true, true, Policy::default(), Policy::default(), overlay_policy).await;
     let digest = Digest::of(b"wheel");
+    publish_flask_wheel(&h, &digest);
     let uri = format!("/root/pypi/inspect/{}/flask-1.0-py3-none-any.whl", digest.as_str());
 
     let (status, headers, body) = get(&h.state, &uri, None).await;
@@ -607,4 +611,16 @@ async fn test_policy_rejects_archive_inspection() {
     assert_eq!(denial["action"], "serve");
     assert_eq!(denial["project"], "flask");
     assert_eq!(denial["rule"], "wheel-python-block-list");
+}
+
+/// The download gate releases bytes only for a pair the index publishes, so a policy decision is
+/// asked about an artifact the cached layer actually listed.
+fn publish_flask_wheel(h: &Harness, digest: &Digest) {
+    crate::tests::register_publication(
+        &h.state.serving.meta,
+        "pypi",
+        "flask-1.0-py3-none-any.whl",
+        digest.as_str(),
+        None,
+    );
 }

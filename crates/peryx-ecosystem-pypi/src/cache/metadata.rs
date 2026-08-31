@@ -90,6 +90,35 @@ pub async fn metadata_bytes(
     write_generated_metadata(state, artifact_digest, route, artifact_filename).await
 }
 
+/// Whether `index` publishes `filename` at `digest`.
+///
+/// The blob store and the digest-to-source locator are both process-wide, so any route that takes a
+/// digest from its URL can reach bytes another index cached unless it first proves the pair belongs
+/// to the index it names. This is that proof, and it is the only membership rule peryx applies:
+/// every route that releases artifact bytes reaches it through the download gate. See #1308.
+///
+/// A sidecar is published by its artifact - both carry the artifact's digest in the URL - so the
+/// pair is judged on the artifact's own publication.
+///
+/// # Errors
+/// Returns [`CacheError`] when the store cannot be read.
+pub fn publishes_file(
+    state: &ServingState,
+    index: &Index,
+    filename: &str,
+    digest: &Digest,
+) -> Result<bool, CacheError> {
+    let artifact = super::artifact_of(filename);
+    Ok(winning_publication(
+        state,
+        index,
+        &crate::project_of_filename(artifact),
+        digest.as_str(),
+        artifact,
+    )?
+    .is_some())
+}
+
 /// The publication of `filename`/`sha256` that `index` serves, or `None` when it serves none.
 ///
 /// A virtual index answers with the first leaf in shadow order that published the file, the leaf

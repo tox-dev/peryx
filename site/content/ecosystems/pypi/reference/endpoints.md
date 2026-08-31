@@ -255,9 +255,17 @@ reads a `.tar.bz2`, `.tar.xz`, `.tar.Z`, `.tgz`, or `.egg` version from its file
 carrying the extension into the version string.
 
 Inspection releases the same bytes a download does, so it runs the file route's gates before it opens an archive: the
-index serve policy at the `serve` action, then the project's stored status. A quarantined project or a filename the
-policy denies answers `403` through `inspect` and through the archive browser exactly as it does through `files`, and
-the refusal lands before peryx fetches the artifact from upstream.
+project's stored status, then the pair's membership of the addressed index, then the index serve policy at the `serve`
+action. A quarantined project or a filename the policy denies answers `403` through `inspect` and through the archive
+browser exactly as it does through `files`, and the refusal lands before peryx fetches the artifact from upstream.
+
+The blob store is content-addressed and shared by every index, so a route releases bytes only for a `sha256`/`filename`
+pair the index it names publishes: a file on the page that index cached, or an upload it holds. A virtual index
+publishes whatever its layers do. A pair the index does not publish answers `404` in the same status, headers, and body
+as a digest no index has ever held, so a caller who learns a private artifact's digest cannot confirm it exists by
+asking a public index for it. That answer stands for `GET` and `HEAD` alike and ahead of any `If-None-Match`, because a
+validator cannot select a representation the index does not serve. The `.metadata` and `.provenance` siblings carry
+their artifact's digest, so they are judged on the artifact's own publication.
 
 ## Rate limits
 

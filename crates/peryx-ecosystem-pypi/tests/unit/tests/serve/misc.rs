@@ -151,6 +151,8 @@ async fn test_artifact_path_rejects_an_invalid_digest() {
     assert!(err.to_string().contains("invalid sha256 digest"), "{err}");
 }
 
+/// A digest the index never published is refused in the words it answers an unknown digest with,
+/// so browsing cannot report on what another index holds. See #1308.
 #[tokio::test]
 async fn test_artifact_path_rejects_a_digest_that_is_not_a_project_member() {
     let h = harness().await;
@@ -166,7 +168,7 @@ async fn test_artifact_path_rejects_a_digest_that_is_not_a_project_member() {
     get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
 
     let foreign = Digest::of(b"another project's wheel");
-    let err = browse_artifact(
+    let refused = browse_artifact(
         h.state.serving.clone(),
         0,
         "pypi",
@@ -175,7 +177,54 @@ async fn test_artifact_path_rejects_a_digest_that_is_not_a_project_member() {
     )
     .await
     .unwrap_err();
-    assert!(err.to_string().contains("is not a member of project"), "{err}");
+    let unknown = Digest::of(b"nothing ever stored this");
+    let absent = browse_artifact(
+        h.state.serving.clone(),
+        0,
+        "pypi",
+        unknown.as_str(),
+        "flask-1.0-py3-none-any.whl",
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(refused.to_string(), browse_not_found(foreign.as_str()));
+    assert_eq!(absent.to_string(), browse_not_found(unknown.as_str()));
+}
+
+/// The browse query's project is what the caller's read was authorized against, so a file naming
+/// another project is refused there even when the index publishes it.
+#[tokio::test]
+async fn test_artifact_path_rejects_a_file_from_another_project() {
+    let h = harness().await;
+    let digest = Digest::of(b"listed wheel");
+    crate::tests::register_publication(
+        &h.state.serving.meta,
+        "pypi",
+        "flask-1.0-py3-none-any.whl",
+        digest.as_str(),
+        None,
+    );
+
+    let err = browse_artifact_in(
+        h.state.serving.clone(),
+        0,
+        "pypi",
+        "django",
+        digest.as_str(),
+        "flask-1.0-py3-none-any.whl",
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(err.to_string(), browse_not_found(digest.as_str()));
+}
+
+fn browse_not_found(digest: &str) -> String {
+    format!(
+        "artifact on index \"pypi\" for file \"flask-1.0-py3-none-any.whl\" with digest {digest}: \
+         no matching cached file or upstream source was found"
+    )
 }
 
 #[tokio::test]
@@ -202,27 +251,6 @@ async fn test_artifact_path_reports_an_unfetchable_member_file() {
     .await
     .unwrap_err();
     assert!(err.to_string().contains("artifact on index"), "{err}");
-}
-
-#[tokio::test]
-async fn test_artifact_path_reports_a_project_detail_error() {
-    let h = harness().await;
-    h.state
-        .serving
-        .meta
-        .put_index("pypi/flask", &fresh_record(br#"{"files":[{"bad": }]}"#))
-        .unwrap();
-    let digest = Digest::of(b"wheel");
-    let err = browse_artifact(
-        h.state.serving.clone(),
-        0,
-        "pypi",
-        digest.as_str(),
-        "flask-1.0-py3-none-any.whl",
-    )
-    .await
-    .unwrap_err();
-    assert!(err.to_string().contains("for project"), "{err}");
 }
 
 #[rstest]
@@ -708,12 +736,23 @@ async fn browse_artifact(
     digest: &str,
     filename: &str,
 ) -> Result<Option<peryx_core::BrowsePage>, peryx_driver::serving::BrowseError> {
+    browse_artifact_in(state, position, index, "flask", digest, filename).await
+}
+
+async fn browse_artifact_in(
+    state: Arc<peryx_driver::state::ServingState>,
+    position: usize,
+    index: &str,
+    project: &str,
+    digest: &str,
+    filename: &str,
+) -> Result<Option<peryx_core::BrowsePage>, peryx_driver::serving::BrowseError> {
     let access = peryx_driver::access::ReadAccess::from_headers(&state, &axum::http::HeaderMap::new());
     crate::serving::PypiServing
         .browse(BrowseRequest {
             state,
             position,
-            raw_query: format!("index={index}&project=flask&sha256={digest}&file={filename}"),
+            raw_query: format!("index={index}&project={project}&sha256={digest}&file={filename}"),
             access: &access,
             base: None,
         })

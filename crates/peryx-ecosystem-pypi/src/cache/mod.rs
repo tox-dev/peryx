@@ -28,6 +28,7 @@ pub use fetch::{
     MAX_PROJECT_BYTES, MAX_PROJECT_FILES, ProjectSyncError, ProjectSyncOutcome, RefreshSummary, refresh_stale_pages,
     sync_project_files,
 };
+pub(crate) use metadata::publishes_file;
 pub use metadata::{metadata_bytes, registered_file_size};
 pub(crate) use mutate::{
     RemovalContext, remove_files_with_webhook, restore_files_with_webhook, set_yanked_with_webhook, store_upload,
@@ -204,6 +205,15 @@ impl CacheError {
             Self::Quota(err) => format!("quota accounting error: {err}"),
         }
     }
+}
+
+/// The artifact a download route's filename names: a PEP 658 sidecar and a PEP 740 provenance
+/// bundle both ride on their artifact's digest, so both resolve through the artifact's own entry.
+pub(crate) fn artifact_of(filename: &str) -> &str {
+    filename
+        .strip_suffix(".metadata")
+        .or_else(|| filename.strip_suffix(crate::attestation::PROVENANCE_SUFFIX))
+        .unwrap_or(filename)
 }
 
 pub(crate) fn ensure_digest_clear(state: &ServingState, digest: &Digest) -> Result<(), CacheError> {

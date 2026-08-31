@@ -1215,15 +1215,17 @@ async fn test_ui_private_archive_listing_rejects_a_foreign_digest(
         foreign.as_str()
     );
 
+    let refusal = "no matching cached file or upstream source was found";
+
     let (status, listing) = get_authorized(&router, &listing_url, &reader_authorization()).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(listing.contains("is not a member of project"), "{listing}");
+    assert!(listing.contains(refusal), "{listing}");
     assert!(!listing.contains("dist-info/METADATA"), "{listing}");
 
     let member = format!("{listing_url}&member=veloxdemo-1.0.0.dist-info%2FMETADATA");
     let (status, content) = get_authorized(&router, &member, &reader_authorization()).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(content.contains("is not a member of project"), "{content}");
+    assert!(content.contains(refusal), "{content}");
 }
 
 fn wheel_record(entries: &[(String, Vec<u8>)], record_path: &str) -> String {

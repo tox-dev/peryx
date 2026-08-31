@@ -255,6 +255,13 @@ async fn test_cache_hit_download_records_a_daily_version_bucket() {
     let wheel = b"wheelcontent";
     let digest = Digest::of(wheel);
     harness.state.serving.blobs.put_bytes_as(wheel, &digest).await.unwrap();
+    crate::tests::register_publication(
+        &harness.state.serving.meta,
+        "pypi",
+        "flask-1.0-py3-none-any.whl",
+        digest.as_str(),
+        None,
+    );
     let uri = format!("/pypi/files/{}/flask-1.0-py3-none-any.whl", digest.as_str());
 
     let (status, ..) = get(&harness.state, &uri, None).await;
@@ -280,6 +287,13 @@ async fn test_ranged_download_counts_only_the_transmitted_bytes() {
     let wheel = b"wheelcontent";
     let digest = Digest::of(wheel);
     harness.state.serving.blobs.put_bytes_as(wheel, &digest).await.unwrap();
+    crate::tests::register_publication(
+        &harness.state.serving.meta,
+        "pypi",
+        "flask-1.0-py3-none-any.whl",
+        digest.as_str(),
+        None,
+    );
     let uri = format!("/pypi/files/{}/flask-1.0-py3-none-any.whl", digest.as_str());
 
     let (status, ..) = get_bytes_with_headers(&harness.state, &uri, &[("range", "bytes=2-5")]).await;

@@ -84,6 +84,7 @@ async fn test_file_without_sha256_keeps_its_upstream_url() {
 async fn test_file_whose_source_is_not_a_mirror_is_not_found() {
     let h = harness().await;
     let digest = Digest::of(b"wheel");
+    crate::tests::register_publication(&h.state.serving.meta, "pypi", "x.whl", digest.as_str(), None);
     h.state
         .serving
         .meta
@@ -278,6 +279,13 @@ async fn test_unreadable_cached_blob_is_not_found() {
     let wheel = b"wheelcontent";
     let digest = Digest::of(wheel);
     h.state.serving.blobs.put_bytes_as(wheel, &digest).await.unwrap();
+    crate::tests::register_publication(
+        &h.state.serving.meta,
+        "pypi",
+        "flask-1.0-py3-none-any.whl",
+        digest.as_str(),
+        None,
+    );
     let lease = h.state.serving.blobs.materialize(&digest).await.unwrap();
     std::fs::set_permissions(lease.path(), std::fs::Permissions::from_mode(0o000)).unwrap();
     let uri = format!("/pypi/files/{}/flask-1.0-py3-none-any.whl", digest.as_str());
@@ -304,6 +312,8 @@ async fn test_download_policy_reports_a_blob_head_error() {
         .join(format!("blobs/sha256/{}/{}/{}", &hex[..2], &hex[2..4], hex));
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::os::unix::fs::symlink(&path, &path).unwrap();
+
+    crate::tests::register_publication(&h.state.serving.meta, "pypi", "flask-1.0.whl", digest.as_str(), None);
 
     let uri = format!("/pypi/files/{}/flask-1.0.whl", digest.as_str());
     let (status, _, body) = get(&h.state, &uri, None).await;

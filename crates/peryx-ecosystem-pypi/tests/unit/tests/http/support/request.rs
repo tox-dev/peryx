@@ -63,6 +63,13 @@ pub async fn request_response(
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     (status, String::from_utf8_lossy(&bytes).into_owned())
 }
+/// Register `filename`/`digest` as published by `index` at `url`, the way a fetched page does. The
+/// file route releases bytes only for a pair the addressed index publishes, so a test that seeds a
+/// download by hand seeds the publication with it.
+pub fn publish_file(state: &AppState, index: &str, filename: &str, digest: &Digest, url: &str) {
+    crate::tests::register_publication(&state.serving.meta, index, filename, digest.as_str(), None);
+    state.serving.meta.put_file_url(digest.as_str(), url, index).unwrap();
+}
 pub fn revoke_digest(state: &AppState, digest: &Digest) {
     state
         .serving
@@ -206,11 +213,13 @@ pub async fn assert_metadata_range_fallback_preserves_other_resources(
 ) {
     let digest = Digest::of(&wheel);
     let filename = "peryxpkg-1.0-py3-none-any.whl";
-    h.state
-        .serving
-        .meta
-        .put_file_url(digest.as_str(), &format!("{}/files/{filename}", h.server.uri()), "pypi")
-        .unwrap();
+    publish_file(
+        &h.state,
+        "pypi",
+        filename,
+        &digest,
+        &format!("{}/files/{filename}", h.server.uri()),
+    );
     Mock::given(method("HEAD"))
         .and(path(format!("/files/{filename}")))
         .respond_with(
@@ -245,15 +254,13 @@ pub async fn assert_metadata_range_fallback_preserves_other_resources(
     let next_wheel = fixture_wheel_with_body_and_metadata("2.0", b"VALUE = 2\n", Some(next_metadata));
     let next_digest = Digest::of(&next_wheel);
     let next_filename = "peryxpkg-2.0-py3-none-any.whl";
-    h.state
-        .serving
-        .meta
-        .put_file_url(
-            next_digest.as_str(),
-            &format!("{}/files/{next_filename}", h.server.uri()),
-            "pypi",
-        )
-        .unwrap();
+    publish_file(
+        &h.state,
+        "pypi",
+        next_filename,
+        &next_digest,
+        &format!("{}/files/{next_filename}", h.server.uri()),
+    );
     Mock::given(method("HEAD"))
         .and(path(format!("/files/{next_filename}")))
         .respond_with(

@@ -499,23 +499,40 @@ fn unchanged(etag: &str, modified: Option<SystemTime>) -> Response {
         .expect("not-modified response builds from validated header parts")
 }
 
-/// The gate every route that releases an artifact's bytes runs first: the index's serve policy,
-/// then the project's stored status.
+/// The gate every route that releases an artifact's bytes runs first: the project's stored status,
+/// then its membership of this index, then the index's serve policy.
 ///
 /// Archive inspection and the UI archive browser share it with the file route, so quarantining a
 /// project or denying its files at [`PolicyAction::Serve`] cannot be walked around by asking for an
 /// archive's members instead of its bytes. See #1524.
+///
+/// Membership is a [`cache::CacheError::FileNotFound`], which is what every caller already answers
+/// a digest no index knows with, so a pair another index published is refused in the same bytes as
+/// one nothing published: the routes cannot become an existence oracle for a private artifact.
+/// See #1308.
+///
+/// The order is what each gate can see. A quarantine withholds the project's files from the page
+/// membership reads, so status runs first or a quarantine would answer as a missing file rather
+/// than with its own refusal. Membership then runs ahead of policy, which reads the size of
+/// whatever blob the digest names: a caller who pairs a foreign digest with a filename of their
+/// choosing gets neither a policy decision made on that name nor the size behind that digest.
 pub(super) async fn download_refusal(
     state: &ServingState,
     index: &Index,
     filename: &str,
     digest: &Digest,
 ) -> Result<Option<DownloadRefusal>, cache::CacheError> {
-    if let Some(denial) = download_policy_denial(state, index, filename, digest).await? {
-        return Ok(Some(DownloadRefusal::policy(&denial)));
-    }
     let status = cache::download_status(state, index, filename)?;
-    Ok((!status.offers_downloads()).then(|| DownloadRefusal::withheld(filename, status)))
+    if !status.offers_downloads() {
+        return Ok(Some(DownloadRefusal::withheld(filename, status)));
+    }
+    if !cache::publishes_file(state, index, filename, digest)? {
+        return Err(cache::CacheError::FileNotFound);
+    }
+    Ok(download_policy_denial(state, index, filename, digest)
+        .await?
+        .as_ref()
+        .map(DownloadRefusal::policy))
 }
 
 async fn download_policy_denial(

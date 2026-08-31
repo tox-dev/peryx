@@ -223,6 +223,20 @@ async fn test_upload_without_attestation_serves_no_provenance() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
+/// A cached index that publishes the file but advertised no attestation for it has no provenance
+/// to serve, and says so without reaching upstream.
+#[tokio::test]
+async fn test_cached_file_without_an_attestation_serves_no_provenance() {
+    let harness = harness().await;
+    let digest = Digest::of(&fixture_wheel());
+    crate::tests::register_publication(&harness.state.serving.meta, "pypi", FILENAME, digest.as_str(), None);
+
+    let uri = format!("/pypi/files/{}/{FILENAME}.provenance", digest.as_str());
+    let (status, ..) = get(&harness.state, &uri, None).await;
+
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
 #[tokio::test]
 async fn test_subject_digest_mismatch_publishes_neither_object() {
     let harness = harness().await;

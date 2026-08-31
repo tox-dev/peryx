@@ -258,8 +258,8 @@ async fn test_file_download_rejects_encoded_path_filename() {
 #[tokio::test]
 async fn test_file_download_allows_literal_percent_filename() {
     let h = harness().await;
-    let digest = put_local_file(&h.state, "peryxpkg%2F.whl", b"PKpercent", "1.0");
-    let uri = format!("/hosted/files/{}/peryxpkg%252F.whl", digest.as_str());
+    let digest = put_local_file(&h.state, "peryxpkg-1.0%2F.tar.gz", b"PKpercent", "1.0");
+    let uri = format!("/hosted/files/{}/peryxpkg-1.0%252F.tar.gz", digest.as_str());
     let (status, _, body) = get(&h.state, &uri, None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body, "PKpercent");
@@ -275,6 +275,7 @@ async fn test_file_download_unknown_digest_is_not_found() {
 async fn test_file_source_not_a_mirror_is_not_found() {
     let h = harness().await;
     let digest = Digest::of(b"orphan");
+    crate::tests::register_publication(&h.state.serving.meta, "pypi", "orphan.whl", digest.as_str(), None);
     h.state
         .serving
         .meta
@@ -314,9 +315,18 @@ async fn test_file_digest_mismatch_fails_the_body_and_never_persists() {
 }
 const WHEEL: &[u8] = b"wheelcontent";
 
+/// A wheel already in the blob store and published by `pypi`, which is what a page fetch leaves
+/// behind and what the file route now requires before it releases the bytes.
 fn cached_wheel_uri(h: &Harness) -> String {
     let digest = Digest::of(WHEEL);
     h.state.serving.blobs.blocking().put_bytes_as(WHEEL, &digest).unwrap();
+    crate::tests::register_publication(
+        &h.state.serving.meta,
+        "pypi",
+        "flask-1.0-py3-none-any.whl",
+        digest.as_str(),
+        None,
+    );
     format!("/pypi/files/{}/flask-1.0-py3-none-any.whl", digest.as_str())
 }
 
@@ -741,6 +751,7 @@ async fn test_head_of_an_uncached_file_on_an_offline_mirror_is_unavailable() {
     let dir = tempfile::tempdir().unwrap();
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
     let digest = Digest::of(WHEEL);
+    crate::tests::register_publication(&meta, "pypi", "flask-1.0-py3-none-any.whl", digest.as_str(), None);
     crate::store::PypiStore::put_file_url(&meta, digest.as_str(), "https://files.example/flask.whl", "pypi").unwrap();
     let indexes = vec![Index {
         name: "pypi".to_owned(),

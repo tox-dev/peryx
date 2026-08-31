@@ -12,6 +12,7 @@ mod finalize_sweep;
 mod frontier;
 mod inspect;
 mod legacy_json;
+mod membership;
 mod metadata;
 mod mirror;
 mod mutate;
