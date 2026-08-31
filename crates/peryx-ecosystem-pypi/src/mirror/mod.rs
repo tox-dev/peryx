@@ -215,9 +215,14 @@ mod ecosystem_config_tests;
 #[path = "../../tests/unit/mirror/support.rs"]
 mod test_support;
 
+/// Where a run's project list comes from, and what obtaining it is allowed to write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SelectionSource {
+    /// Sync: the upstream catalog, published as part of the work the run is doing.
     Upstream,
+    /// Plan: the upstream catalog, read for the preview and not published.
+    UpstreamPreview,
+    /// Verify, and any offline target: the catalog the store already holds.
     Cache,
 }
 

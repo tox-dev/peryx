@@ -1,6 +1,7 @@
 //! Durable, generation-based synchronization of a remote Simple root project catalog.
 
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::io::{Read, Seek as _, Write};
 use std::rc::Rc;
 
@@ -108,6 +109,29 @@ pub async fn sync_catalog<C: SimpleClientExt + Sync>(
     publish_response(meta, index, fallback_source, head, fetched_at_unix).await
 }
 
+/// Fetch and parse the remote project catalog, keeping the names in memory.
+///
+/// `peryx mirror plan` previews a run, so it needs the upstream project names while leaving the store
+/// as it found it: this transfers and parses the document [`sync_catalog`] publishes, but stages no
+/// generation, writes no rows, and records no catalog metric. It holds at most 2,000,000 names, the
+/// ceiling a publishing parse enforces on the store.
+///
+/// The request carries no validators: a `304` would answer with an active generation this caller has
+/// no business consulting or refreshing.
+///
+/// # Errors
+/// Returns an error when the transfer, the response status, or the parse fails.
+pub async fn read_catalog_projects<C: SimpleClientExt + Sync>(client: &C) -> Result<Vec<String>, CatalogSyncError> {
+    let head = client.head_index(None, None, None).await?;
+    check_transferable(&head)?;
+    let base = head.url.clone();
+    let format = catalog_format(head.content_type.as_deref());
+    let (mut file, _) = transfer_catalog(head).await?;
+    let mut sink = MemorySink::default();
+    parse_catalog(&mut file, format, &base, &mut sink)?;
+    Ok(sink.projects.into_iter().collect())
+}
+
 async fn publish_response(
     meta: &MetaStore,
     index: &str,
@@ -115,37 +139,19 @@ async fn publish_response(
     head: SimpleHead,
     fetched_at_unix: i64,
 ) -> Result<CatalogSyncOutcome, CatalogSyncError> {
-    match head.status {
-        200 if head.content_length.is_some_and(|bytes| bytes > MAX_CATALOG_BYTES) => {
-            return Err(CatalogSyncError::TooLarge);
-        }
-        200 => {}
-        status => return Err(CatalogSyncError::Status(status)),
-    }
+    check_transferable(&head)?;
     let source = head.source.clone().unwrap_or_else(|| redact_url(fallback_source));
     let base = head.url.clone();
     let final_url = redact_url(head.url.as_str());
-    let content_type = head.content_type.clone().unwrap_or_default();
-    let format = if content_type
-        .split_once(';')
-        .map_or(content_type.as_str(), |(media_type, _)| media_type)
-        .trim()
-        .eq_ignore_ascii_case("application/vnd.pypi.simple.v1+json")
-    {
-        "json"
-    } else {
-        "html"
-    };
+    let format = catalog_format(head.content_type.as_deref());
     let etag = head.etag.clone();
     let last_modified = head.last_modified.clone();
     let last_serial = head.last_serial;
-    let mut file = tempfile::tempfile()?;
-    let bytes = write_catalog_stream(head.into_stream(), &mut file, MAX_CATALOG_BYTES).await?;
-    file.flush()?;
-    file.rewind()?;
+    let (mut file, bytes) = transfer_catalog(head).await?;
 
     let (generation, expected_active) = begin_catalog_generation(meta, index)?;
-    let result = parse_catalog(&mut file, format, &base, meta, index, generation);
+    let mut sink = GenerationSink::new(meta, index, generation);
+    let result = parse_catalog(&mut file, format, &base, &mut sink);
     let projects = match result {
         Ok(projects) => projects,
         Err(err) => {
@@ -168,6 +174,38 @@ async fn publish_response(
     publish_catalog_generation(meta, index, expected_active, catalog)?;
     recover_catalog_generations(meta, index)?;
     Ok(CatalogSyncOutcome::Published { projects })
+}
+
+fn check_transferable(head: &SimpleHead) -> Result<(), CatalogSyncError> {
+    match head.status {
+        200 if head.content_length.is_some_and(|bytes| bytes > MAX_CATALOG_BYTES) => Err(CatalogSyncError::TooLarge),
+        200 => Ok(()),
+        status => Err(CatalogSyncError::Status(status)),
+    }
+}
+
+fn catalog_format(content_type: Option<&str>) -> &'static str {
+    let content_type = content_type.unwrap_or_default();
+    if content_type
+        .split_once(';')
+        .map_or(content_type, |(media_type, _)| media_type)
+        .trim()
+        .eq_ignore_ascii_case("application/vnd.pypi.simple.v1+json")
+    {
+        "json"
+    } else {
+        "html"
+    }
+}
+
+/// Drain the response body into a bounded temporary file, rewound and ready to parse, so a parse
+/// never runs against a transfer still in flight.
+async fn transfer_catalog(head: SimpleHead) -> Result<(std::fs::File, u64), CatalogSyncError> {
+    let mut file = tempfile::tempfile()?;
+    let bytes = write_catalog_stream(head.into_stream(), &mut file, MAX_CATALOG_BYTES).await?;
+    file.flush()?;
+    file.rewind()?;
+    Ok((file, bytes))
 }
 
 async fn write_catalog_stream<S>(mut stream: S, writer: &mut impl Write, limit: u64) -> Result<u64, CatalogSyncError>
@@ -210,23 +248,19 @@ fn parse_catalog(
     reader: &mut impl Read,
     format: &str,
     base: &Url,
-    meta: &MetaStore,
-    index: &str,
-    generation: u64,
+    sink: &mut dyn CatalogSink,
 ) -> Result<u64, CatalogSyncError> {
-    parse_catalog_with_limit(reader, format, base, meta, index, generation, MAX_CATALOG_PROJECTS)
+    parse_catalog_with_limit(reader, format, base, sink, MAX_CATALOG_PROJECTS)
 }
 
 fn parse_catalog_with_limit(
     reader: &mut impl Read,
     format: &str,
     base: &Url,
-    meta: &MetaStore,
-    index: &str,
-    generation: u64,
+    sink: &mut dyn CatalogSink,
     max_projects: u64,
 ) -> Result<u64, CatalogSyncError> {
-    let mut batcher = CatalogBatcher::new(meta, index, generation, max_projects);
+    let mut batcher = CatalogBatcher::new(sink, max_projects);
     if format == "json" {
         let mut deserializer = serde_json::Deserializer::from_reader(reader);
         RootSeed { batcher: &mut batcher }.deserialize(&mut deserializer)?;
@@ -237,10 +271,52 @@ fn parse_catalog_with_limit(
     batcher.finish()
 }
 
-struct CatalogBatcher<'a> {
+/// Where a parsed catalog's names go. The caller's intent picks the sink: publishing a generation
+/// writes rows, previewing one keeps the names in memory. Each call reports how many names it had
+/// not already seen, which is what a published generation counts.
+trait CatalogSink {
+    fn accept(&mut self, batch: &[(String, String)]) -> Result<u64, CatalogSyncError>;
+}
+
+struct GenerationSink<'a> {
     meta: &'a MetaStore,
     index: &'a str,
     generation: u64,
+}
+
+impl<'a> GenerationSink<'a> {
+    const fn new(meta: &'a MetaStore, index: &'a str, generation: u64) -> Self {
+        Self {
+            meta,
+            index,
+            generation,
+        }
+    }
+}
+
+impl CatalogSink for GenerationSink<'_> {
+    fn accept(&mut self, batch: &[(String, String)]) -> Result<u64, CatalogSyncError> {
+        Ok(put_catalog_projects(self.meta, self.index, self.generation, batch)?)
+    }
+}
+
+#[derive(Default)]
+struct MemorySink {
+    projects: BTreeSet<String>,
+}
+
+impl CatalogSink for MemorySink {
+    fn accept(&mut self, batch: &[(String, String)]) -> Result<u64, CatalogSyncError> {
+        let mut added = 0;
+        for (normalized, _) in batch {
+            added += u64::from(self.projects.insert(normalized.clone()));
+        }
+        Ok(added)
+    }
+}
+
+struct CatalogBatcher<'a> {
+    sink: &'a mut dyn CatalogSink,
     batch: Vec<(String, String)>,
     entries: u64,
     projects: u64,
@@ -248,11 +324,9 @@ struct CatalogBatcher<'a> {
 }
 
 impl<'a> CatalogBatcher<'a> {
-    fn new(meta: &'a MetaStore, index: &'a str, generation: u64, max_projects: u64) -> Self {
+    fn new(sink: &'a mut dyn CatalogSink, max_projects: u64) -> Self {
         Self {
-            meta,
-            index,
-            generation,
+            sink,
             batch: Vec::with_capacity(CATALOG_BATCH),
             entries: 0,
             projects: 0,
@@ -276,7 +350,7 @@ impl<'a> CatalogBatcher<'a> {
     }
 
     fn flush(&mut self) -> Result<(), CatalogSyncError> {
-        self.projects += put_catalog_projects(self.meta, self.index, self.generation, &self.batch)?;
+        self.projects += self.sink.accept(&self.batch)?;
         self.batch.clear();
         Ok(())
     }

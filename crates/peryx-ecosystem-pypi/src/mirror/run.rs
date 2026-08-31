@@ -61,7 +61,7 @@ pub(super) async fn pypi_plan(
 ) -> anyhow::Result<()> {
     let state = state.serving.as_ref();
     let target = target(configured, state, index)?;
-    let selection = selection(state, &target, options, SelectionSource::Upstream).await?;
+    let selection = selection(state, &target, options, SelectionSource::UpstreamPreview).await?;
     out.write_all(HEADER.as_bytes())?;
     let mut counts = PrefetchCounts::default();
     let mut planned = stream::iter(selection.projects.iter().cloned())

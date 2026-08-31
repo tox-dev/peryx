@@ -11,9 +11,9 @@ use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::{
-    CatalogBatcher, CatalogSyncError, CatalogSyncOutcome, HtmlSink, HtmlState, HtmlTokenizer, MAX_CATALOG_BYTES,
-    MAX_CATALOG_PROJECTS, parse_catalog_with_limit, publish_response, redact_url, sync_catalog, write_catalog_chunk,
-    write_catalog_stream,
+    CatalogBatcher, CatalogSyncError, CatalogSyncOutcome, GenerationSink, HtmlSink, HtmlState, HtmlTokenizer,
+    MAX_CATALOG_BYTES, MAX_CATALOG_PROJECTS, parse_catalog_with_limit, publish_response, read_catalog_projects,
+    redact_url, sync_catalog, write_catalog_chunk, write_catalog_stream,
 };
 use crate::SimpleClientExt as _;
 use crate::store::{
@@ -69,6 +69,37 @@ async fn test_sync_catalog_rejects_304_without_active_generation() {
     server.verify().await;
     drop(client);
     drop(server);
+}
+
+#[tokio::test]
+async fn test_read_catalog_projects_normalizes_and_deduplicates_names() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            r#"{"meta":{"api-version":"1.4"},"projects":[{"name":"Flask"},{"name":"FLASK"},{"name":"Django"}]}"#,
+            "application/vnd.pypi.simple.v1+json",
+        ))
+        .mount(&server)
+        .await;
+    let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
+
+    assert_eq!(read_catalog_projects(&client).await.unwrap(), ["django", "flask"]);
+}
+
+#[tokio::test]
+async fn test_read_catalog_projects_reports_an_upstream_failure() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+    let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
+
+    let error = read_catalog_projects(&client).await.unwrap_err();
+
+    assert!(matches!(error, CatalogSyncError::Status(503)));
 }
 
 #[tokio::test]
@@ -301,9 +332,7 @@ fn test_parse_failures_never_replace_active_generation() {
             &mut Cursor::new(document),
             "json",
             &Url::parse("https://example.invalid/simple/").unwrap(),
-            &meta,
-            "failure",
-            staging,
+            &mut GenerationSink::new(&meta, "failure", staging),
             limit,
         )
         .unwrap_err();
@@ -335,9 +364,7 @@ fn test_json_parser_validates_shapes_and_ignores_extensions() {
             &mut Cursor::new(document),
             "json",
             &Url::parse("https://example.invalid/simple/").unwrap(),
-            &meta,
-            "shape",
-            generation,
+            &mut GenerationSink::new(&meta, "shape", generation),
             MAX_CATALOG_PROJECTS,
         )
         .unwrap_err();
@@ -353,9 +380,7 @@ fn test_json_parser_validates_shapes_and_ignores_extensions() {
             &mut Cursor::new(document),
             "json",
             &Url::parse("https://example.invalid/simple/").unwrap(),
-            &meta,
-            "extension",
-            generation,
+            &mut GenerationSink::new(&meta, "extension", generation),
             MAX_CATALOG_PROJECTS,
         )
         .unwrap(),
@@ -378,9 +403,7 @@ fn test_catalog_batch_flushes_at_transaction_limit() {
             &mut Cursor::new(document),
             "json",
             &Url::parse("https://example.invalid/simple/").unwrap(),
-            &meta,
-            "batch",
-            generation,
+            &mut GenerationSink::new(&meta, "batch", generation),
             MAX_CATALOG_PROJECTS,
         )
         .unwrap(),
@@ -406,9 +429,7 @@ fn test_streaming_html_and_json_publish_equivalent_names() {
             &mut Cursor::new(document),
             format,
             &Url::parse("https://example.invalid/simple/").unwrap(),
-            &meta,
-            format,
-            generation,
+            &mut GenerationSink::new(&meta, format, generation),
             MAX_CATALOG_PROJECTS,
         )
         .unwrap();
@@ -429,9 +450,7 @@ fn test_html_parser_uses_links_and_rejects_nameless_anchors() {
             &mut Cursor::new(r#"</a><a href="/simple/flask/"></a>"#),
             "html",
             &base,
-            &meta,
-            "href",
-            generation,
+            &mut GenerationSink::new(&meta, "href", generation),
             MAX_CATALOG_PROJECTS,
         )
         .unwrap(),
@@ -443,9 +462,7 @@ fn test_html_parser_uses_links_and_rejects_nameless_anchors() {
         &mut Cursor::new(r"<a></a><a>ignored after error</a>"),
         "html",
         &base,
-        &meta,
-        "nameless",
-        generation,
+        &mut GenerationSink::new(&meta, "nameless", generation),
         MAX_CATALOG_PROJECTS,
     )
     .unwrap_err();
@@ -457,7 +474,8 @@ fn test_html_tokenizer_accepts_decoder_errors() {
     let (_dir, meta) = store();
     let base = Url::parse("https://example.invalid/simple/").unwrap();
     let (generation, _) = begin_catalog_generation(&meta, "decoder").unwrap();
-    let mut batcher = CatalogBatcher::new(&meta, "decoder", generation, MAX_CATALOG_PROJECTS);
+    let mut sink = GenerationSink::new(&meta, "decoder", generation);
+    let mut batcher = CatalogBatcher::new(&mut sink, MAX_CATALOG_PROJECTS);
     let state = Rc::new(RefCell::new(HtmlState::new(&base, &mut batcher)));
     let mut tokenizer = HtmlTokenizer {
         tokenizer: html5ever::tokenizer::Tokenizer::new(

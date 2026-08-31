@@ -78,6 +78,9 @@ async fn all_projects(state: &ServingState, target: &Target, source: SelectionSo
         .upstream_routes
         .get(&target.cached)
         .expect("a cached index always has an upstream route");
+    if matches!(source, SelectionSource::UpstreamPreview) {
+        return Ok(crate::catalog::read_catalog_projects(router).await?);
+    }
     let sync = crate::catalog::sync_catalog(
         router,
         &state.cache.inflight,

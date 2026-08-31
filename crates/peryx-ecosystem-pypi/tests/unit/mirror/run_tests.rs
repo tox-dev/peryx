@@ -222,6 +222,89 @@ async fn plan_reports_included_metadata_and_filtered_files() {
     assert!(output.contains("missing sha256"));
 }
 
+async fn mount_catalog_upstream(server: &MockServer) {
+    Mock::given(method("GET"))
+        .and(path("/simple/"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            r#"{"meta":{"api-version":"1.4"},"projects":[{"name":"Demo"}]}"#,
+            SIMPLE_JSON,
+        ))
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/simple/demo/"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(server)
+        .await;
+}
+
+fn catalog_metrics(fixture: &test_support::StateFixture) -> BTreeMap<&'static str, u64> {
+    fixture.state.serving.metrics.flush().unwrap();
+    fixture
+        .state
+        .serving
+        .metrics
+        .index_totals()
+        .get("pypi")
+        .map(|index| index.extensions.clone())
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn plan_over_every_project_leaves_the_store_byte_identical() {
+    let server = MockServer::start().await;
+    mount_catalog_upstream(&server).await;
+    let fixture = test_support::state(vec![cached_index(&format!("{}/simple/", server.uri()), false)]);
+    let store = fixture.dir.path().join("peryx.redb");
+    let before = Digest::of(&std::fs::read(&store).unwrap());
+    let mut output = Vec::new();
+
+    pypi_plan(
+        &config(PrefetchMode::All, &[]),
+        &fixture.state,
+        "pypi",
+        &options(),
+        &mut output,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(Digest::of(&std::fs::read(&store).unwrap()), before);
+    assert!(fixture.state.serving.meta.list_projects("pypi").unwrap().is_empty());
+    assert_eq!(catalog_metrics(&fixture), BTreeMap::new());
+    let output = String::from_utf8(output).unwrap();
+    assert!(output.contains("page\tpypi\tdemo"), "{output}");
+    assert!(output.contains("projects\t\t\t1\tprojects"), "{output}");
+}
+
+#[tokio::test]
+async fn sync_over_every_project_publishes_the_catalog_and_its_metrics() {
+    let server = MockServer::start().await;
+    mount_catalog_upstream(&server).await;
+    let fixture = test_support::state(vec![cached_index(&format!("{}/simple/", server.uri()), false)]);
+    let mut output = Vec::new();
+
+    pypi_sync(
+        &config(PrefetchMode::All, &[]),
+        &fixture.state,
+        "pypi",
+        &options(),
+        &mut output,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(fixture.state.serving.meta.list_projects("pypi").unwrap(), ["Demo"]);
+    assert_eq!(
+        catalog_metrics(&fixture),
+        BTreeMap::from([
+            ("pypi.catalog.projects", 1),
+            ("pypi.catalog.published", 1),
+            ("pypi.catalog.syncs", 1),
+        ])
+    );
+}
+
 #[tokio::test]
 async fn sync_reports_a_missing_project_without_failure() {
     let server = MockServer::start().await;

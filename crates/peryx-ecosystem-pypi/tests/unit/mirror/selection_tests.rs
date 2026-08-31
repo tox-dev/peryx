@@ -441,6 +441,28 @@ async fn all_projects_syncs_and_reports_upstream_catalog_failures() {
 }
 
 #[tokio::test]
+async fn all_projects_previews_the_upstream_catalog_without_publishing_it() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            r#"{"meta":{"api-version":"1.4"},"projects":[{"name":"Demo"}]}"#,
+            "application/vnd.pypi.simple.v1+json",
+        ))
+        .mount(&server)
+        .await;
+    let fixture = test_support::state(vec![cached_index(&format!("{}/simple/", server.uri()), false)]);
+    let previewed = target(&config(PrefetchMode::All), &fixture.state.serving, "pypi").unwrap();
+
+    let projects = all_projects(&fixture.state.serving, &previewed, SelectionSource::UpstreamPreview)
+        .await
+        .unwrap();
+
+    assert_eq!(projects, ["demo"]);
+    assert!(fixture.state.serving.meta.list_projects("pypi").unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn all_projects_accepts_html_catalogs() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

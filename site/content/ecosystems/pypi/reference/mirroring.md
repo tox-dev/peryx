@@ -34,7 +34,8 @@ metadata_only = false
 | `max_file_size_bytes` | Positive integer                   | Unbounded  |
 | `metadata_only`       | Boolean                            | `false`    |
 
-`mode = "all"` reads the upstream Simple project list before visiting project pages. `mode = "metadata-only"` implies
+`mode = "all"` reads the upstream Simple project list before visiting project pages: `sync` publishes that list as the
+index's catalog, while `plan` parses it for the preview and keeps nothing. `mode = "metadata-only"` implies
 `metadata_only = true`. Artifact filters run after a project page is fetched.
 
 ```shell
