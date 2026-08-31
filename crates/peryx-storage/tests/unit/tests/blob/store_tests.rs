@@ -672,3 +672,89 @@ fn test_concurrent_commits_repair_a_corrupt_destination() {
 
     assert_eq!(store.read(&digest).unwrap(), b"contended");
 }
+
+/// Writable and traversable but not readable: a rename into `directory` lands, and the flush that would
+/// make it durable is refused.
+#[cfg(unix)]
+fn while_unflushable<T>(directory: &std::path::Path, act: impl FnOnce() -> T) -> T {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o333)).unwrap();
+    let outcome = act();
+    std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o755)).unwrap();
+    outcome
+}
+
+#[cfg(unix)]
+#[test]
+fn test_commit_issues_no_receipt_when_the_digest_directory_cannot_be_flushed() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = BlobStore::new(dir.path().join("blobs"));
+    let digest = Digest::of(b"unflushed");
+    let parent = store.path_for(&digest).parent().unwrap().to_path_buf();
+    std::fs::create_dir_all(&parent).unwrap();
+    let mut pending = store.begin().unwrap();
+    pending.write(b"unflushed").unwrap();
+
+    let committed = while_unflushable(&parent, || store.commit(pending, &digest));
+
+    assert_eq!(committed.unwrap_err().kind(), crate::blob::BlobErrorKind::Io);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_commit_issues_no_receipt_when_a_new_fan_out_ancestor_cannot_be_flushed() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = BlobStore::new(dir.path().join("blobs"));
+    let digest = Digest::of(b"fresh fan-out");
+    let mut pending = store.begin().unwrap();
+    pending.write(b"fresh fan-out").unwrap();
+
+    let committed = while_unflushable(&store.staging_dir(), || store.commit(pending, &digest));
+
+    assert_eq!(committed.unwrap_err().kind(), crate::blob::BlobErrorKind::Io);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_commit_over_a_matching_resident_issues_no_receipt_when_the_flush_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = BlobStore::new(dir.path().join("blobs"));
+    let digest = store.write(b"resident").unwrap();
+    let parent = store.path_for(&digest).parent().unwrap().to_path_buf();
+    let mut pending = store.begin().unwrap();
+    pending.write(b"resident").unwrap();
+
+    let committed = while_unflushable(&parent, || store.commit(pending, &digest));
+
+    assert_eq!(committed.unwrap_err().kind(), crate::blob::BlobErrorKind::Io);
+    assert_eq!(store.read(&digest).unwrap(), b"resident");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_finish_upload_retry_reports_an_unflushable_published_parent() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = BlobStore::new(dir.path().join("blobs"));
+    let digest = Digest::of(b"resumed");
+    store.stage_upload_chunk("sess-1", 0, b"resumed").unwrap();
+    store.finish_upload("sess-1", &digest).unwrap();
+    let parent = store.path_for(&digest).parent().unwrap().to_path_buf();
+
+    let retried = while_unflushable(&parent, || store.finish_upload("sess-1", &digest));
+
+    assert_eq!(retried.unwrap_err().kind(), crate::blob::BlobErrorKind::Io);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_write_of_a_matching_resident_reports_an_unflushable_parent() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = BlobStore::new(dir.path().join("blobs"));
+    let digest = store.write(b"rewritten").unwrap();
+    let parent = store.path_for(&digest).parent().unwrap().to_path_buf();
+
+    let written = while_unflushable(&parent, || store.write(b"rewritten"));
+
+    assert_eq!(written.unwrap_err().kind(), crate::blob::BlobErrorKind::Io);
+    assert_eq!(store.read(&digest).unwrap(), b"rewritten");
+}

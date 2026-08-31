@@ -35,15 +35,56 @@ fn to_hex(bytes: &[u8]) -> String {
     out
 }
 
-/// Syncing the file does not make its rename crash-durable. Directory sync failures do not fail the write.
-fn sync_parent(path: &Path) {
-    if let Some(parent) = path.parent()
-        && let Ok(directory) = std::fs::File::open(parent)
-    {
-        let _ = directory.sync_all();
+/// Syncing a file does not make its rename crash-durable: the directory entry reaches disk only once the
+/// containing directory is itself flushed. A caller that discarded this failure would hand out a
+/// durability receipt for a placement the filesystem never confirmed.
+///
+/// # Errors
+/// Returns the failure to open or flush the parent directory, or [`std::io::ErrorKind::InvalidInput`]
+/// when `path` names no entry in a directory.
+fn sync_parent(path: &Path) -> std::io::Result<()> {
+    match path.parent() {
+        // A bare file name is an entry in the working directory, which is what has to be flushed.
+        Some(parent) if parent.as_os_str().is_empty() => sync_dir(Path::new(".")),
+        Some(parent) => sync_dir(parent),
+        None => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{} has no parent directory to flush", path.display()),
+        )),
     }
+}
+
+/// Every directory `create_dir_all` creates is itself an unflushed entry in its own parent, so a fresh
+/// fan-out only becomes durable once each new level is flushed from the leaf toward the first level that
+/// already existed.
+///
+/// # Errors
+/// Returns the first creation, open, or flush failure.
+fn create_dir_durable(dir: &Path) -> std::io::Result<()> {
+    let missing = dir
+        .ancestors()
+        .take_while(|level| !level.as_os_str().is_empty() && !level.exists())
+        .count();
+    std::fs::create_dir_all(dir)?;
+    dir.ancestors().take(missing).try_for_each(sync_parent)
+}
+
+#[cfg(unix)]
+fn sync_dir(path: &Path) -> std::io::Result<()> {
+    std::fs::File::open(path)?.sync_all()
+}
+
+/// Windows exposes no directory flush — `FlushFileBuffers` rejects a handle opened with backup semantics
+/// — and NTFS instead orders the rename in the metadata log its recovery pass replays.
+#[cfg(not(unix))]
+fn sync_dir(_path: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 #[cfg(test)]
 #[path = "../../tests/unit/blob/sweep_tests.rs"]
 mod sweep_tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/blob/sync_tests.rs"]
+mod sync_tests;

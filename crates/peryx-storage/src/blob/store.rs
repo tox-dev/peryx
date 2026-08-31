@@ -8,30 +8,32 @@ use sha2::{Digest as _, Sha256};
 
 use super::error::{BlobError, BlobScanError};
 use super::stage::{OwnedPath, PathOwners, STAGE_MAX_AGE, STAGE_PREFIX, StageUsage, is_stage};
-use super::{BlobMetadata, Digest, DurabilityCapabilities, PlacementReceipt, WriteEvidence, sync_parent};
+use super::{
+    BlobMetadata, Digest, DurabilityCapabilities, PlacementReceipt, WriteEvidence, create_dir_durable, sync_parent,
+};
 
 /// An occupied digest path may contain corrupt bytes, so a failed no-clobber move verifies the resident
 /// file before discarding the trusted source.
 fn publish(dest: &Path, source: tempfile::TempPath, digest: &Digest, len: u64) -> Result<(), BlobError> {
     match source.persist_noclobber(dest) {
-        Ok(()) => {
-            sync_parent(dest);
-            Ok(())
-        }
+        Ok(()) => sync_parent(dest).map_err(BlobError::from),
         Err(err) => reconcile(dest, err.path, digest, len),
     }
 }
 
 /// Holds the digest lock until the resident file is verified or replaced, preventing concurrent repairs
 /// from discarding the trusted source.
+///
+/// A matching resident is flushed too: it may come from a writer whose own directory sync failed, so
+/// finding the bytes proves nothing about the durability of the entry naming them.
 fn reconcile(dest: &Path, source: tempfile::TempPath, digest: &Digest, len: u64) -> Result<(), BlobError> {
     let _guard = digest_lock(digest);
     if resident_matches(dest, digest, len)? {
-        return discard_stage(source);
+        discard_stage(source)?;
+    } else {
+        source.persist(dest).map_err(|err| err.error)?;
     }
-    source.persist(dest).map_err(|err| err.error)?;
-    sync_parent(dest);
-    Ok(())
+    sync_parent(dest).map_err(BlobError::from)
 }
 
 /// Rejects a truncated resident before paying for a full hash.
@@ -205,7 +207,7 @@ impl BlobStore {
 
     fn create_path_for(&self, digest: &Digest) -> Result<PathBuf, BlobError> {
         let parent = self.parent_for(digest);
-        std::fs::create_dir_all(&parent)?;
+        create_dir_durable(&parent)?;
         Ok(parent.join(digest.as_str()))
     }
 
@@ -321,19 +323,21 @@ impl BlobStore {
         Ok(())
     }
 
-    /// Leaves a matching resident untouched and repairs a corrupt resident from `bytes`.
+    /// Leaves a matching resident untouched and repairs a corrupt resident from `bytes`, flushing the
+    /// digest directory either way.
     ///
     /// # Errors
-    /// Returns [`super::BlobErrorKind::Io`] if the directory cannot be created or the file cannot be written.
+    /// Returns [`super::BlobErrorKind::Io`] if the directory cannot be created, the file cannot be
+    /// written, or the directory entry cannot be flushed.
     pub fn write(&self, bytes: &[u8]) -> Result<Digest, BlobError> {
         let digest = Digest::of(bytes);
-        let hex = digest.as_str();
-        let parent = self.root.join("sha256").join(&hex[0..2]).join(&hex[2..4]);
-        let dest = parent.join(hex);
+        let parent = self.parent_for(&digest);
+        let dest = parent.join(digest.as_str());
         if dest.is_file() && resident_matches(&dest, &digest, bytes.len() as u64)? {
+            sync_parent(&dest)?;
             return Ok(digest);
         }
-        std::fs::create_dir_all(&parent)?;
+        create_dir_durable(&parent)?;
         let mut tmp = stage_file(&parent)?;
         let _owned = self.own(tmp.path().to_owned());
         tmp.write_all(bytes)?;
@@ -489,11 +493,13 @@ impl BlobStore {
     ///
     pub fn finish_upload(&self, session: &str, expected: &Digest) -> Result<(), BlobError> {
         let stage = self.upload_dir().join(session);
+        let published = self.path_for(expected);
         let mut file = match std::fs::File::open(&stage) {
             Ok(file) => file,
-            // A retry after a lost response succeeds when the published blob outlived its stage.
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound && self.path_for(expected).is_file() => {
-                return Ok(());
+            // A retry after a lost response succeeds when the published blob outlived its stage, and
+            // completes the flush the interrupted attempt may never have finished.
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound && published.is_file() => {
+                return sync_parent(&published).map_err(BlobError::from);
             }
             Err(err) => return Err(absent_or_io(err, expected)),
         };
@@ -605,7 +611,9 @@ impl BlobStore {
     /// A matching resident yields a receipt without a rewrite; a corrupt resident is replaced.
     ///
     /// # Errors
-    /// Returns [`super::BlobErrorKind::Io`] on a filesystem failure.
+    /// Returns [`super::BlobErrorKind::Io`] on a filesystem failure, including a directory the
+    /// filesystem would not flush. No receipt is issued in that case: the entry naming the blob is not
+    /// known to have crossed the boundary the receipt would claim.
     ///
     pub fn commit_staged(&self, staged: StagedBlob) -> Result<PlacementReceipt, BlobError> {
         let receipt = PlacementReceipt {
