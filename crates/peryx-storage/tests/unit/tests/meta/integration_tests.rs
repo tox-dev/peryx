@@ -179,6 +179,23 @@ fn test_reclaim_guard_first_write_creates_only_its_table() {
 }
 
 #[test]
+fn test_referencing_a_blob_creates_no_reclaim_guard_table() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peryx.redb");
+    let store = MetaStore::open(&path).unwrap();
+    store
+        .commit_driver_txn(|txn| {
+            txn.put("ref/1", b"points-here")?;
+            txn.reference_blob("sha256:blob", 4);
+            Ok::<_, MetaError>(((), vec![b"{}".to_vec()]))
+        })
+        .unwrap();
+    drop(store);
+
+    assert_distributed_tables(&path, &["journal", "journal_blobs", "journal_mutations"]);
+}
+
+#[test]
 fn test_ingress_first_write_creates_only_its_tables() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("peryx.redb");

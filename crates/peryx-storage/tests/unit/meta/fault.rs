@@ -119,12 +119,14 @@ pub fn create(
     write.commit().unwrap();
     MetaStore {
         db: Arc::new(MetaDatabase::ReadWrite(database)),
+        clock: super::system_clock(),
     }
 }
 
 pub fn reopen(inner: &Arc<InMemoryBackend>, fault: &Arc<Fault>) -> MetaStore {
     MetaStore {
         db: Arc::new(MetaDatabase::ReadWrite(database(inner, fault))),
+        clock: super::system_clock(),
     }
 }
 

@@ -1,14 +1,38 @@
-use peryx_ha::{ReclaimGuard, ReclaimGuardArm, ReclaimGuardStore as _};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 
-use crate::meta::{DriverBlobReference, DriverMutation, JournalEntry, MetaError};
+use peryx_ha::{ReclaimGuard, ReclaimGuardArm, ReclaimGuardStore as _};
+use rstest::rstest;
+
+use crate::meta::{DriverBlobReference, DriverMutation, JournalEntry, MetaError, MetaStore};
 
 fn guard(expires_at_unix: i64) -> ReclaimGuard {
     ReclaimGuard { expires_at_unix }
 }
 
+/// Admission judges a lease against the store's clock, so these tests step it instead of waiting.
+fn stepped_store() -> (tempfile::TempDir, MetaStore, Arc<AtomicI64>) {
+    let dir = tempfile::tempdir().unwrap();
+    let now = Arc::new(AtomicI64::new(0));
+    let ticks = Arc::clone(&now);
+    let store = MetaStore::open(dir.path().join("peryx.redb"))
+        .unwrap()
+        .with_clock(Arc::new(move || ticks.load(Ordering::Relaxed)));
+    (dir, store, now)
+}
+
+fn publish_reference(store: &MetaStore, digest: &str) -> Result<(), MetaError> {
+    store.commit_driver_txn(|txn| {
+        txn.put("ref/1", b"points-here")?;
+        txn.reference_blob(digest, 6);
+        Ok::<_, MetaError>(((), vec![b"{}".to_vec()]))
+    })
+}
+
 #[test]
-fn test_blob_reclaim_guard_blocks_a_reference_and_admits_it_after_deletion() {
-    let (_dir, store) = super::store();
+fn test_live_blob_reclaim_guard_blocks_a_reference_and_admits_it_after_deletion() {
+    let (_dir, store, now) = stepped_store();
+    now.store(10, Ordering::Relaxed);
     let digest = "orphaned-blob-digest";
     assert_eq!(
         store
@@ -18,13 +42,7 @@ fn test_blob_reclaim_guard_blocks_a_reference_and_admits_it_after_deletion() {
     );
     assert_eq!(store.reclaim_guard(digest).unwrap(), Some(guard(11)));
 
-    let error = store
-        .commit_driver_txn(|txn| {
-            txn.put("ref/1", b"points-here")?;
-            txn.reference_blob(digest, 6);
-            Ok::<_, MetaError>(((), vec![b"{}".to_vec()]))
-        })
-        .unwrap_err();
+    let error = publish_reference(&store, digest).unwrap_err();
     assert!(matches!(error, MetaError::BlobReclaiming { digest: rejected } if rejected == digest));
     assert!(
         store.get_driver_value("ref/1").unwrap().is_none(),
@@ -37,17 +55,74 @@ fn test_blob_reclaim_guard_blocks_a_reference_and_admits_it_after_deletion() {
     );
 
     assert!(store.compare_and_disarm_reclaim_guard(digest, guard(11)).unwrap());
-    store
-        .commit_driver_txn(|txn| {
-            txn.put("ref/1", b"points-here")?;
-            txn.reference_blob(digest, 6);
-            Ok::<_, MetaError>(((), vec![b"{}".to_vec()]))
-        })
-        .unwrap();
+    publish_reference(&store, digest).unwrap();
     assert_eq!(
         store.get_driver_value("ref/1").unwrap().as_deref(),
         Some(b"points-here".as_slice())
     );
+}
+
+#[rstest]
+#[case::at_the_lease_deadline(11)]
+#[case::past_the_lease_deadline(12)]
+fn test_lapsed_blob_reclaim_guard_admits_a_reference_and_drops_its_row(#[case] now_unix: i64) {
+    let (_dir, store, now) = stepped_store();
+    let digest = "orphaned-blob-digest";
+    store
+        .compare_and_arm_reclaim_guards(&[digest], 0, 10, guard(11))
+        .unwrap();
+    now.store(now_unix, Ordering::Relaxed);
+
+    publish_reference(&store, digest).unwrap();
+
+    assert_eq!(
+        store.get_driver_value("ref/1").unwrap().as_deref(),
+        Some(b"points-here".as_slice())
+    );
+    assert_eq!(
+        store.reclaim_guard(digest).unwrap(),
+        None,
+        "the commit that admitted past the lease also cleared it"
+    );
+}
+
+#[test]
+fn test_blob_reclaim_guard_on_another_digest_admits_an_unguarded_reference() {
+    let (_dir, store, now) = stepped_store();
+    now.store(10, Ordering::Relaxed);
+    store
+        .compare_and_arm_reclaim_guards(&["guarded"], 0, 10, guard(100))
+        .unwrap();
+
+    publish_reference(&store, "unguarded").unwrap();
+
+    assert_eq!(
+        store.get_driver_value("ref/1").unwrap().as_deref(),
+        Some(b"points-here".as_slice())
+    );
+    assert_eq!(
+        store.reclaim_guard("guarded").unwrap(),
+        Some(guard(100)),
+        "an unrelated live lease survives the commit"
+    );
+}
+
+#[test]
+fn test_default_store_clock_judges_a_blob_reclaim_guard_against_wall_time() {
+    let (_dir, store) = super::store();
+    store
+        .compare_and_arm_reclaim_guards(&["lapsed"], 0, 0, guard(1))
+        .unwrap();
+    store
+        .compare_and_arm_reclaim_guards(&["held"], 0, 0, guard(i64::MAX))
+        .unwrap();
+
+    publish_reference(&store, "lapsed").unwrap();
+    let error = publish_reference(&store, "held").unwrap_err();
+
+    assert!(matches!(error, MetaError::BlobReclaiming { digest } if digest == "held"));
+    assert_eq!(store.reclaim_guard("lapsed").unwrap(), None);
+    assert_eq!(store.reclaim_guard("held").unwrap(), Some(guard(i64::MAX)));
 }
 
 #[test]

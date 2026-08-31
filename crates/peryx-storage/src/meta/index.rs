@@ -1,5 +1,6 @@
-use peryx_ha::ArtifactPlacement;
-use redb::ReadableTable as _;
+use peryx_core::Clock;
+use peryx_ha::{ArtifactPlacement, ReclaimGuard};
+use redb::{ReadableTable as _, TableHandle as _};
 
 use super::error::{MetaError, MetaScanError};
 use super::policy_decision::advance_repository_generations;
@@ -402,7 +403,7 @@ impl MetaStore {
         }
         Self::enqueue_webhook_events(&txn, &webhooks).map_err(E::from)?;
         Self::write_artifact_placements(&txn, &placements).map_err(E::from)?;
-        check_blob_reclaim_guard(&txn, expected_serial, &journal).map_err(E::from)?;
+        check_blob_reclaim_guard(&txn, expected_serial, &journal, &self.clock).map_err(E::from)?;
         let journal_commit = commit_journal(&txn, &journal)?;
         advance_repository_generations(&txn, &policy_inputs).map_err(E::from)?;
         if let Some((repository, catalog)) = catalog_generation {
@@ -450,10 +451,14 @@ fn finish_journal(journal: PendingJournal, driver: DriverTxn<'_>) -> Result<Vec<
     }
 }
 
+/// Rejects a reference only while a collector still holds the blob's lease. A lapsed guard is the
+/// residue of a purge that died between arming and disarming, so it is dropped here rather than left
+/// to reject every later publication of that digest.
 fn check_blob_reclaim_guard(
     txn: &redb::WriteTransaction,
     expected_serial: Option<u64>,
     journal: &[JournalEntry],
+    clock: &Clock,
 ) -> Result<(), MetaError> {
     let Some(last) = journal.last() else {
         return Ok(());
@@ -461,15 +466,30 @@ fn check_blob_reclaim_guard(
     if expected_serial.is_some() || last.blobs.is_empty() {
         return Ok(());
     }
-    let guards = txn.open_table(BLOB_RECLAIM_GUARD)?;
+    if !table_exists(txn, &BLOB_RECLAIM_GUARD)? {
+        return Ok(());
+    }
+    let now = clock();
+    let mut guards = txn.open_table(BLOB_RECLAIM_GUARD)?;
     for blob in &last.blobs {
-        if guards.get(blob.sha256.as_str())?.is_some() {
+        let held = guards.get(blob.sha256.as_str())?.map(|value| ReclaimGuard {
+            expires_at_unix: value.value(),
+        });
+        let Some(guard) = held else {
+            continue;
+        };
+        if !guard.is_expired_at(now) {
             return Err(MetaError::BlobReclaiming {
                 digest: blob.sha256.clone(),
             });
         }
+        guards.remove(blob.sha256.as_str())?;
     }
     Ok(())
+}
+
+fn table_exists(txn: &redb::WriteTransaction, table: &impl redb::TableHandle) -> Result<bool, MetaError> {
+    Ok(txn.list_tables()?.any(|handle| handle.name() == table.name()))
 }
 
 fn update_policy_generation(txn: &redb::WriteTransaction, repository: &str, catalog: u64) -> Result<(), MetaError> {

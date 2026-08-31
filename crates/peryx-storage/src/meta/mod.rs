@@ -3,7 +3,9 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use peryx_core::Clock;
 use redb::{Database, ReadOnlyDatabase, ReadableDatabase as _, TableDefinition};
 
 mod analytics;
@@ -220,9 +222,19 @@ impl DriverBatch {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct MetaStore {
     db: Arc<MetaDatabase>,
+    clock: Clock,
+}
+
+impl std::fmt::Debug for MetaStore {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MetaStore")
+            .field("db", &self.db)
+            .finish_non_exhaustive()
+    }
 }
 
 enum MetaDatabase {
@@ -326,7 +338,15 @@ impl MetaStore {
         txn.commit()?;
         Ok(Self {
             db: Arc::new(MetaDatabase::ReadWrite(db)),
+            clock: system_clock(),
         })
+    }
+
+    /// Replaces the wall clock that decides whether a blob's reclaim-guard lease has lapsed.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Clock) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// Validates distributed persistence without creating domain tables.
@@ -365,6 +385,7 @@ impl MetaStore {
     pub fn open_existing(path: impl AsRef<Path>) -> Result<Self, MetaError> {
         Ok(Self {
             db: Arc::new(MetaDatabase::ReadWrite(Database::open(path)?)),
+            clock: system_clock(),
         })
     }
 
@@ -375,6 +396,16 @@ impl MetaStore {
     pub fn open_existing_read_only(path: impl AsRef<Path>) -> Result<Self, MetaError> {
         Ok(Self {
             db: Arc::new(MetaDatabase::ReadOnly(ReadOnlyDatabase::open(path)?)),
+            clock: system_clock(),
         })
     }
+}
+
+/// A host clock that predates the epoch must not stop the store from opening.
+fn system_clock() -> Clock {
+    Arc::new(|| {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX))
+    })
 }

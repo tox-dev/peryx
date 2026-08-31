@@ -1,4 +1,6 @@
 use std::collections::BTreeSet;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 
 use peryx_ha::{ReclaimGuard, ReclaimGuardArm, ReclaimGuardStore as _};
 use peryx_storage::blob::BlobStorage;
@@ -118,6 +120,23 @@ fn expired_owner_is_replaced_before_deletion() {
 }
 
 #[test]
+fn expired_guard_for_a_present_blob_is_released() {
+    let (_directory, _path, meta, blobs) = stores();
+    let kept = blobs.blocking().put_bytes(b"kept").unwrap();
+    meta.compare_and_arm_reclaim_guards(&[kept.as_str()], 0, 0, ReclaimGuard { expires_at_unix: 10 })
+        .unwrap();
+
+    let report = purge_orphaned_blobs(&meta, &blobs, true, 10, || {
+        Ok(BTreeSet::from([kept.as_str().to_owned()]))
+    })
+    .unwrap();
+
+    assert!(report.blobs.is_empty());
+    assert!(blobs.blocking().head(&kept).unwrap().is_some());
+    assert_eq!(meta.reclaim_guard(kept.as_str()).unwrap(), None);
+}
+
+#[test]
 fn expired_guard_for_an_absent_blob_is_released() {
     let (_directory, _path, meta, blobs) = stores();
     let digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -128,20 +147,6 @@ fn expired_guard_for_an_absent_blob_is_released() {
 
     assert!(report.blobs.is_empty());
     assert_eq!(meta.reclaim_guard(digest).unwrap(), None);
-}
-
-#[test]
-fn invalid_expired_guard_stops_the_purge() {
-    let (_directory, _path, meta, blobs) = stores();
-    meta.compare_and_arm_reclaim_guards(&["invalid"], 0, 0, ReclaimGuard { expires_at_unix: 10 })
-        .unwrap();
-
-    let error = purge_orphaned_blobs(&meta, &blobs, true, 10, || Ok(BTreeSet::new())).unwrap_err();
-
-    assert_eq!(
-        error.to_string(),
-        "read orphan reclaim guard: invalid SHA-256 digest \"invalid\""
-    );
 }
 
 #[test]
@@ -207,24 +212,49 @@ fn deletion_failure_keeps_the_guard_armed() {
 }
 
 #[test]
-fn guarded_blob_inspection_failure_stops_the_purge() {
+fn an_interrupted_purge_stops_rejecting_references_once_its_lease_lapses() {
     let directory = tempfile::tempdir().unwrap();
-    let root = directory.path().join("blobs");
-    std::fs::create_dir_all(root.join("sha256")).unwrap();
-    std::fs::write(root.join("sha256/01"), b"not a directory").unwrap();
-    let meta = MetaStore::open(directory.path().join("peryx.redb")).unwrap();
-    let digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-    meta.compare_and_arm_reclaim_guards(&[digest], 0, 0, ReclaimGuard { expires_at_unix: 10 })
-        .unwrap();
-
-    let error =
-        purge_orphaned_blobs(&meta, &BlobStorage::filesystem(root), true, 10, || Ok(BTreeSet::new())).unwrap_err();
-
-    assert!(matches!(
-        error,
-        OrphanPurgeError::Blob {
-            operation: "inspect guarded blob",
-            ..
+    let ticks = Arc::new(AtomicI64::new(10));
+    let clock = Arc::clone(&ticks);
+    let meta = MetaStore::open(directory.path().join("peryx.redb"))
+        .unwrap()
+        .with_clock(Arc::new(move || clock.load(Ordering::Relaxed)));
+    let blobs = BlobStorage::filesystem(directory.path().join("blobs"));
+    let orphan = blobs.blocking().put_bytes(b"orphan").unwrap();
+    let orphan_path = purge_orphaned_blobs(&meta, &blobs, false, 10, || Ok(BTreeSet::new()))
+        .unwrap()
+        .blobs
+        .pop()
+        .unwrap()
+        .path;
+    let mut scans = 0;
+    purge_orphaned_blobs(&meta, &blobs, true, 10, || {
+        scans += 1;
+        if scans == 2 {
+            std::fs::remove_file(&orphan_path).unwrap();
+            std::fs::create_dir(&orphan_path).unwrap();
+            std::fs::write(orphan_path.join("entry"), b"occupied").unwrap();
         }
-    ));
+        Ok(BTreeSet::new())
+    })
+    .unwrap_err();
+    let lease = ReclaimGuard {
+        expires_at_unix: 10 + RECLAIM_GUARD_LEASE_SECS,
+    };
+    assert_eq!(meta.reclaim_guard(orphan.as_str()).unwrap(), Some(lease));
+
+    ticks.store(lease.expires_at_unix - 1, Ordering::Relaxed);
+    let rejected = republish(&meta, orphan.as_str()).unwrap_err();
+    ticks.store(lease.expires_at_unix, Ordering::Relaxed);
+    republish(&meta, orphan.as_str()).unwrap();
+
+    assert!(matches!(rejected, MetaError::BlobReclaiming { digest } if digest == orphan.as_str()));
+    assert_eq!(meta.reclaim_guard(orphan.as_str()).unwrap(), None);
+}
+
+fn republish(meta: &MetaStore, digest: &str) -> Result<(), MetaError> {
+    meta.commit_driver_txn(|txn| {
+        txn.reference_blob(digest, 6);
+        Ok::<_, MetaError>(((), vec![b"{}".to_vec()]))
+    })
 }

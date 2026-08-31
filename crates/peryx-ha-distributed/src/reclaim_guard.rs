@@ -51,7 +51,7 @@ pub fn purge_orphaned_blobs(
         ));
     }
 
-    release_absent_expired_guards(meta, blobs, now)?;
+    release_expired_guards(meta, now)?;
     let guard = ReclaimGuard {
         expires_at_unix: now.saturating_add(RECLAIM_GUARD_LEASE_SECS),
     };
@@ -84,25 +84,12 @@ pub fn purge_orphaned_blobs(
     Ok(report(selected))
 }
 
-fn release_absent_expired_guards(meta: &MetaStore, blobs: &BlobStorage, now: i64) -> Result<(), OrphanPurgeError> {
-    for (encoded, guard) in meta.reclaim_guards()? {
-        if !guard.is_expired_at(now) {
-            continue;
-        }
-        let digest = Digest::from_hex(&encoded).ok_or_else(|| OrphanPurgeError::Blob {
-            operation: "read orphan reclaim guard",
-            reason: format!("invalid SHA-256 digest {encoded:?}"),
-        })?;
-        let absent = blobs
-            .blocking()
-            .head(&digest)
-            .map_err(|error| OrphanPurgeError::Blob {
-                operation: "inspect guarded blob",
-                reason: error.to_string(),
-            })?
-            .is_none();
-        if absent {
-            meta.compare_and_disarm_reclaim_guard(&encoded, guard)?;
+/// A lapsed lease proves its collector no longer holds the blob, whether or not the bytes survived
+/// the purge that armed it, so the row goes regardless of what the store reports.
+fn release_expired_guards(meta: &MetaStore, now: i64) -> Result<(), OrphanPurgeError> {
+    for (digest, guard) in meta.reclaim_guards()? {
+        if guard.is_expired_at(now) {
+            meta.compare_and_disarm_reclaim_guard(&digest, guard)?;
         }
     }
     Ok(())
