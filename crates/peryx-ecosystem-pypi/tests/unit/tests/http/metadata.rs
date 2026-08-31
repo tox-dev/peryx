@@ -162,8 +162,13 @@ async fn test_routed_metadata_ranges_use_the_advertising_source_credentials() {
             upstream: Some("mirror"),
             project_status: None,
             project_status_reason: None,
-            files: &[(digest.as_str().to_owned(), file_url, Some(wheel_size as u64))],
-            metadata: &[],
+            files: &[crate::store::PublishedFileWrite {
+                sha256: digest.as_str().to_owned(),
+                filename: filename.to_owned(),
+                url: file_url,
+                size: Some(wheel_size as u64),
+                metadata: None,
+            }],
             attestations: &[],
         })
         .unwrap();
@@ -181,11 +186,13 @@ async fn test_metadata_rejects_sidecar_over_size_limit() {
     let artifact = Digest::of(b"artifact");
     let metadata = Digest::of(b"metadata");
     let server = oversized_metadata_server();
-    h.state
-        .serving
-        .meta
-        .put_metadata(artifact.as_str(), &server.url, metadata.as_str(), "pypi")
-        .unwrap();
+    crate::tests::register_publication(
+        &h.state.serving.meta,
+        "pypi",
+        "pkg.whl",
+        artifact.as_str(),
+        Some((&server.url, metadata.as_str())),
+    );
 
     let uri = format!("/pypi/files/{}/pkg.whl.metadata", artifact.as_str());
     let (status, _, body) = get(&h.state, &uri, None).await;
@@ -216,14 +223,21 @@ async fn test_buffered_persist_inserts_metadata_before_url_query() {
     let (status, ..) = get(&h.state, "/pypi/simple/flask/", Some("text/html")).await;
     assert_eq!(status, StatusCode::OK);
 
-    let (url, ..) = h
+    let publication = h
         .state
         .serving
         .meta
-        .get_metadata(wheel_digest.as_str())
-        .unwrap()
-        .expect("metadata sibling registered");
-    assert_eq!(url, format!("{}/files/flask.whl.metadata?token=abc", h.server.uri()));
+        .get_file_publication("pypi", "flask", wheel_digest.as_str(), "flask-1.0.whl")
+        .unwrap();
+    assert_eq!(
+        publication,
+        Some(crate::store::FilePublication::Claimed(crate::store::MetadataClaim {
+            url: format!("{}/files/flask.whl.metadata?token=abc", h.server.uri()),
+            metadata_sha256: meta_digest.as_str().to_owned(),
+            source: "pypi".to_owned(),
+            upstream: None,
+        }))
+    );
 }
 #[tokio::test]
 async fn test_metadata_not_found_when_unregistered() {
@@ -277,14 +291,10 @@ async fn test_metadata_backfill_reads_wheel_ranges() {
             h.state
                 .serving
                 .meta
-                .get_metadata(digest.as_str())
+                .get_metadata_digest(digest.as_str())
                 .unwrap()
                 .expect("generated metadata registered"),
-            (
-                "peryx:generated".to_owned(),
-                Digest::of(metadata).as_str().to_owned(),
-                "pypi".to_owned(),
-            ),
+            Digest::of(metadata).as_str(),
             "{label}"
         );
     }
@@ -754,11 +764,13 @@ async fn test_metadata_digest_mismatch_is_server_error() {
     let artifact = Digest::of(b"artifact");
     let metadata = Digest::of(b"expected");
     let metadata_url = format!("{}/files/pkg.whl.metadata", h.server.uri());
-    h.state
-        .serving
-        .meta
-        .put_metadata(artifact.as_str(), &metadata_url, metadata.as_str(), "pypi")
-        .unwrap();
+    crate::tests::register_publication(
+        &h.state.serving.meta,
+        "pypi",
+        "pkg.whl",
+        artifact.as_str(),
+        Some((&metadata_url, metadata.as_str())),
+    );
     Mock::given(method("GET"))
         .and(path("/files/pkg.whl.metadata"))
         .respond_with(ResponseTemplate::new(200).set_body_bytes(b"wrong".to_vec()))

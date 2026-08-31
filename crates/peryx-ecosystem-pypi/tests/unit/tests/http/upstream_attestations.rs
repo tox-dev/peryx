@@ -80,11 +80,20 @@ pub(super) fn put_cached_attestation_page(harness: &Harness, digest: &str) {
             upstream: None,
             project_status: None,
             project_status_reason: None,
-            files: &[(digest.to_owned(), format!("https://files.example/{FILENAME}"), None)],
-            metadata: &[],
+            files: &[published_file(digest)],
             attestations: &[],
         })
         .unwrap();
+}
+
+fn published_file(digest: &str) -> crate::store::PublishedFileWrite {
+    crate::store::PublishedFileWrite {
+        sha256: digest.to_owned(),
+        filename: FILENAME.to_owned(),
+        url: format!("https://files.example/{FILENAME}"),
+        size: None,
+        metadata: None,
+    }
 }
 
 async fn mount_upstream_page_without_attestation(harness: &Harness, digest: &str) {
@@ -448,8 +457,7 @@ async fn test_virtual_provenance_without_a_registered_layer_source_is_not_found(
             upstream: None,
             project_status: None,
             project_status_reason: None,
-            files: &[(digest.clone(), format!("https://files.example/{FILENAME}"), None)],
-            metadata: &[],
+            files: &[published_file(&digest)],
             attestations: &[],
         })
         .unwrap();

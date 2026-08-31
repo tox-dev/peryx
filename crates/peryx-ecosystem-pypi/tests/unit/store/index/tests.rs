@@ -131,16 +131,16 @@ fn test_put_cached_page_records_file_url_size_and_status() {
         upstream: Some("mirror"),
         project_status: Some("archived"),
         project_status_reason: Some("read only"),
-        files: &[(
-            "feedface".to_owned(),
-            "https://files.example/pkg-1.0.whl".to_owned(),
-            Some(42),
-        )],
-        metadata: &[(
-            "feedface".to_owned(),
-            "https://files.example/pkg-1.0.whl.metadata".to_owned(),
-            "decafbad".to_owned(),
-        )],
+        files: &[crate::store::PublishedFileWrite {
+            sha256: "feedface".to_owned(),
+            filename: "pkg-1.0.whl".to_owned(),
+            url: "https://files.example/pkg-1.0.whl".to_owned(),
+            size: Some(42),
+            metadata: Some((
+                "https://files.example/pkg-1.0.whl.metadata".to_owned(),
+                "decafbad".to_owned(),
+            )),
+        }],
         attestations: &[],
     })
     .unwrap();
@@ -149,12 +149,20 @@ fn test_put_cached_page_records_file_url_size_and_status() {
     assert_eq!(source.size, Some(42), "the file's size line round-trips");
     assert_eq!(source.upstream.as_deref(), Some("mirror"));
     assert_eq!(
-        meta.get_metadata("feedface").unwrap(),
-        Some((
-            "https://files.example/pkg-1.0.whl.metadata".to_owned(),
-            "decafbad".to_owned(),
-            "pypi".to_owned(),
-        ))
+        meta.get_file_publication("pypi", "pkg", "feedface", "pkg-1.0.whl")
+            .unwrap(),
+        Some(crate::store::FilePublication::Claimed(crate::store::MetadataClaim {
+            url: "https://files.example/pkg-1.0.whl.metadata".to_owned(),
+            metadata_sha256: "decafbad".to_owned(),
+            source: "pypi".to_owned(),
+            upstream: Some("mirror".to_owned()),
+        })),
+        "the claim is scoped to the publication that advertised it"
+    );
+    assert_eq!(
+        meta.get_metadata_digest("feedface").unwrap(),
+        None,
+        "an upstream claim is not metadata peryx derived from the artifact"
     );
     assert_eq!(
         meta.get_project_status("pypi", "pkg")
@@ -180,7 +188,6 @@ fn test_put_cached_page_clears_status_when_none() {
         project_status: None,
         project_status_reason: None,
         files: &[],
-        metadata: &[],
         attestations: &[],
     })
     .unwrap();
@@ -211,7 +218,6 @@ fn test_late_page_registration_preserves_or_resets_a_cached_attestation_by_url()
         project_status: None,
         project_status_reason: None,
         files: &[],
-        metadata: &[],
         attestations: &[("abc".to_owned(), filename.to_owned(), first_url.to_owned())],
     })
     .unwrap();
@@ -233,7 +239,6 @@ fn test_late_page_registration_preserves_or_resets_a_cached_attestation_by_url()
         project_status: None,
         project_status_reason: None,
         files: &[],
-        metadata: &[],
         attestations: &[("abc".to_owned(), filename.to_owned(), second_url.to_owned())],
     })
     .unwrap();
@@ -556,8 +561,18 @@ mod generation {
         let source = meta.get_file_url(&"a".repeat(64)).unwrap().unwrap();
         assert_eq!(source.url, "https://files.example/flask-1.0-py3-none-any.whl");
         assert_eq!(source.size, Some(10));
-        let (_url, digest, _source) = meta.get_metadata(&"a".repeat(64)).unwrap().unwrap();
-        assert_eq!(digest, "b".repeat(64));
+        let publication = meta
+            .get_file_publication("pypi", "flask", &"a".repeat(64), "flask-1.0-py3-none-any.whl")
+            .unwrap();
+        assert_eq!(
+            publication,
+            Some(crate::store::FilePublication::Claimed(crate::store::MetadataClaim {
+                url: "https://files.example/flask-1.0-py3-none-any.whl.metadata".to_owned(),
+                metadata_sha256: "b".repeat(64),
+                source: "pypi".to_owned(),
+                upstream: None,
+            }))
+        );
     }
 
     #[test]
@@ -826,4 +841,40 @@ mod generation {
                 .is_empty()
         );
     }
+}
+
+#[test]
+fn test_retire_cached_project_drops_its_publication_records() {
+    let (_dir, meta) = store();
+    meta.put_cached_page(crate::store::CachedPageWrite {
+        key: "pypi/pkg",
+        record: &record(),
+        index: "pypi",
+        normalized: "pkg",
+        display: "Pkg",
+        source: "pypi",
+        upstream: None,
+        project_status: None,
+        project_status_reason: None,
+        files: &[crate::store::PublishedFileWrite {
+            sha256: "feedface".to_owned(),
+            filename: "pkg-1.0.whl".to_owned(),
+            url: "https://files.example/pkg-1.0.whl".to_owned(),
+            size: None,
+            metadata: Some((
+                "https://files.example/pkg-1.0.whl.metadata".to_owned(),
+                "decafbad".to_owned(),
+            )),
+        }],
+        attestations: &[],
+    })
+    .unwrap();
+
+    meta.retire_cached_project("pypi/pkg", "pypi", "pkg").unwrap();
+
+    assert_eq!(
+        meta.get_file_publication("pypi", "pkg", "feedface", "pkg-1.0.whl")
+            .unwrap(),
+        None
+    );
 }

@@ -534,10 +534,8 @@ fn store_record(
         version: record.version.as_str(),
         submitted_at_unix,
         metadata: Some(MetadataSibling {
-            url: "uploaded",
             metadata_sha256: metadata_digest.as_str(),
             size: metadata.len() as u64,
-            source: name,
         }),
         provenance: provenance.map(|(digest, size)| ProvenanceSibling {
             provenance_sha256: digest.as_str(),
@@ -587,10 +585,8 @@ fn store_record_with_commit(
         version: record.version.as_str(),
         submitted_at_unix,
         metadata: Some(MetadataSibling {
-            url: "uploaded",
             metadata_sha256: metadata_digest.as_str(),
             size: metadata.len() as u64,
-            source: name,
         }),
         provenance: provenance.as_ref().map(|(digest, size)| ProvenanceSibling {
             provenance_sha256: digest.as_str(),

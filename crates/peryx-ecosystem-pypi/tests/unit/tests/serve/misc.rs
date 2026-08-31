@@ -117,15 +117,21 @@ async fn test_buffered_fetch_registers_metadata_siblings() {
 
     let (status, ..) = get(&h.state, "/pypi/simple/flask/", None).await;
     assert_eq!(status, StatusCode::OK);
-    let (url, meta_sha, _source) = h
+    let publication = h
         .state
         .serving
         .meta
-        .get_metadata(digest.as_str())
-        .unwrap()
-        .expect("metadata sibling registered");
-    assert_eq!(url, format!("{file_url}.metadata"));
-    assert_eq!(meta_sha, meta_digest.as_str());
+        .get_file_publication("pypi", "flask", digest.as_str(), "flask-1.0-py3-none-any.whl")
+        .unwrap();
+    assert_eq!(
+        publication,
+        Some(crate::store::FilePublication::Claimed(crate::store::MetadataClaim {
+            url: format!("{file_url}.metadata"),
+            metadata_sha256: meta_digest.as_str().to_owned(),
+            source: "pypi".to_owned(),
+            upstream: None,
+        }))
+    );
 }
 
 fn detail_with_metadata(wheel: &str, url: &str, meta: &str) -> String {

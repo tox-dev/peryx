@@ -97,6 +97,21 @@ because the upstream `.asc` is still reachable next to that URL. Pass-through ha
 content-address the file by and so leaves the URL alone. There the marker is still true, so peryx passes it through
 untouched. The marker tracks one fact only: whether the URL peryx hands out has a signature next to it.
 
+## PEP 658 metadata claims
+
+A `.metadata` sibling is what one index's page claims about a file it publishes, not a property of the distribution's
+bytes. Two indexes can publish the same wheel and advertise different sidecars, and one of them can advertise none at
+all. peryx records each claim against the publication that made it: the cached index, the project, the artifact digest,
+and the filename. A `.metadata` request resolves the claim belonging to the index the request arrived on, and fetches it
+through that index's own credentials.
+
+A virtual index resolves the claim the same way its pages merge: it walks its layers in shadow order and stops at the
+first layer that publishes the file. A file whose winning publication advertises no sidecar therefore inherits none from
+a layer behind it.
+
+Metadata peryx reads out of the artifact itself, extracted from the wheel or uploaded alongside it, is a function of the
+digest rather than a claim. That stays shared: every publication of the same digest resolves the same bytes.
+
 ## Provenance and attestations
 
 A file uploaded with [PEP 740](https://peps.python.org/pep-0740/) attestations carries a `provenance` key on its Simple

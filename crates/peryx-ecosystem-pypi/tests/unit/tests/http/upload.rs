@@ -1780,8 +1780,13 @@ async fn test_pypi_maintenance_scans_walk_real_records() {
     let sibling = Digest::of(b"the metadata sibling");
     blobs.put_bytes_as(b"a wheel", &digest).await.unwrap();
     meta.put_file_url(digest.as_str(), &file_url, "pypi").unwrap();
-    meta.put_metadata(digest.as_str(), &file_url, sibling.as_str(), "pypi")
-        .unwrap();
+    crate::tests::register_publication(
+        meta,
+        "pypi",
+        "flask-1.0-py3-none-any.whl",
+        digest.as_str(),
+        Some((&file_url, sibling.as_str())),
+    );
     meta.put_project("pypi", "flask", "Flask").unwrap();
     meta.set_override(
         true,

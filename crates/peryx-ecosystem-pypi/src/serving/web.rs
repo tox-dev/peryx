@@ -726,7 +726,7 @@ pub(super) async fn project_page(
         None => ui.files.iter().rev().find(|file| file.has_metadata),
     };
     let mut meta = match sibling {
-        Some(file) => metadata_for(&state, &route, file).await?,
+        Some(file) => metadata_for(&state, index, &route, file).await?,
         None => MetadataView::default(),
     };
     meta.version = default.or(meta.version);
@@ -982,7 +982,12 @@ fn metadata_file<'a>(project: &'a ProjectView, version: &str) -> Option<&'a File
 }
 
 /// Fetch and parse the PEP 658 metadata sibling of `file` into the neutral view model.
-async fn metadata_for(state: &Arc<ServingState>, route: &str, file: &FileView) -> Result<MetadataView, String> {
+async fn metadata_for(
+    state: &Arc<ServingState>,
+    index: &Index,
+    route: &str,
+    file: &FileView,
+) -> Result<MetadataView, String> {
     let Some(digest) = Digest::from_hex(&file.sha256) else {
         return Err(format!(
             "metadata fetch on index {route:?} for file {:?}: invalid sha256 digest {:?}",
@@ -990,7 +995,7 @@ async fn metadata_for(state: &Arc<ServingState>, route: &str, file: &FileView) -
         ));
     };
     let metadata_filename = format!("{}.metadata", file.filename);
-    let bytes = cache::metadata_bytes(state, &digest, route, &metadata_filename)
+    let bytes = cache::metadata_bytes(state, index, &digest, route, &metadata_filename)
         .await
         .map_err(|err| {
             format!(

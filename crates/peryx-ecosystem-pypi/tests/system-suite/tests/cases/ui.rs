@@ -7,7 +7,7 @@ use axum::http::{Request, StatusCode, header};
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use peryx_core::path::local_artifact_url;
-use peryx_ecosystem_pypi::store::{CachedIndex, CachedPageWrite, PypiStore as _};
+use peryx_ecosystem_pypi::store::{CachedIndex, CachedPageWrite, PublishedFileWrite, PypiStore as _};
 use peryx_ecosystem_pypi::upload::Uploaded;
 use peryx_ecosystem_pypi::{CoreMetadata, File, Provenance, Yanked, to_json};
 use peryx_ha::{ArtifactPlacement, ArtifactPlacementStore, ArtifactSource};
@@ -865,7 +865,15 @@ fn file_router(file: &serde_json::Value) -> (tempfile::TempDir, axum::Router) {
         .as_str()
         .filter(|sha256| !sha256.is_empty())
         .zip(url)
-        .map(|(sha256, url)| vec![(sha256.to_owned(), url.to_owned(), None)])
+        .map(|(sha256, url)| {
+            vec![PublishedFileWrite {
+                sha256: sha256.to_owned(),
+                filename: file["filename"].as_str().unwrap_or_default().to_owned(),
+                url: url.to_owned(),
+                size: None,
+                metadata: None,
+            }]
+        })
         .unwrap_or_default();
     state
         .serving
@@ -881,7 +889,6 @@ fn file_router(file: &serde_json::Value) -> (tempfile::TempDir, axum::Router) {
             project_status: None,
             project_status_reason: None,
             files: &files,
-            metadata: &[],
             attestations: &[],
         })
         .unwrap();

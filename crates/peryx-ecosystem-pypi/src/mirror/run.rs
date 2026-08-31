@@ -206,7 +206,7 @@ async fn sync_files(
         };
         if let Some(metadata) = &file.metadata {
             let metadata_filename = format!("{}.metadata", file.filename);
-            match sync_metadata(state, &target.route, &metadata_filename, &file.digest, &metadata.digest).await {
+            match sync_metadata(state, target, &metadata_filename, &file.digest, &metadata.digest).await {
                 Ok(SyncOutcome::Cached(bytes)) => {
                     let row = Row::metadata(
                         &target.index,
@@ -288,7 +288,7 @@ async fn sync_file(
 
 async fn sync_metadata(
     state: &Arc<ServingState>,
-    route: &str,
+    target: &Target,
     metadata_filename: &str,
     artifact_digest: &str,
     metadata_digest: &str,
@@ -299,9 +299,15 @@ async fn sync_metadata(
         return Ok(SyncOutcome::Cached(metadata.bytes));
     }
     Ok(SyncOutcome::Downloaded(
-        crate::cache::metadata_bytes(state, &artifact, route, metadata_filename)
-            .await?
-            .len() as u64,
+        crate::cache::metadata_bytes(
+            state,
+            state.index_at(target.position),
+            &artifact,
+            &target.route,
+            metadata_filename,
+        )
+        .await?
+        .len() as u64,
     ))
 }
 

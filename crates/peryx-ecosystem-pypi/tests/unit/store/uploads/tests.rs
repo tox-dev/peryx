@@ -40,10 +40,8 @@ fn published() -> PublishedFile<'static> {
         version: "1.0",
         submitted_at_unix: 123,
         metadata: Some(MetadataSibling {
-            url: "uploaded",
             metadata_sha256: "metadata-sha",
             size: 8,
-            source: "hosted",
         }),
         provenance: None,
         quota: None,
@@ -69,7 +67,7 @@ fn test_publish_file_if_commit_writes_record_sibling_project_and_serial() {
         Some(b"record".as_slice())
     );
     assert!(
-        meta.get_metadata("artifact-sha").unwrap().is_some(),
+        meta.get_metadata_digest("artifact-sha").unwrap().is_some(),
         "the sibling row is written"
     );
     assert_eq!(meta.get_project("hosted", "flask").unwrap().as_deref(), Some("Flask"));
@@ -242,7 +240,7 @@ fn test_publish_file_if_commit_without_a_metadata_sibling_writes_no_sibling() {
 
     assert!(wrote);
     assert!(
-        meta.get_metadata("artifact-sha").unwrap().is_none(),
+        meta.get_metadata_digest("artifact-sha").unwrap().is_none(),
         "a file without metadata records no sibling row"
     );
     assert_eq!(

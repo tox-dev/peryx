@@ -213,20 +213,23 @@ async fn test_offline_metadata_fetches_are_unavailable() {
     });
     let artifact = Digest::of(b"wheel");
     let metadata = Digest::of(b"metadata");
-    state
-        .serving
-        .meta
-        .put_metadata(
-            artifact.as_str(),
-            "https://example.invalid/files/flask.whl.metadata",
-            metadata.as_str(),
-            "pypi",
-        )
-        .unwrap();
+    crate::tests::register_publication(
+        &state.serving.meta,
+        "pypi",
+        "flask-1.0-py3-none-any.whl",
+        artifact.as_str(),
+        Some(("https://example.invalid/files/flask.whl.metadata", metadata.as_str())),
+    );
 
-    let err = cache::metadata_bytes(&state.serving, &artifact, "pypi", "flask-1.0-py3-none-any.whl.metadata")
-        .await
-        .unwrap_err();
+    let err = cache::metadata_bytes(
+        &state.serving,
+        state.serving.index_at(0),
+        &artifact,
+        "pypi",
+        "flask-1.0-py3-none-any.whl.metadata",
+    )
+    .await
+    .unwrap_err();
 
     assert!(matches!(err, cache::CacheError::OfflineMissing("metadata")));
 }
@@ -254,9 +257,15 @@ async fn test_offline_generated_wheel_metadata_range_fetch_is_unavailable() {
         )
         .unwrap();
 
-    let err = cache::metadata_bytes(&state.serving, &artifact, "pypi", "flask-1.0-py3-none-any.whl.metadata")
-        .await
-        .unwrap_err();
+    let err = cache::metadata_bytes(
+        &state.serving,
+        state.serving.index_at(0),
+        &artifact,
+        "pypi",
+        "flask-1.0-py3-none-any.whl.metadata",
+    )
+    .await
+    .unwrap_err();
 
     assert!(matches!(err, cache::CacheError::OfflineMissing("metadata")));
 }

@@ -81,6 +81,7 @@ fn serving_delegates_name_policy_cache_and_trash() {
         [
             "file_url_records",
             "metadata_records",
+            "publication_records",
             "project_records",
             "upload_records",
             "override_records",

@@ -308,7 +308,6 @@ pub(super) fn persist_page_from(
 ) -> Result<(), CacheError> {
     let parsed = parse_detail(&record.body)?;
     let mut files = Vec::new();
-    let mut metadata = Vec::new();
     let mut attestations = Vec::new();
     let policy = mirror_policy(state, name);
     for file in &parsed.files {
@@ -318,16 +317,19 @@ pub(super) fn persist_page_from(
         let Some(sha256) = file.hashes.get("sha256") else {
             continue;
         };
-        files.push((sha256.clone(), file.url.clone(), file.size));
-        if let CoreMetadata::Hashes(hashes) = file.metadata()
-            && let Some(digest) = hashes.get("sha256")
-        {
-            metadata.push((
-                sha256.clone(),
-                crate::stream::metadata_sibling(&file.url),
-                digest.clone(),
-            ));
-        }
+        let metadata = match file.metadata() {
+            CoreMetadata::Hashes(hashes) => hashes
+                .get("sha256")
+                .map(|digest| (crate::stream::metadata_sibling(&file.url), digest.clone())),
+            CoreMetadata::Absent | CoreMetadata::Available => None,
+        };
+        files.push(crate::store::PublishedFileWrite {
+            sha256: sha256.clone(),
+            filename: file.filename.clone(),
+            url: file.url.clone(),
+            size: file.size,
+            metadata,
+        });
         if let Some(url) = file.provenance.secure_url() {
             attestations.push((sha256.clone(), file.filename.clone(), url.to_owned()));
         }
@@ -346,7 +348,6 @@ pub(super) fn persist_page_from(
             project_status: parsed.meta.project_status.as_deref(),
             project_status_reason: parsed.meta.project_status_reason.as_deref(),
             files: &files,
-            metadata: &metadata,
             attestations: &attestations,
         })
         .map_err(CacheError::from)?;

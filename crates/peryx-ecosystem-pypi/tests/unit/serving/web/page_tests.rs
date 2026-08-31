@@ -172,7 +172,7 @@ fn rich_project() -> (tempfile::TempDir, Arc<AppState>) {
     state
         .serving
         .meta
-        .put_metadata(artifact.as_str(), "peryx:generated", metadata_digest.as_str(), "hosted")
+        .put_metadata(artifact.as_str(), metadata_digest.as_str())
         .unwrap();
 
     let provenance = stored_provenance(artifact.as_str());

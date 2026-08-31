@@ -812,12 +812,12 @@ async fn sync_files_reports_invalid_metadata_and_artifact_digests() {
     assert_eq!(summary.failures, 2);
     assert_eq!(String::from_utf8(output).unwrap().matches("\tfailure\t").count(), 2);
     assert!(
-        sync_metadata(&fixture.state.serving, "pypi", "demo.metadata", "bad", &"a".repeat(64),)
+        sync_metadata(&fixture.state.serving, &target, "demo.metadata", "bad", &"a".repeat(64),)
             .await
             .is_err()
     );
     assert!(
-        sync_metadata(&fixture.state.serving, "pypi", "demo.metadata", &"a".repeat(64), "bad",)
+        sync_metadata(&fixture.state.serving, &target, "demo.metadata", &"a".repeat(64), "bad",)
             .await
             .is_err()
     );

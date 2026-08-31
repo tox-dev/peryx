@@ -4,8 +4,8 @@ pub(super) use std::collections::BTreeMap;
 pub(super) use std::sync::Arc;
 
 pub(super) use crate::store::CachedIndex;
-pub(super) use crate::store::CachedPageWrite;
 pub(super) use crate::store::PypiStore as _;
+pub(super) use crate::store::{CachedPageWrite, PublishedFileWrite};
 pub(super) use crate::{CoreMetadata, File, Meta, ProjectDetail, Provenance, Yanked, to_json};
 pub(super) use axum::http::StatusCode;
 pub(super) use peryx_storage::blob::{BlobStorage, Digest};
@@ -48,7 +48,7 @@ pub(super) fn put_uploaded_package_with_metadata(
     let metadata_digest = state.blobs.blocking().put_bytes(metadata.as_bytes()).unwrap();
     state
         .meta
-        .put_metadata(artifact_digest.as_str(), "uploaded", metadata_digest.as_str(), "hosted")
+        .put_metadata(artifact_digest.as_str(), metadata_digest.as_str())
         .unwrap();
     let uploaded = Uploaded {
         version: "1.0".to_owned(),
@@ -143,8 +143,13 @@ pub(super) fn put_cached_package(
         .files
         .iter()
         .filter_map(|file| {
-            file.sha256()
-                .map(|digest| (digest.to_owned(), file.url.clone(), file.size))
+            file.sha256().map(|digest| PublishedFileWrite {
+                sha256: digest.to_owned(),
+                filename: file.filename.clone(),
+                url: file.url.clone(),
+                size: file.size,
+                metadata: None,
+            })
         })
         .collect::<Vec<_>>();
     state
@@ -160,7 +165,6 @@ pub(super) fn put_cached_package(
             project_status: detail.meta.project_status.as_deref(),
             project_status_reason: detail.meta.project_status_reason.as_deref(),
             files: &files,
-            metadata: &[],
             attestations: &[],
         })
         .unwrap();

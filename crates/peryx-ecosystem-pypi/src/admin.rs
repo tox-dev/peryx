@@ -36,10 +36,7 @@ pub fn referenced_blob_digests(meta: &MetaStore) -> Result<BTreeSet<String>, Str
         Ok(())
     })
     .map_err(crate::error_message)?;
-    meta.scan_metadata_records(|digest, value| {
-        let Some((_url, metadata_digest, _source)) = split_triple(value) else {
-            return Err(format!("invalid PEP 658 metadata record for digest {digest:?}"));
-        };
+    meta.scan_metadata_records(|digest, metadata_digest| {
         if Digest::from_hex(digest).is_none() {
             return Err(format!("invalid PEP 658 wheel digest {digest:?}"));
         }
@@ -49,6 +46,15 @@ pub fn referenced_blob_digests(meta: &MetaStore) -> Result<BTreeSet<String>, Str
         digests.insert(digest.to_owned());
         digests.insert(metadata_digest.to_owned());
         Ok(())
+    })
+    .map_err(crate::error_message)?;
+    meta.scan_file_publications(|key, value| match claimed_sidecar(value) {
+        ClaimedSidecar::Digest(metadata_digest) => {
+            digests.insert(metadata_digest.to_owned());
+            Ok(())
+        }
+        ClaimedSidecar::None => Ok(()),
+        ClaimedSidecar::Unreadable => Err(format!("invalid PEP 658 publication record {key:?}")),
     })
     .map_err(crate::error_message)?;
     meta.scan_upload_records(|key, bytes| {
@@ -67,6 +73,26 @@ pub fn referenced_blob_digests(meta: &MetaStore) -> Result<BTreeSet<String>, Str
     })
     .map_err(crate::error_message)?;
     Ok(digests)
+}
+
+/// What a publication record says about its sidecar. A claimed sidecar's blob is cached under the
+/// digest the record names, so the orphan collector must keep that blob.
+enum ClaimedSidecar<'a> {
+    Digest(&'a str),
+    None,
+    Unreadable,
+}
+
+fn claimed_sidecar(value: &str) -> ClaimedSidecar<'_> {
+    if value.is_empty() {
+        return ClaimedSidecar::None;
+    }
+    match split_triple(value) {
+        Some((_url, metadata_digest, _rest)) if Digest::from_hex(metadata_digest).is_some() => {
+            ClaimedSidecar::Digest(metadata_digest)
+        }
+        _ => ClaimedSidecar::Unreadable,
+    }
 }
 
 fn valid_provenance<'a>(artifact_digest: &str, value: &'a str) -> Option<&'a str> {
@@ -107,6 +133,7 @@ pub fn cache_pages(meta: &MetaStore, index_names: &[&str]) -> Result<Vec<CachePa
 pub fn cache_record_counts(meta: &MetaStore) -> Result<Vec<(String, u64)>, String> {
     let mut file_urls = 0_u64;
     let mut metadata = 0_u64;
+    let mut publications = 0_u64;
     let mut projects = 0_u64;
     let mut uploads = 0_u64;
     let mut overrides = 0_u64;
@@ -118,6 +145,11 @@ pub fn cache_record_counts(meta: &MetaStore) -> Result<Vec<(String, u64)>, Strin
     .map_err(crate::error_message)?;
     meta.scan_metadata_records(|_digest, _value| {
         metadata += 1;
+        Ok::<(), std::convert::Infallible>(())
+    })
+    .map_err(crate::error_message)?;
+    meta.scan_file_publications(|_key, _value| {
+        publications += 1;
         Ok::<(), std::convert::Infallible>(())
     })
     .map_err(crate::error_message)?;
@@ -144,6 +176,7 @@ pub fn cache_record_counts(meta: &MetaStore) -> Result<Vec<(String, u64)>, Strin
     Ok(vec![
         ("file_url_records".to_owned(), file_urls),
         ("metadata_records".to_owned(), metadata),
+        ("publication_records".to_owned(), publications),
         ("project_records".to_owned(), projects),
         ("upload_records".to_owned(), uploads),
         ("override_records".to_owned(), overrides),
@@ -399,13 +432,18 @@ pub fn fsck_metadata(meta: &MetaStore, blobs: &BlobStorage, out: &mut dyn Write)
         Ok::<(), std::io::Error>(())
     })
     .map_err(crate::error_message)?;
-    meta.scan_metadata_records(|digest, value| {
-        let valid = Digest::from_hex(digest).is_some()
-            && split_triple(value)
-                .is_some_and(|(_url, metadata_digest, _source)| Digest::from_hex(metadata_digest).is_some());
-        if !valid {
+    meta.scan_metadata_records(|digest, metadata_digest| {
+        if Digest::from_hex(digest).is_none() || Digest::from_hex(metadata_digest).is_none() {
             problems += 1;
             writeln!(out, "metadata\tpypi\tpep658\t{digest}\tinvalid record")?;
+        }
+        Ok::<(), std::io::Error>(())
+    })
+    .map_err(crate::error_message)?;
+    meta.scan_file_publications(|key, value| {
+        if matches!(claimed_sidecar(value), ClaimedSidecar::Unreadable) {
+            problems += 1;
+            writeln!(out, "metadata\tpypi\tpublication\t{key}\tinvalid record")?;
         }
         Ok::<(), std::io::Error>(())
     })

@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 
 use peryx_storage::meta::{ArtifactOrigin as _, ArtifactSource, ByteAvailability};
 
-use super::{FileSource, MetaStore, PypiArtifactOrigin, metadata_key, split_file_source};
+use super::{
+    FilePublication, FileSource, MetaStore, MetadataClaim, PypiArtifactOrigin, metadata_key, split_file_source,
+};
 use crate::store::PypiStore as _;
 
 fn store() -> (tempfile::TempDir, MetaStore) {
@@ -60,30 +62,30 @@ fn test_file_source_without_size_keeps_routed_upstream() {
 }
 
 #[test]
-fn test_put_and_get_metadata_roundtrips_the_sibling() {
+fn test_put_and_get_metadata_roundtrips_the_derived_digest() {
     let (_dir, meta) = store();
-    assert_eq!(meta.get_metadata("wheelsha").unwrap(), None);
-    meta.put_metadata("wheelsha", "https://up/pkg.whl.metadata", "metasha", "pypi")
-        .unwrap();
+    assert_eq!(meta.get_metadata_digest("wheelsha").unwrap(), None);
+    meta.put_metadata("wheelsha", "metasha").unwrap();
     assert_eq!(
-        meta.get_metadata("wheelsha").unwrap(),
-        Some((
-            "https://up/pkg.whl.metadata".to_owned(),
-            "metasha".to_owned(),
-            "pypi".to_owned(),
-        ))
+        meta.get_metadata_digest("wheelsha").unwrap(),
+        Some("metasha".to_owned())
     );
 }
 
 #[test]
-fn test_get_metadata_digests_skips_missing_and_malformed_records() {
+fn test_get_metadata_digest_skips_a_non_utf8_record() {
     let (_dir, meta) = store();
-    meta.put_metadata("wheelsha", "https://up/pkg.whl.metadata", "metasha", "pypi")
-        .unwrap();
-    // Legacy records may lack the digest separator.
-    meta.put_driver_value(&metadata_key("broken"), b"only-url").unwrap();
+    meta.put_driver_value(&metadata_key("bad"), &[0xff, 0xfe]).unwrap();
 
-    let digests = meta.get_metadata_digests(["missing", "broken", "wheelsha"]).unwrap();
+    assert_eq!(meta.get_metadata_digest("bad").unwrap(), None);
+}
+
+#[test]
+fn test_get_metadata_digests_skips_missing_records() {
+    let (_dir, meta) = store();
+    meta.put_metadata("wheelsha", "metasha").unwrap();
+
+    let digests = meta.get_metadata_digests(["missing", "wheelsha"]).unwrap();
 
     assert_eq!(digests, BTreeMap::from([("wheelsha".to_owned(), "metasha".to_owned())]));
 }
@@ -118,28 +120,20 @@ fn test_scan_file_urls_skips_a_non_utf8_record() {
 #[test]
 fn test_scan_metadata_records_visits_each_record() {
     let (_dir, meta) = store();
-    meta.put_metadata("wheelsha", "https://up/pkg.metadata", "metasha", "pypi")
-        .unwrap();
+    meta.put_metadata("wheelsha", "metasha").unwrap();
     let mut seen = Vec::new();
     meta.scan_metadata_records(|digest, value| {
         seen.push((digest.to_owned(), value.to_owned()));
         Ok::<(), std::io::Error>(())
     })
     .unwrap();
-    assert_eq!(
-        seen,
-        vec![(
-            "wheelsha".to_owned(),
-            "https://up/pkg.metadata\nmetasha\npypi".to_owned()
-        )]
-    );
+    assert_eq!(seen, vec![("wheelsha".to_owned(), "metasha".to_owned())]);
 }
 
 #[test]
 fn test_scan_metadata_records_skips_a_non_utf8_record() {
     let (_dir, meta) = store();
-    meta.put_metadata("good", "https://up/pkg.metadata", "metasha", "pypi")
-        .unwrap();
+    meta.put_metadata("good", "metasha").unwrap();
     meta.put_driver_value(&metadata_key("bad"), &[0xff, 0xfe]).unwrap();
     let mut seen = Vec::new();
     meta.scan_metadata_records(|digest, _value| {
@@ -182,4 +176,101 @@ fn test_scan_provenance_records_visits_valid_and_skips_non_utf8() {
     })
     .unwrap();
     assert_eq!(seen, vec![("good".to_owned(), "provsha\n16".to_owned())]);
+}
+
+fn seed_publication(meta: &MetaStore, value: &[u8]) {
+    meta.put_driver_value(&super::publication_key("pypi", "pkg", "wheelsha", "pkg-1.0.whl"), value)
+        .unwrap();
+}
+
+#[test]
+fn test_get_file_publication_reads_a_claim_with_its_routed_upstream() {
+    let (_dir, meta) = store();
+    seed_publication(&meta, b"https://up/pkg.whl.metadata\nmetasha\npypi\nmirror");
+
+    assert_eq!(
+        meta.get_file_publication("pypi", "pkg", "wheelsha", "pkg-1.0.whl")
+            .unwrap(),
+        Some(FilePublication::Claimed(MetadataClaim {
+            url: "https://up/pkg.whl.metadata".to_owned(),
+            metadata_sha256: "metasha".to_owned(),
+            source: "pypi".to_owned(),
+            upstream: Some("mirror".to_owned()),
+        }))
+    );
+}
+
+#[test]
+fn test_get_file_publication_reads_an_empty_record_as_unclaimed() {
+    let (_dir, meta) = store();
+    seed_publication(&meta, b"");
+
+    assert_eq!(
+        meta.get_file_publication("pypi", "pkg", "wheelsha", "pkg-1.0.whl")
+            .unwrap(),
+        Some(FilePublication::Unclaimed)
+    );
+}
+
+#[test]
+fn test_get_file_publication_is_absent_for_an_unpublished_file() {
+    let (_dir, meta) = store();
+
+    assert_eq!(
+        meta.get_file_publication("pypi", "pkg", "wheelsha", "pkg-1.0.whl")
+            .unwrap(),
+        None
+    );
+}
+
+#[rstest::rstest]
+#[case::without_digest(b"https://up/pkg.whl.metadata", "metadata_sha256")]
+#[case::without_source(b"https://up/pkg.whl.metadata\nmetasha", "source")]
+#[case::without_upstream(b"https://up/pkg.whl.metadata\nmetasha\npypi", "upstream")]
+fn test_get_file_publication_rejects_a_truncated_claim(#[case] value: &[u8], #[case] field: &str) {
+    let (_dir, meta) = store();
+    seed_publication(&meta, value);
+
+    let err = meta
+        .get_file_publication("pypi", "pkg", "wheelsha", "pkg-1.0.whl")
+        .unwrap_err();
+
+    assert!(
+        matches!(err, peryx_storage::meta::MetaError::DriverRecordMissing { field: missing, .. } if missing == field)
+    );
+}
+
+#[test]
+fn test_get_file_publication_rejects_a_non_utf8_record() {
+    let (_dir, meta) = store();
+    seed_publication(&meta, &[0xff, 0xfe]);
+
+    assert!(matches!(
+        meta.get_file_publication("pypi", "pkg", "wheelsha", "pkg-1.0.whl")
+            .unwrap_err(),
+        peryx_storage::meta::MetaError::DriverRecordUtf8 { .. }
+    ));
+}
+
+#[test]
+fn test_scan_file_publications_visits_valid_and_skips_non_utf8() {
+    let (_dir, meta) = store();
+    seed_publication(&meta, b"https://up/pkg.whl.metadata\nmetasha\npypi\n");
+    meta.put_driver_value(&super::publication_key("pypi", "pkg", "other", "pkg-2.0.whl"), &[0xff])
+        .unwrap();
+    let mut seen = Vec::new();
+
+    meta.scan_file_publications(|key, value| {
+        seen.push((key.to_owned(), value.to_owned()));
+        Ok::<(), std::io::Error>(())
+    })
+    .unwrap();
+
+    assert_eq!(
+        seen,
+        vec![(
+            "pypi/pkg/wheelsha/pkg-1.0.whl".to_owned(),
+            "https://up/pkg.whl.metadata\nmetasha\npypi\n".to_owned()
+        )]
+    );
 }

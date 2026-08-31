@@ -83,12 +83,7 @@ async fn test_revoked_digest_is_not_read_through_any_byte_route() {
     h.state
         .serving
         .meta
-        .put_metadata(
-            artifact.as_str(),
-            "peryx:generated",
-            metadata_digest.as_str(),
-            "uploaded",
-        )
+        .put_metadata(artifact.as_str(), metadata_digest.as_str())
         .unwrap();
     let provenance = br#"{"version":1,"attestation_bundles":[]}"#;
     let provenance_digest = h.state.serving.blobs.put_bytes(provenance).await.unwrap();

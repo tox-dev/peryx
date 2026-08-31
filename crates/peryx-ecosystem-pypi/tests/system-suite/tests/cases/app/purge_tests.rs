@@ -206,7 +206,7 @@ fn test_cache_purge_project_yes_removes_metadata_records() {
     let meta = MetaStore::open_existing(config.data_dir.join("peryx.redb")).unwrap();
     assert!(meta.get_index("pypi/flask").unwrap().is_none());
     assert!(meta.get_file_url(digest.as_str()).unwrap().is_none());
-    assert!(meta.get_metadata(digest.as_str()).unwrap().is_none());
+    assert!(meta.get_metadata_digest(digest.as_str()).unwrap().is_none());
     assert!(meta.list_projects("pypi").unwrap().is_empty());
 }
 
@@ -245,8 +245,7 @@ fn test_cache_purge_orphaned_blobs_rejects_invalid_metadata_references() {
                 raw.as_bytes(),
             );
         } else {
-            meta.put_metadata(&wheel, "https://files.example/pkg.whl.metadata", &metadata, "pypi")
-                .unwrap();
+            meta.put_metadata(&wheel, &metadata).unwrap();
             drop(meta);
         }
         let config = config_at(&dir);

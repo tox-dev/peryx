@@ -11,14 +11,15 @@ mod summary;
 mod uploads;
 
 pub use files::{
-    FileSource, PypiArtifactOrigin, get_file_url, get_metadata, get_metadata_digests, get_provenance, put_file_url,
-    put_metadata, put_provenance, scan_file_urls, scan_metadata_records, scan_provenance_records,
+    FilePublication, FileSource, MetadataClaim, PypiArtifactOrigin, get_file_publication, get_file_url,
+    get_metadata_digest, get_metadata_digests, get_provenance, put_file_url, put_metadata, put_provenance,
+    scan_file_publications, scan_file_urls, scan_metadata_records, scan_provenance_records,
 };
 pub use index::{
-    CachedPageWrite, abort_project_generation, active_project_generation, begin_project_generation, get_index,
-    get_project_status, list_index_pages, list_project_files, project_meta_state, publish_project_generation,
-    put_cached_page, put_index, put_project_files, recover_project_generations, refresh_project_generation,
-    scan_index_pages, scan_index_records, touch_index_freshness,
+    CachedPageWrite, PublishedFileWrite, abort_project_generation, active_project_generation, begin_project_generation,
+    get_index, get_project_status, list_index_pages, list_project_files, project_meta_state,
+    publish_project_generation, put_cached_page, put_index, put_project_files, recover_project_generations,
+    refresh_project_generation, scan_index_pages, scan_index_records, touch_index_freshness,
 };
 pub(crate) use journal::{ChangelogReadError, read_changelog_page};
 pub use journal::{JournalEntry, JournalSnapshot, read_journal_entries};
@@ -40,8 +41,8 @@ pub(crate) use uploads::publish_file_with_commit_if;
 pub(crate) use uploads::scan_upload_policy_snapshot;
 pub use uploads::{
     Guard, MetadataSibling, PromotedRelease, ProvenanceSibling, PublishedFile, UploadMutation, delete_upload,
-    list_overrides, list_upload_entries, mutate_uploads, promote_files_checked, publish_file_if, put_upload,
-    scan_override_records, scan_upload_records, set_override,
+    get_upload, list_overrides, list_upload_entries, mutate_uploads, promote_files_checked, publish_file_if,
+    put_upload, scan_override_records, scan_upload_records, set_override,
 };
 pub(crate) use uploads::{UploadMutationPlan, mutate_uploads_and_overrides};
 
@@ -52,8 +53,15 @@ const INDEX_PREFIX: &str = "pypi\u{0}i\u{0}";
 const FRESHNESS_PREFIX: &str = "pypi\u{0}h\u{0}";
 /// The former `artifact_source` table: upstream source URLs, keyed by artifact digest.
 const FILE_PREFIX: &str = "pypi\u{0}f\u{0}";
-/// The former `metadata_sidecar` table: PEP 658 siblings, keyed by artifact digest.
+/// Metadata peryx derived from an artifact's own verified bytes - extracted from the archive, or
+/// uploaded alongside it - keyed by artifact digest. The bytes are a function of the digest, so this
+/// record is immutable and every publication of that digest shares it.
 const METADATA_PREFIX: &str = "pypi\u{0}d\u{0}";
+/// One cached index's publication of one file, keyed by `{index}/{normalized}/{sha256}/{filename}`,
+/// holding the PEP 658 sidecar that publication advertised (empty when it advertised none). A claim
+/// is scoped this way because it is the publisher's word about its own URL, not a property of the
+/// artifact bytes: two indexes serving the same wheel must not inherit each other's sidecar.
+const PUBLICATION_PREFIX: &str = "pypi\u{0}n\u{0}";
 /// PEP 740 provenance objects, keyed by artifact digest so a `.provenance` request resolves by
 /// digest without scanning a project's uploads.
 const PROVENANCE_PREFIX: &str = "pypi\u{0}a\u{0}";
@@ -93,6 +101,14 @@ fn file_key(sha256: &str) -> String {
 
 fn metadata_key(sha256: &str) -> String {
     format!("{METADATA_PREFIX}{sha256}")
+}
+
+fn publication_prefix(index: &str, normalized: &str) -> String {
+    format!("{PUBLICATION_PREFIX}{index}/{normalized}/")
+}
+
+fn publication_key(index: &str, normalized: &str, sha256: &str, filename: &str) -> String {
+    format!("{}{sha256}/{filename}", publication_prefix(index, normalized))
 }
 
 fn provenance_key(sha256: &str) -> String {
@@ -210,8 +226,13 @@ fn file_source_value(url: &str, source: &str, size: Option<u64>, upstream: Optio
     )
 }
 
-fn metadata_value(url: &str, metadata_sha256: &str, source: &str) -> String {
-    format!("{url}\n{metadata_sha256}\n{source}")
+/// A publication's sidecar claim, or the empty record standing for "this publication advertised no
+/// sidecar". The empty record is what stops a virtual index from walking past the winning layer into
+/// a shadowed layer's claim.
+fn publication_value(metadata: Option<&(String, String)>, source: &str, upstream: Option<&str>) -> String {
+    metadata.map_or_else(String::new, |(url, metadata_sha256)| {
+        format!("{url}\n{metadata_sha256}\n{source}\n{}", upstream.unwrap_or_default())
+    })
 }
 
 fn provenance_value(provenance_sha256: &str, size: u64) -> String {
@@ -304,24 +325,43 @@ pub trait PypiStore {
         visit: impl FnMut(&str, &str) -> Result<(), E>,
     ) -> Result<(), peryx_storage::meta::MetaScanError<E>>;
 
-    /// Record the PEP 658 metadata sibling for an artifact.
+    /// Record the metadata derived from an artifact's own bytes.
     ///
     /// # Errors
     /// Returns a store error if the write fails.
-    fn put_metadata(
-        &self,
-        artifact_sha256: &str,
-        url: &str,
-        metadata_sha256: &str,
-        source: &str,
-    ) -> Result<(), peryx_storage::meta::MetaError>;
+    fn put_metadata(&self, artifact_sha256: &str, metadata_sha256: &str) -> Result<(), peryx_storage::meta::MetaError>;
 
     /// # Errors
     /// Returns a store error if the read fails.
-    fn get_metadata(
+    fn get_metadata_digest(&self, artifact_sha256: &str) -> Result<Option<String>, peryx_storage::meta::MetaError>;
+
+    /// # Errors
+    /// Returns a store error if the read fails.
+    fn get_upload(
         &self,
-        artifact_sha256: &str,
-    ) -> Result<Option<(String, String, String)>, peryx_storage::meta::MetaError>;
+        index: &str,
+        normalized: &str,
+        filename: &str,
+    ) -> Result<Option<Vec<u8>>, peryx_storage::meta::MetaError>;
+
+    /// # Errors
+    /// Returns a store error if the read fails or the stored record cannot be decoded.
+    fn get_file_publication(
+        &self,
+        index: &str,
+        normalized: &str,
+        sha256: &str,
+        filename: &str,
+    ) -> Result<Option<FilePublication>, peryx_storage::meta::MetaError>;
+
+    /// Visit raw publication records, keyed by `{index}/{normalized}/{sha256}/{filename}`.
+    ///
+    /// # Errors
+    /// Returns a scan error if the store read fails or the visitor fails.
+    fn scan_file_publications<E>(
+        &self,
+        visit: impl FnMut(&str, &str) -> Result<(), E>,
+    ) -> Result<(), peryx_storage::meta::MetaScanError<E>>;
 
     /// # Errors
     /// Returns a store error if the read fails.
@@ -627,21 +667,38 @@ impl PypiStore for peryx_storage::meta::MetaStore {
         files::scan_file_urls(self, visit)
     }
 
-    fn put_metadata(
-        &self,
-        artifact_sha256: &str,
-        url: &str,
-        metadata_sha256: &str,
-        source: &str,
-    ) -> Result<(), peryx_storage::meta::MetaError> {
-        files::put_metadata(self, artifact_sha256, url, metadata_sha256, source)
+    fn put_metadata(&self, artifact_sha256: &str, metadata_sha256: &str) -> Result<(), peryx_storage::meta::MetaError> {
+        files::put_metadata(self, artifact_sha256, metadata_sha256)
     }
 
-    fn get_metadata(
+    fn get_metadata_digest(&self, artifact_sha256: &str) -> Result<Option<String>, peryx_storage::meta::MetaError> {
+        files::get_metadata_digest(self, artifact_sha256)
+    }
+
+    fn get_upload(
         &self,
-        artifact_sha256: &str,
-    ) -> Result<Option<(String, String, String)>, peryx_storage::meta::MetaError> {
-        files::get_metadata(self, artifact_sha256)
+        index: &str,
+        normalized: &str,
+        filename: &str,
+    ) -> Result<Option<Vec<u8>>, peryx_storage::meta::MetaError> {
+        uploads::get_upload(self, index, normalized, filename)
+    }
+
+    fn get_file_publication(
+        &self,
+        index: &str,
+        normalized: &str,
+        sha256: &str,
+        filename: &str,
+    ) -> Result<Option<FilePublication>, peryx_storage::meta::MetaError> {
+        files::get_file_publication(self, index, normalized, sha256, filename)
+    }
+
+    fn scan_file_publications<E>(
+        &self,
+        visit: impl FnMut(&str, &str) -> Result<(), E>,
+    ) -> Result<(), peryx_storage::meta::MetaScanError<E>> {
+        files::scan_file_publications(self, visit)
     }
 
     fn get_metadata_digests<'a>(

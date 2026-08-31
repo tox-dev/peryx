@@ -398,7 +398,7 @@ fn metadata_doc(ctx: &IndexerCtx<'_>, detail: &ProjectDetail) -> Result<Option<C
         let Some(artifact_sha256) = file.hashes.get("sha256") else {
             continue;
         };
-        let Some((_url, metadata_sha256, _source)) = ctx.meta.get_metadata(artifact_sha256)? else {
+        let Some(metadata_sha256) = ctx.meta.get_metadata_digest(artifact_sha256)? else {
             continue;
         };
         let Some(digest) = Digest::from_hex(&metadata_sha256) else {

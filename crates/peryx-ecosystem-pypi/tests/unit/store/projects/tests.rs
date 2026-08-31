@@ -206,15 +206,18 @@ fn test_count_then_delete_project_cache_reports_and_removes_each_row() {
         upstream: None,
         project_status: Some("archived"),
         project_status_reason: Some("read only"),
-        files: &[(file_digests[0].clone(), "https://files/flask.whl".to_owned(), Some(123))],
-        metadata: &[(
-            metadata_digests[0].clone(),
-            "https://files/flask.whl.metadata".to_owned(),
-            "c".repeat(64),
-        )],
+        files: &[crate::store::PublishedFileWrite {
+            sha256: file_digests[0].clone(),
+            filename: "flask-1.0.whl".to_owned(),
+            url: "https://files/flask.whl".to_owned(),
+            size: Some(123),
+            metadata: Some(("https://files/flask.whl.metadata".to_owned(), "c".repeat(64))),
+        }],
         attestations: &[],
     })
     .unwrap();
+
+    meta.put_metadata(&metadata_digests[0], &"c".repeat(64)).unwrap();
 
     let expected = ProjectCachePurgeCounts {
         index_pages: 1,
@@ -236,7 +239,13 @@ fn test_count_then_delete_project_cache_reports_and_removes_each_row() {
     );
     assert!(meta.get_index("pypi/flask").unwrap().is_none());
     assert!(meta.get_file_url(&file_digests[0]).unwrap().is_none());
-    assert!(meta.get_metadata(&metadata_digests[0]).unwrap().is_none());
+    assert!(meta.get_metadata_digest(&metadata_digests[0]).unwrap().is_none());
+    assert_eq!(
+        meta.get_file_publication("pypi", "flask", &file_digests[0], "flask-1.0.whl")
+            .unwrap(),
+        None,
+        "the purge drops the project's publication rows"
+    );
     assert!(meta.get_project_status("pypi", "flask").unwrap().is_none());
     assert!(meta.list_projects("pypi").unwrap().is_empty());
 }

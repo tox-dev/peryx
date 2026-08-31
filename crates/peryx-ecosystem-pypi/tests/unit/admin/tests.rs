@@ -44,11 +44,13 @@ fn seed_valid_page(meta: &MetaStore) {
     meta.put_project("pypi", "flask", "Flask").unwrap();
     meta.put_file_url(digest.as_str(), "https://files/flask.whl", "pypi")
         .unwrap();
-    meta.put_metadata(
-        digest.as_str(),
-        "https://files/flask.whl.metadata",
-        metadata_digest.as_str(),
-        "pypi",
+    meta.put_metadata(digest.as_str(), metadata_digest.as_str()).unwrap();
+    meta.put_driver_value(
+        &format!(
+            "pypi\u{0}n\u{0}pypi/flask/{digest}/flask-1.0.whl",
+            digest = digest.as_str()
+        ),
+        format!("https://files/flask.whl.metadata\n{}\npypi\n", metadata_digest.as_str()).as_bytes(),
     )
     .unwrap();
 }
@@ -82,6 +84,36 @@ fn test_error_message_renders_store_and_visit_scan_faults() {
         crate::error_message(MetaScanError::Visit(std::io::Error::other("disk"))).as_str(),
         "disk"
     );
+}
+
+#[test]
+fn test_referenced_blob_digests_keeps_a_claimed_sidecar_without_a_derived_record() {
+    let (_dir, meta) = store();
+    let sidecar = Digest::of(b"claimed sidecar");
+    meta.put_driver_value(
+        "pypi\u{0}n\u{0}pypi/flask/wheelsha/flask-1.0.whl",
+        format!("https://files/flask.whl.metadata\n{}\npypi\n", sidecar.as_str()).as_bytes(),
+    )
+    .unwrap();
+    meta.put_driver_value("pypi\u{0}n\u{0}pypi/flask/othersha/flask-2.0.whl", b"")
+        .unwrap();
+
+    assert_eq!(
+        referenced_blob_digests(&meta).unwrap(),
+        std::collections::BTreeSet::from([sidecar.as_str().to_owned()])
+    );
+}
+
+#[test]
+fn test_referenced_blob_digests_rejects_a_corrupt_publication_record() {
+    let (_dir, meta) = store();
+    meta.put_driver_value(
+        "pypi\u{0}n\u{0}pypi/flask/wheelsha/flask-1.0.whl",
+        b"url\nnot-hex\npypi",
+    )
+    .unwrap();
+
+    assert!(referenced_blob_digests(&meta).is_err());
 }
 
 #[test]
@@ -134,6 +166,7 @@ fn test_cache_record_counts_counts_each_record_kind() {
     let counts: std::collections::HashMap<String, u64> = cache_record_counts(&meta).unwrap().into_iter().collect();
     assert_eq!(counts["file_url_records"], 1);
     assert_eq!(counts["metadata_records"], 1);
+    assert_eq!(counts["publication_records"], 1);
     assert_eq!(counts["project_records"], 1);
     assert_eq!(counts["upload_records"], 1);
     assert_eq!(counts["override_records"], 1);
@@ -231,6 +264,8 @@ fn test_fsck_metadata_reports_every_invalid_record_kind() {
 #[case::project_index('p', "/flask", "Flask".to_owned(), "project")]
 #[case::project_name('p', "pypi/", "Flask".to_owned(), "project")]
 #[case::project_display('p', "pypi/flask", String::new(), "project")]
+#[case::publication_metadata('n', "pypi/demo/sha/demo-1.0.whl", "url\nnot-hex\npypi\n".to_owned(), "publication")]
+#[case::publication_truncated('n', "pypi/demo/sha/demo-1.0.whl", "url".to_owned(), "publication")]
 #[case::override_filename('o', "hosted/demo/", r#"{"hidden":true,"yanked":false}"#.to_owned(), "override")]
 #[case::override_kind('o', "hosted/demo/demo.whl", "invalid".to_owned(), "override")]
 fn test_fsck_metadata_rejects_each_invalid_field(

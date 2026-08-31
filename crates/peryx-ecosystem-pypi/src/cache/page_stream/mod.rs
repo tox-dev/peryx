@@ -45,15 +45,14 @@ fn persist_streamed(
     } else {
         summary.registrations.as_slice()
     };
-    let files: Vec<(String, String, Option<u64>)> = registrations
+    let files: Vec<crate::store::PublishedFileWrite> = registrations
         .iter()
-        .map(|registration| (registration.sha256.clone(), registration.url.clone(), registration.size))
-        .collect();
-    let metadata: Vec<(String, String, String)> = registrations
-        .iter()
-        .filter_map(|registration| {
-            let (url, digest) = registration.metadata.as_ref()?;
-            Some((registration.sha256.clone(), url.clone(), digest.clone()))
+        .map(|registration| crate::store::PublishedFileWrite {
+            sha256: registration.sha256.clone(),
+            filename: registration.filename.clone(),
+            url: registration.url.clone(),
+            size: registration.size,
+            metadata: registration.metadata.clone(),
         })
         .collect();
     let attestations: Vec<(String, String, String)> = registrations
@@ -77,7 +76,6 @@ fn persist_streamed(
             project_status: summary.project_status.as_deref(),
             project_status_reason: summary.project_status_reason.as_deref(),
             files: &files,
-            metadata: &metadata,
             attestations: &attestations,
         })
         .map_err(CacheError::from)?;

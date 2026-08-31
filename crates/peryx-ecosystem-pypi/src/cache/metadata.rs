@@ -4,9 +4,11 @@ use std::io::{Cursor, Read};
 use std::sync::{Arc, Mutex};
 
 use crate::store::PypiStore as _;
+use crate::store::{FilePublication, MetadataClaim};
 use crate::stream::Registration;
 use bytes::Bytes;
 use peryx_driver::state::ServingState;
+use peryx_index::{Index, IndexKind};
 use peryx_storage::blob::Digest;
 use peryx_upstream::{ArtifactClient, RangeError, RangeSession};
 
@@ -44,14 +46,19 @@ async fn fetch_from_source(
         .await?)
 }
 
-/// Resolve an artifact's PEP 658 metadata bytes: cached blob, advertised upstream sibling, or
-/// generated metadata extracted from the artifact.
+/// Resolve an artifact's PEP 658 metadata bytes for the publication `index` serves it as.
+///
+/// The winning publication decides first. Only the index that listed this file may lend it a PEP
+/// 658 sidecar, because a claim is the publisher's word about its own URL rather than a property
+/// of the artifact bytes. Metadata peryx derived from those bytes is shared by digest, since every
+/// publication of a digest has the same METADATA to extract.
 ///
 /// # Errors
 /// Returns [`CacheError::FileNotFound`] if the artifact has no usable metadata source, or another
 /// error on a store, archive, or upstream failure.
 pub async fn metadata_bytes(
     state: &Arc<ServingState>,
+    index: &Index,
     artifact_digest: &Digest,
     route: &str,
     metadata_filename: &str,
@@ -64,34 +71,109 @@ pub async fn metadata_bytes(
     if state.negative_fresh(&negative_key) {
         return Err(CacheError::FileNotFound);
     }
-    if let Some((url, metadata_hex, source)) = state.meta.get_metadata(artifact_digest.as_str())? {
+    let publication = winning_publication(
+        state,
+        index,
+        &crate::project_of_filename(artifact_filename),
+        artifact_digest.as_str(),
+        artifact_filename,
+        &mut Vec::new(),
+    )?;
+    if let Some(FilePublication::Claimed(claim)) = publication {
+        return claimed_metadata(state, &claim, negative_key).await;
+    }
+    if let Some(metadata_hex) = state.meta.get_metadata_digest(artifact_digest.as_str())? {
         let metadata_digest = Digest::from_hex(&metadata_hex).ok_or(CacheError::FileNotFound)?;
         if state.blobs.head(&metadata_digest).await?.is_some() {
-            return Ok(Bytes::from(
-                state
-                    .blobs
-                    .read_bytes(&metadata_digest, crate::archive::MAX_WHEEL_METADATA_BYTES)
-                    .await?,
-            ));
-        }
-        if url != GENERATED_METADATA_URL {
-            let upstream = state
-                .meta
-                .get_file_url(artifact_digest.as_str())?
-                .and_then(|source| source.upstream);
-            let bytes = match fetch_from_source(state, &source, upstream.as_deref(), &url).await {
-                Ok(bytes) => bytes,
-                Err(CacheError::Upstream(err)) if err.status() == Some(404) => {
-                    state.remember_negative(negative_key, NEGATIVE_TTL_SECS);
-                    return Err(CacheError::FileNotFound);
-                }
-                Err(err) => return Err(err),
-            };
-            state.blobs.put_bytes_as(&bytes, &metadata_digest).await?;
-            return Ok(bytes);
+            return read_metadata_blob(state, &metadata_digest).await;
         }
     }
     write_generated_metadata(state, artifact_digest, route, artifact_filename).await
+}
+
+/// The publication of `filename`/`sha256` that `index` serves, or `None` when it serves none.
+///
+/// A virtual index answers with its first layer in shadow order that published the file, the layer
+/// whose page entry won the merge, so a shadowed layer's sidecar stays where it is. The walk skips a
+/// layer already on its traversal path, which bounds a cyclic configuration.
+fn winning_publication(
+    state: &ServingState,
+    index: &Index,
+    project: &str,
+    sha256: &str,
+    filename: &str,
+    traversed: &mut Vec<String>,
+) -> Result<Option<FilePublication>, CacheError> {
+    if traversed.iter().any(|name| name == &index.name) {
+        return Ok(None);
+    }
+    traversed.push(index.name.clone());
+    match &index.kind {
+        IndexKind::Cached { .. } => Ok(state
+            .meta
+            .get_file_publication(&index.name, project, sha256, filename)?),
+        // A hosted file's metadata comes out of the bytes peryx holds, so it carries no claim. It
+        // still owns the publication, which stops the walk before a proxied layer's claim.
+        IndexKind::Hosted { .. } => Ok(
+            hosted_publication(state, &index.name, project, sha256, filename)?.then_some(FilePublication::Unclaimed)
+        ),
+        IndexKind::Virtual { layers, .. } => {
+            for position in peryx_index::shadow_order(&state.indexes, layers) {
+                let layer = state.index_at(position);
+                if let Some(publication) = winning_publication(state, layer, project, sha256, filename, traversed)? {
+                    return Ok(Some(publication));
+                }
+            }
+            Ok(None)
+        }
+    }
+}
+
+fn hosted_publication(
+    state: &ServingState,
+    index: &str,
+    project: &str,
+    sha256: &str,
+    filename: &str,
+) -> Result<bool, CacheError> {
+    let Some(record) = state.meta.get_upload(index, project, filename)? else {
+        return Ok(false);
+    };
+    let uploaded: crate::upload::Uploaded = serde_json::from_slice(&record)?;
+    Ok(uploaded.trashed.is_none() && uploaded.file.sha256() == Some(sha256))
+}
+
+/// Serve the sidecar a publication advertised, fetching it through that publication's own source on
+/// a blob miss. The blob store commits it under the advertised digest, so bytes that do not hash to
+/// what the page promised never reach a reader.
+async fn claimed_metadata(
+    state: &Arc<ServingState>,
+    claim: &MetadataClaim,
+    negative_key: String,
+) -> Result<Bytes, CacheError> {
+    let metadata_digest = Digest::from_hex(&claim.metadata_sha256).ok_or(CacheError::FileNotFound)?;
+    if state.blobs.head(&metadata_digest).await?.is_some() {
+        return read_metadata_blob(state, &metadata_digest).await;
+    }
+    let bytes = match fetch_from_source(state, &claim.source, claim.upstream.as_deref(), &claim.url).await {
+        Ok(bytes) => bytes,
+        Err(CacheError::Upstream(err)) if err.status() == Some(404) => {
+            state.remember_negative(negative_key, NEGATIVE_TTL_SECS);
+            return Err(CacheError::FileNotFound);
+        }
+        Err(err) => return Err(err),
+    };
+    state.blobs.put_bytes_as(&bytes, &metadata_digest).await?;
+    Ok(bytes)
+}
+
+async fn read_metadata_blob(state: &Arc<ServingState>, metadata_digest: &Digest) -> Result<Bytes, CacheError> {
+    Ok(Bytes::from(
+        state
+            .blobs
+            .read_bytes(metadata_digest, crate::archive::MAX_WHEEL_METADATA_BYTES)
+            .await?,
+    ))
 }
 
 async fn write_generated_metadata(
@@ -100,31 +182,25 @@ async fn write_generated_metadata(
     route: &str,
     artifact_filename: &str,
 ) -> Result<Bytes, CacheError> {
-    let (bytes, source) = generated_metadata_bytes(state, artifact_digest, route, artifact_filename).await?;
+    let bytes = generated_metadata_bytes(state, artifact_digest, route, artifact_filename).await?;
     let metadata_digest = state.blobs.put_bytes(&bytes).await?;
-    let source = source.unwrap_or_else(|| GENERATED_METADATA_URL.to_owned());
-    let artifact_sha256 = artifact_digest.as_str();
-    let metadata_sha256 = metadata_digest.as_str();
     state
         .meta
-        .put_metadata(artifact_sha256, GENERATED_METADATA_URL, metadata_sha256, &source)?;
+        .put_metadata(artifact_digest.as_str(), metadata_digest.as_str())?;
     super::invalidate_project_route(state, route, &crate::project_of_filename(artifact_filename));
     Ok(Bytes::from(bytes))
 }
-
-const GENERATED_METADATA_URL: &str = "peryx:generated";
 
 async fn generated_metadata_bytes(
     state: &Arc<ServingState>,
     artifact_digest: &Digest,
     route: &str,
     filename: &str,
-) -> Result<(Vec<u8>, Option<String>), CacheError> {
+) -> Result<Vec<u8>, CacheError> {
     let source = state.meta.get_file_url(artifact_digest.as_str())?;
     if state.blobs.head(artifact_digest).await?.is_some() {
         let lease = state.blobs.materialize(artifact_digest).await?;
-        let metadata = metadata_from_artifact_path(filename, lease.path())?.ok_or(CacheError::FileNotFound)?;
-        return Ok((metadata, source.map(|source| source.source)));
+        return metadata_from_artifact_path(filename, lease.path())?.ok_or(CacheError::FileNotFound);
     }
     let Some(source) = source else {
         return Err(CacheError::FileNotFound);
@@ -133,7 +209,7 @@ async fn generated_metadata_bytes(
         generated_wheel_metadata_by_range(state, &source.source, source.upstream.as_deref(), &source.url, filename)
             .await?
     {
-        return Ok((metadata, Some(source.source)));
+        return Ok(metadata);
     }
     let path = file_path(
         state.clone(),
@@ -142,8 +218,7 @@ async fn generated_metadata_bytes(
         filename.to_owned(),
     )
     .await?;
-    let metadata = metadata_from_artifact_path(filename, path.path())?.ok_or(CacheError::FileNotFound)?;
-    Ok((metadata, Some(source.source)))
+    metadata_from_artifact_path(filename, path.path())?.ok_or(CacheError::FileNotFound)
 }
 
 fn metadata_from_artifact_path(filename: &str, path: &std::path::Path) -> Result<Option<Vec<u8>>, CacheError> {
@@ -355,7 +430,7 @@ async fn run_metadata_backfill_candidates(
     for candidate in candidates {
         if state
             .meta
-            .get_metadata(candidate.digest.as_str())
+            .get_metadata_digest(candidate.digest.as_str())
             .is_ok_and(|record| record.is_some())
         {
             continue;

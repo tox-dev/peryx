@@ -78,7 +78,7 @@ fn backup_fixture() -> (tempfile::TempDir, Config, Digest, Digest) {
         &uploaded_record_json(&content_digest, &metadata_digest),
     )
     .unwrap();
-    meta.put_metadata(content_digest.as_str(), "uploaded", metadata_digest.as_str(), "hosted")
+    meta.put_metadata(content_digest.as_str(), metadata_digest.as_str())
         .unwrap();
     meta.put_project("hosted", "flask", "Flask").unwrap();
     drop(meta);

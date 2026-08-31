@@ -5,21 +5,18 @@ use peryx_storage::meta::{DriverTxn, MetaError, MetaScanError, MetaStore, QuotaE
 use super::journal::JournalEntry;
 use super::overrides::{FileOverride, OverrideMutation};
 use super::{
-    OVERRIDE_PREFIX, UPLOAD_PREFIX, metadata_key, metadata_value, override_key, project_key, provenance_key,
-    provenance_value, upload_key,
+    OVERRIDE_PREFIX, UPLOAD_PREFIX, metadata_key, override_key, project_key, provenance_key, provenance_value,
+    upload_key,
 };
 use crate::distribution_version_segment;
 
-/// The PEP 658 metadata sibling recorded alongside a published file.
+/// The PEP 658 metadata sibling recorded alongside a published file, extracted from the
+/// distribution's own bytes at upload.
 pub struct MetadataSibling<'a> {
-    /// Where the sibling came from; `uploaded` for a file published here.
-    pub url: &'a str,
-    /// The sibling's sha256, so a later fetch can verify it.
+    /// The sibling's sha256, which the page advertises and a reader verifies.
     pub metadata_sha256: &'a str,
     /// The sibling's byte length.
     pub size: u64,
-    /// The index that owns it.
-    pub source: &'a str,
 }
 
 /// The PEP 740 provenance blob published alongside a distribution that carried attestations.
@@ -182,8 +179,7 @@ pub fn publish_file_in_txn<E: From<MetaError>>(
             }
             txn.reference_blob(file.artifact_sha256, file.artifact_size);
             if let Some(sibling) = &file.metadata {
-                let value = metadata_value(sibling.url, sibling.metadata_sha256, sibling.source);
-                txn.put(&metadata_key(file.artifact_sha256), value.as_bytes())?;
+                txn.put(&metadata_key(file.artifact_sha256), sibling.metadata_sha256.as_bytes())?;
                 txn.reference_blob(sibling.metadata_sha256, sibling.size);
             }
             if let Some(sibling) = &file.provenance {
@@ -397,6 +393,20 @@ pub fn mutate_uploads_and_overrides<E: From<MetaError>>(
         }
         Ok((changed, journal))
     })
+}
+
+/// The stored record for one hosted file, for a caller that knows the filename and would otherwise
+/// list a whole project to find it.
+///
+/// # Errors
+/// Returns a store error if the read fails.
+pub fn get_upload(
+    meta: &MetaStore,
+    index: &str,
+    normalized: &str,
+    filename: &str,
+) -> Result<Option<Vec<u8>>, MetaError> {
+    meta.get_driver_value(&upload_key(index, normalized, filename))
 }
 
 /// # Errors

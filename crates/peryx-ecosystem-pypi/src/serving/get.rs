@@ -351,7 +351,7 @@ async fn file_route(state: &Arc<ServingState>, index: &Index, file: &str, header
             family: METADATA_FAMILY.key,
         });
         return file_response(
-            cache::metadata_bytes(state, &digest, &route, &filename).await,
+            cache::metadata_bytes(state, index, &digest, &route, &filename).await,
             CacheContext::metadata(&route, digest.as_str(), &filename),
         );
     }

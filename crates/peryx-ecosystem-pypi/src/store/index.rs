@@ -12,8 +12,8 @@ use super::record::{
     CachedIndex, CachedIndexPage, FreshnessOverlay, ProjectGeneration, ProjectMetaState, ProjectStatusRecord,
 };
 use super::{
-    INDEX_PREFIX, UpstreamAttestation, file_key, file_source_value, freshness_key, index_key, metadata_key,
-    metadata_value, project_key, project_status_key,
+    INDEX_PREFIX, UpstreamAttestation, file_key, file_source_value, freshness_key, index_key, project_key,
+    project_status_key, publication_key, publication_prefix, publication_value,
 };
 use super::{project_file_key, project_generation_attestation_prefix, project_generation_prefix, project_meta_key};
 
@@ -44,9 +44,20 @@ pub struct CachedPageWrite<'a> {
     pub upstream: Option<&'a str>,
     pub project_status: Option<&'a str>,
     pub project_status_reason: Option<&'a str>,
-    pub files: &'a [(String, String, Option<u64>)],
-    pub metadata: &'a [(String, String, String)],
+    pub files: &'a [PublishedFileWrite],
     pub attestations: &'a [(String, String, String)],
+}
+
+/// One file as a page published it: enough to register where its bytes live and what it said about
+/// its PEP 658 sidecar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublishedFileWrite {
+    pub sha256: String,
+    pub filename: String,
+    pub url: String,
+    pub size: Option<u64>,
+    /// `(sibling url, metadata sha256)` when the page advertised a sidecar for this file.
+    pub metadata: Option<(String, String)>,
 }
 
 /// # Errors
@@ -63,7 +74,6 @@ pub fn put_cached_page(meta: &MetaStore, write: CachedPageWrite<'_>) -> Result<(
         project_status,
         project_status_reason,
         files,
-        metadata,
         attestations,
     } = write;
     meta.commit_driver_cache_txn(|txn| {
@@ -80,17 +90,13 @@ pub fn put_cached_page(meta: &MetaStore, write: CachedPageWrite<'_>) -> Result<(
                 .and_then(|record| txn.put_local(&project_status_key(index, normalized), &record)),
             })
             .and_then(|()| {
-                files.iter().try_for_each(|(sha256, url, size)| {
-                    let key = file_key(sha256);
-                    let value = file_source_value(url, source, *size, upstream);
-                    txn.put_local(&key, value.as_bytes())
-                })
-            })
-            .and_then(|()| {
-                metadata.iter().try_for_each(|(wheel_sha256, url, metadata_sha256)| {
-                    let key = metadata_key(wheel_sha256);
-                    let value = metadata_value(url, metadata_sha256, source);
-                    txn.put_local(&key, value.as_bytes())
+                files.iter().try_for_each(|file| {
+                    let value = file_source_value(&file.url, source, file.size, upstream);
+                    txn.put_local(&file_key(&file.sha256), value.as_bytes()).and_then(|()| {
+                        let key = publication_key(index, normalized, &file.sha256, &file.filename);
+                        let value = publication_value(file.metadata.as_ref(), source, upstream);
+                        txn.put_local(&key, value.as_bytes())
+                    })
                 })
             })
             .and_then(|()| replace_project_upstream_attestations_in_txn(txn, index, normalized, upstream, attestations))
@@ -132,9 +138,17 @@ pub fn retire_cached_project(meta: &MetaStore, key: &str, index: &str, project: 
         txn.remove(&index_key(key))
             .map(|_| ())
             .and_then(|()| txn.remove(&freshness_key(key)).map(|_| ()))
+            .and_then(|()| remove_project_publications_in_txn(txn, index, project))
             .and_then(|()| replace_project_upstream_attestations_in_txn(txn, index, project, None, &[]))
             .map(|()| ((), Vec::new()))
     })
+}
+
+/// Drop every publication record a project's page left behind, so a page peryx no longer holds
+/// cannot keep answering with the sidecar it once advertised.
+fn remove_project_publications_in_txn(txn: &mut DriverTxn<'_>, index: &str, normalized: &str) -> Result<(), MetaError> {
+    txn.prefix(&publication_prefix(index, normalized))
+        .and_then(|rows| rows.into_iter().try_for_each(|(key, _)| txn.remove(&key).map(|_| ())))
 }
 
 /// Advance a cached page's freshness after a `304 Not Modified`: write the small overlay row alone,
@@ -423,12 +437,15 @@ fn register_file_rows(
     };
     let source_value = file_source_value(&file.url, source, file.size, upstream);
     txn.put_local(&file_key(sha256), source_value.as_bytes())?;
-    if let CoreMetadata::Hashes(hashes) = file.metadata()
-        && let Some(digest) = hashes.get("sha256")
-    {
-        let sibling = metadata_value(&metadata_sibling(&file.url), digest, source);
-        txn.put_local(&metadata_key(sha256), sibling.as_bytes())?;
-    }
+    let claim = match file.metadata() {
+        CoreMetadata::Hashes(hashes) => hashes
+            .get("sha256")
+            .map(|digest| (metadata_sibling(&file.url), digest.clone())),
+        CoreMetadata::Absent | CoreMetadata::Available => None,
+    };
+    let key = publication_key(index, project, sha256, &file.filename);
+    let publication = publication_value(claim.as_ref(), source, upstream);
+    txn.put_local(&key, publication.as_bytes())?;
     file.provenance.secure_url().map_or(Ok(()), |url| {
         let record = UpstreamAttestation::remote(url, index, project, upstream);
         stage_upstream_attestation_in_txn(txn, index, generation, sha256, &file.filename, &record)

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     CATALOG_GENERATION_PREFIX, CATALOG_PREFIX, PROJECTS_PREFIX, file_key, freshness_key, index_key, metadata_key,
-    project_key, project_status_key, provenance_key,
+    project_key, project_status_key, provenance_key, publication_prefix,
 };
 
 const CATALOG_DELETE_BATCH: usize = 10_000;
@@ -375,6 +375,9 @@ pub fn delete_project_cache(
     }
     for digest in file_digests {
         batch.delete(provenance_key(digest));
+    }
+    for key in meta.driver_prefix_keys(&publication_prefix(index, normalized))? {
+        batch.delete(key);
     }
     meta.commit_driver_batch(&batch, true)?;
     Ok(counts)

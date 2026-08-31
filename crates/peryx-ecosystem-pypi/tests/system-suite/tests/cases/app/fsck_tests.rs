@@ -23,8 +23,7 @@ fn test_cache_fsck_reports_metadata_problems() {
     .unwrap();
     meta.put_file_url("bad", "https://files.example/pkg.whl", "pypi")
         .unwrap();
-    meta.put_metadata("bad", "https://files.example/pkg.whl.metadata", "also-bad", "pypi")
-        .unwrap();
+    meta.put_metadata("bad", "also-bad").unwrap();
     meta.put_project("", "", "").unwrap();
     meta.put_upload("hosted", "pkg", "bad.whl", b"not json").unwrap();
     meta.put_upload("", "", "", &uploaded_record_json(&Digest::of(b"missing")))

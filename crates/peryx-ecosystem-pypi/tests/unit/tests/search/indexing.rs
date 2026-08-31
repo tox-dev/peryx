@@ -149,12 +149,7 @@ fn put_search_budget_package(state: &ServingState, file_count: usize) {
         .unwrap();
     state
         .meta
-        .put_metadata(
-            files.first().unwrap().sha256().unwrap(),
-            "uploaded",
-            metadata.as_str(),
-            "pypi",
-        )
+        .put_metadata(files.first().unwrap().sha256().unwrap(), metadata.as_str())
         .unwrap();
     put_cached_package(
         state,
@@ -255,22 +250,20 @@ async fn test_search_skips_unusable_metadata_and_quarantined_projects() {
     h.state
         .serving
         .meta
-        .put_metadata(invalid_hex.as_str(), "uploaded", "not-hex", "pypi")
+        .put_metadata(invalid_hex.as_str(), "not-hex")
         .unwrap();
     h.state
         .serving
         .meta
         .put_metadata(
             invalid_utf8.as_str(),
-            "uploaded",
             h.state.serving.blobs.put_bytes(&[0xff]).await.unwrap().as_str(),
-            "pypi",
         )
         .unwrap();
     h.state
         .serving
         .meta
-        .put_metadata(missing_blob.as_str(), "uploaded", missing_metadata.as_str(), "pypi")
+        .put_metadata(missing_blob.as_str(), missing_metadata.as_str())
         .unwrap();
     put_cached_package(
         &h.state.serving,
@@ -366,7 +359,6 @@ async fn test_search_indexes_a_project_whose_metadata_sibling_is_malformed() {
         .meta
         .put_metadata(
             artifact.as_str(),
-            "uploaded",
             h.state
                 .serving
                 .blobs
@@ -374,7 +366,6 @@ async fn test_search_indexes_a_project_whose_metadata_sibling_is_malformed() {
                 .await
                 .unwrap()
                 .as_str(),
-            "pypi",
         )
         .unwrap();
     put_cached_package(

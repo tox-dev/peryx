@@ -54,6 +54,72 @@ fn writer_acl(secret: impl Into<String>) -> peryx_identity::IndexAcl {
     }
 }
 
+/// Register one cached index's publication of a file, the way a fetched page does, so a test can
+/// exercise sidecar serving without mounting a whole index page. `sidecar` is the `(url, sha256)`
+/// the page advertised, or `None` for a page that advertised none.
+pub fn register_publication(
+    meta: &peryx_storage::meta::MetaStore,
+    index: &str,
+    filename: &str,
+    artifact_sha256: &str,
+    sidecar: Option<(&str, &str)>,
+) {
+    use crate::store::PypiStore as _;
+
+    let project = crate::project_of_filename(filename);
+    let artifact_url = format!("https://files.example/{filename}");
+    let body = crate::to_json(&crate::ProjectDetail {
+        meta: crate::Meta::default(),
+        name: project.clone(),
+        versions: Vec::new(),
+        files: vec![crate::File {
+            filename: filename.to_owned(),
+            url: artifact_url.clone(),
+            hashes: std::collections::BTreeMap::from([("sha256".to_owned(), artifact_sha256.to_owned())]),
+            core_metadata: sidecar.map_or(crate::CoreMetadata::Absent, |(_url, sha256)| {
+                crate::CoreMetadata::Hashes(std::collections::BTreeMap::from([(
+                    "sha256".to_owned(),
+                    sha256.to_owned(),
+                )]))
+            }),
+            requires_python: None,
+            size: None,
+            upload_time: None,
+            yanked: crate::Yanked::No,
+            dist_info_metadata: crate::CoreMetadata::Absent,
+            gpg_sig: None,
+            provenance: crate::Provenance::Absent,
+        }],
+    });
+    meta.put_cached_page(crate::store::CachedPageWrite {
+        key: &format!("{index}/{project}"),
+        record: &crate::store::CachedIndex {
+            etag: None,
+            last_serial: None,
+            fetched_at_unix: 0,
+            content_type: Some("application/vnd.pypi.simple.v1+json".to_owned()),
+            fresh_secs: None,
+            body: body.into_bytes(),
+        },
+        index,
+        normalized: &project,
+        display: &project,
+        source: index,
+        upstream: None,
+        project_status: None,
+        project_status_reason: None,
+        files: &[crate::store::PublishedFileWrite {
+            sha256: artifact_sha256.to_owned(),
+            filename: filename.to_owned(),
+            url: artifact_url,
+            size: None,
+            metadata: sidecar.map(|(url, sha256)| (url.to_owned(), sha256.to_owned())),
+        }],
+        attestations: &[],
+    })
+    .unwrap();
+}
+
 // A permanent subscriber prevents thread-local tests from caching callsites as disabled process-wide.
 pub fn install_global_subscriber() {
     static INSTALLED: OnceLock<()> = OnceLock::new();
