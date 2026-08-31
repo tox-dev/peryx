@@ -139,6 +139,32 @@ impl Default for RouteSet {
     }
 }
 
+/// Routes that bind their own state before composition, carried alongside the descriptors the
+/// request middleware classifies them by.
+///
+/// Server-rendered pages hold a state the process-wide router cannot name, so they cannot join a
+/// [`RouteSet`]; they still have to reach the middleware with a declared class.
+#[derive(Default)]
+pub struct MountedRoutes {
+    router: Router,
+    descriptors: Vec<RouteDescriptor>,
+}
+
+impl MountedRoutes {
+    #[must_use]
+    pub const fn new(router: Router, descriptors: Vec<RouteDescriptor>) -> Self {
+        Self { router, descriptors }
+    }
+
+    pub fn into_router(self) -> Router {
+        self.router
+    }
+
+    pub fn into_parts(self) -> (Router, Vec<RouteDescriptor>) {
+        (self.router, self.descriptors)
+    }
+}
+
 pub trait HttpRoutes: Send + Sync {
     fn routes(&self) -> RouteSet;
 }

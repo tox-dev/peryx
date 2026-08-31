@@ -19,7 +19,7 @@ use peryx_driver::http_services::HttpDomainServices;
 use peryx_driver::rate_limit;
 use peryx_driver::state::AppState;
 use peryx_driver::{
-    ProcessRouteMethodNotAllowed, RouteDescriptor, RouteMethod, RoutePosture, RouteRateLimit, RouteSet,
+    MountedRoutes, ProcessRouteMethodNotAllowed, RouteDescriptor, RouteMethod, RoutePosture, RouteRateLimit, RouteSet,
 };
 
 /// All index traffic lands on a catch-all path that the handlers resolve to a configured index by
@@ -30,11 +30,20 @@ pub fn router(state: Arc<AppState>) -> Router {
 }
 
 pub fn router_with_services(state: Arc<AppState>, services: HttpDomainServices) -> Router {
+    router_with_ui(state, services, MountedRoutes::default())
+}
+
+/// Composes the whole request surface, server-rendered pages included.
+///
+/// The pages join the service routes before any layer attaches, because axum applies a layer to the
+/// routes registered at the point of the call: merging them afterwards would leave the pages outside
+/// tracing, route classification and every rate-limit budget.
+pub fn router_with_ui(state: Arc<AppState>, services: HttpDomainServices, ui: MountedRoutes) -> Router {
     let mut route_set = service_routes();
     for registered in state.http_routes() {
         route_set = route_set.merge(registered.routes());
     }
-    let (mut router, descriptors) = route_set.into_parts();
+    let (mut router, mut descriptors) = route_set.into_parts();
     // An absolute-mount ecosystem owns the top-level prefixes it declares; mount a catch-all under
     // each, bound to that driver, so the router reaches it without naming the ecosystem.
     for (prefix, driver) in state.absolute_mounts() {
@@ -47,6 +56,8 @@ pub fn router_with_services(state: Arc<AppState>, services: HttpDomainServices) 
             .route(prefix, any(serve.clone()))
             .route(&format!("{prefix}{{*rest}}"), any(serve));
     }
+    let (pages, page_descriptors) = ui.into_parts();
+    descriptors.extend(page_descriptors);
     let router = router
         .route(
             "/{*path}",
@@ -55,19 +66,22 @@ pub fn router_with_services(state: Arc<AppState>, services: HttpDomainServices) 
                 .delete(handlers::dispatch_delete)
                 .merge(post(handlers::dispatch_post).layer(DefaultBodyLimit::disable())),
         )
+        .with_state(Arc::clone(&state))
+        .merge(pages)
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(request_span)
                 .on_response(DefaultOnResponse::new().level(tracing::Level::INFO)),
         );
-    let classify_routes = state.serving.rate_limits.enabled() || state.serving.read_only;
-    let router = if state.serving.rate_limits.enabled() {
-        router.layer(middleware::from_fn_with_state(state.clone(), rate_limit::enforce))
+    let serving = Arc::clone(&state.serving);
+    let classify_routes = serving.rate_limits.enabled() || serving.read_only;
+    let router = if serving.rate_limits.enabled() {
+        router.layer(middleware::from_fn_with_state(Arc::clone(&state), rate_limit::enforce))
     } else {
         router
     };
-    let router = if state.serving.read_only {
-        router.layer(middleware::from_fn_with_state(state.clone(), reject_replica_mutation))
+    let router = if serving.read_only {
+        router.layer(middleware::from_fn_with_state(state, reject_replica_mutation))
     } else {
         router
     };
@@ -79,17 +93,14 @@ pub fn router_with_services(state: Arc<AppState>, services: HttpDomainServices) 
     } else {
         router
     };
-    let serving = Arc::clone(&state.serving);
-    router
-        .layer(
-            ServiceBuilder::new()
-                .layer(MapRequestLayer::new(move |request: Request| {
-                    serving.requests.fetch_add(1, Ordering::Relaxed);
-                    request
-                }))
-                .layer(Extension(services)),
-        )
-        .with_state(state)
+    router.layer(
+        ServiceBuilder::new()
+            .layer(MapRequestLayer::new(move |request: Request| {
+                serving.requests.fetch_add(1, Ordering::Relaxed);
+                request
+            }))
+            .layer(Extension(services)),
+    )
 }
 
 fn request_span(request: &Request) -> tracing::Span {

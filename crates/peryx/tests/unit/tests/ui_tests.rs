@@ -13,7 +13,7 @@ use tower::ServiceExt as _;
 
 use crate::config::{AvailabilityConfig, Config, DcMember, DcMembership, DcRole, ReplicationConfig, SecretSource};
 use crate::server::{build_state_with_plugins, router_for};
-use crate::tests::support::plugins;
+use crate::tests::support::{plugins, render_gate};
 
 const ADMIN_PASSWORD: &str = "local password";
 
@@ -54,7 +54,6 @@ async fn get_authorized(router: &axum::Router, uri: &str, authorization: &str) -
     if !authorization.is_empty() {
         request = request.header(header::AUTHORIZATION, authorization);
     }
-    // Leptos SSR uses process-global arenas and can lose wakes during concurrent test renders.
     let _render = render_gate().lock().await;
     let response = router
         .clone()
@@ -64,11 +63,6 @@ async fn get_authorized(router: &axum::Router, uri: &str, authorization: &str) -
     let status = response.status();
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     (status, String::from_utf8_lossy(&bytes).into_owned())
-}
-
-fn render_gate() -> &'static tokio::sync::Mutex<()> {
-    static GATE: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
-    GATE.get_or_init(tokio::sync::Mutex::default)
 }
 
 fn topology_config(dir: &tempfile::TempDir) -> Config {

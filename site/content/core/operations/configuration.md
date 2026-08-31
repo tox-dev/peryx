@@ -569,6 +569,11 @@ Each route class is a sub-table with `requests` and `window_secs`:
 The authentication class uses the upload default because password checks and token exchanges consume bounded
 cryptographic workers. Its separate bucket prevents login traffic from exhausting management or package-write capacity.
 
+The server-rendered pages spend the budget of the work they render, so switching from the JSON route to the page cannot
+buy more capacity: `/search` and `/browse` draw on `listing`, the dashboard, `/stats`, and the `/admin` pages draw on
+`admin`, and `/login` draws on `authentication`. Static assets under `/pkg`, `/favicon.svg`, and `/mark.svg` stay
+outside every budget because one page load fetches several of them.
+
 The selected ecosystem maps each route to one request group. Read methods retain the group of the resource they address;
 the method alone does not turn a read into a write. Ecosystem documentation defines each route map:
 

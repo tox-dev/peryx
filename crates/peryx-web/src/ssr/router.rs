@@ -5,17 +5,29 @@ use axum::extract::FromRef;
 use leptos::prelude::*;
 use leptos_axum::{AxumRouteListing, LeptosRoutes as _};
 use leptos_router::{Method, SsrMode};
-use peryx_driver::AppState;
+use peryx_driver::rate_limit::RouteClass;
+use peryx_driver::{AppState, MountedRoutes, RouteDescriptor, RouteMethod, RoutePosture, RouteRateLimit};
 
 use crate::shell;
 
 macro_rules! axum_routes {
-    ($(($path:literal, $matcher:expr, $view:ident, $mode:ident)),+ $(,)?) => {
+    ($(($path:literal, $matcher:expr, $view:ident, $mode:ident, $class:ident)),+ $(,)?) => {
         vec![$(AxumRouteListing::new(
             $path.to_owned(),
             SsrMode::$mode,
             [Method::Get],
             Vec::new(),
+        )),+]
+    };
+}
+
+macro_rules! page_descriptors {
+    ($(($path:literal, $matcher:expr, $view:ident, $mode:ident, $class:ident)),+ $(,)?) => {
+        vec![$(RouteDescriptor::new(
+            RouteMethod::Get,
+            $path,
+            RoutePosture::Read,
+            RouteRateLimit::Class(RouteClass::$class),
         )),+]
     };
 }
@@ -36,15 +48,20 @@ fn route_list() -> Vec<AxumRouteListing> {
     crate::app_routes!(axum_routes)
 }
 
-pub fn ui_router(app: Arc<AppState>) -> Router {
+fn route_descriptors() -> Vec<RouteDescriptor> {
+    crate::app_routes!(page_descriptors)
+}
+
+/// The rendered pages, paired with their classes so the process-wide middleware can trace, count and
+/// throttle them alongside the JSON routes they duplicate.
+pub fn ui_pages(app: Arc<AppState>) -> MountedRoutes {
     let options = leptos_options();
-    let site_root = options.site_root.to_string();
     let state = UiState { options, app };
-    let routes = route_list();
-    Router::new()
+    let listings = route_list();
+    let router = Router::new()
         .leptos_routes_with_context(
             &state,
-            routes,
+            listings,
             {
                 let app = state.app.clone();
                 move || provide_context(app.clone())
@@ -54,6 +71,15 @@ pub fn ui_router(app: Arc<AppState>) -> Router {
                 move || shell(options.clone())
             },
         )
+        .with_state(state);
+    MountedRoutes::new(router, route_descriptors())
+}
+
+/// Static bytes the browser fetches several of per page load. They stay outside the request
+/// middleware so a hydrating page cannot spend a rendering budget on its own assets.
+pub fn ui_assets() -> Router {
+    let site_root = leptos_options().site_root.to_string();
+    Router::new()
         // cargo-leptos and direct server builds emit different Wasm names.
         .route_service(
             "/pkg/peryx_web_bg.wasm",
@@ -62,7 +88,6 @@ pub fn ui_router(app: Arc<AppState>) -> Router {
         .nest_service("/pkg", tower_http::services::ServeDir::new(format!("{site_root}/pkg")))
         .route("/favicon.svg", axum::routing::get(favicon))
         .route("/mark.svg", axum::routing::get(mark))
-        .with_state(state)
 }
 
 async fn favicon() -> impl axum::response::IntoResponse {

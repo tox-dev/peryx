@@ -10,32 +10,59 @@ use crate::model::UiSearchResult;
 use crate::url::browse_index_url;
 use crate::url::search_page_url;
 
+/// Every page declares the rate-limit class it renders under, so a page cannot reach the router
+/// without a budget: the server-rendered pages run the same work as their JSON counterparts.
 macro_rules! app_routes {
     ($consumer:ident) => {
         $consumer! {
-            ("/", StaticSegment("/"), Dashboard, Async),
-            ("/admin/status", (StaticSegment("/admin"), StaticSegment("status")), AdminStatus, Async),
-            ("/admin/topology", (StaticSegment("/admin"), StaticSegment("topology")), AvailabilityTopology, Async),
-            ("/admin/placements", (StaticSegment("/admin"), StaticSegment("placements")), ArtifactPlacements, Async),
-            ("/admin/operations", (StaticSegment("/admin"), StaticSegment("operations")), PendingOperations, Async),
+            ("/", StaticSegment("/"), Dashboard, Async, Admin),
+            ("/admin/status", (StaticSegment("/admin"), StaticSegment("status")), AdminStatus, Async, Admin),
+            (
+                "/admin/topology",
+                (StaticSegment("/admin"), StaticSegment("topology")),
+                AvailabilityTopology,
+                Async,
+                Admin
+            ),
+            (
+                "/admin/placements",
+                (StaticSegment("/admin"), StaticSegment("placements")),
+                ArtifactPlacements,
+                Async,
+                Admin
+            ),
+            (
+                "/admin/operations",
+                (StaticSegment("/admin"), StaticSegment("operations")),
+                PendingOperations,
+                Async,
+                Admin
+            ),
             (
                 "/admin/policy-decisions",
                 (StaticSegment("/admin"), StaticSegment("policy-decisions")),
                 PolicyDecisions,
-                OutOfOrder
+                OutOfOrder,
+                Admin
             ),
-            ("/admin/trash", (StaticSegment("/admin"), StaticSegment("trash")), Trash, OutOfOrder),
-            ("/admin/analytics", (StaticSegment("/admin"), StaticSegment("analytics")), UsageAnalytics, OutOfOrder),
-            ("/browse", StaticSegment("/browse"), Browse, Async),
-            ("/search", StaticSegment("/search"), Search, Async),
-            ("/stats", StaticSegment("/stats"), Stats, Async),
-            ("/login", StaticSegment("/login"), Login, Async),
+            ("/admin/trash", (StaticSegment("/admin"), StaticSegment("trash")), Trash, OutOfOrder, Admin),
+            (
+                "/admin/analytics",
+                (StaticSegment("/admin"), StaticSegment("analytics")),
+                UsageAnalytics,
+                OutOfOrder,
+                Admin
+            ),
+            ("/browse", StaticSegment("/browse"), Browse, Async, Listing),
+            ("/search", StaticSegment("/search"), Search, Async, Listing),
+            ("/stats", StaticSegment("/stats"), Stats, Async, Admin),
+            ("/login", StaticSegment("/login"), Login, Async, Authentication),
         }
     };
 }
 
 macro_rules! route_paths {
-    ($(($path:literal, $matcher:expr, $view:ident, $mode:ident)),+ $(,)?) => {
+    ($(($path:literal, $matcher:expr, $view:ident, $mode:ident, $class:ident)),+ $(,)?) => {
         pub const ROUTE_PATHS: &[&str] = &[$($path),+];
     };
 }
@@ -62,7 +89,7 @@ use pages::{
 pub use app as App;
 
 macro_rules! app_view {
-    ($(($path:literal, $matcher:expr, $view:ident, $mode:ident)),+ $(,)?) => {
+    ($(($path:literal, $matcher:expr, $view:ident, $mode:ident, $class:ident)),+ $(,)?) => {
         view! {
             <Style>{style::CSS}</Style>
             <Title text="peryx" />

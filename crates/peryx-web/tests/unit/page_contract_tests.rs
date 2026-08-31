@@ -8,7 +8,7 @@ use leptos_router::location::RequestUrl;
 use tower::ServiceExt as _;
 
 use crate::App;
-use crate::ssr::ui_router;
+use crate::ssr::ui_pages;
 use peryx_driver::AppState;
 use peryx_search::{ContentSource, IndexerCtx, SearchDocument, SearchDocumentProvider, SearchError};
 use peryx_storage::blob::BlobStorage;
@@ -122,7 +122,8 @@ async fn render_with_documents(path: &str) -> String {
 
 async fn render_document(path: &str, documents: bool) -> String {
     let (_directory, app) = state(documents);
-    let response = ui_router(app)
+    let response = ui_pages(app)
+        .into_router()
         .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
         .await
         .unwrap();

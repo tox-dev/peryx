@@ -650,7 +650,7 @@ pub fn ecosystem_route_class(method: &Method, path: &str) -> Option<RouteClass> 
     if method != Method::GET && method != Method::HEAD && method != Method::OPTIONS {
         return Some(RouteClass::Upload);
     }
-    if matches!(path, "stats" | "admin/status") || path.ends_with("/+api") || path.contains("/+api/") {
+    if path.ends_with("/+api") || path.contains("/+api/") {
         return Some(RouteClass::Admin);
     }
     None

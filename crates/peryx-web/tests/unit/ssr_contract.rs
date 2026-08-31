@@ -388,8 +388,7 @@ async fn login_contract_reads_signed_session_cookie() {
 
 #[tokio::test]
 async fn router_contract_serves_favicon() {
-    let (_directory, app) = state(Vec::new());
-    let (status, headers, body) = render(Arc::new(app), "/favicon.svg", &[]).await;
+    let (status, headers, body) = asset("/favicon.svg").await;
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(headers[header::CONTENT_TYPE], "image/svg+xml");
@@ -398,8 +397,7 @@ async fn router_contract_serves_favicon() {
 
 #[tokio::test]
 async fn router_contract_serves_brand_mark() {
-    let (_directory, app) = state(Vec::new());
-    let (status, headers, body) = render(Arc::new(app), "/mark.svg", &[]).await;
+    let (status, headers, body) = asset("/mark.svg").await;
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(headers[header::CONTENT_TYPE], "image/svg+xml");
@@ -547,15 +545,28 @@ fn rendered_main(body: &str) -> &str {
     body.split_once("<main>").unwrap().1.split_once("</main>").unwrap().0
 }
 
+async fn asset(uri: &str) -> (StatusCode, HeaderMap, String) {
+    respond(
+        peryx_web::ssr::ui_assets(),
+        Request::builder().uri(uri).body(Body::empty()).unwrap(),
+    )
+    .await
+}
+
 async fn render(app: Arc<AppState>, uri: &str, headers: &[(&str, &str)]) -> (StatusCode, HeaderMap, String) {
     let mut request = Request::builder().uri(uri);
     for (name, value) in headers {
         request = request.header(*name, *value);
     }
-    let response = peryx_web::ssr::ui_router(app)
-        .oneshot(request.body(Body::empty()).unwrap())
-        .await
-        .unwrap();
+    respond(
+        peryx_web::ssr::ui_pages(app).into_router(),
+        request.body(Body::empty()).unwrap(),
+    )
+    .await
+}
+
+async fn respond(router: axum::Router, request: Request<Body>) -> (StatusCode, HeaderMap, String) {
+    let response = router.oneshot(request).await.unwrap();
     let status = response.status();
     let headers = response.headers().clone();
     let body = String::from_utf8(to_bytes(response.into_body(), usize::MAX).await.unwrap().to_vec()).unwrap();

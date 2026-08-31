@@ -13,7 +13,7 @@ pub use browse::browse;
 pub use login::login_state;
 pub use operations::operations;
 pub use placement::{blob_placements, placements};
-pub use router::{UiState, ui_router};
+pub use router::{UiState, ui_assets, ui_pages};
 pub use search::search;
 pub use snapshot::{admin_snapshot, snapshot, stats};
 pub use topology::topology;

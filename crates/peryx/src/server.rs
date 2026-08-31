@@ -9,7 +9,6 @@ use peryx_core::path;
 use peryx_driver::state::RuntimeOptions;
 use peryx_driver::{AppState, Index, IndexKind};
 use peryx_events::webhook::{WebhookRuntime, WebhookTargetConfig};
-use peryx_http::router;
 use peryx_identity::{
     Action, LdapBindMode, LdapLoginService, LdapProvider, LdapProviderSettings, OidcLoginProvider, OidcLoginService,
     OidcProviderSettings, SessionSealer, Signer,
@@ -573,7 +572,9 @@ fn make_replica_configs(configs: &mut [IndexConfig]) {
 }
 
 pub fn router_for(state: Arc<AppState>) -> Router {
-    peryx_web::ssr::ui_router(state.clone()).merge(router(state))
+    let services = peryx_driver::http_services::HttpDomainServices::for_state(&state);
+    peryx_http::router_with_ui(Arc::clone(&state), services, peryx_web::ssr::ui_pages(state))
+        .merge(peryx_web::ssr::ui_assets())
 }
 
 type CredentialProviders = HashMap<(String, String), CredentialProvider>;

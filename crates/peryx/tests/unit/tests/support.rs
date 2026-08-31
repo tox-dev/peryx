@@ -27,6 +27,12 @@ use peryx_storage::meta::MetaStore;
 use peryx_test_support::EcosystemDriverFixture;
 use utoipa::openapi::PathsBuilder;
 
+/// Leptos SSR uses process-global arenas and can lose wakes during concurrent test renders.
+pub fn render_gate() -> &'static tokio::sync::Mutex<()> {
+    static GATE: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    GATE.get_or_init(tokio::sync::Mutex::default)
+}
+
 pub fn plugins() -> PluginRegistry {
     registry(&REGISTRATION)
 }

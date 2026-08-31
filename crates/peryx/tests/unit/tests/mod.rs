@@ -10,6 +10,7 @@ mod replication_liveness_tests;
 mod server_tests;
 pub mod support;
 mod tls_support;
+mod ui_rate_limit_tests;
 mod ui_tests;
 mod upstream_tls_error_tests;
 mod upstream_tls_tests;
