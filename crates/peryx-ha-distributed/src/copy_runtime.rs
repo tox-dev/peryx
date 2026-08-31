@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::StreamExt as _;
+use futures_util::stream::FuturesUnordered;
 
 use crate::copy_planning::{CrossDcCopy, copy_backlog_entry, plan_cross_dc_copy};
 use crate::placement_policy::apply_blob_placement;
@@ -18,8 +19,49 @@ use peryx_ha::{
 use peryx_storage::blob::{BlobStore, Digest};
 use peryx_storage::meta::MetaStore;
 
-const SCAN_BATCH: NonZeroUsize = NonZeroUsize::new(256).unwrap();
 const SOURCE_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+/// A pass stops planning at the first page boundary that reaches `limit`, so it holds one page of
+/// planned copies at a time and attempts at most `limit + batch - 1` of them before it yields.
+const PASS_PACING: PassPacing = PassPacing {
+    batch: NonZeroUsize::new(256).unwrap(),
+    limit: NonZeroUsize::new(4096).unwrap(),
+};
+
+#[derive(Clone, Copy)]
+struct PassPacing {
+    batch: NonZeroUsize,
+    limit: NonZeroUsize,
+}
+
+enum ScanPosition {
+    Start,
+    After(String),
+    End,
+}
+
+struct BacklogScan {
+    position: ScanPosition,
+    planned: usize,
+    error: Option<AvailabilityTaskError>,
+}
+
+impl BacklogScan {
+    fn resuming(cursor: Option<String>) -> Self {
+        Self {
+            position: cursor.map_or(ScanPosition::Start, ScanPosition::After),
+            planned: 0,
+            error: None,
+        }
+    }
+
+    /// Where the next pass starts; `None` restarts at the first placement.
+    fn resume(&self) -> Option<&str> {
+        match &self.position {
+            ScanPosition::After(cursor) => Some(cursor),
+            ScanPosition::Start | ScanPosition::End => None,
+        }
+    }
+}
 
 trait SourceTransports: Send + Sync {
     fn transport(&self, source_dc: &str) -> Option<&(dyn BlobTransport + Send + Sync)>;
@@ -78,32 +120,42 @@ impl CrossDcBlobCopier {
         }))
     }
 
-    fn collect_backlog(
+    /// Returns the next page of planned copies, or `None` once the pass stops planning because it
+    /// was cancelled, reached its per-pass cap, exhausted the index, or failed to read it.
+    fn next_page(
         &self,
         meta: &MetaStore,
+        scan: &mut BacklogScan,
         fence: NonZeroU64,
-        batch: NonZeroUsize,
+        pacing: PassPacing,
         cancelled: &(dyn Fn() -> bool + Send + Sync),
-    ) -> Result<Vec<CrossDcCopy>, AvailabilityTaskError> {
-        let mut planned = Vec::new();
-        let mut cursor: Option<String> = None;
-        loop {
-            if cancelled() {
-                break;
+    ) -> Option<Vec<CrossDcCopy>> {
+        if scan.planned >= pacing.limit.get() || cancelled() {
+            return None;
+        }
+        let cursor = match &scan.position {
+            ScanPosition::Start => None,
+            ScanPosition::After(cursor) => Some(cursor.clone()),
+            ScanPosition::End => return None,
+        };
+        let page = match meta.scan_blob_placement_groups(cursor.as_deref(), pacing.batch) {
+            Ok(page) => page,
+            Err(error) => {
+                scan.error = Some(task_error("copy_backlog_scan", error));
+                return None;
             }
-            let page = meta
-                .scan_blob_placement_groups(cursor.as_deref(), batch)
-                .map_err(|error| task_error("copy_backlog_scan", error))?;
-            planned.extend(page.groups.iter().filter_map(|records| {
+        };
+        let planned: Vec<CrossDcCopy> = page
+            .groups
+            .iter()
+            .filter_map(|records| {
                 copy_backlog_entry(records, &self.local_dc, fence)
                     .map(|entry| plan_cross_dc_copy(&entry, &self.local_dc, &self.backend, fence))
-            }));
-            match page.next_cursor {
-                Some(next) => cursor = Some(next),
-                None => break,
-            }
-        }
-        Ok(planned)
+            })
+            .collect();
+        scan.planned += planned.len();
+        scan.position = page.next_cursor.map_or(ScanPosition::End, ScanPosition::After);
+        Some(planned)
     }
 
     async fn copy_one(&self, meta: &MetaStore, clock: &Clock, copy: CrossDcCopy) -> bool {
@@ -141,7 +193,8 @@ impl CrossDcBlobCopier {
 
 impl CrossDcBlobCopier {
     /// # Errors
-    /// Returns an error when the placement backlog read fails.
+    /// Returns an error when the placement backlog read fails, or when the pass cannot read or record
+    /// the cursor the next pass resumes from.
     pub async fn copy_pass(
         &self,
         meta: &MetaStore,
@@ -150,18 +203,57 @@ impl CrossDcBlobCopier {
         cancelled: &(dyn Fn() -> bool + Send + Sync),
         concurrency: NonZeroUsize,
     ) -> Result<AvailabilityTaskReport, AvailabilityTaskError> {
+        self.paced_copy_pass(meta, clock, fence, cancelled, concurrency, PASS_PACING)
+            .await
+    }
+
+    /// Feeds each planned page straight into the bounded-concurrency stage, so the first copy starts
+    /// one page into the scan rather than after it, and the report counts attempts rather than plans.
+    async fn paced_copy_pass(
+        &self,
+        meta: &MetaStore,
+        clock: &Clock,
+        fence: u64,
+        cancelled: &(dyn Fn() -> bool + Send + Sync),
+        concurrency: NonZeroUsize,
+        pacing: PassPacing,
+    ) -> Result<AvailabilityTaskReport, AvailabilityTaskError> {
         let Some(fence) = NonZeroU64::new(fence) else {
             return Ok(AvailabilityTaskReport::default());
         };
-        let planned = self.collect_backlog(meta, fence, SCAN_BATCH, cancelled)?;
-        let processed = planned.len() as u64;
-        let changed = futures_util::stream::iter(planned)
-            .map(|copy| self.copy_one(meta, clock, copy))
-            .buffer_unordered(concurrency.get())
-            .filter(|recorded| std::future::ready(*recorded))
-            .count()
-            .await as u64;
-        Ok(AvailabilityTaskReport { processed, changed })
+        let resumed = meta
+            .blob_copy_cursor(self.local_dc.as_str())
+            .map_err(|error| task_error("copy_cursor_read", error))?;
+        let mut scan = BacklogScan::resuming(resumed.clone());
+        let mut planning = true;
+        let mut page = Vec::new().into_iter();
+        let mut in_flight = FuturesUnordered::new();
+        let mut report = AvailabilityTaskReport::default();
+        loop {
+            while planning && in_flight.len() < concurrency.get() {
+                if let Some(copy) = page.next() {
+                    in_flight.push(self.copy_one(meta, clock, copy));
+                } else {
+                    match self.next_page(meta, &mut scan, fence, pacing, cancelled) {
+                        Some(next) => page = next.into_iter(),
+                        None => planning = false,
+                    }
+                }
+            }
+            let Some(recorded) = in_flight.next().await else {
+                break;
+            };
+            report.processed += 1;
+            report.changed += u64::from(recorded);
+        }
+        if let Some(error) = scan.error {
+            return Err(error);
+        }
+        if scan.resume() != resumed.as_deref() {
+            meta.set_blob_copy_cursor(self.local_dc.as_str(), scan.resume())
+                .map_err(|error| task_error("copy_cursor_write", error))?;
+        }
+        Ok(report)
     }
 }
 

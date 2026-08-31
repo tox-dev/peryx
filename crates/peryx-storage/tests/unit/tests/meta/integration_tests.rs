@@ -15,8 +15,9 @@ use crate::meta::{
     TransferAudit,
 };
 
-const DISTRIBUTED_TABLES: [&str; 17] = [
+const DISTRIBUTED_TABLES: [&str; 18] = [
     "artifact_placement",
+    "blob_copy_cursor",
     "blob_placement",
     "blob_chunk_digest",
     "blob_reclaim_guard",
@@ -64,6 +65,7 @@ fn test_open_omits_distributed_domain_tables() {
     assert_eq!(store.count_reconcile().unwrap(), 0);
     assert!(store.transfer_audits("repo").unwrap().is_empty());
     assert_eq!(store.view_frontier("search").unwrap(), None);
+    assert_eq!(store.blob_copy_cursor("west").unwrap(), None);
     assert!(store.view_frontiers().unwrap().is_empty());
     assert_eq!(store.writer_identity().unwrap(), None);
     assert!(store.journal_snapshot(0, 1).unwrap().records.is_empty());
@@ -289,6 +291,17 @@ fn test_frontier_first_write_creates_only_its_table() {
     drop(store);
 
     assert_distributed_tables(&path, &["derived_view_frontier"]);
+}
+
+#[test]
+fn test_copy_cursor_first_write_creates_only_its_table() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peryx.redb");
+    let store = MetaStore::open(&path).unwrap();
+    store.set_blob_copy_cursor("west", Some("sha256:0f1e")).unwrap();
+    drop(store);
+
+    assert_distributed_tables(&path, &["blob_copy_cursor"]);
 }
 
 #[test]

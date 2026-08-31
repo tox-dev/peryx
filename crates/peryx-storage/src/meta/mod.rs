@@ -10,6 +10,7 @@ mod analytics;
 mod blob_chunk_digest;
 mod blob_placement;
 mod bootstrap;
+mod copy_cursor;
 mod error;
 mod external_identity;
 #[cfg(test)]
@@ -159,6 +160,8 @@ const DIGEST_REVOCATION_STATE: TableDefinition<&str, u64> = TableDefinition::new
 /// Combines source and byte availability to avoid content-store probes during reads.
 const ARTIFACT_PLACEMENT: TableDefinition<&str, &[u8]> = TableDefinition::new("artifact_placement");
 const BLOB_PLACEMENT: TableDefinition<&str, &[u8]> = TableDefinition::new("blob_placement");
+/// Where each datacenter's last cross-datacenter copy pass stopped scanning the placement index.
+const BLOB_COPY_CURSOR: TableDefinition<&str, &str> = TableDefinition::new("blob_copy_cursor");
 const BLOB_CHUNK_DIGEST: TableDefinition<&str, &[u8]> = TableDefinition::new("blob_chunk_digest");
 const RECLAMATION_TOMBSTONE: TableDefinition<&str, &[u8]> = TableDefinition::new("reclamation_tombstone");
 const BLOB_RECLAIM_GUARD: TableDefinition<&str, i64> = TableDefinition::new("blob_reclaim_guard");

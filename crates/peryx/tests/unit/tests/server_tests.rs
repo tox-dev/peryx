@@ -2046,8 +2046,9 @@ fn build_router(config: &Config) -> anyhow::Result<axum::Router> {
 fn test_none_mode_builds_no_distributed_state_or_resources() {
     use redb::{ReadableDatabase as _, TableHandle as _};
 
-    const DISTRIBUTED_TABLES: [&str; 18] = [
+    const DISTRIBUTED_TABLES: [&str; 19] = [
         "artifact_placement",
+        "blob_copy_cursor",
         "blob_placement",
         "blob_chunk_digest",
         "blob_reclaim_guard",

@@ -637,7 +637,10 @@ owner. Independent repositories can sweep together, while one repository cannot 
 `dc_copy` copies blobs owed by the local placement domain from verified peers. It runs on a filesystem backend in a
 configured `dc` or `ha` group whose roster names this node and at least one peer. It accepts only `concurrency` (copies
 in flight, range `1..=64`, default `8`). The ownership group's cluster term fences each copy, so a node without a live
-consensus term copies nothing.
+consensus term copies nothing. A pass plans one page of the placement index at a time and starts copying from it before
+the scan reaches the end, so a datacenter joining a large mirror transfers its first artifact right away instead of
+holding the whole backlog in memory first. Each pass copies at most a few thousand blobs and records where its scan
+stopped, so the next run resumes there rather than rescanning from the start.
 
 One bounded timer drives every schedule, so a large set costs no per-tick scan. When a tick arrives while the same job's
 previous run is still going, peryx skips it rather than queueing it, and counts the skip in the job metrics. Pick an

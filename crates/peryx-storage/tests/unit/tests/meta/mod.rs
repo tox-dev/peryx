@@ -4,6 +4,7 @@ mod analytics_tests;
 mod blob_placement_scan_tests;
 mod blob_placement_tests;
 mod bootstrap_tests;
+mod copy_cursor_tests;
 mod driver_txn_tests;
 mod error_tests;
 mod external_identity_tests;

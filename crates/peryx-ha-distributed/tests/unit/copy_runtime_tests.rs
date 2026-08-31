@@ -271,51 +271,111 @@ fn test_roster_transport_rejects_an_empty_token() {
     assert!(RosterTransports::new(HashMap::from([("east".to_owned(), "http://peer/".to_owned())]), "",).is_err());
 }
 
+fn pacing(batch: usize, limit: usize) -> PassPacing {
+    PassPacing {
+        batch: NonZeroUsize::new(batch).unwrap(),
+        limit: NonZeroUsize::new(limit).unwrap(),
+    }
+}
+
+struct Owed {
+    blob: Digest,
+    artifact: ArtifactDigest,
+    content: &'static [u8],
+}
+
+/// Seeds one verified east placement per content and returns them in the placement index's order.
+fn seed_owed(meta: &MetaStore, backend: &BackendId, contents: &[&'static [u8]]) -> Vec<Owed> {
+    let mut owed: Vec<Owed> = contents
+        .iter()
+        .map(|content| {
+            let (blob, artifact) = digests(content);
+            Owed {
+                blob,
+                artifact,
+                content,
+            }
+        })
+        .collect();
+    owed.sort_by_key(|entry| entry.artifact.canonical());
+    for entry in &owed {
+        seed_verified(
+            meta,
+            &key(&entry.artifact, backend, "east", "peer/loc"),
+            entry.content.len() as u64,
+        );
+    }
+    owed
+}
+
+fn plan_pages(
+    copier: &CrossDcBlobCopier,
+    meta: &MetaStore,
+    pacing: PassPacing,
+    cancelled: &(dyn Fn() -> bool + Send + Sync),
+) -> (Vec<CrossDcCopy>, BacklogScan) {
+    let mut scan = BacklogScan::resuming(None);
+    let mut planned = Vec::new();
+    while let Some(page) = copier.next_page(meta, &mut scan, NonZeroU64::new(5).unwrap(), pacing, cancelled) {
+        planned.extend(page);
+    }
+    (planned, scan)
+}
+
 #[test]
-fn test_collect_backlog_plans_every_owed_digest_across_pages() {
+fn test_backlog_scan_plans_every_owed_digest_across_pages() {
     let (_dir, meta) = meta();
     let (_store_dir, store, backend) = filesystem();
-    for suffix in ["aa", "bb"] {
-        let content = format!("blob-{suffix}");
-        let (_blob, artifact) = digests(content.as_bytes());
-        seed_verified(&meta, &key(&artifact, &backend, "east", "peer/loc"), 4);
-    }
+    seed_owed(&meta, &backend, &[b"blob-aa", b"blob-bb"]);
     let copier = copier_with("home", backend, store, Arc::new(FakePeers { peers: HashMap::new() }));
 
-    let planned = copier
-        .collect_backlog(
-            &meta,
-            NonZeroU64::new(5).unwrap(),
-            NonZeroUsize::new(1).unwrap(),
-            &|| false,
-        )
-        .unwrap();
+    let (planned, _scan) = plan_pages(&copier, &meta, pacing(1, 64), &|| false);
 
     assert_eq!(planned.len(), 2);
 }
 
 #[test]
-fn test_collect_backlog_stops_when_cancelled() {
+fn test_backlog_scan_clears_the_cursor_once_the_index_is_exhausted() {
     let (_dir, meta) = meta();
     let (_store_dir, store, backend) = filesystem();
-    let (_blob, artifact) = digests(CONTENT);
-    seed_verified(&meta, &key(&artifact, &backend, "east", "peer/loc"), 4);
+    seed_owed(&meta, &backend, &[b"blob-aa", b"blob-bb"]);
     let copier = copier_with("home", backend, store, Arc::new(FakePeers { peers: HashMap::new() }));
 
-    let planned = copier
-        .collect_backlog(
-            &meta,
-            NonZeroU64::new(5).unwrap(),
-            NonZeroUsize::new(256).unwrap(),
-            &|| true,
-        )
-        .unwrap();
+    let (_planned, scan) = plan_pages(&copier, &meta, pacing(1, 64), &|| false);
+
+    assert_eq!(scan.resume(), None, "an exhausted scan restarts the next pass");
+}
+
+#[test]
+fn test_backlog_scan_stops_at_the_per_pass_cap() {
+    let (_dir, meta) = meta();
+    let (_store_dir, store, backend) = filesystem();
+    let owed = seed_owed(&meta, &backend, &[b"blob-aa", b"blob-bb", b"blob-cc"]);
+    let copier = copier_with("home", backend, store, Arc::new(FakePeers { peers: HashMap::new() }));
+
+    let (planned, scan) = plan_pages(&copier, &meta, pacing(1, 1), &|| false);
+
+    let first = owed[0].artifact.canonical();
+    assert_eq!(
+        (planned.len(), scan.resume()),
+        (1, Some(first.as_str())),
+        "the cap stops the scan at a page boundary and keeps a resume cursor"
+    );
+}
+
+#[test]
+fn test_backlog_scan_stops_when_cancelled() {
+    let (_dir, meta) = meta();
+    let (_store_dir, store, backend) = filesystem();
+    seed_owed(&meta, &backend, &[CONTENT]);
+    let copier = copier_with("home", backend, store, Arc::new(FakePeers { peers: HashMap::new() }));
+
+    let (planned, _scan) = plan_pages(&copier, &meta, pacing(256, 64), &|| true);
 
     assert!(planned.is_empty(), "a cancelled pass plans nothing");
 }
 
-#[test]
-fn test_collect_backlog_surfaces_a_scan_failure() {
+fn corrupt_placement_store() -> (tempfile::TempDir, MetaStore) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("peryx.redb");
     crate::support::distributed_meta(&path);
@@ -328,20 +388,19 @@ fn test_collect_backlog_surfaces_a_scan_failure() {
         .unwrap();
     transaction.commit().unwrap();
     drop(database);
-    let meta = MetaStore::open_existing(path).unwrap();
+    (dir, MetaStore::open_existing(path).unwrap())
+}
+
+#[test]
+fn test_backlog_scan_records_a_scan_failure() {
+    let (_dir, meta) = corrupt_placement_store();
     let (_store_dir, store, backend) = filesystem();
     let copier = copier_with("home", backend, store, Arc::new(FakePeers { peers: HashMap::new() }));
 
-    let error = copier
-        .collect_backlog(
-            &meta,
-            NonZeroU64::new(5).unwrap(),
-            NonZeroUsize::new(1).unwrap(),
-            &|| false,
-        )
-        .unwrap_err();
+    let (planned, scan) = plan_pages(&copier, &meta, pacing(1, 64), &|| false);
 
-    assert_eq!(error.code(), "copy_backlog_scan");
+    assert!(planned.is_empty());
+    assert_eq!(scan.error.map(|error| error.code()), Some("copy_backlog_scan"));
 }
 
 fn local_state(meta: &MetaStore, target: &BlobPlacementKey) -> BlobPlacementState {
@@ -796,4 +855,175 @@ async fn test_http_copy_pass_reuses_one_connection_for_one_source() {
     server.abort();
 
     assert_eq!((report.changed, connections.load(Ordering::Relaxed)), (2, 1));
+}
+
+struct CountingSource {
+    inner: LoopbackBlobSource,
+    fetches: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl BlobTransport for CountingSource {
+    async fn fetch_blob(&self, request: crate::BlobRequest) -> Result<Vec<u8>, TransportError> {
+        self.fetches.fetch_add(1, Ordering::SeqCst);
+        self.inner.fetch_blob(request).await
+    }
+}
+
+struct CountingPeers {
+    peer: CountingSource,
+}
+
+impl SourceTransports for CountingPeers {
+    fn transport(&self, _source_dc: &str) -> Option<&(dyn BlobTransport + Send + Sync)> {
+        Some(&self.peer as &(dyn BlobTransport + Send + Sync))
+    }
+}
+
+fn counting_peers(owed: &[Owed]) -> (Arc<CountingPeers>, Arc<AtomicUsize>) {
+    let fetches = Arc::new(AtomicUsize::new(0));
+    let blobs = owed
+        .iter()
+        .map(|entry| (entry.blob.clone(), Bytes::copy_from_slice(entry.content)))
+        .collect();
+    let peers = Arc::new(CountingPeers {
+        peer: CountingSource {
+            inner: LoopbackBlobSource::new(blobs, TransferLimits::default()),
+            fetches: fetches.clone(),
+        },
+    });
+    (peers, fetches)
+}
+
+#[tokio::test]
+async fn test_copy_pass_copies_before_the_scan_reaches_the_end_of_the_index() {
+    let (_meta_dir, meta) = meta();
+    let (_store_dir, store, backend) = filesystem();
+    let owed = seed_owed(&meta, &backend, &[b"streamed-aa", b"streamed-bb", b"streamed-cc"]);
+    let (peers, fetches) = counting_peers(&owed);
+    let copier = copier_with("home", backend, store.clone(), peers);
+    let clock: Clock = Arc::new(|| 42);
+    let stop_after_first_fetch = || fetches.load(Ordering::SeqCst) > 0;
+
+    let report = copier
+        .paced_copy_pass(
+            &meta,
+            &clock,
+            9,
+            &stop_after_first_fetch,
+            NonZeroUsize::MIN,
+            pacing(1, 64),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        (report, meta.blob_copy_cursor("home").unwrap()),
+        (
+            AvailabilityTaskReport {
+                processed: 1,
+                changed: 1,
+            },
+            Some(owed[0].artifact.canonical()),
+        ),
+        "the first copy runs and the pass records where the scan stopped"
+    );
+    assert_eq!(store.read(&owed[0].blob).unwrap(), owed[0].content);
+}
+
+#[tokio::test]
+async fn test_a_capped_pass_resumes_from_the_recorded_cursor() {
+    let (_meta_dir, meta) = meta();
+    let (_store_dir, store, backend) = filesystem();
+    let owed = seed_owed(&meta, &backend, &[b"resumed-aa", b"resumed-bb"]);
+    let (peers, _fetches) = counting_peers(&owed);
+    let copier = copier_with("home", backend, store.clone(), peers);
+    let clock: Clock = Arc::new(|| 42);
+
+    let first = copier
+        .paced_copy_pass(&meta, &clock, 9, &|| false, NonZeroUsize::MIN, pacing(1, 1))
+        .await
+        .unwrap();
+    let recorded = meta.blob_copy_cursor("home").unwrap();
+    let second = copier
+        .paced_copy_pass(&meta, &clock, 9, &|| false, NonZeroUsize::MIN, pacing(1, 1))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        (first, recorded, second, meta.blob_copy_cursor("home").unwrap()),
+        (
+            AvailabilityTaskReport {
+                processed: 1,
+                changed: 1,
+            },
+            Some(owed[0].artifact.canonical()),
+            AvailabilityTaskReport {
+                processed: 1,
+                changed: 1,
+            },
+            None,
+        ),
+        "each pass copies one digest and the sweep clears its cursor at the end"
+    );
+    assert_eq!(store.read(&owed[1].blob).unwrap(), owed[1].content);
+}
+
+#[tokio::test]
+async fn test_copy_pass_surfaces_a_scan_failure() {
+    let (_dir, meta) = corrupt_placement_store();
+    let (_store_dir, store, backend) = filesystem();
+    let copier = copier_with("home", backend, store, Arc::new(FakePeers { peers: HashMap::new() }));
+    let clock: Clock = Arc::new(|| 42);
+
+    let error = copier
+        .copy_pass(&meta, &clock, 9, &|| false, NonZeroUsize::MIN)
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code(), "copy_backlog_scan");
+}
+
+#[tokio::test]
+async fn test_copy_pass_reports_an_unreadable_cursor() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peryx.redb");
+    let database = redb::Database::create(&path).unwrap();
+    let transaction = database.begin_write().unwrap();
+    transaction
+        .open_table(redb::TableDefinition::<&str, u64>::new("blob_copy_cursor"))
+        .unwrap();
+    transaction.commit().unwrap();
+    drop(database);
+    let meta = MetaStore::open_existing(path).unwrap();
+    let (_store_dir, store, backend) = filesystem();
+    let copier = copier_with("home", backend, store, Arc::new(FakePeers { peers: HashMap::new() }));
+    let clock: Clock = Arc::new(|| 42);
+
+    let error = copier
+        .copy_pass(&meta, &clock, 9, &|| false, NonZeroUsize::MIN)
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code(), "copy_cursor_read");
+}
+
+#[tokio::test]
+async fn test_copy_pass_reports_an_unwritable_cursor() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peryx.redb");
+    let (_store_dir, store, backend) = filesystem();
+    let seeded = crate::support::distributed_meta(&path);
+    seed_owed(&seeded, &backend, &[b"unwritable-aa", b"unwritable-bb"]);
+    drop(seeded);
+    let meta = MetaStore::open_existing_read_only(path).unwrap();
+    let copier = copier_with("home", backend, store, Arc::new(FakePeers { peers: HashMap::new() }));
+    let clock: Clock = Arc::new(|| 42);
+
+    let error = copier
+        .paced_copy_pass(&meta, &clock, 9, &|| false, NonZeroUsize::MIN, pacing(1, 1))
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.code(), "copy_cursor_write");
 }
