@@ -528,11 +528,7 @@ pub(super) fn known_metadata(state: &ServingState, files: &[File]) -> Result<BTr
 /// Build a hosted (uploaded) project's detail from its stored file records. Yank markers are kept, so
 /// yanked files stay downloadable but are skipped by resolvers; soft-deleted files are dropped, so a
 /// project whose files are all trashed reads as absent.
-pub(super) fn local_detail(
-    state: &ServingState,
-    name: &str,
-    project: &str,
-) -> Result<Option<ProjectDetail>, CacheError> {
+pub fn local_detail(state: &ServingState, name: &str, project: &str) -> Result<Option<ProjectDetail>, CacheError> {
     let entries = state.meta.list_upload_entries(name, project)?;
     if entries.is_empty() {
         return Ok(None);

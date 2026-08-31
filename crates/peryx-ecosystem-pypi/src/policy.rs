@@ -1,6 +1,6 @@
 //! Maps `PyPI` policy config and metadata into neutral facts and rules.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::str::FromStr as _;
 use std::sync::Arc;
 
@@ -528,6 +528,20 @@ fn tags(values: &[String]) -> Result<HashSet<String>, PypiPolicyError> {
     Ok(tags)
 }
 
+/// What a policy withholds from one project page, judged against the whole file set so a release-wide
+/// rule such as the project size limit sees the siblings that would reach a client together.
+///
+/// [`PypiPolicy::apply_detail`] drops what this refuses. A caller that must explain a refusal rather
+/// than silently drop the file reads the denials instead.
+#[derive(Debug, Default)]
+pub struct Admission {
+    /// The denial that withdraws the whole project: a resource rule, or a release-wide rule the
+    /// admitted files violate together.
+    pub project: Option<PolicyDenial>,
+    /// Each refused file's denial, keyed by filename.
+    pub files: BTreeMap<String, PolicyDenial>,
+}
+
 /// Policy operations phrased in `PyPI` terms, implemented on the neutral [`Policy`].
 pub trait PypiPolicy {
     fn fallback_mode(&self) -> FallbackMode;
@@ -567,6 +581,10 @@ pub trait PypiPolicy {
         detail: ProjectDetail,
         now: Option<i64>,
     ) -> Result<ProjectDetail, PolicyDenial>;
+
+    /// The refusals `action` raises over `detail` without applying them, so a caller can report why a
+    /// file is withheld. `now` is the serve clock, as in [`apply_detail`](Self::apply_detail).
+    fn admit_detail(&self, action: PolicyAction, project: &str, detail: &ProjectDetail, now: Option<i64>) -> Admission;
 
     fn apply_list(&self, list: ProjectList) -> ProjectList;
 
@@ -619,20 +637,46 @@ impl PypiPolicy for Policy {
         mut detail: ProjectDetail,
         now: Option<i64>,
     ) -> Result<ProjectDetail, PolicyDenial> {
-        self.check_resource(action, project)?;
+        let admission = self.admit_detail(action, project, &detail, now);
+        if let Some(denial) = admission.project {
+            return Err(denial);
+        }
         if !self.active() {
             return Ok(detail);
         }
-        detail.files.retain(|file| {
-            let mut facts = facts_from_file(project, file);
-            facts.now = now;
-            self.check_facts(action, &facts).is_ok()
-        });
-        if let Some(limit) = self.max_resource_size() {
-            apply_project_size_limit(action, project, limit, &detail)?;
-        }
+        detail
+            .files
+            .retain(|file| !admission.files.contains_key(&file.filename));
         retain_versions_with_files(&mut detail);
         Ok(detail)
+    }
+
+    fn admit_detail(&self, action: PolicyAction, project: &str, detail: &ProjectDetail, now: Option<i64>) -> Admission {
+        if let Err(denial) = self.check_resource(action, project) {
+            return Admission {
+                project: Some(denial),
+                files: BTreeMap::new(),
+            };
+        }
+        if !self.active() {
+            return Admission::default();
+        }
+        let mut files = BTreeMap::new();
+        let mut admitted = Vec::new();
+        for file in &detail.files {
+            let mut facts = facts_from_file(project, file);
+            facts.now = now;
+            match self.check_facts(action, &facts) {
+                Ok(()) => admitted.push(file),
+                Err(denial) => {
+                    files.insert(file.filename.clone(), denial);
+                }
+            }
+        }
+        let project = self
+            .max_resource_size()
+            .and_then(|limit| project_size_denial(action, project, admitted, limit));
+        Admission { project, files }
     }
 
     fn apply_list(&self, list: ProjectList) -> ProjectList {
@@ -653,24 +697,8 @@ impl PypiPolicy for Policy {
     }
 
     fn preview_detail(&self, action: PolicyAction, detail: &ProjectDetail) -> Vec<PolicyDenial> {
-        let mut denials = Vec::new();
-        if let Err(denial) = self.check_resource(action, &detail.name) {
-            denials.push(denial);
-            return denials;
-        }
-        let mut allowed = Vec::new();
-        for file in &detail.files {
-            match self.check_file(action, &detail.name, file) {
-                Ok(()) => allowed.push(file),
-                Err(denial) => denials.push(denial),
-            }
-        }
-        if let Some(limit) = self.max_resource_size()
-            && let Some(denial) = project_size_denial(action, &detail.name, allowed, limit)
-        {
-            denials.push(denial);
-        }
-        denials
+        let admission = self.admit_detail(action, &detail.name, detail, None);
+        admission.files.into_values().chain(admission.project).collect()
     }
 }
 
@@ -745,15 +773,6 @@ fn pypi_attributes(parsed: &crate::DistributionFilename) -> Vec<(&'static str, S
         attributes.push(("platform_tag", platform.clone()));
     }
     attributes
-}
-
-fn apply_project_size_limit(
-    action: PolicyAction,
-    project: &str,
-    limit: u64,
-    detail: &ProjectDetail,
-) -> Result<(), PolicyDenial> {
-    project_size_denial(action, project, detail.files.iter(), limit).map_or(Ok(()), Err)
 }
 
 fn project_size_denial<'a>(

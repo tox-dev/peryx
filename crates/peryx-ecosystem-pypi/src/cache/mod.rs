@@ -37,6 +37,7 @@ pub use mutate::{
 };
 pub use page_stream::{PageOutcome, materialize_detail, stream_detail};
 pub use provenance::{ProvenanceBody, provenance_bytes};
+pub(crate) use resolve::local_detail;
 pub use resolve::{DetailPage, list_serial, resolve_detail, resolve_detail_page, resolve_list};
 pub use shadow::shadowed_candidates;
 

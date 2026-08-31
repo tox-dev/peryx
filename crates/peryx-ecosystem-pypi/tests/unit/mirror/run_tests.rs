@@ -12,8 +12,8 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::{
-    DEFAULT_PREFETCH_CONCURRENCY, SyncRun, cached_detail, parse_response_detail, pypi_plan, pypi_sync, pypi_verify,
-    raw_detail, sync_file, sync_metadata, upstream_ceiling, verify_blob,
+    DEFAULT_PREFETCH_CONCURRENCY, SyncRun, admission, cached_detail, parse_response_detail, pypi_plan, pypi_sync,
+    pypi_verify, raw_detail, sync_file, sync_metadata, upstream_ceiling, verify_blob,
 };
 use crate::mirror::test_support::{self, cached_index};
 use crate::mirror::{
@@ -21,6 +21,7 @@ use crate::mirror::{
 };
 use crate::store::{CachedIndex, PypiStore as _};
 use crate::{CoreMetadata, File, Meta, ProjectDetail, Provenance, SimpleResponse, Yanked, to_json};
+use peryx_index::Index;
 
 const SIMPLE_JSON: &str = "application/vnd.pypi.simple.v1+json";
 
@@ -595,7 +596,10 @@ async fn collect_files(
     };
     let mut rows = Vec::new();
     let mut counts = PrefetchCounts::default();
-    run.files("demo", detail, &mut rows, &mut counts).await.unwrap();
+    let admission = admission(state, target, "demo", detail);
+    run.files("demo", detail, &admission, &mut rows, &mut counts)
+        .await
+        .unwrap();
     (String::from_utf8(rows).unwrap(), counts)
 }
 
@@ -614,6 +618,7 @@ async fn blob_verification_distinguishes_invalid_missing_and_present() {
         index: "pypi".to_owned(),
         route: "pypi".to_owned(),
         position: 0,
+        cached_position: 0,
         cached: "pypi".to_owned(),
         client: peryx_upstream::UpstreamClient::new("https://example.test/simple/").unwrap(),
         offline: true,
@@ -653,6 +658,7 @@ async fn blob_verification_reports_mismatches_and_backend_errors() {
         index: "pypi".to_owned(),
         route: "pypi".to_owned(),
         position: 0,
+        cached_position: 0,
         cached: "pypi".to_owned(),
         client: peryx_upstream::UpstreamClient::new("https://example.test/simple/").unwrap(),
         offline: true,
@@ -1100,4 +1106,275 @@ async fn an_index_without_a_configured_ceiling_falls_back_to_the_prefetch_defaul
 
     assert_eq!(upstream_ceiling(limits, "pypi"), DEFAULT_PREFETCH_CONCURRENCY);
     assert_eq!(upstream_ceiling(limits, "absent"), DEFAULT_PREFETCH_CONCURRENCY);
+}
+
+fn policy_index(
+    configure: impl FnOnce(&mut peryx_policy::PolicyConfig, &mut crate::policy::PypiPolicyConfig),
+) -> Index {
+    Index {
+        policy: test_support::policy(configure),
+        ..cached_index("https://example.test/simple/", true)
+    }
+}
+
+fn declined_rows(output: &str) -> Vec<(&str, &str, &str)> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let cells = line.split('\t').collect::<Vec<_>>();
+            (cells.get(7) == Some(&"skipped") && cells[0] != "summary").then(|| (cells[0], cells[3], cells[8]))
+        })
+        .collect()
+}
+
+async fn run(action: MirrorAction, state: Arc<peryx_driver::AppState>, index: &str) -> Result<String, String> {
+    let mut output = Vec::new();
+    let configured = toml::Table::from_iter([
+        ("mode".to_owned(), toml::Value::String("selected".to_owned())),
+        (
+            "packages".to_owned(),
+            toml::Value::Array(vec![toml::Value::String("demo".to_owned())]),
+        ),
+    ]);
+    crate::PypiServing
+        .mirror(
+            state,
+            MirrorRequest {
+                action,
+                index,
+                settings: &toml::Table::new(),
+                configured: &configured,
+                overrides: &toml::Table::new(),
+            },
+            &mut output,
+        )
+        .await?;
+    Ok(String::from_utf8(output).unwrap())
+}
+
+#[rstest]
+#[case::plan(MirrorAction::Plan)]
+#[case::sync(MirrorAction::Sync)]
+#[case::verify(MirrorAction::Verify)]
+#[tokio::test]
+async fn every_action_skips_a_project_the_policy_blocks(#[case] action: MirrorAction) {
+    let fixture = test_support::state(vec![policy_index(|_neutral, pypi| {
+        pypi.block_projects = vec!["demo".to_owned()];
+    })]);
+    fixture.state.serving.meta.put_project("pypi", "demo", "demo").unwrap();
+
+    let output = run(action, Arc::clone(&fixture.state), "pypi").await.unwrap();
+
+    assert_eq!(
+        declined_rows(&output),
+        [("page", "", "cached policy: project \"demo\" is blocked")]
+    );
+}
+
+#[rstest]
+#[case::plan(MirrorAction::Plan)]
+#[case::verify(MirrorAction::Verify)]
+#[tokio::test]
+async fn plan_and_verify_withdraw_a_project_a_release_wide_rule_rejects(#[case] action: MirrorAction) {
+    let fixture = test_support::state(vec![policy_index(|_neutral, pypi| {
+        pypi.max_project_size_bytes = Some(4);
+    })]);
+    store_demo_page(&fixture);
+
+    let output = run(action, Arc::clone(&fixture.state), "pypi").await.unwrap();
+
+    assert_eq!(
+        declined_rows(&output),
+        [("page", "", "cached policy: project size 13 exceeds limit 4")]
+    );
+}
+
+#[tokio::test]
+async fn sync_reports_the_release_wide_refusal_materialization_raises() {
+    let fixture = test_support::state(vec![policy_index(|_neutral, pypi| {
+        pypi.max_project_size_bytes = Some(4);
+    })]);
+    store_demo_page(&fixture);
+
+    let output = run(MirrorAction::Sync, Arc::clone(&fixture.state), "pypi")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        declined_rows(&output),
+        [("page", "", "serve policy: project size 13 exceeds limit 4")]
+    );
+}
+
+fn store_demo_page(fixture: &test_support::StateFixture) {
+    let mut detail = artifact_detail("https://example.test");
+    detail.files.retain(|file| file.filename != "demo-1.0.tar.gz");
+    fixture.state.serving.meta.put_project("pypi", "demo", "demo").unwrap();
+    fixture
+        .state
+        .serving
+        .meta
+        .put_index("pypi/demo", &record(to_json(&detail).into_bytes()))
+        .unwrap();
+}
+
+#[tokio::test]
+async fn plan_declines_the_files_policy_refuses_and_keeps_the_rest() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/demo/"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            to_json(&artifact_detail(&server.uri())),
+            "application/vnd.pypi.simple.v1+json",
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let fixture = test_support::state(vec![Index {
+        policy: test_support::policy(|_neutral, pypi| {
+            pypi.block_package_types = vec![crate::policy::PackageType::Sdist];
+        }),
+        ..cached_index(&format!("{}/simple/", server.uri()), false)
+    }]);
+
+    let output = run(MirrorAction::Plan, Arc::clone(&fixture.state), "pypi")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        declined_rows(&output),
+        [
+            (
+                "file",
+                "demo-1.0.tar.gz",
+                "cached policy: package type sdist is blocked"
+            ),
+            ("file", "demo-1.0.zip", "cached policy: package type sdist is blocked"),
+        ]
+    );
+    assert!(
+        output.contains("file\tpypi\tdemo\tdemo-1.0-py3-none-any.whl"),
+        "{output}"
+    );
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn sync_never_requests_an_artifact_the_policy_refuses() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/demo/"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            to_json(&artifact_detail(&server.uri())),
+            "application/vnd.pypi.simple.v1+json",
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+    for (route, body, requests) in [
+        ("/demo.whl", b"artifact".as_slice(), 1),
+        ("/demo.whl.metadata", b"metadata".as_slice(), 1),
+        ("/demo.zip", b"sdist".as_slice(), 0),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(route))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body))
+            .expect(requests)
+            .mount(&server)
+            .await;
+    }
+    let fixture = test_support::state(vec![Index {
+        policy: test_support::policy(|_neutral, pypi| {
+            pypi.block_package_types = vec![crate::policy::PackageType::Sdist];
+        }),
+        ..cached_index(&format!("{}/simple/", server.uri()), false)
+    }]);
+
+    let output = run(MirrorAction::Sync, Arc::clone(&fixture.state), "pypi")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        declined_rows(&output),
+        [
+            (
+                "file",
+                "demo-1.0.tar.gz",
+                "cached policy: package type sdist is blocked"
+            ),
+            ("file", "demo-1.0.zip", "cached policy: package type sdist is blocked"),
+        ]
+    );
+    assert_eq!(
+        reported_sizes(&output, "downloaded"),
+        [
+            ("metadata", "demo-1.0-py3-none-any.whl.metadata", "8"),
+            ("file", "demo-1.0-py3-none-any.whl", "8"),
+        ]
+    );
+    assert_eq!(
+        fixture.state.serving.blobs.head(&Digest::of(b"sdist")).await.unwrap(),
+        None
+    );
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn sync_never_mirrors_an_artifact_a_virtual_target_would_not_serve() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/demo/"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            to_json(&artifact_detail(&server.uri())),
+            "application/vnd.pypi.simple.v1+json",
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+    for (route, body, requests) in [
+        ("/demo.whl", b"artifact".as_slice(), 1),
+        ("/demo.whl.metadata", b"metadata".as_slice(), 1),
+        ("/demo.zip", b"sdist".as_slice(), 0),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(route))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body))
+            .expect(requests)
+            .mount(&server)
+            .await;
+    }
+    let fixture = test_support::state(vec![
+        cached_index(&format!("{}/simple/", server.uri()), false),
+        test_support::virtual_index(
+            "root",
+            vec![0],
+            test_support::policy(|_neutral, pypi| {
+                pypi.block_package_types = vec![crate::policy::PackageType::Sdist];
+            }),
+        ),
+    ]);
+
+    let output = run(MirrorAction::Sync, Arc::clone(&fixture.state), "root")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        declined_rows(&output),
+        [
+            ("file", "demo-1.0.tar.gz", "serve policy: package type sdist is blocked"),
+            ("file", "demo-1.0.zip", "serve policy: package type sdist is blocked"),
+        ]
+    );
+    assert_eq!(
+        reported_sizes(&output, "downloaded"),
+        [
+            ("metadata", "demo-1.0-py3-none-any.whl.metadata", "8"),
+            ("file", "demo-1.0-py3-none-any.whl", "8"),
+        ]
+    );
+    assert_eq!(
+        fixture.state.serving.blobs.head(&Digest::of(b"sdist")).await.unwrap(),
+        None
+    );
+    server.verify().await;
 }

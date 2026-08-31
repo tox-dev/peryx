@@ -13,7 +13,9 @@ use peryx_storage::blob::Digest;
 use tokio::sync::Semaphore;
 
 use super::report::{unix_now, write_count, write_file_row, write_file_row_bytes, write_page_row, write_row};
-use super::selection::{candidates, content_type_is_json, selection, target};
+use super::selection::{
+    ProjectAdmission, admission, candidates, content_type_is_json, refusal, refusal_reason, selection, target,
+};
 use super::{
     BlobCheck, FileCandidate, HEADER, PrefetchConfig, PrefetchCounts, PrefetchFile, PrefetchMetadata, PrefetchOptions,
     Row, Selection, SelectionSource, SyncOutcome, Target,
@@ -32,6 +34,19 @@ const VERIFY_CONCURRENCY: usize = 8;
 struct PrefetchReport {
     rows: Vec<u8>,
     counts: PrefetchCounts,
+}
+
+/// Report a project policy withheld. It is skipped rather than failed: an operator reading the run
+/// should tell a repository that declines the project from one that could not be reached.
+fn write_refusal(
+    rows: &mut Vec<u8>,
+    counts: &mut PrefetchCounts,
+    index: &str,
+    project: &str,
+    reason: &str,
+) -> anyhow::Result<()> {
+    counts.skipped += 1;
+    write_row(rows, Row::page(index, project, "skipped", reason))
 }
 
 /// The upstream overlap a prefetch run may take: whatever the index already grants the serving path.
@@ -93,10 +108,19 @@ async fn plan_project(
         projects: 1,
         ..PrefetchCounts::default()
     };
+    if let Some(reason) = refusal(state, target, &project) {
+        write_refusal(&mut rows, &mut counts, &target.index, &project, &reason)?;
+        return Ok(PrefetchReport { rows, counts });
+    }
     match plan_detail(state, target, &project).await {
         Ok(Some(detail)) => {
+            let admission = admission(state, target, &project, &detail);
+            if let Some(reason) = admission.refusal() {
+                write_refusal(&mut rows, &mut counts, &target.index, &project, reason)?;
+                return Ok(PrefetchReport { rows, counts });
+            }
             write_row(&mut rows, Row::page(&target.index, &project, "selected", ""))?;
-            for candidate in candidates(&detail, selection.rules.get(&project), &selection.filters) {
+            for candidate in candidates(&detail, selection.rules.get(&project), &selection.filters, &admission) {
                 match candidate {
                     FileCandidate::Include(file) => {
                         counts.files += 1;
@@ -117,7 +141,7 @@ async fn plan_project(
                     }
                     FileCandidate::Skip(file, reason) => {
                         counts.skipped += 1;
-                        write_file_row(&mut rows, &target.index, &project, &file, "skipped", reason)?;
+                        write_file_row(&mut rows, &target.index, &project, &file, "skipped", &reason)?;
                     }
                 }
             }
@@ -197,6 +221,11 @@ impl SyncRun<'_> {
             projects: 1,
             ..PrefetchCounts::default()
         };
+        let index = &self.target.index;
+        if let Some(reason) = refusal(self.state, self.target, &project) {
+            write_refusal(&mut rows, &mut counts, index, &project, &reason)?;
+            return Ok(PrefetchReport { rows, counts });
+        }
         let materialized = gated(
             &self.transfers,
             crate::cache::materialize_detail(Arc::clone(self.state), self.target.position, project.clone()),
@@ -204,19 +233,27 @@ impl SyncRun<'_> {
         .await;
         match materialized {
             Ok(Some(_)) => {
+                // Materialization already raises the project-wide rules, so what is left to judge is
+                // the stored page's files: it keeps every file upstream published, including the ones
+                // policy withheld from the registration.
                 let detail = cached_detail(self.state, self.target, &project)?;
-                write_row(&mut rows, Row::page(&self.target.index, &project, "synced", ""))?;
-                self.files(&project, &detail, &mut rows, &mut counts).await?;
+                let admission = admission(self.state, self.target, &project, &detail);
+                write_row(&mut rows, Row::page(index, &project, "synced", ""))?;
+                self.files(&project, &detail, &admission, &mut rows, &mut counts)
+                    .await?;
             }
             Ok(None) => {
                 counts.skipped += 1;
-                let row = Row::page(&self.target.index, &project, "skipped", "project not found");
+                let row = Row::page(index, &project, "skipped", "project not found");
                 write_row(&mut rows, row)?;
+            }
+            Err(crate::cache::CacheError::Policy(denial)) => {
+                write_refusal(&mut rows, &mut counts, index, &project, &refusal_reason(&denial))?;
             }
             Err(err) => {
                 counts.failures += 1;
                 let reason = err.user_message();
-                let row = Row::page(&self.target.index, &project, "failure", &reason);
+                let row = Row::page(index, &project, "failure", &reason);
                 write_row(&mut rows, row)?;
             }
         }
@@ -227,10 +264,16 @@ impl SyncRun<'_> {
         &self,
         project: &str,
         detail: &ProjectDetail,
+        admission: &ProjectAdmission,
         rows: &mut Vec<u8>,
         counts: &mut PrefetchCounts,
     ) -> anyhow::Result<()> {
-        let selected = candidates(detail, self.selection.rules.get(project), &self.selection.filters);
+        let selected = candidates(
+            detail,
+            self.selection.rules.get(project),
+            &self.selection.filters,
+            admission,
+        );
         let mut transfers = stream::iter(selected)
             .map(|candidate| self.candidate(project, candidate))
             .buffered(self.concurrency);
@@ -249,7 +292,7 @@ impl SyncRun<'_> {
             FileCandidate::Include(file) => file,
             FileCandidate::Skip(file, reason) => {
                 counts.skipped += 1;
-                write_file_row(&mut rows, &self.target.index, project, &file, "skipped", reason)?;
+                write_file_row(&mut rows, &self.target.index, project, &file, "skipped", &reason)?;
                 return Ok(PrefetchReport { rows, counts });
             }
         };
@@ -360,6 +403,10 @@ async fn verify_project(
         projects: 1,
         ..PrefetchCounts::default()
     };
+    if let Some(reason) = refusal(state, target, &project) {
+        write_refusal(&mut rows, &mut counts, &target.index, &project, &reason)?;
+        return Ok(PrefetchReport { rows, counts });
+    }
     let key = format!("{}/{}", target.cached, project);
     let Some(record) = state
         .meta
@@ -379,13 +426,18 @@ async fn verify_project(
             return Ok(PrefetchReport { rows, counts });
         }
     };
+    let admission = admission(state, target, &project, &detail);
+    if let Some(reason) = admission.refusal() {
+        write_refusal(&mut rows, &mut counts, &target.index, &project, reason)?;
+        return Ok(PrefetchReport { rows, counts });
+    }
     let included =
-        candidates(&detail, selection.rules.get(&project), &selection.filters).filter_map(
-            |candidate| match candidate {
+        candidates(&detail, selection.rules.get(&project), &selection.filters, &admission).filter_map(|candidate| {
+            match candidate {
                 FileCandidate::Include(file) => Some(file),
                 FileCandidate::Skip(..) => None,
-            },
-        );
+            }
+        });
     let mut checked = stream::iter(included)
         .map(|file| verify_file(state, target, &project, file, checks))
         .buffered(VERIFY_CONCURRENCY);

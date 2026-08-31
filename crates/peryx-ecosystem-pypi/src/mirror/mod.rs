@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::PathBuf;
@@ -384,7 +385,7 @@ impl From<PrefetchConfig> for ArtifactFilters {
 
 enum FileCandidate {
     Include(PrefetchFile),
-    Skip(PrefetchFile, &'static str),
+    Skip(PrefetchFile, Cow<'static, str>),
 }
 
 struct PrefetchFile {
@@ -405,6 +406,9 @@ struct Target {
     index: String,
     route: String,
     position: usize,
+    /// The cached member the run mirrors from: the target itself, or the one cached leaf of a virtual
+    /// target. Its policy decides what peryx may fetch at all, before the target decides what it serves.
+    cached_position: usize,
     cached: String,
     client: UpstreamClient,
     offline: bool,

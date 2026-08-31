@@ -4,7 +4,7 @@ use peryx_driver::AppState;
 use peryx_driver::rate_limit::RateLimitConfig;
 use peryx_identity::IndexAcl;
 use peryx_index::{Index, IndexKind};
-use peryx_policy::Policy;
+use peryx_policy::{Policy, PolicyConfig};
 use peryx_storage::blob::BlobStorage;
 use peryx_storage::meta::MetaStore;
 use peryx_upstream::{NamedUpstream, UpstreamClient, UpstreamRouter};
@@ -80,4 +80,26 @@ pub fn hosted_index(name: &str) -> Index {
         policy: Policy::default(),
         acl: IndexAcl::default(),
     }
+}
+
+pub fn virtual_index(name: &str, layers: Vec<usize>, policy: Policy) -> Index {
+    Index {
+        name: name.to_owned(),
+        route: name.to_owned(),
+        ecosystem: crate::ECOSYSTEM,
+        kind: IndexKind::Virtual {
+            layers,
+            write_target: None,
+        },
+        policy,
+        acl: IndexAcl::default(),
+    }
+}
+
+pub fn policy(configure: impl FnOnce(&mut PolicyConfig, &mut crate::policy::PypiPolicyConfig)) -> Policy {
+    let mut neutral = PolicyConfig::default();
+    let mut pypi = crate::policy::PypiPolicyConfig::default();
+    configure(&mut neutral, &mut pypi);
+    Policy::compile(&neutral, crate::normalize_name)
+        .with_capabilities(crate::policy::compile_capabilities(&pypi).unwrap())
 }

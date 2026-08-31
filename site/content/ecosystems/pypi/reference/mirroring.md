@@ -37,6 +37,15 @@ metadata_only = false
 `mode = "all"` reads the upstream Simple project list before visiting project pages. `mode = "metadata-only"` implies
 `metadata_only = true`. Artifact filters run after a project page is fetched.
 
+Index policy runs before those filters, so a run mirrors only what the repository would serve. Each project passes the
+cached member's `cached` rules, which decide what peryx may fetch upstream at all, and then the target's `serve` rules,
+which decide what it would hand a client; the second stage judges only the files the first admitted, so a release-wide
+rule such as `max_project_size_bytes` measures the siblings that would actually reach an installer. A virtual target
+also honours its `fallback_mode`: a repository that ranks its cached members out of a project's view mirrors nothing for
+it. Every refusal is reported as a `skipped` row naming the stage and the rule -
+`cached policy: package type sdist is blocked` - so a declined file reads differently from one upstream never published.
+`peryx mirror verify` applies the same admission, so a file policy withholds is not reported as a missing blob.
+
 ```shell
 peryx mirror plan root/pypi --option 'packages=["requests>=2,<3"]'
 peryx mirror sync root/pypi --option 'requirements=["requirements.txt"]'

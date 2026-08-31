@@ -1,3 +1,5 @@
+use crate::policy::PypiPolicy as _;
+use crate::source_policy::SourceSelection;
 use crate::store::PypiStore as _;
 use crate::{
     CoreMetadata, DistributionKind, File, ProjectDetail, is_valid_name, normalize_name, parse_distribution_filename,
@@ -6,7 +8,9 @@ use crate::{
 use anyhow::{Context as _, bail};
 use peryx_driver::ServingState;
 use peryx_index::{Index, IndexKind};
+use peryx_policy::{PolicyAction, PolicyDenial};
 use peryx_upstream::UpstreamClient;
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -292,19 +296,136 @@ fn requirement_line(line: &str) -> &str {
         .trim()
 }
 
+/// The policy verdict a prefetch run reaches for one project, so a refusal reaches the report instead
+/// of thinning the candidate set behind the operator's back.
+pub(super) struct ProjectAdmission {
+    project: Option<String>,
+    files: BTreeMap<String, String>,
+}
+
+impl ProjectAdmission {
+    /// Why the whole project is withheld, when policy withholds it.
+    pub(super) fn refusal(&self) -> Option<&str> {
+        self.project.as_deref()
+    }
+}
+
+/// The two policies a prefetched file passes, in the order serving applies them: the cached member
+/// decides what peryx may fetch at all, then the target index decides what it would serve. Each stage
+/// judges only the files the previous one admitted, so a release-wide rule such as the project size
+/// limit sees the sibling set that would actually reach a client.
+///
+/// Reads no store and writes nothing beyond the policy decisions every evaluation records, so plan
+/// reaches the same verdict sync does without materializing a page.
+pub(super) fn admission(
+    state: &ServingState,
+    target: &Target,
+    project: &str,
+    detail: &ProjectDetail,
+) -> ProjectAdmission {
+    let now = Some((state.clock)());
+    let mut files = BTreeMap::new();
+    let mut admitted = Cow::Borrowed(detail);
+    for (index, action) in stages(state, target) {
+        let verdict = index.policy.admit_detail(action, project, &admitted, now);
+        if let Some(denial) = verdict.project {
+            return ProjectAdmission {
+                project: Some(refusal_reason(&denial)),
+                files,
+            };
+        }
+        if verdict.files.is_empty() {
+            continue;
+        }
+        admitted = Cow::Owned(retaining(&admitted, &verdict.files));
+        files.extend(
+            verdict
+                .files
+                .into_iter()
+                .map(|(filename, denial)| (filename, refusal_reason(&denial))),
+        );
+    }
+    ProjectAdmission { project: None, files }
+}
+
+/// The refusal a run can reach from the project name alone, before it spends an upstream request on a
+/// page the target would not serve.
+pub(super) fn refusal(state: &ServingState, target: &Target, project: &str) -> Option<String> {
+    // The rule that names the project comes first: it explains the refusal in the operator's own
+    // terms, where the source policy can only say that no cached member survived.
+    stages(state, target)
+        .into_iter()
+        .find_map(|(index, action)| index.policy.check_resource(action, project).err())
+        .map(|denial| refusal_reason(&denial))
+        .or_else(|| shadow_refusal(state, target, project))
+}
+
+fn stages<'a>(state: &'a ServingState, target: &Target) -> [(&'a Index, PolicyAction); 2] {
+    [
+        (state.index_at(target.cached_position), PolicyAction::Cached),
+        (state.index_at(target.position), PolicyAction::Serve),
+    ]
+}
+
+/// Why a virtual target's source policy keeps every cached candidate out of the merged page. Mirroring
+/// a leaf the repository has already ranked out of its own view buys storage nothing.
+fn shadow_refusal(state: &ServingState, target: &Target, project: &str) -> Option<String> {
+    let index = state.index_at(target.position);
+    let IndexKind::Virtual { layers, .. } = &index.kind else {
+        return None;
+    };
+    let hosted = peryx_index::leaf_order(&state.indexes, layers)
+        .into_iter()
+        .filter(|&position| matches!(state.index_at(position).kind, IndexKind::Hosted { .. }))
+        .any(|position| hosted_files(state, &state.index_at(position).name, project));
+    let excluded = SourceSelection::new(index, project).cached_exclusion(hosted)?;
+    Some(format!(
+        "virtual policy: cached members excluded by {}",
+        excluded.as_str()
+    ))
+}
+
+fn hosted_files(state: &ServingState, hosted: &str, project: &str) -> bool {
+    crate::cache::local_detail(state, hosted, project).is_ok_and(|detail| detail.is_some())
+}
+
+/// One refusal, phrased for the report: which stage refused, and the rule's own explanation.
+pub(super) fn refusal_reason(denial: &PolicyDenial) -> String {
+    format!("{} policy: {}", denial.action, denial.reason)
+}
+
+fn retaining(detail: &ProjectDetail, refused: &BTreeMap<String, PolicyDenial>) -> ProjectDetail {
+    ProjectDetail {
+        meta: detail.meta.clone(),
+        name: detail.name.clone(),
+        versions: detail.versions.clone(),
+        files: detail
+            .files
+            .iter()
+            .filter(|file| !refused.contains_key(&file.filename))
+            .cloned()
+            .collect(),
+    }
+}
+
 pub(super) fn candidates<'a>(
     detail: &'a ProjectDetail,
     rule: Option<&'a ProjectRule>,
     filters: &'a ArtifactFilters,
+    admission: &'a ProjectAdmission,
 ) -> impl Iterator<Item = FileCandidate> + 'a {
     detail.files.iter().map(move |file| {
+        let refused = admission.files.get(&file.filename).cloned();
         let file = prefetch_file(file);
+        if let Some(reason) = refused {
+            return FileCandidate::Skip(file, Cow::Owned(reason));
+        }
         if file.digest.is_empty() {
-            return FileCandidate::Skip(file, "missing sha256");
+            return FileCandidate::Skip(file, Cow::Borrowed("missing sha256"));
         }
         match decision(&file, rule, filters) {
             Ok(()) => FileCandidate::Include(file),
-            Err(reason) => FileCandidate::Skip(file, reason),
+            Err(reason) => FileCandidate::Skip(file, Cow::Borrowed(reason)),
         }
     })
 }
@@ -390,28 +511,30 @@ pub(super) fn target(configured: &PrefetchConfig, state: &ServingState, selector
         .position(|index| index.name == selector || index.route == selector)
         .context(format!("unknown cached index {selector:?}"))?;
     let index = state.index_at(position);
-    let (cached, client, offline) = target_upstream(state, index)?;
+    let (cached_position, client, offline) = target_upstream(state, position)?;
     Ok(Target {
         index: selector.to_owned(),
         route: index.route.clone(),
         position,
-        cached,
+        cached_position,
+        cached: state.index_at(cached_position).name.clone(),
         client,
         offline,
         prefetch: configured.clone(),
     })
 }
 
-fn target_upstream(state: &ServingState, index: &Index) -> anyhow::Result<(String, UpstreamClient, bool)> {
+fn target_upstream(state: &ServingState, position: usize) -> anyhow::Result<(usize, UpstreamClient, bool)> {
+    let index = state.index_at(position);
     match &index.kind {
-        IndexKind::Cached { client, offline } => Ok((index.name.clone(), client.clone(), *offline)),
+        IndexKind::Cached { client, offline } => Ok((position, client.clone(), *offline)),
         IndexKind::Hosted { .. } => bail!("index {:?} is hosted and has no upstream", index.name),
         IndexKind::Virtual { layers, .. } => {
             let mut cached = None;
             for &pos in layers {
                 let layer = state.index_at(pos);
                 if let IndexKind::Cached { client, offline } = &layer.kind
-                    && cached.replace((layer.name.clone(), client.clone(), *offline)).is_some()
+                    && cached.replace((pos, client.clone(), *offline)).is_some()
                 {
                     bail!("index {:?} has more than one cached member", index.name);
                 }

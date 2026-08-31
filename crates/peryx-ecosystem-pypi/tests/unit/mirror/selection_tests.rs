@@ -8,13 +8,15 @@ use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::{
-    all_projects, candidates, content_type_is_json, include_target, logical_lines, parse_selector, requirement_line,
-    selection, strip_comment, tags_allowed, target, target_upstream, wheel_tags_allowed,
+    ProjectAdmission, admission, all_projects, candidates, content_type_is_json, include_target, logical_lines,
+    parse_selector, refusal, requirement_line, selection, strip_comment, tags_allowed, target, target_upstream,
+    wheel_tags_allowed,
 };
 use crate::mirror::test_support::{self, cached_index, hosted_index};
 use crate::mirror::{
     ArtifactFilters, FileCandidate, PrefetchConfig, PrefetchMode, PrefetchOptions, ProjectRule, SelectionSource,
 };
+use crate::policy::{FallbackMode, PackageType};
 use crate::store::PypiStore as _;
 use crate::{CoreMetadata, File, Meta, ProjectDetail, Provenance, Yanked, parse_version_specifiers};
 
@@ -284,18 +286,18 @@ fn candidates_report_each_filter_decision() {
         specs: vec![Some(parse_version_specifiers("<2").unwrap())],
     };
 
-    let outcomes = candidates(&detail, Some(&rule), &filters)
+    let outcomes = candidates(&detail, Some(&rule), &filters, &admitted())
         .map(candidate_outcome)
         .collect::<Vec<_>>();
 
     assert_eq!(
         outcomes,
         [
-            ("demo-1.0-py3-none-any.whl".to_owned(), "missing sha256"),
-            ("unknown.bin".to_owned(), "unsupported filename"),
-            ("demo-1.0-py3-none-any.whl".to_owned(), "wheel tag filtered"),
-            ("demo-2.0.tar.gz".to_owned(), "size filtered"),
-            ("demo-1.0.tar.gz".to_owned(), "included"),
+            ("demo-1.0-py3-none-any.whl".to_owned(), "missing sha256".to_owned()),
+            ("unknown.bin".to_owned(), "unsupported filename".to_owned()),
+            ("demo-1.0-py3-none-any.whl".to_owned(), "wheel tag filtered".to_owned()),
+            ("demo-2.0.tar.gz".to_owned(), "size filtered".to_owned()),
+            ("demo-1.0.tar.gz".to_owned(), "included".to_owned()),
         ]
     );
 }
@@ -320,15 +322,15 @@ fn artifact_filters_cover_disabled_types_tags_and_versions() {
             file("demo-1.0.tar.gz", Some(&digest), Some(1), CoreMetadata::Absent),
         ],
     };
-    let reasons = candidates(&detail, None, &filters)
+    let reasons = candidates(&detail, None, &filters, &admitted())
         .map(candidate_outcome)
         .collect::<Vec<_>>();
 
     assert_eq!(
         reasons,
         [
-            ("demo-1.0-py3-none-any.whl".to_owned(), "wheels disabled"),
-            ("demo-1.0.tar.gz".to_owned(), "sdists disabled"),
+            ("demo-1.0-py3-none-any.whl".to_owned(), "wheels disabled".to_owned()),
+            ("demo-1.0.tar.gz".to_owned(), "sdists disabled".to_owned()),
         ]
     );
     assert!(tags_allowed("py3.cp312", &BTreeSet::from(["cp312".to_owned()])));
@@ -346,10 +348,17 @@ fn artifact_filters_cover_disabled_types_tags_and_versions() {
     ));
 }
 
-fn candidate_outcome(candidate: FileCandidate) -> (String, &'static str) {
+fn candidate_outcome(candidate: FileCandidate) -> (String, String) {
     match candidate {
-        FileCandidate::Include(file) => (file.filename, "included"),
-        FileCandidate::Skip(file, reason) => (file.filename, reason),
+        FileCandidate::Include(file) => (file.filename, "included".to_owned()),
+        FileCandidate::Skip(file, reason) => (file.filename, reason.into_owned()),
+    }
+}
+
+fn admitted() -> ProjectAdmission {
+    ProjectAdmission {
+        project: None,
+        files: BTreeMap::new(),
     }
 }
 
@@ -514,8 +523,12 @@ fn candidate_reports_version_filters() {
         specs: vec![Some(parse_version_specifiers(">=2").unwrap())],
     };
     assert_eq!(
-        candidate_outcome(candidates(&detail, Some(&rule), &filters()).next().unwrap()),
-        ("demo-1.0.tar.gz".to_owned(), "version filtered")
+        candidate_outcome(
+            candidates(&detail, Some(&rule), &filters(), &admitted())
+                .next()
+                .unwrap()
+        ),
+        ("demo-1.0.tar.gz".to_owned(), "version filtered".to_owned())
     );
     assert_eq!(include_target("--requirement=demo.txt"), Some("demo.txt"));
     assert_eq!(include_target("--requirement="), None);
@@ -590,5 +603,216 @@ fn targets_accept_cached_and_single_cached_virtual_indexes() {
     assert!(content_type_is_json(None));
     assert!(content_type_is_json(Some("application/json")));
     assert!(!content_type_is_json(Some("text/html")));
-    assert!(target_upstream(&fixture.state.serving, fixture.state.serving.index_at(1)).is_err());
+    assert!(target_upstream(&fixture.state.serving, 1).is_err());
+}
+
+/// One wheel and one sdist of the same release, so a per-file rule and a release-wide rule that sums
+/// their sizes can be told apart.
+fn release() -> ProjectDetail {
+    let digest = "a".repeat(64);
+    ProjectDetail {
+        meta: Meta::default(),
+        name: "demo".to_owned(),
+        versions: vec!["1.0".to_owned()],
+        files: vec![
+            file(
+                "demo-1.0-py3-none-any.whl",
+                Some(&digest),
+                Some(4),
+                CoreMetadata::Absent,
+            ),
+            file("demo-1.0.tar.gz", Some(&digest), Some(1), CoreMetadata::Absent),
+        ],
+    }
+}
+
+fn outcomes(detail: &ProjectDetail, admission: &ProjectAdmission) -> Vec<(String, String)> {
+    candidates(detail, None, &filters(), admission)
+        .map(candidate_outcome)
+        .collect()
+}
+
+#[test]
+fn admission_reports_the_file_the_cached_member_refuses() {
+    let fixture = test_support::state(vec![Index {
+        policy: test_support::policy(|_neutral, pypi| pypi.block_package_types = vec![PackageType::Sdist]),
+        ..cached_index("https://example.test/simple/", false)
+    }]);
+    let state = &fixture.state.serving;
+    let target = target(&config(PrefetchMode::Selected), state, "pypi").unwrap();
+    let detail = release();
+
+    let admission = admission(state, &target, "demo", &detail);
+
+    assert_eq!(admission.refusal(), None);
+    assert_eq!(
+        outcomes(&detail, &admission),
+        [
+            ("demo-1.0-py3-none-any.whl".to_owned(), "included".to_owned()),
+            (
+                "demo-1.0.tar.gz".to_owned(),
+                "cached policy: package type sdist is blocked".to_owned()
+            ),
+        ]
+    );
+}
+
+#[test]
+fn admission_reports_the_file_a_virtual_target_would_not_serve() {
+    let fixture = test_support::state(vec![
+        cached_index("https://example.test/simple/", false),
+        test_support::virtual_index(
+            "root",
+            vec![0],
+            test_support::policy(|_neutral, pypi| pypi.block_package_types = vec![PackageType::Sdist]),
+        ),
+    ]);
+    let state = &fixture.state.serving;
+    let target = target(&config(PrefetchMode::Selected), state, "root").unwrap();
+    let detail = release();
+
+    let admission = admission(state, &target, "demo", &detail);
+
+    assert_eq!(
+        outcomes(&detail, &admission),
+        [
+            ("demo-1.0-py3-none-any.whl".to_owned(), "included".to_owned()),
+            (
+                "demo-1.0.tar.gz".to_owned(),
+                "serve policy: package type sdist is blocked".to_owned()
+            ),
+        ]
+    );
+}
+
+#[test]
+fn admission_withdraws_a_project_a_release_wide_rule_rejects() {
+    let fixture = test_support::state(vec![Index {
+        policy: test_support::policy(|_neutral, pypi| pypi.max_project_size_bytes = Some(4)),
+        ..cached_index("https://example.test/simple/", false)
+    }]);
+    let state = &fixture.state.serving;
+    let target = target(&config(PrefetchMode::Selected), state, "pypi").unwrap();
+
+    let admission = admission(state, &target, "demo", &release());
+
+    assert_eq!(
+        admission.refusal(),
+        Some("cached policy: project size 5 exceeds limit 4")
+    );
+}
+
+#[test]
+fn admission_measures_a_release_wide_rule_against_the_admitted_siblings() {
+    let fixture = test_support::state(vec![
+        Index {
+            policy: test_support::policy(|_neutral, pypi| pypi.block_package_types = vec![PackageType::Sdist]),
+            ..cached_index("https://example.test/simple/", false)
+        },
+        test_support::virtual_index(
+            "root",
+            vec![0],
+            test_support::policy(|_neutral, pypi| pypi.max_project_size_bytes = Some(4)),
+        ),
+    ]);
+    let state = &fixture.state.serving;
+    let target = target(&config(PrefetchMode::Selected), state, "root").unwrap();
+    let detail = release();
+
+    let admission = admission(state, &target, "demo", &detail);
+
+    assert_eq!(admission.refusal(), None);
+    assert_eq!(
+        outcomes(&detail, &admission),
+        [
+            ("demo-1.0-py3-none-any.whl".to_owned(), "included".to_owned()),
+            (
+                "demo-1.0.tar.gz".to_owned(),
+                "cached policy: package type sdist is blocked".to_owned()
+            ),
+        ]
+    );
+}
+
+#[test]
+fn refusal_reports_a_protected_project_before_any_upstream_request() {
+    let fixture = test_support::state(vec![Index {
+        policy: test_support::policy(|_neutral, pypi| pypi.protected_names = vec!["demo".to_owned()]),
+        ..cached_index("https://example.test/simple/", false)
+    }]);
+    let state = &fixture.state.serving;
+    let target = target(&config(PrefetchMode::Selected), state, "pypi").unwrap();
+
+    assert_eq!(
+        refusal(state, &target, "demo").as_deref(),
+        Some("cached policy: project \"demo\" is protected from upstream fallback")
+    );
+    assert_eq!(refusal(state, &target, "other"), None);
+}
+
+#[test]
+fn refusal_reports_a_project_the_target_blocks() {
+    let fixture = test_support::state(vec![
+        cached_index("https://example.test/simple/", false),
+        test_support::virtual_index(
+            "root",
+            vec![0],
+            test_support::policy(|_neutral, pypi| pypi.block_projects = vec!["demo".to_owned()]),
+        ),
+    ]);
+    let state = &fixture.state.serving;
+    let target = target(&config(PrefetchMode::Selected), state, "root").unwrap();
+
+    assert_eq!(
+        refusal(state, &target, "demo").as_deref(),
+        Some("serve policy: project \"demo\" is blocked")
+    );
+}
+
+#[rstest]
+#[case::no_fallback(
+    FallbackMode::NoFallback,
+    false,
+    Some("virtual policy: cached members excluded by fallback")
+)]
+#[case::private_first_shadowed(
+    FallbackMode::PrivateFirst,
+    true,
+    Some("virtual policy: cached members excluded by fallback")
+)]
+#[case::private_first_unshadowed(FallbackMode::PrivateFirst, false, None)]
+#[case::fallback(FallbackMode::Fallback, true, None)]
+fn refusal_follows_a_virtual_targets_source_policy(
+    #[case] mode: FallbackMode,
+    #[case] hosted_publishes: bool,
+    #[case] expected: Option<&str>,
+) {
+    let fixture = test_support::state(vec![
+        cached_index("https://example.test/simple/", false),
+        hosted_index("private"),
+        test_support::virtual_index(
+            "root",
+            vec![1, 0],
+            test_support::policy(|_neutral, pypi| pypi.fallback_mode = mode),
+        ),
+    ]);
+    let state = &fixture.state.serving;
+    if hosted_publishes {
+        publish(state, "demo-1.0-py3-none-any.whl");
+    }
+    let target = target(&config(PrefetchMode::Selected), state, "root").unwrap();
+
+    assert_eq!(refusal(state, &target, "demo").as_deref(), expected);
+}
+
+fn publish(state: &peryx_driver::ServingState, filename: &str) {
+    let uploaded = crate::upload::Uploaded {
+        version: "1.0".to_owned(),
+        file: file(filename, Some(&"a".repeat(64)), Some(1), CoreMetadata::Absent),
+        trashed: None,
+    };
+    state
+        .meta
+        .put_upload("private", "demo", filename, &serde_json::to_vec(&uploaded).unwrap())
+        .unwrap();
 }
