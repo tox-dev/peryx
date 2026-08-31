@@ -29,6 +29,9 @@ pub enum ShadowReason {
     /// The repository's fallback policy excluded this member's cached candidate in favor of a hosted
     /// member.
     Fallback,
+    /// The repository's policy protects the resource from upstream fallback, which excludes every
+    /// cached candidate whatever the fallback mode allows.
+    Protected,
 }
 
 impl ShadowReason {
@@ -37,6 +40,7 @@ impl ShadowReason {
         match self {
             Self::Precedence => "precedence",
             Self::Fallback => "fallback",
+            Self::Protected => "protected-name",
         }
     }
 }

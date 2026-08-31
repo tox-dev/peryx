@@ -1,7 +1,8 @@
 //! [`resolve`](super::resolve) merges members in shadow order and drops the candidates a member
 //! shadows; this replays the same order and records the losers instead. It reads only stored records:
 //! a hosted member's uploads and a cached member's fetched page. It never probes an
-//! upstream per row, and it applies the repository's fallback mode exactly as resolution does.
+//! upstream per row, and it excludes cached members on the same two grounds resolution does: the
+//! repository's fallback mode, and the cache-fill denial that overrides every mode.
 
 use std::collections::BTreeSet;
 
@@ -9,8 +10,8 @@ use crate::policy::{FallbackMode, PypiPolicy as _};
 use peryx_driver::state::ServingState;
 use peryx_index::{Index, IndexKind};
 
-use super::CacheError;
 use super::resolve::{local_detail, raw_to_detail};
+use super::{CacheError, cached_denial};
 use crate::shadow::{ShadowCandidate, ShadowReason, ShadowSource};
 use crate::store::PypiStore as _;
 use crate::{ProjectDetail, name};
@@ -45,14 +46,15 @@ fn candidates(state: &ServingState, position: usize, project: &str) -> Result<Ve
     let hosted_found = members
         .iter()
         .any(|(member, detail)| !is_cached(member) && !detail.files.is_empty());
-    let excludes_cached = excludes_cached(index.policy.fallback_mode(), hosted_found);
+    let cached_exclusion = cached_exclusion(index, &project, hosted_found);
     let mut selected = BTreeSet::new();
     let mut candidates = Vec::new();
     for (member, detail) in members {
         let cached = is_cached(member);
+        let excluded = if cached { cached_exclusion } else { None };
         for file in detail.files {
-            let (is_selected, reason) = if cached && excludes_cached {
-                (false, Some(ShadowReason::Fallback))
+            let (is_selected, reason) = if let Some(reason) = excluded {
+                (false, Some(reason))
             } else if selected.insert(file.filename.clone()) {
                 (true, None)
             } else {
@@ -94,13 +96,17 @@ const fn is_cached(index: &Index) -> bool {
     matches!(index.kind, IndexKind::Cached { .. })
 }
 
-/// Whether the repository's fallback mode drops cached members. Mirrors
-/// [`resolve`](super::resolve)'s `consult_cached`/`PrivateFirst` handling: plain fallback keeps them,
-/// private-first drops them only when a hosted member is present, and no-fallback never consults them.
-const fn excludes_cached(mode: FallbackMode, hosted_found: bool) -> bool {
-    match mode {
-        FallbackMode::Fallback => false,
-        FallbackMode::PrivateFirst => hosted_found,
-        FallbackMode::NoFallback => true,
+/// Why the repository drops its cached members for `project`, if it does. Mirrors
+/// [`resolve`](super::resolve)'s member filtering: a cache-fill denial outranks every fallback mode,
+/// then plain fallback keeps cached members, private-first drops them only when a hosted member is
+/// present, and no-fallback never consults them.
+fn cached_exclusion(index: &Index, project: &str, hosted_found: bool) -> Option<ShadowReason> {
+    if cached_denial(index, project).is_some() {
+        return Some(ShadowReason::Protected);
+    }
+    match index.policy.fallback_mode() {
+        FallbackMode::Fallback => None,
+        FallbackMode::PrivateFirst => hosted_found.then_some(ShadowReason::Fallback),
+        FallbackMode::NoFallback => Some(ShadowReason::Fallback),
     }
 }

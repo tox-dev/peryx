@@ -13,7 +13,7 @@ use peryx_policy::{PolicyAction, PolicyDenial};
 use peryx_upstream::UpstreamClient;
 
 use super::fetch::fetch_and_store;
-use super::{CacheError, flight_gate, fresh_cached, project_negative_key, supports_generated_metadata};
+use super::{CacheError, cached_denial, flight_gate, fresh_cached, project_negative_key, supports_generated_metadata};
 use crate::policy::{FallbackMode, RemoteMetadataMode};
 
 /// A resolved project page and the source serial that produced it, when the index has one serial stream.
@@ -150,8 +150,8 @@ async fn virtual_detail(
     context: ResolutionContext<'_>,
 ) -> Result<Option<ProjectDetail>, CacheError> {
     let mode = index.policy.fallback_mode();
-    let cached_denial = index.policy.check_resource(PolicyAction::Cached, project).err();
-    let consult_cached = mode != FallbackMode::NoFallback && cached_denial.is_none();
+    let denial = cached_denial(index, project);
+    let consult_cached = mode != FallbackMode::NoFallback && denial.is_none();
     let ordered: Vec<_> = peryx_index::shadow_order(&state.indexes, layers)
         .into_iter()
         .filter(|&pos| !peryx_index::reaches_cached(&state.indexes, pos) || consult_cached)
@@ -198,7 +198,7 @@ async fn virtual_detail(
         details.retain(|(pos, _)| !peryx_index::reaches_cached(&state.indexes, *pos));
     }
     if details.is_empty() {
-        if let Some(denial) = cached_denial {
+        if let Some(denial) = denial {
             return Err(denial.into());
         }
         if mode == FallbackMode::NoFallback && context.deny_no_fallback_miss {

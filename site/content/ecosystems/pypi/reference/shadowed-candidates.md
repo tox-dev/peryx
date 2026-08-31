@@ -30,6 +30,11 @@ shadow an upstream file with the same name. `fallback` means the configured fall
 - `no-fallback` excludes cached members.
 - `fallback` merges distinct filenames and uses precedence for collisions.
 
+`protected-name` means the repository's `protected_names` rules cover the project, which denies upstream fallback for it
+in every mode. This rule outranks the fallback mode, so a protected project reports `protected-name` rather than
+`fallback` even under `private-first`. Resolution excludes the same candidates, so a protected project with no hosted
+member answers a policy denial and no candidate is selected.
+
 The optional `decision` object describes whether policy permits the candidate:
 
 | Field                   | Meaning                                                       |

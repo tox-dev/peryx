@@ -79,7 +79,8 @@ pub(super) fn shadow_candidates() -> OperationBuilder {
             .description(Some(
                 "Explains candidate selection for one subject in a virtual repository. Each row identifies \
                  its member, source, digest, and rejection reason: `precedence` when another member supplied \
-                 the artifact first, or `fallback` when policy excluded a cached member. A recorded policy \
+                 the artifact first, `fallback` when the fallback mode excluded a cached member, or \
+                 `protected-name` when the subject is protected from upstream fallback. A recorded policy \
                  decision includes its state, matched rule, sanitized reason, and retry time. Repository \
                  readers and authorized ecosystem credentials can inspect the repository. Server operators \
                  without repository access cannot. The query reads stored records without changing selection.",

@@ -8,7 +8,7 @@ use peryx_driver::serving::RuntimeInstallContext;
 use peryx_driver::state::ServingState;
 use peryx_identity::{ArtifactDigest, DigestDecision};
 use peryx_index::{Index, IndexKind};
-use peryx_policy::PolicyDenial;
+use peryx_policy::{PolicyAction, PolicyDenial};
 use peryx_storage::blob::Digest;
 use peryx_upstream::{ArtifactClient, UpstreamClient};
 
@@ -55,6 +55,13 @@ pub(crate) fn invalidate_project(state: &ServingState, index: &str, project: &st
     for position in dependents {
         state.invalidate_representations(&state.indexes[*position].route, project);
     }
+}
+
+/// The repository's cache-fill denial for `project`, when policy has one. A protected name denies
+/// [`PolicyAction::Cached`] whatever the fallback mode, so [`resolve`] drops the cache-reaching members
+/// it covers and [`shadow`] replays this same decision instead of restating the rule.
+pub(crate) fn cached_denial(index: &Index, project: &str) -> Option<PolicyDenial> {
+    index.policy.check_resource(PolicyAction::Cached, project).err()
 }
 
 fn invalidate_project_route(state: &ServingState, route: &str, project: &str) {

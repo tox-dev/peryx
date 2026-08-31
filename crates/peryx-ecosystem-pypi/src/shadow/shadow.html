@@ -164,7 +164,11 @@
     }
 
     function reasonLabel(reason) {
-      return { precedence: 'Higher-precedence member', fallback: 'Fallback source' }[reason] ?? reason ?? '-';
+      return {
+        precedence: 'Higher-precedence member',
+        fallback: 'Fallback source',
+        'protected-name': 'Protected name',
+      }[reason] ?? reason ?? '-';
     }
 
     function timestamp(value) {

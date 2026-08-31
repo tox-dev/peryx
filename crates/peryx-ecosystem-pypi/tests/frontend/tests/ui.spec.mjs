@@ -526,6 +526,10 @@ test("shadow inspection labels outcome, source, and decision without colour alon
             selected: true,
             reason: null,
           }),
+          shadowCandidate({
+            filename: "example-3.0-py3-none-any.whl",
+            reason: "protected-name",
+          }),
         ],
         next_cursor: null,
       }),
@@ -558,6 +562,7 @@ test("shadow inspection labels outcome, source, and decision without colour alon
   await expect(table).toContainText("hosted upload");
   await expect(table).toContainText("cached upstream");
   await expect(table).toContainText("Higher-precedence member");
+  await expect(table).toContainText("Protected name");
   await expect(table).toContainText("1970-01-01T00:01:00Z");
   const undecided = table.locator("tbody tr", {
     hasText: "example-2.0-py3-none-any.whl",
