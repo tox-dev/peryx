@@ -17,6 +17,15 @@ pub enum CompareWrite {
     CapacityExceeded,
 }
 
+/// A reclamation write carries the reference revision its referenced verdict was proved against, so a
+/// digest that gained a reference after the proof cannot be written as unreferenced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TombstoneWrite {
+    Written,
+    Conflict,
+    ReferencesMoved,
+}
+
 #[expect(clippy::missing_errors_doc, reason = "implementations define backend errors")]
 pub trait BlobPlacementStore {
     type Error;
@@ -68,11 +77,13 @@ pub trait ReclamationStore {
     type Error;
 
     fn reclamation_snapshot(&self, digest: &ArtifactDigest) -> Result<ReclamationSnapshot, Self::Error>;
+    /// Writes only while the store's reference revision still equals `revision`.
     fn compare_and_put_reclamation_tombstone(
         &self,
         expected: &ReclamationSnapshot,
         replacement: &ReclamationTombstone,
-    ) -> Result<bool, Self::Error>;
+        revision: u64,
+    ) -> Result<TombstoneWrite, Self::Error>;
     fn compare_and_remove_reclamation_tombstone(&self, expected: &ReclamationTombstone) -> Result<bool, Self::Error>;
     fn reclamation_tombstone(&self, digest: &ArtifactDigest) -> Result<Option<ReclamationTombstone>, Self::Error>;
     fn reclamation_tombstones(&self) -> Result<Vec<ReclamationTombstone>, Self::Error>;

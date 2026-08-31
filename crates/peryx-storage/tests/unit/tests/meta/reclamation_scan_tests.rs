@@ -2,6 +2,7 @@ use std::num::NonZeroUsize;
 
 use peryx_ha::{
     ReclamationSnapshot, ReclamationState, ReclamationStore as _, ReclamationTombstone, ReclamationTombstonePage,
+    TombstoneWrite,
 };
 use peryx_identity::ArtifactDigest;
 
@@ -31,7 +32,13 @@ fn write_tombstone(store: &MetaStore, suffix: u8) -> ReclamationTombstone {
         tombstone: None,
         placements: Vec::new(),
     };
-    assert!(store.compare_and_put_reclamation_tombstone(&expected, &record).unwrap());
+    let references = store.reference_revision().unwrap();
+    assert_eq!(
+        store
+            .compare_and_put_reclamation_tombstone(&expected, &record, references)
+            .unwrap(),
+        TombstoneWrite::Written
+    );
     record
 }
 

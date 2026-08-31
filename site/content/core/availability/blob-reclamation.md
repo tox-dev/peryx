@@ -22,8 +22,16 @@ A selector builds the retained set from these sources:
 Each content owner implements the shared reference-inventory trait. The availability layer receives only a set of
 content digests and does not import owner metadata types.
 
-The selector reads placements in the same transaction as the reference inventory. A digest outside the retained set is a
-candidate. A returned reference abandons an existing candidate.
+An inventory spans several owner reads that cannot share one metadata transaction, so the selector reads an internal
+reference revision on both sides of the scan and keeps the result only when the revision did not move. Every driver-row
+write advances that revision, including one that appends no replication journal entry, so a reference committed part way
+through the scan retires the inventory rather than leaving a digest that an earlier read already reported as
+unreferenced.
+
+Selection and readiness each prove their own inventory, and each reclamation write carries the revision its verdict came
+from. A reference committed after the proof moves the revision, the compare-and-put refuses the write, and the tombstone
+keeps the state it had. A digest outside the retained set is a candidate. A returned reference abandons an existing
+candidate.
 
 ## Frontier gate
 

@@ -126,7 +126,7 @@ fn test_is_withdrawn_is_false_after_a_revocation_is_lifted() {
 fn test_is_withdrawn_is_true_under_an_in_flight_reclamation() {
     let (_dir, meta) = meta();
     let (_blob, artifact) = digests(CONTENT);
-    crate::select_reclamation_candidate(&meta, &artifact, false, 0, 5, 10).unwrap();
+    crate::select_reclamation_candidate(&meta, &artifact, false, 0, 0, 5, 10).unwrap();
 
     assert!(is_withdrawn(&meta, &artifact).unwrap());
 }
@@ -135,7 +135,7 @@ fn test_is_withdrawn_is_true_under_an_in_flight_reclamation() {
 fn test_is_withdrawn_is_false_for_a_skipped_reclamation() {
     let (_dir, meta) = meta();
     let (_blob, artifact) = digests(CONTENT);
-    crate::select_reclamation_candidate(&meta, &artifact, true, 0, 5, 10).unwrap();
+    crate::select_reclamation_candidate(&meta, &artifact, true, 0, 0, 5, 10).unwrap();
 
     assert!(!is_withdrawn(&meta, &artifact).unwrap());
 }

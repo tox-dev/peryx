@@ -1,4 +1,4 @@
-use crate::meta::{DriverBatch, MetaError};
+use crate::meta::{DriverBatch, MetaError, MetaStore};
 
 fn decode_error() -> MetaError {
     MetaError::from(serde_json::from_str::<serde_json::Value>("{").unwrap_err())
@@ -338,4 +338,88 @@ fn test_driver_prefix_operations_stop_at_limits_and_prefix_boundaries() {
         vec!["scope/c"]
     );
     assert_eq!(store.driver_prefix_keys("scope/").unwrap(), vec!["scope/b"]);
+}
+
+#[rstest::rstest]
+#[case::put_value(&|store: &MetaStore| store.put_driver_value("k", b"v").unwrap())]
+#[case::update_value(&|store: &MetaStore| store.update_driver_value("k", |_| Ok((Some(b"v".to_vec()), ()))).unwrap())]
+#[case::batch(&|store: &MetaStore| {
+    let mut batch = DriverBatch::default();
+    batch.put("k".to_owned(), b"v".to_vec());
+    store.commit_driver_batch(&batch, true).unwrap();
+})]
+#[case::journaled_txn(&|store: &MetaStore| {
+    store
+        .commit_driver_txn(|txn| {
+            txn.put("k", b"v")?;
+            Ok::<_, MetaError>(((), vec![b"{\"action\":\"add\"}".to_vec()]))
+        })
+        .unwrap();
+})]
+#[case::local_txn(&|store: &MetaStore| {
+    store
+        .commit_driver_cache_txn(|txn| txn.put_local("k", b"v"))
+        .unwrap();
+})]
+fn test_a_driver_row_write_advances_the_reference_revision(#[case] write: &dyn Fn(&MetaStore)) {
+    let (_dir, store) = super::store();
+
+    write(&store);
+
+    assert_eq!(store.reference_revision().unwrap(), 1);
+}
+
+#[rstest::rstest]
+#[case::delete_value(&|store: &MetaStore| assert!(store.delete_driver_value("k").unwrap()))]
+#[case::remove_values_if(&|store: &MetaStore| assert_eq!(store.remove_driver_values_if("k", 1, |_| Ok(true)).unwrap(), vec!["k".to_owned()]))]
+#[case::batch(&|store: &MetaStore| {
+    let mut batch = DriverBatch::default();
+    batch.delete("k".to_owned());
+    store.commit_driver_batch(&batch, true).unwrap();
+})]
+#[case::journaled_txn(&|store: &MetaStore| {
+    store
+        .commit_driver_txn(|txn| {
+            assert!(txn.remove("k")?);
+            Ok::<_, MetaError>(((), vec![b"{\"action\":\"remove\"}".to_vec()]))
+        })
+        .unwrap();
+})]
+#[case::local_txn(&|store: &MetaStore| {
+    store
+        .commit_driver_cache_txn(|txn| txn.remove_local("k").map(|removed| assert!(removed)))
+        .unwrap();
+})]
+fn test_a_driver_row_removal_advances_the_reference_revision(#[case] remove: &dyn Fn(&MetaStore)) {
+    let (_dir, store) = super::store();
+    store.put_driver_value("k", b"v").unwrap();
+
+    remove(&store);
+
+    assert_eq!(store.reference_revision().unwrap(), 2);
+}
+
+#[rstest::rstest]
+#[case::delete_value(&|store: &MetaStore| assert!(!store.delete_driver_value("absent").unwrap()))]
+#[case::remove_values_if(&|store: &MetaStore| assert!(store.remove_driver_values_if("absent", 1, |_| Ok(true)).unwrap().is_empty()))]
+#[case::batch(&|store: &MetaStore| store.commit_driver_batch(&DriverBatch::default(), true).unwrap())]
+#[case::journaled_txn(&|store: &MetaStore| {
+    store
+        .commit_driver_txn(|txn| {
+            assert!(!txn.remove("absent")?);
+            Ok::<_, MetaError>(((), Vec::new()))
+        })
+        .unwrap();
+})]
+#[case::local_txn(&|store: &MetaStore| {
+    store
+        .commit_driver_cache_txn(|txn| txn.remove_local("absent").map(|removed| assert!(!removed)))
+        .unwrap();
+})]
+fn test_a_write_that_changes_no_driver_row_leaves_the_reference_revision(#[case] write: &dyn Fn(&MetaStore)) {
+    let (_dir, store) = super::store();
+
+    write(&store);
+
+    assert_eq!(store.reference_revision().unwrap(), 0);
 }

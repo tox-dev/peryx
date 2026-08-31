@@ -354,7 +354,7 @@ async fn test_a_stale_worker_is_fenced_out_of_selection() {
     let (_meta_dir, meta) = meta();
     let (_app_dir, state) = app(meta);
     let (_blob, artifact) = store_blob(&state, b"contested");
-    select_reclamation_candidate(&state.meta, &artifact, false, 0, 12, 10).unwrap();
+    select_reclamation_candidate(&state.meta, &artifact, false, 0, 0, 12, 10).unwrap();
 
     let error = selector(
         &[],
@@ -472,6 +472,9 @@ fn test_reclaim_pass_surfaces_a_tombstone_read_failure() {
     let write = database.begin_write().unwrap();
     write.open_table(TableDefinition::<&str, u64>::new("serial")).unwrap();
     write
+        .open_table(TableDefinition::<&str, u64>::new("reference_revision"))
+        .unwrap();
+    write
         .open_table(TableDefinition::<&str, u64>::new("reclamation_tombstone"))
         .unwrap();
     write.commit().unwrap();
@@ -503,7 +506,7 @@ impl ReclamationFrontiers for MissingFrontiers {
 fn test_reclaim_pass_keeps_pending_state_without_frontier_evidence() {
     let (_meta_dir, meta) = meta();
     let artifact = ArtifactDigest::from_sha256("d".repeat(64)).unwrap();
-    select_reclamation_candidate(&meta, &artifact, false, 0, 9, 10).unwrap();
+    select_reclamation_candidate(&meta, &artifact, false, 0, 0, 9, 10).unwrap();
     let (_app_dir, state) = app(meta);
     let reclaimer = BlobReclamationSelector::new(Arc::new(StubRefs(BTreeSet::new())), Arc::new(MissingFrontiers));
 
@@ -572,7 +575,7 @@ fn test_replica_frontiers_use_the_lowest_reported_serial() {
 fn test_reclaim_pass_stops_before_finalizing_when_cancelled() {
     let (_meta_dir, meta) = meta();
     let artifact = ArtifactDigest::from_sha256("a".repeat(64)).unwrap();
-    select_reclamation_candidate(&meta, &artifact, false, 0, 9, 10).unwrap();
+    select_reclamation_candidate(&meta, &artifact, false, 0, 0, 9, 10).unwrap();
     let (_app_dir, state) = app(meta);
 
     let report = selector(
@@ -596,11 +599,12 @@ fn test_reclaim_pass_stops_before_finalizing_when_cancelled() {
 fn test_reclaim_pass_ignores_a_finalized_tombstone() {
     let (_meta_dir, meta) = meta();
     let artifact = ArtifactDigest::from_sha256("b".repeat(64)).unwrap();
-    select_reclamation_candidate(&meta, &artifact, false, 0, 9, 10).unwrap();
+    select_reclamation_candidate(&meta, &artifact, false, 0, 0, 9, 10).unwrap();
     mark_reclamation_ready(
         &meta,
         &artifact,
         false,
+        0,
         ObservedFrontier {
             replica: Some(0),
             backup: Some(0),
@@ -629,7 +633,7 @@ fn test_reclaim_pass_ignores_a_finalized_tombstone() {
 fn test_reclaim_pass_surfaces_a_stale_finalization_fence() {
     let (_meta_dir, meta) = meta();
     let artifact = ArtifactDigest::from_sha256("c".repeat(64)).unwrap();
-    select_reclamation_candidate(&meta, &artifact, false, 0, 12, 10).unwrap();
+    select_reclamation_candidate(&meta, &artifact, false, 0, 0, 12, 10).unwrap();
     let (_app_dir, state) = app(meta);
 
     let error = selector(
@@ -650,7 +654,7 @@ fn test_reclamation_policy_forgets_only_the_current_fence() {
     let (_meta_dir, meta) = meta();
     let artifact = ArtifactDigest::from_sha256("e".repeat(64)).unwrap();
     assert!(!forget_reclamation_tombstone(&meta, &artifact, 1).unwrap());
-    select_reclamation_candidate(&meta, &artifact, false, 0, 5, 10).unwrap();
+    select_reclamation_candidate(&meta, &artifact, false, 0, 0, 5, 10).unwrap();
     assert!(matches!(
         forget_reclamation_tombstone(&meta, &artifact, 3).unwrap_err(),
         ReclamationError::Decision(peryx_ha::ReclamationDecisionError::StaleFence { current: 5, applied: 3 })
@@ -677,7 +681,7 @@ fn concurrent_reclamation_updates_converge() {
                     let meta = meta.clone();
                     scope.spawn(move || {
                         barrier.wait();
-                        select_reclamation_candidate(&meta, &artifact, false, 0, 9, 10)
+                        select_reclamation_candidate(&meta, &artifact, false, 0, 0, 9, 10)
                     })
                 })
                 .collect::<Vec<_>>();
@@ -694,7 +698,7 @@ fn concurrent_reclamation_updates_converge() {
                     let meta = meta.clone();
                     scope.spawn(move || {
                         barrier.wait();
-                        mark_reclamation_ready(&meta, &artifact, false, observed, 9, 11)
+                        mark_reclamation_ready(&meta, &artifact, false, 0, observed, 9, 11)
                     })
                 })
                 .collect::<Vec<_>>();
@@ -735,13 +739,13 @@ fn test_reclamation_policy_reports_missing_and_terminal_readiness() {
         backup: Some(0),
     };
     assert!(matches!(
-        mark_reclamation_ready(&meta, &artifact, false, observed, 1, 10).unwrap_err(),
+        mark_reclamation_ready(&meta, &artifact, false, 0, observed, 1, 10).unwrap_err(),
         ReclamationError::Decision(peryx_ha::ReclamationDecisionError::MissingCandidate)
     ));
-    select_reclamation_candidate(&meta, &artifact, false, 0, 1, 10).unwrap();
-    let first = mark_reclamation_ready(&meta, &artifact, false, observed, 1, 11).unwrap();
+    select_reclamation_candidate(&meta, &artifact, false, 0, 0, 1, 10).unwrap();
+    let first = mark_reclamation_ready(&meta, &artifact, false, 0, observed, 1, 11).unwrap();
     assert_eq!(
-        mark_reclamation_ready(&meta, &artifact, false, observed, 1, 12).unwrap(),
+        mark_reclamation_ready(&meta, &artifact, false, 0, observed, 1, 12).unwrap(),
         first
     );
 }
@@ -758,11 +762,11 @@ fn test_reclamation_retention_counts_and_prunes_only_skipped_records() {
         backup: Some(0),
     };
     for digest in [&pending, &ready, &skipped_one, &skipped_two] {
-        select_reclamation_candidate(&meta, digest, false, 0, 1, 10).unwrap();
+        select_reclamation_candidate(&meta, digest, false, 0, 0, 1, 10).unwrap();
     }
-    mark_reclamation_ready(&meta, &ready, false, observed, 1, 11).unwrap();
-    mark_reclamation_ready(&meta, &skipped_one, true, observed, 1, 11).unwrap();
-    mark_reclamation_ready(&meta, &skipped_two, true, observed, 1, 11).unwrap();
+    mark_reclamation_ready(&meta, &ready, false, 0, observed, 1, 11).unwrap();
+    mark_reclamation_ready(&meta, &skipped_one, true, 0, observed, 1, 11).unwrap();
+    mark_reclamation_ready(&meta, &skipped_two, true, 0, observed, 1, 11).unwrap();
 
     assert_eq!(
         reclamation_progress(&meta).unwrap(),
@@ -918,7 +922,7 @@ fn test_finalization_advances_one_page_per_pass() {
     let (_meta_dir, meta) = meta();
     let artifacts = ["a", "b", "c"].map(|seed| ArtifactDigest::from_sha256(seed.repeat(64)).unwrap());
     for artifact in &artifacts {
-        select_reclamation_candidate(&meta, artifact, false, 0, 9, 10).unwrap();
+        select_reclamation_candidate(&meta, artifact, false, 0, 0, 9, 10).unwrap();
     }
     let (_app_dir, state) = app(meta);
 
@@ -982,4 +986,186 @@ fn test_reclaim_pass_surfaces_a_cursor_write_failure() {
         .unwrap_err();
 
     assert_eq!(error.code(), "reclamation_cursor_write");
+}
+
+/// Answers each scan in turn from `answers`, and when `tear_at` names a scan it commits a driver row
+/// part way through it, moving the reference revision the way a publish landing between two component
+/// scans moves it.
+struct ScriptedRefs {
+    meta: MetaStore,
+    answers: Vec<BTreeSet<String>>,
+    tear_at: Option<usize>,
+    scans: std::sync::atomic::AtomicUsize,
+}
+
+impl ScriptedRefs {
+    fn new(meta: &MetaStore, answers: Vec<BTreeSet<String>>, tear_at: Option<usize>) -> Arc<Self> {
+        Arc::new(Self {
+            meta: meta.clone(),
+            answers,
+            tear_at,
+            scans: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+}
+
+impl ReferenceInventory for ScriptedRefs {
+    fn referenced(&self) -> Result<BTreeSet<String>, String> {
+        let scan = self.scans.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if self.tear_at == Some(scan) {
+            publish_reference(&self.meta);
+        }
+        Ok(self.answers[scan].clone())
+    }
+}
+
+fn publish_reference(meta: &MetaStore) {
+    meta.put_driver_value("published", b"reference").unwrap();
+}
+
+fn scripted(state: &Runtime, answers: Vec<BTreeSet<String>>, tear_at: Option<usize>) -> BlobReclamationSelector {
+    BlobReclamationSelector::new(
+        ScriptedRefs::new(&state.meta, answers, tear_at),
+        Arc::new(StubFrontiers(covered())),
+    )
+}
+
+fn only(digest: &ArtifactDigest) -> BTreeSet<String> {
+    BTreeSet::from([digest.sha256().to_owned()])
+}
+
+#[test]
+fn test_a_reference_committed_after_selection_keeps_the_digest_from_becoming_ready() {
+    let (_meta_dir, meta) = meta();
+    let (_app_dir, state) = app(meta);
+    let (_blob, artifact) = store_blob(&state, b"published while the pass ran");
+
+    let report = scripted(&state, vec![BTreeSet::new(), only(&artifact)], None)
+        .reclaim_pass(&state.meta, &state.blobs, &state.clock, &|| false, 9, batch())
+        .unwrap();
+
+    assert_eq!(report.processed, 1);
+    assert_eq!(
+        tombstone_status(&state.meta, &artifact),
+        Some(ReclamationStatus::Skipped),
+        "the readiness verdict comes from a proof taken after selection, not from the opening scan"
+    );
+}
+
+#[test]
+fn test_an_inventory_torn_by_a_concurrent_commit_selects_nothing() {
+    let (_meta_dir, meta) = meta();
+    let (_app_dir, state) = app(meta);
+    let (_blob, artifact) = store_blob(&state, b"orphan");
+
+    let report = scripted(&state, vec![BTreeSet::new()], Some(0))
+        .reclaim_pass(&state.meta, &state.blobs, &state.clock, &|| false, 9, batch())
+        .unwrap();
+
+    assert_eq!(report, AvailabilityTaskReport::default());
+    assert_eq!(
+        tombstone_status(&state.meta, &artifact),
+        None,
+        "a reference committed between two component scans retires the inventory"
+    );
+}
+
+#[test]
+fn test_an_inventory_torn_after_selection_finalizes_nothing() {
+    let (_meta_dir, meta) = meta();
+    let (_app_dir, state) = app(meta);
+    let (_blob, artifact) = store_blob(&state, b"orphan");
+
+    let report = scripted(&state, vec![BTreeSet::new(), BTreeSet::new()], Some(1))
+        .reclaim_pass(&state.meta, &state.blobs, &state.clock, &|| false, 9, batch())
+        .unwrap();
+
+    assert_eq!(report.changed, 1, "selection ran against its own proof");
+    assert_eq!(
+        tombstone_status(&state.meta, &artifact),
+        Some(ReclamationStatus::Pending),
+        "the readiness proof is retired before any tombstone is marked ready"
+    );
+}
+
+/// Commits a reference once the pass has already proved its inventory, using the cancellation probe as
+/// the point between the proof and the compare-and-put write.
+fn publish_between(meta: &MetaStore) -> impl Fn() -> bool + Send + Sync {
+    let meta = meta.clone();
+    let published = std::sync::atomic::AtomicBool::new(false);
+    move || {
+        if !published.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            publish_reference(&meta);
+        }
+        false
+    }
+}
+
+#[test]
+fn test_a_reference_committed_after_the_selection_proof_writes_no_tombstone() {
+    let (_meta_dir, meta) = meta();
+    let (_app_dir, state) = app(meta);
+    let (_blob, artifact) = store_blob(&state, b"orphan");
+
+    let report = selector(&[], covered())
+        .reclaim_pass(
+            &state.meta,
+            &state.blobs,
+            &state.clock,
+            &publish_between(&state.meta),
+            9,
+            batch(),
+        )
+        .unwrap();
+
+    assert_eq!(report.processed, 1);
+    assert_eq!(report.changed, 0);
+    assert_eq!(tombstone_status(&state.meta, &artifact), None);
+}
+
+#[test]
+fn test_a_reference_committed_after_the_readiness_proof_leaves_the_tombstone_pending() {
+    let (_meta_dir, meta) = meta();
+    let artifact = ArtifactDigest::from_sha256("7".repeat(64)).unwrap();
+    select_reclamation_candidate(&meta, &artifact, false, 0, 0, 9, 10).unwrap();
+    let (_app_dir, state) = app(meta);
+
+    let report = selector(&[], covered())
+        .reclaim_pass(
+            &state.meta,
+            &state.blobs,
+            &state.clock,
+            &publish_between(&state.meta),
+            9,
+            batch(),
+        )
+        .unwrap();
+
+    assert_eq!(report, AvailabilityTaskReport::default());
+    assert_eq!(
+        tombstone_status(&state.meta, &artifact),
+        Some(ReclamationStatus::Pending),
+        "the write carries the revision its verdict was proved against"
+    );
+}
+
+#[test]
+fn test_reclaim_pass_surfaces_a_reference_revision_read_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peryx.redb");
+    crate::support::distributed_meta(&path);
+    let database = Database::open(&path).unwrap();
+    let write = database.begin_write().unwrap();
+    write
+        .delete_table(TableDefinition::<&str, u64>::new("reference_revision"))
+        .unwrap();
+    write.commit().unwrap();
+    drop(database);
+    let (_app_dir, state) = app(MetaStore::open_existing(&path).unwrap());
+
+    let error = selector(&[], covered())
+        .reclaim_pass(&state.meta, &state.blobs, &state.clock, &|| false, 9, batch())
+        .unwrap_err();
+
+    assert_eq!(error.code(), "reclamation_reference_revision");
 }

@@ -2,6 +2,7 @@ use peryx_ha::{
     ArtifactPlacement, ArtifactSource, BackendId, BackendLocation, BlobPlacementKey, BlobPlacementRecord,
     BlobPlacementState, ByteAvailability, CompareWrite, DataCenterId, ReclaimGuard, ReclaimGuardArm,
     ReclaimGuardStore as _, ReclamationSnapshot, ReclamationState, ReclamationStore as _, ReclamationTombstone,
+    TombstoneWrite,
 };
 use peryx_identity::ArtifactDigest;
 use redb::{ReadableDatabase as _, TableHandle as _};
@@ -138,7 +139,7 @@ fn test_reclamation_first_write_creates_only_evidence_tables() {
     let store = MetaStore::open(&path).unwrap();
     let digest = ArtifactDigest::from_sha256(Digest::of(b"blob").as_str()).unwrap();
     let expected = store.reclamation_snapshot(&digest).unwrap();
-    assert!(
+    assert_eq!(
         store
             .compare_and_put_reclamation_tombstone(
                 &expected,
@@ -151,8 +152,10 @@ fn test_reclamation_first_write_creates_only_evidence_tables() {
                     selected_at_unix: 0,
                     updated_at_unix: 0,
                 },
+                0,
             )
-            .unwrap()
+            .unwrap(),
+        TombstoneWrite::Written
     );
     drop(store);
 

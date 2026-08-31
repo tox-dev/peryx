@@ -5,11 +5,25 @@ use super::error::{MetaError, MetaScanError};
 use super::policy_decision::advance_repository_generations;
 use super::{
     BLOB_RECLAIM_GUARD, DRIVER_KV, DriverBatch, DriverBlobReference, DriverMutation, JOURNAL, JOURNAL_BLOBS,
-    JOURNAL_MUTATIONS, JournalEntry, MetaStore, POLICY_INPUT_GENERATION, PolicyInputGeneration, SERIAL, SERIAL_KEY,
-    WebhookEventIntent,
+    JOURNAL_MUTATIONS, JournalEntry, MetaStore, POLICY_INPUT_GENERATION, PolicyInputGeneration, REFERENCE_REVISION,
+    REFERENCE_REVISION_KEY, SERIAL, SERIAL_KEY, WebhookEventIntent,
 };
 
 impl MetaStore {
+    /// Returns `0` before the first driver-row write.
+    ///
+    /// A reference inventory is assembled from several driver reads that cannot share one redb
+    /// transaction, so reading this revision on both sides of the assembly is what proves the result
+    /// describes a single state rather than a torn one.
+    ///
+    /// # Errors
+    /// Returns a store error if the read fails.
+    pub fn reference_revision(&self) -> Result<u64, MetaError> {
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(REFERENCE_REVISION)?;
+        Ok(table.get(REFERENCE_REVISION_KEY)?.map_or(0, |value| value.value()))
+    }
+
     /// Treats keys and values as opaque bytes.
     ///
     /// # Errors
@@ -20,6 +34,7 @@ impl MetaStore {
             let mut table = txn.open_table(DRIVER_KV)?;
             table.insert(key, value)?;
         }
+        advance_reference_revision(&txn)?;
         txn.commit()?;
         Ok(())
     }
@@ -40,6 +55,9 @@ impl MetaStore {
             let mut table = txn.open_table(DRIVER_KV)?;
             table.remove(key)?.is_some()
         };
+        if removed {
+            advance_reference_revision(&txn)?;
+        }
         txn.commit()?;
         Ok(removed)
     }
@@ -70,6 +88,7 @@ impl MetaStore {
             }
             result = updated;
         }
+        advance_reference_revision(&txn)?;
         txn.commit()?;
         Ok(result)
     }
@@ -108,6 +127,9 @@ impl MetaStore {
                 table.remove(key.as_str())?;
             }
             removed = keys;
+        }
+        if !removed.is_empty() {
+            advance_reference_revision(&txn)?;
         }
         txn.commit()?;
         Ok(removed)
@@ -233,6 +255,9 @@ impl MetaStore {
                 table.remove(key.as_str())?;
             }
         }
+        if !batch.puts.is_empty() || !batch.deletes.is_empty() {
+            advance_reference_revision(&txn)?;
+        }
         txn.commit()?;
         Ok(())
     }
@@ -353,7 +378,7 @@ impl MetaStore {
         let mut txn = self.db.begin_write().map_err(MetaError::from)?;
         set_durability(&mut txn, durable);
         check_replica_serial(&txn, expected_serial)?;
-        let (value, journal, webhooks, placements, policy_inputs) = {
+        let (value, journal, webhooks, placements, policy_inputs, wrote_rows) = {
             let mut driver = DriverTxn {
                 txn: &txn,
                 table: txn.open_table(DRIVER_KV).map_err(MetaError::from)?,
@@ -362,14 +387,19 @@ impl MetaStore {
                 webhooks: Vec::new(),
                 placements: Vec::new(),
                 policy_inputs: std::collections::BTreeSet::new(),
+                wrote_rows: false,
             };
             let (value, journal) = body(&mut driver)?;
             let webhooks = std::mem::take(&mut driver.webhooks);
             let placements = std::mem::take(&mut driver.placements);
             let policy_inputs = std::mem::take(&mut driver.policy_inputs);
+            let wrote_rows = driver.wrote_rows;
             let journal = finish_journal(journal, driver).map_err(E::from)?;
-            (value, journal, webhooks, placements, policy_inputs)
+            (value, journal, webhooks, placements, policy_inputs, wrote_rows)
         };
+        if wrote_rows {
+            advance_reference_revision(&txn).map_err(E::from)?;
+        }
         Self::enqueue_webhook_events(&txn, &webhooks).map_err(E::from)?;
         Self::write_artifact_placements(&txn, &placements).map_err(E::from)?;
         check_blob_reclaim_guard(&txn, expected_serial, &journal).map_err(E::from)?;
@@ -505,6 +535,13 @@ pub(super) fn commit_journal<E: From<MetaError>>(
     Ok(Some(super::JournalCommit::new(next)))
 }
 
+fn advance_reference_revision(txn: &redb::WriteTransaction) -> Result<(), MetaError> {
+    let mut revisions = txn.open_table(REFERENCE_REVISION)?;
+    let next = revisions.get(REFERENCE_REVISION_KEY)?.map_or(0, |value| value.value()) + 1;
+    revisions.insert(REFERENCE_REVISION_KEY, next)?;
+    Ok(())
+}
+
 /// Gives a [`MetaStore::commit_driver_txn`] body atomic access to opaque driver rows.
 pub struct DriverTxn<'txn> {
     txn: &'txn redb::WriteTransaction,
@@ -514,6 +551,7 @@ pub struct DriverTxn<'txn> {
     webhooks: Vec<WebhookEventIntent>,
     placements: Vec<(String, ArtifactPlacement)>,
     policy_inputs: std::collections::BTreeSet<String>,
+    wrote_rows: bool,
 }
 
 /// Read-only access to opaque driver rows from one metadata snapshot.
@@ -636,6 +674,7 @@ impl DriverTxn<'_> {
     /// Returns a store error if the write fails.
     pub fn put_local(&mut self, key: &str, value: &[u8]) -> Result<(), MetaError> {
         self.table.insert(key, value)?;
+        self.wrote_rows = true;
         Ok(())
     }
 
@@ -644,7 +683,9 @@ impl DriverTxn<'_> {
     /// # Errors
     /// Returns a store error if the write fails.
     pub fn remove_local(&mut self, key: &str) -> Result<bool, MetaError> {
-        Ok(self.table.remove(key)?.is_some())
+        let removed = self.table.remove(key)?.is_some();
+        self.wrote_rows |= removed;
+        Ok(removed)
     }
 
     pub fn reference_blob(&mut self, sha256: &str, size: u64) {
@@ -661,6 +702,7 @@ impl DriverTxn<'_> {
     pub fn upsert(&mut self, key: &str, value: &[u8]) -> Result<bool, MetaError> {
         let inserted = self.table.insert(key, value)?.is_none();
         self.touched.insert(key.to_owned());
+        self.wrote_rows = true;
         Ok(inserted)
     }
 
@@ -672,6 +714,7 @@ impl DriverTxn<'_> {
         let removed = self.table.remove(key)?.is_some();
         if removed {
             self.touched.insert(key.to_owned());
+            self.wrote_rows = true;
         }
         Ok(removed)
     }

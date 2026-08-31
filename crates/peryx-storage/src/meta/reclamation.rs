@@ -3,11 +3,15 @@ use std::ops::Bound::{Excluded, Included, Unbounded};
 
 use peryx_ha::{
     BlobPlacementRecord, ReclamationSnapshot, ReclamationStore, ReclamationTombstone, ReclamationTombstonePage,
+    TombstoneWrite,
 };
 use peryx_identity::ArtifactDigest;
 use redb::ReadableTable as _;
 
-use super::{BLOB_PLACEMENT, MetaError, MetaStore, RECLAMATION_TOMBSTONE, open_optional_table};
+use super::{
+    BLOB_PLACEMENT, MetaError, MetaStore, RECLAMATION_TOMBSTONE, REFERENCE_REVISION, REFERENCE_REVISION_KEY,
+    open_optional_table,
+};
 
 impl ReclamationStore for MetaStore {
     type Error = MetaError;
@@ -32,21 +36,24 @@ impl ReclamationStore for MetaStore {
         &self,
         expected: &ReclamationSnapshot,
         replacement: &ReclamationTombstone,
-    ) -> Result<bool, Self::Error> {
+        revision: u64,
+    ) -> Result<TombstoneWrite, Self::Error> {
         let txn = self.db.begin_write()?;
-        let written = if write_snapshot_matches(&txn, expected, &replacement.digest)? {
+        let outcome = if write_reference_revision(&txn)? != revision {
+            TombstoneWrite::ReferencesMoved
+        } else if write_snapshot_matches(&txn, expected, &replacement.digest)? {
             {
                 let mut table = txn.open_table(RECLAMATION_TOMBSTONE)?;
                 let key = replacement.digest.canonical();
                 let encoded = serde_json::to_vec(replacement)?;
                 table.insert(key.as_str(), encoded.as_slice())?;
             }
-            true
+            TombstoneWrite::Written
         } else {
-            false
+            TombstoneWrite::Conflict
         };
         txn.commit()?;
-        Ok(written)
+        Ok(outcome)
     }
 
     fn compare_and_remove_reclamation_tombstone(&self, expected: &ReclamationTombstone) -> Result<bool, Self::Error> {
@@ -129,6 +136,11 @@ impl ReclamationStore for MetaStore {
         }
         Ok(page)
     }
+}
+
+fn write_reference_revision(txn: &redb::WriteTransaction) -> Result<u64, MetaError> {
+    let table = txn.open_table(REFERENCE_REVISION)?;
+    Ok(table.get(REFERENCE_REVISION_KEY)?.map_or(0, |value| value.value()))
 }
 
 fn write_snapshot_matches(

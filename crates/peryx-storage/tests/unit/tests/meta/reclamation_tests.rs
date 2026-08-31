@@ -1,6 +1,6 @@
 use peryx_ha::{
     BackendId, BackendLocation, BlobPlacementKey, BlobPlacementRecord, BlobPlacementState, CompareWrite, DataCenterId,
-    ReclamationSnapshot, ReclamationState, ReclamationStore as _, ReclamationTombstone,
+    ReclamationSnapshot, ReclamationState, ReclamationStore as _, ReclamationTombstone, TombstoneWrite,
 };
 use peryx_identity::ArtifactDigest;
 use tempfile::TempDir;
@@ -48,7 +48,13 @@ fn placement(suffix: u8) -> BlobPlacementRecord {
 
 fn write_tombstone(store: &MetaStore, record: &ReclamationTombstone) {
     let expected = store.reclamation_snapshot(&record.digest).unwrap();
-    assert!(store.compare_and_put_reclamation_tombstone(&expected, record).unwrap());
+    let references = store.reference_revision().unwrap();
+    assert_eq!(
+        store
+            .compare_and_put_reclamation_tombstone(&expected, record, references)
+            .unwrap(),
+        TombstoneWrite::Written
+    );
 }
 
 #[test]
@@ -94,10 +100,11 @@ fn reclamation_write_rejects_changed_tombstone_evidence() {
     let initial = store.reclamation_snapshot(&digest(1)).unwrap();
     write_tombstone(&store, &tombstone(1, 3));
 
-    assert!(
-        !store
-            .compare_and_put_reclamation_tombstone(&initial, &tombstone(1, 4))
-            .unwrap()
+    assert_eq!(
+        store
+            .compare_and_put_reclamation_tombstone(&initial, &tombstone(1, 4), 0)
+            .unwrap(),
+        TombstoneWrite::Conflict
     );
     assert_eq!(store.reclamation_tombstone(&digest(1)).unwrap(), Some(tombstone(1, 3)));
 }
@@ -111,10 +118,11 @@ fn reclamation_write_rejects_changed_placement_evidence() {
         CompareWrite::Written
     );
 
-    assert!(
-        !store
-            .compare_and_put_reclamation_tombstone(&initial, &tombstone(1, 3))
-            .unwrap()
+    assert_eq!(
+        store
+            .compare_and_put_reclamation_tombstone(&initial, &tombstone(1, 3), 0)
+            .unwrap(),
+        TombstoneWrite::Conflict
     );
     assert!(store.reclamation_tombstone(&digest(1)).unwrap().is_none());
 }
@@ -164,4 +172,20 @@ fn reclamation_tombstones_survive_reopen() {
 
     let store = MetaStore::open_existing(path).unwrap();
     assert_eq!(store.reclamation_tombstone(&record.digest).unwrap(), Some(record));
+}
+
+#[test]
+fn reclamation_write_rejects_a_verdict_proved_against_an_older_reference_revision() {
+    let (_dir, store) = store();
+    let expected = store.reclamation_snapshot(&digest(1)).unwrap();
+    let references = store.reference_revision().unwrap();
+    store.put_driver_value("published", b"reference").unwrap();
+
+    assert_eq!(
+        store
+            .compare_and_put_reclamation_tombstone(&expected, &tombstone(1, 3), references)
+            .unwrap(),
+        TombstoneWrite::ReferencesMoved
+    );
+    assert_eq!(store.reclamation_tombstone(&digest(1)).unwrap(), None);
 }

@@ -113,6 +113,9 @@ pub use webhook::{
 };
 
 const SERIAL: TableDefinition<&str, u64> = TableDefinition::new("serial");
+/// Advances on every driver-row write, including one that appends no journal entry, so a reference
+/// inventory scanned across several driver reads can prove nothing changed underneath it.
+const REFERENCE_REVISION: TableDefinition<&str, u64> = TableDefinition::new("reference_revision");
 const WEBHOOK_DELIVERY: TableDefinition<&str, &[u8]> = TableDefinition::new("webhook_delivery");
 const WEBHOOK_DUE: TableDefinition<&str, &str> = TableDefinition::new("webhook_due");
 const WEBHOOK_EVENT: TableDefinition<&str, &[u8]> = TableDefinition::new("webhook_event");
@@ -178,6 +181,8 @@ const SCOPED_TOKEN: TableDefinition<&str, &[u8]> = TableDefinition::new("scoped_
 const SCOPED_TOKEN_REACH: TableDefinition<&str, &str> = TableDefinition::new("scoped_token_reach");
 const SCOPED_TOKEN_VERIFIER: TableDefinition<&str, &str> = TableDefinition::new("scoped_token_verifier");
 const SERIAL_KEY: &str = "serial";
+/// [`REFERENCE_REVISION`] is a single-row counter, so this names the only row it holds.
+const REFERENCE_REVISION_KEY: &str = "revision";
 const WEBHOOK_SERIAL_KEY: &str = "webhook_delivery";
 const JOB_SERIAL_KEY: &str = "job_run";
 const POLICY_DECISION_SERIAL_KEY: &str = "policy_decision";
@@ -274,6 +279,7 @@ impl MetaStore {
         let txn = db.begin_write()?;
         {
             txn.open_table(SERIAL)?;
+            txn.open_table(REFERENCE_REVISION)?;
             txn.open_table(WEBHOOK_DELIVERY)?;
             txn.open_table(WEBHOOK_DUE)?;
             txn.open_table(WEBHOOK_EVENT)?;

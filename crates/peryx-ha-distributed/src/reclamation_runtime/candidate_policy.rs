@@ -1,5 +1,5 @@
 use peryx_ha::{
-    ObservedFrontier, ReadyOutcome, ReclamationDecisionError, ReclamationStore, SelectOutcome,
+    ObservedFrontier, ReadyOutcome, ReclamationDecisionError, ReclamationStore, SelectOutcome, TombstoneWrite,
     decide_reclamation_readiness, decide_reclamation_selection,
 };
 use peryx_identity::ArtifactDigest;
@@ -13,45 +13,58 @@ pub enum ReclamationError {
     Decision(#[from] ReclamationDecisionError),
 }
 
+/// Returns `None` when the reference revision moved past `revision`, which retires the `referenced`
+/// verdict without writing it; the caller re-proves the inventory before deciding this digest again.
+///
 /// # Errors
 /// Returns a persistence or reclamation decision error.
 pub fn select_reclamation_candidate(
     meta: &MetaStore,
     digest: &ArtifactDigest,
     referenced: bool,
+    revision: u64,
     required_frontier: u64,
     fence: u64,
     now: i64,
-) -> Result<SelectOutcome, ReclamationError> {
+) -> Result<Option<SelectOutcome>, ReclamationError> {
     loop {
         let snapshot = meta.reclamation_snapshot(digest)?;
         let outcome = decide_reclamation_selection(digest, &snapshot, referenced, required_frontier, fence, now)?;
         let Some(replacement) = outcome.replacement() else {
-            return Ok(outcome);
+            return Ok(Some(outcome));
         };
-        if meta.compare_and_put_reclamation_tombstone(&snapshot, replacement)? {
-            return Ok(outcome);
+        match meta.compare_and_put_reclamation_tombstone(&snapshot, replacement, revision)? {
+            TombstoneWrite::Written => return Ok(Some(outcome)),
+            TombstoneWrite::ReferencesMoved => return Ok(None),
+            TombstoneWrite::Conflict => {}
         }
     }
 }
 
+/// Returns `None` when the reference revision moved past `revision`, so a digest that gained a
+/// reference after the inventory was proved cannot be marked ready from that stale verdict.
+///
 /// # Errors
 /// Returns a persistence or reclamation decision error.
 pub fn mark_reclamation_ready(
     meta: &MetaStore,
     digest: &ArtifactDigest,
     referenced: bool,
+    revision: u64,
     observed: ObservedFrontier,
     fence: u64,
     now: i64,
-) -> Result<ReadyOutcome, ReclamationError> {
+) -> Result<Option<ReadyOutcome>, ReclamationError> {
     loop {
         let snapshot = meta.reclamation_snapshot(digest)?;
         let outcome = decide_reclamation_readiness(&snapshot, referenced, observed, fence, now)?;
-        if snapshot.tombstone.as_ref() == Some(outcome.replacement())
-            || meta.compare_and_put_reclamation_tombstone(&snapshot, outcome.replacement())?
-        {
-            return Ok(outcome);
+        if snapshot.tombstone.as_ref() == Some(outcome.replacement()) {
+            return Ok(Some(outcome));
+        }
+        match meta.compare_and_put_reclamation_tombstone(&snapshot, outcome.replacement(), revision)? {
+            TombstoneWrite::Written => return Ok(Some(outcome)),
+            TombstoneWrite::ReferencesMoved => return Ok(None),
+            TombstoneWrite::Conflict => {}
         }
     }
 }

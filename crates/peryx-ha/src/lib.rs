@@ -29,7 +29,7 @@ pub use reclamation::{
 pub use reconcile::{NewReconcileEntry, ReconcileEnqueue, ReconcileEntry, ReconcilePage};
 pub use store::{
     ArtifactPlacementStore, BlobPlacementStore, CompareWrite, ReclaimGuardStore, ReclamationStore, ReconcileStore,
-    TransferAudit, TransferAuditStore,
+    TombstoneWrite, TransferAudit, TransferAuditStore,
 };
 pub use views::{
     AvailabilityPageQuery, AvailabilityViewReader, BlobPlacementViewError, OperationsViewError, PlacementViewError,

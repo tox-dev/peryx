@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Instant;
@@ -67,16 +68,15 @@ impl BlobReclamationSelector {
             return Ok(AvailabilityTaskReport::default());
         }
         let now = clock();
-        let referenced = match self.references.referenced() {
-            Ok(referenced) => referenced,
-            Err(reason) => return Err(AvailabilityTaskError::new("reclamation_references", reason)),
-        };
         let required = match meta.current_serial() {
             Ok(required) => required,
             Err(error) => return Err(task_error("reclamation_frontier_read", error)),
         };
         let mut report = AvailabilityTaskReport::default();
 
+        let Some(selected_against) = self.prove_references(meta)? else {
+            return Ok(report);
+        };
         let selection = read_cursor(meta, ReclamationPhase::Selection)?;
         let stored = match blobs.blocking().digest_page(selection.as_deref(), batch) {
             Ok(page) => page,
@@ -87,20 +87,25 @@ impl BlobReclamationSelector {
                 return Ok(report);
             }
             report.processed += 1;
-            if referenced.contains(digest.as_str()) {
+            if selected_against.digests.contains(digest.as_str()) {
                 continue;
             }
             let artifact = ArtifactDigest::from_sha256(digest.as_str())
                 .expect("blob storage only yields canonical SHA-256 digests");
-            match select_reclamation_candidate(meta, &artifact, false, required, fence, now) {
-                Ok(SelectOutcome::Selected(_)) => report.changed += 1,
-                Ok(_) => {}
+            match select_reclamation_candidate(meta, &artifact, false, selected_against.revision, required, fence, now)
+            {
+                Ok(Some(SelectOutcome::Selected(_))) => report.changed += 1,
+                Ok(Some(_)) => {}
+                Ok(None) => return Ok(report),
                 Err(error) => return Err(task_error("reclamation_select", error)),
             }
         }
         advance_cursor(meta, ReclamationPhase::Selection, stored.next_cursor.as_deref())?;
 
         let Some(observed) = self.frontiers.observe() else {
+            return Ok(report);
+        };
+        let Some(marked_against) = self.prove_references(meta)? else {
             return Ok(report);
         };
         let finalize = read_cursor(meta, ReclamationPhase::Finalize)?;
@@ -115,16 +120,50 @@ impl BlobReclamationSelector {
             if !matches!(tombstone.state, ReclamationState::Pending) {
                 continue;
             }
-            let referenced_now = referenced.contains(tombstone.digest.sha256());
-            match mark_reclamation_ready(meta, &tombstone.digest, referenced_now, observed, fence, now) {
-                Ok(ReadyOutcome::Ready(_)) => report.changed += 1,
-                Ok(_) => {}
+            let referenced_now = marked_against.digests.contains(tombstone.digest.sha256());
+            match mark_reclamation_ready(
+                meta,
+                &tombstone.digest,
+                referenced_now,
+                marked_against.revision,
+                observed,
+                fence,
+                now,
+            ) {
+                Ok(Some(ReadyOutcome::Ready(_))) => report.changed += 1,
+                Ok(Some(_)) => {}
+                Ok(None) => return Ok(report),
                 Err(error) => return Err(task_error("reclamation_mark", error)),
             }
         }
         advance_cursor(meta, ReclamationPhase::Finalize, tombstones.next_cursor.as_deref())?;
         Ok(report)
     }
+
+    /// Reads the reference revision on both sides of the inventory scan and keeps the result only when
+    /// it did not move, so a reference committed part way through the scan retires the inventory
+    /// instead of leaving a digest that one component already reported as unreferenced.
+    ///
+    /// `None` ends the pass; the cursors stay put and the next pass proves a fresh inventory.
+    fn prove_references(&self, meta: &MetaStore) -> Result<Option<ProvedReferences>, AvailabilityTaskError> {
+        let revision = reference_revision(meta)?;
+        let digests = match self.references.referenced() {
+            Ok(digests) => digests,
+            Err(reason) => return Err(AvailabilityTaskError::new("reclamation_references", reason)),
+        };
+        Ok((reference_revision(meta)? == revision).then_some(ProvedReferences { revision, digests }))
+    }
+}
+
+/// The referenced digests together with the revision that proves nothing changed while they were read.
+struct ProvedReferences {
+    revision: u64,
+    digests: BTreeSet<String>,
+}
+
+fn reference_revision(meta: &MetaStore) -> Result<u64, AvailabilityTaskError> {
+    meta.reference_revision()
+        .map_err(|error| task_error("reclamation_reference_revision", error))
 }
 
 fn read_cursor(meta: &MetaStore, phase: ReclamationPhase) -> Result<Option<String>, AvailabilityTaskError> {
