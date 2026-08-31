@@ -6,6 +6,7 @@ use std::sync::Arc;
 use anyhow::{Context as _, bail, ensure};
 use axum::Router;
 use peryx_core::path;
+use peryx_driver::oidc::GuardedOidcTransport;
 use peryx_driver::state::RuntimeOptions;
 use peryx_driver::{AppState, Index, IndexKind};
 use peryx_events::webhook::{WebhookRuntime, WebhookTargetConfig};
@@ -467,19 +468,27 @@ fn oidc_logins(configs: &[OidcProviderConfig], meta: &MetaStore) -> anyhow::Resu
                         .with_context(|| format!("read OIDC provider {} client secret", config.id))
                 })
                 .transpose()?;
-            let provider = OidcLoginProvider::new(OidcProviderSettings {
-                id: config.id.clone(),
-                issuer: config.issuer.clone(),
-                client_id: config.client_id.clone(),
-                client_secret,
-                redirect_uri: config.redirect_uri.clone(),
-                scopes: config.scopes.clone(),
-                subject_claim: config.subject_claim.clone(),
-                display_name_claim: config.display_name_claim.clone(),
-                groups_claim: config.groups_claim.clone(),
-                clock_skew: config.clock_skew,
-                request_timeout: config.request_timeout,
-            })
+            let transport = GuardedOidcTransport::new(
+                [config.issuer.as_str()],
+                &config.trusted_endpoint_hosts,
+                config.request_timeout,
+            )
+            .with_context(|| format!("configure OIDC provider {} transport", config.id))?;
+            let provider = OidcLoginProvider::new(
+                OidcProviderSettings {
+                    id: config.id.clone(),
+                    issuer: config.issuer.clone(),
+                    client_id: config.client_id.clone(),
+                    client_secret,
+                    redirect_uri: config.redirect_uri.clone(),
+                    scopes: config.scopes.clone(),
+                    subject_claim: config.subject_claim.clone(),
+                    display_name_claim: config.display_name_claim.clone(),
+                    groups_claim: config.groups_claim.clone(),
+                    clock_skew: config.clock_skew,
+                },
+                Arc::new(transport),
+            )
             .with_context(|| format!("configure OIDC provider {}", config.id))?;
             Ok(OidcLoginService::new(
                 provider,

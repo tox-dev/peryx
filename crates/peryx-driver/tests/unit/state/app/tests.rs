@@ -584,19 +584,28 @@ fn test_login_services_and_session_sealer_install_by_provider_id() {
         .unwrap();
     state
         .set_oidc_logins([OidcLoginService::new(
-            OidcLoginProvider::new(OidcProviderSettings {
-                id: ProviderId::new("browser").unwrap(),
-                issuer: "https://issuer.example".to_owned(),
-                client_id: "peryx-web".to_owned(),
-                client_secret: None,
-                redirect_uri: Url::parse("https://registry.example/oidc/browser/callback").unwrap(),
-                scopes: vec!["openid".to_owned()],
-                subject_claim: "sub".to_owned(),
-                display_name_claim: "name".to_owned(),
-                groups_claim: None,
-                clock_skew: Duration::from_mins(1),
-                request_timeout: Duration::from_secs(5),
-            })
+            OidcLoginProvider::new(
+                OidcProviderSettings {
+                    id: ProviderId::new("browser").unwrap(),
+                    issuer: "https://issuer.example".to_owned(),
+                    client_id: "peryx-web".to_owned(),
+                    client_secret: None,
+                    redirect_uri: Url::parse("https://registry.example/oidc/browser/callback").unwrap(),
+                    scopes: vec!["openid".to_owned()],
+                    subject_claim: "sub".to_owned(),
+                    display_name_claim: "name".to_owned(),
+                    groups_claim: None,
+                    clock_skew: Duration::from_mins(1),
+                },
+                Arc::new(
+                    crate::oidc::GuardedOidcTransport::new(
+                        ["https://issuer.example"],
+                        std::iter::empty::<&str>(),
+                        Duration::from_secs(5),
+                    )
+                    .unwrap(),
+                ),
+            )
             .unwrap(),
             state.serving.meta.clone(),
             Vec::new(),

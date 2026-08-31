@@ -618,6 +618,9 @@ pub struct OidcProviderConfig {
     pub groups_claim: Option<String>,
     pub clock_skew: Duration,
     pub request_timeout: Duration,
+    /// Hosts whose non-public addresses a discovered token or key endpoint may name. The issuer's
+    /// own host is trusted without listing.
+    pub trusted_endpoint_hosts: Vec<String>,
     pub group_mappings: Vec<ExternalGroupGrant>,
 }
 
@@ -636,6 +639,7 @@ impl fmt::Debug for OidcProviderConfig {
             .field("groups_claim", &self.groups_claim)
             .field("clock_skew", &self.clock_skew)
             .field("request_timeout", &self.request_timeout)
+            .field("trusted_endpoint_hosts", &self.trusted_endpoint_hosts)
             .field("group_mappings", &self.group_mappings)
             .finish()
     }

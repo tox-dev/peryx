@@ -12,7 +12,7 @@ use super::policy::TrustedPublisher;
 use super::runtime::{OidcRuntime, PublisherBinding};
 use crate::ECOSYSTEM;
 
-pub const AUTH_FIELDS: &[&str] = &["oidc_audience", "trusted_publisher"];
+pub const AUTH_FIELDS: &[&str] = &["oidc_audience", "oidc_trusted_endpoint_hosts", "trusted_publisher"];
 
 pub fn auth_defaults() -> toml::Table {
     toml::Table::from_iter([("oidc_audience".to_owned(), toml::Value::String("peryx".to_owned()))])
@@ -46,8 +46,12 @@ pub fn validate(config: PluginAuthConfig<'_>) -> Result<(), String> {
 }
 
 pub fn install(context: &mut AuthInstallContext<'_>, values: &toml::Table) -> Result<(), String> {
-    let config = parse(values)?;
-    if config.publishers.is_empty() {
+    let Config {
+        audience,
+        trusted_endpoint_hosts,
+        publishers,
+    } = parse(values)?;
+    if publishers.is_empty() {
         return Ok(());
     }
     let signer = context
@@ -56,8 +60,7 @@ pub fn install(context: &mut AuthInstallContext<'_>, values: &toml::Table) -> Re
         .ok_or_else(|| "auth: `signing_key` is required when trusted publishers are configured".to_owned())?;
     let runtime = Arc::new(
         OidcRuntime::new(
-            config
-                .publishers
+            publishers
                 .into_iter()
                 .map(|publisher| {
                     let route = context
@@ -70,7 +73,7 @@ pub fn install(context: &mut AuthInstallContext<'_>, values: &toml::Table) -> Re
                         route,
                         publisher: TrustedPublisher {
                             issuer: publisher.issuer,
-                            audience: config.audience.clone(),
+                            audience: audience.clone(),
                             subject: Glob::new(publisher.subject),
                             claims: publisher.claims,
                             projects: publisher.projects.into_iter().map(Glob::new).collect(),
@@ -78,6 +81,7 @@ pub fn install(context: &mut AuthInstallContext<'_>, values: &toml::Table) -> Re
                     })
                 })
                 .collect::<Result<Vec<_>, String>>()?,
+            &trusted_endpoint_hosts,
             signer,
             context.token_ttl_secs(),
         )
@@ -98,6 +102,10 @@ pub fn enabled(state: &ServingState) -> bool {
 struct Config {
     #[serde(rename = "oidc_audience")]
     audience: String,
+    /// Hosts whose non-public addresses a discovered key endpoint may name. Each publisher's own
+    /// issuer host is trusted without listing.
+    #[serde(rename = "oidc_trusted_endpoint_hosts")]
+    trusted_endpoint_hosts: Vec<String>,
     #[serde(rename = "trusted_publisher")]
     publishers: Vec<PublisherConfig>,
 }
@@ -106,6 +114,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             audience: "peryx".to_owned(),
+            trusted_endpoint_hosts: Vec::new(),
             publishers: Vec::new(),
         }
     }
@@ -130,6 +139,9 @@ fn parse(values: &toml::Table) -> Result<Config, String> {
         .map_err(|error| format!("auth: {error}"))?;
     if config.audience.trim().is_empty() {
         return Err("auth: `oidc_audience` must not be empty".to_owned());
+    }
+    if config.trusted_endpoint_hosts.iter().any(|host| host.trim().is_empty()) {
+        return Err("auth: `oidc_trusted_endpoint_hosts` entries must not be empty".to_owned());
     }
     if config.publishers.iter().any(|publisher| {
         publisher.id.trim().is_empty()

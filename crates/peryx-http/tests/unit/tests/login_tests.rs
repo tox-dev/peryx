@@ -55,19 +55,18 @@ fn settings(destination: &str) -> OidcProviderSettings {
         display_name_claim: "name".to_owned(),
         groups_claim: None,
         clock_skew: Duration::from_mins(1),
-        request_timeout: Duration::from_secs(5),
     }
 }
 
 fn provider(destination: &str) -> OidcLoginProvider {
-    OidcLoginProvider::with_http_transport(settings(destination), transport(destination)).unwrap()
+    OidcLoginProvider::new(settings(destination), transport(destination)).unwrap()
 }
 
 fn provider_with_id(id: &str, destination: &str) -> OidcLoginProvider {
     let mut settings = settings(destination);
     settings.id = ProviderId::new(id).unwrap();
     settings.redirect_uri.set_path(&format!("/_/login/{id}/callback"));
-    OidcLoginProvider::with_http_transport(settings, transport(destination)).unwrap()
+    OidcLoginProvider::new(settings, transport(destination)).unwrap()
 }
 
 fn transport(destination: &str) -> Arc<dyn OidcHttpTransport> {
@@ -97,6 +96,14 @@ struct WiremockTransport {
 
 #[async_trait::async_trait]
 impl OidcHttpTransport for WiremockTransport {
+    fn client(&self) -> &reqwest::Client {
+        &self.client
+    }
+
+    fn permits(&self, _url: &url::Url) -> bool {
+        true
+    }
+
     async fn execute(&self, mut request: reqwest::Request) -> Result<reqwest::Response, reqwest::Error> {
         if request.url().origin() == self.logical_origin.origin() {
             request.url_mut().set_scheme(self.destination.scheme()).unwrap();
@@ -933,7 +940,7 @@ async fn test_a_malformed_group_claim_preserves_managed_grants() {
     );
     let mut provider_settings = settings(&server.uri());
     provider_settings.groups_claim = Some("groups".to_owned());
-    let provider = OidcLoginProvider::with_http_transport(provider_settings, transport(&server.uri())).unwrap();
+    let provider = OidcLoginProvider::new(provider_settings, transport(&server.uri())).unwrap();
     assert!(state.set_session_sealer(SessionSealer::new(KEY)).is_ok());
     let authorization = provider.authorization(NOW).await.unwrap();
     Mock::given(method("POST"))

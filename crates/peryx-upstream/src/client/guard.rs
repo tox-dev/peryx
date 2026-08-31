@@ -32,26 +32,36 @@ impl OutboundGuard {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        Self::with_resolver(base, trusted_hosts, Arc::new(SystemResolver))
+        Self::for_hosts(
+            base.host_str()
+                .map(str::to_owned)
+                .into_iter()
+                .chain(trusted_hosts.into_iter().map(|entry| entry.as_ref().to_owned())),
+        )
     }
 
-    fn with_resolver<I, S>(base: &Url, trusted_hosts: I, inner: Arc<dyn Resolve>) -> Self
+    /// Trusts each entry of `trusted_hosts`, given as a hostname, an IP literal, or a bracketed
+    /// IPv6 literal. Every other destination must be globally routable.
+    pub fn for_hosts<I, S>(trusted_hosts: I) -> Self
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let mut trusted = base
-            .host()
-            .map(|host| canonical_host(&host))
-            .into_iter()
-            .collect::<HashSet<_>>();
-        trusted.extend(
-            trusted_hosts
-                .into_iter()
-                .filter_map(|entry| canonical_entry(entry.as_ref())),
-        );
+        Self::with_resolver(trusted_hosts, Arc::new(SystemResolver))
+    }
+
+    fn with_resolver<I, S>(trusted_hosts: I, inner: Arc<dyn Resolve>) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
         Self {
-            trusted: Arc::new(trusted),
+            trusted: Arc::new(
+                trusted_hosts
+                    .into_iter()
+                    .filter_map(|entry| canonical_entry(entry.as_ref()))
+                    .collect::<HashSet<_>>(),
+            ),
             inner,
         }
     }
@@ -68,21 +78,16 @@ impl OutboundGuard {
                 reason: format!("scheme {:?} is not http or https", url.scheme()),
             });
         }
-        let host = url.host();
-        let Some(ip) = literal_ip(host.as_ref()) else {
+        let Some(ip) = literal_ip(url.host().as_ref()) else {
             return Ok(());
         };
-        if self.is_trusted(host.as_ref()) || is_global_ip(ip) {
+        if self.trusted.contains(&ip.to_string()) || is_global_ip(ip) {
             Ok(())
         } else {
             Err(UpstreamError::BlockedDestination {
                 reason: format!("{ip} is not a public address"),
             })
         }
-    }
-
-    fn is_trusted(&self, host: Option<&Host<&str>>) -> bool {
-        host.is_some_and(|host| self.trusted.contains(&canonical_host(host)))
     }
 }
 
@@ -113,14 +118,6 @@ const fn literal_ip(host: Option<&Host<&str>>) -> Option<IpAddr> {
         Some(Host::Ipv4(ip)) => Some(IpAddr::V4(*ip)),
         Some(Host::Ipv6(ip)) => Some(IpAddr::V6(*ip)),
         Some(Host::Domain(_)) | None => None,
-    }
-}
-
-fn canonical_host<S: AsRef<str>>(host: &Host<S>) -> String {
-    match host {
-        Host::Domain(name) => name.as_ref().to_ascii_lowercase(),
-        Host::Ipv4(ip) => ip.to_string(),
-        Host::Ipv6(ip) => ip.to_string(),
     }
 }
 

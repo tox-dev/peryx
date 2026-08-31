@@ -21,7 +21,6 @@ use reqwest::header::{
 };
 use url::Url;
 
-use self::guard::OutboundGuard;
 use self::range::RangeSuppressions;
 use self::response::{header_str, strong_etag};
 use self::retry::{
@@ -35,6 +34,7 @@ pub use self::credential::{
 };
 pub use self::error::{RangeError, UpstreamError};
 pub use self::exec::{CredentialScope, ExecCredentialConfig, ExecCredentialConfigError, ExecCredentialProviderError};
+pub use self::guard::OutboundGuard;
 pub use self::netrc::{Netrc, NetrcError};
 pub use self::tls::{UpstreamTls, UpstreamTlsError};
 

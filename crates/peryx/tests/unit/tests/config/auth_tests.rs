@@ -435,7 +435,7 @@ const OIDC_FULL: &str = "[auth]\nsigning_key = \"key\"\n[[auth.oidc_provider]]\n
      client_id = \"peryx\"\nclient_secret_env = \"OIDC_SECRET\"\n\
      redirect_uri = \"https://registry.example/oidc/corporate/callback\"\nscopes = [\"openid\", \"email\", \"groups\"]\n\
      subject_claim = \"sub\"\ndisplay_name_claim = \"name\"\ngroups_claim = \"groups\"\n\
-     clock_skew_secs = 30\nrequest_timeout_secs = 8\n\
+     clock_skew_secs = 30\nrequest_timeout_secs = 8\ntrusted_endpoint_hosts = [\"keys.corp.internal\"]\n\
      [[auth.oidc_provider.group_mapping]]\ngroup = \"registry-admins\"\nrole = \"administrator\"\n\
      [[auth.oidc_provider.group_mapping]]\ngroup = \"packagers\"\nrole = \"repository_reader\"\nrepository = \"packages\"\n\
      [[index]]\nname = \"packages\"\nhosted = true\n";
@@ -460,6 +460,7 @@ fn test_oidc_provider_config_resolves_every_field() {
     assert_eq!(provider.groups_claim.as_deref(), Some("groups"));
     assert_eq!(provider.clock_skew, std::time::Duration::from_secs(30));
     assert_eq!(provider.request_timeout, std::time::Duration::from_secs(8));
+    assert_eq!(provider.trusted_endpoint_hosts, ["keys.corp.internal"]);
     assert_eq!(provider.group_mappings[0].role, Role::Administrator);
     assert_eq!(provider.group_mappings[0].scope, GrantScope::Server);
     assert_eq!(
@@ -485,6 +486,7 @@ fn test_oidc_provider_config_applies_claim_and_bound_defaults() {
     assert!(provider.scopes.is_empty());
     assert_eq!(provider.clock_skew, std::time::Duration::from_mins(1));
     assert_eq!(provider.request_timeout, std::time::Duration::from_secs(10));
+    assert!(provider.trusted_endpoint_hosts.is_empty());
     assert!(provider.group_mappings.is_empty());
 }
 
@@ -558,6 +560,11 @@ fn test_oidc_provider_config_applies_claim_and_bound_defaults() {
     "web",
     "issuer = \"https://idp.example\"\nclient_id = \"peryx\"\nredirect_uri = \"https://registry.example/cb\"\nrequest_timeout_secs = 0\n",
     "`request_timeout_secs` must be positive"
+)]
+#[case::empty_trusted_endpoint_host(
+    "web",
+    "issuer = \"https://idp.example\"\nclient_id = \"peryx\"\nredirect_uri = \"https://registry.example/cb\"\ntrusted_endpoint_hosts = [\" \"]\n",
+    "`trusted_endpoint_hosts` entries must not be empty"
 )]
 fn test_oidc_provider_rejects_invalid_settings(#[case] id: &str, #[case] body: &str, #[case] expected: &str) {
     let text = format!("[[auth.oidc_provider]]\nid = \"{id}\"\n{body}");

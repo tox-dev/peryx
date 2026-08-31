@@ -1,11 +1,9 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use jsonwebtoken::jwk::JwkSet;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
-use reqwest::Client;
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::sync::Mutex;
@@ -13,11 +11,10 @@ use url::Url;
 
 use crate::oidc_http::{
     CachePolicy, CacheWindow, DISCOVERY_BODY_LIMIT, JWKS_BODY_LIMIT, OidcHttpError, OidcHttpTransport,
-    REFRESH_BACKOFF_SECS, ReqwestOidcHttpTransport, discovery_url, fetch, usable_keys,
+    REFRESH_BACKOFF_SECS, discovery_url, fetch, usable_keys,
 };
 
 const TOKEN_BODY_LIMIT: usize = 32 * 1024;
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_IDENTITY_LIFETIME_SECS: i64 = 3600;
 const MAX_JTI_BYTES: usize = 256;
 const MAX_SUBJECT_BYTES: usize = 2048;
@@ -45,41 +42,19 @@ pub trait OidcTokenVerifier: Send + Sync {
 pub struct OidcVerifier {
     audience: String,
     issuers: HashMap<String, Arc<IssuerState>>,
-    client: Client,
     transport: Arc<dyn OidcHttpTransport>,
 }
 
 impl OidcVerifier {
+    /// `transport` carries the deployment's outbound destination policy; the verifier opens no
+    /// connection of its own.
+    ///
     /// # Errors
     /// Rejects an empty audience or an invalid issuer URL.
     pub fn new(
         issuers: impl IntoIterator<Item = String>,
         audience: impl Into<String>,
-    ) -> Result<Self, OidcVerificationError> {
-        let client = oidc_client()?;
-        Self::with_transport(
-            issuers.into_iter().collect(),
-            audience,
-            Arc::new(ReqwestOidcHttpTransport(client.clone())),
-            client,
-        )
-    }
-
-    /// # Errors
-    /// Rejects an empty audience or an invalid issuer URL.
-    pub fn with_http_transport(
-        issuers: impl IntoIterator<Item = String>,
-        audience: impl Into<String>,
         transport: Arc<dyn OidcHttpTransport>,
-    ) -> Result<Self, OidcVerificationError> {
-        Self::with_transport(issuers.into_iter().collect(), audience, transport, oidc_client()?)
-    }
-
-    fn with_transport(
-        issuers: Vec<String>,
-        audience: impl Into<String>,
-        transport: Arc<dyn OidcHttpTransport>,
-        client: Client,
     ) -> Result<Self, OidcVerificationError> {
         let audience = audience.into();
         if audience.trim().is_empty() {
@@ -102,7 +77,6 @@ impl OidcVerifier {
         Ok(Self {
             audience,
             issuers: states,
-            client,
             transport,
         })
     }
@@ -196,6 +170,9 @@ impl OidcVerifier {
             return Err(OidcVerificationError::InvalidIssuerResponse);
         }
         let jwks_uri = issuer_url(&discovery.jwks_uri).or(Err(OidcVerificationError::InvalidIssuerResponse))?;
+        if !self.transport.permits(&jwks_uri) {
+            return Err(OidcVerificationError::BlockedDestination);
+        }
         let (jwks, jwks_policy) = self.fetch_json::<JwkSet>(&jwks_uri, JWKS_BODY_LIMIT).await?;
         Ok((usable_keys(jwks)?, discovery_policy.strictest(&jwks_policy).window(now)))
     }
@@ -205,7 +182,8 @@ impl OidcVerifier {
         url: &Url,
         limit: usize,
     ) -> Result<(T, CachePolicy), OidcVerificationError> {
-        let (body, policy) = fetch(self.transport.as_ref(), self.client.get(url.clone()), limit)
+        let request = self.transport.client().get(url.clone());
+        let (body, policy) = fetch(self.transport.as_ref(), request, limit)
             .await
             .map_err(OidcVerificationError::from)?;
         serde_json::from_slice(&body)
@@ -239,6 +217,8 @@ pub enum OidcVerificationError {
     IssuerUnavailable,
     #[error("the issuer returned an invalid response")]
     InvalidIssuerResponse,
+    #[error("the issuer named a destination the outbound policy refuses")]
+    BlockedDestination,
     #[error("the identity token names an unknown signing key")]
     UnknownKey,
 }
@@ -248,7 +228,7 @@ impl OidcVerificationError {
     pub const fn unavailable(&self) -> bool {
         matches!(
             self,
-            Self::IssuerUnavailable | Self::InvalidIssuerResponse | Self::UnknownKey
+            Self::IssuerUnavailable | Self::InvalidIssuerResponse | Self::BlockedDestination | Self::UnknownKey
         )
     }
 }
@@ -363,15 +343,6 @@ fn issuer_url(value: &str) -> Result<Url, OidcVerificationError> {
         return Err(OidcVerificationError::Configuration);
     }
     Ok(url)
-}
-
-fn oidc_client() -> Result<Client, OidcVerificationError> {
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-    Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(REQUEST_TIMEOUT)
-        .build()
-        .or(Err(OidcVerificationError::Configuration))
 }
 
 #[cfg(test)]

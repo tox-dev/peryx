@@ -5,8 +5,8 @@ pub use client::retry;
 pub use client::{
     Auth, CredentialError, CredentialFailure, CredentialIdentity, CredentialProvider, CredentialProviderId,
     CredentialRefresh, CredentialScope, CredentialSnapshot, ExecCredentialConfig, ExecCredentialConfigError,
-    ExecCredentialProviderError, Netrc, NetrcError, RangeError, RangeSession, Reachability, UpstreamClient,
-    UpstreamError, UpstreamTls, UpstreamTlsError, redact_url,
+    ExecCredentialProviderError, Netrc, NetrcError, OutboundGuard, RangeError, RangeSession, Reachability,
+    UpstreamClient, UpstreamError, UpstreamTls, UpstreamTlsError, redact_url,
 };
 pub use route::{ArtifactClient, NamedUpstream, RouteError, UpstreamHealth, UpstreamRouter};
 

@@ -259,6 +259,8 @@ struct SnapshotOidcProvider<'a> {
     groups_claim: Option<&'a str>,
     clock_skew_secs: u64,
     request_timeout_secs: u64,
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    trusted_endpoint_hosts: &'a [String],
     #[serde(rename = "group_mapping", skip_serializing_if = "Vec::is_empty")]
     group_mappings: Vec<SnapshotExternalGroupGrant<'a>>,
 }
@@ -469,6 +471,7 @@ fn snapshot_oidc_provider(provider: &OidcProviderConfig) -> SnapshotOidcProvider
         groups_claim: provider.groups_claim.as_deref(),
         clock_skew_secs: provider.clock_skew.as_secs(),
         request_timeout_secs: provider.request_timeout.as_secs(),
+        trusted_endpoint_hosts: &provider.trusted_endpoint_hosts,
         group_mappings: provider.group_mappings.iter().map(snapshot_group_mapping).collect(),
     }
 }

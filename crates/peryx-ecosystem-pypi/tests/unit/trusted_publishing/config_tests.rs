@@ -121,6 +121,53 @@ trusted_publisher = []
 }
 
 #[test]
+fn test_validate_rejects_an_empty_trusted_endpoint_host() {
+    let values = values(
+        r#"
+oidc_trusted_endpoint_hosts = [" "]
+trusted_publisher = []
+"#,
+    );
+    assert_eq!(
+        validate(config(&values, &[])),
+        Err("auth: `oidc_trusted_endpoint_hosts` entries must not be empty".to_owned())
+    );
+}
+
+/// An issuer whose key endpoint sits on a second internal host needs that host approved, so the
+/// list has to reach the runtime rather than stop at parsing.
+#[test]
+fn test_install_accepts_approved_trusted_endpoint_hosts() {
+    let (_dir, mut state) = state("private");
+    state.set_token_realm(Signer::new(b"key", "peryx"), 300).unwrap();
+    let mut values = publisher();
+    values.insert(
+        "oidc_trusted_endpoint_hosts".to_owned(),
+        toml::Value::Array(vec![toml::Value::String("keys.corp.internal".to_owned())]),
+    );
+
+    install_auth(&mut state, &values).unwrap();
+
+    assert!(crate::trusted_publishing_enabled(&state));
+}
+
+/// The outbound policy trusts each configured issuer host, so an issuer it cannot read a host from
+/// fails installation rather than widening the policy.
+#[test]
+fn test_install_rejects_an_issuer_without_a_host() {
+    let (_dir, mut state) = state("private");
+    state.set_token_realm(Signer::new(b"key", "peryx"), 300).unwrap();
+    let mut values = publisher();
+    let publishers = values.get_mut("trusted_publisher").unwrap().as_array_mut().unwrap();
+    publishers[0].as_table_mut().unwrap()["issuer"] = toml::Value::String("issuer.example".to_owned());
+
+    assert_eq!(
+        install_auth(&mut state, &values),
+        Err("trusted publishing is misconfigured".to_owned())
+    );
+}
+
+#[test]
 fn test_validate_rejects_empty_publisher_fields() {
     let values = values(
         r#"

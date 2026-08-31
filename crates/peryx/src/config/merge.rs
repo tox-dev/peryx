@@ -900,6 +900,9 @@ fn classify_oidc_provider(mut raw: RawOidcProvider) -> Result<OidcProviderConfig
     }
     let request_timeout = std::num::NonZeroU64::new(raw.request_timeout_secs.unwrap_or(10))
         .ok_or_else(|| error("`request_timeout_secs` must be positive"))?;
+    if raw.trusted_endpoint_hosts.iter().any(|host| host.trim().is_empty()) {
+        return Err(error("`trusted_endpoint_hosts` entries must not be empty"));
+    }
     let group_mappings = raw
         .group_mappings
         .into_iter()
@@ -917,6 +920,7 @@ fn classify_oidc_provider(mut raw: RawOidcProvider) -> Result<OidcProviderConfig
         groups_claim: raw.groups_claim,
         clock_skew: Duration::from_secs(raw.clock_skew_secs.unwrap_or(60)),
         request_timeout: Duration::from_secs(request_timeout.get()),
+        trusted_endpoint_hosts: raw.trusted_endpoint_hosts,
         group_mappings,
     })
 }

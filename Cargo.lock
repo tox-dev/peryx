@@ -4829,7 +4829,9 @@ dependencies = [
  "peryx-storage",
  "peryx-upstream",
  "redb",
+ "reqwest",
  "rstest",
+ "rustls",
  "serde",
  "serde_json",
  "tempfile",
@@ -4843,6 +4845,7 @@ dependencies = [
  "url",
  "utoipa",
  "uuid",
+ "wiremock",
 ]
 
 [[package]]

@@ -13,10 +13,20 @@ pub const MAX_DISCOVERY_BYTES: usize = 65_536;
 pub const MAX_JWKS_BYTES: usize = 1_048_576;
 
 pub fn transport(destination: &str) -> Arc<dyn OidcHttpTransport> {
+    routed_transport(destination, &[], &[])
+}
+
+/// A transport that also routes each origin in `aliases` to the mock server, and whose outbound
+/// policy refuses each host in `blocked`.
+pub fn routed_transport(destination: &str, aliases: &[&str], blocked: &[&str]) -> Arc<dyn OidcHttpTransport> {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     Arc::new(WiremockTransport {
-        logical_origin: Url::parse(&secure_origin(destination)).unwrap(),
+        logical_origins: std::iter::once(secure_origin(destination))
+            .chain(aliases.iter().map(|alias| (*alias).to_owned()))
+            .map(|origin| Url::parse(&origin).unwrap())
+            .collect(),
         destination: Url::parse(destination).unwrap(),
+        blocked: blocked.iter().map(|host| (*host).to_owned()).collect(),
         client: http_client(),
     })
 }
@@ -122,18 +132,28 @@ pub fn padded_json(mut value: Value, size: usize) -> String {
 
 #[derive(Debug)]
 struct WiremockTransport {
-    logical_origin: Url,
+    logical_origins: Vec<Url>,
     destination: Url,
+    blocked: Vec<String>,
     client: reqwest::Client,
 }
 
 #[async_trait]
 impl OidcHttpTransport for WiremockTransport {
+    fn client(&self) -> &reqwest::Client {
+        &self.client
+    }
+
+    fn permits(&self, url: &Url) -> bool {
+        !self.blocked.iter().any(|host| url.host_str() == Some(host.as_str()))
+    }
+
     async fn execute(&self, mut request: reqwest::Request) -> Result<reqwest::Response, reqwest::Error> {
-        if request.url().scheme() == self.logical_origin.scheme()
-            && request.url().host_str() == self.logical_origin.host_str()
-            && request.url().port_or_known_default() == self.logical_origin.port_or_known_default()
-        {
+        if self.logical_origins.iter().any(|origin| {
+            request.url().scheme() == origin.scheme()
+                && request.url().host_str() == origin.host_str()
+                && request.url().port_or_known_default() == origin.port_or_known_default()
+        }) {
             request.url_mut().set_scheme(self.destination.scheme()).unwrap();
             request.url_mut().set_host(self.destination.host_str()).unwrap();
             request.url_mut().set_port(self.destination.port()).unwrap();
@@ -147,6 +167,14 @@ struct InsecureTransport(reqwest::Client);
 
 #[async_trait]
 impl OidcHttpTransport for InsecureTransport {
+    fn client(&self) -> &reqwest::Client {
+        &self.0
+    }
+
+    fn permits(&self, _url: &Url) -> bool {
+        true
+    }
+
     async fn execute(&self, mut request: reqwest::Request) -> Result<reqwest::Response, reqwest::Error> {
         request.url_mut().set_scheme("http").unwrap();
         self.0.execute(request).await

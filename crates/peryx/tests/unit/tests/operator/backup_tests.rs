@@ -591,6 +591,7 @@ display_name_claim = "name"
 groups_claim = "groups"
 clock_skew_secs = 45
 request_timeout_secs = 8
+trusted_endpoint_hosts = ["keys.idp.internal"]
 
 [[auth.oidc_provider.group_mapping]]
 group = "registry-admins"

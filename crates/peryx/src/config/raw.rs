@@ -250,6 +250,8 @@ pub struct RawOidcProvider {
     pub groups_claim: Option<String>,
     pub clock_skew_secs: Option<u64>,
     pub request_timeout_secs: Option<u64>,
+    #[serde(default)]
+    pub trusted_endpoint_hosts: Vec<String>,
     #[serde(default, rename = "group_mapping")]
     pub group_mappings: Vec<RawExternalGroupGrant>,
 }

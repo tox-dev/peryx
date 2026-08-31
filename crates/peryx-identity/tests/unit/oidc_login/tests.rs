@@ -8,7 +8,8 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::*;
 use crate::tests::oidc_http::{
-    MAX_DISCOVERY_BYTES, TestHttpServer, TestResponseBody, insecure_transport, padded_json, secure_origin, transport,
+    MAX_DISCOVERY_BYTES, TestHttpServer, TestResponseBody, insecure_transport, padded_json, routed_transport,
+    secure_origin, transport,
 };
 use crate::{ExternalIdentityResolution, ExternalLinkRequest, ServerUser, UserId, UserState};
 
@@ -33,7 +34,6 @@ fn settings(issuer: &str) -> OidcProviderSettings {
         display_name_claim: "name".to_owned(),
         groups_claim: Some("groups".to_owned()),
         clock_skew: Duration::from_mins(1),
-        request_timeout: Duration::from_secs(5),
     }
 }
 
@@ -42,7 +42,7 @@ fn provider(issuer: &str) -> OidcLoginProvider {
 }
 
 fn provider_with_settings(settings: OidcProviderSettings, destination: &str) -> OidcLoginProvider {
-    OidcLoginProvider::with_http_transport(settings, transport(destination)).unwrap()
+    OidcLoginProvider::new(settings, transport(destination)).unwrap()
 }
 
 fn encoding_key() -> EncodingKey {
@@ -721,12 +721,115 @@ async fn test_token_body_read_failure_retains_the_http_status() {
     )
     .await;
     mount_jwks(&server, json!({"keys": [jwk("key-1")]})).await;
-    let provider = OidcLoginProvider::with_http_transport(settings(&issuer(&server)), insecure_transport()).unwrap();
+    let provider = OidcLoginProvider::new(settings(&issuer(&server)), insecure_transport()).unwrap();
 
     assert_eq!(
         provider.callback(&response(), &pending(), NOW).await.unwrap_err(),
         OidcProviderError::TokenExchange(OidcTokenExchangeError::Transport { status: Some(200) })
     );
+}
+
+async fn mount_metadata_naming(server: &MockServer, authorization: &str, token: &str, jwks_uri: &str) {
+    mount_discovery(
+        server,
+        json!({
+            "issuer": issuer(server),
+            "authorization_endpoint": authorization,
+            "token_endpoint": token,
+            "jwks_uri": jwks_uri,
+            "id_token_signing_alg_values_supported": ["RS256"],
+        }),
+        "application/json",
+    )
+    .await;
+    mount_jwks(server, json!({"keys": [jwk("key-1")]})).await;
+}
+
+/// Discovery names both backchannel endpoints, so a host the outbound policy refuses must not be
+/// connected to even though the mock provider behind it would answer.
+#[rstest]
+#[case::token_endpoint(true)]
+#[case::key_endpoint(false)]
+#[tokio::test]
+async fn test_backchannel_host_the_policy_refuses_is_rejected(#[case] token_endpoint_is_internal: bool) {
+    let server = MockServer::start().await;
+    let origin = issuer(&server);
+    let (token, jwks_uri) = if token_endpoint_is_internal {
+        ("https://metadata.internal/token".to_owned(), format!("{origin}/jwks"))
+    } else {
+        (format!("{origin}/token"), "https://metadata.internal/jwks".to_owned())
+    };
+    mount_metadata_naming(&server, &format!("{origin}/authorize"), &token, &jwks_uri).await;
+    let provider = OidcLoginProvider::new(
+        settings(&origin),
+        routed_transport(&server.uri(), &["https://metadata.internal"], &["metadata.internal"]),
+    )
+    .unwrap();
+
+    assert_eq!(
+        provider.authorization(NOW).await.unwrap_err(),
+        OidcProviderError::BlockedDestination
+    );
+}
+
+/// A provider may serve its token and key endpoints from a host other than the issuer, so a
+/// permitted one still completes a login.
+#[tokio::test]
+async fn test_backchannel_host_the_policy_permits_still_logs_in() {
+    let server = MockServer::start().await;
+    let origin = issuer(&server);
+    mount_metadata_naming(
+        &server,
+        &format!("{origin}/authorize"),
+        "https://endpoints.example/token",
+        "https://endpoints.example/jwks",
+    )
+    .await;
+    let provider = OidcLoginProvider::new(
+        settings(&origin),
+        routed_transport(&server.uri(), &["https://endpoints.example"], &[]),
+    )
+    .unwrap();
+    let authorization = provider.authorization(NOW).await.unwrap();
+    let mut claims = base_claims(&server);
+    claims["nonce"] = authorization.pending.nonce.clone().into();
+    mount_token(
+        &server,
+        json!({"id_token": mint("key-1", &claims), "token_type": "Bearer"}),
+    )
+    .await;
+    let callback = CallbackResponse {
+        state: authorization.pending.state.clone(),
+        code: "auth-code".to_owned(),
+    };
+
+    let login = provider.callback(&callback, &authorization.pending, NOW).await.unwrap();
+
+    assert_eq!(login.identity.subject.as_str(), "subject-123");
+}
+
+/// The authorization endpoint is a browser redirect target rather than a destination peryx
+/// connects to, so the outbound policy leaves it alone.
+#[tokio::test]
+async fn test_authorization_endpoint_is_outside_the_destination_policy() {
+    let server = MockServer::start().await;
+    let origin = issuer(&server);
+    mount_metadata_naming(
+        &server,
+        "https://metadata.internal/authorize",
+        &format!("{origin}/token"),
+        &format!("{origin}/jwks"),
+    )
+    .await;
+    let provider = OidcLoginProvider::new(
+        settings(&origin),
+        routed_transport(&server.uri(), &[], &["metadata.internal"]),
+    )
+    .unwrap();
+
+    let authorization = provider.authorization(NOW).await.unwrap();
+
+    assert_eq!(authorization.redirect_url.host_str(), Some("metadata.internal"));
 }
 
 #[tokio::test]
@@ -860,7 +963,7 @@ async fn test_cold_provider_network_failure_is_unavailable() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     drop(listener);
-    let provider = OidcLoginProvider::new(settings(&format!("https://{address}"))).unwrap();
+    let provider = provider(&format!("http://{address}"));
     assert!(matches!(
         provider.authorization(NOW).await,
         Err(OidcProviderError::Unavailable)
@@ -1183,25 +1286,38 @@ fn test_scope_string_inserts_and_deduplicates_openid() {
 #[case::empty_subject(OidcProviderBuildError::InvalidClaim, |s: &mut OidcProviderSettings| s.subject_claim.clear())]
 #[case::empty_display(OidcProviderBuildError::InvalidClaim, |s: &mut OidcProviderSettings| s.display_name_claim.clear())]
 #[case::empty_group(OidcProviderBuildError::InvalidClaim, |s: &mut OidcProviderSettings| s.groups_claim = Some(String::new()))]
-#[case::zero_timeout(OidcProviderBuildError::InvalidTimeout, |s: &mut OidcProviderSettings| s.request_timeout = Duration::ZERO)]
 fn test_new_rejects_invalid_settings(
     #[case] expected: OidcProviderBuildError,
     #[case] mutate: fn(&mut OidcProviderSettings),
 ) {
     let mut raw = settings("https://issuer.example");
     mutate(&mut raw);
-    assert_eq!(OidcLoginProvider::new(raw).unwrap_err(), expected);
+    assert_eq!(
+        OidcLoginProvider::new(raw, transport("https://issuer.example")).unwrap_err(),
+        expected
+    );
 }
 
 #[test]
 fn test_new_accepts_a_secure_provider() {
-    let provider = OidcLoginProvider::new(settings("https://issuer.example")).unwrap();
+    let provider =
+        OidcLoginProvider::new(settings("https://issuer.example"), transport("https://issuer.example")).unwrap();
     assert_eq!(provider.id().as_str(), "corporate");
+}
+
+/// The refusal has to name a policy an operator can change, not read as a provider outage.
+#[test]
+fn test_blocked_destination_reports_the_outbound_policy() {
+    assert_eq!(
+        OidcProviderError::BlockedDestination.to_string(),
+        "OIDC provider named a destination the outbound policy refuses"
+    );
 }
 
 #[rstest]
 #[case::unavailable(OidcProviderError::Unavailable, true, false)]
 #[case::invalid_response(OidcProviderError::InvalidProviderResponse, true, false)]
+#[case::blocked(OidcProviderError::BlockedDestination, true, false)]
 #[case::unknown_key(OidcProviderError::UnknownKey, true, false)]
 #[case::provider(OidcProviderError::ProviderMismatch, false, false)]
 #[case::state(OidcProviderError::StateMismatch, false, false)]

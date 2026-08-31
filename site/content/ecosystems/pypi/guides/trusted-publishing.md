@@ -29,6 +29,9 @@ pipeline. GitHub documents its available fields in the
 [Actions OIDC claim reference](https://docs.github.com/en/actions/reference/security/oidc); GitLab lists its fields in
 the [CI ID token reference](https://docs.gitlab.com/ci/secrets/id_token_authentication/).
 
+`[auth].oidc_trusted_endpoint_hosts` optionally lists hosts whose private addresses a discovered JWKS endpoint may name;
+see [verification and cache limits](#verification-and-cache-limits).
+
 Peryx mounts the exchange routes after an operator configures a publisher. Without a publisher it creates no OIDC client
 or replay state. Peryx contacts an issuer during an exchange request. This CI exchange does not create a server user or
 browser session. Browser OIDC login uses a separate provider configuration and credential path.
@@ -74,6 +77,14 @@ redirects or use a JWT header or claim as a network location. Discovery requests
 and one hour from `iat` to `exp`, with no clock-skew allowance. It limits the subject to 2,048 bytes and the replay ID
 to 256 bytes. The internal token expires at the earlier of `token_ttl_secs` and the external identity expiry. A
 deployment with no OCI index accepts `token_ttl_secs` from 1 through 86400.
+
+Discovery names the JWKS endpoint, which the specification allows on a host other than the issuer, so that host arrives
+from a document the issuer controls rather than from your configuration. Peryx applies its outbound destination policy
+to it: each configured `issuer` host reaches private address space, and every other JWKS host must be globally routable
+both as a URL literal and as the address the connection resolves to. `[auth].oidc_trusted_endpoint_hosts` lists the
+extra hosts a private deployment approves, so a self-hosted issuer that serves its JWKS from a second internal host
+keeps working. An issuer that serves its own JWKS needs no entry. A refused destination fails the exchange with a
+retryable `503` and never opens a connection.
 
 The algorithm allowlist and issuer-to-JWK binding implement
 [RFC 8725](https://www.rfc-editor.org/rfc/rfc8725.html#section-3). JWK metadata follows RFC 7517. Peryx accepts both

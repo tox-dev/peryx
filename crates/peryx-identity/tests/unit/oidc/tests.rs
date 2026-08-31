@@ -10,7 +10,8 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::*;
 use crate::tests::oidc_http::{
-    MAX_DISCOVERY_BYTES, MAX_JWKS_BYTES, TestHttpServer, TestResponseBody, padded_json, secure_origin, transport,
+    MAX_DISCOVERY_BYTES, MAX_JWKS_BYTES, TestHttpServer, TestResponseBody, padded_json, routed_transport,
+    secure_origin, transport,
 };
 
 const NOW: i64 = 2_000_000_000;
@@ -150,7 +151,7 @@ fn identity(issuer: &str, kid: &str, jti: &str) -> String {
 }
 
 fn test_verifier(issuer: &str) -> OidcVerifier {
-    OidcVerifier::with_http_transport([secure_origin(issuer)], "peryx", transport(issuer)).unwrap()
+    OidcVerifier::new([secure_origin(issuer)], "peryx", transport(issuer)).unwrap()
 }
 
 async fn verifier() -> (MockServer, Arc<OidcVerifier>) {
@@ -174,7 +175,14 @@ impl VerifierExt for OidcVerifier {
 
 #[test]
 fn test_public_verifier_accepts_an_https_issuer() {
-    assert!(OidcVerifier::new(["https://issuer.example".to_owned()], "peryx").is_ok());
+    assert!(
+        OidcVerifier::new(
+            ["https://issuer.example".to_owned()],
+            "peryx",
+            transport("https://issuer.example")
+        )
+        .is_ok()
+    );
 }
 
 #[rstest]
@@ -189,27 +197,19 @@ fn test_public_verifier_accepts_an_https_issuer() {
 #[case::fragment(vec!["https://issuer.example#tenant".to_owned()], "peryx")]
 fn test_public_verifier_rejects_invalid_configuration(#[case] issuers: Vec<String>, #[case] audience: &str) {
     assert_eq!(
-        OidcVerifier::new(issuers, audience).err(),
-        Some(OidcVerificationError::Configuration)
-    );
-}
-
-#[test]
-fn test_injected_transport_preserves_issuer_validation() {
-    assert_eq!(
-        OidcVerifier::with_http_transport(
-            ["http://issuer.example".to_owned()],
-            "peryx",
-            transport("http://127.0.0.1:1"),
-        )
-        .err(),
+        OidcVerifier::new(issuers, audience, transport("https://issuer.example")).err(),
         Some(OidcVerificationError::Configuration)
     );
 }
 
 #[tokio::test]
 async fn test_verifier_rejects_a_different_expected_audience() {
-    let verifier = OidcVerifier::new(["https://issuer.example".to_owned()], "peryx").unwrap();
+    let verifier = OidcVerifier::new(
+        ["https://issuer.example".to_owned()],
+        "peryx",
+        transport("https://issuer.example"),
+    )
+    .unwrap();
     assert_eq!(
         verifier.verify("unused", "other", NOW).await,
         Err(OidcVerificationError::InvalidIdentity)
@@ -603,14 +603,82 @@ async fn test_discovery_rejects_an_invalid_key_set_url() {
     );
 }
 
+async fn mount_issuer_with_keys_at(server: &MockServer, jwks_uri: &str) {
+    Mock::given(method("GET"))
+        .and(path("/.well-known/openid-configuration"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .insert_header("cache-control", "max-age=120")
+                .set_body_json(json!({
+                    "issuer": secure_origin(&server.uri()),
+                    "jwks_uri": jwks_uri,
+                    "id_token_signing_alg_values_supported": ["RS256"]
+                })),
+        )
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/keys"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/json")
+                .insert_header("cache-control", "max-age=120")
+                .set_body_json(json!({"keys": [jwk("key-1")]})),
+        )
+        .mount(server)
+        .await;
+}
+
+/// Discovery names the key endpoint, so a host the outbound policy refuses must not be connected
+/// to even though the key set behind it would answer.
+#[tokio::test]
+async fn test_key_set_host_the_policy_refuses_is_rejected() {
+    let server = MockServer::start().await;
+    mount_issuer_with_keys_at(&server, "https://metadata.internal/keys").await;
+    let verifier = OidcVerifier::new(
+        [secure_origin(&server.uri())],
+        "peryx",
+        routed_transport(&server.uri(), &["https://metadata.internal"], &["metadata.internal"]),
+    )
+    .unwrap();
+
+    assert_eq!(
+        verifier
+            .verify_identity(&identity(&server.uri(), "key-1", "refused"), NOW)
+            .await,
+        Err(OidcVerificationError::BlockedDestination)
+    );
+}
+
+/// `OpenID` Connect Discovery permits a key endpoint on a host other than the issuer, so a permitted
+/// one still verifies.
+#[tokio::test]
+async fn test_key_set_host_the_policy_permits_still_verifies() {
+    let server = MockServer::start().await;
+    mount_issuer_with_keys_at(&server, "https://keys.example/keys").await;
+    let verifier = OidcVerifier::new(
+        [secure_origin(&server.uri())],
+        "peryx",
+        routed_transport(&server.uri(), &["https://keys.example"], &[]),
+    )
+    .unwrap();
+
+    let accepted = verifier
+        .verify_identity(&identity(&server.uri(), "key-1", "permitted"), NOW)
+        .await
+        .unwrap();
+
+    assert_eq!(accepted.subject, "repo:org/app:ref:refs/heads/main");
+}
+
 #[tokio::test]
 async fn test_unavailable_discovery_endpoint_is_reported() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let issuer = format!("https://{}", listener.local_addr().unwrap());
     drop(listener);
     assert_eq!(
-        OidcVerifier::new([issuer.clone()], "peryx")
-            .unwrap()
+        test_verifier(&issuer)
             .verify_identity(&identity(&issuer, "key-1", "unavailable"), NOW)
             .await,
         Err(OidcVerificationError::IssuerUnavailable)
@@ -683,11 +751,21 @@ async fn test_malformed_issuer_body(
     );
 }
 
+/// The refusal has to name a policy an operator can change, not read as a provider outage.
+#[test]
+fn test_blocked_destination_reports_the_outbound_policy() {
+    assert_eq!(
+        OidcVerificationError::BlockedDestination.to_string(),
+        "the issuer named a destination the outbound policy refuses"
+    );
+}
+
 #[rstest]
 #[case::configuration(OidcVerificationError::Configuration, false)]
 #[case::identity(OidcVerificationError::InvalidIdentity, false)]
 #[case::issuer(OidcVerificationError::IssuerUnavailable, true)]
 #[case::response(OidcVerificationError::InvalidIssuerResponse, true)]
+#[case::blocked(OidcVerificationError::BlockedDestination, true)]
 #[case::key(OidcVerificationError::UnknownKey, true)]
 fn test_error_availability(#[case] error: OidcVerificationError, #[case] expected: bool) {
     assert_eq!(error.unavailable(), expected);

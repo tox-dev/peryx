@@ -13,20 +13,23 @@ pub const DEFAULT_FRESH_SECS: i64 = 300;
 pub const MAX_FRESH_SECS: i64 = 900;
 pub const HARD_CACHE_SECS: i64 = 3600;
 
+/// The backchannel side of an OIDC provider: it shapes and sends requests, and it decides which
+/// provider-declared destinations the deployment may connect to.
+///
+/// Discovery may name a token or key endpoint on any host, so those destinations arrive from a
+/// remote document. Every implementation therefore answers [`permits`](Self::permits); there is no
+/// default that would let a composition root fall back to an unchecked client.
 #[async_trait]
 pub trait OidcHttpTransport: Send + Sync {
+    /// The client that shapes backchannel requests. Requests execute through
+    /// [`execute`](Self::execute), so this client's own destination policy is the one that applies.
+    fn client(&self) -> &reqwest::Client;
+
+    /// Whether a provider-declared backchannel destination may be connected to.
+    fn permits(&self, url: &Url) -> bool;
+
     /// Send a request without following redirects.
     async fn execute(&self, request: reqwest::Request) -> Result<reqwest::Response, reqwest::Error>;
-}
-
-#[derive(Debug)]
-pub struct ReqwestOidcHttpTransport(pub reqwest::Client);
-
-#[async_trait]
-impl OidcHttpTransport for ReqwestOidcHttpTransport {
-    async fn execute(&self, request: reqwest::Request) -> Result<reqwest::Response, reqwest::Error> {
-        self.0.execute(request).await
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

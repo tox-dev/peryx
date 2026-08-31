@@ -20,8 +20,7 @@ use url::Url;
 use crate::oidc::Audience;
 use crate::oidc_http::{
     BoundedResponseError, CachePolicy, CacheWindow, DISCOVERY_BODY_LIMIT, JWKS_BODY_LIMIT, OidcHttpError,
-    OidcHttpTransport, REFRESH_BACKOFF_SECS, ReqwestOidcHttpTransport, discovery_url, fetch, fetch_bounded,
-    usable_keys,
+    OidcHttpTransport, REFRESH_BACKOFF_SECS, discovery_url, fetch, fetch_bounded, usable_keys,
 };
 use crate::{
     ExternalGroup, ExternalGroupGrant, ExternalIdentity, ExternalIdentityLinker, ExternalIdentityResolution,
@@ -52,7 +51,6 @@ pub struct OidcProviderSettings {
     pub groups_claim: Option<String>,
     /// Tolerance applied to token time claims for provider clock drift.
     pub clock_skew: Duration,
-    pub request_timeout: Duration,
 }
 
 /// Returns provider assertions without changing local state.
@@ -69,7 +67,6 @@ pub struct OidcLoginProvider {
     display_name_claim: String,
     groups_claim: Option<String>,
     leeway_secs: u64,
-    client: reqwest::Client,
     transport: Arc<dyn OidcHttpTransport>,
     cache: Arc<AsyncMutex<Cache>>,
 }
@@ -92,30 +89,15 @@ impl std::fmt::Debug for OidcLoginProvider {
 }
 
 impl OidcLoginProvider {
-    /// Validates inputs without opening a provider connection.
+    /// Validates inputs without opening a provider connection. `transport` carries the deployment's
+    /// outbound destination policy; the provider opens no connection of its own.
     ///
     /// # Errors
-    /// Returns [`OidcProviderBuildError`] for an invalid issuer or redirect URL, an empty client ID or
-    /// claim name, or a non-positive timeout.
-    pub fn new(settings: OidcProviderSettings) -> Result<Self, OidcProviderBuildError> {
-        let client = oidc_client(settings.request_timeout)?;
-        Self::with_transport(settings, Arc::new(ReqwestOidcHttpTransport(client.clone())), client)
-    }
-
-    /// # Errors
-    /// Returns the same validation errors as [`new`](Self::new).
-    pub fn with_http_transport(
+    /// Returns [`OidcProviderBuildError`] for an invalid issuer or redirect URL, or an empty client
+    /// ID or claim name.
+    pub fn new(
         settings: OidcProviderSettings,
         transport: Arc<dyn OidcHttpTransport>,
-    ) -> Result<Self, OidcProviderBuildError> {
-        let client = oidc_client(settings.request_timeout)?;
-        Self::with_transport(settings, transport, client)
-    }
-
-    fn with_transport(
-        settings: OidcProviderSettings,
-        transport: Arc<dyn OidcHttpTransport>,
-        client: reqwest::Client,
     ) -> Result<Self, OidcProviderBuildError> {
         let issuer = Url::parse(&settings.issuer).map_err(|_| OidcProviderBuildError::InvalidIssuer)?;
         let issuer = secure_url(&issuer).ok_or(OidcProviderBuildError::InvalidIssuer)?;
@@ -138,9 +120,6 @@ impl OidcLoginProvider {
         if settings.groups_claim.as_ref().is_some_and(String::is_empty) {
             return Err(OidcProviderBuildError::InvalidClaim);
         }
-        if settings.request_timeout.is_zero() {
-            return Err(OidcProviderBuildError::InvalidTimeout);
-        }
         Ok(Self {
             id: settings.id,
             issuer: settings.issuer,
@@ -153,7 +132,6 @@ impl OidcLoginProvider {
             display_name_claim: settings.display_name_claim,
             groups_claim: settings.groups_claim,
             leeway_secs: settings.clock_skew.as_secs(),
-            client,
             transport,
             cache: Arc::new(AsyncMutex::new(Cache::default())),
         })
@@ -224,7 +202,8 @@ impl OidcLoginProvider {
             .append_pair("client_id", &self.client_id)
             .finish();
         let mut request = self
-            .client
+            .transport
+            .client()
             .post(token_endpoint.clone())
             .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
             .body(body);
@@ -378,17 +357,23 @@ impl OidcLoginProvider {
 
     async fn refresh(&self, now: i64) -> Result<Entry, OidcProviderError> {
         let (body, discovery_policy) = self
-            .fetch(self.client.get(self.discovery.clone()), DISCOVERY_BODY_LIMIT)
+            .fetch(
+                self.transport.client().get(self.discovery.clone()),
+                DISCOVERY_BODY_LIMIT,
+            )
             .await?;
         let discovery =
             serde_json::from_slice::<Discovery>(&body).map_err(|_| OidcProviderError::InvalidProviderResponse)?;
         if discovery.issuer != self.issuer || !discovery.algorithms.iter().any(|algorithm| algorithm == "RS256") {
             return Err(OidcProviderError::InvalidProviderResponse);
         }
+        // The authorization endpoint is a browser redirect target, not a destination peryx connects
+        // to, so the outbound policy applies to the backchannel endpoints alone.
         let authorization = Self::endpoint(&discovery.authorization_endpoint)?;
-        let token = Self::endpoint(&discovery.token_endpoint)?;
-        let jwks_uri = Self::endpoint(&discovery.jwks_uri)?;
-        let (jwks_body, jwks_policy) = self.fetch(self.client.get(jwks_uri), JWKS_BODY_LIMIT).await?;
+        let token = self.backchannel_endpoint(&discovery.token_endpoint)?;
+        let jwks_uri = self.backchannel_endpoint(&discovery.jwks_uri)?;
+        let request = self.transport.client().get(jwks_uri);
+        let (jwks_body, jwks_policy) = self.fetch(request, JWKS_BODY_LIMIT).await?;
         let jwks =
             serde_json::from_slice::<JwkSet>(&jwks_body).map_err(|_| OidcProviderError::InvalidProviderResponse)?;
         Ok(Entry {
@@ -403,6 +388,15 @@ impl OidcLoginProvider {
             .ok()
             .filter(|url| secure_url(url).is_some())
             .ok_or(OidcProviderError::InvalidProviderResponse)
+    }
+
+    fn backchannel_endpoint(&self, value: &str) -> Result<Url, OidcProviderError> {
+        let url = Self::endpoint(value)?;
+        if self.transport.permits(&url) {
+            Ok(url)
+        } else {
+            Err(OidcProviderError::BlockedDestination)
+        }
     }
 
     async fn fetch(
@@ -526,8 +520,6 @@ pub enum OidcProviderBuildError {
     EmptyClientId,
     #[error("OIDC subject, display-name, and group claim names must not be empty")]
     InvalidClaim,
-    #[error("OIDC request timeout must be positive")]
-    InvalidTimeout,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -570,6 +562,8 @@ pub enum OidcProviderError {
     Unavailable,
     #[error("OIDC provider returned an invalid response")]
     InvalidProviderResponse,
+    #[error("OIDC provider named a destination the outbound policy refuses")]
+    BlockedDestination,
     #[error("OIDC provider names an unknown signing key")]
     UnknownKey,
     #[error("OIDC callback provider does not match the pending login")]
@@ -592,6 +586,7 @@ impl OidcProviderError {
             self,
             Self::Unavailable
                 | Self::InvalidProviderResponse
+                | Self::BlockedDestination
                 | Self::UnknownKey
                 | Self::TokenExchange(OidcTokenExchangeError::Transport { .. })
         )
@@ -741,15 +736,6 @@ fn claim_groups(value: &Value) -> Result<Vec<ExternalGroup>, OidcProviderError> 
 fn secure_url(url: &Url) -> Option<&Url> {
     (url.scheme() == "https" && url.host_str().is_some() && url.username().is_empty() && url.password().is_none())
         .then_some(url)
-}
-
-fn oidc_client(request_timeout: Duration) -> Result<reqwest::Client, OidcProviderBuildError> {
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-    reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(request_timeout)
-        .build()
-        .or(Err(OidcProviderBuildError::InvalidTimeout))
 }
 
 #[cfg(test)]

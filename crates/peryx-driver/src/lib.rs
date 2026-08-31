@@ -13,6 +13,7 @@ mod driver_set;
 mod http_routes;
 pub mod http_services;
 pub mod jobs;
+pub mod oidc;
 pub mod openapi;
 pub mod quota;
 pub mod range;

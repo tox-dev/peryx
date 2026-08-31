@@ -216,6 +216,7 @@ display_name_claim = "name"
 groups_claim = "groups"
 clock_skew_secs = 30
 request_timeout_secs = 8
+trusted_endpoint_hosts = ["keys.idp.internal"]
 
 [[auth.oidc_provider.group_mapping]]
 group = "service-admins"
@@ -235,6 +236,15 @@ the user; an email or a display name, which can be reassigned, does not belong h
 initial local name. `groups_claim` is optional; when present, its values select `group_mapping` entries the way LDAP
 groups do. A mapping without `repository` grants a server-scoped role, while one with `repository` must name a
 configured index.
+
+**Backchannel destinations.** Discovery names the token and JWKS endpoints, and OpenID Connect Discovery permits them on
+hosts other than the issuer, so those hosts come from a document the provider controls rather than from your
+configuration. Peryx applies the same outbound destination policy it applies to artifact upstreams: the configured
+`issuer` host reaches private address space, and every other token or JWKS host must be globally routable both as a URL
+literal and as the address the connection resolves to. `trusted_endpoint_hosts` lists the extra hosts a private
+deployment approves, so an internal identity provider that serves those endpoints from a second internal host keeps
+working. A refused destination fails the login with a retryable `503` and never opens a connection. The authorization
+endpoint is a browser redirect target rather than a destination peryx connects to, so the policy leaves it alone.
 
 **The login flow.** `GET /_/login/{id}` mints `state`, a `nonce`, and a PKCE verifier. It seals them into a single-use,
 short-lived cookie and redirects the browser to the provider. The provider returns to `/_/login/{id}/callback`, where

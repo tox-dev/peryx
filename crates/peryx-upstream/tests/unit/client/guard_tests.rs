@@ -165,9 +165,12 @@ impl Resolve for FakeResolver {
 }
 
 fn guard_with(base: &str, trusted: &[&str], outcome: Result<Vec<SocketAddr>, ()>) -> OutboundGuard {
+    let base = Url::parse(base).unwrap();
     OutboundGuard::with_resolver(
-        &Url::parse(base).unwrap(),
-        trusted.iter().copied(),
+        base.host_str()
+            .map(str::to_owned)
+            .into_iter()
+            .chain(trusted.iter().map(|entry| (*entry).to_owned())),
         Arc::new(FakeResolver(outcome)),
     )
 }

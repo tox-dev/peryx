@@ -926,6 +926,7 @@ fn oidc_provider(id: &str, client_secret: Option<SecretSource>) -> OidcProviderC
         groups_claim: None,
         clock_skew: Duration::from_mins(1),
         request_timeout: Duration::from_secs(5),
+        trusted_endpoint_hosts: Vec::new(),
         group_mappings: Vec::new(),
     }
 }
@@ -998,6 +999,26 @@ fn test_build_state_rejects_an_invalid_oidc_provider() {
         .expect("expected invalid OIDC provider error");
 
     assert_eq!(error.to_string(), "configure OIDC provider corporate");
+}
+
+#[test]
+fn test_build_state_rejects_an_oidc_issuer_the_destination_policy_cannot_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut provider = oidc_provider("corporate", None);
+    provider.issuer = "idp.example".to_owned();
+    let config = Config {
+        data_dir: dir.path().to_path_buf(),
+        auth: AuthConfig {
+            oidc_providers: vec![provider],
+            signing_key: Some(SecretSource::Literal(TOKEN_REALM_SIGNING_KEY.to_owned())),
+            ..AuthConfig::default()
+        },
+        ..neutral_config()
+    };
+
+    let error = build_state(&config).err().expect("expected invalid issuer error");
+
+    assert_eq!(error.to_string(), "configure OIDC provider corporate transport");
 }
 
 #[test]

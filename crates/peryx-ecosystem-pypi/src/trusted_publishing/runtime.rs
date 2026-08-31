@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
+use peryx_driver::oidc::GuardedOidcTransport;
 use peryx_identity::{
     Glob, Grant, OidcTokenVerifier, OidcVerificationError, OidcVerifier, Principal, Signer, TokenScope, VerifiedToken,
 };
@@ -10,6 +12,7 @@ use super::policy::{PublishClaims, PublishDenial, TrustedPublisher, authorize_pu
 
 pub(super) const TOKEN_SCOPE: TokenScope = TokenScope::new("trusted-publishing");
 const MAX_REPLAY_ENTRIES: usize = 65_536;
+const VERIFIER_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PublisherBinding {
@@ -40,13 +43,21 @@ pub struct OidcRuntime {
 impl OidcRuntime {
     pub(super) fn new(
         bindings: Vec<PublisherBinding>,
+        trusted_endpoint_hosts: &[String],
         signer: Signer,
         token_ttl_secs: i64,
     ) -> Result<Self, ExchangeError> {
         let first = bindings.first().ok_or(ExchangeError::Configuration)?;
+        let transport = GuardedOidcTransport::new(
+            bindings.iter().map(|binding| binding.publisher.issuer.as_str()),
+            trusted_endpoint_hosts,
+            VERIFIER_REQUEST_TIMEOUT,
+        )
+        .map_err(|_| ExchangeError::Configuration)?;
         let verifier = OidcVerifier::new(
             bindings.iter().map(|binding| binding.publisher.issuer.clone()),
             first.publisher.audience.clone(),
+            Arc::new(transport),
         )
         .map_err(|_| ExchangeError::Configuration)?;
         Self::build(bindings, Arc::new(verifier), signer, token_ttl_secs, MAX_REPLAY_ENTRIES)
