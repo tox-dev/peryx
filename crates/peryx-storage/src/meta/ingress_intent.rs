@@ -188,7 +188,8 @@ impl MetaStore {
         Ok(result)
     }
 
-    /// Applies only forward transitions. Settled intents continue using capacity until pruning.
+    /// Applies only forward transitions, dropping the intent's order entry in the same transaction so a
+    /// settled intent costs later sweeps nothing. Settled intents continue using capacity until pruning.
     ///
     /// # Errors
     /// Returns a store error when the row cannot be read, encoded, or committed.
@@ -197,12 +198,14 @@ impl MetaStore {
         let outcome;
         {
             let mut table = txn.open_table(INGRESS_INTENT)?;
+            let mut order = txn.open_table(INGRESS_INTENT_ORDER)?;
             let existing = read_intent(&table, intent_key)?;
             outcome = match existing {
                 Some(mut record) if to > record.phase => {
                     record.phase = to;
                     record.updated_at_unix = now;
                     table.insert(intent_key, serde_json::to_vec(&record)?.as_slice())?;
+                    order.remove(record.seq)?;
                     IntentTransition::Advanced
                 }
                 _ => IntentTransition::Ignored,
@@ -270,11 +273,12 @@ impl MetaStore {
     }
 
     /// Advances up to `limit` pending intents no upload can finalize to [`IntentPhase::Expired`], where
-    /// [`prune_ingress_intents`](Self::prune_ingress_intents) reclaims the record and its bytes. An
-    /// intent qualifies once the owning ecosystem has refused it at least `min_refusals` times and
-    /// `deadline_secs` have passed since it was staged. The refusal floor is what keeps a still
-    /// finalizable intent alive: age alone never expires one, so a home datacenter that is slow to
-    /// finalize does not lose a write whose bytes are durable.
+    /// [`prune_ingress_intents`](Self::prune_ingress_intents) reclaims the record and its bytes, dropping
+    /// each expired intent's order entry in the same transaction. An intent qualifies once the owning
+    /// ecosystem has refused it at least `min_refusals` times and `deadline_secs` have passed since it
+    /// was staged. The refusal floor is what keeps a still finalizable intent alive: age alone never
+    /// expires one, so a home datacenter that is slow to finalize does not lose a write whose bytes are
+    /// durable.
     ///
     /// # Errors
     /// Returns a store error when a row cannot be read, encoded, or committed.
@@ -289,6 +293,7 @@ impl MetaStore {
         let expired;
         {
             let mut table = txn.open_table(INGRESS_INTENT)?;
+            let mut order = txn.open_table(INGRESS_INTENT_ORDER)?;
             let mut stale = Vec::new();
             for entry in table.iter()? {
                 if stale.len() >= limit {
@@ -308,6 +313,7 @@ impl MetaStore {
                 record.phase = IntentPhase::Expired;
                 record.updated_at_unix = now;
                 table.insert(key.as_str(), serde_json::to_vec(&record)?.as_slice())?;
+                order.remove(record.seq)?;
             }
         }
         txn.commit()?;
@@ -341,8 +347,10 @@ impl MetaStore {
 
     /// Returns up to `limit` pending intents in durable admission order, skipping those refused
     /// `max_refusals` times or more so a head of intents no upload can finalize cannot fill the batch
-    /// and starve the recoverable work behind it. Settled order entries remain indexed until pruning but
-    /// do not appear. Pass [`u32::MAX`] to walk every pending intent regardless of refusals.
+    /// and starve the recoverable work behind it. A refused intent stays offered until it expires. Only
+    /// pending intents are indexed, so a settled one is never read and drain cost follows the pending
+    /// backlog rather than the retained history. Pass [`u32::MAX`] to walk every pending intent
+    /// regardless of refusals.
     ///
     /// # Errors
     /// Returns a store error when a table cannot be read or a record decoded.
@@ -365,7 +373,7 @@ impl MetaStore {
             let key = key.value();
             let Some(value) = table.get(key)? else { continue };
             let record: StagedIntent = serde_json::from_slice(value.value())?;
-            if record.phase == IntentPhase::Pending && record.refusals < max_refusals {
+            if record.refusals < max_refusals {
                 pending.push((key.to_owned(), record));
                 if pending.len() == limit {
                     break;
@@ -386,7 +394,8 @@ impl MetaStore {
     }
 
     /// Removes up to `limit` settled intents past retention and releases their authority capacity. Pending
-    /// work remains eligible to finalize and is never pruned.
+    /// work remains eligible to finalize and is never pruned. A settled intent left the order index when
+    /// it settled, so pruning only reclaims the record.
     ///
     /// # Errors
     /// Returns a store error when a row cannot be read or the delete cannot be committed.
@@ -396,7 +405,6 @@ impl MetaStore {
         {
             let mut table = txn.open_table(INGRESS_INTENT)?;
             let mut counts = txn.open_table(INGRESS_INTENT_COUNT)?;
-            let mut order = txn.open_table(INGRESS_INTENT_ORDER)?;
             let mut doomed = Vec::new();
             for entry in table.iter()? {
                 if doomed.len() >= limit {
@@ -412,7 +420,6 @@ impl MetaStore {
             }
             for (key, record) in &doomed {
                 table.remove(key.as_str())?;
-                order.remove(record.seq)?;
                 refund_capacity(&mut counts, record)?;
             }
             pruned = doomed.len();

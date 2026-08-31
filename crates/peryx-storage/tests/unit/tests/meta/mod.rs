@@ -12,6 +12,7 @@ mod finalize_tests;
 mod ingress_intent_tests;
 mod integration_tests;
 mod intent_lifetime_tests;
+mod intent_order_index_tests;
 mod job_tests;
 mod journal_tests;
 mod operation_outcome_tests;

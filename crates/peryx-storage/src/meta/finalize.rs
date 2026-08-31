@@ -6,7 +6,7 @@ use redb::ReadableTable as _;
 
 use super::ingress_intent::{IntentPhase, StagedIntent};
 use super::operation_outcome::{OperationOutcomeRecord, OperationState};
-use super::{DriverTxn, INGRESS_INTENT, MetaError, MetaStore, OPERATION_OUTCOME};
+use super::{DriverTxn, INGRESS_INTENT, INGRESS_INTENT_ORDER, MetaError, MetaStore, OPERATION_OUTCOME};
 
 #[derive(Debug, Clone, Copy)]
 pub struct FinalizedWrite<'a> {
@@ -98,6 +98,8 @@ pub(super) fn stamp_finalized<E: From<MetaError>>(
     advance_intent_to_admitted(txn, write.intent_key, write.now)
 }
 
+/// Settles the pending intent this write finalizes, dropping its pending-order entry in the same
+/// transaction so later sweeps never read a settled row.
 fn advance_intent_to_admitted<E: From<MetaError>>(
     txn: &redb::WriteTransaction,
     intent_key: &str,
@@ -120,6 +122,8 @@ fn advance_intent_to_admitted<E: From<MetaError>>(
         intents
             .insert(intent_key, encoded.as_slice())
             .map_err(MetaError::from)?;
+        let mut order = txn.open_table(INGRESS_INTENT_ORDER).map_err(MetaError::from)?;
+        order.remove(record.seq).map_err(MetaError::from)?;
     }
     Ok(())
 }
