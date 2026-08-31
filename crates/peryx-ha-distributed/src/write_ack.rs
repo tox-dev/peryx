@@ -5,7 +5,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use peryx_core::TopologyConfig;
 use peryx_ha::{
-    BlobWriteDurability, CommittedBlob, DcAck, MetadataOperation, ReceiptSource, RemoteFrontierSource,
+    BlobWriteDurability, CommittedBlob, DcAck, MetadataOperation, ReceiptRequest, ReceiptSource, RemoteFrontierSource,
     WriteAckObserver, WriteDurability,
 };
 
@@ -118,7 +118,10 @@ impl BlobWriteDurability for DistributedBlobDurability {
         let (byte_deadline, (metadata, metadata_deadline)) = tokio::join!(
             gather_receipts(
                 &self.receipt_sources,
-                write.digest(),
+                ReceiptRequest {
+                    digest: write.digest(),
+                    size: write.size(),
+                },
                 &mut filesystem,
                 self.budget,
                 DEFAULT_RECEIPT_POLL,

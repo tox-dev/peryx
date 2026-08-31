@@ -45,6 +45,7 @@ async fn test_fill_remote_degrades_an_availability_failure() {
     let durability = state
         .confirm_blob_write(CommittedBlob::new(
             &digest,
+            b"remote".len() as u64,
             "pypi",
             peryx_ha::AuthorityEpoch(1),
             None,

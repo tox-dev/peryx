@@ -36,6 +36,7 @@ async fn test_durability_reports_unavailable() {
         Durability
             .confirm(CommittedBlob::new(
                 &digest,
+                b"content".len() as u64,
                 "repository",
                 peryx_ha::AuthorityEpoch(1),
                 None,

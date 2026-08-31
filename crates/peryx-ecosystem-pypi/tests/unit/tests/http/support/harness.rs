@@ -771,6 +771,7 @@ async fn test_local_durability_confirms_the_committed_scope() {
         LocalDurability
             .confirm(peryx_ha::CommittedBlob::new(
                 &digest,
+                b"content".len() as u64,
                 "pypi",
                 peryx_ha::AuthorityEpoch(7),
                 None,

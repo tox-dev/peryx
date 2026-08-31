@@ -200,6 +200,7 @@ async fn shared_distributed_test_services_expose_their_contracts() {
     let durability = super::LocalDurability
         .confirm(peryx_ha::CommittedBlob::new(
             &digest,
+            b"fixture".len() as u64,
             "store/app",
             peryx_ha::AuthorityEpoch(1),
             None,

@@ -152,6 +152,18 @@ fn test_terminal_reason_is_none_for_retryable_and_named_otherwise() {
         TransportError::EmptyBatch { frontier: 5, after: 2 }.terminal_reason(),
         Some("empty_batch")
     );
+    assert_eq!(
+        TransportError::ReceiptIdentity {
+            expected: "a".to_owned(),
+            actual: "b".to_owned()
+        }
+        .terminal_reason(),
+        Some("receipt_identity")
+    );
+    assert_eq!(
+        TransportError::ReceiptSize { expected: 1, actual: 2 }.terminal_reason(),
+        Some("receipt_size")
+    );
 }
 
 #[tokio::test]

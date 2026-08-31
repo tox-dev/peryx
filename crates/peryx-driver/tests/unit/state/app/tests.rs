@@ -343,6 +343,7 @@ async fn test_none_mode_has_no_distributed_runtime() {
         serving
             .confirm_blob_write(peryx_ha::CommittedBlob::new(
                 &digest,
+                b"local".len() as u64,
                 "catalog",
                 peryx_ha::AuthorityEpoch(3),
                 None,
@@ -461,6 +462,7 @@ async fn test_configured_blob_services_receive_requests() {
         serving
             .confirm_blob_write(peryx_ha::CommittedBlob::new(
                 &digest,
+                17,
                 "catalog",
                 peryx_ha::AuthorityEpoch(7),
                 None,

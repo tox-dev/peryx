@@ -681,6 +681,7 @@ async fn test_registry_runtime_settings_replace_defaults() {
         serving
             .confirm_blob_write(peryx_ha::CommittedBlob::new(
                 &digest,
+                b"registry".len() as u64,
                 "catalog",
                 peryx_ha::AuthorityEpoch(1),
                 None,

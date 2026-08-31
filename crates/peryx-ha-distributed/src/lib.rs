@@ -170,7 +170,9 @@ pub use peer::{
     PeerTransport, TransferLimits, TransportError, drain_to_frontier,
 };
 pub use peer_http::{HttpPeerError, HttpPeerTransport};
-pub use peer_receipt::{DEFAULT_RECEIPT_POLL, LoopbackReceiptSource, PeerReceipt, ReceiptSource, gather_receipts};
+pub use peer_receipt::{
+    DEFAULT_RECEIPT_POLL, LoopbackReceiptSource, PeerReceipt, ReceiptRequest, ReceiptSource, gather_receipts,
+};
 pub use peer_receipt_http::{HttpReceiptError, HttpReceiptSource, ReceiptReply, receipt_router};
 pub use peryx_ha::VisibilitySnapshotStore;
 pub use peryx_ha::{AvailabilityAudience, AvailabilityAuthorizer};

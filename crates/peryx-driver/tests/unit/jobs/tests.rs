@@ -96,6 +96,7 @@ async fn test_distributed_blob_confirmation_uses_the_installed_durability() {
         state
             .confirm_blob_write(peryx_ha::CommittedBlob::new(
                 &digest,
+                b"blob".len() as u64,
                 "repository",
                 peryx_ha::AuthorityEpoch(7),
                 None,

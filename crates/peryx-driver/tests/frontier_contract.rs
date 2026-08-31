@@ -38,6 +38,7 @@ async fn distributed_frontier_publishes_to_current_and_late_observers() {
             .serving
             .confirm_blob_write(CommittedBlob::new(
                 &digest,
+                b"frontier".len() as u64,
                 "repository",
                 AuthorityEpoch(1),
                 None,

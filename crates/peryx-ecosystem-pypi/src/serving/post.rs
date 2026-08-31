@@ -320,6 +320,7 @@ async fn admit_and_store(
         state
             .confirm_blob_write(CommittedBlob::new(
                 &digest,
+                incoming,
                 &authority,
                 AuthorityEpoch(state.committed_authority_epoch(&authority).await),
                 stored.commit,

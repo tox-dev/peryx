@@ -11,7 +11,7 @@ pub use peryx_ha::RemoteFrontierSource;
 use peryx_ha::{RemoteAck, TransportError};
 
 use crate::dc_ack::Deadline;
-use crate::evidence_gather::{Observation, gather};
+use crate::evidence_gather::{Attempt, Observation, gather};
 use crate::remote_durability::{MetadataOperation, assess_remote_metadata_durability};
 
 pub const DEFAULT_FRONTIER_POLL: Duration = Duration::from_millis(50);
@@ -37,7 +37,16 @@ pub async fn gather_remote_acks(
         authority,
         budget,
         poll,
-        |source, authority| Box::pin(async move { source.fetch_frontier(authority).await.ok().flatten() }),
+        |source, authority| {
+            Box::pin(async move {
+                source
+                    .fetch_frontier(authority)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map_or(Attempt::Retry, Attempt::Found)
+            })
+        },
         |ack| {
             acks.retain(|held| held.datacenter != ack.datacenter);
             acks.push(ack);

@@ -29,15 +29,15 @@ an already-published file is the same idempotent success it has always been.
 
 Every `dc` and `ha` node serves `GET /+replication/v1/receipts/sha256/{digest}` on its public server. Service assembly
 builds an HTTP receipt client for each other member in the local datacenter and polls those clients during the upload
-deadline. The route requires the replication bearer token; `200` returns the stored byte length, `404` reports no local
-blob, and malformed digests return `400`. This peer route is internal and does not appear in the public OpenAPI
-document.
+deadline. The route requires the replication bearer token; `200` names the serving node, the digest, and the stored byte
+length, `404` reports no local blob, and malformed digests return `400`. This peer route is internal and does not appear
+in the public OpenAPI document.
 
-The receipt body does not identify the process that answered or echo the digest, so the caller labels it with the
-configured member name. Duplicate endpoints can therefore look like independent filesystem copies. The resolver also
-uses this node-receipt model for object stores instead of carrying backend-specific commit evidence. Use a `dc`
-filesystem roster only when each member address reaches one distinct process and storage failure domain.
-Cross-datacenter artifact replication runs after publication; the upload does not wait for those bytes.
+Each client counts an answer only when the node, digest, and size are the ones it asked for, so two configured addresses
+that reach one process contribute one copy instead of two. The resolver also uses this node-receipt model for object
+stores instead of carrying backend-specific commit evidence, so a `dc` filesystem roster still wants each member address
+on its own storage failure domain. Cross-datacenter artifact replication runs after publication; the upload does not
+wait for those bytes.
 
 Filesystem persistence also ignores a parent-directory sync failure before a receipt can be served. On a filesystem
 where that sync is needed for crash durability, a receipt can overstate what survives a crash.

@@ -42,6 +42,7 @@ pub trait BlobAvailability: Send + Sync {
 #[derive(Debug, Clone, Copy)]
 pub struct CommittedBlob<'a> {
     digest: &'a Digest,
+    size: u64,
     authority: &'a str,
     epoch: AuthorityEpoch,
     commit: Option<JournalCommit>,
@@ -52,6 +53,7 @@ impl<'a> CommittedBlob<'a> {
     #[must_use]
     pub const fn new(
         digest: &'a Digest,
+        size: u64,
         authority: &'a str,
         epoch: AuthorityEpoch,
         commit: Option<JournalCommit>,
@@ -59,6 +61,7 @@ impl<'a> CommittedBlob<'a> {
     ) -> Self {
         Self {
             digest,
+            size,
             authority,
             epoch,
             commit,
@@ -69,6 +72,12 @@ impl<'a> CommittedBlob<'a> {
     #[must_use]
     pub const fn digest(&self) -> &Digest {
         self.digest
+    }
+
+    /// The byte length every peer receipt for this write must report.
+    #[must_use]
+    pub const fn size(&self) -> u64 {
+        self.size
     }
 
     #[must_use]

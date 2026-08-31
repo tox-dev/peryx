@@ -868,6 +868,7 @@ async fn blob_services_dispatches_durability(#[case] outcome: WriteDurability) {
     let digest = Digest::of(b"content");
     let write = CommittedBlob::new(
         &digest,
+        b"content".len() as u64,
         "repository",
         AuthorityEpoch(7),
         None,
@@ -887,6 +888,7 @@ fn committed_blob_exposes_write_context() {
     let digest = Digest::of(b"content");
     let write = CommittedBlob::new(
         &digest,
+        b"content".len() as u64,
         "repository",
         AuthorityEpoch(7),
         None,
@@ -894,6 +896,7 @@ fn committed_blob_exposes_write_context() {
     );
 
     assert_eq!(write.digest(), &digest);
+    assert_eq!(write.size(), b"content".len() as u64);
     assert_eq!(write.authority(), "repository");
     assert_eq!(write.epoch(), AuthorityEpoch(7));
     assert_eq!(write.commit(), None);

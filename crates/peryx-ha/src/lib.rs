@@ -1123,6 +1123,10 @@ pub enum TransportError {
     BlobNotFound { digest: String },
     #[error("peer blob transport is at its concurrent-stream limit")]
     AtCapacity,
+    #[error("peer receipt names node {actual:?}; the source is bound to node {expected:?}")]
+    ReceiptIdentity { expected: String, actual: String },
+    #[error("peer receipt reports {actual} bytes; the write stored {expected}")]
+    ReceiptSize { expected: u64, actual: u64 },
 }
 
 impl TransportError {
@@ -1148,6 +1152,8 @@ impl TransportError {
             Self::SourceChanged { .. } => Some("source_changed"),
             Self::FrontierGap { .. } => Some("frontier_gap"),
             Self::EmptyBatch { .. } => Some("empty_batch"),
+            Self::ReceiptIdentity { .. } => Some("receipt_identity"),
+            Self::ReceiptSize { .. } => Some("receipt_size"),
         }
     }
 
@@ -1161,6 +1167,13 @@ impl TransportError {
     }
 }
 
+/// The write a receipt must attest: the digest asked for and the byte length the writer stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReceiptRequest<'a> {
+    pub digest: &'a Digest,
+    pub size: u64,
+}
+
 /// Proof that one peer durably holds an artifact.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerReceipt {
@@ -1169,14 +1182,49 @@ pub struct PeerReceipt {
     pub size: u64,
 }
 
+impl PeerReceipt {
+    /// Rejects a receipt that attests anything other than `request` served by `node`.
+    ///
+    /// Byte quorum counts distinct node names, so one process answering for two configured sources
+    /// would otherwise pass off a single copy as two. Binding every receipt to the node its source was
+    /// configured for keeps a process from filling more than one receipt slot.
+    ///
+    /// # Errors
+    ///
+    /// Returns a non-retryable [`TransportError`] when the answering node, digest, or byte length is
+    /// not the one the request bound.
+    pub fn verify(&self, node: &str, request: ReceiptRequest<'_>) -> Result<(), TransportError> {
+        if self.node != node {
+            return Err(TransportError::ReceiptIdentity {
+                expected: node.to_owned(),
+                actual: self.node.clone(),
+            });
+        }
+        if &self.digest != request.digest {
+            return Err(TransportError::DigestMismatch {
+                expected: request.digest.as_str().to_owned(),
+                actual: self.digest.as_str().to_owned(),
+            });
+        }
+        if self.size != request.size {
+            return Err(TransportError::ReceiptSize {
+                expected: request.size,
+                actual: self.size,
+            });
+        }
+        Ok(())
+    }
+}
+
 #[async_trait]
 pub trait ReceiptSource: Sync {
     fn node(&self) -> &str;
 
     /// # Errors
     ///
-    /// Returns [`TransportError`] when the peer request or response fails.
-    async fn fetch_receipt(&self, digest: &Digest) -> Result<Option<PeerReceipt>, TransportError>;
+    /// Returns [`TransportError`] when the peer request or response fails, or when the answer does not
+    /// attest `request` from [`ReceiptSource::node`].
+    async fn fetch_receipt(&self, request: ReceiptRequest<'_>) -> Result<Option<PeerReceipt>, TransportError>;
 }
 
 /// A remote datacenter's accepted metadata frontier.

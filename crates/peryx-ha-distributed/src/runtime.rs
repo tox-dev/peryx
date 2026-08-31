@@ -624,6 +624,22 @@ impl Consensus {
     }
 }
 
+/// A receipt attests which member holds the bytes, so a process that cannot name itself must not serve
+/// one: peers would otherwise count an anonymous answer as a distinct copy.
+fn merge_receipt_endpoint(
+    router: Router,
+    config: &RuntimeConfig,
+    context: &DistributedRuntimeContext,
+) -> anyhow::Result<Router> {
+    let Some(identity) = config.node_identity.as_ref().or(config.writer_identity.as_ref()) else {
+        return Ok(router);
+    };
+    Ok(router.merge(
+        receipt_router(config.role.token().to_owned(), identity.clone(), context.blobs.clone())
+            .context("build receipt routes")?,
+    ))
+}
+
 /// HA producers use their member identity; a DC primary is the configured writer.
 fn merge_analytics_endpoint(
     router: Router,
@@ -752,9 +768,7 @@ impl DistributedRuntime {
                 )
             }
         };
-        let routes = routes.merge(
-            receipt_router(config.role.token().to_owned(), context.blobs.clone()).context("build receipt routes")?,
-        );
+        let routes = merge_receipt_endpoint(routes, config, context)?;
         let routes = if config.mode == DistributedMode::Ha {
             routes.merge(
                 frontier_router(config.role.token().to_owned(), context.frontier.clone())

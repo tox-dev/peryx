@@ -190,15 +190,20 @@ paths.
 
 A `dc` or `ha` node serves `GET /+replication/v1/receipts/sha256/{digest}` on the public server. The receipt client
 queries the configured addresses of other members in the same datacenter with the replication bearer token. A present
-blob returns `200 OK` with its size, an absent blob returns `404 Not Found`, and a malformed digest returns
-`400 Bad Request`.
+blob returns `200 OK` naming the node that answered, the digest it read, and that blob's size; an absent blob returns
+`404 Not Found`, and a malformed digest returns `400 Bad Request`. A node that has no configured identity serves no
+receipt route at all, because it cannot name itself in an answer.
 
-The response proves that the selected endpoint has the blob but does not carry a signed node identity or echo the
-digest. The client attributes it to the configured member address, so duplicate addresses must not be configured as
-independent evidence. The current resolver uses this node-receipt path for object stores as well as filesystems; it does
-not construct object-store-specific evidence. The filesystem persistence path also ignores a parent-directory sync
-failure before this receipt can be issued, which can overstate crash durability. This route is an internal peer
-operation and is not part of the public OpenAPI document.
+The client holds every `200` to the member its source was configured for: the node, digest, and size must all be the
+ones it asked about. Anything else is a protocol failure that contributes no receipt and retires that source for the
+rest of the write. Two configured addresses that reach one process therefore yield one receipt rather than two, and a
+replaced node stops contributing under its predecessor's name until the roster names it. The shared bearer token proves
+group membership, not which member answered, so only this binding keeps one process out of two receipt slots.
+
+The current resolver uses this node-receipt path for object stores as well as filesystems; it does not construct
+object-store-specific evidence. The filesystem persistence path also ignores a parent-directory sync failure before this
+receipt can be issued, which can overstate crash durability. This route is an internal peer operation and is not part of
+the public OpenAPI document.
 
 ## Availability topology snapshot
 

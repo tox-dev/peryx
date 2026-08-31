@@ -82,6 +82,7 @@ async fn test_trace_state_reports_write_durability_unavailable() {
         state
             .confirm_blob_write(peryx_ha::CommittedBlob::new(
                 &digest,
+                b"artifact".len() as u64,
                 "catalog",
                 AuthorityEpoch(4),
                 None,

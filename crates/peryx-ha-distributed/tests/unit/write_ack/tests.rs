@@ -20,6 +20,8 @@ impl WriteAckObserver for Observer {
     }
 }
 
+const SIZE: u64 = 1;
+
 fn digest() -> Digest {
     Digest::from_hex(&format!("{:064x}", 1)).unwrap()
 }
@@ -46,6 +48,7 @@ fn write(digest: &Digest) -> CommittedBlob<'_> {
         .unwrap();
     CommittedBlob::new(
         digest,
+        SIZE,
         "repository:alpha",
         AuthorityEpoch(2),
         Some(commit),
@@ -100,6 +103,7 @@ async fn unjournaled_local_write_needs_no_metadata_acknowledgement() {
     let outcome = durability
         .confirm(CommittedBlob::new(
             &digest,
+            SIZE,
             "repository:alpha",
             AuthorityEpoch(2),
             None,

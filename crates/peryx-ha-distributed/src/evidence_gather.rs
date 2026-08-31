@@ -11,6 +11,14 @@ pub enum Observation {
     Durable,
 }
 
+/// What one query to a source produced. [`Attempt::Retire`] drops the source for the rest of this
+/// gather, so a peer that broke the protocol is not asked again on the same write.
+pub enum Attempt<Evidence> {
+    Found(Evidence),
+    Retry,
+    Retire,
+}
+
 pub async fn gather<Source, Context, Evidence, Request, Observe>(
     sources: Vec<&Source>,
     context: &Context,
@@ -23,19 +31,24 @@ where
     Source: ?Sized + Send + Sync,
     Context: ?Sized + Sync,
     Evidence: Send,
-    Request: for<'a> Fn(&'a Source, &'a Context) -> BoxFuture<'a, Option<Evidence>> + Send + Sync,
+    Request: for<'a> Fn(&'a Source, &'a Context) -> BoxFuture<'a, Attempt<Evidence>> + Send + Sync,
     Observe: FnMut(Evidence) -> Observation + Send,
 {
     let gather = async {
         let request = &request;
         let sources = &sources;
-        let mut requests: FuturesUnordered<BoxFuture<'_, (usize, Option<Evidence>)>> = sources
+        let mut requests: FuturesUnordered<BoxFuture<'_, (usize, Attempt<Evidence>)>> = sources
             .iter()
             .enumerate()
             .map(|(index, source)| Box::pin(async move { (index, request(source, context).await) }) as _)
             .collect();
-        while let Some((index, evidence)) = requests.next().await {
-            match evidence.map_or(Observation::Pending, &mut observe) {
+        while let Some((index, attempt)) = requests.next().await {
+            let observation = match attempt {
+                Attempt::Found(evidence) => observe(evidence),
+                Attempt::Retry => Observation::Pending,
+                Attempt::Retire => continue,
+            };
+            match observation {
                 Observation::Durable => return,
                 Observation::Complete => {}
                 Observation::Pending => requests.push(Box::pin(async move {

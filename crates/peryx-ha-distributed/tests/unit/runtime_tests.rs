@@ -840,13 +840,40 @@ async fn primary_runtime_mounts_routes_and_starts_no_workers() {
         )
         .await
         .unwrap();
-    assert_eq!(receipt.status(), StatusCode::OK);
+    assert_eq!(
+        receipt.status(),
+        StatusCode::NOT_FOUND,
+        "a node with no configured identity cannot attest a receipt"
+    );
     assert_eq!(get(&router, "/+replication/v1/health").await.0, StatusCode::OK);
     assert_eq!(get(&router, "/+replication/v1/ready").await.0, StatusCode::OK);
     let (lifecycle, _) = crate::lifecycle::Lifecycle::new();
     lifecycle.activate();
     let runtime = runtime.prepare_worker_runtime().unwrap();
     assert!(runtime.start_with_lifecycle(lifecycle).unwrap().is_none());
+}
+
+#[tokio::test]
+async fn primary_runtime_receipt_names_the_configured_node() {
+    let (dir, state) = state();
+    let config = RuntimeConfig {
+        writer_identity: Some("east-1".to_owned()),
+        ..primary_config(&dir, DistributedMode::Dc)
+    };
+    let runtime = runtime(&config, &state).unwrap();
+    let digest = state.serving.blobs.put_bytes(b"receipt").await.unwrap();
+
+    let (status, body) = get(
+        &runtime.routes(),
+        &format!("/+replication/v1/receipts/sha256/{}", digest.as_str()),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body,
+        serde_json::json!({ "node": "east-1", "digest": digest.as_str(), "size": b"receipt".len() })
+    );
 }
 
 #[tokio::test]
