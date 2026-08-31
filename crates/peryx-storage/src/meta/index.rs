@@ -2,6 +2,7 @@ use peryx_ha::ArtifactPlacement;
 use redb::ReadableTable as _;
 
 use super::error::{MetaError, MetaScanError};
+use super::policy_decision::advance_repository_generations;
 use super::{
     BLOB_RECLAIM_GUARD, DRIVER_KV, DriverBatch, DriverBlobReference, DriverMutation, JOURNAL, JOURNAL_BLOBS,
     JOURNAL_MUTATIONS, JournalEntry, MetaStore, POLICY_INPUT_GENERATION, PolicyInputGeneration, SERIAL, SERIAL_KEY,
@@ -188,7 +189,7 @@ impl MetaStore {
         mut visit: impl FnMut(&str, &[u8]) -> Result<(), E>,
     ) -> Result<(), MetaScanError<E>> {
         let txn = self.db.begin_read().map_err(MetaError::from)?;
-        let mut generation = txn
+        let generation = txn
             .open_table(POLICY_INPUT_GENERATION)
             .map_err(MetaError::from)?
             .get(repository)
@@ -197,12 +198,6 @@ impl MetaStore {
             .transpose()
             .map_err(MetaError::from)?
             .unwrap_or_default();
-        generation.repository = txn
-            .open_table(SERIAL)
-            .map_err(MetaError::from)?
-            .get(SERIAL_KEY)
-            .map_err(MetaError::from)?
-            .map_or(0, |value| value.value());
         start(generation).map_err(MetaScanError::Visit)?;
         let table = txn.open_table(DRIVER_KV).map_err(MetaError::from)?;
         for entry in table.range(prefix..).map_err(MetaError::from)? {
@@ -358,24 +353,27 @@ impl MetaStore {
         let mut txn = self.db.begin_write().map_err(MetaError::from)?;
         set_durability(&mut txn, durable);
         check_replica_serial(&txn, expected_serial)?;
-        let (value, journal, webhooks, placements) = {
+        let (value, journal, webhooks, placements, policy_inputs) = {
             let mut driver = DriverTxn {
                 table: txn.open_table(DRIVER_KV).map_err(MetaError::from)?,
                 touched: std::collections::BTreeSet::new(),
                 blobs: std::collections::BTreeSet::new(),
                 webhooks: Vec::new(),
                 placements: Vec::new(),
+                policy_inputs: std::collections::BTreeSet::new(),
             };
             let (value, journal) = body(&mut driver)?;
             let webhooks = std::mem::take(&mut driver.webhooks);
             let placements = std::mem::take(&mut driver.placements);
+            let policy_inputs = std::mem::take(&mut driver.policy_inputs);
             let journal = finish_journal(journal, driver).map_err(E::from)?;
-            (value, journal, webhooks, placements)
+            (value, journal, webhooks, placements, policy_inputs)
         };
         Self::enqueue_webhook_events(&txn, &webhooks).map_err(E::from)?;
         Self::write_artifact_placements(&txn, &placements).map_err(E::from)?;
         check_blob_reclaim_guard(&txn, expected_serial, &journal).map_err(E::from)?;
         let journal_commit = commit_journal(&txn, &journal)?;
+        advance_repository_generations(&txn, &policy_inputs).map_err(E::from)?;
         if let Some((repository, catalog)) = catalog_generation {
             update_policy_generation(&txn, repository, catalog).map_err(E::from)?;
         }
@@ -450,10 +448,6 @@ fn update_policy_generation(txn: &redb::WriteTransaction, repository: &str, cata
         .map(|value| serde_json::from_slice::<PolicyInputGeneration>(value.value()))
         .transpose()?
         .unwrap_or_default();
-    generation.repository = txn
-        .open_table(SERIAL)?
-        .get(SERIAL_KEY)?
-        .map_or(0, |value| value.value());
     generation.catalog = catalog;
     let encoded = serde_json::to_vec(&generation)?;
     generations.insert(repository, encoded.as_slice())?;
@@ -517,6 +511,7 @@ pub struct DriverTxn<'txn> {
     blobs: std::collections::BTreeSet<DriverBlobReference>,
     webhooks: Vec<WebhookEventIntent>,
     placements: Vec<(String, ArtifactPlacement)>,
+    policy_inputs: std::collections::BTreeSet<String>,
 }
 
 /// Read-only access to opaque driver rows from one metadata snapshot.
@@ -574,6 +569,16 @@ impl DriverTxn<'_> {
     /// transaction stages a row for it.
     pub fn put_artifact_placement(&mut self, digest: &str, placement: ArtifactPlacement) {
         self.placements.push((digest.to_owned(), placement));
+    }
+
+    /// Declares that this transaction changes `repository`'s policy inputs, advancing that
+    /// repository's input revision in the same commit as the rows themselves.
+    ///
+    /// Driver rows are opaque bytes here, so only the mutation boundary can name the repository a
+    /// write belongs to. A repository nobody declares keeps its revision, which is what stops one
+    /// repository's writes from invalidating another's evaluated decisions.
+    pub fn touch_policy_inputs(&mut self, repository: &str) {
+        self.policy_inputs.insert(repository.to_owned());
     }
 
     /// Includes writes staged earlier in this transaction.

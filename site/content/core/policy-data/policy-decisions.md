@@ -26,10 +26,11 @@ identifies the decision; pagination uses a separate cursor that is not part of t
 | `fresh`                  | Whether current repository, catalog, and policy generations still match |
 | `id`, `input_generation` | Audit identity and the generation counters used by freshness checks     |
 
-The input generation has three counters. `repository` follows the durable metadata serial, `catalog` changes when a new
-remote catalog becomes active, and `policy` changes when the process loads an index policy. `fresh: false` means at
-least one current counter differs from the counters used for that decision. Clients must not use a stale record to
-predict a new request.
+The input generation has three counters, each scoped to the repository that owns the decision. `repository` counts
+changes to that repository's own stored records, `catalog` changes when a new remote catalog becomes active, and
+`policy` changes when the process loads an index policy. A write to one repository never moves another's counters.
+`fresh: false` means at least one current counter differs from the counters used for that decision. Clients must not use
+a stale record to predict a new request.
 
 Query one repository with its access token:
 

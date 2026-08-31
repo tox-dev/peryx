@@ -196,6 +196,7 @@ pub fn publish_file_in_txn<E: From<MetaError>>(
     })? {
         Guard::Skip => Ok((false, Vec::new())),
         Guard::Commit => {
+            txn.touch_policy_inputs(file.index);
             if let Some(webhook) = webhook {
                 txn.enqueue_webhook_event(webhook);
             }
@@ -273,6 +274,7 @@ pub fn promote_files_checked<E: From<MetaError>>(
             match guard(filename, token, txn.get(&key)?.as_deref())? {
                 Guard::Skip => {}
                 Guard::Commit => {
+                    txn.touch_policy_inputs(release.index);
                     txn.put(&key, record)?;
                     if let Some(size) = release.blob_sizes.get(token) {
                         txn.reference_blob(token, *size);
@@ -368,6 +370,7 @@ pub fn mutate_uploads<E: From<MetaError>>(
                     txn.remove(&key)?;
                 }
             }
+            txn.touch_policy_inputs(index);
             changed += 1;
             journal.extend(journal_entries(outbox, || {
                 journal_bytes(
@@ -411,6 +414,7 @@ pub fn mutate_uploads_and_overrides<E: From<MetaError>>(
                 continue;
             };
             guard()?;
+            txn.touch_policy_inputs(plan.index);
             txn.put(&key, &bytes)?;
             changed += 1;
             journal.extend(journal_entries(plan.outbox, || {
@@ -429,6 +433,7 @@ pub fn mutate_uploads_and_overrides<E: From<MetaError>>(
             let Some(override_action) = apply_override(txn, &key, plan.override_mutation)? else {
                 continue;
             };
+            txn.touch_policy_inputs(plan.index);
             changed += 1;
             journal.extend(journal_entries(plan.outbox, || {
                 journal_bytes(
@@ -509,6 +514,7 @@ pub fn delete_upload(
     meta.commit_driver_txn(|txn| {
         let key = upload_key(index, normalized, filename);
         if let Some(record) = txn.get(&key)? {
+            txn.touch_policy_inputs(index);
             txn.remove(&key)?;
             release_provenance_in_txn(txn, index, normalized, filename)?;
             Ok((
@@ -584,6 +590,7 @@ pub fn set_override(
         let Some(action) = apply_override(txn, &key, mutation)? else {
             return Ok((false, Vec::new()));
         };
+        txn.touch_policy_inputs(index);
         Ok((
             true,
             journal_entries(outbox, || {

@@ -493,3 +493,59 @@ fn seed_archive(state: &ServingState) -> (String, String) {
     state.meta.put_project("hosted", "demo", "Demo").unwrap();
     (filename, digest.as_str().to_owned())
 }
+
+#[test]
+fn serving_advances_only_the_replicated_repositories_generation() {
+    let (_directory, state) = state_with_indexes(vec![
+        hosted_index(),
+        Index {
+            name: "other".to_owned(),
+            route: "other".to_owned(),
+            ..hosted_index()
+        },
+    ]);
+
+    PypiServing
+        .apply_replicated_changes(&state.serving, &["pypi\0u\0hosted/demo/demo-1.0.whl".to_owned()])
+        .unwrap();
+
+    assert_eq!(
+        ["hosted", "other"].map(|index| state.serving.meta.policy_input_generation(index).unwrap()),
+        [
+            peryx_storage::meta::PolicyInputGeneration {
+                repository: 1,
+                catalog: 0,
+                policy: 0,
+            },
+            peryx_storage::meta::PolicyInputGeneration::default(),
+        ]
+    );
+}
+
+#[test]
+fn serving_holds_the_frontier_when_a_replicated_generation_cannot_advance() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("peryx.redb");
+    drop(MetaStore::open(&path).unwrap());
+    let database = redb::Database::open(&path).unwrap();
+    let txn = database.begin_write().unwrap();
+    txn.open_table(redb::TableDefinition::<&str, &[u8]>::new("policy_input_generation"))
+        .unwrap()
+        .insert("hosted", b"{".as_slice())
+        .unwrap();
+    txn.commit().unwrap();
+    drop(database);
+    let mut state = AppState::new(
+        MetaStore::open_existing(&path).unwrap(),
+        BlobStorage::filesystem(directory.path().join("blobs")),
+        60,
+        vec![hosted_index()],
+    );
+    crate::tests::install(&mut state);
+
+    let block = PypiServing
+        .apply_replicated_changes(&state.serving, &["pypi\0u\0hosted/demo/demo-1.0.whl".to_owned()])
+        .unwrap_err();
+
+    assert_eq!(block.view, peryx_driver::state::SEARCH_VIEW);
+}

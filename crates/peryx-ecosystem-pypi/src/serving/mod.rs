@@ -522,14 +522,22 @@ impl PypiServing {
     fn apply_replicated_changes_impl(state: &ServingState, changed_keys: &[String]) -> Result<(), ViewBlock> {
         let ctx = state.indexer_ctx();
         let mut views: std::collections::BTreeSet<(usize, &str)> = std::collections::BTreeSet::new();
+        let mut touched: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for key in changed_keys {
             if let Some((index, normalized)) = crate::store::project_of_key(key) {
+                touched.insert(index.to_owned());
                 for position in serving_positions(ctx.indexes, index) {
                     views.insert((position, normalized));
                 }
             }
         }
-        let mut block = None;
+        // A replicated row arrives as an opaque key, so only this hook can say whose policy inputs moved.
+        let mut block = state.meta.advance_repository_generations(&touched).err().map(|error| {
+            tracing::error!(%error, "replica policy generation advance failed; holding the readable frontier");
+            ViewBlock {
+                view: SEARCH_VIEW.to_owned(),
+            }
+        });
         for (position, normalized) in views {
             let index = &ctx.indexes[position];
             if let Err(error) = rebuild_project_view(&ctx, &state.search, index, normalized) {

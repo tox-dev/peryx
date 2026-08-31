@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use redb::{ReadableTable as _, ReadableTableMetadata as _};
 use serde::{Deserialize, Serialize};
@@ -9,7 +9,7 @@ use peryx_policy::{PolicyAction, PolicyDecisionState};
 use super::error::MetaError;
 use super::{
     MetaStore, POLICY_DECISION, POLICY_DECISION_CURRENT, POLICY_DECISION_CURRENT_ID, POLICY_DECISION_SERIAL_KEY,
-    POLICY_INPUT_GENERATION, SERIAL, SERIAL_KEY,
+    POLICY_INPUT_GENERATION, SERIAL,
 };
 
 const MAX_DECISION_HISTORY: usize = 10_000;
@@ -17,6 +17,11 @@ const MAX_QUERY_LIMIT: usize = 100;
 const MAX_REASON_BYTES: usize = 2_048;
 const MAX_SUBJECT_BYTES: usize = 512;
 
+/// The three inputs a policy result depends on, each counted within one repository.
+///
+/// `repository` counts changes to that repository's own rows, `catalog` its published catalog
+/// identity, and `policy` its configured rules. A result stays fresh while all three still match, so
+/// no counter may be shared with another repository.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PolicyInputGeneration {
     pub repository: u64,
@@ -166,10 +171,6 @@ impl MetaStore {
     /// Returns a store error if the generation cannot be read, encoded, or committed.
     pub fn advance_policy_generation(&self, repository: &str) -> Result<PolicyInputGeneration, MetaError> {
         let txn = self.db.begin_write()?;
-        let repository_generation = txn
-            .open_table(SERIAL)?
-            .get(SERIAL_KEY)?
-            .map_or(0, |value| value.value());
         let generation = {
             let mut table = txn.open_table(POLICY_INPUT_GENERATION)?;
             let mut generation = table
@@ -177,7 +178,6 @@ impl MetaStore {
                 .map(|value| serde_json::from_slice::<PolicyInputGeneration>(value.value()))
                 .transpose()?
                 .unwrap_or_default();
-            generation.repository = repository_generation;
             generation.policy += 1;
             let encoded = serde_json::to_vec(&generation)?;
             table.insert(repository, encoded.as_slice())?;
@@ -185,6 +185,21 @@ impl MetaStore {
         };
         txn.commit()?;
         Ok(generation)
+    }
+
+    /// Advances the input revision of each named repository, for a mutation that has already landed
+    /// and so cannot advance it in its own transaction.
+    ///
+    /// A replica applies opaque keys it cannot attribute, so its ecosystem apply hook - which does
+    /// parse its own keys - names the repositories here once the rows are committed.
+    ///
+    /// # Errors
+    /// Returns a store error if a generation cannot be read, encoded, or committed.
+    pub fn advance_repository_generations(&self, repositories: &BTreeSet<String>) -> Result<(), MetaError> {
+        let txn = self.db.begin_write()?;
+        advance_repository_generations(&txn, repositories)?;
+        txn.commit()?;
+        Ok(())
     }
 
     /// # Errors
@@ -230,7 +245,7 @@ impl MetaStore {
                 .map_err(MetaError::from)?;
             format!("pd_{next:016x}")
         };
-        let mut input_generation = {
+        let input_generation = {
             let table = txn.open_table(POLICY_INPUT_GENERATION).map_err(MetaError::from)?;
             table
                 .get(decision.repository)
@@ -240,12 +255,6 @@ impl MetaStore {
                 .map_err(MetaError::from)?
                 .unwrap_or_default()
         };
-        input_generation.repository = txn
-            .open_table(SERIAL)
-            .map_err(MetaError::from)?
-            .get(SERIAL_KEY)
-            .map_err(MetaError::from)?
-            .map_or(0, |value| value.value());
         let record = PolicyDecisionRecord {
             id: Uuid::new_v4(),
             repository: decision.repository.to_owned(),
@@ -314,19 +323,13 @@ impl MetaStore {
             .expect("current policy decision must have history");
         let record = decode_policy_decision(record.value()).map_err(MetaError::from)?;
         let generations = txn.open_table(POLICY_INPUT_GENERATION).map_err(MetaError::from)?;
-        let mut generation = generations
+        let generation = generations
             .get(record.repository.as_str())
             .map_err(MetaError::from)?
             .map(|value| serde_json::from_slice::<PolicyInputGeneration>(value.value()))
             .transpose()
             .map_err(MetaError::from)?
             .unwrap_or_default();
-        generation.repository = txn
-            .open_table(SERIAL)
-            .map_err(MetaError::from)?
-            .get(SERIAL_KEY)
-            .map_err(MetaError::from)?
-            .map_or(0, |value| value.value());
         Ok((record.input_generation == generation).then_some(record))
     }
 
@@ -363,19 +366,13 @@ impl MetaStore {
         let current = txn.open_table(POLICY_DECISION_CURRENT_ID).map_err(MetaError::from)?;
         let history = txn.open_table(POLICY_DECISION).map_err(MetaError::from)?;
         let generations = txn.open_table(POLICY_INPUT_GENERATION).map_err(MetaError::from)?;
-        let mut generation = generations
+        let generation = generations
             .get(repository)
             .map_err(MetaError::from)?
             .map(|value| serde_json::from_slice::<PolicyInputGeneration>(value.value()))
             .transpose()
             .map_err(MetaError::from)?
             .unwrap_or_default();
-        generation.repository = txn
-            .open_table(SERIAL)
-            .map_err(MetaError::from)?
-            .get(SERIAL_KEY)
-            .map_err(MetaError::from)?
-            .map_or(0, |value| value.value());
         let mut decisions = HashMap::with_capacity(wanted.len());
         for entry in current.iter().map_err(MetaError::from)?.rev() {
             let (id, subject) = entry.map_err(MetaError::from)?;
@@ -424,12 +421,6 @@ impl MetaStore {
         let txn = self.db.begin_read().map_err(MetaError::from)?;
         let history = txn.open_table(POLICY_DECISION).map_err(MetaError::from)?;
         let generations = txn.open_table(POLICY_INPUT_GENERATION).map_err(MetaError::from)?;
-        let repository_generation = txn
-            .open_table(SERIAL)
-            .map_err(MetaError::from)?
-            .get(SERIAL_KEY)
-            .map_err(MetaError::from)?
-            .map_or(0, |value| value.value());
         let mut decisions = Vec::with_capacity(query.limit + 1);
         let mut cursors = Vec::with_capacity(query.limit + 1);
         for entry in history.iter().map_err(MetaError::from)?.rev() {
@@ -441,14 +432,13 @@ impl MetaStore {
             if !matches_query(&record, query) {
                 continue;
             }
-            let mut generation = generations
+            let generation = generations
                 .get(record.repository.as_str())
                 .map_err(MetaError::from)?
                 .map(|value| serde_json::from_slice::<PolicyInputGeneration>(value.value()))
                 .transpose()
                 .map_err(MetaError::from)?
                 .unwrap_or_default();
-            generation.repository = repository_generation;
             decisions.push(PolicyDecisionItem {
                 fresh: record.input_generation == generation,
                 record,
@@ -462,6 +452,27 @@ impl MetaStore {
         decisions.truncate(query.limit);
         Ok(PolicyDecisionPage { decisions, next_cursor })
     }
+}
+
+pub(super) fn advance_repository_generations(
+    txn: &redb::WriteTransaction,
+    repositories: &BTreeSet<String>,
+) -> Result<(), MetaError> {
+    if repositories.is_empty() {
+        return Ok(());
+    }
+    let mut generations = txn.open_table(POLICY_INPUT_GENERATION)?;
+    for repository in repositories {
+        let mut generation = generations
+            .get(repository.as_str())?
+            .map(|value| serde_json::from_slice::<PolicyInputGeneration>(value.value()))
+            .transpose()?
+            .unwrap_or_default();
+        generation.repository += 1;
+        let encoded = serde_json::to_vec(&generation)?;
+        generations.insert(repository.as_str(), encoded.as_slice())?;
+    }
+    Ok(())
 }
 
 fn validate_decision(decision: &NewPolicyDecision<'_>) -> Result<(), PolicyDecisionStoreError> {

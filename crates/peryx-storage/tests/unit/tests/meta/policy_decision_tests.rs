@@ -32,6 +32,15 @@ fn publish_catalog(meta: &crate::meta::MetaStore, generation: u64) {
     .unwrap();
 }
 
+fn write_row(meta: &crate::meta::MetaStore, repository: &str, key: &str, value: &[u8]) {
+    meta.commit_driver_txn(|txn| {
+        txn.touch_policy_inputs(repository);
+        txn.put(key, value)?;
+        Ok::<_, crate::meta::MetaError>(((), vec![b"replicated".to_vec()]))
+    })
+    .unwrap();
+}
+
 #[test]
 fn test_policy_decision_replaces_current_and_retains_history() {
     let (_dir, meta) = store();
@@ -67,10 +76,10 @@ fn test_policy_decision_replaces_current_and_retains_history() {
 fn test_policy_decision_repository_change_makes_current_stale() {
     let (_dir, meta) = store();
     meta.advance_policy_generation("private").unwrap();
-    meta.next_serial().unwrap();
+    write_row(&meta, "private", "pypi/private/one", b"one");
     meta.record_policy_decision(decision("resource", PolicyDecisionState::Allow, 10))
         .unwrap();
-    meta.next_serial().unwrap();
+    write_row(&meta, "private", "pypi/private/two", b"two");
 
     assert_eq!(
         (
@@ -166,9 +175,9 @@ fn test_policy_decision_failed_catalog_publication_rolls_back_generation() {
 }
 
 #[test]
-fn test_policy_catalog_generation_captures_repository_serial() {
+fn test_policy_catalog_publication_leaves_the_repository_revision_alone() {
     let (_dir, meta) = store();
-    meta.next_serial().unwrap();
+    write_row(&meta, "private", "pypi/private/one", b"one");
     publish_catalog(&meta, 1);
 
     assert_eq!(
@@ -179,6 +188,164 @@ fn test_policy_catalog_generation_captures_repository_serial() {
             policy: 0,
         }
     );
+}
+
+#[test]
+fn test_policy_decision_stays_fresh_when_another_repository_changes() {
+    let (_dir, meta) = store();
+    meta.advance_policy_generation("private").unwrap();
+    let recorded = meta
+        .record_policy_decision(decision("resource", PolicyDecisionState::Allow, 10))
+        .unwrap();
+
+    write_row(&meta, "other", "pypi/other/one", b"one");
+
+    assert_eq!(
+        (
+            meta.current_policy_decision(decision("resource", PolicyDecisionState::Allow, 0))
+                .unwrap(),
+            meta.policy_input_generation("private").unwrap(),
+            meta.policy_input_generation("other").unwrap(),
+        ),
+        (
+            Some(recorded),
+            crate::meta::PolicyInputGeneration {
+                repository: 0,
+                catalog: 0,
+                policy: 1,
+            },
+            crate::meta::PolicyInputGeneration {
+                repository: 1,
+                catalog: 0,
+                policy: 0,
+            },
+        )
+    );
+}
+
+#[test]
+fn test_policy_decision_history_marks_only_the_changed_repository_stale() {
+    let (_dir, meta) = store();
+    meta.record_policy_decision(decision("resource", PolicyDecisionState::Allow, 10))
+        .unwrap();
+    meta.record_policy_decision(NewPolicyDecision {
+        repository: "other",
+        ..decision("resource", PolicyDecisionState::Allow, 11)
+    })
+    .unwrap();
+
+    write_row(&meta, "other", "pypi/other/one", b"one");
+
+    assert_eq!(
+        meta.query_policy_decisions(&PolicyDecisionQuery {
+            limit: 10,
+            ..PolicyDecisionQuery::default()
+        })
+        .unwrap()
+        .decisions
+        .into_iter()
+        .map(|item| (item.record.repository, item.fresh))
+        .collect::<Vec<_>>(),
+        vec![("other".to_owned(), false), ("private".to_owned(), true)]
+    );
+}
+
+#[test]
+fn test_policy_decision_artifact_lookup_ignores_another_repository_change() {
+    let (_dir, meta) = store();
+    let recorded = meta
+        .record_policy_decision(decision("resource", PolicyDecisionState::Allow, 10))
+        .unwrap();
+
+    write_row(&meta, "other", "pypi/other/one", b"one");
+
+    assert_eq!(
+        meta.current_policy_decisions_for_artifacts("private", "resource", &["artifact-1.0.bin"])
+            .unwrap(),
+        HashMap::from([(
+            "artifact-1.0.bin".to_owned(),
+            PolicyDecisionItem {
+                record: recorded,
+                fresh: true
+            }
+        )])
+    );
+}
+
+#[test]
+fn test_policy_repository_revision_rolls_back_with_its_transaction() {
+    let (_dir, meta) = store();
+    write_row(&meta, "private", "pypi/private/one", b"one");
+
+    let result = meta.commit_driver_txn(|txn| {
+        txn.touch_policy_inputs("private");
+        txn.put("pypi/private/two", b"two")?;
+        Err::<((), Vec<Vec<u8>>), _>(crate::meta::MetaError::DriverPrecondition("failed".to_owned()))
+    });
+
+    assert_eq!(
+        (
+            result.is_err(),
+            meta.get_driver_value("pypi/private/two").unwrap(),
+            meta.policy_input_generation("private").unwrap().repository,
+        ),
+        (true, None, 1)
+    );
+}
+
+#[test]
+fn test_policy_repository_revisions_survive_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peryx.redb");
+    let meta = crate::meta::MetaStore::open(&path).unwrap();
+    write_row(&meta, "private", "pypi/private/one", b"one");
+    write_row(&meta, "other", "pypi/other/one", b"one");
+    write_row(&meta, "other", "pypi/other/two", b"two");
+    meta.commit_driver_txn(|txn| {
+        txn.touch_policy_inputs("private");
+        Err::<((), Vec<Vec<u8>>), _>(crate::meta::MetaError::DriverPrecondition("interrupted".to_owned()))
+    })
+    .unwrap_err();
+    drop(meta);
+
+    let meta = crate::meta::MetaStore::open(&path).unwrap();
+
+    assert_eq!(
+        (
+            meta.policy_input_generation("private").unwrap().repository,
+            meta.policy_input_generation("other").unwrap().repository,
+        ),
+        (1, 2)
+    );
+}
+
+#[test]
+fn test_advance_repository_generations_moves_only_the_named_repositories() {
+    let (_dir, meta) = store();
+    write_row(&meta, "private", "pypi/private/one", b"one");
+    write_row(&meta, "other", "pypi/other/one", b"one");
+
+    meta.advance_repository_generations(&std::collections::BTreeSet::from(["other".to_owned()]))
+        .unwrap();
+
+    assert_eq!(
+        (
+            meta.policy_input_generation("private").unwrap().repository,
+            meta.policy_input_generation("other").unwrap().repository,
+        ),
+        (1, 2)
+    );
+}
+
+#[test]
+fn test_advance_repository_generations_accepts_an_empty_set() {
+    let (_dir, meta) = store();
+    write_row(&meta, "private", "pypi/private/one", b"one");
+
+    meta.advance_repository_generations(&std::collections::BTreeSet::new())
+        .unwrap();
+
+    assert_eq!(meta.policy_input_generation("private").unwrap().repository, 1);
 }
 
 #[test]
@@ -334,7 +501,7 @@ fn test_policy_decision_artifact_batch_keeps_stale_records() {
     let mut candidate = decision("project", PolicyDecisionState::Allow, 10);
     candidate.artifact = Some("stale.whl");
     let expected = meta.record_policy_decision(candidate).unwrap();
-    meta.next_serial().unwrap();
+    write_row(&meta, "private", "pypi/private/one", b"one");
 
     assert_eq!(
         meta.current_policy_decisions_for_artifacts("private", "project", &["stale.whl"])
@@ -582,9 +749,9 @@ fn test_policy_generation_initializes_an_unknown_repository() {
 }
 
 #[test]
-fn test_policy_generation_captures_repository_serial() {
+fn test_policy_generation_keeps_the_repository_revision() {
     let (_dir, meta) = store();
-    meta.next_serial().unwrap();
+    write_row(&meta, "private", "pypi/private/one", b"one");
 
     assert_eq!(
         meta.advance_policy_generation("private").unwrap(),

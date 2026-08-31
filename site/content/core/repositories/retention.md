@@ -81,7 +81,8 @@ The output order is total. Evaluating the same snapshot and policy produces the 
 A plan identifies both inputs:
 
 - `policy_version`: stable hash of the compiled, typed rule values
-- `frontier`: repository serial, catalog generation, and policy generation read by the scan
+- `frontier`: repository revision, catalog generation, and policy generation read by the scan, all scoped to this
+  repository
 
 An apply step can reject a plan after either input changes.
 

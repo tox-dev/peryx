@@ -1169,3 +1169,88 @@ fn test_combined_mutation_reports_override_changes(
     assert_eq!(meta.current_serial().unwrap(), expected as u64);
     assert_eq!(meta.next_webhook_event_id().unwrap(), None);
 }
+
+#[derive(Clone, Copy)]
+enum HostedMutation {
+    Publish,
+    Promote,
+    Rewrite,
+    Remove,
+    Override,
+    RewriteWithOverride,
+}
+
+fn apply_hosted_mutation(meta: &MetaStore, mutation: HostedMutation) {
+    match mutation {
+        HostedMutation::Publish => {
+            meta.publish_file_if(true, &published(), |_stored| Ok::<_, MetaError>(Guard::Commit))
+                .unwrap();
+        }
+        HostedMutation::Promote => {
+            promote(meta, "staging").unwrap();
+        }
+        HostedMutation::Rewrite => {
+            meta.mutate_uploads(true, "hosted", "flask", "yank", 123, |_filename, _record| {
+                Ok::<_, MetaError>(UploadMutation::Replace(b"yanked".to_vec()))
+            })
+            .unwrap();
+        }
+        HostedMutation::Remove => {
+            meta.delete_upload(true, "hosted", "flask", "flask-1.0.whl", 123)
+                .unwrap();
+        }
+        HostedMutation::Override => {
+            meta.set_override(
+                true,
+                "hosted",
+                "flask",
+                "flask-1.0.whl",
+                OverrideMutation::Hidden(true),
+                123,
+            )
+            .unwrap();
+        }
+        HostedMutation::RewriteWithOverride => {
+            mutate_uploads_and_overrides(
+                meta,
+                UploadMutationPlan {
+                    outbox: true,
+                    index: "hosted",
+                    normalized: "flask",
+                    action: "mutate",
+                    submitted_at_unix: 123,
+                    override_filenames: &["flask-1.0.whl".to_owned()],
+                    override_mutation: OverrideMutation::Hidden(true),
+                },
+                || Ok::<_, MetaError>(()),
+                |_filename, _record| Ok::<_, MetaError>(Some(b"rewritten".to_vec())),
+                |_| None,
+            )
+            .unwrap();
+        }
+    }
+}
+
+fn revisions(meta: &MetaStore) -> [u64; 3] {
+    ["hosted", "staging", "prod"].map(|index| meta.policy_input_generation(index).unwrap().repository)
+}
+
+#[rstest]
+#[case::publish(HostedMutation::Publish, [1, 0, 0])]
+#[case::promote(HostedMutation::Promote, [0, 0, 1])]
+#[case::rewrite(HostedMutation::Rewrite, [1, 0, 0])]
+#[case::remove(HostedMutation::Remove, [1, 0, 0])]
+#[case::override_only(HostedMutation::Override, [1, 0, 0])]
+#[case::rewrite_with_override(HostedMutation::RewriteWithOverride, [1, 0, 0])]
+fn test_hosted_mutation_advances_only_its_own_repository(#[case] mutation: HostedMutation, #[case] expected: [u64; 3]) {
+    let (_dir, meta) = store();
+    for index in ["hosted", "staging", "prod"] {
+        meta.put_upload(index, "flask", "flask-1.0.whl", br#"{"version":"1.0"}"#)
+            .unwrap();
+    }
+    let before = revisions(&meta);
+
+    apply_hosted_mutation(&meta, mutation);
+
+    assert_eq!((before, revisions(&meta)), ([0, 0, 0], expected));
+}

@@ -490,8 +490,11 @@ fn test_evaluate_retention_plans_nothing_for_an_empty_index() {
 #[test]
 fn test_evaluate_retention_reports_the_metadata_frontier() {
     let (_dir, meta) = store();
-    meta.commit_driver_txn(|_| Ok::<_, MetaError>(((), vec![b"journal entry".to_vec()])))
-        .unwrap();
+    meta.commit_driver_txn(|txn| {
+        txn.touch_policy_inputs("pypi");
+        Ok::<_, MetaError>(((), vec![b"journal entry".to_vec()]))
+    })
+    .unwrap();
     meta.advance_policy_generation("pypi").unwrap();
     seed(&meta, "pypi", "demo", "1.0", Yanked::No, None);
 

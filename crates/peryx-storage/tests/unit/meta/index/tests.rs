@@ -118,6 +118,49 @@ fn test_visit_driver_policy_snapshot_is_consistent() {
 }
 
 #[test]
+fn test_visit_driver_policy_snapshot_ignores_another_repository() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let mut generations = Vec::new();
+    let mut snapshot = |repository: &str| {
+        meta.visit_driver_policy_snapshot(
+            "catalog/",
+            repository,
+            |generation| {
+                generations.push(generation);
+                Ok::<(), std::io::Error>(())
+            },
+            |_key, _value| Ok(()),
+        )
+        .unwrap();
+    };
+
+    snapshot("private");
+    meta.commit_driver_txn(|txn| {
+        txn.touch_policy_inputs("other");
+        txn.put("catalog/1", b"one")?;
+        Ok::<_, MetaError>(((), vec![b"entry".to_vec()]))
+    })
+    .unwrap();
+    snapshot("private");
+    meta.commit_driver_txn(|txn| {
+        txn.touch_policy_inputs("private");
+        txn.put("catalog/2", b"two")?;
+        Ok::<_, MetaError>(((), vec![b"entry".to_vec()]))
+    })
+    .unwrap();
+    snapshot("private");
+
+    assert_eq!(
+        generations
+            .into_iter()
+            .map(|generation| generation.repository)
+            .collect::<Vec<_>>(),
+        vec![0, 0, 1]
+    );
+}
+
+#[test]
 fn test_remove_driver_values_if_honors_zero_limit() {
     fn remove(value: &[u8]) -> Result<bool, MetaError> {
         serde_json::from_slice(value).map_err(MetaError::from)

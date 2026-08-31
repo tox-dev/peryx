@@ -268,11 +268,16 @@ fn test_driver_batch_applies_puts_and_deletes_with_selected_durability() {
 }
 
 #[test]
-fn test_driver_policy_snapshot_reads_rows_and_current_serial() {
+fn test_driver_policy_snapshot_reads_rows_and_current_revision() {
     let (_dir, store) = super::store();
     store.put_driver_value("scope/a", b"one").unwrap();
     store.put_driver_value("scope/b", b"two").unwrap();
-    store.next_serial().unwrap();
+    store
+        .commit_driver_txn(|txn| {
+            txn.touch_policy_inputs("repository");
+            Ok::<_, crate::meta::MetaError>(((), Vec::new()))
+        })
+        .unwrap();
     let mut seen = Vec::new();
     let mut generation = None;
 

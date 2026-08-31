@@ -228,7 +228,11 @@ async fn shadow_candidates_find_stale_decisions_behind_unrelated_records() {
             None,
         ))
         .unwrap();
-    state.serving.meta.next_serial().unwrap();
+    state
+        .serving
+        .meta
+        .advance_repository_generations(&std::collections::BTreeSet::from(["root-pypi".to_owned()]))
+        .unwrap();
     let authorization = local_reader(&state, "root-pypi").await;
 
     let (status, _, body) = request(
