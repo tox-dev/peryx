@@ -255,7 +255,9 @@ copy.
 **Outages.** `request_timeout_secs` bounds discovery, key, token, and user-info requests. Once a session exists, no
 request reaches the provider. A provider outage fails an in-progress browser login with a retryable `503` but leaves
 API-token authentication available, so protected operations continue while the identity provider is down. A
-metadata-fetch failure retains cached keys and signature validation.
+metadata-fetch failure retains cached keys and signature validation unless the provider's `Cache-Control` withheld them.
+Peryx caches no `no-store` or `private` response, and under `no-cache` or `must-revalidate` a failed refetch fails the
+login instead of reusing a document the provider marked stale.
 
 `default_anonymous_read = false` makes each index ACL deny anonymous reads by default. An implementation applies that
 default to its protected routes. Public core routes stay open. An index that should stay open sets

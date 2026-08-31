@@ -80,19 +80,26 @@ The algorithm allowlist and issuer-to-JWK binding implement
 `application/json` and registered `application/*+json` responses. It treats the resulting upload credential as an RFC
 6750 bearer token, even when a PyPI client wraps it in Basic `__token__` syntax.
 
-Each issuer has an independent JWKS cache and refresh lock. Peryx clamps HTTP freshness from 60 through 900 seconds, and
-a known JWK may remain usable during a transient refresh failure for at most one hour from the last successful fetch. An
-unknown JWK or cold-cache failure triggers a refresh at most once per minute. Peryx keeps a working cache after a
+Each issuer has an independent JWKS cache and refresh lock. Without a usable `max-age`, Peryx treats a response as fresh
+for 300 seconds, and it caps a stated freshness at 900 seconds. A known JWK may remain usable during a transient refresh
+failure for at most one hour from the last successful fetch. An unknown JWK or cold-cache failure triggers a refresh at
+most once per minute, and that throttle ends with the freshness the issuer stated. Peryx keeps a working cache after a
 duplicate JWK ID or malformed JWKS. An issuer outage does not block long-lived Basic uploads, minted Peryx tokens, or
 exchanges through another issuer.
 
-The cache reads `Cache-Control: max-age` under RFC 9111, then applies the documented min/max freshness and hard stale
-limit. GitLab returns `max-age=0`; the one-minute floor prevents per-publish discovery and JWKS requests.
+Peryx applies the [RFC 9111](https://www.rfc-editor.org/rfc/rfc9111.html#section-5.2.2) directives from both the
+discovery document and the JWKS, taking the stricter of the two. Under `no-store` or `private` it verifies the identity
+that prompted the fetch and caches nothing. `no-cache` demands a successful refetch before the next use and withdraws
+the stale window when that refetch fails. Peryx honors a `max-age` below 60 seconds; `max-age=0` demands a refetch but
+keeps the stale window unless `must-revalidate` or `proxy-revalidate` accompanies it. A directive Peryx cannot parse,
+including a repeated `max-age`, reads as already stale. GitLab returns `max-age=0`, so each publish revalidates
+discovery and the JWKS.
 
-The stale-JWK window is an availability trade-off: removing a JWK at the issuer may take up to one hour to remove it
-from a running Peryx process. Keep CI identity lifetimes short. For immediate revocation, remove the publisher from the
-configuration and restart peryx; if the signing secret or a minted token may have leaked, rotate the realm secret too.
-Changing that secret invalidates each outstanding Peryx realm token. Issuer JWK rotation needs no operator action.
+The stale-JWK window is an availability trade-off: unless the issuer forbids stale reuse, removing a JWK at the issuer
+may take up to one hour to remove it from a running Peryx process. Keep CI identity lifetimes short. For immediate
+revocation, remove the publisher from the configuration and restart peryx; if the signing secret or a minted token may
+have leaked, rotate the realm secret too. Changing that secret invalidates each outstanding Peryx realm token. Issuer
+JWK rotation needs no operator action.
 
 Peryx consumes the `(issuer, jti)` pair from an identity after verification and authorization, so one process mints at
 most one token from it. The atomic consume follows the Warehouse
