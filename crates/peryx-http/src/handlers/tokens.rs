@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, Request, StatusCode, header};
+use axum::http::{Extensions, HeaderMap, Request, StatusCode, header};
 use axum::response::{IntoResponse as _, Response};
 use peryx_driver::authz::{Decision, DenyReason, ScopedDecision};
 use peryx_driver::state::AppState;
@@ -38,7 +38,7 @@ pub struct ListTokensQuery {
 
 pub async fn create_token(State(state): State<Arc<AppState>>, request: Request<Body>) -> Response {
     let (parts, body) = request.into_parts();
-    let actor = match authenticate(&state, &parts.headers).await {
+    let actor = match authenticate(&state, &parts.headers, &parts.extensions).await {
         Ok(actor) => actor,
         Err(rejection) => return rejection.response(),
     };
@@ -82,9 +82,10 @@ pub async fn create_token(State(state): State<Arc<AppState>>, request: Request<B
 pub async fn list_tokens(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    extensions: Extensions,
     Query(query): Query<ListTokensQuery>,
 ) -> Response {
-    let actor = match authenticate(&state, &headers).await {
+    let actor = match authenticate(&state, &headers, &extensions).await {
         Ok(actor) => actor,
         Err(rejection) => return rejection.response(),
     };
@@ -106,8 +107,13 @@ pub async fn list_tokens(
     }
 }
 
-pub async fn inspect_token(State(state): State<Arc<AppState>>, headers: HeaderMap, Path(id): Path<String>) -> Response {
-    let (_actor, record) = match load_and_authorize(&state, &headers, &TokenId::new(id)).await {
+pub async fn inspect_token(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    extensions: Extensions,
+    Path(id): Path<String>,
+) -> Response {
+    let (_actor, record) = match load_and_authorize(&state, &headers, &extensions, &TokenId::new(id)).await {
         Ok(authorized) => authorized,
         Err(rejection) => return rejection.response(),
     };
@@ -117,9 +123,14 @@ pub async fn inspect_token(State(state): State<Arc<AppState>>, headers: HeaderMa
     )
 }
 
-pub async fn rotate_token(State(state): State<Arc<AppState>>, headers: HeaderMap, Path(id): Path<String>) -> Response {
+pub async fn rotate_token(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    extensions: Extensions,
+    Path(id): Path<String>,
+) -> Response {
     let id = TokenId::new(id);
-    let (actor, _record) = match load_and_authorize(&state, &headers, &id).await {
+    let (actor, _record) = match load_and_authorize(&state, &headers, &extensions, &id).await {
         Ok(authorized) => authorized,
         Err(rejection) => return rejection.response(),
     };
@@ -130,9 +141,14 @@ pub async fn rotate_token(State(state): State<Arc<AppState>>, headers: HeaderMap
     }
 }
 
-pub async fn revoke_token(State(state): State<Arc<AppState>>, headers: HeaderMap, Path(id): Path<String>) -> Response {
+pub async fn revoke_token(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    extensions: Extensions,
+    Path(id): Path<String>,
+) -> Response {
     let id = TokenId::new(id);
-    let (actor, _record) = match load_and_authorize(&state, &headers, &id).await {
+    let (actor, _record) = match load_and_authorize(&state, &headers, &extensions, &id).await {
         Ok(authorized) => authorized,
         Err(rejection) => return rejection.response(),
     };
@@ -149,9 +165,10 @@ pub async fn revoke_token(State(state): State<Arc<AppState>>, headers: HeaderMap
 async fn load_and_authorize(
     state: &AppState,
     headers: &HeaderMap,
+    extensions: &Extensions,
     id: &TokenId,
 ) -> Result<(UserId, Option<ScopedTokenRecord>), Rejection> {
-    let actor = authenticate(state, headers).await?;
+    let actor = authenticate(state, headers, extensions).await?;
     let Some(record) = state.serving.tokens.inspect(id).map_err(|_| Rejection::Unavailable)? else {
         return Ok((actor, None));
     };
@@ -159,7 +176,7 @@ async fn load_and_authorize(
     Ok((actor, Some(record)))
 }
 
-async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<UserId, Rejection> {
+async fn authenticate(state: &AppState, headers: &HeaderMap, extensions: &Extensions) -> Result<UserId, Rejection> {
     let credentials = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -168,7 +185,7 @@ async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<UserId, R
     state
         .serving
         .users
-        .authenticate(&credentials.user, &credentials.password)
+        .authenticate_request(extensions, &credentials)
         .await
         .map_err(|_| Rejection::Unavailable)?
         .ok_or(Rejection::Unauthorized)

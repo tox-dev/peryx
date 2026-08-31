@@ -32,7 +32,7 @@ pub use blocking_scan::{BlockingScanExecutor, ScanCancellation};
 pub use driver_set::{BlobReferenceScan, BlobReferenceScanError, DriverSet};
 pub use http_routes::{
     HttpRoutes, MountedRoutes, ProcessRouteMethodNotAllowed, RouteDescriptor, RouteMethod, RoutePosture,
-    RouteRateLimit, RouteSet,
+    RoutePrincipal, RouteRateLimit, RouteSet,
 };
 pub use serving::PolicyDryRunDriver;
 pub use state::{

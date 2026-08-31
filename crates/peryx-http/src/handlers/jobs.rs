@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{Extensions, HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use peryx_driver::authz::{Decision, DenyReason};
 use peryx_driver::jobs::CancelJobRun;
@@ -15,8 +15,13 @@ use peryx_identity::{Resource, Scope, parse_basic};
 ///
 /// A delivered signal returns `202 Accepted` while the run unwinds. A non-local or finished run returns
 /// `409 Conflict`. Unknown and unauthorized runs return `404 Not Found`.
-pub async fn cancel_job(State(state): State<Arc<AppState>>, headers: HeaderMap, Path(id): Path<String>) -> Response {
-    if let Err(rejection) = authorize_administrator(&state, &headers).await {
+pub async fn cancel_job(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    extensions: Extensions,
+    Path(id): Path<String>,
+) -> Response {
+    if let Err(rejection) = authorize_administrator(&state, &headers, &extensions).await {
         return rejection.response();
     }
     match state.serving.job_attempts.cancel(&id) {
@@ -30,7 +35,11 @@ pub async fn cancel_job(State(state): State<Arc<AppState>>, headers: HeaderMap, 
 
 /// Authenticate a local user and require the server-wide administration-write scope. A missing grant
 /// answers the same `404` a missing run does, so a denial cannot confirm the endpoint to a probe.
-async fn authorize_administrator(state: &AppState, headers: &HeaderMap) -> Result<(), Rejection> {
+async fn authorize_administrator(
+    state: &AppState,
+    headers: &HeaderMap,
+    extensions: &Extensions,
+) -> Result<(), Rejection> {
     let credentials = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -39,7 +48,7 @@ async fn authorize_administrator(state: &AppState, headers: &HeaderMap) -> Resul
     let actor = state
         .serving
         .users
-        .authenticate(&credentials.user, &credentials.password)
+        .authenticate_request(extensions, &credentials)
         .await
         .map_err(|_| Rejection::Unavailable)?
         .ok_or(Rejection::Unauthorized)?;

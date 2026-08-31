@@ -10,7 +10,7 @@ use std::sync::Arc;
 use axum::Extension;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::http::{Extensions, HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse as _, Response};
 use peryx_driver::authz::{Decision, ScopedDecision};
 use peryx_driver::http_services::{
@@ -60,9 +60,10 @@ pub async fn create_repository(
     State(state): State<Arc<AppState>>,
     Extension(services): Extension<HttpDomainServices>,
     headers: HeaderMap,
+    extensions: Extensions,
     body: Bytes,
 ) -> Response {
-    let (actor, _) = match administrator(&state, &headers, Scope::AdministrationWrite).await {
+    let (actor, _) = match administrator(&state, &headers, &extensions, Scope::AdministrationWrite).await {
         Ok(actor) => actor,
         Err(response) => return response,
     };
@@ -91,9 +92,10 @@ pub async fn list_repositories(
     State(state): State<Arc<AppState>>,
     Extension(services): Extension<HttpDomainServices>,
     headers: HeaderMap,
+    extensions: Extensions,
     Query(query): Query<RepositoriesQuery>,
 ) -> Response {
-    if let Err(response) = administrator(&state, &headers, Scope::AdministrationRead).await {
+    if let Err(response) = administrator(&state, &headers, &extensions, Scope::AdministrationRead).await {
         return response;
     }
     let repository_query = RepositoryQuery {
@@ -115,9 +117,10 @@ pub async fn inspect_repository(
     State(state): State<Arc<AppState>>,
     Extension(services): Extension<HttpDomainServices>,
     headers: HeaderMap,
+    extensions: Extensions,
     Path(id): Path<RepositoryId>,
 ) -> Response {
-    if let Err(response) = administrator(&state, &headers, Scope::AdministrationRead).await {
+    if let Err(response) = administrator(&state, &headers, &extensions, Scope::AdministrationRead).await {
         return response;
     }
     match services.repositories().inspect(&id) {
@@ -132,9 +135,10 @@ pub async fn update_repository(
     Extension(services): Extension<HttpDomainServices>,
     Path(id): Path<RepositoryId>,
     headers: HeaderMap,
+    extensions: Extensions,
     body: Bytes,
 ) -> Response {
-    let (actor, _) = match administrator(&state, &headers, Scope::AdministrationWrite).await {
+    let (actor, _) = match administrator(&state, &headers, &extensions, Scope::AdministrationWrite).await {
         Ok(actor) => actor,
         Err(response) => return response,
     };
@@ -166,8 +170,9 @@ pub async fn disable_repository(
     Extension(services): Extension<HttpDomainServices>,
     Path(id): Path<RepositoryId>,
     headers: HeaderMap,
+    extensions: Extensions,
 ) -> Response {
-    set_enabled(&state, &services, &id, &headers, false).await
+    set_enabled(&state, &services, &id, &headers, &extensions, false).await
 }
 
 pub async fn enable_repository(
@@ -175,8 +180,9 @@ pub async fn enable_repository(
     Extension(services): Extension<HttpDomainServices>,
     Path(id): Path<RepositoryId>,
     headers: HeaderMap,
+    extensions: Extensions,
 ) -> Response {
-    set_enabled(&state, &services, &id, &headers, true).await
+    set_enabled(&state, &services, &id, &headers, &extensions, true).await
 }
 
 async fn set_enabled(
@@ -184,9 +190,10 @@ async fn set_enabled(
     services: &HttpDomainServices,
     id: &RepositoryId,
     headers: &HeaderMap,
+    extensions: &Extensions,
     enabled: bool,
 ) -> Response {
-    let (actor, _) = match administrator(state, headers, Scope::AdministrationWrite).await {
+    let (actor, _) = match administrator(state, headers, extensions, Scope::AdministrationWrite).await {
         Ok(actor) => actor,
         Err(response) => return response,
     };
@@ -210,6 +217,7 @@ async fn set_enabled(
 async fn administrator(
     state: &AppState,
     headers: &HeaderMap,
+    extensions: &Extensions,
     scope: Scope,
 ) -> Result<(UserId, ScopedDecision), Response> {
     let credentials = headers
@@ -220,7 +228,7 @@ async fn administrator(
     let actor = state
         .serving
         .users
-        .authenticate(&credentials.user, &credentials.password)
+        .authenticate_request(extensions, &credentials)
         .await
         .map_err(|_| unavailable())?
         .ok_or_else(unauthorized)?;

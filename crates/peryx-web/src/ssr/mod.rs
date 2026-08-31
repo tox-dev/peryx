@@ -28,7 +28,10 @@ async fn status_class(app: &AppState) -> FieldClassification {
     let headers = leptos_axum::extract::<axum::http::HeaderMap>()
         .await
         .unwrap_or_default();
-    peryx_http::handlers::status_authorization(app, &headers)
+    let extensions = leptos_axum::extract::<axum::http::Extensions>()
+        .await
+        .unwrap_or_default();
+    peryx_http::handlers::status_authorization(app, &headers, &extensions)
         .await
         .map_or_else(
             |_| {

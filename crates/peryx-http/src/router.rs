@@ -177,10 +177,7 @@ fn public_routes() -> RouteSet {
             read(RouteMethod::Get, "/+search/", rate_limit::RouteClass::Listing),
             get(handlers::search),
         )
-        .route(
-            read(RouteMethod::Get, "/+status", rate_limit::RouteClass::Admin),
-            get(handlers::status),
-        )
+        .route(admin_read(RouteMethod::Get, "/+status"), get(handlers::status))
         .route(exempt_read(RouteMethod::Get, "/+health"), get(handlers::health))
         .route(exempt_read(RouteMethod::Get, "/+ready"), get(handlers::readiness))
         .route(
@@ -219,48 +216,38 @@ fn authentication_routes() -> RouteSet {
 
 fn analytics_routes() -> RouteSet {
     RouteSet::new()
+        .route(admin_read(RouteMethod::Get, "/+stats"), get(handlers::stats))
         .route(
-            read(RouteMethod::Get, "/+stats", rate_limit::RouteClass::Admin),
-            get(handlers::stats),
-        )
-        .route(
-            read(
-                RouteMethod::Get,
-                "/+analytics/top-resources",
-                rate_limit::RouteClass::Admin,
-            ),
+            admin_read(RouteMethod::Get, "/+analytics/top-resources"),
             get(handlers::analytics_top),
         )
         .route(
-            read(RouteMethod::Get, "/+analytics/unused", rate_limit::RouteClass::Admin),
+            admin_read(RouteMethod::Get, "/+analytics/unused"),
             get(handlers::analytics_unused),
         )
         .route(
-            read(RouteMethod::Get, "/+analytics/groups", rate_limit::RouteClass::Admin),
+            admin_read(RouteMethod::Get, "/+analytics/groups"),
             get(handlers::analytics_groups),
         )
         .route(
-            read(RouteMethod::Get, "/+analytics/sources", rate_limit::RouteClass::Admin),
+            admin_read(RouteMethod::Get, "/+analytics/sources"),
             get(handlers::analytics_sources),
         )
         .route(
-            read(RouteMethod::Get, "/+analytics/timeline", rate_limit::RouteClass::Admin),
+            admin_read(RouteMethod::Get, "/+analytics/timeline"),
             get(handlers::analytics_timeline),
         )
         .route(
-            read(RouteMethod::Get, "/+policy/decisions", rate_limit::RouteClass::Admin),
+            admin_read(RouteMethod::Get, "/+policy/decisions"),
             get(handlers::policy_decisions),
         )
         .route(
-            read(RouteMethod::Post, "/+query", rate_limit::RouteClass::Admin),
+            admin_read(RouteMethod::Post, "/+query"),
             post(handlers::pql_query).layer(DefaultBodyLimit::max(16 * 1024)),
         )
+        .route(admin_read(RouteMethod::Get, "/+quota"), get(handlers::quota_summary))
         .route(
-            read(RouteMethod::Get, "/+quota", rate_limit::RouteClass::Admin),
-            get(handlers::quota_summary),
-        )
-        .route(
-            read(RouteMethod::Get, "/+quota/repository", rate_limit::RouteClass::Admin),
+            admin_read(RouteMethod::Get, "/+quota/repository"),
             get(handlers::quota_repository),
         )
 }
@@ -268,51 +255,40 @@ fn analytics_routes() -> RouteSet {
 fn repository_routes() -> RouteSet {
     RouteSet::new()
         .route(
-            read(RouteMethod::Get, "/+repositories", rate_limit::RouteClass::Admin),
+            admin_read(RouteMethod::Get, "/+repositories"),
             get(handlers::list_repositories),
         )
         .route(
-            mutation(RouteMethod::Post, "/+repositories", rate_limit::RouteClass::Admin),
+            admin_mutation(RouteMethod::Post, "/+repositories"),
             post(handlers::create_repository).layer(DefaultBodyLimit::max(64 * 1024)),
         )
         .route(
-            read(RouteMethod::Get, "/+repositories/{id}", rate_limit::RouteClass::Admin),
+            admin_read(RouteMethod::Get, "/+repositories/{id}"),
             get(handlers::inspect_repository),
         )
         .route(
-            mutation(RouteMethod::Put, "/+repositories/{id}", rate_limit::RouteClass::Admin),
+            admin_mutation(RouteMethod::Put, "/+repositories/{id}"),
             put(handlers::update_repository).layer(DefaultBodyLimit::max(64 * 1024)),
         )
         .route(
-            mutation(
-                RouteMethod::Post,
-                "/+repositories/{id}/disable",
-                rate_limit::RouteClass::Admin,
-            ),
+            admin_mutation(RouteMethod::Post, "/+repositories/{id}/disable"),
             post(handlers::disable_repository),
         )
         .route(
-            mutation(
-                RouteMethod::Post,
-                "/+repositories/{id}/enable",
-                rate_limit::RouteClass::Admin,
-            ),
+            admin_mutation(RouteMethod::Post, "/+repositories/{id}/enable"),
             post(handlers::enable_repository),
         )
         .route(
-            mutation(RouteMethod::Post, "/+retention/plan", rate_limit::RouteClass::Admin),
+            admin_mutation(RouteMethod::Post, "/+retention/plan"),
             post(handlers::retention_plan),
         )
         .route(
-            mutation(RouteMethod::Post, "/+retention/export", rate_limit::RouteClass::Admin),
+            admin_mutation(RouteMethod::Post, "/+retention/export"),
             post(handlers::retention_export),
         )
+        .route(admin_read(RouteMethod::Get, "/+trash"), get(handlers::list_trash))
         .route(
-            read(RouteMethod::Get, "/+trash", rate_limit::RouteClass::Admin),
-            get(handlers::list_trash),
-        )
-        .route(
-            read(RouteMethod::Get, "/+trash/record", rate_limit::RouteClass::Admin),
+            admin_read(RouteMethod::Get, "/+trash/record"),
             get(handlers::inspect_trash),
         )
 }
@@ -320,71 +296,53 @@ fn repository_routes() -> RouteSet {
 fn security_routes() -> RouteSet {
     RouteSet::new()
         .route(
-            read(RouteMethod::Get, "/+revocations", rate_limit::RouteClass::Admin),
+            admin_read(RouteMethod::Get, "/+revocations"),
             get(handlers::list_revocations),
         )
         .route(
-            read(
-                RouteMethod::Get,
-                "/+revocations/{digest}",
-                rate_limit::RouteClass::Admin,
-            ),
+            admin_read(RouteMethod::Get, "/+revocations/{digest}"),
             get(handlers::inspect_revocation),
         )
         .route(
-            mutation(
-                RouteMethod::Put,
-                "/+revocations/{digest}",
-                rate_limit::RouteClass::Admin,
-            ),
+            admin_mutation(RouteMethod::Put, "/+revocations/{digest}"),
             put(handlers::put_revocation),
         )
         .route(
-            mutation(
-                RouteMethod::Post,
-                "/+revocations/{digest}/lift",
-                rate_limit::RouteClass::Admin,
-            ),
+            admin_mutation(RouteMethod::Post, "/+revocations/{digest}/lift"),
             post(handlers::lift_revocation),
         )
+        .route(admin_read(RouteMethod::Get, "/+grants"), get(handlers::list_grants))
         .route(
-            read(RouteMethod::Get, "/+grants", rate_limit::RouteClass::Admin),
-            get(handlers::list_grants),
-        )
-        .route(
-            mutation(RouteMethod::Post, "/+grants", rate_limit::RouteClass::Admin),
+            admin_mutation(RouteMethod::Post, "/+grants"),
             post(handlers::create_grant),
         )
         .route(
-            read(RouteMethod::Get, "/+grants/{id}", rate_limit::RouteClass::Admin),
+            admin_read(RouteMethod::Get, "/+grants/{id}"),
             get(handlers::inspect_grant),
         )
         .route(
-            mutation(RouteMethod::Delete, "/+grants/{id}", rate_limit::RouteClass::Admin),
+            admin_mutation(RouteMethod::Delete, "/+grants/{id}"),
             delete(handlers::revoke_grant),
         )
+        .route(admin_read(RouteMethod::Get, "/+tokens"), get(handlers::list_tokens))
         .route(
-            read(RouteMethod::Get, "/+tokens", rate_limit::RouteClass::Admin),
-            get(handlers::list_tokens),
-        )
-        .route(
-            mutation(RouteMethod::Post, "/+tokens", rate_limit::RouteClass::Admin),
+            admin_mutation(RouteMethod::Post, "/+tokens"),
             post(handlers::create_token),
         )
         .route(
-            read(RouteMethod::Get, "/+tokens/{id}", rate_limit::RouteClass::Admin),
+            admin_read(RouteMethod::Get, "/+tokens/{id}"),
             get(handlers::inspect_token),
         )
         .route(
-            mutation(RouteMethod::Delete, "/+tokens/{id}", rate_limit::RouteClass::Admin),
+            admin_mutation(RouteMethod::Delete, "/+tokens/{id}"),
             delete(handlers::revoke_token),
         )
         .route(
-            mutation(RouteMethod::Post, "/+tokens/{id}/rotate", rate_limit::RouteClass::Admin),
+            admin_mutation(RouteMethod::Post, "/+tokens/{id}/rotate"),
             post(handlers::rotate_token),
         )
         .route(
-            mutation(RouteMethod::Post, "/+jobs/{id}/cancel", rate_limit::RouteClass::Admin),
+            admin_mutation(RouteMethod::Post, "/+jobs/{id}/cancel"),
             post(handlers::cancel_job),
         )
         .route(
@@ -399,6 +357,16 @@ const fn read(method: RouteMethod, path: &'static str, class: rate_limit::RouteC
 
 const fn mutation(method: RouteMethod, path: &'static str, class: rate_limit::RouteClass) -> RouteDescriptor {
     RouteDescriptor::new(method, path, RoutePosture::Mutation, RouteRateLimit::Class(class))
+}
+
+/// A management route that checks a server user's password. The limiter resolves that account before
+/// the handler runs, so two administrators behind one address spend separate allowances.
+const fn admin_read(method: RouteMethod, path: &'static str) -> RouteDescriptor {
+    read(method, path, rate_limit::RouteClass::Admin).authenticating_local_user()
+}
+
+const fn admin_mutation(method: RouteMethod, path: &'static str) -> RouteDescriptor {
+    mutation(method, path, rate_limit::RouteClass::Admin).authenticating_local_user()
 }
 
 const fn exempt_read(method: RouteMethod, path: &'static str) -> RouteDescriptor {

@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::{Query, State};
-use axum::http::{HeaderMap, Request, StatusCode, Uri, header};
+use axum::http::{Extensions, HeaderMap, Request, StatusCode, Uri, header};
 use axum::response::{IntoResponse as _, Response};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -73,7 +73,7 @@ pub async fn analytics_timeline(state: State<Arc<AppState>>, request: Request<Bo
 
 async fn respond(State(state): State<Arc<AppState>>, request: Request<Body>, view: UsageView) -> Response {
     let (parts, _) = request.into_parts();
-    let mut response = usage_response(&state, &parts.headers, &parts.uri, view).await;
+    let mut response = usage_response(&state, &parts.headers, &parts.extensions, &parts.uri, view).await;
     ProtectedCachePolicy::NoStore.apply(response.headers_mut());
     response
 }
@@ -88,8 +88,14 @@ struct UsageParams {
     limit: Option<usize>,
 }
 
-async fn usage_response(state: &AppState, headers: &HeaderMap, uri: &Uri, view: UsageView) -> Response {
-    let identity = match authenticate(state, headers).await {
+async fn usage_response(
+    state: &AppState,
+    headers: &HeaderMap,
+    extensions: &Extensions,
+    uri: &Uri,
+    view: UsageView,
+) -> Response {
+    let identity = match authenticate(state, headers, extensions).await {
         Ok(identity) => identity,
         Err(rejection) => return rejection.response(),
     };
@@ -237,7 +243,7 @@ impl From<super::EcosystemCredentialDenied> for Rejection {
     }
 }
 
-async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<Identity, Rejection> {
+async fn authenticate(state: &AppState, headers: &HeaderMap, extensions: &Extensions) -> Result<Identity, Rejection> {
     let authorization = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -249,7 +255,7 @@ async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<Identity,
     state
         .serving
         .users
-        .authenticate(&credentials.user, &credentials.password)
+        .authenticate_request(extensions, &credentials)
         .await
         .map_err(|_| Rejection::Unavailable)?
         .map(Identity::Local)

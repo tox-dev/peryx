@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, HeaderValue, Request, StatusCode, header};
+use axum::http::{Extensions, HeaderMap, HeaderValue, Request, StatusCode, header};
 use axum::response::{IntoResponse as _, Response};
 use peryx_driver::authz::{Decision, ScopedDecision};
 use peryx_driver::revocations::{
@@ -36,10 +36,11 @@ pub async fn put_revocation(
     request: Request<Body>,
 ) -> Response {
     let headers = request.headers();
-    let (actor, authorization) = match administrator(&state, headers, Scope::AdministrationWrite).await {
-        Ok(authenticated) => authenticated,
-        Err(response) => return response,
-    };
+    let (actor, authorization) =
+        match administrator(&state, headers, request.extensions(), Scope::AdministrationWrite).await {
+            Ok(authenticated) => authenticated,
+            Err(response) => return response,
+        };
     let Ok(digest) = ArtifactDigest::from_str(&digest) else {
         return problem(StatusCode::BAD_REQUEST, "invalid digest");
     };
@@ -73,9 +74,10 @@ pub async fn put_revocation(
 pub async fn inspect_revocation(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    extensions: Extensions,
     Path(digest): Path<String>,
 ) -> Response {
-    let (_actor, authorization) = match administrator(&state, &headers, Scope::AdministrationRead).await {
+    let (_actor, authorization) = match administrator(&state, &headers, &extensions, Scope::AdministrationRead).await {
         Ok(authenticated) => authenticated,
         Err(response) => return response,
     };
@@ -92,9 +94,10 @@ pub async fn inspect_revocation(
 pub async fn list_revocations(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    extensions: Extensions,
     Query(query): Query<DigestRevocationsQuery>,
 ) -> Response {
-    let (_actor, _authorization) = match administrator(&state, &headers, Scope::AdministrationRead).await {
+    let (_actor, _authorization) = match administrator(&state, &headers, &extensions, Scope::AdministrationRead).await {
         Ok(authenticated) => authenticated,
         Err(response) => return response,
     };
@@ -123,9 +126,10 @@ pub async fn list_revocations(
 pub async fn lift_revocation(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    extensions: Extensions,
     Path(digest): Path<String>,
 ) -> Response {
-    let (actor, authorization) = match administrator(&state, &headers, Scope::AdministrationWrite).await {
+    let (actor, authorization) = match administrator(&state, &headers, &extensions, Scope::AdministrationWrite).await {
         Ok(authenticated) => authenticated,
         Err(response) => return response,
     };
@@ -144,6 +148,7 @@ pub async fn lift_revocation(
 async fn administrator(
     state: &AppState,
     headers: &HeaderMap,
+    extensions: &Extensions,
     scope: Scope,
 ) -> Result<(UserId, ScopedDecision), Response> {
     let credentials = headers
@@ -154,7 +159,7 @@ async fn administrator(
     let actor = state
         .serving
         .users
-        .authenticate(&credentials.user, &credentials.password)
+        .authenticate_request(extensions, &credentials)
         .await
         .map_err(|_| unavailable())?
         .ok_or_else(unauthorized)?;

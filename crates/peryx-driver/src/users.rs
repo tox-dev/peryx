@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
+use axum::http::Extensions;
 use peryx_identity::{
-    PasswordCheck, PasswordError, PasswordPolicy, PasswordVerifier, ServerUser, UserId, UserLifecycleEvent, UserState,
+    BasicCredentials, PasswordCheck, PasswordError, PasswordPolicy, PasswordVerifier, ServerUser, UserId,
+    UserLifecycleEvent, UserState,
 };
 use peryx_storage::meta::{AdministratorBootstrapError, MetaError, MetaStore, UserStoreError};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -59,6 +61,28 @@ pub enum BootstrapError {
 impl From<PasswordError> for BootstrapError {
     fn from(error: PasswordError) -> Self {
         Self::Derivation(error.into())
+    }
+}
+
+/// What a request's local credential resolved to.
+///
+/// A management route's limiter verifies the credential to pick the caller's bucket and leaves the
+/// verdict in the request extensions, so the handler that runs next reads it back instead of
+/// deriving the same password a second time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalAuthentication {
+    /// The password verified for this account.
+    Verified(UserId),
+    /// The credential named no active account, or its password did not match.
+    Rejected,
+}
+
+impl LocalAuthentication {
+    fn verified(&self) -> Option<UserId> {
+        match self {
+            Self::Verified(user) => Some(user.clone()),
+            Self::Rejected => None,
+        }
     }
 }
 
@@ -170,6 +194,35 @@ impl UserService {
     /// Returns a missing-user or storage error.
     pub fn clear_password(&self, id: &UserId) -> Result<(), UserStoreError> {
         self.store.clear_user_password(id)
+    }
+
+    /// The verdict for `credentials` on this request, checking the password only if nothing has
+    /// checked it yet.
+    ///
+    /// A management route resolves its caller twice - once for the rate-limit bucket, once for the
+    /// handler's authorization - and a password derivation is far too expensive to spend twice.
+    ///
+    /// # Errors
+    /// Returns the derivation or storage failure that stopped the check.
+    pub async fn authenticate_request(
+        &self,
+        extensions: &Extensions,
+        credentials: &BasicCredentials,
+    ) -> Result<Option<UserId>, AuthenticationError> {
+        match extensions.get::<LocalAuthentication>() {
+            Some(verdict) => Ok(verdict.verified()),
+            None => Ok(self.verify(credentials).await?.verified()),
+        }
+    }
+
+    pub(crate) async fn verify(
+        &self,
+        credentials: &BasicCredentials,
+    ) -> Result<LocalAuthentication, AuthenticationError> {
+        Ok(self
+            .authenticate(&credentials.user, &credentials.password)
+            .await?
+            .map_or(LocalAuthentication::Rejected, LocalAuthentication::Verified))
     }
 
     /// An unknown name, a disabled account, a passwordless account, and a wrong password all fail the

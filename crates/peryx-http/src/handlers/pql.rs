@@ -7,7 +7,7 @@ use std::sync::Arc;
 use axum::Extension;
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::{HeaderMap, Request, StatusCode, header};
+use axum::http::{Extensions, HeaderMap, Request, StatusCode, header};
 use axum::response::{IntoResponse as _, Response};
 use peryx_driver::authz::{Decision, DenyReason, ScopedDecision};
 use peryx_driver::http_services::HttpDomainServices;
@@ -29,11 +29,17 @@ pub async fn pql_query(
     request: Request<Body>,
 ) -> Response {
     let (parts, body) = request.into_parts();
-    let response = query_response(&state, &services, &parts.headers, body).await;
+    let response = query_response(&state, &services, &parts.headers, &parts.extensions, body).await;
     apply_cache_policy(response)
 }
 
-async fn query_response(state: &AppState, services: &HttpDomainServices, headers: &HeaderMap, body: Body) -> Response {
+async fn query_response(
+    state: &AppState,
+    services: &HttpDomainServices,
+    headers: &HeaderMap,
+    extensions: &Extensions,
+    body: Body,
+) -> Response {
     if !super::is_json(headers) {
         return problem(StatusCode::UNSUPPORTED_MEDIA_TYPE, "request body must be JSON");
     }
@@ -49,7 +55,7 @@ async fn query_response(state: &AppState, services: &HttpDomainServices, headers
         Ok(ast) => ast,
         Err(error) => return pql_error(&error),
     };
-    let identity = match authenticate(state, headers).await {
+    let identity = match authenticate(state, headers, extensions).await {
         Ok(identity) => identity,
         Err(rejection) => return rejection.response(),
     };
@@ -113,7 +119,7 @@ impl Rejection {
     }
 }
 
-async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<Identity, Rejection> {
+async fn authenticate(state: &AppState, headers: &HeaderMap, extensions: &Extensions) -> Result<Identity, Rejection> {
     let authorization = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -125,7 +131,7 @@ async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<Identity,
     state
         .serving
         .users
-        .authenticate(&credentials.user, &credentials.password)
+        .authenticate_request(extensions, &credentials)
         .await
         .map_err(|_| Rejection::Unavailable)?
         .map(Identity::Local)

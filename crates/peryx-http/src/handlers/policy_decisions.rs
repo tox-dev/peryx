@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::Extension;
 use axum::body::Body;
 use axum::extract::{Query, State};
-use axum::http::{HeaderMap, Request, StatusCode, Uri, header};
+use axum::http::{Extensions, HeaderMap, Request, StatusCode, Uri, header};
 use axum::response::{IntoResponse as _, Response};
 use peryx_driver::authz::{Decision, DenyReason, ScopedDecision};
 use peryx_driver::http_services::{
@@ -37,7 +37,8 @@ pub async fn policy_decisions(
     request: Request<Body>,
 ) -> Response {
     let (request, _) = request.into_parts();
-    let mut response = policy_decisions_response(&state, &services, &request.headers, &request.uri).await;
+    let mut response =
+        policy_decisions_response(&state, &services, &request.headers, &request.extensions, &request.uri).await;
     ProtectedCachePolicy::NoStore.apply(response.headers_mut());
     response
 }
@@ -46,9 +47,10 @@ async fn policy_decisions_response(
     state: &AppState,
     services: &HttpDomainServices,
     headers: &HeaderMap,
+    extensions: &Extensions,
     uri: &Uri,
 ) -> Response {
-    let identity = match authenticate(state, headers).await {
+    let identity = match authenticate(state, headers, extensions).await {
         Ok(identity) => identity,
         Err(rejection) => return rejection.response(),
     };
@@ -123,6 +125,7 @@ impl From<super::EcosystemCredentialDenied> for PolicyDecisionRejection {
 async fn authenticate(
     state: &AppState,
     headers: &HeaderMap,
+    extensions: &Extensions,
 ) -> Result<PolicyDecisionIdentity, PolicyDecisionRejection> {
     let authorization = headers
         .get(header::AUTHORIZATION)
@@ -135,7 +138,7 @@ async fn authenticate(
     state
         .serving
         .users
-        .authenticate(&credentials.user, &credentials.password)
+        .authenticate_request(extensions, &credentials)
         .await
         .map_err(|_| PolicyDecisionRejection::Unavailable)?
         .map(PolicyDecisionIdentity::Local)

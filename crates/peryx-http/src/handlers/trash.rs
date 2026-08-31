@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::Extension;
 use axum::body::Body;
 use axum::extract::{Query, State};
-use axum::http::{HeaderMap, Request, StatusCode, Uri, header};
+use axum::http::{Extensions, HeaderMap, Request, StatusCode, Uri, header};
 use axum::response::{IntoResponse as _, Response};
 use peryx_core::{Ecosystem, TrashState};
 use peryx_driver::authz::{Decision, DenyReason, ScopedDecision};
@@ -41,7 +41,14 @@ pub async fn list_trash(
     request: Request<Body>,
 ) -> Response {
     let (request, _) = request.into_parts();
-    let mut response = list_trash_response(&state, services.trash(), &request.headers, &request.uri).await;
+    let mut response = list_trash_response(
+        &state,
+        services.trash(),
+        &request.headers,
+        &request.extensions,
+        &request.uri,
+    )
+    .await;
     ProtectedCachePolicy::NoStore.apply(response.headers_mut());
     response
 }
@@ -52,13 +59,26 @@ pub async fn inspect_trash(
     request: Request<Body>,
 ) -> Response {
     let (request, _) = request.into_parts();
-    let mut response = inspect_trash_response(&state, services.trash(), &request.headers, &request.uri).await;
+    let mut response = inspect_trash_response(
+        &state,
+        services.trash(),
+        &request.headers,
+        &request.extensions,
+        &request.uri,
+    )
+    .await;
     ProtectedCachePolicy::NoStore.apply(response.headers_mut());
     response
 }
 
-async fn list_trash_response(state: &AppState, trash: &dyn TrashService, headers: &HeaderMap, uri: &Uri) -> Response {
-    let identity = match authenticate(state, headers).await {
+async fn list_trash_response(
+    state: &AppState,
+    trash: &dyn TrashService,
+    headers: &HeaderMap,
+    extensions: &Extensions,
+    uri: &Uri,
+) -> Response {
+    let identity = match authenticate(state, headers, extensions).await {
         Ok(identity) => identity,
         Err(rejection) => return rejection.response(),
     };
@@ -90,9 +110,10 @@ async fn inspect_trash_response(
     state: &AppState,
     trash: &dyn TrashService,
     headers: &HeaderMap,
+    extensions: &Extensions,
     uri: &Uri,
 ) -> Response {
-    let identity = match authenticate(state, headers).await {
+    let identity = match authenticate(state, headers, extensions).await {
         Ok(identity) => identity,
         Err(rejection) => return rejection.response(),
     };
@@ -203,7 +224,11 @@ impl From<super::EcosystemCredentialDenied> for TrashRejection {
     }
 }
 
-async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<TrashIdentity, TrashRejection> {
+async fn authenticate(
+    state: &AppState,
+    headers: &HeaderMap,
+    extensions: &Extensions,
+) -> Result<TrashIdentity, TrashRejection> {
     let authorization = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -215,7 +240,7 @@ async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<TrashIden
     state
         .serving
         .users
-        .authenticate(&credentials.user, &credentials.password)
+        .authenticate_request(extensions, &credentials)
         .await
         .map_err(|_| TrashRejection::Unavailable)?
         .map(TrashIdentity::Local)

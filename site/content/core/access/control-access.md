@@ -102,6 +102,13 @@ and anonymous credentials share the source-address bucket.
 Route groups and their configuration keys belong to the selected ecosystem. See the
 [ecosystem documentation](@/ecosystems/_index.md) for its rate-limit example.
 
+Management routes resolve no index, so their principal is a server user rather than an index token. peryx checks that
+user's password once per request, before the handler runs, and charges the request to that account: two administrators
+behind one proxy spend separate allowances even though one address carries both. The password check itself sits behind
+the source-address bucket, so a caller who has exhausted that allowance is refused before the server derives anything. A
+request that carries no credential and holds a signed-in browser session is charged to the account that session names.
+Missing, unreadable and rejected credentials stay on the source-address bucket.
+
 ## Preserve client buckets behind a reverse proxy
 
 List the networks from which peryx accepts proxy connections:

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use axum::Extension;
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::{HeaderMap, HeaderValue, Request, StatusCode, header};
+use axum::http::{Extensions, HeaderMap, HeaderValue, Request, StatusCode, header};
 use axum::response::{IntoResponse as _, Response};
 use peryx_driver::authz::Decision;
 use peryx_driver::http_services::HttpDomainServices;
@@ -159,7 +159,7 @@ struct Prepared {
 impl Prepared {
     async fn from_request(state: &AppState, request: Request<Body>) -> Result<Self, Response> {
         let (parts, body) = request.into_parts();
-        administrator(state, &parts.headers).await?;
+        administrator(state, &parts.headers, &parts.extensions).await?;
         if !super::is_json(&parts.headers) {
             return Err(problem(StatusCode::UNSUPPORTED_MEDIA_TYPE, "request body must be JSON"));
         }
@@ -221,7 +221,7 @@ impl Prepared {
     }
 }
 
-async fn administrator(state: &AppState, headers: &HeaderMap) -> Result<UserId, Response> {
+async fn administrator(state: &AppState, headers: &HeaderMap, extensions: &Extensions) -> Result<UserId, Response> {
     let credentials = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -230,7 +230,7 @@ async fn administrator(state: &AppState, headers: &HeaderMap) -> Result<UserId, 
     let actor = state
         .serving
         .users
-        .authenticate(&credentials.user, &credentials.password)
+        .authenticate_request(extensions, &credentials)
         .await
         .map_err(|_| unavailable())?
         .ok_or_else(unauthorized)?;

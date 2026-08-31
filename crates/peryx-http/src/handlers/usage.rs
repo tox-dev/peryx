@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use axum::extract::{Query, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{Extensions, HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
 use peryx_core::Role;
@@ -89,9 +89,10 @@ pub struct StatsQuery {
 pub async fn stats(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    extensions: Extensions,
     Query(query): Query<StatsQuery>,
 ) -> Response {
-    let mut response = match authorize_operator(&state, &headers).await {
+    let mut response = match authorize_operator(&state, &headers, &extensions).await {
         Ok(()) => {
             let mut tree = state
                 .serving
@@ -133,7 +134,11 @@ impl StatsRejection {
     }
 }
 
-async fn authorize_operator(state: &AppState, headers: &HeaderMap) -> Result<(), StatsRejection> {
+async fn authorize_operator(
+    state: &AppState,
+    headers: &HeaderMap,
+    extensions: &Extensions,
+) -> Result<(), StatsRejection> {
     let credentials = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -142,7 +147,7 @@ async fn authorize_operator(state: &AppState, headers: &HeaderMap) -> Result<(),
     let actor = state
         .serving
         .users
-        .authenticate(&credentials.user, &credentials.password)
+        .authenticate_request(extensions, &credentials)
         .await
         .map_err(|_| StatsRejection::Unavailable)?
         .ok_or(StatsRejection::Unauthorized)?;

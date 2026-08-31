@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, HeaderValue, Request, StatusCode, header};
+use axum::http::{Extensions, HeaderMap, HeaderValue, Request, StatusCode, header};
 use axum::response::{IntoResponse as _, Response};
 use peryx_driver::authz::{
     DeleteGrantOutcome, RoleGrantFilter, RoleGrantQuery, RoleGrantQueryError, RoleGrantStoreError, StoredRoleGrant,
@@ -41,9 +41,10 @@ pub struct GrantsQuery {
 pub async fn list_grants(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    extensions: Extensions,
     Query(query): Query<GrantsQuery>,
 ) -> Response {
-    let (_actor, grants) = match caller(&state, &headers).await {
+    let (_actor, grants) = match caller(&state, &headers, &extensions).await {
         Ok(caller) => caller,
         Err(response) => return response,
     };
@@ -85,7 +86,7 @@ pub async fn create_grant(State(state): State<Arc<AppState>>, request: Request<B
     if !super::is_json(&headers) {
         return problem(StatusCode::UNSUPPORTED_MEDIA_TYPE, "request body must be JSON");
     }
-    let (actor, grants) = match caller(&state, &headers).await {
+    let (actor, grants) = match caller(&state, &headers, request.extensions()).await {
         Ok(caller) => caller,
         Err(response) => return response,
     };
@@ -136,8 +137,13 @@ pub async fn create_grant(State(state): State<Arc<AppState>>, request: Request<B
     }
 }
 
-pub async fn inspect_grant(State(state): State<Arc<AppState>>, headers: HeaderMap, Path(id): Path<String>) -> Response {
-    let (_actor, grants) = match caller(&state, &headers).await {
+pub async fn inspect_grant(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    extensions: Extensions,
+    Path(id): Path<String>,
+) -> Response {
+    let (_actor, grants) = match caller(&state, &headers, &extensions).await {
         Ok(caller) => caller,
         Err(response) => return response,
     };
@@ -151,8 +157,13 @@ pub async fn inspect_grant(State(state): State<Arc<AppState>>, headers: HeaderMa
     }
 }
 
-pub async fn revoke_grant(State(state): State<Arc<AppState>>, headers: HeaderMap, Path(id): Path<String>) -> Response {
-    let (actor, grants) = match caller(&state, &headers).await {
+pub async fn revoke_grant(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    extensions: Extensions,
+    Path(id): Path<String>,
+) -> Response {
+    let (actor, grants) = match caller(&state, &headers, &extensions).await {
         Ok(caller) => caller,
         Err(response) => return response,
     };
@@ -198,7 +209,11 @@ fn administers(id: &str, grants: &[RoleGrant]) -> bool {
     role_grant_reach(id).is_some_and(|reach| can_manage_grants(grants, &reach))
 }
 
-async fn caller(state: &AppState, headers: &HeaderMap) -> Result<(UserId, Vec<RoleGrant>), Response> {
+async fn caller(
+    state: &AppState,
+    headers: &HeaderMap,
+    extensions: &Extensions,
+) -> Result<(UserId, Vec<RoleGrant>), Response> {
     let credentials = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -207,7 +222,7 @@ async fn caller(state: &AppState, headers: &HeaderMap) -> Result<(UserId, Vec<Ro
     let actor = state
         .serving
         .users
-        .authenticate(&credentials.user, &credentials.password)
+        .authenticate_request(extensions, &credentials)
         .await
         .map_err(|_| unavailable())?
         .ok_or_else(unauthorized)?;

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use axum::Extension;
 use axum::body::Body;
 use axum::extract::{Query, State};
-use axum::http::{HeaderMap, Request, StatusCode, Uri, header};
+use axum::http::{Extensions, HeaderMap, Request, StatusCode, Uri, header};
 use axum::response::{IntoResponse as _, Response};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -28,7 +28,7 @@ pub async fn quota_summary(
     request: Request<Body>,
 ) -> Response {
     let (parts, _) = request.into_parts();
-    let mut response = summary_response(&state, &services, &parts.headers, &parts.uri).await;
+    let mut response = summary_response(&state, &services, &parts.headers, &parts.extensions, &parts.uri).await;
     ProtectedCachePolicy::Private.apply(response.headers_mut());
     response
 }
@@ -39,7 +39,7 @@ pub async fn quota_repository(
     request: Request<Body>,
 ) -> Response {
     let (parts, _) = request.into_parts();
-    let mut response = detail_response(&state, &services, &parts.headers, &parts.uri).await;
+    let mut response = detail_response(&state, &services, &parts.headers, &parts.extensions, &parts.uri).await;
     ProtectedCachePolicy::Private.apply(response.headers_mut());
     response
 }
@@ -53,8 +53,14 @@ struct QuotaParams {
     limit: Option<usize>,
 }
 
-async fn summary_response(state: &AppState, services: &HttpDomainServices, headers: &HeaderMap, uri: &Uri) -> Response {
-    let identity = match authenticate(state, headers).await {
+async fn summary_response(
+    state: &AppState,
+    services: &HttpDomainServices,
+    headers: &HeaderMap,
+    extensions: &Extensions,
+    uri: &Uri,
+) -> Response {
+    let identity = match authenticate(state, headers, extensions).await {
         Ok(identity) => identity,
         Err(rejection) => return rejection.response(),
     };
@@ -79,8 +85,14 @@ async fn summary_response(state: &AppState, services: &HttpDomainServices, heade
     axum::Json(json!({ "repositories": rows, "next_cursor": next_cursor })).into_response()
 }
 
-async fn detail_response(state: &AppState, services: &HttpDomainServices, headers: &HeaderMap, uri: &Uri) -> Response {
-    let identity = match authenticate(state, headers).await {
+async fn detail_response(
+    state: &AppState,
+    services: &HttpDomainServices,
+    headers: &HeaderMap,
+    extensions: &Extensions,
+    uri: &Uri,
+) -> Response {
+    let identity = match authenticate(state, headers, extensions).await {
         Ok(identity) => identity,
         Err(rejection) => return rejection.response(),
     };
@@ -149,7 +161,7 @@ impl From<super::EcosystemCredentialDenied> for Rejection {
     }
 }
 
-async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<Identity, Rejection> {
+async fn authenticate(state: &AppState, headers: &HeaderMap, extensions: &Extensions) -> Result<Identity, Rejection> {
     let authorization = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -161,7 +173,7 @@ async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<Identity,
     state
         .serving
         .users
-        .authenticate(&credentials.user, &credentials.password)
+        .authenticate_request(extensions, &credentials)
         .await
         .map_err(|_| Rejection::Unavailable)?
         .map(Identity::Local)

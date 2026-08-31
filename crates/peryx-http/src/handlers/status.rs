@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering;
 
 use axum::Extension;
 use axum::extract::{Query, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{Extensions, HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 
 use super::usage::{ecosystem_summaries, family_descriptors};
@@ -33,8 +33,9 @@ pub async fn status(
     State(state): State<Arc<AppState>>,
     Extension(services): Extension<HttpDomainServices>,
     headers: HeaderMap,
+    extensions: Extensions,
 ) -> Response {
-    let Ok(authorization) = status_authorization(&state, &headers).await else {
+    let Ok(authorization) = status_authorization(&state, &headers, &extensions).await else {
         return unavailable();
     };
     let mut response = axum::Json(serde_json::Value::Object(
@@ -116,8 +117,9 @@ async fn status_document(
 pub async fn status_authorization(
     state: &AppState,
     headers: &HeaderMap,
+    extensions: &Extensions,
 ) -> Result<ResponseAuthorization, PasswordDerivationError> {
-    let Some(actor) = status_actor(state, headers).await? else {
+    let Some(actor) = status_actor(state, headers, extensions).await? else {
         return Ok(ResponseAuthorization::Public);
     };
     let administrator =
@@ -142,7 +144,11 @@ pub async fn status_authorization(
 ///
 /// Only a request with no `Authorization` header consults the browser session; a header the request
 /// carries decides it, so a rejected credential never falls through to a cookie.
-async fn status_actor(state: &AppState, headers: &HeaderMap) -> Result<Option<UserId>, PasswordDerivationError> {
+async fn status_actor(
+    state: &AppState,
+    headers: &HeaderMap,
+    extensions: &Extensions,
+) -> Result<Option<UserId>, PasswordDerivationError> {
     let credentials = match HeaderCredential::from_headers(&state.serving, headers) {
         HeaderCredential::Absent => {
             return Ok(peryx_driver::access::session_user(&state.serving, headers).map(|user| user.id));
@@ -150,12 +156,7 @@ async fn status_actor(state: &AppState, headers: &HeaderMap) -> Result<Option<Us
         HeaderCredential::Verified(VerifiedCredential::Basic(credentials)) => credentials,
         HeaderCredential::Verified(VerifiedCredential::Bearer(_)) | HeaderCredential::Invalid(_) => return Ok(None),
     };
-    match state
-        .serving
-        .users
-        .authenticate(&credentials.user, &credentials.password)
-        .await
-    {
+    match state.serving.users.authenticate_request(extensions, &credentials).await {
         Ok(actor) => Ok(actor),
         Err(AuthenticationError::Store(_)) => Ok(None),
         Err(AuthenticationError::Derivation(error)) => Err(error),

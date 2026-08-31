@@ -39,12 +39,24 @@ pub enum RouteRateLimit {
     Exempt,
 }
 
+/// Whose allowance a route's requests spend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoutePrincipal {
+    /// Nothing on the route verifies a server user, so its bucket follows the source address.
+    SourceAddress,
+    /// The route checks a server user's password. The limiter resolves that account before the
+    /// handler runs and buckets the request by it, so administrators sharing one address do not
+    /// share an allowance.
+    LocalUser,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RouteDescriptor {
     method: RouteMethod,
     path: &'static str,
     posture: RoutePosture,
     rate_limit: RouteRateLimit,
+    principal: RoutePrincipal,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -63,7 +75,16 @@ impl RouteDescriptor {
             path,
             posture,
             rate_limit,
+            principal: RoutePrincipal::SourceAddress,
         }
+    }
+
+    /// Declares that the route checks a server user's password, so the limiter resolves that account
+    /// once and the handler reads the verdict back rather than deriving it again.
+    #[must_use]
+    pub const fn authenticating_local_user(mut self) -> Self {
+        self.principal = RoutePrincipal::LocalUser;
+        self
     }
 
     #[must_use]
@@ -84,6 +105,11 @@ impl RouteDescriptor {
     #[must_use]
     pub const fn rate_limit(self) -> RouteRateLimit {
         self.rate_limit
+    }
+
+    #[must_use]
+    pub const fn principal(self) -> RoutePrincipal {
+        self.principal
     }
 }
 

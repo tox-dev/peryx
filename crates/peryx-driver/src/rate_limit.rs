@@ -15,7 +15,8 @@ use moka::sync::Cache;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::state::AppState;
-use crate::{ProcessRouteMethodNotAllowed, RouteDescriptor, RouteRateLimit};
+use crate::users::LocalAuthentication;
+use crate::{ProcessRouteMethodNotAllowed, RouteDescriptor, RoutePrincipal, RouteRateLimit};
 
 /// Concurrent upstream fetches allowed per cached index; `0` (the default) means unlimited.
 ///
@@ -243,6 +244,36 @@ impl RateLimiter {
         })
     }
 
+    /// Reports whether `actor` has room left in `class` without charging it.
+    ///
+    /// A bucket exists only once [`Self::check`] has charged it, and it charges nothing while the
+    /// class is unlimited, so an absent bucket always has room.
+    ///
+    /// # Errors
+    /// Returns the denial a charged check would have produced.
+    fn probe(&self, class: RouteClass, actor: ActorKey) -> Result<(), Limited> {
+        let now = (self.clock)();
+        let Some(bucket) = self.buckets.get(&BucketKey { class, actor }) else {
+            return Ok(());
+        };
+        let bucket = bucket.lock().expect("rate limit bucket lock");
+        if bucket.used < self.config.limit(class).requests || now >= bucket.reset_at {
+            return Ok(());
+        }
+        self.denied.increment(class);
+        Err(Limited {
+            class,
+            actor,
+            retry_after: bucket.reset_at.saturating_sub(now).as_secs().max(1),
+        })
+    }
+
+    /// Buckets a server account by an identifier no caller can choose, so an account cannot spread
+    /// its allowance by renaming itself.
+    fn user_actor(&self, user: &peryx_identity::UserId) -> ActorKey {
+        ActorKey::User(self.principal_hasher.hash_one(user))
+    }
+
     /// Charge one request in `class` to the client at `ip` and report whether it stays within the
     /// limit. This is the synchronous decision [`enforce`] makes per request, exposed so callers can
     /// exercise the limiter (in tests and benchmarks) without driving a full HTTP request through the
@@ -311,6 +342,7 @@ struct Window {
 enum ActorKey {
     Ip(IpAddr),
     Token(u64),
+    User(u64),
 }
 
 impl ActorKey {
@@ -318,6 +350,7 @@ impl ActorKey {
         match self {
             Self::Ip(_) => "ip",
             Self::Token(_) => "token",
+            Self::User(_) => "user",
         }
     }
 }
@@ -551,15 +584,12 @@ pub struct UpstreamLimited {
     pub retry_after: u64,
 }
 
-pub async fn enforce(State(state): State<Arc<AppState>>, request: axum::extract::Request, next: Next) -> Response {
+pub async fn enforce(State(state): State<Arc<AppState>>, mut request: axum::extract::Request, next: Next) -> Response {
     if request.extensions().get::<ProcessRouteMethodNotAllowed>().is_some() {
         return next.run(request).await;
     }
-    let declared_class = match request
-        .extensions()
-        .get::<RouteDescriptor>()
-        .map(|route| route.rate_limit())
-    {
+    let descriptor = request.extensions().get::<RouteDescriptor>().copied();
+    let declared_class = match descriptor.map(RouteDescriptor::rate_limit) {
         Some(RouteRateLimit::Class(class)) => Some(class),
         Some(RouteRateLimit::Exempt) => return next.run(request).await,
         None => None,
@@ -613,7 +643,11 @@ pub async fn enforce(State(state): State<Arc<AppState>>, request: axum::extract:
         );
         return malformed_forwarded_response();
     };
-    match state.serving.rate_limits.check(class, actor) {
+    let verdict = match resolve_actor(&state, class, actor, descriptor, &mut request).await {
+        Ok(actor) => state.serving.rate_limits.check(class, actor),
+        Err(limited) => Err(limited),
+    };
+    match verdict {
         Ok(()) => next.run(request).await,
         Err(limited) => {
             // Compute the log fields before the macro: as macro arguments they would evaluate only when
@@ -634,6 +668,66 @@ pub async fn enforce(State(state): State<Arc<AppState>>, request: axum::extract:
             limited_response(limited.retry_after)
         }
     }
+}
+
+/// Re-buckets a request the source address cannot fairly account for.
+///
+/// `address` is where the ecosystem lookup left the request: on the client's own address, because no
+/// ecosystem credential named a principal. Two process-wide principals can still surface here - the
+/// account a management route checks a password for, and the account a browser session already holds
+/// - and each owns an allowance separate from the address it arrives from.
+///
+/// The password check sits behind the address bucket without spending it. A caller whose address has
+/// already exhausted its allowance is refused before the server derives anything, and a caller whose
+/// credential verifies charges its own bucket instead of the one it shares with every other
+/// administrator behind the same proxy.
+///
+/// # Errors
+/// Returns the address-bucket denial when the request is refused ahead of the password check.
+async fn resolve_actor(
+    state: &AppState,
+    class: RouteClass,
+    address: ActorKey,
+    descriptor: Option<RouteDescriptor>,
+    request: &mut axum::extract::Request,
+) -> Result<ActorKey, Limited> {
+    if !matches!(address, ActorKey::Ip(_)) {
+        return Ok(address);
+    }
+    let Some(authorization) = request.headers().get(header::AUTHORIZATION) else {
+        // Only a request carrying no credential of its own speaks for its browser session.
+        return Ok(session_actor(state, request.headers()).unwrap_or(address));
+    };
+    if descriptor.map(RouteDescriptor::principal) != Some(RoutePrincipal::LocalUser) {
+        return Ok(address);
+    }
+    // An index credential resolves against an index ACL rather than the user store, so putting it
+    // through a password derivation would spend one and name nobody.
+    let Some(credentials) = authorization
+        .to_str()
+        .ok()
+        .filter(|value| !state.recognizes_index_credential(value))
+        .and_then(peryx_identity::parse_basic)
+    else {
+        return Ok(address);
+    };
+    state.serving.rate_limits.probe(class, address)?;
+    // A check that cannot complete leaves the request on its address bucket and lets the handler
+    // answer the failure.
+    let Ok(verdict) = state.serving.users.verify(&credentials).await else {
+        return Ok(address);
+    };
+    let actor = match &verdict {
+        LocalAuthentication::Verified(user) => state.serving.rate_limits.user_actor(user),
+        LocalAuthentication::Rejected => address,
+    };
+    request.extensions_mut().insert(verdict);
+    Ok(actor)
+}
+
+fn session_actor(state: &AppState, headers: &HeaderMap) -> Option<ActorKey> {
+    let user = crate::access::session_user(&state.serving, headers)?;
+    Some(state.serving.rate_limits.user_actor(&user.id))
 }
 
 /// Classifies fallback routes shared by ecosystem namespaces.
@@ -765,6 +859,10 @@ fn limited_response(retry_after: u64) -> Response {
     );
     response
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/rate_limit/principal_tests.rs"]
+mod principal_tests;
 
 #[cfg(test)]
 #[path = "../tests/unit/rate_limit/tests.rs"]
