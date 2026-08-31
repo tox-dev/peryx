@@ -29,7 +29,9 @@ pub enum FinalizeOutcome {
 
 pub(super) enum FinalizeFlow<E> {
     User(E),
-    RaceReplay,
+    /// Carries the outcome the transaction observed. Retention prunes expired terminal rows, so reading
+    /// the row again after the transaction ends can find it already deleted.
+    RaceReplay(OperationOutcomeRecord),
 }
 
 impl<E: From<MetaError>> From<MetaError> for FinalizeFlow<E> {
@@ -57,24 +59,15 @@ impl MetaStore {
             |txn, ()| stamp_finalized(txn, &write),
             |driver| body(driver).map(|journal| ((), journal)).map_err(FinalizeFlow::User),
         );
-        self.resolve_finalize(write.operation, committed)
+        resolve_finalize(committed)
     }
+}
 
-    pub(super) fn resolve_finalize<E: From<MetaError>>(
-        &self,
-        operation: &str,
-        committed: Result<(), FinalizeFlow<E>>,
-    ) -> Result<FinalizeOutcome, E> {
-        match committed {
-            Ok(()) => Ok(FinalizeOutcome::Published),
-            Err(FinalizeFlow::User(err)) => Err(err),
-            Err(FinalizeFlow::RaceReplay) => {
-                let record = self
-                    .operation_outcome(operation)?
-                    .expect("a race-replay observed a terminal outcome that is still stored");
-                Ok(FinalizeOutcome::Replayed(record))
-            }
-        }
+fn resolve_finalize<E>(committed: Result<(), FinalizeFlow<E>>) -> Result<FinalizeOutcome, E> {
+    match committed {
+        Ok(()) => Ok(FinalizeOutcome::Published),
+        Err(FinalizeFlow::User(err)) => Err(err),
+        Err(FinalizeFlow::RaceReplay(record)) => Ok(FinalizeOutcome::Replayed(record)),
     }
 }
 
@@ -89,8 +82,8 @@ pub(super) fn stamp_finalized<E: From<MetaError>>(
         .map(|value| serde_json::from_slice::<OperationOutcomeRecord>(value.value()))
         .transpose()
         .map_err(MetaError::from)?;
-    if existing.is_some_and(|record| record.state.is_terminal()) {
-        return Err(FinalizeFlow::RaceReplay);
+    if let Some(record) = existing.filter(|record| record.state.is_terminal()) {
+        return Err(FinalizeFlow::RaceReplay(record));
     }
     let record = OperationOutcomeRecord {
         state: OperationState::Published,
@@ -134,3 +127,7 @@ fn advance_intent_to_admitted<E: From<MetaError>>(
 #[cfg(test)]
 #[path = "../../tests/unit/meta/finalize_fault_tests.rs"]
 mod fault_tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/meta/finalize_race_tests.rs"]
+mod race_tests;
