@@ -103,6 +103,8 @@ uuid = { version = "1.25", features = ["serde", "v4"] }
 tantivy = { version = "0.26", default-features = false, features = ["mmap", "lz4-compression", "columnar-zstd-compression"] }
 toml = "1.1"
 insta = "1"
+# 0.3.2 widened with_vars/with_vars_unset to accept array literals.
+temp-env = "0.3.2"
 thiserror = "2.0.20"
 async-trait = "0.1.92"
 bb8 = { version = "0.9.1", default-features = false }

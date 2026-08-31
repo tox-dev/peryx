@@ -2,8 +2,11 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 
 project_tmp := justfile_directory() + "/.tox/tmp"
 coverage_target_root := justfile_directory() + "/.tox/coverage-target"
-native_coverage_target := env_var_or_default("CARGO_TARGET_DIR", justfile_directory() + "/target") + "/llvm-cov-target"
-native_coverage_binary := native_coverage_target + "/debug/peryx" + if os_family() == "windows" { ".exe" } else { "" }
+exe_suffix := if os_family() == "windows" { ".exe" } else { "" }
+workspace_target := env_var_or_default("CARGO_TARGET_DIR", justfile_directory() + "/target")
+workspace_binary := workspace_target + "/debug/peryx" + exe_suffix
+native_coverage_target := workspace_target + "/llvm-cov-target"
+native_coverage_binary := native_coverage_target + "/debug/peryx" + exe_suffix
 tools_root := justfile_directory() + "/.tox/tools"
 export PERYX_TEST_TMPDIR := project_tmp
 
@@ -17,6 +20,19 @@ _project-temp:
 # Verify that the Docker daemon is available.
 _docker-ready:
     docker info >/dev/null
+
+# Print the archive-relative path of the shipped server inside a nextest archive.
+_archive-peryx-binary archive:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    tar --extract --to-stdout --file "{{ archive }}" target/nextest/binaries-metadata.json \
+      | jq -er '
+          [."rust-build-meta"."non-test-binaries"[][]
+            | select(.name == "peryx" and .kind == "bin-exe")
+            | .path]
+          | unique
+          | if length == 1 then .[0] else error("archive must contain one Peryx server binary") end
+        '
 
 # Check CodSpeed benchmark selections.
 _codspeed-target-contract:
@@ -50,13 +66,34 @@ _coverage-target-contract:
     just --dry-run coverage-native 2>&1 \
       | grep -F 'PERYX_BIN="{{ native_coverage_binary }}"'
 
+# Check that the default test suite receives the built Peryx binary.
+_test-target-contract:
+    CARGO_TARGET_DIR="{{ project_tmp }}/test-target-contract" just --dry-run test 2>&1 \
+      | grep -F 'PERYX_BIN="{{ project_tmp }}/test-target-contract/debug/peryx{{ exe_suffix }}"'
+
+# Check that the archive lookup reads the shipped server out of the archive metadata.
+_archive-binary-contract:
+    just --dry-run _archive-peryx-binary archive.tar.zst 2>&1 \
+      | grep -F 'tar --extract --to-stdout --file "archive.tar.zst" target/nextest/binaries-metadata.json'
+    just --dry-run _archive-peryx-binary archive.tar.zst 2>&1 \
+      | grep -F 'select(.name == "peryx" and .kind == "bin-exe")'
+
 # Check that archived sanitizer tests receive the relocated Peryx binary.
 _sanitizer-target-contract:
     just --dry-run sanitizer-run archive.tar.zst slice:1/8 2>&1 \
-      | grep -F 'tar --extract --to-stdout --file "archive.tar.zst" target/nextest/binaries-metadata.json'
+      | grep -F '_archive-peryx-binary "archive.tar.zst"'
     just --dry-run sanitizer-run archive.tar.zst slice:1/8 2>&1 \
       | grep -F 'PERYX_BIN="$scratch/target/$binary"'
     just --dry-run sanitizer-run archive.tar.zst slice:1/8 2>&1 \
+      | grep -F -- '--extract-to "$scratch"'
+
+# Check that archived mutation baseline tests receive the relocated Peryx binary.
+_mutation-baseline-target-contract:
+    just --dry-run mutation-baseline-run archive.tar.zst slice:1/8 2>&1 \
+      | grep -F '_archive-peryx-binary "archive.tar.zst"'
+    just --dry-run mutation-baseline-run archive.tar.zst slice:1/8 2>&1 \
+      | grep -F 'PERYX_BIN="$scratch/target/$binary"'
+    just --dry-run mutation-baseline-run archive.tar.zst slice:1/8 2>&1 \
       | grep -F -- '--extract-to "$scratch"'
 
 # Check mutation shard planning.
@@ -98,7 +135,7 @@ lint-docs: _project-temp
     prek run codespell --all-files
 
 # Check workflows and repository automation.
-lint-automation: _project-temp _browser-contract _codspeed-target-contract _coverage-target-contract _features-tool-contract _mutation-shard-count-contract _readthedocs-contract _renovate-contract _sanitizer-target-contract
+lint-automation: _project-temp _archive-binary-contract _browser-contract _codspeed-target-contract _coverage-target-contract _features-tool-contract _mutation-baseline-target-contract _mutation-shard-count-contract _readthedocs-contract _renovate-contract _sanitizer-target-contract _test-target-contract
     SKIP=cargo-fmt,cargo-clippy,mdformat,codespell prek run --all-files
 
 # Check that the hosted build commands survive their shell wrapper.
@@ -200,7 +237,7 @@ test-deps: _project-temp
 
 # Run workspace tests, doctests, and benchmark harnesses.
 test: test-deps
-    PATH="{{ tools_root }}/bin:$PATH" cargo nextest run \
+    PERYX_BIN="{{ workspace_binary }}" PATH="{{ tools_root }}/bin:$PATH" cargo nextest run \
       --workspace --exclude peryx-storage --all-features --profile ci \
       -E 'not(test(e2e_live))'
     cargo nextest run --package peryx-storage --profile ci
@@ -324,16 +361,7 @@ sanitizer-run archive partition="slice:1/1": test-deps
     set -euo pipefail
     scratch=$(mktemp -d "{{ project_tmp }}/sanitizer.XXXXXX")
     trap 'rm -rf "$scratch"' EXIT
-    binary=$(
-      tar --extract --to-stdout --file "{{ archive }}" target/nextest/binaries-metadata.json \
-        | jq -er '
-            [."rust-build-meta"."non-test-binaries"[][]
-              | select(.name == "peryx" and .kind == "bin-exe")
-              | .path]
-            | unique
-            | if length == 1 then .[0] else error("archive must contain one Peryx server binary") end
-          '
-    )
+    binary=$("{{ just_executable() }}" _archive-peryx-binary "{{ archive }}")
     ASAN_OPTIONS=allow_addr2line=1 PERYX_BIN="$scratch/target/$binary" \
       PATH="{{ tools_root }}/bin:$PATH" cargo +nightly nextest run \
       --archive-file "{{ archive }}" --extract-to "$scratch" \
@@ -413,9 +441,16 @@ mutation-baseline-archive archive: _project-temp
 
 # Run a partition from the mutation baseline archive.
 mutation-baseline-run archive partition="slice:1/1": test-deps
-    INSTA_UPDATE=no INSTA_FORCE_PASS=0 PATH="{{ tools_root }}/bin:$PATH" \
-      cargo nextest run --archive-file "{{ archive }}" --workspace-remap "{{ justfile_directory() }}" \
-      --profile ci --partition "{{ partition }}" -E 'not(test(e2e_live))'
+    #!/usr/bin/env bash
+    set -euo pipefail
+    scratch=$(mktemp -d "{{ project_tmp }}/mutation-baseline.XXXXXX")
+    trap 'rm -rf "$scratch"' EXIT
+    binary=$("{{ just_executable() }}" _archive-peryx-binary "{{ archive }}")
+    INSTA_UPDATE=no INSTA_FORCE_PASS=0 PERYX_BIN="$scratch/target/$binary" \
+      PATH="{{ tools_root }}/bin:$PATH" cargo nextest run \
+      --archive-file "{{ archive }}" --extract-to "$scratch" \
+      --workspace-remap "{{ justfile_directory() }}" --profile ci \
+      --partition "{{ partition }}" -E 'not(test(e2e_live))'
 
 # Count workspace mutation candidates.
 mutation-count: _project-temp
