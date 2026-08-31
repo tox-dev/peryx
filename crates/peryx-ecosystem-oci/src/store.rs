@@ -215,6 +215,16 @@ pub fn record_content_placement(
     meta.put_artifact_placement(digest, &ArtifactPlacement::record(origin.artifact_source(), present))
 }
 
+/// Stage a pushed manifest's placement inside the transaction that publishes it, so no reader can see a
+/// manifest this node serves without seeing that it holds the bytes. A push writes verified bytes here,
+/// so the row is hosted and local.
+pub fn record_pushed_placement_txn(txn: &mut DriverTxn, digest: &str) {
+    txn.put_artifact_placement(
+        digest,
+        ArtifactPlacement::record(OciArtifactOrigin::Pushed.artifact_source(), true),
+    );
+}
+
 /// Read local availability without creating the optional placement table.
 pub fn content_available_locally(meta: &MetaStore, digest: &str) -> Result<bool, MetaError> {
     Ok(meta
@@ -796,22 +806,30 @@ pub fn tag_freshness(meta: &MetaStore, index: &str, repo: &str, tag: &str) -> Re
         .map(|digest| (i64::from_be_bytes(*at), digest)))
 }
 
-/// Record that the manifest `referrer` declares `subject` as its subject in `repo`, storing its
-/// descriptor for the referrers API. Keyed by the subject so a referrers query is a prefix scan.
+/// What a manifest that declares a subject contributes to that subject's referrers listing: the subject
+/// it points at, and the descriptor a referrers query returns for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Referrer {
+    pub subject: String,
+    pub descriptor: Vec<u8>,
+}
+
+/// Stage `digest`'s referrer row inside the transaction that publishes it, so the subject lists an
+/// attestation or signature exactly when the repository serves it. Keyed by the subject, so a referrers
+/// query is a prefix scan.
 ///
 /// # Errors
 /// Returns a store error if the write fails.
-pub fn put_referrer(
-    meta: &MetaStore,
+pub fn put_referrer_txn(
+    txn: &mut DriverTxn,
     index: &str,
     repo: &str,
-    subject: &str,
-    referrer: &str,
-    descriptor: &[u8],
+    digest: &str,
+    referrer: &Referrer,
 ) -> Result<(), MetaError> {
-    meta.put_driver_value(
-        &format!("{}{referrer}", referrer_prefix(index, repo, subject)),
-        descriptor,
+    txn.put(
+        &format!("{}{digest}", referrer_prefix(index, repo, &referrer.subject)),
+        &referrer.descriptor,
     )
 }
 

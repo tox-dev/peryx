@@ -9,7 +9,7 @@ use rstest::rstest;
 use wiremock::matchers::{method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use super::{body_has_code, hosted, oci_digest, proxy, send, send_with, virtual_stack};
+use super::{body_has_code, hosted, oci_digest, proxy, seed_referrer, send, send_with, virtual_stack};
 use crate::store::{self, Manifest};
 
 const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
@@ -624,36 +624,30 @@ async fn test_referrers_hide_revoked_descriptors_and_subjects() {
     let subject = format!("sha256:{}", "5".repeat(64));
     let clear = format!("sha256:{}", "6".repeat(64));
     let revoked = format!("sha256:{}", "7".repeat(64));
-    store::put_referrer(
+    seed_referrer(
         &state.serving.meta,
-        "store",
         "app",
         &subject,
         &format!("sha256:{}", "8".repeat(64)),
         br#"{"artifactType":"application/vnd.example.sig"}"#,
-    )
-    .unwrap();
-    store::put_referrer(
+    );
+    seed_referrer(
         &state.serving.meta,
-        "store",
         "app",
         &subject,
         &format!("sha256:{}", "9".repeat(64)),
         b"not json",
-    )
-    .unwrap();
+    );
     for digest in [&clear, &revoked] {
-        store::put_referrer(
+        seed_referrer(
             &state.serving.meta,
-            "store",
             "app",
             &subject,
             digest,
             serde_json::json!({"digest":digest,"artifactType":"application/vnd.example.sig"})
                 .to_string()
                 .as_bytes(),
-        )
-        .unwrap();
+        );
     }
     revoke(&state, &revoked);
     let uri = format!("/v2/store/app/referrers/{subject}?artifactType=application/vnd.example.sig");
@@ -683,15 +677,13 @@ async fn test_referrers_accept_sha512_subject_with_active_revocations() {
     let subject = format!("sha512:{}", "5".repeat(128));
     let referrer = format!("sha256:{}", "6".repeat(64));
     let descriptor = serde_json::json!({"digest":referrer,"artifactType":"application/vnd.example.sig"});
-    store::put_referrer(
+    seed_referrer(
         &state.serving.meta,
-        "store",
         "app",
         &subject,
         &referrer,
         descriptor.to_string().as_bytes(),
-    )
-    .unwrap();
+    );
     revoke(&state, &format!("sha256:{}", "7".repeat(64)));
 
     let (status, _, body) = send(&app, Method::GET, &format!("/v2/store/app/referrers/{subject}")).await;

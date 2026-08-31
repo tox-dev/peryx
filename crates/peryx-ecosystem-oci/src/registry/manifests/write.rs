@@ -92,7 +92,7 @@ pub(in crate::registry) async fn put_manifest(
             canonical: &canonical,
             media_type: &media_type,
             bytes: &bytes,
-            document: &document,
+            referrer: referrer_of(&canonical, &media_type, bytes.len(), &document),
             reference,
             reservation: &reservation,
             journal,
@@ -142,20 +142,28 @@ struct ManifestWrite<'a> {
     canonical: &'a str,
     media_type: &'a str,
     bytes: &'a [u8],
-    document: &'a serde_json::Value,
+    referrer: Option<store::Referrer>,
     reference: &'a Reference,
     reservation: &'a Option<peryx_storage::meta::QuotaReservationRecord>,
     journal: crate::outbox::Outbox,
     webhook: Option<peryx_storage::meta::WebhookEventIntent>,
 }
 
+/// Publish the manifest and everything derived from it under one lease check, and return the subject
+/// digest the response echoes in `OCI-Subject`.
+///
+/// The publication, the manifest's placement and its referrer row commit together, so a fault leaves
+/// the repository exactly as it was: there is no point at which a client can read the manifest while
+/// search cannot report its bytes or the subject cannot list it.
 async fn commit_manifest(
     state: &ServingState,
     fence: u64,
     write: ManifestWrite<'_>,
 ) -> Result<EpochCommit<Option<String>>, ServeError> {
+    let subject = write.referrer.as_ref().map(|referrer| referrer.subject.clone());
     commit_epoch(state, write.repo, fence, |lease| {
         lease.guard()?;
+        let search_invalidation = crate::search_oci::SearchInvalidationGuard::arm(state, write.repo);
         crate::quota::publish_manifest(
             &state.meta,
             crate::quota::ManifestCommit {
@@ -167,25 +175,14 @@ async fn commit_manifest(
                     bytes: write.bytes.to_vec(),
                 },
                 reference: write.reference,
+                referrer: write.referrer.as_ref(),
                 reservation: write.reservation.clone(),
                 journal: write.journal,
                 webhook: write.webhook,
             },
         )?;
-        lease.guard()?;
-        let search_invalidation = crate::search_oci::SearchInvalidationGuard::arm(state, write.repo);
-        store::record_content_placement(&state.meta, write.canonical, store::OciArtifactOrigin::Pushed, true)?;
         drop(search_invalidation);
-        lease.guard()?;
-        record_referrer(
-            state,
-            write.index,
-            write.repo,
-            write.canonical,
-            write.media_type,
-            write.bytes.len(),
-            write.document,
-        )
+        Ok(subject)
     })
     .await
 }
@@ -224,20 +221,18 @@ fn reference_tag(reference: &Reference) -> Option<&str> {
         Reference::Digest(_) => None,
     }
 }
-/// If a pushed manifest declares a subject, store its descriptor under that subject for the referrers
-/// API and return the subject digest so the response can echo it in `OCI-Subject`.
-fn record_referrer(
-    state: &ServingState,
-    index: &str,
-    repo: &str,
+/// The referrers-API row a pushed manifest contributes, or `None` when it declares no subject.
+///
+/// Derived from the parsed document before the publication transaction opens, so the row the subject
+/// will list is decided while the push can still be rejected outright, and committing it costs the
+/// transaction nothing but a write.
+fn referrer_of(
     canonical: &str,
     media_type: &str,
     size: usize,
     document: &serde_json::Value,
-) -> Result<Option<String>, ServeError> {
-    let Some(subject) = document["subject"]["digest"].as_str() else {
-        return Ok(None);
-    };
+) -> Option<store::Referrer> {
+    let subject = document["subject"]["digest"].as_str()?;
     let mut descriptor = serde_json::json!({
         "mediaType": media_type,
         "digest": canonical,
@@ -252,9 +247,10 @@ fn record_referrer(
     if let Some(annotations) = document.get("annotations").filter(|value| value.is_object()) {
         descriptor["annotations"] = annotations.clone();
     }
-    let descriptor = descriptor.to_string();
-    store::put_referrer(&state.meta, index, repo, subject, canonical, descriptor.as_bytes())?;
-    Ok(Some(subject.to_owned()))
+    Some(store::Referrer {
+        subject: subject.to_owned(),
+        descriptor: descriptor.to_string().into_bytes(),
+    })
 }
 pub(in crate::registry) async fn delete_manifest(
     state: &Arc<ServingState>,

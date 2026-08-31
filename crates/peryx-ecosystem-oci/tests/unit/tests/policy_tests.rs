@@ -10,7 +10,10 @@ use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
 use tower::ServiceExt as _;
 
-use super::{app_with_indexes, auth, body_has_code, oci_digest, oci_index, send, send_body, send_with, writable_index};
+use super::{
+    app_with_indexes, auth, body_has_code, oci_digest, oci_index, seed_referrer, send, send_body, send_with,
+    writable_index,
+};
 use crate::store::{self, Manifest};
 
 const TOKEN: &str = "s3cret";
@@ -395,15 +398,7 @@ async fn test_policy_hides_a_blocked_repository_from_tags_referrers_and_catalog(
     for repo in ["blocked/app", "public/app"] {
         store::record_manifest(&state.serving.meta, "store", repo, &digest, &manifest).unwrap();
         store::put_tag(&state.serving.meta, "store", repo, "1.0", &digest).unwrap();
-        store::put_referrer(
-            &state.serving.meta,
-            "store",
-            repo,
-            &digest,
-            &digest,
-            br#"{"digest":"x"}"#,
-        )
-        .unwrap();
+        seed_referrer(&state.serving.meta, repo, &digest, &digest, br#"{"digest":"x"}"#);
     }
 
     let (status, _, _) = send(&app, Method::GET, "/v2/store/blocked/app/tags/list").await;

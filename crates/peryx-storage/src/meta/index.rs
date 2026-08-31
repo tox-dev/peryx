@@ -1,3 +1,4 @@
+use peryx_ha::ArtifactPlacement;
 use redb::ReadableTable as _;
 
 use super::error::{MetaError, MetaScanError};
@@ -357,19 +358,22 @@ impl MetaStore {
         let mut txn = self.db.begin_write().map_err(MetaError::from)?;
         set_durability(&mut txn, durable);
         check_replica_serial(&txn, expected_serial)?;
-        let (value, journal, webhooks) = {
+        let (value, journal, webhooks, placements) = {
             let mut driver = DriverTxn {
                 table: txn.open_table(DRIVER_KV).map_err(MetaError::from)?,
                 touched: std::collections::BTreeSet::new(),
                 blobs: std::collections::BTreeSet::new(),
                 webhooks: Vec::new(),
+                placements: Vec::new(),
             };
             let (value, journal) = body(&mut driver)?;
             let webhooks = std::mem::take(&mut driver.webhooks);
+            let placements = std::mem::take(&mut driver.placements);
             let journal = finish_journal(journal, driver).map_err(E::from)?;
-            (value, journal, webhooks)
+            (value, journal, webhooks, placements)
         };
         Self::enqueue_webhook_events(&txn, &webhooks).map_err(E::from)?;
+        Self::write_artifact_placements(&txn, &placements).map_err(E::from)?;
         check_blob_reclaim_guard(&txn, expected_serial, &journal).map_err(E::from)?;
         let journal_commit = commit_journal(&txn, &journal)?;
         if let Some((repository, catalog)) = catalog_generation {
@@ -512,6 +516,7 @@ pub struct DriverTxn<'txn> {
     touched: std::collections::BTreeSet<String>,
     blobs: std::collections::BTreeSet<DriverBlobReference>,
     webhooks: Vec<WebhookEventIntent>,
+    placements: Vec<(String, ArtifactPlacement)>,
 }
 
 /// Read-only access to opaque driver rows from one metadata snapshot.
@@ -562,6 +567,13 @@ impl DriverTxn<'_> {
     /// Persist this event only if the surrounding driver mutation commits.
     pub fn enqueue_webhook_event(&mut self, event: WebhookEventIntent) {
         self.webhooks.push(event);
+    }
+
+    /// Persist this placement only if the surrounding driver mutation commits, so a derived row and the
+    /// rows it describes cannot disagree. Placement lives in its own table, which stays absent until a
+    /// transaction stages a row for it.
+    pub fn put_artifact_placement(&mut self, digest: &str, placement: ArtifactPlacement) {
+        self.placements.push((digest.to_owned(), placement));
     }
 
     /// Includes writes staged earlier in this transaction.

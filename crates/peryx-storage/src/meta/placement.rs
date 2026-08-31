@@ -31,6 +31,22 @@ impl MetaStore {
         Ok(())
     }
 
+    /// Writes the placements a driver transaction staged into that same transaction. An empty list opens
+    /// nothing, so a driver mutation that stages no placement leaves the optional table uncreated.
+    pub(super) fn write_artifact_placements(
+        txn: &redb::WriteTransaction,
+        placements: &[(String, ArtifactPlacement)],
+    ) -> Result<(), MetaError> {
+        if placements.is_empty() {
+            return Ok(());
+        }
+        let mut table = txn.open_table(ARTIFACT_PLACEMENT)?;
+        for (digest, placement) in placements {
+            table.insert(digest.as_str(), serde_json::to_vec(placement)?.as_slice())?;
+        }
+        Ok(())
+    }
+
     /// # Errors
     /// Returns a store error when the row cannot be read or decoded.
     pub fn get_artifact_placement(&self, digest: &str) -> Result<Option<ArtifactPlacement>, MetaError> {

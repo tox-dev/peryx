@@ -828,6 +828,25 @@ fn image_manifest(media_type: &str, extra: &str) -> Vec<u8> {
     .into_bytes()
 }
 
+/// Write one referrer row the way a publication does, for tests that read the referrers API without
+/// pushing the manifest that would have produced it.
+fn seed_referrer(meta: &MetaStore, repo: &str, subject: &str, digest: &str, descriptor: &[u8]) {
+    meta.commit_driver_txn(|txn| {
+        crate::store::put_referrer_txn(
+            txn,
+            "store",
+            repo,
+            digest,
+            &crate::store::Referrer {
+                subject: subject.to_owned(),
+                descriptor: descriptor.to_vec(),
+            },
+        )
+        .map(|()| ((), Vec::new()))
+    })
+    .unwrap();
+}
+
 /// Upload [`CONFIG_BLOB`] into `name`, so an image manifest naming it may be pushed there.
 async fn seed_config(app: &axum::Router, name: &str, authorization: &str) {
     let (status, ..) = send_body(

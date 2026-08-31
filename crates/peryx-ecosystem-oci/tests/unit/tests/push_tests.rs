@@ -2544,6 +2544,35 @@ async fn test_mount_at_the_current_epoch_publishes_the_blob() {
     assert_eq!(got, &blob[..]);
 }
 
+/// A pushed manifest must never be readable before search can report that this node holds its bytes,
+/// so the placement row lands with the publication rather than after it.
+#[tokio::test]
+async fn test_a_manifest_push_records_its_placement_with_the_publication() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = hosted_writable(&dir, TOKEN);
+    seed_config(&app, "store/app", &auth(TOKEN)).await;
+    let manifest = image_manifest(MANIFEST_TYPE, "");
+    let digest = oci_digest(&manifest);
+
+    let (status, _, _) = send_body(
+        &app,
+        Method::PUT,
+        "/v2/store/app/manifests/v1",
+        &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
+        manifest,
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(
+        state.serving.meta.get_artifact_placement(&digest).unwrap(),
+        Some(peryx_ha::ArtifactPlacement::record(
+            peryx_ha::ArtifactSource::Hosted,
+            true
+        ))
+    );
+}
+
 /// Stale-epoch errors must not expose control-plane topology.
 fn assert_no_topology(body: &bytes::Bytes) {
     let text = String::from_utf8_lossy(body).to_ascii_lowercase();

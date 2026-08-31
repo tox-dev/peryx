@@ -1,11 +1,13 @@
 use axum::http::{Method, StatusCode};
-use peryx_storage::meta::{AccountingClass, MetaStore, NewQuotaReservation, QuotaLimits};
+use peryx_ha::{ArtifactPlacement, ArtifactSource};
+use peryx_storage::meta::{AccountingClass, MetaStore, NewQuotaReservation, QuotaLimits, QuotaReservationRecord};
 use rstest::rstest;
 use tempfile::TempDir;
 
 use super::{app_with_journal, auth, oci_digest, send_body, send_with, writable_index};
 use crate::name::Reference;
 use crate::outbox::OciMutation;
+use crate::registry::ServeError;
 use crate::store::{self, Manifest};
 use crate::{quota, store::TrashInfo};
 
@@ -57,6 +59,7 @@ fn test_publish_manifest_records_the_reference_it_named(#[case] reference: Refer
             canonical: "sha256:abc",
             manifest: &manifest(),
             reference: &reference,
+            referrer: None,
             reservation: None,
             journal: true,
             webhook: None,
@@ -75,6 +78,117 @@ fn test_publish_manifest_records_the_reference_it_named(#[case] reference: Refer
     );
 }
 
+fn referrer() -> store::Referrer {
+    store::Referrer {
+        subject: "sha256:subject".to_owned(),
+        descriptor: br#"{"digest":"sha256:abc"}"#.to_vec(),
+    }
+}
+
+fn publish(
+    meta: &MetaStore,
+    referrer: Option<&store::Referrer>,
+    reservation: Option<QuotaReservationRecord>,
+) -> Result<bool, ServeError> {
+    quota::publish_manifest(
+        meta,
+        quota::ManifestCommit {
+            index: "store",
+            repo: "app",
+            canonical: "sha256:abc",
+            manifest: &manifest(),
+            reference: &Reference::Tag("latest".to_owned()),
+            referrer,
+            reservation,
+            journal: true,
+            webhook: None,
+        },
+    )
+}
+
+/// Everything a reader resolves from a published manifest: the manifest itself, where its bytes live,
+/// and what its subject lists. Publication either brings all three into existence or none of them.
+fn resolved(meta: &MetaStore) -> (Option<Manifest>, Option<ArtifactPlacement>, Vec<Vec<u8>>) {
+    (
+        store::get_manifest(meta, "sha256:abc").unwrap(),
+        meta.get_artifact_placement("sha256:abc").unwrap(),
+        store::list_referrers(meta, "store", "app", "sha256:subject").unwrap(),
+    )
+}
+
+fn reserve(meta: &MetaStore, created_at_unix: i64) -> QuotaReservationRecord {
+    meta.reserve_quota(
+        NewQuotaReservation {
+            repository: "store",
+            resource: Some("app"),
+            group: Some("latest"),
+            digest: "sha256:abc",
+            bytes: 2,
+            class: AccountingClass::Hosted,
+            created_at_unix,
+        },
+        QuotaLimits::default(),
+    )
+    .unwrap()
+}
+
+#[rstest]
+#[case::with_a_subject(Some(referrer()), vec![referrer().descriptor])]
+#[case::without_a_subject(None, Vec::new())]
+fn test_publication_commits_the_placement_and_any_referrer_row(
+    #[case] row: Option<store::Referrer>,
+    #[case] listed: Vec<Vec<u8>>,
+) {
+    let (_dir, meta) = store();
+
+    publish(&meta, row.as_ref(), None).unwrap();
+
+    assert_eq!(
+        resolved(&meta),
+        (
+            Some(manifest()),
+            Some(ArtifactPlacement::record(ArtifactSource::Hosted, true)),
+            listed
+        )
+    );
+}
+
+#[test]
+fn test_a_publication_that_cannot_settle_exposes_nothing_and_a_retry_repairs_it() {
+    let (_dir, meta) = store();
+    let released = reserve(&meta, 100);
+    meta.release_quota_reservation(released.id).unwrap();
+
+    let aborted = publish(&meta, Some(&referrer()), Some(released));
+
+    assert!(aborted.is_err(), "an unavailable reservation aborts the publication");
+    assert_eq!(
+        resolved(&meta),
+        (None, None, Vec::new()),
+        "the manifest and its derived rows roll back together"
+    );
+
+    publish(&meta, Some(&referrer()), Some(reserve(&meta, 101))).unwrap();
+
+    assert_eq!(
+        only_op(&meta),
+        OciMutation::PublishManifest {
+            index: "store".to_owned(),
+            repo: "app".to_owned(),
+            digest: "sha256:abc".to_owned(),
+            tag: Some("latest".to_owned()),
+        }
+    );
+    assert_eq!(
+        resolved(&meta),
+        (
+            Some(manifest()),
+            Some(ArtifactPlacement::record(ArtifactSource::Hosted, true)),
+            vec![referrer().descriptor]
+        )
+    );
+}
+
 #[test]
 fn test_none_mode_publish_records_no_outbox_entry() {
     let (_dir, meta) = store();
@@ -87,6 +201,7 @@ fn test_none_mode_publish_records_no_outbox_entry() {
             canonical: "sha256:abc",
             manifest: &manifest(),
             reference: &Reference::Digest("sha256:abc".to_owned()),
+            referrer: None,
             reservation: None,
             journal: false,
             webhook: None,

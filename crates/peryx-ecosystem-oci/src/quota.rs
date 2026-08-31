@@ -237,11 +237,15 @@ pub struct ManifestCommit<'a> {
     pub canonical: &'a str,
     pub manifest: &'a Manifest,
     pub reference: &'a Reference,
+    pub referrer: Option<&'a store::Referrer>,
     pub reservation: Option<QuotaReservationRecord>,
     pub journal: crate::outbox::Outbox,
     pub webhook: Option<peryx_storage::meta::WebhookEventIntent>,
 }
 
+/// Publish a pushed manifest and every row derived from it - its placement, and the referrer row a
+/// subject query answers from - in one metadata transaction, so a fault leaves the repository serving
+/// what it did before rather than a manifest whose derived rows never landed.
 pub fn publish_manifest(meta: &MetaStore, commit: ManifestCommit<'_>) -> Result<bool, ServeError> {
     let ManifestCommit {
         index,
@@ -249,6 +253,7 @@ pub fn publish_manifest(meta: &MetaStore, commit: ManifestCommit<'_>) -> Result<
         canonical,
         manifest,
         reference,
+        referrer,
         reservation,
         journal,
         webhook,
@@ -259,6 +264,10 @@ pub fn publish_manifest(meta: &MetaStore, commit: ManifestCommit<'_>) -> Result<
             Reference::Digest(_) => None,
         };
         let publication = store::publish_manifest_txn(txn, index, repo, canonical, manifest, tag)?;
+        store::record_pushed_placement_txn(txn, canonical);
+        if let Some(referrer) = referrer {
+            store::put_referrer_txn(txn, index, repo, canonical, referrer)?;
+        }
         if publication.changed
             && let Some(webhook) = webhook
         {

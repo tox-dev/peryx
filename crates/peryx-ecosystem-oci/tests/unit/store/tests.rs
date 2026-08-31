@@ -226,37 +226,39 @@ fn test_put_tag_reports_insert_and_repoints() {
     );
 }
 
+fn referrer(subject: &str, descriptor: &[u8]) -> Referrer {
+    Referrer {
+        subject: subject.to_owned(),
+        descriptor: descriptor.to_vec(),
+    }
+}
+
+fn put_referrers(meta: &MetaStore, rows: &[(&str, &str, &str, &[u8])]) {
+    meta.commit_driver_txn(|txn| {
+        for (index, repo, digest, descriptor) in rows {
+            put_referrer_txn(txn, index, repo, digest, &referrer("sha256:subj", descriptor))?;
+        }
+        Ok::<_, MetaError>(((), Vec::new()))
+    })
+    .unwrap();
+}
+
 #[test]
 fn test_referrers_scope_to_index_repo_and_subject() {
     let (_dir, meta) = store();
-    put_referrer(
+    put_referrers(
         &meta,
-        "store",
-        "app",
-        "sha256:subj",
-        "sha256:ref1",
-        b"{\"digest\":\"sha256:ref1\"}",
-    )
+        &[
+            ("store", "app", "sha256:ref1", b"{\"digest\":\"sha256:ref1\"}"),
+            ("store", "app", "sha256:ref2", b"{\"digest\":\"sha256:ref2\"}"),
+            ("store", "other", "sha256:ref3", b"{\"digest\":\"sha256:ref3\"}"),
+        ],
+    );
+    meta.commit_driver_txn(|txn| {
+        put_referrer_txn(txn, "store", "app", "sha256:ref4", &referrer("sha256:elsewhere", b"{}"))?;
+        Ok::<_, MetaError>(((), Vec::new()))
+    })
     .unwrap();
-    put_referrer(
-        &meta,
-        "store",
-        "app",
-        "sha256:subj",
-        "sha256:ref2",
-        b"{\"digest\":\"sha256:ref2\"}",
-    )
-    .unwrap();
-    put_referrer(
-        &meta,
-        "store",
-        "other",
-        "sha256:subj",
-        "sha256:ref3",
-        b"{\"digest\":\"sha256:ref3\"}",
-    )
-    .unwrap();
-    put_referrer(&meta, "store", "app", "sha256:elsewhere", "sha256:ref4", b"{}").unwrap();
 
     let referrers = list_referrers(&meta, "store", "app", "sha256:subj").unwrap();
     assert_eq!(referrers.len(), 2);
