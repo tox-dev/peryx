@@ -578,3 +578,156 @@ async fn test_promote_under_a_superseded_epoch_conflicts_and_promotes_nothing() 
         );
     }
 }
+
+fn promoter_auth() -> String {
+    format!("Basic {}", STANDARD.encode("__token__:pr0m0te"))
+}
+
+async fn stage_peryxpkg(state: &Arc<AppState>) {
+    upload_wheel_to(
+        state,
+        "/staging/",
+        "peryxpkg-1.0-py3-none-any.whl",
+        "1.0",
+        &fixture_wheel(),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn test_promote_denies_a_source_the_caller_cannot_read() {
+    let h = private_promotion_harness().await;
+    stage_peryxpkg(&h.state).await;
+
+    let (status, body) = request_response(
+        &h.state,
+        "PUT",
+        "/prod/peryxpkg/1.0/promote?from=staging",
+        Some(&upload_auth()),
+    )
+    .await;
+
+    assert_eq!((status, body.as_str()), (StatusCode::NOT_FOUND, "not found"));
+    assert_eq!(
+        get(&h.state, "/prod/simple/peryxpkg/", Some("application/json"))
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn test_promote_accepts_a_source_the_caller_can_read() {
+    let h = private_promotion_harness().await;
+    stage_peryxpkg(&h.state).await;
+
+    let (status, body) = request_response(
+        &h.state,
+        "PUT",
+        "/prod/peryxpkg/1.0/promote?from=staging",
+        Some(&promoter_auth()),
+    )
+    .await;
+
+    assert_eq!((status, body.as_str()), (StatusCode::OK, "promoted 1 file(s)"));
+    let (_, _, listing) = get(&h.state, "/prod/simple/peryxpkg/", Some("application/json")).await;
+    let detail: serde_json::Value = serde_json::from_str(&listing).unwrap();
+    assert_eq!(detail["files"][0]["filename"], "peryxpkg-1.0-py3-none-any.whl");
+}
+
+/// The virtual routes share `staging` as their write target, so only the named route's own ACL can
+/// account for the two outcomes.
+#[rstest]
+#[case::sealed_route_over_readable_layer("sealed", "pr0m0te", StatusCode::NOT_FOUND, "not found")]
+#[case::open_route_over_sealed_layer("open", "s3cret", StatusCode::OK, "promoted 1 file(s)")]
+#[tokio::test]
+async fn test_promote_authorizes_the_named_virtual_route_not_its_write_target(
+    #[case] source: &str,
+    #[case] secret: &str,
+    #[case] expected: StatusCode,
+    #[case] message: &str,
+) {
+    let h = private_promotion_harness().await;
+    stage_peryxpkg(&h.state).await;
+    let auth = format!("Basic {}", STANDARD.encode(format!("__token__:{secret}")));
+
+    let (status, body) = request_response(
+        &h.state,
+        "PUT",
+        &format!("/prod/peryxpkg/1.0/promote?from={source}"),
+        Some(&auth),
+    )
+    .await;
+
+    assert_eq!((status, body.as_str()), (expected, message));
+}
+
+/// `internal` would answer `405 no hosted upload layer` and `staging` would promote for a reader, so
+/// an unreadable source has to be refused before either can distinguish itself from a missing route.
+#[rstest]
+#[case::missing("absent")]
+#[case::hidden_cache("internal")]
+#[case::unreadable_hosted("staging")]
+#[case::unreadable_virtual("sealed")]
+#[tokio::test]
+async fn test_promote_hides_which_unreadable_source_was_named(#[case] source: &str) {
+    let h = private_promotion_harness().await;
+    stage_peryxpkg(&h.state).await;
+
+    let (status, body) = request_response(
+        &h.state,
+        "PUT",
+        &format!("/prod/peryxpkg/1.0/promote?from={source}"),
+        Some(&upload_auth()),
+    )
+    .await;
+
+    assert_eq!((status, body.as_str()), (StatusCode::NOT_FOUND, "not found"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_promote_logs_the_refused_source_read() {
+    let h = private_promotion_harness().await;
+    stage_peryxpkg(&h.state).await;
+    let logs = LogCapture::default();
+    let guard = logs.install();
+
+    assert_eq!(
+        request(
+            &h.state,
+            "PUT",
+            "/prod/peryxpkg/1.0/promote?from=staging",
+            Some(&upload_auth()),
+        )
+        .await,
+        StatusCode::NOT_FOUND
+    );
+
+    drop(guard);
+    assert!(!logs.text().contains("s3cret"));
+    let denial = logs
+        .security_events()
+        .into_iter()
+        .find(|event| field(event, "action") == Some("promote"))
+        .unwrap();
+    assert_eq!(
+        (
+            field(&denial, "result"),
+            field(&denial, "reason"),
+            field(&denial, "index"),
+            field(&denial, "source_index"),
+            field(&denial, "hosted_index"),
+            field(&denial, "resource"),
+            field(&denial, "group"),
+        ),
+        (
+            Some("denied"),
+            Some("source read denied"),
+            Some("prod"),
+            Some("staging"),
+            Some("prod"),
+            Some("peryxpkg"),
+            Some("1.0"),
+        )
+    );
+}

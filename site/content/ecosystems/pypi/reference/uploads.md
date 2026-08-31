@@ -265,6 +265,23 @@ echoing bundle content. In `audit` mode the upload publishes and peryx records t
 instead of rejecting. Either way the decision is persisted to the policy-decision log. An upload with no attestations
 satisfies no requirement.
 
+## Promotion authorization
+
+`PUT /{route}/{project}/{version}/promote?from={source}` reads one index and writes another, and each side is judged on
+its own ACL. The target needs `write` for the presented credential, exactly as an upload does. The named source route
+needs `read` for that same credential, so target write alone cannot copy a private release into an index the caller can
+download from.
+
+The source decision reads the ACL of the route the request named. A virtual source resolves its records through a hosted
+write target, and that layer's ACL does not stand in for the route's: a sealed virtual route over a readable layer is
+refused, and a readable virtual route over a sealed layer is allowed. An index whose ACL keeps `anonymous_read` is
+readable by every credential, so promoting out of a public source needs no ACL change.
+
+A source the credential cannot read answers `404` with `not found`, the same reply as a route that does not exist. The
+read is decided before the source's hosted upload layer is resolved, so a private cache no longer answers `405` and
+separates itself from a route the caller cannot see. peryx records the refusal as a `promote` security event with reason
+`source read denied`, naming the actor, both indexes, and the release.
+
 ## Version matching for admin operations
 
 The version-scoped admin operations address a release by version: yank, un-yank, delete, and promote. Each reads the

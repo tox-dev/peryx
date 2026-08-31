@@ -1,5 +1,5 @@
 use super::*;
-use peryx_identity::IndexAcl;
+use peryx_identity::{Action, Glob, Grant, IndexAcl, NamedToken};
 use std::sync::RwLock;
 
 pub struct Harness {
@@ -394,6 +394,115 @@ async fn promotion_harness_with(distributed: bool) -> Harness {
         clock,
     }
 }
+/// Promotion where source read and target write are held by different credentials.
+///
+/// `s3cret` uploads to `staging` and writes `prod` but reads nothing; `pr0m0te` reads `staging` and
+/// writes `prod`. The two virtual routes share `staging` as their write target while carrying the
+/// opposite `anonymous_read` to it, so a test can tell the named route's ACL from its layer's.
+pub async fn private_promotion_harness() -> Harness {
+    let dir = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
+    let clock = Arc::new(AtomicI64::new(1000));
+    let ticks = clock.clone();
+    let indexes = vec![
+        Index {
+            name: "internal".to_owned(),
+            route: "internal".to_owned(),
+            ecosystem: crate::ECOSYSTEM,
+            kind: IndexKind::Cached {
+                client: UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap(),
+                offline: false,
+            },
+            policy: Policy::default(),
+            acl: sealed_acl(),
+        },
+        Index {
+            name: "staging".to_owned(),
+            route: "staging".to_owned(),
+            ecosystem: crate::ECOSYSTEM,
+            kind: IndexKind::Hosted { volatile: true },
+            policy: Policy::default(),
+            acl: IndexAcl {
+                anonymous_read: false,
+                tokens: vec![
+                    named_token("writer", "s3cret", [Action::Write, Action::Delete]),
+                    named_token("promoter", "pr0m0te", [Action::Read]),
+                ],
+            },
+        },
+        Index {
+            name: "prod".to_owned(),
+            route: "prod".to_owned(),
+            ecosystem: crate::ECOSYSTEM,
+            kind: IndexKind::Hosted { volatile: true },
+            policy: Policy::default(),
+            acl: IndexAcl {
+                anonymous_read: false,
+                tokens: vec![
+                    named_token("writer", "s3cret", [Action::Write, Action::Delete]),
+                    named_token("promoter", "pr0m0te", [Action::Write, Action::Delete]),
+                ],
+            },
+        },
+        Index {
+            name: "sealed".to_owned(),
+            route: "sealed".to_owned(),
+            ecosystem: crate::ECOSYSTEM,
+            kind: IndexKind::Virtual {
+                layers: vec![1, 0],
+                write_target: Some(1),
+            },
+            policy: Policy::default(),
+            acl: sealed_acl(),
+        },
+        Index {
+            name: "open".to_owned(),
+            route: "open".to_owned(),
+            ecosystem: crate::ECOSYSTEM,
+            kind: IndexKind::Virtual {
+                layers: vec![1, 0],
+                write_target: Some(1),
+            },
+            policy: Policy::default(),
+            acl: IndexAcl::default(),
+        },
+    ];
+    let state = AppState::with_clock(
+        meta,
+        blobs,
+        60,
+        indexes,
+        Arc::new(move || ticks.load(Ordering::Relaxed)),
+    );
+    Harness {
+        dir,
+        server,
+        state: wire(state, false),
+        clock,
+    }
+}
+
+fn sealed_acl() -> IndexAcl {
+    IndexAcl {
+        anonymous_read: false,
+        tokens: Vec::new(),
+    }
+}
+
+fn named_token(name: &str, secret: &str, actions: impl IntoIterator<Item = Action>) -> NamedToken {
+    NamedToken {
+        name: name.to_owned(),
+        secret: secret.to_owned(),
+        grants: vec![Grant {
+            resources: vec![Glob::new("*")],
+            actions: actions.into_iter().collect(),
+        }],
+        expires_at: None,
+    }
+}
+
 pub fn policy(configure: impl FnOnce(&mut PolicyConfig, &mut PypiPolicyConfig)) -> Policy {
     let mut neutral = PolicyConfig::default();
     let mut pypi = PypiPolicyConfig::default();

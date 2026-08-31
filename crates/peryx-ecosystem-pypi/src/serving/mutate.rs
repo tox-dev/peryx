@@ -5,9 +5,10 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use futures_util::FutureExt;
 use peryx_core::path::{self};
+use peryx_driver::access::ReadAccess;
 use peryx_driver::not_found;
 use peryx_driver::state::ServingState;
-use peryx_identity::Action;
+use peryx_identity::{Action, ResourceMatch};
 use peryx_index::{Index, IndexKind};
 
 use crate::cache::{self, CacheError};
@@ -31,14 +32,18 @@ struct PromotionAudit<'a> {
 }
 
 fn emit_promotion_status_event(audit: &PromotionAudit<'_>, block: &UploadStatusBlock) {
-    peryx_events::security::Event::new("promote", block.result)
+    emit_promotion_refusal(audit, block.result, &block.reason);
+}
+
+fn emit_promotion_refusal(audit: &PromotionAudit<'_>, result: &'static str, reason: &str) {
+    peryx_events::security::Event::new("promote", result)
         .actor(audit.actor)
         .index(audit.route)
         .source_index(audit.source_index)
         .hosted_index(audit.hosted_index)
         .resource(Some(audit.project))
         .group(Some(audit.version))
-        .reason(Some(&block.reason))
+        .reason(Some(reason))
         .request(audit.headers)
         .emit();
 }
@@ -114,13 +119,6 @@ async fn promote_request(
         Ok(source) => source,
         Err(error) => return error.into_response(),
     };
-    let Some(source_local) = upload_target(state, source) else {
-        return (
-            StatusCode::METHOD_NOT_ALLOWED,
-            format!("source index {source_route:?} has no hosted upload layer"),
-        )
-            .into_response();
-    };
     let (project, version) = match parse_project_version(spec) {
         Ok((project, Some(version))) => (project, version),
         Ok((_project, None)) => return (StatusCode::BAD_REQUEST, "promotion requires a version").into_response(),
@@ -134,6 +132,24 @@ async fn promote_request(
         hosted_index: &hosted.name,
         project: &project,
         version: &version,
+    };
+    // Without this, write on the target alone copies a private release into an index the caller can
+    // download from. The named route's own ACL decides, not the hosted layer a virtual source writes
+    // through, and a refusal answers like a missing source so the two stay indistinguishable.
+    if ReadAccess::from_headers(state, headers)
+        .for_index(source)
+        .authorize_resource(ResourceMatch::Pattern(&project))
+        .is_err()
+    {
+        emit_promotion_refusal(&audit, "denied", "source read denied");
+        return not_found();
+    }
+    let Some(source_local) = upload_target(state, source) else {
+        return (
+            StatusCode::METHOD_NOT_ALLOWED,
+            format!("source index {source_route:?} has no hosted upload layer"),
+        )
+            .into_response();
     };
     if let Some(block) = upload_status_response(
         cache::project_status(state, index, &project).await,

@@ -30,7 +30,8 @@ peryx resolves a request to the index with the longest matching route prefix. Th
 - `DELETE /{route}/{project}/[{version}/]yank`: un-yank.
 - `DELETE /{route}/{project}/[{version}/]`: delete uploads (volatile only); hide cached files.
 - `PUT /{route}/{project}/[{version}/]restore`: restore hidden cached files.
-- `PUT /{route}/{project}/{version}/promote?from=...`: promote uploaded records from another route's hosted layer.
+- `PUT /{route}/{project}/{version}/promote?from=...`: promote uploaded records from another route's hosted layer; needs
+  `write` on the target and `read` on the named source route.
 - `GET /+api`: server discovery, global URLs plus every configured index.
 - `GET /+search`: search cached packages across every configured index.
 - `GET /api-docs/openapi.json`: the public server's OpenAPI description. It excludes private availability-control and
