@@ -157,6 +157,12 @@ impl ConsensusPlan {
         &self.token
     }
 
+    /// The voter ID inbound RPCs must address for this process to answer them.
+    #[must_use]
+    pub const fn local_voter(&self) -> VoterId {
+        self.local
+    }
+
     /// # Errors
     /// Returns an error for an invalid member address or voter ID collision.
     pub fn new(
@@ -752,10 +758,10 @@ impl OwnershipGroup {
                 let Some(token) = self.peer_token.as_deref() else {
                     return Err(map_ownership_write_error(error));
                 };
-                let Some(target) = self.node.forward_target(&error) else {
+                let Some((id, target)) = self.node.forward_target(&error) else {
                     return Err(map_ownership_write_error(error));
                 };
-                let client = RaftRpcClient::new(&target.endpoint, token, PEER_RPC_TIMEOUT)
+                let client = RaftRpcClient::new(id, &target.endpoint, token, PEER_RPC_TIMEOUT)
                     .expect("the replication token and peer endpoint were validated at startup");
                 let response: Result<
                     ClientWriteResponse<TypeConfig>,
@@ -772,6 +778,7 @@ impl OwnershipGroup {
     /// Applies the configuration contract to a dynamic address so a learner cannot join on a form static
     /// membership would reject.
     async fn add_learner(&self, datacenter: &str, address: String) -> Result<CommandReceipt, ControlError> {
+        let id = voter_id(datacenter);
         let node = PeryxNode {
             datacenter: DatacenterId(datacenter.to_owned()),
             endpoint: MemberEndpoint::parse(&address)
@@ -780,9 +787,10 @@ impl OwnershipGroup {
         };
         // Learners do not change either side of the audited voter transition.
         let metrics = self.node.metrics().borrow().clone();
+        admit_member_identity(&metrics.membership_config, id, &node)?;
         let voters: BTreeSet<u64> = metrics.membership_config.voter_ids().collect();
         let voters = voter_names(&metrics.membership_config, &voters);
-        match self.node.raft().add_learner(voter_id(datacenter), node, false).await {
+        match self.node.raft().add_learner(id, node, false).await {
             Ok(response) => Ok(committed_receipt(
                 &response.log_id,
                 CommandOutcome::Committed,
@@ -875,6 +883,32 @@ fn map_ownership_write_error(error: RaftError<VoterId, ClientWriteError<VoterId,
         },
         error => OwnershipError::Unavailable(error.to_string()),
     }
+}
+
+/// `OpenRaft` keeps the committed node entry when `add_learner` repeats an ID, so a request that
+/// disagrees with committed metadata would commit nothing and still report success. Two IDs sharing one
+/// endpoint is worse: the leader opens a replication stream per ID to the same process, and one process
+/// then answers a vote under two voter identities.
+fn admit_member_identity(
+    membership: &StoredMembership<VoterId, PeryxNode>,
+    id: VoterId,
+    node: &PeryxNode,
+) -> Result<(), ControlError> {
+    for (member_id, member) in membership.nodes() {
+        if *member_id == id && member != node {
+            return Err(ControlError::Invalid(format!(
+                "datacenter {:?} maps to voter id {id}, which datacenter {:?} already holds at {}",
+                node.datacenter.0, member.datacenter.0, member.endpoint
+            )));
+        }
+        if *member_id != id && member.endpoint == node.endpoint {
+            return Err(ControlError::Invalid(format!(
+                "endpoint {} already belongs to datacenter {:?}; remove that member before reusing it",
+                node.endpoint, member.datacenter.0
+            )));
+        }
+    }
+    Ok(())
 }
 
 const fn committed_receipt(

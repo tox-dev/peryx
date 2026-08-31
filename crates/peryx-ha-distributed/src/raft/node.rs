@@ -90,27 +90,31 @@ impl RaftNode {
     }
 
     /// Prefers the leader captured in the write error because metrics may lag during an election. Falls
-    /// back to current metrics when the error has no leader.
+    /// back to current metrics when the error has no leader. The voter ID travels with the address so a
+    /// forwarded write names the process it expects to answer.
     #[must_use]
-    pub fn forward_target(&self, error: &RaftError<NodeId, ClientWriteError<NodeId, PeryxNode>>) -> Option<PeryxNode> {
+    pub fn forward_target(
+        &self,
+        error: &RaftError<NodeId, ClientWriteError<NodeId, PeryxNode>>,
+    ) -> Option<(NodeId, PeryxNode)> {
         if let RaftError::APIError(ClientWriteError::ForwardToLeader(forward)) = error
-            && let Some(node) = &forward.leader_node
+            && let (Some(id), Some(node)) = (forward.leader_id, &forward.leader_node)
         {
-            return Some(node.clone());
+            return Some((id, node.clone()));
         }
         self.leader()
     }
 
     /// Returns `None` when metrics have no leader or membership lacks its node data.
     #[must_use]
-    pub fn leader(&self) -> Option<PeryxNode> {
+    pub fn leader(&self) -> Option<(NodeId, PeryxNode)> {
         let metrics = self.raft.metrics().borrow().clone();
         let leader = metrics.current_leader?;
         metrics
             .membership_config
             .nodes()
             .find(|(id, _)| **id == leader)
-            .map(|(_, node)| node.clone())
+            .map(|(id, node)| (*id, node.clone()))
     }
 
     #[must_use]

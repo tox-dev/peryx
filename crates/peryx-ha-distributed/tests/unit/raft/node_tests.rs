@@ -58,7 +58,7 @@ async fn test_a_bootstrapped_single_node_becomes_its_own_leader() {
     let dir = tempfile::tempdir().unwrap();
     let node = leader_node(&dir).await;
 
-    assert_eq!(node.leader(), Some(peer("east", "http://localhost:4460/")));
+    assert_eq!(node.leader(), Some((1, peer("east", "http://localhost:4460/"))));
     assert_eq!(node.metrics().borrow().current_leader, Some(1));
 }
 
@@ -72,7 +72,7 @@ async fn test_the_leader_lookup_skips_a_non_leader_member() {
         .await
         .unwrap();
 
-    assert_eq!(node.leader(), Some(peer("east", "http://localhost:4460/")));
+    assert_eq!(node.leader(), Some((1, peer("east", "http://localhost:4460/"))));
 }
 
 #[tokio::test]
@@ -319,7 +319,7 @@ async fn test_forward_target_prefers_the_error_leader_over_local_metrics() {
         leader_node: Some(stamped.clone()),
     }));
 
-    assert_eq!(node.forward_target(&error), Some(stamped));
+    assert_eq!(node.forward_target(&error), Some((2, stamped)));
 }
 
 #[tokio::test]
@@ -391,7 +391,7 @@ async fn test_a_three_node_group_forms_quorum_over_the_mounted_rpc_endpoints() {
         )
         .await
         .unwrap();
-        let rpc_router = raft_rpc_router(CLUSTER_TOKEN, node.rpc_handler()).unwrap();
+        let rpc_router = raft_rpc_router(id, CLUSTER_TOKEN, node.rpc_handler()).unwrap();
         servers.push(tokio::spawn(std::future::IntoFuture::into_future(axum::serve(
             listener, rpc_router,
         ))));

@@ -26,10 +26,17 @@ use openraft::raft::{
 
 use crate::raft::{PeryxNode, TypeConfig};
 
+type NodeId = u64;
+
 const APPEND_ENTRIES_PATH: &str = "+replication/v1/raft/append-entries";
 const CLIENT_WRITE_PATH: &str = "+replication/v1/raft/client-write";
 const VOTE_PATH: &str = "+replication/v1/raft/vote";
 const INSTALL_SNAPSHOT_PATH: &str = "+replication/v1/raft/install-snapshot";
+
+/// Names the voter the caller believes owns the dialled endpoint. The group token proves membership, not
+/// that a request reached the process the roster addresses, so every receiver compares this with its own
+/// voter ID before answering.
+const TARGET_HEADER: &str = "x-peryx-raft-target";
 
 /// Caps peer responses at 64 MiB, above an `OpenRaft` snapshot chunk while bounding memory consumed by
 /// broken or hostile peers.
@@ -85,6 +92,8 @@ pub enum RaftRpcError {
     Timeout,
     #[error("peer rejected the replication credential")]
     Unauthenticated,
+    #[error("peer at this endpoint is not the addressed raft voter")]
+    TargetMismatch,
     #[error("peer raft endpoint returned status {status}")]
     RemoteError { status: u16 },
     #[error("peer raft reply is {actual} bytes; the transport caps a reply at {limit}")]
@@ -102,6 +111,7 @@ impl RaftRpcError {
 
 #[derive(Clone)]
 pub struct RaftRpcClient {
+    target: NodeId,
     http: HttpClientTransport,
     max_response_bytes: u64,
 }
@@ -110,6 +120,7 @@ impl fmt::Debug for RaftRpcClient {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("RaftRpcClient")
+            .field("target", &self.target)
             .field("max_response_bytes", &self.max_response_bytes)
             .field("http", &self.http)
             .finish_non_exhaustive()
@@ -117,13 +128,22 @@ impl fmt::Debug for RaftRpcClient {
 }
 
 impl RaftRpcClient {
+    /// `target` is the voter the roster places at `base`; the peer refuses the call unless it holds that
+    /// voter ID.
+    ///
     /// # Errors
     /// Returns [`RaftRpcConfigError`] for an empty token or a URL that is not a usable HTTP(S) base.
     ///
     /// # Panics
     /// Panics if HTTP client construction fails.
-    pub fn new(base: &str, token: impl Into<String>, timeout: Duration) -> Result<Self, RaftRpcConfigError> {
+    pub fn new(
+        target: NodeId,
+        base: &str,
+        token: impl Into<String>,
+        timeout: Duration,
+    ) -> Result<Self, RaftRpcConfigError> {
         Ok(Self {
+            target,
             http: HttpClientTransport::new(base, token, timeout).map_err(map_config_error)?,
             max_response_bytes: DEFAULT_MAX_RPC_RESPONSE_BYTES,
         })
@@ -153,6 +173,7 @@ impl RaftRpcClient {
                 self.http
                     .post(self.http.endpoint(rpc.path()))
                     .header(header::CONTENT_TYPE, "application/json")
+                    .header(TARGET_HEADER, self.target)
                     .body(body),
             )
             .await
@@ -168,6 +189,9 @@ impl RaftRpcClient {
 }
 
 const fn require_rpc_success(status: StatusCode) -> Result<(), RaftRpcError> {
+    if status.as_u16() == StatusCode::MISDIRECTED_REQUEST.as_u16() {
+        return Err(RaftRpcError::TargetMismatch);
+    }
     match classify_status(status) {
         ReplicationStatus::Success => Ok(()),
         ReplicationStatus::Unauthenticated => Err(RaftRpcError::Unauthenticated),
@@ -210,15 +234,18 @@ pub trait RaftRpcHandler: Send + Sync + 'static {
 
 #[derive(Clone)]
 struct RaftRpcState {
+    local: NodeId,
     token: String,
     handler: Arc<dyn RaftRpcHandler>,
 }
 
-/// Builds bearer-authenticated endpoints for all three peer RPCs.
+/// Builds bearer-authenticated endpoints for all three peer RPCs. `local` is this process's voter ID; a
+/// request addressed to any other voter is refused before it reaches `handler`.
 ///
 /// # Errors
 /// Returns [`RaftRpcConfigError::EmptyToken`] when the bearer token is empty.
 pub fn raft_rpc_router(
+    local: NodeId,
     token: impl Into<String>,
     handler: Arc<dyn RaftRpcHandler>,
 ) -> Result<Router, RaftRpcConfigError> {
@@ -226,7 +253,7 @@ pub fn raft_rpc_router(
     if token.is_empty() {
         return Err(RaftRpcConfigError::EmptyToken);
     }
-    let state = RaftRpcState { token, handler };
+    let state = RaftRpcState { local, token, handler };
     Ok(Router::new()
         .route(&format!("/{APPEND_ENTRIES_PATH}"), post(dispatch_append_entries))
         .route(&format!("/{CLIENT_WRITE_PATH}"), post(dispatch_client_write))
@@ -256,13 +283,23 @@ async fn dispatch(state: &RaftRpcState, rpc: RaftRpc, headers: &HeaderMap, body:
     if !authorized(headers, &state.token) {
         return unauthorized();
     }
+    // Answering for a voter this process does not hold would let one process supply two logical replies.
+    if !addressed_to(headers, state.local) {
+        return (StatusCode::MISDIRECTED_REQUEST, "raft rpc target mismatch").into_response();
+    }
     match state.handler.handle(rpc, body).await {
         Ok(bytes) => ([(header::CONTENT_TYPE, "application/json")], bytes).into_response(),
         Err(RaftRpcRejection::Malformed) => (StatusCode::BAD_REQUEST, "malformed raft rpc").into_response(),
     }
 }
 
-type NodeId = u64;
+fn addressed_to(headers: &HeaderMap, local: NodeId) -> bool {
+    headers
+        .get(TARGET_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<NodeId>().ok())
+        .is_some_and(|target| target == local)
+}
 
 /// Maps transport loss and timeouts to retryable `Unreachable` errors; protocol failures become
 /// `Network` errors.
@@ -361,7 +398,7 @@ impl RaftNetworkFactory<TypeConfig> for PeerRaftNetworkFactory {
         PeerRaftNetwork {
             target,
             target_node: node.clone(),
-            client: RaftRpcClient::new(&node.endpoint, self.token.clone(), self.timeout),
+            client: RaftRpcClient::new(target, &node.endpoint, self.token.clone(), self.timeout),
         }
     }
 }

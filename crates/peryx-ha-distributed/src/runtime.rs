@@ -787,6 +787,7 @@ impl DistributedRuntime {
             Some(plan) => {
                 let started = plan.ignite_with_lifecycle(lifecycle).await?;
                 let peer_router = crate::raft::network::raft_rpc_router(
+                    plan.local_voter(),
                     plan.token(),
                     started.node().rpc_handler_with_clock(self.clock.clone()),
                 )

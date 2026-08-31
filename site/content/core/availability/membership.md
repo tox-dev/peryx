@@ -35,6 +35,22 @@ no-op rather than a distinct entry, so a retried command is idempotent.
 Liveness suspicion never changes the roster. A voter the group cannot currently reach stays a voter; only an explicit
 administrator command adds or removes one, so a transient partition never silently reshapes the quorum.
 
+## One datacenter, one voter, one endpoint
+
+A datacenter's name derives its voter identity, and that identity owns exactly one member address. Adding a learner
+whose derived identity is already committed under different member data is refused, because the group keeps the
+committed entry and would otherwise report a commit that moved nothing. Adding one at an address another member already
+holds is refused too: the leader would open a replication stream per identity to the same process, and that process
+could then answer a vote twice under two names.
+
+Reusing an address therefore takes two commands. **Remove** the member that holds it, which drops its entry from the
+roster, and then **add** the replacement at that address. A replacement issued as a single swap against a live member's
+address is refused rather than leaving two identities pointed at one process.
+
+Every Raft RPC names the voter the sender expects to answer it. A receiver that holds a different voter identity refuses
+the call instead of replying, so a request that reaches the wrong process fails as an identity error rather than
+counting as that voter's reply. The group credential proves membership; it does not prove which process answered.
+
 ## What a change records
 
 Each committed membership command retains an audit line naming the actor who submitted it, the command and its target

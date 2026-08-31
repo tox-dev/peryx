@@ -212,6 +212,7 @@ async fn test_ignite_starts_and_bootstraps_a_single_node_group() {
 
     assert_eq!(plan.home(), DatacenterId("east".to_owned()));
     assert_eq!(plan.token(), TOKEN);
+    assert_eq!(plan.local_voter(), voter_id("east"));
 
     let node = plan.ignite().await.unwrap();
 
@@ -224,7 +225,10 @@ async fn test_ignite_starts_and_bootstraps_a_single_node_group() {
     .unwrap()
     .unwrap();
 
-    assert_eq!(node.leader().map(|node| node.datacenter.0), Some("east".to_owned()));
+    assert_eq!(
+        node.leader().map(|(_, node)| node.datacenter.0),
+        Some("east".to_owned())
+    );
     assert!(dir.path().join("raft/ownership-log.redb").exists());
 }
 
@@ -902,6 +906,86 @@ async fn test_add_learner_records_the_canonical_endpoint() {
 }
 
 #[tokio::test]
+async fn test_repeating_a_learner_add_at_its_committed_endpoint_stays_committed() {
+    let dir = tempfile::tempdir().unwrap();
+    let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned()));
+    group.submit(None, add_learner("west")).await.unwrap();
+
+    let repeated = group.submit(None, add_learner("west")).await.unwrap();
+
+    assert!(!repeated.replayed, "an unkeyed retry runs the add again");
+    assert_eq!(repeated.receipt.outcome, CommandOutcome::Committed);
+}
+
+/// `OpenRaft` keeps the committed node entry, so an unchecked add would report a commit that changed
+/// nothing about where the group dials that voter.
+#[tokio::test]
+async fn test_add_learner_rejects_a_datacenter_whose_voter_id_is_committed_elsewhere() {
+    let dir = tempfile::tempdir().unwrap();
+    let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned()));
+
+    let error = group
+        .submit(
+            None,
+            ControlCommand::AddLearner {
+                datacenter: "east".to_owned(),
+                address: "http://east-rebuild.internal:4470".to_owned(),
+            },
+        )
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(&error, ControlError::Invalid(reason)
+            if reason.contains("already holds at http://east.internal:4460/")),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn test_add_learner_rejects_an_endpoint_another_member_owns() {
+    let dir = tempfile::tempdir().unwrap();
+    let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned()));
+
+    let error = group
+        .submit(
+            None,
+            ControlCommand::AddLearner {
+                datacenter: "west".to_owned(),
+                address: "http://east.internal:4460".to_owned(),
+            },
+        )
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(&error, ControlError::Invalid(reason)
+            if reason.contains("already belongs to datacenter \"east\"")),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn test_replacing_a_voter_at_a_live_member_endpoint_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned()));
+
+    let error = group
+        .submit(
+            None,
+            ControlCommand::ReplaceVoter {
+                remove: "east".to_owned(),
+                datacenter: "west".to_owned(),
+                address: "http://east.internal:4460".to_owned(),
+            },
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, ControlError::Invalid(_)), "{error}");
+}
+
+#[tokio::test]
 async fn test_a_membership_command_without_a_leader_reports_the_forward_target() {
     let dir = tempfile::tempdir().unwrap();
     let group = OwnershipGroup::new(started_node(&dir).await, DatacenterId("east".to_owned()));
@@ -1055,6 +1139,96 @@ async fn test_replacing_a_voter_adds_the_learner_then_rewrites_the_roster() {
         .receipt;
 
     assert_eq!(receipt.outcome, CommandOutcome::NoChange);
+}
+
+/// Serves the voter ID the roster derives, so a peer that answers for another ID is a misdirection.
+async fn mounted_node(
+    dir: &TempDir,
+    datacenter: &str,
+) -> (RaftNode, String, tokio::task::JoinHandle<std::io::Result<()>>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let id = voter_id(datacenter);
+    let store = RaftLogStore::open(dir.path().join("raft.redb")).unwrap();
+    let node = RaftNode::start(
+        id,
+        RaftConfig::default(),
+        "ownership",
+        PeerRaftNetworkFactory::new(TOKEN, Duration::from_secs(1)),
+        RaftLogStoreAdapter::new(store),
+        OwnershipStateMachine::default(),
+    )
+    .await
+    .unwrap();
+    let router = crate::raft::network::raft_rpc_router(id, TOKEN, node.rpc_handler()).unwrap();
+    let served = tokio::spawn(std::future::IntoFuture::into_future(axum::serve(listener, router)));
+    (node, format!("http://{address}/"), served)
+}
+
+/// Reusing an address is legitimate once its owner is gone, so the endpoint rule must release with the
+/// removal rather than fence the address forever.
+#[tokio::test]
+async fn test_removing_a_voter_frees_its_endpoint_for_the_replacement() {
+    let east_dir = tempfile::tempdir().unwrap();
+    let west_dir = tempfile::tempdir().unwrap();
+    let (east, east_endpoint, east_served) = mounted_node(&east_dir, "east").await;
+    let (west, west_endpoint, west_served) = mounted_node(&west_dir, "west").await;
+    east.bootstrap(one_voter("east", &east_endpoint)).await.unwrap();
+    let mut membership = east.metrics();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        membership.wait_for(|metrics| metrics.current_leader == Some(voter_id("east"))),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let group = OwnershipGroup::new(east.clone(), DatacenterId("east".to_owned()));
+    let joined = ControlCommand::AddLearner {
+        datacenter: "west".to_owned(),
+        address: west_endpoint.clone(),
+    };
+    let reused = ControlCommand::AddLearner {
+        datacenter: "north".to_owned(),
+        address: west_endpoint,
+    };
+    group.submit(None, joined).await.unwrap();
+    group
+        .submit(
+            None,
+            ControlCommand::PromoteVoter {
+                datacenter: "west".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let taken = group.submit(None, reused.clone()).await.unwrap_err();
+    group
+        .submit(
+            None,
+            ControlCommand::RemoveVoter {
+                datacenter: "west".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        membership.wait_for(|metrics| !metrics.membership_config.nodes().any(|(id, _)| *id == voter_id("west"))),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let freed = group.submit(None, reused).await.unwrap();
+
+    assert!(matches!(taken, ControlError::Invalid(_)), "{taken}");
+    assert_eq!(freed.receipt.outcome, CommandOutcome::Committed);
+    east.raft().shutdown().await.unwrap();
+    west.raft().shutdown().await.unwrap();
+    for served in [east_served, west_served] {
+        served.abort();
+        assert!(served.await.unwrap_err().is_cancelled());
+    }
 }
 
 #[tokio::test]

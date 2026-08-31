@@ -2,7 +2,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Bytes;
+use axum::http::HeaderValue;
 use axum::response::IntoResponse;
+use rstest::rstest;
 use serde::{Deserialize, Serialize};
 
 use crate::raft::network::{
@@ -12,6 +14,7 @@ use crate::raft::network::{
 use crate::support::{TestServer, http_contract};
 
 const TOKEN: &str = "secret";
+const LOCAL: u64 = 3;
 
 #[derive(Serialize, Deserialize)]
 struct Ping {
@@ -45,17 +48,17 @@ impl RaftRpcHandler for EchoHandler {
 }
 
 fn client(base: &str, token: &str) -> RaftRpcClient {
-    RaftRpcClient::new(base, token, Duration::from_secs(5)).unwrap()
+    RaftRpcClient::new(LOCAL, base, token, Duration::from_secs(5)).unwrap()
 }
 
 async fn echo_server() -> TestServer {
-    TestServer::start(raft_rpc_router(TOKEN, Arc::new(EchoHandler)).unwrap()).await
+    TestServer::start(raft_rpc_router(LOCAL, TOKEN, Arc::new(EchoHandler)).unwrap()).await
 }
 
 #[test]
 fn test_configuration_contract() {
     http_contract::assert_configuration(
-        |base, token| RaftRpcClient::new(base, token, Duration::from_secs(5)).map(|_| ()),
+        |base, token| RaftRpcClient::new(LOCAL, base, token, Duration::from_secs(5)).map(|_| ()),
         |error| matches!(error, RaftRpcConfigError::EmptyToken),
         |error| matches!(error, RaftRpcConfigError::InvalidBase(_)),
     );
@@ -66,13 +69,13 @@ fn test_debug_names_the_response_bound_without_the_token() {
     http_contract::assert_redacted(
         &client("http://peer.example/root", TOKEN),
         TOKEN,
-        &["RaftRpcClient", "max_response_bytes"],
+        &["RaftRpcClient", "target", "max_response_bytes"],
     );
 }
 
 #[test]
 fn test_router_rejects_an_empty_token() {
-    let error = raft_rpc_router("", Arc::new(EchoHandler)).unwrap_err();
+    let error = raft_rpc_router(LOCAL, "", Arc::new(EchoHandler)).unwrap_err();
     assert!(matches!(error, RaftRpcConfigError::EmptyToken));
 }
 
@@ -89,6 +92,7 @@ fn test_only_a_transport_loss_reads_as_unreachable() {
     assert!(RaftRpcError::Unreachable.is_unreachable());
     assert!(RaftRpcError::Timeout.is_unreachable());
     assert!(!RaftRpcError::Unauthenticated.is_unreachable());
+    assert!(!RaftRpcError::TargetMismatch.is_unreachable());
     assert!(!RaftRpcError::RemoteError { status: 500 }.is_unreachable());
     assert!(!RaftRpcError::ResponseTooLarge { limit: 1, actual: 2 }.is_unreachable());
     assert!(!RaftRpcError::Malformed.is_unreachable());
@@ -142,12 +146,64 @@ async fn test_send_maps_a_rejected_token_to_unauthenticated() {
 }
 
 #[tokio::test]
+async fn test_send_maps_an_rpc_the_peer_does_not_answer_for_to_a_target_mismatch() {
+    let server = echo_server().await;
+    let misdirected = RaftRpcClient::new(LOCAL + 1, &server.url, TOKEN, Duration::from_secs(5)).unwrap();
+
+    let error = misdirected
+        .send::<_, Pong>(RaftRpc::Vote, &Ping { n: 7 })
+        .await
+        .unwrap_err();
+
+    assert_eq!(error, RaftRpcError::TargetMismatch);
+}
+
+#[rstest]
+#[case::unaddressed(None)]
+#[case::not_a_voter_id(Some(HeaderValue::from_static("east")))]
+#[case::not_text(Some(HeaderValue::from_bytes(&[0xff]).unwrap()))]
+#[case::another_voter(Some(HeaderValue::from_static("9")))]
+#[tokio::test]
+async fn test_the_router_answers_only_for_the_voter_it_holds(#[case] target: Option<HeaderValue>) {
+    let server = echo_server().await;
+    let request = reqwest::Client::new()
+        .post(format!("{}+replication/v1/raft/vote", server.url))
+        .bearer_auth(TOKEN)
+        .body(serde_json::to_vec(&Ping { n: 7 }).unwrap());
+
+    let status = target
+        .into_iter()
+        .fold(request, |request, value| request.header("x-peryx-raft-target", value))
+        .send()
+        .await
+        .unwrap()
+        .status();
+
+    assert_eq!(status, reqwest::StatusCode::MISDIRECTED_REQUEST);
+}
+
+/// A caller that fails the group credential learns nothing about which voter the process holds.
+#[tokio::test]
+async fn test_an_unauthenticated_misdirected_rpc_reports_only_the_credential_failure() {
+    let server = echo_server().await;
+    let misdirected = RaftRpcClient::new(LOCAL + 1, &server.url, "wrong", Duration::from_secs(5)).unwrap();
+
+    let error = misdirected
+        .send::<_, Pong>(RaftRpc::Vote, &Ping { n: 7 })
+        .await
+        .unwrap_err();
+
+    assert_eq!(error, RaftRpcError::Unauthenticated);
+}
+
+#[tokio::test]
 async fn test_router_rejects_a_malformed_request() {
     let server = echo_server().await;
 
     let status = reqwest::Client::new()
         .post(format!("{}+replication/v1/raft/vote", server.url))
         .bearer_auth(TOKEN)
+        .header("x-peryx-raft-target", LOCAL)
         .body("not json")
         .send()
         .await
@@ -256,7 +312,7 @@ async fn test_send_maps_a_deadline_to_timeout() {
         let (_connection, _) = listener.accept().await.unwrap();
         release_rx.await.unwrap();
     });
-    let client = RaftRpcClient::new(&format!("http://{address}/"), TOKEN, Duration::from_millis(200)).unwrap();
+    let client = RaftRpcClient::new(LOCAL, &format!("http://{address}/"), TOKEN, Duration::from_millis(200)).unwrap();
 
     let error = client
         .send::<_, Pong>(RaftRpc::AppendEntries, &Ping { n: 1 })
@@ -353,8 +409,10 @@ mod adapter {
     }
 
     async fn stub_server(remote_error: bool) -> TestServer {
-        TestServer::start(crate::raft::network::raft_rpc_router(TOKEN, Arc::new(StubVoter { remote_error })).unwrap())
-            .await
+        TestServer::start(
+            crate::raft::network::raft_rpc_router(TARGET, TOKEN, Arc::new(StubVoter { remote_error })).unwrap(),
+        )
+        .await
     }
 
     fn append_req() -> AppendEntriesRequest<TypeConfig> {
