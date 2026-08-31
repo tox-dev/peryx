@@ -433,8 +433,24 @@ fn write_rate_limit_metrics(body: &mut String, state: &AppState) {
     let _ = writeln!(body, "peryx_upstream_rate_limit_denied_total {}", upstream.denied);
     let _ = writeln!(
         body,
+        "# HELP peryx_upstream_admission_denied_total Upstream fetches refused admission before queueing.\n\
+         # TYPE peryx_upstream_admission_denied_total counter"
+    );
+    let _ = writeln!(
+        body,
+        "peryx_upstream_admission_denied_total {}",
+        upstream.admission_denied
+    );
+    let _ = writeln!(
+        body,
         "# HELP peryx_upstream_inflight_fetches Current upstream fetches held by the hosted concurrency cap.\n\
          # TYPE peryx_upstream_inflight_fetches gauge"
     );
     let _ = writeln!(body, "peryx_upstream_inflight_fetches {}", upstream.in_flight);
+    let _ = writeln!(
+        body,
+        "# HELP peryx_upstream_waiting_fetches Admitted upstream fetches waiting for a concurrency slot.\n\
+         # TYPE peryx_upstream_waiting_fetches gauge"
+    );
+    let _ = writeln!(body, "peryx_upstream_waiting_fetches {}", upstream.waiting);
 }

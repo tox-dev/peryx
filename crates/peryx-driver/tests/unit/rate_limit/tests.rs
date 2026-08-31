@@ -19,8 +19,8 @@ use peryx_storage::meta::MetaStore;
 use tower::ServiceExt as _;
 
 use super::{
-    ActorKey, ForwardedClient, RateLimitConfig, RateLimiter, RouteClass, RouteLimit, UpstreamLimits,
-    ecosystem_route_class, limited_response, malformed_forwarded_response, real_ip,
+    ActorKey, ForwardedClient, RateLimitConfig, RateLimiter, RouteClass, RouteLimit, UpstreamLimited, UpstreamLimits,
+    UpstreamPermit, ecosystem_route_class, limited_response, malformed_forwarded_response, real_ip,
 };
 use crate::serving::{
     AbsoluteProtocolDriver, EcosystemDriver, IndexedProtocolDriver, ProtocolDriver, RateLimitPrincipal, ServiceDriver,
@@ -440,9 +440,9 @@ fn test_real_ip_requires_one_valid_address() {
 async fn test_upstream_limits_handle_unconfigured_unbounded_and_bounded_indexes() {
     let limits = UpstreamLimits::new([("unbounded".to_owned(), 0), ("bounded".to_owned(), 1)]);
 
-    assert!(limits.acquire("missing").await.unwrap().is_none());
-    assert!(limits.acquire("unbounded").await.unwrap().is_none());
-    let permit = limits.acquire("bounded").await.unwrap().unwrap();
+    limits.acquire("missing").await.unwrap();
+    limits.acquire("unbounded").await.unwrap();
+    let permit = limits.acquire("bounded").await.unwrap();
     assert_eq!(
         limits
             .snapshots()
@@ -450,11 +450,17 @@ async fn test_upstream_limits_handle_unconfigured_unbounded_and_bounded_indexes(
             .map(|snapshot| (
                 snapshot.index,
                 snapshot.max_concurrent,
+                snapshot.max_waiting,
                 snapshot.in_flight,
-                snapshot.denied
+                snapshot.waiting,
+                snapshot.denied,
+                snapshot.admission_denied,
             ))
             .collect::<Vec<_>>(),
-        vec![("bounded".to_owned(), 1, 1, 0), ("unbounded".to_owned(), 0, 0, 0)]
+        vec![
+            ("bounded".to_owned(), 1, 4, 1, 0, 0, 0),
+            ("unbounded".to_owned(), 0, 0, 0, 0, 0, 0)
+        ]
     );
     assert_eq!(limits.totals().in_flight, 1);
     drop(permit);
@@ -464,7 +470,7 @@ async fn test_upstream_limits_handle_unconfigured_unbounded_and_bounded_indexes(
 #[tokio::test(start_paused = true)]
 async fn test_upstream_limit_times_out_with_retry_horizon() {
     let limits = Arc::new(UpstreamLimits::new([("bounded".to_owned(), 1)]));
-    let _permit = limits.acquire("bounded").await.unwrap().unwrap();
+    let _permit = limits.acquire("bounded").await.unwrap();
     let waiting_limits = Arc::clone(&limits);
     let waiting = tokio::spawn(async move { waiting_limits.acquire("bounded").await });
     tokio::time::advance(Duration::from_secs(30)).await;
@@ -474,6 +480,94 @@ async fn test_upstream_limit_times_out_with_retry_horizon() {
     assert_eq!(error.retry_after, 30);
     assert_eq!(limits.snapshots()[0].denied, 1);
     assert_eq!(limits.totals().denied, 1);
+    assert_eq!(limits.totals().admission_denied, 0);
+}
+
+type Acquisition<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<UpstreamPermit, UpstreamLimited>> + Send + 'a>>;
+
+/// Parks `count` acquisitions of `index` on the semaphore queue, returning them still pending so
+/// their admission slots stay held for as long as the caller keeps them alive.
+async fn queued<'a>(limits: &'a UpstreamLimits, index: &'static str, count: usize) -> Vec<Acquisition<'a>> {
+    let mut waiters: Vec<Acquisition<'a>> = (0..count)
+        .map(|_| Box::pin(limits.acquire(index)) as Acquisition<'a>)
+        .collect();
+    for waiter in &mut waiters {
+        assert!(futures_util::poll!(waiter.as_mut()).is_pending());
+    }
+    waiters
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_upstream_index_allowance_rejects_extra_waiters_before_queueing() {
+    let limits = UpstreamLimits::new([("bounded".to_owned(), 1)]);
+    let _active = limits.acquire("bounded").await.unwrap();
+
+    let _waiters = queued(&limits, "bounded", 4).await;
+    let rejected = limits.acquire("bounded").await.unwrap_err();
+
+    assert_eq!(rejected.retry_after, 30);
+    assert_eq!(limits.totals().waiting, 4);
+    assert_eq!(limits.totals().admission_denied, 1);
+    // Nothing waited, so the wait horizon never expired.
+    assert_eq!(limits.totals().denied, 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_upstream_full_index_queue_leaves_other_index_admitted() {
+    let limits = UpstreamLimits::new([("busy".to_owned(), 1), ("quiet".to_owned(), 1)]);
+    let _active = limits.acquire("busy").await.unwrap();
+    let _waiters = queued(&limits, "busy", 4).await;
+
+    limits.acquire("busy").await.unwrap_err();
+    let _quiet = limits.acquire("quiet").await.unwrap();
+
+    assert_eq!(limits.totals().in_flight, 2);
+    assert_eq!(limits.totals().admission_denied, 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_upstream_process_admission_caps_active_and_waiting_work() {
+    let limits = UpstreamLimits::sharing(
+        &Arc::new(tokio::sync::Semaphore::new(2)),
+        [("busy".to_owned(), 1), ("quiet".to_owned(), 1)],
+    );
+    let _active = limits.acquire("busy").await.unwrap();
+    let _waiter = queued(&limits, "busy", 1).await;
+
+    let rejected = limits.acquire("quiet").await.unwrap_err();
+
+    assert_eq!(rejected.retry_after, 30);
+    assert_eq!(limits.totals().in_flight + limits.totals().waiting, 2);
+    assert_eq!(limits.totals().admission_denied, 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_upstream_cancelled_waiter_returns_its_admission_slot() {
+    let limits = UpstreamLimits::sharing(
+        &Arc::new(tokio::sync::Semaphore::new(2)),
+        [("busy".to_owned(), 1), ("quiet".to_owned(), 1)],
+    );
+    let _active = limits.acquire("busy").await.unwrap();
+    let waiter = queued(&limits, "busy", 1).await;
+
+    drop(waiter);
+
+    assert_eq!(limits.totals().waiting, 0);
+    limits.acquire("quiet").await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_upstream_sibling_gates_spend_one_process_admission() {
+    let artifacts = UpstreamLimits::sharing(&Arc::new(tokio::sync::Semaphore::new(1)), [("bounded".to_owned(), 1)]);
+    let metadata = artifacts.sibling([("bounded".to_owned(), 1)]);
+    let _active = artifacts.acquire("bounded").await.unwrap();
+
+    let rejected = metadata.acquire("bounded").await.unwrap_err();
+
+    assert_eq!(rejected.retry_after, 30);
+    assert_eq!(metadata.totals().admission_denied, 1);
+    assert_eq!(metadata.totals().in_flight, 0);
 }
 
 fn app(config: RateLimitConfig) -> (tempfile::TempDir, AppState) {

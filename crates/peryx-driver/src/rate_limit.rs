@@ -25,7 +25,14 @@ pub const DEFAULT_UPSTREAM_CONCURRENCY: usize = 0;
 /// Bounds upstream queueing so a stalled fetch returns a retryable error.
 const UPSTREAM_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 
-pub type UpstreamPermit = Option<OwnedSemaphorePermit>;
+/// Waiting slots a capped index may hold, as a multiple of its active cap. A waiter retains its whole
+/// request for up to [`UPSTREAM_WAIT_TIMEOUT`], so the queue absorbs a cold burst without growing with
+/// it.
+const UPSTREAM_WAIT_ALLOWANCE: usize = 4;
+
+/// Process-wide ceiling on upstream work that is active or queued. A per-index queue bound alone still
+/// scales retained request state with the number of configured indexes.
+const MAX_UPSTREAM_ADMISSIONS: usize = 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RouteClass {
@@ -330,20 +337,58 @@ enum ForwardedClient {
 #[derive(Debug)]
 struct MalformedForwarded;
 
-#[derive(Default)]
 pub struct UpstreamLimits {
     entries: HashMap<String, Arc<UpstreamLimit>>,
+    admission: Arc<Semaphore>,
 }
 
 struct UpstreamLimit {
     max_concurrent: usize,
-    semaphore: Option<Arc<Semaphore>>,
+    /// Absent for an uncapped index: with no active cap a fetch never queues, so there is no queue to
+    /// bound and no admission to spend.
+    gate: Option<UpstreamGate>,
     denied: AtomicU64,
+    admission_denied: AtomicU64,
+}
+
+struct UpstreamGate {
+    semaphore: Arc<Semaphore>,
+    /// Active plus waiting fetches on this index, bounded by [`index_admissions`].
+    admission: Arc<Semaphore>,
+}
+
+/// A held upstream slot: the concurrency permit and the admission places it was granted under.
+///
+/// Field order is the release order. The permit frees the active slot before the admission counts
+/// shrink, so a snapshot never reports more active fetches than admitted work.
+#[derive(Debug, Default)]
+pub struct UpstreamPermit {
+    _permit: Option<OwnedSemaphorePermit>,
+    _index: Option<OwnedSemaphorePermit>,
+    _process: Option<OwnedSemaphorePermit>,
+}
+
+/// Active plus waiting work one index may hold, for an active cap of `max_concurrent`.
+fn index_admissions(max_concurrent: usize) -> usize {
+    max_concurrent
+        .saturating_mul(1 + UPSTREAM_WAIT_ALLOWANCE)
+        .min(Semaphore::MAX_PERMITS)
 }
 
 impl UpstreamLimits {
     #[must_use]
     pub fn new(limits: impl IntoIterator<Item = (String, usize)>) -> Self {
+        Self::sharing(&Arc::new(Semaphore::new(MAX_UPSTREAM_ADMISSIONS)), limits)
+    }
+
+    /// Builds a second set of gates over this one's process budget, so upstream work split across
+    /// drivers spends one admission count rather than one per gate.
+    #[must_use]
+    pub fn sibling(&self, limits: impl IntoIterator<Item = (String, usize)>) -> Self {
+        Self::sharing(&self.admission, limits)
+    }
+
+    fn sharing(admission: &Arc<Semaphore>, limits: impl IntoIterator<Item = (String, usize)>) -> Self {
         Self {
             entries: limits
                 .into_iter()
@@ -352,46 +397,57 @@ impl UpstreamLimits {
                         name,
                         Arc::new(UpstreamLimit {
                             max_concurrent,
-                            semaphore: (max_concurrent > 0).then(|| Arc::new(Semaphore::new(max_concurrent))),
+                            gate: (max_concurrent > 0).then(|| UpstreamGate {
+                                semaphore: Arc::new(Semaphore::new(max_concurrent)),
+                                admission: Arc::new(Semaphore::new(index_admissions(max_concurrent))),
+                            }),
                             denied: AtomicU64::new(0),
+                            admission_denied: AtomicU64::new(0),
                         }),
                     )
                 })
                 .collect(),
+            admission: Arc::clone(admission),
         }
     }
 
-    /// Queue cold request bursts at the concurrency cap instead of failing immediately.
+    /// Queue cold request bursts at the concurrency cap instead of failing immediately, up to the
+    /// admission bounds.
+    ///
+    /// A request that would push the process budget or the index's own allowance past its limit is
+    /// rejected here rather than parked in the semaphore's queue, where it would retain its request
+    /// state for the whole wait horizon.
     ///
     /// # Errors
-    /// Returns [`UpstreamLimited`] only when no slot frees within `UPSTREAM_WAIT_TIMEOUT`.
+    /// Returns [`UpstreamLimited`] when either admission bound is full, or when no slot frees within
+    /// `UPSTREAM_WAIT_TIMEOUT`.
     ///
     /// # Panics
     /// Panics if the private semaphore is closed. [`UpstreamLimits`] never closes it.
     pub async fn acquire(&self, name: &str) -> Result<UpstreamPermit, UpstreamLimited> {
         let Some(limit) = self.entries.get(name) else {
-            return Ok(None);
+            return Ok(UpstreamPermit::default());
         };
-        let Some(semaphore) = &limit.semaphore else {
-            return Ok(None);
+        let Some(gate) = &limit.gate else {
+            return Ok(UpstreamPermit::default());
         };
-        let Ok(permit) = tokio::time::timeout(UPSTREAM_WAIT_TIMEOUT, semaphore.clone().acquire_owned()).await else {
+        // An early return drops any permit already taken, so a partial admission is not retained.
+        let Ok(process) = Arc::clone(&self.admission).try_acquire_owned() else {
+            return Err(limit.reject(name, "process_admission_full"));
+        };
+        let Ok(index) = Arc::clone(&gate.admission).try_acquire_owned() else {
+            return Err(limit.reject(name, "index_admission_full"));
+        };
+        let Ok(permit) = tokio::time::timeout(UPSTREAM_WAIT_TIMEOUT, gate.semaphore.clone().acquire_owned()).await
+        else {
             limit.denied.fetch_add(1, Ordering::Relaxed);
-            // The full horizon prevents immediate retries from re-saturating the limiter.
-            let retry_after = UPSTREAM_WAIT_TIMEOUT.as_secs();
-            tracing::info!(
-                target: "peryx::security",
-                security_event = true,
-                event = "rate_limit",
-                action = "upstream_fetch",
-                result = "denied",
-                index = name,
-                retry_after,
-                "upstream concurrency wait timed out"
-            );
-            return Err(UpstreamLimited { retry_after });
+            return Err(limit_denied(name, "wait_timeout"));
         };
-        Ok(Some(permit.expect("upstream semaphore stays open")))
+        Ok(UpstreamPermit {
+            _permit: Some(permit.expect("upstream semaphore stays open")),
+            _index: Some(index),
+            _process: Some(process),
+        })
     }
 
     #[must_use]
@@ -399,16 +455,14 @@ impl UpstreamLimits {
         let mut snapshots: Vec<_> = self
             .entries
             .iter()
-            .map(|(index, limit)| {
-                let in_flight = limit.semaphore.as_ref().map_or(0, |semaphore| {
-                    limit.max_concurrent.saturating_sub(semaphore.available_permits())
-                });
-                UpstreamLimitSnapshot {
-                    index: index.clone(),
-                    max_concurrent: limit.max_concurrent,
-                    in_flight,
-                    denied: limit.denied.load(Ordering::Relaxed),
-                }
+            .map(|(index, limit)| UpstreamLimitSnapshot {
+                index: index.clone(),
+                max_concurrent: limit.max_concurrent,
+                max_waiting: limit.max_waiting(),
+                in_flight: limit.in_flight(),
+                waiting: limit.waiting(),
+                denied: limit.denied.load(Ordering::Relaxed),
+                admission_denied: limit.admission_denied.load(Ordering::Relaxed),
             })
             .collect();
         snapshots.sort_by(|left, right| left.index.cmp(&right.index));
@@ -420,26 +474,76 @@ impl UpstreamLimits {
         self.entries
             .values()
             .fold(UpstreamLimitTotals::default(), |mut totals, limit| {
-                totals.in_flight += limit.semaphore.as_ref().map_or(0, |semaphore| {
-                    limit.max_concurrent.saturating_sub(semaphore.available_permits())
-                });
+                totals.in_flight += limit.in_flight();
+                totals.waiting += limit.waiting();
                 totals.denied += limit.denied.load(Ordering::Relaxed);
+                totals.admission_denied += limit.admission_denied.load(Ordering::Relaxed);
                 totals
             })
     }
 }
 
+impl UpstreamLimit {
+    fn in_flight(&self) -> usize {
+        self.gate.as_ref().map_or(0, |gate| {
+            self.max_concurrent.saturating_sub(gate.semaphore.available_permits())
+        })
+    }
+
+    fn waiting(&self) -> usize {
+        self.gate.as_ref().map_or(0, |gate| {
+            index_admissions(self.max_concurrent)
+                .saturating_sub(gate.admission.available_permits())
+                .saturating_sub(self.in_flight())
+        })
+    }
+
+    fn max_waiting(&self) -> usize {
+        self.gate
+            .as_ref()
+            .map_or(0, |_| index_admissions(self.max_concurrent) - self.max_concurrent)
+    }
+
+    fn reject(&self, name: &str, reason: &'static str) -> UpstreamLimited {
+        self.admission_denied.fetch_add(1, Ordering::Relaxed);
+        limit_denied(name, reason)
+    }
+}
+
+/// The full wait horizon prevents immediate retries from re-saturating the limiter, whether the
+/// request was turned away at admission or gave up waiting.
+fn limit_denied(name: &str, reason: &'static str) -> UpstreamLimited {
+    let retry_after = UPSTREAM_WAIT_TIMEOUT.as_secs();
+    tracing::info!(
+        target: "peryx::security",
+        security_event = true,
+        event = "rate_limit",
+        action = "upstream_fetch",
+        result = "denied",
+        index = name,
+        reason,
+        retry_after,
+        "upstream fetch denied by the concurrency cap"
+    );
+    UpstreamLimited { retry_after }
+}
+
 pub struct UpstreamLimitSnapshot {
     pub index: String,
     pub max_concurrent: usize,
+    pub max_waiting: usize,
     pub in_flight: usize,
+    pub waiting: usize,
     pub denied: u64,
+    pub admission_denied: u64,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct UpstreamLimitTotals {
     pub in_flight: usize,
+    pub waiting: usize,
     pub denied: u64,
+    pub admission_denied: u64,
 }
 
 #[derive(Debug)]

@@ -385,6 +385,11 @@ Each `[[index]]` table declares one index. `name` is required; exactly one of `[
 
 A hosted index accepts writes through its `[[index.access_token]]` grants; there is no separate write credential key.
 
+A capped index also bounds what queues behind the cap: it admits four times `upstream_concurrency` as waiters, and the
+process admits 1024 upstream fetches that are active or queued across every index. A request over either bound is
+refused with `429 Too Many Requests` before it joins the queue, because an admitted waiter retains its whole request for
+the 30-second wait horizon. An uncapped index never queues and so spends no admission.
+
 A `route` is a raw URL path prefix. It must be one or more non-empty path segments separated by `/`; each segment may
 contain only ASCII letters, digits, `-`, `.`, `_`, and `~`. Startup rejects routes with a leading or trailing `/`, empty
 segments, percent encoding, traversal segments, control characters, spaces, and routes whose first segment is reserved

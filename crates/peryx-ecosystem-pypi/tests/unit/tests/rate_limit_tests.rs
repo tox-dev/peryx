@@ -674,7 +674,6 @@ async fn test_upstream_acquire_times_out_when_saturated() {
     let limits = UpstreamLimits::new([("pypi".to_owned(), 1)]);
 
     let held = limits.acquire("pypi").await.unwrap();
-    assert!(held.is_some());
 
     let denied = limits.acquire("pypi").await;
 
@@ -691,7 +690,6 @@ async fn test_upstream_acquire_times_out_when_saturated() {
 async fn test_request_returns_429_when_upstream_cap_saturated() {
     let h = harness(RateLimitConfig::default(), 1).await;
     let held = h.state.serving.upstream_limits.acquire("pypi").await.unwrap();
-    assert!(held.is_some());
 
     let (status, headers, body) = request(&h.state, "/pypi/simple/flask/", &[]).await;
     drop(held);
@@ -743,7 +741,6 @@ async fn test_virtual_index_surfaces_429_when_only_layer_is_rate_limited() {
     ));
 
     let held = state.serving.upstream_limits.acquire("pypi").await.unwrap();
-    assert!(held.is_some());
 
     let (status, headers, _) = request(&state, "/root/simple/flask/", &[]).await;
     drop(held);
@@ -812,8 +809,8 @@ fn test_state_with_search_path_uses_disabled_limiter() {
 async fn test_upstream_limits_allow_unknown_and_uncapped_mirrors() {
     let limits = UpstreamLimits::new([("z".to_owned(), 0), ("a".to_owned(), 2)]);
 
-    assert!(matches!(limits.acquire("missing").await, Ok(None)));
-    assert!(matches!(limits.acquire("z").await, Ok(None)));
+    limits.acquire("missing").await.unwrap();
+    limits.acquire("z").await.unwrap();
     let snapshots = limits.snapshots();
 
     assert_eq!(snapshots[0].index, "a");

@@ -255,9 +255,16 @@ When `[rate_limit] enabled = true` and a client exceeds a configured route-class
 `upstream_concurrency` and the cap is saturated, requests wait for a free slot instead of failing, and only a wait
 longer than 30 seconds returns the same `429` with `Retry-After`.
 
-Peryx writes a security log for each denial with `event = "rate_limit"`, the denied class or index, and the retry delay.
-It never logs credentials. Prometheus includes allowed and denied HTTP request counters by class plus process-wide
-upstream concurrency totals. Rate-limiter request counters stay at zero while the request limiter is disabled.
+The queue behind a saturated cap is itself bounded, because a waiter retains its whole request for the full 30-second
+horizon. An index admits four times its `upstream_concurrency` as waiters, and the process admits 1024 upstream fetches
+that are active or queued across every index and both the artifact and metadata gates. A request over either bound gets
+the same `429` immediately rather than joining the queue, so one index's cold burst cannot consume the memory another
+index's requests need.
+
+Peryx writes a security log for each denial with `event = "rate_limit"`, the denied class or index, the retry delay, and
+a `reason` separating an admission refusal from an expired wait. It never logs credentials. Prometheus includes allowed
+and denied HTTP request counters by class plus process-wide upstream concurrency totals. Rate-limiter request counters
+stay at zero while the request limiter is disabled.
 
 PyPI maps project listings and detail pages to `listing`, `.metadata` siblings to `metadata`, artifact downloads and
 archive inspection to `artifact`, mutations to `upload`, and status or discovery routes to `admin`. A `HEAD` request
@@ -304,8 +311,11 @@ were not cached). Counters reset on restart; scrape `/metrics` for durable time 
 - `peryx_requests_total`: HTTP requests the server accepts, including limiter rejections and unmatched routes.
 - `peryx_rate_limit_allowed_total{class="<class>"}`: HTTP requests the local rate limiter allowed.
 - `peryx_rate_limit_denied_total{class="<class>"}`: HTTP requests the local rate limiter denied.
-- `peryx_upstream_rate_limit_denied_total`: cached-index concurrency cap denials across the process.
+- `peryx_upstream_rate_limit_denied_total`: cached-index concurrency waits that expired across the process.
+- `peryx_upstream_admission_denied_total`: upstream fetches refused before queueing because an index allowance or the
+  process admission count was full.
 - `peryx_upstream_inflight_fetches`: current upstream fetches holding a concurrency slot across the process.
+- `peryx_upstream_waiting_fetches`: current admitted upstream fetches queued for a concurrency slot across the process.
 
 Serving counters carry only `{ecosystem="<ecosystem>",role="<role>"}`. Values from repositories with the same ecosystem
 and role are summed before rendering. Each family is scoped to the role that reports it:

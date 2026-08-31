@@ -217,6 +217,9 @@ async fn test_metrics_renders_neutral_extension_rate_limit_and_process_families(
         "peryx_example_extension_total{ecosystem=\"example\",role=\"cached\"} 0",
         "peryx_example_ecosystem_total{ecosystem=\"example\",role=\"hosted\"} 5",
         "peryx_upstream_rate_limit_denied_total 0",
+        "peryx_upstream_admission_denied_total 0",
+        "peryx_upstream_inflight_fetches 0",
+        "peryx_upstream_waiting_fetches 0",
         "peryx_process_fixture 1",
     ] {
         assert!(body.contains(sample), "missing {sample}: {body}");

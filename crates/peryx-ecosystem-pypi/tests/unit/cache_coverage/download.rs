@@ -95,7 +95,7 @@ async fn test_pump_download_commits_and_reports_the_transfer() {
         pending,
         producer,
         ("pypi".to_owned(), "flask-1.0.whl".to_owned(), Some("mirror".to_owned())),
-        None,
+        peryx_driver::rate_limit::UpstreamPermit::default(),
     )
     .with_subscriber(subscriber)
     .await;

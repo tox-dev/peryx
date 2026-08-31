@@ -287,6 +287,8 @@ impl AppState {
         let revocations = crate::revocations::RevocationService::new(meta.clone());
         let tokens = crate::tokens::TokenService::new(meta.clone());
         let job_attempts = crate::jobs::JobAttemptControl::new(meta.clone());
+        let artifact_gates = UpstreamLimits::new(upstream_limits.clone());
+        let metadata_gates = artifact_gates.sibling(upstream_limits);
         Self {
             serving: std::sync::Arc::new(super::app::ServingState {
                 meta,
@@ -311,8 +313,8 @@ impl AppState {
                 search,
                 required_views,
                 rate_limits: RateLimiter::new(rate_limit),
-                upstream_limits: UpstreamLimits::new(upstream_limits.clone()),
-                metadata_upstream_limits: UpstreamLimits::new(upstream_limits),
+                upstream_limits: artifact_gates,
+                metadata_upstream_limits: metadata_gates,
                 upstream_routes: upstream_routes.into_iter().collect(),
                 webhooks,
                 signer: None,
