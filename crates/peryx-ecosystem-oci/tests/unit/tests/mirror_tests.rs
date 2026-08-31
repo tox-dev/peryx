@@ -6,7 +6,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 use super::{oci_digest, proxy, search_total, send};
 use crate::mirror::{MirrorMode, MirrorRow, mirror as mirror_with};
 use crate::settings::IndexSettings;
-use crate::store::MAX_MEDIA_TYPE_BYTES;
+use crate::store::{MAX_MEDIA_TYPE_BYTES, Manifest};
 use peryx_driver::ServingState;
 use peryx_index::Index;
 use std::sync::Arc;
@@ -41,6 +41,11 @@ async fn mount_manifest(server: &MockServer, repo: &str, reference: &str, body: 
         .await;
 }
 
+/// An index with no children: valid on its own, and it pulls nothing after itself.
+fn empty_index() -> Vec<u8> {
+    format!(r#"{{"schemaVersion":2,"mediaType":"{INDEX_TYPE}","manifests":[]}}"#).into_bytes()
+}
+
 fn image_manifest(config: &[u8], layer: &[u8]) -> Vec<u8> {
     image_manifest_with_layers(config, &[layer])
 }
@@ -48,12 +53,19 @@ fn image_manifest(config: &[u8], layer: &[u8]) -> Vec<u8> {
 fn image_manifest_with_layers(config: &[u8], layers: &[&[u8]]) -> Vec<u8> {
     let layers = layers
         .iter()
-        .map(|layer| format!(r#"{{"mediaType":"{LAYER_TYPE}","digest":"{}"}}"#, oci_digest(layer)))
+        .map(|layer| {
+            format!(
+                r#"{{"mediaType":"{LAYER_TYPE}","digest":"{}","size":{}}}"#,
+                oci_digest(layer),
+                layer.len(),
+            )
+        })
         .collect::<Vec<_>>()
         .join(",");
     format!(
-        r#"{{"schemaVersion":2,"mediaType":"{MANIFEST_TYPE}","config":{{"mediaType":"{CONFIG_TYPE}","digest":"{}"}},"layers":[{layers}]}}"#,
+        r#"{{"schemaVersion":2,"mediaType":"{MANIFEST_TYPE}","config":{{"mediaType":"{CONFIG_TYPE}","digest":"{}","size":{}}},"layers":[{layers}]}}"#,
         oci_digest(config),
+        config.len(),
     )
     .into_bytes()
 }
@@ -185,7 +197,7 @@ async fn test_empty_mirror_summary_reports_no_work() {
 #[tokio::test]
 async fn test_search_refreshes_after_mirror_inserts_tag() {
     let server = MockServer::start().await;
-    mount_manifest(&server, "library/app", "latest", b"{}", MANIFEST_TYPE).await;
+    mount_manifest(&server, "library/app", "latest", &empty_index(), INDEX_TYPE).await;
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
     let before = search_total(&app, "app").await;
@@ -311,7 +323,8 @@ async fn test_mirror_follows_a_manifest_list() {
     let child = image_manifest(config, layer);
     let child_digest = oci_digest(&child);
     let index = format!(
-        r#"{{"schemaVersion":2,"mediaType":"{INDEX_TYPE}","manifests":[{{"mediaType":"{MANIFEST_TYPE}","digest":"{child_digest}","platform":{{"os":"linux","architecture":"amd64"}}}}]}}"#,
+        r#"{{"schemaVersion":2,"mediaType":"{INDEX_TYPE}","manifests":[{{"mediaType":"{MANIFEST_TYPE}","digest":"{child_digest}","size":{},"platform":{{"os":"linux","architecture":"amd64"}}}}]}}"#,
+        child.len(),
     )
     .into_bytes();
     mount_manifest(&server, "library/multi", "latest", &index, INDEX_TYPE).await;
@@ -349,7 +362,7 @@ async fn test_mirror_follows_a_manifest_list() {
 fn index_over(children: &[&str], marker: &str) -> Vec<u8> {
     let entries = children
         .iter()
-        .map(|digest| format!(r#"{{"mediaType":"{MANIFEST_TYPE}","digest":"{digest}"}}"#))
+        .map(|digest| format!(r#"{{"mediaType":"{MANIFEST_TYPE}","digest":"{digest}","size":7}}"#))
         .collect::<Vec<_>>()
         .join(",");
     format!(
@@ -772,7 +785,7 @@ async fn test_mirror_reports_a_missing_blob() {
 async fn test_mirror_rejects_an_unsupported_blob_digest() {
     let server = MockServer::start().await;
     let manifest = format!(
-        r#"{{"schemaVersion":2,"mediaType":"{MANIFEST_TYPE}","config":{{"mediaType":"{CONFIG_TYPE}","digest":"md5:00112233445566778899aabbccddeeff"}},"layers":[]}}"#,
+        r#"{{"schemaVersion":2,"mediaType":"{MANIFEST_TYPE}","config":{{"mediaType":"{CONFIG_TYPE}","digest":"md5:00112233445566778899aabbccddeeff","size":2}},"layers":[]}}"#,
     )
     .into_bytes();
     mount_manifest(&server, "library/app", "latest", &manifest, MANIFEST_TYPE).await;
@@ -831,8 +844,9 @@ async fn test_mirror_reports_blob_body_failures() {
 
     let config = b"{}";
     let manifest = format!(
-        r#"{{"schemaVersion":2,"mediaType":"{MANIFEST_TYPE}","config":{{"mediaType":"{CONFIG_TYPE}","digest":"{}"}},"layers":[]}}"#,
+        r#"{{"schemaVersion":2,"mediaType":"{MANIFEST_TYPE}","config":{{"mediaType":"{CONFIG_TYPE}","digest":"{}","size":{}}},"layers":[]}}"#,
         oci_digest(config),
+        config.len(),
     )
     .into_bytes();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -884,8 +898,9 @@ async fn test_mirror_reports_blob_store_failures() {
     let server = MockServer::start().await;
     let config = b"{}";
     let manifest = format!(
-        r#"{{"schemaVersion":2,"mediaType":"{MANIFEST_TYPE}","config":{{"mediaType":"{CONFIG_TYPE}","digest":"{}"}},"layers":[]}}"#,
+        r#"{{"schemaVersion":2,"mediaType":"{MANIFEST_TYPE}","config":{{"mediaType":"{CONFIG_TYPE}","digest":"{}","size":{}}},"layers":[]}}"#,
         oci_digest(config),
+        config.len(),
     )
     .into_bytes();
     mount_manifest(&server, "library/app", "latest", &manifest, MANIFEST_TYPE).await;
@@ -943,10 +958,80 @@ async fn test_mirror_reports_a_blob_head_failure() {
     assert!(reason.contains("filesystem blob backend head"), "{reason}");
 }
 
+/// The rows a run that rejects `library/app:latest` must report: the broken rule against the digest,
+/// and a summary that counts it as the only outcome.
+fn rejection_rows(body: &[u8], reason: &str) -> Vec<MirrorRow> {
+    vec![
+        MirrorRow {
+            kind: "manifest",
+            index: "hub".to_owned(),
+            repo: "library/app".to_owned(),
+            reference: "latest".to_owned(),
+            digest: oci_digest(body),
+            status: "error",
+            bytes: 0,
+            reason: reason.to_owned(),
+        },
+        MirrorRow {
+            kind: "summary",
+            index: "hub".to_owned(),
+            repo: String::new(),
+            reference: String::new(),
+            digest: String::new(),
+            status: "error",
+            bytes: 0,
+            reason: "0 synced, 0 cached, 1 errors".to_owned(),
+        },
+    ]
+}
+
+#[rstest::rstest]
+#[case::malformed_json(
+    MANIFEST_TYPE,
+    b"{".to_vec(),
+    "manifest body is not JSON: EOF while parsing an object at line 1 column 1"
+)]
+#[case::not_an_object(MANIFEST_TYPE, b"[]".to_vec(), "manifest body is not a JSON object")]
+#[case::schema_version(
+    MANIFEST_TYPE,
+    format!(r#"{{"schemaVersion":1,"mediaType":"{MANIFEST_TYPE}","config":{{}},"layers":[]}}"#).into_bytes(),
+    "manifest schemaVersion must be 2"
+)]
+#[case::an_index_under_an_image_type(
+    MANIFEST_TYPE,
+    format!(r#"{{"schemaVersion":2,"mediaType":"{INDEX_TYPE}","manifests":[]}}"#).into_bytes(),
+    "manifest is missing the required config field"
+)]
+#[case::layers_are_not_a_list(
+    MANIFEST_TYPE,
+    format!(
+        r#"{{"schemaVersion":2,"mediaType":"{MANIFEST_TYPE}","config":{{"mediaType":"{CONFIG_TYPE}","digest":"sha256:c0ffee","size":3}},"layers":{{}}}}"#
+    )
+    .into_bytes(),
+    "manifest layers must be an array of descriptors"
+)]
+#[case::a_layer_without_a_size(
+    MANIFEST_TYPE,
+    format!(
+        r#"{{"schemaVersion":2,"mediaType":"{MANIFEST_TYPE}","config":{{"mediaType":"{CONFIG_TYPE}","digest":"sha256:c0ffee","size":3}},"layers":[{{"mediaType":"{LAYER_TYPE}","digest":"sha256:beef"}}]}}"#
+    )
+    .into_bytes(),
+    "the layers[0] descriptor requires a non-negative integer size"
+)]
+#[case::an_index_child_without_a_digest(
+    INDEX_TYPE,
+    format!(r#"{{"schemaVersion":2,"mediaType":"{INDEX_TYPE}","manifests":[{{"mediaType":"{MANIFEST_TYPE}","size":4}}]}}"#)
+        .into_bytes(),
+    "the manifests[0] descriptor requires a digest string"
+)]
 #[tokio::test]
-async fn test_mirror_tolerates_a_non_json_manifest() {
+async fn test_mirror_rejects_a_body_its_media_type_does_not_describe(
+    #[case] media_type: &str,
+    #[case] body: Vec<u8>,
+    #[case] reason: &str,
+) {
     let server = MockServer::start().await;
-    mount_manifest(&server, "library/app", "latest", b"this is not json", MANIFEST_TYPE).await;
+    mount_manifest(&server, "library/app", "latest", &body, media_type).await;
 
     let dir = tempfile::tempdir().unwrap();
     let (state, _app) = proxy(&dir, &format!("{}/", server.uri()), false);
@@ -958,8 +1043,160 @@ async fn test_mirror_tolerates_a_non_json_manifest() {
     )
     .await
     .unwrap();
-    assert!(rows.iter().any(|row| row.kind == "manifest" && row.status == "synced"));
-    assert!(!rows.iter().any(|row| row.kind == "blob"));
+
+    assert_eq!(rows, rejection_rows(&body, reason));
+}
+
+#[tokio::test]
+async fn test_a_rejected_manifest_leaves_nothing_cached_under_its_digest() {
+    let server = MockServer::start().await;
+    let body = b"this is not json";
+    mount_manifest(&server, "library/app", "latest", body, MANIFEST_TYPE).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (state, _app) = proxy(&dir, &format!("{}/", server.uri()), false);
+    let rows = mirror(
+        &state.serving,
+        &state.serving.indexes[0],
+        &["library/app:latest".to_owned()],
+        MirrorMode::Sync,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(rows[0].status, "error");
+    assert!(rows[0].reason.starts_with("manifest body is not JSON"));
+    assert_eq!(
+        (
+            crate::store::get_manifest(&state.serving.meta, &oci_digest(body)).unwrap(),
+            crate::store::get_tag(&state.serving.meta, "hub", "library/app", "latest").unwrap(),
+        ),
+        (None, None)
+    );
+}
+
+/// A malformed child stops at itself: the parent it hangs off stays mirrored, and the run reports the
+/// gap rather than a graph it never pulled.
+#[tokio::test]
+async fn test_mirror_rejects_a_malformed_child_manifest() {
+    let server = MockServer::start().await;
+    let child = b"{}".to_vec();
+    let child_digest = oci_digest(&child);
+    let index = index_over(&[child_digest.as_str()], "root");
+    mount_manifest(&server, "library/app", "latest", &index, INDEX_TYPE).await;
+    mount_manifest(&server, "library/app", &child_digest, &child, MANIFEST_TYPE).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (state, _app) = proxy(&dir, &format!("{}/", server.uri()), false);
+    let rows = mirror(
+        &state.serving,
+        &state.serving.indexes[0],
+        &["library/app:latest".to_owned()],
+        MirrorMode::Sync,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(rows.last().unwrap().reason, "1 synced, 0 cached, 1 errors");
+    assert_eq!(
+        rows.iter()
+            .find(|row| row.reference == child_digest)
+            .map(|row| (row.status, row.reason.as_str())),
+        Some(("error", "manifest schemaVersion must be 2"))
+    );
+    assert!(
+        crate::store::get_manifest(&state.serving.meta, &child_digest)
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// An artifact manifest legitimately carries no layers: the config is the whole payload.
+#[tokio::test]
+async fn test_mirror_accepts_an_artifact_manifest_without_layers() {
+    let server = MockServer::start().await;
+    let config = br#"{"artifactType":"application/vnd.example"}"#;
+    let manifest = image_manifest_with_layers(config, &[]);
+    mount_manifest(&server, "library/app", "latest", &manifest, MANIFEST_TYPE).await;
+    mount_blob(&server, "library/app", config).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (state, _app) = proxy(&dir, &format!("{}/", server.uri()), false);
+    let rows = mirror(
+        &state.serving,
+        &state.serving.indexes[0],
+        &["library/app:latest".to_owned()],
+        MirrorMode::Sync,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(rows.last().unwrap().reason, "2 synced, 0 cached, 0 errors");
+    assert_eq!(
+        rows.iter().map(|row| (row.kind, row.status)).collect::<Vec<_>>(),
+        [("manifest", "synced"), ("blob", "synced"), ("summary", "synced")]
+    );
+}
+
+/// A media type peryx models no schema for is stored as it came: nothing is asserted about the body,
+/// and no dependency is inferred from fields that only look like descriptors.
+#[tokio::test]
+async fn test_mirror_stores_an_unknown_media_type_opaquely() {
+    let server = MockServer::start().await;
+    let body = br#"{"layers":[{"digest":"sha256:not-a-descriptor"}]}"#;
+    mount_manifest(
+        &server,
+        "library/app",
+        "latest",
+        body,
+        "application/vnd.example.artifact+json",
+    )
+    .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (state, _app) = proxy(&dir, &format!("{}/", server.uri()), false);
+    let rows = mirror(
+        &state.serving,
+        &state.serving.indexes[0],
+        &["library/app:latest".to_owned()],
+        MirrorMode::Sync,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(rows.last().unwrap().reason, "1 synced, 0 cached, 0 errors");
+    assert_eq!(
+        crate::store::get_manifest(&state.serving.meta, &oci_digest(body))
+            .unwrap()
+            .map(|manifest| manifest.bytes),
+        Some(body.to_vec())
+    );
+}
+
+/// A proxy caches upstream manifests verbatim, so the store can hold bytes no push or mirror run ever
+/// checked. Verification must not read their empty descriptor list as a complete image.
+#[tokio::test]
+async fn test_verify_rejects_a_stored_manifest_the_schema_denies() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, _app) = proxy(&dir, "http://127.0.0.1:1/", false);
+    let stored = Manifest {
+        media_type: MANIFEST_TYPE.to_owned(),
+        bytes: b"{}".to_vec(),
+    };
+    let digest = oci_digest(&stored.bytes);
+    crate::store::record_manifest(&state.serving.meta, "hub", "library/app", &digest, &stored).unwrap();
+    crate::store::put_tag(&state.serving.meta, "hub", "library/app", "latest", &digest).unwrap();
+
+    let rows = mirror(
+        &state.serving,
+        &state.serving.indexes[0],
+        &["library/app:latest".to_owned()],
+        MirrorMode::Verify,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(rows, rejection_rows(&stored.bytes, "manifest schemaVersion must be 2"));
 }
 
 #[tokio::test]

@@ -25,3 +25,14 @@ peryx mirror verify root/oci --option 'images=["library/alpine:latest"]'
 
 At least one configured or command-line image is required. Repository rewriting follows the index's
 [`[index.settings].library_prefix`](@/ecosystems/oci/reference/settings.md).
+
+## Manifest validation
+
+Every manifest is checked against the schema its media type declares before it is stored. An image manifest needs
+`schemaVersion: 2`, a config descriptor, and a layers array; an index needs `schemaVersion: 2` and a manifests array.
+Either array may be empty, so an artifact manifest with no layers is accepted. A media type peryx models no schema for
+is stored as it came and names no dependencies.
+
+A body that breaks a rule is reported as an error row naming the rule, and neither the manifest nor its tag is cached.
+`verify` applies the same check to what the store already holds, so a run never calls an image complete when its layers
+could not be read.

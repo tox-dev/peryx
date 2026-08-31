@@ -206,3 +206,26 @@ fn test_a_present_subject_is_validated() {
 
     assert_eq!(fault.to_string(), "the subject descriptor requires a mediaType string");
 }
+
+#[rstest]
+#[case::absent(format!(r#"{{"schemaVersion":2,{},"layers":[]}}"#, config()))]
+#[case::the_other_schema(
+    format!(r#"{{"schemaVersion":2,"mediaType":"{INDEX_TYPE}",{},"layers":[]}}"#, config())
+)]
+fn test_parse_does_not_ask_the_body_to_repeat_its_media_type(#[case] body: String) {
+    ManifestSchema::Image.parse(body.as_bytes()).unwrap();
+}
+
+#[rstest]
+#[case::wrong_schema(ManifestSchema::Index, image(&format!(r#"{},"layers":[]"#, config())), "manifest is missing the required manifests field")]
+#[case::malformed(ManifestSchema::Image, "{".to_owned(), "manifest body is not JSON: EOF while parsing an object at line 1 column 1")]
+#[case::descriptor(
+    ManifestSchema::Image,
+    image(&format!(r#"{},"layers":[{}]"#, config(), layer(r#""size":"big""#))),
+    "the layers[0] descriptor requires a non-negative integer size"
+)]
+fn test_parse_keeps_every_other_rule(#[case] schema: ManifestSchema, #[case] body: String, #[case] message: &str) {
+    let fault = schema.parse(body.as_bytes()).unwrap_err();
+
+    assert_eq!(fault.to_string(), message);
+}

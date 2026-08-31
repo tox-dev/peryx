@@ -159,17 +159,19 @@ async fn mirror_plan_reports_selected_images() {
 #[tokio::test]
 async fn mirror_reports_stable_columns_across_actions() {
     let server = MockServer::start().await;
-    let manifest = b"{}";
+    let index_type = "application/vnd.oci.image.index.v1+json";
+    let manifest = format!(r#"{{"schemaVersion":2,"mediaType":"{index_type}","manifests":[]}}"#).into_bytes();
     Mock::given(method("GET"))
         .and(path("/v2/library/example/manifests/latest"))
-        .respond_with(ResponseTemplate::new(200).set_body_raw(manifest, "application/vnd.oci.image.manifest.v1+json"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(manifest.clone(), index_type))
         .mount(&server)
         .await;
     let dir = tempfile::tempdir().unwrap();
     let (state, _) = proxy(&dir, &format!("{}/", server.uri()), false);
     let configured = images(&["library/example:latest"]);
     let empty = toml::Table::new();
-    let digest = oci_digest(manifest);
+    let digest = oci_digest(&manifest);
+    let bytes = manifest.len().to_string();
 
     for (action, expected_detail, expected_summary) in [
         (
@@ -196,7 +198,7 @@ async fn mirror_reports_stable_columns_across_actions() {
                 "latest",
                 &digest,
                 "",
-                "2",
+                &bytes,
                 "synced",
                 "",
             ],
@@ -207,7 +209,7 @@ async fn mirror_reports_stable_columns_across_actions() {
                 "",
                 "",
                 "",
-                "2",
+                &bytes,
                 "synced",
                 "1 synced, 0 cached, 0 errors",
             ],

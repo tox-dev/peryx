@@ -14,7 +14,7 @@ use serde::Serialize;
 use crate::name::{ImageReference, Reference, parse_image_reference};
 use crate::registry::{MAX_MANIFEST_BYTES, bounded_body, download_blob, serving_members};
 use crate::settings::{IndexSettings, upstream_repo};
-use crate::store::{self, Manifest};
+use crate::store::{self, Descriptors, Manifest};
 use crate::upstream::Upstream;
 
 /// The media type recorded for a manifest whose upstream response omits one.
@@ -219,6 +219,27 @@ fn schedule_children(
     false
 }
 
+/// What a manifest depends on, or `None` after reporting the schema rule its body breaks.
+///
+/// An upstream is not a push: peryx never accepted these bytes over the registry API, so nothing has
+/// checked that they are a manifest at all. A body the media type's schema rejects names no
+/// dependencies, which the walk would otherwise read as a graph that is already complete.
+fn descriptors_of(
+    manifest: &Manifest,
+    repo: &str,
+    reference: &str,
+    digest: &str,
+    rows: &mut Vec<MirrorRow>,
+) -> Option<Descriptors> {
+    match store::validated_descriptors(&manifest.media_type, &manifest.bytes) {
+        Ok(descriptors) => Some(descriptors),
+        Err(fault) => {
+            rows.push(MirrorRow::error("manifest", repo, reference, digest, fault.to_string()));
+            None
+        }
+    }
+}
+
 impl Mirror<'_> {
     /// The name `repo` is spelled with upstream. What lands in the store keeps the operator's spelling,
     /// so a mirrored image serves under the name it was asked for.
@@ -231,19 +252,21 @@ impl Mirror<'_> {
             Reference::Tag(tag) => (tag.as_str(), Some(tag.as_str())),
             Reference::Digest(digest) => (digest.as_str(), None),
         };
-        if let Some(manifest) = self.manifest_of(&image.repository, reference, tag, rows).await? {
-            self.walk_manifest(&image.repository, &manifest, rows).await?;
+        if let Some(descriptors) = self.manifest_of(&image.repository, reference, tag, rows).await? {
+            self.walk_manifest(&image.repository, descriptors, rows).await?;
         }
         Ok(())
     }
 
+    /// Pull one manifest and hand back what it depends on. `None` is a reference this run reported on
+    /// and will not walk.
     async fn manifest_of(
         &self,
         repo: &str,
         reference: &str,
         tag: Option<&str>,
         rows: &mut Vec<MirrorRow>,
-    ) -> anyhow::Result<Option<Manifest>> {
+    ) -> anyhow::Result<Option<Descriptors>> {
         if self.mode == MirrorMode::Verify {
             return self.verify_manifest(repo, reference, tag, rows);
         }
@@ -288,6 +311,11 @@ impl Mirror<'_> {
             media_type,
             bytes: bytes.to_vec(),
         };
+        // Storing first and walking after would cache bytes no client can use under a digest the run
+        // then reports complete, because a document that does not parse names no dependencies.
+        let Some(descriptors) = descriptors_of(&manifest, repo, reference, &digest, rows) else {
+            return Ok(None);
+        };
         store::record_manifest(&self.state.meta, self.index, repo, &digest, &manifest)?;
         store::record_content_placement(&self.state.meta, &digest, store::OciArtifactOrigin::Mirrored, true)?;
         let search_invalidation = crate::search_oci::SearchInvalidationGuard::arm(self.state, repo);
@@ -303,7 +331,7 @@ impl Mirror<'_> {
             &digest,
             manifest.bytes.len() as u64,
         ));
-        Ok(Some(manifest))
+        Ok(Some(descriptors))
     }
 
     fn verify_manifest(
@@ -312,7 +340,7 @@ impl Mirror<'_> {
         reference: &str,
         tag: Option<&str>,
         rows: &mut Vec<MirrorRow>,
-    ) -> anyhow::Result<Option<Manifest>> {
+    ) -> anyhow::Result<Option<Descriptors>> {
         let digest = match tag {
             Some(tag) => {
                 let Some(digest) = store::get_tag(&self.state.meta, self.index, repo, tag)? else {
@@ -339,8 +367,13 @@ impl Mirror<'_> {
             ));
             return Ok(None);
         };
+        // A stored manifest that no longer parses cannot be reported cached: its empty descriptor list
+        // would pass verification for an image whose layers were never mirrored.
+        let Some(descriptors) = descriptors_of(&manifest, repo, reference, &digest, rows) else {
+            return Ok(None);
+        };
         rows.push(MirrorRow::cached("manifest", repo, reference, &digest));
-        Ok(Some(manifest))
+        Ok(Some(descriptors))
     }
 
     /// Follow a manifest to the blobs it needs, over a work queue rather than recursion: an image
@@ -350,10 +383,15 @@ impl Mirror<'_> {
     /// terminates and a diamond fetches each shared descendant a single time. Bounds are enforced when
     /// a child is scheduled, before it is fetched, so a graph a hostile upstream keeps growing stops on
     /// a stable error row without the fetch that would follow.
-    async fn walk_manifest(&self, repo: &str, manifest: &Manifest, rows: &mut Vec<MirrorRow>) -> anyhow::Result<()> {
+    async fn walk_manifest(
+        &self,
+        repo: &str,
+        descriptors: Descriptors,
+        rows: &mut Vec<MirrorRow>,
+    ) -> anyhow::Result<()> {
         let mut visited: HashSet<String> = HashSet::new();
         let mut pending: Vec<(String, usize)> = Vec::new();
-        let (children, blobs) = store::manifest_descriptors(&manifest.bytes);
+        let (children, blobs) = descriptors;
         for digest in blobs {
             self.blob(repo, &digest, rows).await;
         }
@@ -361,10 +399,9 @@ impl Mirror<'_> {
             return Ok(());
         }
         while let Some((digest, depth)) = pending.pop() {
-            let Some(child) = self.manifest_of(repo, &digest, None, rows).await? else {
+            let Some((children, blobs)) = self.manifest_of(repo, &digest, None, rows).await? else {
                 continue;
             };
-            let (children, blobs) = store::manifest_descriptors(&child.bytes);
             for digest in blobs {
                 self.blob(repo, &digest, rows).await;
             }

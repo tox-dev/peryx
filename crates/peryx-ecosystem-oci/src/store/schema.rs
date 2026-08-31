@@ -61,6 +61,22 @@ impl ManifestSchema {
     /// # Errors
     /// Returns the first rule the document breaks.
     pub fn validate(self, declared: &str, bytes: &[u8]) -> Result<Value, ManifestSchemaError> {
+        self.check(bytes, Some(declared))
+    }
+
+    /// The same document rules for bytes peryx accepted from somewhere other than a push, where no
+    /// declared type is the body's to repeat: a mirror run records the upstream's `Content-Type` as the
+    /// manifest's media type, and image-spec 1.0 leaves `mediaType` out of the body altogether. A body
+    /// that names the other schema is still rejected, by the fields that schema requires and this one
+    /// does not have.
+    ///
+    /// # Errors
+    /// Returns the first rule the document breaks.
+    pub fn parse(self, bytes: &[u8]) -> Result<Value, ManifestSchemaError> {
+        self.check(bytes, None)
+    }
+
+    fn check(self, bytes: &[u8], declared: Option<&str>) -> Result<Value, ManifestSchemaError> {
         let document: Value = serde_json::from_slice(bytes)?;
         let Some(fields) = document.as_object() else {
             return Err(ManifestSchemaError::NotAnObject);
@@ -70,7 +86,9 @@ impl ManifestSchema {
         }
         // The declared type is what peryx records and hands back as `Content-Type`, so a body claiming
         // another one would be served under a media type it contradicts.
-        if fields.get("mediaType").and_then(Value::as_str) != Some(declared) {
+        if let Some(declared) = declared
+            && fields.get("mediaType").and_then(Value::as_str) != Some(declared)
+        {
             return Err(ManifestSchemaError::MediaType(declared.to_owned()));
         }
         match self {

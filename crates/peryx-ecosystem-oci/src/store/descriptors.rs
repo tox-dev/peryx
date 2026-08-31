@@ -6,8 +6,11 @@ use std::collections::BTreeSet;
 use peryx_storage::blob::Digest;
 use peryx_storage::meta::{MetaError, MetaStore};
 
-use super::Manifest;
-use super::{BLOB_MEMBERSHIP_PREFIX, MANIFEST_PREFIX};
+use super::{BLOB_MEMBERSHIP_PREFIX, MANIFEST_PREFIX, Manifest, ManifestSchema, ManifestSchemaError};
+
+/// What a manifest depends on: the child manifests of an image index, then the config and layer blobs
+/// of an image manifest.
+pub type Descriptors = (Vec<String>, Vec<String>);
 
 /// Map an OCI `sha256:<hex>` digest onto the blob store's digest, or `None` for another algorithm the
 /// content-addressed store cannot key on.
@@ -23,21 +26,51 @@ pub fn blob_digest(digest: &str) -> Option<Digest> {
 /// registry never stores, so it is omitted: the spec lets a manifest reference it without the blob
 /// present, and the orphan purge must not expect it locally.
 #[must_use]
-pub fn manifest_descriptors(bytes: &[u8]) -> (Vec<String>, Vec<String>) {
+pub fn manifest_descriptors(bytes: &[u8]) -> Descriptors {
     serde_json::from_slice::<serde_json::Value>(bytes)
         .as_ref()
         .map_or_else(|_| (Vec::new(), Vec::new()), document_descriptors)
 }
 /// The same split for a document the caller has already parsed, so a pushed manifest is read once.
 #[must_use]
-pub fn document_descriptors(document: &serde_json::Value) -> (Vec<String>, Vec<String>) {
-    if let Some(manifests) = document["manifests"].as_array() {
-        let children = manifests
-            .iter()
-            .filter_map(|entry| entry["digest"].as_str().map(str::to_owned))
-            .collect();
-        return (children, Vec::new());
+pub fn document_descriptors(document: &serde_json::Value) -> Descriptors {
+    if document["manifests"].is_array() {
+        return (child_manifests(document), Vec::new());
     }
+    (Vec::new(), image_blobs(document))
+}
+/// Check a manifest against the schema its media type declares, then split the descriptors of the
+/// document that passed, so bytes peryx stores are bytes it can serve back and walk.
+///
+/// A media type peryx models no schema for is opaque: its body is asserted nothing about and it names
+/// no dependencies, so an artifact type peryx does not understand neither fails a mirror run nor sends
+/// it after blobs the manifest never named. The split follows the declared schema rather than the
+/// fields that happen to be present, so an image manifest carrying a stray `manifests` array still
+/// names the config and layers a client will pull.
+///
+/// # Errors
+/// Returns the first rule the document breaks.
+pub fn validated_descriptors(media_type: &str, bytes: &[u8]) -> Result<Descriptors, ManifestSchemaError> {
+    let Some(schema) = ManifestSchema::of(media_type) else {
+        return Ok((Vec::new(), Vec::new()));
+    };
+    let document = schema.parse(bytes)?;
+    Ok(match schema {
+        ManifestSchema::Index => (child_manifests(&document), Vec::new()),
+        ManifestSchema::Image => (Vec::new(), image_blobs(&document)),
+    })
+}
+
+fn child_manifests(document: &serde_json::Value) -> Vec<String> {
+    document["manifests"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry["digest"].as_str().map(str::to_owned))
+        .collect()
+}
+
+fn image_blobs(document: &serde_json::Value) -> Vec<String> {
     let config = document["config"]["digest"].as_str().map(str::to_owned);
     let layers = document["layers"]
         .as_array()
@@ -45,7 +78,7 @@ pub fn document_descriptors(document: &serde_json::Value) -> (Vec<String>, Vec<S
         .flatten()
         .filter(|layer| layer["urls"].as_array().is_none_or(Vec::is_empty))
         .filter_map(|layer| layer["digest"].as_str().map(str::to_owned));
-    (Vec::new(), config.into_iter().chain(layers).collect())
+    config.into_iter().chain(layers).collect()
 }
 /// The digest of the index's `linux/amd64` child image manifest, if it lists one.
 ///
