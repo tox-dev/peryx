@@ -56,6 +56,13 @@ conditional_writes = false
 checksum_writes = false
 ```
 
+`If-None-Match: *` reports that the key was taken, not what occupies it, so a node that loses the race reads the
+resident object back and compares its length and SHA-256 against the blob it staged. It skips the read when the store
+reports a full-object SHA-256 for the object, which is the value AWS S3 records for a single-request write; a multipart
+object carries a composite checksum over its part digests, which is a different value from the digest peryx keys on, so
+those conflicts always cost a read. A resident object of another length or another digest fails the commit with a
+mismatch and no placement receipt.
+
 That declaration is per instance and restricts the node to the `none`
 [availability contract](@/core/availability/contracts.md): the `dc` and `ha` modes require both guarantees, and startup
 refuses one of those modes on a backend that declares either as `false`.

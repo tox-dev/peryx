@@ -71,6 +71,7 @@ enum BlobErrorDetail {
     Io(std::io::Error),
     NotFound(String),
     DigestMismatch { expected: String, actual: String },
+    SizeMismatch { expected: u64, actual: u64 },
     InvalidRange { start: u64, end: u64, bytes: u64 },
     LimitExceeded { limit: u64, actual: u64 },
     Unsupported(&'static str),
@@ -87,7 +88,11 @@ impl BlobError {
         match self.detail {
             BlobErrorDetail::Io(_) => BlobErrorKind::Io,
             BlobErrorDetail::NotFound(_) => BlobErrorKind::NotFound,
-            BlobErrorDetail::DigestMismatch { .. } => BlobErrorKind::DigestMismatch,
+            // A blob of another length cannot hash to the expected digest, so a length disagreement is
+            // the same integrity failure to every caller that handles a content mismatch.
+            BlobErrorDetail::DigestMismatch { .. } | BlobErrorDetail::SizeMismatch { .. } => {
+                BlobErrorKind::DigestMismatch
+            }
             BlobErrorDetail::InvalidRange { .. } => BlobErrorKind::InvalidRange,
             BlobErrorDetail::LimitExceeded { .. } => BlobErrorKind::LimitExceeded,
             BlobErrorDetail::Unsupported(_) => BlobErrorKind::Unsupported,
@@ -115,6 +120,14 @@ impl BlobError {
                 expected: expected.as_str().to_owned(),
                 actual: actual.as_str().to_owned(),
             },
+        }
+    }
+
+    #[must_use]
+    pub const fn size_mismatch(expected: u64, actual: u64) -> Self {
+        Self {
+            context: None,
+            detail: BlobErrorDetail::SizeMismatch { expected, actual },
         }
     }
 
@@ -205,6 +218,9 @@ impl fmt::Display for BlobErrorDetail {
             Self::NotFound(digest) => write!(formatter, "blob {digest} not found"),
             Self::DigestMismatch { expected, actual } => {
                 write!(formatter, "digest mismatch: expected {expected}, got {actual}")
+            }
+            Self::SizeMismatch { expected, actual } => {
+                write!(formatter, "size mismatch: expected {expected} bytes, got {actual}")
             }
             Self::InvalidRange { start, end, bytes } => {
                 write!(formatter, "range {start}..{end} exceeds {bytes} bytes")

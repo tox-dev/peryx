@@ -36,6 +36,15 @@ fn test_mismatch_returns_only_digest_pairs() {
         Some((expected.as_str(), actual.as_str()))
     );
     assert_eq!(BlobError::io(std::io::Error::other("disk")).mismatch(), None);
+    assert_eq!(BlobError::size_mismatch(7, 9).mismatch(), None);
+}
+
+#[test]
+fn test_size_mismatch_is_a_content_mismatch() {
+    assert_eq!(
+        BlobError::size_mismatch(7, 9).kind(),
+        crate::blob::BlobErrorKind::DigestMismatch
+    );
 }
 
 #[test]
@@ -55,6 +64,10 @@ fn test_blob_error_formats_every_detail_with_optional_context() {
                 expected.as_str(),
                 actual.as_str()
             ),
+        ),
+        (
+            BlobError::size_mismatch(7, 9),
+            "size mismatch: expected 7 bytes, got 9".to_owned(),
         ),
         (
             BlobError::invalid_range(3, 9, 7),

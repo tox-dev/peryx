@@ -567,10 +567,22 @@ async fn run_container_child(storage: &BlobStorage, scenario: ContainerScenario)
             storage.put_bytes(&vec![7; (5 << 20) + 1]).await.unwrap();
         }
         ContainerScenario::Concurrent => {
-            let bytes = vec![7; (5 << 20) + 1];
             let other = storage.clone();
-            let (first, second) = tokio::join!(storage.put_bytes(&bytes), other.put_bytes(&bytes));
+            let multipart = vec![7; (5 << 20) + 1];
+            let (first, second) = tokio::join!(storage.put_bytes(&multipart), other.put_bytes(&multipart));
             assert_eq!(first.unwrap(), second.unwrap());
+            // A whole-object write races on the same precondition, and the loser has to prove the object
+            // the winner left before it reports a placement of its own.
+            let (first, second) = tokio::join!(storage.put_bytes(b"concurrent"), other.put_bytes(b"concurrent"));
+            assert_eq!(first.unwrap(), second.unwrap());
+        }
+        ContainerScenario::Foreign => {
+            let error = storage.put_bytes(b"expected").await.unwrap_err();
+            assert_eq!(error.kind(), BlobErrorKind::DigestMismatch);
+            assert_eq!(
+                error.mismatch(),
+                Some((Digest::of(b"expected").as_str(), Digest::of(b"squatted").as_str()))
+            );
         }
         ContainerScenario::StreamReset => {
             run_container_stream(storage, Some("s3 request failed: streaming error")).await;
@@ -712,8 +724,15 @@ async fn run_wire_write_child(storage: &BlobStorage, scenario: WireWriteScenario
             assert_eq!(storage.put_bytes(b"package").await.unwrap(), Digest::of(b"package"));
         }
         WireWriteScenario::Immutable => {
-            let digest = storage.put_bytes(b"expected").await.unwrap();
-            assert_eq!(storage.read_bytes(&digest, 8).await.unwrap(), b"existing");
+            assert_eq!(storage.put_bytes(b"expected").await.unwrap(), Digest::of(b"expected"));
+        }
+        WireWriteScenario::ImmutableMismatch => {
+            let error = storage.put_bytes(b"expected").await.unwrap_err();
+            assert_eq!(error.kind(), BlobErrorKind::DigestMismatch);
+            assert_eq!(
+                error.mismatch(),
+                Some((Digest::of(b"expected").as_str(), Digest::of(b"existing").as_str()))
+            );
         }
     }
 }
@@ -820,6 +839,7 @@ enum ContainerScenario {
     Cancel,
     Multipart,
     Concurrent,
+    Foreign,
     StreamReset,
     StreamTimeout,
     StreamTrickle,
@@ -847,6 +867,7 @@ enum WireWriteScenario {
     Present,
     SmallPut,
     Immutable,
+    ImmutableMismatch,
 }
 
 #[derive(Clone, Copy)]
@@ -897,6 +918,8 @@ impl ChildScenario {
             #[cfg(feature = "container-tests")]
             "concurrent" => Ok(Self::Container(ContainerScenario::Concurrent)),
             #[cfg(feature = "container-tests")]
+            "foreign" => Ok(Self::Container(ContainerScenario::Foreign)),
+            #[cfg(feature = "container-tests")]
             "stream_reset" => Ok(Self::Container(ContainerScenario::StreamReset)),
             #[cfg(feature = "container-tests")]
             "stream_timeout" => Ok(Self::Container(ContainerScenario::StreamTimeout)),
@@ -918,6 +941,7 @@ impl ChildScenario {
             "wire_present" => Ok(Self::Write(WireWriteScenario::Present)),
             "wire_small_put" => Ok(Self::Write(WireWriteScenario::SmallPut)),
             "wire_immutable" => Ok(Self::Write(WireWriteScenario::Immutable)),
+            "wire_immutable_mismatch" => Ok(Self::Write(WireWriteScenario::ImmutableMismatch)),
             "wire_health_error" => Ok(Self::Failure(WireFailureScenario::Health)),
             "wire_head_error" => Ok(Self::Failure(WireFailureScenario::Head)),
             "wire_head_missing_length" => Ok(Self::Failure(WireFailureScenario::HeadMissingLength)),

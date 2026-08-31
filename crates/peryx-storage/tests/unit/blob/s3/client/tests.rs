@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use aws_sdk_s3::config::Credentials;
 use aws_sdk_s3::primitives::SdkBody;
-use aws_smithy_http_client::test_util::{CaptureRequestReceiver, NeverClient, capture_request};
+use aws_smithy_http_client::test_util::{CaptureRequestReceiver, NeverClient, capture_request, infallible_client_fn};
 use bytes::Bytes;
 use futures_util::StreamExt as _;
 use http_body::Frame;
@@ -633,4 +633,218 @@ async fn test_get_body_reports_its_idle_timeout() {
     let error = get.body.next().await.unwrap().unwrap_err();
 
     assert!(matches!(error, S3Error::Request(_)));
+}
+
+const STAGED: &[u8] = b"expected";
+const RESIDENT: &[u8] = b"existing";
+
+fn conflicting_backend(
+    staging: &std::path::Path,
+    respond: impl Fn(&http::Request<SdkBody>) -> http::Response<SdkBody> + Send + Sync + 'static,
+) -> (S3Backend, Arc<std::sync::Mutex<Vec<String>>>) {
+    let methods = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&methods);
+    let config = S3Config::new(base_settings()).unwrap();
+    let service = S3Client::service_config(
+        &config,
+        Builder::new()
+            .behavior_version(BehaviorVersion::latest())
+            .credentials_provider(Credentials::new("id", "secret", None, None, "test"))
+            .region(Region::new("us-east-1"))
+            .http_client(infallible_client_fn(move |request: http::Request<SdkBody>| {
+                recorded.lock().unwrap().push(request.method().to_string());
+                respond(&request)
+            })),
+    );
+    let backend = S3Backend {
+        client: S3Client {
+            config,
+            client: Arc::new(OnceCell::from(Client::from_conf(service))),
+        },
+        staging: BlobStore::new(staging),
+        acquisitions: Arc::default(),
+    };
+    (backend, methods)
+}
+
+fn xml_error(status: u16, code: &str) -> http::Response<SdkBody> {
+    http::Response::builder()
+        .status(status)
+        .body(SdkBody::from(format!("<Error><Code>{code}</Code></Error>")))
+        .unwrap()
+}
+
+fn resident_head(length: usize) -> http::response::Builder {
+    http::Response::builder()
+        .status(200)
+        .header("Content-Length", length.to_string())
+        .header("ETag", "\"resident\"")
+}
+
+fn resident_body(bytes: &'static [u8]) -> http::Response<SdkBody> {
+    http::Response::builder()
+        .status(200)
+        .header("Content-Length", bytes.len().to_string())
+        .body(SdkBody::from(bytes))
+        .unwrap()
+}
+
+async fn commit_staged(backend: &S3Backend) -> Result<crate::blob::PlacementReceipt, crate::blob::BlobError> {
+    let mut write = backend.begin().await.unwrap();
+    write.write_chunk(Bytes::from_static(STAGED)).await.unwrap();
+    write.commit(&Digest::of(STAGED)).await
+}
+
+#[tokio::test]
+async fn test_conflict_over_matching_resident_bytes_stays_idempotent() {
+    let staging = tempfile::tempdir().unwrap();
+    let (backend, _) = conflicting_backend(staging.path(), |request| match request.method().as_str() {
+        "PUT" => xml_error(412, "PreconditionFailed"),
+        "HEAD" => resident_head(STAGED.len()).body(SdkBody::empty()).unwrap(),
+        _ => resident_body(STAGED),
+    });
+
+    let receipt = commit_staged(&backend).await.unwrap();
+
+    assert_eq!(receipt.digest, Digest::of(STAGED));
+    assert_eq!(receipt.size, STAGED.len() as u64);
+}
+
+#[tokio::test]
+async fn test_conflict_over_other_resident_bytes_yields_no_receipt() {
+    let staging = tempfile::tempdir().unwrap();
+    let (backend, _) = conflicting_backend(staging.path(), |request| match request.method().as_str() {
+        "PUT" => xml_error(412, "PreconditionFailed"),
+        "HEAD" => resident_head(RESIDENT.len()).body(SdkBody::empty()).unwrap(),
+        _ => resident_body(RESIDENT),
+    });
+
+    let error = commit_staged(&backend).await.unwrap_err();
+
+    assert_eq!(
+        error.mismatch(),
+        Some((Digest::of(STAGED).as_str(), Digest::of(RESIDENT).as_str()))
+    );
+}
+
+#[tokio::test]
+async fn test_conflict_over_a_different_length_skips_the_download() {
+    let staging = tempfile::tempdir().unwrap();
+    // Only the head answers; a read the commit should never issue would fail its pinned precondition.
+    let (backend, methods) = conflicting_backend(staging.path(), |request| match request.method().as_str() {
+        "HEAD" => resident_head(3).body(SdkBody::empty()).unwrap(),
+        _ => xml_error(412, "PreconditionFailed"),
+    });
+
+    let error = commit_staged(&backend).await.unwrap_err();
+
+    assert_eq!(error.kind(), crate::blob::BlobErrorKind::DigestMismatch);
+    assert!(
+        error.to_string().ends_with("size mismatch: expected 8 bytes, got 3"),
+        "{error}"
+    );
+    assert_eq!(*methods.lock().unwrap(), ["PUT", "HEAD"]);
+}
+
+#[tokio::test]
+async fn test_a_full_object_checksum_proves_the_conflict_without_a_read() {
+    let staging = tempfile::tempdir().unwrap();
+    let checksum = super::super::digest_checksum(&Digest::of(STAGED));
+    let (backend, methods) = conflicting_backend(staging.path(), move |request| match request.method().as_str() {
+        "HEAD" => resident_head(STAGED.len())
+            .header("x-amz-checksum-sha256", &checksum)
+            .header("x-amz-checksum-type", "FULL_OBJECT")
+            .body(SdkBody::empty())
+            .unwrap(),
+        _ => xml_error(412, "PreconditionFailed"),
+    });
+
+    assert_eq!(commit_staged(&backend).await.unwrap().digest, Digest::of(STAGED));
+    assert_eq!(*methods.lock().unwrap(), ["PUT", "HEAD"]);
+}
+
+#[tokio::test]
+async fn test_a_composite_checksum_does_not_prove_the_conflict() {
+    let staging = tempfile::tempdir().unwrap();
+    let checksum = super::super::digest_checksum(&Digest::of(STAGED));
+    let (backend, _) = conflicting_backend(staging.path(), move |request| match request.method().as_str() {
+        "PUT" => xml_error(412, "PreconditionFailed"),
+        "HEAD" => resident_head(STAGED.len())
+            .header("x-amz-checksum-sha256", &checksum)
+            .header("x-amz-checksum-type", "COMPOSITE")
+            .body(SdkBody::empty())
+            .unwrap(),
+        _ => resident_body(RESIDENT),
+    });
+
+    let error = commit_staged(&backend).await.unwrap_err();
+
+    assert_eq!(
+        error.mismatch(),
+        Some((Digest::of(STAGED).as_str(), Digest::of(RESIDENT).as_str()))
+    );
+}
+
+#[tokio::test]
+async fn test_conflict_over_an_object_that_vanished_yields_no_receipt() {
+    let staging = tempfile::tempdir().unwrap();
+    let (backend, _) = conflicting_backend(staging.path(), |request| match request.method().as_str() {
+        "PUT" => xml_error(412, "PreconditionFailed"),
+        _ => xml_error(404, "NoSuchKey"),
+    });
+
+    let error = commit_staged(&backend).await.unwrap_err();
+
+    assert_eq!(error.kind(), crate::blob::BlobErrorKind::NotFound);
+}
+
+#[tokio::test]
+async fn test_conflict_verification_reports_an_unreadable_head() {
+    let staging = tempfile::tempdir().unwrap();
+    let (backend, _) = conflicting_backend(staging.path(), |request| match request.method().as_str() {
+        "PUT" => xml_error(412, "PreconditionFailed"),
+        _ => xml_error(500, "InternalError"),
+    });
+
+    let error = commit_staged(&backend).await.unwrap_err();
+
+    assert_eq!(error.kind(), crate::blob::BlobErrorKind::Io);
+}
+
+#[tokio::test]
+async fn test_conflict_verification_requires_an_etag_to_pin_the_object() {
+    let staging = tempfile::tempdir().unwrap();
+    let (backend, _) = conflicting_backend(staging.path(), |request| match request.method().as_str() {
+        "HEAD" => http::Response::builder()
+            .status(200)
+            .header("Content-Length", STAGED.len().to_string())
+            .body(SdkBody::empty())
+            .unwrap(),
+        _ => xml_error(412, "PreconditionFailed"),
+    });
+
+    let error = commit_staged(&backend).await.unwrap_err();
+
+    assert_eq!(
+        std::error::Error::source(&error).unwrap().to_string(),
+        "s3 returned an invalid ETag"
+    );
+}
+
+#[tokio::test]
+async fn test_a_replacement_during_verification_yields_no_receipt() {
+    let staging = tempfile::tempdir().unwrap();
+    // The conditional write and the pinned read fail the same precondition: the key was taken, then the
+    // generation the head measured was replaced under the verifying read.
+    let (backend, _) = conflicting_backend(staging.path(), |request| match request.method().as_str() {
+        "HEAD" => resident_head(STAGED.len()).body(SdkBody::empty()).unwrap(),
+        _ => xml_error(412, "PreconditionFailed"),
+    });
+
+    let error = commit_staged(&backend).await.unwrap_err();
+
+    assert_eq!(
+        std::error::Error::source(&error).unwrap().to_string(),
+        "object changed during read"
+    );
 }

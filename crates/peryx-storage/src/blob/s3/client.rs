@@ -8,7 +8,7 @@ use aws_sdk_s3::Client;
 use aws_sdk_s3::config::{Builder, Config, Region, RequestChecksumCalculation, ResponseChecksumValidation};
 use aws_sdk_s3::error::{ProvideErrorMetadata as _, SdkError};
 use aws_sdk_s3::primitives::{ByteStream, Length};
-use aws_sdk_s3::types::{ChecksumAlgorithm, CompletedMultipartUpload, CompletedPart};
+use aws_sdk_s3::types::{ChecksumAlgorithm, ChecksumMode, ChecksumType, CompletedMultipartUpload, CompletedPart};
 use bytes::Bytes;
 use futures_util::StreamExt as _;
 use futures_util::stream::BoxStream;
@@ -41,6 +41,10 @@ pub enum S3Error {
 pub struct S3Head {
     pub bytes: u64,
     pub etag: Option<String>,
+    /// The base64 SHA-256 the store computed over the whole byte stream, which is the only checksum
+    /// type that hashes what a peryx digest hashes. A multipart object carries a composite value
+    /// built from part digests, so it is dropped here rather than mistaken for a content digest.
+    pub whole_object_sha256: Option<String>,
 }
 
 pub struct S3Get {
@@ -138,12 +142,17 @@ impl S3Client {
             .head_object()
             .bucket(&self.config.bucket)
             .key(key)
+            .checksum_mode(ChecksumMode::Enabled)
             .send()
             .await
         {
             Ok(output) => Ok(Some(S3Head {
                 bytes: object_length(output.content_length())?,
                 etag: output.e_tag().map(str::to_owned),
+                whole_object_sha256: output
+                    .checksum_sha256()
+                    .filter(|_| output.checksum_type() == Some(&ChecksumType::FullObject))
+                    .map(str::to_owned),
             })),
             Err(error) => match map_sdk_error(&error.into()) {
                 S3Error::NotFound => Ok(None),

@@ -269,10 +269,50 @@ impl S3Backend {
             self.put_multipart(&key, &digest, len, part_size, &path).await
         };
         match result {
-            Ok(()) | Err(S3Error::AlreadyExists) => Ok(()),
-            Err(error) => Err(error),
+            Ok(()) => Ok(()),
+            Err(S3Error::AlreadyExists) => self.verify_resident(&key, &digest, len).await,
+            Err(error) => Err(blob_error(error, Some(&digest))),
         }
-        .map_err(|error| blob_error(error, Some(&digest)).with_context("s3", BlobOperation::Commit, Some(&digest)))
+        .map_err(|error| error.with_context("s3", BlobOperation::Commit, Some(&digest)))
+    }
+
+    /// Proves the object occupying the digest key holds the bytes this commit staged. `If-None-Match: *`
+    /// reports only that the name was taken, so a conflict on its own certifies nothing about the
+    /// resident content and a receipt built on it would attest to whatever the winning writer stored.
+    async fn verify_resident(&self, key: &str, digest: &Digest, len: u64) -> Result<(), BlobError> {
+        let head = self
+            .client
+            .head(key)
+            .await
+            .map_err(|error| blob_error(error, Some(digest)))?
+            .ok_or_else(|| BlobError::not_found(digest))?;
+        if head.bytes != len {
+            return Err(BlobError::size_mismatch(len, head.bytes));
+        }
+        if head.whole_object_sha256 == Some(digest_checksum(digest)) {
+            return Ok(());
+        }
+        let etag = head
+            .etag
+            .ok_or_else(|| blob_error(S3Error::InvalidResponse("ETag"), Some(digest)))?;
+        // Pinning the read to the generation the head measured stops a replacement mid-read from
+        // combining two objects into one digest.
+        let response = self
+            .client
+            .get(key, None, Some(&etag))
+            .await
+            .map_err(|error| blob_error(error, Some(digest)))?;
+        let mut hasher = Sha256::new();
+        let mut body = stream_body(response);
+        while let Some(chunk) = body.try_next().await? {
+            hasher.update(&chunk);
+        }
+        let resident = Digest::from_sha256(hasher.finalize().into());
+        if resident == *digest {
+            Ok(())
+        } else {
+            Err(BlobError::digest_mismatch(digest, &resident))
+        }
     }
 
     async fn put_whole(&self, key: &str, digest: &Digest, path: &Path) -> Result<(), S3Error> {
@@ -312,13 +352,20 @@ impl S3Backend {
             };
             match self.client.complete_multipart(key, &upload_id, parts).await {
                 Ok(()) => return remove_journal(&journal).await,
-                Err(S3Error::AlreadyExists) => return self.abort_and_clear(key, &upload_id, &journal).await,
+                Err(S3Error::AlreadyExists) => {
+                    self.abort_and_clear(key, &upload_id, &journal).await?;
+                    return Err(S3Error::AlreadyExists);
+                }
                 Err(S3Error::Conflict) if conflicts < self.client.config().max_retries => {
                     conflicts += 1;
                     self.abort_and_clear(key, &upload_id, &journal).await?;
                 }
                 Err(S3Error::NoSuchUpload) => match self.client.head(key).await {
-                    Ok(Some(_)) => return remove_journal(&journal).await,
+                    // A peer finished this upload; the commit still has to prove what it left behind.
+                    Ok(Some(_)) => {
+                        remove_journal(&journal).await?;
+                        return Err(S3Error::AlreadyExists);
+                    }
                     Ok(None) if !recovered_stale_upload => {
                         recovered_stale_upload = true;
                         remove_journal(&journal).await?;

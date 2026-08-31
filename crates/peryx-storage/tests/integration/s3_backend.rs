@@ -64,6 +64,7 @@ enum WireBehavior {
     Present,
     SmallPut,
     Immutable,
+    ImmutableMismatch,
     Multipart,
     HealthError,
     HeadError,
@@ -104,6 +105,7 @@ enum WireWriteBehavior {
     Present,
     SmallPut,
     Immutable,
+    ImmutableMismatch,
 }
 
 #[derive(Clone, Copy)]
@@ -149,6 +151,7 @@ impl WireBehavior {
             Self::Present => "wire_present",
             Self::SmallPut => "wire_small_put",
             Self::Immutable => "wire_immutable",
+            Self::ImmutableMismatch => "wire_immutable_mismatch",
             Self::Multipart => "wire_multipart",
             Self::HealthError => "wire_health_error",
             Self::HeadError => "wire_head_error",
@@ -254,6 +257,23 @@ async fn mount_multipart(server: &MockServer) {
         .await;
 }
 
+/// Serves the object a peer left at the digest key, so a commit that lost the completion race can read it
+/// back and confirm it holds the bytes it staged.
+async fn mount_resident_multipart_object(server: &MockServer, len: usize) {
+    Mock::given(method("HEAD"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Length", len.to_string().as_str())
+                .insert_header("ETag", "\"resident\""),
+        )
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![7; len]))
+        .mount(server)
+        .await;
+}
+
 fn count_aborts(requests: &[Request]) -> usize {
     requests
         .iter()
@@ -308,6 +328,9 @@ async fn mount_wire_behavior(server: &MockServer, behavior: WireBehavior) {
         WireBehavior::Present => mount_wire_writes(server, WireWriteBehavior::Present).await,
         WireBehavior::SmallPut => mount_wire_writes(server, WireWriteBehavior::SmallPut).await,
         WireBehavior::Immutable => mount_wire_writes(server, WireWriteBehavior::Immutable).await,
+        WireBehavior::ImmutableMismatch => {
+            mount_wire_writes(server, WireWriteBehavior::ImmutableMismatch).await;
+        }
         WireBehavior::Multipart => mount_wire_failures(server, WireFailureBehavior::Multipart).await,
         WireBehavior::HealthError => mount_wire_failures(server, WireFailureBehavior::Health).await,
         WireBehavior::HeadError => mount_wire_failures(server, WireFailureBehavior::Head).await,
@@ -458,20 +481,30 @@ async fn mount_wire_writes(server: &MockServer, behavior: WireWriteBehavior) {
                 .mount(server)
                 .await;
         }
-        WireWriteBehavior::Immutable => {
-            Mock::given(method("PUT"))
-                .respond_with(
-                    ResponseTemplate::new(412)
-                        .set_body_raw("<Error><Code>PreconditionFailed</Code></Error>", "application/xml"),
-                )
-                .mount(server)
-                .await;
-            Mock::given(method("GET"))
-                .respond_with(ResponseTemplate::new(200).set_body_bytes(b"existing"))
-                .mount(server)
-                .await;
-        }
+        WireWriteBehavior::Immutable => mount_resident_conflict(server, b"expected").await,
+        WireWriteBehavior::ImmutableMismatch => mount_resident_conflict(server, b"existing").await,
     }
+}
+
+/// Answers a conditional whole-object write with a conflict over an object of the staged length, so the
+/// commit can only tell the two apart by reading the resident bytes back.
+async fn mount_resident_conflict(server: &MockServer, resident: &'static [u8]) {
+    Mock::given(method("PUT"))
+        .respond_with(service_error(412, "PreconditionFailed"))
+        .mount(server)
+        .await;
+    Mock::given(method("HEAD"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Length", resident.len().to_string().as_str())
+                .insert_header("ETag", "\"resident\""),
+        )
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(resident))
+        .mount(server)
+        .await;
 }
 
 async fn mount_wire_failures(server: &MockServer, behavior: WireFailureBehavior) {
@@ -586,14 +619,12 @@ async fn mount_wire_multipart_failures(server: &MockServer, behavior: WireMultip
             mount_multipart(server).await;
             Mock::given(method("POST"))
                 .and(query_param("uploadId", "upload-1"))
-                .respond_with(
-                    ResponseTemplate::new(412)
-                        .set_body_raw("<Error><Code>PreconditionFailed</Code></Error>", "application/xml"),
-                )
+                .respond_with(service_error(412, "PreconditionFailed"))
                 .up_to_n_times(1)
                 .with_priority(1)
                 .mount(server)
                 .await;
+            mount_resident_multipart_object(server, (5 << 20) + 1).await;
         }
         WireMultipartFailureBehavior::Complete => {
             mount_multipart(server).await;
@@ -815,6 +846,7 @@ fn assert_child_succeeded(output: &Output) {
 #[case::present(WireBehavior::Present)]
 #[case::small_put(WireBehavior::SmallPut)]
 #[case::immutable(WireBehavior::Immutable)]
+#[case::immutable_mismatch(WireBehavior::ImmutableMismatch)]
 #[case::multipart(WireBehavior::Multipart)]
 #[case::health_error(WireBehavior::HealthError)]
 #[case::head_error(WireBehavior::HeadError)]
@@ -1088,10 +1120,7 @@ async fn test_s3_accepts_a_peer_completed_multipart_upload() {
         .with_priority(1)
         .mount(&server)
         .await;
-    Mock::given(method("HEAD"))
-        .respond_with(ResponseTemplate::new(200).insert_header("Content-Length", "20971521"))
-        .mount(&server)
-        .await;
+    mount_resident_multipart_object(&server, (20 << 20) + 1).await;
     let staging = tempfile::tempdir().unwrap();
 
     assert_child_succeeded(
@@ -2410,6 +2439,36 @@ async fn test_s3_reports_a_structural_journal_cleanup_failure(#[case] point: Jou
         )
         .await,
     );
+}
+
+/// The blob key names the digest, so bytes that hash to something else can only get there from another
+/// writer. A conditional write reports the collision but not the content, and a receipt for the resident
+/// object would certify whatever that writer chose.
+#[cfg(feature = "container-tests")]
+#[tokio::test]
+async fn test_s3_container_refuses_a_conflict_over_foreign_bytes() {
+    let minio = minio().await;
+    admin_client(&minio.endpoint)
+        .put_object()
+        .bucket(BUCKET)
+        .key(format!("cache/sha256/{}", Digest::of(b"expected").as_str()))
+        .body(ByteStream::from_static(b"squatted"))
+        .send()
+        .await
+        .unwrap();
+    let staging = tempfile::tempdir().unwrap();
+
+    assert_child_succeeded(
+        &child(
+            &minio.endpoint,
+            staging.path(),
+            "foreign",
+            ROOT_ACCESS_KEY,
+            ROOT_SECRET_KEY,
+        )
+        .await,
+    );
+    drop(minio);
 }
 
 #[cfg(feature = "container-tests")]
