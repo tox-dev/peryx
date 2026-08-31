@@ -15,11 +15,9 @@ mod blob;
 mod blob_availability;
 mod blob_fetch;
 mod blob_http;
-mod blob_piece;
 mod blob_placement;
 mod blob_plane;
 mod blob_pull;
-mod blob_reassembly;
 mod blob_routing;
 mod blob_stage;
 mod byte_ack;
@@ -115,16 +113,14 @@ pub use blob::{BlobRequest, BlobTransport, ByteRange, CapacityLimited, LoopbackB
 pub use blob_availability::{BlobAvailability, ReferencedBlob, blob_availability};
 pub use blob_fetch::{FetchOutcome, FetchReport, fetch_missing};
 pub use blob_http::{HttpBlobError, HttpBlobTransport};
-pub use blob_piece::{PieceError, blob_piece};
 pub use blob_placement::{FetchPlan, plan_blob_fetch};
 pub use blob_plane::{
     BLOB_VIEW, BlobPlaneReport, BlobSources, PeerBlobEvidence, advance_blob_frontier,
     advance_blob_frontier_with_evidence, pull_outstanding, pull_outstanding_with_evidence, pull_referenced,
 };
-pub use blob_pull::{ChunkFailure, ChunkUnavailable, PullError, chunk_ranges, pull_chunk_verified, pull_ranged};
-pub use blob_reassembly::{BlobPiece, ReassemblyError, reassemble_verified};
+pub use blob_pull::{ChunkFailure, ChunkUnavailable, chunk_ranges};
 pub use blob_routing::RoutingBlobTransport;
-pub use blob_stage::{DEFAULT_RANGED_PULL_BUDGET, RangedPullBudget, StagedPullError, pull_blob_staged};
+pub use blob_stage::{DEFAULT_RANGED_PULL_BUDGET, RangedPullBudget, StagedPull, StagedPullError, pull_blob_staged};
 pub use byte_ack::{ByteAckDecision, decide_byte_ack};
 pub use change_page::{DEFAULT_MAX_CONCURRENT_CHANGE_PAGES, MAX_CHANGE_PAGE_BYTES};
 pub use channel::{BoundedChannel, BufferOutcome, ChannelFull, buffer_batch};
@@ -274,9 +270,6 @@ mod blob_fetch_tests;
 #[path = "../tests/unit/blob_http_tests.rs"]
 mod blob_http_tests;
 #[cfg(test)]
-#[path = "../tests/unit/blob_piece_tests.rs"]
-mod blob_piece_tests;
-#[cfg(test)]
 #[path = "../tests/unit/blob_placement_tests.rs"]
 mod blob_placement_tests;
 #[cfg(test)]
@@ -288,9 +281,6 @@ mod blob_plane_tests;
 #[cfg(test)]
 #[path = "../tests/unit/blob_pull_tests.rs"]
 mod blob_pull_tests;
-#[cfg(test)]
-#[path = "../tests/unit/blob_reassembly_tests.rs"]
-mod blob_reassembly_tests;
 #[cfg(test)]
 #[path = "../tests/unit/blob_routing_tests.rs"]
 mod blob_routing_tests;

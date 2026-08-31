@@ -784,9 +784,9 @@ async fn test_streaming_surfaces_a_local_commit_fault() {
 }
 
 #[tokio::test]
-async fn test_whole_fallback_catalogs_the_chunk_digest_for_the_next_fetch() {
+async fn test_an_uncatalogued_fetch_records_the_chunk_digests_for_the_next_fetch() {
     let (_dir, meta, blobs) = stores();
-    let content = Bytes::from_static(b"first fetch buffers the whole, and records its chunks");
+    let content = Bytes::from_static(b"the first fetch streams the ranges, and records their chunk digests");
     let digest = Digest::of(&content);
     seed_verified(&meta, &digest, "east", "filesystem", "east/a", content.len() as u64);
     let reader = reader(
@@ -808,7 +808,7 @@ async fn test_whole_fallback_catalogs_the_chunk_digest_for_the_next_fetch() {
 }
 
 #[tokio::test]
-async fn test_whole_fallback_serves_even_when_the_catalog_write_fails() {
+async fn test_an_uncatalogued_fetch_serves_even_when_the_catalog_write_fails() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("peryx.redb");
     let content = Bytes::from_static(b"served despite a read-only catalog");
@@ -832,4 +832,25 @@ async fn test_whole_fallback_serves_even_when_the_catalog_write_fails() {
 
     assert!(matches!(outcome, ReadThroughOutcome::Served(_)));
     assert!(blobs.head(&digest).await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn test_a_catalogued_fetch_keeps_the_stored_chunk_digests() {
+    let (_dir, meta, blobs) = stores();
+    let content = Bytes::from_static(b"the stored boundaries outlive the fetch that used them");
+    let digest = Digest::of(&content);
+    seed_verified(&meta, &digest, "east", "filesystem", "east/a", content.len() as u64);
+    seed_chunk_digest(&meta, &digest, &chunked(&content, 8));
+    let reader = reader(
+        &meta,
+        &blobs,
+        "home",
+        delegates([("east", serving(&content))]),
+        DEFAULT_READ_THROUGH_LIMITS,
+    );
+
+    let outcome = reader.read_through(&digest).await.unwrap();
+
+    assert!(matches!(outcome, ReadThroughOutcome::Served(_)));
+    assert_eq!(stored_chunk_digest(&meta, &digest), Some(chunked(&content, 8)));
 }

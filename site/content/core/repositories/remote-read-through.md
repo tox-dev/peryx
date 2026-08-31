@@ -34,17 +34,24 @@ The placement record supplies the expected length. A peer cannot change the allo
 The transport requests bounded byte ranges. A failed range can use the next source. Transient failures follow a bounded
 retry schedule; terminal responses end the attempt.
 
-The service reassembles the ranges and verifies the complete content against the requested digest. It then stages the
-bytes under their content address and verifies them again during publication. Failed verification leaves no local
-content and produces no response body. The owner may then use its configured fallback.
+Each completed range is written to an unpublished stage in offset order, and publication happens only once the stage
+hashes to the requested digest. Failed verification leaves no local content and produces no response body. The owner may
+then use its configured fallback.
+
+The first fetch of a digest records per-chunk digests taken from the same pass that published it. A later fetch splits
+the transfer on those recorded boundaries and verifies each range as it arrives, which names the peer that served
+corrupt bytes instead of failing the whole transfer.
 
 Remote read-through does not advertise a new placement. Placement publication has its own fenced lifecycle. A later
 request can still use the local bytes.
 
 ## Memory bound
 
-The current transfer path buffers one content item until complete verification. Per-peer concurrency limits bound the
-number of buffers. Staged content serves from disk.
+A transfer holds its range budget rather than the content item, whatever the item's size. Ranges are requested in offset
+order, at most four at a time and within a 32 MiB resident cap, and each one is written to the stage and released as
+soon as the ranges before it have been written. A range wider than the whole cap still transfers on its own, so one
+fetch holds at most the larger of its range size and 32 MiB. Concurrent misses multiply that ceiling by the number of
+fetches in flight, not by the size of the content. Staged content serves from disk.
 
 ## Configuration
 
@@ -67,6 +74,8 @@ max-delay-secs = 30
 max-attempts = 10
 ```
 
-Fields are optional. The `retry` table sets the reconnect schedule when present. Bounds that require a positive value
-reject zero during configuration loading. `cooldown-secs` controls the open-state delay. `probe-timeout-secs` bounds the
-single half-open request; expiry or cancellation begins another cooldown.
+Fields are optional. `chunk-bytes` sets the range size for a digest with no recorded per-chunk digests; once they are
+recorded they own the boundaries, because a chunk digest verifies only its own span. The `retry` table sets the
+reconnect schedule when present. Bounds that require a positive value reject zero during configuration loading.
+`cooldown-secs` controls the open-state delay. `probe-timeout-secs` bounds the single half-open request; expiry or
+cancellation begins another cooldown.

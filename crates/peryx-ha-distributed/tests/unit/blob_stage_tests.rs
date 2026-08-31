@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use peryx_storage::blob::{BlobStorage, ChunkedDigest, Digest};
+use peryx_storage::blob::{BlobStorage, CHUNK_BYTES, ChunkedDigest, Digest};
 use tokio::sync::Semaphore;
 
 use crate::blob::{BlobRequest, BlobTransport, ByteRange};
@@ -177,11 +177,11 @@ async fn test_pull_blob_staged_commits_the_pulled_bytes() {
     let log = log();
     let sources = [peer(0, SIXTEEN, &log), peer(1, SIXTEEN, &log)];
 
-    let receipt = pull_blob_staged(&blobs, &[&sources[0], &sources[1]], &digest, 16, None, budget(4, 4, 64))
+    let staged = pull_blob_staged(&blobs, &[&sources[0], &sources[1]], &digest, 16, None, budget(4, 4, 64))
         .await
         .unwrap();
 
-    assert_eq!((receipt.digest, receipt.size), (digest.clone(), 16));
+    assert_eq!((staged.receipt.digest, staged.receipt.size), (digest.clone(), 16));
     assert!(blobs.verify(&digest).await.unwrap());
 }
 
@@ -461,11 +461,11 @@ async fn test_pull_blob_staged_commits_an_empty_blob_without_any_range() {
     let log = log();
     let source = peer(0, b"", &log);
 
-    let receipt = pull_blob_staged(&blobs, &[&source], &digest, 0, None, DEFAULT_RANGED_PULL_BUDGET)
+    let staged = pull_blob_staged(&blobs, &[&source], &digest, 0, None, DEFAULT_RANGED_PULL_BUDGET)
         .await
         .unwrap();
 
-    assert_eq!((receipt.size, served(&log)), (0, Vec::new()));
+    assert_eq!((staged.receipt.size, served(&log)), (0, Vec::new()));
 }
 
 #[cfg(unix)]
@@ -503,4 +503,54 @@ async fn test_pull_blob_staged_reports_a_publication_the_local_store_refuses() {
 
     set_mode(&root, 0o755);
     assert!(matches!(error, StagedPullError::Stage(_)));
+}
+
+#[tokio::test]
+async fn test_pull_blob_staged_derives_a_chunk_catalog_for_an_uncatalogued_pull() {
+    let (_dir, blobs) = stores();
+    let digest = Digest::of(SIXTEEN);
+    let log = log();
+    let source = peer(0, SIXTEEN, &log);
+
+    let staged = pull_blob_staged(&blobs, &[&source], &digest, 16, None, budget(4, 4, 64))
+        .await
+        .unwrap();
+
+    assert_eq!(staged.chunks, Some(ChunkedDigest::of(SIXTEEN, CHUNK_BYTES)));
+}
+
+#[tokio::test]
+async fn test_pull_blob_staged_derives_no_catalog_when_it_verified_against_one() {
+    let (_dir, blobs) = stores();
+    let digest = Digest::of(SIXTEEN);
+    let log = log();
+    let source = peer(0, SIXTEEN, &log);
+
+    let staged = pull_blob_staged(
+        &blobs,
+        &[&source],
+        &digest,
+        16,
+        Some(&catalog(SIXTEEN, 6)),
+        budget(4, 4, 64),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(staged.chunks, None);
+}
+
+#[tokio::test]
+async fn test_pull_blob_staged_derives_the_catalog_from_the_assignment_that_verified() {
+    let (_dir, blobs) = stores();
+    let digest = Digest::of(SIXTEEN);
+    let log = log();
+    let corrupt = peer(0, b"cccccccccccccccc", &log);
+    let healthy = peer(1, SIXTEEN, &log);
+
+    let staged = pull_blob_staged(&blobs, &[&corrupt, &healthy], &digest, 16, None, budget(16, 4, 64))
+        .await
+        .unwrap();
+
+    assert_eq!(staged.chunks, Some(ChunkedDigest::of(SIXTEEN, CHUNK_BYTES)));
 }

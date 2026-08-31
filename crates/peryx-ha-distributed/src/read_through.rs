@@ -1,5 +1,5 @@
-//! Reads verified remote placements after a local miss. Trusted placement metadata bounds staging, and
-//! whole-blob verification guards publication.
+//! Reads verified remote placements after a local miss. Trusted placement metadata bounds staging, ranges
+//! stream into an unpublished stage, and whole-blob verification guards publication.
 //!
 //! The placement lifecycle alone creates local placement records because it owns their authority fence.
 
@@ -9,17 +9,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::{
-    BlobTransport, ChunkUnavailable, CircuitBreaker, CircuitConfig, CircuitPermit, DEFAULT_CIRCUIT,
-    DEFAULT_RECONNECT_POLICY, FetchPlan, PlacementDescriptor, PullError, ReconnectPolicy, Retry, TransportError,
-    chunk_ranges, plan_blob_fetch, pull_chunk_verified, pull_ranged, route_blob_placements,
+    BlobTransport, CircuitBreaker, CircuitConfig, CircuitPermit, DEFAULT_CIRCUIT, DEFAULT_RANGED_PULL_BUDGET,
+    DEFAULT_RECONNECT_POLICY, FetchPlan, PlacementDescriptor, RangedPullBudget, ReconnectPolicy, Retry,
+    StagedPullError, TransportError, plan_blob_fetch, pull_blob_staged, route_blob_placements,
 };
-use bytes::Bytes;
 use peryx_ha::{
     BlobAvailability, BlobAvailabilityError, BlobAvailabilityFailure, BlobPlacementRecord, BlobPlacementState,
     DataCenterId,
 };
 use peryx_identity::ArtifactDigest;
-use peryx_storage::blob::{BlobError, BlobErrorKind, BlobMetadata, BlobStorage, CHUNK_BYTES, ChunkedDigest, Digest};
+use peryx_storage::blob::{BlobError, BlobMetadata, BlobStorage, ChunkedDigest, Digest};
 use peryx_storage::meta::{MetaError, MetaStore};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +47,8 @@ pub struct ReadThroughLimits {
     pub concurrency: NonZeroUsize,
     /// Maximum bytes materialized by one ranged fetch.
     pub per_fetch_bytes: NonZeroU64,
+    /// Bytes requested per range when no catalog is stored. A stored catalog owns the boundaries instead,
+    /// because its chunk digests only verify its own spans.
     pub chunk_bytes: NonZeroUsize,
     pub max_fanout: NonZeroUsize,
     pub circuit: CircuitConfig,
@@ -69,13 +70,6 @@ impl Default for ReadThroughLimits {
     }
 }
 
-enum StreamOutcome {
-    Committed(BlobMetadata),
-    ChunkUnavailable(ChunkUnavailable),
-    /// Whole-digest verification failed after all chunks matched the catalog; no local blob remains.
-    WholeMismatch,
-}
-
 struct Source {
     data_center: String,
     transport: DcTransport,
@@ -94,7 +88,7 @@ pub struct RemotePlacementReader {
     local_dc: DataCenterId,
     delegates: HashMap<String, DcTransport>,
     circuit: CircuitBreaker,
-    chunk_bytes: NonZeroUsize,
+    budget: RangedPullBudget,
     max_fanout: NonZeroUsize,
     policy: ReconnectPolicy,
 }
@@ -119,7 +113,10 @@ impl RemotePlacementReader {
                 limits.circuit,
                 Arc::new(move || Duration::from_secs((clock)().max(0).unsigned_abs())),
             ),
-            chunk_bytes: limits.chunk_bytes,
+            budget: RangedPullBudget {
+                range_bytes: limits.chunk_bytes,
+                ..DEFAULT_RANGED_PULL_BUDGET
+            },
             max_fanout: limits.max_fanout,
             policy: limits.policy,
         }
@@ -143,19 +140,12 @@ impl RemotePlacementReader {
         let Some((sources, total_length)) = self.select(&routing.verified_remote) else {
             return Ok(ReadThroughOutcome::Unavailable);
         };
-        match self.meta.blob_chunk_digest(&artifact).map_err(ReadThroughError::Meta)? {
-            Some(chunked) => {
-                self.fetch_streaming(&self.blobs, digest, &sources, total_length, &chunked)
-                    .await
-            }
-            None => {
-                self.fetch(&self.meta, &artifact, &self.blobs, digest, &sources, total_length)
-                    .await
-            }
-        }
+        let catalog = self.meta.blob_chunk_digest(&artifact).map_err(ReadThroughError::Meta)?;
+        self.fetch(&artifact, digest, &sources, total_length, catalog.as_ref())
+            .await
     }
 
-    /// Selects at most one reachable source per data center in canonical placement order. The reassembly
+    /// Selects at most one reachable source per data center in canonical placement order. The transfer
     /// length comes from the selected verified placement record.
     fn select(&self, verified_remote: &[BlobPlacementRecord]) -> Option<(Vec<Source>, usize)> {
         let sizes: HashMap<&str, u64> = verified_remote
@@ -194,18 +184,21 @@ impl RemotePlacementReader {
         Some((sources, total_length))
     }
 
-    /// Without cataloged chunk digests, verifies and commits the whole blob before recording chunk
-    /// digests for later streaming reads.
+    /// Ranges stream into an unpublished stage under the pull budget, so a first fetch of a multi-gigabyte
+    /// artifact holds the budget rather than the artifact. Nothing becomes visible before the whole digest
+    /// verifies, and a pull that had no catalog records the digests the pass derived so later reads can
+    /// verify each range as it arrives.
+    ///
+    /// Transport exhaustion retries from a fresh stage; a terminal range failure or a digest mismatch
+    /// returns [`ReadThroughOutcome::Unavailable`] with nothing published.
     async fn fetch(
         &self,
-        meta: &MetaStore,
         artifact: &ArtifactDigest,
-        blobs: &BlobStorage,
         digest: &Digest,
         sources: &[Source],
         total_length: usize,
+        catalog: Option<&ChunkedDigest>,
     ) -> Result<ReadThroughOutcome, ReadThroughError> {
-        let ranges = chunk_ranges(total_length, self.chunk_bytes.get());
         let mut attempt = 1u32;
         loop {
             let mut admitted = self.admit(sources);
@@ -214,55 +207,21 @@ impl RemotePlacementReader {
             }
             let transports: Vec<&(dyn BlobTransport + Send + Sync)> =
                 admitted.iter().map(|source| source.source.transport.as_ref()).collect();
-            match pull_ranged(&transports, digest, &ranges, total_length, digest).await {
-                Ok(bytes) => {
+            let pull = pull_blob_staged(&self.blobs, &transports, digest, total_length, catalog, self.budget).await;
+            match pull {
+                Ok(staged) => {
                     admitted[0].success();
-                    let chunked = ChunkedDigest::of(&bytes, CHUNK_BYTES);
-                    let metadata = self.commit(blobs, digest, bytes).await?;
-                    catalog_chunks(meta, artifact, digest, &chunked);
-                    return Ok(ReadThroughOutcome::Served(metadata));
-                }
-                Err(PullError::Exhausted { failures, .. }) => {
-                    record_failures(&mut admitted, &failures);
-                    match self.policy.on_error(representative(&failures), attempt) {
-                        Retry::After(delay) => {
-                            tokio::time::sleep(delay).await;
-                            attempt += 1;
-                        }
-                        Retry::GiveUp { .. } => return Ok(ReadThroughOutcome::Unavailable),
+                    if let Some(chunks) = &staged.chunks {
+                        catalog_chunks(&self.meta, artifact, digest, chunks);
                     }
+                    return Ok(ReadThroughOutcome::Served(BlobMetadata {
+                        bytes: staged.receipt.size,
+                        modified: None,
+                    }));
                 }
-                Err(PullError::Piece(_) | PullError::Reassembly(_)) => return Ok(ReadThroughOutcome::Unavailable),
-            }
-        }
-    }
-
-    /// Verifies each chunk before staging it. Transport exhaustion retries from a new stage; terminal
-    /// chunk failure or whole-digest mismatch returns [`ReadThroughOutcome::Unavailable`].
-    async fn fetch_streaming(
-        &self,
-        blobs: &BlobStorage,
-        digest: &Digest,
-        sources: &[Source],
-        total_length: usize,
-        chunked: &ChunkedDigest,
-    ) -> Result<ReadThroughOutcome, ReadThroughError> {
-        let mut attempt = 1u32;
-        loop {
-            let mut admitted = self.admit(sources);
-            if admitted.is_empty() {
-                return Ok(ReadThroughOutcome::Unavailable);
-            }
-            match self
-                .stream_chunks(blobs, digest, chunked, total_length, &admitted)
-                .await?
-            {
-                StreamOutcome::Committed(metadata) => {
-                    admitted[0].success();
-                    return Ok(ReadThroughOutcome::Served(metadata));
-                }
-                StreamOutcome::WholeMismatch => return Ok(ReadThroughOutcome::Unavailable),
-                StreamOutcome::ChunkUnavailable(unavailable) => {
+                Err(StagedPullError::Stage(error)) => return Err(ReadThroughError::Blob(error)),
+                Err(StagedPullError::DigestMismatch { .. }) => return Ok(ReadThroughOutcome::Unavailable),
+                Err(StagedPullError::RangeUnavailable(unavailable)) => {
                     let failures = unavailable.transport_failures();
                     record_failures(&mut admitted, &failures);
                     if failures.is_empty() {
@@ -278,54 +237,6 @@ impl RemotePlacementReader {
                 }
             }
         }
-    }
-
-    /// Holds one chunk in memory at a time. Commit verifies the whole digest in case the catalog and a
-    /// source agree on bytes for different content.
-    async fn stream_chunks(
-        &self,
-        blobs: &BlobStorage,
-        digest: &Digest,
-        chunked: &ChunkedDigest,
-        total_length: usize,
-        admitted: &[AdmittedSource<'_>],
-    ) -> Result<StreamOutcome, ReadThroughError> {
-        let transports: Vec<&(dyn BlobTransport + Send + Sync)> =
-            admitted.iter().map(|source| source.source.transport.as_ref()).collect();
-        let mut write = blobs.begin().await.map_err(ReadThroughError::Blob)?;
-        for index in 0..chunked.len() {
-            match pull_chunk_verified(&transports, digest, chunked, index, total_length as u64).await {
-                Ok(bytes) => write.write_chunk(bytes).await.map_err(ReadThroughError::Blob)?,
-                Err(unavailable) => return Ok(StreamOutcome::ChunkUnavailable(unavailable)),
-            }
-        }
-        match write.commit(digest).await {
-            Ok(receipt) => Ok(StreamOutcome::Committed(BlobMetadata {
-                bytes: receipt.size,
-                modified: None,
-            })),
-            Err(error) if error.kind() == BlobErrorKind::DigestMismatch => Ok(StreamOutcome::WholeMismatch),
-            Err(error) => Err(ReadThroughError::Blob(error)),
-        }
-    }
-
-    /// Whole-digest verification must pass before staged bytes are published.
-    async fn commit(
-        &self,
-        blobs: &BlobStorage,
-        digest: &Digest,
-        bytes: Bytes,
-    ) -> Result<BlobMetadata, ReadThroughError> {
-        let mut pending = blobs.begin().await.map_err(ReadThroughError::Blob)?;
-        pending.write_chunk(bytes).await.map_err(ReadThroughError::Blob)?;
-        pending
-            .commit(digest)
-            .await
-            .map(|receipt| BlobMetadata {
-                bytes: receipt.size,
-                modified: None,
-            })
-            .map_err(ReadThroughError::Blob)
     }
 
     fn admit<'a>(&self, sources: &'a [Source]) -> Vec<AdmittedSource<'a>> {

@@ -59,11 +59,11 @@ async fn test_pull_blob_staged_holds_its_byte_budget_not_the_whole_blob() {
     };
     let baseline = resident();
 
-    let receipt = pull_blob_staged(&blobs, &[&source], &digest, BLOB_BYTES, None, budget)
+    let staged = pull_blob_staged(&blobs, &[&source], &digest, BLOB_BYTES, None, budget)
         .await
         .unwrap();
 
     let observed = peak.load(Ordering::Relaxed) - baseline;
-    assert_eq!(receipt.size, BLOB_BYTES as u64);
+    assert_eq!(staged.receipt.size, BLOB_BYTES as u64);
     assert!(observed < MAX_RESIDENT_BYTES);
 }

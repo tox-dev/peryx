@@ -12,7 +12,9 @@ use std::num::NonZeroUsize;
 use bytes::Bytes;
 use futures_util::StreamExt as _;
 use futures_util::stream::FuturesUnordered;
-use peryx_storage::blob::{BlobError, BlobErrorKind, BlobStorage, ChunkedDigest, Digest, PlacementReceipt};
+use peryx_storage::blob::{
+    BlobError, BlobErrorKind, BlobStorage, CHUNK_BYTES, ChunkedDigest, ChunkedDigestBuilder, Digest, PlacementReceipt,
+};
 
 use crate::blob::{BlobRequest, BlobTransport, ByteRange};
 use crate::blob_pull::{ChunkFailure, ChunkUnavailable, chunk_ranges};
@@ -40,6 +42,16 @@ pub const DEFAULT_RANGED_PULL_BUDGET: RangedPullBudget = RangedPullBudget {
     max_resident_bytes: NonZeroUsize::new(4 * RANGE_BYTES).expect("32 MiB is non-zero"),
 };
 
+/// A published pull.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StagedPull {
+    pub receipt: PlacementReceipt,
+    /// Chunk digests derived from the staged bytes, present exactly when the pull started without a
+    /// trusted catalog. They come from the same pass that published the blob, so they describe the bytes
+    /// the whole digest verified rather than whatever the store holds when a later reader asks.
+    pub chunks: Option<ChunkedDigest>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum StagedPullError {
     #[error("no source served the {} bytes at offset {}", .0.range.length, .0.range.offset)]
@@ -56,8 +68,8 @@ pub enum StagedPullError {
 /// `total_length` bounds the transfer and must come from a verified placement record rather than a peer
 /// advertisement. `catalog` supplies trusted per-chunk digests when the local store holds them; each
 /// range is then verified on arrival and a corrupt source is named. Without it a range is trusted only
-/// as far as its length, and a whole-digest failure retries under a rotated assignment because the
-/// mismatch names no source.
+/// as far as its length, a whole-digest failure retries under a rotated assignment because the mismatch
+/// names no source, and the pass derives the chunk digests the next ranged read will verify against.
 ///
 /// # Errors
 /// [`StagedPullError::RangeUnavailable`] when no source serves a range, [`StagedPullError::DigestMismatch`]
@@ -70,13 +82,13 @@ pub async fn pull_blob_staged<T: BlobTransport + ?Sized>(
     total_length: usize,
     catalog: Option<&ChunkedDigest>,
     budget: RangedPullBudget,
-) -> Result<PlacementReceipt, StagedPullError> {
+) -> Result<StagedPull, StagedPullError> {
     let ranges = plan_ranges(total_length, catalog, budget.range_bytes);
     // Every source already matched a trusted chunk digest, so a rotation would restage the same bytes.
     let attempts = if catalog.is_some() { 1 } else { sources.len().max(1) };
     for rotation in 0..attempts {
-        if let Some(receipt) = stage_pass(blobs, sources, digest, &ranges, catalog, budget, rotation).await? {
-            return Ok(receipt);
+        if let Some(staged) = stage_pass(blobs, sources, digest, &ranges, catalog, budget, rotation).await? {
+            return Ok(staged);
         }
     }
     Err(StagedPullError::DigestMismatch { attempts })
@@ -91,8 +103,9 @@ async fn stage_pass<T: BlobTransport + ?Sized>(
     catalog: Option<&ChunkedDigest>,
     budget: RangedPullBudget,
     rotation: usize,
-) -> Result<Option<PlacementReceipt>, StagedPullError> {
+) -> Result<Option<StagedPull>, StagedPullError> {
     let mut stage = blobs.begin().await.map_err(StagedPullError::Stage)?;
+    let mut derived = catalog.is_none().then(|| ChunkedDigestBuilder::new(CHUNK_BYTES));
     let mut dispatched = 0;
     let mut next_write = 0;
     let mut resident = 0;
@@ -125,12 +138,18 @@ async fn stage_pass<T: BlobTransport + ?Sized>(
         window.insert(index, bytes);
         while let Some(bytes) = window.remove(&next_write) {
             resident -= bytes.len();
+            if let Some(builder) = &mut derived {
+                builder.update(&bytes);
+            }
             stage.write_chunk(bytes).await.map_err(StagedPullError::Stage)?;
             next_write += 1;
         }
     }
     match stage.commit(digest).await {
-        Ok(receipt) => Ok(Some(receipt)),
+        Ok(receipt) => Ok(Some(StagedPull {
+            receipt,
+            chunks: derived.map(ChunkedDigestBuilder::finish),
+        })),
         Err(error) if error.kind() == BlobErrorKind::DigestMismatch => Ok(None),
         Err(error) => Err(StagedPullError::Stage(error)),
     }
