@@ -1,4 +1,4 @@
-use crate::model::UiSnapshot;
+use crate::model::{UiSnapshot, UiStats};
 
 #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
 use super::RequiredOption;
@@ -168,12 +168,47 @@ fn required<T>(value: Option<T>) -> Result<T, super::LoaderError> {
     value.ok_or(super::LoaderError::Invalid(super::LoaderEndpoint::Status))
 }
 
+/// A status snapshot and the usage counters read in the same refresh.
+///
+/// The usage half carries its own outcome because `/+stats` is operator-scoped: a reader without
+/// that scope is answered `401` on every poll, and failing the pair on it would leave the whole
+/// dashboard blank rather than show the indexes it is allowed to see.
+pub type UiOverview = (UiSnapshot, Result<UiStats, super::LoaderError>);
+
+/// The dashboard snapshot and the usage counters measured beside it.
+///
+/// Status and usage are separate endpoints that both keep counting while a page is open, so they
+/// are read as one pair: an index card must never report listings counted seconds apart from the
+/// accepted-request total printed above it, a combination the server never held. A pair whose
+/// usage half failed reports that failure instead of the counters, never counters from an earlier
+/// refresh.
+///
+/// # Errors
+///
+/// Returns a typed error when the status endpoint cannot provide a valid document. Nothing is
+/// published then, so the caller keeps the last pair it did publish.
+pub async fn load_overview() -> Result<UiOverview, super::LoaderError> {
+    let (snapshot, usage) = futures_util::future::join(load_snapshot(), super::load_stats(None, None)).await;
+    Ok((snapshot?, usage))
+}
+
+/// The admin snapshot and the usage counters measured beside it, paired as [`load_overview`] pairs
+/// them.
+///
+/// # Errors
+///
+/// Returns a typed error when the status endpoint cannot provide a valid document.
+pub async fn load_admin_overview() -> Result<UiOverview, super::LoaderError> {
+    let (snapshot, usage) = futures_util::future::join(load_admin_snapshot(), super::load_stats(None, None)).await;
+    Ok((snapshot?, usage))
+}
+
 /// The dashboard snapshot.
 ///
 /// # Errors
 ///
 /// Returns a typed error when the status endpoint cannot provide a valid document.
-pub async fn load_snapshot() -> Result<UiSnapshot, super::LoaderError> {
+async fn load_snapshot() -> Result<UiSnapshot, super::LoaderError> {
     #[cfg(feature = "ssr")]
     {
         Ok(crate::ssr::snapshot().await)
@@ -198,7 +233,7 @@ pub async fn load_snapshot() -> Result<UiSnapshot, super::LoaderError> {
 /// # Errors
 ///
 /// Returns a typed error when the status endpoint cannot provide a valid document.
-pub async fn load_admin_snapshot() -> Result<UiSnapshot, super::LoaderError> {
+async fn load_admin_snapshot() -> Result<UiSnapshot, super::LoaderError> {
     #[cfg(feature = "ssr")]
     {
         Ok(crate::ssr::admin_snapshot().await)

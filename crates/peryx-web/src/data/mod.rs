@@ -27,7 +27,7 @@ pub use search::load_search;
 #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
 pub use stats::load_analytics;
 pub use stats::load_stats;
-pub use status::{load_admin_snapshot, load_snapshot};
+pub use status::{UiOverview, load_admin_overview, load_overview};
 pub use topology::load_topology;
 #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
 pub use topology::{TopologyStream, subscribe_topology};

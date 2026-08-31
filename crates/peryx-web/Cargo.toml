@@ -66,6 +66,7 @@ web-sys = { workspace = true, optional = true, features = [
     "XmlHttpRequestUpload",
 ] }
 base64 = { workspace = true, optional = true }
+futures-util.workspace = true
 peryx-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -78,7 +79,6 @@ minicov = { workspace = true, optional = true }
 [dev-dependencies]
 any_spawner = "0.3"
 async-trait.workspace = true
-futures-util.workspace = true
 peryx-policy.workspace = true
 peryx-events.workspace = true
 peryx-identity.workspace = true

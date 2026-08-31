@@ -1824,7 +1824,7 @@ test("dashboard preserves and recovers its last status snapshot", async ({
     });
   });
   await page.route("**/+stats**", (route) =>
-    route.fulfill({ json: statsRoutes(3) }),
+    route.fulfill({ json: statsRoutes(phase === "initial" ? 3 : 9) }),
   );
   await goto(page, "/login");
   await openClientPath(page, "/");
@@ -1842,6 +1842,127 @@ test("dashboard preserves and recovers its last status snapshot", async ({
   phase = "recovery";
   await advanceToRequest(page, "/+status");
   await expect(page.locator(".metrics-group").first()).toContainText("42");
+  await expect(page.locator(".card-usage")).toContainText("9 reads");
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
+test("dashboard reports a failed usage half without stale counters", async ({
+  page,
+}) => {
+  await page.clock.install();
+  let phase = "initial";
+  await page.route("**/+status", (route) =>
+    route.fulfill({ json: statusDocument(phase === "initial" ? 41 : 42) }),
+  );
+  await page.route("**/+stats**", (route) => {
+    if (phase === "failure") return route.fulfill({ status: 500 });
+    return route.fulfill({
+      json: statsRoutes(phase === "initial" ? 3 : 9),
+    });
+  });
+  await goto(page, "/login");
+  await openClientPath(page, "/");
+  await expect(page.locator(".tagline")).toContainText("vbrowser-41");
+  await expect(page.locator(".card-usage")).toContainText("3 reads");
+
+  phase = "failure";
+  await advanceToRequest(page, "/+stats");
+  await expect(page.getByRole("alert")).toHaveText(
+    "/+stats returned HTTP 500.",
+  );
+  await expect(page.locator(".tagline")).toContainText("vbrowser-42");
+  await expect(page.locator(".metrics-group").first()).toContainText("42");
+  await expect(page.locator(".card-usage")).toHaveCount(0);
+
+  phase = "recovery";
+  await advanceToRequest(page, "/+stats");
+  await expect(page.locator(".tagline")).toContainText("vbrowser-42");
+  await expect(page.locator(".metrics-group").first()).toContainText("42");
+  await expect(page.locator(".card-usage")).toContainText("9 reads");
+  await expect(page.getByRole("alert")).toHaveCount(0);
+});
+
+test("dashboard renders its first snapshot when usage is out of reach", async ({
+  page,
+}) => {
+  await page.route("**/+status", (route) =>
+    route.fulfill({ json: statusDocument(41) }),
+  );
+  await page.route("**/+stats**", (route) => route.fulfill({ status: 401 }));
+  await goto(page, "/login");
+  await openClientPath(page, "/");
+  await expect(page.locator(".card .card-title")).toHaveText("cache");
+  await expect(page.locator(".metrics-group").first()).toContainText("41");
+  await expect(page.getByRole("alert")).toHaveText(
+    "/+stats returned HTTP 401.",
+  );
+  await expect(page.locator(".card-usage")).toHaveCount(0);
+});
+
+test("dashboard skips a refresh while the previous one is outstanding", async ({
+  page,
+}) => {
+  await page.clock.install();
+  let statusRequests = 0;
+  let usage = null;
+  await page.route("**/+status", (route) => {
+    statusRequests += 1;
+    return route.fulfill({ json: statusDocument(40 + statusRequests) });
+  });
+  await page.route("**/+stats**", async (route) => {
+    if (usage) await usage.promise;
+    await route.fulfill({ json: statsRoutes(3) });
+  });
+  await goto(page, "/login");
+  await openClientPath(page, "/");
+  await expect(page.locator(".tagline")).toContainText("vbrowser-41");
+
+  usage = Promise.withResolvers();
+  await advanceToRequest(page, "/+status");
+  await page.clock.fastForward(5_000);
+  await page.clock.fastForward(5_000);
+  usage.resolve();
+  await expect(page.locator(".tagline")).toContainText("vbrowser-42");
+  expect(statusRequests).toBe(2);
+
+  await advanceToRequest(page, "/+status");
+  await expect(page.locator(".tagline")).toContainText("vbrowser-43");
+  expect(statusRequests).toBe(3);
+});
+
+test("admin status reports a failed usage half without stale counters", async ({
+  page,
+}) => {
+  await page.clock.install();
+  let phase = "initial";
+  await page.route("**/+status", (route) =>
+    route.fulfill({ json: statusDocument(phase === "initial" ? 41 : 42) }),
+  );
+  await page.route("**/+stats**", (route) => {
+    if (phase === "failure") return route.fulfill({ status: 500 });
+    return route.fulfill({
+      json: statsRoutes(phase === "initial" ? 3 : 9),
+    });
+  });
+  await goto(page, "/login");
+  await openClientPath(page, "/admin/status");
+  const usage = page.locator(".ops-table").filter({ hasText: "Refreshes" });
+  const reads = usage.locator("tbody td").nth(2);
+  await expect(page.locator(".metrics-group").first()).toContainText("41");
+  await expect(reads).toHaveText("3");
+
+  phase = "failure";
+  await advanceToRequest(page, "/+stats");
+  await expect(page.getByRole("alert")).toHaveText(
+    "/+stats returned HTTP 500.",
+  );
+  await expect(page.locator(".metrics-group").first()).toContainText("42");
+  await expect(usage).toHaveCount(0);
+
+  phase = "recovery";
+  await advanceToRequest(page, "/+stats");
+  await expect(page.locator(".metrics-group").first()).toContainText("42");
+  await expect(reads).toHaveText("9");
   await expect(page.getByRole("alert")).toHaveCount(0);
 });
 

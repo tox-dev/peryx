@@ -41,14 +41,32 @@ pub use topology::AvailabilityTopology;
 pub use trash::Trash;
 
 /// Refresh browser data every five seconds after hydration.
+///
+/// A tick that lands while the previous load is still outstanding is skipped: refetching then
+/// would stack a second request on a slow endpoint and let a later generation overtake an earlier
+/// one.
+///
+/// The interval outlives the page that started it, so a tick can arrive after the route has been
+/// left and the resource disposed. Reading a disposed resource panics, and there is nothing left
+/// to refresh, so a disposed resource skips the tick as well.
 #[cfg(all(not(feature = "ssr"), feature = "hydrate"))]
 fn start_refresh<T>(resource: Resource<Result<T, LoaderError>>)
 where
     T: serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static,
 {
     use std::time::Duration;
+
+    use futures_util::FutureExt as _;
+
     Effect::new(move |_| {
-        set_interval(move || resource.refetch(), Duration::from_secs(5));
+        set_interval(
+            move || {
+                if !resource.is_disposed() && resource.ready().now_or_never().is_some() {
+                    resource.refetch();
+                }
+            },
+            Duration::from_secs(5),
+        );
     });
 }
 
@@ -86,6 +104,16 @@ fn retain<T: Clone + Send + Sync + 'static>(
         Err(error) => state.error = Some(error.to_string()),
     });
     state.get_untracked()
+}
+
+/// The counters to render from the usage half of a published pair, and the message to report when
+/// that half did not answer. The counters are dropped rather than carried over, so a page never
+/// prints usage measured in a refresh other than the snapshot beside it.
+fn usage_or_error(usage: Result<UiStats, LoaderError>) -> (Option<UiStats>, Option<String>) {
+    match usage {
+        Ok(usage) => (Some(usage), None),
+        Err(error) => (None, Some(error.to_string())),
+    }
 }
 
 /// The per-ecosystem metric groups: one labelled block per ecosystem, so the reader can tell a

@@ -3,7 +3,7 @@ use leptos::prelude::*;
 use crate::data::{LoaderEndpoint, LoaderError};
 use crate::model::{UiCounters, UiEcosystemSummary, UiMetricFamily, UiSnapshot, UiStats};
 
-use super::{ErrorMessage, LoadState, ecosystem_stats, human_size, optional_counters_for, retain};
+use super::{ErrorMessage, LoadState, ecosystem_stats, human_size, optional_counters_for, retain, usage_or_error};
 
 #[test]
 fn ecosystem_stats_render_declared_and_missing_families() {
@@ -69,6 +69,30 @@ fn load_state_retains_value_during_failure() {
             (Some("available"), Some("Request to /+status failed."))
         );
     });
+}
+
+#[test]
+fn usage_or_error_hands_a_read_half_to_the_page() {
+    let usage = UiStats {
+        totals: UiCounters {
+            pages: 7,
+            ..UiCounters::default()
+        },
+        ..UiStats::default()
+    };
+    assert_eq!(usage_or_error(Ok(usage.clone())), (Some(usage), None));
+}
+
+#[test]
+fn usage_or_error_replaces_a_failed_half_with_its_message() {
+    let failed = LoaderError::Status {
+        endpoint: LoaderEndpoint::Stats,
+        status: 503,
+    };
+    assert_eq!(
+        usage_or_error(Err(failed)),
+        (None, Some("/+stats returned HTTP 503.".to_owned()))
+    );
 }
 
 #[test]

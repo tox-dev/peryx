@@ -1,30 +1,35 @@
 use leptos::prelude::*;
 
-use super::{ErrorMessage, LoadState, ecosystem_stats, human_size, optional_counters_for, retain, start_refresh};
-use crate::data::{load_snapshot, load_stats};
+use super::{
+    ErrorMessage, LoadState, ecosystem_stats, human_size, optional_counters_for, retain, start_refresh, usage_or_error,
+};
+use crate::data::{UiOverview, load_overview};
 use crate::model::{UiCounters, UiIndex, UiSnapshot, UiStats};
 use crate::url::{browse_index_url, stats_index_url};
 
 /// The landing dashboard: identity, live counters, and the configured indexes with their usage.
 #[component]
 pub fn Dashboard() -> impl IntoView {
-    let snapshot = Resource::new(|| (), |()| load_snapshot());
-    let stats = Resource::new(|| (), |()| load_stats(None, None));
-    let loaded_snapshot = RwSignal::new(LoadState::default());
-    let loaded_stats = RwSignal::new(LoadState::default());
-    start_refresh(snapshot);
-    start_refresh(stats);
+    let overview = Resource::new(|| (), |()| load_overview());
+    let loaded = RwSignal::new(LoadState::default());
+    start_refresh(overview);
     view! {
         <section class="page">
-            <StoopHero snapshot=loaded_snapshot />
+            <StoopHero overview=loaded />
             <Suspense fallback=|| view! { <StoopLoader /> }>
                 {move || Suspend::new(async move {
-                    let snapshot = retain(loaded_snapshot, snapshot.await);
-                    let stats = retain(loaded_stats, stats.await);
+                    let loaded = retain(loaded, overview.await);
                     view! {
-                        {snapshot.error.map(|message| view! { <ErrorMessage message /> })}
-                        {stats.error.map(|message| view! { <ErrorMessage message /> })}
-                        {snapshot.value.map(|data| view! { <DashboardBody data usage=stats.value /> })}
+                        {loaded.error.map(|message| view! { <ErrorMessage message /> })}
+                        {loaded
+                            .value
+                            .map(|(data, usage)| {
+                                let (usage, error) = usage_or_error(usage);
+                                view! {
+                                    {error.map(|message| view! { <ErrorMessage message /> })}
+                                    <DashboardBody data usage />
+                                }
+                            })}
                     }
                 })}
             </Suspense>
@@ -39,7 +44,7 @@ pub fn Dashboard() -> impl IntoView {
 /// refetch every few seconds would otherwise rebuild this `<svg>`, and a fresh node restarts the
 /// once-on-load dive, so the falcon would re-dive on every poll.
 #[component]
-fn StoopHero(snapshot: RwSignal<LoadState<UiSnapshot>>) -> impl IntoView {
+fn StoopHero(overview: RwSignal<LoadState<UiOverview>>) -> impl IntoView {
     view! {
         <div class="hero-brand">
             <span class="stoop-stage">
@@ -50,7 +55,7 @@ fn StoopHero(snapshot: RwSignal<LoadState<UiSnapshot>>) -> impl IntoView {
                 <span class="wordmark">"peryx"</span>
                 <span class="tagline">
                     "the artifact vault · v"
-                    {move || snapshot.get().value.map(|snapshot| snapshot.version)}
+                    {move || overview.get().value.map(|(snapshot, _)| snapshot.version)}
                 </span>
             </span>
         </div>

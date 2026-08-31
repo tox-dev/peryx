@@ -1,28 +1,33 @@
 use leptos::prelude::*;
 
-use super::{ErrorMessage, LoadState, ecosystem_stats, human_size, optional_counters_for, retain, start_refresh};
-use crate::data::{load_admin_snapshot, load_stats};
+use super::{
+    ErrorMessage, LoadState, ecosystem_stats, human_size, optional_counters_for, retain, start_refresh, usage_or_error,
+};
+use crate::data::load_admin_overview;
 use crate::model::{UiCounters, UiIndex, UiRecentWrite, UiSnapshot, UiStats, UiSummaryStatus};
 use crate::url::{browse_index_url, stats_index_url};
 
 #[component]
 pub fn AdminStatus() -> impl IntoView {
-    let snapshot = Resource::new(|| (), |()| load_admin_snapshot());
-    let stats = Resource::new(|| (), |()| load_stats(None, None));
-    let loaded_snapshot = RwSignal::new(LoadState::default());
-    let loaded_stats = RwSignal::new(LoadState::default());
-    start_refresh(snapshot);
-    start_refresh(stats);
+    let overview = Resource::new(|| (), |()| load_admin_overview());
+    let loaded = RwSignal::new(LoadState::default());
+    start_refresh(overview);
     view! {
         <section class="page ops-page">
             <Suspense fallback=|| view! { <p class="dim">"loading"</p> }>
                 {move || Suspend::new(async move {
-                    let snapshot = retain(loaded_snapshot, snapshot.await);
-                    let stats = retain(loaded_stats, stats.await);
+                    let loaded = retain(loaded, overview.await);
                     view! {
-                        {snapshot.error.map(|message| view! { <ErrorMessage message /> })}
-                        {stats.error.map(|message| view! { <ErrorMessage message /> })}
-                        {snapshot.value.map(|data| view! { <AdminStatusBody data usage=stats.value /> })}
+                        {loaded.error.map(|message| view! { <ErrorMessage message /> })}
+                        {loaded
+                            .value
+                            .map(|(data, usage)| {
+                                let (usage, error) = usage_or_error(usage);
+                                view! {
+                                    {error.map(|message| view! { <ErrorMessage message /> })}
+                                    <AdminStatusBody data usage />
+                                }
+                            })}
                     }
                 })}
             </Suspense>
