@@ -688,6 +688,9 @@ async fn test_control_transfer_and_epoch_advance_reject_a_live_writer() {
         ControlCommand::AdvanceEpoch {
             authority: "proj".to_owned(),
         },
+        ControlCommand::ForgetAuthority {
+            authority: "proj".to_owned(),
+        },
     ] {
         assert!(matches!(
             group.submit(None, command).await,
@@ -695,6 +698,23 @@ async fn test_control_transfer_and_epoch_advance_reject_a_live_writer() {
         ));
     }
     group.finish_epoch_write(&lease).await.unwrap();
+}
+
+#[tokio::test]
+async fn test_a_forget_command_drops_the_home_and_a_repeat_reports_no_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned()));
+    assert_eq!(group.claim_home("proj").await.unwrap(), east_claim(1));
+    let forget = ControlCommand::ForgetAuthority {
+        authority: "proj".to_owned(),
+    };
+
+    let dropped = group.submit(None, forget.clone()).await.unwrap();
+
+    assert_eq!(dropped.receipt.outcome, CommandOutcome::Committed);
+    assert_eq!(group.committed_epoch("proj").await, 0);
+    let repeated = group.submit(None, forget).await.unwrap();
+    assert_eq!(repeated.receipt.outcome, CommandOutcome::NoChange);
 }
 
 #[tokio::test]

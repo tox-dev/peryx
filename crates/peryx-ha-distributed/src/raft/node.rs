@@ -199,6 +199,9 @@ fn stamp_leader_time(command: OwnershipCommand, now_unix: i64) -> OwnershipComma
             new_home,
             now_unix,
         },
+        OwnershipCommand::ForgetAuthority { authority, .. } => {
+            OwnershipCommand::ForgetAuthority { authority, now_unix }
+        }
         OwnershipCommand::AcquireSingletonLease { job, holder, .. } => OwnershipCommand::AcquireSingletonLease {
             job,
             holder,

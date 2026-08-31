@@ -161,6 +161,22 @@ async fn test_client_write_rpc_stamps_lease_times_with_the_leader_clock() {
         response.unwrap().data,
         OwnershipResponse::Applied(OwnershipEffect::Rejected(Rejection::WritesInFlight))
     );
+
+    let body = Bytes::from(
+        serde_json::to_vec(&OwnershipCommand::ForgetAuthority {
+            authority: AuthorityKey("proj".to_owned()),
+            now_unix: i64::MAX,
+        })
+        .unwrap(),
+    );
+    let reply = handler.handle(RaftRpc::ClientWrite, body).await.unwrap();
+    let response: Result<ClientWriteResponse<TypeConfig>, RaftError<u64, ClientWriteError<u64, PeryxNode>>> =
+        serde_json::from_slice(&reply).unwrap();
+    assert_eq!(
+        response.unwrap().data,
+        OwnershipResponse::Applied(OwnershipEffect::Rejected(Rejection::WritesInFlight)),
+        "a forget carrying its own far-future clock would have expired the lease and removed the record"
+    );
 }
 
 #[tokio::test]

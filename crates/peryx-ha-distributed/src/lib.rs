@@ -159,7 +159,7 @@ pub use multi_pull::{PullRound, pull_round};
 pub use openapi::availability_paths;
 pub use ownership::{
     AppliedMeta, Assignment, AssignmentCause, ControlRejection, ControlResolution, DatacenterId, OwnershipCommand,
-    OwnershipEffect, OwnershipError, OwnershipState, Rejection, TransferRecord, control_outcome,
+    OwnershipEffect, OwnershipError, OwnershipState, Rejection, control_outcome,
 };
 pub use peer::{
     BatchFrame, BatchRequest, DEFAULT_TRANSFER_LIMITS, FrontierSync, LoopbackPeer, LoopbackTransport, PeerFault,

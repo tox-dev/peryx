@@ -36,6 +36,12 @@ fn move_home(new_home: &str) -> ControlCommand {
     }
 }
 
+fn forget_authority() -> ControlCommand {
+    ControlCommand::ForgetAuthority {
+        authority: "proj".to_owned(),
+    }
+}
+
 fn add_learner() -> ControlCommand {
     ControlCommand::AddLearner {
         datacenter: "west".to_owned(),
@@ -187,6 +193,35 @@ fn test_a_transfer_records_its_receipt_and_moves_the_home() {
         )))
     );
     assert_eq!(state.home(&key("proj")), Some(&DatacenterId("west".to_owned())));
+}
+
+#[test]
+fn test_forgetting_a_homed_authority_records_its_receipt_and_drops_the_record() {
+    let mut state = homed();
+
+    let effect = state.apply(&attempt("k1", forget_authority()), META);
+
+    assert_eq!(
+        effect,
+        resolved(ControlResolution::Committed(authority_receipt(
+            CommandOutcome::Committed
+        )))
+    );
+    assert_eq!(state.epoch(&key("proj")), AuthorityEpoch(0));
+}
+
+#[test]
+fn test_forgetting_an_authority_the_group_never_homed_records_a_no_change_receipt() {
+    let mut state = OwnershipState::new();
+
+    let effect = state.apply(&attempt("k1", forget_authority()), META);
+
+    assert_eq!(
+        effect,
+        resolved(ControlResolution::Committed(authority_receipt(
+            CommandOutcome::NoChange
+        )))
+    );
 }
 
 #[rstest]
@@ -423,6 +458,8 @@ fn test_the_window_survives_a_snapshot_round_trip() {
 #[rstest]
 #[case::advanced(OwnershipEffect::EpochAdvanced { epoch: AuthorityEpoch(2) }, Ok(CommandOutcome::Committed))]
 #[case::same_home(OwnershipEffect::Rejected(Rejection::SameHome), Ok(CommandOutcome::NoChange))]
+#[case::forgotten(OwnershipEffect::Forgotten { epoch: AuthorityEpoch(3) }, Ok(CommandOutcome::Committed))]
+#[case::already_forgotten(OwnershipEffect::AlreadyForgotten, Ok(CommandOutcome::NoChange))]
 #[case::unassigned(
     OwnershipEffect::Rejected(Rejection::NotAssigned),
     Err(ControlRejection::NotAssigned)

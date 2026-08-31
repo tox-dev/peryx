@@ -2,7 +2,7 @@ use crate::authority::{Admission, AuthorityFence, AuthorityKey};
 use crate::envelope::AuthorityEpoch;
 use crate::ownership::{
     AppliedMeta, Assignment, AssignmentCause, DatacenterId, OwnershipCommand, OwnershipEffect, OwnershipError,
-    OwnershipState, Rejection, TransferRecord,
+    OwnershipState, Rejection,
 };
 use rstest::rstest;
 
@@ -39,6 +39,17 @@ fn transfer_at(authority: &str, new_home: &str, now_unix: i64) -> OwnershipComma
     OwnershipCommand::RecordTransfer {
         authority: key(authority),
         new_home: dc(new_home),
+        now_unix,
+    }
+}
+
+fn forget(authority: &str) -> OwnershipCommand {
+    forget_at(authority, 0)
+}
+
+fn forget_at(authority: &str, now_unix: i64) -> OwnershipCommand {
+    OwnershipCommand::ForgetAuthority {
+        authority: key(authority),
         now_unix,
     }
 }
@@ -414,7 +425,6 @@ fn test_an_unassigned_authority_reads_as_the_zero_sentinel() {
 
     assert_eq!(state.epoch(&key("proj")), AuthorityEpoch(0));
     assert_eq!(state.home(&key("proj")), None);
-    assert!(state.transfers(&key("proj")).is_empty());
 }
 
 #[test]
@@ -450,7 +460,6 @@ fn test_advancing_the_epoch_increments_it_and_keeps_the_home() {
     );
     assert_eq!(state.epoch(&key("proj")), AuthorityEpoch(2));
     assert_eq!(state.home(&key("proj")), Some(&dc("east")));
-    assert!(state.transfers(&key("proj")).is_empty());
 }
 
 #[test]
@@ -694,7 +703,7 @@ fn test_transfer_waits_for_all_live_write_ids() {
 }
 
 #[test]
-fn test_transfer_moves_the_home_mints_the_next_epoch_and_records_the_move() {
+fn test_transfer_moves_the_home_and_mints_the_next_epoch() {
     let mut state = OwnershipState::new();
     state.apply(&assign("proj", "east"), META);
 
@@ -710,39 +719,17 @@ fn test_transfer_moves_the_home_mints_the_next_epoch_and_records_the_move() {
     );
     assert_eq!(state.epoch(&key("proj")), AuthorityEpoch(2));
     assert_eq!(state.home(&key("proj")), Some(&dc("west")));
-    assert_eq!(
-        state.transfers(&key("proj")),
-        &[TransferRecord {
-            from: dc("east"),
-            to: dc("west"),
-            epoch: AuthorityEpoch(2),
-        }]
-    );
 }
 
 #[test]
-fn test_successive_transfers_keep_the_full_trail_in_order() {
+fn test_successive_transfers_leave_only_the_last_home() {
     let mut state = OwnershipState::new();
     state.apply(&assign("proj", "east"), META);
 
     state.apply(&transfer("proj", "west"), META);
     state.apply(&transfer("proj", "north"), META);
 
-    assert_eq!(
-        state.transfers(&key("proj")),
-        &[
-            TransferRecord {
-                from: dc("east"),
-                to: dc("west"),
-                epoch: AuthorityEpoch(2),
-            },
-            TransferRecord {
-                from: dc("west"),
-                to: dc("north"),
-                epoch: AuthorityEpoch(3),
-            },
-        ]
-    );
+    assert_eq!(state.epoch(&key("proj")), AuthorityEpoch(3));
     assert_eq!(state.home(&key("proj")), Some(&dc("north")));
 }
 
@@ -765,7 +752,7 @@ fn test_transferring_to_the_current_home_is_rejected_and_mints_no_epoch() {
 
     assert_eq!(effect, OwnershipEffect::Rejected(Rejection::SameHome));
     assert_eq!(state.epoch(&key("proj")), AuthorityEpoch(1));
-    assert!(state.transfers(&key("proj")).is_empty());
+    assert_eq!(state.home(&key("proj")), Some(&dc("east")));
 }
 
 #[test]
@@ -833,14 +820,6 @@ fn test_snapshot_restore_round_trips_the_full_state() {
     assert_eq!(restored.epoch(&key("alpha")), AuthorityEpoch(2));
     assert_eq!(restored.home(&key("alpha")), Some(&dc("west")));
     assert_eq!(
-        restored.transfers(&key("alpha")),
-        &[TransferRecord {
-            from: dc("east"),
-            to: dc("west"),
-            epoch: AuthorityEpoch(2),
-        }]
-    );
-    assert_eq!(
         restored.assignment(&key("alpha")),
         Some(&Assignment {
             cause: AssignmentCause::FirstPublish,
@@ -872,9 +851,127 @@ fn test_restore_rejects_malformed_bytes() {
 
 #[test]
 fn test_restore_rejects_a_record_at_the_reserved_zero_epoch() {
-    let snapshot = br#"{"authorities":{"proj":{"home":"east","epoch":0,"assignment":{"cause":"first-publish","term":1,"index":1,"epoch":1},"transfers":[],"writes":{}}},"singletons":{},"controls":{}}"#;
+    let snapshot = br#"{"authorities":{"proj":{"home":"east","epoch":0,"assignment":{"cause":"first-publish","term":1,"index":1,"epoch":1},"writes":{}}},"singletons":{},"controls":{}}"#;
 
     let error = OwnershipState::restore(snapshot).unwrap_err();
 
     assert!(matches!(error, OwnershipError::ZeroEpoch { authority } if authority == "proj"));
+}
+
+/// A transferred authority and an epoch-advanced one reach the same home and epoch, so the two
+/// snapshots must be byte-identical. Retaining a move trail makes the transferred one grow with the
+/// number of moves applied.
+#[test]
+fn test_repeated_transfers_add_nothing_to_the_snapshot() {
+    let rounds = 1_000;
+    let mut advanced = OwnershipState::new();
+    advanced.apply(&assign("proj", "east"), META);
+    let mut moved = OwnershipState::new();
+    moved.apply(&assign("proj", "east"), META);
+
+    for round in 0..rounds {
+        advanced.apply(&advance("proj"), META);
+        moved.apply(&transfer("proj", if round % 2 == 0 { "west" } else { "east" }), META);
+    }
+
+    assert_eq!(moved.home(&key("proj")), Some(&dc("east")));
+    assert_eq!(moved.epoch(&key("proj")), AuthorityEpoch(rounds + 1));
+    assert_eq!(moved.snapshot(), advanced.snapshot());
+}
+
+/// Snapshot cost tracks the authorities the group still homes, so forgetting one returns the exact
+/// bytes it contributed rather than leaving a shrunken record behind.
+#[test]
+fn test_forgetting_an_authority_returns_the_snapshot_to_its_size_without_it() {
+    let mut retained = OwnershipState::new();
+    retained.apply(&assign("beta", "west"), META);
+    let mut state = OwnershipState::new();
+    state.apply(&assign("alpha", "east"), META);
+    state.apply(&assign("beta", "west"), META);
+    state.apply(&transfer("alpha", "north"), META);
+
+    let effect = state.apply(&forget("alpha"), META);
+
+    assert_eq!(
+        effect,
+        OwnershipEffect::Forgotten {
+            epoch: AuthorityEpoch(2)
+        }
+    );
+    assert_eq!(state.snapshot(), retained.snapshot());
+}
+
+#[test]
+fn test_a_forgotten_authority_reads_as_unassigned_and_restores_without_it() {
+    let mut state = OwnershipState::new();
+    state.apply(&assign("alpha", "east"), META);
+    state.apply(&assign("beta", "west"), META);
+
+    state.apply(&forget("alpha"), META);
+    let restored = OwnershipState::restore(&state.snapshot()).unwrap();
+
+    assert_eq!(restored.epoch(&key("alpha")), AuthorityEpoch(0));
+    assert_eq!(restored.home(&key("alpha")), None);
+    assert_eq!(restored.assignment(&key("alpha")), None);
+    assert_eq!(restored.home(&key("beta")), Some(&dc("west")));
+}
+
+#[test]
+fn test_forgetting_an_authority_the_state_never_held_changes_nothing() {
+    let mut state = OwnershipState::new();
+    state.apply(&assign("beta", "west"), META);
+    let unchanged = state.snapshot();
+
+    let effect = state.apply(&forget("alpha"), META);
+
+    assert_eq!(effect, OwnershipEffect::AlreadyForgotten);
+    assert_eq!(state.snapshot(), unchanged);
+}
+
+#[test]
+fn test_forgetting_is_refused_while_a_write_lease_is_live() {
+    let mut state = OwnershipState::new();
+    state.apply(&assign("alpha", "east"), META);
+    state.apply(&begin_write("alpha", 1, "write-1", 100), META);
+    let held = state.snapshot();
+
+    let effect = state.apply(&forget_at("alpha", 100), META);
+
+    assert_eq!(effect, OwnershipEffect::Rejected(Rejection::WritesInFlight));
+    assert_eq!(state.snapshot(), held);
+}
+
+#[test]
+fn test_forgetting_ignores_a_write_lease_that_has_expired() {
+    let mut state = OwnershipState::new();
+    state.apply(&assign("alpha", "east"), META);
+    state.apply(&begin_write("alpha", 1, "write-1", 100), META);
+
+    let lapsed = 100 + peryx_ha::AUTHORITY_WRITE_LEASE_SECS + peryx_ha::AUTHORITY_CLOCK_SKEW_SECS;
+    let effect = state.apply(&forget_at("alpha", lapsed), META);
+
+    assert_eq!(
+        effect,
+        OwnershipEffect::Forgotten {
+            epoch: AuthorityEpoch(1)
+        }
+    );
+}
+
+#[test]
+fn test_publishing_to_a_forgotten_authority_assigns_it_again_from_epoch_one() {
+    let mut state = OwnershipState::new();
+    state.apply(&assign("alpha", "east"), META);
+    state.apply(&advance("alpha"), META);
+    state.apply(&forget("alpha"), META);
+
+    let effect = state.apply(&assign("alpha", "west"), META);
+
+    assert_eq!(
+        effect,
+        OwnershipEffect::Assigned {
+            home: dc("west"),
+            epoch: AuthorityEpoch(1),
+        }
+    );
 }

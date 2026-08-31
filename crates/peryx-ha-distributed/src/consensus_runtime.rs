@@ -754,6 +754,13 @@ impl OwnershipGroup {
                 })
                 .await
             }
+            ControlCommand::ForgetAuthority { authority } => {
+                self.submit_ownership(OwnershipCommand::ForgetAuthority {
+                    authority: AuthorityKey(authority),
+                    now_unix: (self.clock)(),
+                })
+                .await
+            }
         }
     }
 
@@ -836,7 +843,7 @@ impl OwnershipGroup {
     async fn submit_ownership(&self, command: OwnershipCommand) -> Result<CommandReceipt, ControlError> {
         let response = self.submit_ownership_command(command).await?;
         let outcome = applied_outcome(response.data)?;
-        // Transfer and epoch commands have no voter transition to audit.
+        // Authority commands have no voter transition to audit.
         Ok(committed_receipt(&response.log_id, outcome, Vec::new(), Vec::new()))
     }
 

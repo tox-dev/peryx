@@ -737,6 +737,12 @@ fn transport_error_derives_distinguish_payloads(#[case] value: TransportError, #
     "advance_epoch",
     "repo"
 )]
+#[case(
+    ControlCommand::ForgetAuthority { authority: "repo".into() },
+    r#"{"type":"forget_authority","authority":"repo"}"#,
+    "forget_authority",
+    "repo"
+)]
 fn control_command_contract(
     #[case] command: ControlCommand,
     #[case] json: &str,

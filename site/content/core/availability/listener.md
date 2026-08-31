@@ -119,8 +119,8 @@ log; the handler submits a typed command and never writes the membership or owne
 replayed command cannot corrupt the group. The endpoint requires the administration write scope, the write counterpart
 of the read scope the status endpoint gates.
 
-The request body is a tagged command. The four membership commands rewrite the consensus roster, and the two authority
-commands move or fence an artifact home:
+The request body is a tagged command. The four membership commands rewrite the consensus roster, and the three authority
+commands move, fence, or drop an artifact home:
 
 | `type`               | Fields                            | Effect                                                            |
 | -------------------- | --------------------------------- | ----------------------------------------------------------------- |
@@ -130,6 +130,13 @@ commands move or fence an artifact home:
 | `replace_voter`      | `remove`, `datacenter`, `address` | Add the incoming datacenter as a learner and swap it in.          |
 | `transfer_authority` | `authority`, `new_home`           | Move an authority's home, minting the next epoch.                 |
 | `advance_epoch`      | `authority`                       | Mint the next epoch without moving the home, fencing stale work.  |
+| `forget_authority`   | `authority`                       | Drop a retired authority's home and epoch from replicated state.  |
+
+`forget_authority` is how a deleted repository stops paying for replication. Replicated ownership state holds one record
+per authority and every snapshot carries all of them, so a repository that will never be published to again otherwise
+travels to each rejoining follower forever. The command answers `no_change` when nothing is homed under the authority,
+and is refused while a write lease is live, because the lease holder still stamps work with the epoch it drops. An
+authority published to after being forgotten is assigned again from epoch one.
 
 An `address` follows the same contract as an `[[availability.member]]` address: an `http` or `https` URL with an
 explicit port and no path, query, fragment, or credentials. A command carrying any other form is rejected as invalid

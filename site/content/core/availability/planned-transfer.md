@@ -100,7 +100,10 @@ The record retains the authority, the source and target datacenters, the actor w
 reason, the barrier the target had to reach, the epoch the move minted, and the index of the consensus log entry that
 committed it. The epoch comes from a read of committed ownership state rather than the commit receipt, matching the rest
 of the ownership plane. The audit is durable and is the record an operator and reconciliation answer from: who moved an
-authority, from where, to where, why, on what catch-up barrier, and under which committed index.
+authority, from where, to where, why, on what catch-up barrier, and under which committed index. It is also the only
+record of the move that is kept. Replicated ownership state holds one record per authority carrying its current home and
+epoch, so a move overwrites its predecessor there rather than accumulating a trail every snapshot would then have to
+carry to every rejoining follower.
 
 The minted epoch is the fence. A write the old home had in flight under the previous epoch is now stale and is rejected,
 so a former home cannot finalize a write against an authority it no longer owns. Reconciling the operations the old home

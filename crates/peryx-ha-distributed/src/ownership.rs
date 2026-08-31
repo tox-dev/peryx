@@ -42,14 +42,6 @@ pub struct Assignment {
     pub epoch: AuthorityEpoch,
 }
 
-/// Transfer provenance used by reconciliation and drain.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TransferRecord {
-    pub from: DatacenterId,
-    pub to: DatacenterId,
-    pub epoch: AuthorityEpoch,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OwnershipCommand {
     /// Assigns an unowned authority at epoch one.
@@ -72,12 +64,14 @@ pub enum OwnershipCommand {
         epoch: AuthorityEpoch,
         id: String,
     },
-    /// Moves an assigned authority, increases its epoch, and records the transfer.
+    /// Moves an assigned authority and increases its epoch.
     RecordTransfer {
         authority: AuthorityKey,
         new_home: DatacenterId,
         now_unix: i64,
     },
+    /// Drops an authority the deployment no longer serves, so its record leaves the replicated state.
+    ForgetAuthority { authority: AuthorityKey, now_unix: i64 },
     /// Grants a cluster-singleton job to one holder at the next generation.
     AcquireSingletonLease {
         job: String,
@@ -165,6 +159,12 @@ pub enum OwnershipEffect {
         to: DatacenterId,
         epoch: AuthorityEpoch,
     },
+    /// The authority left the replicated state at the epoch it last held.
+    Forgotten {
+        epoch: AuthorityEpoch,
+    },
+    /// Nothing was homed under the authority, which is the end state the command asked for.
+    AlreadyForgotten,
     SingletonAcquired {
         holder: String,
         term: u64,
@@ -213,7 +213,6 @@ struct AuthorityRecord {
     home: DatacenterId,
     epoch: AuthorityEpoch,
     assignment: Assignment,
-    transfers: Vec<TransferRecord>,
     #[serde(default)]
     writes: BTreeMap<String, WriteLeaseRecord>,
 }
@@ -294,6 +293,7 @@ impl OwnershipState {
                 new_home,
                 now_unix,
             } => self.transfer(authority, new_home, *now_unix),
+            OwnershipCommand::ForgetAuthority { authority, now_unix } => self.forget(authority, *now_unix),
             OwnershipCommand::AcquireSingletonLease {
                 job,
                 holder,
@@ -381,6 +381,9 @@ impl OwnershipState {
             )),
             ControlCommand::AdvanceEpoch { authority } => {
                 Some(self.advance_epoch(&AuthorityKey(authority.clone()), now_unix))
+            }
+            ControlCommand::ForgetAuthority { authority } => {
+                Some(self.forget(&AuthorityKey(authority.clone()), now_unix))
             }
             ControlCommand::AddLearner { .. }
             | ControlCommand::PromoteVoter { .. }
@@ -563,7 +566,6 @@ impl OwnershipState {
                     index: meta.index,
                     epoch,
                 },
-                transfers: Vec::new(),
                 writes: BTreeMap::new(),
             },
         );
@@ -641,16 +643,27 @@ impl OwnershipState {
         let epoch = AuthorityEpoch(record.epoch.0 + 1);
         let from = std::mem::replace(&mut record.home, new_home.clone());
         record.epoch = epoch;
-        record.transfers.push(TransferRecord {
-            from: from.clone(),
-            to: new_home.clone(),
-            epoch,
-        });
         OwnershipEffect::Transferred {
             from,
             to: new_home.clone(),
             epoch,
         }
+    }
+
+    /// Removes the authority so its home, epoch, and assignment stop travelling in every snapshot.
+    /// A live write lease blocks the removal, because the lease holder still stamps work with the epoch
+    /// this drops.
+    fn forget(&mut self, authority: &AuthorityKey, now_unix: i64) -> OwnershipEffect {
+        let Some(record) = self.authorities.get_mut(&authority.0) else {
+            return OwnershipEffect::AlreadyForgotten;
+        };
+        expire_writes(record, now_unix);
+        if !record.writes.is_empty() {
+            return OwnershipEffect::Rejected(Rejection::WritesInFlight);
+        }
+        let epoch = record.epoch;
+        self.authorities.remove(&authority.0);
+        OwnershipEffect::Forgotten { epoch }
     }
 
     /// Returns epoch zero when `authority` is unassigned.
@@ -669,14 +682,6 @@ impl OwnershipState {
     #[must_use]
     pub fn assignment(&self, authority: &AuthorityKey) -> Option<&Assignment> {
         self.authorities.get(&authority.0).map(|record| &record.assignment)
-    }
-
-    /// Returns transfers oldest first, or an empty slice for an unassigned or unmoved authority.
-    #[must_use]
-    pub fn transfers(&self, authority: &AuthorityKey) -> &[TransferRecord] {
-        self.authorities
-            .get(&authority.0)
-            .map_or(&[], |record| record.transfers.as_slice())
     }
 
     /// # Panics
@@ -704,23 +709,27 @@ impl OwnershipState {
     }
 }
 
-/// Why a transfer or epoch advance left ownership unchanged. A rejected command records no receipt, so
-/// its idempotency key stays open to a retry.
+/// Why an authority command left ownership unchanged. A rejected command records no receipt, so its
+/// idempotency key stays open to a retry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ControlRejection {
     NotAssigned,
     WritesInFlight,
 }
 
-/// The outcome a transfer or epoch-advance effect commits. Moving an authority to its current home is
-/// the requested end state, so it commits as a no-op rather than failing.
+/// The outcome an authority-command effect commits.
+///
+/// Moving an authority to its current home, and forgetting one the state never held, are the requested
+/// end states, so both commit as no-ops rather than failing.
 ///
 /// # Errors
 /// Returns the [`ControlRejection`] for an effect that left ownership unchanged and so recorded no
 /// receipt.
 pub const fn control_outcome(effect: &OwnershipEffect) -> Result<CommandOutcome, ControlRejection> {
     match effect {
-        OwnershipEffect::Rejected(Rejection::SameHome) => Ok(CommandOutcome::NoChange),
+        OwnershipEffect::Rejected(Rejection::SameHome) | OwnershipEffect::AlreadyForgotten => {
+            Ok(CommandOutcome::NoChange)
+        }
         OwnershipEffect::Rejected(Rejection::NotAssigned) => Err(ControlRejection::NotAssigned),
         OwnershipEffect::Rejected(Rejection::WritesInFlight) => Err(ControlRejection::WritesInFlight),
         _ => Ok(CommandOutcome::Committed),

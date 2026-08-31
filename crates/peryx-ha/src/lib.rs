@@ -510,6 +510,10 @@ pub enum ControlCommand {
     AdvanceEpoch {
         authority: String,
     },
+    /// Drops an authority the deployment no longer serves from replicated ownership state.
+    ForgetAuthority {
+        authority: String,
+    },
 }
 
 impl ControlCommand {
@@ -522,6 +526,7 @@ impl ControlCommand {
             Self::ReplaceVoter { .. } => "replace_voter",
             Self::TransferAuthority { .. } => "transfer_authority",
             Self::AdvanceEpoch { .. } => "advance_epoch",
+            Self::ForgetAuthority { .. } => "forget_authority",
         }
     }
 
@@ -532,7 +537,9 @@ impl ControlCommand {
             | Self::PromoteVoter { datacenter }
             | Self::RemoveVoter { datacenter }
             | Self::ReplaceVoter { datacenter, .. } => datacenter,
-            Self::TransferAuthority { authority, .. } | Self::AdvanceEpoch { authority } => authority,
+            Self::TransferAuthority { authority, .. }
+            | Self::AdvanceEpoch { authority }
+            | Self::ForgetAuthority { authority } => authority,
         }
     }
 }

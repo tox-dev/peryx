@@ -43,6 +43,8 @@ fn minted(effect: &OwnershipEffect) -> Option<AuthorityEpoch> {
         | OwnershipEffect::EpochAdvanced { epoch }
         | OwnershipEffect::Transferred { epoch, .. } => Some(*epoch),
         OwnershipEffect::AlreadyAssigned { .. }
+        | OwnershipEffect::Forgotten { .. }
+        | OwnershipEffect::AlreadyForgotten
         | OwnershipEffect::WriteLeased { .. }
         | OwnershipEffect::WriteFinished
         | OwnershipEffect::SingletonAcquired { .. }
