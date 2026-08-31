@@ -47,6 +47,7 @@ async fn run_filesystem() -> Result<(), String> {
     let dir = tempfile::tempdir().unwrap();
     let storage = BlobStorage::filesystem(dir.path());
     storage.health().await.unwrap();
+    assert_eq!(storage.recover_incomplete_uploads().await.unwrap(), 0);
     let digest = storage.put_bytes(b"package").await.unwrap();
     storage.head(&digest).await.unwrap();
     storage.open(&digest, None).await.unwrap();
@@ -97,7 +98,13 @@ async fn run_integration(scenario_name: String, endpoint: String, staging_dir: P
         settings.upload_concurrency = 3;
     } else if matches!(
         scenario_name.as_str(),
-        "wire_abort_failure" | "wire_conflict_exhausted" | "wire_create_failure"
+        "wire_abort_failure"
+            | "wire_conflict_exhausted"
+            | "wire_create_failure"
+            | "wire_interrupted_multipart"
+            | "recover_none"
+            | "recover_one"
+            | "recover_error"
     ) {
         settings.max_retries = 0;
     } else if scenario_name == "wire_huge_timeout" {
@@ -520,6 +527,18 @@ async fn run_child_scenario(storage: &BlobStorage, scenario: ChildScenario) {
         ChildScenario::Write(scenario) => run_wire_write_child(storage, scenario).await,
         ChildScenario::Failure(scenario) => run_wire_failure_child(storage, scenario).await,
         ChildScenario::Multipart(scenario) => run_wire_multipart_child(storage, scenario).await,
+        ChildScenario::Recover(scenario) => run_recover_child(storage, scenario).await,
+    }
+}
+
+async fn run_recover_child(storage: &BlobStorage, scenario: RecoverScenario) {
+    match scenario {
+        RecoverScenario::Nothing => assert_eq!(storage.recover_incomplete_uploads().await.unwrap(), 0),
+        RecoverScenario::Aborted => assert_eq!(storage.recover_incomplete_uploads().await.unwrap(), 1),
+        RecoverScenario::Error => assert_eq!(
+            storage.recover_incomplete_uploads().await.unwrap_err().kind(),
+            BlobErrorKind::Io
+        ),
     }
 }
 
@@ -753,7 +772,8 @@ async fn run_wire_multipart_child(storage: &BlobStorage, scenario: WireMultipart
         | WireMultipartScenario::PartMissingChecksum
         | WireMultipartScenario::CompleteFailure
         | WireMultipartScenario::ConflictExhausted
-        | WireMultipartScenario::JournalFailure => {
+        | WireMultipartScenario::JournalFailure
+        | WireMultipartScenario::Interrupted => {
             assert_eq!(
                 storage.put_bytes(&vec![7; (5 << 20) + 1]).await.unwrap_err().kind(),
                 BlobErrorKind::Io
@@ -782,6 +802,14 @@ enum ChildScenario {
     Write(WireWriteScenario),
     Failure(WireFailureScenario),
     Multipart(WireMultipartScenario),
+    Recover(RecoverScenario),
+}
+
+#[derive(Clone, Copy)]
+enum RecoverScenario {
+    Nothing,
+    Aborted,
+    Error,
 }
 
 #[cfg(feature = "container-tests")]
@@ -851,6 +879,7 @@ enum WireMultipartScenario {
     CompleteExists,
     StaleUpload,
     AbortFailure,
+    Interrupted,
 }
 
 impl ChildScenario {
@@ -913,6 +942,10 @@ impl ChildScenario {
             "wire_complete_exists" => Ok(Self::Multipart(WireMultipartScenario::CompleteExists)),
             "wire_stale_upload" => Ok(Self::Multipart(WireMultipartScenario::StaleUpload)),
             "wire_abort_failure" => Ok(Self::Multipart(WireMultipartScenario::AbortFailure)),
+            "wire_interrupted_multipart" => Ok(Self::Multipart(WireMultipartScenario::Interrupted)),
+            "recover_none" => Ok(Self::Recover(RecoverScenario::Nothing)),
+            "recover_one" => Ok(Self::Recover(RecoverScenario::Aborted)),
+            "recover_error" => Ok(Self::Recover(RecoverScenario::Error)),
             _ => Err(format!("unknown S3 scenario: {value}")),
         }
     }

@@ -388,6 +388,19 @@ pub fn recover_job_attempts(state: &AppState) -> Result<usize, peryx_storage::me
     }
 }
 
+/// Abort the blob uploads a prior process left unfinished before this writer serves traffic. A
+/// read-only replica commits no blob of its own, so it journals none to recover.
+///
+/// # Errors
+/// Returns a blob error when the unfinished uploads cannot be listed.
+pub async fn recover_blob_uploads(state: &AppState) -> Result<usize, peryx_storage::blob::BlobError> {
+    if state.serving.read_only {
+        Ok(0)
+    } else {
+        state.serving.blobs.recover_incomplete_uploads().await
+    }
+}
+
 fn ldap_logins(configs: &[LdapProviderConfig], meta: &MetaStore) -> anyhow::Result<Vec<LdapLoginService<MetaStore>>> {
     configs
         .iter()

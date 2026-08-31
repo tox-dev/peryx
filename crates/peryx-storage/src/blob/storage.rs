@@ -173,6 +173,18 @@ impl BlobStorage {
         }
     }
 
+    /// Aborts the object-store uploads a previous process left unfinished. The filesystem backend
+    /// publishes through an atomic rename and journals no remote upload, so it recovers nothing.
+    ///
+    /// # Errors
+    /// Returns a contextual backend error when the unfinished uploads cannot be listed.
+    pub async fn recover_incomplete_uploads(&self) -> Result<usize, BlobError> {
+        match &self.backend {
+            Backend::Filesystem(_) => Ok(0),
+            Backend::S3(backend) => Box::pin(backend.recover_multipart_uploads()).await,
+        }
+    }
+
     /// # Errors
     /// Returns a contextual backend error when staging cannot start.
     pub async fn begin(&self) -> Result<BlobWrite, BlobError> {

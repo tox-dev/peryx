@@ -254,6 +254,13 @@ async fn mount_multipart(server: &MockServer) {
         .await;
 }
 
+fn count_aborts(requests: &[Request]) -> usize {
+    requests
+        .iter()
+        .filter(|request| request.method.as_str() == "DELETE")
+        .count()
+}
+
 fn count_creates(requests: &[Request]) -> usize {
     requests
         .iter()
@@ -271,6 +278,13 @@ fn multipart_journal(staging: &Path) -> PathBuf {
     staging
         .join("s3-multipart")
         .join(Digest::of(&vec![7; (5 << 20) + 1]).as_str())
+}
+
+fn write_multipart_journal(staging: &Path, contents: &[u8]) -> PathBuf {
+    let journal = multipart_journal(staging);
+    std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
+    std::fs::write(&journal, contents).unwrap();
+    journal
 }
 
 async fn mount_wire_behavior(server: &MockServer, behavior: WireBehavior) {
@@ -1406,13 +1420,7 @@ async fn test_s3_multipart_restarts_after_a_conditional_conflict() {
     );
     let requests = server.received_requests().await.unwrap();
     assert_eq!(count_creates(&requests), 2);
-    assert_eq!(
-        requests
-            .iter()
-            .filter(|request| request.method.as_str() == "DELETE")
-            .count(),
-        1
-    );
+    assert_eq!(count_aborts(&requests), 1);
 }
 
 #[tokio::test]
@@ -1962,6 +1970,37 @@ async fn test_s3_container_restarts_a_stale_multipart_journal() {
     resume_upload(&upload).await;
 }
 
+#[cfg(feature = "container-tests")]
+#[tokio::test]
+async fn test_s3_container_recovery_aborts_an_upload_no_commit_returns_for() {
+    let upload = interrupted_upload().await;
+    remove_timeout(&upload).await;
+
+    assert_child_succeeded(
+        &child(
+            &upload.toxiproxy.endpoint,
+            upload.staging.path(),
+            "recover_one",
+            ROOT_ACCESS_KEY,
+            ROOT_SECRET_KEY,
+        )
+        .await,
+    );
+
+    assert!(!multipart_journal(upload.staging.path()).exists());
+    assert!(
+        admin_client(&upload.minio.endpoint)
+            .list_multipart_uploads()
+            .bucket(BUCKET)
+            .send()
+            .await
+            .unwrap()
+            .uploads
+            .unwrap_or_default()
+            .is_empty()
+    );
+}
+
 #[derive(Clone, Copy)]
 enum JournalDamage {
     Empty,
@@ -1978,17 +2017,14 @@ async fn test_s3_replaces_a_malformed_multipart_journal(#[case] damage: JournalD
     let server = MockServer::start().await;
     mount_multipart(&server).await;
     let staging = tempfile::tempdir().unwrap();
-    let journal = multipart_journal(staging.path());
-    std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
-    std::fs::write(
-        journal,
-        match damage {
+    write_multipart_journal(
+        staging.path(),
+        &match damage {
             JournalDamage::Empty => Vec::new(),
             JournalDamage::NonUtf8 => vec![0xff],
             JournalDamage::Oversized => vec![b'x'; 4_097],
         },
-    )
-    .unwrap();
+    );
     assert_child_succeeded(
         &child(
             &server.uri(),
@@ -2080,10 +2116,8 @@ async fn test_s3_reports_a_multipart_journal_removal_failure() {
     let server = MockServer::start().await;
     mount_multipart(&server).await;
     let staging = tempfile::tempdir().unwrap();
-    let journal = multipart_journal(staging.path());
+    let journal = write_multipart_journal(staging.path(), b"upload-1");
     let directory = journal.parent().unwrap();
-    std::fs::create_dir_all(directory).unwrap();
-    std::fs::write(&journal, "upload-1").unwrap();
     std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o500)).unwrap();
     assert_child_succeeded(
         &child(
@@ -2096,6 +2130,207 @@ async fn test_s3_reports_a_multipart_journal_removal_failure() {
         .await,
     );
     std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+#[tokio::test]
+async fn test_s3_recovery_aborts_a_multipart_upload_a_prior_process_abandoned() {
+    let server = MockServer::start().await;
+    mount_multipart(&server).await;
+    Mock::given(method("PUT"))
+        .and(query_param("uploadId", "upload-1"))
+        .respond_with(service_error(500, "InternalError"))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    // The abort that would clear the journal fails, so the first process leaves the upload behind.
+    Mock::given(method("DELETE"))
+        .and(query_param("uploadId", "upload-1"))
+        .respond_with(service_error(500, "InternalError"))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    let staging = tempfile::tempdir().unwrap();
+    assert_child_succeeded(
+        &child(
+            &server.uri(),
+            staging.path(),
+            "wire_interrupted_multipart",
+            ROOT_ACCESS_KEY,
+            ROOT_SECRET_KEY,
+        )
+        .await,
+    );
+    assert!(multipart_journal(staging.path()).exists());
+
+    assert_child_succeeded(
+        &child(
+            &server.uri(),
+            staging.path(),
+            "recover_one",
+            ROOT_ACCESS_KEY,
+            ROOT_SECRET_KEY,
+        )
+        .await,
+    );
+
+    assert!(!multipart_journal(staging.path()).exists());
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(count_creates(&requests), 1);
+    assert_eq!(count_aborts(&requests), 2);
+}
+
+#[tokio::test]
+async fn test_s3_recovery_retries_an_abort_that_failed_in_an_earlier_pass() {
+    let server = MockServer::start().await;
+    mount_multipart(&server).await;
+    Mock::given(method("DELETE"))
+        .and(query_param("uploadId", "upload-1"))
+        .respond_with(service_error(500, "InternalError"))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    let staging = tempfile::tempdir().unwrap();
+    write_multipart_journal(staging.path(), b"upload-1");
+
+    assert_child_succeeded(
+        &child(
+            &server.uri(),
+            staging.path(),
+            "recover_none",
+            ROOT_ACCESS_KEY,
+            ROOT_SECRET_KEY,
+        )
+        .await,
+    );
+    assert!(multipart_journal(staging.path()).exists());
+
+    assert_child_succeeded(
+        &child(
+            &server.uri(),
+            staging.path(),
+            "recover_one",
+            ROOT_ACCESS_KEY,
+            ROOT_SECRET_KEY,
+        )
+        .await,
+    );
+
+    assert!(!multipart_journal(staging.path()).exists());
+    assert_eq!(count_aborts(&server.received_requests().await.unwrap()), 2);
+}
+
+#[tokio::test]
+async fn test_s3_recovery_finds_nothing_after_a_completed_multipart_commit() {
+    let server = MockServer::start().await;
+    mount_multipart(&server).await;
+    let staging = tempfile::tempdir().unwrap();
+    assert_child_succeeded(
+        &child(
+            &server.uri(),
+            staging.path(),
+            "wire_multipart",
+            ROOT_ACCESS_KEY,
+            ROOT_SECRET_KEY,
+        )
+        .await,
+    );
+
+    assert_child_succeeded(
+        &child(
+            &server.uri(),
+            staging.path(),
+            "recover_none",
+            ROOT_ACCESS_KEY,
+            ROOT_SECRET_KEY,
+        )
+        .await,
+    );
+
+    assert_eq!(count_aborts(&server.received_requests().await.unwrap()), 0);
+}
+
+#[tokio::test]
+async fn test_s3_recovery_leaves_a_journal_not_named_for_a_digest() {
+    let server = MockServer::start().await;
+    let staging = tempfile::tempdir().unwrap();
+    let stray = staging.path().join("s3-multipart").join("not-a-digest");
+    std::fs::create_dir_all(stray.parent().unwrap()).unwrap();
+    std::fs::write(&stray, "upload-1").unwrap();
+
+    assert_child_succeeded(
+        &child(
+            &server.uri(),
+            staging.path(),
+            "recover_none",
+            ROOT_ACCESS_KEY,
+            ROOT_SECRET_KEY,
+        )
+        .await,
+    );
+
+    assert!(stray.exists());
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_s3_recovery_drops_a_malformed_journal_without_an_abort() {
+    let server = MockServer::start().await;
+    let staging = tempfile::tempdir().unwrap();
+    write_multipart_journal(staging.path(), b"");
+
+    assert_child_succeeded(
+        &child(
+            &server.uri(),
+            staging.path(),
+            "recover_none",
+            ROOT_ACCESS_KEY,
+            ROOT_SECRET_KEY,
+        )
+        .await,
+    );
+
+    assert!(!multipart_journal(staging.path()).exists());
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_s3_recovery_accepts_a_staging_directory_without_journals() {
+    let server = MockServer::start().await;
+    let staging = tempfile::tempdir().unwrap();
+
+    assert_child_succeeded(
+        &child(
+            &server.uri(),
+            staging.path(),
+            "recover_none",
+            ROOT_ACCESS_KEY,
+            ROOT_SECRET_KEY,
+        )
+        .await,
+    );
+
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_s3_recovery_reports_an_unlistable_journal_directory() {
+    let server = MockServer::start().await;
+    let staging = tempfile::tempdir().unwrap();
+    std::fs::write(staging.path().join("s3-multipart"), []).unwrap();
+
+    assert_child_succeeded(
+        &child(
+            &server.uri(),
+            staging.path(),
+            "recover_error",
+            ROOT_ACCESS_KEY,
+            ROOT_SECRET_KEY,
+        )
+        .await,
+    );
 }
 
 #[derive(Clone, Copy)]

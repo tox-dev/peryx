@@ -31,17 +31,60 @@ use super::{
 const MAX_MULTIPART_PARTS: u64 = 10_000;
 const MAX_PART_SIZE: u64 = 5 << 30;
 const MAX_MULTIPART_BYTES: u64 = MAX_MULTIPART_PARTS * MAX_PART_SIZE;
+const MULTIPART_DIR: &str = "s3-multipart";
 
 #[derive(Debug, Clone)]
 pub struct S3Backend {
     client: S3Client,
     staging: BlobStore,
     acquisitions: Arc<Mutex<HashMap<PathBuf, Arc<UploadAcquisition>>>>,
+    owners: Arc<MultipartOwners>,
 }
 
 #[derive(Debug)]
 struct UploadAcquisition {
     result: watch::Receiver<Option<Result<String, String>>>,
+}
+
+/// Journals that commits in this process still drive, counted because concurrent commits of one
+/// digest share a journal. Recovery aborts only the uploads nothing here owns.
+#[derive(Debug, Default)]
+struct MultipartOwners(std::sync::Mutex<HashMap<PathBuf, usize>>);
+
+impl MultipartOwners {
+    fn own(self: &Arc<Self>, journal: PathBuf) -> OwnedJournal {
+        *self.owned().entry(journal.clone()).or_default() += 1;
+        OwnedJournal {
+            owners: Arc::clone(self),
+            journal,
+        }
+    }
+
+    fn owns(&self, journal: &Path) -> bool {
+        self.owned().contains_key(journal)
+    }
+
+    fn owned(&self) -> std::sync::MutexGuard<'_, HashMap<PathBuf, usize>> {
+        self.0.lock().expect("multipart ownership is never held across a panic")
+    }
+}
+
+struct OwnedJournal {
+    owners: Arc<MultipartOwners>,
+    journal: PathBuf,
+}
+
+impl Drop for OwnedJournal {
+    fn drop(&mut self) {
+        let mut owned = self.owners.owned();
+        let remaining = owned
+            .get_mut(&self.journal)
+            .expect("an owned journal stays registered until its guard drops");
+        *remaining -= 1;
+        if *remaining == 0 {
+            owned.remove(&self.journal);
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -58,7 +101,62 @@ impl S3Backend {
             client: S3Client::new(config),
             staging: BlobStore::new(staging_dir),
             acquisitions: Arc::default(),
+            owners: Arc::default(),
         }
+    }
+
+    /// Aborts the multipart uploads a previous process journaled and never finished, and removes each
+    /// journal the object store accepts an abort for. A journal whose abort fails is kept for the next
+    /// pass. Run this before the backend serves traffic: it treats every journal no in-process commit
+    /// owns as abandoned.
+    ///
+    /// # Errors
+    /// Returns a contextual error when the journal directory cannot be listed.
+    pub async fn recover_multipart_uploads(&self) -> Result<usize, BlobError> {
+        let directory = self.staging.staging_dir().join(MULTIPART_DIR);
+        let listed = |error: std::io::Error| BlobError::from(error).with_context("s3", BlobOperation::Delete, None);
+        let mut entries = match tokio::fs::read_dir(&directory).await {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(error) => return Err(listed(error)),
+        };
+        let mut aborted = 0;
+        while let Some(entry) = entries.next_entry().await.map_err(listed)? {
+            aborted += usize::from(self.recover_journal(&directory, &entry.file_name()).await);
+        }
+        if aborted > 0 {
+            tracing::info!(aborted, "aborted abandoned s3 multipart uploads");
+        }
+        Ok(aborted)
+    }
+
+    /// Reports whether the upload was aborted. A failure keeps the journal for a later pass instead of
+    /// propagating, so one unreachable upload cannot strand the rest.
+    async fn recover_journal(&self, directory: &Path, name: &std::ffi::OsStr) -> bool {
+        let journal = directory.join(name);
+        let Some(digest) = name.to_str().and_then(Digest::from_hex) else {
+            tracing::warn!(path = %journal.display(), "ignored a multipart journal not named for a digest");
+            return false;
+        };
+        if self.owners.owns(&journal) {
+            return false;
+        }
+        match self.abort_journaled_upload(&digest, &journal).await {
+            Ok(aborted) => aborted,
+            Err(error) => {
+                tracing::warn!(%error, digest = digest.as_str(), "retained a multipart journal whose abort failed");
+                false
+            }
+        }
+    }
+
+    async fn abort_journaled_upload(&self, digest: &Digest, journal: &Path) -> Result<bool, S3Error> {
+        let Some(upload_id) = read_journal(journal).await? else {
+            return Ok(false);
+        };
+        self.abort_and_clear(&self.key_for(digest), &upload_id, journal)
+            .await
+            .map(|()| true)
     }
 
     #[must_use]
@@ -238,6 +336,8 @@ impl S3Backend {
         path: &Path,
     ) -> Result<(), S3Error> {
         let journal = self.multipart_journal(digest);
+        // Recovery treats an unowned journal as abandoned, so hold this one for the whole commit.
+        let _owned = self.owners.own(journal.clone());
         let mut conflicts = 0;
         let mut recovered_stale_upload = false;
         loop {
@@ -277,7 +377,7 @@ impl S3Backend {
     }
 
     fn multipart_journal(&self, digest: &Digest) -> PathBuf {
-        self.staging.staging_dir().join("s3-multipart").join(digest.as_str())
+        self.staging.staging_dir().join(MULTIPART_DIR).join(digest.as_str())
     }
 
     async fn acquire_upload(&self, key: &str, journal: &Path) -> Result<String, S3Error> {

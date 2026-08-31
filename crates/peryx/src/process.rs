@@ -314,6 +314,7 @@ fn run_server_with_active_plugins(
         };
         let state = crate::server::build_state_with_active_plugins(config, plugins)?;
         crate::server::recover_job_attempts(&state)?;
+        crate::server::recover_blob_uploads(&state).await?;
         let router = crate::server::router_for(state.clone());
         let availability = prepare_process_availability(config, plugins, &state).await?;
         let result = run_prepared_process(config, listen_address, state, router, availability, shutdown).await;

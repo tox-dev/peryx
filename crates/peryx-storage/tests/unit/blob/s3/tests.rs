@@ -1,12 +1,34 @@
+use std::path::Path;
 use std::sync::Arc;
 
 use super::{
-    BlobError, MAX_MULTIPART_BYTES, MAX_PART_SIZE, S3Backend, S3Config, S3Error, S3Settings, UploadAcquisition,
+    BlobError, Digest, MAX_MULTIPART_BYTES, MAX_PART_SIZE, S3Backend, S3Config, S3Error, S3Settings, UploadAcquisition,
     multipart_part_size,
 };
 use crate::blob::BlobErrorKind;
 use rstest::rstest;
 use tokio::sync::watch;
+
+fn backend(staging: &Path) -> S3Backend {
+    S3Backend::new(
+        S3Config::new(S3Settings {
+            endpoint: "http://127.0.0.1:1".to_owned(),
+            bucket: "bucket".to_owned(),
+            prefix: String::new(),
+            region: "us-east-1".to_owned(),
+            path_style: true,
+            request_timeout: std::time::Duration::from_secs(1),
+            max_retries: 0,
+            multipart_threshold: 5 << 20,
+            part_size: 5 << 20,
+            upload_concurrency: 1,
+            conditional_writes: true,
+            checksum_writes: true,
+        })
+        .unwrap(),
+        staging.to_owned(),
+    )
+}
 
 #[test]
 fn test_blob_error_from_s3_error() {
@@ -43,24 +65,7 @@ fn test_multipart_part_size_rejects_the_first_byte_above_the_protocol_limit() {
 #[tokio::test]
 async fn test_upload_acquisition_reuses_an_inflight_result() {
     let directory = tempfile::tempdir().unwrap();
-    let backend = S3Backend::new(
-        S3Config::new(S3Settings {
-            endpoint: "http://127.0.0.1:1".to_owned(),
-            bucket: "bucket".to_owned(),
-            prefix: String::new(),
-            region: "us-east-1".to_owned(),
-            path_style: true,
-            request_timeout: std::time::Duration::from_secs(1),
-            max_retries: 0,
-            multipart_threshold: 5 << 20,
-            part_size: 5 << 20,
-            upload_concurrency: 1,
-            conditional_writes: true,
-            checksum_writes: true,
-        })
-        .unwrap(),
-        directory.path().to_owned(),
-    );
+    let backend = backend(directory.path());
     let journal = directory.path().join("journal");
     let (_, result) = watch::channel(Some(Ok("upload-1".to_owned())));
     backend
@@ -70,4 +75,25 @@ async fn test_upload_acquisition_reuses_an_inflight_result() {
         .insert(journal.clone(), Arc::new(UploadAcquisition { result }));
 
     assert_eq!(backend.acquire_upload("key", &journal).await.unwrap(), "upload-1");
+}
+
+/// A malformed journal is removed as soon as recovery reads it, so its survival shows recovery left the
+/// journal alone rather than that the abort failed.
+#[tokio::test]
+async fn test_recovery_leaves_a_journal_every_owner_has_not_released() {
+    let directory = tempfile::tempdir().unwrap();
+    let backend = backend(directory.path());
+    let journal = backend.multipart_journal(&Digest::of(b"package"));
+    std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
+    std::fs::write(&journal, []).unwrap();
+    let first = backend.owners.own(journal.clone());
+    let second = backend.owners.own(journal.clone());
+
+    drop(second);
+    assert_eq!(backend.recover_multipart_uploads().await.unwrap(), 0);
+    assert!(journal.exists());
+
+    drop(first);
+    assert_eq!(backend.recover_multipart_uploads().await.unwrap(), 0);
+    assert!(!journal.exists());
 }

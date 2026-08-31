@@ -695,8 +695,9 @@ the AWS provider chain rather than the endpoint URL.
 Blobs are immutable and keyed by their sha256. A write stages to `data_dir/blob-staging`, hashes as it streams, then
 uses a conditional create for `<prefix>/sha256/<digest>`: one `PUT` below `multipart_threshold_bytes`, bounded
 concurrent parts above it. Peryx journals multipart upload IDs under the staging directory so a commit interrupted after
-creation can resume. Reads stream ranged `GET`s. An explicit blob verification downloads and hashes the complete object;
-normal reads do not add a second digest pass.
+creation can resume. That directory is node-private: startup treats every journal in it as this node's own work, so two
+peryx processes must never share a `data_dir`. Reads stream ranged `GET`s. An explicit blob verification downloads and
+hashes the complete object; normal reads do not add a second digest pass.
 
 ### Credentials
 
@@ -731,6 +732,38 @@ later write of the same content observes the existing digest key. Configure buck
 backups for the object bytes, and keep an independent recovery point for Peryx's local metadata store.
 `peryx backup create` rejects an S3-backed configuration before writing a backup; it does not snapshot the `[blob]`
 selection or the metadata that refers to those objects.
+
+### Abandoned multipart uploads
+
+A process that exits partway through a multipart commit leaves the upload open, and the object store bills its uploaded
+parts until something completes or aborts it. Before a writer serves traffic it scans
+`data_dir/blob-staging/s3-multipart` and aborts every journaled upload no commit in that process owns. A journal
+outlives an abort the endpoint rejects, and the next startup retries it; a completed commit removes its own journal, so
+recovery never touches a published blob. A read-only replica commits no blobs of its own and skips the pass.
+
+The journal lands after `CreateMultipartUpload` returns its ID, so a crash inside that window leaves an upload peryx has
+no local record of. No later start can find it, and the backstop belongs on the bucket: give it an
+`AbortIncompleteMultipartUpload` lifecycle rule.
+
+```json
+{
+  "Rules": [
+    {
+      "ID": "peryx-abort-incomplete-multipart-uploads",
+      "Status": "Enabled",
+      "Filter": {
+        "Prefix": "prod/"
+      },
+      "AbortIncompleteMultipartUpload": {
+        "DaysAfterInitiation": 7
+      }
+    }
+  ]
+}
+```
+
+Match `Prefix` to your `[blob].prefix`, and keep `DaysAfterInitiation` clear of your slowest upload: the rule aborts by
+age alone and cannot tell an abandoned upload from one still streaming.
 
 ## `[availability]`
 

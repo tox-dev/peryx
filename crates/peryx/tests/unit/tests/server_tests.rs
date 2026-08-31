@@ -24,7 +24,7 @@ use crate::config::{
 };
 use crate::server::{
     build_indexes_with_plugins, build_router_with_plugins, build_state_with_plugins, check_config_with_plugins,
-    recover_job_attempts,
+    recover_blob_uploads, recover_job_attempts,
 };
 #[cfg(feature = "composition-pypi")]
 use crate::tests::support::plugins_with_inactive_owner;
@@ -573,6 +573,30 @@ fn test_recover_job_attempts_only_updates_writers(
         state.serving.meta.get_job_run(&id).unwrap().unwrap().state,
         expected_state
     );
+}
+
+/// A malformed journal is removed as soon as recovery reads it, so its survival shows the replica
+/// skipped the pass rather than that an abort failed.
+#[rstest]
+#[case::writer(false, false)]
+#[case::read_only(true, true)]
+#[tokio::test]
+async fn test_recover_blob_uploads_skips_a_read_only_replica(#[case] read_only: bool, #[case] kept: bool) {
+    let dir = tempfile::tempdir().unwrap();
+    let journal = dir
+        .path()
+        .join("blob-staging")
+        .join("s3-multipart")
+        .join("0".repeat(64));
+    std::fs::create_dir_all(journal.parent().unwrap()).unwrap();
+    std::fs::write(&journal, []).unwrap();
+    let state = build_state(&s3_blob_config(&dir)).unwrap();
+    let mut state = Arc::into_inner(state).expect("newly built state has no other owners");
+    state.set_read_only(read_only).unwrap();
+
+    assert_eq!(recover_blob_uploads(&state).await.unwrap(), 0);
+
+    assert_eq!(journal.exists(), kept);
 }
 
 #[test]
