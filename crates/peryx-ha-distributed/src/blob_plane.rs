@@ -15,7 +15,8 @@ use crate::blob::BlobTransport;
 use crate::blob_availability::{BlobAvailability, ReferencedBlob, blob_availability};
 use crate::blob_fetch::{FetchOutcome, FetchReport, fetch_missing};
 use crate::blob_placement::{FetchPlan, plan_blob_fetch};
-use crate::blob_pull::{PullError, pull_ranged_blob};
+use crate::blob_pull::{ChunkFailure, ChunkUnavailable};
+use crate::blob_stage::{DEFAULT_RANGED_PULL_BUDGET, StagedPullError, pull_blob_staged};
 use crate::error::SyncError;
 use crate::protocol::{PlacementAvailability, PlacementDescriptor};
 use crate::{TransportError, apply_placement_event, record_artifact_placement};
@@ -223,7 +224,9 @@ async fn probe_deferred_blob<T: BlobTransport>(
     }
 }
 
-/// Source exhaustion leaves the blob pending; length and verification failures fail closed.
+/// Source exhaustion leaves the blob pending; length and verification failures fail closed. The bytes
+/// reach storage through a staged, budgeted pipeline, so peak memory follows the range size rather than
+/// the blob's.
 async fn pull_one_ranged<T: BlobTransport>(
     meta: &MetaStore,
     blobs: &BlobStorage,
@@ -234,25 +237,54 @@ async fn pull_one_ranged<T: BlobTransport>(
     report: &mut BlobPlaneReport,
 ) -> Result<(), SyncError> {
     let transports: Vec<&T> = dcs.iter().filter_map(|dc| sources.delegates.get(dc)).collect();
-    // Bound reassembly with the trusted journal size, never a peer advertisement.
+    // Bound the transfer with the trusted journal size, never a peer advertisement.
     let total_length = usize::try_from(size).expect("a blob fits addressable memory");
-    let reason = match pull_ranged_blob(&transports, digest, total_length).await {
-        Ok(bytes) => {
-            commit_blob(blobs, meta, digest, size, bytes.to_vec()).await?;
+    let artifact = ArtifactDigest::from_sha256(digest.as_str()).expect("a journal digest is canonical sha256 hex");
+    let catalog = meta.blob_chunk_digest(&artifact)?;
+    let pull = pull_blob_staged(
+        blobs,
+        &transports,
+        digest,
+        total_length,
+        catalog.as_ref(),
+        DEFAULT_RANGED_PULL_BUDGET,
+    )
+    .await;
+    let reason = match pull {
+        Ok(_) => {
+            // Publish placement after durable bytes; the primary can resupply replicas recorded as `Proxy`.
+            record_artifact_placement(meta, digest.as_str(), ArtifactSource::Proxy, true)?;
             report.fetched += 1;
             return Ok(());
         }
-        Err(PullError::Exhausted { .. }) => {
-            report.pending += 1;
-            return Ok(());
+        Err(StagedPullError::Stage(error)) => return Err(SyncError::Blob(error)),
+        Err(StagedPullError::DigestMismatch { .. }) => "blob_digest_mismatch",
+        Err(StagedPullError::RangeUnavailable(unavailable)) => {
+            let Some(reason) = terminal_range_reason(&unavailable) else {
+                report.pending += 1;
+                return Ok(());
+            };
+            reason
         }
-        Err(PullError::Piece(_)) => "range_length_mismatch",
-        Err(PullError::Reassembly(_)) => "reassembly_failed",
     };
     Err(SyncError::BlobFetchFailed {
         reason,
         digest: digest.as_str().to_owned(),
     })
+}
+
+/// A source that failed at the transport may recover, so the blob stays pending. A source that served the
+/// wrong length or wrong chunk bytes will serve them again, so the pass fails closed.
+fn terminal_range_reason(unavailable: &ChunkUnavailable) -> Option<&'static str> {
+    let mut reason = None;
+    for (_, failure) in &unavailable.failures {
+        match failure {
+            ChunkFailure::Transport(_) => return None,
+            ChunkFailure::WrongLength { .. } => reason = Some("range_length_mismatch"),
+            ChunkFailure::DigestMismatch => reason = Some("chunk_digest_mismatch"),
+        }
+    }
+    reason
 }
 
 /// Omits unparseable digests from pulls; [`advance_blob_frontier`] still holds the frontier below them.

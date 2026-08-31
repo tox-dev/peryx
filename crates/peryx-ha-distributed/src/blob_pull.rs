@@ -62,23 +62,6 @@ async fn reassemble_pass<T: BlobTransport + ?Sized>(
     reassemble_verified(&pieces, total_length, expected).map_err(PullError::Reassembly)
 }
 
-// Bounds each ranged response before whole-blob verification.
-const RANGED_CHUNK_BYTES: usize = 8 * 1024 * 1024;
-
-/// `total_length` bounds reassembly allocation and must come from trusted metadata, not a peer.
-///
-/// # Errors
-/// [`PullError`] when every source is exhausted for a range, a fetched range is the wrong length, or the
-/// reassembled blob does not verify against `digest`.
-pub async fn pull_ranged_blob<T: BlobTransport + ?Sized>(
-    sources: &[&T],
-    digest: &Digest,
-    total_length: usize,
-) -> Result<Bytes, PullError> {
-    let ranges = chunk_ranges(total_length, RANGED_CHUNK_BYTES);
-    pull_ranged(sources, digest, &ranges, total_length, digest).await
-}
-
 /// A zero-length blob yields no ranges and verifies as empty.
 #[must_use]
 pub fn chunk_ranges(total_length: usize, chunk: usize) -> Vec<ByteRange> {
@@ -103,7 +86,7 @@ pub enum ChunkFailure {
 pub struct ChunkUnavailable {
     pub index: usize,
     pub range: ByteRange,
-    /// Failures in source order.
+    /// Each attempted source in attempt order, indexed into the caller's source slice.
     pub failures: Vec<(usize, ChunkFailure)>,
 }
 

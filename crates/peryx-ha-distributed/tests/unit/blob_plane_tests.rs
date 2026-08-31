@@ -12,7 +12,7 @@ use axum::response::IntoResponse as _;
 use bytes::Bytes;
 use peryx_ha::{ArtifactSource, BackendId, BackendLocation, BlobPlacementKey, BlobPlacementTransition, DataCenterId};
 use peryx_identity::ArtifactDigest;
-use peryx_storage::blob::{BlobStorage, Digest};
+use peryx_storage::blob::{BlobStorage, ChunkedDigest, Digest};
 use peryx_storage::meta::{DriverBlobReference, JournalEntry, MetaStore};
 
 use crate::blob::{BlobRequest, BlobTransport, CapacityLimited, LoopbackBlobSource};
@@ -86,6 +86,12 @@ fn seed_verified_placement_on(meta: &MetaStore, digest: &Digest, dc: &str, backe
         20,
     )
     .unwrap();
+}
+
+fn seed_chunk_catalog(meta: &MetaStore, digest: &Digest, content: &[u8]) {
+    let artifact = ArtifactDigest::from_sha256(digest.as_str()).unwrap();
+    meta.put_blob_chunk_digest(&artifact, &ChunkedDigest::of(content, NonZeroU64::new(4).unwrap()))
+        .unwrap();
 }
 
 fn nz(n: usize) -> NonZeroUsize {
@@ -519,7 +525,7 @@ async fn test_pull_outstanding_rejects_a_ranged_blob_a_peer_corrupts() {
     assert!(matches!(
         error,
         SyncError::BlobFetchFailed { reason, digest: failed }
-            if reason == "reassembly_failed" && failed == digest.as_str()
+            if reason == "blob_digest_mismatch" && failed == digest.as_str()
     ));
     assert!(blobs.head(&digest).await.unwrap().is_none());
 }
@@ -551,6 +557,96 @@ async fn test_pull_outstanding_rejects_a_ranged_range_of_the_wrong_length() {
         SyncError::BlobFetchFailed { reason, digest: failed }
             if reason == "range_length_mismatch" && failed == digest.as_str()
     ));
+}
+
+#[tokio::test]
+async fn test_pull_outstanding_ranges_a_catalogued_blob_over_its_chunk_boundaries() {
+    let (_dir, meta, blobs) = stores();
+    let bytes = b"catalogued-ranged-blob";
+    let digest = Digest::of(bytes);
+    seed_serial(&meta, 0, &[(digest.as_str(), bytes.len() as u64)]);
+    seed_verified_placement(&meta, &digest, "dc-a", bytes.len() as u64);
+    seed_verified_placement(&meta, &digest, "dc-b", bytes.len() as u64);
+    seed_chunk_catalog(&meta, &digest, bytes);
+    let delegates = HashMap::from([
+        ("dc-a".to_owned(), loopback(&digest, bytes)),
+        ("dc-b".to_owned(), loopback(&digest, bytes)),
+    ]);
+    let sources = BlobSources {
+        simple: &empty_source(),
+        delegates: &delegates,
+        local_dc: "dc-a",
+    };
+
+    let report = pull_outstanding(&sources, &meta, &blobs, nz(10), nz(2)).await.unwrap();
+
+    assert_eq!(report, BlobPlaneReport { fetched: 1, pending: 0 });
+    assert!(blobs.verify(&digest).await.unwrap());
+}
+
+#[tokio::test]
+async fn test_pull_outstanding_rejects_a_catalogued_blob_no_peer_serves_intact() {
+    let (_dir, meta, blobs) = stores();
+    let bytes = b"12345";
+    let digest = Digest::of(bytes);
+    seed_serial(&meta, 0, &[(digest.as_str(), bytes.len() as u64)]);
+    seed_verified_placement(&meta, &digest, "dc-a", bytes.len() as u64);
+    seed_verified_placement(&meta, &digest, "dc-b", bytes.len() as u64);
+    seed_chunk_catalog(&meta, &digest, bytes);
+    let delegates = HashMap::from([
+        ("dc-a".to_owned(), mislabeled(&digest, b"67890")),
+        ("dc-b".to_owned(), mislabeled(&digest, b"67890")),
+    ]);
+    let sources = BlobSources {
+        simple: &empty_source(),
+        delegates: &delegates,
+        local_dc: "dc-a",
+    };
+
+    let error = pull_outstanding(&sources, &meta, &blobs, nz(10), nz(2))
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        SyncError::BlobFetchFailed { reason, digest: failed }
+            if reason == "chunk_digest_mismatch" && failed == digest.as_str()
+    ));
+    assert!(blobs.head(&digest).await.unwrap().is_none());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_pull_outstanding_reports_a_stage_the_local_store_refuses() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let dir = tempfile::tempdir().unwrap();
+    let meta = crate::support::distributed_meta(dir.path().join("peryx.redb"));
+    let root = dir.path().join("blobs");
+    std::fs::create_dir_all(&root).unwrap();
+    let blobs = BlobStorage::filesystem(root.clone());
+    let bytes = b"unstageable";
+    let digest = Digest::of(bytes);
+    seed_serial(&meta, 0, &[(digest.as_str(), bytes.len() as u64)]);
+    seed_verified_placement(&meta, &digest, "dc-a", bytes.len() as u64);
+    seed_verified_placement(&meta, &digest, "dc-b", bytes.len() as u64);
+    let delegates = HashMap::from([
+        ("dc-a".to_owned(), loopback(&digest, bytes)),
+        ("dc-b".to_owned(), loopback(&digest, bytes)),
+    ]);
+    let sources = BlobSources {
+        simple: &empty_source(),
+        delegates: &delegates,
+        local_dc: "dc-a",
+    };
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+    let error = pull_outstanding(&sources, &meta, &blobs, nz(10), nz(2))
+        .await
+        .unwrap_err();
+
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(matches!(error, SyncError::Blob(_)));
 }
 
 #[tokio::test]

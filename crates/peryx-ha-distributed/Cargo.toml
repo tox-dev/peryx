@@ -62,6 +62,10 @@ name = "failover_drain"
 harness = false
 
 [[bench]]
+name = "ranged_pull"
+harness = false
+
+[[bench]]
 name = "write_ack"
 harness = false
 

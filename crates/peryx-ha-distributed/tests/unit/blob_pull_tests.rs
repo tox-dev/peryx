@@ -6,9 +6,7 @@ use peryx_storage::blob::{ChunkedDigest, Digest};
 
 use crate::blob::{BlobRequest, BlobTransport, ByteRange};
 use crate::blob_piece::PieceError;
-use crate::blob_pull::{
-    ChunkFailure, ChunkUnavailable, PullError, chunk_ranges, pull_chunk_verified, pull_ranged, pull_ranged_blob,
-};
+use crate::blob_pull::{ChunkFailure, ChunkUnavailable, PullError, chunk_ranges, pull_chunk_verified, pull_ranged};
 use crate::blob_reassembly::ReassemblyError;
 use crate::peer::TransportError;
 
@@ -214,39 +212,6 @@ async fn test_pull_ranged_verifies_the_empty_blob_from_zero_ranges() {
     let source = serve(b"");
 
     let bytes = pull_ranged(&[&source], &expected, &[], 0, &expected).await;
-
-    assert_eq!(bytes, Ok(Bytes::new()));
-}
-
-#[tokio::test]
-async fn test_pull_ranged_blob_chunks_and_verifies_the_whole() {
-    let content = b"0123456789";
-    let expected = Digest::of(content);
-    let source = serve(content);
-
-    let bytes = pull_ranged_blob(&[&source], &expected, content.len()).await;
-
-    assert_eq!(bytes, Ok(Bytes::from_static(content)));
-}
-
-#[tokio::test]
-async fn test_pull_ranged_blob_falls_through_to_the_next_source() {
-    let content = b"0123456789";
-    let expected = Digest::of(content);
-    let down = fail(TransportError::Timeout);
-    let up = serve(content);
-
-    let bytes = pull_ranged_blob(&[&down, &up], &expected, content.len()).await;
-
-    assert_eq!(bytes, Ok(Bytes::from_static(content)));
-}
-
-#[tokio::test]
-async fn test_pull_ranged_blob_verifies_the_empty_blob() {
-    let expected = Digest::of(b"");
-    let source = serve(b"");
-
-    let bytes = pull_ranged_blob(&[&source], &expected, 0).await;
 
     assert_eq!(bytes, Ok(Bytes::new()));
 }
