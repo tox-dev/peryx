@@ -119,6 +119,10 @@ fn test_cache_error_user_message_describes_store_and_policy_errors() {
         cache::CacheError::FileExists("pkg-1.0.whl".to_owned()).user_message(),
         "file \"pkg-1.0.whl\" already exists with different content"
     );
+    assert_eq!(
+        cache::CacheError::ProvenanceMismatch("pkg-1.0.whl".to_owned()).user_message(),
+        "file \"pkg-1.0.whl\" already exists with different attestations"
+    );
     let config = PolicyConfig {
         block_resources: vec!["flask".to_owned()],
         ..PolicyConfig::default()

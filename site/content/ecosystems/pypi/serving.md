@@ -119,12 +119,17 @@ API entry (a `data-provenance` attribute in HTML), pointing at the provenance ob
 The URL is peryx's own, alongside the file's download URL: `.../files/{sha256}/{filename}.provenance`, the same
 digest-addressed shape as the `.metadata` sibling.
 
-### Digest-addressed provenance
+### Provenance belongs to the publication
 
-The provenance route finds a distribution's stored bundle by its SHA-256 digest in one keyed lookup. It does not scan
-the project's releases. The route serves `{"version": 1, "attestation_bundles": [...]}` with the
-`application/vnd.pypi.integrity.v1+json` media type and caches it as immutable because one digest names one byte
-sequence.
+A bundle is what one publisher attested about one release, not a property of the distribution's bytes, so peryx records
+it against the publication that carried it: the hosted index, the normalized project, the artifact digest, and the
+filename. Two hosted indexes can accept different bundles for byte-identical distributions, and each route serves its
+own; neither inherits the other's. The blob store still deduplicates the bundle bytes underneath when they match.
+
+The route resolves the requesting index's publication in one keyed lookup rather than scanning the project's releases.
+It serves `{"version": 1, "attestation_bundles": [...]}` with the `application/vnd.pypi.integrity.v1+json` media type
+and caches it as immutable, because that publication's bundle never moves: peryx has no path that rewrites one, and a
+re-upload of the same bytes carrying different attestations is refused rather than applied.
 
 An upstream provenance URL is mutable even though the distribution digest is not. Repository policy can leave that URL
 direct or replace it with a local route. The local route can proxy each request or retain and revalidate the body.

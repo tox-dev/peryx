@@ -225,7 +225,6 @@ fn test_count_then_delete_project_cache_reports_and_removes_each_row() {
         project_status_records: 1,
         file_url_records: 1,
         metadata_records: 1,
-        provenance_records: 0,
     };
     assert_eq!(
         meta.count_project_cache_purge("pypi", "flask", &file_digests, &metadata_digests)
@@ -251,17 +250,31 @@ fn test_count_then_delete_project_cache_reports_and_removes_each_row() {
 }
 
 #[test]
-fn test_delete_project_cache_counts_and_removes_the_provenance_row() {
+fn test_delete_project_cache_leaves_a_hosted_publications_bundle_alone() {
     let (_dir, meta) = store();
     let file_digest = "a".repeat(64);
-    meta.put_provenance(&file_digest, &"b".repeat(64), 16).unwrap();
+    let bundle = "b".repeat(64);
+    meta.put_provenance(
+        "hosted",
+        "flask",
+        &file_digest,
+        "flask-1.0.whl",
+        crate::store::ProvenanceSibling {
+            provenance_sha256: &bundle,
+            size: 16,
+        },
+    )
+    .unwrap();
 
-    let counts = meta
-        .delete_project_cache("pypi", "flask", std::slice::from_ref(&file_digest), &[])
+    meta.delete_project_cache("pypi", "flask", std::slice::from_ref(&file_digest), &[])
         .unwrap();
 
-    assert_eq!(counts.provenance_records, 1);
-    assert!(meta.get_provenance(&file_digest).unwrap().is_none());
+    assert_eq!(
+        meta.get_provenance("hosted", "flask", &file_digest, "flask-1.0.whl")
+            .unwrap(),
+        Some((bundle, 16)),
+        "purging a cached project that mirrors the same bytes is not the hosted publication's deletion"
+    );
 }
 
 #[test]

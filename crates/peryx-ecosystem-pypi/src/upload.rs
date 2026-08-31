@@ -21,7 +21,7 @@ use peryx_storage::blob::{BlobError, BlobStaged, BlobStorage, Digest};
 use peryx_storage::meta::{MetaError, MetaStore};
 
 use crate::store::PypiStore as _;
-use crate::store::{Guard, MetadataSibling, ProvenanceSibling, PublishedFile};
+use crate::store::{Guard, MetadataSibling, ProvenanceSibling, PublishedFile, PublishedState};
 use serde::{Deserialize, Serialize};
 
 pub use peryx_core::TrashInfo;
@@ -180,6 +180,8 @@ pub enum UploadStoreError {
     Parse(#[from] serde_json::Error),
     #[error("file already exists with different content: {0}")]
     FileExists(String),
+    #[error("file already exists with different attestations: {0}")]
+    ProvenanceMismatch(String),
 }
 
 /// # Errors
@@ -543,8 +545,9 @@ fn store_record(
         }),
         quota: quota.map(crate::quota::PendingQuota::record),
     };
-    meta.publish_file_if(outbox, &file, |existing| {
-        upload_conflict(existing, content_digest.as_str(), &filename)
+    let bundle = provenance.map(|(digest, _size)| digest.as_str());
+    meta.publish_file_if(outbox, &file, |stored| {
+        upload_conflict(stored, content_digest.as_str(), &filename, bundle)
     })
 }
 
@@ -594,24 +597,38 @@ fn store_record_with_commit(
         }),
         quota: quota.map(crate::quota::PendingQuota::record),
     };
-    crate::store::publish_file_with_commit_if(meta, outbox, &file, webhook, |existing| {
-        upload_conflict(existing, content_digest.as_str(), &filename)
+    let bundle = provenance.as_ref().map(|(digest, _size)| digest.as_str());
+    crate::store::publish_file_with_commit_if(meta, outbox, &file, webhook, |stored| {
+        upload_conflict(stored, content_digest.as_str(), &filename, bundle)
     })
 }
 
 /// The upload publish precondition, evaluated inside the write transaction: a first upload commits,
 /// an identical re-upload is an idempotent no-op, and the same filename with different bytes is a
 /// conflict - so two concurrent different-content uploads cannot both publish.
-fn upload_conflict(existing: Option<&[u8]>, digest: &str, filename: &str) -> Result<Guard, UploadStoreError> {
-    let Some(existing) = existing else {
+///
+/// Identical means identical attestations too. PEP 740 binds a bundle to a publication, not to the
+/// distribution's bytes, so a re-upload that adds, drops, or swaps one is asking to rewrite what the
+/// index already told its readers about who signed the release. Reporting that as a no-op would leave
+/// the publisher believing the new bundle is being served, so it is a conflict until an authorized
+/// provenance-update path exists to carry it.
+fn upload_conflict(
+    stored: PublishedState<'_>,
+    digest: &str,
+    filename: &str,
+    bundle: Option<&str>,
+) -> Result<Guard, UploadStoreError> {
+    let Some(existing) = stored.record else {
         return Ok(Guard::Commit);
     };
     let uploaded: Uploaded = serde_json::from_slice(existing)?;
-    if uploaded.file.hashes.get("sha256").is_some_and(|hash| hash == digest) {
-        Ok(Guard::Skip)
-    } else {
-        Err(UploadStoreError::FileExists(filename.to_owned()))
+    if uploaded.file.hashes.get("sha256").is_none_or(|hash| hash != digest) {
+        return Err(UploadStoreError::FileExists(filename.to_owned()));
     }
+    if stored.provenance != bundle {
+        return Err(UploadStoreError::ProvenanceMismatch(filename.to_owned()));
+    }
+    Ok(Guard::Skip)
 }
 
 fn parse_filename(filename: &str) -> Result<DistributionFilename, UploadError> {

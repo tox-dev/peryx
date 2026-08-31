@@ -10,8 +10,8 @@ fn test_cache_purge_project_dry_run_keeps_records() {
     app::cache(&config, &purge_resource_command(false), &mut out).unwrap();
     assert_eq!(
         String::from_utf8(out).unwrap(),
-        "action\ttarget\tindex\tresource\tindex_pages\tproject_records\tfile_url_records\tmetadata_records\tprovenance_records\n\
- dry-run\tresource\tpypi\tflask\t1\t1\t1\t1\t0\n"
+        "action\ttarget\tindex\tresource\tindex_pages\tproject_records\tfile_url_records\tmetadata_records\n\
+ dry-run\tresource\tpypi\tflask\t1\t1\t1\t1\n"
     );
     let meta = MetaStore::open_existing(config.data_dir.join("peryx.redb")).unwrap();
     assert!(meta.get_index("pypi/flask").unwrap().is_some());
@@ -35,8 +35,8 @@ fn test_cache_purge_resource_missing_target_is_empty() {
     .unwrap();
     assert_eq!(
         String::from_utf8(out).unwrap(),
-        "action\ttarget\tindex\tresource\tindex_pages\tproject_records\tfile_url_records\tmetadata_records\tprovenance_records\n\
- dry-run\tresource\tpypi\tmissing\t0\t0\t0\t0\t0\n"
+        "action\ttarget\tindex\tresource\tindex_pages\tproject_records\tfile_url_records\tmetadata_records\n\
+ dry-run\tresource\tpypi\tmissing\t0\t0\t0\t0\n"
     );
 }
 
@@ -69,7 +69,7 @@ fn test_cache_purge_project_preserves_shared_and_uploaded_blobs() {
     assert!(
         String::from_utf8(out)
             .unwrap()
-            .contains("dry-run\tresource\tpypi\tflask\t1\t1\t0\t0\t0\n")
+            .contains("dry-run\tresource\tpypi\tflask\t1\t1\t0\t0\n")
     );
 }
 
@@ -178,7 +178,7 @@ fn test_cache_purge_project_ignores_files_without_sha256() {
     assert!(
         String::from_utf8(out)
             .unwrap()
-            .contains("dry-run\tresource\tpypi\tflask\t1\t0\t0\t0\t0\n")
+            .contains("dry-run\tresource\tpypi\tflask\t1\t0\t0\t0\n")
     );
 }
 
@@ -186,8 +186,7 @@ fn test_cache_purge_project_ignores_files_without_sha256() {
 fn test_cache_purge_project_reports_write_errors() {
     let (_dir, config, _digest) = cache_fixture();
     let mut out = bounded_output(
-        "action\ttarget\tindex\tresource\tindex_pages\tproject_records\tfile_url_records\tmetadata_records\tprovenance_records\n"
-            .len(),
+        "action\ttarget\tindex\tresource\tindex_pages\tproject_records\tfile_url_records\tmetadata_records\n".len(),
     );
     let err = app::cache(&config, &purge_resource_command(false), &mut out).unwrap_err();
     assert!(err.to_string().contains("failed to write whole buffer"));
@@ -200,8 +199,8 @@ fn test_cache_purge_project_yes_removes_metadata_records() {
     app::cache(&config, &purge_resource_command(true), &mut out).unwrap();
     assert_eq!(
         String::from_utf8(out).unwrap(),
-        "action\ttarget\tindex\tresource\tindex_pages\tproject_records\tfile_url_records\tmetadata_records\tprovenance_records\n\
- removed\tresource\tpypi\tflask\t1\t1\t1\t1\t0\n"
+        "action\ttarget\tindex\tresource\tindex_pages\tproject_records\tfile_url_records\tmetadata_records\n\
+ removed\tresource\tpypi\tflask\t1\t1\t1\t1\n"
     );
     let meta = MetaStore::open_existing(config.data_dir.join("peryx.redb")).unwrap();
     assert!(meta.get_index("pypi/flask").unwrap().is_none());

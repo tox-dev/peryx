@@ -40,9 +40,9 @@ pub(crate) use uploads::publish_file_in_txn;
 pub(crate) use uploads::publish_file_with_commit_if;
 pub(crate) use uploads::scan_upload_policy_snapshot;
 pub use uploads::{
-    Guard, MetadataSibling, PromotedRelease, ProvenanceSibling, PublishedFile, UploadMutation, delete_upload,
-    get_upload, list_overrides, list_upload_entries, mutate_uploads, promote_files_checked, publish_file_if,
-    put_upload, scan_override_records, scan_upload_records, set_override,
+    Guard, MetadataSibling, PromotedRelease, ProvenanceSibling, PublishedFile, PublishedState, UploadMutation,
+    delete_upload, get_upload, list_overrides, list_upload_entries, mutate_uploads, promote_files_checked,
+    publish_file_if, put_upload, scan_override_records, scan_upload_records, set_override,
 };
 pub(crate) use uploads::{UploadMutationPlan, mutate_uploads_and_overrides};
 
@@ -62,8 +62,11 @@ const METADATA_PREFIX: &str = "pypi\u{0}d\u{0}";
 /// is scoped this way because it is the publisher's word about its own URL, not a property of the
 /// artifact bytes: two indexes serving the same wheel must not inherit each other's sidecar.
 const PUBLICATION_PREFIX: &str = "pypi\u{0}n\u{0}";
-/// PEP 740 provenance objects, keyed by artifact digest so a `.provenance` request resolves by
-/// digest without scanning a project's uploads.
+/// One hosted publication's PEP 740 provenance bundle, keyed by
+/// `{index}/{normalized}/{sha256}/{filename}`, holding the bundle blob's digest and byte length.
+/// A bundle is what one publisher attested about its own release, not a property of the artifact
+/// bytes, so two hosted indexes carrying the same wheel keep separate bundles; the blob store
+/// deduplicates the bytes underneath when they happen to be identical.
 const PROVENANCE_PREFIX: &str = "pypi\u{0}a\u{0}";
 /// Mutable provenance objects advertised by upstream indexes, keyed by source, artifact digest,
 /// filename, and owning project.
@@ -111,8 +114,12 @@ fn publication_key(index: &str, normalized: &str, sha256: &str, filename: &str) 
     format!("{}{sha256}/{filename}", publication_prefix(index, normalized))
 }
 
-fn provenance_key(sha256: &str) -> String {
-    format!("{PROVENANCE_PREFIX}{sha256}")
+fn provenance_prefix(index: &str, normalized: &str) -> String {
+    format!("{PROVENANCE_PREFIX}{index}/{normalized}/")
+}
+
+fn provenance_key(index: &str, normalized: &str, sha256: &str, filename: &str) -> String {
+    format!("{}{sha256}/{filename}", provenance_prefix(index, normalized))
 }
 
 fn upstream_attestation_prefix(index: &str, sha256: &str, filename: &str) -> String {
@@ -237,6 +244,12 @@ fn publication_value(metadata: Option<&(String, String)>, source: &str, upstream
 
 fn provenance_value(provenance_sha256: &str, size: u64) -> String {
     format!("{provenance_sha256}\n{size}")
+}
+
+/// Split a provenance record into `(bundle sha256, byte length)`, rejecting one missing either field.
+fn split_provenance_value(value: &str) -> Option<(&str, u64)> {
+    let (sha256, size) = value.split_once('\n')?;
+    Some((sha256, size.parse().ok()?))
 }
 
 /// The `PyPI` metadata surface as inherent-style methods on the neutral [`MetaStore`].
@@ -379,20 +392,28 @@ pub trait PypiStore {
         visit: impl FnMut(&str, &str) -> Result<(), E>,
     ) -> Result<(), peryx_storage::meta::MetaScanError<E>>;
 
-    /// Record a distribution's PEP 740 provenance sibling, keyed by the artifact digest.
+    /// Record one hosted publication's PEP 740 provenance bundle.
     ///
     /// # Errors
     /// Returns a store error if the write fails.
     fn put_provenance(
         &self,
+        index: &str,
+        normalized: &str,
         artifact_sha256: &str,
-        provenance_sha256: &str,
-        size: u64,
+        filename: &str,
+        bundle: ProvenanceSibling<'_>,
     ) -> Result<(), peryx_storage::meta::MetaError>;
 
     /// # Errors
     /// Returns a store error if the read fails.
-    fn get_provenance(&self, artifact_sha256: &str) -> Result<Option<(String, u64)>, peryx_storage::meta::MetaError>;
+    fn get_provenance(
+        &self,
+        index: &str,
+        normalized: &str,
+        artifact_sha256: &str,
+        filename: &str,
+    ) -> Result<Option<(String, u64)>, peryx_storage::meta::MetaError>;
 
     /// # Errors
     /// Returns a store or decode error when the record cannot be read.
@@ -483,7 +504,8 @@ pub trait PypiStore {
     ) -> Result<ProjectCachePurgeCounts, peryx_storage::meta::MetaError>;
 
     /// Publish a file - its sibling, record, project, and journal entry - only if `guard` accepts the
-    /// filename's current record, checked inside the same write transaction. Returns whether it wrote.
+    /// publication as the store holds it, checked inside the same write transaction. Returns whether
+    /// it wrote.
     ///
     /// # Errors
     /// Returns the guard's error, or a store error mapped into it, if the transaction fails.
@@ -491,7 +513,7 @@ pub trait PypiStore {
         &self,
         outbox: bool,
         file: &PublishedFile,
-        guard: impl FnOnce(Option<&[u8]>) -> Result<Guard, E>,
+        guard: impl FnOnce(PublishedState<'_>) -> Result<Guard, E>,
     ) -> Result<bool, E>;
 
     /// # Errors
@@ -717,15 +739,23 @@ impl PypiStore for peryx_storage::meta::MetaStore {
 
     fn put_provenance(
         &self,
+        index: &str,
+        normalized: &str,
         artifact_sha256: &str,
-        provenance_sha256: &str,
-        size: u64,
+        filename: &str,
+        bundle: ProvenanceSibling<'_>,
     ) -> Result<(), peryx_storage::meta::MetaError> {
-        files::put_provenance(self, artifact_sha256, provenance_sha256, size)
+        files::put_provenance(self, index, normalized, artifact_sha256, filename, bundle)
     }
 
-    fn get_provenance(&self, artifact_sha256: &str) -> Result<Option<(String, u64)>, peryx_storage::meta::MetaError> {
-        files::get_provenance(self, artifact_sha256)
+    fn get_provenance(
+        &self,
+        index: &str,
+        normalized: &str,
+        artifact_sha256: &str,
+        filename: &str,
+    ) -> Result<Option<(String, u64)>, peryx_storage::meta::MetaError> {
+        files::get_provenance(self, index, normalized, artifact_sha256, filename)
     }
 
     fn list_upstream_attestations(
@@ -863,7 +893,7 @@ impl PypiStore for peryx_storage::meta::MetaStore {
         &self,
         outbox: bool,
         file: &PublishedFile,
-        guard: impl FnOnce(Option<&[u8]>) -> Result<Guard, E>,
+        guard: impl FnOnce(PublishedState<'_>) -> Result<Guard, E>,
     ) -> Result<bool, E> {
         uploads::publish_file_if(self, outbox, file, guard)
     }

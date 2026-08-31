@@ -15,6 +15,10 @@ use crate::upload::{StagedUpload, UploadStoreError, commit_publish, prepare, sta
 const FILENAME: &str = "Flask-1.0-py3-none-any.whl";
 
 fn attestations_field(filename: &str, sha256: &str) -> String {
+    signed_attestations_field(filename, sha256, "YmFy")
+}
+
+fn signed_attestations_field(filename: &str, sha256: &str, signature: &str) -> String {
     let statement = STANDARD.encode(
         json!({
             "_type": "https://in-toto.io/Statement/v1",
@@ -27,9 +31,28 @@ fn attestations_field(filename: &str, sha256: &str) -> String {
     json!([{
         "version": 1,
         "verification_material": {"certificate": "Zm9v", "transparency_entries": []},
-        "envelope": {"statement": statement, "signature": "YmFy"},
+        "envelope": {"statement": statement, "signature": signature},
     }])
     .to_string()
+}
+
+/// Publish `wheel` onto the `hosted` index, attesting it under `signature` when one is given.
+fn publish_wheel(
+    meta: &MetaStore,
+    blobs: &BlobStorage,
+    wheel: &[u8],
+    signature: Option<&str>,
+) -> Result<bool, UploadStoreError> {
+    let (_staged_dir, staged) = super::support::staged_upload(wheel);
+    let sha = staged.blob.digest().as_str().to_owned();
+    let mut form = staged_form(wheel);
+    form.attestations = signature.map(|signature| signed_attestations_field(FILENAME, &sha, signature));
+    store_prepared_blocking(
+        meta,
+        blobs,
+        "hosted",
+        prepare(form, staged, "root/hosted", 1000).unwrap(),
+    )
 }
 
 fn blake2_256(bytes: &[u8]) -> String {
@@ -95,7 +118,7 @@ fn test_store_prepared_blocking_stages_and_records_the_provenance_bundle() {
 
     assert!(stored);
     let (provenance_sha, size) = meta
-        .get_provenance(&sha)
+        .get_provenance("hosted", "flask", &sha, FILENAME)
         .unwrap()
         .expect("the provenance row is written");
     let bytes = blobs
@@ -221,4 +244,37 @@ async fn test_store_prepared_quota_releases_when_the_existing_record_is_invalid(
         meta.list_upload_entries("hosted", "flask").unwrap(),
         vec![(FILENAME.to_owned(), b"invalid-json".to_vec())]
     );
+}
+
+#[rstest::rstest]
+#[case::added(None, Some("YmFy"))]
+#[case::removed(Some("YmFy"), None)]
+#[case::changed(Some("YmFy"), Some("YmF6"))]
+fn test_same_bytes_reupload_rejects_a_move_in_the_publications_attestations(
+    #[case] first: Option<&str>,
+    #[case] second: Option<&str>,
+) {
+    let wheel = wheel_metadata("Flask", "1.0");
+    let dir = tempfile::tempdir().unwrap();
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
+    assert!(publish_wheel(&meta, &blobs, &wheel, first).unwrap());
+
+    let result = publish_wheel(&meta, &blobs, &wheel, second);
+
+    assert!(
+        matches!(&result, Err(UploadStoreError::ProvenanceMismatch(filename)) if filename == FILENAME),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn test_same_bytes_reupload_of_the_same_bundle_is_an_idempotent_no_op() {
+    let wheel = wheel_metadata("Flask", "1.0");
+    let dir = tempfile::tempdir().unwrap();
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
+    assert!(publish_wheel(&meta, &blobs, &wheel, Some("YmFy")).unwrap());
+
+    assert!(!publish_wheel(&meta, &blobs, &wheel, Some("YmFy")).unwrap());
 }

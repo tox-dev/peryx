@@ -4,8 +4,8 @@ use peryx_ha::{ArtifactPlacement, ArtifactPlacementStore};
 use peryx_storage::meta::{ArtifactOrigin, ArtifactSource, MetaError, MetaScanError, MetaStore};
 
 use super::{
-    FILE_PREFIX, METADATA_PREFIX, PROVENANCE_PREFIX, PUBLICATION_PREFIX, file_key, file_source_value, metadata_key,
-    provenance_key, provenance_value, publication_key,
+    FILE_PREFIX, METADATA_PREFIX, PROVENANCE_PREFIX, PUBLICATION_PREFIX, ProvenanceSibling, file_key,
+    file_source_value, metadata_key, provenance_key, provenance_value, publication_key, split_provenance_value,
 };
 
 /// Where a `PyPI` artifact's bytes came from, mapped once into the neutral [`ArtifactSource`] so no
@@ -223,30 +223,42 @@ pub fn scan_metadata_records<E>(
     Ok(())
 }
 
-/// Record a distribution's PEP 740 provenance sibling: keyed by the artifact's digest, storing the
-/// provenance blob's own sha256 and its byte length.
+/// Record one hosted publication's PEP 740 provenance bundle, storing the bundle blob's own sha256
+/// and its byte length.
+///
+/// The bundle is scoped to the publication rather than to the artifact digest because it is what one
+/// publisher attested about its own release: two hosted indexes may accept different bundles for
+/// byte-identical distributions, and neither may serve the other's.
 ///
 /// # Errors
 /// Returns a store error if the write fails.
 pub fn put_provenance(
     meta: &MetaStore,
+    index: &str,
+    normalized: &str,
     artifact_sha256: &str,
-    provenance_sha256: &str,
-    size: u64,
+    filename: &str,
+    bundle: ProvenanceSibling<'_>,
 ) -> Result<(), MetaError> {
     meta.put_driver_value(
-        &provenance_key(artifact_sha256),
-        provenance_value(provenance_sha256, size).as_bytes(),
+        &provenance_key(index, normalized, artifact_sha256, filename),
+        provenance_value(bundle.provenance_sha256, bundle.size).as_bytes(),
     )
 }
 
 /// # Errors
 /// Returns a store error if the read fails.
-pub fn get_provenance(meta: &MetaStore, artifact_sha256: &str) -> Result<Option<(String, u64)>, MetaError> {
+pub fn get_provenance(
+    meta: &MetaStore,
+    index: &str,
+    normalized: &str,
+    artifact_sha256: &str,
+    filename: &str,
+) -> Result<Option<(String, u64)>, MetaError> {
     Ok(meta
-        .get_driver_value(&provenance_key(artifact_sha256))?
+        .get_driver_value(&provenance_key(index, normalized, artifact_sha256, filename))?
         .and_then(|raw| String::from_utf8(raw).ok())
-        .and_then(|value| split_provenance(&value)))
+        .and_then(|value| split_provenance_value(&value).map(|(sha256, size)| (sha256.to_owned(), size))))
 }
 
 /// # Errors
@@ -261,13 +273,6 @@ pub fn scan_provenance_records<E>(
         }
     }
     Ok(())
-}
-
-/// Split a provenance value into `(provenance sha256, byte length)`, rejecting a record missing
-/// either field.
-fn split_provenance(value: &str) -> Option<(String, u64)> {
-    let (sha256, size) = value.split_once('\n')?;
-    Some((sha256.to_owned(), size.parse().ok()?))
 }
 
 fn split_file_source(key: &str, value: &str) -> Result<FileSource, MetaError> {

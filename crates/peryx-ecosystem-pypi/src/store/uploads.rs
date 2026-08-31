@@ -5,8 +5,8 @@ use peryx_storage::meta::{DriverTxn, MetaError, MetaScanError, MetaStore, QuotaE
 use super::journal::JournalEntry;
 use super::overrides::{FileOverride, OverrideMutation};
 use super::{
-    OVERRIDE_PREFIX, UPLOAD_PREFIX, metadata_key, override_key, project_key, provenance_key, provenance_value,
-    upload_key,
+    OVERRIDE_PREFIX, UPLOAD_PREFIX, metadata_key, override_key, project_key, provenance_key, provenance_prefix,
+    provenance_value, split_provenance_value, upload_key,
 };
 use crate::distribution_version_segment;
 
@@ -20,6 +20,7 @@ pub struct MetadataSibling<'a> {
 }
 
 /// The PEP 740 provenance blob published alongside a distribution that carried attestations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProvenanceSibling<'a> {
     /// The provenance blob's own sha256, which serving and the blob reference both key on.
     pub provenance_sha256: &'a str,
@@ -57,6 +58,8 @@ pub struct PublishedFile<'a> {
 
 /// Everything one release promotion writes to the store.
 pub struct PromotedRelease<'a> {
+    /// The hosted index the release is copied from, whose provenance bundles the promotion inherits.
+    pub source: &'a str,
     /// The hosted index the release lands on.
     pub index: &'a str,
     /// The project's normalized name, which keys its rows.
@@ -86,6 +89,16 @@ pub enum UploadMutation {
     Delete,
 }
 
+/// One publication as the store already holds it, for a precondition that has to weigh more than the
+/// served record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PublishedState<'a> {
+    /// The served file record, `None` when the filename is unpublished on this index.
+    pub record: Option<&'a [u8]>,
+    /// The provenance bundle blob's sha256, when this publication carries one.
+    pub provenance: Option<&'a str>,
+}
+
 /// Publish a file, but only if `guard` accepts the filename's current stored record.
 ///
 /// Its metadata sibling, its record, its project, and its journal entry go in together, and the guard
@@ -97,9 +110,9 @@ pub enum UploadMutation {
 /// that transaction too, so a concurrent upload of the same name cannot slip between the duplicate
 /// check and the publish and overwrite a record whose bytes a client already resolved.
 ///
-/// `guard` sees the file's current record (`None` when unpublished) and returns [`Guard::Commit`] to
-/// publish, [`Guard::Skip`] to treat it as an idempotent no-op, or an error to reject it. Returns
-/// whether the file was written.
+/// `guard` sees the publication as the store holds it - its record and its provenance bundle, both
+/// `None` when unpublished - and returns [`Guard::Commit`] to publish, [`Guard::Skip`] to treat it as
+/// an idempotent no-op, or an error to reject it. Returns whether the file was written.
 ///
 /// # Errors
 /// Returns the guard's error, or a store error mapped into it, if the transaction fails.
@@ -107,7 +120,7 @@ pub fn publish_file_if<E: From<MetaError>>(
     meta: &MetaStore,
     outbox: bool,
     file: &PublishedFile,
-    guard: impl FnOnce(Option<&[u8]>) -> Result<Guard, E>,
+    guard: impl FnOnce(PublishedState<'_>) -> Result<Guard, E>,
 ) -> Result<bool, E> {
     let Some(reservation) = file.quota else {
         return meta.commit_driver_txn(|txn| publish_file_in_txn(txn, outbox, file, guard, None));
@@ -125,7 +138,7 @@ pub fn publish_file_with_commit_if<E: From<MetaError>>(
     outbox: bool,
     file: &PublishedFile,
     webhook: Option<peryx_storage::meta::WebhookEventIntent>,
-    guard: impl FnOnce(Option<&[u8]>) -> Result<Guard, E>,
+    guard: impl FnOnce(PublishedState<'_>) -> Result<Guard, E>,
 ) -> Result<peryx_storage::meta::DriverCommit<bool>, E> {
     let Some(reservation) = file.quota else {
         return meta.commit_driver_txn_with_commit(|txn| publish_file_in_txn(txn, outbox, file, guard, webhook));
@@ -167,11 +180,20 @@ pub fn publish_file_in_txn<E: From<MetaError>>(
     txn: &mut DriverTxn,
     outbox: bool,
     file: &PublishedFile,
-    guard: impl FnOnce(Option<&[u8]>) -> Result<Guard, E>,
+    guard: impl FnOnce(PublishedState<'_>) -> Result<Guard, E>,
     webhook: Option<peryx_storage::meta::WebhookEventIntent>,
 ) -> Result<(bool, Vec<Vec<u8>>), E> {
     let upload = upload_key(file.index, file.normalized, file.filename);
-    match guard(txn.get(&upload)?.as_deref())? {
+    let provenance = provenance_key(file.index, file.normalized, file.artifact_sha256, file.filename);
+    let record = txn.get(&upload)?;
+    let stored_provenance = txn
+        .get(&provenance)?
+        .and_then(|raw| String::from_utf8(raw).ok())
+        .and_then(|value| value.split_once('\n').map(|(digest, _size)| digest.to_owned()));
+    match guard(PublishedState {
+        record: record.as_deref(),
+        provenance: stored_provenance.as_deref(),
+    })? {
         Guard::Skip => Ok((false, Vec::new())),
         Guard::Commit => {
             if let Some(webhook) = webhook {
@@ -184,7 +206,7 @@ pub fn publish_file_in_txn<E: From<MetaError>>(
             }
             if let Some(sibling) = &file.provenance {
                 let value = provenance_value(sibling.provenance_sha256, sibling.size);
-                txn.put(&provenance_key(file.artifact_sha256), value.as_bytes())?;
+                txn.put(&provenance, value.as_bytes())?;
                 txn.reference_blob(sibling.provenance_sha256, sibling.size);
             }
             txn.put(&upload, file.record)?;
@@ -255,6 +277,7 @@ pub fn promote_files_checked<E: From<MetaError>>(
                     if let Some(size) = release.blob_sizes.get(token) {
                         txn.reference_blob(token, *size);
                     }
+                    copy_provenance_in_txn(txn, release, filename, token)?;
                     written += 1;
                     journal.extend(journal_entries(outbox, || {
                         journal_bytes(
@@ -275,6 +298,37 @@ pub fn promote_files_checked<E: From<MetaError>>(
         txn.put(&project, release.display.as_bytes())?;
         Ok((written, journal))
     })
+}
+
+/// Carry a promoted publication's provenance bundle onto the target index.
+///
+/// The bundle belongs to the publication, so the target gets its own row and its own blob reference:
+/// deleting either publication leaves the other's bundle readable, and the blob is reclaimable only
+/// once the last publication releases it. A source row too damaged to name its blob fails the
+/// promotion rather than publishing a target that advertises provenance nothing backs.
+fn copy_provenance_in_txn(
+    txn: &mut DriverTxn,
+    release: &PromotedRelease<'_>,
+    filename: &str,
+    artifact_sha256: &str,
+) -> Result<(), MetaError> {
+    let source = provenance_key(release.source, release.normalized, artifact_sha256, filename);
+    let Some(raw) = txn.get(&source)? else {
+        return Ok(());
+    };
+    let (bundle, size) =
+        std::str::from_utf8(&raw)
+            .ok()
+            .and_then(split_provenance_value)
+            .ok_or(MetaError::DriverRecordMissing {
+                key: source,
+                field: "provenance",
+            })?;
+    txn.reference_blob(bundle, size);
+    txn.put(
+        &provenance_key(release.index, release.normalized, artifact_sha256, filename),
+        &raw,
+    )
 }
 
 /// Apply a per-file mutation to every uploaded record of `normalized` on `index`, journaling
@@ -424,6 +478,24 @@ pub fn list_upload_entries(
     Ok(entries)
 }
 
+/// Drop the provenance bundle a deleted publication held, so the blob's last reference goes with the
+/// publication that claimed it and the orphan collector can reclaim the bytes.
+///
+/// The row is keyed by the artifact digest the record carries, which only the record itself names, so
+/// the release matches on the filename segment instead of decoding opaque record bytes.
+fn release_provenance_in_txn(
+    txn: &mut DriverTxn,
+    index: &str,
+    normalized: &str,
+    filename: &str,
+) -> Result<(), MetaError> {
+    let published = format!("/{filename}");
+    txn.prefix(&provenance_prefix(index, normalized))?
+        .into_iter()
+        .filter(|(key, _)| key.ends_with(&published))
+        .try_for_each(|(key, _)| txn.remove(&key).map(|_| ()))
+}
+
 /// # Errors
 /// Returns a store error if the write fails.
 pub fn delete_upload(
@@ -438,6 +510,7 @@ pub fn delete_upload(
         let key = upload_key(index, normalized, filename);
         if let Some(record) = txn.get(&key)? {
             txn.remove(&key)?;
+            release_provenance_in_txn(txn, index, normalized, filename)?;
             Ok((
                 true,
                 journal_entries(outbox, || {

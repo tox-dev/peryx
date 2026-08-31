@@ -128,8 +128,9 @@ without them advertises none. `{route}` below is the index's route.
 
 #### Route
 
-`GET /{route}/files/{sha256}/{filename}.provenance` returns the provenance object. A digest and filename with no hosted
-or registered upstream provenance returns `404`.
+`GET /{route}/files/{sha256}/{filename}.provenance` returns the provenance object this route's publication carries. A
+digest and filename this route publishes with no hosted or registered upstream provenance returns `404`, even when
+another index publishes the same bytes with a bundle.
 
 #### Body
 

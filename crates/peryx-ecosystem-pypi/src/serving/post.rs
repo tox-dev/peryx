@@ -12,6 +12,7 @@ use peryx_ha::{AuthorityEpoch, CommittedBlob};
 use peryx_identity::Action;
 use peryx_index::Index;
 use peryx_policy::{Policy, PolicyAction, PolicyDenial};
+use peryx_storage::blob::Digest;
 use peryx_storage::meta::{IntentPhase, OperationClaim, OperationResult, OperationState, QuotaLimit, QuotaLimits};
 
 use crate::cache::{self, CacheError};
@@ -245,6 +246,7 @@ async fn admit_and_store(
         .file
         .size
         .expect("a prepared upload carries its byte size");
+    let bundle = prepared.provenance.as_deref().map(Digest::of);
     let request = admission::AdmissionRequest {
         tenant: &index.route,
         authority: project,
@@ -252,6 +254,7 @@ async fn admit_and_store(
         digest: prepared.digest.as_str(),
         size: incoming,
         ingress_dc: &admission::ingress_dc(state.availability_topology()),
+        provenance: bundle.as_ref().map(Digest::as_str),
     };
     let now = (state.clock)();
     let intent = match admission::admit(
@@ -572,30 +575,26 @@ fn emit_store_side_effects(state: &Arc<ServingState>, audit: &UploadAudit<'_>, s
     .emit();
 }
 
-/// Map a store failure to its client response and security observation. A different-content collision is
-/// a `400`; any other fault is a `500`, and the operation is left pending so a retry re-drives it.
+/// Map a store failure to its client response and security observation. A collision with what the
+/// filename already publishes - different bytes, or different attestations over the same bytes - is a
+/// `400`; any other fault is a `500`, and the operation is left pending so a retry re-drives it.
 fn upload_store_error_response(audit: &UploadAudit<'_>, err: CacheError) -> Response {
     match err {
-        CacheError::FileExists(filename) => {
-            security_upload_event(
-                audit.headers,
-                audit.actor.as_deref(),
-                audit.route,
-                Some(audit.hosted),
-                "denied",
-            )
-            .resource(Some(audit.project))
-            .group(Some(audit.version))
-            .artifact(Some(&filename))
-            .digest(Some(audit.digest))
-            .reason(Some("file exists with different content"))
-            .emit();
-            (
-                StatusCode::BAD_REQUEST,
-                format!("File already exists: {filename:?} has different content; use a different filename"),
-            )
-                .into_response()
-        }
+        CacheError::FileExists(filename) => upload_denied_response(
+            audit,
+            &filename,
+            "file exists with different content",
+            format!("File already exists: {filename:?} has different content; use a different filename"),
+        ),
+        CacheError::ProvenanceMismatch(filename) => upload_denied_response(
+            audit,
+            &filename,
+            "file exists with different attestations",
+            format!(
+                "File already exists: {filename:?} was published with different attestations; \
+                 a re-upload cannot change them"
+            ),
+        ),
         err => {
             let reason = err.user_message();
             security_upload_event(
@@ -615,6 +614,25 @@ fn upload_store_error_response(audit: &UploadAudit<'_>, err: CacheError) -> Resp
             cache_error_response(&err, CacheContext::upload(audit.route, audit.project))
         }
     }
+}
+
+/// The `400` for an upload the store refused because the filename already publishes something else,
+/// with the denial recorded against the colliding filename rather than the requested one.
+fn upload_denied_response(audit: &UploadAudit<'_>, filename: &str, reason: &str, message: String) -> Response {
+    security_upload_event(
+        audit.headers,
+        audit.actor.as_deref(),
+        audit.route,
+        Some(audit.hosted),
+        "denied",
+    )
+    .resource(Some(audit.project))
+    .group(Some(audit.version))
+    .artifact(Some(filename))
+    .digest(Some(audit.digest))
+    .reason(Some(reason))
+    .emit();
+    (StatusCode::BAD_REQUEST, message).into_response()
 }
 
 fn emit_upload_status_event(audit: &UploadAudit<'_>, block: &UploadStatusBlock) {

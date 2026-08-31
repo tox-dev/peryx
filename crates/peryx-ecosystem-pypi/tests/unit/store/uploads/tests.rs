@@ -8,8 +8,8 @@ use rstest::rstest;
 
 use super::{
     FileOverride, Guard, MetaError, MetaStore, MetadataSibling, OverrideMutation, PromotedRelease, ProvenanceSibling,
-    PublishError, PublishedFile, UploadMutation, UploadMutationPlan, map_publish_error, mutate_uploads_and_overrides,
-    override_key, upload_key,
+    PublishError, PublishedFile, PublishedState, UploadMutation, UploadMutationPlan, map_publish_error,
+    mutate_uploads_and_overrides, override_key, provenance_key, upload_key,
 };
 use crate::Yanked;
 use crate::store::{PypiStore as _, read_journal_entries};
@@ -53,8 +53,15 @@ fn test_publish_file_if_commit_writes_record_sibling_project_and_serial() {
     let (_dir, meta) = store();
 
     let wrote = meta
-        .publish_file_if(true, &published(), |existing| {
-            assert!(existing.is_none(), "a first publish sees no prior record");
+        .publish_file_if(true, &published(), |stored| {
+            assert_eq!(
+                stored,
+                PublishedState {
+                    record: None,
+                    provenance: None
+                },
+                "a first publish sees no prior record"
+            );
             Ok::<_, MetaError>(Guard::Commit)
         })
         .unwrap();
@@ -83,7 +90,7 @@ fn test_publish_file_without_an_outbox_writes_no_journal() {
     let (_dir, meta) = store();
 
     let wrote = meta
-        .publish_file_if(false, &published(), |_existing| Ok::<_, MetaError>(Guard::Commit))
+        .publish_file_if(false, &published(), |_stored| Ok::<_, MetaError>(Guard::Commit))
         .unwrap();
 
     assert!(wrote);
@@ -103,7 +110,7 @@ fn test_publish_file_if_commits_quota_with_a_new_record() {
                 quota: Some(&reservation),
                 ..published()
             },
-            |_existing| Ok::<_, MetaError>(Guard::Commit),
+            |_stored| Ok::<_, MetaError>(Guard::Commit),
         )
         .unwrap();
 
@@ -120,8 +127,13 @@ fn test_publish_file_if_commits_quota_with_a_new_record() {
 #[test]
 fn test_publish_file_if_releases_quota_for_a_duplicate() {
     let (_dir, meta) = store();
-    let commit_if_missing =
-        |existing: Option<&[u8]>| Ok::<_, MetaError>(if existing.is_some() { Guard::Skip } else { Guard::Commit });
+    let commit_if_missing = |stored: PublishedState<'_>| {
+        Ok::<_, MetaError>(if stored.record.is_some() {
+            Guard::Skip
+        } else {
+            Guard::Commit
+        })
+    };
     meta.publish_file_if(true, &published(), commit_if_missing).unwrap();
     let reservation = reservation(&meta);
 
@@ -155,7 +167,7 @@ fn test_publish_file_if_leaves_quota_pending_after_a_guard_error() {
             quota: Some(&reservation),
             ..published()
         },
-        |_existing| Err::<Guard, _>(MetaError::DriverPrecondition("conflict".to_owned())),
+        |_stored| Err::<Guard, _>(MetaError::DriverPrecondition("conflict".to_owned())),
     );
 
     assert!(matches!(result, Err(MetaError::DriverPrecondition(reason)) if reason == "conflict"));
@@ -180,7 +192,7 @@ fn test_publish_file_if_rejects_a_used_quota_reservation() {
             quota: Some(&reservation),
             ..published()
         },
-        |_existing| Ok::<_, MetaError>(Guard::Commit),
+        |_stored| Ok::<_, MetaError>(Guard::Commit),
     );
 
     assert!(matches!(result, Err(MetaError::DriverPrecondition(reason)) if reason.contains("already committed")));
@@ -234,7 +246,7 @@ fn test_publish_file_if_commit_without_a_metadata_sibling_writes_no_sibling() {
                 metadata: None,
                 ..published()
             },
-            |_existing| Ok::<_, MetaError>(Guard::Commit),
+            |_stored| Ok::<_, MetaError>(Guard::Commit),
         )
         .unwrap();
 
@@ -255,7 +267,7 @@ fn test_publish_file_if_commit_without_a_metadata_sibling_writes_no_sibling() {
 fn test_publish_file_if_records_artifact_and_metadata_blobs() {
     let (_dir, meta) = store();
 
-    meta.publish_file_if(true, &published(), |_existing| Ok::<_, MetaError>(Guard::Commit))
+    meta.publish_file_if(true, &published(), |_stored| Ok::<_, MetaError>(Guard::Commit))
         .unwrap();
 
     assert_eq!(
@@ -286,12 +298,13 @@ fn test_publish_file_if_writes_the_provenance_row_and_references_its_blob() {
             }),
             ..published()
         },
-        |_existing| Ok::<_, MetaError>(Guard::Commit),
+        |_stored| Ok::<_, MetaError>(Guard::Commit),
     )
     .unwrap();
 
     assert_eq!(
-        meta.get_provenance("artifact-sha").unwrap(),
+        meta.get_provenance("hosted", "flask", "artifact-sha", "flask-1.0.whl")
+            .unwrap(),
         Some(("provenance-sha".to_owned(), 16))
     );
     assert!(
@@ -306,13 +319,76 @@ fn test_publish_file_if_writes_the_provenance_row_and_references_its_blob() {
 }
 
 #[test]
+fn test_publish_file_if_scopes_the_provenance_row_to_the_publishing_index() {
+    let (_dir, meta) = store();
+
+    for (index, bundle) in [("hosted", "staging-bundle"), ("mirror", "mirror-bundle")] {
+        meta.publish_file_if(
+            true,
+            &PublishedFile {
+                index,
+                provenance: Some(ProvenanceSibling {
+                    provenance_sha256: bundle,
+                    size: 16,
+                }),
+                ..published()
+            },
+            |_stored| Ok::<_, MetaError>(Guard::Commit),
+        )
+        .unwrap();
+    }
+
+    assert_eq!(
+        meta.get_provenance("hosted", "flask", "artifact-sha", "flask-1.0.whl")
+            .unwrap(),
+        Some(("staging-bundle".to_owned(), 16)),
+        "the second index publishing the same bytes does not replace the first index's bundle"
+    );
+    assert_eq!(
+        meta.get_provenance("mirror", "flask", "artifact-sha", "flask-1.0.whl")
+            .unwrap(),
+        Some(("mirror-bundle".to_owned(), 16))
+    );
+}
+
+#[test]
+fn test_publish_file_if_shows_the_guard_the_publications_stored_bundle() {
+    let (_dir, meta) = store();
+    let with_bundle = PublishedFile {
+        provenance: Some(ProvenanceSibling {
+            provenance_sha256: "bundle-sha",
+            size: 16,
+        }),
+        ..published()
+    };
+    meta.publish_file_if(true, &with_bundle, |_stored| Ok::<_, MetaError>(Guard::Commit))
+        .unwrap();
+
+    meta.publish_file_if(true, &with_bundle, |stored| {
+        assert_eq!(
+            stored,
+            PublishedState {
+                record: Some(b"record"),
+                provenance: Some("bundle-sha"),
+            }
+        );
+        Ok::<_, MetaError>(Guard::Skip)
+    })
+    .unwrap();
+}
+
+#[test]
 fn test_publish_file_if_without_provenance_writes_no_provenance_row() {
     let (_dir, meta) = store();
 
-    meta.publish_file_if(true, &published(), |_existing| Ok::<_, MetaError>(Guard::Commit))
+    meta.publish_file_if(true, &published(), |_stored| Ok::<_, MetaError>(Guard::Commit))
         .unwrap();
 
-    assert!(meta.get_provenance("artifact-sha").unwrap().is_none());
+    assert!(
+        meta.get_provenance("hosted", "flask", "artifact-sha", "flask-1.0.whl")
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]
@@ -320,7 +396,7 @@ fn test_publish_file_if_skip_leaves_the_store_unchanged() {
     let (_dir, meta) = store();
 
     let wrote = meta
-        .publish_file_if(true, &published(), |_existing| Ok::<_, MetaError>(Guard::Skip))
+        .publish_file_if(true, &published(), |_stored| Ok::<_, MetaError>(Guard::Skip))
         .unwrap();
 
     assert!(!wrote);
@@ -336,7 +412,7 @@ fn test_publish_file_if_skip_leaves_the_store_unchanged() {
 fn test_publish_file_if_propagates_a_guard_rejection_without_writing() {
     let (_dir, meta) = store();
 
-    let result = meta.publish_file_if(true, &published(), |_existing| {
+    let result = meta.publish_file_if(true, &published(), |_stored| {
         Err::<Guard, _>(MetaError::from(
             serde_json::from_str::<serde_json::Value>("{").unwrap_err(),
         ))
@@ -364,6 +440,7 @@ fn test_promote_files_checked_writes_the_release_project_and_journal() {
         .promote_files_checked(
             true,
             &PromotedRelease {
+                source: "staging",
                 index: "hosted",
                 normalized: "flask",
                 display: "Flask",
@@ -399,6 +476,108 @@ fn test_promote_files_checked_writes_the_release_project_and_journal() {
     assert_eq!(journal.version.as_deref(), Some("1.0"));
     assert_eq!(journal.filename.as_deref(), Some("flask-1.0.whl"));
     assert_eq!(journal.submitted_at_unix, 123);
+}
+
+#[test]
+fn test_promote_files_checked_copies_the_source_publications_bundle() {
+    let (_dir, meta) = store();
+    meta.publish_file_if(
+        true,
+        &PublishedFile {
+            index: "staging",
+            provenance: Some(ProvenanceSibling {
+                provenance_sha256: "bundle-sha",
+                size: 16,
+            }),
+            ..published()
+        },
+        |_stored| Ok::<_, MetaError>(Guard::Commit),
+    )
+    .unwrap();
+
+    promote(&meta, "staging").unwrap();
+
+    assert_eq!(
+        meta.get_provenance("prod", "flask", "artifact-sha", "flask-1.0.whl")
+            .unwrap(),
+        Some(("bundle-sha".to_owned(), 16)),
+        "the target publication inherits the bundle it was promoted with"
+    );
+    assert_eq!(
+        meta.get_provenance("staging", "flask", "artifact-sha", "flask-1.0.whl")
+            .unwrap(),
+        Some(("bundle-sha".to_owned(), 16)),
+        "the source publication keeps its own"
+    );
+    assert!(
+        meta.journal_after(0, 2).unwrap()[1]
+            .blobs
+            .contains(&peryx_storage::meta::DriverBlobReference {
+                sha256: "bundle-sha".to_owned(),
+                size: 16,
+            }),
+        "the target holds its own reference so either deletion leaves the other readable"
+    );
+}
+
+#[test]
+fn test_promote_files_checked_writes_no_bundle_when_the_source_published_none() {
+    let (_dir, meta) = store();
+
+    promote(&meta, "staging").unwrap();
+
+    assert_eq!(
+        meta.get_provenance("prod", "flask", "artifact-sha", "flask-1.0.whl")
+            .unwrap(),
+        None
+    );
+}
+
+#[test]
+fn test_promote_files_checked_rejects_a_source_bundle_it_cannot_read() {
+    let (_dir, meta) = store();
+    meta.put_driver_value(
+        &provenance_key("staging", "flask", "artifact-sha", "flask-1.0.whl"),
+        b"bundle-sha",
+    )
+    .unwrap();
+
+    let err = promote(&meta, "staging").unwrap_err();
+
+    assert!(matches!(
+        err,
+        MetaError::DriverRecordMissing {
+            field: "provenance",
+            ..
+        }
+    ));
+    assert!(
+        meta.get_driver_value(&upload_key("prod", "flask", "flask-1.0.whl"))
+            .unwrap()
+            .is_none(),
+        "the promotion is abandoned rather than publishing a target with no readable bundle"
+    );
+}
+
+fn promote(meta: &MetaStore, source: &str) -> Result<usize, MetaError> {
+    let records = vec![(
+        "flask-1.0.whl".to_owned(),
+        "artifact-sha".to_owned(),
+        br#"{"version":"1.0"}"#.to_vec(),
+    )];
+    meta.promote_files_checked(
+        true,
+        &PromotedRelease {
+            source,
+            index: "prod",
+            normalized: "flask",
+            display: "Flask",
+            records: &records,
+            blob_sizes: &BTreeMap::from([("artifact-sha".to_owned(), 8)]),
+            submitted_at_unix: 123,
+        },
+        |_filename, _digest, _existing| Ok::<_, MetaError>(Guard::Commit),
+    )
 }
 
 #[test]
@@ -722,6 +901,42 @@ fn test_delete_upload_removes_the_record_and_journals_delete_file() {
     assert_eq!(
         read_journal_entries(&meta, 0, 1).unwrap().entries[0].version.as_deref(),
         Some("1.0")
+    );
+}
+
+#[test]
+fn test_delete_upload_releases_only_its_own_publications_bundle() {
+    let (_dir, meta) = store();
+    for filename in ["flask-1.0.whl", "flask-2.0.whl"] {
+        meta.publish_file_if(
+            true,
+            &PublishedFile {
+                filename,
+                provenance: Some(ProvenanceSibling {
+                    provenance_sha256: "bundle-sha",
+                    size: 16,
+                }),
+                ..published()
+            },
+            |_stored| Ok::<_, MetaError>(Guard::Commit),
+        )
+        .unwrap();
+    }
+
+    meta.delete_upload(true, "hosted", "flask", "flask-1.0.whl", 123)
+        .unwrap();
+
+    assert_eq!(
+        meta.get_provenance("hosted", "flask", "artifact-sha", "flask-1.0.whl")
+            .unwrap(),
+        None,
+        "the deleted publication releases its bundle reference"
+    );
+    assert_eq!(
+        meta.get_provenance("hosted", "flask", "artifact-sha", "flask-2.0.whl")
+            .unwrap(),
+        Some(("bundle-sha".to_owned(), 16)),
+        "the surviving publication keeps its own"
     );
 }
 

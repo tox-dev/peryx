@@ -104,6 +104,8 @@ pub enum CacheError {
     ArtifactRevoked,
     #[error("file already exists: {0}")]
     FileExists(String),
+    #[error("file already exists with different attestations: {0}")]
+    ProvenanceMismatch(String),
     #[error("file record lacks sha256: {0}")]
     MissingSha256(String),
     #[error("no uploaded files matched source {source_index:?}, project {project:?}, version {version:?}")]
@@ -145,6 +147,7 @@ impl From<upload::UploadStoreError> for CacheError {
             upload::UploadStoreError::Blob(err) => Self::Blob(err),
             upload::UploadStoreError::Parse(err) => Self::Parse(err),
             upload::UploadStoreError::FileExists(filename) => Self::FileExists(filename),
+            upload::UploadStoreError::ProvenanceMismatch(filename) => Self::ProvenanceMismatch(filename),
         }
     }
 }
@@ -179,6 +182,9 @@ impl CacheError {
                 "no matching cached file or upstream source was found".to_owned()
             }
             Self::FileExists(filename) => format!("file {filename:?} already exists with different content"),
+            Self::ProvenanceMismatch(filename) => {
+                format!("file {filename:?} already exists with different attestations")
+            }
             Self::MissingSha256(filename) => format!("uploaded file {filename:?} has no sha256 hash"),
             Self::NoPromotableFiles {
                 source_index,

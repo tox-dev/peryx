@@ -3,7 +3,8 @@ use std::collections::BTreeMap;
 use peryx_storage::meta::{ArtifactOrigin as _, ArtifactSource, ByteAvailability};
 
 use super::{
-    FilePublication, FileSource, MetaStore, MetadataClaim, PypiArtifactOrigin, metadata_key, split_file_source,
+    FilePublication, FileSource, MetaStore, MetadataClaim, ProvenanceSibling, PypiArtifactOrigin, metadata_key,
+    split_file_source,
 };
 use crate::store::PypiStore as _;
 
@@ -144,38 +145,80 @@ fn test_scan_metadata_records_skips_a_non_utf8_record() {
     assert_eq!(seen, vec!["good".to_owned()], "the non-UTF-8 record is skipped");
 }
 
+fn bundle(provenance_sha256: &str) -> ProvenanceSibling<'_> {
+    ProvenanceSibling {
+        provenance_sha256,
+        size: 16,
+    }
+}
+
 #[test]
-fn test_put_and_get_provenance_roundtrips_the_sibling() {
+fn test_put_and_get_provenance_roundtrips_the_bundle() {
     let (_dir, meta) = store();
-    assert_eq!(meta.get_provenance("wheelsha").unwrap(), None);
-    meta.put_provenance("wheelsha", "provsha", 16).unwrap();
     assert_eq!(
-        meta.get_provenance("wheelsha").unwrap(),
+        meta.get_provenance("hosted", "pkg", "wheelsha", "pkg-1.0.whl").unwrap(),
+        None
+    );
+    meta.put_provenance("hosted", "pkg", "wheelsha", "pkg-1.0.whl", bundle("provsha"))
+        .unwrap();
+    assert_eq!(
+        meta.get_provenance("hosted", "pkg", "wheelsha", "pkg-1.0.whl").unwrap(),
         Some(("provsha".to_owned(), 16))
+    );
+}
+
+#[test]
+fn test_get_provenance_reads_only_the_publication_it_was_written_for() {
+    let (_dir, meta) = store();
+    meta.put_provenance("hosted", "pkg", "wheelsha", "pkg-1.0.whl", bundle("provsha"))
+        .unwrap();
+
+    assert_eq!(
+        meta.get_provenance("other", "pkg", "wheelsha", "pkg-1.0.whl").unwrap(),
+        None,
+        "a second hosted index publishing the same bytes inherits no bundle"
+    );
+    assert_eq!(
+        meta.get_provenance("hosted", "pkg", "wheelsha", "pkg-2.0.whl").unwrap(),
+        None,
+        "a second filename over the same bytes inherits no bundle"
     );
 }
 
 #[test]
 fn test_get_provenance_rejects_a_record_missing_its_size() {
     let (_dir, meta) = store();
-    meta.put_driver_value(&super::provenance_key("wheelsha"), b"provsha")
-        .unwrap();
-    assert_eq!(meta.get_provenance("wheelsha").unwrap(), None);
+    meta.put_driver_value(
+        &super::provenance_key("hosted", "pkg", "wheelsha", "pkg-1.0.whl"),
+        b"provsha",
+    )
+    .unwrap();
+    assert_eq!(
+        meta.get_provenance("hosted", "pkg", "wheelsha", "pkg-1.0.whl").unwrap(),
+        None
+    );
 }
 
 #[test]
 fn test_scan_provenance_records_visits_valid_and_skips_non_utf8() {
     let (_dir, meta) = store();
-    meta.put_provenance("good", "provsha", 16).unwrap();
-    meta.put_driver_value(&super::provenance_key("bad"), &[0xff, 0xfe])
+    meta.put_provenance("hosted", "pkg", "good", "pkg-1.0.whl", bundle("provsha"))
         .unwrap();
+    meta.put_driver_value(
+        &super::provenance_key("hosted", "pkg", "bad", "pkg-2.0.whl"),
+        &[0xff, 0xfe],
+    )
+    .unwrap();
     let mut seen = Vec::new();
-    meta.scan_provenance_records(|digest, value| {
-        seen.push((digest.to_owned(), value.to_owned()));
+    meta.scan_provenance_records(|key, value| {
+        seen.push((key.to_owned(), value.to_owned()));
         Ok::<(), std::io::Error>(())
     })
     .unwrap();
-    assert_eq!(seen, vec![("good".to_owned(), "provsha\n16".to_owned())]);
+    assert_eq!(
+        seen,
+        vec![("hosted/pkg/good/pkg-1.0.whl".to_owned(), "provsha\n16".to_owned())]
+    );
 }
 
 fn seed_publication(meta: &MetaStore, value: &[u8]) {

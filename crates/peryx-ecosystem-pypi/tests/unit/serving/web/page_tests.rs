@@ -186,7 +186,16 @@ fn rich_project() -> (tempfile::TempDir, Arc<AppState>) {
     state
         .serving
         .meta
-        .put_provenance(artifact.as_str(), provenance_digest.as_str(), provenance.len() as u64)
+        .put_provenance(
+            "hosted",
+            "demo",
+            artifact.as_str(),
+            FILENAME,
+            crate::store::ProvenanceSibling {
+                provenance_sha256: provenance_digest.as_str(),
+                size: provenance.len() as u64,
+            },
+        )
         .unwrap();
     state
         .serving

@@ -162,7 +162,14 @@ fn test_cache_record_counts_counts_each_record_kind() {
         0,
     )
     .unwrap();
-    meta.put_provenance(&"a".repeat(64), &"b".repeat(64), 16).unwrap();
+    meta.put_provenance(
+        "pypi",
+        "flask",
+        &"a".repeat(64),
+        "flask-1.0.whl",
+        provenance_bundle(&"b".repeat(64)),
+    )
+    .unwrap();
     let counts: std::collections::HashMap<String, u64> = cache_record_counts(&meta).unwrap().into_iter().collect();
     assert_eq!(counts["file_url_records"], 1);
     assert_eq!(counts["metadata_records"], 1);
@@ -211,28 +218,38 @@ fn test_referenced_blob_digests_rejects_a_corrupt_upload_record() {
     assert!(referenced_blob_digests(&meta).is_err());
 }
 
+fn provenance_bundle(provenance_sha256: &str) -> crate::store::ProvenanceSibling<'_> {
+    crate::store::ProvenanceSibling {
+        provenance_sha256,
+        size: 16,
+    }
+}
+
 #[test]
 fn test_referenced_blob_digests_includes_the_provenance_blob() {
     let (_dir, meta) = store();
     let provenance_blob = "c".repeat(64);
-    meta.put_provenance(&"a".repeat(64), &provenance_blob, 16).unwrap();
+    meta.put_provenance(
+        "pypi",
+        "flask",
+        DIGEST_A,
+        "flask-1.0.whl",
+        provenance_bundle(&provenance_blob),
+    )
+    .unwrap();
     assert!(referenced_blob_digests(&meta).unwrap().contains(&provenance_blob));
 }
 
 #[rstest]
-#[case::artifact("not-hex", DIGEST_B, "16")]
-#[case::provenance(DIGEST_A, "not-hex", "16")]
-#[case::size(DIGEST_A, DIGEST_B, "invalid")]
-fn test_referenced_blob_digests_rejects_each_corrupt_provenance_field(
-    #[case] artifact_digest: &str,
-    #[case] provenance_digest: &str,
-    #[case] size: &str,
-) {
+#[case::without_size(DIGEST_B.to_owned())]
+#[case::provenance(format!("not-hex\n16"))]
+#[case::size(format!("{DIGEST_B}\ninvalid"))]
+fn test_referenced_blob_digests_rejects_each_corrupt_provenance_field(#[case] value: String) {
     let (_dir, meta) = store();
 
     meta.put_driver_value(
-        &format!("pypi\u{0}a\u{0}{artifact_digest}"),
-        format!("{provenance_digest}\n{size}").as_bytes(),
+        &format!("pypi\u{0}a\u{0}pypi/flask/{DIGEST_A}/flask-1.0.whl"),
+        value.as_bytes(),
     )
     .unwrap();
 
@@ -250,9 +267,11 @@ fn test_fsck_metadata_reports_every_invalid_record_kind() {
     meta.put_upload("pypi", "flask", "flask-1.0.whl", b"not json").unwrap();
     meta.put_driver_value("pypi\u{0}o\u{0}pypi/flask/flask-1.0.whl", b"bogus")
         .unwrap();
-    meta.put_driver_value("pypi\u{0}a\u{0}not-hex", b"abc\n16").unwrap();
+    meta.put_driver_value("pypi\u{0}a\u{0}pypi/flask/not-hex/flask-1.0.whl", b"abc\n16")
+        .unwrap();
 
-    meta.put_provenance(&"a".repeat(64), &"b".repeat(64), 16).unwrap();
+    meta.put_provenance("pypi", "flask", DIGEST_A, "flask-1.0.whl", provenance_bundle(DIGEST_B))
+        .unwrap();
     let mut out = Vec::new();
     let problems = fsck_metadata(&meta, &blobs, &mut out).unwrap();
     assert_eq!(problems, 7, "{}", String::from_utf8_lossy(&out));

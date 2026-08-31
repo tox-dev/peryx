@@ -20,15 +20,25 @@ fn statement(name: &str, sha256: &str) -> String {
 }
 
 pub(super) fn attestations_field(name: &str, sha256: &str) -> String {
+    signed_attestations_field(name, sha256, "YmFy")
+}
+
+/// The same attestation under a chosen signature, so two publishers can attest the same
+/// distribution and be told apart by the bytes peryx stores.
+fn signed_attestations_field(name: &str, sha256: &str, signature: &str) -> String {
     serde_json::json!([{
         "version": 1,
         "verification_material": {"certificate": "Zm9v", "transparency_entries": []},
-        "envelope": {"statement": statement(name, sha256), "signature": "YmFy"},
+        "envelope": {"statement": statement(name, sha256), "signature": signature},
     }])
     .to_string()
 }
 
 pub(super) async fn upload_with_attestations(state: &Arc<AppState>, wheel: &[u8], field: &str) -> StatusCode {
+    upload_with_attestations_to(state, "/root/pypi/", wheel, field).await
+}
+
+async fn upload_with_attestations_to(state: &Arc<AppState>, route: &str, wheel: &[u8], field: &str) -> StatusCode {
     let fields = vec![
         (":action", "file_upload"),
         ("name", "peryxpkg"),
@@ -37,7 +47,7 @@ pub(super) async fn upload_with_attestations(state: &Arc<AppState>, wheel: &[u8]
         ("attestations", field),
     ];
     let (content_type, body) = multipart_body(&fields, Some((FILENAME, wheel)));
-    post_upload(state, "/root/pypi/", Some(&upload_auth()), &content_type, body).await
+    post_upload(state, route, Some(&upload_auth()), &content_type, body).await
 }
 
 fn provenance_uri(sha256: &str) -> String {
@@ -57,7 +67,7 @@ async fn test_hosted_provenance_with_a_missing_blob_is_not_found() {
         .state
         .serving
         .meta
-        .get_provenance(digest.as_str())
+        .get_provenance("hosted", "peryxpkg", digest.as_str(), FILENAME)
         .unwrap()
         .unwrap()
         .0;
@@ -139,7 +149,14 @@ async fn test_project_page_flags_an_unreadable_hosted_provenance() {
         upload_with_attestations(&harness.state, &wheel, &attestations_field(FILENAME, &sha256)).await,
         StatusCode::OK
     );
-    let provenance = harness.state.serving.meta.get_provenance(&sha256).unwrap().unwrap().0;
+    let provenance = harness
+        .state
+        .serving
+        .meta
+        .get_provenance("hosted", "peryxpkg", &sha256, FILENAME)
+        .unwrap()
+        .unwrap()
+        .0;
     assert!(
         harness
             .state
@@ -413,4 +430,141 @@ async fn test_required_attestation_audit_publishes_an_upload_without_attestation
     assert_eq!(status, StatusCode::OK);
     let (page, ..) = get(&harness.state, "/root/pypi/simple/peryxpkg/", Some("application/json")).await;
     assert_eq!(page, StatusCode::OK);
+}
+
+const STAGING_SIGNATURE: &str = "c3RhZ2luZw==";
+const PROD_SIGNATURE: &str = "cHJvZA==";
+
+#[tokio::test]
+async fn test_each_hosted_index_serves_the_bundle_its_own_publication_carries() {
+    let h = promotion_harness().await;
+    let wheel = fixture_wheel();
+    let sha256 = Digest::of(&wheel).as_str().to_owned();
+    for (route, signature) in [("staging", STAGING_SIGNATURE), ("prod", PROD_SIGNATURE)] {
+        assert_eq!(
+            upload_with_attestations_to(
+                &h.state,
+                &format!("/{route}/"),
+                &wheel,
+                &signed_attestations_field(FILENAME, &sha256, signature),
+            )
+            .await,
+            StatusCode::OK,
+            "{route} accepts its own publisher's attestation"
+        );
+    }
+
+    for (route, signature) in [("staging", STAGING_SIGNATURE), ("prod", PROD_SIGNATURE)] {
+        let (status, _, body) = get(
+            &h.state,
+            &format!("/{route}/files/{sha256}/{FILENAME}.provenance"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{route}");
+        assert!(
+            body.contains(signature),
+            "{route} serves its own publication's bundle, not the other index's"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_promotion_carries_the_bundle_onto_the_target_publication() {
+    let h = authority_promotion_harness().await;
+    let wheel = fixture_wheel();
+    let sha256 = Digest::of(&wheel).as_str().to_owned();
+    assert_eq!(
+        upload_with_attestations_to(
+            &h.state,
+            "/staging/",
+            &wheel,
+            &signed_attestations_field(FILENAME, &sha256, STAGING_SIGNATURE),
+        )
+        .await,
+        StatusCode::OK
+    );
+
+    assert_eq!(
+        request(
+            &h.state,
+            "PUT",
+            "/prod/peryxpkg/1.0/promote?from=staging",
+            Some(&upload_auth()),
+        )
+        .await,
+        StatusCode::OK
+    );
+
+    let (status, _, body) = get(&h.state, &format!("/prod/files/{sha256}/{FILENAME}.provenance"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains(STAGING_SIGNATURE));
+    let (_, _, page) = get(&h.state, "/prod/simple/peryxpkg/", Some("application/json")).await;
+    let detail: serde_json::Value = serde_json::from_str(&page).unwrap();
+    assert_eq!(
+        detail["files"][0]["provenance"],
+        serde_json::json!(format!("/prod/files/{sha256}/{FILENAME}.provenance")),
+        "the promoted page points at the target's own bundle route"
+    );
+}
+
+#[tokio::test]
+async fn test_reupload_that_adds_attestations_is_rejected() {
+    let h = harness().await;
+    let wheel = fixture_wheel();
+    let sha256 = Digest::of(&wheel).as_str().to_owned();
+    assert_eq!(upload_with_attestations(&h.state, &wheel, "").await, StatusCode::OK);
+
+    assert_eq!(
+        upload_with_attestations(
+            &h.state,
+            &wheel,
+            &signed_attestations_field(FILENAME, &sha256, STAGING_SIGNATURE),
+        )
+        .await,
+        StatusCode::BAD_REQUEST
+    );
+    let (status, ..) = get(&h.state, &provenance_uri(&sha256), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "the rejected bundle was never published");
+}
+
+#[rstest]
+#[case::removed(None)]
+#[case::changed(Some(PROD_SIGNATURE))]
+#[tokio::test]
+async fn test_reupload_cannot_drop_or_replace_the_published_attestations(#[case] second: Option<&str>) {
+    let h = harness().await;
+    let wheel = fixture_wheel();
+    let sha256 = Digest::of(&wheel).as_str().to_owned();
+    assert_eq!(
+        upload_with_attestations(
+            &h.state,
+            &wheel,
+            &signed_attestations_field(FILENAME, &sha256, STAGING_SIGNATURE),
+        )
+        .await,
+        StatusCode::OK
+    );
+
+    let replacement = second.map_or_else(String::new, |signature| {
+        signed_attestations_field(FILENAME, &sha256, signature)
+    });
+    assert_eq!(
+        upload_with_attestations(&h.state, &wheel, &replacement).await,
+        StatusCode::BAD_REQUEST
+    );
+    let (status, _, body) = get(&h.state, &provenance_uri(&sha256), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains(STAGING_SIGNATURE), "the published bundle still stands");
+}
+
+#[tokio::test]
+async fn test_reupload_of_the_same_bytes_and_bundle_stays_idempotent() {
+    let h = harness().await;
+    let wheel = fixture_wheel();
+    let sha256 = Digest::of(&wheel).as_str().to_owned();
+    let field = attestations_field(FILENAME, &sha256);
+    assert_eq!(upload_with_attestations(&h.state, &wheel, &field).await, StatusCode::OK);
+
+    assert_eq!(upload_with_attestations(&h.state, &wheel, &field).await, StatusCode::OK);
 }

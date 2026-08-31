@@ -198,8 +198,13 @@ fn publish(
         expiry_unix: descriptor.expiry_unix,
         now,
     };
-    let guard =
-        |existing: Option<&[u8]>| Ok::<_, FinalizeError>(if existing.is_some() { Guard::Skip } else { Guard::Commit });
+    let guard = |stored: crate::store::PublishedState<'_>| {
+        Ok::<_, FinalizeError>(if stored.record.is_some() {
+            Guard::Skip
+        } else {
+            Guard::Commit
+        })
+    };
     // The terminal-outcome replay is decided before publication, so this commit publishes rather than
     // replays; either way the operation ends published with the same acknowledgement.
     state.meta.commit_finalized_write(write, |txn| {

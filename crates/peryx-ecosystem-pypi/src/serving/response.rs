@@ -352,7 +352,9 @@ fn cache_error_status(err: &CacheError, context: &CacheContext<'_>) -> StatusCod
             StatusCode::NOT_FOUND
         }
         CacheError::OfflineMissing(_) => StatusCode::SERVICE_UNAVAILABLE,
-        CacheError::FileExists(_) | CacheError::AuthoritySuperseded => StatusCode::CONFLICT,
+        CacheError::FileExists(_) | CacheError::ProvenanceMismatch(_) | CacheError::AuthoritySuperseded => {
+            StatusCode::CONFLICT
+        }
         CacheError::NotVolatile | CacheError::Policy(_) => StatusCode::FORBIDDEN,
         CacheError::RateLimited { .. } | CacheError::UpstreamRateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
         CacheError::Parse(_) if matches!(context.operation, "upload storage" | "file removal" | "promotion") => {

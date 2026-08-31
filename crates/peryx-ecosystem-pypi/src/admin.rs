@@ -64,9 +64,9 @@ pub fn referenced_blob_digests(meta: &MetaStore) -> Result<BTreeSet<String>, Str
         Ok::<(), String>(())
     })
     .map_err(crate::error_message)?;
-    meta.scan_provenance_records(|digest, value| {
-        let Some(provenance_digest) = valid_provenance(digest, value) else {
-            return Err(format!("invalid provenance record for digest {digest:?}"));
+    meta.scan_provenance_records(|key, value| {
+        let Some(provenance_digest) = valid_provenance(value) else {
+            return Err(format!("invalid provenance record for publication {key:?}"));
         };
         digests.insert(provenance_digest.to_owned());
         Ok(())
@@ -95,12 +95,9 @@ fn claimed_sidecar(value: &str) -> ClaimedSidecar<'_> {
     }
 }
 
-fn valid_provenance<'a>(artifact_digest: &str, value: &'a str) -> Option<&'a str> {
+fn valid_provenance(value: &str) -> Option<&str> {
     let (provenance_digest, size) = value.split_once('\n')?;
-    (Digest::from_hex(artifact_digest).is_some()
-        && Digest::from_hex(provenance_digest).is_some()
-        && size.parse::<u64>().is_ok())
-    .then_some(provenance_digest)
+    (Digest::from_hex(provenance_digest).is_some() && size.parse::<u64>().is_ok()).then_some(provenance_digest)
 }
 
 /// This driver's cached index pages, each key split into `(index, project)`, for `cache list`/`cache
@@ -298,8 +295,10 @@ fn upload_key_parts<'a>(key: &'a str, index_names: &[&str]) -> Option<(String, &
 }
 
 /// Purge one project's cached records from `index`, keeping any blob a still-cached project or a
-/// hosted upload also references. With `apply`, deletes the records and returns the removed counts;
-/// otherwise counts what a purge would remove. Returns the normalized project name alongside.
+/// hosted upload also references. A hosted publication's provenance bundle is not cache data and is
+/// released with the publication, so a purge never touches it. With `apply`, deletes the records and
+/// returns the removed counts; otherwise counts what a purge would remove. Returns the normalized
+/// project name alongside.
 ///
 /// # Errors
 /// Returns a message when a cached page cannot be read or the store cannot be written.
@@ -328,7 +327,6 @@ pub fn purge_project(meta: &MetaStore, index: &str, project: &str, apply: bool) 
             ("project_records".to_owned(), counts.project_records as u64),
             ("file_url_records".to_owned(), counts.file_url_records as u64),
             ("metadata_records".to_owned(), counts.metadata_records as u64),
-            ("provenance_records".to_owned(), counts.provenance_records as u64),
         ],
     })
 }
@@ -484,10 +482,10 @@ pub fn fsck_metadata(meta: &MetaStore, blobs: &BlobStorage, out: &mut dyn Write)
         Ok::<(), std::io::Error>(())
     })
     .map_err(crate::error_message)?;
-    meta.scan_provenance_records(|digest, value| {
-        if valid_provenance(digest, value).is_none() {
+    meta.scan_provenance_records(|key, value| {
+        if valid_provenance(value).is_none() {
             problems += 1;
-            writeln!(out, "metadata\tpypi\tprovenance\t{digest}\tinvalid record")?;
+            writeln!(out, "metadata\tpypi\tprovenance\t{key}\tinvalid record")?;
         }
         Ok::<(), std::io::Error>(())
     })

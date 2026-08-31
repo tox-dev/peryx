@@ -154,6 +154,14 @@ pub async fn promote_release(
             blob_sizes.insert(digest.clone(), size);
         }
         uploaded.file.url = local_artifact_url(target_route, &digest, &filename);
+        // The bundle is copied onto the target publication, so its marker names the target's route.
+        if let crate::Provenance::Url(_) = uploaded.file.provenance {
+            uploaded.file.provenance = crate::Provenance::Url(format!(
+                "{}{}",
+                uploaded.file.url,
+                crate::attestation::PROVENANCE_SUFFIX
+            ));
+        }
         records.push((filename, digest, to_json(&uploaded).into_bytes()));
     }
     if !matched {
@@ -168,6 +176,7 @@ pub async fn promote_release(
         .get_project(source, normalized)?
         .unwrap_or_else(|| normalized.to_owned());
     let release = PromotedRelease {
+        source,
         index: target,
         normalized,
         display: &display,

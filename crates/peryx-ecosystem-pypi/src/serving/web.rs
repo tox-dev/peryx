@@ -1,7 +1,7 @@
 //! Producing the web UI's neutral view models from the `PyPI` serving layer, so the web crate renders
 //! a project page without any knowledge of the Simple API, wheels, or PEP 658.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -721,7 +721,7 @@ pub(super) async fn project_page(
     }
     apply_actions(&route, &mut ui);
     apply_placement(&state, &hosted, &mut ui).map_err(crate::error_message)?;
-    apply_provenance(&state, &mut ui).await;
+    apply_provenance(&state, &hosted, &normalized, &mut ui).await;
     let default = default_version(&ui);
     // A pre-PEP 700 upstream names no versions, so no release owns a file and the newest sibling stands in.
     let sibling = match default.as_deref() {
@@ -814,31 +814,35 @@ async fn resolve_detail_and_hosted(
     index: &Index,
     project: &str,
     route: &str,
-) -> Result<Option<(ProjectDetail, BTreeSet<String>)>, CacheError> {
+) -> Result<Option<(ProjectDetail, BTreeMap<String, String>)>, CacheError> {
     let Some(detail) = cache::resolve_detail(state, index, project, route).await? else {
         return Ok(None);
     };
-    let mut hosted = BTreeSet::new();
+    let mut hosted = BTreeMap::new();
     collect_hosted_filenames(state, index, project, &mut hosted)?;
     Ok(Some((detail, hosted)))
 }
 
-/// The filenames an index's hosted (upload) layers published for `project`, unioned across a virtual
-/// index's layers so a merged page can tell an uploaded file from a mirrored one.
+/// The hosted (upload) layer that published each filename of `project`, merged across a virtual
+/// index's layers so a merged page can tell an uploaded file from a mirrored one and can name the
+/// layer that owns the publication.
+///
+/// The walk follows shadow order, the order [`cache::resolve_detail`] merges pages in, and keeps the
+/// first layer to claim a filename, so the panel reads the same publication the page serves.
 fn collect_hosted_filenames(
     state: &ServingState,
     index: &Index,
     project: &str,
-    names: &mut BTreeSet<String>,
+    names: &mut BTreeMap<String, String>,
 ) -> Result<(), peryx_storage::meta::MetaError> {
     match &index.kind {
         IndexKind::Hosted { .. } => {
             for (filename, _record) in state.meta.list_upload_entries(&index.name, project)? {
-                names.insert(filename);
+                names.entry(filename).or_insert_with(|| index.name.clone());
             }
         }
         IndexKind::Virtual { layers, .. } => {
-            for &pos in layers {
+            for pos in peryx_index::shadow_order(&state.indexes, layers) {
                 collect_hosted_filenames(state, state.index_at(pos), project, names)?;
             }
         }
@@ -857,11 +861,11 @@ fn collect_hosted_filenames(
 /// not recorded - an upstream catalog entry never fetched - stays proxied and remote-only.
 fn apply_placement(
     state: &ServingState,
-    hosted: &BTreeSet<String>,
+    hosted: &BTreeMap<String, String>,
     ui: &mut ProjectView,
 ) -> Result<(), peryx_storage::meta::MetaError> {
     for file in &mut ui.files {
-        let is_hosted = hosted.contains(&file.filename);
+        let is_hosted = hosted.contains_key(&file.filename);
         file.upstream = if is_hosted {
             None
         } else {
@@ -913,31 +917,42 @@ const fn ui_availability(availability: ByteAvailability) -> UiByteAvailability {
 /// object stays well under this, which bounds the read regardless.
 const MAX_PROVENANCE_BYTES: u64 = 2 * 1024 * 1024;
 
-/// Fill each file's provenance panel from digest-indexed metadata read locally.
+/// Fill each file's provenance panel from the publication's own record, read locally.
 ///
 /// A hosted file's stored provenance document is summarized into per-attestation records; a mirrored
 /// file is flagged as an upstream claim without reading or fetching its document. This reads only
 /// local storage - it never calls upstream and never verifies a signature - so a listing stays a
 /// projection of what peryx already holds.
-async fn apply_provenance(state: &Arc<ServingState>, ui: &mut ProjectView) {
+async fn apply_provenance(
+    state: &Arc<ServingState>,
+    hosted: &BTreeMap<String, String>,
+    normalized: &str,
+    ui: &mut ProjectView,
+) {
     for file in &mut ui.files {
-        file.provenance_detail = provenance_detail(state, file).await;
+        file.provenance_detail = provenance_detail(state, hosted, normalized, file).await;
     }
 }
 
 /// The provenance panel for one file, or `None` when it advertises no provenance. A hosted document
 /// that cannot be read is reported as `malformed` rather than hidden, so the page never implies an
 /// advertised attestation is absent.
-async fn provenance_detail(state: &Arc<ServingState>, file: &FileView) -> Option<ProvenanceView> {
+async fn provenance_detail(
+    state: &Arc<ServingState>,
+    hosted: &BTreeMap<String, String>,
+    normalized: &str,
+    file: &FileView,
+) -> Option<ProvenanceView> {
     file.provenance.as_ref()?;
-    if file.source != UiArtifactSource::Hosted {
+    // `apply_placement` marks exactly the files in `hosted` as hosted, so membership is the source.
+    let Some(index) = hosted.get(&file.filename) else {
         return Some(ProvenanceView {
             source: ProvenanceSource::Mirrored,
             attestations: Vec::new(),
             malformed: false,
         });
-    }
-    let attestations = hosted_attestations(state, file).await;
+    };
+    let attestations = hosted_attestations(state, index, normalized, file).await;
     Some(ProvenanceView {
         source: ProvenanceSource::Hosted,
         malformed: attestations.is_none(),
@@ -945,8 +960,18 @@ async fn provenance_detail(state: &Arc<ServingState>, file: &FileView) -> Option
     })
 }
 
-async fn hosted_attestations(state: &Arc<ServingState>, file: &FileView) -> Option<Vec<AttestationView>> {
-    let (provenance_hex, _size) = state.meta.get_provenance(&file.sha256).ok()??;
+/// The bundle the hosted layer that owns this publication accepted - not whatever bundle another
+/// index published over the same bytes.
+async fn hosted_attestations(
+    state: &Arc<ServingState>,
+    index: &str,
+    normalized: &str,
+    file: &FileView,
+) -> Option<Vec<AttestationView>> {
+    let (provenance_hex, _size) = state
+        .meta
+        .get_provenance(index, normalized, &file.sha256, &file.filename)
+        .ok()??;
     let digest = Digest::from_hex(&provenance_hex)?;
     let bytes = state.blobs.read_bytes(&digest, MAX_PROVENANCE_BYTES).await.ok()?;
     crate::attestation::summarize_provenance(&bytes, &file.sha256, &file.filename)

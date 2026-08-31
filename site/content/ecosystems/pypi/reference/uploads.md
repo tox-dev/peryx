@@ -38,19 +38,22 @@ records an intent bound to the upload route, normalized project, filename, diges
 operation ID. It then claims that operation, resolves an HA home when ownership is active, and commits the blob and
 metadata on the serving node. The handler advances the intent to `admitted` after that local publication.
 
-| Situation                                                      | Status | Result                                                                              |
-| -------------------------------------------------------------- | ------ | ----------------------------------------------------------------------------------- |
-| Local publication and required evidence complete               | `200`  | Metadata is visible and the operation records `published`                           |
-| Local publication complete but the evidence deadline expires   | `202`  | Metadata is already committed; retrying the same upload rechecks the same operation |
-| An HA request reaches a node outside the assigned project home | `503`  | `project authority is unavailable; retry the upload`, with `Retry-After: 1`         |
-| The same filename is resent with different content             | `400`  | `File already exists: "<name>" has different content; use a different filename`     |
-| A declared digest does not match the bytes                     | `400`  | `<field> mismatch`, before an intent is recorded                                    |
-| The backend lacks the required write capabilities              | `503`  | `same-datacenter durability unavailable: <guarantee>`                               |
-| The authority reaches either retention ceiling                 | `503`  | The matching `ingress admission retention is full` error, with `Retry-After: 30`    |
+| Situation                                                      | Status | Result                                                                                                    |
+| -------------------------------------------------------------- | ------ | --------------------------------------------------------------------------------------------------------- |
+| Local publication and required evidence complete               | `200`  | Metadata is visible and the operation records `published`                                                 |
+| Local publication complete but the evidence deadline expires   | `202`  | Metadata is already committed; retrying the same upload rechecks the same operation                       |
+| An HA request reaches a node outside the assigned project home | `503`  | `project authority is unavailable; retry the upload`, with `Retry-After: 1`                               |
+| The same filename is resent with different content             | `400`  | `File already exists: "<name>" has different content; use a different filename`                           |
+| The same bytes are resent with different attestations          | `400`  | `File already exists: "<name>" was published with different attestations; a re-upload cannot change them` |
+| A declared digest does not match the bytes                     | `400`  | `<field> mismatch`, before an intent is recorded                                                          |
+| The backend lacks the required write capabilities              | `503`  | `same-datacenter durability unavailable: <guarantee>`                                                     |
+| The authority reaches either retention ceiling                 | `503`  | The matching `ingress admission retention is full` error, with `Retry-After: 30`                          |
 
-**Idempotency.** The intent key uses the tenant, authority, and filename. The operation key also includes the digest. A
-retry of an operation already marked `published` replays its stored response. A pending retry re-enters the idempotent
-store and checks durability again, so a `202` can become `200` after more receipts arrive.
+**Idempotency.** The intent key uses the tenant, authority, and filename. The operation key also includes the digest,
+and the provenance bundle's digest when the upload attached attestations, because a resend that changes what a publisher
+attested is a different request rather than a retry. A retry of an operation already marked `published` replays its
+stored response. A pending retry re-enters the idempotent store and checks durability again, so a `202` can become `200`
+after more receipts arrive.
 
 **Checksums.** The handler verifies `sha256_digest`, `blake2_256_digest`, and the supported `md5_digest` case before it
 records an intent. See [upload digest fields](#upload-digest-fields).
@@ -240,10 +243,15 @@ neither the file nor its provenance. The `400` body names the offending attestat
 
 peryx wraps the accepted attestations into a provenance object
 `{"version": 1, "attestation_bundles": [{"publisher": null, "attestations": [...]}]}`, stores it content-addressed in
-the blob store keyed by the artifact's digest, and serves it at `.../files/{sha256}/{filename}.provenance` with media
-type `application/vnd.pypi.integrity.v1+json`. The `publisher` is `null` because peryx does not resolve a Trusted
-Publisher identity. See [Simple API serving](@/ecosystems/pypi/reference/simple-api.md#provenance-and-attestations) for
-the served shape.
+the blob store, and records the reference against this publication - hosted index, normalized project, artifact digest,
+and filename - so another index publishing the same bytes cannot replace it. It serves the object at
+`.../files/{sha256}/{filename}.provenance` with media type `application/vnd.pypi.integrity.v1+json`. The `publisher` is
+`null` because peryx does not resolve a Trusted Publisher identity. See
+[Simple API serving](@/ecosystems/pypi/reference/simple-api.md#provenance-and-attestations) for the served shape.
+
+Promoting a release copies the source publication's reference onto the target, which then holds it independently:
+deleting either publication leaves the other's bundle readable, and the bytes become reclaimable only when the last
+publication releases them.
 
 ### Requiring predicate types
 

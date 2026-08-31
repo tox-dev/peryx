@@ -90,7 +90,16 @@ async fn test_revoked_digest_is_not_read_through_any_byte_route() {
     h.state
         .serving
         .meta
-        .put_provenance(artifact.as_str(), provenance_digest.as_str(), provenance.len() as u64)
+        .put_provenance(
+            "hosted",
+            "peryxpkg",
+            artifact.as_str(),
+            FILENAME,
+            crate::store::ProvenanceSibling {
+                provenance_sha256: provenance_digest.as_str(),
+                size: provenance.len() as u64,
+            },
+        )
         .unwrap();
     revoke_digest(&h.state, &artifact);
     let base = format!("/hosted/files/{}/{FILENAME}", artifact.as_str());

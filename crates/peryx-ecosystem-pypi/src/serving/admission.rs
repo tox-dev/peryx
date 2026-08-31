@@ -44,6 +44,10 @@ pub(super) struct AdmissionRequest<'a> {
     pub digest: &'a str,
     pub size: u64,
     pub ingress_dc: &'a str,
+    /// The provenance bundle's digest, when the upload attached attestations. It joins the operation
+    /// id because a re-upload that changes what a publisher attested is a different request, not a
+    /// retry of the first one, and must reach the store's precondition rather than replay its answer.
+    pub provenance: Option<&'a str>,
 }
 
 /// The identity a staged intent binds, serialized as the intent payload so a recovered intent names the
@@ -103,7 +107,10 @@ fn admit_staged(
         return Ok(reject);
     }
     let key = intent_key(request.tenant, request.authority, request.filename);
-    let operation = format!("{key}:{}", request.digest);
+    let operation = request.provenance.map_or_else(
+        || format!("{key}:{}", request.digest),
+        |bundle| format!("{key}:{}:{bundle}", request.digest),
+    );
     let payload = serde_json::to_vec(&IngressIntent {
         tenant: request.tenant.to_owned(),
         authority: request.authority.to_owned(),

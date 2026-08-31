@@ -92,7 +92,8 @@ fn find_attestation_source<'a>(
     async move {
         match &index.kind {
             IndexKind::Hosted { .. } => {
-                layer_has_attestation(state, index, &artifact_project(filename), artifact_sha256, filename)
+                let project = artifact_project(filename);
+                layer_has_attestation(state, index, &project, artifact_sha256, filename)
                     .await
                     .and_then(|visible| {
                         if !visible {
@@ -100,7 +101,7 @@ fn find_attestation_source<'a>(
                         }
                         state
                             .meta
-                            .get_provenance(artifact_sha256)
+                            .get_provenance(&index.name, &project, artifact_sha256, filename)
                             .map_err(CacheError::from)
                             .map(|record| record.map(|(digest, _size)| AttestationSource::Hosted(digest)))
                     })

@@ -17,6 +17,7 @@ fn request<'a>(filename: &'a str, digest: &'a str) -> AdmissionRequest<'a> {
         digest,
         size: 11,
         ingress_dc: "dc-a",
+        provenance: None,
     }
 }
 
@@ -54,6 +55,31 @@ fn test_admit_stages_a_fresh_intent_bound_to_its_identity() {
     let intent: IngressIntent = serde_json::from_slice(&staged.payload).unwrap();
     assert_eq!(intent.ingress_dc, "dc-a");
     assert_eq!(intent.operation, "pypi:root/hosted:flask:flask-1.0.whl:aa");
+}
+
+#[test]
+fn test_admit_binds_an_attested_upload_to_its_own_operation() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = meta(&dir);
+    let request = AdmissionRequest {
+        provenance: Some("bb"),
+        ..request("flask-1.0.whl", "aa")
+    };
+
+    assert!(matches!(
+        admit(&meta, DurabilityCapabilities::FILESYSTEM, STAGING_LIMITS, &request, 10),
+        Admission::Admitted(_)
+    ));
+
+    let staged = meta
+        .staged_intent("pypi:root/hosted:flask:flask-1.0.whl")
+        .unwrap()
+        .unwrap();
+    let intent: IngressIntent = serde_json::from_slice(&staged.payload).unwrap();
+    assert_eq!(
+        intent.operation, "pypi:root/hosted:flask:flask-1.0.whl:aa:bb",
+        "a re-upload that changes the bundle is a new operation, not a retry of the first"
+    );
 }
 
 #[test]
