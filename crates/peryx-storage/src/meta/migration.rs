@@ -358,7 +358,7 @@ fn collect_target(
             collect_text(txn, POLICY_DECISION_CURRENT, cursor, Some(created_keys))
         }
         MetadataRecordSet::PolicyDecisionCurrentById => {
-            collect_text(txn, POLICY_DECISION_CURRENT_ID, cursor, Some(created_keys))
+            collect_bytes(txn, POLICY_DECISION_CURRENT_ID, cursor, Some(created_keys))
         }
         MetadataRecordSet::Analytics => collect_bytes(txn, ANALYTICS, cursor, Some(created_keys)),
     }
@@ -443,14 +443,9 @@ fn rewrite_target(
         MetadataRecordSet::PolicyDecisionCurrent => {
             rewrite_text(txn, POLICY_DECISION_CURRENT, original, rewritten, migration, record_set)
         }
-        MetadataRecordSet::PolicyDecisionCurrentById => rewrite_text(
-            txn,
-            POLICY_DECISION_CURRENT_ID,
-            original,
-            rewritten,
-            migration,
-            record_set,
-        ),
+        MetadataRecordSet::PolicyDecisionCurrentById => {
+            rewrite_bytes(txn, POLICY_DECISION_CURRENT_ID, original, rewritten).map_err(Into::into)
+        }
         MetadataRecordSet::Analytics => rewrite_bytes(txn, ANALYTICS, original, rewritten).map_err(Into::into),
     }
 }
@@ -471,14 +466,9 @@ fn insert_target(
         MetadataRecordSet::PolicyDecisionCurrent => {
             insert_text(txn, POLICY_DECISION_CURRENT, original, rewritten, migration, record_set)
         }
-        MetadataRecordSet::PolicyDecisionCurrentById => insert_text(
-            txn,
-            POLICY_DECISION_CURRENT_ID,
-            original,
-            rewritten,
-            migration,
-            record_set,
-        ),
+        MetadataRecordSet::PolicyDecisionCurrentById => {
+            insert_bytes(txn, POLICY_DECISION_CURRENT_ID, rewritten).map_err(Into::into)
+        }
         MetadataRecordSet::Analytics => insert_bytes(txn, ANALYTICS, rewritten).map_err(Into::into),
     }
 }
@@ -623,9 +613,7 @@ const fn target_name(record_set: MetadataRecordSet) -> &'static str {
 
 const fn target_value_kind(record_set: MetadataRecordSet) -> MetadataValueKind {
     match record_set {
-        MetadataRecordSet::PolicyDecisionCurrent | MetadataRecordSet::PolicyDecisionCurrentById => {
-            MetadataValueKind::Text
-        }
+        MetadataRecordSet::PolicyDecisionCurrent => MetadataValueKind::Text,
         _ => MetadataValueKind::Bytes,
     }
 }

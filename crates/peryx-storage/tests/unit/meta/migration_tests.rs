@@ -224,7 +224,7 @@ fn test_metadata_migration_dry_run_reads_current_records_without_writing() {
         (
             MetadataRecordSet::PolicyDecisionCurrentById,
             "policy_decision_current_id",
-            MetadataValueKind::Text,
+            MetadataValueKind::Bytes,
         ),
         (MetadataRecordSet::Analytics, "analytics", MetadataValueKind::Bytes),
     ];
@@ -380,9 +380,7 @@ fn test_metadata_migration_recognizes_current_tables(
     let legacy_sources = [LegacyMetadataSource {
         table,
         value_kind: match record_set {
-            MetadataRecordSet::PolicyDecisionCurrent | MetadataRecordSet::PolicyDecisionCurrentById => {
-                MetadataValueKind::Text
-            }
+            MetadataRecordSet::PolicyDecisionCurrent => MetadataValueKind::Text,
             _ => MetadataValueKind::Bytes,
         },
         target: record_set,
@@ -571,7 +569,7 @@ fn test_metadata_migration_does_not_rescan_created_current_keys() {
 #[case::decision_by_id(
     MetadataRecordSet::PolicyDecisionCurrentById,
     "policy_decision_current_id",
-    MetadataValueKind::Text
+    MetadataValueKind::Bytes
 )]
 #[case::analytics(MetadataRecordSet::Analytics, "analytics", MetadataValueKind::Bytes)]
 fn test_metadata_migration_rewrites_current_record_sets(
@@ -691,7 +689,7 @@ fn test_metadata_migration_renamed_key_preserves_target_collision(#[case] collis
 #[case::decision_by_id(
     LegacyMetadataSource {
         table: "retired_decision_id",
-        value_kind: MetadataValueKind::Text,
+        value_kind: MetadataValueKind::Bytes,
         target: MetadataRecordSet::PolicyDecisionCurrentById,
     },
     "policy_decision_current_id"

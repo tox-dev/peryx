@@ -73,6 +73,19 @@ fn test_policy_decision_replaces_current_and_retains_history() {
 }
 
 #[test]
+fn test_an_unevaluated_subject_has_no_current_decision() {
+    let (_dir, meta) = store();
+    meta.record_policy_decision(decision("evaluated", PolicyDecisionState::Allow, 10))
+        .unwrap();
+
+    assert_eq!(
+        meta.current_policy_decision(decision("unevaluated", PolicyDecisionState::Allow, 0))
+            .unwrap(),
+        None
+    );
+}
+
+#[test]
 fn test_policy_decision_repository_change_makes_current_stale() {
     let (_dir, meta) = store();
     meta.advance_policy_generation("private").unwrap();

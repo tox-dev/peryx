@@ -380,7 +380,7 @@ impl MetadataMigration for UnreadableDecision {
     }
 
     fn record_sets(&self) -> &[MetadataRecordSet] {
-        &[MetadataRecordSet::PolicyDecisionHistory]
+        &[MetadataRecordSet::PolicyDecisionCurrentById]
     }
 
     fn legacy_sources(&self) -> &[LegacyMetadataSource] {

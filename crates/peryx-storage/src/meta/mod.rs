@@ -130,9 +130,13 @@ const INGRESS_INTENT_ORDER: TableDefinition<u64, &str> = TableDefinition::new("i
 const INGRESS_INTENT_SEQ: TableDefinition<&str, u64> = TableDefinition::new("ingress_intent_seq");
 const INGRESS_SEQ_KEY: &str = "next";
 const RECONCILE_BACKLOG: TableDefinition<&str, &[u8]> = TableDefinition::new("reconcile_backlog");
+/// Bounded audit log of every evaluation, oldest rows evicted once it crosses its limit.
 const POLICY_DECISION: TableDefinition<&str, &[u8]> = TableDefinition::new("policy_decision");
+/// Subject to the identifier of the decision that currently holds for it.
 const POLICY_DECISION_CURRENT: TableDefinition<&str, &str> = TableDefinition::new("policy_decision_current");
-const POLICY_DECISION_CURRENT_ID: TableDefinition<&str, &str> = TableDefinition::new("policy_decision_current_id");
+/// Current decisions in evaluation order, stored apart from the audit log so that evicting audit
+/// rows cannot drop live subject state.
+const POLICY_DECISION_CURRENT_ID: TableDefinition<&str, &[u8]> = TableDefinition::new("policy_decision_current_id");
 const POLICY_INPUT_GENERATION: TableDefinition<&str, &[u8]> = TableDefinition::new("policy_input_generation");
 const DERIVED_VIEW_FRONTIER: TableDefinition<&str, u64> = TableDefinition::new("derived_view_frontier");
 const QUOTA_USAGE: TableDefinition<&str, &[u8]> = TableDefinition::new("quota_usage");

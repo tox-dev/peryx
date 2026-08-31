@@ -132,7 +132,7 @@ pub struct PolicyDecisionPage {
     pub next_cursor: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize)]
 struct PolicyDecisionSubject<'a> {
     repository: &'a str,
     resource: &'a str,
@@ -284,12 +284,12 @@ impl MetaStore {
                     .map_err(MetaError::from)?
                     .map(|id| id.value().to_owned())
             };
-            let mut current_ids = txn.open_table(POLICY_DECISION_CURRENT_ID).map_err(MetaError::from)?;
+            let mut current_records = txn.open_table(POLICY_DECISION_CURRENT_ID).map_err(MetaError::from)?;
             if let Some(previous) = previous {
-                current_ids.remove(previous.as_str()).map_err(MetaError::from)?;
+                current_records.remove(previous.as_str()).map_err(MetaError::from)?;
             }
-            current_ids
-                .insert(history_id.as_str(), subject.as_str())
+            current_records
+                .insert(history_id.as_str(), encoded.as_slice())
                 .map_err(MetaError::from)?;
         }
         prune_history(&txn, history_limit)?;
@@ -302,8 +302,7 @@ impl MetaStore {
     /// read or decoded.
     ///
     /// # Panics
-    /// Panics if a current pointer has no matching history record; both tables change in one
-    /// transaction.
+    /// Panics if a current pointer has no matching record; both tables change in one transaction.
     pub fn current_policy_decision(
         &self,
         subject: NewPolicyDecision<'_>,
@@ -316,11 +315,11 @@ impl MetaStore {
             return Ok(None);
         };
         let id = id.value().to_owned();
-        let history = txn.open_table(POLICY_DECISION).map_err(MetaError::from)?;
-        let record = history
+        let records = txn.open_table(POLICY_DECISION_CURRENT_ID).map_err(MetaError::from)?;
+        let record = records
             .get(id.as_str())
             .map_err(MetaError::from)?
-            .expect("current policy decision must have history");
+            .expect("current policy decision must have a record");
         let record = decode_policy_decision(record.value()).map_err(MetaError::from)?;
         let generations = txn.open_table(POLICY_INPUT_GENERATION).map_err(MetaError::from)?;
         let generation = generations
@@ -338,10 +337,6 @@ impl MetaStore {
     /// # Errors
     /// Returns a validation error for an oversized request or subject, or a store error if a record
     /// cannot be read or decoded.
-    ///
-    /// # Panics
-    /// Panics if a current pointer has no matching history record; both tables change in one
-    /// transaction.
     pub fn current_policy_decisions_for_artifacts(
         &self,
         repository: &str,
@@ -364,7 +359,6 @@ impl MetaStore {
 
         let txn = self.db.begin_read().map_err(MetaError::from)?;
         let current = txn.open_table(POLICY_DECISION_CURRENT_ID).map_err(MetaError::from)?;
-        let history = txn.open_table(POLICY_DECISION).map_err(MetaError::from)?;
         let generations = txn.open_table(POLICY_INPUT_GENERATION).map_err(MetaError::from)?;
         let generation = generations
             .get(repository)
@@ -375,25 +369,20 @@ impl MetaStore {
             .unwrap_or_default();
         let mut decisions = HashMap::with_capacity(wanted.len());
         for entry in current.iter().map_err(MetaError::from)?.rev() {
-            let (id, subject) = entry.map_err(MetaError::from)?;
-            let subject: PolicyDecisionSubject<'_> = serde_json::from_str(subject.value()).map_err(MetaError::from)?;
-            if subject.repository != repository
-                || subject.resource != resource
-                || !matches!(subject.action, PolicyAction::Serve | PolicyAction::Cached)
+            let (_, value) = entry.map_err(MetaError::from)?;
+            let record = decode_policy_decision(value.value()).map_err(MetaError::from)?;
+            if record.repository != repository
+                || record.resource != resource
+                || !matches!(record.action, PolicyAction::Serve | PolicyAction::Cached)
             {
                 continue;
             }
-            let Some(artifact) = subject.artifact else {
+            let Some(artifact) = record.artifact.as_deref() else {
                 continue;
             };
             if !wanted.contains(artifact) || decisions.contains_key(artifact) {
                 continue;
             }
-            let record = history
-                .get(id.value())
-                .map_err(MetaError::from)?
-                .expect("current policy decision must have history");
-            let record = decode_policy_decision(record.value()).map_err(MetaError::from)?;
             decisions.insert(
                 artifact.to_owned(),
                 PolicyDecisionItem {
@@ -532,40 +521,23 @@ fn decode_policy_decision(bytes: &[u8]) -> Result<PolicyDecisionRecord, serde_js
     serde_json::from_slice(bytes)
 }
 
-fn prune_history(txn: &redb::WriteTransaction, history_limit: usize) -> Result<(), PolicyDecisionStoreError> {
+/// Drops the oldest audit row once the log crosses its bound.
+///
+/// Current decisions live in their own table, so an evicted row never takes a subject's live state
+/// with it - not even a subject in another repository, whose rows interleave with these by serial.
+fn prune_history(txn: &redb::WriteTransaction, history_limit: usize) -> Result<(), MetaError> {
     let stale_id = {
-        let history = txn.open_table(POLICY_DECISION).map_err(MetaError::from)?;
-        (history.len().map_err(MetaError::from)? > history_limit as u64)
+        let history = txn.open_table(POLICY_DECISION)?;
+        (history.len()? > history_limit as u64)
             .then(|| history.first())
-            .transpose()
-            .map_err(MetaError::from)?
+            .transpose()?
             .flatten()
             .map(|(id, _)| id.value().to_owned())
     };
     let Some(stale_id) = stale_id else {
         return Ok(());
     };
-    let stale_subject = {
-        let current_ids = txn.open_table(POLICY_DECISION_CURRENT_ID).map_err(MetaError::from)?;
-        current_ids
-            .get(stale_id.as_str())
-            .map_err(MetaError::from)?
-            .map(|subject| subject.value().to_owned())
-    };
-    txn.open_table(POLICY_DECISION)
-        .map_err(MetaError::from)?
-        .remove(stale_id.as_str())
-        .map_err(MetaError::from)?;
-    if let Some(subject) = stale_subject {
-        txn.open_table(POLICY_DECISION_CURRENT)
-            .map_err(MetaError::from)?
-            .remove(subject.as_str())
-            .map_err(MetaError::from)?;
-        txn.open_table(POLICY_DECISION_CURRENT_ID)
-            .map_err(MetaError::from)?
-            .remove(stale_id.as_str())
-            .map_err(MetaError::from)?;
-    }
+    txn.open_table(POLICY_DECISION)?.remove(stale_id.as_str())?;
     Ok(())
 }
 

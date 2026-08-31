@@ -56,11 +56,10 @@ impl MetadataMigration for PypiPlugin {
             MetadataRecordSet::QuotaReservation => {
                 rewrite_json::<QuotaReservationRecord, LegacyQuotaReservation, _>(record, Into::into)
             }
-            MetadataRecordSet::PolicyDecisionHistory => {
+            MetadataRecordSet::PolicyDecisionHistory | MetadataRecordSet::PolicyDecisionCurrentById => {
                 rewrite_json::<PolicyDecisionRecord, LegacyPolicyDecisionRecord, _>(record, Into::into)
             }
-            MetadataRecordSet::PolicyDecisionCurrent => rewrite_policy_subject(record, true),
-            MetadataRecordSet::PolicyDecisionCurrentById => rewrite_policy_subject(record, false),
+            MetadataRecordSet::PolicyDecisionCurrent => rewrite_policy_subject(record),
             MetadataRecordSet::Analytics => rewrite_analytics(record),
         })
     }
@@ -84,30 +83,18 @@ where
     })
 }
 
-fn rewrite_policy_subject(record: &MetadataRecord, key: bool) -> Option<MetadataRecord> {
-    let subject = if key {
-        record.key.as_bytes()
-    } else {
-        record.value.as_slice()
-    };
-    if serde_json::from_slice::<PolicyDecisionSubject>(subject).is_ok() {
+/// Current decisions are keyed by their subject, so this record set migrates in its key.
+fn rewrite_policy_subject(record: &MetadataRecord) -> Option<MetadataRecord> {
+    if serde_json::from_str::<PolicyDecisionSubject>(&record.key).is_ok() {
         return None;
     }
-    let Ok(legacy) = serde_json::from_slice::<LegacyPolicyDecisionSubject>(subject) else {
+    let Ok(legacy) = serde_json::from_str::<LegacyPolicyDecisionSubject>(&record.key) else {
         return None;
     };
-    let encoded =
-        serde_json::to_string(&PolicyDecisionSubject::from(legacy)).expect("owned policy decision subjects serialize");
-    Some(if key {
-        MetadataRecord {
-            key: encoded,
-            value: record.value.clone(),
-        }
-    } else {
-        MetadataRecord {
-            key: record.key.clone(),
-            value: encoded.into_bytes(),
-        }
+    Some(MetadataRecord {
+        key: serde_json::to_string(&PolicyDecisionSubject::from(legacy))
+            .expect("owned policy decision subjects serialize"),
+        value: record.value.clone(),
     })
 }
 

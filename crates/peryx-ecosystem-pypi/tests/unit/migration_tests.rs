@@ -152,10 +152,12 @@ fn test_migration_rewrites_legacy_quota_reservations() {
     );
 }
 
-#[test]
-fn test_migration_rewrites_legacy_policy_history() {
+#[rstest::rstest]
+#[case::audit_log(MetadataRecordSet::PolicyDecisionHistory)]
+#[case::current(MetadataRecordSet::PolicyDecisionCurrentById)]
+fn test_migration_rewrites_legacy_policy_records(#[case] record_set: MetadataRecordSet) {
     let migrated = rewritten(
-        MetadataRecordSet::PolicyDecisionHistory,
+        record_set,
         &record(
             "decision",
             json!({
@@ -196,10 +198,8 @@ fn test_migration_rewrites_legacy_policy_history() {
     );
 }
 
-#[rstest::rstest]
-#[case::subject_key(MetadataRecordSet::PolicyDecisionCurrent, true)]
-#[case::subject_value(MetadataRecordSet::PolicyDecisionCurrentById, false)]
-fn test_migration_rewrites_legacy_policy_subjects(#[case] record_set: MetadataRecordSet, #[case] key: bool) {
+#[test]
+fn test_migration_rewrites_legacy_policy_subject_keys() {
     let subject = json!({
         "repository": "repo",
         "project": "resource",
@@ -208,34 +208,27 @@ fn test_migration_rewrites_legacy_policy_subjects(#[case] record_set: MetadataRe
         "source": "upstream",
         "action": "serve"
     });
-    let record = if key {
-        MetadataRecord {
+    let migrated = rewritten(
+        MetadataRecordSet::PolicyDecisionCurrent,
+        &MetadataRecord {
             key: subject.to_string(),
-            value: b"decision".to_vec(),
-        }
-    } else {
-        MetadataRecord {
-            key: "decision".to_owned(),
-            value: serde_json::to_vec(&subject).unwrap(),
-        }
-    };
-    let migrated = rewritten(record_set, &record);
-    let migrated_subject = if key {
-        serde_json::from_str(&migrated.key).unwrap()
-    } else {
-        value(&migrated)
-    };
+            value: b"pd_0000000000000001".to_vec(),
+        },
+    );
 
     assert_eq!(
-        migrated_subject,
-        json!({
-            "repository": "repo",
-            "resource": "resource",
-            "group": "group",
-            "artifact": "artifact",
-            "source": "upstream",
-            "action": "serve"
-        })
+        (serde_json::from_str::<Value>(&migrated.key).unwrap(), migrated.value),
+        (
+            json!({
+                "repository": "repo",
+                "resource": "resource",
+                "group": "group",
+                "artifact": "artifact",
+                "source": "upstream",
+                "action": "serve"
+            }),
+            b"pd_0000000000000001".to_vec()
+        )
     );
 }
 
@@ -365,6 +358,25 @@ fn test_migration_rewrites_legacy_daily_analytics() {
         "next_eligible_at_unix": 10
     })
 )]
+#[case::current_policy_by_id(
+    MetadataRecordSet::PolicyDecisionCurrentById,
+    "decision",
+    json!({
+        "id": "00000000-0000-0000-0000-000000000002",
+        "repository": "repo",
+        "resource": "resource",
+        "group": "group",
+        "artifact": "artifact",
+        "source": "upstream",
+        "action": "serve",
+        "state": "allow",
+        "rule": "rule",
+        "reason": "reason",
+        "evaluated_at_unix": 9,
+        "input_generation": {"repository": 1, "catalog": 2, "policy": 3},
+        "next_eligible_at_unix": 10
+    })
+)]
 #[case::current_reads(MetadataRecordSet::Analytics, "reads", json!({"artifacts": []}))]
 #[case::current_daily(MetadataRecordSet::Analytics, "daily_usage", json!({"schema": 1, "buckets": []}))]
 #[case::unknown_analytics(MetadataRecordSet::Analytics, "other", json!({}))]
@@ -377,10 +389,8 @@ fn test_migration_leaves_current_or_unowned_records_unchanged(
     assert_eq!(PypiPlugin.rewrite(record_set, &record(key, contents)), Ok(None));
 }
 
-#[rstest::rstest]
-#[case::subject_key(MetadataRecordSet::PolicyDecisionCurrent, true)]
-#[case::subject_value(MetadataRecordSet::PolicyDecisionCurrentById, false)]
-fn test_migration_leaves_current_policy_subjects_unchanged(#[case] record_set: MetadataRecordSet, #[case] key: bool) {
+#[test]
+fn test_migration_leaves_current_policy_subject_keys_unchanged() {
     let subject = json!({
         "repository": "repo",
         "resource": "resource",
@@ -389,38 +399,31 @@ fn test_migration_leaves_current_policy_subjects_unchanged(#[case] record_set: M
         "source": "upstream",
         "action": "serve"
     });
-    let record = if key {
-        MetadataRecord {
-            key: subject.to_string(),
-            value: b"decision".to_vec(),
-        }
-    } else {
-        MetadataRecord {
-            key: "decision".to_owned(),
-            value: serde_json::to_vec(&subject).unwrap(),
-        }
-    };
 
-    assert_eq!(PypiPlugin.rewrite(record_set, &record), Ok(None));
+    assert_eq!(
+        PypiPlugin.rewrite(
+            MetadataRecordSet::PolicyDecisionCurrent,
+            &MetadataRecord {
+                key: subject.to_string(),
+                value: b"pd_0000000000000001".to_vec(),
+            }
+        ),
+        Ok(None)
+    );
 }
 
-#[rstest::rstest]
-#[case::subject_key(MetadataRecordSet::PolicyDecisionCurrent, true)]
-#[case::subject_value(MetadataRecordSet::PolicyDecisionCurrentById, false)]
-fn test_migration_leaves_malformed_policy_subjects_unchanged(#[case] record_set: MetadataRecordSet, #[case] key: bool) {
-    let record = if key {
-        MetadataRecord {
-            key: "malformed".to_owned(),
-            value: b"decision".to_vec(),
-        }
-    } else {
-        MetadataRecord {
-            key: "decision".to_owned(),
-            value: b"malformed".to_vec(),
-        }
-    };
-
-    assert_eq!(PypiPlugin.rewrite(record_set, &record), Ok(None));
+#[test]
+fn test_migration_leaves_malformed_policy_subject_keys_unchanged() {
+    assert_eq!(
+        PypiPlugin.rewrite(
+            MetadataRecordSet::PolicyDecisionCurrent,
+            &MetadataRecord {
+                key: "malformed".to_owned(),
+                value: b"pd_0000000000000001".to_vec(),
+            }
+        ),
+        Ok(None)
+    );
 }
 
 #[test]
@@ -518,6 +521,28 @@ fn write_policy_fixture(path: &Path) {
             }),
         )],
     );
+    write_bytes(
+        path,
+        "policy_decision_current_id",
+        &[(
+            "decision",
+            json!({
+                "id": "00000000-0000-0000-0000-000000000002",
+                "repository": "repo",
+                "project": "resource",
+                "version": "group",
+                "filename": "artifact",
+                "source": "upstream",
+                "action": "serve",
+                "state": "allow",
+                "rule": null,
+                "reason": null,
+                "evaluated_at_unix": 15,
+                "input_generation": {"repository": 1, "catalog": 2, "policy": 3},
+                "next_eligible_at_unix": null
+            }),
+        )],
+    );
     let legacy_subject = json!({
         "repository": "repo",
         "project": "resource",
@@ -530,11 +555,6 @@ fn write_policy_fixture(path: &Path) {
         path,
         "policy_decision_current",
         &[(legacy_subject.to_string(), "decision".to_owned())],
-    );
-    write_text(
-        path,
-        "policy_decision_current_id",
-        &[("decision".to_owned(), legacy_subject.to_string())],
     );
 }
 
@@ -688,7 +708,7 @@ fn assert_migrated_policy(path: &Path) {
         )
     );
     assert_eq!(
-        value_bytes(read_text(path, "policy_decision_current_id")["decision"].as_bytes())["resource"],
+        value_bytes(&read_bytes(path, "policy_decision_current_id")["decision"])["resource"],
         "resource"
     );
 }
