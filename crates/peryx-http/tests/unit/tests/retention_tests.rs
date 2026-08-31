@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::mpsc::{Sender, channel};
+use std::sync::{Arc, Mutex};
 
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};
@@ -344,30 +345,33 @@ async fn test_retention_export_keeps_its_existing_blocking_path() {
     assert!(String::from_utf8(body.to_vec()).unwrap().contains("\"artifact\":\"a\""));
 }
 
+/// Occupies every blocking-scan slot until the test releases the workers.
+///
+/// A flag the worker rechecks under a condition variable only makes it wait when the test loses the
+/// race to set that flag, so the wait runs or not depending on thread timing. Each worker instead
+/// blocks on a channel receive, which runs on every pass whether or not the release already landed.
+/// Dropping the gate without releasing disconnects the channel, which frees the workers too.
 struct SaturatedScans {
-    release: Arc<(Mutex<bool>, Condvar)>,
+    open: Sender<()>,
     scans: Vec<tokio::task::JoinHandle<Result<(), tokio::task::JoinError>>>,
 }
 
 impl SaturatedScans {
     async fn start(executor: BlockingScanExecutor) -> Self {
-        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let (open, reached) = channel();
+        let reached = Arc::new(Mutex::new(reached));
         let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut scans = Vec::new();
         for _ in 0..2 {
             let executor = executor.clone();
-            let release = release.clone();
+            let reached = reached.clone();
             let started_tx = started_tx.clone();
             scans.push(tokio::spawn(async move {
                 executor
                     .run(move |_| {
                         started_tx.send(()).unwrap();
-                        let (released, changed) = &*release;
-                        let mut released = released.lock().unwrap();
-                        while !*released {
-                            released = changed.wait(released).unwrap();
-                        }
-                        drop(released);
+                        // Either token or disconnect frees this worker, and only a failing test disconnects.
+                        let _ = reached.lock().unwrap().recv();
                     })
                     .await
             }));
@@ -375,22 +379,16 @@ impl SaturatedScans {
         for _ in 0..2 {
             started_rx.recv().await.unwrap();
         }
-        Self { release, scans }
+        Self { open, scans }
     }
 
-    async fn release(mut self) {
-        *self.release.0.lock().unwrap() = true;
-        self.release.1.notify_all();
-        for scan in self.scans.drain(..) {
+    async fn release(self) {
+        for _ in 0..self.scans.len() {
+            self.open.send(()).unwrap();
+        }
+        for scan in self.scans {
             scan.await.unwrap().unwrap();
         }
-    }
-}
-
-impl Drop for SaturatedScans {
-    fn drop(&mut self) {
-        *self.release.0.lock().unwrap() = true;
-        self.release.1.notify_all();
     }
 }
 
