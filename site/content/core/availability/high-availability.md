@@ -107,17 +107,26 @@ frontier and `503 Service Unavailable` otherwise, naming every cause in `reasons
 
 - `blob_store`: the mounted blob store failed its reachability check, so the mount cannot answer artifact requests.
 - `frontier_lag`: a replica has not yet reached the writer's latest observed serial.
+- `readable_lag`: a replica applied the writer's latest serial, but a required derived view - the search index or the
+  blob view - has not caught up, so reads still hold below it.
 - `sync_error`: a replica's last poll of its writer failed.
+- `metadata_store`: a replica's own metadata store could not answer, so it cannot say how far it has applied.
+- `blob_plane`: a replica's last blob pass failed. Only a later complete pass clears it; applying more metadata does
+  not.
+- `retired_peers`: a replica retired every peer it follows, so no source remains to poll.
 - `incompatible_schema`: a replica's writer speaks an unsupported replication protocol version, which a later poll
   cannot resolve without upgrading the writer.
 - `worker_unhealthy`: a background availability task panicked. The node keeps answering the reads it can still satisfy,
   but readiness reports the fault until the process restarts.
 
+A replica derives every reason, and the `peryx_ha_distributed_caught_up` gauge, from one cycle snapshot, so the verdict
+and the serials printed beside it always describe the same synchronization pass.
+
 Both documents are filtered to the caller's class, like `/+status`. Any caller reads `mode`, `role`, `ready`, and
-`reasons`. `operator:read` adds a replica's `serial`, `primary_serial`, `lag`, and synced counters, or a writer's own
-`serial`. `administration:read` adds the redacted `upstream` origin a replica follows, with credentials, query, and
-fragment removed. An anonymous or repository-only caller never reads a serial, lag, or peer origin, so the topology
-stays off an unauthenticated response. Both probes send `Cache-Control: no-store`.
+`reasons`. `operator:read` adds a replica's `serial`, `primary_serial`, `readable_serial`, `lag`, and synced counters,
+or a writer's own `serial`. `administration:read` adds the redacted `upstream` origin a replica follows, with
+credentials, query, and fragment removed. An anonymous or repository-only caller never reads a serial, lag, or peer
+origin, so the topology stays off an unauthenticated response. Both probes send `Cache-Control: no-store`.
 
 Point a replica read pool at readiness so a lagging or disconnected replica leaves rotation without a restart:
 
@@ -130,9 +139,11 @@ backend peryx-replicas
 ```
 
 When readiness reports `frontier_lag`, compare the replica's `lag` against the writer's write rate: a lag that never
-reaches zero points at a stalled poll, which readiness reports as `sync_error` once a poll fails. An
-`incompatible_schema` reason means the writer and replica were built against different replication protocol versions;
-upgrade the writer before routing reads to that replica.
+reaches zero points at a stalled poll, which readiness reports as `sync_error` once a poll fails. A `readable_lag`
+beside a zero `lag` is the other shape: metadata arrived but a required view did not, so compare `readable_serial`
+against `serial` and look for a `blob_plane` reason beside it. An `incompatible_schema` reason means the writer and
+replica were built against different replication protocol versions; upgrade the writer before routing reads to that
+replica.
 
 ### Distributed group readiness
 

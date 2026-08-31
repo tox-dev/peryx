@@ -1591,6 +1591,7 @@ async fn replica_status_filters_fields_by_audience() {
     let (_, administrator_document) = get(&administrator.routes(), "/+replication/v1/health").await;
 
     assert!(operator_document.get("serial").is_some());
+    assert_eq!(operator_document["readable_serial"], 0);
     assert!(operator_document.get("upstream").is_none());
     assert_eq!(administrator_document["upstream"], "http://127.0.0.1:1/");
 }
@@ -1618,7 +1619,10 @@ async fn replica_cycle_records_an_incompatible_schema() {
 
     assert_eq!(sync_cycle(&mut runtime).await, Some(true));
     let (_, document) = get(&runtime.routes(), "/+replication/v1/ready").await;
-    assert_eq!(document["reasons"], serde_json::json!(["incompatible_schema"]));
+    assert_eq!(
+        document["reasons"],
+        serde_json::json!(["incompatible_schema", "retired_peers", "frontier_lag"])
+    );
 }
 
 async fn sync_cycle(runtime: &mut DistributedRuntime) -> Option<bool> {

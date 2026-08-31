@@ -5,7 +5,8 @@ use std::fmt::Write as _;
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
-use crate::{HeartbeatError, SyncError, SyncOutcome};
+use crate::replica_cycle::{BlobPass, ReplicaCycle};
+use crate::{HeartbeatError, SyncError};
 use peryx_core::PrometheusSource;
 
 /// Error text does not affect cardinality because labels use a closed set.
@@ -137,21 +138,32 @@ impl AvailabilityMetrics {
         edit(&mut state)
     }
 
-    pub fn record_cycle(&self, outcome: SyncOutcome, elapsed: Duration) {
+    /// Counts one cycle once, whatever mix of outcomes it carried: a pass that advances metadata and
+    /// loses the blob plane is a single cycle with a single latency observation.
+    ///
+    /// A cycle that applied no page leaves pending serials unchanged.
+    pub(crate) fn record_cycle(&self, cycle: &ReplicaCycle) {
+        let failures = [
+            cycle.metadata.as_ref().err(),
+            match &cycle.blobs {
+                BlobPass::Failed(error) => Some(error),
+                BlobPass::Completed(_) | BlobPass::Skipped => None,
+            },
+        ];
+        let pending = cycle
+            .metadata
+            .as_ref()
+            .ok()
+            .map(|outcome| outcome.primary_serial.saturating_sub(outcome.serial));
         self.with(|state| {
             state.cycles += 1;
-            state.pending_serials = outcome.primary_serial.saturating_sub(outcome.serial);
-            state.latency.observe(elapsed);
-        });
-    }
-
-    /// Leaves pending serials unchanged because the cycle applied no page.
-    pub fn record_error(&self, error: &SyncError, elapsed: Duration) {
-        let class = SyncErrorClass::of(error);
-        self.with(|state| {
-            state.cycles += 1;
-            state.errors[class.index()] += 1;
-            state.latency.observe(elapsed);
+            for class in failures.into_iter().flatten().map(SyncErrorClass::of) {
+                state.errors[class.index()] += 1;
+            }
+            if let Some(pending) = pending {
+                state.pending_serials = pending;
+            }
+            state.latency.observe(cycle.elapsed);
         });
     }
 

@@ -11,8 +11,8 @@ use crate::{
     ConsensusPlan, DEFAULT_BEACON_INTERVAL, DEFAULT_DEAD_AFTER, DEFAULT_RECONNECT_POLICY, DEFAULT_SET_LIMITS,
     DEFAULT_SUSPECT_AFTER, DEFAULT_TRANSFER_LIMITS, DurabilityPolicy, HttpBlobTransport, HttpPeerTransport,
     LivenessTracker, MemberFrontier, MemberRole, OwnershipGroup, PeerSet, REPLICA_BLOB_FETCH_CONCURRENCY, ReplicaLoop,
-    ReplicaLoopParts, ReplicaMonitor, ReplicaReclamationFrontiers, SetLimits, TransferLimits, WorkerShared,
-    analytics_router, follower_router, frontier_router, group_readiness, liveness_router, primary_router,
+    ReplicaLoopParts, ReplicaMonitor, ReplicaObservation, ReplicaReclamationFrontiers, SetLimits, TransferLimits,
+    WorkerShared, analytics_router, follower_router, frontier_router, group_readiness, liveness_router, primary_router,
     receipt_router, resolve_producer_epoch,
 };
 use anyhow::Context as _;
@@ -124,11 +124,40 @@ struct ReplicaView {
     upstream: String,
 }
 
-/// A worker panic fails readiness while the replica continues serving under its staleness contract.
-fn worker_reason(workers: Option<&Arc<WorkerShared>>) -> Option<&'static str> {
-    workers
-        .filter(|workers| !workers.is_healthy())
-        .map(|_| "worker_unhealthy")
+/// One reading of every input the readiness answer depends on.
+///
+/// Reading them one at a time lets the published answer pair a verdict with a frontier from a later
+/// moment, so an operator sees `ready` contradicting the serials printed beside it.
+struct NodeObservation<'a> {
+    blob_store_healthy: bool,
+    /// A worker panic fails readiness while the replica continues serving under its staleness contract.
+    worker_domain_healthy: bool,
+    frontier: NodeFrontier<'a>,
+}
+
+/// A replica answers from its last published cycle; every other role answers from its own journal.
+enum NodeFrontier<'a> {
+    Replica {
+        observation: ReplicaObservation,
+        upstream: &'a str,
+    },
+    Local(u64),
+}
+
+impl NodeObservation<'_> {
+    fn readiness(&self) -> (bool, Vec<&'static str>) {
+        let mut reasons = Vec::new();
+        if !self.blob_store_healthy {
+            reasons.push("blob_store");
+        }
+        if let NodeFrontier::Replica { observation, .. } = &self.frontier {
+            reasons.extend(observation.readiness_gaps());
+        }
+        if !self.worker_domain_healthy {
+            reasons.push("worker_unhealthy");
+        }
+        (reasons.is_empty(), reasons)
+    }
 }
 
 #[derive(Clone)]
@@ -173,60 +202,64 @@ fn group_readiness_source(config: &RuntimeConfig) -> Option<GroupReadinessSource
 }
 
 impl AvailabilityNode {
-    /// Readiness requires a healthy blob store, replica frontier, and worker domain.
-    async fn readiness(&self) -> (bool, Vec<&'static str>) {
-        let mut reasons = Vec::new();
-        if self.blobs.health().await.is_err() {
-            reasons.push("blob_store");
+    /// Readiness requires a healthy blob store, replica frontier, and worker domain, each read once.
+    async fn observe(&self) -> NodeObservation<'_> {
+        NodeObservation {
+            blob_store_healthy: self.blobs.health().await.is_ok(),
+            worker_domain_healthy: self.workers.as_ref().is_none_or(|workers| workers.is_healthy()),
+            frontier: self.replica.as_ref().map_or_else(
+                || NodeFrontier::Local(self.meta.current_serial().unwrap_or(0)),
+                |replica| NodeFrontier::Replica {
+                    observation: replica.monitor.snapshot(),
+                    upstream: &replica.upstream,
+                },
+            ),
         }
-        if let Some(gap) = self
-            .replica
-            .as_ref()
-            .and_then(|replica| replica.monitor.readiness_gap())
-        {
-            reasons.push(gap);
-        }
-        reasons.extend(worker_reason(self.workers.as_ref()));
-        (reasons.is_empty(), reasons)
     }
 
     /// Operators receive frontiers and lag; administrators also receive the redacted primary origin.
+    ///
+    /// The verdict and the frontiers printed beside it come from the same reading, so a replica
+    /// never publishes `ready` against serials that contradict it.
     async fn document(&self, audience: AvailabilityAudience) -> (bool, serde_json::Map<String, Value>) {
-        let (ready, reasons) = self.readiness().await;
+        let node = self.observe().await;
+        let (ready, reasons) = node.readiness();
         let mut body = serde_json::Map::from_iter([
             ("mode".to_owned(), json!(self.mode)),
             ("role".to_owned(), json!(self.role.as_str())),
             ("ready".to_owned(), json!(ready)),
             ("reasons".to_owned(), json!(reasons)),
         ]);
-        if let Some(replica) = &self.replica {
-            let observation = replica.monitor.snapshot();
-            let lag = observation
-                .primary_serial
-                .map(|primary_serial| primary_serial.saturating_sub(observation.serial));
-            if audience >= AvailabilityAudience::Operator {
-                body.extend([
-                    ("serial".to_owned(), json!(observation.serial)),
-                    ("primary_serial".to_owned(), json!(observation.primary_serial)),
-                    ("lag".to_owned(), json!(lag)),
-                    ("synced_changes".to_owned(), json!(observation.changes)),
-                    ("sync_errors".to_owned(), json!(observation.errors)),
-                    ("retired_members".to_owned(), json!(observation.retired)),
-                ]);
-            }
-            if audience == AvailabilityAudience::Administrator {
-                body.insert("upstream".to_owned(), json!(replica.upstream));
-            }
-        } else {
-            let serial = self.meta.current_serial().unwrap_or(0);
-            if audience >= AvailabilityAudience::Operator {
-                body.insert("serial".to_owned(), json!(serial));
-                let now = Instant::now();
-                if let Some(liveness) = &self.liveness {
-                    body.insert("peers".to_owned(), json!(liveness.summary(now)));
+        match node.frontier {
+            NodeFrontier::Replica { observation, upstream } => {
+                let lag = observation
+                    .primary_serial
+                    .map(|primary_serial| primary_serial.saturating_sub(observation.serial));
+                if audience >= AvailabilityAudience::Operator {
+                    body.extend([
+                        ("serial".to_owned(), json!(observation.serial)),
+                        ("primary_serial".to_owned(), json!(observation.primary_serial)),
+                        ("readable_serial".to_owned(), json!(observation.readable_serial)),
+                        ("lag".to_owned(), json!(lag)),
+                        ("synced_changes".to_owned(), json!(observation.changes)),
+                        ("sync_errors".to_owned(), json!(observation.errors)),
+                        ("retired_members".to_owned(), json!(observation.retired)),
+                    ]);
                 }
-                if let Some(group) = &self.group {
-                    body.insert("group_readiness".to_owned(), self.group_readiness(group, serial, now));
+                if audience == AvailabilityAudience::Administrator {
+                    body.insert("upstream".to_owned(), json!(upstream));
+                }
+            }
+            NodeFrontier::Local(serial) => {
+                if audience >= AvailabilityAudience::Operator {
+                    body.insert("serial".to_owned(), json!(serial));
+                    let now = Instant::now();
+                    if let Some(liveness) = &self.liveness {
+                        body.insert("peers".to_owned(), json!(liveness.summary(now)));
+                    }
+                    if let Some(group) = &self.group {
+                        body.insert("group_readiness".to_owned(), self.group_readiness(group, serial, now));
+                    }
                 }
             }
         }
@@ -275,7 +308,7 @@ async fn availability_health(State(node): State<AvailabilityNode>, headers: Head
     availability_response(StatusCode::OK, body)
 }
 
-/// Returns `503` for a frontier gap, incompatible schema, or failed local store.
+/// Returns `503` for a metadata fault, a blob-plane fault, or any frontier a required view holds back.
 async fn availability_readiness(State(node): State<AvailabilityNode>, headers: HeaderMap) -> Response {
     let authorization = headers
         .get(axum::http::header::AUTHORIZATION)

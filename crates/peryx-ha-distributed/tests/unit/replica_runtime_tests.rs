@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::num::{NonZeroU32, NonZeroUsize};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 use axum::routing::get;
@@ -37,6 +37,29 @@ impl ReplicaViewApplier for Views {
     fn publish_applied_frontier(&self, serial: u64) {
         self.0.store(serial, Ordering::Relaxed);
     }
+}
+
+/// Blocks inside the frontier read so a reader can take a snapshot with a cycle in flight. Its
+/// readable frontier stays at zero, standing in for the blob view a failed pass left behind.
+struct PausedViews {
+    arrived: mpsc::SyncSender<()>,
+    release: Mutex<mpsc::Receiver<()>>,
+}
+
+impl ReplicaViewApplier for PausedViews {
+    fn apply(&self, _page: ReplicaPage, _changed_keys: &[String]) {}
+
+    fn readable_frontier(&self) -> u64 {
+        self.arrived.send(()).expect("the reader waits for the frontier read");
+        self.release
+            .lock()
+            .expect("the release channel is usable")
+            .recv()
+            .expect("the reader releases the cycle");
+        0
+    }
+
+    fn publish_applied_frontier(&self, _serial: u64) {}
 }
 
 fn stores(dir: &tempfile::TempDir) -> (MetaStore, BlobStorage) {
@@ -90,7 +113,7 @@ fn replica(
     blobs: BlobStorage,
     metadata: PeerSet<HttpPeerTransport>,
     transport: CapacityLimited<HttpBlobTransport>,
-    views: Arc<Views>,
+    views: Arc<dyn ReplicaViewApplier>,
     monitor: Arc<ReplicaMonitor>,
 ) -> ReplicaLoop {
     ReplicaLoop::new(ReplicaLoopParts {
@@ -189,7 +212,7 @@ async fn test_cycle_applies_a_primary_page_and_runs_the_blob_plane() {
 
     assert!(replica.cycle().await.unwrap());
     assert_eq!(monitor.snapshot().primary_serial, Some(1));
-    assert_eq!(monitor.readiness_gap(), None);
+    assert!(monitor.snapshot().is_ready());
 }
 
 async fn cycle_with_page(page: ChangePage) -> Arc<ReplicaMonitor> {
@@ -228,7 +251,10 @@ async fn test_cycle_records_page_apply_and_protocol_errors() {
         }],
     })
     .await;
-    assert_eq!(apply_error.readiness_gap(), Some("sync_error"));
+    assert_eq!(
+        apply_error.snapshot().readiness_gaps(),
+        vec!["sync_error", "frontier_lag"]
+    );
 
     let incompatible = cycle_with_page(ChangePage {
         version: PROTOCOL_VERSION + 1,
@@ -238,7 +264,10 @@ async fn test_cycle_records_page_apply_and_protocol_errors() {
         changes: Vec::new(),
     })
     .await;
-    assert_eq!(incompatible.readiness_gap(), Some("incompatible_schema"));
+    assert_eq!(
+        incompatible.snapshot().readiness_gaps(),
+        vec!["incompatible_schema", "retired_peers", "frontier_lag"]
+    );
 }
 
 #[tokio::test]
@@ -257,13 +286,13 @@ async fn test_cycle_records_an_invalid_local_replica_state() {
     );
 
     assert!(replica.cycle().await.unwrap());
-    assert_eq!(monitor.readiness_gap(), Some("sync_error"));
+    assert_eq!(monitor.snapshot().readiness_gaps(), vec!["sync_error", "frontier_lag"]);
 }
 
-#[tokio::test]
-async fn test_cycle_records_a_blob_plane_failure_after_metadata_commits() {
-    let source_dir = tempfile::tempdir().unwrap();
-    let (source_meta, source_blobs) = stores(&source_dir);
+/// A primary whose only page names a blob it does not hold, so the replica's blob plane fails while
+/// its metadata plane reaches the primary's serial.
+async fn primary_missing_a_blob(dir: &tempfile::TempDir) -> TestServer {
+    let (source_meta, source_blobs) = stores(dir);
     let missing = Digest::of(b"missing");
     Replica::new(&source_meta, NonZeroUsize::new(4).unwrap())
         .apply_page(ChangePage {
@@ -282,7 +311,13 @@ async fn test_cycle_records_a_blob_plane_failure_after_metadata_commits() {
             }],
         })
         .unwrap();
-    let server = TestServer::start(primary_router("primary", TOKEN, source_meta, source_blobs).unwrap()).await;
+    TestServer::start(primary_router("primary", TOKEN, source_meta, source_blobs).unwrap()).await
+}
+
+#[tokio::test]
+async fn test_cycle_records_a_blob_plane_failure_after_metadata_commits() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let server = primary_missing_a_blob(&source_dir).await;
     let target_dir = tempfile::tempdir().unwrap();
     let (meta, blobs) = stores(&target_dir);
     let monitor = Arc::new(ReplicaMonitor::new(0));
@@ -296,7 +331,52 @@ async fn test_cycle_records_a_blob_plane_failure_after_metadata_commits() {
     );
 
     assert!(replica.cycle().await.unwrap());
-    assert_eq!(monitor.snapshot().errors, 1);
+    let observation = monitor.snapshot();
+    assert_eq!(observation.errors, 1);
+    assert_eq!(observation.primary_serial, Some(1));
+    assert_eq!(observation.readiness_gaps(), vec!["blob_plane"]);
+}
+
+/// The readiness answer a reader takes while a cycle runs must describe one pass. Before the fix the
+/// loop published the metadata outcome, then the blob outcome, then the frontier, so a probe landing
+/// between them read a caught-up replica whose blob view was still behind and returned it to service.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_a_cycle_in_flight_never_publishes_half_of_its_result() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let server = primary_missing_a_blob(&source_dir).await;
+    let target_dir = tempfile::tempdir().unwrap();
+    let (meta, blobs) = stores(&target_dir);
+    let (arrived, arrivals) = mpsc::sync_channel(1);
+    let (releases, release) = mpsc::channel();
+    let monitor = Arc::new(ReplicaMonitor::new(0));
+    let mut replica = replica(
+        meta,
+        blobs,
+        metadata(&server.url),
+        blob_transport(&server.url),
+        Arc::new(PausedViews {
+            arrived,
+            release: Mutex::new(release),
+        }),
+        Arc::clone(&monitor),
+    );
+
+    let cycle = tokio::spawn(async move { replica.cycle().await });
+    arrivals.recv().expect("the cycle reaches its frontier read");
+    let during = monitor.snapshot();
+    releases.send(()).expect("the cycle resumes");
+    assert!(cycle.await.unwrap().unwrap());
+
+    assert_eq!(during.serial, 0);
+    assert_eq!(during.primary_serial, None);
+    assert_eq!(during.errors, 0);
+    assert_eq!(during.readiness_gaps(), vec!["frontier_lag"]);
+
+    let after = monitor.snapshot();
+    assert_eq!(after.serial, 1);
+    assert_eq!(after.primary_serial, Some(1));
+    assert_eq!(after.readable_serial, 0);
+    assert_eq!(after.readiness_gaps(), vec!["blob_plane", "readable_lag"]);
 }
 
 #[tokio::test(start_paused = true)]
@@ -319,7 +399,7 @@ async fn test_run_retries_a_disconnected_metadata_plane_until_cancelled() {
     assert!(task.await.unwrap_err().is_cancelled());
 
     assert!(monitor.snapshot().errors > 0);
-    assert_eq!(monitor.readiness_gap(), Some("sync_error"));
+    assert_eq!(monitor.snapshot().readiness_gaps(), vec!["sync_error", "frontier_lag"]);
 }
 
 #[tokio::test]
@@ -342,7 +422,10 @@ async fn test_cycle_reports_a_fully_retired_peer_set() {
     );
 
     assert_eq!(replica.cycle().await, Err(TransportError::Disconnected));
-    assert_eq!(monitor.readiness_gap(), Some("retired_peers"));
+    assert_eq!(
+        monitor.snapshot().readiness_gaps(),
+        vec!["sync_error", "retired_peers", "frontier_lag"]
+    );
     assert!(monitor.snapshot().fully_retired);
     assert_eq!(
         monitor.snapshot().retired,
@@ -381,7 +464,7 @@ async fn test_cycle_keeps_partial_retirement_distinct_from_sync_error() {
     );
 
     assert_eq!(replica.cycle().await, Err(TransportError::Disconnected));
-    assert_eq!(monitor.readiness_gap(), Some("sync_error"));
+    assert_eq!(monitor.snapshot().readiness_gaps(), vec!["sync_error", "frontier_lag"]);
     assert!(!monitor.snapshot().fully_retired);
     assert_eq!(
         monitor.snapshot().retired,

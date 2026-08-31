@@ -119,7 +119,10 @@ current in `reasons`:
 
 - `frontier_lag`: the replica has not yet reached the writer's latest serial. Compare its `lag` against the writer's
   write rate; a lag that never reaches zero is a stalled poll, not a slow one.
+- `readable_lag`: the replica applied the writer's serial, but a required derived view has not caught up with it.
+  Compare `readable_serial` against `serial`.
 - `sync_error`: the replica's last poll of the writer failed, the direct symptom of the partition.
+- `blob_plane`: the replica's last blob pass failed, so bytes the metadata names are not yet readable.
 - `blob_store`: the mounted blob store failed its reachability check.
 - `incompatible_schema`: the writer speaks a replication protocol version the replica cannot apply; a later poll cannot
   resolve without upgrading the writer.

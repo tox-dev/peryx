@@ -6,6 +6,7 @@ use peryx_ha::{ReplicaPage, ReplicaViewApplier};
 use peryx_storage::blob::BlobStorage;
 use peryx_storage::meta::MetaStore;
 
+use crate::replica_cycle::{BlobPass, ReplicaCycle, RetiredPeers};
 use crate::{
     AvailabilityMetrics, BlobPlaneReport, BlobSources, CapacityLimited, ChangePage, HttpBlobTransport,
     HttpPeerTransport, PROTOCOL_VERSION, PeerSet, ReconnectPolicy, Replica, ReplicaMonitor, Retry, SyncError,
@@ -99,6 +100,9 @@ impl ReplicaLoop {
     /// Advances metadata before blobs. The readable frontier is the slower view, so reads cannot name
     /// absent bytes. The loop retries blob failures without blocking metadata progress.
     ///
+    /// Every exit path assembles one cycle result and publishes it once, so a probe never reads this
+    /// cycle's metadata outcome beside the previous cycle's blob outcome or frontier.
+    ///
     /// Validation and commit failures retry at the poll interval; metadata transport loss triggers backoff.
     ///
     /// # Errors
@@ -108,7 +112,7 @@ impl ReplicaLoop {
         let now = self.clock_origin.elapsed();
         let state = match Replica::new(&self.meta, self.page_size).state() {
             Ok(state) => state,
-            Err(error) => return Ok(self.record_metadata_error(&error, started.elapsed())),
+            Err(error) => return Ok(self.publish_metadata_failure(error, None, started)),
         };
         let after = state.as_ref().map_or(0, |state| state.serial);
         // A fresh replica pins its first commit to the source that answers this round.
@@ -134,49 +138,64 @@ impl ReplicaLoop {
         };
         let round = match pull_round(&mut self.metadata, now, after, committed.as_deref(), apply).await {
             Ok(round) => round,
-            Err(error) => return Ok(self.record_metadata_error(&error, started.elapsed())),
+            Err(error) => return Ok(self.publish_metadata_failure(error, None, started)),
         };
-        self.monitor.record_retired(round.retired.clone(), round.fully_retired);
-        let elapsed = started.elapsed();
+        let retired = Some(RetiredPeers {
+            peers: round.retired,
+            fully_retired: round.fully_retired,
+        });
         if let Some(actual) = round.incompatible {
             let error = SyncError::UnsupportedVersion {
                 actual,
                 expected: PROTOCOL_VERSION,
             };
-            return Ok(self.record_metadata_error(&error, elapsed));
+            return Ok(self.publish_metadata_failure(error, retired, started));
         }
         if !round.answered {
             let loss = TransportError::Disconnected;
-            self.record_metadata_error(&SyncError::primary(loss.clone()), elapsed);
+            self.publish_metadata_failure(SyncError::primary(loss.clone()), retired, started);
             return Err(loss);
         }
 
-        let outcome = SyncOutcome {
-            changes: round.applied,
-            serial: round.serial,
-            primary_serial: round.head.max(round.serial),
-        };
-        match self.pull_blobs().await {
-            Ok(report) => self.monitor.record_blobs(report),
+        let blobs = match self.pull_blobs().await {
+            Ok(report) => BlobPass::Completed(report),
             Err(error) => {
-                self.monitor.record_error(&error);
-                self.metrics.record_error(&error, elapsed);
                 tracing::error!(%error, "replica blob plane failed");
+                BlobPass::Failed(error)
             }
-        }
-        self.monitor.record(outcome);
-        let readable = self.views.readable_frontier();
-        self.monitor.record_readable(readable);
-        self.metrics.record_cycle(outcome, elapsed);
+        };
+        self.publish(ReplicaCycle {
+            metadata: Ok(SyncOutcome {
+                changes: round.applied,
+                serial: round.serial,
+                primary_serial: round.head.max(round.serial),
+            }),
+            blobs,
+            readable: self.views.readable_frontier(),
+            retired,
+            elapsed: started.elapsed(),
+        });
         Ok(round.caught_up)
     }
 
     /// Returns `true` so validation and commit failures retry at the poll interval instead of backing off.
-    fn record_metadata_error(&self, error: &SyncError, elapsed: Duration) -> bool {
-        self.monitor.record_error(error);
-        self.metrics.record_error(error, elapsed);
+    fn publish_metadata_failure(&self, error: SyncError, retired: Option<RetiredPeers>, started: Instant) -> bool {
         tracing::error!(%error, "replica metadata synchronization failed");
+        self.publish(ReplicaCycle {
+            metadata: Err(error),
+            blobs: BlobPass::Skipped,
+            readable: self.views.readable_frontier(),
+            retired,
+            elapsed: started.elapsed(),
+        });
         true
+    }
+
+    /// The monitor and the metrics take the cycle together, so the readiness probe, the caught-up
+    /// gauge and the sync counters cannot disagree about which pass they describe.
+    fn publish(&self, cycle: ReplicaCycle) {
+        self.metrics.record_cycle(&cycle);
+        self.monitor.publish(cycle);
     }
 
     async fn pull_blobs(&self) -> Result<BlobPlaneReport, SyncError> {

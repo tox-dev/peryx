@@ -229,8 +229,9 @@ A `dc` or `ha` node mounts two replication-scoped probes beside the public
 [`/+health` and `/+ready`](@/core/availability/high-availability.md#load-balancer-probes) probes; a `none` node runs no
 availability subsystem and mounts neither. Point a replica read pool at
 [`GET /+replication/v1/ready`](@/core/availability/high-availability.md#availability-health-and-readiness) so a lagging
-or disconnected replica leaves rotation without a restart, naming its cause in `reasons` (`frontier_lag`, `sync_error`,
-`incompatible_schema`, or `blob_store`). Use the public `/+ready?writes=true` for the writer pool.
+or disconnected replica leaves rotation without a restart, naming every cause in `reasons` (`frontier_lag`,
+`readable_lag`, `sync_error`, `metadata_store`, `blob_plane`, `retired_peers`, `incompatible_schema`, or `blob_store`).
+Use the public `/+ready?writes=true` for the writer pool.
 
 Scrape [`/metrics`](@/core/operations/metrics.md) for durable signals. Alert on `peryx_ha_distributed_lag`, the
 committed-serial distance a replica runs behind its primary, and on a sustained

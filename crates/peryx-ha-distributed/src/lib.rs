@@ -73,6 +73,7 @@ mod remote_durability;
 mod remote_frontier;
 mod remote_frontier_http;
 mod replica;
+mod replica_cycle;
 mod replica_monitor;
 mod replica_runtime;
 mod rollout;

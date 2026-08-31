@@ -3,36 +3,62 @@ use std::sync::Mutex;
 
 use peryx_core::PrometheusSource;
 
-use crate::{BlobPlaneReport, RetiredPeer, SyncError, SyncOutcome};
+use crate::RetiredPeer;
+use crate::replica_cycle::{BlobPass, MetadataFault, ReplicaCycle};
 
-#[derive(Clone, Copy)]
-enum ReplicaHealthStatus {
-    Starting,
-    CatchingUp,
-    CaughtUp,
-    Error,
-}
-
-#[derive(Clone, Copy)]
-enum ReplicaFault {
-    None,
-    Sync,
-    IncompatibleSchema,
-}
-
+/// One replica cycle's published result.
+///
+/// Every field comes from the same cycle, so a reader that takes one snapshot sees a metadata
+/// outcome, a blob outcome and a readable frontier that agree with one another.
 #[derive(Clone)]
 pub struct ReplicaObservation {
-    status: ReplicaHealthStatus,
-    fault: ReplicaFault,
+    metadata_fault: Option<MetadataFault>,
+    /// A failed blob pass sets it and only a later complete pass clears it; a metadata outcome
+    /// leaves it standing.
+    blob_fault: bool,
     pub serial: u64,
     pub primary_serial: Option<u64>,
     pub changes: u64,
     pub errors: u64,
-    readable_serial: u64,
+    /// The lowest serial every required derived view has applied. Reads never pass it, so it - not
+    /// the metadata serial - is the frontier readiness compares against the primary.
+    pub readable_serial: u64,
     blobs_fetched: u64,
     blobs_pending: u64,
     pub retired: Vec<RetiredPeer>,
     pub fully_retired: bool,
+}
+
+impl ReplicaObservation {
+    /// Every reason this replica cannot serve the primary's latest observed serial.
+    ///
+    /// A blob-plane fault and a lagging derived view stay distinct from a metadata transport
+    /// failure: the metadata plane can be current while reads still have to hold back.
+    #[must_use]
+    pub fn readiness_gaps(&self) -> Vec<&'static str> {
+        let mut gaps = Vec::new();
+        gaps.extend(self.metadata_fault.map(MetadataFault::reason));
+        if self.fully_retired {
+            gaps.push("retired_peers");
+        }
+        if self.blob_fault {
+            gaps.push("blob_plane");
+        }
+        gaps.extend(match self.primary_serial {
+            None => Some("frontier_lag"),
+            Some(primary) if self.serial < primary => Some("frontier_lag"),
+            Some(primary) if self.readable_serial < primary => Some("readable_lag"),
+            Some(_) => None,
+        });
+        gaps
+    }
+
+    /// Ready means every required derived view reflects the latest serial the primary reported and
+    /// no plane is faulted. The readiness probe and the caught-up gauge share this condition.
+    #[must_use]
+    pub fn is_ready(&self) -> bool {
+        self.readiness_gaps().is_empty()
+    }
 }
 
 pub struct ReplicaMonitor {
@@ -44,8 +70,8 @@ impl ReplicaMonitor {
     pub const fn new(serial: u64) -> Self {
         Self {
             observation: Mutex::new(ReplicaObservation {
-                status: ReplicaHealthStatus::Starting,
-                fault: ReplicaFault::None,
+                metadata_fault: None,
+                blob_fault: false,
                 serial,
                 primary_serial: None,
                 changes: 0,
@@ -59,64 +85,46 @@ impl ReplicaMonitor {
         }
     }
 
-    pub(crate) fn record(&self, outcome: SyncOutcome) {
+    /// Applies one cycle under a single lock. Publishing plane by plane would let a probe between
+    /// two of them read a metadata outcome beside a blob outcome from the previous pass.
+    pub(crate) fn publish(&self, cycle: ReplicaCycle) {
         let mut observation = self
             .observation
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        observation.status = if outcome.caught_up() {
-            ReplicaHealthStatus::CaughtUp
-        } else {
-            ReplicaHealthStatus::CatchingUp
-        };
-        observation.fault = ReplicaFault::None;
-        observation.serial = outcome.serial;
-        observation.primary_serial = Some(outcome.primary_serial);
-        observation.changes = observation
-            .changes
-            .saturating_add(u64::try_from(outcome.changes).unwrap_or(u64::MAX));
-    }
-
-    /// Readers must not pass this minimum frontier across required derived views.
-    pub(crate) fn record_readable(&self, serial: u64) {
-        let mut observation = self
-            .observation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        observation.readable_serial = serial;
-    }
-
-    pub(crate) fn record_blobs(&self, report: BlobPlaneReport) {
-        let mut observation = self
-            .observation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        observation.blobs_fetched = observation
-            .blobs_fetched
-            .saturating_add(u64::try_from(report.fetched).unwrap_or(u64::MAX));
-        observation.blobs_pending = u64::try_from(report.pending).unwrap_or(u64::MAX);
-    }
-
-    pub(crate) fn record_error(&self, error: &SyncError) {
-        let mut observation = self
-            .observation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        observation.status = ReplicaHealthStatus::Error;
-        observation.fault = match error {
-            SyncError::UnsupportedVersion { .. } => ReplicaFault::IncompatibleSchema,
-            _ => ReplicaFault::Sync,
-        };
-        observation.errors = observation.errors.saturating_add(1);
-    }
-
-    pub(crate) fn record_retired(&self, retired: Vec<RetiredPeer>, fully_retired: bool) {
-        let mut observation = self
-            .observation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        observation.retired = retired;
-        observation.fully_retired = fully_retired;
+        match cycle.metadata {
+            Ok(outcome) => {
+                observation.metadata_fault = None;
+                observation.serial = outcome.serial;
+                observation.primary_serial = Some(outcome.primary_serial);
+                observation.changes = observation
+                    .changes
+                    .saturating_add(u64::try_from(outcome.changes).unwrap_or(u64::MAX));
+            }
+            Err(error) => {
+                observation.metadata_fault = Some(MetadataFault::of(&error));
+                observation.errors = observation.errors.saturating_add(1);
+            }
+        }
+        match cycle.blobs {
+            BlobPass::Completed(report) => {
+                observation.blob_fault = false;
+                observation.blobs_fetched = observation
+                    .blobs_fetched
+                    .saturating_add(u64::try_from(report.fetched).unwrap_or(u64::MAX));
+                observation.blobs_pending = u64::try_from(report.pending).unwrap_or(u64::MAX);
+            }
+            BlobPass::Failed(_) => {
+                observation.blob_fault = true;
+                observation.errors = observation.errors.saturating_add(1);
+            }
+            BlobPass::Skipped => {}
+        }
+        observation.readable_serial = cycle.readable;
+        if let Some(retired) = cycle.retired {
+            observation.retired = retired.peers;
+            observation.fully_retired = retired.fully_retired;
+        }
     }
 
     pub fn snapshot(&self) -> ReplicaObservation {
@@ -125,35 +133,15 @@ impl ReplicaMonitor {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
-
-    /// Reports the highest-priority readiness gap: schema incompatibility, full retirement, sync failure, then lag.
-    pub fn readiness_gap(&self) -> Option<&'static str> {
-        let observation = self.snapshot();
-        match observation.fault {
-            ReplicaFault::IncompatibleSchema => Some("incompatible_schema"),
-            _ if observation.fully_retired => Some("retired_peers"),
-            ReplicaFault::Sync => Some("sync_error"),
-            ReplicaFault::None => match observation.status {
-                ReplicaHealthStatus::CaughtUp => None,
-                ReplicaHealthStatus::Starting | ReplicaHealthStatus::CatchingUp | ReplicaHealthStatus::Error => {
-                    Some("frontier_lag")
-                }
-            },
-        }
-    }
 }
 
 impl PrometheusSource for ReplicaMonitor {
     fn write_metrics(&self, body: &mut String) {
-        let observation = self
-            .observation
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        let caught_up = u8::from(matches!(observation.status, ReplicaHealthStatus::CaughtUp));
+        let observation = self.snapshot();
+        let caught_up = u8::from(observation.is_ready());
         let _ = write!(
             body,
-            "# HELP peryx_ha_distributed_caught_up Whether the replica has reached the latest observed primary serial.\n\
+            "# HELP peryx_ha_distributed_caught_up Whether every required view reflects the latest observed primary serial with no plane faulted.\n\
              # TYPE peryx_ha_distributed_caught_up gauge\n\
              peryx_ha_distributed_caught_up {caught_up}\n\
              # HELP peryx_ha_distributed_serial Last serial committed by the replica.\n\
