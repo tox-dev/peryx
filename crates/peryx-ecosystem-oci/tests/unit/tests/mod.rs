@@ -6,6 +6,7 @@ mod conformance_tests;
 mod contents_tests;
 mod discovery_tests;
 mod frontier;
+mod manifest_schema_tests;
 mod metrics_tests;
 mod mirror_contract_tests;
 mod mirror_tests;
@@ -810,6 +811,34 @@ fn body_has_code(body: &Bytes, code: &str) -> bool {
 
 fn oci_digest(bytes: &[u8]) -> String {
     format!("sha256:{}", Digest::of(bytes).as_str())
+}
+
+/// The config blob a fixture image manifest names. A push validates the manifest document and then
+/// checks that every blob it names is one this repository holds, so a valid image fixture uploads it.
+const CONFIG_BLOB: &[u8] = br#"{"architecture":"amd64","os":"linux"}"#;
+
+/// A schema-valid image manifest under `media_type` naming [`CONFIG_BLOB`], with `extra` appended as
+/// further top-level fields.
+fn image_manifest(media_type: &str, extra: &str) -> Vec<u8> {
+    format!(
+        r#"{{"schemaVersion":2,"mediaType":"{media_type}","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{}","size":{}}},"layers":[]{extra}}}"#,
+        oci_digest(CONFIG_BLOB),
+        CONFIG_BLOB.len(),
+    )
+    .into_bytes()
+}
+
+/// Upload [`CONFIG_BLOB`] into `name`, so an image manifest naming it may be pushed there.
+async fn seed_config(app: &axum::Router, name: &str, authorization: &str) {
+    let (status, ..) = send_body(
+        app,
+        Method::POST,
+        &format!("/v2/{name}/blobs/uploads/?digest={}", oci_digest(CONFIG_BLOB)),
+        &[("authorization", authorization)],
+        CONFIG_BLOB.to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
 }
 
 /// The fake fences uploads when its leased and current epochs differ.

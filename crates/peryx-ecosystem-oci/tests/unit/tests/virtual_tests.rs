@@ -3,13 +3,20 @@ use wiremock::matchers::{method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::{
-    app_with_indexes, auth, gated_response, oci_digest, oci_index, send, send_body, virtual_stack, writable_index,
+    app_with_indexes, auth, gated_response, image_manifest, oci_digest, oci_index, seed_config, send, send_body,
+    virtual_stack, writable_index,
 };
 
 const TOKEN: &str = "s3cret";
 const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
 
+/// A schema-valid image manifest, `from` distinguishing one fixture's bytes from another's.
+fn manifest(from: &str) -> Vec<u8> {
+    image_manifest(MANIFEST_TYPE, &format!(r#","annotations":{{"from":"{from}"}}"#))
+}
+
 async fn push_to_virtual(app: &axum::Router, tag: &str, manifest: &[u8]) {
+    seed_config(app, "reg/app", &auth(TOKEN)).await;
     let (status, _, _) = send_body(
         app,
         Method::PUT,
@@ -24,31 +31,31 @@ async fn push_to_virtual(app: &axum::Router, tag: &str, manifest: &[u8]) {
 #[tokio::test]
 async fn test_virtual_hosted_manifest_shadows_upstream() {
     let server = MockServer::start().await;
-    let upstream = br#"{"schemaVersion":2,"from":"upstream"}"#;
+    let upstream = manifest("upstream");
     Mock::given(method("GET"))
         .and(path("/v2/app/manifests/latest"))
-        .respond_with(ResponseTemplate::new(200).set_body_raw(upstream.to_vec(), MANIFEST_TYPE))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(upstream.clone(), MANIFEST_TYPE))
         .mount(&server)
         .await;
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = virtual_stack(&dir, &format!("{}/", server.uri()));
 
-    let hosted = br#"{"schemaVersion":2,"from":"hosted"}"#;
-    push_to_virtual(&app, "latest", hosted).await;
+    let hosted = manifest("hosted");
+    push_to_virtual(&app, "latest", &hosted).await;
 
     let (status, headers, got) = send(&app, Method::GET, "/v2/reg/app/manifests/latest").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(got, &hosted[..]);
-    assert_eq!(headers["docker-content-digest"], oci_digest(hosted));
+    assert_eq!(headers["docker-content-digest"], oci_digest(&hosted));
 }
 
 #[tokio::test]
 async fn test_virtual_falls_through_to_upstream() {
     let server = MockServer::start().await;
-    let upstream = br#"{"schemaVersion":2,"from":"upstream"}"#;
+    let upstream = manifest("upstream");
     Mock::given(method("GET"))
         .and(path("/v2/app/manifests/edge"))
-        .respond_with(ResponseTemplate::new(200).set_body_raw(upstream.to_vec(), MANIFEST_TYPE))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(upstream.clone(), MANIFEST_TYPE))
         .mount(&server)
         .await;
     let dir = tempfile::tempdir().unwrap();
@@ -61,10 +68,10 @@ async fn test_virtual_falls_through_to_upstream() {
 #[tokio::test]
 async fn test_virtual_manifest_trash_blocks_proxy_fallback_and_tag_discovery() {
     let server = MockServer::start().await;
-    let manifest = br#"{"schemaVersion":2,"from":"shared"}"#;
+    let manifest = manifest("shared");
     Mock::given(method("GET"))
         .and(path("/v2/app/manifests/latest"))
-        .respond_with(ResponseTemplate::new(200).set_body_raw(manifest.to_vec(), MANIFEST_TYPE))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(manifest.clone(), MANIFEST_TYPE))
         .mount(&server)
         .await;
     Mock::given(method("GET"))
@@ -77,8 +84,8 @@ async fn test_virtual_manifest_trash_blocks_proxy_fallback_and_tag_discovery() {
         .await;
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = virtual_stack(&dir, &format!("{}/", server.uri()));
-    push_to_virtual(&app, "latest", manifest).await;
-    let digest = oci_digest(manifest);
+    push_to_virtual(&app, "latest", &manifest).await;
+    let digest = oci_digest(&manifest);
     let (status, _, _) = send_body(
         &app,
         Method::DELETE,
@@ -105,10 +112,10 @@ async fn test_virtual_manifest_trash_blocks_proxy_fallback_and_tag_discovery() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_virtual_digest_delete_wins_an_inflight_proxy_pull() {
     let server = MockServer::start().await;
-    let manifest = br#"{"schemaVersion":2,"from":"upstream"}"#;
-    let digest = oci_digest(manifest);
+    let manifest = manifest("upstream");
+    let digest = oci_digest(&manifest);
     let upstream_path = format!("/v2/app/manifests/{digest}");
-    let (gate, response) = gated_response(ResponseTemplate::new(200).set_body_raw(manifest.to_vec(), MANIFEST_TYPE));
+    let (gate, response) = gated_response(ResponseTemplate::new(200).set_body_raw(manifest.clone(), MANIFEST_TYPE));
     Mock::given(method("GET"))
         .and(path(upstream_path.clone()))
         .respond_with(response)
@@ -116,6 +123,7 @@ async fn test_virtual_digest_delete_wins_an_inflight_proxy_pull() {
         .await;
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = virtual_stack(&dir, &format!("{}/", server.uri()));
+    seed_config(&app, "reg/app", &auth(TOKEN)).await;
     let pull_app = app.clone();
     let pull_uri = format!("/v2/reg/app/manifests/{digest}");
     let pull = tokio::spawn(async move { send(&pull_app, Method::GET, &pull_uri).await });
@@ -125,7 +133,7 @@ async fn test_virtual_digest_delete_wins_an_inflight_proxy_pull() {
         Method::PUT,
         &format!("/v2/reg/app/manifests/{digest}"),
         &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
-        manifest.to_vec(),
+        manifest.clone(),
     )
     .await;
     assert_eq!(push.0, StatusCode::CREATED);
@@ -146,8 +154,8 @@ async fn test_virtual_digest_delete_wins_an_inflight_proxy_pull() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_virtual_tag_delete_wins_an_inflight_proxy_pull() {
     let server = MockServer::start().await;
-    let manifest = br#"{"schemaVersion":2,"from":"upstream"}"#;
-    let digest = oci_digest(manifest);
+    let manifest = manifest("upstream");
+    let digest = oci_digest(&manifest);
     let upstream_path = "/v2/app/manifests/latest";
     let (gate, response) =
         gated_response(ResponseTemplate::new(200).insert_header("docker-content-digest", digest.as_str()));
@@ -158,15 +166,16 @@ async fn test_virtual_tag_delete_wins_an_inflight_proxy_pull() {
         .await;
     Mock::given(method("GET"))
         .and(path(upstream_path))
-        .respond_with(ResponseTemplate::new(200).set_body_raw(manifest.to_vec(), MANIFEST_TYPE))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(manifest.clone(), MANIFEST_TYPE))
         .mount(&server)
         .await;
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = virtual_stack(&dir, &format!("{}/", server.uri()));
+    seed_config(&app, "reg/app", &auth(TOKEN)).await;
     let pull_app = app.clone();
     let pull = tokio::spawn(async move { send(&pull_app, Method::GET, "/v2/reg/app/manifests/latest").await });
     let release = gate.entered().await;
-    push_to_virtual(&app, "latest", manifest).await;
+    push_to_virtual(&app, "latest", &manifest).await;
     let delete = send_body(
         &app,
         Method::DELETE,
@@ -184,8 +193,8 @@ async fn test_virtual_tag_delete_wins_an_inflight_proxy_pull() {
 #[tokio::test]
 async fn test_virtual_digest_tombstone_blocks_a_lower_proxy_tag() {
     let server = MockServer::start().await;
-    let manifest = br#"{"schemaVersion":2,"from":"shared"}"#;
-    let digest = oci_digest(manifest);
+    let manifest = manifest("shared");
+    let digest = oci_digest(&manifest);
     Mock::given(method("HEAD"))
         .and(path("/v2/app/manifests/latest"))
         .respond_with(ResponseTemplate::new(200).insert_header("docker-content-digest", digest.as_str()))
@@ -193,17 +202,18 @@ async fn test_virtual_digest_tombstone_blocks_a_lower_proxy_tag() {
         .await;
     Mock::given(method("GET"))
         .and(path("/v2/app/manifests/latest"))
-        .respond_with(ResponseTemplate::new(200).set_body_raw(manifest.to_vec(), MANIFEST_TYPE))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(manifest.clone(), MANIFEST_TYPE))
         .mount(&server)
         .await;
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = virtual_stack(&dir, &format!("{}/", server.uri()));
+    seed_config(&app, "reg/app", &auth(TOKEN)).await;
     let push = send_body(
         &app,
         Method::PUT,
         &format!("/v2/reg/app/manifests/{digest}"),
         &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
-        manifest.to_vec(),
+        manifest.clone(),
     )
     .await;
     assert_eq!(push.0, StatusCode::CREATED);
@@ -226,8 +236,8 @@ async fn test_virtual_digest_tombstone_blocks_a_lower_proxy_tag() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_virtual_subject_delete_wins_inflight_referrer_discovery() {
     let server = MockServer::start().await;
-    let manifest = br#"{"schemaVersion":2,"kind":"subject"}"#;
-    let subject = oci_digest(manifest);
+    let manifest = manifest("subject");
+    let subject = oci_digest(&manifest);
     let referrer = format!("sha256:{}", "a".repeat(64));
     let upstream_path = format!("/v2/app/referrers/{subject}");
     let (gate, response) = gated_response(
@@ -253,7 +263,7 @@ async fn test_virtual_subject_delete_wins_inflight_referrer_discovery() {
         .await;
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = virtual_stack(&dir, &format!("{}/", server.uri()));
-    push_to_virtual(&app, "base", manifest).await;
+    push_to_virtual(&app, "base", &manifest).await;
     let pull_app = app.clone();
     let pull_uri = format!("/v2/reg/app/referrers/{subject}");
     let pull = tokio::spawn(async move { send(&pull_app, Method::GET, &pull_uri).await });
@@ -286,13 +296,11 @@ async fn test_virtual_referrers_discard_local_results_when_a_proxy_fails() {
         .await;
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = virtual_stack(&dir, &format!("{}/", server.uri()));
-    let manifest = serde_json::json!({
-        "schemaVersion": 2,
-        "mediaType": MANIFEST_TYPE,
-        "artifactType": "application/vnd.example.sig",
-        "subject": {"digest": subject},
-    })
-    .to_string();
+    let manifest = String::from_utf8(image_manifest(
+        MANIFEST_TYPE,
+        &format!(r#","artifactType":"application/vnd.example.sig","subject":{{"mediaType":"{MANIFEST_TYPE}","digest":"{subject}","size":4}}"#),
+    ))
+    .unwrap();
     push_to_virtual(&app, "signature", manifest.as_bytes()).await;
 
     assert_eq!(
@@ -325,13 +333,11 @@ async fn test_virtual_referrers_keep_local_results_when_a_proxy_is_empty() {
         .await;
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = virtual_stack(&dir, &format!("{}/", server.uri()));
-    let manifest = serde_json::json!({
-        "schemaVersion": 2,
-        "mediaType": MANIFEST_TYPE,
-        "artifactType": "application/vnd.example.sig",
-        "subject": {"digest": subject},
-    })
-    .to_string();
+    let manifest = String::from_utf8(image_manifest(
+        MANIFEST_TYPE,
+        &format!(r#","artifactType":"application/vnd.example.sig","subject":{{"mediaType":"{MANIFEST_TYPE}","digest":"{subject}","size":4}}"#),
+    ))
+    .unwrap();
     let referrer = oci_digest(manifest.as_bytes());
     push_to_virtual(&app, "signature", manifest.as_bytes()).await;
 
@@ -363,15 +369,16 @@ async fn test_virtual_lower_tombstone_does_not_hide_a_higher_manifest() {
             ),
         ],
     );
-    let bytes = br#"{"schemaVersion":2,"from":"high"}"#;
-    let digest = oci_digest(bytes);
+    let bytes = manifest("high");
+    let digest = oci_digest(&bytes);
     for index in ["high", "low"] {
+        seed_config(&app, &format!("{index}/app"), &auth(TOKEN)).await;
         let (status, _, _) = send_body(
             &app,
             Method::PUT,
             &format!("/v2/{index}/app/manifests/latest"),
             &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
-            bytes.to_vec(),
+            bytes.clone(),
         )
         .await;
         assert_eq!(status, StatusCode::CREATED);
@@ -505,7 +512,7 @@ async fn test_virtual_tags_union_hosted_and_upstream() {
         .await;
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = virtual_stack(&dir, &format!("{}/", server.uri()));
-    push_to_virtual(&app, "hosted-tag", br#"{"schemaVersion":2}"#).await;
+    push_to_virtual(&app, "hosted-tag", &manifest("hosted")).await;
 
     let (status, _, body) = send(&app, Method::GET, "/v2/reg/app/tags/list").await;
     assert_eq!(status, StatusCode::OK);
@@ -556,7 +563,7 @@ async fn test_virtual_tags_follow_upstream_pagination() {
 async fn test_virtual_tags_tolerate_an_unreachable_proxy() {
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = virtual_stack(&dir, "http://127.0.0.1:1/");
-    push_to_virtual(&app, "only-hosted", br#"{"schemaVersion":2}"#).await;
+    push_to_virtual(&app, "only-hosted", &manifest("hosted")).await;
     let (status, _, body) = send(&app, Method::GET, "/v2/reg/app/tags/list").await;
     assert_eq!(status, StatusCode::OK);
     assert!(std::str::from_utf8(&body).unwrap().contains("\"only-hosted\""));

@@ -9,7 +9,7 @@ use crate::error::{ErrorCode, error_response, error_response_with_status};
 use crate::registry::authority::{
     EpochCommit, authority_moved, claim_repository_home, commit_epoch, release_reservation, repository_epoch,
 };
-use crate::store::{self, Manifest};
+use crate::store::{self, Manifest, ManifestSchema};
 
 use super::*;
 
@@ -28,8 +28,8 @@ pub(in crate::registry) async fn put_manifest(
     if policy_blocks(index, PolicyAction::Upload, &repo) {
         return Ok(error_response(ErrorCode::Denied, "image name is blocked by policy"));
     }
-    let media_type = match manifest_media_type(headers) {
-        Ok(media_type) => media_type,
+    let (media_type, schema) = match manifest_media_type(headers) {
+        Ok(declared) => declared,
         Err(response) => return Ok(*response),
     };
     let bytes = match axum::body::to_bytes(body, MAX_MANIFEST_BYTES).await {
@@ -55,7 +55,11 @@ pub(in crate::registry) async fn put_manifest(
             "manifest bytes do not match the digest",
         ));
     }
-    if let Some(response) = missing_manifest_reference(state, index, &repo, &bytes).await? {
+    let document = match schema.validate(&media_type, &bytes) {
+        Ok(document) => document,
+        Err(fault) => return Ok(error_response(ErrorCode::ManifestInvalid, &fault.to_string())),
+    };
+    if let Some(response) = missing_manifest_reference(state, index, &repo, &document).await? {
         return Ok(response);
     }
     let fence = match claim_repository_home(state, &repo).await {
@@ -88,6 +92,7 @@ pub(in crate::registry) async fn put_manifest(
             canonical: &canonical,
             media_type: &media_type,
             bytes: &bytes,
+            document: &document,
             reference,
             reservation: &reservation,
             journal,
@@ -111,7 +116,7 @@ pub(in crate::registry) async fn put_manifest(
     Ok(manifest_created(&location, &canonical, subject.as_deref()))
 }
 
-fn manifest_media_type(headers: &HeaderMap) -> Result<String, Box<Response>> {
+fn manifest_media_type(headers: &HeaderMap) -> Result<(String, ManifestSchema), Box<Response>> {
     let declared = headers
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
@@ -122,14 +127,13 @@ fn manifest_media_type(headers: &HeaderMap) -> Result<String, Box<Response>> {
         .map_or(declared, |(base, _)| base)
         .trim()
         .to_owned();
-    if is_supported_manifest_type(&media_type) {
-        Ok(media_type)
-    } else {
-        Err(Box::new(error_response(
+    let Some(schema) = ManifestSchema::of(&media_type) else {
+        return Err(Box::new(error_response(
             ErrorCode::ManifestInvalid,
             &format!("unsupported manifest media type {media_type}"),
-        )))
-    }
+        )));
+    };
+    Ok((media_type, schema))
 }
 
 struct ManifestWrite<'a> {
@@ -138,6 +142,7 @@ struct ManifestWrite<'a> {
     canonical: &'a str,
     media_type: &'a str,
     bytes: &'a [u8],
+    document: &'a serde_json::Value,
     reference: &'a Reference,
     reservation: &'a Option<peryx_storage::meta::QuotaReservationRecord>,
     journal: crate::outbox::Outbox,
@@ -178,7 +183,8 @@ async fn commit_manifest(
             write.repo,
             write.canonical,
             write.media_type,
-            write.bytes,
+            write.bytes.len(),
+            write.document,
         )
     })
     .await
@@ -226,18 +232,16 @@ fn record_referrer(
     repo: &str,
     canonical: &str,
     media_type: &str,
-    bytes: &[u8],
+    size: usize,
+    document: &serde_json::Value,
 ) -> Result<Option<String>, ServeError> {
-    let Ok(document) = serde_json::from_slice::<serde_json::Value>(bytes) else {
-        return Ok(None);
-    };
     let Some(subject) = document["subject"]["digest"].as_str() else {
         return Ok(None);
     };
     let mut descriptor = serde_json::json!({
         "mediaType": media_type,
         "digest": canonical,
-        "size": bytes.len(),
+        "size": size,
     });
     let artifact_type = document["artifactType"]
         .as_str()
@@ -420,18 +424,6 @@ fn manifest_created(location: &str, digest: &str, subject: Option<&str>) -> Resp
         .body(Body::empty())
         .expect("created response builds from validated parts")
 }
-/// Whether a hosted push may store bytes under this media type: the OCI image manifest and index and
-/// the Docker v2 schema-2 manifest and manifest list. A proxy stores whatever an upstream sends
-/// verbatim, but an authoritative push rejects anything else rather than serving it back as a manifest.
-fn is_supported_manifest_type(media_type: &str) -> bool {
-    matches!(
-        media_type,
-        "application/vnd.oci.image.manifest.v1+json"
-            | "application/vnd.oci.image.index.v1+json"
-            | "application/vnd.docker.distribution.manifest.v2+json"
-            | "application/vnd.docker.distribution.manifest.list.v2+json"
-    )
-}
 /// Whether a body-read failure is axum's length-limit rejection rather than a transport fault, so an
 /// oversize manifest answers `413` while a broken transfer stays a gateway error.
 fn is_length_limit(err: &axum::Error) -> bool {
@@ -459,9 +451,9 @@ async fn missing_manifest_reference(
     state: &ServingState,
     index: &Index,
     repo: &str,
-    bytes: &[u8],
+    document: &serde_json::Value,
 ) -> Result<Option<Response>, ServeError> {
-    let (children, blobs) = store::manifest_descriptors(bytes);
+    let (children, blobs) = store::document_descriptors(document);
     for blob in blobs {
         let present = if let Some(storage) = store::blob_digest(&blob) {
             state

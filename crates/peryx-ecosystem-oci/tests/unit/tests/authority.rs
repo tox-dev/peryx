@@ -13,10 +13,11 @@ use peryx_index::{Index, IndexKind};
 use peryx_policy::{Policy, PolicyConfig};
 
 const TOKEN: &str = "s3cret";
-const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
-const MANIFEST: &[u8] = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}"#;
-const OTHER_MANIFEST: &[u8] =
-    br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","annotations":{"v":"2"}}"#;
+// An index with no children is the cheapest manifest a push accepts: these tests fence the write
+// path, not the image document, so the fixture names no blob to upload first.
+const MANIFEST_TYPE: &str = "application/vnd.oci.image.index.v1+json";
+const MANIFEST: &[u8] = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[]}"#;
+const OTHER_MANIFEST: &[u8] = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[],"annotations":{"v":"2"}}"#;
 
 struct RecordingAuthority {
     fail_claim: bool,

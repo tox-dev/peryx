@@ -62,6 +62,13 @@ where
     context.register_lexicon(peryx_ecosystem_oci::ECOSYSTEM, &OCI_LEXICON);
     let blob = vec![0x7fu8; 4096];
     let blob_digest = format!("sha256:{}", Digest::of(&blob).as_str());
+    // A push checks the body against the schema its media type selects and requires every blob it
+    // names to be a member of this repository, so the config descriptor names the blob uploaded below.
+    let manifest = format!(
+        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{blob_digest}","size":{}}},"layers":[]}}"#,
+        blob.len()
+    )
+    .into_bytes();
     let app = router(Arc::new(state));
 
     let request = Request::builder()
@@ -73,14 +80,13 @@ where
     let response = runtime.block_on(app.clone().oneshot(request)).unwrap();
     assert_eq!(response.status(), 201);
 
-    let manifest = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}"#;
-    let manifest_digest = format!("sha256:{}", Digest::of(manifest).as_str());
+    let manifest_digest = format!("sha256:{}", Digest::of(&manifest).as_str());
     let request = Request::builder()
         .method("PUT")
         .uri("/v2/store/app/manifests/v1")
         .header("authorization", auth())
         .header("content-type", "application/vnd.oci.image.manifest.v1+json")
-        .body(Body::from(manifest.to_vec()))
+        .body(Body::from(manifest))
         .unwrap();
     let response = runtime.block_on(app.clone().oneshot(request)).unwrap();
     assert_eq!(response.status(), 201);

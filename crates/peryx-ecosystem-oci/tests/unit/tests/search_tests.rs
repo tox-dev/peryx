@@ -17,8 +17,10 @@ use crate::store;
 const TOKEN: &str = "s3cret";
 const DIGEST: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const OTHER_DIGEST: &str = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
-const MANIFEST: &[u8] = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}"#;
+// An index with no children is the cheapest manifest a push accepts: the search view does not read the
+// image document, so the fixture names no blob to upload first.
+const MANIFEST_TYPE: &str = "application/vnd.oci.image.index.v1+json";
+const MANIFEST: &[u8] = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[]}"#;
 
 #[tokio::test]
 async fn test_oci_indexer_surfaces_repositories_and_tags() {

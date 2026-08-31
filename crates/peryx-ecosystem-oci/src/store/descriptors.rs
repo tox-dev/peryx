@@ -24,9 +24,13 @@ pub fn blob_digest(digest: &str) -> Option<Digest> {
 /// present, and the orphan purge must not expect it locally.
 #[must_use]
 pub fn manifest_descriptors(bytes: &[u8]) -> (Vec<String>, Vec<String>) {
-    let Ok(document) = serde_json::from_slice::<serde_json::Value>(bytes) else {
-        return (Vec::new(), Vec::new());
-    };
+    serde_json::from_slice::<serde_json::Value>(bytes)
+        .as_ref()
+        .map_or_else(|_| (Vec::new(), Vec::new()), document_descriptors)
+}
+/// The same split for a document the caller has already parsed, so a pushed manifest is read once.
+#[must_use]
+pub fn document_descriptors(document: &serde_json::Value) -> (Vec<String>, Vec<String>) {
     if let Some(manifests) = document["manifests"].as_array() {
         let children = manifests
             .iter()

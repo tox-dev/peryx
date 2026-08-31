@@ -325,9 +325,18 @@ fn test_registry_round_trip() {
     assert_eq!(code, 201);
     assert_eq!(node.oci_pull_blob("app", &digest), Some((200, blob.to_vec())));
 
-    let manifest = br#"{"schemaVersion":2}"#;
+    let manifest = format!(
+        concat!(
+            r#"{{"schemaVersion":2,"mediaType":"{manifest_type}","#,
+            r#""config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{digest}","size":{size}}},"#,
+            r#""layers":[]}}"#,
+        ),
+        manifest_type = OCI_MANIFEST_TYPE,
+        digest = digest,
+        size = blob.len(),
+    );
     assert_eq!(
-        node.oci_put_manifest("app", "1.0", manifest, OCI_MANIFEST_TYPE)
+        node.oci_put_manifest("app", "1.0", manifest.as_bytes(), OCI_MANIFEST_TYPE)
             .expect("manifest reaches the node")
             .0,
         201,

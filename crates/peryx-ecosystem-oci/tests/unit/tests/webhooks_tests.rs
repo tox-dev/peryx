@@ -16,6 +16,17 @@ use super::{auth, oci_digest};
 
 const TOKEN: &str = "s3cret";
 const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
+const CONFIG: &[u8] = b"a-config-document";
+
+/// A schema-valid image manifest naming [`CONFIG`], the blob [`push_manifest`] uploads first.
+fn image_manifest() -> Vec<u8> {
+    format!(
+        r#"{{"schemaVersion":2,"mediaType":"{MANIFEST_TYPE}","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{}","size":{}}},"layers":[]}}"#,
+        oci_digest(CONFIG),
+        CONFIG.len()
+    )
+    .into_bytes()
+}
 
 fn hosted_with_meta_and_webhook(
     dir: &tempfile::TempDir,
@@ -93,14 +104,14 @@ fn enqueued_delivery(state: &AppState) -> WebhookDeliveryRecord {
     deliveries.pop().unwrap()
 }
 
-async fn push_manifest(app: &axum::Router, blob: &[u8], manifest: &[u8], reference: &str) {
-    let digest = oci_digest(blob);
+async fn push_manifest(app: &axum::Router, manifest: &[u8], reference: &str) {
+    let digest = oci_digest(CONFIG);
     send_body(
         app,
         Method::POST,
         &format!("/v2/store/app/blobs/uploads/?digest={digest}"),
         &[("authorization", &auth(TOKEN))],
-        blob.to_vec(),
+        CONFIG.to_vec(),
     )
     .await;
     let status = send_body(
@@ -122,8 +133,7 @@ async fn push_manifest(app: &axum::Router, blob: &[u8], manifest: &[u8], referen
 async fn test_manifest_push_fires_manifest_push_webhook() {
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = hosted_with_webhook(&dir, &["manifest-push"]);
-    let manifest = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}"#;
-    push_manifest(&app, b"layer-bytes", manifest, "1.0").await;
+    push_manifest(&app, &image_manifest(), "1.0").await;
 
     let delivery = enqueued_delivery(&state);
     assert_eq!(delivery.event, "manifest-push");
@@ -141,9 +151,9 @@ async fn test_manifest_push_fires_manifest_push_webhook() {
 async fn test_manifest_push_by_digest_fires_manifest_push_webhook() {
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = hosted_with_webhook(&dir, &["manifest-push"]);
-    let manifest = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}"#;
-    let digest = oci_digest(manifest);
-    push_manifest(&app, b"layer-bytes", manifest, &digest).await;
+    let manifest = image_manifest();
+    let digest = oci_digest(&manifest);
+    push_manifest(&app, &manifest, &digest).await;
 
     let payload: serde_json::Value = serde_json::from_str(&enqueued_delivery(&state).payload).unwrap();
     assert_eq!(payload["data"]["digest"], digest);
@@ -154,8 +164,7 @@ async fn test_manifest_push_by_digest_fires_manifest_push_webhook() {
 async fn test_manifest_delete_fires_a_delete_webhook() {
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = hosted_with_webhook(&dir, &["manifest-delete"]);
-    let manifest = br#"{"schemaVersion":2}"#;
-    push_manifest(&app, b"layer", manifest, "2.0").await;
+    push_manifest(&app, &image_manifest(), "2.0").await;
 
     let status = send_body(
         &app,
@@ -179,9 +188,9 @@ async fn test_manifest_delete_fires_a_delete_webhook() {
 async fn test_manifest_delete_by_digest_fires_a_delete_webhook() {
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = hosted_with_webhook(&dir, &["manifest-delete"]);
-    let manifest = br#"{"schemaVersion":2}"#;
-    let digest = oci_digest(manifest);
-    push_manifest(&app, b"layer", manifest, "2.0").await;
+    let manifest = image_manifest();
+    let digest = oci_digest(&manifest);
+    push_manifest(&app, &manifest, "2.0").await;
 
     let status = send_body(
         &app,
@@ -203,7 +212,7 @@ async fn test_manifest_delete_by_digest_fires_a_delete_webhook() {
 async fn test_manifest_restore_fires_a_restore_webhook() {
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = hosted_with_webhook(&dir, &["manifest-restore"]);
-    push_manifest(&app, b"layer", br#"{"schemaVersion":2}"#, "2.0").await;
+    push_manifest(&app, &image_manifest(), "2.0").await;
     send_body(
         &app,
         Method::DELETE,
@@ -236,9 +245,9 @@ async fn test_manifest_restore_fires_a_restore_webhook() {
 async fn test_manifest_restore_by_digest_fires_a_restore_webhook() {
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = hosted_with_webhook(&dir, &["manifest-restore"]);
-    let manifest = br#"{"schemaVersion":2}"#;
-    let digest = oci_digest(manifest);
-    push_manifest(&app, b"layer", manifest, "2.0").await;
+    let manifest = image_manifest();
+    let digest = oci_digest(&manifest);
+    push_manifest(&app, &manifest, "2.0").await;
     send_body(
         &app,
         Method::DELETE,

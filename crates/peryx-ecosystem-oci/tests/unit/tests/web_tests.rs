@@ -532,9 +532,9 @@ async fn test_browse_virtual_index_lists_member_repositories() {
         "/v2/reg/team/app/manifests/1.0",
         &[
             ("authorization", &auth("s3cret")),
-            ("content-type", "application/vnd.oci.image.manifest.v1+json"),
+            ("content-type", "application/vnd.oci.image.index.v1+json"),
         ],
-        br#"{"schemaVersion":2}"#.to_vec(),
+        br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[]}"#.to_vec(),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);

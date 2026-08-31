@@ -16,7 +16,10 @@ use super::{
     realm_app_with_clock_and_limits, scoped_index, send, send_body, send_with, token_from, writable_index,
 };
 
-const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
+// An index with no children is the cheapest manifest a push accepts: these tests exercise the
+// credential path, not the image document, so the fixture names no blob to upload first.
+const MANIFEST_TYPE: &str = "application/vnd.oci.image.index.v1+json";
+const MANIFEST: &[u8] = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[]}"#;
 const SECRET: &str = "s3cret";
 
 fn team_registry(dir: &tempfile::TempDir) -> axum::Router {
@@ -302,7 +305,7 @@ async fn publish_tag(app: &axum::Router, name: &str) {
         Method::PUT,
         &format!("/v2/{name}/manifests/latest"),
         &[("authorization", &auth(SECRET)), ("content-type", MANIFEST_TYPE)],
-        br#"{"schemaVersion":2}"#.to_vec(),
+        MANIFEST.to_vec(),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{response:?}");
@@ -330,7 +333,7 @@ fn catalog_denied_registry(dir: &tempfile::TempDir, different_subjects: bool) ->
 async fn test_resource_accepts_case_insensitive_bearer_scheme(#[case] scheme: &str) {
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = realm_app(&dir, vec![writable_index("pub", "pub", true, SECRET)]);
-    let body = br#"{"schemaVersion":2}"#;
+    let body = MANIFEST;
     let digest = oci_digest(body);
     push(&app, "pub/app", &digest, body, &auth(SECRET)).await;
 
@@ -345,14 +348,14 @@ async fn test_resource_accepts_case_insensitive_bearer_scheme(#[case] scheme: &s
     )
     .await;
     assert_eq!(pull, StatusCode::OK);
-    assert_eq!(got, &body[..]);
+    assert_eq!(got, body);
 }
 
 #[tokio::test]
 async fn test_named_token_pushes_within_its_glob_and_is_refused_outside_it() {
     let dir = tempfile::tempdir().unwrap();
     let app = team_registry(&dir);
-    let body = br#"{"schemaVersion":2}"#;
+    let body = MANIFEST;
     let digest = oci_digest(body);
 
     let (_, granted) = request_token(
@@ -443,7 +446,7 @@ async fn test_bearer_token_may_not_push_beyond_scope(#[case] requested_scope: &s
         Some(&auth(SECRET)),
     )
     .await;
-    let body = br#"{"schemaVersion":2}"#;
+    let body = MANIFEST;
     let (status, headers, _) = send_body(
         &app,
         Method::PUT,
@@ -476,7 +479,7 @@ async fn test_named_subject_isolated_by_index_secret(#[case] target_secret: &str
         scoped_index("target", "target", "ci", target_secret, "*", actions),
     ];
     let (_state, app) = realm_app(&dir, indexes);
-    let body = br#"{"schemaVersion":2}"#;
+    let body = MANIFEST;
     let digest = oci_digest(body);
     push(&app, "target/app", &digest, body, &auth(target_secret)).await;
     let (_, token) = request_token(
@@ -516,7 +519,7 @@ async fn test_docker_login_flow_validates_and_then_pushes() {
     .await;
     assert_eq!(confirm, StatusCode::OK);
 
-    let body = br#"{"schemaVersion":2}"#;
+    let body = MANIFEST;
     let digest = oci_digest(body);
     let (_, scoped) = request_token(
         &app,
@@ -597,7 +600,7 @@ async fn test_basic_is_still_accepted_on_a_resource_push() {
     let dir = tempfile::tempdir().unwrap();
     // Legacy Basic-token login remains supported when a realm is configured.
     let (_state, app) = realm_app(&dir, vec![writable_index("store", "store", true, SECRET)]);
-    let body = br#"{"schemaVersion":2}"#;
+    let body = MANIFEST;
     let digest = oci_digest(body);
     push(&app, "store/app", &digest, body, &auth(SECRET)).await;
 }

@@ -29,7 +29,11 @@ fn test_quota_reservation_preserves_oci_identity(#[case] tag: Option<&str>) {
 }
 
 const TOKEN: &str = "s3cret";
-const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
+// An index with no children is the cheapest manifest a push accepts: quota accounting does not read
+// the image document, so the fixture names no blob to upload first.
+const MANIFEST_TYPE: &str = "application/vnd.oci.image.index.v1+json";
+const MANIFEST: &[u8] = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[]}"#;
+const OTHER_MANIFEST: &[u8] = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[],"annotations":{"v":"2"}}"#;
 
 fn quota_store(dir: &tempfile::TempDir, limits: &PolicyConfig) -> (Arc<peryx_driver::AppState>, axum::Router) {
     app_with(dir, quota_index(limits))
@@ -640,8 +644,8 @@ async fn test_audit_mode_records_the_violation_and_accepts_the_push() {
 async fn test_manifest_over_the_version_quota_stays_absent_from_discovery() {
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = tag_quota_store(&dir, 1);
-    let first = br#"{"schemaVersion":2}"#;
-    let second = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}"#;
+    let first = MANIFEST;
+    let second = OTHER_MANIFEST;
     assert_eq!(push_manifest(&app, "store/app", "v1", first).await, StatusCode::CREATED);
     assert_eq!(
         push_manifest(&app, "store/app", "v2", second).await,
@@ -681,7 +685,7 @@ async fn test_manifest_over_the_version_quota_stays_absent_from_discovery() {
 async fn test_manifest_re_push_under_the_same_tag_is_not_double_counted() {
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = tag_quota_store(&dir, 1);
-    let manifest = br#"{"schemaVersion":2}"#;
+    let manifest = MANIFEST;
 
     assert_eq!(
         push_manifest(&app, "store/app", "v1", manifest).await,
@@ -707,7 +711,7 @@ async fn test_manifest_re_push_under_the_same_tag_is_not_double_counted() {
 async fn test_manifest_re_push_from_trash_is_not_double_counted() {
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = tag_quota_store(&dir, 1);
-    let manifest = br#"{"schemaVersion":2}"#;
+    let manifest = MANIFEST;
     assert_eq!(
         push_manifest(&app, "store/app", "v1", manifest).await,
         StatusCode::CREATED
@@ -735,7 +739,7 @@ async fn test_manifest_re_push_from_trash_is_not_double_counted() {
 async fn test_a_new_tag_on_an_existing_manifest_counts_a_version() {
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = tag_quota_store(&dir, 2);
-    let manifest = br#"{"schemaVersion":2}"#;
+    let manifest = MANIFEST;
 
     assert_eq!(
         push_manifest(&app, "store/app", "v1", manifest).await,
@@ -763,11 +767,11 @@ async fn test_manifest_re_push_by_digest_is_not_re_accounted() {
     let (state, app) = quota_store(
         &dir,
         &PolicyConfig {
-            max_accounted_bytes: Some(64),
+            max_accounted_bytes: Some(MANIFEST.len() as u64),
             ..PolicyConfig::default()
         },
     );
-    let manifest = br#"{"schemaVersion":2}"#;
+    let manifest = MANIFEST;
     let digest = oci_digest(manifest);
 
     assert_eq!(

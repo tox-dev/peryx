@@ -1,9 +1,13 @@
+use std::sync::LazyLock;
+
 use axum::http::{Method, StatusCode, header};
 use rstest::rstest;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use super::{auth, body_has_code, hosted_writable, oci_digest, proxy, send_body, send_with};
+use super::{
+    auth, body_has_code, hosted_writable, image_manifest, oci_digest, proxy, seed_config, send_body, send_with,
+};
 
 const TOKEN: &str = "s3cret";
 const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
@@ -11,23 +15,22 @@ const INDEX_TYPE: &str = "application/vnd.oci.image.index.v1+json";
 const IMAGE_ACCEPT: &str = "application/vnd.docker.distribution.manifest.v2+json";
 const LIST_TYPE: &str = "application/vnd.docker.distribution.manifest.list.v2+json";
 
-const CHILD: &[u8] = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}"#;
-const DOCKER_CHILD: &[u8] =
-    br#"{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json"}"#;
+static CHILD: LazyLock<Vec<u8>> = LazyLock::new(|| image_manifest(MANIFEST_TYPE, ""));
+static DOCKER_CHILD: LazyLock<Vec<u8>> = LazyLock::new(|| image_manifest(IMAGE_ACCEPT, ""));
 
-fn amd64_list(media_type: &str, child_media_type: &str, child_digest: &str) -> Vec<u8> {
+fn amd64_list(media_type: &str, child_media_type: &str, child_digest: &str, child_size: usize) -> Vec<u8> {
     format!(
-        r#"{{"schemaVersion":2,"mediaType":"{media_type}","manifests":[{{"mediaType":"{child_media_type}","digest":"{child_digest}","platform":{{"os":"linux","architecture":"amd64"}}}}]}}"#,
+        r#"{{"schemaVersion":2,"mediaType":"{media_type}","manifests":[{{"mediaType":"{child_media_type}","digest":"{child_digest}","size":{child_size},"platform":{{"os":"linux","architecture":"amd64"}}}}]}}"#,
     )
     .into_bytes()
 }
 
 fn amd64_index(child_digest: &str) -> Vec<u8> {
-    amd64_list(INDEX_TYPE, MANIFEST_TYPE, child_digest)
+    amd64_list(INDEX_TYPE, MANIFEST_TYPE, child_digest, CHILD.len())
 }
 
 fn amd64_docker_list(child_digest: &str) -> Vec<u8> {
-    amd64_list(LIST_TYPE, IMAGE_ACCEPT, child_digest)
+    amd64_list(LIST_TYPE, IMAGE_ACCEPT, child_digest, DOCKER_CHILD.len())
 }
 
 async fn push_to(
@@ -56,8 +59,9 @@ async fn push(app: &axum::Router, reference: &str, media_type: &str, body: &[u8]
 async fn hosted_index() -> (tempfile::TempDir, axum::Router, String) {
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = hosted_writable(&dir, TOKEN);
-    let child_digest = oci_digest(CHILD);
-    push(&app, &child_digest, MANIFEST_TYPE, CHILD).await;
+    seed_config(&app, "store/app", &auth(TOKEN)).await;
+    let child_digest = oci_digest(&CHILD);
+    push(&app, &child_digest, MANIFEST_TYPE, &CHILD).await;
     push(&app, "multi", INDEX_TYPE, &amd64_index(&child_digest)).await;
     (dir, app, child_digest)
 }
@@ -65,8 +69,9 @@ async fn hosted_index() -> (tempfile::TempDir, axum::Router, String) {
 async fn hosted_docker_list() -> (tempfile::TempDir, axum::Router, String) {
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = hosted_writable(&dir, TOKEN);
-    let child_digest = oci_digest(DOCKER_CHILD);
-    push(&app, &child_digest, IMAGE_ACCEPT, DOCKER_CHILD).await;
+    seed_config(&app, "store/app", &auth(TOKEN)).await;
+    let child_digest = oci_digest(&DOCKER_CHILD);
+    push(&app, &child_digest, IMAGE_ACCEPT, &DOCKER_CHILD).await;
     push(&app, "multi", LIST_TYPE, &amd64_docker_list(&child_digest)).await;
     (dir, app, child_digest)
 }
@@ -85,7 +90,7 @@ async fn test_get_serves_the_amd64_child_when_accept_excludes_the_docker_list() 
     assert_eq!(headers["docker-content-digest"], child_digest);
     assert_eq!(headers[header::CONTENT_TYPE], IMAGE_ACCEPT);
     assert_eq!(headers[header::VARY], "accept");
-    assert_eq!(body, DOCKER_CHILD);
+    assert_eq!(body, *DOCKER_CHILD);
 }
 
 #[rstest]
@@ -220,7 +225,7 @@ async fn test_get_by_digest_serves_the_amd64_child() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(headers["docker-content-digest"], child_digest);
-    assert_eq!(body, DOCKER_CHILD);
+    assert_eq!(body, *DOCKER_CHILD);
 }
 
 #[tokio::test]
@@ -280,17 +285,19 @@ async fn test_get_of_a_plain_image_is_unaffected() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(headers["docker-content-digest"], child_digest);
-    assert_eq!(body, CHILD);
+    assert_eq!(body, *CHILD);
 }
 
 #[tokio::test]
 async fn test_get_of_a_docker_list_without_an_amd64_child_returns_an_error() {
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = hosted_writable(&dir, TOKEN);
-    let child_digest = oci_digest(CHILD);
-    push(&app, &child_digest, MANIFEST_TYPE, CHILD).await;
+    seed_config(&app, "store/app", &auth(TOKEN)).await;
+    let child_digest = oci_digest(&CHILD);
+    push(&app, &child_digest, MANIFEST_TYPE, &CHILD).await;
     let index = format!(
-        r#"{{"schemaVersion":2,"mediaType":"{LIST_TYPE}","manifests":[{{"mediaType":"{IMAGE_ACCEPT}","digest":"{child_digest}","platform":{{"os":"linux","architecture":"arm64"}}}}]}}"#,
+        r#"{{"schemaVersion":2,"mediaType":"{LIST_TYPE}","manifests":[{{"mediaType":"{IMAGE_ACCEPT}","digest":"{child_digest}","size":{},"platform":{{"os":"linux","architecture":"arm64"}}}}]}}"#,
+        CHILD.len(),
     )
     .into_bytes();
     push(&app, "multi", LIST_TYPE, &index).await;
@@ -410,8 +417,9 @@ async fn test_get_propagates_a_docker_list_child_fetch_error() {
 async fn test_push_rejects_a_docker_list_naming_a_child_from_another_repository() {
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = hosted_writable(&dir, TOKEN);
-    let child_digest = oci_digest(DOCKER_CHILD);
-    let (status, body) = push_to(&app, "store/private", &child_digest, IMAGE_ACCEPT, DOCKER_CHILD).await;
+    seed_config(&app, "store/private", &auth(TOKEN)).await;
+    let child_digest = oci_digest(&DOCKER_CHILD);
+    let (status, body) = push_to(&app, "store/private", &child_digest, IMAGE_ACCEPT, &DOCKER_CHILD).await;
     assert_eq!(status, StatusCode::CREATED, "{body:?}");
 
     let (status, body) = push_to(
@@ -430,7 +438,7 @@ async fn test_push_rejects_a_docker_list_naming_a_child_from_another_repository(
 async fn test_get_does_not_negotiate_a_child_held_only_by_another_repository() {
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = hosted_writable(&dir, TOKEN);
-    let child_digest = oci_digest(DOCKER_CHILD);
+    let child_digest = oci_digest(&DOCKER_CHILD);
     let list = amd64_docker_list(&child_digest);
     let list_digest = oci_digest(&list);
     // Both the list and its child belong to `private`; only the tag naming the list lands in `app`,
@@ -461,7 +469,7 @@ async fn test_get_does_not_negotiate_a_child_held_only_by_another_repository() {
 #[tokio::test]
 async fn test_get_fetches_the_amd64_child_from_a_proxy_member() {
     let server = MockServer::start().await;
-    let child_digest = oci_digest(DOCKER_CHILD);
+    let child_digest = oci_digest(&DOCKER_CHILD);
     let index = amd64_docker_list(&child_digest);
     for (reference, body, media_type) in [
         ("latest", index.clone(), LIST_TYPE),
@@ -485,5 +493,5 @@ async fn test_get_fetches_the_amd64_child_from_a_proxy_member() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(headers["docker-content-digest"], child_digest);
-    assert_eq!(body, DOCKER_CHILD);
+    assert_eq!(body, *DOCKER_CHILD);
 }

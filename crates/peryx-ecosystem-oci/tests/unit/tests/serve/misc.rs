@@ -132,7 +132,7 @@ async fn test_catalog_lists_oci_repositories_with_pagination() {
     };
     let hosted = |name: &str, route: &str| writable_index(name, route, true, "s3cret");
     let (_state, app) = app_with_indexes(&dir, vec![pypi, hosted("store", "store"), hosted("root", "")]);
-    let manifest = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}"#;
+    let manifest = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[]}"#;
     for uri in [
         "/v2/store/app1/manifests/v1",
         "/v2/store/app2/manifests/v1",
@@ -144,7 +144,7 @@ async fn test_catalog_lists_oci_repositories_with_pagination() {
             uri,
             &[
                 ("authorization", &crate::tests::auth("s3cret")),
-                ("content-type", MANIFEST_TYPE),
+                ("content-type", "application/vnd.oci.image.index.v1+json"),
             ],
             manifest.to_vec(),
         )

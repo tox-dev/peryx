@@ -2,32 +2,38 @@ use axum::http::{Method, StatusCode, header};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use super::{auth, hosted_writable, oci_digest, proxy, send, send_body, send_with};
+use super::{
+    CONFIG_BLOB, auth, hosted_writable, image_manifest, oci_digest, proxy, seed_config, send, send_body, send_with,
+};
 
 const TOKEN: &str = "s3cret";
 const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
 
 async fn push_subject_and_referrer(app: &axum::Router) -> (String, String) {
-    let subject_manifest = br#"{"schemaVersion":2,"kind":"subject"}"#;
-    let subject = oci_digest(subject_manifest);
+    seed_config(app, "store/app", &auth(TOKEN)).await;
+    let subject_manifest = image_manifest(MANIFEST_TYPE, "");
+    let subject = oci_digest(&subject_manifest);
     let status = send_body(
         app,
         Method::PUT,
         "/v2/store/app/manifests/base",
         &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
-        subject_manifest.to_vec(),
+        subject_manifest,
     )
     .await
     .0;
     assert_eq!(status, StatusCode::CREATED);
-    let manifest = format!(r#"{{"schemaVersion":2,"subject":{{"digest":"{subject}"}}}}"#);
-    let digest = oci_digest(manifest.as_bytes());
+    let manifest = image_manifest(
+        MANIFEST_TYPE,
+        &format!(r#","subject":{{"mediaType":"{MANIFEST_TYPE}","digest":"{subject}","size":7}}"#),
+    );
+    let digest = oci_digest(&manifest);
     let status = send_body(
         app,
         Method::PUT,
         "/v2/store/app/manifests/sig",
         &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
-        manifest.into_bytes(),
+        manifest,
     )
     .await
     .0;
@@ -48,18 +54,22 @@ async fn referrer_count(app: &axum::Router, subject: &str) -> usize {
 async fn test_manifest_with_subject_records_a_referrer_and_echoes_it() {
     let dir = tempfile::tempdir().unwrap();
     let (_, app) = hosted_writable(&dir, TOKEN);
+    seed_config(&app, "store/app", &auth(TOKEN)).await;
     let subject = format!("sha256:{}", "5".repeat(64));
-    let manifest = format!(
-        r#"{{"schemaVersion":2,"mediaType":"{MANIFEST_TYPE}","artifactType":"application/vnd.example+type","subject":{{"mediaType":"{MANIFEST_TYPE}","digest":"{subject}","size":7}}}}"#
+    let manifest = image_manifest(
+        MANIFEST_TYPE,
+        &format!(
+            r#","artifactType":"application/vnd.example+type","subject":{{"mediaType":"{MANIFEST_TYPE}","digest":"{subject}","size":7}}"#
+        ),
     );
-    let digest = oci_digest(manifest.as_bytes());
+    let digest = oci_digest(&manifest);
 
     let (status, headers, _) = send_body(
         &app,
         Method::PUT,
         "/v2/store/app/manifests/v1",
         &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
-        manifest.clone().into_bytes(),
+        manifest.clone(),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
@@ -161,12 +171,13 @@ async fn test_referrers_on_an_unresolvable_name_is_name_unknown() {
 async fn test_manifest_without_a_subject_has_no_referrer_header() {
     let dir = tempfile::tempdir().unwrap();
     let (_, app) = hosted_writable(&dir, TOKEN);
+    seed_config(&app, "store/app", &auth(TOKEN)).await;
     let (status, headers, _) = send_body(
         &app,
         Method::PUT,
         "/v2/store/app/manifests/plain",
         &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
-        br#"{"schemaVersion":2}"#.to_vec(),
+        image_manifest(MANIFEST_TYPE, ""),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
@@ -209,16 +220,21 @@ async fn test_upload_status_reports_progress() {
 async fn test_referrer_artifact_type_falls_back_to_config_and_keeps_annotations() {
     let dir = tempfile::tempdir().unwrap();
     let (_, app) = hosted_writable(&dir, TOKEN);
+    seed_config(&app, "store/app", &auth(TOKEN)).await;
     let subject = format!("sha256:{}", "8".repeat(64));
+    // The referrer descriptor falls back to the config media type when no artifactType is declared.
     let manifest = format!(
-        r#"{{"schemaVersion":2,"config":{{"mediaType":"application/vnd.example.config"}},"annotations":{{"key":"value"}},"subject":{{"digest":"{subject}"}}}}"#
-    );
+        r#"{{"schemaVersion":2,"mediaType":"{MANIFEST_TYPE}","config":{{"mediaType":"application/vnd.example.config","digest":"{}","size":{}}},"layers":[],"annotations":{{"key":"value"}},"subject":{{"mediaType":"{MANIFEST_TYPE}","digest":"{subject}","size":7}}}}"#,
+        oci_digest(CONFIG_BLOB),
+        CONFIG_BLOB.len(),
+    )
+    .into_bytes();
     let status = send_body(
         &app,
         Method::PUT,
         "/v2/store/app/manifests/cfg",
         &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
-        manifest.into_bytes(),
+        manifest,
     )
     .await
     .0;
@@ -229,22 +245,6 @@ async fn test_referrer_artifact_type_falls_back_to_config_and_keeps_annotations(
     let descriptor = &index["manifests"].as_array().unwrap()[0];
     assert_eq!(descriptor["artifactType"], "application/vnd.example.config");
     assert_eq!(descriptor["annotations"]["key"], "value");
-}
-
-#[tokio::test]
-async fn test_non_json_manifest_records_no_referrer() {
-    let dir = tempfile::tempdir().unwrap();
-    let (_, app) = hosted_writable(&dir, TOKEN);
-    let (status, headers, _) = send_body(
-        &app,
-        Method::PUT,
-        "/v2/store/app/manifests/raw",
-        &[("authorization", &auth(TOKEN))],
-        b"not json at all".to_vec(),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED);
-    assert!(!headers.contains_key("oci-subject"));
 }
 
 #[tokio::test]
@@ -504,13 +504,14 @@ async fn test_cancel_upload_on_a_read_only_proxy_is_denied() {
 async fn test_tag_list_pagination() {
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = hosted_writable(&dir, TOKEN);
+    seed_config(&app, "store/app", &auth(TOKEN)).await;
     for tag in ["a", "b", "c", "d"] {
         let status = send_body(
             &app,
             Method::PUT,
             &format!("/v2/store/app/manifests/{tag}"),
             &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
-            br#"{"schemaVersion":2}"#.to_vec(),
+            image_manifest(MANIFEST_TYPE, ""),
         )
         .await
         .0;

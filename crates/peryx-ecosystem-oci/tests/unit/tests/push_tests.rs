@@ -15,11 +15,14 @@ use tower::ServiceExt as _;
 
 use super::{
     EpochAuthority, app_with_indexes, assert_registry_version, auth, bind_ownership, body_has_code, hosted,
-    hosted_writable, oci_digest, proxy, scoped_index, send, send_body, send_with, writable_index,
+    hosted_writable, image_manifest, oci_digest, proxy, scoped_index, seed_config, send, send_body, send_with,
+    writable_index,
 };
 
 const TOKEN: &str = "s3cret";
 const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
+const INDEX_TYPE: &str = "application/vnd.oci.image.index.v1+json";
+const CONFIG_TYPE: &str = "application/vnd.oci.image.config.v1+json";
 
 #[tokio::test]
 async fn test_session_upload_then_pull() {
@@ -625,15 +628,16 @@ async fn test_mount_falls_back_to_a_session(#[case] present: bool, #[case] sourc
 async fn test_manifest_put_by_tag_then_pull_and_list() {
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = hosted_writable(&dir, TOKEN);
-    let manifest = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}"#;
-    let digest = oci_digest(manifest);
+    seed_config(&app, "store/app", &auth(TOKEN)).await;
+    let manifest = image_manifest(MANIFEST_TYPE, "");
+    let digest = oci_digest(&manifest);
 
     let (status, headers, _) = send_body(
         &app,
         Method::PUT,
         "/v2/store/app/manifests/v1",
         &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
-        manifest.to_vec(),
+        manifest.clone(),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
@@ -654,14 +658,15 @@ async fn test_manifest_put_by_tag_then_pull_and_list() {
 async fn test_manifest_put_by_digest_and_mismatch() {
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = hosted_writable(&dir, TOKEN);
-    let manifest = br#"{"schemaVersion":2}"#;
-    let digest = oci_digest(manifest);
+    seed_config(&app, "store/app", &auth(TOKEN)).await;
+    let manifest = image_manifest(MANIFEST_TYPE, "");
+    let digest = oci_digest(&manifest);
     let (status, _, _) = send_body(
         &app,
         Method::PUT,
         &format!("/v2/store/app/manifests/{digest}"),
         &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
-        manifest.to_vec(),
+        manifest.clone(),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
@@ -672,7 +677,7 @@ async fn test_manifest_put_by_digest_and_mismatch() {
         Method::PUT,
         &format!("/v2/store/app/manifests/{wrong}"),
         &[("authorization", &auth(TOKEN))],
-        manifest.to_vec(),
+        manifest.clone(),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -683,14 +688,15 @@ async fn test_manifest_put_by_digest_and_mismatch() {
 async fn test_manifest_delete_by_tag() {
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = hosted_writable(&dir, TOKEN);
-    let manifest = br#"{"schemaVersion":2}"#;
-    let digest = oci_digest(manifest);
+    seed_config(&app, "store/app", &auth(TOKEN)).await;
+    let manifest = image_manifest(MANIFEST_TYPE, "");
+    let digest = oci_digest(&manifest);
     send_body(
         &app,
         Method::PUT,
         "/v2/store/app/manifests/v1",
         &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
-        manifest.to_vec(),
+        manifest.clone(),
     )
     .await;
     let (status, _, _) = send_body(
@@ -748,14 +754,15 @@ async fn test_manifest_delete_by_tag() {
 async fn test_manifest_delete_by_digest_and_missing() {
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = hosted_writable(&dir, TOKEN);
-    let manifest = br#"{"schemaVersion":2}"#;
-    let digest = oci_digest(manifest);
+    seed_config(&app, "store/app", &auth(TOKEN)).await;
+    let manifest = image_manifest(MANIFEST_TYPE, "");
+    let digest = oci_digest(&manifest);
     send_body(
         &app,
         Method::PUT,
         "/v2/store/app/manifests/v1",
         &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
-        manifest.to_vec(),
+        manifest.clone(),
     )
     .await;
     let (status, _, _) = send_body(
@@ -809,15 +816,18 @@ async fn test_manifest_delete_by_digest_retained_while_another_index_tags_it() {
             writable_index("keep", "keep", true, TOKEN),
         ],
     );
-    let manifest = br#"{"schemaVersion":2}"#;
-    let digest = oci_digest(manifest);
+    for route in ["store", "keep"] {
+        seed_config(&app, &format!("{route}/app"), &auth(TOKEN)).await;
+    }
+    let manifest = image_manifest(MANIFEST_TYPE, "");
+    let digest = oci_digest(&manifest);
     for route in ["store", "keep"] {
         let (status, _, _) = send_body(
             &app,
             Method::PUT,
             &format!("/v2/{route}/app/manifests/v1"),
             &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
-            manifest.to_vec(),
+            manifest.clone(),
         )
         .await;
         assert_eq!(status, StatusCode::CREATED);
@@ -844,27 +854,26 @@ async fn test_manifest_delete_by_digest_retained_while_another_index_tags_it() {
 async fn test_manifest_delete_by_digest_retains_an_image_index_child() {
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = hosted_writable(&dir, TOKEN);
-    let child = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}"#;
-    let child_digest = oci_digest(child);
+    seed_config(&app, "store/app", &auth(TOKEN)).await;
+    let child = image_manifest(MANIFEST_TYPE, "");
+    let child_digest = oci_digest(&child);
     send_body(
         &app,
         Method::PUT,
         &format!("/v2/store/app/manifests/{child_digest}"),
         &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
-        child.to_vec(),
+        child.clone(),
     )
     .await;
     let index = format!(
-        r#"{{"schemaVersion":2,"manifests":[{{"digest":"{child_digest}","platform":{{"os":"linux","architecture":"amd64"}}}}]}}"#
+        r#"{{"schemaVersion":2,"mediaType":"{INDEX_TYPE}","manifests":[{{"mediaType":"{MANIFEST_TYPE}","digest":"{child_digest}","size":{},"platform":{{"os":"linux","architecture":"amd64"}}}}]}}"#,
+        child.len(),
     );
     send_body(
         &app,
         Method::PUT,
         "/v2/store/app/manifests/latest",
-        &[
-            ("authorization", &auth(TOKEN)),
-            ("content-type", "application/vnd.oci.image.index.v1+json"),
-        ],
+        &[("authorization", &auth(TOKEN)), ("content-type", INDEX_TYPE)],
         index.into_bytes(),
     )
     .await;
@@ -894,14 +903,15 @@ async fn test_manifest_delete_by_digest_retains_an_image_index_child() {
 async fn test_manifest_delete_by_digest_restores_the_same_bytes_and_tags() {
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = hosted_writable(&dir, TOKEN);
-    let manifest = br#"{"schemaVersion":2}"#;
-    let digest = oci_digest(manifest);
+    seed_config(&app, "store/app", &auth(TOKEN)).await;
+    let manifest = image_manifest(MANIFEST_TYPE, "");
+    let digest = oci_digest(&manifest);
     send_body(
         &app,
         Method::PUT,
         "/v2/store/app/manifests/v1",
         &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
-        manifest.to_vec(),
+        manifest.clone(),
     )
     .await;
     let (status, _, _) = send_body(
@@ -937,14 +947,15 @@ async fn test_manifest_delete_by_digest_restores_the_same_bytes_and_tags() {
 async fn test_republish_by_digest_leaves_deleted_tags_in_trash() {
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = hosted_writable(&dir, TOKEN);
-    let manifest = br#"{"schemaVersion":2}"#;
-    let digest = oci_digest(manifest);
+    seed_config(&app, "store/app", &auth(TOKEN)).await;
+    let manifest = image_manifest(MANIFEST_TYPE, "");
+    let digest = oci_digest(&manifest);
     send_body(
         &app,
         Method::PUT,
         "/v2/store/app/manifests/v1",
         &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
-        manifest.to_vec(),
+        manifest.clone(),
     )
     .await;
     send_body(
@@ -961,7 +972,7 @@ async fn test_republish_by_digest_leaves_deleted_tags_in_trash() {
         Method::PUT,
         &format!("/v2/store/app/manifests/{digest}"),
         &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
-        manifest.to_vec(),
+        manifest.clone(),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
@@ -981,18 +992,19 @@ async fn test_republish_by_digest_leaves_deleted_tags_in_trash() {
 async fn test_digest_restore_keeps_a_concurrently_reused_tag() {
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = hosted_writable(&dir, TOKEN);
-    let old = br#"{"schemaVersion":2,"annotations":{"build":"old"}}"#;
-    let new = br#"{"schemaVersion":2,"annotations":{"build":"new"}}"#;
-    let old_digest = oci_digest(old);
-    let new_digest = oci_digest(new);
-    for manifest in [old.as_slice(), new.as_slice()] {
-        let reference = if manifest == old { "v1" } else { "next" };
+    seed_config(&app, "store/app", &auth(TOKEN)).await;
+    let old = image_manifest(MANIFEST_TYPE, r#","annotations":{"build":"old"}"#);
+    let new = image_manifest(MANIFEST_TYPE, r#","annotations":{"build":"new"}"#);
+    let old_digest = oci_digest(&old);
+    let new_digest = oci_digest(&new);
+    for manifest in [&old, &new] {
+        let reference = if manifest == &old { "v1" } else { "next" };
         send_body(
             &app,
             Method::PUT,
             &format!("/v2/store/app/manifests/{reference}"),
             &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
-            manifest.to_vec(),
+            manifest.clone(),
         )
         .await;
     }
@@ -1009,7 +1021,7 @@ async fn test_digest_restore_keeps_a_concurrently_reused_tag() {
         Method::PUT,
         "/v2/store/app/manifests/v1",
         &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
-        new.to_vec(),
+        new.clone(),
     )
     .await;
 
@@ -1038,7 +1050,11 @@ async fn test_manifest_trash_keeps_shared_layer_bytes_available() {
     let (_state, app) = hosted_writable(&dir, TOKEN);
     let blob = b"shared-layer";
     let blob_digest = upload_blob(&app, "store/app", blob).await;
-    let manifest = format!(r#"{{"schemaVersion":2,"layers":[{{"digest":"{blob_digest}"}}]}}"#);
+    let config = upload_blob(&app, "store/app", b"a-config-document").await;
+    let manifest = format!(
+        r#"{{"schemaVersion":2,"mediaType":"{MANIFEST_TYPE}","config":{{"mediaType":"{CONFIG_TYPE}","digest":"{config}","size":17}},"layers":[{{"mediaType":"application/vnd.oci.image.layer.v1.tar","digest":"{blob_digest}","size":{}}}]}}"#,
+        blob.len(),
+    );
     let manifest_digest = oci_digest(manifest.as_bytes());
     send_body(
         &app,
@@ -1362,11 +1378,9 @@ async fn test_manifest_put_faults_are_gateway_errors() {
     super::install_oci(&mut state, HashMap::new(), false);
     let app = peryx_http::router(Arc::new(state));
     let authorization = auth(TOKEN);
-    let headers = [
-        ("authorization", authorization.as_str()),
-        ("content-type", MANIFEST_TYPE),
-    ];
-    let manifest = br#"{"schemaVersion":2}"#;
+    let headers = [("authorization", authorization.as_str()), ("content-type", INDEX_TYPE)];
+    // An index with no children names no blob to upload, which a read-only store could not accept.
+    let manifest = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[]}"#;
     let request_body = manifest.into();
     let response = send_body(&app, Method::PUT, "/v2/store/app/manifests/v1", &headers, request_body).await;
     let (status, _, body) = response;
@@ -1487,7 +1501,8 @@ async fn test_manifest_push_over_the_size_limit_is_413() {
 async fn test_manifest_push_ignores_content_type_parameters() {
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = hosted_writable(&dir, TOKEN);
-    let manifest = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}"#;
+    seed_config(&app, "store/app", &auth(TOKEN)).await;
+    let manifest = image_manifest(MANIFEST_TYPE, "");
     let (status, _, _) = send_body(
         &app,
         Method::PUT,
@@ -1496,7 +1511,7 @@ async fn test_manifest_push_ignores_content_type_parameters() {
             ("authorization", &auth(TOKEN)),
             ("content-type", &format!("{MANIFEST_TYPE}; charset=utf-8")),
         ],
-        manifest.to_vec(),
+        manifest,
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
@@ -1511,7 +1526,7 @@ async fn test_manifest_push_rejects_missing_referenced_blob() {
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = hosted_writable(&dir, TOKEN);
     let manifest = format!(
-        r#"{{"schemaVersion":2,"config":{{"digest":"sha256:{}"}},"layers":[]}}"#,
+        r#"{{"schemaVersion":2,"mediaType":"{MANIFEST_TYPE}","config":{{"mediaType":"{CONFIG_TYPE}","digest":"sha256:{}","size":4}},"layers":[]}}"#,
         "a".repeat(64)
     );
     let (status, _, body) = send_body(
@@ -1530,13 +1545,15 @@ async fn test_manifest_push_rejects_missing_referenced_blob() {
 async fn test_manifest_push_rejects_an_unsupported_blob_digest() {
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = hosted_writable(&dir, TOKEN);
-    let manifest = br#"{"schemaVersion":2,"config":{"digest":"md5:00112233445566778899aabbccddeeff"},"layers":[]}"#;
+    let manifest = format!(
+        r#"{{"schemaVersion":2,"mediaType":"{MANIFEST_TYPE}","config":{{"mediaType":"{CONFIG_TYPE}","digest":"md5:00112233445566778899aabbccddeeff","size":4}},"layers":[]}}"#
+    );
     let (status, _, body) = send_body(
         &app,
         Method::PUT,
         "/v2/store/app/manifests/v1",
         &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
-        manifest.to_vec(),
+        manifest.into_bytes(),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -1554,8 +1571,12 @@ async fn test_manifest_push_checks_referenced_blob_membership(
 ) {
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = hosted_writable(&dir, TOKEN);
-    let config = upload_blob(&app, blob_repository, b"config-bytes").await;
-    let manifest = format!(r#"{{"schemaVersion":2,"config":{{"digest":"{config}"}},"layers":[]}}"#);
+    let blob = b"config-bytes";
+    let config = upload_blob(&app, blob_repository, blob).await;
+    let manifest = format!(
+        r#"{{"schemaVersion":2,"mediaType":"{MANIFEST_TYPE}","config":{{"mediaType":"{CONFIG_TYPE}","digest":"{config}","size":{}}},"layers":[]}}"#,
+        blob.len(),
+    );
     let (status, _, body) = send_body(
         &app,
         Method::PUT,
@@ -1577,17 +1598,14 @@ async fn test_manifest_push_rejects_index_with_missing_child() {
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = hosted_writable(&dir, TOKEN);
     let index = format!(
-        r#"{{"schemaVersion":2,"manifests":[{{"digest":"sha256:{}"}}]}}"#,
+        r#"{{"schemaVersion":2,"mediaType":"{INDEX_TYPE}","manifests":[{{"mediaType":"{MANIFEST_TYPE}","digest":"sha256:{}","size":4}}]}}"#,
         "b".repeat(64)
     );
     let (status, _, body) = send_body(
         &app,
         Method::PUT,
         "/v2/store/app/manifests/v1",
-        &[
-            ("authorization", &auth(TOKEN)),
-            ("content-type", "application/vnd.oci.image.index.v1+json"),
-        ],
+        &[("authorization", &auth(TOKEN)), ("content-type", INDEX_TYPE)],
         index.into_bytes(),
     )
     .await;
@@ -1632,26 +1650,27 @@ async fn test_manifest_push_checks_referenced_child_membership(
         );
     }
     let (_state, app) = app_with_indexes(&dir, vec![index]);
-    let child = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}"#;
-    let child_digest = oci_digest(child);
+    seed_config(&app, child_repository, &auth(TOKEN)).await;
+    let child = image_manifest(MANIFEST_TYPE, "");
+    let child_digest = oci_digest(&child);
     let (status, _, _) = send_body(
         &app,
         Method::PUT,
         &format!("/v2/{child_repository}/manifests/{child_digest}"),
         &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
-        child.to_vec(),
+        child.clone(),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
-    let index = format!(r#"{{"schemaVersion":2,"manifests":[{{"digest":"{child_digest}"}}]}}"#);
+    let index = format!(
+        r#"{{"schemaVersion":2,"mediaType":"{INDEX_TYPE}","manifests":[{{"mediaType":"{MANIFEST_TYPE}","digest":"{child_digest}","size":{}}}]}}"#,
+        child.len(),
+    );
     let (status, _, body) = send_body(
         &app,
         Method::PUT,
         "/v2/store/app/manifests/latest",
-        &[
-            ("authorization", &auth(TOKEN)),
-            ("content-type", "application/vnd.oci.image.index.v1+json"),
-        ],
+        &[("authorization", &auth(TOKEN)), ("content-type", INDEX_TYPE)],
         index.into_bytes(),
     )
     .await;
@@ -1819,10 +1838,12 @@ async fn start_session(app: &axum::Router, name: &str, token: &str) -> String {
 async fn test_blob_delete_retains_a_referenced_blob() {
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = hosted_writable(&dir, TOKEN);
-    let digest = upload_blob(&app, "store/app", b"referenced-layer").await;
+    let blob = b"referenced-layer";
+    let digest = upload_blob(&app, "store/app", blob).await;
     let layer = Digest::from_hex(digest.strip_prefix("sha256:").unwrap()).unwrap();
     let manifest = format!(
-        r#"{{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{{"digest":"{digest}"}},"layers":[]}}"#
+        r#"{{"schemaVersion":2,"mediaType":"{MANIFEST_TYPE}","config":{{"mediaType":"{CONFIG_TYPE}","digest":"{digest}","size":{}}},"layers":[]}}"#,
+        blob.len(),
     );
     let (status, _, _) = send_body(
         &app,

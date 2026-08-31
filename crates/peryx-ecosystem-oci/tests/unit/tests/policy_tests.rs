@@ -15,6 +15,11 @@ use crate::store::{self, Manifest};
 
 const TOKEN: &str = "s3cret";
 const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
+const INDEX_TYPE: &str = "application/vnd.oci.image.index.v1+json";
+// An index with no children is the cheapest manifest a push accepts: the policy gates under test do
+// not read the image document, so the fixture names no blob to upload first.
+const EMPTY_INDEX: &[u8] =
+    br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[]}"#;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RecordedPolicyDecision {
@@ -293,11 +298,7 @@ async fn test_policy_hides_a_blocked_manifest_on_serve() {
 async fn test_policy_refuses_a_blocked_push() {
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = store_blocking(&dir);
-    let manifest = br#"{"schemaVersion":2}"#;
-    let headers = [
-        ("authorization", auth(TOKEN)),
-        ("content-type", MANIFEST_TYPE.to_owned()),
-    ];
+    let headers = [("authorization", auth(TOKEN)), ("content-type", INDEX_TYPE.to_owned())];
     let refs: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
 
     let (status, _, body) = send_body(
@@ -305,7 +306,7 @@ async fn test_policy_refuses_a_blocked_push() {
         Method::PUT,
         "/v2/store/blocked/app/manifests/1.0",
         &refs,
-        manifest.to_vec(),
+        EMPTY_INDEX.to_vec(),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
@@ -316,7 +317,7 @@ async fn test_policy_refuses_a_blocked_push() {
         Method::PUT,
         "/v2/store/public/app/manifests/1.0",
         &refs,
-        manifest.to_vec(),
+        EMPTY_INDEX.to_vec(),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
@@ -481,22 +482,22 @@ async fn test_policy_refuses_a_monolithic_blob_over_the_size_limit() {
 }
 
 #[rstest::rstest]
-#[case::at_limit(19, StatusCode::CREATED, None)]
-#[case::over_limit(18, StatusCode::FORBIDDEN, Some("DENIED"))]
+#[case::at_limit(0, StatusCode::CREATED, None)]
+#[case::over_limit(1, StatusCode::FORBIDDEN, Some("DENIED"))]
 #[tokio::test]
 async fn test_policy_applies_the_size_limit_to_manifests(
-    #[case] limit: u64,
+    #[case] under: u64,
     #[case] expected_status: StatusCode,
     #[case] expected_error: Option<&str>,
 ) {
     let dir = tempfile::tempdir().unwrap();
-    let (_state, app) = store_size_limited(&dir, limit);
+    let (_state, app) = store_size_limited(&dir, EMPTY_INDEX.len() as u64 - under);
     let (status, _, body) = send_body(
         &app,
         Method::PUT,
         "/v2/store/app/manifests/v1",
-        &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
-        br#"{"schemaVersion":2}"#.to_vec(),
+        &[("authorization", &auth(TOKEN)), ("content-type", INDEX_TYPE)],
+        EMPTY_INDEX.to_vec(),
     )
     .await;
 

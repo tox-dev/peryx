@@ -1,7 +1,7 @@
 use axum::http::{Method, StatusCode};
 use peryx_driver::AppState;
 
-use super::{auth, hosted_writable, oci_digest, send, send_body};
+use super::{auth, hosted_writable, image_manifest, oci_digest, seed_config, send, send_body};
 
 const TOKEN: &str = "s3cret";
 const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
@@ -30,13 +30,13 @@ async fn test_oci_serving_records_page_download_and_upload() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
-    let manifest = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}"#;
+    seed_config(&app, "store/app", &auth(TOKEN)).await;
     let (status, _, _) = send_body(
         &app,
         Method::PUT,
         "/v2/store/app/manifests/1.0",
         &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
-        manifest.to_vec(),
+        image_manifest(MANIFEST_TYPE, ""),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
@@ -81,13 +81,13 @@ async fn test_head_requests_do_not_count_as_page_or_download() {
         blob.to_vec(),
     )
     .await;
-    let manifest = br#"{"schemaVersion":2}"#;
+    seed_config(&app, "store/app", &auth(TOKEN)).await;
     send_body(
         &app,
         Method::PUT,
         "/v2/store/app/manifests/1.0",
         &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
-        manifest.to_vec(),
+        image_manifest(MANIFEST_TYPE, ""),
     )
     .await;
 

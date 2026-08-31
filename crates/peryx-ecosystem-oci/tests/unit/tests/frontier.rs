@@ -7,8 +7,10 @@ use rstest::rstest;
 use super::{app_with_journal, auth, oci_digest, oci_index, proxy, replica_router, send, send_body, writable_index};
 
 const TOKEN: &str = "s3cret";
-const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
-const MANIFEST: &[u8] = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}"#;
+// An index with no children is the cheapest manifest a push accepts: these tests are about the
+// readable frontier, not the image document, so the fixture names no blob to upload first.
+const MANIFEST_TYPE: &str = "application/vnd.oci.image.index.v1+json";
+const MANIFEST: &[u8] = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[]}"#;
 
 async fn push_manifest(app: &axum::Router, reference: &str, body: &[u8]) -> StatusCode {
     send_body(
@@ -73,7 +75,8 @@ async fn test_replica_holds_hosted_referrers_until_the_search_view_catches_up() 
     let subject = oci_digest(MANIFEST);
     assert_eq!(push_manifest(&app, "v1", MANIFEST).await, StatusCode::CREATED);
     let referrer = format!(
-        r#"{{"schemaVersion":2,"mediaType":"{MANIFEST_TYPE}","artifactType":"application/vnd.example.sig","subject":{{"digest":"{subject}"}}}}"#,
+        r#"{{"schemaVersion":2,"mediaType":"{MANIFEST_TYPE}","manifests":[],"artifactType":"application/vnd.example.sig","subject":{{"mediaType":"{MANIFEST_TYPE}","digest":"{subject}","size":{}}}}}"#,
+        MANIFEST.len(),
     );
     let referrer_digest = oci_digest(referrer.as_bytes());
     assert_eq!(

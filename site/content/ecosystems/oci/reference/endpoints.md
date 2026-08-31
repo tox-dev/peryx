@@ -84,11 +84,13 @@ type (defaulting to `application/vnd.oci.image.manifest.v1+json`); peryx ignores
 `application/vnd.oci.image.manifest.v1+json; charset=utf-8` matches and stores as the bare base type rather than failing
 with `400 MANIFEST_INVALID`. A media type peryx does not accept as a manifest is `400 MANIFEST_INVALID`. A body over 4
 MiB produces `413 Payload Too Large`, distinct from the `502` a broken transfer returns. For a digest reference, peryx
-returns `400 DIGEST_INVALID` unless the body hashes to that digest. peryx returns `400 MANIFEST_BLOB_UNKNOWN` when the
-manifest names a config or layer that this repository cannot serve. An image-index child produces the same error when it
-is missing or when it belongs only to another repository, whatever the index's quota policy. On success, peryx returns
-`201` with `Location` and `Docker-Content-Digest`. When the manifest declares a `subject`, peryx sends its digest in
-`OCI-Subject` and records it for the referrers API.
+returns `400 DIGEST_INVALID` unless the body hashes to that digest. The body must then parse as the document its media
+type declares, or peryx answers `400 MANIFEST_INVALID` naming the rule it broke, before it claims the repository home,
+reserves quota or writes anything. peryx returns `400 MANIFEST_BLOB_UNKNOWN` when the manifest names a config or layer
+that this repository cannot serve. An image-index child produces the same error when it is missing or when it belongs
+only to another repository, whatever the index's quota policy. On success, peryx returns `201` with `Location` and
+`Docker-Content-Digest`. When the manifest declares a `subject`, peryx sends its digest in `OCI-Subject` and records it
+for the referrers API.
 
 `DELETE /v2/<name>/manifests/<reference>` moves repository metadata to trash. Deleting a tag hides only that tag; the
 manifest remains readable by digest and through its other tags. Deleting a digest hides the digest and every tag in that
@@ -391,7 +393,7 @@ Errors use the distribution-spec shape `{"errors": [{"code": "<CODE>", "message"
 | `BLOB_UPLOAD_UNKNOWN`   | `404`  | Upload session does not exist                                           |
 | `DIGEST_INVALID`        | `400`  | Non-sha256 blob digest, byte mismatch, or malformed referrers digest    |
 | `MANIFEST_BLOB_UNKNOWN` | `400`  | Pushed manifest references an unavailable blob or child manifest        |
-| `MANIFEST_INVALID`      | `400`  | Unsupported manifest media type or upstream digest mismatch             |
+| `MANIFEST_INVALID`      | `400`  | Unsupported media type, body that breaks its schema, or digest mismatch |
 | `DENIED`                | `403`  | Index is read-only or uploads are disabled                              |
 | `TOOMANYREQUESTS`       | `429`  | Upstream rate-limited the pull-through; response includes `Retry-After` |
 | `UNAUTHORIZED`          | `401`  | Upload credentials are missing or invalid                               |
@@ -403,6 +405,14 @@ returns `429` with code `TOOMANYREQUESTS` and forwards `Retry-After`.
 A manifest record prefixes its media type with a two-byte length, so an upstream `Content-Type` over 65,535 bytes cannot
 be stored without shifting the record boundary and corrupting the bytes a later read would serve. peryx rejects such a
 response as an invalid pull-through, answers `502`, and caches neither the manifest nor its tag.
+
+A pushed manifest is checked against the schema its declared media type selects: an image manifest (OCI or Docker v2
+schema 2) needs `schemaVersion` 2, a `mediaType` matching what the push declared, a `config` descriptor and a `layers`
+array; an image index or Docker manifest list needs a `manifests` array in place of those two. Every descriptor needs a
+`mediaType`, a `digest` and a non-negative integer `size`, and a `subject`, when present, is checked the same way.
+Fields the specification does not define are extension data and pass untouched, so an artifact manifest, a foreign
+layer's `urls` and an index entry's `platform` are all accepted. A pull-through cache stores what an upstream sends
+verbatim; this check gates authoritative pushes only.
 
 A manifest push whose body exceeds the 4 MiB cap answers `413 Payload Too Large` with code `SIZE_INVALID`. The
 distribution spec defines no size-specific code, so peryx reuses `SIZE_INVALID` under the overridden status rather than

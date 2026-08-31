@@ -319,7 +319,11 @@ async fn test_hosted_push_journals_the_blob_and_manifest() {
         Method::PUT,
         "/v2/store/app/manifests/1.0",
         &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
-        b"{}".to_vec(),
+        format!(
+            r#"{{"schemaVersion":2,"mediaType":"{MANIFEST_TYPE}","config":{{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"{digest}","size":{}}},"layers":[]}}"#,
+            blob.len(),
+        )
+        .into_bytes(),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
