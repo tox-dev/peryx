@@ -14,6 +14,7 @@ use crate::tests::oidc_http::{
 };
 
 const NOW: i64 = 2_000_000_000;
+const HARD_CACHE_SECS: i64 = 3_600;
 const MAX_MACHINE_TOKEN_BYTES: usize = 32_768;
 const MODULUS: &str = "yRE6rHuNR0QbHO3H3Kt2pOKGVhQqGZXInOduQNxXzuKlvQTLUTv4l4sggh5_CYYi_cvI-SXVT9kPWSKXxJXBXd_4LkvcPuUakBoAkfh-eiFVMh2VrUyWyj3MFl0HTVF9KwRXLAcwkREiS3npThHRyIxuy0ZMeZfxVL5arMhw1SRELB8HoGfG_AtH89BIE9jDBHZ9dLelK9a184zAf8LwoPLxvJb3Il5nncqPcSfKDDodMFBIMc4lQzDKL5gvmiXLXB1AGLm8KBjfE8s3L5xqi-yUod-j8MtvIj812dkS4QMiRVN_by2h3ZY8LYVGrqZXZTcgn2ujn8uKjXLZVD5TdQ";
 const PRIVATE_KEY_DER: &str = "MIIEpAIBAAKCAQEAyRE6rHuNR0QbHO3H3Kt2pOKGVhQqGZXInOduQNxXzuKlvQTLUTv4l4sggh5/CYYi/cvI+SXVT9kPWSKXxJXBXd/4LkvcPuUakBoAkfh+eiFVMh2VrUyWyj3MFl0HTVF9KwRXLAcwkREiS3npThHRyIxuy0ZMeZfxVL5arMhw1SRELB8HoGfG/AtH89BIE9jDBHZ9dLelK9a184zAf8LwoPLxvJb3Il5nncqPcSfKDDodMFBIMc4lQzDKL5gvmiXLXB1AGLm8KBjfE8s3L5xqi+yUod+j8MtvIj812dkS4QMiRVN/by2h3ZY8LYVGrqZXZTcgn2ujn8uKjXLZVD5TdQIDAQABAoIBAHREk0I0O9DvECKdWUpAmF3mY7oY9PNQiu44Yaf+AoSuyRpRUGTMIgc3u3eivOE8ALX0BmYUO5JtuRNZDpvt4SAwqCnVUinIf6C+eH/wSurCpapSM0BAHp4aOA7igptyOMgMPYBHNA1e9A7jE0dCxKWMl3DSWNyjQTk4zeRGEAEfbNjHrq6YCtjHSZSLmWiG80hnfnYos9hOr5JnLnyS7ZmFE/5P3XVrxLc/tQ5zum0R4cbrgzHiQP5RgfxGJaEi7XcgherCCOgurJSSbYH29Gz8u5fFbS+Yg8s+OiCss3cs1rSgJ9/eHZuzGEdUZVARH6hVMjSuwvqVTFaE8AgtleECgYEA+uLMn4kNqHlJS2A5uAnCkj90ZxEtNm3E8hAxUrhssktY5XSOAPBlxyf5RuRGIImGtUVIr4HuJSa5TX48n3Vdt9MYCprO/iYl6moNRSPt5qowIIOJmIjY2mqPDfDt/zw+fcDD3lmCJrFlzcnh0uea1CohxEbQnL3cypeLt+WbU6kCgYEAzSp19m1ajieFkqgoB0YTpt/OroDx38vvI5unInJlEeOjQ+oIAQdN2wpxBvTrRorMU6P07mFUbt1j+Co6CbNiw+X8HcCaqYLR5clbJOOWNR36PuzOpQLkfK8woupBxzW9B8gZmY8rB1mbJ+/WTPrEJy6YGmIEBkWylQ2VpW8O4O0CgYEApdbvvfFBlwD9YxbrcGz7MeNCFbMz+MucqQntIKoKJ91ImPxvtc0y6e/Rhnv0oyNlaUOwJVu0yNgNG117w0g4t/+Q38mvVC5xV7/cn7x9UMFk6MkqVir3dYGEqIl/OP1grY2Tq9HtB5iyG9L8NIamQOLMyUqqMUILxdthHyFmiGkCgYEAn9+PjpjGMPHxL0gj8Q8VbzsFtou6b1deIRRA2CHmSltltR1gYVTMwXxQeUhPMmgkMqUXzs4/WijgpthY44hK1TaZEKIuoxrS70nJ4WQLf5a9k1065fDsFZD6yGjdGxvwEmlGMZgTwqV7t1I4X0Ilqhav5hcs5apYL7gnPYPeRz0CgYALHCj/Ji8XSsDoF/MhVhnGdIs2P99NNdmo3R2Pv0CuZbDKMU559LJHUvrKS8WkuWRDuKrz1W/EQKApFjDGpdqToZqriUFQzwy7mR3ayIiogzNtHcvbDHx8oFnGY0OFksX/ye0/XGpy2SFxYRwGU98HPYeBvAQQrVjdkzfy7BmXQQ==";
@@ -46,7 +47,7 @@ fn claims<'a>(issuer: &str, subject: &'a str, token_id: &'a str, padding: &'a st
     }
 }
 
-async fn mount_issuer_with(server: &MockServer, keys: Value, content_type: &str, cache_control: Option<&str>) {
+async fn mount_issuer_with(server: &MockServer, keys: Value, content_type: &str, cache_control: &[&str]) {
     let mut discovery = ResponseTemplate::new(200).set_body_raw(
         json!({
             "issuer": secure_origin(&server.uri()),
@@ -59,9 +60,9 @@ async fn mount_issuer_with(server: &MockServer, keys: Value, content_type: &str,
     let mut jwks = ResponseTemplate::new(200)
         .insert_header("content-type", "application/json")
         .set_body_json(keys);
-    if let Some(cache_control) = cache_control {
-        discovery = discovery.insert_header("cache-control", cache_control);
-        jwks = jwks.insert_header("cache-control", cache_control);
+    for line in cache_control {
+        discovery = discovery.append_header("cache-control", *line);
+        jwks = jwks.append_header("cache-control", *line);
     }
     Mock::given(method("GET"))
         .and(path("/.well-known/openid-configuration"))
@@ -76,7 +77,17 @@ async fn mount_issuer_with(server: &MockServer, keys: Value, content_type: &str,
 }
 
 async fn mount_issuer(server: &MockServer, keys: Value) {
-    mount_issuer_with(server, keys, "application/json", Some("max-age=120")).await;
+    mount_issuer_with(server, keys, "application/json", &["max-age=120"]).await;
+}
+
+/// Replace the mounted issuer with one that fails every discovery request.
+async fn mount_outage(server: &MockServer) {
+    server.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/.well-known/openid-configuration"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(server)
+        .await;
 }
 
 fn jwk(kid: &str) -> Value {
@@ -718,11 +729,14 @@ async fn test_discovery_uses_the_configured_issuer_path() {
 }
 
 #[rstest]
-#[case::quoted_zero(Some("private, max-age=\"0\", must-revalidate"), 60)]
-#[case::no_store(Some("no-store"), 300)]
-#[case::absent(None, 300)]
+#[case::absent(&[], 300)]
+#[case::below_the_backoff(&["max-age=30"], 30)]
+#[case::clamped(&["max-age=100000"], 900)]
+#[case::mixed_case(&["MAX-AGE=45"], 45)]
+#[case::qualified(&["community=\"x, max-age=1\", max-age=45"], 45)]
+#[case::separate_field_lines(&["max-age=45", "proxy-revalidate"], 45)]
 #[tokio::test]
-async fn test_cache_control_sets_refresh_time(#[case] cache_control: Option<&str>, #[case] fresh_for: i64) {
+async fn test_cache_control_sets_refresh_time(#[case] cache_control: &[&str], #[case] fresh_for: i64) {
     let server = MockServer::start().await;
     mount_issuer_with(
         &server,
@@ -748,6 +762,125 @@ async fn test_cache_control_sets_refresh_time(#[case] cache_control: Option<&str
     assert_eq!(server.received_requests().await.unwrap().len(), 4);
 }
 
+/// A response the provider forbids storing verifies the token that fetched it and nothing later.
+#[rstest]
+#[case::no_store(&["no-store"])]
+#[case::private(&["max-age=600", "Private"])]
+#[tokio::test]
+async fn test_unstorable_jwks_leaves_no_cached_key(#[case] cache_control: &[&str]) {
+    let server = MockServer::start().await;
+    mount_issuer_with(
+        &server,
+        json!({"keys": [jwk("key-1")]}),
+        "application/json",
+        cache_control,
+    )
+    .await;
+    let verifier = test_verifier(&server.uri());
+    verifier
+        .verify_identity(&identity(&server.uri(), "key-1", "fetched"), NOW)
+        .await
+        .unwrap();
+    mount_outage(&server).await;
+    assert_eq!(
+        verifier
+            .verify_identity(&identity(&server.uri(), "key-1", "later"), NOW + 1)
+            .await,
+        Err(OidcVerificationError::InvalidIssuerResponse)
+    );
+}
+
+#[rstest]
+#[case::unqualified(&["no-cache"])]
+#[case::qualified(&["no-cache=\"Set-Cookie\", max-age=600"])]
+#[case::mixed_case(&["No-Cache"])]
+#[tokio::test]
+async fn test_no_cache_key_needs_a_successful_revalidation(#[case] cache_control: &[&str]) {
+    let server = MockServer::start().await;
+    mount_issuer_with(
+        &server,
+        json!({"keys": [jwk("key-1")]}),
+        "application/json",
+        cache_control,
+    )
+    .await;
+    let verifier = test_verifier(&server.uri());
+    verifier
+        .verify_identity(&identity(&server.uri(), "key-1", "fetched"), NOW)
+        .await
+        .unwrap();
+    verifier
+        .verify_identity(&identity(&server.uri(), "key-1", "revalidated"), NOW + 1)
+        .await
+        .unwrap();
+    assert_eq!(server.received_requests().await.unwrap().len(), 4);
+    mount_outage(&server).await;
+    assert_eq!(
+        verifier
+            .verify_identity(&identity(&server.uri(), "key-1", "unvalidated"), NOW + 2)
+            .await,
+        Err(OidcVerificationError::InvalidIssuerResponse)
+    );
+}
+
+/// `max-age=0` demands revalidation, and alone it still allows the bounded stale window;
+/// `must-revalidate` withdraws that window.
+#[rstest]
+#[case::stale_allowed(&["max-age=0"], Ok(()))]
+#[case::stale_forbidden(&["max-age=0, must-revalidate"], Err(OidcVerificationError::InvalidIssuerResponse))]
+#[tokio::test]
+async fn test_zero_max_age_revalidates(
+    #[case] cache_control: &[&str],
+    #[case] expected: Result<(), OidcVerificationError>,
+) {
+    let server = MockServer::start().await;
+    mount_issuer_with(
+        &server,
+        json!({"keys": [jwk("key-1")]}),
+        "application/json",
+        cache_control,
+    )
+    .await;
+    let verifier = test_verifier(&server.uri());
+    verifier
+        .verify_identity(&identity(&server.uri(), "key-1", "fetched"), NOW)
+        .await
+        .unwrap();
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    mount_outage(&server).await;
+    assert_eq!(
+        verifier
+            .verify_identity(&identity(&server.uri(), "key-1", "stale"), NOW + 1)
+            .await
+            .map(|_| ()),
+        expected
+    );
+}
+
+#[tokio::test]
+async fn test_zero_max_age_stale_window_ends_at_the_hard_limit() {
+    let server = MockServer::start().await;
+    mount_issuer_with(
+        &server,
+        json!({"keys": [jwk("key-1")]}),
+        "application/json",
+        &["max-age=0"],
+    )
+    .await;
+    let verifier = test_verifier(&server.uri());
+    verifier
+        .verify_identity(&identity(&server.uri(), "key-1", "fetched"), NOW)
+        .await
+        .unwrap();
+    mount_outage(&server).await;
+    assert_eq!(
+        verifier
+            .verify_identity(&identity(&server.uri(), "key-1", "expired"), NOW + HARD_CACHE_SECS)
+            .await,
+        Err(OidcVerificationError::InvalidIssuerResponse)
+    );
+}
+
 #[rstest]
 #[case::json("application/json; charset=utf-8", true)]
 #[case::structured("application/jwk-set+json", true)]
@@ -758,13 +891,7 @@ async fn test_cache_control_sets_refresh_time(#[case] cache_control: Option<&str
 #[tokio::test]
 async fn test_discovery_content_type_is_enforced(#[case] content_type: &str, #[case] accepted: bool) {
     let server = MockServer::start().await;
-    mount_issuer_with(
-        &server,
-        json!({"keys": [jwk("key-1")]}),
-        content_type,
-        Some("max-age=120"),
-    )
-    .await;
+    mount_issuer_with(&server, json!({"keys": [jwk("key-1")]}), content_type, &["max-age=120"]).await;
     let result = test_verifier(&server.uri())
         .verify_identity(&identity(&server.uri(), "key-1", "content-type"), NOW)
         .await;

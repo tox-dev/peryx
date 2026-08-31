@@ -94,20 +94,49 @@ fn response() -> CallbackResponse {
     }
 }
 
+fn metadata(server: &MockServer) -> Value {
+    json!({
+        "issuer": issuer(server),
+        "authorization_endpoint": format!("{}/authorize", secure_origin(&server.uri())),
+        "token_endpoint": format!("{}/token", secure_origin(&server.uri())),
+        "jwks_uri": format!("{}/jwks", secure_origin(&server.uri())),
+        "id_token_signing_alg_values_supported": ["RS256"],
+    })
+}
+
 async fn mount_metadata(server: &MockServer, keys: Value) {
-    mount_discovery(
-        server,
-        json!({
-            "issuer": issuer(server),
-            "authorization_endpoint": format!("{}/authorize", secure_origin(&server.uri())),
-            "token_endpoint": format!("{}/token", secure_origin(&server.uri())),
-            "jwks_uri": format!("{}/jwks", secure_origin(&server.uri())),
-            "id_token_signing_alg_values_supported": ["RS256"],
-        }),
-        "application/json",
-    )
-    .await;
-    mount_jwks(server, keys).await;
+    mount_metadata_with(server, keys, &["max-age=120"]).await;
+}
+
+async fn mount_metadata_with(server: &MockServer, keys: Value, cache_control: &[&str]) {
+    let mut discovery = ResponseTemplate::new(200).set_body_raw(metadata(server).to_string(), "application/json");
+    let mut jwks = ResponseTemplate::new(200)
+        .insert_header("content-type", "application/json")
+        .set_body_json(keys);
+    for line in cache_control {
+        discovery = discovery.append_header("cache-control", *line);
+        jwks = jwks.append_header("cache-control", *line);
+    }
+    Mock::given(method("GET"))
+        .and(path("/.well-known/openid-configuration"))
+        .respond_with(discovery)
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/jwks"))
+        .respond_with(jwks)
+        .mount(server)
+        .await;
+}
+
+/// Replace the mounted provider with one that fails every discovery request.
+async fn mount_outage(server: &MockServer) {
+    server.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/.well-known/openid-configuration"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(server)
+        .await;
 }
 
 async fn mount_jwks(server: &MockServer, keys: Value) {
@@ -963,6 +992,90 @@ async fn test_warm_cache_serves_without_refetching() {
         .await
         .unwrap();
     assert_eq!(discovery_requests(&server).await, 2);
+}
+
+#[rstest]
+#[case::absent(&[], 300)]
+#[case::below_the_backoff(&["max-age=30"], 30)]
+#[case::clamped(&["max-age=100000"], MAX_METADATA_FRESH_SECS)]
+#[case::mixed_case(&["MAX-AGE=45"], 45)]
+#[case::qualified(&["community=\"x, max-age=1\", max-age=45"], 45)]
+#[case::separate_field_lines(&["max-age=45", "proxy-revalidate"], 45)]
+#[tokio::test]
+async fn test_provider_freshness_bounds_reuse(#[case] cache_control: &[&str], #[case] fresh_for: i64) {
+    let server = MockServer::start().await;
+    mount_metadata_with(&server, json!({"keys": [jwk("key-1")]}), cache_control).await;
+    let provider = provider(&server.uri());
+    provider.authorization(NOW).await.unwrap();
+    provider.authorization(NOW + fresh_for - 1).await.unwrap();
+    assert_eq!(discovery_requests(&server).await, 1);
+    provider.authorization(NOW + fresh_for).await.unwrap();
+    assert_eq!(discovery_requests(&server).await, 2);
+}
+
+/// A response the provider forbids storing serves the login that fetched it and nothing later.
+#[rstest]
+#[case::no_store(&["no-store"])]
+#[case::private(&["max-age=600", "Private"])]
+#[tokio::test]
+async fn test_unstorable_metadata_leaves_no_cached_endpoints(#[case] cache_control: &[&str]) {
+    let server = MockServer::start().await;
+    mount_metadata_with(&server, json!({"keys": [jwk("key-1")]}), cache_control).await;
+    let provider = provider(&server.uri());
+    provider.authorization(NOW).await.unwrap();
+    mount_outage(&server).await;
+    assert!(matches!(
+        provider.authorization(NOW + 1).await,
+        Err(OidcProviderError::InvalidProviderResponse)
+    ));
+}
+
+#[rstest]
+#[case::unqualified(&["no-cache"])]
+#[case::qualified(&["no-cache=\"Set-Cookie\", max-age=600"])]
+#[case::mixed_case(&["No-Cache"])]
+#[tokio::test]
+async fn test_no_cache_metadata_needs_a_successful_revalidation(#[case] cache_control: &[&str]) {
+    let server = MockServer::start().await;
+    mount_metadata_with(&server, json!({"keys": [jwk("key-1")]}), cache_control).await;
+    let provider = provider(&server.uri());
+    provider.authorization(NOW).await.unwrap();
+    provider.authorization(NOW + 1).await.unwrap();
+    assert_eq!(discovery_requests(&server).await, 2);
+    mount_outage(&server).await;
+    assert!(matches!(
+        provider.authorization(NOW + 2).await,
+        Err(OidcProviderError::InvalidProviderResponse)
+    ));
+}
+
+/// `max-age=0` demands revalidation, and alone it still allows the bounded stale window;
+/// `must-revalidate` withdraws that window.
+#[rstest]
+#[case::stale_allowed(&["max-age=0"], true)]
+#[case::stale_forbidden(&["max-age=0, must-revalidate"], false)]
+#[tokio::test]
+async fn test_zero_max_age_metadata_revalidates(#[case] cache_control: &[&str], #[case] serves_stale: bool) {
+    let server = MockServer::start().await;
+    mount_metadata_with(&server, json!({"keys": [jwk("key-1")]}), cache_control).await;
+    let provider = provider(&server.uri());
+    provider.authorization(NOW).await.unwrap();
+    assert_eq!(discovery_requests(&server).await, 1);
+    mount_outage(&server).await;
+    assert_eq!(provider.authorization(NOW + 1).await.is_ok(), serves_stale);
+}
+
+#[tokio::test]
+async fn test_zero_max_age_stale_window_ends_at_the_hard_limit() {
+    let server = MockServer::start().await;
+    mount_metadata_with(&server, json!({"keys": [jwk("key-1")]}), &["max-age=0"]).await;
+    let provider = provider(&server.uri());
+    provider.authorization(NOW).await.unwrap();
+    mount_outage(&server).await;
+    assert!(matches!(
+        provider.authorization(NOW + HARD_CACHE_SECS).await,
+        Err(OidcProviderError::InvalidProviderResponse)
+    ));
 }
 
 #[rstest]

@@ -19,8 +19,9 @@ use url::Url;
 
 use crate::oidc::Audience;
 use crate::oidc_http::{
-    BoundedResponseError, DISCOVERY_BODY_LIMIT, JWKS_BODY_LIMIT, MIN_FRESH_SECS, OidcHttpError, OidcHttpTransport,
-    ReqwestOidcHttpTransport, discovery_url, fetch, fetch_bounded, freshness, usable_keys,
+    BoundedResponseError, CachePolicy, CacheWindow, DISCOVERY_BODY_LIMIT, JWKS_BODY_LIMIT, OidcHttpError,
+    OidcHttpTransport, REFRESH_BACKOFF_SECS, ReqwestOidcHttpTransport, discovery_url, fetch, fetch_bounded,
+    usable_keys,
 };
 use crate::{
     ExternalGroup, ExternalGroupGrant, ExternalIdentity, ExternalIdentityLinker, ExternalIdentityResolution,
@@ -28,7 +29,6 @@ use crate::{
 };
 
 const TOKEN_BODY_LIMIT: usize = 64 * 1024;
-const HARD_CACHE_SECS: i64 = 3600;
 const RANDOM_BYTES: usize = 32;
 const OPENID_SCOPE: &str = "openid";
 
@@ -337,40 +337,47 @@ impl OidcLoginProvider {
     }
 
     async fn endpoints(&self, now: i64) -> Result<Endpoints, OidcProviderError> {
-        let cache = self.fresh(now, None).await?;
-        cache.endpoints.clone().ok_or(OidcProviderError::Unavailable)
+        Ok(self.entry(now, None).await?.endpoints.clone())
     }
 
     async fn key(&self, kid: &str, now: i64) -> Result<DecodingKey, OidcProviderError> {
-        let cache = self.fresh(now, Some(kid)).await?;
-        cache.keys.get(kid).cloned().ok_or(OidcProviderError::UnknownKey)
+        self.entry(now, Some(kid))
+            .await?
+            .keys
+            .get(kid)
+            .cloned()
+            .ok_or(OidcProviderError::UnknownKey)
     }
 
-    async fn fresh(
-        &self,
-        now: i64,
-        want_key: Option<&str>,
-    ) -> Result<tokio::sync::MutexGuard<'_, Cache>, OidcProviderError> {
+    async fn entry(&self, now: i64, want_key: Option<&str>) -> Result<Arc<Entry>, OidcProviderError> {
         let mut cache = self.cache.lock().await;
-        let stale = cache.endpoints.is_none() || now >= cache.fresh_until;
-        let key_miss = want_key.is_some_and(|kid| !cache.keys.contains_key(kid));
-        let hard_expired = cache.endpoints.is_some() && now >= cache.hard_until;
-        if (stale || key_miss) && (now >= cache.refresh_after || hard_expired) {
-            match self.refresh(now).await {
-                Ok(next) => *cache = next,
-                Err(error) => {
-                    cache.refresh_after = now + MIN_FRESH_SECS;
-                    if cache.endpoints.is_none() || hard_expired {
-                        return Err(error);
-                    }
-                }
+        if let Some(entry) = cache.entry.as_ref().filter(|entry| entry.serves(want_key, now)) {
+            return Ok(Arc::clone(entry));
+        }
+        if now < cache.refresh_after {
+            return cache.stale(now, OidcProviderError::Unavailable);
+        }
+        match self.refresh(now).await {
+            Ok(entry) => {
+                let entry = Arc::new(entry);
+                // A response the provider forbids storing answers only this operation.
+                cache.entry = entry.window.storable.then(|| Arc::clone(&entry));
+                // An unknown key refetches at most once per backoff, and never past the granted freshness.
+                cache.refresh_after = cache
+                    .entry
+                    .as_ref()
+                    .map_or(now, |stored| stored.window.fresh_until.min(now + REFRESH_BACKOFF_SECS));
+                Ok(entry)
+            }
+            Err(error) => {
+                cache.refresh_after = now + REFRESH_BACKOFF_SECS;
+                cache.stale(now, error)
             }
         }
-        Ok(cache)
     }
 
-    async fn refresh(&self, now: i64) -> Result<Cache, OidcProviderError> {
-        let (body, discovery_age) = self
+    async fn refresh(&self, now: i64) -> Result<Entry, OidcProviderError> {
+        let (body, discovery_policy) = self
             .fetch(self.client.get(self.discovery.clone()), DISCOVERY_BODY_LIMIT)
             .await?;
         let discovery =
@@ -381,17 +388,13 @@ impl OidcLoginProvider {
         let authorization = Self::endpoint(&discovery.authorization_endpoint)?;
         let token = Self::endpoint(&discovery.token_endpoint)?;
         let jwks_uri = Self::endpoint(&discovery.jwks_uri)?;
-        let (jwks_body, jwks_age) = self.fetch(self.client.get(jwks_uri), JWKS_BODY_LIMIT).await?;
+        let (jwks_body, jwks_policy) = self.fetch(self.client.get(jwks_uri), JWKS_BODY_LIMIT).await?;
         let jwks =
             serde_json::from_slice::<JwkSet>(&jwks_body).map_err(|_| OidcProviderError::InvalidProviderResponse)?;
-        let keys = usable_keys(jwks)?;
-        let fresh_for = freshness(discovery_age, jwks_age);
-        Ok(Cache {
-            endpoints: Some(Endpoints { authorization, token }),
-            keys,
-            fresh_until: now + fresh_for,
-            hard_until: now + HARD_CACHE_SECS,
-            refresh_after: now + MIN_FRESH_SECS,
+        Ok(Entry {
+            endpoints: Endpoints { authorization, token },
+            keys: usable_keys(jwks)?,
+            window: discovery_policy.strictest(&jwks_policy).window(now),
         })
     }
 
@@ -406,7 +409,7 @@ impl OidcLoginProvider {
         &self,
         request: reqwest::RequestBuilder,
         limit: usize,
-    ) -> Result<(Vec<u8>, Option<i64>), OidcProviderError> {
+    ) -> Result<(Vec<u8>, CachePolicy), OidcProviderError> {
         fetch(self.transport.as_ref(), request, limit)
             .await
             .map_err(OidcProviderError::from)
@@ -619,11 +622,32 @@ pub enum OidcLoginError<E> {
 
 #[derive(Default)]
 struct Cache {
-    endpoints: Option<Endpoints>,
-    keys: HashMap<String, DecodingKey>,
-    fresh_until: i64,
-    hard_until: i64,
+    entry: Option<Arc<Entry>>,
     refresh_after: i64,
+}
+
+impl Cache {
+    /// A cached entry answers a failed or suppressed refresh only inside its hard-stale window.
+    fn stale(&self, now: i64, unavailable: OidcProviderError) -> Result<Arc<Entry>, OidcProviderError> {
+        self.entry
+            .as_ref()
+            .filter(|entry| now < entry.window.hard_until)
+            .map(Arc::clone)
+            .ok_or(unavailable)
+    }
+}
+
+struct Entry {
+    endpoints: Endpoints,
+    keys: HashMap<String, DecodingKey>,
+    window: CacheWindow,
+}
+
+impl Entry {
+    /// A fresh entry answers directly; a wanted key it does not hold forces a refresh instead.
+    fn serves(&self, want_key: Option<&str>, now: i64) -> bool {
+        now < self.window.fresh_until && want_key.is_none_or(|kid| self.keys.contains_key(kid))
+    }
 }
 
 #[derive(Clone)]

@@ -12,13 +12,12 @@ use tokio::sync::Mutex;
 use url::Url;
 
 use crate::oidc_http::{
-    DISCOVERY_BODY_LIMIT, JWKS_BODY_LIMIT, MIN_FRESH_SECS, OidcHttpError, OidcHttpTransport, ReqwestOidcHttpTransport,
-    discovery_url, fetch, freshness, usable_keys,
+    CachePolicy, CacheWindow, DISCOVERY_BODY_LIMIT, JWKS_BODY_LIMIT, OidcHttpError, OidcHttpTransport,
+    REFRESH_BACKOFF_SECS, ReqwestOidcHttpTransport, discovery_url, fetch, usable_keys,
 };
 
 const TOKEN_BODY_LIMIT: usize = 32 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
-const HARD_CACHE_SECS: i64 = 3600;
 const MAX_IDENTITY_LIFETIME_SECS: i64 = 3600;
 const MAX_JTI_BYTES: usize = 256;
 const MAX_SUBJECT_BYTES: usize = 2048;
@@ -164,51 +163,53 @@ impl OidcVerifier {
 
     async fn key(&self, state: &IssuerState, key_id: &str, now: i64) -> Result<DecodingKey, OidcVerificationError> {
         let mut cache = state.cache.lock().await;
-        let cached = cache.key(key_id);
-        let refresh = cached.is_none() || now >= cache.fresh_until;
-        let hard_expired = !cache.keys.is_empty() && now >= cache.hard_until;
-        if refresh && (now >= cache.refresh_after || hard_expired) {
-            match self.refresh(state, now).await {
-                Ok(next) => *cache = next,
-                Err(error) => {
-                    cache.refresh_after = now + MIN_FRESH_SECS;
-                    if cached.is_none() || hard_expired {
-                        return Err(error);
-                    }
-                }
+        if now < cache.window.fresh_until
+            && let Some(key) = cache.key(key_id)
+        {
+            return Ok(key);
+        }
+        if now < cache.refresh_after {
+            return cache.stale(key_id, now, OidcVerificationError::IssuerUnavailable);
+        }
+        match self.refresh(state, now).await {
+            Ok((keys, window)) => {
+                let key = keys.get(key_id).cloned();
+                *cache = KeyCache::stored(keys, window, now);
+                key.ok_or(OidcVerificationError::UnknownKey)
+            }
+            Err(error) => {
+                cache.refresh_after = now + REFRESH_BACKOFF_SECS;
+                cache.stale(key_id, now, error)
             }
         }
-        cache.key(key_id).ok_or(OidcVerificationError::UnknownKey)
     }
 
-    async fn refresh(&self, state: &IssuerState, now: i64) -> Result<KeyCache, OidcVerificationError> {
-        let (discovery, discovery_age) = self
+    async fn refresh(
+        &self,
+        state: &IssuerState,
+        now: i64,
+    ) -> Result<(HashMap<String, DecodingKey>, CacheWindow), OidcVerificationError> {
+        let (discovery, discovery_policy) = self
             .fetch_json::<Discovery>(&state.discovery, DISCOVERY_BODY_LIMIT)
             .await?;
         if discovery.issuer != state.issuer || !discovery.algorithms.iter().any(|algorithm| algorithm == "RS256") {
             return Err(OidcVerificationError::InvalidIssuerResponse);
         }
         let jwks_uri = issuer_url(&discovery.jwks_uri).or(Err(OidcVerificationError::InvalidIssuerResponse))?;
-        let (jwks, jwks_age) = self.fetch_json::<JwkSet>(&jwks_uri, JWKS_BODY_LIMIT).await?;
-        let fresh_for = freshness(discovery_age, jwks_age);
-        Ok(KeyCache {
-            keys: usable_keys(jwks)?,
-            fresh_until: now + fresh_for,
-            hard_until: now + HARD_CACHE_SECS,
-            refresh_after: now + MIN_FRESH_SECS,
-        })
+        let (jwks, jwks_policy) = self.fetch_json::<JwkSet>(&jwks_uri, JWKS_BODY_LIMIT).await?;
+        Ok((usable_keys(jwks)?, discovery_policy.strictest(&jwks_policy).window(now)))
     }
 
     async fn fetch_json<T: for<'de> Deserialize<'de>>(
         &self,
         url: &Url,
         limit: usize,
-    ) -> Result<(T, Option<i64>), OidcVerificationError> {
-        let (body, max_age) = fetch(self.transport.as_ref(), self.client.get(url.clone()), limit)
+    ) -> Result<(T, CachePolicy), OidcVerificationError> {
+        let (body, policy) = fetch(self.transport.as_ref(), self.client.get(url.clone()), limit)
             .await
             .map_err(OidcVerificationError::from)?;
         serde_json::from_slice(&body)
-            .map(|value| (value, max_age))
+            .map(|value| (value, policy))
             .map_err(|_| OidcVerificationError::InvalidIssuerResponse)
     }
 }
@@ -270,12 +271,38 @@ struct IssuerState {
 #[derive(Default)]
 struct KeyCache {
     keys: HashMap<String, DecodingKey>,
-    fresh_until: i64,
-    hard_until: i64,
+    window: CacheWindow,
     refresh_after: i64,
 }
 
 impl KeyCache {
+    /// A response the provider forbids storing answers only the operation that fetched it, so it
+    /// leaves an empty cache behind rather than a stale one the provider never authorized.
+    fn stored(keys: HashMap<String, DecodingKey>, window: CacheWindow, now: i64) -> Self {
+        if !window.storable {
+            return Self::default();
+        }
+        Self {
+            keys,
+            // An unknown key refetches at most once per backoff, and never past the granted freshness.
+            refresh_after: window.fresh_until.min(now + REFRESH_BACKOFF_SECS),
+            window,
+        }
+    }
+
+    /// A cached key answers a failed or suppressed refresh only inside the hard-stale window.
+    fn stale(
+        &self,
+        key_id: &str,
+        now: i64,
+        unavailable: OidcVerificationError,
+    ) -> Result<DecodingKey, OidcVerificationError> {
+        if now >= self.window.hard_until {
+            return Err(unavailable);
+        }
+        self.key(key_id).ok_or(OidcVerificationError::UnknownKey)
+    }
+
     fn key(&self, key_id: &str) -> Option<DecodingKey> {
         self.keys.get(key_id).cloned()
     }
