@@ -456,6 +456,16 @@ fn test_stage_upload_chunk_resumes_idempotently_past_a_lost_offset() {
 }
 
 #[test]
+fn test_stage_upload_chunk_surfaces_an_unusable_session_name_as_io() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = BlobStore::new(dir.path().join("blobs"));
+    // An interior NUL isolates invalid input from the fresh-stage and resumed-stage paths.
+    let error = store.stage_upload_chunk("bad\0session", 0, b"x").unwrap_err();
+
+    assert_eq!(error.kind(), crate::blob::BlobErrorKind::Io);
+}
+
+#[test]
 fn test_staged_upload_len_is_none_for_an_unknown_session() {
     let dir = tempfile::tempdir().unwrap();
     let store = BlobStore::new(dir.path().join("blobs"));
@@ -743,6 +753,33 @@ fn test_finish_upload_retry_reports_an_unflushable_published_parent() {
     let retried = while_unflushable(&parent, || store.finish_upload("sess-1", &digest));
 
     assert_eq!(retried.unwrap_err().kind(), crate::blob::BlobErrorKind::Io);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_stage_upload_chunk_accepts_no_bytes_when_the_stage_entry_cannot_be_flushed() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = BlobStore::new(dir.path().join("blobs"));
+    let uploads = dir.path().join("blobs/uploads");
+    std::fs::create_dir_all(&uploads).unwrap();
+
+    let staged = while_unflushable(&uploads, || store.stage_upload_chunk("sess-1", 0, b"hello"));
+
+    assert_eq!(staged.unwrap_err().kind(), crate::blob::BlobErrorKind::Io);
+}
+
+/// The entry is durable from the call that created it, so a resume must not pay for a directory flush.
+#[cfg(unix)]
+#[test]
+fn test_stage_upload_chunk_resumes_without_reflushing_the_stage_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = BlobStore::new(dir.path().join("blobs"));
+    let uploads = dir.path().join("blobs/uploads");
+    store.stage_upload_chunk("sess-1", 0, b"hello ").unwrap();
+
+    let resumed = while_unflushable(&uploads, || store.stage_upload_chunk("sess-1", 6, b"world"));
+
+    assert_eq!(resumed.unwrap(), 11);
 }
 
 #[cfg(unix)]

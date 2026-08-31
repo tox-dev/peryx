@@ -523,21 +523,33 @@ impl BlobStore {
         self.root.join("uploads")
     }
 
-    /// Syncs `chunk` before returning. Truncating to the committed `offset` makes replay after a crash
-    /// idempotent even when the previous chunk reached disk before its offset was committed.
+    /// Syncs `chunk` before returning, and the stage directory as well on the call that creates the
+    /// session file: flushing a file leaves the directory entry naming it unflushed, so a crash there
+    /// would strand a committed offset with no stage to resume into and the resumed write would fill the
+    /// lost prefix with zeros. Later chunks find the entry already durable and skip the directory flush.
+    ///
+    /// Truncating to the committed `offset` makes replay after a crash idempotent even when the previous
+    /// chunk reached disk before its offset was committed.
     ///
     /// `session` must be a generated ID containing one safe path component.
     ///
     /// # Errors
     /// Returns [`super::BlobErrorKind::InvalidRange`] if `offset` exceeds the stage length, or
-    /// [`super::BlobErrorKind::Io`] if the stage directory or file cannot be created or written.
+    /// [`super::BlobErrorKind::Io`] if the stage directory or file cannot be created, written, or flushed.
     pub fn stage_upload_chunk(&self, session: &str, offset: u64, chunk: &[u8]) -> Result<u64, BlobError> {
-        std::fs::create_dir_all(self.upload_dir())?;
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(false)
-            .open(self.upload_dir().join(session))?;
+        let uploads = self.upload_dir();
+        create_dir_durable(&uploads)?;
+        let stage = uploads.join(session);
+        // Creating no-clobber is what distinguishes a fresh entry from a resumed one without a racy
+        // existence check ahead of the open.
+        let (mut file, created) = match std::fs::OpenOptions::new().create_new(true).write(true).open(&stage) {
+            Ok(file) => (file, true),
+            Err(err) if err.kind() == ErrorKind::AlreadyExists => (
+                std::fs::OpenOptions::new().write(true).truncate(false).open(&stage)?,
+                false,
+            ),
+            Err(err) => return Err(err.into()),
+        };
         let bytes = file.metadata()?.len();
         if offset > bytes {
             return Err(BlobError::invalid_range(offset, offset, bytes));
@@ -546,6 +558,9 @@ impl BlobStore {
         file.seek(SeekFrom::Start(offset))?;
         file.write_all(chunk)?;
         file.sync_all()?;
+        if created {
+            sync_parent(&stage)?;
+        }
         Ok(file.metadata()?.len())
     }
 
