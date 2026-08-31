@@ -52,6 +52,10 @@ PyPI uses the distribution filename as the default candidate key. A hosted file 
 filename, while distinct versions remain in the merged project page. Project-name isolation requires an explicit
 [PyPI fallback policy](@/ecosystems/pypi/reference/policy.md#project-isolation).
 
+Nesting does not change the rule. A virtual member contributes the cached and hosted leaves it reaches, each with its
+own source, after that member has applied its own policy. Precedence and the source policy of the enclosing index then
+run over those leaves, so a cache two levels down never outranks a hosted sibling.
+
 Put the rule at the virtual route when clients cannot enforce one source policy. A client that adds another source can
 bypass the route's decision, so access policy must restrict alternate sources when shadowing forms a security boundary.
 

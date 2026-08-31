@@ -68,16 +68,34 @@ pub fn shadow_order(indexes: &[Index], layers: &[usize]) -> Vec<usize> {
     ordered
 }
 
+/// The leaf indexes `layers` serves from, hosted before cached, keeping configured order within
+/// each group and listing a shared descendant once.
+///
+/// A virtual member never appears: it stands for the leaves beneath it, and a container has no
+/// source class of its own, so ordering it as hosted lets a nested cache shadow a hosted sibling.
+/// Detection is path-local, so a diamond still contributes its shared leaf while a cyclic branch
+/// fails closed and contributes nothing.
+#[must_use]
+pub fn leaf_order(indexes: &[Index], layers: &[usize]) -> Vec<usize> {
+    let mut leaves = leaves(indexes, layers);
+    leaves.sort_by_key(|&position| matches!(indexes[position].kind, IndexKind::Cached { .. }));
+    leaves
+}
+
 /// Hosted layers pass their journal frontier through virtual indexes.
 #[must_use]
 pub fn layers_include_hosted(indexes: &[Index], layers: &[usize]) -> bool {
-    layers_reach(indexes, layers, |kind| matches!(kind, IndexKind::Hosted { .. }))
+    leaves(indexes, layers)
+        .into_iter()
+        .any(|position| matches!(indexes[position].kind, IndexKind::Hosted { .. }))
 }
 
 /// Follow nested layers because source policy applies to indirect cached sources too.
 #[must_use]
 pub fn reaches_cached(indexes: &[Index], position: usize) -> bool {
-    layers_reach(indexes, &[position], |kind| matches!(kind, IndexKind::Cached { .. }))
+    leaves(indexes, &[position])
+        .into_iter()
+        .any(|position| matches!(indexes[position].kind, IndexKind::Cached { .. }))
 }
 
 /// The index at `position` followed by every index it composes, nested layers included.
@@ -104,28 +122,31 @@ pub fn composed_indexes(indexes: &[Index], position: usize) -> Vec<usize> {
     composed
 }
 
-fn layers_reach(indexes: &[Index], layers: &[usize], target: fn(&IndexKind) -> bool) -> bool {
-    fn walk(indexes: &[Index], position: usize, path: &mut Vec<usize>, target: fn(&IndexKind) -> bool) -> bool {
-        if path.contains(&position) {
-            return false;
-        }
-        let kind = &indexes[position].kind;
-        if target(kind) {
-            return true;
-        }
-        match kind {
-            IndexKind::Virtual { layers, .. } => {
-                path.push(position);
-                let found = layers.iter().any(|&member| walk(indexes, member, path, target));
-                path.pop();
-                found
+fn leaves(indexes: &[Index], layers: &[usize]) -> Vec<usize> {
+    fn walk(indexes: &[Index], position: usize, path: &mut Vec<usize>, found: &mut Vec<usize>) {
+        match &indexes[position].kind {
+            IndexKind::Cached { .. } | IndexKind::Hosted { .. } => {
+                if !found.contains(&position) {
+                    found.push(position);
+                }
             }
-            IndexKind::Cached { .. } | IndexKind::Hosted { .. } => false,
+            IndexKind::Virtual { layers, .. } => {
+                if path.contains(&position) {
+                    return;
+                }
+                path.push(position);
+                for &member in layers {
+                    walk(indexes, member, path, found);
+                }
+                path.pop();
+            }
         }
     }
-    layers
-        .iter()
-        .any(|&position| walk(indexes, position, &mut Vec::new(), target))
+    let mut found = Vec::new();
+    for &position in layers {
+        walk(indexes, position, &mut Vec::new(), &mut found);
+    }
+    found
 }
 
 #[cfg(test)]

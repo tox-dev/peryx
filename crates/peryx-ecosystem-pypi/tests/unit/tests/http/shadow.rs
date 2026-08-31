@@ -181,6 +181,27 @@ async fn test_private_first_shadows_every_cached_candidate_when_hosted_is_presen
 }
 
 #[tokio::test]
+async fn test_a_cache_below_a_nested_member_is_recorded_as_a_cached_candidate() {
+    let harness = nested_harness(policy(|_, pypi| pypi.fallback_mode = FallbackMode::PrivateFirst)).await;
+    mount_acme(&harness).await;
+    put_local_project(&harness.state, "acme-pkg", HOSTED_FILE, b"hosted wheel", "1.0");
+    warm_cache(&harness, "acme-pkg").await;
+
+    let (status, page) = candidates(&harness, "root/pypi", "acme-pkg").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        rows(&page),
+        vec![
+            ("hosted", HOSTED_FILE, true, None),
+            ("pypi", HOSTED_FILE, false, Some("fallback")),
+            ("pypi", CACHED_FILE, false, Some("fallback")),
+        ],
+        "the nested container is not a candidate; the cache it reaches is"
+    );
+}
+
+#[tokio::test]
 async fn test_no_fallback_excludes_cached_members() {
     let harness = overlay_harness(FallbackMode::NoFallback).await;
     mount_acme(&harness).await;

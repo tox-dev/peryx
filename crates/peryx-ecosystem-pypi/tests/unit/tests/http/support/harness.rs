@@ -63,6 +63,22 @@ pub async fn offline_harness(mirror_policy: Policy) -> Harness {
     )
     .await
 }
+/// The overlay reaches `pypi` through an intermediate virtual repository, so the cache is a leaf two
+/// levels down rather than a direct member of the overlay.
+pub async fn nested_harness(overlay_policy: Policy) -> Harness {
+    harness_with_options(
+        true,
+        true,
+        Policy::default(),
+        Policy::default(),
+        overlay_policy,
+        HarnessOptions {
+            nested: true,
+            ..HarnessOptions::default()
+        },
+    )
+    .await
+}
 pub async fn harness_with_upstream_concurrency(
     mirror_policy: Policy,
     overlay_policy: Policy,
@@ -99,7 +115,7 @@ async fn harness_with_options(
     let upstream = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
     let clock = Arc::new(AtomicI64::new(1000));
     let ticks = clock.clone();
-    let indexes = vec![
+    let mut indexes = vec![
         Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
@@ -130,11 +146,24 @@ async fn harness_with_options(
             acl: IndexAcl::default(),
             ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Virtual {
-                layers: vec![1, 0],
+                layers: if options.nested { vec![1, 3] } else { vec![1, 0] },
                 write_target: Some(1),
             },
         },
     ];
+    if options.nested {
+        indexes.push(Index {
+            name: "inner".to_owned(),
+            route: "inner".to_owned(),
+            policy: Policy::default(),
+            acl: IndexAcl::default(),
+            ecosystem: crate::ECOSYSTEM,
+            kind: IndexKind::Virtual {
+                layers: vec![0],
+                write_target: None,
+            },
+        });
+    }
     let mut state = AppState::with_limits(
         meta,
         blobs,
@@ -164,6 +193,7 @@ struct HarnessOptions {
     offline: bool,
     upstream_concurrency: usize,
     distributed: bool,
+    nested: bool,
 }
 
 impl Default for HarnessOptions {
@@ -173,6 +203,7 @@ impl Default for HarnessOptions {
             offline: false,
             upstream_concurrency: peryx_driver::rate_limit::DEFAULT_UPSTREAM_CONCURRENCY,
             distributed: false,
+            nested: false,
         }
     }
 }

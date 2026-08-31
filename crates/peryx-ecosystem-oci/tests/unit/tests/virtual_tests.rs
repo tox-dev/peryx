@@ -631,3 +631,84 @@ async fn test_push_to_virtual_whose_upload_target_is_a_proxy_is_denied() {
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert!(super::body_has_code(&body, "DENIED"), "{body:?}");
 }
+
+/// A proxy behind two virtual layers, so the outer index must reach the leaf rather than the
+/// container that stands in front of it.
+fn nested_proxy_stack(dir: &tempfile::TempDir, upstream: &str, offline: bool) -> axum::Router {
+    use peryx_index::IndexKind;
+    use peryx_upstream::UpstreamClient;
+
+    let client = UpstreamClient::new(upstream).unwrap();
+    app_with_indexes(
+        dir,
+        vec![
+            oci_index("hub", "hub", IndexKind::Cached { client, offline }),
+            oci_index(
+                "inner",
+                "inner",
+                IndexKind::Virtual {
+                    layers: vec![0],
+                    write_target: None,
+                },
+            ),
+            oci_index(
+                "outer",
+                "outer",
+                IndexKind::Virtual {
+                    layers: vec![1],
+                    write_target: None,
+                },
+            ),
+        ],
+    )
+    .1
+}
+
+#[tokio::test]
+async fn test_two_level_virtual_pull_warms_a_grandchild_proxy_and_serves_it_offline() {
+    let server = MockServer::start().await;
+    let upstream = manifest("upstream");
+    Mock::given(method("GET"))
+        .and(path("/v2/app/manifests/latest"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(upstream.clone(), MANIFEST_TYPE))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let warm = nested_proxy_stack(&dir, &format!("{}/", server.uri()), false);
+    let warming = send(&warm, Method::GET, "/v2/outer/app/manifests/latest").await;
+    assert_eq!((warming.0, &warming.2[..]), (StatusCode::OK, &upstream[..]));
+    drop(warm);
+    drop(server);
+
+    let offline = nested_proxy_stack(&dir, "http://127.0.0.1:1/", true);
+    let (status, headers, got) = send(&offline, Method::GET, "/v2/outer/app/manifests/latest").await;
+
+    assert_eq!((status, &got[..]), (StatusCode::OK, &upstream[..]));
+    assert_eq!(headers["docker-content-digest"], oci_digest(&upstream));
+}
+
+#[tokio::test]
+async fn test_two_level_virtual_lists_a_grandchild_proxy_tag() {
+    let server = MockServer::start().await;
+    let upstream = manifest("upstream");
+    Mock::given(method("GET"))
+        .and(path("/v2/app/manifests/latest"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(upstream.clone(), MANIFEST_TYPE))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v2/app/tags/list"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(br#"{"name":"app","tags":["latest"]}"#.to_vec(), "application/json"),
+        )
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let app = nested_proxy_stack(&dir, &format!("{}/", server.uri()), false);
+
+    let (status, _, body) = send(&app, Method::GET, "/v2/outer/app/tags/list").await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(std::str::from_utf8(&body).unwrap().contains("latest"), "{body:?}");
+}

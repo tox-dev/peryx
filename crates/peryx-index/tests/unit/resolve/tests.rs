@@ -1,4 +1,6 @@
-use super::{RouteResolver, composed_indexes, layers_include_hosted, reaches_cached, remainder, shadow_order};
+use super::{
+    RouteResolver, composed_indexes, layers_include_hosted, leaf_order, reaches_cached, remainder, shadow_order,
+};
 use crate::index::{Index, IndexKind};
 use peryx_core::Ecosystem;
 use peryx_identity::IndexAcl;
@@ -107,6 +109,52 @@ fn test_shadow_order_keeps_configured_order_within_a_group() {
         index("hosted-b", "b", hosted()),
     ];
     assert_eq!(shadow_order(&indexes, &[0, 1, 2]), vec![0, 2, 1]);
+}
+
+#[test]
+fn test_leaf_order_ranks_a_nested_cache_behind_a_hosted_sibling() {
+    let indexes = vec![
+        index("alpha", "alpha", cached()),
+        index("inner", "inner", virtual_layers(&[0])),
+        index("hosted", "hosted", hosted()),
+    ];
+    assert_eq!(leaf_order(&indexes, &[1, 2]), vec![2, 0]);
+}
+
+#[test]
+fn test_leaf_order_keeps_configured_order_within_a_group() {
+    let indexes = vec![
+        index("hosted-a", "a", hosted()),
+        index("hosted-b", "b", hosted()),
+        index("inner", "inner", virtual_layers(&[1])),
+    ];
+    assert_eq!(leaf_order(&indexes, &[0, 2]), vec![0, 1]);
+}
+
+#[test]
+fn test_leaf_order_returns_a_leaf_member_unchanged() {
+    let indexes = vec![index("hosted", "h", hosted()), index("alpha", "c", cached())];
+    assert_eq!(leaf_order(&indexes, &[1, 0]), vec![0, 1]);
+}
+
+#[test]
+fn test_leaf_order_lists_a_shared_descendant_once() {
+    let indexes = vec![
+        index("hosted", "hosted", hosted()),
+        index("left", "left", virtual_layers(&[0])),
+        index("right", "right", virtual_layers(&[0])),
+    ];
+    assert_eq!(leaf_order(&indexes, &[1, 2]), vec![0]);
+}
+
+#[test]
+fn test_leaf_order_drops_a_cyclic_branch_and_keeps_the_rest() {
+    let indexes = vec![
+        index("hosted", "hosted", hosted()),
+        index("a", "a", virtual_layers(&[2])),
+        index("b", "b", virtual_layers(&[1])),
+    ];
+    assert_eq!(leaf_order(&indexes, &[1, 0]), vec![0]);
 }
 
 #[test]

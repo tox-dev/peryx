@@ -12,10 +12,20 @@ const CACHED_FILE: &str = "requests-2.0-py3-none-any.whl";
 /// A cached mirror, a hosted index, and a virtual repository over both, so a project can be held by
 /// either member or by both at once.
 fn virtual_state(overlay: Policy) -> (tempfile::TempDir, Arc<AppState>) {
+    state_with(overlay, false)
+}
+
+/// The same three indexes, except the virtual repository reaches the mirror through an intermediate
+/// virtual member listed ahead of the hosted one.
+fn nested_virtual_state(overlay: Policy) -> (tempfile::TempDir, Arc<AppState>) {
+    state_with(overlay, true)
+}
+
+fn state_with(overlay: Policy, nested: bool) -> (tempfile::TempDir, Arc<AppState>) {
     let dir = tempfile::tempdir().unwrap();
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
     let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
-    let indexes = vec![
+    let mut indexes = vec![
         Index {
             name: "pypi".to_owned(),
             route: "pypi".to_owned(),
@@ -40,13 +50,26 @@ fn virtual_state(overlay: Policy) -> (tempfile::TempDir, Arc<AppState>) {
             route: VIRTUAL_ROUTE.to_owned(),
             ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Virtual {
-                layers: vec![0, 1],
+                layers: if nested { vec![3, 1] } else { vec![0, 1] },
                 write_target: Some(1),
             },
             policy: overlay,
             acl: peryx_identity::IndexAcl::default(),
         },
     ];
+    if nested {
+        indexes.push(Index {
+            name: "inner".to_owned(),
+            route: "inner".to_owned(),
+            ecosystem: crate::ECOSYSTEM,
+            kind: IndexKind::Virtual {
+                layers: vec![0],
+                write_target: None,
+            },
+            policy: Policy::default(),
+            acl: peryx_identity::IndexAcl::default(),
+        });
+    }
     (dir, crate::tests::wired(AppState::new(meta, blobs, 60, indexes)))
 }
 
@@ -200,4 +223,24 @@ fn test_search_private_first_availability_ignores_a_shadowed_cached_release() {
         !document.available_locally,
         "an evicted hosted release is not local just because the shadowed upstream copy is"
     );
+}
+
+#[test]
+fn test_search_private_first_withholds_a_cache_below_a_nested_member() {
+    let (_dir, state) = nested_virtual_state(index_policy(|_, pypi| pypi.fallback_mode = FallbackMode::PrivateFirst));
+    put_both_members(&state.serving);
+
+    let document = virtual_document(&state.serving, "requests").expect("the hosted member still holds the project");
+
+    assert_eq!(advertised_files(&document), [HOSTED_FILE]);
+}
+
+#[test]
+fn test_search_no_fallback_keeps_the_hosted_leaf_of_a_nested_member() {
+    let (_dir, state) = nested_virtual_state(index_policy(|_, pypi| pypi.fallback_mode = FallbackMode::NoFallback));
+    put_both_members(&state.serving);
+
+    let document = virtual_document(&state.serving, "requests").expect("the hosted member still holds the project");
+
+    assert_eq!(advertised_files(&document), [HOSTED_FILE]);
 }

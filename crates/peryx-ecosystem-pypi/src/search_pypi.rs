@@ -106,7 +106,7 @@ pub(crate) fn package_document(
     index: &Index,
     normalized: &str,
 ) -> Result<Option<SearchDocument>, SearchError> {
-    let mut detail = cached_detail(ctx, index, normalized, &index.route)?;
+    let mut detail = index_detail(ctx, index, normalized, &index.route)?;
     drop_revoked_files(ctx, &mut detail)?;
     if detail.files.is_empty() {
         return Ok(None);
@@ -240,23 +240,46 @@ fn collect_hosted_filenames(
     Ok(())
 }
 
-fn cached_detail(
+/// The document view of one index: a merge for a virtual repository, the stored records otherwise.
+fn index_detail(
     ctx: &IndexerCtx<'_>,
     index: &Index,
     normalized: &str,
     serve_route: &str,
 ) -> Result<ProjectDetail, SearchError> {
-    let detail = match &index.kind {
-        IndexKind::Cached { .. } => mirror_detail(ctx, index, normalized, serve_route),
-        IndexKind::Hosted { .. } => local_detail(ctx, &index.name, normalized, serve_route),
-        IndexKind::Virtual { layers, write_target } => {
-            virtual_detail(ctx, index, layers, *write_target, normalized, serve_route)
-        }
-    }?;
-    Ok(index
+    let IndexKind::Virtual { layers, write_target } = &index.kind else {
+        return leaf_detail(ctx, index, normalized, serve_route);
+    };
+    let selection = SourceSelection::new(index, normalized);
+    let candidates = virtual_candidates(ctx, &selection, layers, *write_target, normalized, serve_route)?;
+    Ok(apply_index_policy(
+        index,
+        normalized,
+        merge_candidates(normalized, candidates),
+    ))
+}
+
+/// One leaf index's stored records for the project, with that index's own policy applied: a hosted
+/// index's uploads, or the page a mirror already fetched.
+fn leaf_detail(
+    ctx: &IndexerCtx<'_>,
+    index: &Index,
+    normalized: &str,
+    serve_route: &str,
+) -> Result<ProjectDetail, SearchError> {
+    let detail = if matches!(index.kind, IndexKind::Hosted { .. }) {
+        local_detail(ctx, &index.name, normalized, serve_route)?
+    } else {
+        mirror_detail(ctx, index, normalized, serve_route)?
+    };
+    Ok(apply_index_policy(index, normalized, detail))
+}
+
+fn apply_index_policy(index: &Index, normalized: &str, detail: ProjectDetail) -> ProjectDetail {
+    index
         .policy
         .apply_detail(PolicyAction::Serve, normalized, detail, None)
-        .unwrap_or_else(|_| empty_detail(normalized)))
+        .unwrap_or_else(|_| empty_detail(normalized))
 }
 
 fn mirror_detail(
@@ -333,35 +356,62 @@ fn local_detail(
     Ok(detail)
 }
 
-/// Merge a virtual index's layers for the search document, resolving cached layers last so an
-/// indexed project describes the hosted file that shadows upstream rather than the file it shadows.
-/// The served page merges by the same precedence.
+/// The leaf candidates a virtual index contributes to the search document, each paired with the leaf
+/// that produced it and ranked hosted-before-cached, so an indexed project describes the hosted file
+/// that shadows upstream rather than the file it shadows. The served page ranks the same leaves.
 ///
-/// [`SourceSelection`] decides which members contribute, so a document never advertises a name,
-/// version, or summary the route's source policy withholds from the served page. Resolution logs the
+/// `selection` decides which of them contribute, so a document never advertises a name, version, or
+/// summary the route's source policy withholds from the served page, and an enclosing repository's
+/// refusal of cached content travels down with it the way resolution carries it. Resolution logs the
 /// private-first collision when it serves one; the indexer would repeat that entry on every crawl.
-fn virtual_detail(
+fn virtual_candidates(
     ctx: &IndexerCtx<'_>,
-    index: &Index,
+    selection: &SourceSelection,
     layers: &[usize],
     upload: Option<usize>,
     normalized: &str,
     serve_route: &str,
-) -> Result<ProjectDetail, SearchError> {
-    let selection = SourceSelection::new(index, normalized);
-    let mut members = Vec::new();
-    for position in selection.candidates(ctx.indexes, layers) {
-        members.push((
-            position,
-            cached_detail(ctx, ctx.index_at(position), normalized, serve_route)?,
-        ));
+) -> Result<Vec<(usize, ProjectDetail)>, SearchError> {
+    let consult_cached = selection.consults_cached();
+    let mut candidates = Vec::new();
+    for position in selection.members(ctx.indexes, layers) {
+        let found = member_candidates(ctx, position, normalized, serve_route, consult_cached)?;
+        candidates.extend(found);
     }
-    selection.retain_selected(ctx.indexes, &mut members, |detail| !detail.files.is_empty());
+    selection.select(ctx.indexes, &mut candidates, |detail| !detail.files.is_empty());
+    if let Some(position) = upload {
+        apply_overrides(ctx, &ctx.index_at(position).name, normalized, &mut candidates)?;
+    }
+    Ok(candidates)
+}
+
+/// The leaf candidates one member offers, with that member's own policy already applied.
+fn member_candidates(
+    ctx: &IndexerCtx<'_>,
+    position: usize,
+    normalized: &str,
+    serve_route: &str,
+    consult_cached: bool,
+) -> Result<Vec<(usize, ProjectDetail)>, SearchError> {
+    let member = ctx.index_at(position);
+    let IndexKind::Virtual { layers, write_target } = &member.kind else {
+        return Ok(vec![(position, leaf_detail(ctx, member, normalized, serve_route)?)]);
+    };
+    let selection = SourceSelection::new(member, normalized).under_cached_refusal(!consult_cached);
+    let candidates = virtual_candidates(ctx, &selection, layers, *write_target, normalized, serve_route)?;
+    Ok(candidates
+        .into_iter()
+        .map(|(leaf, detail)| (leaf, apply_index_policy(member, normalized, detail)))
+        .collect())
+}
+
+/// Merge ranked candidates into the document view, keeping the first candidate to claim a filename.
+fn merge_candidates(normalized: &str, candidates: Vec<(usize, ProjectDetail)>) -> ProjectDetail {
     let mut files = Vec::new();
     let mut seen = BTreeSet::new();
     let mut versions = BTreeSet::new();
     let mut meta = Meta::default();
-    for (_, detail) in members {
+    for (_, detail) in candidates {
         // Merge status before skipping empty members; quarantine must dominate member order.
         if detail.meta.status().severity() > meta.status().severity() {
             meta.project_status = detail.meta.project_status;
@@ -377,9 +427,6 @@ fn virtual_detail(
             }
         }
     }
-    if let Some(position) = upload {
-        apply_overrides(ctx, &ctx.index_at(position).name, normalized, &mut files)?;
-    }
     let mut detail = ProjectDetail {
         meta,
         name: normalized.to_owned(),
@@ -387,7 +434,7 @@ fn virtual_detail(
         files,
     };
     apply_project_status(&mut detail);
-    Ok(detail)
+    detail
 }
 
 fn empty_detail(normalized: &str) -> ProjectDetail {
@@ -403,18 +450,22 @@ fn apply_overrides(
     ctx: &IndexerCtx<'_>,
     hosted: &str,
     normalized: &str,
-    files: &mut Vec<File>,
+    candidates: &mut [(usize, ProjectDetail)],
 ) -> Result<(), SearchError> {
     let overrides = FileOverride::decode_all(ctx.meta.list_overrides(hosted, normalized)?);
     if overrides.is_empty() {
         return Ok(());
     }
-    files.retain(|file| !overrides.get(&file.filename).is_some_and(|record| record.hidden));
-    for file in files {
-        if let Some(record) = overrides.get(&file.filename)
-            && record.yanked != Yanked::No
-        {
-            file.yanked = record.yanked.clone();
+    for (_, detail) in candidates {
+        detail
+            .files
+            .retain(|file| !overrides.get(&file.filename).is_some_and(|record| record.hidden));
+        for file in &mut detail.files {
+            if let Some(record) = overrides.get(&file.filename)
+                && record.yanked != Yanked::No
+            {
+                file.yanked = record.yanked.clone();
+            }
         }
     }
     Ok(())

@@ -77,7 +77,6 @@ pub async fn metadata_bytes(
         &crate::project_of_filename(artifact_filename),
         artifact_digest.as_str(),
         artifact_filename,
-        &mut Vec::new(),
     )?;
     if let Some(FilePublication::Claimed(claim)) = publication {
         return claimed_metadata(state, &claim, negative_key).await;
@@ -93,21 +92,17 @@ pub async fn metadata_bytes(
 
 /// The publication of `filename`/`sha256` that `index` serves, or `None` when it serves none.
 ///
-/// A virtual index answers with its first layer in shadow order that published the file, the layer
-/// whose page entry won the merge, so a shadowed layer's sidecar stays where it is. The walk skips a
-/// layer already on its traversal path, which bounds a cyclic configuration.
+/// A virtual index answers with the first leaf in shadow order that published the file, the leaf
+/// whose page entry won the merge, so a shadowed leaf's sidecar stays where it is. Nesting is
+/// flattened rather than descended per layer, because a container carries neither publications nor a
+/// source class of its own.
 fn winning_publication(
     state: &ServingState,
     index: &Index,
     project: &str,
     sha256: &str,
     filename: &str,
-    traversed: &mut Vec<String>,
 ) -> Result<Option<FilePublication>, CacheError> {
-    if traversed.iter().any(|name| name == &index.name) {
-        return Ok(None);
-    }
-    traversed.push(index.name.clone());
     match &index.kind {
         IndexKind::Cached { .. } => Ok(state
             .meta
@@ -118,9 +113,9 @@ fn winning_publication(
             hosted_publication(state, &index.name, project, sha256, filename)?.then_some(FilePublication::Unclaimed)
         ),
         IndexKind::Virtual { layers, .. } => {
-            for position in peryx_index::shadow_order(&state.indexes, layers) {
-                let layer = state.index_at(position);
-                if let Some(publication) = winning_publication(state, layer, project, sha256, filename, traversed)? {
+            for position in peryx_index::leaf_order(&state.indexes, layers) {
+                let leaf = state.index_at(position);
+                if let Some(publication) = winning_publication(state, leaf, project, sha256, filename)? {
                     return Ok(Some(publication));
                 }
             }

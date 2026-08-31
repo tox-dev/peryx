@@ -686,7 +686,7 @@ async fn test_no_fallback_denies_a_cache_reached_through_a_nested_virtual() {
     let reason = denial["reason"].as_str().unwrap();
     assert!(reason.contains("no-fallback"), "{reason}");
     assert!(reason.contains("hosted"), "{reason}");
-    assert!(reason.contains("inner"), "{reason}");
+    assert!(reason.contains("pypi"), "{reason}");
     assert!(server.received_requests().await.unwrap().is_empty());
 }
 
@@ -746,7 +746,7 @@ async fn test_no_fallback_denies_a_cache_reached_through_several_virtual_layers(
     let denial: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(denial["rule"], "virtual-fallback");
-    assert!(denial["reason"].as_str().unwrap().contains("middle"), "{body}");
+    assert!(denial["reason"].as_str().unwrap().contains("pypi"), "{body}");
     assert!(server.received_requests().await.unwrap().is_empty());
 }
 
@@ -863,7 +863,152 @@ async fn test_private_first_shadows_a_cache_reached_through_a_nested_virtual() {
     assert_eq!(field(&event, "result"), Some("shadowed"));
     assert_eq!(field(&event, "index"), Some("outer"));
     assert_eq!(field(&event, "hosted_members"), Some("hosted"));
-    assert_eq!(field(&event, "cached_members"), Some("inner"));
+    assert_eq!(field(&event, "cached_members"), Some("pypi"));
+}
+
+#[tokio::test]
+async fn test_a_cache_below_a_nested_member_does_not_shadow_a_hosted_filename() {
+    let server = MockServer::start().await;
+    let upstream = Digest::of(b"upstream flask");
+    mount_json_page(&server, &nested_flask_page(upstream.as_str())).await;
+    let dir = tempfile::tempdir().unwrap();
+    let state = custom_state(&dir, &format!("{}/simple/", server.uri()), |client| {
+        vec![
+            runtime_index("pypi", IndexKind::Cached { client, offline: false }),
+            runtime_index("hosted", IndexKind::Hosted { volatile: true }),
+            runtime_index(
+                "inner",
+                IndexKind::Virtual {
+                    layers: vec![0],
+                    write_target: None,
+                },
+            ),
+            runtime_index(
+                "outer",
+                IndexKind::Virtual {
+                    layers: vec![2, 1],
+                    write_target: None,
+                },
+            ),
+        ]
+    });
+    let hosted = put_local_project(&state, "flask", "flask-1.0-py3-none-any.whl", b"hosted flask", "1.0");
+
+    let (status, _, body) = get(&state, "/outer/simple/flask/", Some("application/json")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains(hosted.as_str()), "{body}");
+    assert!(!body.contains(upstream.as_str()), "{body}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_private_first_keeps_the_hosted_leaf_of_a_mixed_nested_member() {
+    let server = MockServer::start().await;
+    mount_json_page(&server, &nested_flask_page(Digest::of(b"upstream flask").as_str())).await;
+    let dir = tempfile::tempdir().unwrap();
+    let state = custom_state(&dir, &format!("{}/simple/", server.uri()), |client| {
+        vec![
+            runtime_index("pypi", IndexKind::Cached { client, offline: false }),
+            runtime_index("hosted", IndexKind::Hosted { volatile: true }),
+            runtime_index(
+                "inner",
+                IndexKind::Virtual {
+                    layers: vec![1, 0],
+                    write_target: None,
+                },
+            ),
+            Index {
+                policy: policy(|_neutral, pypi| pypi.fallback_mode = FallbackMode::PrivateFirst),
+                ..runtime_index(
+                    "outer",
+                    IndexKind::Virtual {
+                        layers: vec![2],
+                        write_target: None,
+                    },
+                )
+            },
+        ]
+    });
+    put_local_project(&state, "flask", "flask-9.9-py3-none-any.whl", b"hosted flask", "9.9");
+
+    let (status, _, body) = get(&state, "/outer/simple/flask/", Some("application/json")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("flask-9.9-py3-none-any.whl"), "{body}");
+    assert!(!body.contains("flask-1.0-py3-none-any.whl"), "{body}");
+}
+
+#[tokio::test]
+async fn test_no_fallback_keeps_the_hosted_leaf_of_a_mixed_nested_member() {
+    let server = MockServer::start().await;
+    mount_json_page(&server, &nested_flask_page(Digest::of(b"upstream flask").as_str())).await;
+    let dir = tempfile::tempdir().unwrap();
+    let state = custom_state(&dir, &format!("{}/simple/", server.uri()), |client| {
+        vec![
+            runtime_index("pypi", IndexKind::Cached { client, offline: false }),
+            runtime_index("hosted", IndexKind::Hosted { volatile: true }),
+            runtime_index(
+                "inner",
+                IndexKind::Virtual {
+                    layers: vec![1, 0],
+                    write_target: None,
+                },
+            ),
+            Index {
+                policy: policy(|_neutral, pypi| pypi.fallback_mode = FallbackMode::NoFallback),
+                ..runtime_index(
+                    "outer",
+                    IndexKind::Virtual {
+                        layers: vec![2],
+                        write_target: None,
+                    },
+                )
+            },
+        ]
+    });
+    put_local_project(&state, "flask", "flask-9.9-py3-none-any.whl", b"hosted flask", "9.9");
+
+    let (status, _, body) = get(&state, "/outer/simple/flask/", Some("application/json")).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("flask-9.9-py3-none-any.whl"), "{body}");
+    assert_eq!(server.received_requests().await.unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn test_a_cycle_below_a_member_serves_no_candidate() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = custom_state(&dir, "https://example.invalid/simple/", |_client| {
+        vec![
+            runtime_index("hosted", IndexKind::Hosted { volatile: true }),
+            runtime_index(
+                "loop",
+                IndexKind::Virtual {
+                    layers: vec![1],
+                    write_target: None,
+                },
+            ),
+            runtime_index(
+                "outer",
+                IndexKind::Virtual {
+                    layers: vec![0, 1],
+                    write_target: None,
+                },
+            ),
+        ]
+    });
+    put_local_project(&state, "flask", "flask-9.9-py3-none-any.whl", b"hosted flask", "9.9");
+
+    let (status, _, body) = get(&state, "/outer/simple/flask/", Some("application/json")).await;
+
+    assert_eq!(
+        (status, body),
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "project detail on index \"outer\" for project \"flask\": virtual index composition cycle: loop -> loop"
+                .to_owned(),
+        )
+    );
 }
 
 #[tokio::test]

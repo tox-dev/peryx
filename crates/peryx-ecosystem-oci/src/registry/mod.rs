@@ -871,11 +871,14 @@ fn policy_size_denial(index: &Index, repo: &str, size: u64) -> Option<Response> 
         .err()
         .map(|denial| error_response(ErrorCode::Denied, &denial.to_string()))
 }
+/// The indexes a read dispatches to, in shadow order. Every member is a leaf: a store to look the
+/// repository up in, or an upstream to read through. A nested virtual container is neither, so
+/// handing one to a dispatch would lose every repository beneath it.
 pub fn serving_members<'a>(state: &'a ServingState, index: &'a Index) -> Vec<&'a Index> {
     let IndexKind::Virtual { layers, .. } = &index.kind else {
         return vec![index];
     };
-    peryx_index::shadow_order(&state.indexes, layers)
+    peryx_index::leaf_order(&state.indexes, layers)
         .into_iter()
         .map(|position| state.index_at(position))
         .collect()

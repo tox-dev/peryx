@@ -82,18 +82,7 @@ async fn resolve_detail_page_with(
     serve_route: &str,
     context: ResolutionContext<'_>,
 ) -> Result<Option<DetailPage>, CacheError> {
-    if let Some(start) = context.traversal_path.iter().position(|name| name == &index.name) {
-        return Err(CacheError::VirtualIndexCycle(
-            context.traversal_path[start..]
-                .iter()
-                .map(String::as_str)
-                .chain(std::iter::once(index.name.as_str()))
-                .collect::<Vec<_>>()
-                .join(" -> "),
-        ));
-    }
-    let mut traversal_path = context.traversal_path.to_vec();
-    traversal_path.push(index.name.clone());
+    let traversal_path = extend_path(&context, index)?;
     let context = ResolutionContext {
         traversal_path: &traversal_path,
         ..context
@@ -119,15 +108,15 @@ async fn resolve_detail_page_with(
                 revoked_files_removed: false,
             })
         }
-        IndexKind::Virtual { layers, write_target } => {
-            virtual_detail(state, index, layers, *write_target, project, serve_route, context)
-                .await?
-                .map(|detail| DetailPage {
-                    detail,
-                    last_serial: None,
-                    revoked_files_removed: false,
-                })
-        }
+        IndexKind::Virtual { layers, write_target } => merge_candidates(
+            project,
+            virtual_candidates(state, index, layers, *write_target, project, serve_route, context).await?,
+        )
+        .map(|detail| DetailPage {
+            detail,
+            last_serial: None,
+            revoked_files_removed: false,
+        }),
     };
     page.map(|mut page| {
         page.detail = index
@@ -138,10 +127,33 @@ async fn resolve_detail_page_with(
     .transpose()
 }
 
-/// Resolve eligible members concurrently, then apply the virtual repository's source policy before
-/// merging candidates in shadow order. Hidden and yanked overrides from the upload target apply to
-/// the resulting view.
-async fn virtual_detail(
+/// `context`'s traversal path extended by `index`, or the cycle it closes. A repository that reaches
+/// itself has no well-defined view, so the branch fails closed instead of serving part of one.
+fn extend_path(context: &ResolutionContext<'_>, index: &Index) -> Result<Vec<String>, CacheError> {
+    if let Some(start) = context.traversal_path.iter().position(|name| name == &index.name) {
+        return Err(CacheError::VirtualIndexCycle(
+            context.traversal_path[start..]
+                .iter()
+                .map(String::as_str)
+                .chain(std::iter::once(index.name.as_str()))
+                .collect::<Vec<_>>()
+                .join(" -> "),
+        ));
+    }
+    let mut traversal_path = context.traversal_path.to_vec();
+    traversal_path.push(index.name.clone());
+    Ok(traversal_path)
+}
+
+/// Resolve eligible members concurrently into leaf candidates, each paired with the leaf index that
+/// produced it, then apply this repository's source policy and shadow order to those leaves. Hidden
+/// and yanked overrides from the upload target apply to every candidate, so a shadowed leaf carries
+/// the same view of a file as the leaf that wins it.
+///
+/// A member has already applied its own policy to what it returns: a nested repository decides which
+/// of its leaves contribute before this one ranks them. Ranking the member instead would hand a
+/// container a source class it does not have.
+async fn virtual_candidates(
     state: &ServingState,
     index: &Index,
     layers: &[usize],
@@ -149,26 +161,26 @@ async fn virtual_detail(
     project: &str,
     serve_route: &str,
     context: ResolutionContext<'_>,
-) -> Result<Option<ProjectDetail>, CacheError> {
-    let selection = SourceSelection::new(index, project);
+) -> Result<Vec<(usize, ProjectDetail)>, CacheError> {
+    let selection = SourceSelection::new(index, project).under_cached_refusal(!context.consult_cached);
     let mode = selection.mode();
-    let ordered = selection.candidates(&state.indexes, layers);
-    let resolved = futures_util::future::join_all(ordered.iter().map(|&pos| {
-        let layer = state.index_at(pos);
-        Box::pin(async move {
-            Ok(resolve_detail_page_with(state, layer, project, serve_route, context)
-                .await?
-                .map(|page| page.detail))
-        })
-    }))
+    let consulted = selection.members(&state.indexes, layers);
+    let context = ResolutionContext {
+        consult_cached: selection.consults_cached(),
+        ..context
+    };
+    let resolved = futures_util::future::join_all(
+        consulted
+            .iter()
+            .map(|&pos| member_candidates(state, pos, project, serve_route, context)),
+    )
     .await;
-    let mut details = Vec::new();
+    let mut candidates = Vec::new();
     let mut offline_missing = None;
     let mut rate_limited = None;
-    for (pos, outcome) in ordered.into_iter().zip(resolved) {
+    for (pos, outcome) in consulted.into_iter().zip(resolved) {
         match outcome {
-            Ok(Some(detail)) => details.push((pos, detail)),
-            Ok(None) => {}
+            Ok(found) => candidates.extend(found),
             Err(err @ CacheError::OfflineMissing(_)) => offline_missing = Some(err),
             Err(err @ (CacheError::RateLimited { .. } | CacheError::UpstreamRateLimited { .. })) => {
                 rate_limited = Some(err);
@@ -179,10 +191,10 @@ async fn virtual_detail(
             }
         }
     }
-    if selection.retain_selected(&state.indexes, &mut details, |detail| !detail.files.is_empty()) {
+    if selection.select(&state.indexes, &mut candidates, |detail| !detail.files.is_empty()) {
         record_collision(state, index, layers, project);
     }
-    if details.is_empty() {
+    if candidates.is_empty() {
         if let Some(denial) = selection.into_cached_denial() {
             return Err(denial.into());
         }
@@ -195,13 +207,65 @@ async fn virtual_detail(
         if let Some(err) = offline_missing {
             return Err(err);
         }
-        return Ok(None);
+        return Ok(Vec::new());
+    }
+    if let Some(pos) = upload {
+        apply_overrides(state, &state.index_at(pos).name, project, &mut candidates)?;
+    }
+    Ok(candidates)
+}
+
+/// The leaf candidates one member of a virtual repository offers, with that member's own policy
+/// already applied. A leaf offers itself; a nested repository offers the leaves it resolves.
+fn member_candidates<'a>(
+    state: &'a ServingState,
+    position: usize,
+    project: &'a str,
+    serve_route: &'a str,
+    context: ResolutionContext<'a>,
+) -> futures_util::future::BoxFuture<'a, Result<Vec<(usize, ProjectDetail)>, CacheError>> {
+    use futures_util::FutureExt as _;
+
+    let member = state.index_at(position);
+    async move {
+        let IndexKind::Virtual { layers, write_target } = &member.kind else {
+            return Ok(resolve_detail_page_with(state, member, project, serve_route, context)
+                .await?
+                .map(|page| (position, page.detail))
+                .into_iter()
+                .collect());
+        };
+        let traversal_path = extend_path(&context, member)?;
+        let context = ResolutionContext {
+            traversal_path: &traversal_path,
+            ..context
+        };
+        member.policy.check_resource(PolicyAction::Serve, project)?;
+        // One clock reading for the member, so its candidates cannot straddle a policy window.
+        let now = Some((state.clock)());
+        virtual_candidates(state, member, layers, *write_target, project, serve_route, context)
+            .await?
+            .into_iter()
+            .map(|(leaf, detail)| {
+                let detail = member.policy.apply_detail(PolicyAction::Serve, project, detail, now)?;
+                Ok((leaf, detail))
+            })
+            .collect()
+    }
+    .boxed()
+}
+
+/// Merge ranked candidates into the page a virtual repository serves, keeping the first candidate to
+/// claim a filename. `None` when no leaf contributed.
+fn merge_candidates(project: &str, candidates: Vec<(usize, ProjectDetail)>) -> Option<ProjectDetail> {
+    if candidates.is_empty() {
+        return None;
     }
     let mut files = Vec::new();
     let mut seen = BTreeSet::new();
     let mut versions = BTreeSet::new();
     let mut meta = Meta::default();
-    for (_, detail) in details {
+    for (_, detail) in candidates {
         versions.extend(detail.versions);
         // A virtual index guarantees only what its weakest layer does: a layer that cannot promise
         // PEP 700's `versions`/`size` caps the merged page at the base version too.
@@ -220,9 +284,6 @@ async fn virtual_detail(
             }
         }
     }
-    if let Some(pos) = upload {
-        apply_overrides(state, &state.index_at(pos).name, project, &mut files)?;
-    }
     let mut detail = ProjectDetail {
         meta,
         name: project.to_owned(),
@@ -230,12 +291,15 @@ async fn virtual_detail(
         files,
     };
     apply_project_status(&mut detail);
-    Ok(Some(detail))
+    Some(detail)
 }
 
 #[derive(Clone, Copy)]
 struct ResolutionContext<'a> {
     deny_no_fallback_miss: bool,
+    /// Cleared once an enclosing repository's source policy has ruled its cached leaves out, so a
+    /// nested member never reaches upstream for content the enclosing view would discard anyway.
+    consult_cached: bool,
     traversal_path: &'a [String],
 }
 
@@ -243,16 +307,19 @@ impl ResolutionContext<'_> {
     const fn root(deny_no_fallback_miss: bool) -> Self {
         Self {
             deny_no_fallback_miss,
+            consult_cached: true,
             traversal_path: &[],
         }
     }
 }
 
+/// The names of the leaves `layers` reaches on one side of the source split, for an operator reading
+/// a denial. A nested container has no side of its own, so its leaves are named instead.
 fn member_names(state: &ServingState, layers: &[usize], cached: bool) -> String {
-    layers
-        .iter()
-        .filter(|&&pos| peryx_index::reaches_cached(&state.indexes, pos) == cached)
-        .map(|&pos| state.index_at(pos).name.as_str())
+    peryx_index::leaf_order(&state.indexes, layers)
+        .into_iter()
+        .filter(|&pos| matches!(state.index_at(pos).kind, IndexKind::Cached { .. }) == cached)
+        .map(|pos| state.index_at(pos).name.as_str())
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -292,17 +359,28 @@ fn no_fallback_denial(state: &ServingState, index: &Index, layers: &[usize], pro
     )
 }
 
-fn apply_overrides(state: &ServingState, hosted: &str, project: &str, files: &mut Vec<File>) -> Result<(), CacheError> {
+/// Apply the upload target's hide and yank overrides to every candidate, not only the one that wins
+/// a filename, so an override cannot be escaped by a shadowed leaf carrying the same file.
+fn apply_overrides(
+    state: &ServingState,
+    hosted: &str,
+    project: &str,
+    candidates: &mut [(usize, ProjectDetail)],
+) -> Result<(), CacheError> {
     let overrides = FileOverride::decode_all(state.meta.list_overrides(hosted, project)?);
     if overrides.is_empty() {
         return Ok(());
     }
-    files.retain(|file| !overrides.get(&file.filename).is_some_and(|record| record.hidden));
-    for file in files {
-        if let Some(record) = overrides.get(&file.filename)
-            && record.yanked != Yanked::No
-        {
-            file.yanked = record.yanked.clone();
+    for (_, detail) in candidates {
+        detail
+            .files
+            .retain(|file| !overrides.get(&file.filename).is_some_and(|record| record.hidden));
+        for file in &mut detail.files {
+            if let Some(record) = overrides.get(&file.filename)
+                && record.yanked != Yanked::No
+            {
+                file.yanked = record.yanked.clone();
+            }
         }
     }
     Ok(())

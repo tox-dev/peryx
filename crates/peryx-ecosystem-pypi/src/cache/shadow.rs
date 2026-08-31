@@ -1,18 +1,23 @@
-//! [`resolve`](super::resolve) merges members in shadow order and drops the candidates a member
-//! shadows; this replays the same order and records the losers instead. It reads only stored records:
-//! a hosted member's uploads and a cached member's fetched page. It never probes an
-//! upstream per row, and it excludes cached members on the same two grounds resolution does: the
-//! repository's fallback mode, and the cache-fill denial that overrides every mode.
+//! [`resolve`](super::resolve) merges leaf candidates in shadow order and drops the candidates a
+//! leaf shadows; this replays the same order and records the losers instead. Like resolution it
+//! ranks the leaves a member reaches rather than the member itself, so a cache nested one level down
+//! is recorded as the cached source it is, and it asks the same
+//! [`SourceSelection`](crate::source_policy::SourceSelection) why a cached leaf is out.
+//!
+//! It reads only stored records: a hosted leaf's uploads and a cached leaf's fetched page. It never
+//! probes an upstream per row. Only this repository's source policy is replayed, so a leaf that a
+//! nested repository already dropped under its own mode reads here as selected or shadowed on
+//! precedence rather than excluded.
 
 use std::collections::BTreeSet;
 
-use crate::policy::{FallbackMode, PypiPolicy as _};
 use peryx_driver::state::ServingState;
 use peryx_index::{Index, IndexKind};
 
+use super::CacheError;
 use super::resolve::{local_detail, raw_to_detail};
-use super::{CacheError, cached_denial};
 use crate::shadow::{ShadowCandidate, ShadowReason, ShadowSource};
+use crate::source_policy::SourceSelection;
 use crate::store::PypiStore as _;
 use crate::{ProjectDetail, name};
 
@@ -36,7 +41,7 @@ fn candidates(state: &ServingState, position: usize, project: &str) -> Result<Ve
         return Ok(Vec::new());
     };
     let project = name::normalize_name(project);
-    let ordered = peryx_index::shadow_order(&state.indexes, layers);
+    let ordered = peryx_index::leaf_order(&state.indexes, layers);
     let mut members = Vec::new();
     for member in ordered.into_iter().map(|pos| state.index_at(pos)) {
         if let Some(detail) = stored_detail(state, member, &project)? {
@@ -46,7 +51,7 @@ fn candidates(state: &ServingState, position: usize, project: &str) -> Result<Ve
     let hosted_found = members
         .iter()
         .any(|(member, detail)| !is_cached(member) && !detail.files.is_empty());
-    let cached_exclusion = cached_exclusion(index, &project, hosted_found);
+    let cached_exclusion = SourceSelection::new(index, &project).cached_exclusion(hosted_found);
     let mut selected = BTreeSet::new();
     let mut candidates = Vec::new();
     for (member, detail) in members {
@@ -94,19 +99,4 @@ fn stored_detail(state: &ServingState, member: &Index, project: &str) -> Result<
 
 const fn is_cached(index: &Index) -> bool {
     matches!(index.kind, IndexKind::Cached { .. })
-}
-
-/// Why the repository drops its cached members for `project`, if it does. Mirrors
-/// [`resolve`](super::resolve)'s member filtering: a cache-fill denial outranks every fallback mode,
-/// then plain fallback keeps cached members, private-first drops them only when a hosted member is
-/// present, and no-fallback never consults them.
-fn cached_exclusion(index: &Index, project: &str, hosted_found: bool) -> Option<ShadowReason> {
-    if cached_denial(index, project).is_some() {
-        return Some(ShadowReason::Protected);
-    }
-    match index.policy.fallback_mode() {
-        FallbackMode::Fallback => None,
-        FallbackMode::PrivateFirst => hosted_found.then_some(ShadowReason::Fallback),
-        FallbackMode::NoFallback => Some(ShadowReason::Fallback),
-    }
 }
