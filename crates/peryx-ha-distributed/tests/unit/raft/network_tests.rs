@@ -339,20 +339,16 @@ mod adapter {
         }
     }
 
-    fn node(addr: &str) -> PeryxNode {
+    fn node(endpoint: &str) -> PeryxNode {
         PeryxNode {
             datacenter: DatacenterId::default(),
-            addr: addr.to_owned(),
+            endpoint: endpoint.to_owned(),
         }
     }
 
-    fn peer_addr(url: &str) -> String {
-        url.trim_start_matches("http://").trim_end_matches('/').to_owned()
-    }
-
-    async fn client_to(addr: &str) -> PeerRaftNetwork {
+    async fn client_to(endpoint: &str) -> PeerRaftNetwork {
         PeerRaftNetworkFactory::new(TOKEN, Duration::from_secs(5))
-            .new_client(TARGET, &node(addr))
+            .new_client(TARGET, &node(endpoint))
             .await
     }
 
@@ -387,7 +383,7 @@ mod adapter {
     #[tokio::test]
     async fn test_append_entries_round_trips_a_success() {
         let server = stub_server(false).await;
-        let mut network = client_to(&peer_addr(&server.url)).await;
+        let mut network = client_to(&server.url).await;
         let response = network
             .append_entries(append_req(), RPCOption::new(Duration::from_secs(1)))
             .await
@@ -398,7 +394,7 @@ mod adapter {
     #[tokio::test]
     async fn test_vote_round_trips_a_grant() {
         let server = stub_server(false).await;
-        let mut network = client_to(&peer_addr(&server.url)).await;
+        let mut network = client_to(&server.url).await;
         let response = network
             .vote(vote_req(), RPCOption::new(Duration::from_secs(1)))
             .await
@@ -409,7 +405,7 @@ mod adapter {
     #[tokio::test]
     async fn test_install_snapshot_round_trips_a_response() {
         let server = stub_server(false).await;
-        let mut network = client_to(&peer_addr(&server.url)).await;
+        let mut network = client_to(&server.url).await;
         let response = network
             .install_snapshot(snapshot_req(), RPCOption::new(Duration::from_secs(1)))
             .await
@@ -420,7 +416,7 @@ mod adapter {
     #[tokio::test]
     async fn test_a_remote_raft_error_retains_its_target() {
         let server = stub_server(true).await;
-        let address = peer_addr(&server.url);
+        let address = server.url.clone();
         let mut network = client_to(&address).await;
         let error = network
             .vote(vote_req(), RPCOption::new(Duration::from_secs(1)))
@@ -439,7 +435,7 @@ mod adapter {
     #[tokio::test]
     async fn test_a_remote_snapshot_error_retains_its_target() {
         let server = stub_server(true).await;
-        let address = peer_addr(&server.url);
+        let address = server.url.clone();
         let mut network = client_to(&address).await;
         let error = network
             .install_snapshot(snapshot_req(), RPCOption::new(Duration::from_secs(1)))
@@ -457,7 +453,7 @@ mod adapter {
 
     #[tokio::test]
     async fn test_an_unreachable_peer_maps_to_unreachable() {
-        let mut network = client_to("127.0.0.1:1").await;
+        let mut network = client_to("http://127.0.0.1:1/").await;
         let error = network
             .append_entries(append_req(), RPCOption::new(Duration::from_secs(1)))
             .await
@@ -467,7 +463,7 @@ mod adapter {
 
     #[tokio::test]
     async fn test_an_unreachable_peer_maps_a_snapshot_rpc_to_unreachable() {
-        let mut network = client_to("127.0.0.1:1").await;
+        let mut network = client_to("http://127.0.0.1:1/").await;
         let error = network
             .install_snapshot(snapshot_req(), RPCOption::new(Duration::from_secs(1)))
             .await
@@ -492,7 +488,7 @@ mod adapter {
     #[tokio::test]
     async fn test_a_remote_status_maps_a_vote_to_a_network_error() {
         let server = error_server().await;
-        let mut network = client_to(&peer_addr(&server.url)).await;
+        let mut network = client_to(&server.url).await;
         let error = network
             .vote(vote_req(), RPCOption::new(Duration::from_secs(1)))
             .await
@@ -503,7 +499,7 @@ mod adapter {
     #[tokio::test]
     async fn test_a_remote_status_maps_a_snapshot_to_a_network_error() {
         let server = error_server().await;
-        let mut network = client_to(&peer_addr(&server.url)).await;
+        let mut network = client_to(&server.url).await;
         let error = network
             .install_snapshot(snapshot_req(), RPCOption::new(Duration::from_secs(1)))
             .await
@@ -519,6 +515,21 @@ mod adapter {
             .append_entries(append_req(), RPCOption::new(Duration::from_secs(1)))
             .await
             .unwrap_err();
+        assert!(matches!(error, RPCError::Unreachable(_)), "{error:?}");
+    }
+
+    /// The plaintext stub answers `http://` but never completes a TLS handshake, so a successful append
+    /// would mean the transport silently downgraded a configured `https://` peer.
+    #[tokio::test]
+    async fn test_an_https_peer_is_never_dialed_over_plaintext() {
+        let server = stub_server(false).await;
+        let mut network = client_to(&server.url.replace("http://", "https://")).await;
+
+        let error = network
+            .append_entries(append_req(), RPCOption::new(Duration::from_secs(1)))
+            .await
+            .unwrap_err();
+
         assert!(matches!(error, RPCError::Unreachable(_)), "{error:?}");
     }
 

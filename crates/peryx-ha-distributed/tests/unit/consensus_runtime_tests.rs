@@ -25,18 +25,18 @@ use rstest::rstest;
 use tempfile::TempDir;
 
 use super::consensus_runtime::{
-    ConsensusMember, ConsensusPlan, OwnershipGroup, OwnershipHandle, RaftExecutor, authority, build_roster,
-    map_write_error, report_raft_exit, voter_id,
+    ConsensusMember, ConsensusPlan, OwnershipGroup, OwnershipHandle, RaftExecutor, build_roster, map_write_error,
+    report_raft_exit, voter_id,
 };
 
 const TOKEN: &str = "group-secret";
 
-fn one_voter(dc: &str, addr: &str) -> BTreeMap<u64, PeryxNode> {
+fn one_voter(dc: &str, endpoint: &str) -> BTreeMap<u64, PeryxNode> {
     BTreeMap::from([(
         voter_id(dc),
         PeryxNode {
             datacenter: DatacenterId(dc.to_owned()),
-            addr: addr.to_owned(),
+            endpoint: endpoint.to_owned(),
         },
     )])
 }
@@ -105,36 +105,50 @@ fn test_shutting_down_an_executor_returns_while_its_thread_is_blocked() {
     caller.join().unwrap();
 }
 
-#[test]
-fn test_authority_extracts_host_and_port() {
-    assert_eq!(authority("http://host.internal:4460").unwrap(), "host.internal:4460");
-    assert_eq!(authority("https://host.internal:8443/").unwrap(), "host.internal:8443");
+fn member(datacenter: &str, address: &str) -> ConsensusMember {
+    ConsensusMember {
+        datacenter: datacenter.to_owned(),
+        address: address.to_owned(),
+    }
 }
 
 #[rstest]
-#[case::not_url("not a url", None)]
-#[case::missing_host("unix:/var/run/peryx.sock", None)]
-#[case::missing_port("http://host.internal", Some("explicit `host:port`"))]
-#[case::path("http://host.internal:4460/raft", Some("bare host:port"))]
-fn test_authority_rejects_invalid_input(#[case] address: &str, #[case] message: Option<&str>) {
-    let error = authority(address).err().unwrap().to_string();
+#[case::plain("http://host.internal:4460", "http://host.internal:4460/")]
+#[case::tls("https://host.internal:8443/", "https://host.internal:8443/")]
+fn test_build_roster_keeps_the_configured_scheme(#[case] address: &str, #[case] expected: &str) {
+    let roster = build_roster(&[member("east", address)]).unwrap();
 
-    if let Some(message) = message {
-        assert!(error.contains(message), "{error}");
-    }
+    assert_eq!(roster[&voter_id("east")].endpoint, expected);
+}
+
+#[rstest]
+#[case::not_url("not a url", "is not a valid URL")]
+#[case::not_http("unix:/var/run/peryx.sock", "http or https scheme")]
+#[case::missing_port("http://host.internal", "explicit `host:port`")]
+#[case::path("http://host.internal:4460/raft", "no path, query, fragment, or credentials")]
+fn test_build_roster_rejects_an_address_the_transport_cannot_dial(#[case] address: &str, #[case] message: &str) {
+    let error = build_roster(&[member("east", address)]).unwrap_err().to_string();
+
+    assert!(error.contains(message), "{error}");
+}
+
+#[test]
+fn test_build_roster_rejects_two_spellings_of_one_endpoint() {
+    let members = [
+        member("east", "https://peer.internal:443"),
+        member("west", "https://PEER.internal:443/"),
+    ];
+
+    let error = build_roster(&members).unwrap_err().to_string();
+
+    assert!(error.contains("resolve to the same consensus endpoint"), "{error}");
 }
 
 #[test]
 fn test_build_roster_rejects_a_voter_id_collision() {
     let members = [
-        ConsensusMember {
-            datacenter: "east".to_owned(),
-            address: "http://a.internal:4460".to_owned(),
-        },
-        ConsensusMember {
-            datacenter: "east".to_owned(),
-            address: "http://b.internal:4460".to_owned(),
-        },
+        member("east", "http://a.internal:4460"),
+        member("east", "http://b.internal:4460"),
     ];
 
     let error = build_roster(&members).err().unwrap().to_string();
@@ -155,7 +169,7 @@ async fn test_ignite_does_not_bootstrap_a_replica_seed() {
         local: voter_id("west"),
         home: DatacenterId("west".to_owned()),
         seed: false,
-        roster: one_voter("east", "east.internal:4460"),
+        roster: one_voter("east", "http://east.internal:4460/"),
         log_path: dir.path().join("raft/ownership-log.redb"),
         group: "ownership".to_owned(),
         token: TOKEN.to_owned(),
@@ -171,7 +185,7 @@ async fn test_ignite_does_not_bootstrap_a_replica_seed() {
 async fn test_ignite_reports_a_bootstrap_failure() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("raft/ownership-log.redb");
-    let error = plan_at(path, voter_id("west"), one_voter("east", "east.internal:4460"))
+    let error = plan_at(path, voter_id("west"), one_voter("east", "http://east.internal:4460/"))
         .ignite()
         .await
         .err()
@@ -222,7 +236,7 @@ async fn test_ignite_fails_when_the_log_directory_cannot_be_created() {
     let plan = plan_at(
         dir.path().join("raft/ownership-log.redb"),
         voter_id("east"),
-        one_voter("east", "east.internal:4460"),
+        one_voter("east", "http://east.internal:4460/"),
     );
 
     let error = plan.ignite().await.err().unwrap().to_string();
@@ -237,7 +251,7 @@ async fn test_ignite_fails_when_the_log_store_cannot_open() {
     let plan = plan_at(
         dir.path().join("raft/ownership-log.redb"),
         voter_id("east"),
-        one_voter("east", "east.internal:4460"),
+        one_voter("east", "http://east.internal:4460/"),
     );
 
     let error = plan.ignite().await.err().unwrap().to_string();
@@ -254,7 +268,11 @@ async fn test_ignite_fails_to_start_on_a_corrupt_store() {
         .unwrap()
         .save_vote(b"not valid json")
         .unwrap();
-    let plan = plan_at(log_path, voter_id("east"), one_voter("east", "east.internal:4460"));
+    let plan = plan_at(
+        log_path,
+        voter_id("east"),
+        one_voter("east", "http://east.internal:4460/"),
+    );
 
     let error = plan.ignite().await.err().unwrap().to_string();
 
@@ -283,7 +301,7 @@ async fn test_ignite_fails_to_bootstrap_a_roster_without_the_local_node() {
     let plan = plan_at(
         dir.path().join("raft/ownership-log.redb"),
         voter_id("east"),
-        one_voter("west", "west.internal:4460"),
+        one_voter("west", "http://west.internal:4460/"),
     );
 
     let error = plan.ignite().await.err().unwrap().to_string();
@@ -311,7 +329,7 @@ async fn leader_node(dir: &TempDir) -> RaftNode {
         voter_id("east"),
         PeryxNode {
             datacenter: DatacenterId("east".to_owned()),
-            addr: "east.internal:4460".to_owned(),
+            endpoint: "http://east.internal:4460/".to_owned(),
         },
     )]))
     .await
@@ -803,7 +821,7 @@ async fn test_membership_publication_fails_when_metrics_close() {
 fn add_learner(datacenter: &str) -> ControlCommand {
     ControlCommand::AddLearner {
         datacenter: datacenter.to_owned(),
-        address: format!("{datacenter}.internal:4470"),
+        address: format!("http://{datacenter}.internal:4470"),
     }
 }
 
@@ -819,6 +837,52 @@ async fn test_add_learner_commits_on_the_leader() {
         receipt.term >= 1 && receipt.index >= 1,
         "a committed entry carries a real log id"
     );
+}
+
+#[rstest]
+#[case::missing_port("west.internal:4470")]
+#[case::not_url("not a url")]
+#[case::path("http://west.internal:4470/raft")]
+#[tokio::test]
+async fn test_add_learner_rejects_an_address_static_membership_would_refuse(#[case] address: &str) {
+    let dir = tempfile::tempdir().unwrap();
+    let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned()));
+
+    let error = group
+        .submit(ControlCommand::AddLearner {
+            datacenter: "west".to_owned(),
+            address: address.to_owned(),
+        })
+        .await
+        .unwrap_err();
+
+    assert!(
+        matches!(error, ControlError::Invalid(reason) if reason.contains(address)),
+        "{address}"
+    );
+}
+
+#[tokio::test]
+async fn test_add_learner_records_the_canonical_endpoint() {
+    let dir = tempfile::tempdir().unwrap();
+    let node = leader_node(&dir).await;
+    let group = OwnershipGroup::new(node.clone(), DatacenterId("east".to_owned()));
+
+    group
+        .submit(ControlCommand::AddLearner {
+            datacenter: "west".to_owned(),
+            address: "https://WEST.internal:443".to_owned(),
+        })
+        .await
+        .unwrap();
+
+    let learner = node
+        .metrics()
+        .borrow()
+        .membership_config
+        .nodes()
+        .find_map(|(id, node)| (*id == voter_id("west")).then(|| node.endpoint.clone()));
+    assert_eq!(learner.as_deref(), Some("https://west.internal:443/"));
 }
 
 #[tokio::test]
@@ -886,7 +950,7 @@ async fn test_a_membership_receipt_names_the_voter_roster() {
     let added = group
         .submit(ControlCommand::AddLearner {
             datacenter: "west".to_owned(),
-            address: "west.internal:4470".to_owned(),
+            address: "http://west.internal:4470".to_owned(),
         })
         .await
         .unwrap();
@@ -943,7 +1007,7 @@ async fn test_replacing_a_voter_adds_the_learner_then_rewrites_the_roster() {
         .submit(ControlCommand::ReplaceVoter {
             remove: "west".to_owned(),
             datacenter: "west".to_owned(),
-            address: "west.internal:4470".to_owned(),
+            address: "http://west.internal:4470".to_owned(),
         })
         .await
         .unwrap();
@@ -961,7 +1025,7 @@ async fn test_replacing_a_voter_without_a_leader_forwards_from_the_learner_add()
             .submit(ControlCommand::ReplaceVoter {
                 remove: "east".to_owned(),
                 datacenter: "west".to_owned(),
-                address: "west.internal:4470".to_owned(),
+                address: "http://west.internal:4470".to_owned(),
             })
             .await,
         Err(ControlError::NotLeader { .. })
@@ -1065,14 +1129,14 @@ fn test_a_forward_to_a_known_leader_names_its_address() {
         leader_id: Some(voter_id("west")),
         leader_node: Some(PeryxNode {
             datacenter: DatacenterId("west".to_owned()),
-            addr: "west.internal:4460".to_owned(),
+            endpoint: "http://west.internal:4460/".to_owned(),
         }),
     }));
 
     assert_eq!(
         map_write_error(&error),
         ControlError::NotLeader {
-            leader: Some("west.internal:4460".to_owned()),
+            leader: Some("http://west.internal:4460/".to_owned()),
         }
     );
 }

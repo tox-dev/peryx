@@ -5,6 +5,7 @@ use std::path::Path;
 
 use anyhow::{Context as _, bail};
 use peryx_driver::BlobReferenceScanError;
+use peryx_ha::MemberEndpoint;
 use peryx_plugin_registry::PluginRegistry;
 use peryx_storage::blob::Digest;
 use peryx_storage::meta::MetaStore;
@@ -190,7 +191,10 @@ fn check_membership(
             *problems += 1;
             writeln!(out, "problem\tavailability\tmembership\tduplicate dc {}", member.dc)?;
         }
-        if !addresses.insert(member.address.as_str()) {
+        // A manifest can be edited by hand, so two spellings of one endpoint still count as a duplicate.
+        let canonical =
+            MemberEndpoint::parse(&member.address).map_or_else(|_| member.address.clone(), MemberEndpoint::into_string);
+        if !addresses.insert(canonical) {
             *problems += 1;
             let address = &member.address;
             writeln!(out, "problem\tavailability\tmembership\tduplicate address {address}")?;

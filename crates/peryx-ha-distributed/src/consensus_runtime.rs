@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,10 +19,9 @@ use openraft::{LogId, StoredMembership};
 use peryx_core::Clock;
 use peryx_ha::{
     AUTHORITY_WRITE_LEASE_SECS, AuthorityWriteLease, ClusterStatus, CommandOutcome, CommandReceipt, ControlCommand,
-    ControlError, HomeClaim, MembershipControl, OwnershipAuthority, OwnershipError, SINGLETON_LEASE_SECS,
-    SingletonAcquisition, SingletonLease, SingletonRelease, SingletonRenewal, TransferOutcome,
+    ControlError, HomeClaim, MemberEndpoint, MembershipControl, OwnershipAuthority, OwnershipError,
+    SINGLETON_LEASE_SECS, SingletonAcquisition, SingletonLease, SingletonRelease, SingletonRenewal, TransferOutcome,
 };
-use url::Url;
 
 type VoterId = u64;
 
@@ -613,7 +612,7 @@ impl OwnershipAuthority for OwnershipGroup {
                 Err(RaftError::APIError(CheckIsLeaderError::ForwardToLeader(_))) if self.peer_token.is_some() => {}
                 Err(RaftError::APIError(CheckIsLeaderError::ForwardToLeader(forward))) => {
                     return Err(OwnershipError::NotLeader {
-                        leader: forward.leader_node.map(|node| node.addr),
+                        leader: forward.leader_node.map(|node| node.endpoint),
                     });
                 }
                 Err(error) => return Err(OwnershipError::Unavailable(error.to_string())),
@@ -725,8 +724,8 @@ impl OwnershipGroup {
                 let Some(target) = self.node.forward_target(&error) else {
                     return Err(map_ownership_write_error(error));
                 };
-                let client = RaftRpcClient::new(&format!("http://{}/", target.addr), token, PEER_RPC_TIMEOUT)
-                    .expect("the replication token and peer address were validated at startup");
+                let client = RaftRpcClient::new(&target.endpoint, token, PEER_RPC_TIMEOUT)
+                    .expect("the replication token and peer endpoint were validated at startup");
                 let response: Result<
                     ClientWriteResponse<TypeConfig>,
                     RaftError<VoterId, ClientWriteError<VoterId, PeryxNode>>,
@@ -739,10 +738,14 @@ impl OwnershipGroup {
         }
     }
 
+    /// Applies the configuration contract to a dynamic address so a learner cannot join on a form static
+    /// membership would reject.
     async fn add_learner(&self, datacenter: &str, address: String) -> Result<CommandReceipt, ControlError> {
         let node = PeryxNode {
             datacenter: DatacenterId(datacenter.to_owned()),
-            addr: address,
+            endpoint: MemberEndpoint::parse(&address)
+                .map_err(|error| ControlError::Invalid(error.to_string()))?
+                .into_string(),
         };
         // Learners do not change either side of the audited voter transition.
         let metrics = self.node.metrics().borrow().clone();
@@ -808,7 +811,7 @@ impl OwnershipGroup {
 fn map_ownership_write_error(error: RaftError<VoterId, ClientWriteError<VoterId, PeryxNode>>) -> OwnershipError {
     match error {
         RaftError::APIError(ClientWriteError::ForwardToLeader(forward)) => OwnershipError::NotLeader {
-            leader: forward.leader_node.map(|node| node.addr),
+            leader: forward.leader_node.map(|node| node.endpoint),
         },
         error => OwnershipError::Unavailable(error.to_string()),
     }
@@ -843,7 +846,7 @@ fn voter_names(membership: &StoredMembership<u64, PeryxNode>, voter_ids: &BTreeS
 pub fn map_write_error(error: &RaftError<u64, ClientWriteError<u64, PeryxNode>>) -> ControlError {
     match error {
         RaftError::APIError(ClientWriteError::ForwardToLeader(forward)) => ControlError::NotLeader {
-            leader: forward.leader_node.as_ref().map(|node| node.addr.clone()),
+            leader: forward.leader_node.as_ref().map(|node| node.endpoint.clone()),
         },
         other => ControlError::Unavailable(other.to_string()),
     }
@@ -857,11 +860,20 @@ pub struct ConsensusMember {
 
 pub fn build_roster(members: &[ConsensusMember]) -> anyhow::Result<BTreeMap<VoterId, PeryxNode>> {
     let mut roster = BTreeMap::new();
+    let mut endpoints = HashMap::new();
     for member in members {
         let node = PeryxNode {
             datacenter: DatacenterId(member.datacenter.clone()),
-            addr: authority(&member.address)?,
+            endpoint: MemberEndpoint::parse(&member.address)?.into_string(),
         };
+        if let Some(owner) = endpoints.insert(node.endpoint.clone(), member.datacenter.clone()) {
+            bail!(
+                "datacenters {:?} and {:?} resolve to the same consensus endpoint {}",
+                owner,
+                member.datacenter,
+                node.endpoint
+            );
+        }
         if let Some(existing) = roster.insert(voter_id(&member.datacenter), node) {
             bail!(
                 "datacenter {:?} collides with {:?} on the same consensus voter id",
@@ -871,22 +883,6 @@ pub fn build_roster(members: &[ConsensusMember]) -> anyhow::Result<BTreeMap<Vote
         }
     }
     Ok(roster)
-}
-
-/// Extracts the bare `host:port` required by the peer network, rejecting missing ports and non-root paths
-/// before startup.
-pub fn authority(address: &str) -> anyhow::Result<String> {
-    let url = Url::parse(address).with_context(|| format!("member address {address:?} is not a valid URL"))?;
-    let host = url
-        .host_str()
-        .with_context(|| format!("member address {address:?} has no host"))?;
-    let port = url
-        .port()
-        .with_context(|| format!("member address {address:?} needs an explicit `host:port`"))?;
-    if url.path() != "/" && !url.path().is_empty() {
-        bail!("member address {address:?} must be a bare host:port with no path");
-    }
-    Ok(format!("{host}:{port}"))
 }
 
 /// Uses FNV-1a so each node and toolchain derives the same voter ID; the standard hasher has no stable

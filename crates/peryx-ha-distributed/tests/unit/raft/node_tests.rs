@@ -18,15 +18,15 @@ use peryx_ha::OwnershipAuthority as _;
 
 const RPC_TIMEOUT: Duration = Duration::from_secs(1);
 
-fn peer(dc: &str, addr: &str) -> PeryxNode {
+fn peer(dc: &str, endpoint: &str) -> PeryxNode {
     PeryxNode {
         datacenter: DatacenterId(dc.to_owned()),
-        addr: addr.to_owned(),
+        endpoint: endpoint.to_owned(),
     }
 }
 
 fn seed_roster() -> BTreeMap<u64, PeryxNode> {
-    BTreeMap::from([(1, peer("east", "localhost:4460"))])
+    BTreeMap::from([(1, peer("east", "http://localhost:4460/"))])
 }
 
 async fn start_node(dir: &TempDir, config: RaftConfig) -> Result<RaftNode, StartError> {
@@ -58,7 +58,7 @@ async fn test_a_bootstrapped_single_node_becomes_its_own_leader() {
     let dir = tempfile::tempdir().unwrap();
     let node = leader_node(&dir).await;
 
-    assert_eq!(node.leader(), Some(peer("east", "localhost:4460")));
+    assert_eq!(node.leader(), Some(peer("east", "http://localhost:4460/")));
     assert_eq!(node.metrics().borrow().current_leader, Some(1));
 }
 
@@ -72,7 +72,7 @@ async fn test_the_leader_lookup_skips_a_non_leader_member() {
         .await
         .unwrap();
 
-    assert_eq!(node.leader(), Some(peer("east", "localhost:4460")));
+    assert_eq!(node.leader(), Some(peer("east", "http://localhost:4460/")));
 }
 
 #[tokio::test]
@@ -395,7 +395,7 @@ async fn test_a_three_node_group_forms_quorum_over_the_mounted_rpc_endpoints() {
         servers.push(tokio::spawn(std::future::IntoFuture::into_future(axum::serve(
             listener, rpc_router,
         ))));
-        roster.insert(id, peer(&format!("dc{id}"), &addr.to_string()));
+        roster.insert(id, peer(&format!("dc{id}"), &format!("http://{addr}/")));
         guards.push(guard);
         nodes.push(node);
     }

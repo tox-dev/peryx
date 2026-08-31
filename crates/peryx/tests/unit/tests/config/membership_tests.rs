@@ -39,18 +39,38 @@ fn test_valid_group_resolves_one_writer_and_a_replica() {
                 DcMember {
                     node: "node-a".to_owned(),
                     dc: "dc-1".to_owned(),
-                    address: "https://a:1".to_owned(),
+                    address: "https://a:1/".to_owned(),
                     role: DcRole::Writer,
                 },
                 DcMember {
                     node: "node-b".to_owned(),
                     dc: "dc-2".to_owned(),
-                    address: "https://b:1".to_owned(),
+                    address: "https://b:1/".to_owned(),
                     role: DcRole::Replica,
                 },
             ],
         })
     );
+}
+
+#[rstest]
+#[case::adds_the_root_path("https://a.internal:8443", "https://a.internal:8443/")]
+#[case::lowercases_the_host("https://A.Internal:8443/", "https://a.internal:8443/")]
+#[case::keeps_a_scheme_default_port("https://a.internal:443", "https://a.internal:443/")]
+fn test_group_stores_the_canonical_member_address(#[case] address: &str, #[case] expected: &str) {
+    let roster = member("w", "dc-1", address, "writer") + &member("r", "dc-2", "https://r:1", "replica");
+
+    let membership = dc_config(&roster).unwrap().dc_membership.unwrap();
+
+    assert_eq!(membership.members[0].address, expected);
+}
+
+/// A canonical address must survive the validation the resolved config repeats over it.
+#[test]
+fn test_a_canonical_member_address_revalidates() {
+    let config = dc_config(&writer_and_replica()).unwrap();
+
+    assert!(config.validate().is_ok());
 }
 
 #[test]
@@ -165,7 +185,7 @@ fn test_group_and_roster_must_appear_together(#[case] text: String, #[case] expe
 )]
 #[case::duplicate_address(
     member("w", "dc-1", "https://same:1", "writer") + &member("r", "dc-2", "https://same:1", "replica"),
-    "duplicate advertised address \"https://same:1\""
+    "duplicate advertised address \"https://same:1/\""
 )]
 #[case::node_matches_group(
     member("east", "dc-1", "https://a:1", "writer") + &member("r", "dc-2", "https://b:1", "replica"),
@@ -190,19 +210,39 @@ fn test_group_and_roster_must_appear_together(#[case] text: String, #[case] expe
 )]
 #[case::blank_address(
     member("w", "dc-1", " ", "writer") + &member("r", "dc-2", "https://r:1", "replica"),
-    "member `address` must not be empty"
+    "member address must not be empty"
 )]
 #[case::bare_host_address(
     member("w", "dc-1", "10.0.0.1:8443", "writer") + &member("r", "dc-2", "https://r:1", "replica"),
-    "must be an http or https URL"
+    "is not a valid URL"
 )]
 #[case::non_http_scheme_address(
     member("w", "dc-1", "ftp://a:1", "writer") + &member("r", "dc-2", "https://r:1", "replica"),
-    "must be an http or https URL"
+    "must use the http or https scheme"
 )]
 #[case::non_url_address(
     member("w", "dc-1", "not a url", "writer") + &member("r", "dc-2", "https://r:1", "replica"),
-    "must be an http or https URL"
+    "is not a valid URL"
+)]
+#[case::missing_port_address(
+    member("w", "dc-1", "https://a.internal", "writer") + &member("r", "dc-2", "https://r:1", "replica"),
+    "needs an explicit `host:port`"
+)]
+#[case::base_path_address(
+    member("w", "dc-1", "https://a.internal:8443/raft", "writer") + &member("r", "dc-2", "https://r:1", "replica"),
+    "no path, query, fragment, or credentials"
+)]
+#[case::query_address(
+    member("w", "dc-1", "https://a.internal:8443/?dc=east", "writer") + &member("r", "dc-2", "https://r:1", "replica"),
+    "no path, query, fragment, or credentials"
+)]
+#[case::credentials_address(
+    member("w", "dc-1", "https://peer:secret@a.internal:8443", "writer") + &member("r", "dc-2", "https://r:1", "replica"),
+    "no path, query, fragment, or credentials"
+)]
+#[case::equivalent_address(
+    member("w", "dc-1", "https://Same:443", "writer") + &member("r", "dc-2", "https://same:443/", "replica"),
+    "duplicate advertised address"
 )]
 fn test_group_rejects_invalid_topologies(#[case] roster: String, #[case] expected: &str) {
     let error = dc_config(&roster).unwrap_err();
@@ -210,10 +250,12 @@ fn test_group_rejects_invalid_topologies(#[case] roster: String, #[case] expecte
 }
 
 #[rstest]
-#[case::blank(" ", "member `address` must not be empty")]
-#[case::bare_host("10.0.0.1:8443", "must be an http or https URL")]
-#[case::non_http_scheme("ftp://a:1", "must be an http or https URL")]
-#[case::non_url("not a url", "must be an http or https URL")]
+#[case::blank(" ", "member address must not be empty")]
+#[case::bare_host("10.0.0.1:8443", "is not a valid URL")]
+#[case::non_http_scheme("ftp://a:1", "must use the http or https scheme")]
+#[case::non_url("not a url", "is not a valid URL")]
+#[case::missing_port("https://a.internal", "needs an explicit `host:port`")]
+#[case::base_path("https://a.internal:8443/raft", "no path, query, fragment, or credentials")]
 fn test_resolved_config_rejects_an_invalid_member_address(#[case] address: &str, #[case] expected: &str) {
     let mut config = dc_config(&writer_and_replica()).unwrap();
     config.dc_membership.as_mut().unwrap().members[0].address = address.to_owned();

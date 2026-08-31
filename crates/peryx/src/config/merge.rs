@@ -19,7 +19,7 @@ use super::model::{
     DEFAULT_REPLICA_POLL_INTERVAL_SECS, DEFAULT_WRITE_ACK_DEADLINE_SECS, DcMember, DcMembership, DcRole, IndexConfig,
     IndexKind, JobsConfig, LdapBindConfig, LdapProviderConfig, LogConfig, MAX_TOKEN_TTL_SECS, OidcProviderConfig,
     ReplicationConfig, S3StorageConfig, SecretSource, TlsConfig, TokenConfig, UpstreamConfig, UpstreamRoutingConfig,
-    UpstreamTlsConfig, WebhookConfig, WebhookSecret, WriteAckConfig, validate_member_address,
+    UpstreamTlsConfig, WebhookConfig, WebhookSecret, WriteAckConfig, member_endpoint,
 };
 use super::raw::{
     PartialAuthConfig, PartialConfig, PartialJobsConfig, PartialLogConfig, PartialRateLimitConfig, PartialRouteLimit,
@@ -28,7 +28,7 @@ use super::raw::{
     RawReplication, RawTls, RawToken, RawUpstream, RawWebhook, RawWriteAck, RawWriteAckPolicy,
 };
 use peryx_core::Ecosystem;
-use peryx_ha::AvailabilityMode;
+use peryx_ha::{AvailabilityMode, MemberEndpoint};
 use peryx_ha_distributed::read_through::{DEFAULT_READ_THROUGH_LIMITS, ReadThroughLimits};
 use peryx_ha_distributed::{CircuitConfig, ReconnectPolicy};
 
@@ -518,7 +518,7 @@ fn resolve_members(mode: AvailabilityMode, group: &str, raw: Vec<RawDcMember>) -
         members.push(DcMember {
             node,
             dc: non_blank(member.dc, "member `dc`")?,
-            address: member_address(member.address)?,
+            address: member_address(&member.address)?,
             role: member.role,
         });
     }
@@ -574,9 +574,10 @@ fn non_blank(value: String, field: &str) -> Result<String, ConfigError> {
     Ok(value)
 }
 
-fn member_address(value: String) -> Result<String, ConfigError> {
-    validate_member_address(&value)?;
-    Ok(value)
+/// Stores the canonical rendering so duplicate detection and every peer transport compare one spelling of
+/// each member.
+fn member_address(value: &str) -> Result<String, ConfigError> {
+    member_endpoint(value).map(MemberEndpoint::into_string)
 }
 
 fn membership_error(reason: impl Into<String>) -> ConfigError {

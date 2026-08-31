@@ -8,7 +8,7 @@ use std::time::Duration;
 use peryx_core::Ecosystem;
 use peryx_driver::jobs::{MAINTENANCE_INTERVAL, Schedule, ScheduledJob};
 use peryx_driver::rate_limit::{DEFAULT_UPSTREAM_CONCURRENCY, RateLimitConfig};
-use peryx_ha::{AvailabilityMode, DurabilityPolicy};
+use peryx_ha::{AvailabilityMode, DurabilityPolicy, MemberEndpoint};
 use peryx_ha_distributed::read_through::ReadThroughLimits;
 use peryx_http::{DEFAULT_HOT_CACHE_BYTES, DEFAULT_MAX_STALE_SECS};
 use peryx_identity::{Action, ExternalGroupGrant, Glob, Grant, IndexAcl, NamedToken, ProviderId};
@@ -507,7 +507,7 @@ impl Config {
             membership
                 .members
                 .iter()
-                .try_for_each(|member| validate_member_address(&member.address))?;
+                .try_for_each(|member| member_endpoint(&member.address).map(drop))?;
         }
         if mode.is_distributed() && self.write_ack.policy != DurabilityPolicy::Local && self.dc_membership.is_none() {
             return Err(ConfigError::Availability {
@@ -559,18 +559,17 @@ impl Config {
     }
 }
 
-pub(super) fn validate_member_address(address: &str) -> Result<(), ConfigError> {
+/// Applies the same contract the Raft and peer transports parse, so a roster that loads is a roster every
+/// transport can dial.
+pub(super) fn member_endpoint(address: &str) -> Result<MemberEndpoint, ConfigError> {
     if address.trim().is_empty() {
         return Err(ConfigError::DcMembership {
-            reason: "member `address` must not be empty".to_owned(),
+            reason: "member address must not be empty".to_owned(),
         });
     }
-    if !Url::parse(address).is_ok_and(|url| matches!(url.scheme(), "http" | "https") && !url.cannot_be_a_base()) {
-        return Err(ConfigError::DcMembership {
-            reason: format!("member `address` {address:?} must be an http or https URL"),
-        });
-    }
-    Ok(())
+    MemberEndpoint::parse(address).map_err(|error| ConfigError::DcMembership {
+        reason: error.to_string(),
+    })
 }
 
 /// One day keeps realm token expiry arithmetic within the configured credential lifetime.

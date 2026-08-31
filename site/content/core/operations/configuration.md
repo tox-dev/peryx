@@ -820,7 +820,7 @@ one member.
 | `group`   | The group identity the roster belongs to                           | (required with a roster) |
 | `node`    | The member's stable identity, unique within the group              | (required)               |
 | `dc`      | Failure-domain label; unique per member in `ha`, shareable in `dc` | (required)               |
-| `address` | The address peers reach the member on, unique within the group     | (required)               |
+| `address` | The base URL peers reach the member on, unique within the group    | (required)               |
 | `role`    | `writer` or `replica`                                              | (required)               |
 
 In `ha` mode each node also sets `node_identity` to its own member's `node` value, so the ownership consensus runs under
@@ -828,6 +828,12 @@ that node's own voter identity. This is distinct from `writer_identity`, which n
 and follows on the metadata plane and is therefore identical across the group: deriving the consensus identity from
 `writer_identity` would make every node share the writer's voter, so no multi-voter group would form and a home failure
 could not transfer authority to a survivor.
+
+An `address` is an `http` or `https` URL with an explicit port and nothing else: no path, query, fragment, or embedded
+credentials. Every peer transport, the ownership Raft transport included, dials the scheme you configure, so
+`https://raft.example:4460` is never contacted over plain HTTP. peryx stores each address in one canonical spelling, so
+two entries that differ only in host case or a trailing slash name the same member and are rejected as duplicates. The
+same contract applies to the `address` of a learner added through the availability control API.
 
 peryx validates the group at startup and refuses to serve on any violation: a blank or duplicated `group`, `node`, or
 `address`; a `node` that reuses the `group` identity; anything other than exactly one `writer`; or a group with no

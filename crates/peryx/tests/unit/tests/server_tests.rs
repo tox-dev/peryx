@@ -1819,8 +1819,8 @@ fn test_build_state_uses_node_identity_for_the_local_datacenter() {
         dc_membership: Some(DcMembership {
             group: "group".to_owned(),
             members: vec![
-                dc_member("east-writer", "east", "http://east/", DcRole::Writer),
-                dc_member("west-replica", "west", "https://west/", DcRole::Replica),
+                dc_member("east-writer", "east", "http://east:8000/", DcRole::Writer),
+                dc_member("west-replica", "west", "https://west:8443/", DcRole::Replica),
             ],
         }),
         ..s3_blob_config(&dir)
@@ -1913,7 +1913,7 @@ fn test_build_state_rejects_an_invalid_member_address(#[case] availability: Avai
     };
 
     assert!(
-        format!("{error:#}").contains("member `address` \"not a url\" must be an http or https URL"),
+        format!("{error:#}").contains("member address \"not a url\" is not a valid URL"),
         "{error:#}"
     );
 }

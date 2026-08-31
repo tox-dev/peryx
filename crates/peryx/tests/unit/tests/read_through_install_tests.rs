@@ -83,7 +83,7 @@ fn test_install_fails_on_an_unusable_peer_address() {
         .expect("invalid peer address must fail startup");
 
     assert!(
-        format!("{err:#}").contains("member `address` \"http://a b\" must be an http or https URL"),
+        format!("{err:#}").contains("member address \"http://a b\" is not a valid URL"),
         "{err:#}"
     );
 }

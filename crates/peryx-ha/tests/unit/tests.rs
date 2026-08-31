@@ -8,6 +8,8 @@ use tokio::sync::oneshot;
 
 use super::*;
 
+#[path = "endpoint_tests.rs"]
+mod endpoint_tests;
 #[path = "placement_tests.rs"]
 mod placement_tests;
 

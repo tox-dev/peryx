@@ -1,6 +1,7 @@
 //! Availability contracts independent of deployment mode.
 
 mod blob;
+mod endpoint;
 mod placement;
 mod reclamation;
 mod reconcile;
@@ -11,6 +12,7 @@ pub use blob::{
     BlobAvailability, BlobAvailabilityError, BlobAvailabilityFailure, BlobServices, BlobWriteDurability, CommittedBlob,
     WriteDurability,
 };
+pub use endpoint::{MemberEndpoint, MemberEndpointError};
 pub use placement::{
     ArtifactOrigin, ArtifactPlacement, ArtifactPlacementHealth, ArtifactPlacementPage, ArtifactPlacementQuery,
     ArtifactPlacementRow, ArtifactSource, BackendId, BackendLocation, BlobPlacementDecisionError, BlobPlacementFailure,

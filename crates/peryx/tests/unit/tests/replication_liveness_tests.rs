@@ -22,7 +22,7 @@ fn member(node: &str, role: DcRole) -> DcMember {
     DcMember {
         node: node.to_owned(),
         dc: format!("dc-{node}"),
-        address: format!("https://{node}.example/"),
+        address: format!("https://{node}.example:8443/"),
         role,
     }
 }

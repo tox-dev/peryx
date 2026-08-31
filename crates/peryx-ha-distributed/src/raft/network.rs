@@ -358,11 +358,10 @@ impl RaftNetworkFactory<TypeConfig> for PeerRaftNetworkFactory {
     async fn new_client(&mut self, target: NodeId, node: &PeryxNode) -> Self::Network {
         // OpenRaft creates clients inside replication tasks, and this trait cannot return an error. Store
         // invalid-address errors so calls return `Unreachable` without panicking the task.
-        let base = format!("http://{}/", node.addr);
         PeerRaftNetwork {
             target,
             target_node: node.clone(),
-            client: RaftRpcClient::new(&base, self.token.clone(), self.timeout),
+            client: RaftRpcClient::new(&node.endpoint, self.token.clone(), self.timeout),
         }
     }
 }

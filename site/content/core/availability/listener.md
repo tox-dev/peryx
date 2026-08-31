@@ -132,6 +132,10 @@ commands move or fence an artifact home:
 | `transfer_authority` | `authority`, `new_home`           | Move an authority's home, minting the next epoch.                 |
 | `advance_epoch`      | `authority`                       | Mint the next epoch without moving the home, fencing stale work.  |
 
+An `address` follows the same contract as an `[[availability.member]]` address: an `http` or `https` URL with an
+explicit port and no path, query, fragment, or credentials. A command carrying any other form is rejected as invalid
+before it reaches the log, so a learner cannot join on an address static membership would refuse.
+
 ```
 POST /availability/v1/commands
 Idempotency-Key: 5f0c-transfer-proj-west

@@ -1,4 +1,4 @@
-//! Each voter uses a `u64` Raft node ID; [`PeryxNode`] carries its datacenter identity and RPC address.
+//! Each voter uses a `u64` Raft node ID; [`PeryxNode`] carries its datacenter identity and RPC endpoint.
 
 use std::io::Cursor;
 
@@ -40,7 +40,9 @@ openraft::declare_raft_types!(
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct PeryxNode {
     pub datacenter: DatacenterId,
-    pub addr: String,
+    /// The peer's canonical base URL, scheme included. `OpenRaft` requires [`Default`] on node data, so
+    /// this holds the rendering of a [`MemberEndpoint`](peryx_ha::MemberEndpoint) rather than the type.
+    pub endpoint: String,
 }
 
 /// Blank and membership entries return [`NonMutating`](Self::NonMutating) because they carry no

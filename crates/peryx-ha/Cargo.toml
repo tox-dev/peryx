@@ -14,6 +14,7 @@ peryx-identity.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
+url.workspace = true
 
 [dev-dependencies]
 rstest.workspace = true
