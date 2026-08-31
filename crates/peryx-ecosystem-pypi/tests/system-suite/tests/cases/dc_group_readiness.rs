@@ -42,6 +42,16 @@ fn await_readiness(writer: &Node, within: Duration, settled: impl Fn(&Value) -> 
         .expect("the writer signals its readiness transition")
 }
 
+/// Group readiness reports the replication heartbeats alone, and ownership consensus elects its leader
+/// after those start arriving. A first publish claims the authority's home through that consensus and
+/// fails closed with `503` while no leader holds it, so a publish waits for both signals.
+fn await_publishable(cluster: &Cluster, writer: &Node, settled: impl Fn(&Value) -> bool) {
+    await_readiness(writer, CONVERGE, settled);
+    cluster
+        .await_leader(CONVERGE)
+        .expect("the ha group agrees on an ownership leader");
+}
+
 fn group_ready(document: &Value) -> Option<bool> {
     document["group_readiness"]["ready"].as_bool()
 }
@@ -136,7 +146,7 @@ fn test_a_slow_replica_reports_but_holds_the_durable_frontier_at_its_applied_ser
         .expect("the dc group starts");
     let writer = proxied.cluster().node("writer-a").expect("the writer is present");
 
-    await_readiness(writer, CONVERGE, |document| {
+    await_publishable(proxied.cluster(), writer, |document| {
         group_ready(document) == Some(true)
             && durable_frontier(document) == Some(0)
             && writer_serial(document) == Some(0)
@@ -172,7 +182,7 @@ fn test_killing_the_writer_stops_writes_and_preserves_the_durable_frontier() {
     let writer = index_of(&cluster, "writer-a");
     let replica = index_of(&cluster, "replica-b");
 
-    await_readiness(&cluster.nodes()[writer], CONVERGE, |document| {
+    await_publishable(&cluster, &cluster.nodes()[writer], |document| {
         group_ready(document) == Some(true)
     });
     let published = cluster.nodes()[writer]
