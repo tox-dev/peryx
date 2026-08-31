@@ -913,7 +913,6 @@ fn committed_blob_exposes_write_context() {
 #[case(OperationKind::Withdraw, "withdraw")]
 #[case(OperationKind::Delete, "delete")]
 #[case(OperationKind::CacheFill, "cache-fill")]
-#[case(OperationKind::Visibility, "visibility")]
 fn operation_kind_contract(#[case] kind: OperationKind, #[case] name: &str) {
     assert_eq!(kind.as_str(), name);
     assert_eq!(kind.to_string(), name);
@@ -1807,31 +1806,4 @@ fn blob_placement_routing_reports_contents_and_serveability() {
         ..BlobPlacementRouting::default()
     };
     assert_eq!((remote.is_empty(), remote.is_serveable()), (false, true));
-}
-
-#[derive(Default)]
-struct SnapshotStore(Mutex<Option<Vec<u8>>>);
-
-impl VisibilitySnapshotStore for SnapshotStore {
-    type Error = Infallible;
-
-    fn load_snapshot(&self) -> Result<Option<Vec<u8>>, Self::Error> {
-        Ok(self.0.lock().unwrap().clone())
-    }
-
-    fn save_snapshot(&self, bytes: &[u8]) -> Result<(), Self::Error> {
-        *self.0.lock().unwrap() = Some(bytes.to_vec());
-        Ok(())
-    }
-}
-
-#[test]
-fn visibility_snapshot_store_reference_delegates_operations() {
-    let store = SnapshotStore::default();
-    <&SnapshotStore as VisibilitySnapshotStore>::save_snapshot(&&store, b"snapshot").unwrap();
-
-    assert_eq!(
-        <&SnapshotStore as VisibilitySnapshotStore>::load_snapshot(&&store).unwrap(),
-        Some(b"snapshot".to_vec())
-    );
 }

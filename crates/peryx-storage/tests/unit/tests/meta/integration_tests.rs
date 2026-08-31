@@ -15,7 +15,7 @@ use crate::meta::{
     TransferAudit,
 };
 
-const DISTRIBUTED_TABLES: [&str; 18] = [
+const DISTRIBUTED_TABLES: [&str; 17] = [
     "artifact_placement",
     "blob_copy_cursor",
     "blob_placement",
@@ -32,7 +32,6 @@ const DISTRIBUTED_TABLES: [&str; 18] = [
     "reclamation_tombstone",
     "reconcile_backlog",
     "transfer_audit",
-    "visibility_snapshot",
     "writer",
 ];
 
@@ -56,7 +55,6 @@ fn test_open_omits_distributed_domain_tables() {
     );
     assert!(store.reclamation_tombstones().unwrap().is_empty());
     assert_eq!(store.reclaim_guard(digest.canonical().as_str()).unwrap(), None);
-    assert_eq!(store.visibility_snapshot().unwrap(), None);
     assert_eq!(store.blob_chunk_digest(&digest).unwrap(), None);
     assert_eq!(store.staged_intent_usage("repo").unwrap(), IntentUsage::default());
     assert!(store.list_pending_intents(1).unwrap().is_empty());
@@ -248,17 +246,6 @@ fn test_transfer_first_write_creates_only_its_table() {
 }
 
 #[test]
-fn test_visibility_first_write_creates_only_its_table() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("peryx.redb");
-    let store = MetaStore::open(&path).unwrap();
-    store.save_visibility_snapshot(b"snapshot").unwrap();
-    drop(store);
-
-    assert_distributed_tables(&path, &["visibility_snapshot"]);
-}
-
-#[test]
 fn test_replication_journal_first_write_creates_only_its_table() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("peryx.redb");
@@ -317,7 +304,7 @@ fn test_concurrent_first_writes_initialize_an_optional_table_once() {
                 let barrier = Arc::clone(&barrier);
                 scope.spawn(move || {
                     barrier.wait();
-                    store.save_visibility_snapshot(&[value]).unwrap();
+                    store.set_blob_copy_cursor("west", Some(&value.to_string())).unwrap();
                 })
             })
             .collect::<Vec<_>>();
@@ -326,9 +313,8 @@ fn test_concurrent_first_writes_initialize_an_optional_table_once() {
         }
     });
 
-    let snapshot = store.visibility_snapshot().unwrap().unwrap();
-    assert_eq!(snapshot.len(), 1);
-    assert!((0..8).contains(&snapshot[0]));
+    let cursor: u32 = store.blob_copy_cursor("west").unwrap().unwrap().parse().unwrap();
+    assert!(cursor < 8);
 }
 
 #[test]
@@ -337,13 +323,13 @@ fn test_distributed_reads_reject_an_incompatible_table() {
     let path = dir.path().join("peryx.redb");
     let db = redb::Database::create(&path).unwrap();
     let txn = db.begin_write().unwrap();
-    txn.open_table(redb::TableDefinition::<&str, u64>::new("visibility_snapshot"))
+    txn.open_table(redb::TableDefinition::<&str, u64>::new("blob_copy_cursor"))
         .unwrap();
     txn.commit().unwrap();
     drop(db);
 
     assert!(matches!(
-        MetaStore::open_existing(path).unwrap().visibility_snapshot(),
+        MetaStore::open_existing(path).unwrap().blob_copy_cursor("west"),
         Err(MetaError::Table(redb::TableError::TableTypeMismatch { .. }))
     ));
 }

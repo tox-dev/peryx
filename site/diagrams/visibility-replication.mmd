@@ -1,9 +1,0 @@
-flowchart LR
-  auth["home authority"] -->|mint epoch and serial| feed["change feed"]
-  feed -->|visibility envelope| proj["replica projection"]
-  proj -->|apply then persist| snap["visibility snapshot"]
-  proj -->|only then advertise| front["operation frontier"]
-  front -->|gates| view["served protocol view"]
-  class auth,feed accent
-  class proj,snap good
-  class front,view warn

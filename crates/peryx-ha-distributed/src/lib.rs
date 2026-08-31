@@ -87,9 +87,6 @@ mod telemetry;
 mod transfer;
 mod upgrade;
 mod versions;
-mod visibility;
-mod visibility_feed;
-mod visibility_mint;
 mod write_ack;
 
 pub use ack::{AckDecision, acknowledge};
@@ -173,7 +170,6 @@ pub use peer_receipt::{
     DEFAULT_RECEIPT_POLL, LoopbackReceiptSource, PeerReceipt, ReceiptRequest, ReceiptSource, gather_receipts,
 };
 pub use peer_receipt_http::{HttpReceiptError, HttpReceiptSource, ReceiptReply, receipt_router};
-pub use peryx_ha::VisibilitySnapshotStore;
 pub use peryx_ha::{AvailabilityAudience, AvailabilityAuthorizer};
 pub use peryx_ha::{Completeness, CompletenessQuery, CompletenessReport, DayBucket, ExpectedProducer, ProducerReport};
 pub use placement_policy::{
@@ -185,10 +181,7 @@ pub use protocol::{
     BlobReference, Change, ChangePage, MetadataMutation, PROTOCOL_VERSION, PlacementAvailability, PlacementDescriptor,
     Primary,
 };
-pub use readiness::{
-    DurabilityPolicy, GroupReadiness, MemberFrontier, MemberRole, ReadinessBlocker, group_readiness,
-    visibility_compaction_frontier,
-};
+pub use readiness::{DurabilityPolicy, GroupReadiness, MemberFrontier, MemberRole, ReadinessBlocker, group_readiness};
 pub use receipt_quorum::{ByteDurability, ReceiptAck, assess_byte_durability};
 pub use reclaim_guard::{
     OrphanBlob, OrphanPurgeError, OrphanPurgeReport, RECLAIM_GUARD_LEASE_SECS, purge_orphaned_blobs,
@@ -231,15 +224,6 @@ pub use versions::{
     AvailabilityVersions, Incompatibility, Negotiation, Version, VersionRange, WireKind, accepts_operation_kind,
     feature_activated, negotiate, snapshot_compatible,
 };
-pub use visibility::{
-    ApplyEffect, ArtifactId, Frontier as VisibilityFrontier, OpOrder, SnapshotError as VisibilitySnapshotError,
-    VISIBILITY_APPLY_SCHEMA, Visibility, VisibilityAction, VisibilityOp, VisibilityState,
-};
-pub use visibility_feed::{
-    ApplyEnvelopeError, OpenError, VISIBILITY_CHANGE_SCHEMA, VisibilityFeedError, VisibilityProjection,
-    decode_visibility_op, visibility_change, visibility_envelope,
-};
-pub use visibility_mint::{JournalSerials, SerialSource, StaleEpoch, VisibilityMinter};
 pub use write_ack::DistributedBlobDurability;
 
 #[cfg(test)]
@@ -429,11 +413,5 @@ mod upgrade_tests;
 #[path = "../tests/unit/versions_tests.rs"]
 mod versions_tests;
 #[cfg(test)]
-#[path = "../tests/unit/visibility_feed_tests.rs"]
-mod visibility_feed_tests;
-#[cfg(test)]
-#[path = "../tests/unit/visibility_mint_tests.rs"]
-mod visibility_mint_tests;
-#[cfg(test)]
-#[path = "../tests/unit/visibility_tests.rs"]
-mod visibility_tests;
+#[path = "../tests/unit/visibility_replication_tests.rs"]
+mod visibility_replication_tests;

@@ -39,7 +39,6 @@ mod server_mutation;
 mod transfer_audit;
 mod user;
 mod version;
-mod visibility;
 mod webhook;
 mod writer;
 
@@ -178,7 +177,6 @@ const REPOSITORY_ROUTE: TableDefinition<&str, &str> = TableDefinition::new("repo
 const SCOPED_TOKEN: TableDefinition<&str, &[u8]> = TableDefinition::new("scoped_token");
 const SCOPED_TOKEN_REACH: TableDefinition<&str, &str> = TableDefinition::new("scoped_token_reach");
 const SCOPED_TOKEN_VERIFIER: TableDefinition<&str, &str> = TableDefinition::new("scoped_token_verifier");
-const VISIBILITY_SNAPSHOT: TableDefinition<&str, &[u8]> = TableDefinition::new("visibility_snapshot");
 const SERIAL_KEY: &str = "serial";
 const WEBHOOK_SERIAL_KEY: &str = "webhook_delivery";
 const JOB_SERIAL_KEY: &str = "job_run";
@@ -189,7 +187,6 @@ const ANALYTICS_DAILY_KEY: &str = "daily_usage";
 const ANALYTICS_APPLY_KEY: &str = "apply_state";
 /// Durable generation and export watermark prevent duplicate sealed-day exports after restart.
 const ANALYTICS_PRODUCER_KEY: &str = "producer";
-const VISIBILITY_SNAPSHOT_KEY: &str = "current";
 const WRITER_KEY: &str = "active";
 
 /// Opaque driver writes committed atomically through [`MetaStore::commit_driver_batch`].

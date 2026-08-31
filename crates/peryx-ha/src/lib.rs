@@ -29,7 +29,7 @@ pub use reclamation::{
 pub use reconcile::{NewReconcileEntry, ReconcileEnqueue, ReconcileEntry, ReconcilePage};
 pub use store::{
     ArtifactPlacementStore, BlobPlacementStore, CompareWrite, ReclaimGuardStore, ReclamationStore, ReconcileStore,
-    TransferAudit, TransferAuditStore, VisibilitySnapshotStore,
+    TransferAudit, TransferAuditStore,
 };
 pub use views::{
     AvailabilityPageQuery, AvailabilityViewReader, BlobPlacementViewError, OperationsViewError, PlacementViewError,
@@ -1036,7 +1036,6 @@ pub enum OperationKind {
     Withdraw,
     Delete,
     CacheFill,
-    Visibility,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1059,7 +1058,6 @@ impl OperationKind {
             Self::Withdraw => "withdraw",
             Self::Delete => "delete",
             Self::CacheFill => "cache-fill",
-            Self::Visibility => "visibility",
         }
     }
 }

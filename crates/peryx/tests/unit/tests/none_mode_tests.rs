@@ -13,7 +13,7 @@ use crate::server::{build_router, build_state, build_state_with_active_plugins, 
 
 use super::support::plugins;
 
-const DISTRIBUTED_TABLES: [&str; 19] = [
+const DISTRIBUTED_TABLES: [&str; 18] = [
     "artifact_placement",
     "blob_copy_cursor",
     "blob_placement",
@@ -31,7 +31,6 @@ const DISTRIBUTED_TABLES: [&str; 19] = [
     "reconcile_backlog",
     "transfer_attempt",
     "transfer_audit",
-    "visibility_snapshot",
     "writer",
 ];
 

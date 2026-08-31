@@ -44,16 +44,16 @@ fn test_envelope_round_trips_through_encode_decode() {
 }
 
 #[test]
-fn test_visibility_kind_round_trips_as_its_kebab_case_tag() {
-    let original = OperationEnvelope::current("primary-a", AuthorityEpoch(3), OperationKind::Visibility, change());
+fn test_a_kind_round_trips_as_its_kebab_case_tag() {
+    let original = OperationEnvelope::current("primary-a", AuthorityEpoch(3), OperationKind::CacheFill, change());
     let bytes = original.encode();
 
     assert!(
-        String::from_utf8_lossy(&bytes).contains("\"visibility\""),
+        String::from_utf8_lossy(&bytes).contains("\"cache-fill\""),
         "the kind serializes to its kebab-case tag"
     );
     let decoded = OperationEnvelope::decode(&bytes, DecodeLimits::default()).unwrap();
-    assert_eq!(decoded.kind, OperationKind::Visibility);
+    assert_eq!(decoded.kind, OperationKind::CacheFill);
 }
 
 #[test]
@@ -255,7 +255,6 @@ fn test_operation_kind_as_str_and_display_match() {
         (OperationKind::CacheFill, "cache-fill"),
         (OperationKind::Publish, "publish"),
         (OperationKind::Delete, "delete"),
-        (OperationKind::Visibility, "visibility"),
     ];
     for (kind, expected) in cases {
         assert_eq!(kind.as_str(), expected);

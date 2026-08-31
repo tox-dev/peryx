@@ -30,7 +30,6 @@ mod role_grant_tests;
 mod scoped_token_tests;
 mod transfer_audit_tests;
 mod user_tests;
-mod visibility_tests;
 mod webhook_tests;
 mod writer_tests;
 

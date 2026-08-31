@@ -117,26 +117,6 @@ pub trait ReconcileStore {
     fn reconcile_entry(&self, key: &str) -> Result<Option<ReconcileEntry>, Self::Error>;
 }
 
-#[expect(clippy::missing_errors_doc, reason = "implementations define backend errors")]
-pub trait VisibilitySnapshotStore {
-    type Error;
-
-    fn load_snapshot(&self) -> Result<Option<Vec<u8>>, Self::Error>;
-    fn save_snapshot(&self, bytes: &[u8]) -> Result<(), Self::Error>;
-}
-
-impl<T: VisibilitySnapshotStore + ?Sized> VisibilitySnapshotStore for &T {
-    type Error = T::Error;
-
-    fn load_snapshot(&self) -> Result<Option<Vec<u8>>, Self::Error> {
-        (**self).load_snapshot()
-    }
-
-    fn save_snapshot(&self, bytes: &[u8]) -> Result<(), Self::Error> {
-        (**self).save_snapshot(bytes)
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransferAudit {
     pub authority: String,

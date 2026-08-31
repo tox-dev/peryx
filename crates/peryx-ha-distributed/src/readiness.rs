@@ -5,8 +5,6 @@ pub use peryx_ha::DurabilityPolicy;
 use std::cmp::Reverse;
 use std::collections::BTreeSet;
 
-use crate::visibility::Frontier as VisibilityFrontier;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemberRole {
     /// The sole issuer of journal serials.
@@ -73,23 +71,6 @@ pub fn group_readiness(members: &[MemberFrontier], policy: DurabilityPolicy) -> 
         blocked,
         durable_frontier: bounded,
     }
-}
-
-/// Bounds compaction by replicated and backup durability across contiguous authority epochs.
-#[must_use]
-pub fn visibility_compaction_frontier(
-    members: &[MemberFrontier],
-    policy: DurabilityPolicy,
-    backup_applied: u64,
-    epoch: u64,
-) -> VisibilityFrontier {
-    let replicated = group_readiness(members, policy).durable_frontier;
-    let mut frontier = VisibilityFrontier::default();
-    for drained in 1..epoch {
-        frontier.acknowledge(drained, u64::MAX);
-    }
-    frontier.acknowledge(epoch, replicated.min(backup_applied));
-    frontier
 }
 
 /// Returns the required-th largest serial, counting a missing report as zero. Returns zero when the

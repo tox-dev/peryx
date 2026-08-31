@@ -1,83 +1,63 @@
 +++
 title = "Visibility replication"
-description = "Record the design for replicated visibility transitions and tombstones."
+description = "How a replica learns that an artifact is hidden."
 weight = 12
 aliases = [ "/core/availability-visibility-replication/"]
 +++
 
-Visibility replication remains design-only. Operation, feed, minting, and snapshot types ship, but no production owner
-or service-assembly path calls them. Replicas apply the metadata rows in the ordinary change feed; they do not receive
-the typed visibility envelopes or maintain the visibility frontier described below.
+Trash, restore, revoke, and lift decide whether a node may serve an artifact. Hidden state is metadata: a small
+authoritative record and the serial that orders it, never artifact bytes. A tombstone hides bytes; it never moves them.
+So visibility replicates the way every other metadata mutation does, over the one change feed, and a replica commits it
+in the same transaction that advances its cursor.
 
-Trash, restore, revoke, and lift determine whether a replica may serve an artifact. These reversible transitions must
-retain authority order across duplicate or reordered delivery. Otherwise a replica can serve a revoked artifact or hide
-a restored artifact.
+There is no separate visibility feed, envelope, projection, or snapshot. A replica's hidden set is the rows it has
+committed, so it is durable exactly when its cursor is, and a restart resumes from that cursor with the hidden set the
+node last committed.
 
-This contract defines replication, consistency, lag, and recovery for the visibility projection. It refines the
-[availability contracts](@/core/availability/contracts.md) and uses the read frontier defined by
-[derived-view frontiers](@/core/availability/derived-views.md).
+This contract refines the [availability contracts](@/core/availability/contracts.md) and uses the read frontier defined
+by [derived-view frontiers](@/core/availability/derived-views.md).
 
-The projection persists through the shared visibility-snapshot store trait. Content owners emit typed visibility
-operations; availability orders and applies them without importing owner records.
+## Two records, one feed
 
-## The operation and its order
+Where the record lives follows who owns the decision.
 
-A transition is a typed **visibility operation**: which artifact it targets, which of the four transitions it is, and
-where it sits in the authoritative order. The order is a pair: the **authority epoch** followed by the operation
-**serial** within that epoch. The artifact authority stamps both. A higher epoch always outranks a lower one; a higher
-serial outranks a lower one within an epoch. The serial is drawn from the same monotonic metadata journal counter every
-other mutation uses, so a visibility operation orders against owner writes by the one serial the contract already
-expresses staleness over.
+**An ecosystem owns its soft deletes.** Trash and restore edit the ecosystem's own artifact record, and the ecosystem's
+serving path reads that record back when it answers. The edit reaches a replica as the change's metadata mutations,
+which the replica writes as the opaque driver rows they are. Nothing in the shared crates interprets them, so trash
+semantics stay with the owner that defines them.
 
-The operation rides the existing primary-to-replica change feed, not a side channel. It becomes a change whose serial is
-the operation's own serial, wrapped in the replication envelope tagged as a visibility operation. A replica routes a
-visibility envelope to its visibility projection and applies every other kind as before, so the transition inherits the
-feed's ordering, back-pressure, and recovery rather than reinventing them.
+**The server owns digest revocation.** Revocation is server-wide and ecosystem-independent, so it lives in core tables
+and its change carries the whole row as a tagged core payload rather than as driver rows. A replica writes the row, its
+status index, and its active count together, from the same function the writer uses. See
+[digest revocations](@/core/repositories/digest-revocations.md).
 
-{{<diagram file="visibility-replication" />}}
+Both shapes travel as ordinary changes on the same feed and inherit its ordering, back-pressure, and recovery.
 
-## Why ordering is safe
+## Ordering and repeated delivery
 
-The projection is idempotent and monotonic per dimension. Trash/restore and revoke/lift are independent dimensions, each
-with its own high-water order. Applying an operation advances a dimension only when its order is newer than that
-dimension's last; a duplicate or an older, reordered operation leaves the state unchanged. A revoke a replica has
-already applied is not undone by a lift that was authored earlier and merely arrived late, so **duplicate and
-out-of-order delivery cannot resurrect an older state**. Because the two dimensions are independent, a trash and a
-revoke on one artifact do not fence each other out by serial.
+The journal serial is the whole order. A replica applies changes in serial order, refuses a page that skips a serial or
+that comes from a source other than the one its cursor is pinned to, and commits each page against the cursor it read.
+Two nodes that have applied the same serial therefore agree on the hidden set at that serial.
 
-A replica advertises an **operation frontier**, the highest serial per epoch whose applied effect it has durably
-persisted. The projection persists the converged snapshot _before_ it advances that frontier, and a batch commits its
-whole effect or none of it: if the persist fails, the projection and its advertised frontier stay exactly where they
-were. A reader that trusts the frontier can therefore trust the served projection behind it, and a replica never
-advertises coverage of a transition it has not durably applied.
+Each change carries the state it intends rather than a delta toward it, so redelivering one is a no-op: a repeated
+revocation writes the same row and leaves the active count where it was, and a repeated trash rewrites the artifact
+record it already wrote. Recovery can replay a page it is unsure of without resurrecting an artifact.
 
-## Tombstones and compaction
+## What a replica advertises
 
-A hidden artifact is held out of sight by a **tombstone**: the retained record that it is trashed or revoked. A replica
-keeps every tombstone in a durable visibility snapshot, so a restart or a metadata log compaction recovers the full
-hidden set rather than silently resurrecting an artifact whose tombstone was dropped. The snapshot fails closed: a build
-that cannot restore it refuses to start rather than serve a partial hidden set.
+A replica publishes an applied frontier only after the page's transaction has committed, and it retires the cached
+serving decisions the page invalidated before publishing. Serving reads expose changes only up to the readable frontier,
+which trails the applied frontier until the derived views catch up. A reader that trusts a replica's reported serial can
+therefore trust that the node has stopped serving what the writer hid at or below it, and never sees a transition half
+applied.
 
-Retention is bounded by frontier, never by wall-clock age. Compaction releases an artifact only once it has returned to
-the visible default _and_ a required-replica-and-backup frontier covers its operations, because the authority never
-resends an operation below a serial acknowledged everywhere. A still-trashed or still-revoked artifact is never
-released: its tombstone enforces the hidden state. An entry whose high-water sits in a later epoch is kept until every
-earlier epoch has drained too, so a stale lower-epoch operation cannot resurrect an entry the compaction has forgotten.
-
-## Failover
-
-A failover advances the authority epoch. Because the order compares epoch first, every operation the new home mints
-outranks every operation the prior home produced, whatever its serial. A late-arriving operation from the old epoch,
-still in flight when the transfer completed, is applied against the new epoch's high-water and dropped as stale. Thus,
-**failover preserves the delete, restore, revoke, and lift ordering**: the transition the new authority intends wins,
-and the old home cannot pull a dimension back to a value it already lost. The epoch a home stamps only ever moves
-upward, which is what fences a stale home that rejoins.
+If the commit fails, nothing moves: the rows, the cursor, and the advertised frontier all stay where they were, and the
+page is retried. A change whose core payload does not decode fails the whole page rather than being skipped, so a
+replica cannot advance past a revocation it did not understand.
 
 ## Consistency, lag, and recovery by mode
 
-Visibility state is metadata: the small authoritative record and the serial that orders it, not artifact bytes. A
-tombstone hides bytes; it never moves them. So a visibility transition carries the **metadata** promise of its mutation
-mode, and never waits on byte convergence.
+A visibility transition carries the **metadata** promise of its mutation mode and never waits on byte convergence.
 
 - **`none`** applies the transition on the local node. It starts no replication feed or managed replica. Storage loss
   can lose every transition committed after the latest verified backup; recovery restores that backup.
@@ -87,17 +67,13 @@ mode, and never waits on byte convergence.
   acknowledges. A trash, restore, revoke, or lift survives the loss of the writing datacenter, and a reader in the
   surviving datacenter serves the same hidden set the transition intended.
 
-**Consistency across modes is the same:** a replica exposes the projection only up to its readable frontier, and it
-advertises the operation frontier only once the projection behind it is durable. A reader never sees a transition half
-applied, such as new metadata paired with an old visibility view, regardless of mode. The modes differ only in how much
-is at risk when a failure domain is lost, not in what a served answer means.
+**Consistency across modes is the same.** The modes differ only in how much is at risk when a failure domain is lost,
+not in what a served answer means.
 
-**Lag signals.** Each replica's advertised operation frontier, read against the home's current serial, is the lag of its
-visibility projection; a replica that has caught up serves the transitions the home has committed. The
+**Lag signals.** Each replica's applied frontier, read against the writer's current serial, is the lag of its hidden
+set; a replica that has caught up hides what the writer has hidden. The
 [readiness probe](@/core/availability/high-availability.md#availability-health-and-readiness) reports whether a
-replica's derived views, including the visibility projection, have reached the frontier it advertises. Compaction that
-stalls is itself a signal: a required replica or backup that has not acknowledged an epoch holds tombstones from being
-released, so a growing retained set points at a lagging or absent member rather than at the compaction.
+replica's derived views have reached the frontier it advertises.
 
 **Recovery objectives.** Because a visibility transition never gates on bytes, its recovery objectives are the metadata
 objectives of its mode:
@@ -107,7 +83,3 @@ objectives of its mode:
 | `none` | Every transition since the last verifiable backup        | Writer restore or manual promotion, then replica catch-up |
 | `dc`   | Zero within the datacenter; DC loss falls back to `none` | In-DC promotion of the synchronous copy, then catch-up    |
 | `ha`   | Zero across the loss of the writing datacenter           | Cross-DC failover to the remote copy, then catch-up       |
-
-A recovered replica restores its visibility snapshot, including every retained tombstone, and resumes applying from its
-durable cursor, so recovery reproduces the exact hidden set the member last persisted before it advertises a frontier
-again.
