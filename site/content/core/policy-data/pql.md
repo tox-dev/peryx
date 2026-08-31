@@ -118,6 +118,16 @@ The planner admits a join when the joined domain indexes all join keys. It rejec
 scan with `400`. A field present on either side keeps the stricter visibility class, and a join key above the caller's
 class is refused, since an inner join discloses that key's value through the rows it keeps.
 
+Keys must also be able to narrow the joined domain. A domain joined to itself is refused, as is a join keyed only on
+`repository` once the query is pinned to a repository, whether by the caller's grant or by a `repository ==` filter:
+both pair every row with every row sharing its key, so the output is the product of the two domains rather than a
+lookup. A join that reaches 25,000 key matches is refused with `400` for the same reason, before those rows are held in
+memory.
+
+A join stops as soon as it holds the requested page, so its cost follows the page rather than the whole match set. That
+holds when the page is all the query reads: no aggregate, and every order term on a column the outer domain carries. The
+example above orders on `reads`, a `usage.reads` column, so it reads every match up to the cap.
+
 ## Authorization
 
 The evaluator resolves the caller credential and adds a repository predicate before ordering and pagination. Query text

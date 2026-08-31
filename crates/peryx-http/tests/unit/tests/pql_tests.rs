@@ -889,6 +889,45 @@ async fn test_query_join_cursor_is_scope_bound() {
 }
 
 #[tokio::test]
+async fn test_query_rejects_a_self_join() {
+    let (_dir, meta, app) = app(false).await;
+    seed(&meta);
+    let (status, _headers, document) = post(
+        &app,
+        json!({"query": "from policy.decisions join policy.decisions on repository"}),
+        Some(("Alice", PASSWORD)),
+    )
+    .await;
+    assert_eq!(
+        (status, &document["error"]),
+        (
+            StatusCode::BAD_REQUEST,
+            &json!("the join cannot be bounded and is refused")
+        )
+    );
+}
+
+#[tokio::test]
+async fn test_query_rejects_a_join_keyed_only_on_the_repository_the_reader_is_scoped_to() {
+    let (_dir, meta, metrics, app) = build(false).await;
+    seed(&meta);
+    seed_usage(&metrics);
+    let (status, _headers, document) = post(
+        &app,
+        json!({"query": "from policy.decisions join usage.reads on repository where repository == \"private\""}),
+        Some(("Rita", PASSWORD)),
+    )
+    .await;
+    assert_eq!(
+        (status, &document["error"]),
+        (
+            StatusCode::BAD_REQUEST,
+            &json!("the join cannot be bounded and is refused")
+        )
+    );
+}
+
+#[tokio::test]
 async fn test_query_join_rejects_unknown_domain_and_key() {
     let (_dir, meta, metrics, app) = build(false).await;
     seed(&meta);

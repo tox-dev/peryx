@@ -9,25 +9,15 @@ use crate::value::{Row, Value, ValueType};
 use crate::{QueryScope, run};
 use rstest::rstest;
 
-use super::support::{TestSource, decision, operator_scope, repository_scope};
-
-fn rows() -> Vec<Row> {
-    vec![
-        decision("alpha", "resource-a", "blocked", "cache", 300, 10),
-        decision("alpha", "resource-b", "allowed", "origin", 200, 5),
-        decision("alpha", "resource-c", "blocked", "cache", 100, 7),
-        decision("other", "resource-d", "blocked", "origin", 250, 3),
-        Row::new()
-            .with("repository", Value::Str("alpha".to_owned()))
-            .with("resource", Value::Str("resource-e".to_owned()))
-            .with("state", Value::Str("allowed".to_owned()))
-            .with("source", Value::Str("cache".to_owned()))
-            .with("evaluated_at", Value::Timestamp(150)),
-    ]
-}
+use super::support::{TestSource, decision, decisions, operator_scope, repository_scope};
 
 fn query(text: &str, scope: &QueryScope, cursor: Option<&str>) -> Result<Page, PqlError> {
-    execute(&parse(text).expect("parses"), scope, cursor, &TestSource::new(rows()))
+    execute(
+        &parse(text).expect("parses"),
+        scope,
+        cursor,
+        &TestSource::new(decisions()),
+    )
 }
 
 #[rstest]
@@ -404,7 +394,7 @@ fn test_run_end_to_end_binds_parameters() {
         .collect(),
         &operator_scope(),
         None,
-        &TestSource::new(rows()),
+        &TestSource::new(decisions()),
     )
     .expect("runs");
     assert_eq!(
@@ -415,7 +405,7 @@ fn test_run_end_to_end_binds_parameters() {
 
 #[test]
 fn test_run_resolves_a_timestamp_before_fetch() {
-    let source = TestSource::new(rows());
+    let source = TestSource::new(decisions());
     run(
         "from policy.decisions where evaluated_at == :cutoff",
         &std::collections::BTreeMap::from([("cutoff".to_owned(), Value::Str("1970-01-01T00:03:20Z".to_owned()))]),
@@ -445,7 +435,7 @@ fn test_run_surfaces_parse_error() {
         &BTreeMap::new(),
         &operator_scope(),
         None,
-        &TestSource::new(rows()),
+        &TestSource::new(decisions()),
     );
     assert!(matches!(result, Err(PqlError::Parse(_))));
 }
@@ -468,7 +458,7 @@ fn test_execute_matches_non_ascii_string_literal() {
 
 #[test]
 fn test_execute_leading_filter_reaches_source() {
-    let source = TestSource::new(rows());
+    let source = TestSource::new(decisions());
     execute(
         &parse(r#"from big where repository == "alpha""#).expect("parses"),
         &operator_scope(),
@@ -490,7 +480,7 @@ fn test_execute_leading_filter_reaches_source() {
 
 #[test]
 fn test_execute_omits_filter_without_cheap_leading_equality() {
-    let source = TestSource::new(rows());
+    let source = TestSource::new(decisions());
     execute(
         &parse(r#"from policy.decisions where state == "blocked""#).expect("parses"),
         &operator_scope(),

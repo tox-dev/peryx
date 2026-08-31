@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
-use crate::ast::{AggregateFunc, Ast, Join, OrderKey};
+use crate::ast::{AggregateFunc, Ast, Join, OrderKey, Predicate};
 use crate::catalog::DomainSchema;
 use crate::cursor;
 use crate::error::PqlError;
@@ -15,6 +15,11 @@ use crate::value::{Row, Value};
 
 /// Repository-scoped domains must expose this column.
 const SCOPE_COLUMN: &str = "repository";
+
+/// The most key matches a join may walk. Fan-out is the product of the two cardinalities, so a key
+/// both sides repeat outruns memory long before pagination sees a row. Storage caps a repository's
+/// decision history at 10,000, which keeps the widest one-to-one join well inside this bound.
+const MAX_JOIN_MATCHES: usize = 25_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Page {
@@ -44,9 +49,9 @@ pub fn execute(
         .as_ref()
         .and_then(|predicate| leading_filter(predicate, &visible));
     let offset = decode_offset(cursor_text, &ast.domain, scope)?;
-    let candidates = scope_filter(source.fetch(&ast.domain, scope, filter.as_ref())?, scope, schema);
+    let fetched = scope_filter(source.fetch(&ast.domain, scope, filter.as_ref())?, scope, schema);
     Ok(finish(
-        candidates,
+        retain_matching(fetched, ast.predicate.as_ref()),
         &ast,
         plan,
         visible.natural_order,
@@ -85,6 +90,7 @@ fn execute_join(
     // stricter value.
     let merged = visible_schema(&merge_schemas(schema_a, schema_b), scope)?;
     validate_join(&join.on, schema_a, schema_b, &merged)?;
+    require_narrowing_keys(&ast.domain, join, scope)?;
     let ast = resolve_params(ast, &merged)?;
     let plan = validate_resolved(&ast, &merged)?;
     gate_join(&ast, schema_a, schema_b)?;
@@ -94,13 +100,29 @@ fn execute_join(
         .predicate
         .as_ref()
         .and_then(|predicate| leading_filter(predicate, schema_a));
-    let outer = scope_filter(
+    let mut outer = scope_filter(
         source.fetch(&ast.domain, scope, outer_filter.as_ref())?,
         scope,
         schema_a,
     );
+    let order_by = resolved_order(&plan, merged.natural_order);
+    let bound = page_bound(&ast, &order_by, schema_a, plan.limit, offset);
+    // The join emits an outer row's matches together, so ordering the outer side first leaves the
+    // merged sequence in its final order. Only then does stopping at a page's worth of rows keep
+    // the rows the unbounded join would have paged.
+    if bound.is_some() {
+        order_source_rows(&mut outer, &order_by);
+    }
     let probe = scope_filter(source.fetch(&join.domain, scope, None)?, scope, schema_b);
-    let candidates = join_rows(outer, &probe, &join.on, schema_a, schema_b);
+    let candidates = join_rows(
+        outer,
+        &probe,
+        &join.on,
+        schema_a,
+        schema_b,
+        bound,
+        ast.predicate.as_ref(),
+    )?;
     Ok(finish(
         candidates,
         &ast,
@@ -112,8 +134,43 @@ fn execute_join(
     ))
 }
 
+/// The merged rows this page can read, or `None` when an aggregate or an order term the outer
+/// domain does not carry reads every merged row, leaving the hard match cap as the only bound.
+fn page_bound(ast: &Ast, order_by: &[OrderKey], outer: &DomainSchema, limit: u32, offset: u64) -> Option<usize> {
+    if ast.aggregate.is_some() || order_by.iter().any(|key| outer.column(&key.field).is_none()) {
+        return None;
+    }
+    // One row past the page is what mints the next cursor, and nothing downstream reads further.
+    let needed = usize::try_from(offset)
+        .unwrap_or(usize::MAX)
+        .saturating_add(limit as usize)
+        .saturating_add(1);
+    Some(needed.min(MAX_JOIN_MATCHES))
+}
+
+/// A join narrows only when its keys can differ across probe rows. A domain joined to itself pairs
+/// every row with every row sharing its key, and once the caller is pinned to their repositories
+/// the scope column holds one of a handful of values on both sides, so either key set names a
+/// product rather than a lookup.
+fn require_narrowing_keys(domain: &str, join: &Join, scope: &QueryScope) -> Result<(), PqlError> {
+    if domain == join.domain {
+        return Err(PqlError::UnboundedJoin(format!(
+            "`{domain}` joined to itself pairs its rows with each other, so the join cannot be bounded"
+        )));
+    }
+    if join.on == [SCOPE_COLUMN] && matches!(scope.repositories(), RepoScope::Only(_)) {
+        return Err(PqlError::UnboundedJoin(format!(
+            "join key `{SCOPE_COLUMN}` already pins this query, so it cannot narrow `{}`",
+            join.domain
+        )));
+    }
+    Ok(())
+}
+
+/// `matching` has already dropped every row the predicate rejects, so a bounded join can count the
+/// rows it keeps against the page it must fill.
 fn finish(
-    candidates: Vec<Row>,
+    mut matching: Vec<Row>,
     ast: &Ast,
     plan: Plan,
     natural_order: &str,
@@ -121,19 +178,25 @@ fn finish(
     scope: &QueryScope,
     offset: u64,
 ) -> Page {
-    let mut filtered: Vec<Row> = candidates
-        .into_iter()
-        .filter(|row| ast.predicate.as_ref().is_none_or(|predicate| evaluate(predicate, row)))
-        .collect();
     let tuples = if let Some(aggregate) = &ast.aggregate {
-        let mut tuples = aggregate_rows(&filtered, aggregate, &plan.outputs);
+        let mut tuples = aggregate_rows(&matching, aggregate, &plan.outputs);
         order_rows(&mut tuples, &plan.order_by, &plan.outputs);
         tuples
     } else {
-        order_source_rows(&mut filtered, &resolved_order(&plan, natural_order));
-        project_rows(&filtered, &plan.outputs)
+        order_source_rows(&mut matching, &resolved_order(&plan, natural_order));
+        project_rows(&matching, &plan.outputs)
     };
     paginate(tuples, plan, cursor_domain, scope, offset)
+}
+
+fn retain_matching(rows: Vec<Row>, predicate: Option<&Predicate>) -> Vec<Row> {
+    rows.into_iter()
+        .filter(|row| matches_predicate(row, predicate))
+        .collect()
+}
+
+fn matches_predicate(row: &Row, predicate: Option<&Predicate>) -> bool {
+    predicate.is_none_or(|predicate| evaluate(predicate, row))
 }
 
 fn decode_offset(cursor_text: Option<&str>, domain: &str, scope: &QueryScope) -> Result<u64, PqlError> {
@@ -207,13 +270,21 @@ fn merge_schemas(outer: &DomainSchema, probe: &DomainSchema) -> DomainSchema {
     }
 }
 
+/// Merges at most `bound` rows that satisfy `predicate`, and refuses a join walking more than
+/// [`MAX_JOIN_MATCHES`] key matches, so neither the kept rows nor the work to find them grows with
+/// the product of the two domains.
+///
+/// # Errors
+/// Returns [`PqlError::CostExceeded`] once the match cap is crossed.
 fn join_rows(
     outer: Vec<Row>,
     probe: &[Row],
     keys: &[String],
     schema_outer: &DomainSchema,
     schema_probe: &DomainSchema,
-) -> Vec<Row> {
+    bound: Option<usize>,
+    predicate: Option<&Predicate>,
+) -> Result<Vec<Row>, PqlError> {
     let probe_only: Vec<&'static str> = schema_probe
         .columns
         .iter()
@@ -225,14 +296,30 @@ fn join_rows(
         index.entry(join_key(row, keys)).or_default().push(row);
     }
     let mut merged = Vec::new();
-    for row in outer {
-        if let Some(matches) = index.get(&join_key(&row, keys)) {
-            for probe_row in matches {
-                merged.push(merge_row(&row, probe_row, &probe_only));
+    let mut walked = 0usize;
+    'outer: for row in outer {
+        let Some(matches) = index.get(&join_key(&row, keys)) else {
+            continue;
+        };
+        for probe_row in matches {
+            walked += 1;
+            if walked > MAX_JOIN_MATCHES {
+                return Err(PqlError::CostExceeded(format!(
+                    "joining `{}` to `{}` matches more than {MAX_JOIN_MATCHES} row pairs; add a join key that narrows it",
+                    schema_outer.name, schema_probe.name
+                )));
+            }
+            let candidate = merge_row(&row, probe_row, &probe_only);
+            if !matches_predicate(&candidate, predicate) {
+                continue;
+            }
+            merged.push(candidate);
+            if bound == Some(merged.len()) {
+                break 'outer;
             }
         }
     }
-    merged
+    Ok(merged)
 }
 
 fn merge_row(outer: &Row, probe: &Row, probe_only: &[&'static str]) -> Row {

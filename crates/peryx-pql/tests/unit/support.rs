@@ -238,6 +238,24 @@ pub fn scoped(repository: &str, visibility: FieldVisibility) -> QueryScope {
     QueryScope::new(RepoScope::Only(set), visibility, format!("repo:{repository}"))
 }
 
+/// The decision history both the executor and the join tests read. The last row omits `reads`, so a
+/// missing cell reads as null wherever a test touches it.
+#[must_use]
+pub fn decisions() -> Vec<Row> {
+    vec![
+        decision("alpha", "resource-a", "blocked", "cache", 300, 10),
+        decision("alpha", "resource-b", "allowed", "origin", 200, 5),
+        decision("alpha", "resource-c", "blocked", "cache", 100, 7),
+        decision("other", "resource-d", "blocked", "origin", 250, 3),
+        Row::new()
+            .with("repository", Value::Str("alpha".to_owned()))
+            .with("resource", Value::Str("resource-e".to_owned()))
+            .with("state", Value::Str("allowed".to_owned()))
+            .with("source", Value::Str("cache".to_owned()))
+            .with("evaluated_at", Value::Timestamp(150)),
+    ]
+}
+
 #[must_use]
 pub fn decision(repository: &str, resource: &str, state: &str, source: &str, at: i64, reads: i64) -> Row {
     Row::new()
