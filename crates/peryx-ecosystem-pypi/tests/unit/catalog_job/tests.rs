@@ -843,8 +843,23 @@ async fn test_public_job_reports_status_failures() {
     }
 }
 
+#[rstest]
+#[case::bounded_read_deadline(
+    Duration::from_mins(1),
+    Duration::from_secs(30),
+    "retryable_timeout: upstream request timed out"
+)]
+#[case::job_timeout(
+    Duration::from_secs(5),
+    Duration::from_secs(5),
+    "retryable_timeout: catalog sync exceeded 5s"
+)]
 #[tokio::test]
-async fn test_public_job_reports_timeout_failure() {
+async fn test_public_job_reports_timeout_failure(
+    #[case] timeout: Duration,
+    #[case] stalled_for: Duration,
+    #[case] expected: &str,
+) {
     let mut upstream = stalled_upstream("/simple/", None).await;
     let (_dir, app) = app(vec![index(
         "timeout",
@@ -855,13 +870,13 @@ async fn test_public_job_reports_timeout_failure() {
         },
     )]);
     let mut parameters = parameters("timeout", 1, 1);
-    parameters.timeout = Duration::from_secs(30);
+    parameters.timeout = timeout;
     let running = tokio::spawn(async move { run(&app, parameters).await });
     await_stalled_request(&mut upstream).await;
 
     tokio::time::pause();
-    tokio::time::advance(Duration::from_secs(30)).await;
-    assert!(running.await.unwrap().unwrap_err().starts_with("retryable_timeout:"));
+    tokio::time::advance(stalled_for).await;
+    assert_eq!(running.await.unwrap().unwrap_err(), expected);
     release_stalled_request(upstream).await;
 }
 

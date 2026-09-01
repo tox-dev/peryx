@@ -198,14 +198,9 @@ async fn serve(
         let (mut socket, _) = listener.accept().await.unwrap();
         read_request(&mut socket).await;
         events.send(ServerEvent::Requested).unwrap();
-        loop {
-            match commands.recv().await.unwrap() {
-                ServerCommand::Write(bytes) => {
-                    socket.write_all(bytes).await.unwrap();
-                    events.send(ServerEvent::Written).unwrap();
-                }
-                ServerCommand::NextResponse => break,
-            }
+        while let ServerCommand::Write(bytes) = commands.recv().await.unwrap() {
+            socket.write_all(bytes).await.unwrap();
+            events.send(ServerEvent::Written).unwrap();
         }
     }
 }
