@@ -30,6 +30,7 @@ type VoterId = u64;
 /// A peer RPC exceeding this deadline counts as a retryable loss.
 const PEER_RPC_TIMEOUT: Duration = Duration::from_secs(5);
 const MEMBERSHIP_PUBLICATION_TIMEOUT: Duration = Duration::from_secs(5);
+const AUDIT_RECOVERY_RETRY_DELAY: Duration = Duration::from_secs(1);
 const LEARNER_CATCH_UP_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct ConsensusPlan {
@@ -272,24 +273,22 @@ impl ConsensusPlan {
                                 }
                             },
                         };
-                        let recovered_as_leader = node.metrics().borrow().current_leader == Some(local);
-                        if recovered_as_leader {
-                            recover_local_transfer_audits(node.clone(), home.clone(), &audit_store).await;
-                        }
                         let _ = ready.send(Ok(node.clone()));
-                        recover_transfer_audits_on_leadership(
+                        let recovery = recover_transfer_audits_on_leadership(
                             local,
                             node.clone(),
                             home,
                             audit_store,
-                            recovered_as_leader,
                             runtime_cancellation.clone(),
                         )
                         .await;
-                        node.raft()
+                        let shutdown = node
+                            .raft()
                             .shutdown()
                             .await
-                            .context("stop the ownership consensus node")
+                            .context("stop the ownership consensus node");
+                        recovery.context("watch ownership consensus leadership")?;
+                        shutdown
                     })
                 }));
                 let result = result.unwrap_or(Err(anyhow::anyhow!("ownership consensus thread panicked")));
@@ -308,10 +307,21 @@ impl ConsensusPlan {
     }
 }
 
-async fn recover_local_transfer_audits(node: RaftNode, home: DatacenterId, store: &MetaStore) {
+#[derive(Clone, Copy)]
+enum AuditRecovery {
+    Unattempted,
+    Pending(tokio::time::Instant),
+    Complete,
+}
+
+async fn recover_local_transfer_audits(node: RaftNode, home: DatacenterId, store: &MetaStore) -> AuditRecovery {
     let ownership: Arc<dyn OwnershipAuthority> = Arc::new(OwnershipGroup::new(node, home));
-    if let Err(error) = crate::recover_transfer_audits(&ownership, store).await {
-        tracing::warn!(%error, "transfer audit recovery after leadership change failed");
+    match crate::recover_transfer_audits(&ownership, store).await {
+        Ok(_) => AuditRecovery::Complete,
+        Err(error) => {
+            tracing::warn!(%error, "transfer audit recovery after leadership change failed");
+            AuditRecovery::Pending(tokio::time::Instant::now() + AUDIT_RECOVERY_RETRY_DELAY)
+        }
     }
 }
 
@@ -320,19 +330,39 @@ async fn recover_transfer_audits_on_leadership(
     node: RaftNode,
     home: DatacenterId,
     store: MetaStore,
-    mut led: bool,
     cancellation: tokio_util::sync::CancellationToken,
-) {
+) -> Result<(), tokio::sync::watch::error::RecvError> {
+    tokio::select! {
+        () = cancellation.cancelled() => Ok(()),
+        result = watch_transfer_audits_on_leadership(local, node, home, store) => result,
+    }
+}
+
+async fn watch_transfer_audits_on_leadership(
+    local: VoterId,
+    node: RaftNode,
+    home: DatacenterId,
+    store: MetaStore,
+) -> Result<(), tokio::sync::watch::error::RecvError> {
     let mut metrics = node.metrics();
+    let mut recovery = AuditRecovery::Unattempted;
     loop {
         let leads = metrics.borrow_and_update().current_leader == Some(local);
-        if leads && !led {
-            recover_local_transfer_audits(node.clone(), home.clone(), &store).await;
+        if !leads {
+            recovery = AuditRecovery::Unattempted;
+        } else if matches!(recovery, AuditRecovery::Unattempted) {
+            recovery = recover_local_transfer_audits(node.clone(), home.clone(), &store).await;
         }
-        led = leads;
+        let retry = async move {
+            match recovery {
+                AuditRecovery::Pending(retry_at) if leads => tokio::time::sleep_until(retry_at).await,
+                _ => std::future::pending().await,
+            }
+        };
+        tokio::pin!(retry);
         tokio::select! {
-            () = cancellation.cancelled() => return,
-            changed = metrics.changed() => if changed.is_err() { return },
+            changed = metrics.changed() => changed?,
+            () = &mut retry => recovery = AuditRecovery::Unattempted,
         }
     }
 }

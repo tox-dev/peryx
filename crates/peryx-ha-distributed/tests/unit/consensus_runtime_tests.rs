@@ -1,17 +1,19 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::time::Duration;
 
 use crate::DatacenterId;
 use crate::ownership::{AssignmentCause, OwnershipCommand};
 use crate::raft::log_store::RaftLogStoreAdapter;
-use crate::raft::network::{PeerRaftNetworkFactory, raft_rpc_router};
+use crate::raft::network::{PeerRaftNetworkFactory, RaftRpc, RaftRpcHandler, RaftRpcRejection, raft_rpc_router};
 use crate::raft::persistence::RaftLogStore;
-use crate::raft::{OwnershipStateMachine, PeryxNode, RaftConfig, RaftNode};
+use crate::raft::{OwnershipStateMachine, PeryxNode, RaftConfig, RaftNode, TypeConfig};
+use axum::body::Bytes;
 use openraft::error::{ClientWriteError, ForwardToLeader, RaftError};
+use openraft::raft::AppendEntriesRequest;
 use openraft::storage::RaftStateMachine as _;
 use openraft::testing::log_id;
 use openraft::{Entry, EntryPayload};
@@ -58,12 +60,63 @@ fn audit_store(dir: &TempDir, member: &str) -> MetaStore {
     MetaStore::open(dir.path().join(format!("{member}.redb"))).unwrap()
 }
 
-fn serve_raft(
+struct AppendGate {
+    blocked: AtomicBool,
+    rejected_empty: tokio::sync::mpsc::UnboundedSender<()>,
+}
+
+impl AppendGate {
+    fn new(rejected_empty: tokio::sync::mpsc::UnboundedSender<()>) -> Self {
+        Self {
+            blocked: AtomicBool::new(false),
+            rejected_empty,
+        }
+    }
+
+    fn block(&self) {
+        self.blocked.store(true, Ordering::Relaxed);
+    }
+
+    fn open(&self) {
+        self.blocked.store(false, Ordering::Relaxed);
+    }
+}
+
+struct GatedRaftRpcHandler {
+    inner: Arc<dyn RaftRpcHandler>,
+    gate: Arc<AppendGate>,
+}
+
+#[async_trait::async_trait]
+impl RaftRpcHandler for GatedRaftRpcHandler {
+    async fn handle(&self, rpc: RaftRpc, body: Bytes) -> Result<Vec<u8>, RaftRpcRejection> {
+        if rpc == RaftRpc::AppendEntries && self.gate.blocked.load(Ordering::Relaxed) {
+            let request: AppendEntriesRequest<TypeConfig> =
+                serde_json::from_slice(&body).map_err(|_| RaftRpcRejection::Malformed)?;
+            if request.entries.is_empty() {
+                let _ = self.gate.rejected_empty.send(());
+            }
+            return Err(RaftRpcRejection::Unavailable);
+        }
+        self.inner.handle(rpc, body).await
+    }
+}
+
+fn serve_gated_raft(
     listener: tokio::net::TcpListener,
     plan: &ConsensusPlan,
     started: &StartedRaft,
+    gate: Arc<AppendGate>,
 ) -> tokio::task::JoinHandle<std::io::Result<()>> {
-    let router = raft_rpc_router(plan.local_voter(), plan.token(), started.rpc_handler()).unwrap();
+    let router = raft_rpc_router(
+        plan.local_voter(),
+        plan.token(),
+        Arc::new(GatedRaftRpcHandler {
+            inner: started.rpc_handler(),
+            gate,
+        }),
+    )
+    .unwrap();
     tokio::spawn(std::future::IntoFuture::into_future(axum::serve(listener, router)))
 }
 
@@ -378,12 +431,17 @@ async fn test_a_new_leader_projects_its_pending_transfer_audit() {
         .zip(datacenters)
         .map(|(dir, datacenter)| audit_store(dir, datacenter))
         .collect();
+    let (rejected_empty, mut rejected_empty_rx) = tokio::sync::mpsc::unbounded_channel();
+    let gates: Vec<Arc<AppendGate>> = datacenters
+        .iter()
+        .map(|_| Arc::new(AppendGate::new(rejected_empty.clone())))
+        .collect();
     let west = plans[1].ignite(stores[1].clone()).await.unwrap();
-    let west_server = serve_raft(listeners.remove(1), &plans[1], &west);
+    let west_server = serve_gated_raft(listeners.remove(1), &plans[1], &west, Arc::clone(&gates[1]));
     let north = plans[2].ignite(stores[2].clone()).await.unwrap();
-    let north_server = serve_raft(listeners.remove(1), &plans[2], &north);
+    let north_server = serve_gated_raft(listeners.remove(1), &plans[2], &north, Arc::clone(&gates[2]));
     let east = plans[0].ignite(stores[0].clone()).await.unwrap();
-    let east_server = serve_raft(listeners.remove(0), &plans[0], &east);
+    let east_server = serve_gated_raft(listeners.remove(0), &plans[0], &east, Arc::clone(&gates[0]));
     let mut started = vec![Some(east), Some(west), Some(north)];
     let voter_ids: Vec<u64> = datacenters.iter().map(|datacenter| voter_id(datacenter)).collect();
     let mut metrics = started[0].as_ref().unwrap().metrics();
@@ -407,19 +465,54 @@ async fn test_a_new_leader_projects_its_pending_transfer_audit() {
         .await
         .unwrap();
     drop(group);
+    let survivors: Vec<usize> = (0..started.len()).filter(|index| *index != leader).collect();
+    for &index in &survivors {
+        let runtime = started[index].as_ref().unwrap().raft().runtime_config();
+        runtime.elect(false);
+        runtime.heartbeat(false);
+    }
     stop_started_raft(started[leader].take().unwrap()).await;
-    let survivor = started.iter().position(Option::is_some).unwrap();
-    let mut metrics = started[survivor].as_ref().unwrap().metrics();
-    let replacement = tokio::time::timeout(
-        Duration::from_secs(10),
-        metrics.wait_for(|metrics| matches!(metrics.current_leader, Some(id) if id != elected)),
-    )
+    for &index in &survivors {
+        gates[index].block();
+        started[index].as_ref().unwrap().raft().runtime_config().elect(true);
+    }
+    let replacement = tokio::time::timeout(Duration::from_secs(10), async {
+        rejected_empty_rx.recv().await.unwrap();
+        let replacement = survivors
+            .iter()
+            .copied()
+            .find(|index| {
+                let metrics = started[*index].as_ref().unwrap().metrics();
+                let current_leader = metrics.borrow().current_leader;
+                current_leader == Some(plans[*index].local_voter())
+            })
+            .unwrap();
+        for &index in &survivors {
+            started[index].as_ref().unwrap().raft().runtime_config().elect(false);
+        }
+        let metrics = started[replacement].as_ref().unwrap().metrics();
+        let tenure = {
+            let metrics = metrics.borrow();
+            (metrics.current_leader, metrics.current_term)
+        };
+        rejected_empty_rx.recv().await.unwrap();
+        let metrics = metrics.borrow();
+        assert_eq!((metrics.current_leader, metrics.current_term), tenure);
+        replacement
+    })
     .await
-    .unwrap()
-    .unwrap()
-    .current_leader
     .unwrap();
-    let replacement = voter_ids.iter().position(|id| *id == replacement).unwrap();
+    assert!(
+        survivors
+            .iter()
+            .all(|index| stores[*index].transfer_audits("proj").unwrap().is_empty())
+    );
+    for &index in &survivors {
+        gates[index].open();
+        let runtime = started[index].as_ref().unwrap().raft().runtime_config();
+        runtime.elect(true);
+        runtime.heartbeat(true);
+    }
 
     assert_eq!(wait_for_transfer_audits(&stores[replacement], "proj").await.len(), 1);
 
