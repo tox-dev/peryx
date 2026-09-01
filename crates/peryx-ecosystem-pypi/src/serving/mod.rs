@@ -20,10 +20,10 @@ use peryx_driver::client_address;
 use peryx_driver::not_found;
 use peryx_driver::rate_limit::RouteClass;
 use peryx_driver::serving::{
-    BlobReferenceDriver, BrowseDriver, BrowseRequest, CacheDriver, CachePurgeDriver, CacheRefresher, EcosystemDriver,
-    FsckDriver, ImportDriver, IndexSummaryDriver, IndexedProtocolDriver, IntentFinalizer, JobDriver, MetricsDriver,
-    NameDriver, PolicyDriver, PolicyDryRunDriver, RefreshSweep, ReplicatedApplyDriver, RetentionDriver, ServiceDriver,
-    TrashDriver,
+    BlobReferenceDriver, BrowseDriver, BrowseRequest, CacheDriver, CacheInspectDriver, CachePurgeDriver,
+    CacheRefresher, EcosystemDriver, FsckDriver, ImportDriver, IndexSummaryDriver, IndexedProtocolDriver,
+    IntentFinalizer, JobDriver, MetricsDriver, NameDriver, PolicyDriver, PolicyDryRunDriver, RefreshSweep,
+    ReplicatedApplyDriver, RetentionDriver, ServiceDriver, TrashDriver,
 };
 use peryx_driver::state::{SEARCH_VIEW, ServingState, ViewBlock};
 use peryx_events::metrics::MetricFamily;
@@ -443,6 +443,20 @@ impl CacheDriver for PypiServing {
 
     fn cache_record_counts(&self, meta: &peryx_storage::meta::MetaStore) -> Result<Vec<(String, u64)>, String> {
         crate::admin::cache_record_counts(meta)
+    }
+}
+
+impl CacheInspectDriver for PypiServing {
+    fn served_cache_pages(
+        &self,
+        state: &ServingState,
+        index_names: &[&str],
+    ) -> Result<Vec<peryx_driver::serving::CachePage>, String> {
+        crate::admin::cache_pages(&state.meta, index_names)
+    }
+
+    fn served_cache_record_counts(&self, state: &ServingState) -> Result<Vec<(String, u64)>, String> {
+        crate::admin::cache_record_counts(&state.meta)
     }
 }
 

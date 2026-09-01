@@ -8,10 +8,10 @@ A cached repository holds a copy of each resource it has served: the upstream pa
 and metadata rows that page registered. `POST /+cache/purge` removes one resource's copy from a running server.
 
 The [`peryx cache purge`](@/core/operations/cli.md) command does the same removal offline. It cannot be used instead:
-every `cache` subcommand opens the metadata store, the store admits one holder at a time, and `serve` is that holder for
-its whole process lifetime. The dry run is no exception, because a read-only handle is refused for the same reason a
-writable one is. Removing a resource through the CLI therefore means downtime; this endpoint is how an operator removes
-one without it.
+every offline `cache` subcommand opens the metadata store, the store admits one holder at a time, and `serve` is that
+holder for its whole process lifetime. The dry run is no exception, because a read-only handle is refused for the same
+reason a writable one is. Removing a resource through the CLI therefore means downtime; this endpoint is how an operator
+removes one without it. Use the [cache inspection API](@/core/repositories/cache-inspection.md) for read-only commands.
 
 ## Request
 

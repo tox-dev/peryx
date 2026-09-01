@@ -1,16 +1,18 @@
-//! Purging a cached resource without stopping the server. The metadata store is exclusive, so the
-//! `peryx cache purge` path is only available while nothing is serving; this is the same removal
-//! driven in-process, fenced by the driver against its own cache writers.
+//! Cache operations reuse the server's metadata-store handle because redb rejects a second open.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::{Extensions, HeaderMap, Request, StatusCode, header};
 use axum::response::{IntoResponse as _, Response};
+use peryx_core::Ecosystem;
 use peryx_driver::authz::Decision;
-use peryx_driver::serving::PurgeReport;
+use peryx_driver::cache_inspection::{
+    CacheListFilter, CachePageSource, resource_filter, write_cache_fsck, write_cache_list, write_cache_size,
+};
+use peryx_driver::serving::{CacheInspectDriver, PurgeReport};
 use peryx_driver::state::AppState;
 use peryx_identity::{Resource, Scope, parse_basic};
 
@@ -37,8 +39,169 @@ struct PurgeResponse {
     removed: BTreeMap<String, u64>,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CacheListParams {
+    index: Option<String>,
+    resource: Option<String>,
+    digest: Option<String>,
+    #[serde(default)]
+    stale: bool,
+    min_age_secs: Option<u64>,
+    min_size_bytes: Option<u64>,
+}
+
+pub async fn list_cached_contents(State(state): State<Arc<AppState>>, request: Request<Body>) -> Response {
+    let (parts, _) = request.into_parts();
+    if let Err(response) = administrator(&state, &parts.headers, &parts.extensions, Scope::AdministrationRead).await {
+        return protected(response);
+    }
+    let Ok(Query(params)) = Query::<CacheListParams>::try_from_uri(&parts.uri) else {
+        return protected(problem(StatusCode::BAD_REQUEST, "invalid cache list query"));
+    };
+    run_inspection(state, move |state| list_cache(state, &params)).await
+}
+
+pub async fn size_cached_contents(State(state): State<Arc<AppState>>, request: Request<Body>) -> Response {
+    let (parts, _) = request.into_parts();
+    inspect_cache(state, parts.headers, parts.extensions, size_cache).await
+}
+
+pub async fn fsck_cached_contents(State(state): State<Arc<AppState>>, request: Request<Body>) -> Response {
+    let (parts, _) = request.into_parts();
+    inspect_cache(state, parts.headers, parts.extensions, fsck_cache).await
+}
+
 pub async fn purge_cached_resource(State(state): State<Arc<AppState>>, request: Request<Body>) -> Response {
-    let mut response = purge_response(&state, request).await;
+    protected(purge_response(&state, request).await)
+}
+
+async fn inspect_cache(
+    state: Arc<AppState>,
+    headers: HeaderMap,
+    extensions: Extensions,
+    inspect: impl FnOnce(&AppState) -> Result<Vec<u8>, String> + Send + 'static,
+) -> Response {
+    if let Err(response) = administrator(&state, &headers, &extensions, Scope::AdministrationRead).await {
+        return protected(response);
+    }
+    run_inspection(state, inspect).await
+}
+
+async fn run_inspection(
+    state: Arc<AppState>,
+    inspect: impl FnOnce(&AppState) -> Result<Vec<u8>, String> + Send + 'static,
+) -> Response {
+    let blocking_scans = state.blocking_scans.clone();
+    protected(match blocking_scans.run(move |_| inspect(&state)).await {
+        Ok(Ok(report)) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+            report,
+        )
+            .into_response(),
+        Ok(Err(reason)) => problem(StatusCode::INTERNAL_SERVER_ERROR, &reason),
+        Err(_) => problem(StatusCode::INTERNAL_SERVER_ERROR, "cache inspection task failed"),
+    })
+}
+
+fn list_cache(state: &AppState, params: &CacheListParams) -> Result<Vec<u8>, String> {
+    let mut sources = Vec::new();
+    if params.digest.is_none() {
+        let index_names = served_index_names(state);
+        for (ecosystem, driver) in inspectors(state) {
+            sources.push(CachePageSource {
+                resource_filter: resource_filter(
+                    params.resource.as_deref(),
+                    state.driver_set().get_name(ecosystem).map(AsRef::as_ref),
+                ),
+                pages: driver
+                    .served_cache_pages(&state.serving, &index_names)
+                    .map_err(|reason| format!("cache list failed: scan cached index pages: {reason}"))?,
+            });
+        }
+    }
+    let mut output = Vec::new();
+    write_cache_list(
+        sources,
+        &state.serving.blobs,
+        &CacheListFilter {
+            index: params.index.as_deref(),
+            resource_filtered: params.resource.is_some(),
+            digest: params.digest.as_deref(),
+            stale: params.stale,
+            min_age_secs: params.min_age_secs,
+            min_size_bytes: params.min_size_bytes,
+        },
+        state.serving.ttl_secs,
+        (state.serving.clock)(),
+        &mut output,
+    )
+    .map_err(|error| format!("cache list failed: {error}"))?;
+    Ok(output)
+}
+
+fn size_cache(state: &AppState) -> Result<Vec<u8>, String> {
+    let mut pages = Vec::new();
+    let mut record_counts = Vec::new();
+    let index_names = served_index_names(state);
+    for (_, driver) in inspectors(state) {
+        pages.extend(
+            driver
+                .served_cache_pages(&state.serving, &index_names)
+                .map_err(|reason| format!("cache size failed: scan cached index pages: {reason}"))?,
+        );
+        record_counts.extend(
+            driver
+                .served_cache_record_counts(&state.serving)
+                .map_err(|reason| format!("cache size failed: {reason}"))?,
+        );
+    }
+    let mut output = Vec::new();
+    write_cache_size(
+        &pages,
+        record_counts,
+        &state.serving.blobs,
+        state.serving.ttl_secs,
+        (state.serving.clock)(),
+        &mut output,
+    )
+    .map_err(|error| format!("cache size failed: {error}"))?;
+    Ok(output)
+}
+
+/// Longest first, so a resource key is attributed to the most specific index whose name prefixes it.
+fn served_index_names(state: &AppState) -> Vec<&str> {
+    let mut names = state
+        .serving
+        .indexes
+        .iter()
+        .map(|index| index.name.as_str())
+        .collect::<Vec<_>>();
+    names.sort_by_key(|name| std::cmp::Reverse(name.len()));
+    names
+}
+
+/// Sorted, because the registry is a map and a report an operator diffs may not reorder between runs.
+fn inspectors(state: &AppState) -> Vec<(&Ecosystem, &Arc<dyn CacheInspectDriver>)> {
+    let mut drivers = state.driver_set().cache_inspect_drivers().collect::<Vec<_>>();
+    drivers.sort_unstable_by_key(|(ecosystem, _)| ecosystem.as_str());
+    drivers
+}
+
+fn fsck_cache(state: &AppState) -> Result<Vec<u8>, String> {
+    let mut output = Vec::new();
+    write_cache_fsck(
+        state.driver_set(),
+        &state.serving.meta,
+        &state.serving.blobs,
+        &mut output,
+    )
+    .map_err(|error| format!("cache fsck failed: {error}"))?;
+    Ok(output)
+}
+
+fn protected(mut response: Response) -> Response {
     ProtectedCachePolicy::NoStore.apply(response.headers_mut());
     response
 }

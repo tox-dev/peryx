@@ -5,8 +5,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use peryx_core::Ecosystem;
 use peryx_driver::serving::{
-    BlobReferenceDriver, BrowseDriver, BrowseError, BrowseRequest, CacheDriver, CapabilityRegistrar, EcosystemDriver,
-    FsckDriver, ImportDriver, JobConfig, JobDriver, MetricsDriver, NameDriver, RetentionDriver, TrashDriver,
+    BlobReferenceDriver, BrowseDriver, BrowseError, BrowseRequest, CacheDriver, CacheInspectDriver,
+    CapabilityRegistrar, EcosystemDriver, FsckDriver, ImportDriver, JobConfig, JobDriver, MetricsDriver, NameDriver,
+    RetentionDriver, TrashDriver,
 };
 use peryx_driver::serving::{CachePage, PurgeReport};
 use peryx_driver::{BlobReferenceScan, BlobReferenceScanError, DriverSet};
@@ -124,6 +125,20 @@ impl CacheDriver for Driver {
 
     fn cache_record_counts(&self, _meta: &peryx_storage::meta::MetaStore) -> Result<Vec<(String, u64)>, String> {
         Err("counts".to_owned())
+    }
+}
+
+impl CacheInspectDriver for Driver {
+    fn served_cache_pages(
+        &self,
+        _state: &peryx_driver::ServingState,
+        _index_names: &[&str],
+    ) -> Result<Vec<CachePage>, String> {
+        Err("served pages".to_owned())
+    }
+
+    fn served_cache_record_counts(&self, _state: &peryx_driver::ServingState) -> Result<Vec<(String, u64)>, String> {
+        Err("served counts".to_owned())
     }
 }
 
@@ -275,6 +290,37 @@ fn driver_set_registers_and_dispatches_independent_capabilities() {
             &mut Vec::new(),
         ),
         Err("import".to_owned())
+    );
+}
+
+#[test]
+fn driver_set_registers_and_dispatches_cache_inspection() {
+    let ecosystem = Ecosystem::new("example");
+    let mut set = DriverSet::default();
+    set.register_cache_inspect(
+        ecosystem.clone(),
+        Arc::new(Driver {
+            ecosystem: ecosystem.clone(),
+        }),
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let state = peryx_driver::AppState::new(
+        peryx_storage::meta::MetaStore::open(directory.path().join("peryx.redb")).unwrap(),
+        peryx_storage::blob::BlobStorage::filesystem(directory.path().join("blobs")),
+        60,
+        Vec::new(),
+    );
+
+    assert!(set.get_cache(&ecosystem).is_none());
+    let (registered, cache) = set.cache_inspect_drivers().next().unwrap();
+    assert_eq!(*registered, ecosystem);
+    assert_eq!(
+        cache.served_cache_pages(&state.serving, &["catalog"]),
+        Err("served pages".to_owned())
+    );
+    assert_eq!(
+        cache.served_cache_record_counts(&state.serving),
+        Err("served counts".to_owned())
     );
 }
 

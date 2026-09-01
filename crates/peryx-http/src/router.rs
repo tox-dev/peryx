@@ -297,6 +297,18 @@ fn repository_routes() -> RouteSet {
             post(handlers::purge_cached_resource),
         )
         .route(
+            admin_read(RouteMethod::Get, "/+cache"),
+            get(handlers::list_cached_contents),
+        )
+        .route(
+            admin_read(RouteMethod::Get, "/+cache/size"),
+            get(handlers::size_cached_contents),
+        )
+        .route(
+            admin_read(RouteMethod::Get, "/+cache/fsck"),
+            get(handlers::fsck_cached_contents),
+        )
+        .route(
             admin_mutation(RouteMethod::Post, "/+retention/plan"),
             post(handlers::retention_plan),
         )
@@ -511,7 +523,7 @@ mod route_tests {
     fn process_routes_declare_complete_semantics() {
         let (_, descriptors) = service_routes().into_parts();
 
-        assert_eq!(descriptors.len(), 49);
+        assert_eq!(descriptors.len(), 52);
         assert_eq!(
             descriptors
                 .iter()
@@ -532,7 +544,7 @@ mod route_tests {
                     .filter(|descriptor| descriptor.rate_limit() == rate_limit)
                     .count()
             }),
-            [2, 2, 41, 4]
+            [2, 2, 44, 4]
         );
     }
 }

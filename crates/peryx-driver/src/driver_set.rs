@@ -5,9 +5,9 @@ use std::sync::Arc;
 use peryx_core::Ecosystem;
 
 use crate::serving::{
-    BlobReferenceDriver, BrowseDriver, CacheDriver, CachePurgeDriver, CapabilityRegistrar, EcosystemDriver, FsckDriver,
-    ImportDriver, IndexCredentialDriver, IndexSummaryDriver, JobDriver, MetricsDriver, NameDriver, PolicyDriver,
-    PolicyDryRunDriver, RetentionDriver, ServiceDriver, TrashDriver,
+    BlobReferenceDriver, BrowseDriver, CacheDriver, CacheInspectDriver, CachePurgeDriver, CapabilityRegistrar,
+    EcosystemDriver, FsckDriver, ImportDriver, IndexCredentialDriver, IndexSummaryDriver, JobDriver, MetricsDriver,
+    NameDriver, PolicyDriver, PolicyDryRunDriver, RetentionDriver, ServiceDriver, TrashDriver,
 };
 
 #[derive(Clone, Default)]
@@ -22,6 +22,7 @@ pub struct DriverSet {
     fsck: HashMap<Ecosystem, Arc<dyn FsckDriver>>,
     retention: HashMap<Ecosystem, Arc<dyn RetentionDriver>>,
     cache: HashMap<Ecosystem, Arc<dyn CacheDriver>>,
+    cache_inspections: HashMap<Ecosystem, Arc<dyn CacheInspectDriver>>,
     cache_purges: HashMap<Ecosystem, Arc<dyn CachePurgeDriver>>,
     index_summaries: HashMap<Ecosystem, Arc<dyn IndexSummaryDriver>>,
     trash: HashMap<Ecosystem, Arc<dyn TrashDriver>>,
@@ -163,6 +164,10 @@ impl DriverSet {
         self.cache.values()
     }
 
+    pub fn cache_inspect_drivers(&self) -> impl Iterator<Item = (&Ecosystem, &Arc<dyn CacheInspectDriver>)> {
+        self.cache_inspections.iter()
+    }
+
     pub fn fsck_drivers(&self) -> impl Iterator<Item = (&Ecosystem, &Arc<dyn FsckDriver>)> {
         self.fsck.iter()
     }
@@ -248,6 +253,9 @@ impl CapabilityRegistrar for DriverSet {
     }
     fn register_cache(&mut self, ecosystem: Ecosystem, driver: Arc<dyn CacheDriver>) {
         self.cache.insert(ecosystem, driver);
+    }
+    fn register_cache_inspect(&mut self, ecosystem: Ecosystem, driver: Arc<dyn CacheInspectDriver>) {
+        self.cache_inspections.insert(ecosystem, driver);
     }
     fn register_cache_purge(&mut self, ecosystem: Ecosystem, driver: Arc<dyn CachePurgeDriver>) {
         self.cache_purges.insert(ecosystem, driver);

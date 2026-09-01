@@ -284,6 +284,21 @@ pub trait CacheDriver: Send + Sync {
     fn cache_record_counts(&self, meta: &peryx_storage::meta::MetaStore) -> Result<Vec<(String, u64)>, String>;
 }
 
+/// The read half of [`CacheDriver`] against a store the server is still serving from.
+///
+/// The offline reads take a bare [`MetaStore`](peryx_storage::meta::MetaStore) so `peryx cache list`
+/// and friends build no serving state at all. That is also why they cannot answer for a running
+/// server: the store admits one holder, and `serve` is it. In-process the answer comes from the
+/// [`ServingState`] the server already holds, so an ecosystem reports what it is actually serving.
+pub trait CacheInspectDriver: Send + Sync {
+    /// # Errors
+    /// Returns an error when cached pages cannot be read from the running server.
+    fn served_cache_pages(&self, state: &ServingState, index_names: &[&str]) -> Result<Vec<CachePage>, String>;
+    /// # Errors
+    /// Returns an error when cached records cannot be counted from the running server.
+    fn served_cache_record_counts(&self, state: &ServingState) -> Result<Vec<(String, u64)>, String>;
+}
+
 /// The purge [`CacheDriver::purge_resource`] cannot do: one against a store the server is still
 /// serving from.
 ///
@@ -417,6 +432,7 @@ pub trait CapabilityRegistrar {
     fn register_fsck(&mut self, ecosystem: Ecosystem, driver: Arc<dyn FsckDriver>);
     fn register_retention(&mut self, ecosystem: Ecosystem, driver: Arc<dyn RetentionDriver>);
     fn register_cache(&mut self, ecosystem: Ecosystem, driver: Arc<dyn CacheDriver>);
+    fn register_cache_inspect(&mut self, ecosystem: Ecosystem, driver: Arc<dyn CacheInspectDriver>);
     fn register_cache_purge(&mut self, ecosystem: Ecosystem, driver: Arc<dyn CachePurgeDriver>);
     fn register_index_summary(&mut self, ecosystem: Ecosystem, driver: Arc<dyn IndexSummaryDriver>);
     fn register_trash(&mut self, ecosystem: Ecosystem, driver: Arc<dyn TrashDriver>);

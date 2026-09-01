@@ -186,9 +186,10 @@ delete blob files; run `cache purge orphaned-blobs` after a resource purge to re
 
 Purge commands dry-run by default. Add `--yes` to delete the planned rows or blob files.
 
-Every `cache` command opens the metadata store, and the store admits one holder at a time, so none of them run alongside
-`serve`. To remove a cached resource from a running server, or to preview that removal, post to
-[`/+cache/purge`](@/core/repositories/cache-purge.md) instead.
+Every offline `cache` command opens the metadata store, and the store admits one holder at a time, so none of them run
+alongside `serve`. Use the [cache inspection API](@/core/repositories/cache-inspection.md) to list, measure, or check a
+live server. To remove a cached resource, or to preview that removal, post to
+[`/+cache/purge`](@/core/repositories/cache-purge.md).
 
 ## `backup`
 

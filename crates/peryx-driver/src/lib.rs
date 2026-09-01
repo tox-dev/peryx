@@ -6,6 +6,7 @@ pub mod authz;
 pub mod availability;
 mod blocking_scan;
 pub mod body;
+pub mod cache_inspection;
 pub mod client_address;
 pub mod conditional;
 pub mod discovery;

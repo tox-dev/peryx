@@ -29,6 +29,7 @@ use super::{
     CoreMetadata, DEFAULT_INDEXES, ECOSYSTEM, File, Provenance, PypiPlugin, Yanked, default_job_concurrency,
     default_job_project_limit, default_job_timeout_secs, registration,
 };
+use crate::store::CachedIndex;
 use crate::store::PypiStore as _;
 use crate::upload::Uploaded;
 
@@ -46,6 +47,14 @@ fn plugin_exposes_capabilities_and_validates_snippet_formats() {
     assert!(registry.drivers().get_policy_dry_run(&ECOSYSTEM).is_some());
     assert!(registry.drivers().get_retention(&ECOSYSTEM).is_some());
     assert!(registry.drivers().get_cache_purge(&ECOSYSTEM).is_some());
+    assert_eq!(
+        registry
+            .drivers()
+            .cache_inspect_drivers()
+            .map(|(ecosystem, _)| ecosystem.clone())
+            .collect::<Vec<_>>(),
+        vec![ECOSYSTEM]
+    );
     assert!(plugin.text(&base, "pypi", true, "unknown").is_err());
 }
 
@@ -186,6 +195,45 @@ fn plugin_install_registers_the_pypi_runtime() {
     assert!(state.indexed_driver_for(&ECOSYSTEM).is_some());
     assert!(state.driver_set().get_job(&ECOSYSTEM).is_some());
     assert!(state.mirror_driver_for(&ECOSYSTEM).is_some());
+}
+
+#[test]
+fn plugin_online_cache_inspection_matches_offline_reads() {
+    let (_temp_dir, mut state) = hosted_state();
+    state
+        .serving
+        .meta
+        .put_index(
+            "hosted/flask",
+            &CachedIndex {
+                etag: Some("v1".to_owned()),
+                last_serial: Some(1),
+                fetched_at_unix: 100,
+                content_type: Some("application/vnd.pypi.simple.v1+json".to_owned()),
+                fresh_secs: Some(60),
+                body: br#"{"files":[]}"#.to_vec(),
+            },
+        )
+        .unwrap();
+    plugin_install(&mut state);
+    let offline = state.driver_set().get_cache(&ECOSYSTEM).unwrap();
+    let (_, online) = state.driver_set().cache_inspect_drivers().next().unwrap();
+
+    let offline_pages = offline.cache_pages(&state.serving.meta, &["hosted"]).unwrap();
+    let online_pages = online.served_cache_pages(&state.serving, &["hosted"]).unwrap();
+
+    assert_eq!(online_pages, offline_pages);
+    assert_eq!(
+        online_pages
+            .iter()
+            .map(|page| page.resource.as_str())
+            .collect::<Vec<_>>(),
+        ["flask"]
+    );
+    assert_eq!(
+        online.served_cache_record_counts(&state.serving).unwrap(),
+        offline.cache_record_counts(&state.serving.meta).unwrap()
+    );
 }
 
 fn plugin_install(state: &mut peryx_driver::AppState) {

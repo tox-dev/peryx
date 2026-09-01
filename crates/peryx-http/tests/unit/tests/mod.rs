@@ -1,5 +1,6 @@
 mod acl_tests;
 mod analytics_tests;
+mod cache_inspection_tests;
 mod cache_purge_tests;
 mod fallback_tests;
 mod grant_tests;

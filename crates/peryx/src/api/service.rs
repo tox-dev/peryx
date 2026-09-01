@@ -383,10 +383,22 @@ pub(super) fn service_paths(paths: PathsBuilder) -> PathsBuilder {
                 .build(),
         )
         .path(
+            "/+cache",
+            PathItemBuilder::new().operation(HttpMethod::Get, cache_list()).build(),
+        )
+        .path(
+            "/+cache/fsck",
+            PathItemBuilder::new().operation(HttpMethod::Get, cache_fsck()).build(),
+        )
+        .path(
             "/+cache/purge",
             PathItemBuilder::new()
                 .operation(HttpMethod::Post, cache_purge())
                 .build(),
+        )
+        .path(
+            "/+cache/size",
+            PathItemBuilder::new().operation(HttpMethod::Get, cache_size()).build(),
         )
         .path(
             "/+retention/plan",
@@ -1712,6 +1724,91 @@ fn cache_purge() -> OperationBuilder {
             api_json_response(
                 "The cached records could not be read or removed",
                 json!({"error": "cache purge failed: read cached project \"pypi/flask\""}),
+            ),
+        )
+}
+
+fn cache_list() -> OperationBuilder {
+    let mut operation = cache_inspection(
+        "List cached contents",
+        "Lists cached index pages and blobs from the running server. The response uses the same columns as `peryx cache list`.",
+        "kind\tindex\tresource\tdigest\tage_secs\tfresh_secs\tstale\tsize_bytes\tkey\n\
+         index\tpypi\tflask\t\t12\t60\tfalse\t1024\tpypi/flask\n",
+    )
+    .response(
+        "400",
+        api_json_response("The query is invalid", json!({"error": "invalid cache list query"})),
+    );
+    for (name, description, example) in [
+        ("index", "Configured index name", json!("pypi")),
+        ("resource", "Ecosystem resource name", json!("flask")),
+        ("digest", "Exact blob digest", json!("a".repeat(64))),
+        ("stale", "Return stale index pages", json!(true)),
+    ] {
+        operation = operation.parameter(parameter(name, ParameterIn::Query, description, example));
+    }
+    for (name, description, example) in [
+        ("min_age_secs", "Minimum index-page age in seconds", json!(600)),
+        ("min_size_bytes", "Minimum page or blob size in bytes", json!(1_048_576)),
+    ] {
+        operation = operation.parameter(bounded_integer_parameter(
+            name,
+            ParameterIn::Query,
+            description,
+            example,
+            Some(0),
+            None,
+        ));
+    }
+    operation
+}
+
+fn cache_size() -> OperationBuilder {
+    cache_inspection(
+        "Measure cached contents",
+        "Reports cached page, blob, staging, and ecosystem record counts from the running server. The response matches `peryx cache size`.",
+        "index_pages\t1\nstale_index_pages\t0\nindex_bytes\t2048\nblob_files\t2\nblob_bytes\t4096\n",
+    )
+}
+
+fn cache_fsck() -> OperationBuilder {
+    cache_inspection(
+        "Check cached contents",
+        "Checks cache metadata and blob hashes through the running server. The response matches `peryx cache fsck`.",
+        "ok\n",
+    )
+}
+
+fn cache_inspection(summary: &'static str, description: &'static str, example: &'static str) -> OperationBuilder {
+    OperationBuilder::new()
+        .tag("operations")
+        .summary(Some(summary))
+        .description(Some(description))
+        .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
+        .response(
+            "200",
+            text_response("The cache inspection report", "text/plain; charset=utf-8", example),
+        )
+        .response(
+            "401",
+            ResponseBuilder::new().description("No valid local administrator credential was presented"),
+        )
+        .response(
+            "404",
+            ResponseBuilder::new().description("The caller lacks administration read access"),
+        )
+        .response(
+            "500",
+            api_json_response(
+                "The cache could not be inspected",
+                json!({"error": "cache inspection failed"}),
+            ),
+        )
+        .response(
+            "503",
+            api_json_response(
+                "Authentication storage is unavailable",
+                json!({"error": "user directory unavailable"}),
             ),
         )
 }
