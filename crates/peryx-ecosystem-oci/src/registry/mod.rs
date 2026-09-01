@@ -332,7 +332,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> AbsoluteProtocolDriver fo
             if matches!(request.method(), &Method::GET | &Method::HEAD) && (path == "/v2/" || path == "/v2") {
                 auth::negotiate_version(&state, request.headers())
             } else {
-                self.serve_request(state, request).boxed().await
+                self.serve_request(state, request).await
             };
         response
             .headers_mut()
@@ -433,6 +433,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> BrowseDriver for OciRegis
                 &route,
                 &repository,
                 self.repository_tags(&state, state.index_at(position), &repository)
+                    .boxed()
                     .await
                     .map_err(String::from)?,
             )));
@@ -440,6 +441,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> BrowseDriver for OciRegis
         let Some(digest) = query.layer else {
             return Ok(self
                 .manifest_content(state, position, repository.clone(), reference.clone())
+                .boxed()
                 .await?
                 .map(|manifest| crate::web::manifest_page(&route, &repository, &reference, manifest))
                 .map(|mut page| {
@@ -535,15 +537,8 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
                     | OciRoute::Referrers { .. }
             );
         if read
-            && let Err(rejection) = match &route {
-                OciRoute::Catalog => auth::authorize_catalog(&state, &parts.headers),
-                route => read_name(route).map_or(Ok(()), |name| auth::authorize_read(&state, &parts.headers, name)),
-            }
+            && let Some(response) = Self::read_authorization_rejection(&state, &parts.headers, &route, governed_read)
         {
-            let mut response = rejection.into_response();
-            if governed_read {
-                apply_revocation_cache_policy(&mut response, parts.headers.contains_key(header::AUTHORIZATION));
-            }
             return response;
         }
         let headers = &parts.headers;
@@ -553,37 +548,49 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         let result = match route {
             OciRoute::Manifest { name, reference } => {
                 if read {
-                    self.serve_manifest(&state, &name, &reference, head, headers).await
+                    self.serve_manifest(&state, &name, &reference, head, headers)
+                        .boxed()
+                        .await
                 } else if method == Method::PUT {
-                    put_manifest(&state, headers, body, &name, &reference, self.journal_outbox).await
+                    put_manifest(&state, headers, body, &name, &reference, self.journal_outbox)
+                        .boxed()
+                        .await
                 } else {
-                    delete_manifest(&state, headers, &name, &reference, query, self.journal_outbox).await
+                    delete_manifest(&state, headers, &name, &reference, query, self.journal_outbox)
+                        .boxed()
+                        .await
                 }
             }
             OciRoute::ManifestRestore { name, reference } => {
-                restore_manifest(&state, headers, &name, &reference, self.journal_outbox).await
+                restore_manifest(&state, headers, &name, &reference, self.journal_outbox)
+                    .boxed()
+                    .await
             }
             OciRoute::Blob { name, digest } => {
                 if read {
-                    self.serve_blob(&state, &name, &digest, head, headers).await
+                    self.serve_blob(&state, &name, &digest, head, headers).boxed().await
                 } else {
-                    self.delete_blob(&state, headers, &name, &digest).await
+                    self.delete_blob(&state, headers, &name, &digest).boxed().await
                 }
             }
-            OciRoute::BlobContents { name, digest } => self.serve_layer_contents(&state, &name, &digest, query).await,
+            OciRoute::BlobContents { name, digest } => {
+                self.serve_layer_contents(&state, &name, &digest, query).boxed().await
+            }
             OciRoute::Catalog => serve_catalog(&state, query),
-            OciRoute::TagsList { name } => self.serve_tags(&state, &name, query).await,
-            OciRoute::Referrers { name, digest } => self.serve_referrers(&state, &name, &digest, query).await,
-            OciRoute::UploadStart { name } => self.start_upload(&state, headers, query, &name, body).await,
+            OciRoute::TagsList { name } => self.serve_tags(&state, &name, query).boxed().await,
+            OciRoute::Referrers { name, digest } => self.serve_referrers(&state, &name, &digest, query).boxed().await,
+            OciRoute::UploadStart { name } => self.start_upload(&state, headers, query, &name, body).boxed().await,
             OciRoute::UploadSession { name, session } => {
                 if method == Method::GET {
                     Self::upload_status(&state, headers, &name, &session)
                 } else if method == Method::PATCH {
-                    self.patch_upload(&state, headers, &name, &session, body).await
+                    self.patch_upload(&state, headers, &name, &session, body).boxed().await
                 } else if method == Method::PUT {
-                    self.finish_upload(&state, headers, query, &name, &session, body).await
+                    self.finish_upload(&state, headers, query, &name, &session, body)
+                        .boxed()
+                        .await
                 } else {
-                    self.cancel_upload(&state, headers, &name, &session).await
+                    self.cancel_upload(&state, headers, &name, &session).boxed().await
                 }
             }
         };
@@ -592,6 +599,24 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
             apply_revocation_cache_policy(&mut response, authenticated);
         }
         response
+    }
+
+    fn read_authorization_rejection(
+        state: &ServingState,
+        headers: &HeaderMap,
+        route: &OciRoute,
+        governed: bool,
+    ) -> Option<Response> {
+        let rejection = match route {
+            OciRoute::Catalog => auth::authorize_catalog(state, headers),
+            route => read_name(route).map_or(Ok(()), |name| auth::authorize_read(state, headers, name)),
+        }
+        .err()?;
+        let mut response = rejection.into_response();
+        if governed {
+            apply_revocation_cache_policy(&mut response, headers.contains_key(header::AUTHORIZATION));
+        }
+        Some(response)
     }
 
     pub(crate) async fn repository_tags(

@@ -265,7 +265,7 @@ impl EcosystemBrowse for OciPlugin {
     }
 
     async fn dispatch(&self, state: Arc<AppState>, request: Request) -> Response {
-        browse_http(state, request).boxed().await
+        browse_http(state, request).await
     }
 }
 
@@ -336,7 +336,6 @@ async fn browse_http(state: Arc<AppState>, request: Request) -> Response {
             base: base.as_ref(),
         },
     )
-    .boxed()
     .await
     .unwrap_or_else(std::convert::identity)
 }
@@ -355,15 +354,7 @@ async fn browse_resource_response(
     position: usize,
     request: BrowseHttpRequest<'_>,
 ) -> Result<Response, Response> {
-    if request.path != "/+ui/browse" {
-        let index_access = request.access.for_index(state.serving.index_at(position));
-        if let Err(denial) = request.query.project.as_deref().map_or_else(
-            || index_access.authorize_any_resource(),
-            |project| index_access.authorize_resource(peryx_identity::ResourceMatch::Pattern(project)),
-        ) {
-            return Err(browse_denial(denial));
-        }
-    }
+    authorize_browse_resource(&state.serving, position, &request).map_err(browse_denial)?;
     match request.path {
         "/+ui/browse" => driver
             .browse(BrowseRequest {
@@ -400,6 +391,7 @@ async fn browse_resource_response(
             };
             driver
                 .repository_tags(&state.serving, state.serving.index_at(position), &repository)
+                .boxed()
                 .await
                 .map(|names| Json(web::RepositoryContent::References { names }).into_response())
                 .map_err(browse_error)
@@ -410,6 +402,7 @@ async fn browse_resource_response(
             };
             driver
                 .manifest_content(state.serving.clone(), position, repository, reference)
+                .boxed()
                 .await
                 .map(|manifest| {
                     manifest.map_or_else(
@@ -452,6 +445,21 @@ async fn browse_resource_response(
         }
         _ => Ok(StatusCode::NOT_FOUND.into_response()),
     }
+}
+
+fn authorize_browse_resource(
+    state: &peryx_driver::ServingState,
+    position: usize,
+    request: &BrowseHttpRequest<'_>,
+) -> Result<(), Denial> {
+    if request.path == "/+ui/browse" {
+        return Ok(());
+    }
+    let access = request.access.for_index(state.index_at(position));
+    request.query.project.as_deref().map_or_else(
+        || access.authorize_any_resource(),
+        |project| access.authorize_resource(peryx_identity::ResourceMatch::Pattern(project)),
+    )
 }
 
 fn browse_values(raw_query: &str) -> HashMap<String, String> {
