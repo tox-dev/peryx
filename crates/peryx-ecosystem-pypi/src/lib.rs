@@ -1,3 +1,5 @@
+#![recursion_limit = "152"]
+
 #[cfg(feature = "serving")]
 use std::sync::Arc;
 
