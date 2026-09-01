@@ -145,4 +145,5 @@ async fn test_a_coordinator_holds_its_retention_window_not_every_transfer_it_res
     let retained = resident() - baseline;
     assert_eq!(audit.commit_index, 9);
     assert!(retained < MAX_RETAINED_BYTES);
+    assert_eq!(consensus.pending_transfer_audits().await.unwrap(), Vec::new());
 }

@@ -438,6 +438,26 @@ async fn fixed_group_implements_the_control_contract() {
     assert_eq!(group.committed_epoch("proj").await, 7);
     assert!(group.admit_epoch("proj", 7).await);
     assert_eq!(group.transfer_home("proj", "west").await.unwrap(), None);
+    assert_eq!(group.pending_transfer_audits().await.unwrap(), Vec::new());
+}
+
+#[tokio::test]
+async fn fixed_group_reports_its_projected_audit_until_it_completes() {
+    let group = FixedGroup {
+        projection: Some(Arc::new(Mutex::new(Some("t-1".to_owned())))),
+    };
+
+    assert_eq!(
+        group.pending_transfer_audits().await.unwrap(),
+        vec![peryx_ha::PendingTransferAudit {
+            id: "t-1".to_owned(),
+            audit: sealed(),
+        }]
+    );
+
+    group.complete_transfer_audit("t-1").await.unwrap();
+
+    assert_eq!(group.pending_transfer_audits().await.unwrap(), Vec::new());
 }
 
 #[tokio::test]

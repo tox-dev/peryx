@@ -142,6 +142,149 @@ async fn stop_started_raft(started: StartedRaft) {
         .unwrap();
 }
 
+struct GatedCluster {
+    plans: Vec<ConsensusPlan>,
+    stores: Vec<MetaStore>,
+    gates: Vec<Arc<AppendGate>>,
+    started: Vec<Option<StartedRaft>>,
+    servers: Vec<tokio::task::JoinHandle<std::io::Result<()>>>,
+    rejected_empty: tokio::sync::mpsc::UnboundedReceiver<()>,
+}
+
+impl GatedCluster {
+    async fn ignite(datacenters: &[&str], dirs: &[TempDir]) -> Self {
+        let mut listeners = Vec::new();
+        for _ in datacenters {
+            listeners.push(Some(tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap()));
+        }
+        let members: Vec<ConsensusMember> = datacenters
+            .iter()
+            .zip(&listeners)
+            .map(|(datacenter, listener)| ConsensusMember {
+                datacenter: (*datacenter).to_owned(),
+                address: format!("http://{}/", listener.as_ref().unwrap().local_addr().unwrap()),
+            })
+            .collect();
+        let plans: Vec<ConsensusPlan> = datacenters
+            .iter()
+            .zip(dirs)
+            .enumerate()
+            .map(|(index, (datacenter, dir))| {
+                ConsensusPlan::new(
+                    (*datacenter).to_owned(),
+                    index == 0,
+                    &members,
+                    dir.path().join("raft/ownership-log.redb"),
+                    "ownership".to_owned(),
+                    TOKEN.to_owned(),
+                )
+                .unwrap()
+            })
+            .collect();
+        let stores: Vec<MetaStore> = dirs
+            .iter()
+            .zip(datacenters)
+            .map(|(dir, datacenter)| audit_store(dir, datacenter))
+            .collect();
+        let (rejected_empty, rejected_empty_rx) = tokio::sync::mpsc::unbounded_channel();
+        let gates: Vec<Arc<AppendGate>> = datacenters
+            .iter()
+            .map(|_| Arc::new(AppendGate::new(rejected_empty.clone())))
+            .collect();
+        let mut started: Vec<Option<StartedRaft>> = datacenters.iter().map(|_| None).collect();
+        let mut servers = datacenters.iter().map(|_| None).collect::<Vec<_>>();
+        // The seed bootstraps the roster, so it starts once its peers already answer.
+        for index in (1..datacenters.len()).chain([0]) {
+            let node = plans[index].ignite(stores[index].clone()).await.unwrap();
+            servers[index] = Some(serve_gated_raft(
+                listeners[index].take().unwrap(),
+                &plans[index],
+                &node,
+                Arc::clone(&gates[index]),
+            ));
+            started[index] = Some(node);
+        }
+        Self {
+            plans,
+            stores,
+            gates,
+            started,
+            servers: servers.into_iter().map(Option::unwrap).collect(),
+            rejected_empty: rejected_empty_rx,
+        }
+    }
+
+    fn node(&self, index: usize) -> &StartedRaft {
+        self.started[index].as_ref().unwrap()
+    }
+
+    fn elect(&self, index: usize, enabled: bool) {
+        self.node(index).raft().runtime_config().elect(enabled);
+    }
+
+    fn heartbeat(&self, index: usize, enabled: bool) {
+        self.node(index).raft().runtime_config().heartbeat(enabled);
+    }
+
+    fn tenure(&self, index: usize) -> (Option<u64>, u64) {
+        let metrics = self.node(index).metrics();
+        let observed = metrics.borrow();
+        (observed.current_leader, observed.current_term)
+    }
+
+    async fn wait_for_elected_leader(&self) -> usize {
+        let mut metrics = self.node(0).metrics();
+        let elected = tokio::time::timeout(
+            Duration::from_secs(10),
+            metrics.wait_for(|metrics| metrics.current_leader.is_some()),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .current_leader
+        .unwrap();
+        self.plans
+            .iter()
+            .position(|plan| plan.local_voter() == elected)
+            .unwrap()
+    }
+
+    /// Waits for a survivor to win the election its blocked appends provoke, then confirms the
+    /// tenure survives a further rejected heartbeat.
+    async fn elect_replacement(&mut self, survivors: &[usize]) -> usize {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            self.rejected_empty.recv().await.unwrap();
+            let replacement = *survivors
+                .iter()
+                .find(|index| self.tenure(**index).0 == Some(self.plans[**index].local_voter()))
+                .unwrap();
+            for &index in survivors {
+                self.elect(index, false);
+            }
+            let tenure = self.tenure(replacement);
+            self.rejected_empty.recv().await.unwrap();
+            assert_eq!(self.tenure(replacement), tenure);
+            replacement
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn stop(&mut self, index: usize) {
+        stop_started_raft(self.started[index].take().unwrap()).await;
+    }
+
+    async fn shutdown(self) {
+        for started in self.started.into_iter().flatten() {
+            stop_started_raft(started).await;
+        }
+        for server in self.servers {
+            server.abort();
+            assert!(server.await.unwrap_err().is_cancelled());
+        }
+    }
+}
+
 fn blocked_executor() -> (RaftExecutor, Sender<()>, Receiver<()>) {
     let cancellation = tokio_util::sync::CancellationToken::new();
     let (blocked_sender, blocked_receiver) = mpsc::sync_channel(0);
@@ -398,65 +541,10 @@ async fn test_ignite_keeps_an_audit_pending_when_projection_is_read_only() {
 async fn test_a_new_leader_projects_its_pending_transfer_audit() {
     let datacenters = ["east", "west", "north"];
     let dirs: Vec<TempDir> = datacenters.iter().map(|_| tempfile::tempdir().unwrap()).collect();
-    let mut listeners = Vec::new();
-    for _ in &datacenters {
-        listeners.push(tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap());
-    }
-    let members: Vec<ConsensusMember> = datacenters
-        .iter()
-        .zip(&listeners)
-        .map(|(datacenter, listener)| ConsensusMember {
-            datacenter: (*datacenter).to_owned(),
-            address: format!("http://{}/", listener.local_addr().unwrap()),
-        })
-        .collect();
-    let plans: Vec<ConsensusPlan> = datacenters
-        .iter()
-        .zip(&dirs)
-        .enumerate()
-        .map(|(index, (datacenter, dir))| {
-            ConsensusPlan::new(
-                (*datacenter).to_owned(),
-                index == 0,
-                &members,
-                dir.path().join("raft/ownership-log.redb"),
-                "ownership".to_owned(),
-                TOKEN.to_owned(),
-            )
-            .unwrap()
-        })
-        .collect();
-    let stores: Vec<MetaStore> = dirs
-        .iter()
-        .zip(datacenters)
-        .map(|(dir, datacenter)| audit_store(dir, datacenter))
-        .collect();
-    let (rejected_empty, mut rejected_empty_rx) = tokio::sync::mpsc::unbounded_channel();
-    let gates: Vec<Arc<AppendGate>> = datacenters
-        .iter()
-        .map(|_| Arc::new(AppendGate::new(rejected_empty.clone())))
-        .collect();
-    let west = plans[1].ignite(stores[1].clone()).await.unwrap();
-    let west_server = serve_gated_raft(listeners.remove(1), &plans[1], &west, Arc::clone(&gates[1]));
-    let north = plans[2].ignite(stores[2].clone()).await.unwrap();
-    let north_server = serve_gated_raft(listeners.remove(1), &plans[2], &north, Arc::clone(&gates[2]));
-    let east = plans[0].ignite(stores[0].clone()).await.unwrap();
-    let east_server = serve_gated_raft(listeners.remove(0), &plans[0], &east, Arc::clone(&gates[0]));
-    let mut started = vec![Some(east), Some(west), Some(north)];
-    let voter_ids: Vec<u64> = datacenters.iter().map(|datacenter| voter_id(datacenter)).collect();
-    let mut metrics = started[0].as_ref().unwrap().metrics();
-    let elected = tokio::time::timeout(
-        Duration::from_secs(10),
-        metrics.wait_for(|metrics| metrics.current_leader.is_some()),
-    )
-    .await
-    .unwrap()
-    .unwrap()
-    .current_leader
-    .unwrap();
-    let leader = voter_ids.iter().position(|id| *id == elected).unwrap();
+    let mut cluster = GatedCluster::ignite(&datacenters, &dirs).await;
+    let leader = cluster.wait_for_elected_leader().await;
     let group = OwnershipGroup::new(
-        started[leader].as_ref().unwrap().node().clone(),
+        cluster.node(leader).node().clone(),
         DatacenterId(datacenters[leader].to_owned()),
     );
     let _ = group.claim_home("proj").await.unwrap();
@@ -465,64 +553,36 @@ async fn test_a_new_leader_projects_its_pending_transfer_audit() {
         .await
         .unwrap();
     drop(group);
-    let survivors: Vec<usize> = (0..started.len()).filter(|index| *index != leader).collect();
+    let survivors: Vec<usize> = (0..datacenters.len()).filter(|index| *index != leader).collect();
     for &index in &survivors {
-        let runtime = started[index].as_ref().unwrap().raft().runtime_config();
-        runtime.elect(false);
-        runtime.heartbeat(false);
+        cluster.elect(index, false);
+        cluster.heartbeat(index, false);
     }
-    stop_started_raft(started[leader].take().unwrap()).await;
+    cluster.stop(leader).await;
     for &index in &survivors {
-        gates[index].block();
-        started[index].as_ref().unwrap().raft().runtime_config().elect(true);
+        cluster.gates[index].block();
+        cluster.elect(index, true);
     }
-    let replacement = tokio::time::timeout(Duration::from_secs(10), async {
-        rejected_empty_rx.recv().await.unwrap();
-        let replacement = survivors
-            .iter()
-            .copied()
-            .find(|index| {
-                let metrics = started[*index].as_ref().unwrap().metrics();
-                let current_leader = metrics.borrow().current_leader;
-                current_leader == Some(plans[*index].local_voter())
-            })
-            .unwrap();
-        for &index in &survivors {
-            started[index].as_ref().unwrap().raft().runtime_config().elect(false);
-        }
-        let metrics = started[replacement].as_ref().unwrap().metrics();
-        let tenure = {
-            let metrics = metrics.borrow();
-            (metrics.current_leader, metrics.current_term)
-        };
-        rejected_empty_rx.recv().await.unwrap();
-        let metrics = metrics.borrow();
-        assert_eq!((metrics.current_leader, metrics.current_term), tenure);
-        replacement
-    })
-    .await
-    .unwrap();
+    let replacement = cluster.elect_replacement(&survivors).await;
     assert!(
         survivors
             .iter()
-            .all(|index| stores[*index].transfer_audits("proj").unwrap().is_empty())
+            .all(|index| cluster.stores[*index].transfer_audits("proj").unwrap().is_empty())
     );
     for &index in &survivors {
-        gates[index].open();
-        let runtime = started[index].as_ref().unwrap().raft().runtime_config();
-        runtime.elect(true);
-        runtime.heartbeat(true);
+        cluster.gates[index].open();
+        cluster.elect(index, true);
+        cluster.heartbeat(index, true);
     }
 
-    assert_eq!(wait_for_transfer_audits(&stores[replacement], "proj").await.len(), 1);
+    assert_eq!(
+        wait_for_transfer_audits(&cluster.stores[replacement], "proj")
+            .await
+            .len(),
+        1
+    );
 
-    for started in started.into_iter().flatten() {
-        stop_started_raft(started).await;
-    }
-    for server in [east_server, west_server, north_server] {
-        server.abort();
-        assert!(server.await.unwrap_err().is_cancelled());
-    }
+    cluster.shutdown().await;
 }
 
 #[tokio::test]
