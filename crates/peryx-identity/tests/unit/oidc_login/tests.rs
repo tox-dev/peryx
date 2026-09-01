@@ -986,12 +986,8 @@ async fn test_signing_key_rotation_refreshes_a_fresh_cache() {
         json!({"id_token": mint("key-2", &base_claims(&server)), "token_type": "Bearer"}),
     )
     .await;
-    assert!(
-        provider
-            .callback(&response(), &pending(), NOW + FAILED_REFRESH_BACKOFF_SECS)
-            .await
-            .is_ok()
-    );
+    assert!(provider.callback(&response(), &pending(), NOW + 1).await.is_ok());
+    assert_eq!(discovery_requests(&server).await, 1);
 }
 
 #[rstest]
@@ -1022,6 +1018,11 @@ async fn test_unknown_key_refresh_is_rate_limited(#[case] refresh_succeeds: bool
     )
     .await;
     assert!(matches!(
+        provider.callback(&response(), &pending(), NOW + 1).await,
+        Err(OidcProviderError::UnknownKey)
+    ));
+    assert_eq!(discovery_requests(&server).await, 1);
+    assert!(matches!(
         provider
             .callback(&response(), &pending(), NOW + FAILED_REFRESH_BACKOFF_SECS)
             .await,
@@ -1030,18 +1031,85 @@ async fn test_unknown_key_refresh_is_rate_limited(#[case] refresh_succeeds: bool
     assert_eq!(discovery_requests(&server).await, 1);
     assert!(matches!(
         provider
-            .callback(&response(), &pending(), NOW + 2 * FAILED_REFRESH_BACKOFF_SECS - 1)
-            .await,
-        Err(OidcProviderError::UnknownKey)
-    ));
-    assert_eq!(discovery_requests(&server).await, 1);
-    assert!(matches!(
-        provider
-            .callback(&response(), &pending(), NOW + 2 * FAILED_REFRESH_BACKOFF_SECS)
+            .callback(&response(), &pending(), NOW + FAILED_REFRESH_BACKOFF_SECS + 1)
             .await,
         Err(OidcProviderError::UnknownKey)
     ));
     assert_eq!(discovery_requests(&server).await, 2);
+}
+
+#[tokio::test]
+async fn test_unknown_key_refresh_is_single_flight() {
+    let (server, provider) = ready().await;
+    mount_token(
+        &server,
+        json!({"id_token": mint("key-1", &base_claims(&server)), "token_type": "Bearer"}),
+    )
+    .await;
+    provider.callback(&response(), &pending(), NOW).await.unwrap();
+    server.reset().await;
+    mount_metadata(&server, json!({"keys": [jwk("key-1")]})).await;
+    mount_token(
+        &server,
+        json!({"id_token": mint("key-2", &base_claims(&server)), "token_type": "Bearer"}),
+    )
+    .await;
+
+    let callback = response();
+    let login = pending();
+    let (first, second) = tokio::join!(
+        provider.callback(&callback, &login, NOW + 1),
+        provider.callback(&callback, &login, NOW + 1)
+    );
+    assert_eq!(first.unwrap_err(), OidcProviderError::UnknownKey);
+    assert_eq!(second.unwrap_err(), OidcProviderError::UnknownKey);
+    assert_eq!(discovery_requests(&server).await, 1);
+}
+
+#[rstest]
+#[case::fresh(&["max-age=120"], OidcProviderError::UnknownKey, true)]
+#[case::revalidation_required(
+    &["max-age=0, must-revalidate"],
+    OidcProviderError::InvalidProviderResponse,
+    false
+)]
+#[tokio::test]
+async fn test_failed_key_refresh_respects_cached_key_policy(
+    #[case] cache_control: &[&str],
+    #[case] miss_error: OidcProviderError,
+    #[case] accepted: bool,
+) {
+    let server = MockServer::start().await;
+    mount_metadata_with(&server, json!({"keys": [jwk("key-1")]}), cache_control).await;
+    let provider = provider(&server.uri());
+    mount_token(
+        &server,
+        json!({"id_token": mint("key-1", &base_claims(&server)), "token_type": "Bearer"}),
+    )
+    .await;
+    provider.callback(&response(), &pending(), NOW).await.unwrap();
+    mount_outage(&server).await;
+    mount_token(
+        &server,
+        json!({"id_token": mint("key-2", &base_claims(&server)), "token_type": "Bearer"}),
+    )
+    .await;
+    assert_eq!(
+        provider.callback(&response(), &pending(), NOW + 1).await,
+        Err(miss_error)
+    );
+    mount_outage(&server).await;
+    mount_token(
+        &server,
+        json!({"id_token": mint("key-1", &base_claims(&server)), "token_type": "Bearer"}),
+    )
+    .await;
+
+    assert_eq!(
+        provider.callback(&response(), &pending(), NOW + 2).await.is_ok(),
+        accepted
+    );
+    assert_eq!(discovery_requests(&server).await, 0);
 }
 
 #[tokio::test]

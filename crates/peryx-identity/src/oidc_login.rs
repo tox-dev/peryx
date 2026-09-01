@@ -333,23 +333,28 @@ impl OidcLoginProvider {
         if let Some(entry) = cache.entry.as_ref().filter(|entry| entry.serves(want_key, now)) {
             return Ok(Arc::clone(entry));
         }
-        if now < cache.refresh_after {
+        let first_key_miss =
+            !cache.key_miss_checked && cache.entry.as_ref().is_some_and(|entry| entry.misses(want_key, now));
+        if now < cache.refresh_after && !first_key_miss {
             return cache.stale(now, OidcProviderError::Unavailable);
         }
         match self.refresh(now).await {
             Ok(entry) => {
+                let key_miss_checked =
+                    first_key_miss || want_key.is_some_and(|key_id| !entry.keys.contains_key(key_id));
                 let entry = Arc::new(entry);
                 // A response the provider forbids storing answers only this operation.
                 cache.entry = entry.window.storable.then(|| Arc::clone(&entry));
-                // An unknown key refetches at most once per backoff, and never past the granted freshness.
                 cache.refresh_after = cache
                     .entry
                     .as_ref()
                     .map_or(now, |stored| stored.window.fresh_until.min(now + REFRESH_BACKOFF_SECS));
+                cache.key_miss_checked = cache.entry.is_some() && key_miss_checked;
                 Ok(entry)
             }
             Err(error) => {
                 cache.refresh_after = now + REFRESH_BACKOFF_SECS;
+                cache.key_miss_checked |= first_key_miss;
                 cache.stale(now, error)
             }
         }
@@ -619,6 +624,7 @@ pub enum OidcLoginError<E> {
 struct Cache {
     entry: Option<Arc<Entry>>,
     refresh_after: i64,
+    key_miss_checked: bool,
 }
 
 impl Cache {
@@ -642,6 +648,10 @@ impl Entry {
     /// A fresh entry answers directly; a wanted key it does not hold forces a refresh instead.
     fn serves(&self, want_key: Option<&str>, now: i64) -> bool {
         now < self.window.fresh_until && want_key.is_none_or(|kid| self.keys.contains_key(kid))
+    }
+
+    fn misses(&self, want_key: Option<&str>, now: i64) -> bool {
+        now < self.window.fresh_until && want_key.is_some_and(|kid| !self.keys.contains_key(kid))
     }
 }
 

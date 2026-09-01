@@ -399,6 +399,25 @@ async fn test_bad_signature_does_not_refresh_a_warm_key() {
 }
 
 #[tokio::test]
+async fn test_signing_key_rotation_refreshes_a_fresh_cache() {
+    let (server, verifier) = verifier().await;
+    verifier
+        .verify_identity(&identity(&server.uri(), "key-1", "warm"), NOW)
+        .await
+        .unwrap();
+    server.reset().await;
+    mount_issuer(&server, json!({"keys": [jwk("key-2")]})).await;
+
+    assert!(
+        verifier
+            .verify_identity(&identity(&server.uri(), "key-2", "rotated"), NOW + 1)
+            .await
+            .is_ok()
+    );
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+}
+
+#[tokio::test]
 async fn test_cold_issuer_failure_is_rate_limited() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -424,12 +443,81 @@ async fn test_unknown_key_refresh_is_single_flight() {
         .unwrap();
     let unknown = identity(&server.uri(), "key-2", "unknown");
     let (first, second) = tokio::join!(
-        verifier.verify_identity(&unknown, NOW + 61),
-        verifier.verify_identity(&unknown, NOW + 61)
+        verifier.verify_identity(&unknown, NOW + 1),
+        verifier.verify_identity(&unknown, NOW + 1)
     );
     assert_eq!(first.unwrap_err(), OidcVerificationError::UnknownKey);
     assert_eq!(second.unwrap_err(), OidcVerificationError::UnknownKey);
     assert_eq!(server.received_requests().await.unwrap().len(), 4);
+}
+
+#[tokio::test]
+async fn test_unknown_key_refresh_is_rate_limited() {
+    let (server, verifier) = verifier().await;
+    verifier
+        .verify_identity(&identity(&server.uri(), "key-1", "warm"), NOW)
+        .await
+        .unwrap();
+    let unknown = identity(&server.uri(), "key-2", "unknown");
+    assert_eq!(
+        verifier.verify_identity(&unknown, NOW + 1).await,
+        Err(OidcVerificationError::UnknownKey)
+    );
+    assert_eq!(server.received_requests().await.unwrap().len(), 4);
+    assert_eq!(
+        verifier.verify_identity(&unknown, NOW + 60).await,
+        Err(OidcVerificationError::UnknownKey)
+    );
+    assert_eq!(server.received_requests().await.unwrap().len(), 4);
+    assert_eq!(
+        verifier.verify_identity(&unknown, NOW + 61).await,
+        Err(OidcVerificationError::UnknownKey)
+    );
+    assert_eq!(server.received_requests().await.unwrap().len(), 6);
+}
+
+#[rstest]
+#[case::fresh(&["max-age=120"], OidcVerificationError::UnknownKey, true)]
+#[case::revalidation_required(
+    &["max-age=0, must-revalidate"],
+    OidcVerificationError::InvalidIssuerResponse,
+    false
+)]
+#[tokio::test]
+async fn test_failed_key_refresh_respects_cached_key_policy(
+    #[case] cache_control: &[&str],
+    #[case] miss_error: OidcVerificationError,
+    #[case] accepted: bool,
+) {
+    let server = MockServer::start().await;
+    mount_issuer_with(
+        &server,
+        json!({"keys": [jwk("key-1")]}),
+        "application/json",
+        cache_control,
+    )
+    .await;
+    let verifier = test_verifier(&server.uri());
+    verifier
+        .verify_identity(&identity(&server.uri(), "key-1", "warm"), NOW)
+        .await
+        .unwrap();
+    mount_outage(&server).await;
+    assert_eq!(
+        verifier
+            .verify_identity(&identity(&server.uri(), "key-2", "miss"), NOW + 1)
+            .await,
+        Err(miss_error)
+    );
+
+    assert_eq!(
+        verifier
+            .verify_identity(&identity(&server.uri(), "key-1", "known"), NOW + 2)
+            .await
+            .is_ok(),
+        accepted
+    );
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
 }
 
 #[tokio::test]

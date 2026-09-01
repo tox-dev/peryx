@@ -142,17 +142,19 @@ impl OidcVerifier {
         {
             return Ok(key);
         }
-        if now < cache.refresh_after {
+        let first_key_miss = cache.first_key_miss(key_id, now);
+        if now < cache.refresh_after && !first_key_miss {
             return cache.stale(key_id, now, OidcVerificationError::IssuerUnavailable);
         }
         match self.refresh(state, now).await {
             Ok((keys, window)) => {
                 let key = keys.get(key_id).cloned();
-                *cache = KeyCache::stored(keys, window, now);
+                *cache = KeyCache::stored(keys, window, now, first_key_miss || key.is_none());
                 key.ok_or(OidcVerificationError::UnknownKey)
             }
             Err(error) => {
                 cache.refresh_after = now + REFRESH_BACKOFF_SECS;
+                cache.key_miss_checked |= first_key_miss;
                 cache.stale(key_id, now, error)
             }
         }
@@ -253,21 +255,26 @@ struct KeyCache {
     keys: HashMap<String, DecodingKey>,
     window: CacheWindow,
     refresh_after: i64,
+    key_miss_checked: bool,
 }
 
 impl KeyCache {
     /// A response the provider forbids storing answers only the operation that fetched it, so it
     /// leaves an empty cache behind rather than a stale one the provider never authorized.
-    fn stored(keys: HashMap<String, DecodingKey>, window: CacheWindow, now: i64) -> Self {
+    fn stored(keys: HashMap<String, DecodingKey>, window: CacheWindow, now: i64, key_miss_checked: bool) -> Self {
         if !window.storable {
             return Self::default();
         }
         Self {
             keys,
-            // An unknown key refetches at most once per backoff, and never past the granted freshness.
             refresh_after: window.fresh_until.min(now + REFRESH_BACKOFF_SECS),
             window,
+            key_miss_checked,
         }
+    }
+
+    fn first_key_miss(&self, key_id: &str, now: i64) -> bool {
+        !self.key_miss_checked && now < self.window.fresh_until && !self.keys.contains_key(key_id)
     }
 
     /// A cached key answers a failed or suppressed refresh only inside the hard-stale window.
