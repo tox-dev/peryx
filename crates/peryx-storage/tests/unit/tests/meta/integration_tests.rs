@@ -440,6 +440,7 @@ fn transfer_audit() -> TransferAudit {
         reason: "maintenance".to_owned(),
         barrier: 1,
         epoch: 1,
+        commit_term: 1,
         commit_index: 1,
     }
 }

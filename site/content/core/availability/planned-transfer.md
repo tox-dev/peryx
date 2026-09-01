@@ -85,6 +85,8 @@ One transfer runs per authority at a time. A second `POST` for an authority whos
 
 The commit rides an idempotency key, so a retry across a leader loss and a duplicated request collapse to one committed
 move rather than two. Reissue a transfer that failed mid-flight with the same `Idempotency-Key` to reach one outcome.
+The `Idempotency-Key` links a retry to its replicated control receipt and pending audit. Peryx assigns an identity
+before submitting a request without that header and includes it in the response.
 
 ## The audit record
 
@@ -92,6 +94,7 @@ A committed transfer seals a durable audit and answers with it:
 
 ```json
 {
+  "id": "5f0c-drain-proj",
   "authority": "proj",
   "source": "east",
   "target": "west",
@@ -99,18 +102,36 @@ A committed transfer seals a durable audit and answers with it:
   "reason": "drain east",
   "barrier": 4821,
   "epoch": 7,
+  "commit_term": 12,
   "commit_index": 9043
 }
 ```
 
-The record retains the authority, the source and target datacenters, the actor who ordered the move and their stated
-reason, the barrier the target had to reach, the epoch the move minted, and the index of the consensus log entry that
-committed it. The epoch comes from a read of committed ownership state rather than the commit receipt, matching the rest
-of the ownership plane. The audit is durable and is the record an operator and reconciliation answer from: who moved an
-authority, from where, to where, why, on what catch-up barrier, and under which committed index. It is also the only
-record of the move that is kept. Replicated ownership state holds one record per authority carrying its current home and
-epoch, so a move overwrites its predecessor there rather than accumulating a trail every snapshot would then have to
-carry to every rejoining follower.
+The record retains the transfer identity and authority; source and target datacenters; actor and reason; catch-up
+barrier; epoch; and Raft term and index. Operators and reconciliation use it to identify the committed move.
+
+The ownership state machine seals the request fields with the post-mutation epoch and the deciding log position. A later
+authority move cannot change the epoch recorded for an earlier transfer. Replicated ownership keeps only the pending
+audit facts and the current home and epoch for each authority. Once projected, the durable audit is the sole historical
+record, rather than an unbounded trail carried in every snapshot.
+
+## Recovering an audit
+
+Raft commits the move before `MetaStore` stores the audit, so the store write can fail after ownership changes.
+Consensus retains the sealed record under the transfer identity until the projector stores it. Snapshots carry pending
+records past process and leader loss. The idempotency window does not remove them.
+
+A failed store write answers `503 Service Unavailable`, names the transfer identity, and leaves the sealed record
+pending. Peryx can finish the projection through either path:
+
+- A retry under the same `Idempotency-Key` answers from the committed decision. It stores the sealed record and answers
+  `200 OK` with the original epoch and log term/index. No second move occurs.
+- Startup projects pending records. The coordinator does the same before accepting another transfer. A new leader reads
+  the records from replicated state; it does not need the original process or transfer plan.
+
+The audit store uses the authority and commit index as its identity, making repeated writes idempotent. The projector
+clears the replicated fact after the store transaction commits, so a crash between those operations leaves the fact for
+recovery.
 
 The minted epoch is the fence. A write the old home had in flight under the previous epoch is now stale and is rejected,
 so a former home cannot finalize a write against an authority it no longer owns. Reconciling the operations the old home

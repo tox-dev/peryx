@@ -137,6 +137,8 @@ pub struct TransferAudit {
     pub reason: String,
     pub barrier: u64,
     pub epoch: u64,
+    #[serde(default)]
+    pub commit_term: u64,
     pub commit_index: u64,
 }
 

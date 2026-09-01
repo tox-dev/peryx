@@ -1,27 +1,38 @@
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use peryx_driver::state::{
-    ClusterStatus, CommandOutcome, CommandReceipt, ControlCommand, ControlCommit, ControlError, HomeClaim,
-    MembershipControl, OwnershipAuthority, OwnershipError, TransferOutcome,
+    ClusterStatus, ControlCommand, ControlCommit, ControlError, HomeClaim, MembershipControl, OwnershipAuthority,
+    OwnershipError, TransferOutcome,
 };
+use peryx_ha::PendingTransferAudit;
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
 use tokio::sync::Notify;
 
 use super::{
-    CommittedTransfers, EpochOracle, FrontierSource, RosterFrontierSource, TransferCancelError, TransferCoordinator,
-    TransferDriveError, TransferRunError, commit_transfer, observe_target,
+    CommittedTransfers, FrontierSource, RosterFrontierSource, TransferAuditOutbox, TransferCancelError,
+    TransferCoordinator, TransferDriveError, TransferRunError, commit_transfer, observe_target,
+    recover_transfer_audits,
 };
 use crate::support::TestServer;
-use crate::{AuthorityKey, ControlPlane, DatacenterId, TransferError, TransferPhase, TransferPlan, TransferRequest};
+use crate::{
+    AppliedMeta, AssignmentCause, AuthorityKey, ControlPlane, ControlResolution, DatacenterId, OwnershipCommand,
+    OwnershipEffect, OwnershipState, TransferError, TransferPhase, TransferPlan, TransferRequest,
+};
 
 const BARRIER: u64 = 5;
 const RETAINED: usize = 4;
 
 fn request() -> TransferRequest {
+    numbered_request("t-1", "proj")
+}
+
+fn numbered_request(id: &str, authority: &str) -> TransferRequest {
     TransferRequest {
-        authority: AuthorityKey("proj".to_owned()),
+        id: id.to_owned(),
+        authority: AuthorityKey(authority.to_owned()),
         source: DatacenterId("east".to_owned()),
         target: DatacenterId("west".to_owned()),
         actor: "alice".to_owned(),
@@ -48,15 +59,6 @@ impl FrontierSource for ScriptedFrontier {
             .unwrap()
             .pop()
             .expect("the scripted frontier ran out of answers")
-    }
-}
-
-struct FixedEpoch(u64);
-
-#[async_trait::async_trait]
-impl EpochOracle for FixedEpoch {
-    async fn committed_epoch(&self, _authority: &str) -> u64 {
-        self.0
     }
 }
 
@@ -96,53 +98,129 @@ impl OwnershipAuthority for FixedAuthority {
     }
 }
 
-struct ScriptedControl {
-    result: Mutex<Option<Result<CommandReceipt, ControlError>>>,
+struct Consensus {
+    state: Mutex<OwnershipState>,
+    index: AtomicU64,
     submissions: Mutex<Vec<ControlCommand>>,
+    refusal: Mutex<Option<ControlError>>,
+    unclearable: Mutex<bool>,
+    unreadable: AtomicBool,
 }
 
-impl ScriptedControl {
-    fn new(result: Result<CommandReceipt, ControlError>) -> Arc<Self> {
+impl Consensus {
+    fn with_state(state: OwnershipState, next_index: u64) -> Arc<Self> {
         Arc::new(Self {
-            result: Mutex::new(Some(result)),
+            state: Mutex::new(state),
+            index: AtomicU64::new(next_index),
             submissions: Mutex::new(Vec::new()),
+            refusal: Mutex::new(None),
+            unclearable: Mutex::new(false),
+            unreadable: AtomicBool::new(false),
         })
+    }
+
+    fn homed(authorities: &[&str]) -> Arc<Self> {
+        let mut state = OwnershipState::new();
+        for (position, authority) in authorities.iter().enumerate() {
+            state.apply(
+                &OwnershipCommand::AssignHome {
+                    authority: AuthorityKey((*authority).to_owned()),
+                    home: DatacenterId("east".to_owned()),
+                    cause: AssignmentCause::FirstPublish,
+                },
+                AppliedMeta {
+                    term: 1,
+                    index: position as u64 + 1,
+                },
+            );
+        }
+        Self::with_state(state, authorities.len() as u64 + 1)
+    }
+
+    fn refusing(error: ControlError) -> Arc<Self> {
+        let consensus = Self::homed(&["proj"]);
+        *consensus.refusal.lock().unwrap() = Some(error);
+        consensus
+    }
+
+    fn submitted(&self) -> usize {
+        self.submissions.lock().unwrap().len()
+    }
+
+    fn epoch(&self, authority: &str) -> u64 {
+        self.state.lock().unwrap().epoch(&AuthorityKey(authority.to_owned())).0
+    }
+
+    fn restart(&self) -> Arc<Self> {
+        Self::with_state(
+            OwnershipState::restore(&self.state.lock().unwrap().snapshot()).unwrap(),
+            self.index.load(Ordering::SeqCst),
+        )
     }
 }
 
 #[async_trait::async_trait]
-impl MembershipControl for ScriptedControl {
-    async fn submit(&self, _key: Option<&str>, command: ControlCommand) -> Result<ControlCommit, ControlError> {
-        self.submissions.lock().unwrap().push(command);
-        self.result
-            .lock()
-            .unwrap()
-            .take()
-            .expect("the scripted control was submitted twice")
-            .map(ControlCommit::committed)
+impl MembershipControl for Consensus {
+    async fn submit(&self, key: Option<&str>, command: ControlCommand) -> Result<ControlCommit, ControlError> {
+        self.submissions.lock().unwrap().push(command.clone());
+        let refusal = self.refusal.lock().unwrap().clone();
+        if let Some(error) = refusal {
+            return Err(error);
+        }
+        let index = self.index.fetch_add(1, Ordering::SeqCst);
+        let effect = self.state.lock().unwrap().apply(
+            &OwnershipCommand::AttemptControl {
+                key: key.expect("a transfer identity is required").to_owned(),
+                command,
+                now_unix: 0,
+            },
+            AppliedMeta { term: 1, index },
+        );
+        match effect {
+            OwnershipEffect::Control(ControlResolution::Committed(receipt)) => Ok(ControlCommit::committed(receipt)),
+            OwnershipEffect::Control(ControlResolution::Replayed(receipt)) => Ok(ControlCommit::replayed(receipt)),
+            other => Err(ControlError::Unavailable(format!("{other:?}"))),
+        }
     }
 }
 
-fn receipt(index: u64) -> CommandReceipt {
-    CommandReceipt {
-        term: 1,
-        index,
-        outcome: CommandOutcome::Committed,
-        old_voters: Vec::new(),
-        new_voters: Vec::new(),
+#[async_trait::async_trait]
+impl TransferAuditOutbox for Arc<Consensus> {
+    async fn pending_transfer_audits(&self) -> Result<Vec<PendingTransferAudit>, OwnershipError> {
+        if self.unreadable.load(Ordering::SeqCst) {
+            return Err(OwnershipError::Unavailable("no leader".to_owned()));
+        }
+        Ok(self.state.lock().unwrap().pending_transfer_audits())
+    }
+
+    async fn complete_transfer_audit(&self, id: &str) -> Result<(), OwnershipError> {
+        let unclearable = *self.unclearable.lock().unwrap();
+        if unclearable {
+            return Err(OwnershipError::Unavailable("no leader".to_owned()));
+        }
+        self.state.lock().unwrap().apply(
+            &OwnershipCommand::CompleteTransferAudit { key: id.to_owned() },
+            AppliedMeta {
+                term: 1,
+                index: self.index.fetch_add(1, Ordering::SeqCst),
+            },
+        );
+        Ok(())
     }
 }
 
-fn control(result: Result<CommandReceipt, ControlError>) -> (Arc<ScriptedControl>, ControlPlane) {
-    let scripted = ScriptedControl::new(result);
-    let plane = ControlPlane::new(scripted.clone(), Arc::new(|| 0));
-    (scripted, plane)
+fn plane(consensus: &Arc<Consensus>) -> ControlPlane {
+    ControlPlane::new(consensus.clone(), Arc::new(|| 0))
 }
 
 fn meta() -> (tempfile::TempDir, MetaStore) {
     let dir = tempfile::tempdir().unwrap();
     let store = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
     (dir, store)
+}
+
+fn unwritable(dir: &tempfile::TempDir) -> MetaStore {
+    MetaStore::open_existing_read_only(dir.path().join("peryx.redb")).unwrap()
 }
 
 #[tokio::test]
@@ -181,36 +259,227 @@ async fn test_observe_target_surfaces_a_frontier_read_error() {
 }
 
 #[tokio::test]
-async fn test_commit_transfer_commits_derives_the_epoch_and_persists_the_audit() {
+async fn test_commit_transfer_stores_the_audit_consensus_sealed() {
     let mut plan = TransferPlan::plan(request());
     assert_eq!(plan.observe_frontier(BARRIER), TransferPhase::Ready);
-    let (scripted, plane) = control(Ok(receipt(9)));
+    let consensus = Consensus::homed(&["proj"]);
     let (_dir, store) = meta();
 
-    let audit = commit_transfer(&mut plan, &plane, &FixedEpoch(3), &store, Some("k1"))
+    let audit = commit_transfer(&mut plan, &plane(&consensus), &consensus, &store)
         .await
         .unwrap();
 
-    assert_eq!((audit.epoch.0, audit.commit_index), (3, 9));
+    assert_eq!((audit.epoch.0, audit.commit_term, audit.commit_index), (2, 1, 2));
     assert_eq!(audit.authority.0, "proj");
     assert_eq!(audit.target.0, "west");
-    assert_eq!(scripted.submissions.lock().unwrap().len(), 1);
-    let persisted = store.transfer_audits("proj").unwrap();
-    assert_eq!(persisted.len(), 1);
+    assert_eq!(consensus.submitted(), 1);
     assert_eq!(
-        (
-            persisted[0].epoch,
-            persisted[0].commit_index,
-            persisted[0].reason.as_str()
-        ),
-        (3, 9, "drain east")
+        store.transfer_audits("proj").unwrap(),
+        vec![peryx_ha::TransferAudit {
+            authority: "proj".to_owned(),
+            source: "east".to_owned(),
+            target: "west".to_owned(),
+            actor: "alice".to_owned(),
+            reason: "drain east".to_owned(),
+            barrier: BARRIER,
+            epoch: 2,
+            commit_term: 1,
+            commit_index: 2,
+        }]
+    );
+    assert!(consensus.pending_transfer_audits().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_commit_transfer_leaves_a_recovery_fact_when_the_store_write_fails() {
+    let (dir, store) = meta();
+    drop(store);
+    let mut plan = TransferPlan::plan(request());
+    plan.observe_frontier(BARRIER);
+    let consensus = Consensus::homed(&["proj"]);
+
+    let error = commit_transfer(&mut plan, &plane(&consensus), &consensus, &unwritable(&dir))
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        TransferDriveError::ProjectionPending { id, .. } if id == "t-1"
+    ));
+    assert_eq!(
+        consensus.pending_transfer_audits().await.unwrap(),
+        vec![PendingTransferAudit {
+            id: "t-1".to_owned(),
+            audit: peryx_ha::TransferAudit {
+                authority: "proj".to_owned(),
+                source: "east".to_owned(),
+                target: "west".to_owned(),
+                actor: "alice".to_owned(),
+                reason: "drain east".to_owned(),
+                barrier: BARRIER,
+                epoch: 2,
+                commit_term: 1,
+                commit_index: 2,
+            },
+        }]
     );
 }
 
 #[tokio::test]
-async fn test_ownership_authority_supplies_the_committed_epoch() {
+async fn test_recovery_after_a_restart_stores_the_original_epoch_without_a_second_move() {
+    let (dir, store) = meta();
+    drop(store);
+    let consensus = Consensus::homed(&["proj"]);
+    let mut plan = TransferPlan::plan(request());
+    plan.observe_frontier(BARRIER);
+    commit_transfer(&mut plan, &plane(&consensus), &consensus, &unwritable(&dir))
+        .await
+        .unwrap_err();
+    drop(plan);
+    let consensus = consensus.restart();
+    let store = MetaStore::open_existing(dir.path().join("peryx.redb")).unwrap();
+
+    let recovered = recover_transfer_audits(&consensus, &store).await.unwrap();
+
+    assert_eq!(recovered, 1);
+    assert_eq!(
+        store
+            .transfer_audits("proj")
+            .unwrap()
+            .iter()
+            .map(|audit| (audit.epoch, audit.commit_term, audit.commit_index))
+            .collect::<Vec<_>>(),
+        vec![(2, 1, 2)]
+    );
+    assert_eq!(consensus.epoch("proj"), 2);
+    assert!(consensus.pending_transfer_audits().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_commit_transfer_retry_by_identity_replays_the_sealed_audit() {
+    let consensus = Consensus::homed(&["proj"]);
+    let (_dir, store) = meta();
+    let mut first = TransferPlan::plan(request());
+    first.observe_frontier(BARRIER);
+    let committed = commit_transfer(&mut first, &plane(&consensus), &consensus, &store)
+        .await
+        .unwrap();
+    let mut retry = TransferPlan::plan(request());
+    retry.observe_frontier(BARRIER);
+
+    let replayed = commit_transfer(&mut retry, &plane(&consensus), &consensus, &store)
+        .await
+        .unwrap();
+
+    assert_eq!(replayed, committed);
+    assert_eq!(consensus.epoch("proj"), 2);
+    assert_eq!(store.transfer_audits("proj").unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn test_commit_transfer_retry_after_projection_answers_from_the_stored_audit() {
+    let consensus = Consensus::homed(&["proj"]);
+    let (_dir, store) = meta();
+    let mut first = TransferPlan::plan(request());
+    first.observe_frontier(BARRIER);
+    let committed = commit_transfer(&mut first, &plane(&consensus), &consensus, &store)
+        .await
+        .unwrap();
+    let mut retry = TransferPlan::plan(request());
+    retry.observe_frontier(BARRIER);
+
+    let replayed = commit_transfer(&mut retry, &plane(&consensus), &consensus, &store)
+        .await
+        .unwrap();
+
+    assert_eq!(replayed, committed);
+}
+
+#[tokio::test]
+async fn test_commit_transfer_reports_a_committed_move_whose_audit_is_neither_sealed_nor_stored() {
+    let consensus = Consensus::homed(&["proj"]);
+    let (dir, store) = meta();
+    let mut first = TransferPlan::plan(request());
+    first.observe_frontier(BARRIER);
+    commit_transfer(&mut first, &plane(&consensus), &consensus, &store)
+        .await
+        .unwrap();
+    drop(store);
+    let mut retry = TransferPlan::plan(request());
+    retry.observe_frontier(BARRIER);
+
+    let error = commit_transfer(
+        &mut retry,
+        &plane(&consensus),
+        &consensus,
+        &MetaStore::open(dir.path().join("other.redb")).unwrap(),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(matches!(error, TransferDriveError::Unsealed(id) if id == "t-1"));
+}
+
+#[tokio::test]
+async fn test_commit_transfer_succeeds_when_the_fact_cannot_be_cleared() {
+    let consensus = Consensus::homed(&["proj"]);
+    *consensus.unclearable.lock().unwrap() = true;
+    let (_dir, store) = meta();
+    let mut plan = TransferPlan::plan(request());
+    plan.observe_frontier(BARRIER);
+
+    let audit = commit_transfer(&mut plan, &plane(&consensus), &consensus, &store)
+        .await
+        .unwrap();
+
+    assert_eq!(audit.epoch.0, 2);
+    assert_eq!(store.transfer_audits("proj").unwrap().len(), 1);
+    assert_eq!(consensus.pending_transfer_audits().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn test_commit_transfer_reports_an_unreadable_projection_state_after_commit() {
+    let consensus = Consensus::homed(&["proj"]);
+    consensus.unreadable.store(true, Ordering::SeqCst);
+    let (_dir, store) = meta();
+    let mut plan = TransferPlan::plan(request());
+    plan.observe_frontier(BARRIER);
+
+    let error = commit_transfer(&mut plan, &plane(&consensus), &consensus, &store)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        TransferDriveError::ProjectionStateUnavailable { id, .. } if id == "t-1"
+    ));
+    assert_eq!(consensus.epoch("proj"), 2);
+}
+
+#[tokio::test]
+async fn test_recover_transfer_audits_surfaces_an_unreadable_outbox() {
+    let (_dir, store) = meta();
+    let consensus = Consensus::homed(&["proj"]);
+    consensus.unreadable.store(true, Ordering::SeqCst);
+
+    let error = recover_transfer_audits(&consensus, &store).await.unwrap_err();
+
+    assert!(matches!(error, TransferDriveError::Recover(_)));
+}
+
+#[tokio::test]
+async fn test_ownership_authority_supplies_the_transfer_audit_outbox() {
     let authority: Arc<dyn OwnershipAuthority> = Arc::new(FixedAuthority(7));
-    assert_eq!(EpochOracle::committed_epoch(&authority, "proj").await, 7);
+
+    assert_eq!(
+        TransferAuditOutbox::pending_transfer_audits(&authority).await.unwrap(),
+        Vec::new()
+    );
+    assert!(
+        TransferAuditOutbox::complete_transfer_audit(&authority, "t-1")
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -233,10 +502,10 @@ async fn test_fixed_authority_answers_its_snapshot() {
 async fn test_commit_transfer_surfaces_a_refused_commit_without_persisting() {
     let mut plan = TransferPlan::plan(request());
     plan.observe_frontier(BARRIER);
-    let (_scripted, plane) = control(Err(ControlError::NotLeader { leader: None }));
+    let consensus = Consensus::refusing(ControlError::NotLeader { leader: None });
     let (_dir, store) = meta();
 
-    let error = commit_transfer(&mut plan, &plane, &FixedEpoch(3), &store, None)
+    let error = commit_transfer(&mut plan, &plane(&consensus), &consensus, &store)
         .await
         .unwrap_err();
 
@@ -245,20 +514,21 @@ async fn test_commit_transfer_surfaces_a_refused_commit_without_persisting() {
         TransferDriveError::Commit(ControlError::NotLeader { .. })
     ));
     assert!(store.transfer_audits("proj").unwrap().is_empty());
+    assert!(consensus.pending_transfer_audits().await.unwrap().is_empty());
 }
 
 #[tokio::test]
 async fn test_commit_transfer_refuses_a_plan_that_has_not_reached_the_barrier() {
     let mut plan = TransferPlan::plan(request());
-    let (scripted, plane) = control(Ok(receipt(9)));
+    let consensus = Consensus::homed(&["proj"]);
     let (_dir, store) = meta();
 
-    let error = commit_transfer(&mut plan, &plane, &FixedEpoch(3), &store, None)
+    let error = commit_transfer(&mut plan, &plane(&consensus), &consensus, &store)
         .await
         .unwrap_err();
 
     assert!(matches!(error, TransferDriveError::Plan(TransferError::BarrierNotMet)));
-    assert!(scripted.submissions.lock().unwrap().is_empty());
+    assert_eq!(consensus.submitted(), 0);
 }
 
 #[tokio::test]
@@ -266,33 +536,33 @@ async fn test_commit_transfer_refuses_a_cancelled_plan_without_committing() {
     let mut plan = TransferPlan::plan(request());
     plan.observe_frontier(BARRIER);
     plan.cancel().unwrap();
-    let (scripted, plane) = control(Ok(receipt(9)));
+    let consensus = Consensus::homed(&["proj"]);
     let (_dir, store) = meta();
 
-    let error = commit_transfer(&mut plan, &plane, &FixedEpoch(3), &store, None)
+    let error = commit_transfer(&mut plan, &plane(&consensus), &consensus, &store)
         .await
         .unwrap_err();
 
     assert!(matches!(error, TransferDriveError::Plan(TransferError::Cancelled)));
-    assert!(scripted.submissions.lock().unwrap().is_empty());
+    assert_eq!(consensus.submitted(), 0);
 }
 
 #[tokio::test]
 async fn test_commit_transfer_replays_a_committed_plan_without_recommitting() {
     let mut plan = TransferPlan::plan(request());
     plan.observe_frontier(BARRIER);
-    let (scripted, plane) = control(Ok(receipt(9)));
+    let consensus = Consensus::homed(&["proj"]);
     let (_dir, store) = meta();
 
-    let first = commit_transfer(&mut plan, &plane, &FixedEpoch(3), &store, None)
+    let first = commit_transfer(&mut plan, &plane(&consensus), &consensus, &store)
         .await
         .unwrap();
-    let replay = commit_transfer(&mut plan, &plane, &FixedEpoch(3), &store, None)
+    let replay = commit_transfer(&mut plan, &plane(&consensus), &consensus, &store)
         .await
         .unwrap();
 
     assert_eq!(first, replay);
-    assert_eq!(scripted.submissions.lock().unwrap().len(), 1);
+    assert_eq!(consensus.submitted(), 1);
 }
 
 struct GatedFrontier {
@@ -326,16 +596,48 @@ async fn test_coordinator_drives_a_ready_transfer_to_a_sealed_audit() {
     let (frontier, _probed) = GatedFrontier::new(Some(BARRIER));
     let coordinator = TransferCoordinator::with_schedule(frontier, Duration::ZERO, 3, RETAINED);
     let (_dir, store) = meta();
-    let (scripted, plane) = control(Ok(receipt(9)));
+    let consensus = Consensus::homed(&["proj"]);
 
     let audit = coordinator
-        .run(request(), &plane, &FixedEpoch(3), &store, Some("k1"))
+        .run(request(), &plane(&consensus), &consensus, &store)
         .await
         .unwrap();
 
-    assert_eq!((audit.epoch.0, audit.commit_index), (3, 9));
-    assert_eq!(scripted.submissions.lock().unwrap().len(), 1);
+    assert_eq!((audit.epoch.0, audit.commit_term, audit.commit_index), (2, 1, 2));
+    assert_eq!(consensus.submitted(), 1);
     assert_eq!(store.transfer_audits("proj").unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn test_coordinator_recovers_an_earlier_transfer_before_running_the_next() {
+    let (dir, store) = meta();
+    drop(store);
+    let consensus = Consensus::homed(&["proj", "docs"]);
+    let mut stranded = TransferPlan::plan(request());
+    stranded.observe_frontier(BARRIER);
+    commit_transfer(&mut stranded, &plane(&consensus), &consensus, &unwritable(&dir))
+        .await
+        .unwrap_err();
+    drop(stranded);
+    let store = MetaStore::open_existing(dir.path().join("peryx.redb")).unwrap();
+    let (frontier, _probed) = GatedFrontier::new(Some(BARRIER));
+    let coordinator = TransferCoordinator::with_schedule(frontier, Duration::ZERO, 3, RETAINED);
+
+    coordinator
+        .run(numbered_request("t-2", "docs"), &plane(&consensus), &consensus, &store)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        store
+            .transfer_audits("proj")
+            .unwrap()
+            .iter()
+            .map(|audit| (audit.epoch, audit.commit_term, audit.commit_index))
+            .collect::<Vec<_>>(),
+        vec![(2, 1, 3)]
+    );
+    assert_eq!(consensus.epoch("proj"), 2);
 }
 
 #[tokio::test]
@@ -343,15 +645,15 @@ async fn test_coordinator_gives_up_when_the_target_never_reaches_the_barrier() {
     let (frontier, _probed) = GatedFrontier::new(Some(BARRIER - 1));
     let coordinator = TransferCoordinator::with_schedule(frontier, Duration::ZERO, 3, RETAINED);
     let (_dir, store) = meta();
-    let (scripted, plane) = control(Ok(receipt(9)));
+    let consensus = Consensus::homed(&["proj"]);
 
     let error = coordinator
-        .run(request(), &plane, &FixedEpoch(3), &store, None)
+        .run(request(), &plane(&consensus), &consensus, &store)
         .await
         .unwrap_err();
 
     assert!(matches!(error, TransferRunError::BarrierNotReached));
-    assert!(scripted.submissions.lock().unwrap().is_empty());
+    assert_eq!(consensus.submitted(), 0);
     assert!(store.transfer_audits("proj").unwrap().is_empty());
 }
 
@@ -365,19 +667,17 @@ async fn test_coordinator_refuses_a_second_transfer_for_the_same_authority() {
         RETAINED,
     ));
     let (_dir, store) = meta();
+    let consensus = Consensus::homed(&["proj"]);
     let running = tokio::spawn({
         let coordinator = coordinator.clone();
         let store = store.clone();
-        async move {
-            let (_scripted, plane) = control(Ok(receipt(9)));
-            coordinator.run(request(), &plane, &FixedEpoch(3), &store, None).await
-        }
+        let consensus = consensus.clone();
+        async move { coordinator.run(request(), &plane(&consensus), &consensus, &store).await }
     });
     probed.notified().await;
 
-    let (_scripted, plane) = control(Ok(receipt(9)));
     let error = coordinator
-        .run(request(), &plane, &FixedEpoch(3), &store, None)
+        .run(request(), &plane(&consensus), &consensus, &store)
         .await
         .unwrap_err();
 
@@ -402,13 +702,12 @@ async fn test_coordinator_cancel_abandons_an_active_transfer() {
         RETAINED,
     ));
     let (_dir, store) = meta();
+    let consensus = Consensus::homed(&["proj"]);
     let running = tokio::spawn({
         let coordinator = coordinator.clone();
         let store = store.clone();
-        async move {
-            let (_scripted, plane) = control(Ok(receipt(9)));
-            coordinator.run(request(), &plane, &FixedEpoch(3), &store, None).await
-        }
+        let consensus = consensus.clone();
+        async move { coordinator.run(request(), &plane(&consensus), &consensus, &store).await }
     });
     probed.notified().await;
 
@@ -428,24 +727,23 @@ fn coordinator() -> TransferCoordinator {
 }
 
 async fn commit(coordinator: &TransferCoordinator, store: &MetaStore, authority: &str) {
-    let (_scripted, plane) = control(Ok(receipt(9)));
+    let consensus = Consensus::homed(&[authority]);
     coordinator
         .run(
             TransferRequest {
                 authority: AuthorityKey(authority.to_owned()),
                 ..request()
             },
-            &plane,
-            &FixedEpoch(3),
+            &plane(&consensus),
+            &consensus,
             store,
-            None,
         )
         .await
         .unwrap();
 }
 
 async fn abandon(coordinator: &TransferCoordinator, store: &MetaStore, authority: &str) {
-    let (_scripted, plane) = control(Ok(receipt(9)));
+    let consensus = Consensus::homed(&[authority]);
     let error = coordinator
         .run(
             TransferRequest {
@@ -453,10 +751,9 @@ async fn abandon(coordinator: &TransferCoordinator, store: &MetaStore, authority
                 barrier: BARRIER + 1,
                 ..request()
             },
-            &plane,
-            &FixedEpoch(3),
+            &plane(&consensus),
+            &consensus,
             store,
-            None,
         )
         .await
         .unwrap_err();
@@ -506,10 +803,8 @@ async fn test_coordinator_cancel_that_loses_the_race_to_the_commit_is_refused() 
     let running = tokio::spawn({
         let coordinator = coordinator.clone();
         let store = store.clone();
-        async move {
-            let (_scripted, plane) = control(Ok(receipt(9)));
-            coordinator.run(request(), &plane, &FixedEpoch(3), &store, None).await
-        }
+        let consensus = Consensus::homed(&["proj"]);
+        async move { coordinator.run(request(), &plane(&consensus), &consensus, &store).await }
     });
     held.notified().await;
     let queued = Arc::new(Notify::new());
@@ -528,7 +823,7 @@ async fn test_coordinator_cancel_that_loses_the_race_to_the_commit_is_refused() 
     let error = cancelling.await.unwrap().unwrap_err();
 
     assert!(matches!(error, TransferCancelError::AlreadyCommitted(authority) if authority == "proj"));
-    assert_eq!(running.await.unwrap().unwrap().commit_index, 9);
+    assert_eq!(running.await.unwrap().unwrap().commit_index, 2);
 }
 
 /// A coordinator that never ran the move stands in for the process that restarted after it.

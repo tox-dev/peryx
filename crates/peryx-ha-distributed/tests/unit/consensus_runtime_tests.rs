@@ -379,6 +379,27 @@ fn stopped_lease() -> SingletonLease {
     }
 }
 
+fn transfer_command(authority: &str, new_home: &str) -> ControlCommand {
+    ControlCommand::TransferAuthority {
+        authority: authority.to_owned(),
+        new_home: new_home.to_owned(),
+        intent: None,
+    }
+}
+
+fn planned_transfer_command(authority: &str, new_home: &str) -> ControlCommand {
+    ControlCommand::TransferAuthority {
+        authority: authority.to_owned(),
+        new_home: new_home.to_owned(),
+        intent: Some(peryx_ha::TransferIntent {
+            source: "east".to_owned(),
+            actor: "alice".to_owned(),
+            reason: "drain east".to_owned(),
+            barrier: 5,
+        }),
+    }
+}
+
 fn adjustable_clock(now: i64) -> (Arc<AtomicI64>, Clock) {
     let now = Arc::new(AtomicI64::new(now));
     let source = now.clone();
@@ -435,6 +456,31 @@ async fn test_ownership_handle_delegates_to_a_live_group() {
         handle.release_singleton_lease(&lease).await.unwrap(),
         SingletonRelease::Released
     );
+    assert_eq!(handle.pending_transfer_audits().await.unwrap(), Vec::new());
+    handle.complete_transfer_audit("t-1").await.unwrap();
+}
+
+#[tokio::test]
+async fn test_the_group_holds_a_sealed_transfer_audit_until_its_projection_completes() {
+    let dir = tempfile::tempdir().unwrap();
+    let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned()));
+    let _ = group.claim_home("proj").await.unwrap();
+    group
+        .submit(Some("t-1"), planned_transfer_command("proj", "west"))
+        .await
+        .unwrap();
+
+    let sealed = group.pending_transfer_audits().await.unwrap();
+    group.complete_transfer_audit("t-1").await.unwrap();
+
+    assert_eq!(
+        sealed
+            .iter()
+            .map(|fact| (fact.id.clone(), fact.audit.target.clone(), fact.audit.epoch))
+            .collect::<Vec<_>>(),
+        vec![("t-1".to_owned(), "west".to_owned(), 2)]
+    );
+    assert_eq!(group.pending_transfer_audits().await.unwrap(), Vec::new());
 }
 
 #[tokio::test]
@@ -482,6 +528,14 @@ async fn test_ownership_handle_fails_closed_after_the_group_stops() {
     ));
     assert!(matches!(
         handle.release_singleton_lease(&stopped_lease()).await,
+        Err(OwnershipError::Unavailable(message)) if message == "ownership consensus stopped"
+    ));
+    assert!(matches!(
+        handle.pending_transfer_audits().await,
+        Err(OwnershipError::Unavailable(message)) if message == "ownership consensus stopped"
+    ));
+    assert!(matches!(
+        handle.complete_transfer_audit("t-1").await,
         Err(OwnershipError::Unavailable(message)) if message == "ownership consensus stopped"
     ));
     assert_eq!(
@@ -681,10 +735,7 @@ async fn test_control_transfer_and_epoch_advance_reject_a_live_writer() {
     let lease = group.begin_epoch_write("proj", 1).await.unwrap().unwrap();
 
     for command in [
-        ControlCommand::TransferAuthority {
-            authority: "proj".to_owned(),
-            new_home: "west".to_owned(),
-        },
+        transfer_command("proj", "west"),
         ControlCommand::AdvanceEpoch {
             authority: "proj".to_owned(),
         },
@@ -1278,13 +1329,7 @@ async fn test_transferring_an_assigned_authority_commits() {
     assert_eq!(group.claim_home("proj").await.unwrap(), east_claim(1));
 
     let receipt = group
-        .submit(
-            None,
-            ControlCommand::TransferAuthority {
-                authority: "proj".to_owned(),
-                new_home: "west".to_owned(),
-            },
-        )
+        .submit(None, transfer_command("proj", "west"))
         .await
         .unwrap()
         .receipt;
@@ -1299,24 +1344,12 @@ async fn test_repeating_a_transfer_returns_the_committed_no_op() {
     assert_eq!(group.claim_home("proj").await.unwrap(), east_claim(1));
 
     let committed = group
-        .submit(
-            None,
-            ControlCommand::TransferAuthority {
-                authority: "proj".to_owned(),
-                new_home: "west".to_owned(),
-            },
-        )
+        .submit(None, transfer_command("proj", "west"))
         .await
         .unwrap()
         .receipt;
     let repeated = group
-        .submit(
-            None,
-            ControlCommand::TransferAuthority {
-                authority: "proj".to_owned(),
-                new_home: "west".to_owned(),
-            },
-        )
+        .submit(None, transfer_command("proj", "west"))
         .await
         .unwrap()
         .receipt;
@@ -1345,15 +1378,7 @@ async fn test_transferring_an_unassigned_authority_is_invalid() {
     let dir = tempfile::tempdir().unwrap();
     let group = OwnershipGroup::new(leader_node(&dir).await, DatacenterId("east".to_owned()));
 
-    let result = group
-        .submit(
-            None,
-            ControlCommand::TransferAuthority {
-                authority: "ghost".to_owned(),
-                new_home: "west".to_owned(),
-            },
-        )
-        .await;
+    let result = group.submit(None, transfer_command("ghost", "west")).await;
 
     assert_eq!(
         result,

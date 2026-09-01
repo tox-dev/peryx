@@ -11,7 +11,9 @@ use crate::{
     TransferError, TransferPhase, TransferPlan, TransferRequest,
 };
 use peryx_ha::TransferAudit as StoredTransferAudit;
-use peryx_ha::{ControlCommand, ControlError, OwnershipAuthority};
+use peryx_ha::{
+    ControlCommand, ControlError, OwnershipAuthority, OwnershipError, PendingTransferAudit, TransferIntent,
+};
 use peryx_storage::meta::{MetaError, MetaStore};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -26,10 +28,16 @@ pub trait FrontierSource: Send + Sync {
     async fn applied_frontier(&self, datacenter: &str) -> anyhow::Result<Option<u64>>;
 }
 
-/// Reads audit epochs from committed ownership state rather than command receipts.
+/// Reads and clears audit facts from the replicated ownership state.
 #[async_trait::async_trait]
-pub trait EpochOracle: Send + Sync {
-    async fn committed_epoch(&self, authority: &str) -> u64;
+pub trait TransferAuditOutbox: Send + Sync {
+    /// # Errors
+    /// Returns an error when the replicated facts cannot be read.
+    async fn pending_transfer_audits(&self) -> Result<Vec<PendingTransferAudit>, OwnershipError>;
+
+    /// # Errors
+    /// Returns an error when the clearing decision cannot commit.
+    async fn complete_transfer_audit(&self, id: &str) -> Result<(), OwnershipError>;
 }
 
 /// Answers whether an authority already moved, from state that outlives both the coordinator's
@@ -59,6 +67,22 @@ pub enum TransferDriveError {
     Plan(#[source] TransferError),
     #[error("persist the transfer audit: {0}")]
     Persist(#[source] MetaError),
+    #[error("transfer {id} committed but its audit projection is pending: {source}")]
+    ProjectionPending {
+        id: String,
+        #[source]
+        source: MetaError,
+    },
+    #[error("transfer {id} committed but its audit projection state is unavailable: {source}")]
+    ProjectionStateUnavailable {
+        id: String,
+        #[source]
+        source: OwnershipError,
+    },
+    #[error("read the sealed transfer audits: {0}")]
+    Recover(#[source] OwnershipError),
+    #[error("transfer {0} committed but sealed no recoverable audit")]
+    Unsealed(String),
 }
 
 /// Treats a missing frontier as zero so it cannot satisfy the transfer barrier.
@@ -77,20 +101,21 @@ pub async fn observe_target(
     Ok(plan.observe_frontier(applied))
 }
 
-/// Commits a ready plan, then seals and persists its audit.
+/// Commits a ready plan under its stable transfer identity, then projects the audit consensus sealed.
 ///
-/// An idempotency key deduplicates retries across leader loss. The audit records the committed log index
-/// and reads its epoch from committed ownership state.
+/// The identity deduplicates retries across leader loss, and the committing decision seals the whole
+/// audit, so the epoch and log identity come from that decision rather than from a later read of
+/// ownership state that a concurrent move could already have advanced. A store write that fails leaves
+/// the sealed fact for [`recover_transfer_audits`].
 ///
 /// # Errors
-/// Returns [`TransferDriveError`] when the commit is refused, the plan refuses the commit, or persisting
+/// Returns [`TransferDriveError`] when the commit is refused, the plan refuses the commit, or storing
 /// the audit fails.
 pub async fn commit_transfer(
     plan: &mut TransferPlan,
     control: &dyn peryx_ha::ControlExecutor,
-    ownership: &dyn EpochOracle,
+    outbox: &dyn TransferAuditOutbox,
     meta: &MetaStore,
-    key: Option<&str>,
 ) -> Result<TransferAudit, TransferDriveError> {
     // Prevent cancelled or unready plans from reaching consensus.
     let (actor, command) = match plan.phase() {
@@ -101,32 +126,100 @@ pub async fn commit_transfer(
                 ControlCommand::TransferAuthority {
                     authority: request.authority.0.clone(),
                     new_home: request.target.0.clone(),
+                    intent: Some(TransferIntent {
+                        source: request.source.0.clone(),
+                        actor: request.actor.clone(),
+                        reason: request.reason.clone(),
+                        barrier: request.barrier,
+                    }),
                 },
             )
         }
         // A sealed plan returns its original audit without submitting another move; commit ignores these
         // placeholder values in this state.
-        TransferPhase::Committed => return plan.commit(AuthorityEpoch(0), 0).map_err(TransferDriveError::Plan),
+        TransferPhase::Committed => return plan.commit(AuthorityEpoch(0), 0, 0).map_err(TransferDriveError::Plan),
         TransferPhase::Cancelled => return Err(TransferDriveError::Plan(TransferError::Cancelled)),
         TransferPhase::AwaitingCatchUp => return Err(TransferDriveError::Plan(TransferError::BarrierNotMet)),
     };
+    let id = plan.request().id.clone();
     let receipt = control
-        .execute(&actor, key, command)
+        .execute(&actor, Some(&id), command)
         .await
         .map_err(TransferDriveError::Commit)?;
-    let epoch = ownership.committed_epoch(&plan.request().authority.0).await;
+    let sealed = match outbox
+        .pending_transfer_audits()
+        .await
+        .map_err(|source| TransferDriveError::ProjectionStateUnavailable { id: id.clone(), source })?
+        .into_iter()
+        .find(|fact| fact.id == id)
+        .map(|fact| fact.audit)
+    {
+        Some(sealed) => sealed,
+        // A cleared fact has already reached the audit store.
+        None => projected(meta, &plan.request().authority.0, receipt.index)
+            .map_err(|source| TransferDriveError::ProjectionPending { id: id.clone(), source })?
+            .ok_or_else(|| TransferDriveError::Unsealed(id.clone()))?,
+    };
     let audit = plan
-        .commit(AuthorityEpoch(epoch), receipt.index)
+        .commit(AuthorityEpoch(sealed.epoch), sealed.commit_term, sealed.commit_index)
         .map_err(TransferDriveError::Plan)?;
-    meta.record_transfer_audit(&stored(&audit))
-        .map_err(TransferDriveError::Persist)?;
+    project(outbox, meta, &id, &sealed)
+        .await
+        .map_err(|source| TransferDriveError::ProjectionPending { id, source })?;
     Ok(audit)
 }
 
+/// Stores audits left by an interrupted projection, then clears their replicated facts.
+///
+/// # Errors
+/// Returns [`TransferDriveError`] when the sealed facts cannot be read or an audit cannot be stored.
+pub async fn recover_transfer_audits(
+    outbox: &dyn TransferAuditOutbox,
+    meta: &MetaStore,
+) -> Result<usize, TransferDriveError> {
+    let pending = outbox
+        .pending_transfer_audits()
+        .await
+        .map_err(TransferDriveError::Recover)?;
+    let recovered = pending.len();
+    for fact in pending {
+        project(outbox, meta, &fact.id, &fact.audit)
+            .await
+            .map_err(TransferDriveError::Persist)?;
+    }
+    Ok(recovered)
+}
+
+/// Clears the fact after the store transaction commits. A crash between the two repeats an idempotent
+/// write keyed by authority and commit index.
+async fn project(
+    outbox: &dyn TransferAuditOutbox,
+    meta: &MetaStore,
+    id: &str,
+    audit: &StoredTransferAudit,
+) -> Result<(), MetaError> {
+    meta.record_transfer_audit(audit)?;
+    if let Err(error) = outbox.complete_transfer_audit(id).await {
+        tracing::warn!(transfer = id, %error, "clearing a projected transfer audit failed");
+    }
+    Ok(())
+}
+
+fn projected(meta: &MetaStore, authority: &str, index: u64) -> Result<Option<StoredTransferAudit>, MetaError> {
+    Ok(meta
+        .transfer_audits(authority)?
+        .into_iter()
+        .find(|audit| audit.commit_index == index))
+}
+
 #[async_trait::async_trait]
-impl EpochOracle for Arc<dyn OwnershipAuthority> {
-    async fn committed_epoch(&self, authority: &str) -> u64 {
-        OwnershipAuthority::committed_epoch(self.as_ref(), authority).await
+impl TransferAuditOutbox for Arc<dyn OwnershipAuthority> {
+    async fn pending_transfer_audits(&self) -> Result<Vec<PendingTransferAudit>, OwnershipError> {
+        OwnershipAuthority::pending_transfer_audits(self.as_ref()).await
+    }
+
+    async fn complete_transfer_audit(&self, id: &str) -> Result<(), OwnershipError> {
+        OwnershipAuthority::complete_transfer_audit(self.as_ref(), id).await
     }
 }
 
@@ -220,16 +313,16 @@ impl TransferCoordinator {
     /// # Errors
     /// Returns [`Busy`](TransferRunError::Busy) when a transfer for the authority is already running,
     /// [`BarrierNotReached`](TransferRunError::BarrierNotReached) when the budget runs out before the
-    /// target catches up, or [`Drive`](TransferRunError::Drive) when committing or persisting the move
-    /// fails.
+    /// target catches up, or [`Drive`](TransferRunError::Drive) when recovering an earlier projection,
+    /// committing, or storing the move fails.
     pub async fn run(
         &self,
         request: TransferRequest,
         control: &dyn peryx_ha::ControlExecutor,
-        ownership: &dyn EpochOracle,
+        outbox: &dyn TransferAuditOutbox,
         meta: &MetaStore,
-        key: Option<&str>,
     ) -> Result<TransferAudit, TransferRunError> {
+        recover_transfer_audits(outbox, meta).await?;
         let authority = request.authority.0.clone();
         let plan = {
             // A panic cannot corrupt this lookup table, so recover its poisoned guard.
@@ -241,7 +334,7 @@ impl TransferCoordinator {
             registry.running.insert(authority.clone(), plan.clone());
             plan
         };
-        let outcome = self.drive(&plan, control, ownership, meta, key).await;
+        let outcome = self.drive(&plan, control, outbox, meta).await;
         // A committed move is answered from its persisted audit, so only an abandonment needs a window.
         let abandoned = plan.lock().await.phase() != TransferPhase::Committed;
         self.retire(&authority, abandoned);
@@ -267,9 +360,8 @@ impl TransferCoordinator {
         &self,
         plan: &tokio::sync::Mutex<TransferPlan>,
         control: &dyn peryx_ha::ControlExecutor,
-        ownership: &dyn EpochOracle,
+        outbox: &dyn TransferAuditOutbox,
         meta: &MetaStore,
-        key: Option<&str>,
     ) -> Result<TransferAudit, TransferRunError> {
         for _ in 0..self.budget {
             let mut plan = plan.lock().await;
@@ -281,7 +373,7 @@ impl TransferCoordinator {
                 tokio::time::sleep(self.poll).await;
                 continue;
             }
-            return commit_transfer(&mut plan, control, ownership, meta, key)
+            return commit_transfer(&mut plan, control, outbox, meta)
                 .await
                 .map_err(TransferRunError::Drive);
         }
@@ -345,19 +437,6 @@ impl FrontierSource for RosterFrontierSource {
             .fetch_batch(request)
             .await
             .map_or_else(|_| Ok(None), |frame| Ok(Some(frame.frontier().1)))
-    }
-}
-
-fn stored(audit: &TransferAudit) -> StoredTransferAudit {
-    StoredTransferAudit {
-        authority: audit.authority.0.clone(),
-        source: audit.source.0.clone(),
-        target: audit.target.0.clone(),
-        actor: audit.actor.clone(),
-        reason: audit.reason.clone(),
-        barrier: audit.barrier,
-        epoch: audit.epoch.0,
-        commit_index: audit.commit_index,
     }
 }
 

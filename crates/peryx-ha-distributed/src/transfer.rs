@@ -7,6 +7,9 @@ use crate::ownership::DatacenterId;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct TransferRequest {
+    /// The one identity this move carries: it keys the replicated control receipt, the audit consensus
+    /// sealed, and the retry that resolves against both.
+    pub id: String,
     pub authority: AuthorityKey,
     pub source: DatacenterId,
     pub target: DatacenterId,
@@ -27,6 +30,7 @@ pub enum TransferPhase {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransferAudit {
+    pub id: String,
     pub authority: AuthorityKey,
     pub source: DatacenterId,
     pub target: DatacenterId,
@@ -34,6 +38,7 @@ pub struct TransferAudit {
     pub reason: String,
     pub barrier: u64,
     pub epoch: AuthorityEpoch,
+    pub commit_term: u64,
     pub commit_index: u64,
 }
 
@@ -107,13 +112,19 @@ impl TransferPlan {
     /// # Errors
     /// Returns [`BarrierNotMet`](TransferError::BarrierNotMet) when the target has not reached the
     /// barrier, or [`Cancelled`](TransferError::Cancelled) when the plan was already abandoned.
-    pub fn commit(&mut self, epoch: AuthorityEpoch, commit_index: u64) -> Result<TransferAudit, TransferError> {
+    pub fn commit(
+        &mut self,
+        epoch: AuthorityEpoch,
+        commit_term: u64,
+        commit_index: u64,
+    ) -> Result<TransferAudit, TransferError> {
         match &self.state {
             State::AwaitingCatchUp => Err(TransferError::BarrierNotMet),
             State::Cancelled => Err(TransferError::Cancelled),
             State::Committed(audit) => Ok(audit.clone()),
             State::Ready => {
                 let audit = TransferAudit {
+                    id: self.request.id.clone(),
                     authority: self.request.authority.clone(),
                     source: self.request.source.clone(),
                     target: self.request.target.clone(),
@@ -121,6 +132,7 @@ impl TransferPlan {
                     reason: self.request.reason.clone(),
                     barrier: self.request.barrier,
                     epoch,
+                    commit_term,
                     commit_index,
                 };
                 self.state = State::Committed(audit.clone());

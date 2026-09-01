@@ -20,7 +20,8 @@ use peryx_core::Clock;
 use peryx_ha::{
     AUTHORITY_WRITE_LEASE_SECS, AuthorityWriteLease, ClusterStatus, CommandOutcome, CommandReceipt, ControlCommand,
     ControlCommit, ControlError, HomeClaim, MemberEndpoint, MembershipControl, OwnershipAuthority, OwnershipError,
-    SINGLETON_LEASE_SECS, SingletonAcquisition, SingletonLease, SingletonRelease, SingletonRenewal, TransferOutcome,
+    PendingTransferAudit, SINGLETON_LEASE_SECS, SingletonAcquisition, SingletonLease, SingletonRelease,
+    SingletonRenewal, TransferOutcome,
 };
 
 type VoterId = u64;
@@ -439,6 +440,22 @@ impl OwnershipAuthority for OwnershipHandle {
         OwnershipAuthority::transfer_home(group.as_ref(), authority, new_home).await
     }
 
+    async fn pending_transfer_audits(&self) -> Result<Vec<PendingTransferAudit>, OwnershipError> {
+        let group = self
+            .group
+            .upgrade()
+            .ok_or_else(|| OwnershipError::Unavailable("ownership consensus stopped".to_owned()))?;
+        OwnershipAuthority::pending_transfer_audits(group.as_ref()).await
+    }
+
+    async fn complete_transfer_audit(&self, id: &str) -> Result<(), OwnershipError> {
+        let group = self
+            .group
+            .upgrade()
+            .ok_or_else(|| OwnershipError::Unavailable("ownership consensus stopped".to_owned()))?;
+        OwnershipAuthority::complete_transfer_audit(group.as_ref(), id).await
+    }
+
     fn cluster_status(&self) -> ClusterStatus {
         self.group.upgrade().map_or(
             ClusterStatus {
@@ -662,6 +679,17 @@ impl OwnershipAuthority for OwnershipGroup {
         }
     }
 
+    async fn pending_transfer_audits(&self) -> Result<Vec<PendingTransferAudit>, OwnershipError> {
+        Ok(self.node.state_machine().pending_transfer_audits().await)
+    }
+
+    /// Replicating the clearing decision keeps later leaders from projecting the fact again.
+    async fn complete_transfer_audit(&self, id: &str) -> Result<(), OwnershipError> {
+        self.submit_command(OwnershipCommand::CompleteTransferAudit { key: id.to_owned() })
+            .await
+            .map(|_| ())
+    }
+
     fn cluster_status(&self) -> ClusterStatus {
         let metrics = self.node.metrics().borrow().clone();
         let membership = &metrics.membership_config;
@@ -739,7 +767,9 @@ impl OwnershipGroup {
                 self.add_learner(&datacenter, address).await?;
                 self.change_voters(Some(&datacenter), Some(&remove)).await
             }
-            ControlCommand::TransferAuthority { authority, new_home } => {
+            ControlCommand::TransferAuthority {
+                authority, new_home, ..
+            } => {
                 self.submit_ownership(OwnershipCommand::RecordTransfer {
                     authority: AuthorityKey(authority),
                     new_home: DatacenterId(new_home),

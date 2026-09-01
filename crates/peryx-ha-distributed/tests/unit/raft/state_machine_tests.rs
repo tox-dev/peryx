@@ -29,6 +29,23 @@ fn advance(authority: &str) -> OwnershipCommand {
     }
 }
 
+fn move_home(authority: &str, new_home: &str) -> OwnershipCommand {
+    OwnershipCommand::AttemptControl {
+        key: "k1".to_owned(),
+        command: peryx_ha::ControlCommand::TransferAuthority {
+            authority: authority.to_owned(),
+            new_home: new_home.to_owned(),
+            intent: Some(peryx_ha::TransferIntent {
+                source: "east".to_owned(),
+                actor: "alice".to_owned(),
+                reason: "drain east".to_owned(),
+                barrier: 5,
+            }),
+        },
+        now_unix: 0,
+    }
+}
+
 fn normal(index: u64, command: OwnershipCommand) -> Entry<TypeConfig> {
     normal_at(1, index, command)
 }
@@ -251,6 +268,33 @@ async fn test_epoch_of_reads_the_committed_epoch() {
 
     machine.apply(vec![normal(2, advance("proj"))]).await.unwrap();
     assert_eq!(machine.epoch_of(&key("proj")).await, AuthorityEpoch(2));
+}
+
+#[tokio::test]
+async fn test_pending_transfer_audits_reads_the_facts_committed_transfers_sealed() {
+    let mut machine = OwnershipStateMachine::default();
+    machine.apply(vec![normal(1, assign("proj", "east"))]).await.unwrap();
+    assert_eq!(machine.pending_transfer_audits().await, Vec::new());
+
+    machine.apply(vec![normal(2, move_home("proj", "west"))]).await.unwrap();
+
+    assert_eq!(
+        machine.pending_transfer_audits().await,
+        vec![peryx_ha::PendingTransferAudit {
+            id: "k1".to_owned(),
+            audit: peryx_ha::TransferAudit {
+                authority: "proj".to_owned(),
+                source: "east".to_owned(),
+                target: "west".to_owned(),
+                actor: "alice".to_owned(),
+                reason: "drain east".to_owned(),
+                barrier: 5,
+                epoch: 2,
+                commit_term: 1,
+                commit_index: 2,
+            },
+        }]
+    );
 }
 
 fn open_store(dir: &TempDir) -> RaftLogStore {

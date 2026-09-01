@@ -220,7 +220,12 @@ async fn start_transfer(
                 .into_response();
         }
     };
+    // Consensus needs an identity before submission to retain recovery state for each move.
     let request = TransferRequest {
+        id: headers
+            .get(&IDEMPOTENCY_KEY)
+            .and_then(|value| value.to_str().ok())
+            .map_or_else(|| format!("transfer-{}", uuid::Uuid::new_v4().simple()), str::to_owned),
         authority: AuthorityKey(body.authority),
         source: DatacenterId(body.source),
         target: DatacenterId(body.target),
@@ -228,10 +233,9 @@ async fn start_transfer(
         reason: body.reason,
         barrier,
     };
-    let key = headers.get(&IDEMPOTENCY_KEY).and_then(|value| value.to_str().ok());
     match state
         .coordinator
-        .run(request, control.as_ref(), ownership, &state.meta, key)
+        .run(request, control.as_ref(), ownership, &state.meta)
         .await
     {
         Ok(audit) => transfer_committed(&audit),
@@ -257,6 +261,7 @@ async fn cancel_transfer(
 
 fn transfer_committed(audit: &TransferAudit) -> Response {
     let body = json!({
+        "id": audit.id,
         "authority": audit.authority.0,
         "source": audit.source.0,
         "target": audit.target.0,
@@ -264,6 +269,7 @@ fn transfer_committed(audit: &TransferAudit) -> Response {
         "reason": audit.reason,
         "barrier": audit.barrier,
         "epoch": audit.epoch.0,
+        "commit_term": audit.commit_term,
         "commit_index": audit.commit_index,
     });
     (StatusCode::OK, [(header::CACHE_CONTROL, "no-store")], Json(body)).into_response()
@@ -289,9 +295,12 @@ fn drive_error(error: &TransferDriveError) -> Response {
     match error {
         TransferDriveError::Commit(control) => command_error(control),
         TransferDriveError::Plan(plan) => (StatusCode::CONFLICT, plan.to_string()).into_response(),
-        TransferDriveError::Frontier(_) | TransferDriveError::Persist(_) => {
-            (StatusCode::SERVICE_UNAVAILABLE, error.to_string()).into_response()
-        }
+        TransferDriveError::Frontier(_)
+        | TransferDriveError::Persist(_)
+        | TransferDriveError::ProjectionPending { .. }
+        | TransferDriveError::ProjectionStateUnavailable { .. }
+        | TransferDriveError::Recover(_)
+        | TransferDriveError::Unsealed(_) => (StatusCode::SERVICE_UNAVAILABLE, error.to_string()).into_response(),
     }
 }
 

@@ -10,7 +10,7 @@ use crate::authority::AuthorityKey;
 use crate::envelope::AuthorityEpoch;
 use peryx_ha::{
     AUTHORITY_CLOCK_SKEW_SECS, AUTHORITY_WRITE_LEASE_SECS, CONTROL_IDEMPOTENCY_SECS, CommandOutcome, CommandReceipt,
-    ControlCommand, SINGLETON_LEASE_SECS,
+    ControlCommand, PendingTransferAudit, SINGLETON_LEASE_SECS, TransferAudit,
 };
 
 /// The unassigned epoch, which [`AuthorityFence`](crate::AuthorityFence) rejects.
@@ -118,6 +118,8 @@ pub enum OwnershipCommand {
         command: ControlCommand,
         now_unix: i64,
     },
+    /// Drops the audit a committed transfer sealed under `key`, once a store holds it in durable storage.
+    CompleteTransferAudit { key: String },
 }
 
 /// What the replicated idempotency window says about one keyed control attempt.
@@ -185,6 +187,8 @@ pub enum OwnershipEffect {
     /// The key no longer holds an unfinished claim, whether this decision freed one or a retry had
     /// already settled it.
     ControlReleased,
+    /// The key holds no unprojected audit, whether this decision dropped one or an earlier pass had.
+    TransferAuditCompleted,
     /// The command was invalid and left ownership unchanged.
     Rejected(Rejection),
 }
@@ -259,6 +263,10 @@ struct ControlRecord {
     /// The window is anchored at the first claim, so settlement never extends it.
     claimed_at_unix: i64,
     receipt: Option<CommandReceipt>,
+    /// Set while the audit this key's transfer sealed is still unprojected. Snapshots carry it, so a
+    /// restart or a replacement leader resumes the same projection.
+    #[serde(default)]
+    audit: Option<TransferAudit>,
 }
 
 /// Missing authorities are unassigned and read as epoch zero; missing singletons are unheld.
@@ -328,6 +336,10 @@ impl OwnershipState {
                 self.release_control(key, command, *now_unix);
                 OwnershipEffect::ControlReleased
             }
+            OwnershipCommand::CompleteTransferAudit { key } => {
+                self.complete_transfer_audit(key);
+                OwnershipEffect::TransferAuditCompleted
+            }
         }
     }
 
@@ -346,13 +358,13 @@ impl OwnershipState {
             if record.command != *command {
                 return ControlResolution::KeyReuse;
             }
-            return record
-                .receipt
-                .clone()
-                .map_or(ControlResolution::Claimed, ControlResolution::Replayed);
+            let Some(receipt) = record.receipt.clone() else {
+                return ControlResolution::Claimed;
+            };
+            return ControlResolution::Replayed(receipt);
         }
         let Some(effect) = self.apply_control(command, now_unix) else {
-            self.bind_control(key, command, now_unix, None);
+            self.bind_control(key, command, now_unix, None, None);
             return ControlResolution::Claimed;
         };
         let outcome = match control_outcome(&effect) {
@@ -366,15 +378,62 @@ impl OwnershipState {
             old_voters: Vec::new(),
             new_voters: Vec::new(),
         };
-        self.bind_control(key, command, now_unix, Some(receipt.clone()));
+        let audit = self.seal_transfer_audit(command, meta);
+        self.bind_control(key, command, now_unix, Some(receipt.clone()), audit);
         ControlResolution::Committed(receipt)
+    }
+
+    /// Seals the post-mutation epoch and the deciding log position into a transfer audit.
+    fn seal_transfer_audit(&self, command: &ControlCommand, meta: AppliedMeta) -> Option<TransferAudit> {
+        let ControlCommand::TransferAuthority {
+            authority,
+            new_home,
+            intent,
+        } = command
+        else {
+            return None;
+        };
+        let intent = intent.as_ref()?;
+        Some(TransferAudit {
+            authority: authority.clone(),
+            source: intent.source.clone(),
+            target: new_home.clone(),
+            actor: intent.actor.clone(),
+            reason: intent.reason.clone(),
+            barrier: intent.barrier,
+            epoch: self.epoch(&AuthorityKey(authority.clone())).0,
+            commit_term: meta.term,
+            commit_index: meta.index,
+        })
+    }
+
+    /// Audits sealed by a committed transfer that no projector has reported storing.
+    #[must_use]
+    pub fn pending_transfer_audits(&self) -> Vec<PendingTransferAudit> {
+        self.controls
+            .iter()
+            .filter_map(|(key, record)| {
+                record
+                    .audit
+                    .clone()
+                    .map(|audit| PendingTransferAudit { id: key.clone(), audit })
+            })
+            .collect()
+    }
+
+    fn complete_transfer_audit(&mut self, key: &str) {
+        if let Some(record) = self.controls.get_mut(key) {
+            record.audit = None;
+        }
     }
 
     /// The ownership mutation `command` performs, or `None` when a consensus membership change carries
     /// it instead.
     fn apply_control(&mut self, command: &ControlCommand, now_unix: i64) -> Option<OwnershipEffect> {
         match command {
-            ControlCommand::TransferAuthority { authority, new_home } => Some(self.transfer(
+            ControlCommand::TransferAuthority {
+                authority, new_home, ..
+            } => Some(self.transfer(
                 &AuthorityKey(authority.clone()),
                 &DatacenterId(new_home.clone()),
                 now_unix,
@@ -408,6 +467,7 @@ impl OwnershipState {
                 command: command.clone(),
                 claimed_at_unix: now_unix,
                 receipt: None,
+                audit: None,
             })
             .receipt
             .get_or_insert_with(|| receipt.clone())
@@ -428,22 +488,32 @@ impl OwnershipState {
         }
     }
 
-    fn bind_control(&mut self, key: &str, command: &ControlCommand, now_unix: i64, receipt: Option<CommandReceipt>) {
+    fn bind_control(
+        &mut self,
+        key: &str,
+        command: &ControlCommand,
+        now_unix: i64,
+        receipt: Option<CommandReceipt>,
+        audit: Option<TransferAudit>,
+    ) {
         self.controls.insert(
             key.to_owned(),
             ControlRecord {
                 command: command.clone(),
                 claimed_at_unix: now_unix,
                 receipt,
+                audit,
             },
         );
     }
 
     /// Every replica prunes from the `now_unix` of the same committed entry, so the window stays
-    /// identical across the group.
+    /// identical across the group. A record still holding an unprojected audit outlives the window: the
+    /// move it describes is committed, so dropping it would lose the only durable trace of that move.
     fn prune_controls(&mut self, now_unix: i64) {
-        self.controls
-            .retain(|_, record| now_unix.saturating_sub(record.claimed_at_unix) < CONTROL_IDEMPOTENCY_SECS);
+        self.controls.retain(|_, record| {
+            record.audit.is_some() || now_unix.saturating_sub(record.claimed_at_unix) < CONTROL_IDEMPOTENCY_SECS
+        });
     }
 
     /// Grants `job` to `holder` when no unlapsed grant stands, at a generation above every earlier grant

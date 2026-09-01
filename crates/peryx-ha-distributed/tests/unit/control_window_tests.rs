@@ -6,7 +6,10 @@ use crate::ownership::{
     AppliedMeta, AssignmentCause, ControlRejection, ControlResolution, DatacenterId, OwnershipCommand, OwnershipEffect,
     OwnershipState, Rejection, control_outcome,
 };
-use peryx_ha::{CONTROL_IDEMPOTENCY_SECS, CommandOutcome, CommandReceipt, ControlCommand};
+use peryx_ha::{
+    CONTROL_IDEMPOTENCY_SECS, CommandOutcome, CommandReceipt, ControlCommand, PendingTransferAudit, TransferAudit,
+    TransferIntent,
+};
 use rstest::rstest;
 
 const META: AppliedMeta = AppliedMeta { term: 4, index: 9 };
@@ -29,10 +32,36 @@ fn advance_epoch() -> ControlCommand {
     }
 }
 
+const BARRIER: u64 = 5;
+
+fn intent() -> TransferIntent {
+    TransferIntent {
+        source: "east".to_owned(),
+        actor: "alice".to_owned(),
+        reason: "drain east".to_owned(),
+        barrier: BARRIER,
+    }
+}
+
 fn move_home(new_home: &str) -> ControlCommand {
     ControlCommand::TransferAuthority {
         authority: "proj".to_owned(),
         new_home: new_home.to_owned(),
+        intent: Some(intent()),
+    }
+}
+
+fn sealed(new_home: &str, epoch: u64) -> TransferAudit {
+    TransferAudit {
+        authority: "proj".to_owned(),
+        source: "east".to_owned(),
+        target: new_home.to_owned(),
+        actor: "alice".to_owned(),
+        reason: "drain east".to_owned(),
+        barrier: BARRIER,
+        epoch,
+        commit_term: META.term,
+        commit_index: META.index,
     }
 }
 
@@ -65,6 +94,10 @@ fn attempt_at(name: &str, command: ControlCommand, now_unix: i64) -> OwnershipCo
 
 fn attempt(name: &str, command: ControlCommand) -> OwnershipCommand {
     attempt_at(name, command, 0)
+}
+
+fn complete(name: &str) -> OwnershipCommand {
+    OwnershipCommand::CompleteTransferAudit { key: name.to_owned() }
 }
 
 fn release(name: &str, command: ControlCommand) -> OwnershipCommand {
@@ -167,7 +200,7 @@ fn test_a_repeated_epoch_advance_replays_without_advancing_again() {
 }
 
 #[test]
-fn test_a_transfer_to_the_current_home_records_a_no_change_receipt() {
+fn test_a_transfer_to_the_current_home_seals_the_epoch_it_resolved_against() {
     let mut state = homed();
 
     let effect = state.apply(&attempt("k1", move_home("east")), META);
@@ -178,10 +211,17 @@ fn test_a_transfer_to_the_current_home_records_a_no_change_receipt() {
             CommandOutcome::NoChange
         )))
     );
+    assert_eq!(
+        state.pending_transfer_audits(),
+        vec![PendingTransferAudit {
+            id: "k1".to_owned(),
+            audit: sealed("east", 1),
+        }]
+    );
 }
 
 #[test]
-fn test_a_transfer_records_its_receipt_and_moves_the_home() {
+fn test_a_transfer_records_its_receipt_moves_the_home_and_seals_its_audit() {
     let mut state = homed();
 
     let effect = state.apply(&attempt("k1", move_home("west")), META);
@@ -193,6 +233,119 @@ fn test_a_transfer_records_its_receipt_and_moves_the_home() {
         )))
     );
     assert_eq!(state.home(&key("proj")), Some(&DatacenterId("west".to_owned())));
+    assert_eq!(
+        state.pending_transfer_audits(),
+        vec![PendingTransferAudit {
+            id: "k1".to_owned(),
+            audit: sealed("west", 2),
+        }]
+    );
+}
+
+#[test]
+fn test_a_rejected_transfer_seals_no_audit() {
+    let mut state = OwnershipState::new();
+
+    let effect = state.apply(&attempt("k1", move_home("west")), META);
+
+    assert_eq!(
+        effect,
+        resolved(ControlResolution::Rejected(ControlRejection::NotAssigned))
+    );
+    assert_eq!(state.pending_transfer_audits(), Vec::new());
+}
+
+#[test]
+fn test_a_repeated_transfer_replays_the_sealed_audit_without_moving_again() {
+    let mut state = homed();
+    state.apply(&attempt("k1", move_home("west")), META);
+
+    let repeated = state.apply(&attempt("k1", move_home("west")), AppliedMeta { term: 5, index: 20 });
+
+    assert_eq!(
+        repeated,
+        resolved(ControlResolution::Replayed(authority_receipt(
+            CommandOutcome::Committed
+        )))
+    );
+    assert_eq!(state.epoch(&key("proj")), AuthorityEpoch(2));
+}
+
+#[test]
+fn test_an_unprojected_audit_outlives_the_idempotency_window() {
+    let mut state = homed();
+    state.apply(&attempt_at("k1", move_home("west"), 0), META);
+
+    state.apply(&attempt_at("k2", advance_epoch(), CONTROL_IDEMPOTENCY_SECS), META);
+
+    assert_eq!(
+        state.pending_transfer_audits(),
+        vec![PendingTransferAudit {
+            id: "k1".to_owned(),
+            audit: sealed("west", 2),
+        }]
+    );
+}
+
+#[test]
+fn test_an_unprojected_audit_survives_a_snapshot_round_trip() {
+    let mut state = homed();
+    state.apply(&attempt("k1", move_home("west")), META);
+
+    let restored = OwnershipState::restore(&state.snapshot()).unwrap();
+
+    assert_eq!(
+        restored.pending_transfer_audits(),
+        vec![PendingTransferAudit {
+            id: "k1".to_owned(),
+            audit: sealed("west", 2),
+        }]
+    );
+}
+
+#[test]
+fn test_completing_a_projection_drops_the_audit_and_keeps_the_receipt() {
+    let mut state = homed();
+    state.apply(&attempt("k1", move_home("west")), META);
+
+    let completed = state.apply(&complete("k1"), META);
+    let replayed = state.apply(&attempt("k1", move_home("west")), META);
+
+    assert_eq!(completed, OwnershipEffect::TransferAuditCompleted);
+    assert_eq!(state.pending_transfer_audits(), Vec::new());
+    assert_eq!(
+        replayed,
+        resolved(ControlResolution::Replayed(authority_receipt(
+            CommandOutcome::Committed
+        )))
+    );
+}
+
+#[test]
+fn test_completing_an_unknown_projection_changes_nothing() {
+    let mut state = homed();
+
+    let completed = state.apply(&complete("ghost"), META);
+
+    assert_eq!(completed, OwnershipEffect::TransferAuditCompleted);
+    assert_eq!(state.pending_transfer_audits(), Vec::new());
+}
+
+#[test]
+fn test_a_projected_key_prunes_with_the_window() {
+    let mut state = homed();
+    state.apply(&attempt_at("k1", move_home("west"), 0), META);
+    state.apply(&complete("k1"), META);
+
+    let reopened = state.apply(&attempt_at("k1", move_home("east"), CONTROL_IDEMPOTENCY_SECS), META);
+
+    assert_eq!(
+        reopened,
+        resolved(ControlResolution::Committed(authority_receipt(
+            CommandOutcome::Committed
+        ))),
+        "the pruned key stands for whatever the next attempt carries"
+    );
 }
 
 #[test]
@@ -402,7 +555,11 @@ fn test_a_released_key_stays_open_across_a_snapshot_round_trip() {
 }
 
 #[rstest]
-#[case::inside_the_window(CONTROL_IDEMPOTENCY_SECS - 1, 2, ControlResolution::Replayed(authority_receipt(CommandOutcome::Committed)))]
+#[case::inside_the_window(
+    CONTROL_IDEMPOTENCY_SECS - 1,
+    2,
+    ControlResolution::Replayed(authority_receipt(CommandOutcome::Committed))
+)]
 #[case::past_the_window(
     CONTROL_IDEMPOTENCY_SECS,
     3,
@@ -426,9 +583,9 @@ fn test_a_key_is_replayable_until_its_window_closes(
 fn test_pruning_one_key_leaves_a_younger_key_replayable() {
     let mut state = homed();
     state.apply(&attempt_at("old", advance_epoch(), 0), META);
-    state.apply(&attempt_at("young", move_home("west"), 10), META);
+    state.apply(&attempt_at("young", advance_epoch(), 10), META);
 
-    let young = state.apply(&attempt_at("young", move_home("west"), CONTROL_IDEMPOTENCY_SECS), META);
+    let young = state.apply(&attempt_at("young", advance_epoch(), CONTROL_IDEMPOTENCY_SECS), META);
 
     assert_eq!(
         young,

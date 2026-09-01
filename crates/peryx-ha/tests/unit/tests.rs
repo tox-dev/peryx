@@ -8,6 +8,32 @@ use tokio::sync::oneshot;
 
 use super::*;
 
+fn intent() -> TransferIntent {
+    TransferIntent {
+        source: "west".to_owned(),
+        actor: "alice".to_owned(),
+        reason: "drain west".to_owned(),
+        barrier: 5,
+    }
+}
+
+#[test]
+fn transfer_audit_without_a_term_reads_as_legacy() {
+    let audit: TransferAudit = serde_json::from_value(serde_json::json!({
+        "authority": "proj",
+        "source": "east",
+        "target": "west",
+        "actor": "alice",
+        "reason": "drain east",
+        "barrier": 5,
+        "epoch": 2,
+        "commit_index": 9
+    }))
+    .unwrap();
+
+    assert_eq!(audit.commit_term, 0);
+}
+
 #[path = "endpoint_tests.rs"]
 mod endpoint_tests;
 #[path = "placement_tests.rs"]
@@ -635,8 +661,8 @@ fn generated_value_contracts_distinguish_fields_and_variants() {
     ControlCommand::ReplaceVoter { remove: "north".into(), datacenter: "east".into(), address: "one".into() }
 )]
 #[case(
-    ControlCommand::TransferAuthority { authority: "repo".into(), new_home: "east".into() },
-    ControlCommand::TransferAuthority { authority: "repo".into(), new_home: "west".into() }
+    ControlCommand::TransferAuthority { authority: "repo".into(), new_home: "east".into(), intent: Some(intent()) },
+    ControlCommand::TransferAuthority { authority: "repo".into(), new_home: "west".into(), intent: Some(intent()) }
 )]
 #[case(
     ControlCommand::AdvanceEpoch { authority: "one".into() },
@@ -726,8 +752,8 @@ fn transport_error_derives_distinguish_payloads(#[case] value: TransportError, #
     "east"
 )]
 #[case(
-    ControlCommand::TransferAuthority { authority: "repo".into(), new_home: "east".into() },
-    r#"{"type":"transfer_authority","authority":"repo","new_home":"east"}"#,
+    ControlCommand::TransferAuthority { authority: "repo".into(), new_home: "east".into(), intent: Some(intent()) },
+    r#"{"type":"transfer_authority","authority":"repo","new_home":"east","intent":{"source":"west","actor":"alice","reason":"drain west","barrier":5}}"#,
     "transfer_authority",
     "repo"
 )]
@@ -1240,6 +1266,7 @@ async fn control_executor_reports_receipt_and_metrics() {
             ControlCommand::TransferAuthority {
                 authority: "packages".into(),
                 new_home: "west".into(),
+                intent: Some(intent()),
             },
         )
         .await

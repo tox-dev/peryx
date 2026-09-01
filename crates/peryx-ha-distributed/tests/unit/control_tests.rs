@@ -126,6 +126,7 @@ fn transfer() -> ControlCommand {
     ControlCommand::TransferAuthority {
         authority: "proj".to_owned(),
         new_home: "west".to_owned(),
+        intent: None,
     }
 }
 

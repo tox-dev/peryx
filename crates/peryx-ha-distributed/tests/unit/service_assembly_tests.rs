@@ -126,6 +126,31 @@ impl OwnershipAuthority for StaticAuthority {
             epoch: 8,
         }))
     }
+
+    async fn pending_transfer_audits(&self) -> Result<Vec<peryx_ha::PendingTransferAudit>, OwnershipError> {
+        Ok(vec![peryx_ha::PendingTransferAudit {
+            id: "t-1".to_owned(),
+            audit: static_audit(),
+        }])
+    }
+
+    async fn complete_transfer_audit(&self, _id: &str) -> Result<(), OwnershipError> {
+        Ok(())
+    }
+}
+
+fn static_audit() -> peryx_ha::TransferAudit {
+    peryx_ha::TransferAudit {
+        authority: "resource".to_owned(),
+        source: "local".to_owned(),
+        target: "west".to_owned(),
+        actor: "alice".to_owned(),
+        reason: "drain local".to_owned(),
+        barrier: 5,
+        epoch: 8,
+        commit_term: 2,
+        commit_index: 9,
+    }
 }
 
 fn static_lease(job: &str, holder: &str) -> peryx_ha::SingletonLease {
@@ -436,6 +461,22 @@ async fn control_assembly_mounts_authenticated_routes() {
 }
 
 #[tokio::test]
+async fn startup_transfer_audit_recovery_tolerates_unavailable_consensus() {
+    let dir = tempfile::tempdir().unwrap();
+    let context = service_context(&dir);
+    let ownership: Arc<dyn OwnershipAuthority> = Arc::new(DeferredOwnership::new(Arc::new(
+        std::sync::atomic::AtomicBool::new(false),
+    )));
+
+    recover_startup_transfer_audits(&ownership, &context.meta).await;
+
+    assert!(matches!(
+        ownership.pending_transfer_audits().await,
+        Err(OwnershipError::Unavailable(_))
+    ));
+}
+
+#[tokio::test]
 async fn worker_assembly_binds_distributed_jobs() {
     let dir = tempfile::tempdir().unwrap();
     let context = service_context(&dir);
@@ -548,6 +589,14 @@ async fn deferred_worker_inputs_fail_closed_until_bound_and_active() {
         ownership.transfer_home("resource", "west").await,
         Err(OwnershipError::Unavailable(_))
     ));
+    assert!(matches!(
+        ownership.pending_transfer_audits().await,
+        Err(OwnershipError::Unavailable(_))
+    ));
+    assert!(matches!(
+        ownership.complete_transfer_audit("t-1").await,
+        Err(OwnershipError::Unavailable(_))
+    ));
 
     active.store(true, std::sync::atomic::Ordering::Release);
     assert_eq!(
@@ -563,6 +612,14 @@ async fn deferred_worker_inputs_fail_closed_until_bound_and_active() {
     let lease = ownership.begin_epoch_write("resource", 7).await.unwrap().unwrap();
     ownership.finish_epoch_write(&lease).await.unwrap();
     assert_eq!(ownership.transfer_home("east", "west").await.unwrap().unwrap().epoch, 8);
+    assert_eq!(
+        ownership.pending_transfer_audits().await.unwrap(),
+        vec![peryx_ha::PendingTransferAudit {
+            id: "t-1".to_owned(),
+            audit: static_audit(),
+        }]
+    );
+    ownership.complete_transfer_audit("t-1").await.unwrap();
 
     let references = DeferredReferences::default();
     assert_eq!(

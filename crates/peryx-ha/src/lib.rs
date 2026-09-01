@@ -483,6 +483,16 @@ pub trait AnalyticsCompleteness: Send + Sync {
     ) -> Result<CompletenessReport, CompletenessError>;
 }
 
+/// The audit fields a transfer carries into consensus. Replicating them with the move lets the
+/// committed decision seal a whole [`TransferAudit`], so no later read has to reconstruct one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferIntent {
+    pub source: String,
+    pub actor: String,
+    pub reason: String,
+    pub barrier: u64,
+}
+
 /// Replicated alongside its idempotency key, so a replacement leader compares the canonical command
 /// rather than a process-local digest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -506,6 +516,8 @@ pub enum ControlCommand {
     TransferAuthority {
         authority: String,
         new_home: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        intent: Option<TransferIntent>,
     },
     AdvanceEpoch {
         authority: String,
@@ -888,6 +900,35 @@ pub trait OwnershipAuthority: Send + Sync {
     ///
     /// Returns [`OwnershipError`] when the transfer cannot commit on the ownership leader.
     async fn transfer_home(&self, authority: &str, new_home: &str) -> Result<Option<TransferOutcome>, OwnershipError>;
+
+    /// Audits sealed by a committed transfer that no store holds in durable storage yet.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OwnershipError`] when the replicated facts cannot be read.
+    async fn pending_transfer_audits(&self) -> Result<Vec<PendingTransferAudit>, OwnershipError> {
+        Ok(Vec::new())
+    }
+
+    /// Clears the fact for `id` once a store holds its audit. Clearing an absent fact succeeds, so a
+    /// projector that crashed after the store write finishes on its next pass.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OwnershipError`] when the clearing decision cannot commit.
+    async fn complete_transfer_audit(&self, _id: &str) -> Result<(), OwnershipError> {
+        Err(OwnershipError::Unavailable(
+            "transfer audit recovery is unavailable".to_owned(),
+        ))
+    }
+}
+
+/// A committed transfer's audit, held under the stable transfer identity that also keys its control
+/// receipt, until a projector stores it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingTransferAudit {
+    pub id: String,
+    pub audit: TransferAudit,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

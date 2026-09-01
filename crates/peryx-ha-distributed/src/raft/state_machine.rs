@@ -16,6 +16,7 @@ use crate::ownership::{AppliedMeta, DatacenterId, OwnershipError, OwnershipState
 use crate::raft::persistence::{RaftLogError, RaftLogStore};
 use crate::raft::{OwnershipResponse, PeryxNode, TypeConfig};
 use crate::{Admission, AuthorityEpoch, AuthorityFence, AuthorityKey};
+use peryx_ha::PendingTransferAudit;
 
 type NodeId = u64;
 
@@ -119,6 +120,11 @@ impl OwnershipStateMachine {
     /// that have applied a newer epoch reject stale work.
     pub async fn epoch_of(&self, authority: &AuthorityKey) -> AuthorityEpoch {
         self.inner.lock().await.state.epoch(authority)
+    }
+
+    /// Audits sealed by a committed transfer that no projector has reported storing.
+    pub async fn pending_transfer_audits(&self) -> Vec<PendingTransferAudit> {
+        self.inner.lock().await.state.pending_transfer_audits()
     }
 
     /// Rejects work from a superseded epoch against this node's applied state.

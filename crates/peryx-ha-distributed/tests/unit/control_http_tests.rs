@@ -245,7 +245,10 @@ async fn send_with(
     (status, headers, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
 }
 
-struct FixedGroup;
+#[derive(Default)]
+struct FixedGroup {
+    projection: Option<Arc<Mutex<Option<String>>>>,
+}
 
 #[async_trait::async_trait]
 impl OwnershipAuthority for FixedGroup {
@@ -279,18 +282,54 @@ impl OwnershipAuthority for FixedGroup {
     ) -> Result<Option<TransferOutcome>, OwnershipError> {
         Ok(None)
     }
+
+    async fn pending_transfer_audits(&self) -> Result<Vec<peryx_ha::PendingTransferAudit>, OwnershipError> {
+        Ok(self
+            .projection
+            .as_ref()
+            .and_then(|pending| pending.lock().unwrap().clone())
+            .map(|id| vec![peryx_ha::PendingTransferAudit { id, audit: sealed() }])
+            .unwrap_or_default())
+    }
+
+    async fn complete_transfer_audit(&self, _id: &str) -> Result<(), OwnershipError> {
+        if let Some(pending) = &self.projection {
+            *pending.lock().unwrap() = None;
+        }
+        Ok(())
+    }
 }
 
 struct FixedControl {
     result: Result<CommandReceipt, ControlError>,
+    projection: Option<Arc<Mutex<Option<String>>>>,
     calls: Mutex<usize>,
 }
 
 #[async_trait::async_trait]
 impl MembershipControl for FixedControl {
-    async fn submit(&self, _key: Option<&str>, _command: ControlCommand) -> Result<ControlCommit, ControlError> {
+    async fn submit(&self, key: Option<&str>, _command: ControlCommand) -> Result<ControlCommit, ControlError> {
         *self.calls.lock().unwrap() += 1;
-        self.result.clone().map(ControlCommit::committed)
+        self.result.clone().map(|receipt| {
+            if let Some(pending) = &self.projection {
+                *pending.lock().unwrap() = key.map(str::to_owned);
+            }
+            ControlCommit::committed(receipt)
+        })
+    }
+}
+
+fn sealed() -> peryx_ha::TransferAudit {
+    peryx_ha::TransferAudit {
+        authority: "proj".to_owned(),
+        source: "east".to_owned(),
+        target: "west".to_owned(),
+        actor: ADMIN.to_owned(),
+        reason: "drain east".to_owned(),
+        barrier: 10,
+        epoch: 7,
+        commit_term: 5,
+        commit_index: 9,
     }
 }
 
@@ -307,6 +346,7 @@ fn committed(index: u64) -> CommandReceipt {
 fn control_services(result: Result<CommandReceipt, ControlError>) -> (ControlServices, Arc<FixedControl>) {
     let control = Arc::new(FixedControl {
         result,
+        projection: None,
         calls: Mutex::new(0),
     });
     (
@@ -319,7 +359,11 @@ fn control_services(result: Result<CommandReceipt, ControlError>) -> (ControlSer
 }
 
 fn command_body() -> Value {
-    json!({"type": "transfer_authority", "authority": "proj", "new_home": "west"})
+    json!({
+        "type": "transfer_authority",
+        "authority": "proj",
+        "new_home": "west",
+    })
 }
 
 fn transfer_body() -> Value {
@@ -349,9 +393,18 @@ impl FrontierSource for GatedFrontier {
 }
 
 fn consensus_services(result: Result<CommandReceipt, ControlError>) -> ControlServices {
-    let (mut services, _) = control_services(result);
-    services.ownership = Some(Arc::new(FixedGroup));
-    services
+    let projection = Arc::new(Mutex::new(None));
+    let control = Arc::new(FixedControl {
+        result,
+        projection: Some(projection.clone()),
+        calls: Mutex::new(0),
+    });
+    ControlServices {
+        control: Some(Arc::new(ControlPlane::new(control, Arc::new(|| 0)))),
+        ownership: Some(Arc::new(FixedGroup {
+            projection: Some(projection),
+        })),
+    }
 }
 
 #[test]
@@ -365,7 +418,7 @@ fn posture_reports_mode_and_role() {
 
 #[tokio::test]
 async fn fixed_group_implements_the_control_contract() {
-    let group = FixedGroup;
+    let group = FixedGroup::default();
 
     assert_eq!(
         group.claim_home("proj").await.unwrap(),
@@ -609,8 +662,10 @@ async fn transfer_commits_a_sealed_audit() {
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+    assert_eq!(body["id"], "transfer-1");
     assert_eq!(body["target"], "west");
     assert_eq!(body["epoch"], 7);
+    assert_eq!(body["commit_term"], 5);
     assert_eq!(state.serving.meta.transfer_audits("proj").unwrap().len(), 1);
 }
 
@@ -831,6 +886,7 @@ async fn cancel_maps_scope_unknown_and_committed_states() {
 #[test]
 fn response_mappers_cover_each_status_class() {
     let audit = TransferAudit {
+        id: "t-1".to_owned(),
         authority: AuthorityKey("proj".to_owned()),
         source: DatacenterId("east".to_owned()),
         target: DatacenterId("west".to_owned()),
@@ -838,6 +894,7 @@ fn response_mappers_cover_each_status_class() {
         reason: "drain".to_owned(),
         barrier: 3,
         epoch: AuthorityEpoch(4),
+        commit_term: 2,
         commit_index: 5,
     };
     assert_eq!(transfer_committed(&audit).status(), StatusCode::OK);

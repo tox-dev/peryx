@@ -5,6 +5,7 @@ use crate::transfer::{TransferAudit, TransferError, TransferPhase, TransferPlan,
 
 fn request(barrier: u64) -> TransferRequest {
     TransferRequest {
+        id: "transfer-1".to_owned(),
         authority: AuthorityKey("root/alpha/resource-a".to_owned()),
         source: DatacenterId("dc-east".to_owned()),
         target: DatacenterId("dc-west".to_owned()),
@@ -20,8 +21,9 @@ fn ready_plan(barrier: u64) -> TransferPlan {
     plan
 }
 
-fn sealed_audit(barrier: u64, epoch: u64, commit_index: u64) -> TransferAudit {
+fn sealed_audit(barrier: u64, epoch: u64, commit_term: u64, commit_index: u64) -> TransferAudit {
     TransferAudit {
+        id: "transfer-1".to_owned(),
         authority: AuthorityKey("root/alpha/resource-a".to_owned()),
         source: DatacenterId("dc-east".to_owned()),
         target: DatacenterId("dc-west".to_owned()),
@@ -29,6 +31,7 @@ fn sealed_audit(barrier: u64, epoch: u64, commit_index: u64) -> TransferAudit {
         reason: "decommission dc-east".to_owned(),
         barrier,
         epoch: AuthorityEpoch(epoch),
+        commit_term,
         commit_index,
     }
 }
@@ -62,24 +65,27 @@ fn test_a_later_lower_frontier_never_un_readies_a_plan() {
 #[test]
 fn test_committing_a_ready_plan_seals_the_full_audit() {
     let mut plan = ready_plan(10);
-    let audit = plan.commit(AuthorityEpoch(4), 128).unwrap();
-    assert_eq!(audit, sealed_audit(10, 4, 128));
+    let audit = plan.commit(AuthorityEpoch(4), 7, 128).unwrap();
+    assert_eq!(audit, sealed_audit(10, 4, 7, 128));
     assert_eq!(plan.phase(), TransferPhase::Committed);
-    assert_eq!(plan.audit(), Some(&sealed_audit(10, 4, 128)));
+    assert_eq!(plan.audit(), Some(&sealed_audit(10, 4, 7, 128)));
 }
 
 #[test]
 fn test_committing_before_the_barrier_is_refused() {
     let mut plan = TransferPlan::plan(request(10));
-    assert_eq!(plan.commit(AuthorityEpoch(4), 128), Err(TransferError::BarrierNotMet));
+    assert_eq!(
+        plan.commit(AuthorityEpoch(4), 7, 128),
+        Err(TransferError::BarrierNotMet)
+    );
     assert_eq!(plan.phase(), TransferPhase::AwaitingCatchUp);
 }
 
 #[test]
 fn test_committing_twice_books_one_outcome() {
     let mut plan = ready_plan(10);
-    let first = plan.commit(AuthorityEpoch(4), 128).unwrap();
-    let second = plan.commit(AuthorityEpoch(9), 256).unwrap();
+    let first = plan.commit(AuthorityEpoch(4), 7, 128).unwrap();
+    let second = plan.commit(AuthorityEpoch(9), 8, 256).unwrap();
     assert_eq!(first, second);
 }
 
@@ -87,7 +93,7 @@ fn test_committing_twice_books_one_outcome() {
 fn test_a_cancelled_plan_cannot_commit() {
     let mut plan = TransferPlan::plan(request(10));
     plan.cancel().unwrap();
-    assert_eq!(plan.commit(AuthorityEpoch(4), 128), Err(TransferError::Cancelled));
+    assert_eq!(plan.commit(AuthorityEpoch(4), 7, 128), Err(TransferError::Cancelled));
 }
 
 #[test]
@@ -115,7 +121,7 @@ fn test_cancelling_twice_is_a_no_op() {
 #[test]
 fn test_a_committed_plan_refuses_a_late_cancel() {
     let mut plan = ready_plan(10);
-    plan.commit(AuthorityEpoch(4), 128).unwrap();
+    plan.commit(AuthorityEpoch(4), 7, 128).unwrap();
     assert_eq!(plan.cancel(), Err(TransferError::AlreadyCommitted));
     assert_eq!(plan.phase(), TransferPhase::Committed);
 }
@@ -123,7 +129,7 @@ fn test_a_committed_plan_refuses_a_late_cancel() {
 #[test]
 fn test_an_observation_after_commit_does_not_regress_the_phase() {
     let mut plan = ready_plan(10);
-    plan.commit(AuthorityEpoch(4), 128).unwrap();
+    plan.commit(AuthorityEpoch(4), 7, 128).unwrap();
     assert_eq!(plan.observe_frontier(0), TransferPhase::Committed);
 }
 

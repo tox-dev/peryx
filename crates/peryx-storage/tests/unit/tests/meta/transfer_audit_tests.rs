@@ -19,6 +19,7 @@ fn audit(authority: &str, commit_index: u64) -> TransferAudit {
         reason: "drain east".to_owned(),
         barrier: 42,
         epoch: 3,
+        commit_term: 2,
         commit_index,
     }
 }

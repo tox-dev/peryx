@@ -178,6 +178,7 @@ async fn test_a_key_reused_for_different_content_is_refused_after_a_restart() {
             ControlCommand::TransferAuthority {
                 authority: "proj".to_owned(),
                 new_home: "west".to_owned(),
+                intent: None,
             },
         )
         .await;

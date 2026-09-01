@@ -19,7 +19,7 @@ use peryx_ha::{
     RemoteFrontierSource,
 };
 use peryx_storage::blob::{BlobStorage, BlobStore};
-use peryx_storage::meta::{BackendId, DataCenterId};
+use peryx_storage::meta::{BackendId, DataCenterId, MetaStore};
 
 use crate::control_http::{AvailabilityPosture, AvailabilityPostureRole, ControlHttpContext, availability_router};
 use crate::lifecycle::{FailureReceiver, Lifecycle};
@@ -27,7 +27,7 @@ use crate::{
     BlobReclamationSelector, CrossDcBlobCopier, DcDurabilityMetrics, DistributedAnalyticsCompleteness,
     DistributedBlobDurability, DistributedMode, FilesystemPlacementReconciler, HttpReceiptSource,
     HttpRemoteFrontierSource, RosterFrontierSource, RuntimeConfig, RuntimeMemberRole, RuntimeMembership, RuntimeRole,
-    TransferCoordinator, remote_blob_availability,
+    TransferCoordinator, recover_transfer_audits, remote_blob_availability,
 };
 
 const RECEIPT_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
@@ -680,6 +680,12 @@ async fn fail_startup<T>(startup: anyhow::Error, mut active: ActiveDistributed) 
     Err(startup)
 }
 
+async fn recover_startup_transfer_audits(outbox: &dyn crate::TransferAuditOutbox, meta: &MetaStore) {
+    if let Err(error) = recover_transfer_audits(outbox, meta).await {
+        tracing::warn!(%error, "transfer audit recovery at startup failed");
+    }
+}
+
 pub fn prepare_runtime(
     runtime: crate::DistributedRuntime,
     context: DistributedPrepareContext,
@@ -734,6 +740,9 @@ async fn activate_runtime(mut prepared: PreparedDistributed) -> anyhow::Result<A
     };
     let consensus = active.consensus.as_ref();
     let ownership = consensus.map(|value| value.authority.clone());
+    if let Some(ownership) = ownership.as_ref() {
+        recover_startup_transfer_audits(ownership, &prepared.context.state.serving.meta).await;
+    }
     let control_routes = availability_control_router(
         &prepared.context.config,
         AvailabilityControlContext {
@@ -1198,6 +1207,24 @@ impl OwnershipAuthority for DeferredOwnership {
     ) -> Result<Option<peryx_ha::TransferOutcome>, peryx_ha::OwnershipError> {
         match self.current() {
             Some(ownership) => ownership.transfer_home(authority, new_home).await,
+            None => Err(peryx_ha::OwnershipError::Unavailable(
+                "ownership is not active".to_owned(),
+            )),
+        }
+    }
+
+    async fn pending_transfer_audits(&self) -> Result<Vec<peryx_ha::PendingTransferAudit>, peryx_ha::OwnershipError> {
+        match self.current() {
+            Some(ownership) => ownership.pending_transfer_audits().await,
+            None => Err(peryx_ha::OwnershipError::Unavailable(
+                "ownership is not active".to_owned(),
+            )),
+        }
+    }
+
+    async fn complete_transfer_audit(&self, id: &str) -> Result<(), peryx_ha::OwnershipError> {
+        match self.current() {
+            Some(ownership) => ownership.complete_transfer_audit(id).await,
             None => Err(peryx_ha::OwnershipError::Unavailable(
                 "ownership is not active".to_owned(),
             )),
