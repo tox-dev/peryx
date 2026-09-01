@@ -2,7 +2,7 @@
 //! Invalid transitions leave the state unchanged, so all replicas derive the same state from the same
 //! command sequence.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -118,8 +118,8 @@ pub enum OwnershipCommand {
         command: ControlCommand,
         now_unix: i64,
     },
-    /// Drops the audit a committed transfer sealed under `key`, once a store holds it in durable storage.
-    CompleteTransferAudit { key: String },
+    /// Marks one member's durable store as holding the audit sealed under `key`.
+    CompleteTransferAudit { key: String, projector: String },
 }
 
 /// What the replicated idempotency window says about one keyed control attempt.
@@ -263,10 +263,12 @@ struct ControlRecord {
     /// The window is anchored at the first claim, so settlement never extends it.
     claimed_at_unix: i64,
     receipt: Option<CommandReceipt>,
-    /// Set while the audit this key's transfer sealed is still unprojected. Snapshots carry it, so a
-    /// restart or a replacement leader resumes the same projection.
+    /// Set while at least one voter present at commit has not projected this audit. Snapshots retain
+    /// the audit until those voters project it or leave the membership.
     #[serde(default)]
     audit: Option<TransferAudit>,
+    #[serde(default)]
+    audit_projectors: BTreeSet<String>,
 }
 
 /// Missing authorities are unassigned and read as epoch zero; missing singletons are unheld.
@@ -275,6 +277,8 @@ pub struct OwnershipState {
     authorities: BTreeMap<String, AuthorityRecord>,
     singletons: BTreeMap<String, SingletonRecord>,
     controls: BTreeMap<String, ControlRecord>,
+    #[serde(default)]
+    audit_projectors: BTreeSet<String>,
 }
 
 impl OwnershipState {
@@ -336,8 +340,8 @@ impl OwnershipState {
                 self.release_control(key, command, *now_unix);
                 OwnershipEffect::ControlReleased
             }
-            OwnershipCommand::CompleteTransferAudit { key } => {
-                self.complete_transfer_audit(key);
+            OwnershipCommand::CompleteTransferAudit { key, projector } => {
+                self.complete_transfer_audit(key, projector);
                 OwnershipEffect::TransferAuditCompleted
             }
         }
@@ -364,22 +368,26 @@ impl OwnershipState {
             return ControlResolution::Replayed(receipt);
         }
         let Some(effect) = self.apply_control(command, now_unix) else {
-            self.bind_control(key, command, now_unix, None, None);
+            self.bind_control(key, command, now_unix, None, None, BTreeSet::new());
             return ControlResolution::Claimed;
         };
         let outcome = match control_outcome(&effect) {
             Ok(outcome) => outcome,
             Err(rejection) => return ControlResolution::Rejected(rejection),
         };
+        let audit = self.seal_transfer_audit(command, meta);
+        let audit_projectors = audit
+            .as_ref()
+            .map_or_else(BTreeSet::new, |_| self.audit_projectors.clone());
         let receipt = CommandReceipt {
             term: meta.term,
             index: meta.index,
             outcome,
             old_voters: Vec::new(),
             new_voters: Vec::new(),
+            transfer_audit: audit.clone(),
         };
-        let audit = self.seal_transfer_audit(command, meta);
-        self.bind_control(key, command, now_unix, Some(receipt.clone()), audit);
+        self.bind_control(key, command, now_unix, Some(receipt.clone()), audit, audit_projectors);
         ControlResolution::Committed(receipt)
     }
 
@@ -407,24 +415,56 @@ impl OwnershipState {
         })
     }
 
-    /// Audits sealed by a committed transfer that no projector has reported storing.
+    /// Audits sealed by a committed transfer that `projector` has not reported storing.
     #[must_use]
-    pub fn pending_transfer_audits(&self) -> Vec<PendingTransferAudit> {
+    pub(crate) fn pending_transfer_audits(&self, projector: &str) -> Vec<PendingTransferAudit> {
         self.controls
             .iter()
             .filter_map(|(key, record)| {
+                let audit = record.audit.as_ref()?;
                 record
-                    .audit
-                    .clone()
-                    .map(|audit| PendingTransferAudit { id: key.clone(), audit })
+                    .audit_projectors
+                    .contains(projector)
+                    .then(|| PendingTransferAudit {
+                        id: key.clone(),
+                        audit: audit.clone(),
+                    })
             })
             .collect()
     }
 
-    fn complete_transfer_audit(&mut self, key: &str) {
+    fn complete_transfer_audit(&mut self, key: &str, projector: &str) {
         if let Some(record) = self.controls.get_mut(key) {
-            record.audit = None;
+            record.audit_projectors.remove(projector);
+            if record.audit_projectors.is_empty() {
+                record.audit = None;
+            }
         }
+    }
+
+    pub(crate) fn set_audit_projectors(&mut self, projectors: BTreeSet<String>) {
+        for record in self.controls.values_mut() {
+            if let (Some(audit), Some(receipt)) = (&record.audit, &mut record.receipt) {
+                if receipt.transfer_audit.is_none() {
+                    receipt.transfer_audit = Some(audit.clone());
+                }
+            }
+            if projectors.is_empty() {
+                continue;
+            } else if record.audit.is_some() && record.audit_projectors.is_empty() {
+                // Older snapshots carried the audit without its voter roster or receipt copy. Bind
+                // those records to the membership stored with the snapshot.
+                record.audit_projectors.clone_from(&projectors);
+            } else {
+                record
+                    .audit_projectors
+                    .retain(|projector| projectors.contains(projector));
+                if record.audit_projectors.is_empty() {
+                    record.audit = None;
+                }
+            }
+        }
+        self.audit_projectors = projectors;
     }
 
     /// The ownership mutation `command` performs, or `None` when a consensus membership change carries
@@ -468,6 +508,7 @@ impl OwnershipState {
                 claimed_at_unix: now_unix,
                 receipt: None,
                 audit: None,
+                audit_projectors: BTreeSet::new(),
             })
             .receipt
             .get_or_insert_with(|| receipt.clone())
@@ -495,6 +536,7 @@ impl OwnershipState {
         now_unix: i64,
         receipt: Option<CommandReceipt>,
         audit: Option<TransferAudit>,
+        audit_projectors: BTreeSet<String>,
     ) {
         self.controls.insert(
             key.to_owned(),
@@ -503,6 +545,7 @@ impl OwnershipState {
                 claimed_at_unix: now_unix,
                 receipt,
                 audit,
+                audit_projectors,
             },
         );
     }

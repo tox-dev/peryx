@@ -124,27 +124,28 @@ The record retains the transfer identity and authority; source and target datace
 barrier; epoch; and Raft term and index. Operators and reconciliation use it to identify the committed move.
 
 The ownership state machine seals the request fields with the post-mutation epoch and the deciding log position. A later
-authority move cannot change the epoch recorded for an earlier transfer. Replicated ownership keeps only the pending
-audit facts and the current home and epoch for each authority. Once projected, the durable audit is the sole historical
-record, rather than an unbounded trail carried in every snapshot.
+authority move cannot change the epoch recorded for an earlier transfer. Replicated ownership keeps the sealed record
+until every voter present at commit has stored it or left the membership. Once projected, each member's durable audit is
+the historical record, rather than an unbounded trail carried in every snapshot.
 
 ## Recovering an audit
 
-Raft commits the move before `MetaStore` stores the audit, so the store write can fail after ownership changes.
-Consensus retains the sealed record under the transfer identity until the projector stores it. Snapshots carry pending
-records past process and leader loss. The idempotency window does not remove them.
+Raft commits the move before the receiving member's `MetaStore` stores the audit, so the store write can fail after
+ownership changes. Consensus retains the sealed record and one projection acknowledgement per voter present at commit.
+Snapshots carry pending records past process and leader loss. The idempotency window does not remove them.
 
 A failed store write answers `503 Service Unavailable`, names the transfer identity, and leaves the sealed record
 pending. Peryx can finish the projection through either path:
 
-- A retry under the same `Idempotency-Key` answers from the committed decision. It stores the sealed record and answers
-  `200 OK` with the original epoch and log term/index. No second move occurs.
-- Startup projects pending records. The coordinator does the same before accepting another transfer. A new leader reads
-  the records from replicated state; it does not need the original process or transfer plan.
+- A retry under the same `Idempotency-Key` answers from the committed decision, even through another leader. The member
+  handling the retry stores the receipt's sealed record and answers `200 OK` with the original epoch and log term/index.
+  No second move occurs.
+- A node projects its pending records when it becomes leader. The recovery follows Raft leadership notifications and
+  does not need the original process or transfer plan.
 
-The audit store uses the authority and commit index as its identity, making repeated writes idempotent. The projector
-clears the replicated fact after the store transaction commits, so a crash between those operations leaves the fact for
-recovery.
+The audit store uses the authority and commit index as its identity, making repeated writes idempotent. A member records
+its replicated acknowledgement after its store transaction commits. A crash between those operations leaves that
+member's projection pending without making another member repeat completed work.
 
 The minted epoch is the fence. A write the old home had in flight under the previous epoch is now stale and is rejected,
 so a former home cannot finalize a write against an authority it no longer owns. Reconciling the operations the old home

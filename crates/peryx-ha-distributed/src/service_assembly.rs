@@ -19,7 +19,7 @@ use peryx_ha::{
     RemoteFrontierSource,
 };
 use peryx_storage::blob::{BlobStorage, BlobStore};
-use peryx_storage::meta::{BackendId, DataCenterId, MetaStore};
+use peryx_storage::meta::{BackendId, DataCenterId};
 
 use crate::control_http::{AvailabilityPosture, AvailabilityPostureRole, ControlHttpContext, availability_router};
 use crate::lifecycle::{FailureReceiver, Lifecycle};
@@ -27,7 +27,7 @@ use crate::{
     BlobReclamationSelector, CrossDcBlobCopier, DcDurabilityMetrics, DistributedAnalyticsCompleteness,
     DistributedBlobDurability, DistributedMode, FilesystemPlacementReconciler, HttpReceiptSource,
     HttpRemoteFrontierSource, RosterFrontierSource, RuntimeConfig, RuntimeMemberRole, RuntimeMembership, RuntimeRole,
-    TransferCoordinator, recover_transfer_audits, remote_blob_availability,
+    TransferCoordinator, remote_blob_availability,
 };
 
 const RECEIPT_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
@@ -681,12 +681,6 @@ async fn fail_startup<T>(startup: anyhow::Error, mut active: ActiveDistributed) 
     Err(startup)
 }
 
-async fn recover_startup_transfer_audits(outbox: &dyn crate::TransferAuditOutbox, meta: &MetaStore) {
-    if let Err(error) = recover_transfer_audits(outbox, meta).await {
-        tracing::warn!(%error, "transfer audit recovery at startup failed");
-    }
-}
-
 pub fn prepare_runtime(
     runtime: crate::DistributedRuntime,
     context: DistributedPrepareContext,
@@ -741,9 +735,6 @@ async fn activate_runtime(mut prepared: PreparedDistributed) -> anyhow::Result<A
     };
     let consensus = active.consensus.as_ref();
     let ownership = consensus.map(|value| value.authority.clone());
-    if let Some(ownership) = ownership.as_ref() {
-        recover_startup_transfer_audits(ownership, &prepared.context.state.serving.meta).await;
-    }
     let control_routes = availability_control_router(
         &prepared.context.config,
         AvailabilityControlContext {

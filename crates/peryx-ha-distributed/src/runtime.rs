@@ -853,7 +853,10 @@ impl DistributedRuntime {
     ) -> anyhow::Result<Option<Consensus>> {
         match &self.consensus {
             Some(consensus) => {
-                let started = consensus.plan.ignite_with_lifecycle(lifecycle).await?;
+                let started = consensus
+                    .plan
+                    .ignite_with_lifecycle(lifecycle, self.availability.meta.clone())
+                    .await?;
                 consensus
                     .peer_rpc
                     .bind(Some(started.node().rpc_handler_with_clock(self.clock.clone())));

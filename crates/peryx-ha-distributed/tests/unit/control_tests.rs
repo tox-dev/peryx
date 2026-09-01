@@ -23,6 +23,7 @@ fn receipt(index: u64) -> CommandReceipt {
         outcome: CommandOutcome::Committed,
         old_voters: Vec::new(),
         new_voters: Vec::new(),
+        transfer_audit: None,
     }
 }
 
@@ -529,6 +530,7 @@ fn test_a_no_change_receipt_audits_as_no_change() {
         outcome: CommandOutcome::NoChange,
         old_voters: Vec::new(),
         new_voters: Vec::new(),
+        transfer_audit: None,
     };
     let record = AuditRecord::committed("alice", &transfer(), &no_change);
     assert_eq!(record.result, "no_change");
@@ -545,6 +547,7 @@ fn test_a_committed_membership_receipt_audits_the_old_and_new_voter_sets() {
         outcome: CommandOutcome::Committed,
         old_voters: vec!["east".to_owned()],
         new_voters: vec!["east".to_owned(), "west".to_owned()],
+        transfer_audit: None,
     };
     let record = AuditRecord::committed("alice", &promote, &receipt);
     assert_eq!(record.old_voters, ["east"]);

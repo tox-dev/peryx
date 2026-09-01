@@ -298,7 +298,6 @@ fn drive_error(error: &TransferDriveError) -> Response {
         TransferDriveError::Frontier(_)
         | TransferDriveError::Persist(_)
         | TransferDriveError::ProjectionPending { .. }
-        | TransferDriveError::ProjectionStateUnavailable { .. }
         | TransferDriveError::Recover(_)
         | TransferDriveError::Unsealed(_) => (StatusCode::SERVICE_UNAVAILABLE, error.to_string()).into_response(),
     }

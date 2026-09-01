@@ -4,6 +4,7 @@
 //! The generation names snapshots, so a replacement process never repeats an identifier a follower
 //! may still be assembling chunks under.
 
+use std::collections::BTreeSet;
 use std::io::Cursor;
 use std::sync::Arc;
 
@@ -76,6 +77,8 @@ impl Inner {
             inner.state = OwnershipState::restore(&stored.data)?;
             inner.last_applied = meta.last_log_id;
             inner.last_membership = meta.last_membership.clone();
+            let projectors = audit_projectors(&inner.last_membership);
+            inner.state.set_audit_projectors(projectors);
             inner.current_snapshot = Some(StoredSnapshot {
                 meta,
                 data: stored.data,
@@ -129,9 +132,9 @@ impl OwnershipStateMachine {
         self.inner.lock().await.state.epoch(authority)
     }
 
-    /// Audits sealed by a committed transfer that no projector has reported storing.
-    pub async fn pending_transfer_audits(&self) -> Vec<PendingTransferAudit> {
-        self.inner.lock().await.state.pending_transfer_audits()
+    /// Audits sealed by a committed transfer that `projector` has not reported storing.
+    pub async fn pending_transfer_audits(&self, projector: &str) -> Vec<PendingTransferAudit> {
+        self.inner.lock().await.state.pending_transfer_audits(projector)
     }
 
     /// Rejects work from a superseded epoch against this node's applied state.
@@ -188,15 +191,19 @@ impl RaftStateMachine<TypeConfig> for OwnershipStateMachine {
         let mut responses = Vec::new();
         for entry in entries {
             inner.last_applied = Some(entry.log_id);
-            let meta = AppliedMeta {
-                term: entry.log_id.leader_id.term,
-                index: entry.log_id.index,
-            };
             let response = match entry.payload {
                 EntryPayload::Blank => OwnershipResponse::NonMutating,
-                EntryPayload::Normal(command) => OwnershipResponse::Applied(inner.state.apply(&command, meta)),
+                EntryPayload::Normal(command) => OwnershipResponse::Applied(inner.state.apply(
+                    &command,
+                    AppliedMeta {
+                        term: entry.log_id.leader_id.term,
+                        index: entry.log_id.index,
+                    },
+                )),
                 EntryPayload::Membership(membership) => {
                     inner.last_membership = StoredMembership::new(Some(entry.log_id), membership);
+                    let projectors = audit_projectors(&inner.last_membership);
+                    inner.state.set_audit_projectors(projectors);
                     OwnershipResponse::NonMutating
                 }
             };
@@ -220,8 +227,9 @@ impl RaftStateMachine<TypeConfig> for OwnershipStateMachine {
         snapshot: Box<Cursor<Vec<u8>>>,
     ) -> Result<(), StorageError<NodeId>> {
         let data = snapshot.into_inner();
-        let state = OwnershipState::restore(&data)
+        let mut state = OwnershipState::restore(&data)
             .map_err(|error| StorageIOError::read_snapshot(Some(meta.signature()), AnyError::new(&error)))?;
+        state.set_audit_projectors(audit_projectors(&meta.last_membership));
         let mut inner = self.inner.lock().await;
         inner.persist_snapshot(meta, &data)?;
         inner.state = state;
@@ -242,4 +250,13 @@ impl RaftStateMachine<TypeConfig> for OwnershipStateMachine {
             snapshot: Box::new(Cursor::new(stored.data.clone())),
         }))
     }
+}
+
+fn audit_projectors(membership: &StoredMembership<NodeId, PeryxNode>) -> BTreeSet<String> {
+    let voters: BTreeSet<NodeId> = membership.voter_ids().collect();
+    membership
+        .nodes()
+        .filter(|(id, _)| voters.contains(id))
+        .map(|(_, node)| node.datacenter.0.clone())
+        .collect()
 }

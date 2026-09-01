@@ -451,6 +451,7 @@ fn settled() -> OwnershipResponse {
         outcome: CommandOutcome::Committed,
         old_voters: Vec::new(),
         new_voters: Vec::new(),
+        transfer_audit: None,
     }))
 }
 

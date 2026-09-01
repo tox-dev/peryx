@@ -77,12 +77,6 @@ pub enum TransferDriveError {
         #[source]
         source: MetaError,
     },
-    #[error("transfer {id} committed but its audit projection state is unavailable: {source}")]
-    ProjectionStateUnavailable {
-        id: String,
-        #[source]
-        source: OwnershipError,
-    },
     #[error("read the sealed transfer audits: {0}")]
     Recover(#[source] OwnershipError),
     #[error("transfer {0} committed but sealed no recoverable audit")]
@@ -155,20 +149,9 @@ pub async fn commit_transfer(
             return Err(TransferDriveError::Commit(error));
         }
     };
-    let sealed = match outbox
-        .pending_transfer_audits()
-        .await
-        .map_err(|source| TransferDriveError::ProjectionStateUnavailable { id: id.clone(), source })?
-        .into_iter()
-        .find(|fact| fact.id == id)
-        .map(|fact| fact.audit)
-    {
-        Some(sealed) => sealed,
-        // A cleared fact has already reached the audit store.
-        None => projected(meta, &request.authority.0, receipt.index)
-            .map_err(|source| TransferDriveError::ProjectionPending { id: id.clone(), source })?
-            .ok_or_else(|| TransferDriveError::Unsealed(id.clone()))?,
-    };
+    let sealed = receipt
+        .transfer_audit
+        .ok_or_else(|| TransferDriveError::Unsealed(id.clone()))?;
     let audit = plan
         .lock()
         .await
@@ -187,7 +170,7 @@ const fn refused_before_submission(error: &ControlError) -> bool {
     matches!(error, ControlError::KeyReuse | ControlError::Overloaded)
 }
 
-/// Stores audits left by an interrupted projection, then clears their replicated facts.
+/// Stores audits this member has not projected, then records its acknowledgements.
 ///
 /// # Errors
 /// Returns [`TransferDriveError`] when the sealed facts cannot be read or an audit cannot be stored.
@@ -208,8 +191,8 @@ pub async fn recover_transfer_audits(
     Ok(recovered)
 }
 
-/// Clears the fact after the store transaction commits. A crash between the two repeats an idempotent
-/// write keyed by authority and commit index.
+/// Acknowledges the projection after the store transaction commits. A crash between the two repeats an
+/// idempotent write keyed by authority and commit index.
 async fn project(
     outbox: &dyn TransferAuditOutbox,
     meta: &MetaStore,
@@ -221,13 +204,6 @@ async fn project(
         tracing::warn!(transfer = id, %error, "clearing a projected transfer audit failed");
     }
     Ok(())
-}
-
-fn projected(meta: &MetaStore, authority: &str, index: u64) -> Result<Option<StoredTransferAudit>, MetaError> {
-    Ok(meta
-        .transfer_audits(authority)?
-        .into_iter()
-        .find(|audit| audit.commit_index == index))
 }
 
 #[async_trait::async_trait]
@@ -360,8 +336,8 @@ impl TransferCoordinator {
     /// # Errors
     /// Returns [`Busy`](TransferRunError::Busy) when a transfer for the authority is already running,
     /// [`BarrierNotReached`](TransferRunError::BarrierNotReached) when the budget runs out before the
-    /// target catches up, or [`Drive`](TransferRunError::Drive) when recovering an earlier projection,
-    /// committing, or storing the move fails.
+    /// target catches up, or [`Drive`](TransferRunError::Drive) when committing or storing the move
+    /// fails.
     pub async fn run(
         &self,
         request: TransferRequest,
@@ -369,7 +345,6 @@ impl TransferCoordinator {
         outbox: &dyn TransferAuditOutbox,
         meta: &MetaStore,
     ) -> Result<TransferAudit, TransferRunError> {
-        recover_transfer_audits(outbox, meta).await?;
         let authority = request.authority.0.clone();
         let transfer = {
             // A panic cannot corrupt this lookup table, so recover its poisoned guard.

@@ -594,6 +594,7 @@ fn generated_value_contracts_distinguish_fields_and_variants() {
             outcome: CommandOutcome::Committed,
             old_voters: vec!["old".into()],
             new_voters: vec!["new".into()],
+            transfer_audit: None,
         },
         &CommandReceipt {
             term: 2,
@@ -601,6 +602,7 @@ fn generated_value_contracts_distinguish_fields_and_variants() {
             outcome: CommandOutcome::Committed,
             old_voters: vec!["old".into()],
             new_voters: vec!["new".into()],
+            transfer_audit: None,
         },
     );
     assert_derived_contract(&CommandOutcome::Committed, &CommandOutcome::NoChange);
@@ -1306,6 +1308,7 @@ async fn control_executor_reports_receipt_and_metrics() {
             outcome: CommandOutcome::Committed,
             old_voters: vec!["operator".into()],
             new_voters: vec!["packages:request-7".into()],
+            transfer_audit: None,
         }
     );
     assert_eq!(serde_json::to_value(&receipt).unwrap()["term"], 7);
@@ -1487,6 +1490,7 @@ impl ControlExecutor for TestControlExecutor {
             outcome: CommandOutcome::Committed,
             old_voters: vec![actor.into()],
             new_voters: vec![format!("{}:{}", command.target(), key.unwrap())],
+            transfer_audit: None,
         })
     }
 

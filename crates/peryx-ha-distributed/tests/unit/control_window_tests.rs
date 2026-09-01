@@ -1,5 +1,7 @@
 //! The replicated idempotency window, exercised through committed ownership commands.
 
+use std::collections::BTreeSet;
+
 use crate::authority::AuthorityKey;
 use crate::envelope::AuthorityEpoch;
 use crate::ownership::{
@@ -97,7 +99,14 @@ fn attempt(name: &str, command: ControlCommand) -> OwnershipCommand {
 }
 
 fn complete(name: &str) -> OwnershipCommand {
-    OwnershipCommand::CompleteTransferAudit { key: name.to_owned() }
+    complete_for(name, "east")
+}
+
+fn complete_for(name: &str, projector: &str) -> OwnershipCommand {
+    OwnershipCommand::CompleteTransferAudit {
+        key: name.to_owned(),
+        projector: projector.to_owned(),
+    }
 }
 
 fn release(name: &str, command: ControlCommand) -> OwnershipCommand {
@@ -125,6 +134,14 @@ fn authority_receipt(outcome: CommandOutcome) -> CommandReceipt {
         outcome,
         old_voters: Vec::new(),
         new_voters: Vec::new(),
+        transfer_audit: None,
+    }
+}
+
+fn transfer_receipt(outcome: CommandOutcome, target: &str, epoch: u64) -> CommandReceipt {
+    CommandReceipt {
+        transfer_audit: Some(sealed(target, epoch)),
+        ..authority_receipt(outcome)
     }
 }
 
@@ -135,6 +152,7 @@ fn membership_receipt(index: u64) -> CommandReceipt {
         outcome: CommandOutcome::Committed,
         old_voters: vec!["east".to_owned()],
         new_voters: vec!["east".to_owned()],
+        transfer_audit: None,
     }
 }
 
@@ -144,6 +162,7 @@ fn resolved(resolution: ControlResolution) -> OwnershipEffect {
 
 fn homed() -> OwnershipState {
     let mut state = OwnershipState::new();
+    state.set_audit_projectors(BTreeSet::from(["east".to_owned(), "west".to_owned()]));
     state.apply(&assign("proj"), META);
     state
 }
@@ -207,12 +226,14 @@ fn test_a_transfer_to_the_current_home_seals_the_epoch_it_resolved_against() {
 
     assert_eq!(
         effect,
-        resolved(ControlResolution::Committed(authority_receipt(
-            CommandOutcome::NoChange
+        resolved(ControlResolution::Committed(transfer_receipt(
+            CommandOutcome::NoChange,
+            "east",
+            1,
         )))
     );
     assert_eq!(
-        state.pending_transfer_audits(),
+        state.pending_transfer_audits("east"),
         vec![PendingTransferAudit {
             id: "k1".to_owned(),
             audit: sealed("east", 1),
@@ -228,13 +249,15 @@ fn test_a_transfer_records_its_receipt_moves_the_home_and_seals_its_audit() {
 
     assert_eq!(
         effect,
-        resolved(ControlResolution::Committed(authority_receipt(
-            CommandOutcome::Committed
+        resolved(ControlResolution::Committed(transfer_receipt(
+            CommandOutcome::Committed,
+            "west",
+            2,
         )))
     );
     assert_eq!(state.home(&key("proj")), Some(&DatacenterId("west".to_owned())));
     assert_eq!(
-        state.pending_transfer_audits(),
+        state.pending_transfer_audits("east"),
         vec![PendingTransferAudit {
             id: "k1".to_owned(),
             audit: sealed("west", 2),
@@ -252,7 +275,7 @@ fn test_a_rejected_transfer_seals_no_audit() {
         effect,
         resolved(ControlResolution::Rejected(ControlRejection::NotAssigned))
     );
-    assert_eq!(state.pending_transfer_audits(), Vec::new());
+    assert_eq!(state.pending_transfer_audits("east"), Vec::new());
 }
 
 #[test]
@@ -264,8 +287,10 @@ fn test_a_repeated_transfer_replays_the_sealed_audit_without_moving_again() {
 
     assert_eq!(
         repeated,
-        resolved(ControlResolution::Replayed(authority_receipt(
-            CommandOutcome::Committed
+        resolved(ControlResolution::Replayed(transfer_receipt(
+            CommandOutcome::Committed,
+            "west",
+            2,
         )))
     );
     assert_eq!(state.epoch(&key("proj")), AuthorityEpoch(2));
@@ -279,7 +304,7 @@ fn test_an_unprojected_audit_outlives_the_idempotency_window() {
     state.apply(&attempt_at("k2", advance_epoch(), CONTROL_IDEMPOTENCY_SECS), META);
 
     assert_eq!(
-        state.pending_transfer_audits(),
+        state.pending_transfer_audits("east"),
         vec![PendingTransferAudit {
             id: "k1".to_owned(),
             audit: sealed("west", 2),
@@ -295,7 +320,7 @@ fn test_an_unprojected_audit_survives_a_snapshot_round_trip() {
     let restored = OwnershipState::restore(&state.snapshot()).unwrap();
 
     assert_eq!(
-        restored.pending_transfer_audits(),
+        restored.pending_transfer_audits("east"),
         vec![PendingTransferAudit {
             id: "k1".to_owned(),
             audit: sealed("west", 2),
@@ -309,16 +334,61 @@ fn test_completing_a_projection_drops_the_audit_and_keeps_the_receipt() {
     state.apply(&attempt("k1", move_home("west")), META);
 
     let completed = state.apply(&complete("k1"), META);
+    assert_eq!(state.pending_transfer_audits("east"), Vec::new());
+    assert_eq!(state.pending_transfer_audits("west").len(), 1);
+    state.apply(&complete_for("k1", "west"), META);
     let replayed = state.apply(&attempt("k1", move_home("west")), META);
 
     assert_eq!(completed, OwnershipEffect::TransferAuditCompleted);
-    assert_eq!(state.pending_transfer_audits(), Vec::new());
+    assert_eq!(state.pending_transfer_audits("west"), Vec::new());
     assert_eq!(
         replayed,
-        resolved(ControlResolution::Replayed(authority_receipt(
-            CommandOutcome::Committed
+        resolved(ControlResolution::Replayed(transfer_receipt(
+            CommandOutcome::Committed,
+            "west",
+            2,
         )))
     );
+}
+
+#[test]
+fn test_a_new_voter_does_not_inherit_an_existing_audit_projection() {
+    let mut state = homed();
+    state.set_audit_projectors(BTreeSet::from(["east".to_owned()]));
+    state.apply(&attempt("k1", move_home("west")), META);
+
+    state.set_audit_projectors(BTreeSet::from(["east".to_owned(), "west".to_owned()]));
+
+    assert_eq!(state.pending_transfer_audits("west"), Vec::new());
+}
+
+#[test]
+fn test_removing_a_voter_releases_its_pending_audit_projection() {
+    let mut state = homed();
+    state.apply(&attempt_at("k1", move_home("west"), 0), META);
+    state.apply(&complete("k1"), META);
+    state.set_audit_projectors(BTreeSet::from(["east".to_owned()]));
+
+    let reused = state.apply(&attempt_at("k1", move_home("east"), CONTROL_IDEMPOTENCY_SECS), META);
+
+    assert_eq!(
+        reused,
+        resolved(ControlResolution::Committed(transfer_receipt(
+            CommandOutcome::Committed,
+            "east",
+            3,
+        )))
+    );
+}
+
+#[test]
+fn test_an_empty_membership_does_not_discard_a_pending_audit() {
+    let mut state = homed();
+    state.apply(&attempt("k1", move_home("west")), META);
+
+    state.set_audit_projectors(BTreeSet::new());
+
+    assert_eq!(state.pending_transfer_audits("east").len(), 1);
 }
 
 #[test]
@@ -328,7 +398,7 @@ fn test_completing_an_unknown_projection_changes_nothing() {
     let completed = state.apply(&complete("ghost"), META);
 
     assert_eq!(completed, OwnershipEffect::TransferAuditCompleted);
-    assert_eq!(state.pending_transfer_audits(), Vec::new());
+    assert_eq!(state.pending_transfer_audits("east"), Vec::new());
 }
 
 #[test]
@@ -336,13 +406,16 @@ fn test_a_projected_key_prunes_with_the_window() {
     let mut state = homed();
     state.apply(&attempt_at("k1", move_home("west"), 0), META);
     state.apply(&complete("k1"), META);
+    state.apply(&complete_for("k1", "west"), META);
 
     let reopened = state.apply(&attempt_at("k1", move_home("east"), CONTROL_IDEMPOTENCY_SECS), META);
 
     assert_eq!(
         reopened,
-        resolved(ControlResolution::Committed(authority_receipt(
-            CommandOutcome::Committed
+        resolved(ControlResolution::Committed(transfer_receipt(
+            CommandOutcome::Committed,
+            "east",
+            3,
         ))),
         "the pruned key stands for whatever the next attempt carries"
     );

@@ -475,22 +475,6 @@ async fn control_assembly_mounts_authenticated_routes() {
 }
 
 #[tokio::test]
-async fn startup_transfer_audit_recovery_tolerates_unavailable_consensus() {
-    let dir = tempfile::tempdir().unwrap();
-    let context = service_context(&dir);
-    let ownership: Arc<dyn OwnershipAuthority> = Arc::new(DeferredOwnership::new(Arc::new(
-        std::sync::atomic::AtomicBool::new(false),
-    )));
-
-    recover_startup_transfer_audits(&ownership, &context.meta).await;
-
-    assert!(matches!(
-        ownership.pending_transfer_audits().await,
-        Err(OwnershipError::Unavailable(_))
-    ));
-}
-
-#[tokio::test]
 async fn worker_assembly_binds_distributed_jobs() {
     let dir = tempfile::tempdir().unwrap();
     let context = service_context(&dir);

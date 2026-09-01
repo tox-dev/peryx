@@ -56,19 +56,20 @@ impl MembershipControl for Committing {
         let Some(id) = key else {
             return Err(ControlError::Unavailable("expected a transfer identity".to_owned()));
         };
+        let audit = StoredTransferAudit {
+            authority,
+            source: intent.source,
+            target: new_home,
+            actor: intent.actor,
+            reason: intent.reason,
+            barrier: intent.barrier,
+            epoch: 3,
+            commit_term: 1,
+            commit_index: 9,
+        };
         *self.pending.lock().unwrap() = Some(PendingTransferAudit {
             id: id.to_owned(),
-            audit: StoredTransferAudit {
-                authority,
-                source: intent.source,
-                target: new_home,
-                actor: intent.actor,
-                reason: intent.reason,
-                barrier: intent.barrier,
-                epoch: 3,
-                commit_term: 1,
-                commit_index: 9,
-            },
+            audit: audit.clone(),
         });
         Ok(ControlCommit::committed(CommandReceipt {
             term: 1,
@@ -76,6 +77,7 @@ impl MembershipControl for Committing {
             outcome: CommandOutcome::Committed,
             old_voters: Vec::new(),
             new_voters: Vec::new(),
+            transfer_audit: Some(audit),
         }))
     }
 }

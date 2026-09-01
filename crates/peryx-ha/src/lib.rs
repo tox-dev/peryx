@@ -565,6 +565,8 @@ pub struct CommandReceipt {
     pub outcome: CommandOutcome,
     pub old_voters: Vec<String>,
     pub new_voters: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer_audit: Option<TransferAudit>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -918,7 +920,7 @@ pub trait OwnershipAuthority: Send + Sync {
     /// Returns [`OwnershipError`] when the transfer cannot commit on the ownership leader.
     async fn transfer_home(&self, authority: &str, new_home: &str) -> Result<Option<TransferOutcome>, OwnershipError>;
 
-    /// Audits sealed by a committed transfer that no store holds in durable storage yet.
+    /// Audits sealed by a committed transfer that this member has not stored yet.
     ///
     /// # Errors
     ///
@@ -927,8 +929,8 @@ pub trait OwnershipAuthority: Send + Sync {
         Ok(Vec::new())
     }
 
-    /// Clears the fact for `id` once a store holds its audit. Clearing an absent fact succeeds, so a
-    /// projector that crashed after the store write finishes on its next pass.
+    /// Records that this member's store holds the audit for `id`. Repeating the acknowledgement after
+    /// a crash is safe.
     ///
     /// # Errors
     ///
@@ -940,8 +942,7 @@ pub trait OwnershipAuthority: Send + Sync {
     }
 }
 
-/// A committed transfer's audit, held under the stable transfer identity that also keys its control
-/// receipt, until a projector stores it.
+/// A committed transfer audit that the local member still owes, paired with its stable control key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingTransferAudit {
     pub id: String,

@@ -1,13 +1,13 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use openraft::storage::RaftStateMachine;
 use openraft::testing::log_id;
-use openraft::{Entry, EntryPayload, Membership, RaftSnapshotBuilder, Snapshot};
+use openraft::{Entry, EntryPayload, Membership, RaftSnapshotBuilder, Snapshot, SnapshotMeta};
 use tempfile::TempDir;
 
 use crate::ownership::{Assignment, AssignmentCause, DatacenterId, OwnershipCommand, OwnershipEffect, OwnershipState};
 use crate::raft::persistence::RaftLogStore;
-use crate::raft::{OwnershipResponse, OwnershipStateMachine, TypeConfig};
+use crate::raft::{OwnershipResponse, OwnershipStateMachine, PeryxNode, TypeConfig};
 use crate::{Admission, AuthorityEpoch};
 
 fn key(name: &str) -> crate::AuthorityKey {
@@ -46,6 +46,16 @@ fn move_home(authority: &str, new_home: &str) -> OwnershipCommand {
     }
 }
 
+fn advance_control(authority: &str) -> OwnershipCommand {
+    OwnershipCommand::AttemptControl {
+        key: "k1".to_owned(),
+        command: peryx_ha::ControlCommand::AdvanceEpoch {
+            authority: authority.to_owned(),
+        },
+        now_unix: 0,
+    }
+}
+
 fn normal(index: u64, command: OwnershipCommand) -> Entry<TypeConfig> {
     normal_at(1, index, command)
 }
@@ -67,8 +77,21 @@ fn blank(index: u64) -> Entry<TypeConfig> {
 fn membership_entry(index: u64) -> Entry<TypeConfig> {
     Entry {
         log_id: log_id(1, 0, index),
-        payload: EntryPayload::Membership(Membership::new(vec![BTreeSet::from([0])], ())),
+        payload: EntryPayload::Membership(roster_membership()),
     }
+}
+
+fn roster_membership() -> Membership<u64, PeryxNode> {
+    Membership::new(
+        vec![BTreeSet::from([0])],
+        BTreeMap::from([(
+            0,
+            PeryxNode {
+                datacenter: DatacenterId("east".to_owned()),
+                endpoint: "http://east.internal:4460/".to_owned(),
+            },
+        )]),
+    )
 }
 
 #[tokio::test]
@@ -146,7 +169,7 @@ async fn test_a_membership_entry_records_membership_without_mutating_ownership()
     assert_eq!(responses, vec![OwnershipResponse::NonMutating]);
     let (_, membership) = machine.applied_state().await.unwrap();
     assert_eq!(membership.log_id(), &Some(log_id(1, 0, 4)));
-    assert_eq!(membership.membership(), &Membership::new(vec![BTreeSet::from([0])], ()));
+    assert_eq!(membership.membership(), &roster_membership());
 }
 
 #[tokio::test]
@@ -232,6 +255,82 @@ async fn test_installing_a_snapshot_makes_it_the_current_snapshot() {
     assert_eq!(restored.get_current_snapshot().await.unwrap().unwrap().meta, meta);
 }
 
+async fn snapshot_without_projector_acknowledgements() -> (SnapshotMeta<u64, PeryxNode>, Vec<u8>) {
+    let mut source = OwnershipStateMachine::default();
+    source
+        .apply(vec![
+            membership_entry(1),
+            normal(2, assign("proj", "east")),
+            normal(3, move_home("proj", "west")),
+        ])
+        .await
+        .unwrap();
+    let Snapshot { meta, snapshot } = source.get_snapshot_builder().await.build_snapshot().await.unwrap();
+    let mut state: serde_json::Value = serde_json::from_slice(&snapshot.into_inner()).unwrap();
+    state.as_object_mut().unwrap().remove("audit_projectors");
+    for record in state["controls"].as_object_mut().unwrap().values_mut() {
+        let record = record.as_object_mut().unwrap();
+        record.remove("audit_projectors");
+        record["receipt"].as_object_mut().unwrap().remove("transfer_audit");
+    }
+    (meta, serde_json::to_vec(&state).unwrap())
+}
+
+#[tokio::test]
+async fn test_installing_an_older_snapshot_restores_the_audit_in_its_receipt() {
+    let (meta, snapshot) = snapshot_without_projector_acknowledgements().await;
+    let mut restored = OwnershipStateMachine::default();
+
+    restored
+        .install_snapshot(&meta, Box::new(std::io::Cursor::new(snapshot)))
+        .await
+        .unwrap();
+    let response = restored
+        .apply(vec![normal(4, move_home("proj", "west"))])
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        &response[0],
+        OwnershipResponse::Applied(OwnershipEffect::Control(crate::ControlResolution::Replayed(
+            peryx_ha::CommandReceipt {
+                transfer_audit: Some(_),
+                ..
+            }
+        )))
+    ));
+}
+
+#[tokio::test]
+async fn test_installing_a_snapshot_keeps_a_non_transfer_receipt_unaudited() {
+    let mut source = OwnershipStateMachine::default();
+    source
+        .apply(vec![
+            membership_entry(1),
+            normal(2, assign("proj", "east")),
+            normal(3, advance_control("proj")),
+        ])
+        .await
+        .unwrap();
+    let Snapshot { meta, snapshot } = source.get_snapshot_builder().await.build_snapshot().await.unwrap();
+    let mut restored = OwnershipStateMachine::default();
+    restored.install_snapshot(&meta, snapshot).await.unwrap();
+
+    let response = restored.apply(vec![normal(4, advance_control("proj"))]).await.unwrap();
+
+    assert!(matches!(
+        &response[0],
+        OwnershipResponse::Applied(OwnershipEffect::Control(crate::ControlResolution::Replayed(
+            peryx_ha::CommandReceipt {
+                outcome: peryx_ha::CommandOutcome::Committed,
+                transfer_audit: None,
+                ..
+            }
+        )))
+    ));
+    assert_eq!(restored.pending_transfer_audits("east").await, Vec::new());
+}
+
 #[tokio::test]
 async fn test_installing_a_corrupt_snapshot_fails_closed() {
     let mut source = OwnershipStateMachine::default();
@@ -273,13 +372,16 @@ async fn test_epoch_of_reads_the_committed_epoch() {
 #[tokio::test]
 async fn test_pending_transfer_audits_reads_the_facts_committed_transfers_sealed() {
     let mut machine = OwnershipStateMachine::default();
-    machine.apply(vec![normal(1, assign("proj", "east"))]).await.unwrap();
-    assert_eq!(machine.pending_transfer_audits().await, Vec::new());
+    machine
+        .apply(vec![membership_entry(1), normal(2, assign("proj", "east"))])
+        .await
+        .unwrap();
+    assert_eq!(machine.pending_transfer_audits("east").await, Vec::new());
 
-    machine.apply(vec![normal(2, move_home("proj", "west"))]).await.unwrap();
+    machine.apply(vec![normal(3, move_home("proj", "west"))]).await.unwrap();
 
     assert_eq!(
-        machine.pending_transfer_audits().await,
+        machine.pending_transfer_audits("east").await,
         vec![peryx_ha::PendingTransferAudit {
             id: "k1".to_owned(),
             audit: peryx_ha::TransferAudit {
@@ -291,7 +393,7 @@ async fn test_pending_transfer_audits_reads_the_facts_committed_transfers_sealed
                 barrier: 5,
                 epoch: 2,
                 commit_term: 1,
-                commit_index: 2,
+                commit_index: 3,
             },
         }]
     );
@@ -340,7 +442,21 @@ async fn test_a_built_snapshot_survives_reopening_the_store() {
     let (last_applied, membership) = restored.applied_state().await.unwrap();
     assert_eq!(last_applied, Some(log_id(1, 0, 3)));
     assert_eq!(membership.log_id(), &Some(log_id(1, 0, 2)));
-    assert_eq!(membership.membership(), &Membership::new(vec![BTreeSet::from([0])], ()));
+    assert_eq!(membership.membership(), &roster_membership());
+}
+
+#[tokio::test]
+async fn test_reopening_an_older_snapshot_restores_pending_projection_members() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = open_store(&dir);
+    let (meta, snapshot) = snapshot_without_projector_acknowledgements().await;
+    store
+        .save_snapshot(&serde_json::to_vec(&meta).unwrap(), &snapshot, 1)
+        .unwrap();
+
+    let restored = OwnershipStateMachine::with_snapshot_store(store).unwrap();
+
+    assert_eq!(restored.pending_transfer_audits("east").await.len(), 1);
 }
 
 #[tokio::test]

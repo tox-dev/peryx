@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -105,6 +106,7 @@ struct Consensus {
     refusal: Mutex<Option<ControlError>>,
     unclearable: Mutex<bool>,
     unreadable: AtomicBool,
+    projector: Mutex<String>,
 }
 
 impl Consensus {
@@ -116,6 +118,7 @@ impl Consensus {
             refusal: Mutex::new(None),
             unclearable: Mutex::new(false),
             unreadable: AtomicBool::new(false),
+            projector: Mutex::new("east".to_owned()),
         })
     }
 
@@ -134,6 +137,7 @@ impl Consensus {
                 },
             );
         }
+        state.set_audit_projectors(BTreeSet::from(["east".to_owned(), "west".to_owned()]));
         Self::with_state(state, authorities.len() as u64 + 1)
     }
 
@@ -156,6 +160,10 @@ impl Consensus {
             OwnershipState::restore(&self.state.lock().unwrap().snapshot()).unwrap(),
             self.index.load(Ordering::SeqCst),
         )
+    }
+
+    fn activate(&self, projector: &str) {
+        *self.projector.lock().unwrap() = projector.to_owned();
     }
 }
 
@@ -190,7 +198,8 @@ impl TransferAuditOutbox for Arc<Consensus> {
         if self.unreadable.load(Ordering::SeqCst) {
             return Err(OwnershipError::Unavailable("no leader".to_owned()));
         }
-        Ok(self.state.lock().unwrap().pending_transfer_audits())
+        let projector = self.projector.lock().unwrap().clone();
+        Ok(self.state.lock().unwrap().pending_transfer_audits(&projector))
     }
 
     async fn complete_transfer_audit(&self, id: &str) -> Result<(), OwnershipError> {
@@ -198,8 +207,12 @@ impl TransferAuditOutbox for Arc<Consensus> {
         if unclearable {
             return Err(OwnershipError::Unavailable("no leader".to_owned()));
         }
+        let projector = self.projector.lock().unwrap().clone();
         self.state.lock().unwrap().apply(
-            &OwnershipCommand::CompleteTransferAudit { key: id.to_owned() },
+            &OwnershipCommand::CompleteTransferAudit {
+                key: id.to_owned(),
+                projector,
+            },
             AppliedMeta {
                 term: 1,
                 index: self.index.fetch_add(1, Ordering::SeqCst),
@@ -396,26 +409,27 @@ async fn test_commit_transfer_retry_after_projection_answers_from_the_stored_aud
 }
 
 #[tokio::test]
-async fn test_commit_transfer_reports_a_committed_move_whose_audit_is_neither_sealed_nor_stored() {
+async fn test_commit_transfer_retry_on_another_member_projects_the_sealed_receipt() {
     let consensus = Consensus::homed(&["proj"]);
-    let (dir, store) = meta();
+    let (_dir, store) = meta();
     let first = ready(request());
-    commit_transfer(&first, &plane(&consensus), &consensus, &store)
+    let committed = commit_transfer(&first, &plane(&consensus), &consensus, &store)
         .await
         .unwrap();
-    drop(store);
+    consensus.activate("west");
+    let (_other_dir, other) = meta();
     let retry = ready(request());
 
-    let error = commit_transfer(
-        &retry,
-        &plane(&consensus),
-        &consensus,
-        &MetaStore::open(dir.path().join("other.redb")).unwrap(),
-    )
-    .await
-    .unwrap_err();
+    let replayed = commit_transfer(&retry, &plane(&consensus), &consensus, &other)
+        .await
+        .unwrap();
 
-    assert!(matches!(error, TransferDriveError::Unsealed(id) if id == "t-1"));
+    assert_eq!(replayed, committed);
+    assert_eq!(
+        other.transfer_audits("proj").unwrap()[0].commit_index,
+        committed.commit_index
+    );
+    assert!(consensus.pending_transfer_audits().await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -435,20 +449,17 @@ async fn test_commit_transfer_succeeds_when_the_fact_cannot_be_cleared() {
 }
 
 #[tokio::test]
-async fn test_commit_transfer_reports_an_unreadable_projection_state_after_commit() {
+async fn test_commit_transfer_uses_the_receipt_when_the_outbox_read_is_unavailable() {
     let consensus = Consensus::homed(&["proj"]);
     consensus.unreadable.store(true, Ordering::SeqCst);
     let (_dir, store) = meta();
     let plan = ready(request());
 
-    let error = commit_transfer(&plan, &plane(&consensus), &consensus, &store)
+    let audit = commit_transfer(&plan, &plane(&consensus), &consensus, &store)
         .await
-        .unwrap_err();
+        .unwrap();
 
-    assert!(matches!(
-        error,
-        TransferDriveError::ProjectionStateUnavailable { id, .. } if id == "t-1"
-    ));
+    assert_eq!(audit.commit_index, 2);
     assert_eq!(consensus.epoch("proj"), 2);
 }
 
@@ -652,37 +663,6 @@ async fn test_coordinator_drives_a_ready_transfer_to_a_sealed_audit() {
     assert_eq!((audit.epoch.0, audit.commit_term, audit.commit_index), (2, 1, 2));
     assert_eq!(consensus.submitted(), 1);
     assert_eq!(store.transfer_audits("proj").unwrap().len(), 1);
-}
-
-#[tokio::test]
-async fn test_coordinator_recovers_an_earlier_transfer_before_running_the_next() {
-    let (dir, store) = meta();
-    drop(store);
-    let consensus = Consensus::homed(&["proj", "docs"]);
-    let stranded = ready(request());
-    commit_transfer(&stranded, &plane(&consensus), &consensus, &unwritable(&dir))
-        .await
-        .unwrap_err();
-    drop(stranded);
-    let store = MetaStore::open_existing(dir.path().join("peryx.redb")).unwrap();
-    let (frontier, _probed) = GatedFrontier::new(Some(BARRIER));
-    let coordinator = TransferCoordinator::with_schedule(frontier, Duration::ZERO, 3, RETAINED);
-
-    coordinator
-        .run(numbered_request("t-2", "docs"), &plane(&consensus), &consensus, &store)
-        .await
-        .unwrap();
-
-    assert_eq!(
-        store
-            .transfer_audits("proj")
-            .unwrap()
-            .iter()
-            .map(|audit| (audit.epoch, audit.commit_term, audit.commit_index))
-            .collect::<Vec<_>>(),
-        vec![(2, 1, 3)]
-    );
-    assert_eq!(consensus.epoch("proj"), 2);
 }
 
 #[tokio::test]
