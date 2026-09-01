@@ -1092,6 +1092,14 @@ fn authority_write_lease_reserves_the_clock_skew_window(#[case] now: i64, #[case
     assert_eq!(lease.admits(now), admitted);
 }
 
+#[rstest]
+#[case::active(94, true)]
+#[case::guard_boundary(95, false)]
+#[case::past_expiry(101, false)]
+fn singleton_grant_reserves_the_clock_skew_window(#[case] now: i64, #[case] admitted: bool) {
+    assert_eq!(singleton_grant_admits(100, now), admitted);
+}
+
 struct AuthorityWithoutWriteLeases;
 
 #[async_trait]

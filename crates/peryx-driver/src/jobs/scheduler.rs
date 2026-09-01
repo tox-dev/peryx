@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 
@@ -23,8 +23,8 @@ use super::attempts::{CancelJobRun, JobAttemptError};
 use super::metrics::{JobMetrics, Outcome, Reject};
 use super::{JobCompletion, JobContext, JobFailure, JobReport, JobRunOutcome, LeaseScope, NodeJob};
 use crate::state::{
-    OwnershipAuthority, SINGLETON_RENEW_SECS, ServingState, SingletonAcquisition, SingletonLease, SingletonRelease,
-    SingletonRenewal,
+    Clock, OwnershipAuthority, SINGLETON_RENEW_SECS, ServingState, SingletonAcquisition, SingletonLease,
+    SingletonRelease, SingletonRenewal, singleton_grant_admits,
 };
 
 /// This process incarnation's lease-holder identity, minted once so a run's renewal and release match
@@ -411,59 +411,110 @@ impl RunFence {
     }
 }
 
+/// Everything committed answers have told this run about its grant, shared with its renewals.
+///
+/// Nothing but a committed answer moves either field, so together they are the whole of what the run may
+/// claim about its own ownership. An unanswered round trip leaves them alone rather than standing in for
+/// a yes.
+struct Granted {
+    /// The deadline of the freshest committed grant. Past it the authority is free to hand the job to
+    /// another claimant, whether or not this holder has heard about it.
+    until: AtomicI64,
+    /// Set the moment consensus answers that this holder no longer owns the job.
+    lost: AtomicBool,
+}
+
+impl Granted {
+    const fn new(until: i64) -> Self {
+        Self {
+            until: AtomicI64::new(until),
+            lost: AtomicBool::new(false),
+        }
+    }
+
+    /// Whether committed state still rules out a second holder at `now_unix`.
+    fn live(&self, now_unix: i64) -> bool {
+        singleton_grant_admits(self.until.load(Ordering::SeqCst), now_unix)
+    }
+}
+
 /// A held cluster-singleton lease and the renewal that keeps it held for the whole run.
 struct SingletonRun {
     lease: SingletonLease,
     authority: Arc<dyn OwnershipAuthority>,
-    /// Set the moment consensus answers that this holder no longer owns the job.
-    lost: Arc<AtomicBool>,
+    granted: Arc<Granted>,
     renewals: tokio::task::JoinHandle<()>,
 }
 
 impl SingletonRun {
-    fn start(lease: SingletonLease, authority: Arc<dyn OwnershipAuthority>, cancel: &CancellationToken) -> Self {
-        let lost = Arc::new(AtomicBool::new(false));
+    fn start(
+        lease: SingletonLease,
+        authority: Arc<dyn OwnershipAuthority>,
+        clock: Clock,
+        cancel: &CancellationToken,
+    ) -> Self {
+        let granted = Arc::new(Granted::new(lease.expires_at_unix));
         let renewals = tokio::spawn(renew_lease(
             lease.clone(),
             authority.clone(),
-            lost.clone(),
+            granted.clone(),
+            clock,
             cancel.clone(),
         ));
         Self {
             lease,
             authority,
-            lost,
+            granted,
             renewals,
         }
     }
 
-    /// Stop renewing and give the lease back, reporting whether this holder still owned it. The verdict
-    /// comes from the committed answer, never from this process's clock.
-    async fn finish(self) -> bool {
+    /// Stop renewing and give the lease back, reporting what committed state says about this holder's
+    /// ownership of the run that just ended.
+    async fn finish(self, clock: &Clock) -> Ownership {
         self.renewals.abort();
-        if self.lost.load(Ordering::SeqCst) {
-            return false;
+        if self.granted.lost.load(Ordering::SeqCst) {
+            return Ownership::Lost;
         }
         match self.authority.release_singleton_lease(&self.lease).await {
-            Ok(SingletonRelease::Released) => true,
-            Ok(SingletonRelease::Lost) => false,
-            // Cleanup that cannot reach consensus leaves the lease to lapse on the authority's own clock.
-            // Renewal confirmed ownership for the whole body, so the body's outcome still stands.
+            Ok(SingletonRelease::Released) => Ownership::Held,
+            Ok(SingletonRelease::Lost) => Ownership::Lost,
+            // A release that cannot reach consensus answers nothing: the grant lapses on the authority's
+            // own clock, and the authority hands the job on without asking. The run's outcome therefore
+            // stands only while the freshest committed grant still reaches past now.
             Err(error) => {
                 tracing::warn!(job = self.lease.job, %error, "releasing the cluster-singleton lease failed");
-                true
+                if self.granted.live(clock()) {
+                    Ownership::Held
+                } else {
+                    Ownership::Unproven
+                }
             }
         }
     }
 }
 
+/// What committed state says about a finished run's grant.
+enum Ownership {
+    /// A committed answer, or a grant that has not lapsed, rules out a second holder.
+    Held,
+    /// A committed answer moved the job to another holder.
+    Lost,
+    /// Nothing answered, and the freshest grant this holder was given has lapsed, so the authority may
+    /// already have granted the job to a second holder that ran it alongside this one.
+    Unproven,
+}
+
 /// Hold the lease for as long as the run needs it. A renewal consensus refuses is ownership loss, and it
 /// cancels the run as cleanup; a renewal that cannot reach consensus is retried, because only the
-/// authority's committed state decides whether the lease has lapsed.
+/// authority's committed state decides whether the lease has lapsed. Retrying stops once the freshest
+/// committed grant has lapsed: from there the authority can grant the job to a second holder, so the
+/// body is cancelled rather than left running against one.
 async fn renew_lease(
     lease: SingletonLease,
     authority: Arc<dyn OwnershipAuthority>,
-    lost: Arc<AtomicBool>,
+    granted: Arc<Granted>,
+    clock: Clock,
     cancel: CancellationToken,
 ) {
     let mut renewals = tokio::time::interval(Duration::from_secs(SINGLETON_RENEW_SECS));
@@ -474,14 +525,20 @@ async fn renew_lease(
             _ = renewals.tick() => {}
         }
         match authority.renew_singleton_lease(&lease).await {
-            Ok(SingletonRenewal::Renewed(_)) => {}
+            Ok(SingletonRenewal::Renewed(renewed)) => {
+                granted.until.store(renewed.expires_at_unix, Ordering::SeqCst);
+            }
             Ok(SingletonRenewal::Lost) => {
-                lost.store(true, Ordering::SeqCst);
+                granted.lost.store(true, Ordering::SeqCst);
                 cancel.cancel();
                 return;
             }
             Err(error) => {
                 tracing::warn!(job = lease.job, %error, "renewing the cluster-singleton lease failed");
+                if !granted.live(clock()) {
+                    cancel.cancel();
+                    return;
+                }
             }
         }
     }
@@ -512,17 +569,22 @@ async fn acquire_fence(job: &dyn NodeJob, shared: &Shared, cancel: &Cancellation
             })
         }
         LeaseScope::ClusterSingleton(key) => match shared.state.ownership_authority().cloned() {
-            Some(authority) => claim_singleton(&key, authority, cancel).await,
+            Some(authority) => claim_singleton(&key, authority, shared.state.clock.clone(), cancel).await,
             None => Acquired::Held(RunFence::Unowned),
         },
     }
 }
 
-async fn claim_singleton(key: &str, authority: Arc<dyn OwnershipAuthority>, cancel: &CancellationToken) -> Acquired {
+async fn claim_singleton(
+    key: &str,
+    authority: Arc<dyn OwnershipAuthority>,
+    clock: Clock,
+    cancel: &CancellationToken,
+) -> Acquired {
     match authority.acquire_singleton_lease(key, node_holder()).await {
-        Ok(SingletonAcquisition::Acquired(lease)) => {
-            Acquired::Held(RunFence::Singleton(SingletonRun::start(lease, authority, cancel)))
-        }
+        Ok(SingletonAcquisition::Acquired(lease)) => Acquired::Held(RunFence::Singleton(SingletonRun::start(
+            lease, authority, clock, cancel,
+        ))),
         Ok(SingletonAcquisition::Held { holder }) => {
             Acquired::NotAcquired(format!("{holder} holds the {key} cluster-singleton lease"))
         }
@@ -541,16 +603,22 @@ async fn finish_fence(fence: RunFence, shared: &Shared, ok: bool) -> Option<JobF
         } if epoch != 0 => (ok && !shared.state.admit_authority_epoch(&repository, epoch).await)
             .then(|| JobFailure::new("authority_fenced", "a newer authority epoch superseded this run")),
         RunFence::Repository { .. } | RunFence::Unowned => None,
-        RunFence::Singleton(run) => {
-            // The lease goes back whatever the run produced, so a failed body still frees the job.
-            let owned = run.finish().await;
-            (ok && !owned).then(|| {
+        // The lease goes back whatever the run produced, so a failed body still frees the job.
+        RunFence::Singleton(run) => match run.finish(&shared.state.clock).await {
+            Ownership::Held => None,
+            Ownership::Lost => ok.then(|| {
                 JobFailure::new(
                     "lease_fenced",
                     "ownership of this cluster-singleton run moved to another holder",
                 )
-            })
-        }
+            }),
+            Ownership::Unproven => ok.then(|| {
+                JobFailure::new(
+                    "lease_unproven",
+                    "this cluster-singleton grant lapsed before consensus could confirm the run held it",
+                )
+            }),
+        },
     }
 }
 

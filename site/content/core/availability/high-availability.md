@@ -338,20 +338,27 @@ The authority decides when a grant lapses, from committed lease state and the le
 reading cannot extend its ownership. A claim against an unlapsed grant loses, and the run is recorded as failed with
 `lease_not_held` rather than started. The holder renews for as long as the body runs, so a run longer than one lease
 period stays exclusive. A renewal the authority refuses means ownership has moved, and the run is cancelled as cleanup.
-A renewal that cannot reach consensus is retried, since only committed state decides whether the grant has lapsed.
+
+A round trip the group never answers leaves ownership an open question. What the holder may claim is bounded by the
+deadline of the freshest grant the group committed to it, because the authority grants the job to the next claimant once
+that deadline passes, and does so without hearing from the holder. So a renewal that cannot reach consensus is retried
+while the grant still reaches past now, and the run is cancelled once it does not: a body left running against a lapsed
+grant may be running beside a second holder.
 
 Completion presents holder, term, and generation back to the authority. If any of the three no longer matches, the run's
-outcome is rejected with `lease_fenced` rather than counted. The body's outcome and the lease cleanup stay separate: a
-release that cannot reach the group is logged and the grant is left to lapse, and a finished body keeps the result it
-produced.
+outcome is rejected with `lease_fenced` rather than counted. The body's outcome and the lease cleanup stay separate, but
+only while ownership is still provable: a release that cannot reach the group over a grant that still reaches past now
+is logged as cleanup, the grant is left to lapse, and the finished body keeps the result it produced. Over a grant that
+has already lapsed the same failure proves nothing, and the run is rejected with `lease_unproven` rather than published
+as a success.
 
 Modes `none` and `dc` run no ownership group. One such process is the whole cluster and has nothing to contend with, so
 it runs singleton kinds under the closed `0` sentinel with no lease, renewal, or fence lookup.
 
 Fenced runs are visible through the ordinary `peryx_jobs_*` lifecycle counters: a fenced-before-start or superseded run
-increments the `failed` outcome for its kind, and its durable run record carries the `lease_not_held` or `lease_fenced`
-reason. To convert a node-local kind to a cluster singleton, return `LeaseScope::ClusterSingleton` with the singleton
-key from the job's `lease_scope`. The runner then leases and fences it with no further wiring.
+increments the `failed` outcome for its kind, and its durable run record carries the `lease_not_held`, `lease_fenced`,
+or `lease_unproven` reason. To convert a node-local kind to a cluster singleton, return `LeaseScope::ClusterSingleton`
+with the singleton key from the job's `lease_scope`. The runner then leases and fences it with no further wiring.
 
 ## DC writer promotion
 

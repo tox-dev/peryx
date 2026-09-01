@@ -19,6 +19,7 @@ pub use describe::{
 pub use ownership::{
     AuthorityWriteLease, ClusterStatus, HomeClaim, OwnershipAuthority, OwnershipError, SINGLETON_LEASE_SECS,
     SINGLETON_RENEW_SECS, SingletonAcquisition, SingletonLease, SingletonRelease, SingletonRenewal, TransferOutcome,
+    singleton_grant_admits,
 };
 pub use peryx_core::PrometheusSource;
 pub use peryx_ha::{

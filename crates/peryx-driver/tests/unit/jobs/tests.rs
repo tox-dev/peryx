@@ -26,20 +26,53 @@ use super::{
 };
 use crate::serving::{CacheRefresher, IdleReclaimer, IntentFinalizer, RefreshSweep};
 use crate::state::{
-    AppState, Clock, ServingState, SingletonAcquisition, SingletonLease, SingletonRelease, SingletonRenewal,
+    AppState, Clock, SINGLETON_LEASE_SECS, ServingState, SingletonAcquisition, SingletonLease, SingletonRelease,
+    SingletonRenewal,
 };
+use peryx_ha::AUTHORITY_CLOCK_SKEW_SECS;
 use peryx_search::{ContentSource, IndexerCtx, SearchDocument, SearchDocumentProvider, SearchError};
 
-fn serving() -> (tempfile::TempDir, Arc<ServingState>) {
-    serving_with(peryx_ha::AvailabilityCapabilities::default())
+/// The wall-clock reading every fixture starts from.
+const NOW_UNIX: i64 = 1_000;
+
+/// A settable wall clock a serving state shares with the ownership group leasing to it, so a test can
+/// lapse a grant outright instead of waiting one out.
+#[derive(Clone)]
+struct TestClock(Arc<AtomicI64>);
+
+impl Default for TestClock {
+    fn default() -> Self {
+        Self(Arc::new(AtomicI64::new(NOW_UNIX)))
+    }
 }
 
-fn serving_with(capabilities: peryx_ha::AvailabilityCapabilities) -> (tempfile::TempDir, Arc<ServingState>) {
+impl TestClock {
+    fn now(&self) -> i64 {
+        self.0.load(Ordering::SeqCst)
+    }
+
+    fn set(&self, now_unix: i64) {
+        self.0.store(now_unix, Ordering::SeqCst);
+    }
+
+    fn reader(&self) -> Clock {
+        let ticks = self.0.clone();
+        Arc::new(move || ticks.load(Ordering::SeqCst))
+    }
+}
+
+fn serving() -> (tempfile::TempDir, Arc<ServingState>) {
+    serving_with(peryx_ha::AvailabilityCapabilities::default(), &TestClock::default())
+}
+
+fn serving_with(
+    capabilities: peryx_ha::AvailabilityCapabilities,
+    clock: &TestClock,
+) -> (tempfile::TempDir, Arc<ServingState>) {
     let dir = tempfile::tempdir().unwrap();
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
     let blobs = BlobStore::new(dir.path().join("blobs"));
-    let clock: Clock = Arc::new(|| 1_000);
-    let mut state = AppState::with_clock(meta, blobs, 60, Vec::new(), clock);
+    let mut state = AppState::with_clock(meta, blobs, 60, Vec::new(), clock.reader());
     install_distributed(&mut state, capabilities);
     (dir, state.serving)
 }
@@ -59,10 +92,20 @@ fn install_distributed(state: &mut AppState, capabilities: peryx_ha::Availabilit
 }
 
 fn serving_with_authority(authority: Arc<dyn peryx_ha::OwnershipAuthority>) -> (tempfile::TempDir, Arc<ServingState>) {
-    serving_with(peryx_ha::AvailabilityCapabilities {
-        ownership: Some(authority),
-        ..Default::default()
-    })
+    serving_with_authority_at(authority, &TestClock::default())
+}
+
+fn serving_with_authority_at(
+    authority: Arc<dyn peryx_ha::OwnershipAuthority>,
+    clock: &TestClock,
+) -> (tempfile::TempDir, Arc<ServingState>) {
+    serving_with(
+        peryx_ha::AvailabilityCapabilities {
+            ownership: Some(authority),
+            ..Default::default()
+        },
+        clock,
+    )
 }
 
 struct UnavailableDurability;
@@ -1860,6 +1903,9 @@ struct TestAuthority {
     renewed: Notify,
     renewals: AtomicUsize,
     failure: GroupFailure,
+    /// The clock the group decides lapsing on, which is the deployment's clock rather than a holder's.
+    clock: TestClock,
+    granted: GrantDeadline,
 }
 
 /// Which round trip to the group is partitioned away.
@@ -1878,6 +1924,15 @@ struct TestGrant {
     term: u64,
     generation: u64,
     held: bool,
+    expires_at_unix: i64,
+}
+
+impl TestGrant {
+    /// A grant stays exclusive a clock-skew margin past its deadline, as the ownership state machine
+    /// keeps it.
+    const fn lapsed(&self, now_unix: i64) -> bool {
+        now_unix >= self.expires_at_unix.saturating_add(AUTHORITY_CLOCK_SKEW_SECS)
+    }
 }
 
 fn test_authority(epoch: Arc<AtomicU64>, term: u64) -> Arc<TestAuthority> {
@@ -1894,9 +1949,14 @@ impl TestAuthority {
     }
 
     fn partitioned(term: u64, failure: GroupFailure) -> Arc<Self> {
+        Self::partitioned_at(term, failure, TestClock::default())
+    }
+
+    fn partitioned_at(term: u64, failure: GroupFailure, clock: TestClock) -> Arc<Self> {
         Arc::new(Self {
             term,
             failure,
+            clock,
             ..Self::default()
         })
     }
@@ -1912,29 +1972,77 @@ impl TestAuthority {
 
     /// Commit another holder's claim, as a competing node's acquisition would.
     fn take_over(&self, job: &str, holder: &str) {
+        let expires_at_unix = self.clock.now() + SINGLETON_LEASE_SECS;
         let mut grants = self.lock();
         let grant = grants.entry(job.to_owned()).or_default();
         grant.holder = holder.to_owned();
         grant.term = self.term;
         grant.generation += 1;
         grant.held = true;
+        grant.expires_at_unix = expires_at_unix;
         drop(grants);
+        self.granted.record(expires_at_unix);
     }
 
     fn owns(&self, lease: &SingletonLease) -> bool {
+        let now_unix = self.clock.now();
         self.lock().get(&lease.job).is_some_and(|grant| {
             grant.held
                 && grant.holder == lease.holder
                 && grant.term == lease.term
                 && grant.generation == lease.generation
+                && !grant.lapsed(now_unix)
         })
     }
 
     fn holder_of(&self, job: &str) -> Option<String> {
+        let now_unix = self.clock.now();
         self.lock()
             .get(job)
-            .filter(|grant| grant.held)
+            .filter(|grant| grant.held && !grant.lapsed(now_unix))
             .map(|grant| grant.holder.clone())
+    }
+
+    /// Extend a grant the presented lease still owns, moving its deadline on from now rather than from
+    /// the deadline it replaces.
+    fn renew(&self, lease: &SingletonLease) -> Result<SingletonRenewal, crate::state::OwnershipError> {
+        if let Some(error) = self.unreachable_for(GroupFailure::Renew) {
+            return Err(error);
+        }
+        if !self.owns(lease) {
+            return Ok(SingletonRenewal::Lost);
+        }
+        let expires_at_unix = self.clock.now() + SINGLETON_LEASE_SECS;
+        self.lock()
+            .get_mut(&lease.job)
+            .expect("an owned grant is recorded")
+            .expires_at_unix = expires_at_unix;
+        self.granted.record(expires_at_unix);
+        Ok(SingletonRenewal::Renewed(SingletonLease {
+            expires_at_unix,
+            ..lease.clone()
+        }))
+    }
+}
+
+/// Publishes each grant's committed deadline once it is written, so a test waits for a renewal to have
+/// extended one rather than counting round trips that may have raced it.
+struct GrantDeadline(tokio::sync::watch::Sender<i64>);
+
+impl Default for GrantDeadline {
+    fn default() -> Self {
+        Self(tokio::sync::watch::Sender::new(0))
+    }
+}
+
+impl GrantDeadline {
+    fn record(&self, expires_at_unix: i64) {
+        self.0.send_replace(expires_at_unix);
+    }
+
+    async fn reaches(&self, past: i64) {
+        let mut deadlines = self.0.subscribe();
+        deadlines.wait_for(|deadline| *deadline > past).await.unwrap();
     }
 }
 
@@ -1983,7 +2091,7 @@ impl crate::state::OwnershipAuthority for TestAuthority {
             holder: grant.holder,
             term: grant.term,
             generation: grant.generation,
-            expires_at_unix: i64::MAX,
+            expires_at_unix: grant.expires_at_unix,
         }))
     }
 
@@ -1991,16 +2099,10 @@ impl crate::state::OwnershipAuthority for TestAuthority {
         &self,
         lease: &SingletonLease,
     ) -> Result<SingletonRenewal, crate::state::OwnershipError> {
+        let renewal = self.renew(lease);
         self.renewals.fetch_add(1, Ordering::SeqCst);
         self.renewed.notify_one();
-        if let Some(error) = self.unreachable_for(GroupFailure::Renew) {
-            return Err(error);
-        }
-        Ok(if self.owns(lease) {
-            SingletonRenewal::Renewed(lease.clone())
-        } else {
-            SingletonRenewal::Lost
-        })
+        renewal
     }
 
     async fn release_singleton_lease(
@@ -2699,7 +2801,7 @@ async fn test_a_grant_taken_over_mid_run_fences_a_succeeded_body() {
 }
 
 #[tokio::test]
-async fn test_a_release_the_group_cannot_commit_leaves_the_outcome_alone() {
+async fn test_a_release_the_group_cannot_commit_leaves_a_live_grant_s_outcome_alone() {
     let group = TestAuthority::partitioned(7, GroupFailure::Release);
     let (_dir, state) = serving_with_authority(group);
     let scheduler = JobScheduler::new(state, limits(2, 4, 2, 2));
@@ -2708,7 +2810,97 @@ async fn test_a_release_the_group_cannot_commit_leaves_the_outcome_alone() {
     assert_eq!(
         scheduler.run(job).await.unwrap(),
         JobRunOutcome::succeeded(JobReport::default()),
-        "cleanup that cannot reach consensus never rewrites a finished body"
+        "a grant that still rules out a second holder makes an unanswered release pure cleanup"
+    );
+    scheduler.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_a_release_the_group_cannot_commit_fails_a_run_whose_grant_lapsed() {
+    let clock = TestClock::default();
+    let group = TestAuthority::partitioned_at(7, GroupFailure::Release, clock.clone());
+    let (_dir, state) = serving_with_authority_at(group, &clock);
+    let scheduler = Arc::new(JobScheduler::new(state.clone(), limits(2, 4, 2, 2)));
+    let release = Arc::new(Notify::new());
+    let (job, observed) = SingletonJob::new(SINGLETON, SingletonAction::Block(release.clone()));
+    let running = tokio::spawn({
+        let handle = scheduler.clone();
+        async move { handle.run(job).await }
+    });
+    observed.entered.notified().await;
+
+    clock.set(NOW_UNIX + SINGLETON_LEASE_SECS + AUTHORITY_CLOCK_SKEW_SECS);
+    release.notify_one();
+    let error = running.await.unwrap().unwrap_err();
+
+    assert_eq!(
+        error, "lease_unproven: this cluster-singleton grant lapsed before consensus could confirm the run held it",
+        "an unanswered release over a lapsed grant leaves a second holder possible"
+    );
+    assert_eq!(
+        job_runs(&state.meta)[0].error.as_deref(),
+        Some(error.as_str()),
+        "the unproven run is recorded as failed in durable history"
+    );
+    scheduler.shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_renewals_the_group_cannot_commit_stop_a_run_once_its_grant_lapses() {
+    let clock = TestClock::default();
+    let group = TestAuthority::partitioned_at(7, GroupFailure::Renew, clock.clone());
+    let (_dir, state) = serving_with_authority_at(group, &clock);
+    let scheduler = Arc::new(JobScheduler::new(state, limits(2, 4, 2, 2)));
+    let (job, observed) = SingletonJob::new(SINGLETON, SingletonAction::UntilCancelled);
+    let running = tokio::spawn({
+        let handle = scheduler.clone();
+        async move { handle.run(job).await }
+    });
+    observed.entered.notified().await;
+
+    clock.set(NOW_UNIX + SINGLETON_LEASE_SECS + AUTHORITY_CLOCK_SKEW_SECS);
+    // A body that is never stopped waits forever, so the deadline turns that regression into a failure
+    // rather than a hung suite. It bounds only the failing case; the passing one never reaches it.
+    let outcome = tokio::time::timeout(Duration::from_mins(10), running)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert!(
+        observed.cancelled.load(Ordering::SeqCst),
+        "a body the group can no longer vouch for is stopped rather than left racing a second holder"
+    );
+    assert_eq!(
+        outcome.unwrap_err(),
+        "lease_fenced: ownership of this cluster-singleton run moved to another holder"
+    );
+    scheduler.shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_a_renewed_grant_carries_a_run_past_the_deadline_it_started_under() {
+    let clock = TestClock::default();
+    let group = TestAuthority::partitioned_at(7, GroupFailure::Release, clock.clone());
+    let (_dir, state) = serving_with_authority_at(group.clone(), &clock);
+    let scheduler = Arc::new(JobScheduler::new(state, limits(2, 4, 2, 2)));
+    let release = Arc::new(Notify::new());
+    let (job, observed) = SingletonJob::new(SINGLETON, SingletonAction::Block(release.clone()));
+    let running = tokio::spawn({
+        let handle = scheduler.clone();
+        async move { handle.run(job).await }
+    });
+    observed.entered.notified().await;
+    let acquired_until = NOW_UNIX + SINGLETON_LEASE_SECS;
+
+    clock.set(acquired_until - 1);
+    group.granted.reaches(acquired_until).await;
+    clock.set(acquired_until + AUTHORITY_CLOCK_SKEW_SECS);
+    release.notify_one();
+
+    assert_eq!(
+        running.await.unwrap().unwrap(),
+        JobRunOutcome::succeeded(JobReport::default()),
+        "the freshest committed grant, not the one the run started under, bounds an unanswered release"
     );
     scheduler.shutdown().await;
 }

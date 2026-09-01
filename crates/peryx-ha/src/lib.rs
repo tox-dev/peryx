@@ -808,6 +808,21 @@ pub const SINGLETON_LEASE_SECS: i64 = 30;
 /// still leaves attempts before the grant lapses.
 pub const SINGLETON_RENEW_SECS: u64 = 10;
 
+/// Whether a grant committed to expire at `expires_at_unix` still rules out a second holder at
+/// `now_unix`.
+///
+/// The authority grants the job to the next claimant once the recorded grant has lapsed on the applied
+/// clock, and it does that on its own, without hearing from the holder. So a holder whose round trips
+/// stop being answered may keep believing it owns the job only for as long as its freshest committed
+/// grant reaches: past that point nothing it can observe rules out a second holder, and an unanswered
+/// round trip is an open question rather than a yes. The skew margin mirrors
+/// [`AuthorityWriteLease::admits`], so the outgoing holder stops before the deadline the authority
+/// keeps the grant to.
+#[must_use]
+pub const fn singleton_grant_admits(expires_at_unix: i64, now_unix: i64) -> bool {
+    now_unix.saturating_add(AUTHORITY_CLOCK_SKEW_SECS) < expires_at_unix
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransferOutcome {
     pub from: String,
