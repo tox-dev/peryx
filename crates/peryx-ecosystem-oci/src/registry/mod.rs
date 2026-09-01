@@ -871,6 +871,30 @@ fn resolve_writable<'a>(
     }
 }
 
+/// Resolve the writable target for a request that would add content under `name`, refusing a repository
+/// the index's policy blocks.
+///
+/// Every push shape admits here - manifest, monolithic blob, resumable session, cross-repository mount -
+/// so a blocked name cannot take bytes, membership, or quota through whichever shape omits the check.
+/// Removal is not admitted here: a blocked repository stays deletable so an operator can reclaim what it
+/// already holds.
+fn resolve_uploadable<'a>(
+    state: &'a ServingState,
+    name: &str,
+    headers: &HeaderMap,
+) -> Result<(&'a Index, String, Identity), RequestRejection> {
+    let (index, repo, identity) = resolve_writable(state, name, headers, Action::Write)?;
+    if policy_blocks(index, PolicyAction::Upload, &repo) {
+        return Err(name_blocked().into());
+    }
+    Ok((index, repo, identity))
+}
+
+/// The refusal a repository name the policy blocks answers on any write that would add content to it.
+fn name_blocked() -> Response {
+    error_response(ErrorCode::Denied, "image name is blocked by policy")
+}
+
 /// The repository `<name>` a readable route addresses, which its index authorizes the read against
 /// before the handler runs; `None` for the registry-wide catalog, which is not repository-scoped.
 fn read_name(route: &OciRoute) -> Option<&str> {

@@ -28,7 +28,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         name: &str,
         body: Body,
     ) -> Result<Response, ServeError> {
-        let (index, repo, _) = match resolve_writable(state, name, headers, Action::Write) {
+        let (index, repo, _) = match resolve_uploadable(state, name, headers) {
             Ok(target) => target,
             Err(rejection) => return Ok(rejection.into_response()),
         };
@@ -142,7 +142,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         session: &str,
         body: Body,
     ) -> Result<Response, ServeError> {
-        let (index, repo, _) = match resolve_writable(state, name, headers, Action::Write) {
+        let (index, repo, _) = match resolve_uploadable(state, name, headers) {
             Ok(target) => target,
             Err(rejection) => return Ok(rejection.into_response()),
         };
@@ -166,7 +166,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         session: &str,
         body: Body,
     ) -> Result<Response, ServeError> {
-        let (index, repo, _) = match resolve_writable(state, name, headers, Action::Write) {
+        let (index, repo, _) = match resolve_uploadable(state, name, headers) {
             Ok(target) => target,
             Err(rejection) => return Ok(rejection.into_response()),
         };
@@ -220,9 +220,6 @@ async fn mount_blob(state: &ServingState, request: MountRequest<'_>) -> Result<R
         bytes,
         journal,
     } = request;
-    if policy_blocks(index, PolicyAction::Upload, repo) {
-        return Ok(error_response(ErrorCode::Denied, "image name is blocked by policy"));
-    }
     if let Some(response) = policy_size_denial(index, repo, bytes) {
         return Ok(response);
     }

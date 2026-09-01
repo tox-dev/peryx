@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use axum::body::Body;
-use axum::http::{Method, Request, StatusCode};
+use axum::http::{Method, Request, StatusCode, header};
 use peryx_driver::AppState;
 use peryx_http::router;
 use peryx_index::{Index, IndexKind};
@@ -15,6 +15,7 @@ use super::{
     writable_index,
 };
 use crate::store::{self, Manifest};
+use crate::upload_session::UploadStore as _;
 
 const TOKEN: &str = "s3cret";
 const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
@@ -23,6 +24,10 @@ const INDEX_TYPE: &str = "application/vnd.oci.image.index.v1+json";
 // not read the image document, so the fixture names no blob to upload first.
 const EMPTY_INDEX: &[u8] =
     br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[]}"#;
+/// The repository name [`store_blocking`] refuses, and the one beside it that stays open, so every
+/// assertion runs both directions against one index.
+const BLOCKED: &str = "blocked/app";
+const OPEN: &str = "public/app";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RecordedPolicyDecision {
@@ -247,16 +252,9 @@ async fn test_unprotected_virtual_manifest_still_uses_the_proxy() {
     assert_eq!(recorder.decisions(), expected_policy_decisions("team/app", Ok(())));
 }
 
-fn store_blocking(dir: &tempfile::TempDir) -> (Arc<AppState>, axum::Router) {
+fn store_with_policy(dir: &tempfile::TempDir, config: &PolicyConfig) -> (Arc<AppState>, axum::Router) {
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
     let blobs = BlobStore::new(dir.path().join("blobs"));
-    let policy = Policy::compile(
-        &PolicyConfig {
-            block_resources: vec!["blocked/app".to_owned()],
-            ..PolicyConfig::default()
-        },
-        str::to_owned,
-    );
     let mut state = AppState::with_clock(
         meta,
         blobs,
@@ -266,7 +264,7 @@ fn store_blocking(dir: &tempfile::TempDir) -> (Arc<AppState>, axum::Router) {
             route: "store".to_owned(),
             ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Hosted { volatile: true },
-            policy,
+            policy: Policy::compile(config, str::to_owned),
             acl: crate::tests::writer_acl(TOKEN.to_owned()),
         }],
         Arc::new(|| 1000),
@@ -274,6 +272,17 @@ fn store_blocking(dir: &tempfile::TempDir) -> (Arc<AppState>, axum::Router) {
     crate::tests::install_oci(&mut state, std::collections::HashMap::new(), false);
     let state = Arc::new(state);
     (state.clone(), router(state))
+}
+
+fn blocking_config() -> PolicyConfig {
+    PolicyConfig {
+        block_resources: vec![BLOCKED.to_owned()],
+        ..PolicyConfig::default()
+    }
+}
+
+fn store_blocking(dir: &tempfile::TempDir) -> (Arc<AppState>, axum::Router) {
+    store_with_policy(dir, &blocking_config())
 }
 
 #[tokio::test]
@@ -386,6 +395,213 @@ async fn test_policy_refuses_a_blocked_cross_repo_mount() {
 }
 
 #[tokio::test]
+async fn test_policy_refuses_a_blocked_monolithic_blob_upload() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = store_with_policy(
+        &dir,
+        &PolicyConfig {
+            max_accounted_bytes: Some(1024),
+            ..blocking_config()
+        },
+    );
+    let blob = b"a-shared-layer";
+    let digest = oci_digest(blob);
+
+    let (status, _, body) = send_body(
+        &app,
+        Method::POST,
+        &format!("/v2/store/{BLOCKED}/blobs/uploads/?digest={digest}"),
+        &[("authorization", &auth(TOKEN))],
+        blob.to_vec(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(body_has_code(&body, "DENIED"));
+    assert!(!store::blob_is_member(&state.serving.meta, "store", BLOCKED, &digest).unwrap());
+    assert_eq!(
+        state.serving.meta.quota_usage("store").unwrap(),
+        peryx_storage::meta::QuotaUsage::default()
+    );
+
+    let (status, _, _) = send_body(
+        &app,
+        Method::POST,
+        &format!("/v2/store/{OPEN}/blobs/uploads/?digest={digest}"),
+        &[("authorization", &auth(TOKEN))],
+        blob.to_vec(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CREATED);
+    assert!(store::blob_is_member(&state.serving.meta, "store", OPEN, &digest).unwrap());
+    assert_eq!(
+        state.serving.meta.quota_usage("store").unwrap().accounted_bytes,
+        peryx_storage::meta::QuotaValue {
+            committed: blob.len() as u64,
+            reserved: 0,
+        }
+    );
+}
+
+#[tokio::test]
+async fn test_policy_refuses_a_blocked_resumable_upload_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = store_blocking(&dir);
+    let blob = b"a-shared-layer";
+    let digest = oci_digest(blob);
+
+    let (status, headers, body) = send_body(
+        &app,
+        Method::POST,
+        &format!("/v2/store/{BLOCKED}/blobs/uploads/"),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(body_has_code(&body, "DENIED"));
+    assert_eq!(headers.get(header::LOCATION), None);
+    // The refusal precedes `begin_upload`, so the store holds no session to resume the transfer from.
+    assert_eq!(
+        state.serving.meta.reclaim_uploads(i64::MAX, 8).unwrap(),
+        Vec::<String>::new()
+    );
+
+    let (status, headers, _) = send_body(
+        &app,
+        Method::POST,
+        &format!("/v2/store/{OPEN}/blobs/uploads/"),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let session = headers[header::LOCATION].to_str().unwrap().to_owned();
+
+    let (status, _, _) = send_body(
+        &app,
+        Method::PATCH,
+        &session,
+        &[("authorization", &auth(TOKEN))],
+        blob.to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+
+    let (status, _, _) = send_body(
+        &app,
+        Method::PUT,
+        &format!("{session}?digest={digest}"),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert!(store::blob_is_member(&state.serving.meta, "store", OPEN, &digest).unwrap());
+}
+
+#[tokio::test]
+async fn test_policy_refuses_a_session_opened_before_the_name_was_blocked() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = store_blocking(&dir);
+    // A session is durable across a restart, so one opened while the name was still permitted outlives
+    // the restart that applied the block. Seeding the record is what that survivor looks like.
+    let session = "3f0c1d2e-4a5b-6c7d-8e9f-0a1b2c3d4e5f";
+    state
+        .serving
+        .meta
+        .begin_upload(session, "store", BLOCKED, 1000)
+        .unwrap();
+    state.serving.blobs.stage_upload_chunk(session, 0, b"").await.unwrap();
+    let blob = b"a-shared-layer";
+    let digest = oci_digest(blob);
+    let uri = format!("/v2/store/{BLOCKED}/blobs/uploads/{session}");
+
+    let (status, _, body) = send_body(
+        &app,
+        Method::PATCH,
+        &uri,
+        &[("authorization", &auth(TOKEN))],
+        blob.to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(body_has_code(&body, "DENIED"));
+
+    let (status, _, body) = send_body(
+        &app,
+        Method::PUT,
+        &format!("{uri}?digest={digest}"),
+        &[("authorization", &auth(TOKEN))],
+        blob.to_vec(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(body_has_code(&body, "DENIED"));
+    assert!(!store::blob_is_member(&state.serving.meta, "store", BLOCKED, &digest).unwrap());
+    assert_eq!(
+        state
+            .serving
+            .meta
+            .upload_record(session)
+            .unwrap()
+            .map(|record| record.offset),
+        Some(0)
+    );
+}
+
+#[tokio::test]
+async fn test_policy_refuses_restoring_a_blocked_name_from_the_trash() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = store_blocking(&dir);
+    let bytes = br#"{"schemaVersion":2}"#;
+    let digest = oci_digest(bytes);
+    let manifest = Manifest {
+        media_type: MANIFEST_TYPE.to_owned(),
+        bytes: bytes.to_vec(),
+    };
+    let info = store::TrashInfo {
+        deleted_at_unix: 900,
+        actor: None,
+        reason: None,
+    };
+    for repo in [BLOCKED, OPEN] {
+        store::record_manifest(&state.serving.meta, "store", repo, &digest, &manifest).unwrap();
+        store::put_tag(&state.serving.meta, "store", repo, "1.0", &digest).unwrap();
+        store::trash_tag(&state.serving.meta, "store", repo, "1.0", &info, false, |_| None).unwrap();
+        store::trash_manifest(&state.serving.meta, "store", repo, &digest, &info, false, None).unwrap();
+    }
+
+    for reference in ["1.0", digest.as_str()] {
+        let (status, _, body) = send_body(
+            &app,
+            Method::PUT,
+            &format!("/v2/store/{BLOCKED}/manifests/{reference}/restore"),
+            &[("authorization", &auth(TOKEN))],
+            Vec::new(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(body_has_code(&body, "DENIED"));
+    }
+    assert!(store::tag_is_trashed(&state.serving.meta, "store", BLOCKED, "1.0").unwrap());
+    assert!(store::manifest_is_trashed(&state.serving.meta, "store", BLOCKED, &digest).unwrap());
+
+    let (status, _, _) = send_body(
+        &app,
+        Method::PUT,
+        &format!("/v2/store/{OPEN}/manifests/1.0/restore"),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert!(!store::tag_is_trashed(&state.serving.meta, "store", OPEN, "1.0").unwrap());
+}
+
+#[tokio::test]
 async fn test_policy_hides_a_blocked_repository_from_tags_referrers_and_catalog() {
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = store_blocking(&dir);
@@ -417,32 +633,13 @@ async fn test_policy_hides_a_blocked_repository_from_tags_referrers_and_catalog(
 }
 
 fn store_size_limited(dir: &tempfile::TempDir, limit: u64) -> (Arc<AppState>, axum::Router) {
-    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
-    let blobs = BlobStore::new(dir.path().join("blobs"));
-    let policy = Policy::compile(
+    store_with_policy(
+        dir,
         &PolicyConfig {
             max_artifact_size_bytes: Some(limit),
             ..PolicyConfig::default()
         },
-        str::to_owned,
-    );
-    let mut state = AppState::with_clock(
-        meta,
-        blobs,
-        60,
-        vec![Index {
-            name: "store".to_owned(),
-            route: "store".to_owned(),
-            ecosystem: crate::ECOSYSTEM,
-            kind: IndexKind::Hosted { volatile: true },
-            policy,
-            acl: crate::tests::writer_acl(TOKEN.to_owned()),
-        }],
-        Arc::new(|| 1000),
-    );
-    crate::tests::install_oci(&mut state, std::collections::HashMap::new(), false);
-    let state = Arc::new(state);
-    (state.clone(), router(state))
+    )
 }
 
 #[tokio::test]

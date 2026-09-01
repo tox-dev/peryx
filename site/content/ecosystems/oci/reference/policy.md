@@ -22,6 +22,11 @@ protected resources may end in `*` to match a prefix. Access globs use `*` for a
 | `max_tags_per_repository` | Tags retained for one repository                               |
 | `quota_audit`             | Record a would-reject quota decision and admit the push        |
 
+Every write that adds content admits on the name lists first. A manifest push, a monolithic or resumable blob upload, a
+cross-repository mount, and a restore from the trash all answer `403 DENIED` for a blocked repository, whether or not a
+size or quota limit is configured. Deleting from a blocked repository stays permitted, so an operator can reclaim what
+it already holds.
+
 A blob upload, cross-repository mount, or manifest push reserves capacity before it becomes discoverable. Enforcement
 returns `403 DENIED` when a reservation would cross a limit. Each repository accounts for a digest once. Leaving every
 quota unset disables quota accounting.

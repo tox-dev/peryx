@@ -22,13 +22,10 @@ pub(in crate::registry) async fn put_manifest(
     reference: &Reference,
     journal: crate::outbox::Outbox,
 ) -> Result<Response, ServeError> {
-    let (index, repo, identity) = match resolve_writable(state, name, headers, Action::Write) {
+    let (index, repo, identity) = match resolve_uploadable(state, name, headers) {
         Ok(target) => target,
         Err(rejection) => return Ok(rejection.into_response()),
     };
-    if policy_blocks(index, PolicyAction::Upload, &repo) {
-        return Ok(error_response(ErrorCode::Denied, "image name is blocked by policy"));
-    }
     let manifest = match read_manifest(headers, body, index, &repo, reference).await {
         Ok(manifest) => manifest,
         Err(ManifestInputError::Rejected(response)) => return Ok(*response),
@@ -589,8 +586,13 @@ pub(in crate::registry) async fn restore_manifest(
         Ok(target) => target,
         Err(rejection) => return Ok(rejection.into_response()),
     };
-    // Restoring re-exposes a trashed manifest or tag, so it is fenced like a publish: a stale home
-    // cannot bring back a reference the surviving home has moved past.
+    // Restoring re-exposes a trashed manifest or tag under the repository's name, so it admits like a
+    // publish: a name the policy now blocks cannot be brought back through the trash.
+    if policy_blocks(index, PolicyAction::Upload, &repo) {
+        return Ok(name_blocked());
+    }
+    // It is fenced like a publish too: a stale home cannot bring back a reference the surviving home has
+    // moved past.
     let fence = repository_epoch(state, &repo).await;
     let requester = Requester {
         headers,
