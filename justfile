@@ -135,8 +135,12 @@ lint-docs: _project-temp
     prek run codespell --all-files
 
 # Check workflows and repository automation.
-lint-automation: _project-temp _archive-binary-contract _browser-contract _codspeed-target-contract _coverage-target-contract _features-tool-contract _mutation-baseline-target-contract _mutation-shard-count-contract _readthedocs-contract _renovate-contract _sanitizer-target-contract _test-target-contract
+lint-automation: _project-temp _archive-binary-contract _browser-contract _codspeed-target-contract _coverage-target-contract _features-tool-contract _mutation-baseline-target-contract _mutation-profile-contract _mutation-shard-count-contract _readthedocs-contract _renovate-contract _sanitizer-target-contract _test-target-contract
     SKIP=cargo-fmt,cargo-clippy,mdformat,codespell prek run --all-files
+
+_mutation-profile-contract:
+    just --dry-run mutation 0/1 true 2 skip 500 round-robin 2>&1 \
+      | grep -F 'CARGO_PROFILE_TEST_DEBUG=0 PATH='
 
 # Check that the hosted build commands survive their shell wrapper.
 _readthedocs-contract:
@@ -375,7 +379,8 @@ fuzz package target seconds="60": _project-temp
 
 # Mutate one workspace shard.
 mutation shard="0/1" in_place="false" jobs="2" baseline="run" timeout="500" sharding="slice": test-deps
-    PATH="{{ tools_root }}/bin:$PATH" cargo mutants --workspace --all-features --test-tool nextest \
+    CARGO_PROFILE_TEST_DEBUG=0 PATH="{{ tools_root }}/bin:$PATH" \
+      cargo mutants --workspace --all-features --test-tool nextest \
       --no-shuffle --shard "{{ shard }}" --sharding "{{ sharding }}" --output .tox/mutants \
       {{ if in_place == "true" { "--in-place" } else { "--jobs " + jobs } }} \
       --jobserver-tasks "{{ jobs }}" --baseline "{{ baseline }}" \
