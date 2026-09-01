@@ -11,10 +11,13 @@ use crate::raft::network::{
     DEFAULT_MAX_RPC_RESPONSE_BYTES, RaftRpc, RaftRpcClient, RaftRpcConfigError, RaftRpcError, RaftRpcHandler,
     RaftRpcRejection, raft_rpc_router,
 };
-use crate::support::{TestServer, http_contract};
+use crate::support::{RequestBlocker, TestServer, http_contract};
 
 const TOKEN: &str = "secret";
 const LOCAL: u64 = 3;
+/// Outlasts every deadline the tests grant, so a call always ends on its own bound.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const DEADLINE: Duration = Duration::from_secs(5);
 
 #[derive(Serialize, Deserialize)]
 struct Ping {
@@ -47,8 +50,19 @@ impl RaftRpcHandler for EchoHandler {
     }
 }
 
+struct BlockedHandler {
+    blocker: RequestBlocker,
+}
+
+#[async_trait::async_trait]
+impl RaftRpcHandler for BlockedHandler {
+    async fn handle(&self, _rpc: RaftRpc, _body: Bytes) -> Result<Vec<u8>, RaftRpcRejection> {
+        self.blocker.wait().await
+    }
+}
+
 fn client(base: &str, token: &str) -> RaftRpcClient {
-    RaftRpcClient::new(LOCAL, base, token, Duration::from_secs(5)).unwrap()
+    RaftRpcClient::new(LOCAL, base, token, CONNECT_TIMEOUT).unwrap()
 }
 
 async fn echo_server() -> TestServer {
@@ -58,7 +72,7 @@ async fn echo_server() -> TestServer {
 #[test]
 fn test_configuration_contract() {
     http_contract::assert_configuration(
-        |base, token| RaftRpcClient::new(LOCAL, base, token, Duration::from_secs(5)).map(|_| ()),
+        |base, token| RaftRpcClient::new(LOCAL, base, token, CONNECT_TIMEOUT).map(|_| ()),
         |error| matches!(error, RaftRpcConfigError::EmptyToken),
         |error| matches!(error, RaftRpcConfigError::InvalidBase(_)),
     );
@@ -87,22 +101,11 @@ fn test_rpc_labels_are_stable() {
     assert_eq!(RaftRpc::InstallSnapshot.as_str(), "install_snapshot");
 }
 
-#[test]
-fn test_only_a_transport_loss_reads_as_unreachable() {
-    assert!(RaftRpcError::Unreachable.is_unreachable());
-    assert!(RaftRpcError::Timeout.is_unreachable());
-    assert!(!RaftRpcError::Unauthenticated.is_unreachable());
-    assert!(!RaftRpcError::TargetMismatch.is_unreachable());
-    assert!(!RaftRpcError::RemoteError { status: 500 }.is_unreachable());
-    assert!(!RaftRpcError::ResponseTooLarge { limit: 1, actual: 2 }.is_unreachable());
-    assert!(!RaftRpcError::Malformed.is_unreachable());
-}
-
 async fn assert_round_trip(rpc: RaftRpc, label: &str) {
     let server = echo_server().await;
     let client = client(&server.url, TOKEN);
 
-    let pong: Pong = client.send(rpc, &Ping { n: 7 }).await.unwrap();
+    let pong: Pong = client.send(rpc, &Ping { n: 7 }, DEADLINE).await.unwrap();
 
     assert_eq!(
         pong,
@@ -138,7 +141,7 @@ async fn test_send_maps_a_rejected_token_to_unauthenticated() {
     let server = echo_server().await;
 
     let error = client(&server.url, "wrong")
-        .send::<_, Pong>(RaftRpc::Vote, &Ping { n: 7 })
+        .send::<_, Pong>(RaftRpc::Vote, &Ping { n: 7 }, DEADLINE)
         .await
         .unwrap_err();
 
@@ -148,10 +151,10 @@ async fn test_send_maps_a_rejected_token_to_unauthenticated() {
 #[tokio::test]
 async fn test_send_maps_an_rpc_the_peer_does_not_answer_for_to_a_target_mismatch() {
     let server = echo_server().await;
-    let misdirected = RaftRpcClient::new(LOCAL + 1, &server.url, TOKEN, Duration::from_secs(5)).unwrap();
+    let misdirected = RaftRpcClient::new(LOCAL + 1, &server.url, TOKEN, CONNECT_TIMEOUT).unwrap();
 
     let error = misdirected
-        .send::<_, Pong>(RaftRpc::Vote, &Ping { n: 7 })
+        .send::<_, Pong>(RaftRpc::Vote, &Ping { n: 7 }, DEADLINE)
         .await
         .unwrap_err();
 
@@ -186,10 +189,10 @@ async fn test_the_router_answers_only_for_the_voter_it_holds(#[case] target: Opt
 #[tokio::test]
 async fn test_an_unauthenticated_misdirected_rpc_reports_only_the_credential_failure() {
     let server = echo_server().await;
-    let misdirected = RaftRpcClient::new(LOCAL + 1, &server.url, "wrong", Duration::from_secs(5)).unwrap();
+    let misdirected = RaftRpcClient::new(LOCAL + 1, &server.url, "wrong", CONNECT_TIMEOUT).unwrap();
 
     let error = misdirected
-        .send::<_, Pong>(RaftRpc::Vote, &Ping { n: 7 })
+        .send::<_, Pong>(RaftRpc::Vote, &Ping { n: 7 }, DEADLINE)
         .await
         .unwrap_err();
 
@@ -222,7 +225,7 @@ async fn test_router_accepts_a_body_over_the_default_limit() {
         pad: "x".repeat(3 * 1024 * 1024),
     };
 
-    let pong: Pong = client.send(RaftRpc::AppendEntries, &big).await.unwrap();
+    let pong: Pong = client.send(RaftRpc::AppendEntries, &big, DEADLINE).await.unwrap();
 
     assert_eq!(pong.n, 9);
 }
@@ -233,7 +236,7 @@ async fn test_send_maps_a_non_decodable_reply_to_malformed() {
         http_contract::fixed_post("/+replication/v1/raft/vote", || "not a pong".into_response()),
         |base| async move {
             client(&base, TOKEN)
-                .send::<_, Pong>(RaftRpc::Vote, &Ping { n: 1 })
+                .send::<_, Pong>(RaftRpc::Vote, &Ping { n: 1 }, DEADLINE)
                 .await
         },
         Err(RaftRpcError::Malformed),
@@ -247,7 +250,7 @@ async fn test_send_caps_an_oversized_reply() {
     let client = client(&server.url, TOKEN).with_response_cap(4);
 
     let error = client
-        .send::<_, Pong>(RaftRpc::AppendEntries, &Ping { n: 7 })
+        .send::<_, Pong>(RaftRpc::AppendEntries, &Ping { n: 7 }, DEADLINE)
         .await
         .unwrap_err();
 
@@ -269,7 +272,7 @@ async fn test_send_maps_a_refused_connection_to_unreachable() {
     let client = client(&format!("http://{address}/"), TOKEN);
 
     let error = client
-        .send::<_, Pong>(RaftRpc::AppendEntries, &Ping { n: 1 })
+        .send::<_, Pong>(RaftRpc::AppendEntries, &Ping { n: 1 }, DEADLINE)
         .await
         .unwrap_err();
 
@@ -295,7 +298,7 @@ async fn test_send_maps_a_truncated_body_to_unreachable() {
     let client = client(&format!("http://{address}/"), TOKEN);
 
     let error = client
-        .send::<_, Pong>(RaftRpc::AppendEntries, &Ping { n: 1 })
+        .send::<_, Pong>(RaftRpc::AppendEntries, &Ping { n: 1 }, DEADLINE)
         .await
         .unwrap_err();
 
@@ -303,8 +306,13 @@ async fn test_send_maps_a_truncated_body_to_unreachable() {
     task.await.unwrap();
 }
 
-#[tokio::test]
-async fn test_send_maps_a_deadline_to_timeout() {
+/// Under a paused clock the elapsed span is the deadline the call was handed, so a client-wide bound
+/// would show up as an unrelated number rather than as a slow test.
+#[rstest]
+#[case::under_the_old_client_bound(Duration::from_secs(1))]
+#[case::over_the_old_client_bound(Duration::from_secs(9))]
+#[tokio::test(start_paused = true)]
+async fn test_send_gives_up_on_a_silent_peer_at_the_deadline_it_was_handed(#[case] deadline: Duration) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let (release_tx, release_rx) = tokio::sync::oneshot::channel();
@@ -312,16 +320,55 @@ async fn test_send_maps_a_deadline_to_timeout() {
         let (_connection, _) = listener.accept().await.unwrap();
         release_rx.await.unwrap();
     });
-    let client = RaftRpcClient::new(LOCAL, &format!("http://{address}/"), TOKEN, Duration::from_millis(200)).unwrap();
+    let client = client(&format!("http://{address}/"), TOKEN);
+    let start = tokio::time::Instant::now();
 
     let error = client
-        .send::<_, Pong>(RaftRpc::AppendEntries, &Ping { n: 1 })
+        .send::<_, Pong>(RaftRpc::AppendEntries, &Ping { n: 1 }, deadline)
+        .await
+        .unwrap_err();
+
+    let elapsed = start.elapsed().as_secs();
+    assert_eq!((error, elapsed), (RaftRpcError::Timeout, deadline.as_secs()));
+    release_tx.send(()).unwrap();
+    task.await.unwrap();
+}
+
+/// A peer still working on the request learns the caller left, so it can stop instead of persisting a
+/// reply nobody will read.
+#[tokio::test]
+async fn test_a_deadline_abandons_the_request_the_peer_is_still_serving() {
+    let (blocker, entered, dropped) = RequestBlocker::new();
+    let server = TestServer::start(raft_rpc_router(LOCAL, TOKEN, Arc::new(BlockedHandler { blocker })).unwrap()).await;
+    let client = client(&server.url, TOKEN);
+
+    let error = client
+        .send::<_, Pong>(RaftRpc::InstallSnapshot, &Ping { n: 1 }, Duration::from_millis(50))
         .await
         .unwrap_err();
 
     assert_eq!(error, RaftRpcError::Timeout);
-    release_tx.send(()).unwrap();
-    task.await.unwrap();
+    entered.await.unwrap();
+    dropped.await.unwrap();
+}
+
+/// A reply that lands inside the deadline still resolves the call.
+#[tokio::test]
+async fn test_a_generous_deadline_still_answers_the_call() {
+    let server = echo_server().await;
+
+    let pong: Pong = client(&server.url, TOKEN)
+        .send(RaftRpc::InstallSnapshot, &Ping { n: 4 }, Duration::from_mins(1))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        pong,
+        Pong {
+            rpc: "install_snapshot".to_owned(),
+            n: 4,
+        }
+    );
 }
 
 #[test]
@@ -341,7 +388,7 @@ async fn test_send_panics_when_the_request_will_not_serialize() {
     }
 
     let client = client("http://peer.example/", TOKEN);
-    let _: Result<Pong, RaftRpcError> = client.send(RaftRpc::Vote, &Unserializable).await;
+    let _: Result<Pong, RaftRpcError> = client.send(RaftRpc::Vote, &Unserializable, DEADLINE).await;
 }
 
 mod adapter {
@@ -349,8 +396,8 @@ mod adapter {
 
     use axum::body::Bytes;
     use openraft::Vote;
-    use openraft::error::{Fatal, InstallSnapshotError, RPCError, RaftError, RemoteError};
-    use openraft::network::{RPCOption, RaftNetwork, RaftNetworkFactory};
+    use openraft::error::{Fatal, InstallSnapshotError, RPCError, RaftError, RemoteError, Timeout};
+    use openraft::network::{RPCOption, RPCTypes, RaftNetwork, RaftNetworkFactory};
     use openraft::raft::{
         AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse, VoteRequest,
         VoteResponse,
@@ -366,6 +413,9 @@ mod adapter {
 
     type NodeId = u64;
     const TARGET: NodeId = 7;
+    const LOCAL_VOTER: NodeId = 3;
+    /// Outlasts every deadline these tests grant.
+    const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
     struct StubVoter {
         remote_error: bool,
@@ -403,7 +453,7 @@ mod adapter {
     }
 
     async fn client_to(endpoint: &str) -> PeerRaftNetwork {
-        PeerRaftNetworkFactory::new(TOKEN, Duration::from_secs(5))
+        PeerRaftNetworkFactory::new(LOCAL_VOTER, TOKEN, CONNECT_TIMEOUT)
             .new_client(TARGET, &node(endpoint))
             .await
     }
@@ -469,6 +519,100 @@ mod adapter {
             .await
             .unwrap();
         assert_eq!(response.vote, Vote::new(1, 1));
+    }
+
+    /// Accepts the connection and never answers, so the call can only end on its own deadline.
+    async fn silent_peer() -> (String, tokio::sync::oneshot::Sender<()>, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let (_connection, _) = listener.accept().await.unwrap();
+            released.await.unwrap();
+        });
+        (format!("http://{address}/"), release, task)
+    }
+
+    /// `OpenRaft` grants a vote the election window, far shorter than the budget it grants a snapshot
+    /// chunk, and expects the transport to start cancelling once the soft TTL passes.
+    #[tokio::test(start_paused = true)]
+    async fn test_a_vote_ends_on_the_ttl_of_its_own_option() {
+        let (url, release, task) = silent_peer().await;
+        let mut network = client_to(&url).await;
+        let option = RPCOption::new(Duration::from_secs(4));
+        let deadline = option.soft_ttl();
+        let start = tokio::time::Instant::now();
+
+        let error = network.vote(vote_req(), option).await.unwrap_err();
+
+        assert_eq!(
+            (error, start.elapsed().as_secs()),
+            (
+                RPCError::Timeout(Timeout {
+                    action: RPCTypes::Vote,
+                    id: LOCAL_VOTER,
+                    target: TARGET,
+                    timeout: deadline,
+                }),
+                deadline.as_secs()
+            )
+        );
+        release.send(()).unwrap();
+        task.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_an_append_ends_on_the_ttl_of_its_own_option() {
+        let (url, release, task) = silent_peer().await;
+        let mut network = client_to(&url).await;
+        let option = RPCOption::new(Duration::from_secs(8));
+        let deadline = option.soft_ttl();
+        let start = tokio::time::Instant::now();
+
+        let error = network.append_entries(append_req(), option).await.unwrap_err();
+
+        assert_eq!(
+            (error, start.elapsed().as_secs()),
+            (
+                RPCError::Timeout(Timeout {
+                    action: RPCTypes::AppendEntries,
+                    id: LOCAL_VOTER,
+                    target: TARGET,
+                    timeout: deadline,
+                }),
+                deadline.as_secs()
+            )
+        );
+        release.send(()).unwrap();
+        task.await.unwrap();
+    }
+
+    /// The chunked transport retries a chunk in place after a `Timeout`; the whole transfer restarts at
+    /// offset zero when the hard TTL elapses around the call instead.
+    #[tokio::test(start_paused = true)]
+    async fn test_a_snapshot_chunk_ends_on_the_ttl_of_its_own_option() {
+        let (url, release, task) = silent_peer().await;
+        let mut network = client_to(&url).await;
+        let option = RPCOption::new(Duration::from_secs(12));
+        let deadline = option.soft_ttl();
+        let start = tokio::time::Instant::now();
+
+        let error = network.install_snapshot(snapshot_req(), option).await.unwrap_err();
+
+        assert_eq!(
+            (error, start.elapsed().as_secs()),
+            (
+                RPCError::Timeout(Timeout {
+                    action: RPCTypes::InstallSnapshot,
+                    id: LOCAL_VOTER,
+                    target: TARGET,
+                    timeout: deadline,
+                }),
+                deadline.as_secs()
+            )
+        );
+        release.send(()).unwrap();
+        task.await.unwrap();
     }
 
     #[tokio::test]

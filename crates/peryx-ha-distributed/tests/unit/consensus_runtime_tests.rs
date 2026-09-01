@@ -319,7 +319,7 @@ async fn started_node(dir: &TempDir) -> RaftNode {
         voter_id("east"),
         RaftConfig::default(),
         "ownership",
-        PeerRaftNetworkFactory::new(TOKEN, Duration::from_secs(1)),
+        PeerRaftNetworkFactory::new(voter_id("east"), TOKEN, Duration::from_secs(1)),
         RaftLogStoreAdapter::new(store),
         OwnershipStateMachine::default(),
     )
@@ -1220,7 +1220,7 @@ async fn peer_node(dir: &TempDir, datacenter: &str) -> (RaftNode, tokio::net::Tc
         id,
         RaftConfig::default(),
         "ownership",
-        PeerRaftNetworkFactory::new(TOKEN, Duration::from_secs(1)),
+        PeerRaftNetworkFactory::new(id, TOKEN, Duration::from_secs(1)),
         RaftLogStoreAdapter::new(store),
         OwnershipStateMachine::default(),
     )

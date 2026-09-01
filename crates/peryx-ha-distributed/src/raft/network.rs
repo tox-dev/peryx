@@ -17,8 +17,8 @@ use crate::client_transport::{
 };
 use crate::http::{authorized, unauthorized};
 
-use openraft::error::{InstallSnapshotError, NetworkError, RPCError, RaftError, RemoteError, Unreachable};
-use openraft::network::{RPCOption, RaftNetwork, RaftNetworkFactory};
+use openraft::error::{InstallSnapshotError, NetworkError, RPCError, RaftError, RemoteError, Timeout, Unreachable};
+use openraft::network::{RPCOption, RPCTypes, RaftNetwork, RaftNetworkFactory};
 use openraft::raft::{
     AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse, VoteRequest,
     VoteResponse,
@@ -73,6 +73,15 @@ impl RaftRpc {
             Self::InstallSnapshot => "install_snapshot",
         }
     }
+
+    /// Leader forwarding has no counterpart here: `OpenRaft` never issues it.
+    const fn for_action(action: RPCTypes) -> Self {
+        match action {
+            RPCTypes::Vote => Self::Vote,
+            RPCTypes::AppendEntries => Self::AppendEntries,
+            RPCTypes::InstallSnapshot => Self::InstallSnapshot,
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -102,13 +111,6 @@ pub enum RaftRpcError {
     Malformed,
 }
 
-impl RaftRpcError {
-    #[must_use]
-    pub const fn is_unreachable(&self) -> bool {
-        matches!(self, Self::Unreachable | Self::Timeout)
-    }
-}
-
 #[derive(Clone)]
 pub struct RaftRpcClient {
     target: NodeId,
@@ -129,7 +131,8 @@ impl fmt::Debug for RaftRpcClient {
 
 impl RaftRpcClient {
     /// `target` is the voter the roster places at `base`; the peer refuses the call unless it holds that
-    /// voter ID.
+    /// voter ID. `connect_timeout` bounds TCP and TLS establishment only, because one client serves RPCs
+    /// whose response budgets differ by two orders of magnitude; each call carries its own deadline.
     ///
     /// # Errors
     /// Returns [`RaftRpcConfigError`] for an empty token or a URL that is not a usable HTTP(S) base.
@@ -140,11 +143,11 @@ impl RaftRpcClient {
         target: NodeId,
         base: &str,
         token: impl Into<String>,
-        timeout: Duration,
+        connect_timeout: Duration,
     ) -> Result<Self, RaftRpcConfigError> {
         Ok(Self {
             target,
-            http: HttpClientTransport::new(base, token, timeout).map_err(map_config_error)?,
+            http: HttpClientTransport::with_connect_timeout(base, token, connect_timeout).map_err(map_config_error)?,
             max_response_bytes: DEFAULT_MAX_RPC_RESPONSE_BYTES,
         })
     }
@@ -155,13 +158,15 @@ impl RaftRpcClient {
         self
     }
 
+    /// `deadline` bounds the whole exchange for this call alone, response body included.
+    ///
     /// # Errors
     /// Returns [`RaftRpcError::Unreachable`] or [`RaftRpcError::Timeout`] for transport loss and a
     /// terminal variant for authentication, status, size, or decoding failures.
     ///
     /// # Panics
     /// Panics if `request` serialization fails; `OpenRaft` RPC types serialize to JSON.
-    pub async fn send<Req, Resp>(&self, rpc: RaftRpc, request: &Req) -> Result<Resp, RaftRpcError>
+    pub async fn send<Req, Resp>(&self, rpc: RaftRpc, request: &Req, deadline: Duration) -> Result<Resp, RaftRpcError>
     where
         Req: Serialize + Sync,
         Resp: DeserializeOwned,
@@ -172,6 +177,7 @@ impl RaftRpcClient {
             .send(
                 self.http
                     .post(self.http.endpoint(rpc.path()))
+                    .timeout(deadline)
                     .header(header::CONTENT_TYPE, "application/json")
                     .header(TARGET_HEADER, self.target)
                     .body(body),
@@ -337,21 +343,9 @@ fn addressed_to(headers: &HeaderMap, local: NodeId) -> bool {
         .is_some_and(|target| target == local)
 }
 
-/// Maps transport loss and timeouts to retryable `Unreachable` errors; protocol failures become
-/// `Network` errors.
-fn unreachable_or_network<E>(error: &RaftRpcError) -> RPCError<NodeId, PeryxNode, E>
-where
-    E: std::error::Error,
-{
-    if error.is_unreachable() {
-        RPCError::Unreachable(Unreachable::new(error))
-    } else {
-        RPCError::Network(NetworkError::new(error))
-    }
-}
-
 /// Retains peer identity so `OpenRaft` can distinguish peer rejections from transport failures.
 pub struct PeerRaftNetwork {
+    local: NodeId,
     target: NodeId,
     target_node: PeryxNode,
     client: Result<RaftRpcClient, RaftRpcConfigError>,
@@ -360,8 +354,9 @@ pub struct PeerRaftNetwork {
 impl PeerRaftNetwork {
     async fn call<Req, Resp, E>(
         &self,
-        rpc: RaftRpc,
+        action: RPCTypes,
         request: &Req,
+        option: &RPCOption,
     ) -> Result<Resp, RPCError<NodeId, PeryxNode, RaftError<NodeId, E>>>
     where
         Req: Serialize + Sync,
@@ -373,13 +368,41 @@ impl PeerRaftNetwork {
             .client
             .as_ref()
             .map_err(|error| RPCError::Unreachable(Unreachable::new(error)))?;
+        // `OpenRaft` drops this future once the hard TTL expires, and the drop discards whatever the
+        // transport concluded: the chunked snapshot transport retries a chunk in place after a transport
+        // deadline but abandons the whole transfer when the hard TTL elapses around it. The soft TTL is
+        // the point `OpenRaft` reserves for the implementation to begin cancelling, so the transport
+        // stops there and the hard TTL stays the abort boundary.
+        let deadline = option.soft_ttl();
         let wire: Result<Resp, RaftError<NodeId, E>> = client
-            .send(rpc, request)
+            .send(RaftRpc::for_action(action), request, deadline)
             .await
-            .map_err(|error| unreachable_or_network(&error))?;
+            .map_err(|error| self.classify(action, deadline, &error))?;
         wire.map_err(|error| {
             RPCError::RemoteError(RemoteError::new_with_node(self.target, self.target_node.clone(), error))
         })
+    }
+
+    /// A deadline reads as `Timeout` so `OpenRaft` retries on its own timer; `Unreachable` would instead
+    /// back the peer off as though the process were gone. Protocol failures become `Network` errors.
+    fn classify<E>(&self, action: RPCTypes, deadline: Duration, error: &RaftRpcError) -> RPCError<NodeId, PeryxNode, E>
+    where
+        E: std::error::Error,
+    {
+        match error {
+            RaftRpcError::Timeout => RPCError::Timeout(Timeout {
+                action,
+                id: self.local,
+                target: self.target,
+                timeout: deadline,
+            }),
+            RaftRpcError::Unreachable => RPCError::Unreachable(Unreachable::new(error)),
+            RaftRpcError::Unauthenticated
+            | RaftRpcError::TargetMismatch
+            | RaftRpcError::RemoteError { .. }
+            | RaftRpcError::ResponseTooLarge { .. }
+            | RaftRpcError::Malformed => RPCError::Network(NetworkError::new(error)),
+        }
     }
 }
 
@@ -387,40 +410,42 @@ impl RaftNetwork<TypeConfig> for PeerRaftNetwork {
     async fn append_entries(
         &mut self,
         rpc: AppendEntriesRequest<TypeConfig>,
-        _option: RPCOption,
+        option: RPCOption,
     ) -> Result<AppendEntriesResponse<NodeId>, RPCError<NodeId, PeryxNode, RaftError<NodeId>>> {
-        self.call(RaftRpc::AppendEntries, &rpc).await
+        self.call(RPCTypes::AppendEntries, &rpc, &option).await
     }
 
     async fn vote(
         &mut self,
         rpc: VoteRequest<NodeId>,
-        _option: RPCOption,
+        option: RPCOption,
     ) -> Result<VoteResponse<NodeId>, RPCError<NodeId, PeryxNode, RaftError<NodeId>>> {
-        self.call(RaftRpc::Vote, &rpc).await
+        self.call(RPCTypes::Vote, &rpc, &option).await
     }
 
     async fn install_snapshot(
         &mut self,
         rpc: InstallSnapshotRequest<TypeConfig>,
-        _option: RPCOption,
+        option: RPCOption,
     ) -> Result<InstallSnapshotResponse<NodeId>, RPCError<NodeId, PeryxNode, RaftError<NodeId, InstallSnapshotError>>>
     {
-        self.call(RaftRpc::InstallSnapshot, &rpc).await
+        self.call(RPCTypes::InstallSnapshot, &rpc, &option).await
     }
 }
 
 pub struct PeerRaftNetworkFactory {
+    local: NodeId,
     token: String,
-    timeout: Duration,
+    connect_timeout: Duration,
 }
 
 impl PeerRaftNetworkFactory {
     #[must_use]
-    pub fn new(token: impl Into<String>, timeout: Duration) -> Self {
+    pub fn new(local: NodeId, token: impl Into<String>, connect_timeout: Duration) -> Self {
         Self {
+            local,
             token: token.into(),
-            timeout,
+            connect_timeout,
         }
     }
 }
@@ -432,9 +457,10 @@ impl RaftNetworkFactory<TypeConfig> for PeerRaftNetworkFactory {
         // OpenRaft creates clients inside replication tasks, and this trait cannot return an error. Store
         // invalid-address errors so calls return `Unreachable` without panicking the task.
         PeerRaftNetwork {
+            local: self.local,
             target,
             target_node: node.clone(),
-            client: RaftRpcClient::new(target, &node.endpoint, self.token.clone(), self.timeout),
+            client: RaftRpcClient::new(target, &node.endpoint, self.token.clone(), self.connect_timeout),
         }
     }
 }

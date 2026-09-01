@@ -26,8 +26,10 @@ use peryx_ha::{
 
 type VoterId = u64;
 
-/// A peer RPC exceeding this deadline counts as a retryable loss.
-const PEER_RPC_TIMEOUT: Duration = Duration::from_secs(5);
+/// Bounds TCP and TLS establishment only; `OpenRaft` grants every raft RPC its own response deadline.
+const PEER_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+/// Forwarding a write to the leader is a peryx RPC with no `OpenRaft` deadline behind it.
+const CLIENT_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const MEMBERSHIP_PUBLICATION_TIMEOUT: Duration = Duration::from_secs(5);
 const LEARNER_CATCH_UP_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -232,7 +234,7 @@ impl ConsensusPlan {
                                 local,
                                 RaftConfig::default(),
                                 group,
-                                PeerRaftNetworkFactory::new(token, PEER_RPC_TIMEOUT),
+                                PeerRaftNetworkFactory::new(local, token, PEER_CONNECT_TIMEOUT),
                                 RaftLogStoreAdapter::new(store),
                                 state_machine,
                             )
@@ -811,13 +813,13 @@ impl OwnershipGroup {
                 let Some((id, target)) = self.node.forward_target(&error) else {
                     return Err(map_ownership_write_error(error));
                 };
-                let client = RaftRpcClient::new(id, &target.endpoint, token, PEER_RPC_TIMEOUT)
+                let client = RaftRpcClient::new(id, &target.endpoint, token, PEER_CONNECT_TIMEOUT)
                     .expect("the replication token and peer endpoint were validated at startup");
                 let response: Result<
                     ClientWriteResponse<TypeConfig>,
                     RaftError<VoterId, ClientWriteError<VoterId, PeryxNode>>,
                 > = client
-                    .send(RaftRpc::ClientWrite, &command)
+                    .send(RaftRpc::ClientWrite, &command, CLIENT_WRITE_TIMEOUT)
                     .await
                     .map_err(|error| OwnershipError::Unavailable(error.to_string()))?;
                 response.map_err(map_ownership_write_error)

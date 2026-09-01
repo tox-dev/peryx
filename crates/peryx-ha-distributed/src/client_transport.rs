@@ -1,7 +1,7 @@
 use std::fmt;
 use std::time::Duration;
 
-use reqwest::{Client, RequestBuilder, StatusCode, Url};
+use reqwest::{Client, ClientBuilder, RequestBuilder, StatusCode, Url};
 
 use crate::peer::TransportError;
 
@@ -47,7 +47,22 @@ impl fmt::Debug for HttpClientTransport {
 }
 
 impl HttpClientTransport {
+    /// Bounds every request end to end: connection, response and body transfer share `timeout`.
     pub(super) fn new(base: &str, token: impl Into<String>, timeout: Duration) -> Result<Self, HttpClientConfigError> {
+        Self::build(base, token, Client::builder().timeout(timeout))
+    }
+
+    /// Bounds only connection establishment, leaving each request to carry the deadline its caller was
+    /// granted. Used where a single client serves calls with unrelated budgets.
+    pub(super) fn with_connect_timeout(
+        base: &str,
+        token: impl Into<String>,
+        connect: Duration,
+    ) -> Result<Self, HttpClientConfigError> {
+        Self::build(base, token, Client::builder().connect_timeout(connect))
+    }
+
+    fn build(base: &str, token: impl Into<String>, client: ClientBuilder) -> Result<Self, HttpClientConfigError> {
         let token = token.into();
         if token.is_empty() {
             return Err(HttpClientConfigError::EmptyToken);
@@ -65,9 +80,8 @@ impl HttpClientTransport {
         base.set_fragment(None);
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         Ok(Self {
-            client: Client::builder()
+            client: client
                 .user_agent(USER_AGENT)
-                .timeout(timeout)
                 .build()
                 .expect("a static user agent and duration timeout build a reqwest client"),
             base,

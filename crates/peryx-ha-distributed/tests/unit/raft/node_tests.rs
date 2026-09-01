@@ -16,7 +16,7 @@ use crate::raft::{OwnershipResponse, OwnershipStateMachine, PeryxNode, RaftConfi
 use crate::{AuthorityEpoch, AuthorityKey};
 use peryx_ha::OwnershipAuthority as _;
 
-const RPC_TIMEOUT: Duration = Duration::from_secs(1);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
 
 fn peer(dc: &str, endpoint: &str) -> PeryxNode {
     PeryxNode {
@@ -35,7 +35,7 @@ async fn start_node(dir: &TempDir, config: RaftConfig) -> Result<RaftNode, Start
         1,
         config,
         "ownership",
-        PeerRaftNetworkFactory::new("group-secret", RPC_TIMEOUT),
+        PeerRaftNetworkFactory::new(1, "group-secret", CONNECT_TIMEOUT),
         RaftLogStoreAdapter::new(store),
         OwnershipStateMachine::default(),
     )
@@ -315,7 +315,7 @@ async fn test_a_corrupt_log_store_fails_to_start() {
         1,
         RaftConfig::default(),
         "ownership",
-        PeerRaftNetworkFactory::new("group-secret", RPC_TIMEOUT),
+        PeerRaftNetworkFactory::new(1, "group-secret", CONNECT_TIMEOUT),
         RaftLogStoreAdapter::new(store),
         OwnershipStateMachine::default(),
     )
@@ -401,7 +401,7 @@ async fn test_a_three_node_group_forms_quorum_over_the_mounted_rpc_endpoints() {
             id,
             RaftConfig::default(),
             "ownership",
-            PeerRaftNetworkFactory::new(CLUSTER_TOKEN, RPC_TIMEOUT),
+            PeerRaftNetworkFactory::new(id, CLUSTER_TOKEN, CONNECT_TIMEOUT),
             RaftLogStoreAdapter::new(store),
             OwnershipStateMachine::default(),
         )

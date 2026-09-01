@@ -45,7 +45,7 @@ async fn leader_over(store: RaftLogStore) -> RaftNode {
         voter_id("east"),
         RaftConfig::default(),
         "ownership",
-        PeerRaftNetworkFactory::new(TOKEN, Duration::from_secs(1)),
+        PeerRaftNetworkFactory::new(voter_id("east"), TOKEN, Duration::from_secs(1)),
         RaftLogStoreAdapter::new(store),
         OwnershipStateMachine::default(),
     )
@@ -338,7 +338,7 @@ async fn live_group(dirs: &[TempDir]) -> (Vec<RaftNode>, Vec<Server>) {
             id,
             RaftConfig::default(),
             "ownership",
-            PeerRaftNetworkFactory::new(TOKEN, Duration::from_secs(1)),
+            PeerRaftNetworkFactory::new(id, TOKEN, Duration::from_secs(1)),
             RaftLogStoreAdapter::new(RaftLogStore::open(dir.path().join("raft.redb")).unwrap()),
             OwnershipStateMachine::default(),
         )
