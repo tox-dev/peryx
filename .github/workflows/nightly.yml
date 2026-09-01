@@ -107,7 +107,7 @@ jobs:
       - id: shards
         run: |
           mutants=$(just mutation-count)
-          shards=$(just mutation-shard-count "$mutants" 256)
+          shards=$(just mutation-shard-count "$mutants" 128)
           echo "Planning $mutants mutants across $shards shards"
           echo "count=$shards" >> "$GITHUB_OUTPUT"
           echo "indices=$(jq --null-input --compact-output --argjson count "$shards" '[range(0; $count)]')" >> "$GITHUB_OUTPUT"
@@ -163,7 +163,7 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           tools: ${{ env.MUTATION_TOOLS }}
-      - run: just mutation-observed "$SHARD/$SHARD_COUNT" true 2 skip 500 round-robin
+      - run: just mutation-observed "$SHARD/$SHARD_COUNT" true 1 skip 500 round-robin
         env:
           SHARD: ${{ matrix.shard }}
           SHARD_COUNT: ${{ needs.mutation-baseline-build.outputs.shard_count }}
