@@ -94,10 +94,10 @@ fn test_checkpoint_rejects_an_operation_that_cannot_accept_progress(
     }
 
     let error = store
-        .commit_driver_txn::<(), OperationOutcomeError>(|txn| {
-            txn.checkpoint_operation("op-1", b"checkpoint", 3)?;
-            Ok(((), Vec::new()))
+        .commit_driver_txn::<Result<(), OperationOutcomeError>, crate::meta::MetaError>(|txn| {
+            Ok((txn.checkpoint_operation("op-1", b"checkpoint", 3), Vec::new()))
         })
+        .unwrap()
         .unwrap_err();
 
     assert_eq!(error.to_string(), expected.to_string());

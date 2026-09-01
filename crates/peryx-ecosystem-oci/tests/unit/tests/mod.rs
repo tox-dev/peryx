@@ -286,7 +286,10 @@ fn hosted_writable_distributed_with_durability(
         vec![writable_index("store", "store", true, token)],
         true,
         |state| {
-            install_test_distributed(state, None, durability.clone());
+            install_test_distributed_with_services(
+                state,
+                peryx_ha::BlobServices::new(None, durability.clone()).with_metadata_durability(durability.clone()),
+            );
         },
     );
     (state, durability, app)
@@ -336,19 +339,21 @@ fn install_oci(state: &mut AppState, settings: HashMap<String, IndexSettings>, d
     }
 }
 
-fn install_test_distributed<Durability>(
+fn install_test_distributed(
     state: &mut AppState,
     availability: Option<Arc<dyn peryx_ha::BlobAvailability>>,
-    durability: Arc<Durability>,
-) where
-    Durability: peryx_ha::BlobWriteDurability + peryx_ha::MetadataWriteDurability + 'static,
-{
+    durability: Arc<dyn peryx_ha::BlobWriteDurability>,
+) {
+    install_test_distributed_with_services(state, peryx_ha::BlobServices::new(availability, durability));
+}
+
+fn install_test_distributed_with_services(state: &mut AppState, blobs: peryx_ha::BlobServices) {
     let ownership = Arc::new(TestOwnership::default());
     state
         .install_distributed_availability(peryx_ha::AvailabilityStateInstall {
             role: peryx_core::NodeRole::Writer,
             topology: local_topology(),
-            blobs: peryx_ha::BlobServices::new(availability, durability.clone()).with_metadata_durability(durability),
+            blobs,
             analytics: Arc::new(UnavailableCompleteness),
             capabilities: peryx_ha::AvailabilityCapabilities {
                 ownership: Some(ownership.clone()),
@@ -382,15 +387,6 @@ impl peryx_ha::BlobWriteDurability for LocalDurability {
     async fn confirm(&self, write: peryx_ha::CommittedBlob<'_>) -> peryx_ha::WriteDurability {
         peryx_ha::WriteDurability::Confirmed {
             scope: write.evidence().scope(),
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl peryx_ha::MetadataWriteDurability for LocalDurability {
-    async fn confirm_metadata(&self, _write: peryx_ha::CommittedMetadata<'_>) -> peryx_ha::WriteDurability {
-        peryx_ha::WriteDurability::Confirmed {
-            scope: peryx_core::BlobDurability::Filesystem,
         }
     }
 }
