@@ -142,8 +142,7 @@ pub fn generic_member_kind(path: &str) -> MemberKind {
 /// # Errors
 /// Returns [`ArchiveError::UnsafeMember`] when the name could escape a storage key or URL path.
 pub fn safe_member_name(path: &str) -> Result<String, ArchiveError> {
-    if path.is_empty() || path.starts_with('/') || path.starts_with('\\') || path.contains('\\') || path.contains('\0')
-    {
+    if path.starts_with('\\') || path.contains('\\') || path.contains('\0') {
         return Err(ArchiveError::UnsafeMember(path.to_owned()));
     }
     let mut components = Vec::new();

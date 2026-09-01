@@ -366,16 +366,18 @@ fn test_text_chunks_trim_an_incomplete_trailing_character() {
     assert_eq!((chunk.bytes, chunk.next_offset), (b"ab".to_vec(), Some(2)));
 }
 
-#[test]
-fn test_text_chunks_reject_binary_content_and_binary_members() {
-    for (member, body) in [("text.txt", &[0xff][..]), ("image.png", BODY)] {
-        let bytes = zip(&[(member, body)], zip::CompressionMethod::Deflated);
-        let (_dir, path) = write_archive(&bytes);
-        assert!(matches!(
-            read_text_member_chunk_nested_path(&PROFILE, "bundle.zip", &path, &[], member, 0, 8),
-            Err(ArchiveError::BinaryMember(name)) if name == member
-        ));
-    }
+#[rstest]
+#[case::invalid_first_byte("text.txt", &[0xff])]
+#[case::invalid_after_ascii("text.txt", b"a\xff")]
+#[case::incomplete_final_character("text.txt", b"a\xc3")]
+#[case::binary_member("image.png", BODY)]
+fn test_text_chunks_reject_binary_content_and_binary_members(#[case] member: &str, #[case] body: &[u8]) {
+    let bytes = zip(&[(member, body)], zip::CompressionMethod::Deflated);
+    let (_dir, path) = write_archive(&bytes);
+    assert!(matches!(
+        read_text_member_chunk_nested_path(&PROFILE, "bundle.zip", &path, &[], member, 0, 8),
+        Err(ArchiveError::BinaryMember(name)) if name == member
+    ));
 }
 
 #[rstest]
@@ -493,6 +495,22 @@ fn test_tar_member_read_rejects_the_inspection_boundary() {
             1,
         ),
         Err(ArchiveError::InspectionLimitExceeded { limit }) if limit == MAX_DECOMPRESSED_INSPECT_BYTES
+    ));
+}
+
+#[test]
+fn test_tar_member_read_allows_the_exact_inspection_boundary() {
+    assert!(matches!(
+        read_member_chunk(
+            &PROFILE,
+            "bundle.tar",
+            &truncated_tar("file.txt", MAX_DECOMPRESSED_INSPECT_BYTES, BODY),
+            "file.txt",
+            MAX_DECOMPRESSED_INSPECT_BYTES - 512,
+            0,
+        ),
+        Err(ArchiveError::TruncatedMember { expected, actual })
+            if expected == MAX_DECOMPRESSED_INSPECT_BYTES && actual == BODY.len() as u64
     ));
 }
 
