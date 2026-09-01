@@ -719,6 +719,11 @@ creation can resume. That directory is node-private: startup treats every journa
 peryx processes must never share a `data_dir`. Reads stream ranged `GET`s. An explicit blob verification downloads and
 hashes the complete object; normal reads do not add a second digest pass.
 
+A resumable registry upload session stages the same way. Its chunks land under `data_dir/blob-staging/uploads`, each
+flushed before the session's committed offset is reported, so a restart resumes where the client left off. The bucket
+sees the blob only at the final request, once the staged bytes are proven to hash to the digest the client named. A
+mismatch or a rejected commit keeps the stage, so a retry does not re-send the bytes.
+
 ### Credentials
 
 The `[blob]` table does not hold secrets. The first S3 request resolves credentials through the AWS SDK default provider

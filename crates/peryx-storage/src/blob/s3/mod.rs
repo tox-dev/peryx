@@ -22,10 +22,12 @@ use tokio::sync::{Mutex, watch};
 pub use self::client::{S3Client, S3Error};
 use self::client::{S3Get, S3Part};
 pub use self::config::{S3Addressing, S3Config, S3ConfigError, S3Settings};
+use super::backend::filesystem_worker;
 use super::store::BlobStore;
 use super::{
-    BlobBackend, BlobCapabilities, BlobDurability, BlobError, BlobLease, BlobMetadata, BlobOperation, BlobRead,
-    BlobReadBody, BlobStaged, BlobSupport, BlobWrite, Digest, DurabilityCapabilities, PlacementReceipt, Publication,
+    BlobBackend, BlobCapabilities, BlobDurability, BlobError, BlobErrorKind, BlobLease, BlobMetadata, BlobOperation,
+    BlobRead, BlobReadBody, BlobStaged, BlobSupport, BlobWrite, Digest, DurabilityCapabilities, PlacementReceipt,
+    Publication,
 };
 
 const MAX_MULTIPART_PARTS: u64 = 10_000;
@@ -65,6 +67,81 @@ impl S3Backend {
     /// The local store the backend stages writes, downloads, and multipart journals through.
     pub(crate) const fn staging(&self) -> &BlobStore {
         &self.staging
+    }
+
+    /// Publishes the local stage a resumable session filled, once its bytes are proven to hash to
+    /// `expected`.
+    ///
+    /// The stage is the session's only record of the bytes, so it outlives every commit that did not
+    /// reach the object store: a client whose commit failed retries into the stage it already filled.
+    /// A retry that arrives after the stage is gone is answered from the resident object instead.
+    ///
+    /// # Errors
+    /// Returns a contextual stage verification, object-store commit, or stage cleanup error.
+    pub(crate) async fn finish_upload(&self, session: &str, expected: &Digest) -> Result<PlacementReceipt, BlobError> {
+        let verified_session = session.to_owned();
+        let verified_digest = expected.clone();
+        let staged = match self
+            .staging_worker(expected, move |store| {
+                store.verify_upload(&verified_session, &verified_digest)
+            })
+            .await
+        {
+            Ok(staged) => staged,
+            Err(error) if error.kind() == BlobErrorKind::NotFound => return self.finish_resident(expected).await,
+            Err(error) => return Err(error),
+        };
+        let publication = self.upload_stage(&staged.digest, staged.len, &staged.path).await?;
+        let receipt = self.receipt(&staged.digest, staged.len, publication);
+        let discarded_session = session.to_owned();
+        self.staging_worker(expected, move |store| store.discard_upload(&discarded_session))
+            .await?;
+        Ok(receipt)
+    }
+
+    async fn staging_worker<T: Send + 'static>(
+        &self,
+        expected: &Digest,
+        action: impl FnOnce(&BlobStore) -> Result<T, BlobError> + Send + 'static,
+    ) -> Result<T, BlobError> {
+        let permit = self.staging.worker_permit().await;
+        let store = self.staging.clone();
+        filesystem_worker(
+            tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                action(&store)
+            }),
+            BlobOperation::Commit,
+            Some(expected),
+        )
+        .await
+        .map_err(|error| error.with_context("s3", BlobOperation::Commit, Some(expected)))
+    }
+
+    /// Answers a session whose stage a completed commit already removed from the resident object, so a
+    /// client that lost the response to its final request still gets one.
+    async fn finish_resident(&self, digest: &Digest) -> Result<PlacementReceipt, BlobError> {
+        let result: Result<PlacementReceipt, BlobError> = async {
+            let metadata = self
+                .head_inner(digest)
+                .await?
+                .ok_or_else(|| BlobError::not_found(digest))?;
+            self.verify_resident(&self.key_for(digest), digest, metadata.bytes)
+                .await?;
+            Ok(self.receipt(digest, metadata.bytes, Publication::VerifiedResident))
+        }
+        .await;
+        result.map_err(|error| error.with_context("s3", BlobOperation::Commit, Some(digest)))
+    }
+
+    fn receipt(&self, digest: &Digest, size: u64, publication: Publication) -> PlacementReceipt {
+        let durability = self.durability();
+        PlacementReceipt {
+            digest: digest.clone(),
+            size,
+            durability,
+            evidence: durability.object_store_evidence(publication),
+        }
     }
 
     /// Aborts the multipart uploads a previous process journaled and never finished, and removes each
@@ -260,23 +337,27 @@ impl S3Backend {
         let digest = staged.digest().clone();
         let len = staged.len();
         let path = staged.with_materialized(Path::to_path_buf);
-        let key = self.key_for(&digest);
+        self.upload_stage(&digest, len, &path).await
+    }
+
+    async fn upload_stage(&self, digest: &Digest, len: u64, path: &Path) -> Result<Publication, BlobError> {
+        let key = self.key_for(digest);
         let part_size = multipart_part_size(self.client.config().part_size, len)
-            .map_err(|error| error.with_context("s3", BlobOperation::Commit, Some(&digest)))?;
+            .map_err(|error| error.with_context("s3", BlobOperation::Commit, Some(digest)))?;
         let result = if len <= self.client.config().multipart_threshold {
-            self.put_whole(&key, &digest, &path).await
+            self.put_whole(&key, digest, path).await
         } else {
-            self.put_multipart(&key, &digest, len, part_size, &path).await
+            self.put_multipart(&key, digest, len, part_size, path).await
         };
         match result {
             Ok(()) => Ok(Publication::Created),
             Err(S3Error::AlreadyExists) => self
-                .verify_resident(&key, &digest, len)
+                .verify_resident(&key, digest, len)
                 .await
                 .map(|()| Publication::VerifiedResident),
-            Err(error) => Err(blob_error(error, Some(&digest))),
+            Err(error) => Err(blob_error(error, Some(digest))),
         }
-        .map_err(|error| error.with_context("s3", BlobOperation::Commit, Some(&digest)))
+        .map_err(|error| error.with_context("s3", BlobOperation::Commit, Some(digest)))
     }
 
     /// Proves the object occupying the digest key holds the bytes this commit staged. `If-None-Match: *`
@@ -720,13 +801,7 @@ impl S3Staged {
 
     pub(crate) async fn commit(self) -> Result<PlacementReceipt, BlobError> {
         let publication = self.backend.upload(&self.inner).await?;
-        let durability = self.backend.durability();
-        let receipt = PlacementReceipt {
-            digest: self.inner.digest().clone(),
-            size: self.inner.len(),
-            durability,
-            evidence: durability.object_store_evidence(publication),
-        };
+        let receipt = self.backend.receipt(self.inner.digest(), self.inner.len(), publication);
         Box::pin(self.inner.abort()).await?;
         Ok(receipt)
     }

@@ -62,6 +62,9 @@ enum WireBehavior {
     Materialize,
     Delete,
     SmallPut,
+    Resumable,
+    ResumableFailure,
+    ResumableMissing,
     Immutable,
     ImmutableMismatch,
     Multipart,
@@ -103,6 +106,9 @@ enum WireWriteBehavior {
     Delete,
     Present,
     SmallPut,
+    Resumable,
+    ResumableFailure,
+    ResumableMissing,
     Immutable,
     ImmutableMismatch,
 }
@@ -148,6 +154,9 @@ impl WireBehavior {
             Self::Materialize => "wire_materialize",
             Self::Delete => "wire_delete",
             Self::SmallPut => "wire_small_put",
+            Self::Resumable => "wire_resumable",
+            Self::ResumableFailure => "wire_resumable_failure",
+            Self::ResumableMissing => "wire_resumable_missing",
             Self::Immutable => "wire_immutable",
             Self::ImmutableMismatch => "wire_immutable_mismatch",
             Self::Multipart => "wire_multipart",
@@ -324,6 +333,9 @@ async fn mount_wire_behavior(server: &MockServer, behavior: WireBehavior) {
         WireBehavior::Materialize => mount_wire_reads(server, WireReadBehavior::Materialize).await,
         WireBehavior::Delete => mount_wire_writes(server, WireWriteBehavior::Delete).await,
         WireBehavior::SmallPut => mount_wire_writes(server, WireWriteBehavior::SmallPut).await,
+        WireBehavior::Resumable => mount_wire_writes(server, WireWriteBehavior::Resumable).await,
+        WireBehavior::ResumableFailure => mount_wire_writes(server, WireWriteBehavior::ResumableFailure).await,
+        WireBehavior::ResumableMissing => mount_wire_writes(server, WireWriteBehavior::ResumableMissing).await,
         WireBehavior::Immutable => mount_wire_writes(server, WireWriteBehavior::Immutable).await,
         WireBehavior::ImmutableMismatch => {
             mount_wire_writes(server, WireWriteBehavior::ImmutableMismatch).await;
@@ -475,6 +487,52 @@ async fn mount_wire_writes(server: &MockServer, behavior: WireWriteBehavior) {
         WireWriteBehavior::SmallPut => {
             Mock::given(method("PUT"))
                 .respond_with(ResponseTemplate::new(200).insert_header("ETag", "object"))
+                .mount(server)
+                .await;
+        }
+        WireWriteBehavior::Resumable => {
+            Mock::given(method("PUT"))
+                .and(path(object_path(b"")))
+                .and(header("if-none-match", "*"))
+                .and(header(
+                    "x-amz-checksum-sha256",
+                    "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=",
+                ))
+                .respond_with(ResponseTemplate::new(200).insert_header("ETag", "object"))
+                .mount(server)
+                .await;
+            Mock::given(method("PUT"))
+                .and(path(object_path(b"layer bytes")))
+                .and(header("if-none-match", "*"))
+                .and(header(
+                    "x-amz-checksum-sha256",
+                    "OZe/o5c48nnXiOSdDMdD0CpRLIhV95iz7hwNr1iaa5o=",
+                ))
+                .respond_with(ResponseTemplate::new(200).insert_header("ETag", "object"))
+                .mount(server)
+                .await;
+            Mock::given(method("HEAD"))
+                .and(path(object_path(b"layer bytes")))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .insert_header("Content-Length", "11")
+                        .insert_header("x-amz-checksum-sha256", "OZe/o5c48nnXiOSdDMdD0CpRLIhV95iz7hwNr1iaa5o=")
+                        .insert_header("x-amz-checksum-type", "FULL_OBJECT"),
+                )
+                .mount(server)
+                .await;
+        }
+        WireWriteBehavior::ResumableFailure => {
+            Mock::given(method("PUT"))
+                .and(path(object_path(b"layer bytes")))
+                .respond_with(service_error(500, "InternalError"))
+                .mount(server)
+                .await;
+        }
+        WireWriteBehavior::ResumableMissing => {
+            Mock::given(method("HEAD"))
+                .and(path(object_path(b"layer bytes")))
+                .respond_with(service_error(404, "NoSuchKey"))
                 .mount(server)
                 .await;
         }
@@ -841,6 +899,9 @@ fn assert_child_succeeded(output: &Output) {
 #[case::materialize(WireBehavior::Materialize)]
 #[case::delete(WireBehavior::Delete)]
 #[case::small_put(WireBehavior::SmallPut)]
+#[case::resumable(WireBehavior::Resumable)]
+#[case::resumable_failure(WireBehavior::ResumableFailure)]
+#[case::resumable_missing(WireBehavior::ResumableMissing)]
 #[case::immutable(WireBehavior::Immutable)]
 #[case::immutable_mismatch(WireBehavior::ImmutableMismatch)]
 #[case::multipart(WireBehavior::Multipart)]

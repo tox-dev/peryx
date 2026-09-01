@@ -1,4 +1,5 @@
 use futures_util::StreamExt as _;
+use rstest::rstest;
 
 use crate::blob::{
     BlobBackend, BlobErrorKind, BlobMetadata, BlobOperation, BlobRead, BlobReadBody, BlobScanError, BlobStorage,
@@ -14,7 +15,8 @@ fn test_filesystem_backend_id_matches_its_name() {
 }
 
 fn dummy_s3(dir: &std::path::Path) -> BlobStorage {
-    // S3 rejection must happen before any connection attempt.
+    // The endpoint is unreachable on purpose: every case built on this must be answered locally,
+    // before a request goes out.
     let settings = S3Settings {
         endpoint: "http://127.0.0.1:1".to_owned(),
         bucket: "bucket".to_owned(),
@@ -155,27 +157,58 @@ async fn test_filesystem_storage_discards_a_stage() {
     assert_eq!(storage.staged_upload_len("s").await.unwrap(), None);
 }
 
+#[rstest]
+#[case::empty(&[b"" as &[u8]], 0)]
+#[case::chunked(&[b"layer " as &[u8], b"bytes"], 11)]
 #[tokio::test]
-async fn test_object_store_rejects_resumable_upload_staging() {
+async fn test_an_object_store_upload_stage_survives_a_restart(#[case] chunks: &[&[u8]], #[case] offset: u64) {
     let dir = tempfile::tempdir().unwrap();
     let storage = dummy_s3(dir.path());
+    let mut committed = 0;
+    for chunk in chunks {
+        committed = storage.stage_upload_chunk("session", committed, chunk).await.unwrap();
+    }
+    assert_eq!(committed, offset);
+
+    let restarted = dummy_s3(dir.path());
+    assert_eq!(restarted.staged_upload_len("session").await.unwrap(), Some(offset));
+}
+
+#[tokio::test]
+async fn test_a_restarted_object_store_upload_rejects_a_chunk_past_the_committed_offset() {
+    let dir = tempfile::tempdir().unwrap();
+    dummy_s3(dir.path())
+        .stage_upload_chunk("session", 0, b"layer bytes")
+        .await
+        .unwrap();
+
+    let error = dummy_s3(dir.path())
+        .stage_upload_chunk("session", 12, b"gap")
+        .await
+        .unwrap_err();
 
     assert_eq!(
-        storage.stage_upload_chunk("s", 0, b"x").await.unwrap_err().kind(),
-        BlobErrorKind::Unsupported
+        (error.kind(), error.context().unwrap().backend),
+        (BlobErrorKind::InvalidRange, "s3")
     );
+}
+
+#[tokio::test]
+async fn test_an_object_store_digest_mismatch_keeps_the_upload_stage() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = dummy_s3(dir.path());
+    storage.stage_upload_chunk("session", 0, b"actual").await.unwrap();
+
+    let error = storage
+        .finish_upload("session", &Digest::of(b"other"))
+        .await
+        .unwrap_err();
+
     assert_eq!(
-        storage.staged_upload_len("s").await.unwrap_err().kind(),
-        BlobErrorKind::Unsupported
+        (error.kind(), error.context().unwrap().backend),
+        (BlobErrorKind::DigestMismatch, "s3")
     );
-    assert_eq!(
-        storage.finish_upload("s", &Digest::of(b"x")).await.unwrap_err().kind(),
-        BlobErrorKind::Unsupported
-    );
-    assert_eq!(
-        storage.discard_upload("s").await.unwrap_err().kind(),
-        BlobErrorKind::Unsupported
-    );
+    assert_eq!(storage.staged_upload_len("session").await.unwrap(), Some(6));
 }
 
 #[test]

@@ -587,6 +587,23 @@ impl BlobStore {
         }
     }
 
+    /// Verifies a durable upload stage and holds it for the caller without publishing it.
+    ///
+    /// # Errors
+    /// Returns [`super::BlobErrorKind::DigestMismatch`] without removing the stage when its bytes do
+    /// not hash to `expected`, [`super::BlobErrorKind::NotFound`] when no stage exists, or
+    /// [`super::BlobErrorKind::Io`] on a filesystem failure.
+    pub(super) fn verify_upload(&self, session: &str, expected: &Digest) -> Result<UploadStage, BlobError> {
+        let path = self.upload_dir().join(session);
+        let mut file = std::fs::File::open(&path).map_err(|error| absent_or_io(error, expected))?;
+        let len = file.metadata()?.len();
+        let digest = hash_file(&mut file)?;
+        if digest != *expected {
+            return Err(BlobError::digest_mismatch(expected, &digest));
+        }
+        Ok(UploadStage { path, digest, len })
+    }
+
     /// Publishes only bytes that hash to `expected`; an existing verified blob deduplicates the stage.
     ///
     /// The receipt reports the bytes this node proved durable, so a caller that must acknowledge the
@@ -698,6 +715,14 @@ pub struct StagedBlob {
     _owned: OwnedPath,
     digest: Digest,
     len: u64,
+}
+
+/// Bytes a resumable session staged and proved, held for a backend that publishes them elsewhere.
+#[derive(Debug)]
+pub(super) struct UploadStage {
+    pub(super) path: PathBuf,
+    pub(super) digest: Digest,
+    pub(super) len: u64,
 }
 
 impl BlobStore {

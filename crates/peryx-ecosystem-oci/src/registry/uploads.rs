@@ -86,11 +86,13 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         // store and resumes at the recorded offset rather than losing the upload. The stage is opened
         // empty now so a zero-byte upload finalized without any chunk still has bytes to verify.
         state.meta.begin_upload(&session, &index.name, name, now)?;
-        state
-            .blobs
-            .stage_upload_chunk(&session, 0, b"")
-            .await
-            .map_err(ServeError::from)?;
+        if let Err(error) = state.blobs.stage_upload_chunk(&session, 0, b"").await {
+            // A stage that failed part way may still hold a file, and the record is what the reclaim
+            // sweep needs to find it, so the bytes go first and the record only once they are gone.
+            state.blobs.discard_upload(&session).await.map_err(ServeError::from)?;
+            state.meta.remove_upload(&session)?;
+            return Err(error.into());
+        }
         Ok(upload_accepted(name, &session, 0))
     }
 

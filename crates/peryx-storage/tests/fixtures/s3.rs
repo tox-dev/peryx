@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use peryx_storage::blob::{
-    BlobErrorKind, BlobOperation, BlobScanError, BlobStaged, BlobStorage, Digest, S3Config, S3Settings, WriteEvidence,
+    BlobErrorKind, BlobOperation, BlobScanError, BlobStaged, BlobStorage, Digest, PlacementReceipt, S3Config,
+    S3Settings, WriteEvidence,
 };
 #[cfg(feature = "container-tests")]
 use tracing::{Event, Subscriber};
@@ -738,6 +739,62 @@ async fn run_wire_write_child(storage: &BlobStorage, scenario: WireWriteScenario
                 WriteEvidence::ObjectStoreVerified
             );
         }
+        WireWriteScenario::Resumable => {
+            assert_eq!(storage.stage_upload_chunk("empty", 0, b"").await.unwrap(), 0);
+            let empty = Digest::of(b"");
+            assert_eq!(
+                storage.finish_upload("empty", &empty).await.unwrap(),
+                PlacementReceipt {
+                    digest: empty,
+                    size: 0,
+                    durability: storage.durability(),
+                    evidence: WriteEvidence::ObjectStoreVerified,
+                }
+            );
+            assert_eq!(storage.staged_upload_len("empty").await.unwrap(), None);
+
+            assert_eq!(storage.stage_upload_chunk("chunked", 0, b"layer ").await.unwrap(), 6);
+            assert_eq!(storage.stage_upload_chunk("chunked", 6, b"bytes").await.unwrap(), 11);
+            let error = storage
+                .finish_upload("chunked", &Digest::of(b"wrong"))
+                .await
+                .unwrap_err();
+            assert_eq!(error.kind(), BlobErrorKind::DigestMismatch);
+            assert_eq!(storage.staged_upload_len("chunked").await.unwrap(), Some(11));
+
+            let digest = Digest::of(b"layer bytes");
+            let receipt = PlacementReceipt {
+                digest: digest.clone(),
+                size: 11,
+                durability: storage.durability(),
+                evidence: WriteEvidence::ObjectStoreVerified,
+            };
+            assert_eq!(storage.finish_upload("chunked", &digest).await.unwrap(), receipt);
+            assert_eq!(storage.staged_upload_len("chunked").await.unwrap(), None);
+            // The client that lost this response retries into a session whose stage the commit removed,
+            // and the resident object answers it.
+            assert_eq!(storage.finish_upload("chunked", &digest).await.unwrap(), receipt);
+        }
+        WireWriteScenario::ResumableFailure => {
+            storage.stage_upload_chunk("chunked", 0, b"layer bytes").await.unwrap();
+
+            let error = storage
+                .finish_upload("chunked", &Digest::of(b"layer bytes"))
+                .await
+                .unwrap_err();
+
+            assert_eq!(error.kind(), BlobErrorKind::Io);
+            assert_eq!(storage.staged_upload_len("chunked").await.unwrap(), Some(11));
+        }
+        WireWriteScenario::ResumableMissing => {
+            let error = storage
+                .finish_upload("missing", &Digest::of(b"layer bytes"))
+                .await
+                .unwrap_err();
+
+            assert_eq!(error.kind(), BlobErrorKind::NotFound);
+            assert_eq!(error.context().unwrap().backend, "s3");
+        }
         WireWriteScenario::Immutable => {
             // The create lost the precondition, so reading the resident object back is what proves these
             // bytes are the ones at that address.
@@ -894,6 +951,9 @@ enum WireWriteScenario {
     PresentBound,
     PresentFailure,
     SmallPut,
+    Resumable,
+    ResumableFailure,
+    ResumableMissing,
     Immutable,
     ImmutableMismatch,
 }
@@ -979,6 +1039,9 @@ impl ChildScenario {
             "wire_present_bound" => Ok(Self::Write(WireWriteScenario::PresentBound)),
             "wire_present_failure" => Ok(Self::Write(WireWriteScenario::PresentFailure)),
             "wire_small_put" => Ok(Self::Write(WireWriteScenario::SmallPut)),
+            "wire_resumable" => Ok(Self::Write(WireWriteScenario::Resumable)),
+            "wire_resumable_failure" => Ok(Self::Write(WireWriteScenario::ResumableFailure)),
+            "wire_resumable_missing" => Ok(Self::Write(WireWriteScenario::ResumableMissing)),
             "wire_immutable" => Ok(Self::Write(WireWriteScenario::Immutable)),
             "wire_immutable_mismatch" => Ok(Self::Write(WireWriteScenario::ImmutableMismatch)),
             "wire_health_error" => Ok(Self::Failure(WireFailureScenario::Health)),

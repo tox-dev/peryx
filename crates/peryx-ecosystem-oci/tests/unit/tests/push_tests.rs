@@ -222,6 +222,36 @@ async fn test_session_upload_of_an_empty_blob() {
     assert!(got.is_empty());
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn test_a_session_whose_stage_cannot_be_created_leaves_no_upload_record() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    use crate::upload_session::UploadStore as _;
+    let dir = tempfile::tempdir().unwrap();
+    let blobs = dir.path().join("blobs");
+    std::fs::create_dir(&blobs).unwrap();
+    std::fs::set_permissions(&blobs, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let (state, app) = app_with_indexes(&dir, vec![writable_index("store", "store", true, TOKEN)]);
+
+    let (status, _, _) = send_body(
+        &app,
+        Method::POST,
+        "/v2/store/app/blobs/uploads/",
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+
+    // Restore permissions so the temporary directory can be removed.
+    std::fs::set_permissions(&blobs, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert_eq!(
+        state.serving.meta.reclaim_uploads(i64::MAX, 10).unwrap(),
+        Vec::<String>::new()
+    );
+}
+
 async fn stage_one_chunk(app: &axum::Router, blob: &[u8]) -> String {
     let (status, headers, _) = send_body(
         app,

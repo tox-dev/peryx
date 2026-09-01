@@ -77,6 +77,27 @@ impl BlobStorage {
         }
     }
 
+    /// The store a resumable session stages into. The object store has no session protocol of its own,
+    /// so an S3 deployment fills the same durable local stage and publishes it once the digest is proven.
+    const fn upload_store(&self) -> &BlobStore {
+        match &self.backend {
+            Backend::Filesystem(store) => store,
+            Backend::S3(backend) => backend.staging(),
+        }
+    }
+
+    async fn upload_worker<T: Send + 'static>(
+        &self,
+        operation: BlobOperation,
+        action: impl FnOnce(&BlobStore) -> Result<T, BlobError> + Send + 'static,
+    ) -> Result<T, BlobError> {
+        let backend = self.name();
+        let store = self.upload_store().clone();
+        filesystem_worker(tokio::task::spawn_blocking(move || action(&store)), operation, None)
+            .await
+            .map_err(|error| error.with_context(backend, operation, None))
+    }
+
     #[must_use]
     pub fn capabilities(&self) -> BlobCapabilities {
         match &self.backend {
@@ -258,65 +279,41 @@ impl BlobStorage {
         self.stage_bytes(bytes).await?.commit_as(expected).await.map(drop)
     }
 
-    /// Requires a resumable stage with same-data-center durability; S3 returns `Unsupported`.
+    /// Returns the committed offset, durable on every backend: the chunk and the directory entry that
+    /// names its stage are both flushed before the offset is reported, so a restart resumes into the
+    /// same bytes rather than a lost prefix.
     ///
     /// # Errors
-    /// Returns a contextual write error, or an unsupported-operation error on the object store.
+    /// Returns a contextual write error.
     ///
     pub async fn stage_upload_chunk(&self, session: &str, offset: u64, chunk: &[u8]) -> Result<u64, BlobError> {
-        match &self.backend {
-            Backend::Filesystem(store) => {
-                let store = store.clone();
-                let session = session.to_owned();
-                let chunk = chunk.to_vec();
-                filesystem_worker(
-                    tokio::task::spawn_blocking(move || {
-                        filesystem_context(
-                            store.stage_upload_chunk(&session, offset, &chunk),
-                            BlobOperation::Write,
-                            None,
-                        )
-                    }),
-                    BlobOperation::Write,
-                    None,
-                )
-                .await
-            }
-            Backend::S3(_) => Err(unsupported_blocking(BlobOperation::Write)),
-        }
+        let session = session.to_owned();
+        let chunk = chunk.to_vec();
+        self.upload_worker(BlobOperation::Write, move |store| {
+            store.stage_upload_chunk(&session, offset, &chunk)
+        })
+        .await
     }
 
-    /// Returns `None` when `session` has no stage; S3 returns `Unsupported`.
+    /// Returns `None` when `session` has no stage.
     ///
     /// # Errors
-    /// Returns a contextual read error, or an unsupported-operation error on the object store.
+    /// Returns a contextual read error.
     ///
     pub async fn staged_upload_len(&self, session: &str) -> Result<Option<u64>, BlobError> {
-        match &self.backend {
-            Backend::Filesystem(store) => {
-                let store = store.clone();
-                let session = session.to_owned();
-                filesystem_worker(
-                    tokio::task::spawn_blocking(move || {
-                        filesystem_context(store.staged_upload_len(&session), BlobOperation::Head, None)
-                    }),
-                    BlobOperation::Head,
-                    None,
-                )
-                .await
-            }
-            Backend::S3(_) => Err(unsupported_blocking(BlobOperation::Head)),
-        }
+        let session = session.to_owned();
+        self.upload_worker(BlobOperation::Head, move |store| store.staged_upload_len(&session))
+            .await
     }
 
-    /// Publishes only staged bytes that hash to `expected`; S3 returns `Unsupported`.
+    /// Publishes only staged bytes that hash to `expected`, and keeps the stage when they do not, so a
+    /// client that sent a wrong digest retries against the bytes it already uploaded.
     ///
     /// The receipt reports what the commit proved, so a caller acknowledging the write weighs the
     /// earned evidence rather than the backend's advertised guarantees.
     ///
     /// # Errors
-    /// Returns a contextual digest mismatch, not-found, or commit error, or an unsupported-operation
-    /// error on the object store.
+    /// Returns a contextual digest mismatch, not-found, or commit error.
     ///
     pub async fn finish_upload(&self, session: &str, expected: &Digest) -> Result<PlacementReceipt, BlobError> {
         match &self.backend {
@@ -338,31 +335,19 @@ impl BlobStorage {
                 )
                 .await
             }
-            Backend::S3(_) => Err(unsupported_blocking(BlobOperation::Commit)),
+            Backend::S3(backend) => Box::pin(backend.finish_upload(session, expected)).await,
         }
     }
 
-    /// Treats an absent stage as success; S3 returns `Unsupported`.
+    /// Treats an absent stage as success.
     ///
     /// # Errors
-    /// Returns a contextual delete error, or an unsupported-operation error on the object store.
+    /// Returns a contextual delete error.
     ///
     pub async fn discard_upload(&self, session: &str) -> Result<(), BlobError> {
-        match &self.backend {
-            Backend::Filesystem(store) => {
-                let store = store.clone();
-                let session = session.to_owned();
-                filesystem_worker(
-                    tokio::task::spawn_blocking(move || {
-                        filesystem_context(store.discard_upload(&session), BlobOperation::Delete, None)
-                    }),
-                    BlobOperation::Delete,
-                    None,
-                )
-                .await
-            }
-            Backend::S3(_) => Err(unsupported_blocking(BlobOperation::Delete)),
-        }
+        let session = session.to_owned();
+        self.upload_worker(BlobOperation::Delete, move |store| store.discard_upload(&session))
+            .await
     }
 
     /// # Errors
