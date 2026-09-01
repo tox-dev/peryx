@@ -383,7 +383,7 @@ fn group_on(node: &RaftNode, id: u64) -> Arc<OwnershipGroup> {
     )
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_a_key_freed_by_a_lost_leader_is_free_for_its_replacement() {
     let dirs: Vec<TempDir> = (0..3).map(|_| tempfile::tempdir().unwrap()).collect();
     let (nodes, servers) = live_group(&dirs).await;
