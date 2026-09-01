@@ -1414,6 +1414,23 @@ fn test_build_state_rejects_an_invalid_artifact_url_with_netrc() {
 }
 
 #[test]
+fn test_build_state_rejects_an_invalid_artifact_url_with_explicit_credentials() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = parsed_config(
+        &dir,
+        "[[index]]\nname = \"cached\"\n[[index.upstream]]\nname = \"primary\"\nurl = \
+         \"https://primary.example/\"\nartifact_url = \"not a URL\"\ntoken = \"token\"\n",
+    );
+
+    let error = build_state(&config).err().expect("expected invalid artifact URL");
+
+    assert_eq!(
+        error.to_string(),
+        "build cached index cached with upstream <invalid upstream URL>"
+    );
+}
+
+#[test]
 fn test_build_state_selects_an_implicit_hosted_write_target() {
     let dir = tempfile::tempdir().unwrap();
     let state = build_state(&parsed_config(
@@ -1485,8 +1502,11 @@ artifact_url = "https://public-artifacts.example/files/"
     );
 }
 
+#[rstest]
+#[case::advertised(false)]
+#[case::mirror(true)]
 #[tokio::test]
-async fn test_build_state_allows_a_trusted_private_artifact_host() {
+async fn test_build_state_allows_a_trusted_private_artifact_host(#[case] configured_mirror: bool) {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/artifact.bin"))
@@ -1495,17 +1515,29 @@ async fn test_build_state_allows_a_trusted_private_artifact_host() {
         .mount(&server)
         .await;
     let dir = tempfile::tempdir().unwrap();
+    let artifact_url = if configured_mirror {
+        format!("artifact_url = {:?}\n", server.uri())
+    } else {
+        String::new()
+    };
     let state = build_state(&parsed_config(
         &dir,
-        "[[index]]\nname = \"cache\"\n[[index.upstream]]\nname = \"primary\"\nurl = \
-         \"https://metadata.example/catalog/\"\ntrusted_hosts = [\"localhost\"]\n",
+        &format!(
+            "[[index]]\nname = \"cache\"\n[[index.upstream]]\nname = \"primary\"\nurl = \
+             \"https://metadata.example/catalog/\"\n{artifact_url}trusted_hosts = [\"localhost\"]\n"
+        ),
     ))
     .unwrap();
     let source = state.serving.upstream_routes["cache"].source("primary").unwrap();
 
+    let advertised_url = if configured_mirror {
+        "https://artifacts.example/artifact.bin".to_owned()
+    } else {
+        format!("http://localhost:{}/artifact.bin", server.address().port())
+    };
     let artifact = source
         .artifacts()
-        .stream_bytes(&format!("http://localhost:{}/artifact.bin", server.address().port()))
+        .stream_bytes(&advertised_url)
         .await
         .unwrap()
         .try_collect::<Vec<_>>()
