@@ -1,7 +1,10 @@
 //! Consensus receives a move after the target reaches the source barrier. Cancellation and commit
-//! resolve against the same plan, preventing a cancelled move from reaching consensus.
+//! resolve against the same plan, preventing a cancelled move from reaching consensus. The plan lock is
+//! held for neither the frontier probe nor the consensus submission, so a cancellation is answered while
+//! either is in flight rather than after it.
 
 use std::collections::{HashMap, VecDeque};
+use std::future::Future;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -15,6 +18,7 @@ use peryx_ha::{
     ControlCommand, ControlError, OwnershipAuthority, OwnershipError, PendingTransferAudit, TransferIntent,
 };
 use peryx_storage::meta::{MetaError, MetaStore};
+use tokio_util::sync::CancellationToken;
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -85,20 +89,22 @@ pub enum TransferDriveError {
     Unsealed(String),
 }
 
-/// Treats a missing frontier as zero so it cannot satisfy the transfer barrier.
+/// Probes the target without the plan lock, so a cancellation is never queued behind a probe that is
+/// free to run to its own timeout. Treats a missing frontier as zero so it cannot satisfy the barrier.
 ///
 /// # Errors
 /// Returns [`TransferDriveError::Frontier`] when the frontier read fails.
 pub async fn observe_target(
-    plan: &mut TransferPlan,
+    plan: &tokio::sync::Mutex<TransferPlan>,
     frontier: &dyn FrontierSource,
 ) -> Result<TransferPhase, TransferDriveError> {
+    let target = plan.lock().await.request().target.0.clone();
     let applied = frontier
-        .applied_frontier(&plan.request().target.0)
+        .applied_frontier(&target)
         .await
         .map_err(TransferDriveError::Frontier)?
         .unwrap_or(0);
-    Ok(plan.observe_frontier(applied))
+    Ok(plan.lock().await.observe_frontier(applied))
 }
 
 /// Commits a ready plan under its stable transfer identity, then projects the audit consensus sealed.
@@ -108,44 +114,47 @@ pub async fn observe_target(
 /// ownership state that a concurrent move could already have advanced. A store write that fails leaves
 /// the sealed fact for [`recover_transfer_audits`].
 ///
+/// The plan lock is held to claim the commit and again to seal it, never across the submission, so a
+/// cancellation racing the move is answered rather than parked behind a consensus round trip.
+///
 /// # Errors
 /// Returns [`TransferDriveError`] when the commit is refused, the plan refuses the commit, or storing
 /// the audit fails.
 pub async fn commit_transfer(
-    plan: &mut TransferPlan,
+    plan: &tokio::sync::Mutex<TransferPlan>,
     control: &dyn peryx_ha::ControlExecutor,
     outbox: &dyn TransferAuditOutbox,
     meta: &MetaStore,
 ) -> Result<TransferAudit, TransferDriveError> {
-    // Prevent cancelled or unready plans from reaching consensus.
-    let (actor, command) = match plan.phase() {
-        TransferPhase::Ready => {
-            let request = plan.request();
-            (
-                request.actor.clone(),
-                ControlCommand::TransferAuthority {
-                    authority: request.authority.0.clone(),
-                    new_home: request.target.0.clone(),
-                    intent: Some(TransferIntent {
-                        source: request.source.0.clone(),
-                        actor: request.actor.clone(),
-                        reason: request.reason.clone(),
-                        barrier: request.barrier,
-                    }),
-                },
-            )
+    // Claiming under the lock is where cancellation linearizes: it prevents cancelled or unready plans
+    // from reaching consensus, and refuses every cancellation that arrives after this point.
+    let request = {
+        let mut plan = plan.lock().await;
+        match plan.begin_commit().map_err(TransferDriveError::Plan)? {
+            Some(sealed) => return Ok(sealed),
+            None => plan.request().clone(),
         }
-        // A sealed plan returns its original audit without submitting another move; commit ignores these
-        // placeholder values in this state.
-        TransferPhase::Committed => return plan.commit(AuthorityEpoch(0), 0, 0).map_err(TransferDriveError::Plan),
-        TransferPhase::Cancelled => return Err(TransferDriveError::Plan(TransferError::Cancelled)),
-        TransferPhase::AwaitingCatchUp => return Err(TransferDriveError::Plan(TransferError::BarrierNotMet)),
     };
-    let id = plan.request().id.clone();
-    let receipt = control
-        .execute(&actor, Some(&id), command)
-        .await
-        .map_err(TransferDriveError::Commit)?;
+    let command = ControlCommand::TransferAuthority {
+        authority: request.authority.0.clone(),
+        new_home: request.target.0.clone(),
+        intent: Some(TransferIntent {
+            source: request.source.0.clone(),
+            actor: request.actor.clone(),
+            reason: request.reason.clone(),
+            barrier: request.barrier,
+        }),
+    };
+    let id = request.id;
+    let receipt = match control.execute(&request.actor, Some(&id), command).await {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            if refused_before_submission(&error) {
+                plan.lock().await.abandon_commit();
+            }
+            return Err(TransferDriveError::Commit(error));
+        }
+    };
     let sealed = match outbox
         .pending_transfer_audits()
         .await
@@ -156,17 +165,26 @@ pub async fn commit_transfer(
     {
         Some(sealed) => sealed,
         // A cleared fact has already reached the audit store.
-        None => projected(meta, &plan.request().authority.0, receipt.index)
+        None => projected(meta, &request.authority.0, receipt.index)
             .map_err(|source| TransferDriveError::ProjectionPending { id: id.clone(), source })?
             .ok_or_else(|| TransferDriveError::Unsealed(id.clone()))?,
     };
     let audit = plan
+        .lock()
+        .await
         .commit(AuthorityEpoch(sealed.epoch), sealed.commit_term, sealed.commit_index)
         .map_err(TransferDriveError::Plan)?;
     project(outbox, meta, &id, &sealed)
         .await
         .map_err(|source| TransferDriveError::ProjectionPending { id, source })?;
     Ok(audit)
+}
+
+/// The two refusals the control plane raises itself, before any command reaches consensus, so no log
+/// entry can exist for the claim. Every other outcome, leadership loss and timeout included, may already
+/// have appended, and its claim must stand until the same transfer identity resolves it.
+const fn refused_before_submission(error: &ControlError) -> bool {
+    matches!(error, ControlError::KeyReuse | ControlError::Overloaded)
 }
 
 /// Stores audits left by an interrupted projection, then clears their replicated facts.
@@ -249,11 +267,40 @@ pub enum TransferCancelError {
     Durable(String, #[source] anyhow::Error),
 }
 
+/// A running transfer: the plan a cancellation resolves against, and the token that lets the
+/// cancellation take the coordinator out of a probe or a poll instead of waiting the wait out.
+#[derive(Clone)]
+struct Transfer {
+    plan: Arc<tokio::sync::Mutex<TransferPlan>>,
+    cancelled: CancellationToken,
+}
+
+impl Transfer {
+    fn new(request: TransferRequest) -> Self {
+        Self {
+            plan: Arc::new(tokio::sync::Mutex::new(TransferPlan::plan(request))),
+            cancelled: CancellationToken::new(),
+        }
+    }
+
+    /// Abandons `wait` as soon as the transfer is cancelled, so what the coordinator is parked on does
+    /// not decide when the cancellation takes effect.
+    async fn until_cancelled<T>(&self, wait: impl Future<Output = T>) -> Result<T, TransferRunError> {
+        tokio::select! {
+            biased;
+            () = self.cancelled.cancelled() => Err(TransferRunError::Drive(TransferDriveError::Plan(
+                TransferError::Cancelled,
+            ))),
+            outcome = wait => Ok(outcome),
+        }
+    }
+}
+
 /// The plans a cancellation can resolve against: the transfers still running, and a bounded window of
 /// the authorities whose most recent transfer resolved without committing.
 #[derive(Default)]
 struct Registry {
-    running: HashMap<String, Arc<tokio::sync::Mutex<TransferPlan>>>,
+    running: HashMap<String, Transfer>,
     abandoned: VecDeque<String>,
 }
 
@@ -273,7 +320,7 @@ impl Registry {
 }
 
 enum Registration {
-    Running(Arc<tokio::sync::Mutex<TransferPlan>>),
+    Running(Transfer),
     Abandoned,
     Missing,
 }
@@ -324,19 +371,23 @@ impl TransferCoordinator {
     ) -> Result<TransferAudit, TransferRunError> {
         recover_transfer_audits(outbox, meta).await?;
         let authority = request.authority.0.clone();
-        let plan = {
+        let transfer = {
             // A panic cannot corrupt this lookup table, so recover its poisoned guard.
             let mut registry = self.registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             if registry.running.contains_key(&authority) {
                 return Err(TransferRunError::Busy(authority));
             }
-            let plan = Arc::new(tokio::sync::Mutex::new(TransferPlan::plan(request)));
-            registry.running.insert(authority.clone(), plan.clone());
-            plan
+            let transfer = Transfer::new(request);
+            registry.running.insert(authority.clone(), transfer.clone());
+            transfer
         };
-        let outcome = self.drive(&plan, control, outbox, meta).await;
-        // A committed move is answered from its persisted audit, so only an abandonment needs a window.
-        let abandoned = plan.lock().await.phase() != TransferPhase::Committed;
+        let outcome = self.drive(&transfer, control, outbox, meta).await;
+        // A committed move is answered from its persisted audit, and a claimed one may still have
+        // appended, so only a plan that reached neither belongs in the window.
+        let abandoned = matches!(
+            transfer.plan.lock().await.phase(),
+            TransferPhase::AwaitingCatchUp | TransferPhase::Ready | TransferPhase::Cancelled
+        );
         self.retire(&authority, abandoned);
         outcome
     }
@@ -349,33 +400,31 @@ impl TransferCoordinator {
     fn registration(&self, authority: &str) -> Registration {
         let registry = self.registry.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         match registry.running.get(authority) {
-            Some(plan) => Registration::Running(plan.clone()),
+            Some(transfer) => Registration::Running(transfer.clone()),
             None if registry.abandoned.iter().any(|name| name == authority) => Registration::Abandoned,
             None => Registration::Missing,
         }
     }
 
-    /// A concurrent cancellation reaches `commit_transfer`, which rejects the cancelled plan.
+    /// A cancellation that arrives during a probe or a poll ends the wait here; one that arrives after
+    /// the wait reaches `commit_transfer`, which rejects the cancelled plan.
     async fn drive(
         &self,
-        plan: &tokio::sync::Mutex<TransferPlan>,
+        transfer: &Transfer,
         control: &dyn peryx_ha::ControlExecutor,
         outbox: &dyn TransferAuditOutbox,
         meta: &MetaStore,
     ) -> Result<TransferAudit, TransferRunError> {
         for _ in 0..self.budget {
-            let mut plan = plan.lock().await;
-            if matches!(
-                observe_target(&mut plan, self.frontier.as_ref()).await?,
-                TransferPhase::AwaitingCatchUp
-            ) {
-                drop(plan);
-                tokio::time::sleep(self.poll).await;
-                continue;
+            let observed = transfer
+                .until_cancelled(observe_target(&transfer.plan, self.frontier.as_ref()))
+                .await??;
+            if observed != TransferPhase::AwaitingCatchUp {
+                return commit_transfer(&transfer.plan, control, outbox, meta)
+                    .await
+                    .map_err(TransferRunError::Drive);
             }
-            return commit_transfer(&mut plan, control, outbox, meta)
-                .await
-                .map_err(TransferRunError::Drive);
+            transfer.until_cancelled(tokio::time::sleep(self.poll)).await?;
         }
         Err(TransferRunError::BarrierNotReached)
     }
@@ -383,18 +432,27 @@ impl TransferCoordinator {
     /// A cancel of a move that already committed resolves against the persisted audit, so it answers
     /// the same after the abandonment window evicted the authority and after a restart.
     ///
+    /// A running transfer answers from its plan without waiting on whatever the coordinator is parked
+    /// on, because neither the frontier probe nor the consensus submission holds the plan lock.
+    ///
     /// # Errors
     /// Returns [`Unknown`](TransferCancelError::Unknown) when no transfer is registered and none
     /// committed, [`AlreadyCommitted`](TransferCancelError::AlreadyCommitted) when the move already
-    /// committed, or [`Durable`](TransferCancelError::Durable) when the persisted record is unreadable.
+    /// committed or claimed its commit, or [`Durable`](TransferCancelError::Durable) when the persisted
+    /// record is unreadable.
     pub async fn cancel(&self, authority: &str, committed: &dyn CommittedTransfers) -> Result<(), TransferCancelError> {
         match self.registration(authority) {
-            // `TransferPlan::cancel` rejects committed plans.
-            Registration::Running(plan) => plan
-                .lock()
-                .await
-                .cancel()
-                .map_err(|_| TransferCancelError::AlreadyCommitted(authority.to_owned())),
+            // `TransferPlan::cancel` rejects claimed and committed plans.
+            Registration::Running(transfer) => {
+                transfer
+                    .plan
+                    .lock()
+                    .await
+                    .cancel()
+                    .map_err(|_| TransferCancelError::AlreadyCommitted(authority.to_owned()))?;
+                transfer.cancelled.cancel();
+                Ok(())
+            }
             Registration::Abandoned => Ok(()),
             Registration::Missing => match committed.committed(authority).await {
                 Ok(true) => Err(TransferCancelError::AlreadyCommitted(authority.to_owned())),

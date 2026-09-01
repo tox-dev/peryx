@@ -1,7 +1,9 @@
 stateDiagram-v2
   [*] --> AwaitingCatchUp
   AwaitingCatchUp --> Ready: target reaches the barrier
-  Ready --> Committed: commit mints the epoch and records the audit
+  Ready --> Committing: the commit is claimed under the plan lock
+  Committing --> Ready: refused before consensus saw the command
+  Committing --> Committed: commit mints the epoch and records the audit
   AwaitingCatchUp --> Cancelled: operator cancels
   Ready --> Cancelled: operator cancels
   Committed --> [*]

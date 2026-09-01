@@ -1,11 +1,12 @@
-//! The target must reach the source barrier before commit. Commit seals one audit and replays it on
-//! retry. Commit rejects a cancelled plan; cancellation rejects a committed plan.
+//! The target must reach the source barrier before commit. Claiming the commit is where cancellation
+//! linearizes: a claim rejects a cancelled plan, and cancellation rejects a claimed one. Commit seals one
+//! audit and replays it on retry.
 
 use crate::authority::AuthorityKey;
 use crate::envelope::AuthorityEpoch;
 use crate::ownership::DatacenterId;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransferRequest {
     /// The one identity this move carries: it keys the replicated control receipt, the audit consensus
     /// sealed, and the retry that resolves against both.
@@ -24,6 +25,9 @@ pub struct TransferRequest {
 pub enum TransferPhase {
     AwaitingCatchUp,
     Ready,
+    /// The ownership command is claimed and may already have reached the consensus log, so the move can
+    /// no longer be called off.
+    Committing,
     Committed,
     Cancelled,
 }
@@ -57,6 +61,7 @@ pub enum TransferError {
 enum State {
     AwaitingCatchUp,
     Ready,
+    Committing,
     Committed(TransferAudit),
     Cancelled,
 }
@@ -86,6 +91,7 @@ impl TransferPlan {
         match &self.state {
             State::AwaitingCatchUp => TransferPhase::AwaitingCatchUp,
             State::Ready => TransferPhase::Ready,
+            State::Committing => TransferPhase::Committing,
             State::Committed(_) => TransferPhase::Committed,
             State::Cancelled => TransferPhase::Cancelled,
         }
@@ -107,11 +113,43 @@ impl TransferPlan {
         self.phase()
     }
 
-    /// Seals a ready plan once and returns the original audit on retries.
+    /// Claims the commit, the point after which a cancellation is too late. The claim is what lets the
+    /// consensus submission run without the plan lock: a cancellation that arrives while the command is
+    /// in flight is answered immediately, and answered as refused. A plan already claimed stays claimed,
+    /// so a submission whose outcome is unknown is retried under the same transfer identity.
+    ///
+    /// Returns the sealed audit of a plan that already committed, which submits nothing further.
     ///
     /// # Errors
     /// Returns [`BarrierNotMet`](TransferError::BarrierNotMet) when the target has not reached the
     /// barrier, or [`Cancelled`](TransferError::Cancelled) when the plan was already abandoned.
+    pub fn begin_commit(&mut self) -> Result<Option<TransferAudit>, TransferError> {
+        match &self.state {
+            State::AwaitingCatchUp => Err(TransferError::BarrierNotMet),
+            State::Cancelled => Err(TransferError::Cancelled),
+            State::Committed(audit) => Ok(Some(audit.clone())),
+            State::Ready | State::Committing => {
+                self.state = State::Committing;
+                Ok(None)
+            }
+        }
+    }
+
+    /// Releases a claim whose command consensus never saw, so the same transfer identity can wait for the
+    /// barrier again and stay cancellable. Only a claim is released: a sealed or cancelled plan keeps its
+    /// outcome.
+    pub fn abandon_commit(&mut self) {
+        if matches!(self.state, State::Committing) {
+            self.state = State::Ready;
+        }
+    }
+
+    /// Seals a claimed plan once and returns the original audit on retries.
+    ///
+    /// # Errors
+    /// Returns [`BarrierNotMet`](TransferError::BarrierNotMet) when the commit was never claimed through
+    /// [`begin_commit`](Self::begin_commit), or [`Cancelled`](TransferError::Cancelled) when the plan was
+    /// already abandoned.
     pub fn commit(
         &mut self,
         epoch: AuthorityEpoch,
@@ -119,10 +157,10 @@ impl TransferPlan {
         commit_index: u64,
     ) -> Result<TransferAudit, TransferError> {
         match &self.state {
-            State::AwaitingCatchUp => Err(TransferError::BarrierNotMet),
+            State::AwaitingCatchUp | State::Ready => Err(TransferError::BarrierNotMet),
             State::Cancelled => Err(TransferError::Cancelled),
             State::Committed(audit) => Ok(audit.clone()),
-            State::Ready => {
+            State::Committing => {
                 let audit = TransferAudit {
                     id: self.request.id.clone(),
                     authority: self.request.authority.clone(),
@@ -141,14 +179,14 @@ impl TransferPlan {
         }
     }
 
-    /// Cancellation is idempotent until commit.
+    /// Cancellation is idempotent until the commit is claimed.
     ///
     /// # Errors
-    /// Returns [`AlreadyCommitted`](TransferError::AlreadyCommitted) when the plan already committed, so
-    /// a cancel that lost the race to the commit is refused and the move stands.
+    /// Returns [`AlreadyCommitted`](TransferError::AlreadyCommitted) once the commit is claimed, so a
+    /// cancel that lost the race to it is refused and the move stands.
     pub fn cancel(&mut self) -> Result<(), TransferError> {
         match self.state {
-            State::Committed(_) => Err(TransferError::AlreadyCommitted),
+            State::Committing | State::Committed(_) => Err(TransferError::AlreadyCommitted),
             State::Cancelled => Ok(()),
             _ => {
                 self.state = State::Cancelled;

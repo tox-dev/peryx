@@ -56,8 +56,21 @@ catches up.
 ## States and cancellation
 
 A transfer moves through one lifecycle to a single outcome. It waits at `AwaitingCatchUp` until the target reaches the
-barrier, stands `Ready`, and commits once. An administrator can cancel it while it waits, and a cancel is refused once
-it has committed, so a cancel that races the commit resolves to exactly one of the two.
+barrier, stands `Ready`, claims the move as `Committing`, and commits once. An administrator can cancel it up to that
+claim, and a cancel is refused from the claim onward, so a cancel that races the commit resolves to exactly one of the
+two.
+
+The claim is the only part of a commit taken under the plan lock; the frontier probe and the consensus submission both
+run without it. So a cancel is answered from the plan rather than behind whatever the node is currently blocked on: a
+probe against an unresponsive target runs out its own ten-second timeout, a consensus round trip can span a leader
+election, and neither delays the answer. A cancel that lands during a probe or between probes also ends that wait
+outright, so the move is called off rather than carried into consensus by the barrier check that follows.
+
+`Committing` lives in memory and is not an outcome. Two refusals are raised before the command can reach consensus: a
+reused idempotency key, and a saturated command queue. Either returns the transfer to `Ready`, still cancellable under
+the same identity. Any other failure, leadership loss and timeout included, may already have appended, so the transfer
+stays claimed and the same `Idempotency-Key` resolves it. A later cancel for a transfer left in that state is answered
+from the durable audit: `409 Conflict` if the move did commit, `404 Not Found` if it did not.
 
 {{<diagram file="planned-transfer" />}}
 
@@ -67,8 +80,8 @@ Cancel a waiting transfer with a `DELETE` keyed by the authority:
 DELETE /availability/v1/transfers/proj
 ```
 
-- A cancel of a **waiting** transfer abandons its plan and answers `204 No Content`. Its run then observes the abandoned
-  plan and resolves as a `409 Conflict` rather than committing a move the operator called off.
+- A cancel of a **waiting** transfer abandons its plan and answers `204 No Content`. Its run leaves the probe or poll it
+  was in and resolves as a `409 Conflict` rather than committing a move the operator called off.
 - A cancel of a transfer that **already committed** answers `409 Conflict`: the move stands, and the node reads the
   durable audit rather than a retained plan, so it answers the same after a restart.
 - A cancel for an authority with **no registered transfer** answers `404 Not Found`.

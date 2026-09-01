@@ -21,6 +21,12 @@ fn ready_plan(barrier: u64) -> TransferPlan {
     plan
 }
 
+fn claimed_plan(barrier: u64) -> TransferPlan {
+    let mut plan = ready_plan(barrier);
+    assert_eq!(plan.begin_commit(), Ok(None));
+    plan
+}
+
 fn sealed_audit(barrier: u64, epoch: u64, commit_term: u64, commit_index: u64) -> TransferAudit {
     TransferAudit {
         id: "transfer-1".to_owned(),
@@ -63,8 +69,78 @@ fn test_a_later_lower_frontier_never_un_readies_a_plan() {
 }
 
 #[test]
-fn test_committing_a_ready_plan_seals_the_full_audit() {
+fn test_claiming_a_ready_plan_makes_the_cancellation_too_late() {
     let mut plan = ready_plan(10);
+    assert_eq!(plan.begin_commit(), Ok(None));
+    assert_eq!(plan.phase(), TransferPhase::Committing);
+    assert_eq!(plan.audit(), None);
+}
+
+#[test]
+fn test_claiming_a_claimed_plan_keeps_the_claim_for_a_retry() {
+    let mut plan = claimed_plan(10);
+    assert_eq!(plan.begin_commit(), Ok(None));
+    assert_eq!(plan.phase(), TransferPhase::Committing);
+}
+
+#[test]
+fn test_claiming_a_sealed_plan_answers_its_audit_without_a_second_move() {
+    let mut plan = claimed_plan(10);
+    plan.commit(AuthorityEpoch(4), 7, 128).unwrap();
+    assert_eq!(plan.begin_commit(), Ok(Some(sealed_audit(10, 4, 7, 128))));
+    assert_eq!(plan.phase(), TransferPhase::Committed);
+}
+
+#[test]
+fn test_claiming_before_the_barrier_is_refused() {
+    let mut plan = TransferPlan::plan(request(10));
+    assert_eq!(plan.begin_commit(), Err(TransferError::BarrierNotMet));
+    assert_eq!(plan.phase(), TransferPhase::AwaitingCatchUp);
+}
+
+#[test]
+fn test_claiming_a_cancelled_plan_is_refused() {
+    let mut plan = ready_plan(10);
+    plan.cancel().unwrap();
+    assert_eq!(plan.begin_commit(), Err(TransferError::Cancelled));
+    assert_eq!(plan.phase(), TransferPhase::Cancelled);
+}
+
+#[test]
+fn test_abandoning_a_claim_returns_the_plan_to_ready_and_to_cancellation() {
+    let mut plan = claimed_plan(10);
+    plan.abandon_commit();
+    assert_eq!(plan.phase(), TransferPhase::Ready);
+    assert_eq!(plan.cancel(), Ok(()));
+}
+
+#[test]
+fn test_abandoning_a_claim_leaves_a_sealed_plan_sealed() {
+    let mut plan = claimed_plan(10);
+    plan.commit(AuthorityEpoch(4), 7, 128).unwrap();
+    plan.abandon_commit();
+    assert_eq!(plan.phase(), TransferPhase::Committed);
+}
+
+#[test]
+fn test_an_observation_after_a_claim_does_not_regress_the_phase() {
+    let mut plan = claimed_plan(10);
+    assert_eq!(plan.observe_frontier(0), TransferPhase::Committing);
+}
+
+#[test]
+fn test_committing_an_unclaimed_ready_plan_is_refused() {
+    let mut plan = ready_plan(10);
+    assert_eq!(
+        plan.commit(AuthorityEpoch(4), 7, 128),
+        Err(TransferError::BarrierNotMet)
+    );
+    assert_eq!(plan.phase(), TransferPhase::Ready);
+}
+
+#[test]
+fn test_committing_a_claimed_plan_seals_the_full_audit() {
+    let mut plan = claimed_plan(10);
     let audit = plan.commit(AuthorityEpoch(4), 7, 128).unwrap();
     assert_eq!(audit, sealed_audit(10, 4, 7, 128));
     assert_eq!(plan.phase(), TransferPhase::Committed);
@@ -83,7 +159,7 @@ fn test_committing_before_the_barrier_is_refused() {
 
 #[test]
 fn test_committing_twice_books_one_outcome() {
-    let mut plan = ready_plan(10);
+    let mut plan = claimed_plan(10);
     let first = plan.commit(AuthorityEpoch(4), 7, 128).unwrap();
     let second = plan.commit(AuthorityEpoch(9), 8, 256).unwrap();
     assert_eq!(first, second);
@@ -119,8 +195,15 @@ fn test_cancelling_twice_is_a_no_op() {
 }
 
 #[test]
+fn test_a_claimed_plan_refuses_a_late_cancel() {
+    let mut plan = claimed_plan(10);
+    assert_eq!(plan.cancel(), Err(TransferError::AlreadyCommitted));
+    assert_eq!(plan.phase(), TransferPhase::Committing);
+}
+
+#[test]
 fn test_a_committed_plan_refuses_a_late_cancel() {
-    let mut plan = ready_plan(10);
+    let mut plan = claimed_plan(10);
     plan.commit(AuthorityEpoch(4), 7, 128).unwrap();
     assert_eq!(plan.cancel(), Err(TransferError::AlreadyCommitted));
     assert_eq!(plan.phase(), TransferPhase::Committed);
@@ -128,7 +211,7 @@ fn test_a_committed_plan_refuses_a_late_cancel() {
 
 #[test]
 fn test_an_observation_after_commit_does_not_regress_the_phase() {
-    let mut plan = ready_plan(10);
+    let mut plan = claimed_plan(10);
     plan.commit(AuthorityEpoch(4), 7, 128).unwrap();
     assert_eq!(plan.observe_frontier(0), TransferPhase::Committed);
 }

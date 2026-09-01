@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -223,49 +223,55 @@ fn unwritable(dir: &tempfile::TempDir) -> MetaStore {
     MetaStore::open_existing_read_only(dir.path().join("peryx.redb")).unwrap()
 }
 
+fn planned(request: TransferRequest) -> tokio::sync::Mutex<TransferPlan> {
+    tokio::sync::Mutex::new(TransferPlan::plan(request))
+}
+
+fn ready(request: TransferRequest) -> tokio::sync::Mutex<TransferPlan> {
+    let mut plan = TransferPlan::plan(request);
+    assert_eq!(plan.observe_frontier(BARRIER), TransferPhase::Ready);
+    tokio::sync::Mutex::new(plan)
+}
+
 #[tokio::test]
 async fn test_observe_target_waits_below_the_barrier_then_readies_at_it() {
-    let mut plan = TransferPlan::plan(request());
+    let plan = planned(request());
     let frontier = ScriptedFrontier::new([Ok(Some(BARRIER - 1)), Ok(Some(BARRIER))]);
 
     assert_eq!(
-        observe_target(&mut plan, &frontier).await.unwrap(),
+        observe_target(&plan, &frontier).await.unwrap(),
         TransferPhase::AwaitingCatchUp
     );
-    assert_eq!(
-        observe_target(&mut plan, &frontier).await.unwrap(),
-        TransferPhase::Ready
-    );
+    assert_eq!(observe_target(&plan, &frontier).await.unwrap(), TransferPhase::Ready);
 }
 
 #[tokio::test]
 async fn test_observe_target_treats_an_unreachable_target_as_frontier_zero() {
-    let mut plan = TransferPlan::plan(request());
+    let plan = planned(request());
     let frontier = ScriptedFrontier::new([Ok(None)]);
 
     assert_eq!(
-        observe_target(&mut plan, &frontier).await.unwrap(),
+        observe_target(&plan, &frontier).await.unwrap(),
         TransferPhase::AwaitingCatchUp
     );
 }
 
 #[tokio::test]
 async fn test_observe_target_surfaces_a_frontier_read_error() {
-    let mut plan = TransferPlan::plan(request());
+    let plan = planned(request());
     let frontier = ScriptedFrontier::new([Err(anyhow::anyhow!("unreachable"))]);
 
-    let error = observe_target(&mut plan, &frontier).await.unwrap_err();
+    let error = observe_target(&plan, &frontier).await.unwrap_err();
     assert!(matches!(error, TransferDriveError::Frontier(_)));
 }
 
 #[tokio::test]
 async fn test_commit_transfer_stores_the_audit_consensus_sealed() {
-    let mut plan = TransferPlan::plan(request());
-    assert_eq!(plan.observe_frontier(BARRIER), TransferPhase::Ready);
+    let plan = ready(request());
     let consensus = Consensus::homed(&["proj"]);
     let (_dir, store) = meta();
 
-    let audit = commit_transfer(&mut plan, &plane(&consensus), &consensus, &store)
+    let audit = commit_transfer(&plan, &plane(&consensus), &consensus, &store)
         .await
         .unwrap();
 
@@ -294,11 +300,10 @@ async fn test_commit_transfer_stores_the_audit_consensus_sealed() {
 async fn test_commit_transfer_leaves_a_recovery_fact_when_the_store_write_fails() {
     let (dir, store) = meta();
     drop(store);
-    let mut plan = TransferPlan::plan(request());
-    plan.observe_frontier(BARRIER);
+    let plan = ready(request());
     let consensus = Consensus::homed(&["proj"]);
 
-    let error = commit_transfer(&mut plan, &plane(&consensus), &consensus, &unwritable(&dir))
+    let error = commit_transfer(&plan, &plane(&consensus), &consensus, &unwritable(&dir))
         .await
         .unwrap_err();
 
@@ -330,9 +335,8 @@ async fn test_recovery_after_a_restart_stores_the_original_epoch_without_a_secon
     let (dir, store) = meta();
     drop(store);
     let consensus = Consensus::homed(&["proj"]);
-    let mut plan = TransferPlan::plan(request());
-    plan.observe_frontier(BARRIER);
-    commit_transfer(&mut plan, &plane(&consensus), &consensus, &unwritable(&dir))
+    let plan = ready(request());
+    commit_transfer(&plan, &plane(&consensus), &consensus, &unwritable(&dir))
         .await
         .unwrap_err();
     drop(plan);
@@ -359,15 +363,13 @@ async fn test_recovery_after_a_restart_stores_the_original_epoch_without_a_secon
 async fn test_commit_transfer_retry_by_identity_replays_the_sealed_audit() {
     let consensus = Consensus::homed(&["proj"]);
     let (_dir, store) = meta();
-    let mut first = TransferPlan::plan(request());
-    first.observe_frontier(BARRIER);
-    let committed = commit_transfer(&mut first, &plane(&consensus), &consensus, &store)
+    let first = ready(request());
+    let committed = commit_transfer(&first, &plane(&consensus), &consensus, &store)
         .await
         .unwrap();
-    let mut retry = TransferPlan::plan(request());
-    retry.observe_frontier(BARRIER);
+    let retry = ready(request());
 
-    let replayed = commit_transfer(&mut retry, &plane(&consensus), &consensus, &store)
+    let replayed = commit_transfer(&retry, &plane(&consensus), &consensus, &store)
         .await
         .unwrap();
 
@@ -380,15 +382,13 @@ async fn test_commit_transfer_retry_by_identity_replays_the_sealed_audit() {
 async fn test_commit_transfer_retry_after_projection_answers_from_the_stored_audit() {
     let consensus = Consensus::homed(&["proj"]);
     let (_dir, store) = meta();
-    let mut first = TransferPlan::plan(request());
-    first.observe_frontier(BARRIER);
-    let committed = commit_transfer(&mut first, &plane(&consensus), &consensus, &store)
+    let first = ready(request());
+    let committed = commit_transfer(&first, &plane(&consensus), &consensus, &store)
         .await
         .unwrap();
-    let mut retry = TransferPlan::plan(request());
-    retry.observe_frontier(BARRIER);
+    let retry = ready(request());
 
-    let replayed = commit_transfer(&mut retry, &plane(&consensus), &consensus, &store)
+    let replayed = commit_transfer(&retry, &plane(&consensus), &consensus, &store)
         .await
         .unwrap();
 
@@ -399,17 +399,15 @@ async fn test_commit_transfer_retry_after_projection_answers_from_the_stored_aud
 async fn test_commit_transfer_reports_a_committed_move_whose_audit_is_neither_sealed_nor_stored() {
     let consensus = Consensus::homed(&["proj"]);
     let (dir, store) = meta();
-    let mut first = TransferPlan::plan(request());
-    first.observe_frontier(BARRIER);
-    commit_transfer(&mut first, &plane(&consensus), &consensus, &store)
+    let first = ready(request());
+    commit_transfer(&first, &plane(&consensus), &consensus, &store)
         .await
         .unwrap();
     drop(store);
-    let mut retry = TransferPlan::plan(request());
-    retry.observe_frontier(BARRIER);
+    let retry = ready(request());
 
     let error = commit_transfer(
-        &mut retry,
+        &retry,
         &plane(&consensus),
         &consensus,
         &MetaStore::open(dir.path().join("other.redb")).unwrap(),
@@ -425,10 +423,9 @@ async fn test_commit_transfer_succeeds_when_the_fact_cannot_be_cleared() {
     let consensus = Consensus::homed(&["proj"]);
     *consensus.unclearable.lock().unwrap() = true;
     let (_dir, store) = meta();
-    let mut plan = TransferPlan::plan(request());
-    plan.observe_frontier(BARRIER);
+    let plan = ready(request());
 
-    let audit = commit_transfer(&mut plan, &plane(&consensus), &consensus, &store)
+    let audit = commit_transfer(&plan, &plane(&consensus), &consensus, &store)
         .await
         .unwrap();
 
@@ -442,10 +439,9 @@ async fn test_commit_transfer_reports_an_unreadable_projection_state_after_commi
     let consensus = Consensus::homed(&["proj"]);
     consensus.unreadable.store(true, Ordering::SeqCst);
     let (_dir, store) = meta();
-    let mut plan = TransferPlan::plan(request());
-    plan.observe_frontier(BARRIER);
+    let plan = ready(request());
 
-    let error = commit_transfer(&mut plan, &plane(&consensus), &consensus, &store)
+    let error = commit_transfer(&plan, &plane(&consensus), &consensus, &store)
         .await
         .unwrap_err();
 
@@ -500,12 +496,11 @@ async fn test_fixed_authority_answers_its_snapshot() {
 
 #[tokio::test]
 async fn test_commit_transfer_surfaces_a_refused_commit_without_persisting() {
-    let mut plan = TransferPlan::plan(request());
-    plan.observe_frontier(BARRIER);
+    let plan = ready(request());
     let consensus = Consensus::refusing(ControlError::NotLeader { leader: None });
     let (_dir, store) = meta();
 
-    let error = commit_transfer(&mut plan, &plane(&consensus), &consensus, &store)
+    let error = commit_transfer(&plan, &plane(&consensus), &consensus, &store)
         .await
         .unwrap_err();
 
@@ -515,15 +510,65 @@ async fn test_commit_transfer_surfaces_a_refused_commit_without_persisting() {
     ));
     assert!(store.transfer_audits("proj").unwrap().is_empty());
     assert!(consensus.pending_transfer_audits().await.unwrap().is_empty());
+    // An outcome consensus may still have appended keeps the claim, so a retry resolves the same
+    // identity rather than reopening the move to cancellation.
+    assert_eq!(plan.lock().await.phase(), TransferPhase::Committing);
+}
+
+#[tokio::test]
+async fn test_commit_transfer_returns_a_claim_refused_before_submission_to_ready() {
+    let plan = ready(request());
+    let consensus = Consensus::homed(&["proj"]);
+    let (_dir, store) = meta();
+    let control = plane(&consensus);
+    control
+        .execute(
+            "alice",
+            Some("t-1"),
+            ControlCommand::TransferAuthority {
+                authority: "proj".to_owned(),
+                new_home: "north".to_owned(),
+                intent: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    let error = commit_transfer(&plan, &control, &consensus, &store).await.unwrap_err();
+
+    assert!(matches!(error, TransferDriveError::Commit(ControlError::KeyReuse)));
+    // The refusal came before consensus saw the move, so the identity may wait again and be cancelled.
+    assert_eq!(plan.lock().await.phase(), TransferPhase::Ready);
+    assert_eq!(consensus.submitted(), 1);
+}
+
+#[tokio::test]
+async fn test_commit_transfer_retries_an_unresolved_claim_under_the_same_identity() {
+    let plan = ready(request());
+    let consensus = Consensus::refusing(ControlError::Unavailable("no quorum".to_owned()));
+    let (_dir, store) = meta();
+    commit_transfer(&plan, &plane(&consensus), &consensus, &store)
+        .await
+        .unwrap_err();
+    assert_eq!(plan.lock().await.phase(), TransferPhase::Committing);
+    *consensus.refusal.lock().unwrap() = None;
+
+    let audit = commit_transfer(&plan, &plane(&consensus), &consensus, &store)
+        .await
+        .unwrap();
+
+    assert_eq!(audit.id, "t-1");
+    assert_eq!(consensus.epoch("proj"), 2);
+    assert_eq!(store.transfer_audits("proj").unwrap().len(), 1);
 }
 
 #[tokio::test]
 async fn test_commit_transfer_refuses_a_plan_that_has_not_reached_the_barrier() {
-    let mut plan = TransferPlan::plan(request());
+    let plan = planned(request());
     let consensus = Consensus::homed(&["proj"]);
     let (_dir, store) = meta();
 
-    let error = commit_transfer(&mut plan, &plane(&consensus), &consensus, &store)
+    let error = commit_transfer(&plan, &plane(&consensus), &consensus, &store)
         .await
         .unwrap_err();
 
@@ -533,13 +578,12 @@ async fn test_commit_transfer_refuses_a_plan_that_has_not_reached_the_barrier() 
 
 #[tokio::test]
 async fn test_commit_transfer_refuses_a_cancelled_plan_without_committing() {
-    let mut plan = TransferPlan::plan(request());
-    plan.observe_frontier(BARRIER);
-    plan.cancel().unwrap();
+    let plan = ready(request());
+    plan.lock().await.cancel().unwrap();
     let consensus = Consensus::homed(&["proj"]);
     let (_dir, store) = meta();
 
-    let error = commit_transfer(&mut plan, &plane(&consensus), &consensus, &store)
+    let error = commit_transfer(&plan, &plane(&consensus), &consensus, &store)
         .await
         .unwrap_err();
 
@@ -549,15 +593,14 @@ async fn test_commit_transfer_refuses_a_cancelled_plan_without_committing() {
 
 #[tokio::test]
 async fn test_commit_transfer_replays_a_committed_plan_without_recommitting() {
-    let mut plan = TransferPlan::plan(request());
-    plan.observe_frontier(BARRIER);
+    let plan = ready(request());
     let consensus = Consensus::homed(&["proj"]);
     let (_dir, store) = meta();
 
-    let first = commit_transfer(&mut plan, &plane(&consensus), &consensus, &store)
+    let first = commit_transfer(&plan, &plane(&consensus), &consensus, &store)
         .await
         .unwrap();
-    let replay = commit_transfer(&mut plan, &plane(&consensus), &consensus, &store)
+    let replay = commit_transfer(&plan, &plane(&consensus), &consensus, &store)
         .await
         .unwrap();
 
@@ -567,6 +610,7 @@ async fn test_commit_transfer_replays_a_committed_plan_without_recommitting() {
 
 struct GatedFrontier {
     probed: Arc<Notify>,
+    probes: AtomicUsize,
     applied: Option<u64>,
 }
 
@@ -576,6 +620,7 @@ impl GatedFrontier {
         (
             Arc::new(Self {
                 probed: probed.clone(),
+                probes: AtomicUsize::new(0),
                 applied,
             }),
             probed,
@@ -586,6 +631,7 @@ impl GatedFrontier {
 #[async_trait::async_trait]
 impl FrontierSource for GatedFrontier {
     async fn applied_frontier(&self, _datacenter: &str) -> anyhow::Result<Option<u64>> {
+        self.probes.fetch_add(1, Ordering::SeqCst);
         self.probed.notify_one();
         Ok(self.applied)
     }
@@ -613,9 +659,8 @@ async fn test_coordinator_recovers_an_earlier_transfer_before_running_the_next()
     let (dir, store) = meta();
     drop(store);
     let consensus = Consensus::homed(&["proj", "docs"]);
-    let mut stranded = TransferPlan::plan(request());
-    stranded.observe_frontier(BARRIER);
-    commit_transfer(&mut stranded, &plane(&consensus), &consensus, &unwritable(&dir))
+    let stranded = ready(request());
+    commit_transfer(&stranded, &plane(&consensus), &consensus, &unwritable(&dir))
         .await
         .unwrap_err();
     drop(stranded);
@@ -696,7 +741,7 @@ async fn test_coordinator_refuses_a_second_transfer_for_the_same_authority() {
 async fn test_coordinator_cancel_abandons_an_active_transfer() {
     let (frontier, probed) = GatedFrontier::new(Some(BARRIER - 1));
     let coordinator = Arc::new(TransferCoordinator::with_schedule(
-        frontier,
+        frontier.clone(),
         Duration::from_secs(30),
         10,
         RETAINED,
@@ -712,6 +757,7 @@ async fn test_coordinator_cancel_abandons_an_active_transfer() {
     probed.notified().await;
 
     coordinator.cancel("proj", &store).await.unwrap();
+    // Letting the poll interval elapse would re-probe a coordinator that slept through the cancel.
     tokio::time::advance(Duration::from_secs(30)).await;
     assert!(matches!(
         running.await.unwrap(),
@@ -719,6 +765,7 @@ async fn test_coordinator_cancel_abandons_an_active_transfer() {
             TransferError::Cancelled
         )))
     ));
+    assert_eq!(frontier.probes.load(Ordering::SeqCst), 1);
 }
 
 fn coordinator() -> TransferCoordinator {
@@ -771,11 +818,11 @@ async fn test_coordinator_cancel_of_a_committed_transfer_is_refused() {
     assert!(matches!(error, TransferCancelError::AlreadyCommitted(authority) if authority == "proj"));
 }
 
-/// Holds the plan lock across the commit so a cancel queued behind it resolves against a plan that
-/// committed while it waited.
+/// Parks in the probe, holding the coordinator on a frontier the way an unresponsive target does.
 struct HeldFrontier {
     held: Arc<Notify>,
     release: Arc<Notify>,
+    completed: AtomicUsize,
 }
 
 #[async_trait::async_trait]
@@ -783,19 +830,23 @@ impl FrontierSource for HeldFrontier {
     async fn applied_frontier(&self, _datacenter: &str) -> anyhow::Result<Option<u64>> {
         self.held.notify_one();
         self.release.notified().await;
+        self.completed.fetch_add(1, Ordering::SeqCst);
         Ok(Some(BARRIER))
     }
 }
 
 #[tokio::test]
-async fn test_coordinator_cancel_that_loses_the_race_to_the_commit_is_refused() {
+async fn test_coordinator_cancel_leaves_a_frontier_probe_rather_than_committing_behind_it() {
     let (_dir, store) = meta();
     let (held, release) = (Arc::new(Notify::new()), Arc::new(Notify::new()));
+    let frontier = Arc::new(HeldFrontier {
+        held: held.clone(),
+        release: release.clone(),
+        completed: AtomicUsize::new(0),
+    });
+    let consensus = Consensus::homed(&["proj"]);
     let coordinator = Arc::new(TransferCoordinator::with_schedule(
-        Arc::new(HeldFrontier {
-            held: held.clone(),
-            release: release.clone(),
-        }),
+        frontier.clone(),
         Duration::ZERO,
         1,
         RETAINED,
@@ -803,7 +854,7 @@ async fn test_coordinator_cancel_that_loses_the_race_to_the_commit_is_refused() 
     let running = tokio::spawn({
         let coordinator = coordinator.clone();
         let store = store.clone();
-        let consensus = Consensus::homed(&["proj"]);
+        let consensus = consensus.clone();
         async move { coordinator.run(request(), &plane(&consensus), &consensus, &store).await }
     });
     held.notified().await;
@@ -818,12 +869,106 @@ async fn test_coordinator_cancel_that_loses_the_race_to_the_commit_is_refused() 
         }
     });
     queued.notified().await;
+    // Freeing the probe carries a coordinator that waited it out into the commit, so the assertions
+    // below separate the two outcomes rather than hanging on the one that never answers.
     release.notify_one();
 
-    let error = cancelling.await.unwrap().unwrap_err();
+    cancelling.await.unwrap().unwrap();
 
+    assert!(matches!(
+        running.await.unwrap(),
+        Err(TransferRunError::Drive(TransferDriveError::Plan(
+            TransferError::Cancelled
+        )))
+    ));
+    assert_eq!(frontier.completed.load(Ordering::SeqCst), 0);
+    assert_eq!(consensus.submitted(), 0);
+}
+
+/// Parks in the submission so a cancellation arrives while the ownership command is in consensus.
+struct HeldControl {
+    consensus: Arc<Consensus>,
+    submitting: Arc<Notify>,
+    release: Arc<Notify>,
+}
+
+#[async_trait::async_trait]
+impl MembershipControl for HeldControl {
+    async fn submit(&self, key: Option<&str>, command: ControlCommand) -> Result<ControlCommit, ControlError> {
+        self.submitting.notify_one();
+        self.release.notified().await;
+        self.consensus.submit(key, command).await
+    }
+}
+
+#[tokio::test]
+async fn test_coordinator_cancel_of_a_claimed_commit_is_refused_while_the_command_is_in_flight() {
+    let (_dir, store) = meta();
+    let (submitting, release) = (Arc::new(Notify::new()), Arc::new(Notify::new()));
+    let consensus = Consensus::homed(&["proj"]);
+    let held = ControlPlane::new(
+        Arc::new(HeldControl {
+            consensus: consensus.clone(),
+            submitting: submitting.clone(),
+            release: release.clone(),
+        }),
+        Arc::new(|| 0),
+    );
+    let (frontier, _probed) = GatedFrontier::new(Some(BARRIER));
+    let coordinator = Arc::new(TransferCoordinator::with_schedule(
+        frontier,
+        Duration::ZERO,
+        1,
+        RETAINED,
+    ));
+    let running = tokio::spawn({
+        let coordinator = coordinator.clone();
+        let store = store.clone();
+        let consensus = consensus.clone();
+        async move { coordinator.run(request(), &held, &consensus, &store).await }
+    });
+    submitting.notified().await;
+    let queued = Arc::new(Notify::new());
+    let cancelling = tokio::spawn({
+        let coordinator = coordinator.clone();
+        let store = store.clone();
+        let queued = queued.clone();
+        async move {
+            queued.notify_one();
+            coordinator.cancel("proj", &store).await
+        }
+    });
+    queued.notified().await;
+
+    // The command has not been released, so a cancel that answered read the plan rather than queuing
+    // behind the consensus round trip.
+    let answered_in_flight = cancelling.is_finished();
+    release.notify_one();
+
+    assert!(answered_in_flight);
+    let error = cancelling.await.unwrap().unwrap_err();
     assert!(matches!(error, TransferCancelError::AlreadyCommitted(authority) if authority == "proj"));
     assert_eq!(running.await.unwrap().unwrap().commit_index, 2);
+}
+
+#[tokio::test]
+async fn test_coordinator_cancel_after_an_unresolved_commit_is_not_reported_abandoned() {
+    let (_dir, store) = meta();
+    let (frontier, _probed) = GatedFrontier::new(Some(BARRIER));
+    let coordinator = TransferCoordinator::with_schedule(frontier, Duration::ZERO, 1, RETAINED);
+    let consensus = Consensus::refusing(ControlError::Unavailable("no quorum".to_owned()));
+    let refused = coordinator
+        .run(request(), &plane(&consensus), &consensus, &store)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        refused,
+        TransferRunError::Drive(TransferDriveError::Commit(ControlError::Unavailable(_)))
+    ));
+
+    let error = coordinator.cancel("proj", &store).await.unwrap_err();
+
+    assert!(matches!(error, TransferCancelError::Unknown(authority) if authority == "proj"));
 }
 
 /// A coordinator that never ran the move stands in for the process that restarted after it.
