@@ -25,10 +25,12 @@ async fn test_bounded_read_deadline_stops_periodic_chunks() {
         read.run(async move { response.bytes().await.map_err(UpstreamError::from) }),
         async {
             for (offset, chunk) in [b"1\r\na\r\n".as_slice(), b"1\r\nb\r\n"].into_iter().enumerate() {
-                advance_to(started + Duration::from_secs(10 * (offset as u64 + 1))).await;
+                server
+                    .advance_to(started + Duration::from_secs(10 * (offset as u64 + 1)))
+                    .await;
                 server.write(chunk).await;
             }
-            advance_to(deadline).await;
+            server.advance_to(deadline).await;
         }
     );
 
@@ -60,7 +62,7 @@ async fn test_bounded_read_accepts_a_body_near_the_deadline() {
     let (body, ()) = tokio::join!(
         read.run(async move { response.bytes().await.map_err(UpstreamError::from) }),
         async {
-            advance_to(deadline - Duration::from_secs(1)).await;
+            server.advance_to(deadline - Duration::from_secs(1)).await;
             server.write(b"3\r\nabc\r\n0\r\n\r\n").await;
         }
     );
@@ -79,7 +81,7 @@ async fn test_bounded_read_retries_with_the_remaining_budget() {
     let read = client.bounded_read();
     let (response, ()) = tokio::join!(read.send_conditional(url, "application/json", None), async {
         server.requested().await;
-        advance_to(started + Duration::from_secs(20)).await;
+        server.advance_to(started + Duration::from_secs(20)).await;
         server
             .write(
                 b"HTTP/1.1 503 Service Unavailable\r\nretry-after: 0\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
@@ -94,9 +96,9 @@ async fn test_bounded_read_retries_with_the_remaining_budget() {
     let (body, ()) = tokio::join!(
         read.run(async move { response.bytes().await.map_err(UpstreamError::from) }),
         async {
-            advance_to(deadline - Duration::from_secs(1)).await;
+            server.advance_to(deadline - Duration::from_secs(1)).await;
             server.write(b"1\r\na\r\n").await;
-            advance_to(deadline).await;
+            server.advance_to(deadline).await;
         }
     );
 
@@ -124,10 +126,6 @@ async fn test_bounded_read_run_reports_its_deadline() {
     );
 }
 
-async fn advance_to(target: tokio::time::Instant) {
-    tokio::time::advance(target.saturating_duration_since(tokio::time::Instant::now())).await;
-}
-
 enum ServerCommand {
     Write(&'static [u8]),
     NextResponse,
@@ -142,6 +140,7 @@ struct ControlledServer {
     address: SocketAddr,
     commands: mpsc::UnboundedSender<ServerCommand>,
     events: mpsc::UnboundedReceiver<ServerEvent>,
+    clock_running: bool,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -155,6 +154,7 @@ impl ControlledServer {
             address,
             commands,
             events: received_events,
+            clock_running: false,
             task: tokio::spawn(serve(listener, received_commands, events)),
         }
     }
@@ -164,18 +164,33 @@ impl ControlledServer {
     }
 
     async fn requested(&mut self) {
-        tokio::time::resume();
+        self.run_clock();
         let event = self.events.recv().await;
-        tokio::time::pause();
         assert!(matches!(event, Some(ServerEvent::Requested)));
     }
 
     async fn write(&mut self, bytes: &'static [u8]) {
         self.commands.send(ServerCommand::Write(bytes)).unwrap();
-        tokio::time::resume();
+        self.run_clock();
         let event = self.events.recv().await;
-        tokio::time::pause();
         assert!(matches!(event, Some(ServerEvent::Written)));
+    }
+
+    /// A paused clock auto-advances to the next timer whenever the runtime parks, so pausing while
+    /// bytes the server has already written are still in flight jumps straight to the read
+    /// deadline and fails the client for a body it was about to receive. The clock therefore runs
+    /// from the moment the server acts until the test deliberately advances it again.
+    async fn advance_to(&mut self, target: tokio::time::Instant) {
+        if std::mem::take(&mut self.clock_running) {
+            tokio::time::pause();
+        }
+        tokio::time::advance(target.saturating_duration_since(tokio::time::Instant::now())).await;
+    }
+
+    fn run_clock(&mut self) {
+        if !std::mem::replace(&mut self.clock_running, true) {
+            tokio::time::resume();
+        }
     }
 
     fn next_response(&self) {
