@@ -113,6 +113,30 @@ _features-tool-contract:
     fi
     "{{ just_executable() }}" _zero-feature-binary
 
+# Check that every browser suite runs and that any suite failure fails the recipe.
+_frontend-test-contract:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    script=$("{{ just_executable() }}" --dry-run frontend-test 2>&1)
+    for directory in \
+      crates/peryx-web/tests/frontend \
+      crates/peryx-ecosystem-pypi/tests/frontend \
+      crates/peryx-ecosystem-oci/tests/frontend; do
+      if [[ $(grep -Fc "$directory" <<<"$script") -ne 1 ]]; then
+        printf 'frontend-test must run %s exactly once\n' "$directory" >&2
+        exit 1
+      fi
+    done
+    grep -Fq 'npm --prefix "$directory" test || failed+=("$directory")' <<<"$script"
+    grep -Fq 'if (( ${#failed[@]} > 0 )); then' <<<"$script"
+    grep -Fq 'exit 1' <<<"$script"
+    # Joining the suites into one `;` list puts them back under plain `set -e`, which reports
+    # the first broken suite and never runs the rest.
+    if grep -Eq 'npm\b.*\btest\b *;' <<<"$script"; then
+      printf 'frontend-test must not join browser suites with `;`\n' >&2
+      exit 1
+    fi
+
 # Check Rust formatting.
 format-check: _project-temp
     cargo fmt --all --check --
@@ -135,7 +159,7 @@ lint-docs: _project-temp
     prek run codespell --all-files
 
 # Check workflows and repository automation.
-lint-automation: _project-temp _archive-binary-contract _browser-contract _codspeed-target-contract _coverage-target-contract _features-tool-contract _mutation-baseline-target-contract _mutation-profile-contract _mutation-shard-count-contract _readthedocs-contract _renovate-contract _sanitizer-target-contract _test-target-contract
+lint-automation: _project-temp _archive-binary-contract _browser-contract _codspeed-target-contract _coverage-target-contract _features-tool-contract _frontend-test-contract _mutation-baseline-target-contract _mutation-profile-contract _mutation-shard-count-contract _readthedocs-contract _renovate-contract _sanitizer-target-contract _test-target-contract
     SKIP=cargo-fmt,cargo-clippy,mdformat,codespell prek run --all-files
 
 _mutation-profile-contract:
@@ -482,13 +506,31 @@ frontend-deps: _project-temp
 
 # Run the shared and owner browser suites against an existing build.
 frontend-test: _project-temp
-    browser=$(MISE_ENV=browser mise where http:playwright-headless-shell)/chrome-headless-shell; \
-      [[ -f "$browser.exe" ]] && browser="$browser.exe"; \
-      export PERYX_PLAYWRIGHT_BROWSER_PATH="${PERYX_PLAYWRIGHT_BROWSER_PATH:-$browser}"; \
-      export PERYX_PLAYWRIGHT_BROWSER_VERSION="$(MISE_ENV=browser mise current http:playwright-headless-shell)"; \
-      npm --prefix crates/peryx-web/tests/frontend test; \
-      npm --prefix crates/peryx-ecosystem-pypi/tests/frontend test; \
-      npm --prefix crates/peryx-ecosystem-oci/tests/frontend test
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Every suite runs even after an earlier one fails, so a single CI round reports all three;
+    # the recipe then exits non-zero if any of them failed. Collecting the statuses is what
+    # buys that: left uncollected, `set -e` ends the run at the first broken suite, and the two
+    # larger suites are the ones most likely to break.
+    browser=$(MISE_ENV=browser mise where http:playwright-headless-shell)/chrome-headless-shell
+    if [[ -f "$browser.exe" ]]; then
+      browser="$browser.exe"
+    fi
+    export PERYX_PLAYWRIGHT_BROWSER_PATH="${PERYX_PLAYWRIGHT_BROWSER_PATH:-$browser}"
+    # `export VAR="$(cmd)"` reports the status of `export`, so the lookup gets its own assignment.
+    version=$(MISE_ENV=browser mise current http:playwright-headless-shell)
+    export PERYX_PLAYWRIGHT_BROWSER_VERSION="$version"
+    failed=()
+    for directory in \
+      crates/peryx-web/tests/frontend \
+      crates/peryx-ecosystem-pypi/tests/frontend \
+      crates/peryx-ecosystem-oci/tests/frontend; do
+      npm --prefix "$directory" test || failed+=("$directory")
+    done
+    if (( ${#failed[@]} > 0 )); then
+      printf 'browser suite failed: %s\n' "${failed[@]}" >&2
+      exit 1
+    fi
 
 # Print tool versions used by local and container validation.
 versions: _project-temp
