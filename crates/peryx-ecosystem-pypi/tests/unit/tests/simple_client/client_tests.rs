@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use peryx_upstream::{
@@ -135,6 +136,61 @@ async fn test_routed_project_falls_back_after_a_transport_error() {
     assert_eq!(
         route.sources().map(NamedUpstream::health).collect::<Vec<_>>(),
         [UpstreamHealth::Unhealthy, UpstreamHealth::Healthy]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_routed_project_falls_back_after_deadline() {
+    let second = MockServer::start().await;
+    mount_get(
+        &second,
+        "/simple/flask/",
+        ResponseTemplate::new(200).set_body_raw(b"{}".to_vec(), "application/vnd.pypi.simple.v1+json"),
+    )
+    .await;
+    let refresh_started = Arc::new(tokio::sync::Notify::new());
+    let loader_started = Arc::clone(&refresh_started);
+    let credentials = CredentialProvider::refreshing(
+        Auth::None,
+        CredentialRefresh {
+            interval: Duration::ZERO,
+            on_unauthorized: false,
+            failure: CredentialFailure::Fail,
+        },
+        move || {
+            loader_started.notify_one();
+            std::future::pending::<Result<Auth, CredentialError>>()
+        },
+    );
+    let base = "https://deadline.example/simple/";
+    let first =
+        UpstreamClient::with_credentials_and_tls_for_origin(base, credentials, &UpstreamTls::default(), base, &[])
+            .unwrap();
+    let route = UpstreamRouter::new(vec![
+        NamedUpstream::new("first", first),
+        NamedUpstream::new("second", simple_client(&second)),
+    ])
+    .unwrap();
+    let running = route.clone();
+    let request = tokio::spawn(async move { running.fetch_project("flask", None).await });
+    refresh_started.notified().await;
+    tokio::time::advance(Duration::from_secs(30)).await;
+    tokio::time::resume();
+    let response = request.await.unwrap().unwrap();
+    tokio::time::pause();
+    assert_eq!(
+        (
+            response.status,
+            response.source.as_deref(),
+            response.url.to_string(),
+            route.sources().map(NamedUpstream::health).collect::<Vec<_>>(),
+        ),
+        (
+            200,
+            Some("second"),
+            format!("{}/simple/flask/", second.uri()),
+            vec![UpstreamHealth::Unhealthy, UpstreamHealth::Healthy],
+        )
     );
 }
 

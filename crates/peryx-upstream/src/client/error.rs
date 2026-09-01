@@ -22,6 +22,8 @@ pub enum UpstreamError {
     InvalidResponse { reason: String },
     #[error("upstream response exceeds the {limit}-byte limit")]
     ResponseTooLarge { limit: usize },
+    #[error("upstream bounded read deadline exceeded")]
+    DeadlineExceeded,
     #[error("upstream destination is not permitted: {reason}")]
     BlockedDestination { reason: String },
 }
@@ -35,6 +37,7 @@ impl UpstreamError {
             | Self::Url(_)
             | Self::InvalidResponse { .. }
             | Self::ResponseTooLarge { .. }
+            | Self::DeadlineExceeded
             | Self::BlockedDestination { .. } => None,
         }
     }
@@ -54,6 +57,7 @@ impl UpstreamError {
             Self::Http(_) => "upstream request failed".to_owned(),
             Self::InvalidResponse { .. } => "upstream returned an invalid response".to_owned(),
             Self::ResponseTooLarge { limit } => format!("upstream response exceeds the {limit}-byte limit"),
+            Self::DeadlineExceeded => "upstream request timed out".to_owned(),
             Self::BlockedDestination { .. } => "upstream destination is not permitted".to_owned(),
         }
     }

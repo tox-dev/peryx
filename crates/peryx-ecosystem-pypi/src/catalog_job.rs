@@ -542,7 +542,9 @@ fn project_error(error: &ProjectSyncError) -> JobFailure {
 }
 
 fn upstream_error(error: &UpstreamError) -> JobFailure {
-    let category = if matches!(error.status(), Some(429 | 500..=u16::MAX))
+    let category = if matches!(error, UpstreamError::DeadlineExceeded) {
+        "retryable_timeout"
+    } else if matches!(error.status(), Some(429 | 500..=u16::MAX))
         || matches!(error, UpstreamError::Http(error) if error.is_timeout() || error.is_connect())
     {
         "retryable_upstream"

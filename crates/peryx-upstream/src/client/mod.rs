@@ -9,6 +9,7 @@ mod tls;
 
 mod response;
 
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, SystemTime};
@@ -41,6 +42,7 @@ pub use self::tls::{UpstreamTls, UpstreamTlsError};
 const USER_AGENT: &str = concat!("peryx/", env!("CARGO_PKG_VERSION"));
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const BOUNDED_READ_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const RANGE_SUPPRESSION_CAPACITY: usize = 1_024;
 pub(crate) const RANGE_SUPPRESSION_TTL: Duration = Duration::from_mins(5);
 
@@ -119,6 +121,68 @@ pub struct UpstreamClient {
     reachability: Arc<AtomicU8>,
 }
 
+/// A bounded upstream read shares one deadline across request acquisition, retries, and body
+/// consumption.
+#[derive(Clone, Copy, Debug)]
+pub struct BoundedRead<'a> {
+    client: &'a UpstreamClient,
+    deadline: tokio::time::Instant,
+}
+
+impl BoundedRead<'_> {
+    /// Sends a conditional request within this read's remaining budget.
+    ///
+    /// # Errors
+    /// Returns [`UpstreamError::DeadlineExceeded`] when the deadline expires, or [`UpstreamError`]
+    /// when the request fails.
+    pub async fn send_conditional(
+        self,
+        url: Url,
+        accept: &str,
+        etag: Option<&str>,
+    ) -> Result<reqwest::Response, UpstreamError> {
+        self.send_validated(url, accept, etag, None).await
+    }
+
+    /// Sends a validated request within this read's remaining budget.
+    ///
+    /// # Errors
+    /// Returns [`UpstreamError::DeadlineExceeded`] when the deadline expires, or [`UpstreamError`]
+    /// when the request fails.
+    pub async fn send_validated(
+        self,
+        url: Url,
+        accept: &str,
+        etag: Option<&str>,
+        last_modified: Option<&str>,
+    ) -> Result<reqwest::Response, UpstreamError> {
+        self.client
+            .send_validated_before(url, accept, etag, last_modified, self.deadline)
+            .await
+    }
+
+    /// Runs body consumption and body-error retries within this read's remaining budget.
+    ///
+    /// # Errors
+    /// Returns [`UpstreamError::DeadlineExceeded`] when the deadline expires, or the workflow's
+    /// error.
+    pub async fn run<T>(self, future: impl Future<Output = Result<T, UpstreamError>>) -> Result<T, UpstreamError> {
+        run_before(self.deadline, future).await
+    }
+
+    /// Waits before a body-error retry without extending this read's deadline.
+    ///
+    /// # Errors
+    /// Returns [`UpstreamError::DeadlineExceeded`] when the deadline expires during the delay.
+    pub async fn sleep_before_retry(self, url: &Url, attempt: u32, err: &reqwest::Error) -> Result<(), UpstreamError> {
+        run_before(self.deadline, async {
+            retry::sleep_before_retry(url, attempt, err).await;
+            Ok(())
+        })
+        .await
+    }
+}
+
 /// One representation of one resource, held across a sequence of range reads.
 ///
 /// Every read goes back to the client and resolved URL that started the session and carries the
@@ -173,6 +237,17 @@ impl RangeSession {
     /// answers with a different one, [`RangeError::Unsupported`] when upstream stops serving
     /// ranges, and [`RangeError::Upstream`] on other request failures.
     pub async fn fetch_range(&self, start: u64, end: u64, memory_limit: usize) -> Result<Bytes, RangeError> {
+        let deadline = bounded_read_deadline();
+        run_before(deadline, self.fetch_range_before(start, end, memory_limit, deadline)).await
+    }
+
+    async fn fetch_range_before(
+        &self,
+        start: u64,
+        end: u64,
+        memory_limit: usize,
+        deadline: tokio::time::Instant,
+    ) -> Result<Bytes, RangeError> {
         let (range_len, expected_len) = range_lengths(start, end, memory_limit)?;
         if end >= self.len {
             return Err(RangeError::Invalid(format!(
@@ -182,7 +257,7 @@ impl RangeSession {
         }
         let response = self
             .client
-            .request_range(&self.url, start, end, Some(&self.etag))
+            .request_range(&self.url, start, end, Some(&self.etag), deadline)
             .await?;
         if response.url() != &self.url {
             return Err(RangeError::Invalid("range response left the pinned URL".to_owned()));
@@ -450,24 +525,38 @@ impl UpstreamClient {
     /// Reads at most `limit` bytes from an absolute URL.
     ///
     /// # Errors
-    /// Returns [`UpstreamError::ResponseTooLarge`] if the response exceeds `limit`, or
+    /// Returns [`UpstreamError::ResponseTooLarge`] if the response exceeds `limit`,
+    /// [`UpstreamError::DeadlineExceeded`] when the total read deadline expires,
     /// [`UpstreamError::Credential`] when refresh fails, or [`UpstreamError::Http`] when the request
     /// fails or answers a non-success status.
     pub async fn fetch_bytes_limited(&self, url: &str, limit: usize) -> Result<Bytes, UpstreamError> {
-        use futures_util::TryStreamExt as _;
-
         let url = Url::parse(url)?;
         self.guard.check_url(&url)?;
+        let deadline = bounded_read_deadline();
+        run_before(deadline, self.fetch_bytes_limited_before(&url, limit, deadline)).await
+    }
+
+    async fn fetch_bytes_limited_before(
+        &self,
+        url: &Url,
+        limit: usize,
+        deadline: tokio::time::Instant,
+    ) -> Result<Bytes, UpstreamError> {
+        use futures_util::TryStreamExt as _;
+
         let mut retries = 0..MAX_RETRIES;
         loop {
             let response = self
-                .send_with_retry(&mut |auth| {
-                    self.authenticate(
-                        self.bulk(&url).get(url.clone()).header(ACCEPT_ENCODING, "identity"),
-                        &url,
-                        auth,
-                    )
-                })
+                .send_with_retry_before(
+                    &mut |auth| {
+                        self.authenticate(
+                            self.bulk(url).get(url.clone()).header(ACCEPT_ENCODING, "identity"),
+                            url,
+                            auth,
+                        )
+                    },
+                    deadline,
+                )
                 .await?
                 .error_for_status()?;
             let content_length = response.content_length();
@@ -512,11 +601,23 @@ impl UpstreamClient {
         if self.range_suppressions.contains(&url) {
             return Err(RangeError::Unsupported);
         }
+        let deadline = bounded_read_deadline();
+        run_before(deadline, self.range_session_before(&url, deadline)).await
+    }
+
+    async fn range_session_before(
+        &self,
+        url: &Url,
+        deadline: tokio::time::Instant,
+    ) -> Result<RangeSession, RangeError> {
         let response = self
-            .send_with_retry(&mut |auth| {
-                self.authenticate(self.http(&url).head(url.clone()), &url, auth)
-                    .header(ACCEPT_ENCODING, "identity")
-            })
+            .send_with_retry_before(
+                &mut |auth| {
+                    self.authenticate(self.http(url).head(url.clone()), url, auth)
+                        .header(ACCEPT_ENCODING, "identity")
+                },
+                deadline,
+            )
             .await
             .map_err(RangeError::from)?;
         if response.status().is_success() {
@@ -528,14 +629,14 @@ impl UpstreamClient {
                     len,
                     etag,
                 }),
-                _ => self.probe_range_session(response.url()).await,
+                _ => self.probe_range_session(response.url(), deadline).await,
             };
         }
         if matches!(
             response.status(),
             reqwest::StatusCode::METHOD_NOT_ALLOWED | reqwest::StatusCode::NOT_IMPLEMENTED
         ) {
-            return self.probe_range_session(&url).await;
+            return self.probe_range_session(url, deadline).await;
         }
         if matches!(
             response.status(),
@@ -549,8 +650,8 @@ impl UpstreamClient {
 
     /// Pins the session on the probe response itself, so a representation change between the `HEAD`
     /// and the probe cannot leave the session holding a validator it never observed.
-    async fn probe_range_session(&self, url: &Url) -> Result<RangeSession, RangeError> {
-        let response = self.request_range(url, 0, 0, None).await?;
+    async fn probe_range_session(&self, url: &Url, deadline: tokio::time::Instant) -> Result<RangeSession, RangeError> {
+        let response = self.request_range(url, 0, 0, None, deadline).await?;
         let etag = strong_etag(response.headers()).ok_or(RangeError::Unsupported)?;
         let len = validate_content_range(response.headers(), 0, 0)?
             .ok_or_else(|| RangeError::Invalid("range probe returned an unknown representation length".to_owned()))?;
@@ -570,22 +671,26 @@ impl UpstreamClient {
         start: u64,
         end: u64,
         if_range: Option<&HeaderValue>,
+        deadline: tokio::time::Instant,
     ) -> Result<reqwest::Response, RangeError> {
         self.guard.check_url(url).map_err(RangeError::from)?;
         if self.range_suppressions.contains(url) {
             return Err(RangeError::Unsupported);
         }
         let response = self
-            .send_with_retry(&mut |auth| {
-                let request = self
-                    .authenticate(self.http(url).get(url.clone()), url, auth)
-                    .header(ACCEPT_ENCODING, "identity")
-                    .header(RANGE, format!("bytes={start}-{end}"));
-                match if_range {
-                    Some(validator) => request.header(IF_RANGE, validator.clone()),
-                    None => request,
-                }
-            })
+            .send_with_retry_before(
+                &mut |auth| {
+                    let request = self
+                        .authenticate(self.http(url).get(url.clone()), url, auth)
+                        .header(ACCEPT_ENCODING, "identity")
+                        .header(RANGE, format!("bytes={start}-{end}"));
+                    match if_range {
+                        Some(validator) => request.header(IF_RANGE, validator.clone()),
+                        None => request,
+                    }
+                },
+                deadline,
+            )
             .await
             .map_err(RangeError::from)?;
         match response.status() {
@@ -653,15 +758,16 @@ impl UpstreamClient {
     ///
     /// # Errors
     /// Returns [`UpstreamError::BlockedDestination`] when the initial URL violates the outbound
-    /// policy, [`UpstreamError::Credential`] when refresh fails, or [`UpstreamError::Http`] when the
-    /// request fails after exhausting retries.
+    /// policy, [`UpstreamError::DeadlineExceeded`] when the total read deadline expires,
+    /// [`UpstreamError::Credential`] when refresh fails, or [`UpstreamError::Http`] when the request
+    /// fails after exhausting retries.
     pub async fn send_conditional(
         &self,
         url: Url,
         accept: &str,
         etag: Option<&str>,
     ) -> Result<reqwest::Response, UpstreamError> {
-        self.send_validated(url, accept, etag, None).await
+        self.bounded_read().send_conditional(url, accept, etag).await
     }
 
     /// Sends a conditional metadata request. `If-None-Match` takes precedence over modification
@@ -669,8 +775,9 @@ impl UpstreamClient {
     ///
     /// # Errors
     /// Returns [`UpstreamError::BlockedDestination`] when the initial URL violates the outbound
-    /// policy, [`UpstreamError::Credential`] when refresh fails, or [`UpstreamError::Http`] when the
-    /// request fails after exhausting retries.
+    /// policy, [`UpstreamError::DeadlineExceeded`] when the total read deadline expires,
+    /// [`UpstreamError::Credential`] when refresh fails, or [`UpstreamError::Http`] when the request
+    /// fails after exhausting retries.
     pub async fn send_validated(
         &self,
         url: Url,
@@ -678,18 +785,43 @@ impl UpstreamClient {
         etag: Option<&str>,
         last_modified: Option<&str>,
     ) -> Result<reqwest::Response, UpstreamError> {
+        self.bounded_read()
+            .send_validated(url, accept, etag, last_modified)
+            .await
+    }
+
+    /// Starts one total deadline for a composed bounded metadata read.
+    #[must_use]
+    pub fn bounded_read(&self) -> BoundedRead<'_> {
+        BoundedRead {
+            client: self,
+            deadline: bounded_read_deadline(),
+        }
+    }
+
+    async fn send_validated_before(
+        &self,
+        url: Url,
+        accept: &str,
+        etag: Option<&str>,
+        last_modified: Option<&str>,
+        deadline: tokio::time::Instant,
+    ) -> Result<reqwest::Response, UpstreamError> {
         self.guard.check_url(&url)?;
-        self.send_with_retry(&mut |auth| {
-            let mut request = self
-                .authenticate(self.http(&url).get(url.clone()), &url, auth)
-                .header(ACCEPT, accept);
-            if let Some(etag) = etag {
-                request = request.header(IF_NONE_MATCH, etag);
-            } else if let Some(last_modified) = last_modified {
-                request = request.header(IF_MODIFIED_SINCE, last_modified);
-            }
-            request
-        })
+        self.send_with_retry_before(
+            &mut |auth| {
+                let mut request = self
+                    .authenticate(self.http(&url).get(url.clone()), &url, auth)
+                    .header(ACCEPT, accept);
+                if let Some(etag) = etag {
+                    request = request.header(IF_NONE_MATCH, etag);
+                } else if let Some(last_modified) = last_modified {
+                    request = request.header(IF_MODIFIED_SINCE, last_modified);
+                }
+                request
+            },
+            deadline,
+        )
         .await
     }
 
@@ -697,11 +829,32 @@ impl UpstreamClient {
         &self,
         request: &mut (dyn FnMut(&Auth) -> reqwest::RequestBuilder + Send),
     ) -> Result<reqwest::Response, UpstreamError> {
+        self.send_with_retry_inner(request, None).await
+    }
+
+    async fn send_with_retry_before(
+        &self,
+        request: &mut (dyn FnMut(&Auth) -> reqwest::RequestBuilder + Send),
+        deadline: tokio::time::Instant,
+    ) -> Result<reqwest::Response, UpstreamError> {
+        run_before(deadline, self.send_with_retry_inner(request, Some(deadline))).await
+    }
+
+    async fn send_with_retry_inner(
+        &self,
+        request: &mut (dyn FnMut(&Auth) -> reqwest::RequestBuilder + Send),
+        deadline: Option<tokio::time::Instant>,
+    ) -> Result<reqwest::Response, UpstreamError> {
         let mut retries = 0..MAX_RETRIES;
         let mut credential = self.credentials.credential().await.map_err(UpstreamError::from)?;
         let mut refreshed = false;
         loop {
-            match request(credential.auth()).send().await {
+            let request = request(credential.auth());
+            let request = match deadline {
+                Some(deadline) => request.timeout(deadline.saturating_duration_since(tokio::time::Instant::now())),
+                None => request,
+            };
+            match request.send().await {
                 Ok(response) if response.status() == reqwest::StatusCode::UNAUTHORIZED && !refreshed => {
                     let generation = credential.generation();
                     let replacement = self
@@ -746,6 +899,21 @@ impl UpstreamClient {
                 }
             }
         }
+    }
+}
+
+fn bounded_read_deadline() -> tokio::time::Instant {
+    tokio::time::Instant::now() + BOUNDED_READ_TIMEOUT
+}
+
+async fn run_before<T, E>(deadline: tokio::time::Instant, future: impl Future<Output = Result<T, E>>) -> Result<T, E>
+where
+    E: From<UpstreamError>,
+{
+    tokio::select! {
+        biased;
+        () = tokio::time::sleep_until(deadline) => Err(UpstreamError::DeadlineExceeded.into()),
+        result = future => result,
     }
 }
 

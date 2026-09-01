@@ -5,7 +5,7 @@ use std::future::Future;
 
 use bytes::{Bytes, BytesMut};
 use futures_util::Stream;
-use peryx_upstream::retry::{MAX_RETRIES, should_retry_error, sleep_before_retry};
+use peryx_upstream::retry::{MAX_RETRIES, should_retry_error};
 use peryx_upstream::{NamedUpstream, UpstreamClient, UpstreamError, UpstreamRouter};
 use reqwest::StatusCode;
 use reqwest::header::{
@@ -264,7 +264,7 @@ fn record_health<T: SimpleStatus>(upstream: &NamedUpstream, result: &Result<T, U
 const fn fallback_result(result: Result<u16, &UpstreamError>) -> bool {
     match result {
         Ok(status) => matches!(status, 404 | 429 | 500..=599),
-        Err(UpstreamError::Http(_)) => true,
+        Err(UpstreamError::Http(_) | UpstreamError::DeadlineExceeded) => true,
         Err(
             UpstreamError::Credential(_)
             | UpstreamError::Url(_)
@@ -325,32 +325,37 @@ async fn read_capped(
 }
 
 async fn fetch_simple(client: &UpstreamClient, url: Url, etag: Option<&str>) -> Result<SimpleResponse, UpstreamError> {
-    let mut attempt = 0;
-    loop {
-        let response = client.send_conditional(url.clone(), ACCEPT_SIMPLE, etag).await?;
-        let head = simple_head(response)?;
-        match read_capped(Box::pin(head.response.bytes_stream()), MAX_SIMPLE_PAGE_BYTES).await {
-            Ok(body) => {
-                return Ok(SimpleResponse {
-                    status: head.status,
-                    source: head.source,
-                    url: head.url,
-                    content_type: head.content_type,
-                    etag: head.etag,
-                    last_modified: head.last_modified,
-                    retry_after: head.retry_after,
-                    last_serial: head.last_serial,
-                    max_age: head.max_age,
-                    body,
-                });
+    let bounded = client.bounded_read();
+    bounded
+        .run(Box::pin(async {
+            let mut attempt = 0;
+            loop {
+                let response = bounded.send_conditional(url.clone(), ACCEPT_SIMPLE, etag).await?;
+                let head = simple_head(response)?;
+                match read_capped(Box::pin(head.response.bytes_stream()), MAX_SIMPLE_PAGE_BYTES).await {
+                    Ok(body) => {
+                        return Ok(SimpleResponse {
+                            status: head.status,
+                            source: head.source,
+                            url: head.url,
+                            content_type: head.content_type,
+                            etag: head.etag,
+                            last_modified: head.last_modified,
+                            retry_after: head.retry_after,
+                            last_serial: head.last_serial,
+                            max_age: head.max_age,
+                            body,
+                        });
+                    }
+                    Err(UpstreamError::Http(err)) if should_retry_error(&err) && attempt < MAX_RETRIES => {
+                        bounded.sleep_before_retry(&head.url, attempt, &err).await?;
+                        attempt += 1;
+                    }
+                    Err(err) => return Err(err),
+                }
             }
-            Err(UpstreamError::Http(err)) if should_retry_error(&err) && attempt < MAX_RETRIES => {
-                sleep_before_retry(&head.url, attempt, &err).await;
-                attempt += 1;
-            }
-            Err(err) => return Err(err),
-        }
-    }
+        }))
+        .await
 }
 
 fn header_str(headers: &HeaderMap, name: &HeaderName) -> Option<String> {

@@ -1,5 +1,6 @@
 mod client_tests;
 mod credential_tests;
+mod deadline_tests;
 mod error_tests;
 #[cfg(unix)]
 mod exec_tests;
