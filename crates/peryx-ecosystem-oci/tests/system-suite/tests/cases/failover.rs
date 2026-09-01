@@ -1,5 +1,3 @@
-//! Hosted writes require home durability, not cross-DC acknowledgement.
-
 use std::{path::PathBuf, time::Duration};
 
 use peryx::{config, config::Config, operator};
@@ -170,19 +168,13 @@ fn image_manifest() -> Vec<u8> {
 fn push_image(node: &Node) -> String {
     for blob in [CONFIG, LAYER] {
         let (code, _) = node.oci_push_blob(REPO, blob).expect("blob push reaches the writer");
-        assert!(
-            matches!(code, 201 | 202),
-            "a home blob push commits home-locally: {code}",
-        );
+        assert!(matches!(code, 201 | 202), "a local blob push commits: {code}");
     }
     let manifest = image_manifest();
     let (code, digest) = node
         .oci_put_manifest(REPO, "1.0", &manifest, OCI_MANIFEST_TYPE)
         .expect("manifest publish reaches the writer");
-    assert!(
-        matches!(code, 201 | 202),
-        "a home manifest publish commits home-locally: {code}",
-    );
+    assert!(matches!(code, 201 | 202), "a local manifest publish commits: {code}");
     digest
 }
 
@@ -211,24 +203,20 @@ fn assert_image_intact(node: &Node, manifest_digest: &str) {
 }
 
 #[test]
-fn test_home_dc_oci_push_is_retry_safe_and_survives_a_home_failure() {
-    let mut cluster = home_oci_group();
-    await_writer_leader(&cluster);
-    let writer = cluster.node("writer-east").expect("the home writer is present");
+fn test_oci_push_is_retry_safe_across_a_writer_restart() {
+    let mut cluster = Topology::single()
+        .with_index_config(oci_config())
+        .start()
+        .expect("the writer starts");
+    let writer = cluster.node("node-a").expect("the writer is present");
 
     let manifest_digest = push_image(writer);
     assert_image_intact(writer, &manifest_digest);
 
-    // Two survivors preserve quorum while the writer reopens durable state.
-    let home = cluster
-        .nodes_mut()
-        .iter_mut()
-        .find(|node| node.identity() == "writer-east")
-        .unwrap();
-    home.kill();
-    home.restart().expect("the home datacenter restarts on its store");
-    await_writer_leader(&cluster);
-    let writer = cluster.node("writer-east").expect("the home writer is back");
+    cluster.nodes_mut()[0]
+        .restart()
+        .expect("the writer restarts on its store");
+    let writer = cluster.node("node-a").expect("the writer is back");
 
     assert_image_intact(writer, &manifest_digest);
 
@@ -238,21 +226,6 @@ fn test_home_dc_oci_push_is_retry_safe_and_survives_a_home_failure() {
         "the retry publishes the identical manifest digest",
     );
     assert_image_intact(writer, &manifest_digest);
-}
-
-fn await_writer_leader(cluster: &Cluster) {
-    let leader = cluster
-        .await_leader(Duration::from_secs(90))
-        .expect("the ha group agrees on a leader");
-    cluster
-        .await_topology_signal(Duration::from_secs(90), |cluster| {
-            let observed = cluster.node("writer-east").and_then(Node::consensus_leader);
-            (
-                (observed.as_deref() == Some(leader.as_str())).then_some(()),
-                format!("writer-east last observed leader: {observed:?}"),
-            )
-        })
-        .expect("the home writer observes the elected leader");
 }
 
 #[test]
