@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::DistributedAnalyticsCompleteness;
 use async_trait::async_trait;
@@ -16,9 +17,12 @@ use peryx_driver::users::UserService;
 use peryx_ha::{BlobServices, BlobWriteDurability, CommittedBlob, WriteDurability};
 use peryx_identity::{GrantScope, PasswordPolicy, Role};
 use peryx_storage::meta::MetaStore;
+use rstest::rstest;
+use tokio::sync::watch;
 use tower::ServiceExt as _;
 
 const USER_PASSWORD: &str = "local password";
+const TOPOLOGY_SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
 
 struct Durability;
 
@@ -328,6 +332,10 @@ async fn test_topology_read_only_primary_reports_the_writer_role() {
 }
 
 async fn stream(state: &Arc<AppState>, credential: Option<(&str, &str)>) -> Response {
+    stream_from(&peryx_http::router(state.clone()), credential).await
+}
+
+async fn stream_from(router: &axum::Router, credential: Option<(&str, &str)>) -> Response {
     let mut request = Request::builder().uri("/+availability/topology/stream");
     if let Some((user, password)) = credential {
         request = request.header(
@@ -335,10 +343,21 @@ async fn stream(state: &Arc<AppState>, credential: Option<(&str, &str)>) -> Resp
             format!("Basic {}", STANDARD.encode(format!("{user}:{password}"))),
         );
     }
-    peryx_http::router(state.clone())
+    router
+        .clone()
         .oneshot(request.body(Body::empty()).unwrap())
         .await
         .unwrap()
+}
+
+fn record_topology_samples(state: &mut Arc<AppState>) -> watch::Receiver<usize> {
+    let (samples, receiver) = watch::channel(0_usize);
+    Arc::get_mut(&mut Arc::get_mut(state).unwrap().serving).unwrap().clock = Arc::new(move || {
+        let count = *samples.borrow() + 1;
+        samples.send_replace(count);
+        i64::try_from(count - 1).unwrap()
+    });
+    receiver
 }
 
 struct SseReader {
@@ -438,17 +457,148 @@ async fn test_topology_stream_emits_the_initial_snapshot_as_an_event() {
     );
 }
 
-#[tokio::test]
-async fn test_topology_stream_filters_the_public_view() {
+#[rstest]
+#[case::public(
+    None,
+    &["dc", "local", "node", "role"],
+    &["role"]
+)]
+#[case::operator(
+    Some(("Olivia", USER_PASSWORD)),
+    &["dc", "frontier", "liveness", "local", "node", "role"],
+    &["frontier", "liveness", "role"]
+)]
+#[case::administrator(
+    Some(("Alice", USER_PASSWORD)),
+    &["address", "dc", "frontier", "liveness", "local", "node", "role"],
+    &["frontier", "liveness", "role"]
+)]
+#[tokio::test(start_paused = true)]
+async fn test_topology_stream_projects_the_admission_view(
+    #[case] credential: Option<(&str, &str)>,
+    #[case] expected_node_keys: &[&str],
+    #[case] expected_local_keys: &[&str],
+) {
     let (_dir, state) = app(false, true, NodeRole::Writer).await;
-    let response = stream(&state, None).await;
-
-    let (_, snapshot) = SseReader::new(response).data_event().await;
-    assert!(
-        snapshot["local"].get("liveness").is_none(),
-        "a public stream withholds liveness: {snapshot}"
+    let (_, snapshot) = SseReader::new(stream(&state, credential).await).data_event().await;
+    assert_eq!(
+        node(&snapshot, "writer-a")
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>(),
+        expected_node_keys.iter().copied().collect(),
     );
-    assert!(node(&snapshot, "writer-a").get("frontier").is_none(), "{snapshot}");
+    assert_eq!(
+        snapshot["local"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>(),
+        expected_local_keys.iter().copied().collect(),
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_topology_stream_public_suppresses_hidden_state_changes() {
+    let (dir, state) = app(false, false, NodeRole::Writer).await;
+    let mut reader = SseReader::new(stream(&state, None).await);
+
+    reader.data_event().await;
+    set_blob_health(dir.path(), true);
+    let quiet = reader.message().await;
+    assert!(
+        parse_data_event(&quiet).is_none(),
+        "a public stream suppresses hidden state: {quiet}"
+    );
+    assert!(
+        quiet.contains("heartbeat"),
+        "an idle stream carries a keep-alive comment: {quiet}"
+    );
+}
+
+#[rstest]
+#[case::one(1)]
+#[case::one_hundred(100)]
+#[tokio::test(start_paused = true)]
+async fn test_topology_stream_samples_once_per_interval(#[case] subscriber_count: usize) {
+    let (_dir, mut state) = app(false, true, NodeRole::Writer).await;
+    let mut samples = record_topology_samples(&mut state);
+    let router = peryx_http::router(state);
+    let responses = futures_util::future::join_all((0..subscriber_count).map(|_| stream_from(&router, None))).await;
+    let mut readers = responses.into_iter().map(SseReader::new).collect::<Vec<_>>();
+
+    readers[0].data_event().await;
+    assert_eq!(*samples.borrow(), 1);
+    for expected in 2..=4 {
+        advance_topology_sample(&mut samples).await;
+        assert_eq!(*samples.borrow(), expected);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_topology_stream_new_subscriber_receives_the_latest_sample() {
+    let (_dir, mut state) = app(false, true, NodeRole::Writer).await;
+    let mut samples = record_topology_samples(&mut state);
+    let router = peryx_http::router(state);
+    let mut first = SseReader::new(stream_from(&router, None).await);
+
+    first.data_event().await;
+    advance_topology_sample(&mut samples).await;
+    assert_eq!(*samples.borrow(), 2);
+
+    let (_, latest) = SseReader::new(stream_from(&router, None).await).data_event().await;
+    assert_eq!(latest["captured_at"], 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_topology_stream_slow_subscriber_receives_only_the_latest_sample() {
+    let (dir, mut state) = app(false, false, NodeRole::Writer).await;
+    let mut samples = record_topology_samples(&mut state);
+    let router = peryx_http::router(state);
+    let mut current = SseReader::new(stream_from(&router, None).await);
+    let slow = stream_from(&router, Some(("Olivia", USER_PASSWORD))).await;
+
+    current.data_event().await;
+    for healthy in [true, false, true] {
+        set_blob_health(dir.path(), healthy);
+        advance_topology_sample(&mut samples).await;
+    }
+
+    let (_, latest) = SseReader::new(slow).data_event().await;
+    assert_eq!(latest["local"]["liveness"], "live");
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_topology_stream_disconnect_removes_only_that_subscriber() {
+    let (_dir, mut state) = app(false, true, NodeRole::Writer).await;
+    let mut samples = record_topology_samples(&mut state);
+    let router = peryx_http::router(state);
+    let mut first = SseReader::new(stream_from(&router, None).await);
+    let second = stream_from(&router, None).await;
+
+    first.data_event().await;
+    drop(first);
+    advance_topology_sample(&mut samples).await;
+    assert_eq!(*samples.borrow(), 2);
+    drop(second);
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_topology_stream_last_disconnect_stops_the_sampler() {
+    let (_dir, mut state) = app(false, true, NodeRole::Writer).await;
+    let samples = record_topology_samples(&mut state);
+    let router = peryx_http::router(state);
+    let mut reader = SseReader::new(stream_from(&router, None).await);
+
+    reader.data_event().await;
+    drop(reader);
+    tokio::task::yield_now().await;
+    tokio::time::advance(TOPOLOGY_SAMPLE_INTERVAL * 3).await;
+    tokio::task::yield_now().await;
+    assert_eq!(*samples.borrow(), 1);
 }
 
 #[tokio::test(start_paused = true)]
@@ -478,11 +628,26 @@ async fn test_topology_stream_emits_a_new_event_when_state_changes() {
     assert_eq!(first_id, 1);
     assert_eq!(unhealthy["local"]["liveness"], "unready");
 
-    let blob_root = dir.path().join("blobs");
-    std::fs::remove_file(&blob_root).unwrap();
-    std::fs::create_dir(&blob_root).unwrap();
+    set_blob_health(dir.path(), true);
 
     let (second_id, healthy) = reader.data_event().await;
-    assert_eq!(second_id, 2, "each change advances the event id monotonically");
+    assert_eq!(second_id, 2, "each change increments the event id");
     assert_eq!(healthy["local"]["liveness"], "live");
+}
+
+fn set_blob_health(directory: &std::path::Path, healthy: bool) {
+    let blob_root = directory.join("blobs");
+    if healthy {
+        std::fs::remove_file(&blob_root).unwrap();
+        std::fs::create_dir(&blob_root).unwrap();
+    } else {
+        std::fs::remove_dir(&blob_root).unwrap();
+        std::fs::write(&blob_root, b"not a directory").unwrap();
+    }
+}
+
+async fn advance_topology_sample(samples: &mut watch::Receiver<usize>) {
+    let expected = *samples.borrow() + 1;
+    tokio::time::advance(TOPOLOGY_SAMPLE_INTERVAL).await;
+    samples.wait_for(|samples| *samples >= expected).await.unwrap();
 }

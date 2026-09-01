@@ -1,10 +1,8 @@
-use std::collections::hash_map::DefaultHasher;
 use std::convert::Infallible;
-use std::hash::{Hash as _, Hasher as _};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use axum::extract::State;
+use axum::extract::{Extension, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse as _, Response};
@@ -17,6 +15,7 @@ use peryx_driver::rate_limit::RouteClass;
 use peryx_driver::state::{AppState, ServingState};
 use peryx_driver::{RouteDescriptor, RouteMethod, RoutePosture, RouteRateLimit, RouteSet};
 use peryx_ha::{AvailabilityAudience, AvailabilityAuthorizer as _};
+use tokio::sync::watch;
 
 use peryx_http::response_security::ProtectedCachePolicy;
 
@@ -50,6 +49,7 @@ impl HttpRoutes for DistributedHttpRoutes {
                 read("/+availability/placements/{digest}"),
                 get(crate::placements_http::blob_placements),
             )
+            .with_extension(Arc::new(TopologySampler::default()))
     }
 }
 
@@ -77,48 +77,203 @@ async fn availability_topology(State(state): State<Arc<AppState>>, headers: Head
     response
 }
 
-async fn availability_topology_stream(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+async fn availability_topology_stream(
+    State(state): State<Arc<AppState>>,
+    Extension(sampler): Extension<Arc<TopologySampler>>,
+    headers: HeaderMap,
+) -> Response {
     let view = match availability_audience(state.serving.clone(), &headers).await {
         Ok(audience) => topology_view(audience),
         Err(_) => return AvailabilityRejection::response(),
     };
-    let sse = Sse::new(topology_events(state.serving.clone(), view))
+    let sse = Sse::new(topology_events(sampler.subscribe(state.serving.clone(), view)))
         .keep_alive(KeepAlive::new().interval(TOPOLOGY_HEARTBEAT_INTERVAL).text("heartbeat"));
     let mut response = sse.into_response();
     ProtectedCachePolicy::NoStore.apply(response.headers_mut());
     response
 }
 
-fn topology_events(state: Arc<ServingState>, view: TopologyView) -> impl Stream<Item = Result<Event, Infallible>> {
-    let interval = tokio::time::interval(TOPOLOGY_SAMPLE_INTERVAL);
-    stream::unfold(
-        (state, view, interval, None::<u64>, 0_u64),
-        |(state, view, mut interval, mut last, mut sequence)| async move {
-            let event = loop {
-                interval.tick().await;
-                let local = local_status(&state).await;
-                let snapshot = state.availability_topology().snapshot(view, local, (state.clock)());
-                let version = state_version(&snapshot);
-                if last != Some(version) {
-                    last = Some(version);
-                    sequence += 1;
-                    break Event::default()
-                        .id(sequence.to_string())
-                        .event("topology")
-                        .data(serde_json::to_string(&snapshot).unwrap_or_default());
-                }
-            };
-            Some((Ok(event), (state, view, interval, last, sequence)))
-        },
-    )
+fn topology_events(subscription: TopologySubscription) -> impl Stream<Item = Result<Event, Infallible>> {
+    stream::unfold((subscription, 0_u64), |(mut subscription, mut sequence)| async move {
+        let snapshot = subscription.next_snapshot().await;
+        sequence += 1;
+        let event = Event::default()
+            .id(sequence.to_string())
+            .event("topology")
+            .data(serde_json::to_string(snapshot.as_ref()).unwrap_or_default());
+        Some((Ok(event), (subscription, sequence)))
+    })
 }
 
-fn state_version(snapshot: &TopologySnapshot) -> u64 {
-    let mut probe = snapshot.clone();
-    probe.captured_at = 0;
-    let mut hasher = DefaultHasher::new();
-    serde_json::to_vec(&probe).unwrap_or_default().hash(&mut hasher);
-    hasher.finish()
+#[derive(Default)]
+struct TopologySampler {
+    shared: Mutex<SamplerState>,
+}
+
+impl TopologySampler {
+    fn subscribe(self: &Arc<Self>, state: Arc<ServingState>, view: TopologyView) -> TopologySubscription {
+        let receiver = {
+            let mut shared = self.shared.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            shared.subscribers += 1;
+            if let Some(running) = &shared.running {
+                running.samples.subscribe()
+            } else {
+                let (samples, receiver) = watch::channel(None);
+                let task = tokio::spawn(sample_topology(state, samples.clone()));
+                shared.running = Some(RunningSampler { samples, task });
+                receiver
+            }
+        };
+        TopologySubscription {
+            sampler: self.clone(),
+            view,
+            receiver,
+            initial: true,
+            last_version: None,
+        }
+    }
+}
+
+struct TopologySubscription {
+    sampler: Arc<TopologySampler>,
+    view: TopologyView,
+    receiver: watch::Receiver<Option<TopologySample>>,
+    initial: bool,
+    last_version: Option<u64>,
+}
+
+impl TopologySubscription {
+    async fn next_snapshot(&mut self) -> Arc<TopologySnapshot> {
+        loop {
+            let projection = self.next_projection().await;
+            if self.last_version != Some(projection.version) {
+                self.last_version = Some(projection.version);
+                return projection.snapshot;
+            }
+        }
+    }
+
+    async fn next_projection(&mut self) -> TopologyProjection {
+        if self.initial {
+            self.initial = false;
+            if let Some(projection) = self.current_projection() {
+                return projection;
+            }
+        }
+        self.receiver
+            .changed()
+            .await
+            .expect("a subscription retains its sampler");
+        self.current_projection()
+            .expect("the sampler publishes before notifying subscribers")
+    }
+
+    fn current_projection(&mut self) -> Option<TopologyProjection> {
+        self.receiver
+            .borrow_and_update()
+            .as_ref()
+            .map(|sample| sample.projection(self.view).clone())
+    }
+}
+
+impl Drop for TopologySubscription {
+    fn drop(&mut self) {
+        let task = {
+            let mut shared = self
+                .sampler
+                .shared
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            shared.subscribers -= 1;
+            if shared.subscribers == 0 {
+                Some(shared.running.take().expect("a subscriber has a running sampler").task)
+            } else {
+                None
+            }
+        };
+        if let Some(task) = task {
+            task.abort();
+        }
+    }
+}
+
+#[derive(Default)]
+struct SamplerState {
+    subscribers: usize,
+    running: Option<RunningSampler>,
+}
+
+struct RunningSampler {
+    samples: watch::Sender<Option<TopologySample>>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+struct TopologySample {
+    projections: [TopologyProjection; 3],
+}
+
+impl TopologySample {
+    fn projection(&self, view: TopologyView) -> &TopologyProjection {
+        &self.projections[match view {
+            TopologyView::Public => 0,
+            TopologyView::Operator => 1,
+            TopologyView::Administrator => 2,
+        }]
+    }
+}
+
+#[derive(Clone)]
+struct TopologyProjection {
+    snapshot: Arc<TopologySnapshot>,
+    version: u64,
+}
+
+async fn sample_topology(state: Arc<ServingState>, samples: watch::Sender<Option<TopologySample>>) {
+    let mut interval = tokio::time::interval(TOPOLOGY_SAMPLE_INTERVAL);
+    loop {
+        interval.tick().await;
+        let local = local_status(&state).await;
+        let captured_at = (state.clock)();
+        let topology = state.availability_topology();
+        samples.send_replace(Some(TopologySample {
+            projections: {
+                let previous = samples.borrow();
+                [
+                    TopologyView::Public,
+                    TopologyView::Operator,
+                    TopologyView::Administrator,
+                ]
+                .map(|view| {
+                    TopologyProjection::new(
+                        topology.snapshot(view, local, captured_at),
+                        previous.as_ref().map(|sample| sample.projection(view)),
+                    )
+                })
+            },
+        }));
+    }
+}
+
+impl TopologyProjection {
+    fn new(snapshot: TopologySnapshot, previous: Option<&Self>) -> Self {
+        let version = match previous {
+            Some(previous) if same_topology_state(&previous.snapshot, &snapshot) => previous.version,
+            Some(previous) => previous.version + 1,
+            None => 1,
+        };
+        Self {
+            snapshot: Arc::new(snapshot),
+            version,
+        }
+    }
+}
+
+fn same_topology_state(left: &TopologySnapshot, right: &TopologySnapshot) -> bool {
+    left.mode == right.mode
+        && left.group == right.group
+        && left.node_count == right.node_count
+        && left.local == right.local
+        && left.nodes == right.nodes
 }
 
 const fn topology_view(audience: AvailabilityAudience) -> TopologyView {
