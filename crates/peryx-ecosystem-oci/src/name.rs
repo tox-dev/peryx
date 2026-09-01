@@ -68,10 +68,10 @@ pub fn classify(path: &str) -> Option<OciRoute> {
     if segments.iter().any(|segment| segment.is_empty()) {
         return None;
     }
-    let len = segments.len();
-    if len < 2 {
+    let [.., _, _] = segments.as_slice() else {
         return None;
-    }
+    };
+    let len = segments.len();
     if len >= 3 && segments[len - 3] == "manifests" && segments[len - 1] == "restore" {
         return Some(OciRoute::ManifestRestore {
             name: join_name(&segments[..len - 3])?,

@@ -822,11 +822,16 @@ async fn test_unsupported_method_on_a_route_includes_allow(#[case] path: &str, #
     assert!(body_has_code(&body, "UNSUPPORTED"), "{body:?}");
 }
 
+#[rstest]
+#[case::unknown_verb("/v2/hub/app/frobnicate/x")]
+#[case::wrong_restore_suffix("/v2/hub/app/manifests/latest/not-restore")]
+#[case::wrong_contents_suffix("/v2/hub/app/blobs/sha256:abc/not-contents")]
+#[case::wrong_tags_suffix("/v2/hub/app/tags/not-list")]
 #[tokio::test]
-async fn test_unknown_route_reports_name_unknown() {
+async fn test_unknown_route_reports_name_unknown(#[case] path: &str) {
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = proxy(&dir, "http://127.0.0.1:1/", false);
-    let (status, headers, body) = send(&app, Method::GET, "/v2/hub/app/frobnicate/x").await;
+    let (status, headers, body) = send(&app, Method::GET, path).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_registry_version(&headers);
     assert!(body_has_code(&body, "NAME_UNKNOWN"), "{body:?}");
