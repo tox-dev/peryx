@@ -367,6 +367,8 @@ Process and availability metric families can appear beside the PyPI families:
   `peryx_availability_worker_panics_total`.
 - Datacenter durability: `peryx_dc_ack_durable_total`, `peryx_dc_ack_pending_total`, `peryx_dc_ack_unknown_total`,
   `peryx_dc_ack_quorum_acknowledged`, `peryx_dc_ack_quorum_required`, and `peryx_dc_ack_quorum_remaining`.
+- Home placement: `peryx_home_placement_record_failures_total`, which counts publications whose local placement record
+  did not land, so the blob is committed with no verified placement behind it.
 
 The label vocabulary uses bounded request groups, registered ecosystem IDs, and index roles. Repository names, package
 names, user or actor identifiers, request paths, raw errors, credentials, tokens, and URLs never become metric names or

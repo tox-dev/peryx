@@ -228,6 +228,36 @@ fn test_record_local_placement_recovers_a_failed_copy() {
 }
 
 #[test]
+fn test_record_local_placement_restores_a_revoked_copy() {
+    let (_directory, store) = store();
+    let backend = BackendId::new("filesystem").unwrap();
+    let data_center = DataCenterId::new("home").unwrap();
+    let artifact = digest(7);
+    let key = BlobPlacementKey {
+        digest: artifact.clone(),
+        backend: backend.clone(),
+        data_center: data_center.clone(),
+        location: BackendLocation::for_digest(&artifact),
+    };
+    record_local_placement(&store, &backend, &data_center, &artifact, 2_048, 3, 10).unwrap();
+    apply_blob_placement(&store, &key, &BlobPlacementTransition::Revoke, 4, 20).unwrap();
+
+    let outcome = record_local_placement(&store, &backend, &data_center, &artifact, 2_048, 4, 30).unwrap();
+
+    assert_eq!(
+        outcome,
+        BlobPlacementOutcome::Applied(peryx_ha::BlobPlacementRecord {
+            key,
+            state: BlobPlacementState::Verified { size: 2_048 },
+            fence: 4,
+            transfer_attempt: 2,
+            generation: 5,
+            updated_at_unix: 30,
+        })
+    );
+}
+
+#[test]
 fn test_record_local_placement_rejects_a_stale_fence() {
     let (_directory, store) = store();
     let backend = BackendId::new("filesystem").unwrap();

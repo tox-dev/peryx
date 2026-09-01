@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -498,6 +499,91 @@ async fn test_restart_recovers_pending_after_the_ownership_term_advances() {
                 generation: 3,
                 updated_at_unix: 20,
             }),
+        )
+    );
+}
+
+#[tokio::test]
+async fn test_copy_pass_restores_a_policy_retired_local_placement() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let source_blobs = BlobStorage::filesystem(source_dir.path().join("blobs"));
+    source_blobs.put_bytes(CONTENT).await.unwrap();
+    let server = TestServer::start(
+        crate::primary_router(
+            "primary",
+            "token",
+            crate::support::distributed_meta(source_dir.path().join("peryx.redb")),
+            source_blobs,
+        )
+        .unwrap(),
+    )
+    .await;
+    let (_meta_dir, meta) = meta();
+    let (_store_dir, store, backend) = filesystem();
+    let (blob, artifact) = digests(CONTENT);
+    store.write_verified(CONTENT, &blob).unwrap();
+    let local = key(&artifact, &backend, "home", artifact.sha256());
+    // `south` stays outside the target set, so its revocation is the control the refill must not touch.
+    let south = key(&artifact, &backend, "south", "south/loc");
+    seed_verified(&meta, &local, CONTENT.len() as u64);
+    seed_verified(&meta, &south, CONTENT.len() as u64);
+    seed_verified(
+        &meta,
+        &key(&artifact, &backend, "east", "peer/loc"),
+        CONTENT.len() as u64,
+    );
+    let clock: Clock = Arc::new(|| 20);
+    let retired = crate::FilesystemPlacementReconciler::new(dc("home"), store.clone(), BTreeSet::from([dc("east")]))
+        .unwrap()
+        .reconcile_pass(&meta, &clock, 5, &|| false, NonZeroUsize::MIN)
+        .unwrap();
+    let revoked = meta.blob_placement(&local).unwrap().unwrap();
+    let copier = CrossDcBlobCopier::http(
+        dc("home"),
+        HashMap::from([("east".to_owned(), server.url.clone())]),
+        "token",
+        store.clone(),
+        backend,
+    )
+    .unwrap()
+    .unwrap();
+
+    let refilled = copier
+        .copy_pass(&meta, &clock, 9, &|| false, NonZeroUsize::MIN)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        (
+            retired,
+            revoked.state,
+            refilled,
+            meta.blob_placement(&local).unwrap(),
+            meta.blob_placement(&south).unwrap().map(|record| record.state),
+            store.read(&blob).unwrap(),
+        ),
+        (
+            AvailabilityTaskReport {
+                processed: 2,
+                changed: 2,
+            },
+            BlobPlacementState::Revoked,
+            AvailabilityTaskReport {
+                processed: 1,
+                changed: 1,
+            },
+            Some(peryx_ha::BlobPlacementRecord {
+                key: local,
+                state: BlobPlacementState::Verified {
+                    size: CONTENT.len() as u64,
+                },
+                fence: 9,
+                transfer_attempt: 2,
+                generation: 5,
+                updated_at_unix: 20,
+            }),
+            Some(BlobPlacementState::Revoked),
+            CONTENT.to_vec(),
         )
     );
 }

@@ -1,6 +1,6 @@
 //! The pass demotes corrupt local copies and revokes verified copies outside the target data centers. It
-//! skips repairs for revoked or reclaiming digests to avoid resurrecting deleted content. The ledger is
-//! node-wide, so writes use the cluster ownership term; term `0` disables reconciliation.
+//! skips integrity checks for digests under revocation or reclamation. The ledger is node-wide, so writes
+//! use the cluster ownership term; term `0` disables reconciliation.
 use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
 
@@ -120,7 +120,7 @@ impl FilesystemPlacementReconciler {
             if cancelled() {
                 break;
             }
-            // Retirement removes placements, so withdrawn digests need no resurrection guard.
+            // Revoke cannot make a withdrawn digest serveable, so retirement needs no withdrawal lookup.
             let page = meta
                 .scan_blob_placement_groups(cursor.as_deref(), batch)
                 .map_err(|error| task_error("placement_reconcile_scan", error))?;
@@ -168,8 +168,8 @@ fn task_error(code: &'static str, error: impl std::fmt::Display) -> Availability
     AvailabilityTaskError::new(code, error.to_string())
 }
 
-/// Repairs must not resurrect digests under revocation or reclamation. Retirement needs no guard because
-/// it removes placements.
+/// Integrity checks leave digests under revocation or reclamation alone. Retirement applies only
+/// `Revoke`, so it cannot make a digest serveable.
 ///
 /// # Errors
 /// Returns [`MetaError`] when a revocation or reclamation lookup fails.

@@ -3,6 +3,7 @@ use std::str::FromStr as _;
 
 use peryx_ha::{BackendId, BackendLocation, BlobPlacementKey, BlobPlacementRecord, BlobPlacementState, DataCenterId};
 use peryx_identity::ArtifactDigest;
+use rstest::rstest;
 
 use super::{copy_backlog_entry, plan_cross_dc_copy};
 
@@ -85,11 +86,7 @@ fn test_backlog_breaks_generation_ties_by_ledger_order() {
 #[test]
 fn test_backlog_skips_settled_local_placements() {
     let local = DataCenterId::new("west").unwrap();
-    for state in [
-        BlobPlacementState::Pending,
-        BlobPlacementState::Verified { size: 10 },
-        BlobPlacementState::Revoked,
-    ] {
+    for state in [BlobPlacementState::Pending, BlobPlacementState::Verified { size: 10 }] {
         assert!(
             copy_backlog_entry(
                 &[
@@ -104,26 +101,52 @@ fn test_backlog_skips_settled_local_placements() {
     }
 }
 
-#[test]
-fn test_backlog_retries_failed_local_placements() {
+#[rstest]
+#[case::failed(BlobPlacementState::Failed {
+    class: peryx_ha::BlobPlacementFailure::SourceUnavailable,
+})]
+#[case::revoked(BlobPlacementState::Revoked)]
+fn test_backlog_retries_unsettled_local_placements(#[case] state: BlobPlacementState) {
     let entry = copy_backlog_entry(
         &[
             record(1, "east", "east/01", 1, BlobPlacementState::Verified { size: 10 }),
-            record(
-                1,
-                "west",
-                "west/01",
-                1,
-                BlobPlacementState::Failed {
-                    class: peryx_ha::BlobPlacementFailure::SourceUnavailable,
-                },
-            ),
+            record(1, "west", "west/01", 1, state),
         ],
         &DataCenterId::new("west").unwrap(),
         NonZeroU64::new(1).unwrap(),
     );
 
     assert!(entry.is_some());
+}
+
+#[test]
+fn test_backlog_leaves_a_revoked_placement_another_local_copy_replaces() {
+    assert!(
+        copy_backlog_entry(
+            &[
+                record(1, "east", "east/01", 1, BlobPlacementState::Verified { size: 10 }),
+                record(1, "west", "west/01", 1, BlobPlacementState::Revoked),
+                record(1, "west", "west/02", 2, BlobPlacementState::Verified { size: 10 }),
+            ],
+            &DataCenterId::new("west").unwrap(),
+            NonZeroU64::new(1).unwrap(),
+        )
+        .is_none()
+    );
+}
+
+#[rstest]
+#[case::pending(BlobPlacementState::Pending)]
+#[case::revoked(BlobPlacementState::Revoked)]
+fn test_backlog_never_sources_from_an_unverified_remote_placement(#[case] state: BlobPlacementState) {
+    assert!(
+        copy_backlog_entry(
+            &[record(1, "east", "east/01", 1, state)],
+            &DataCenterId::new("west").unwrap(),
+            NonZeroU64::new(1).unwrap(),
+        )
+        .is_none()
+    );
 }
 
 #[test]
@@ -141,16 +164,6 @@ fn test_backlog_retries_pending_after_an_ownership_transition() {
 }
 
 #[test]
-fn test_backlog_requires_records_and_a_verified_source() {
-    let local = DataCenterId::new("west").unwrap();
-
-    assert!(copy_backlog_entry(&[], &local, NonZeroU64::new(1).unwrap()).is_none());
-    assert!(
-        copy_backlog_entry(
-            &[record(1, "east", "east/01", 1, BlobPlacementState::Pending)],
-            &local,
-            NonZeroU64::new(1).unwrap(),
-        )
-        .is_none()
-    );
+fn test_backlog_requires_records() {
+    assert!(copy_backlog_entry(&[], &DataCenterId::new("west").unwrap(), NonZeroU64::new(1).unwrap()).is_none());
 }

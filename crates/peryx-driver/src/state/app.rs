@@ -1,6 +1,7 @@
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
-use std::sync::atomic::AtomicU64;
+use std::fmt::Write as _;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -266,6 +267,7 @@ pub(super) struct DistributedAvailability {
     pub operation_observer: Option<Arc<dyn peryx_ha::OperationObserver>>,
     pub applied_frontier: peryx_ha::AppliedFrontier,
     pub capabilities: peryx_ha::AvailabilityCapabilities,
+    home_placement_metrics: Arc<HomePlacementMetrics>,
 }
 
 impl DistributedAvailability {
@@ -287,7 +289,12 @@ impl DistributedAvailability {
             operation_observer,
             applied_frontier: peryx_ha::AppliedFrontier::default(),
             capabilities,
+            home_placement_metrics: Arc::new(HomePlacementMetrics::default()),
         }
+    }
+
+    pub(super) fn home_placement_metrics(&self) -> Arc<dyn PrometheusSource> {
+        self.home_placement_metrics.clone()
     }
 }
 
@@ -336,10 +343,12 @@ impl DistributedAvailability {
 
     fn record_home_placement(&self, digest_hex: &str, size: u64, fence: u64) {
         let Some(recorder) = &self.capabilities.home_placement else {
+            self.home_placement_metrics.failure();
             tracing::warn!(digest = digest_hex, "home placement recorder is unavailable");
             return;
         };
         if let Err(error) = recorder.record(digest_hex, size, fence) {
+            self.home_placement_metrics.failure();
             tracing::warn!(
                 error,
                 digest = digest_hex,
@@ -366,6 +375,31 @@ impl DistributedAvailability {
 
     fn publish_applied_frontier(&self, serial: u64) {
         self.applied_frontier.publish(serial);
+    }
+}
+
+#[derive(Default)]
+struct HomePlacementMetrics {
+    failures: AtomicU64,
+}
+
+impl HomePlacementMetrics {
+    fn failure(&self) {
+        self.failures.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+impl PrometheusSource for HomePlacementMetrics {
+    fn write_metrics(&self, body: &mut String) {
+        body.push_str(
+            "# HELP peryx_home_placement_record_failures_total Home placement record failures.\n\
+             # TYPE peryx_home_placement_record_failures_total counter\n",
+        );
+        let _ = writeln!(
+            body,
+            "peryx_home_placement_record_failures_total {}",
+            self.failures.load(Ordering::Relaxed)
+        );
     }
 }
 

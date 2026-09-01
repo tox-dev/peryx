@@ -3,5 +3,6 @@ flowchart LR
   failed -->|"copy backlog re-copies from a peer"| pending["Pending (in flight)"]
   pending -->|"peer bytes verified"| verified
   verified -->|"out of policy"| revoked["Revoked (retired)"]
+  revoked -->|"back in policy: copy backlog restages"| pending
   class verified,pending good
   class failed,revoked warn

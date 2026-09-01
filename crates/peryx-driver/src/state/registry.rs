@@ -426,7 +426,7 @@ impl AppState {
         &mut self,
         runtime: peryx_ha::AvailabilityStateInstall,
     ) -> Result<(), String> {
-        self.serving_mut()?.availability.distributed = Some(Box::new(super::app::DistributedAvailability::new(
+        let availability = Box::new(super::app::DistributedAvailability::new(
             runtime.role,
             runtime.topology,
             runtime.blobs,
@@ -434,7 +434,10 @@ impl AppState {
             runtime.capabilities,
             runtime.authority_drainer,
             runtime.operations,
-        )));
+        ));
+        let metrics = availability.home_placement_metrics();
+        self.serving_mut()?.availability.distributed = Some(availability);
+        self.register_prometheus(metrics);
         Ok(())
     }
 

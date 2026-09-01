@@ -425,7 +425,7 @@ fn next_blob_placement<'a>(
 
     match (prior, transition) {
         (None, Transition::Stage) => Ok(Applied(State::Pending)),
-        (Some(record), Transition::Stage) if matches!(record.state, State::Failed { .. }) => {
+        (Some(record), Transition::Stage) if matches!(record.state, State::Failed { .. } | State::Revoked) => {
             Ok(Applied(State::Pending))
         }
         (Some(record), Transition::Stage) if matches!(record.state, State::Pending) && fence > record.fence => {

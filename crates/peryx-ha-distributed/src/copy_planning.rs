@@ -40,9 +40,7 @@ pub fn copy_backlog_entry(
                 generation: record.generation,
                 size,
             }),
-            BlobPlacementState::Verified { .. } | BlobPlacementState::Revoked if is_local => {
-                local_settled = true;
-            }
+            BlobPlacementState::Verified { .. } if is_local => local_settled = true,
             BlobPlacementState::Pending if is_local && record.fence >= fence.get() => local_settled = true,
             _ => {}
         }

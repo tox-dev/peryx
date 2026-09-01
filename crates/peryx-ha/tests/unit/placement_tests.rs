@@ -141,15 +141,13 @@ fn test_verify_projects_digest_evidence(#[case] observed: ArtifactDigest, #[case
     assert_eq!(outcome.record().generation, 2);
 }
 
-#[test]
-fn test_failed_placement_can_be_restaged() {
-    let prior = record(
-        BlobPlacementState::Failed {
-            class: BlobPlacementFailure::SourceUnavailable,
-        },
-        3,
-        2,
-    );
+#[rstest]
+#[case::failed(BlobPlacementState::Failed {
+    class: BlobPlacementFailure::SourceUnavailable,
+})]
+#[case::revoked(BlobPlacementState::Revoked)]
+fn test_failed_or_revoked_placement_can_be_restaged(#[case] state: BlobPlacementState) {
+    let prior = record(state, 3, 2);
 
     assert_eq!(
         decide_blob_placement(&key(), Some(&prior), &BlobPlacementTransition::Stage, 3, 30)
@@ -163,6 +161,16 @@ fn test_failed_placement_can_be_restaged() {
             generation: 3,
             updated_at_unix: 30,
         }
+    );
+}
+
+#[test]
+fn test_revoked_placement_rejects_a_stale_stage() {
+    let prior = record(BlobPlacementState::Revoked, 3, 2);
+
+    assert_eq!(
+        decide_blob_placement(&key(), Some(&prior), &BlobPlacementTransition::Stage, 2, 30),
+        Err(BlobPlacementDecisionError::StaleFence { current: 3, applied: 2 })
     );
 }
 
@@ -335,7 +343,16 @@ fn test_revoke_withdraws_or_preserves_a_revoked_record(#[case] state: BlobPlacem
     BlobPlacementState::Verified { size: 1 },
     BlobPlacementTransition::Verify { attempt: 1, observed: digest(1), size: 1 }
 )]
-#[case::stage_revoked(BlobPlacementState::Revoked, BlobPlacementTransition::Stage)]
+#[case::checkpoint_revoked(BlobPlacementState::Revoked, BlobPlacementTransition::Checkpoint { attempt: 1 })]
+#[case::verify_revoked(
+    BlobPlacementState::Revoked,
+    BlobPlacementTransition::Verify { attempt: 1, observed: digest(1), size: 1 }
+)]
+#[case::fail_revoked(
+    BlobPlacementState::Revoked,
+    BlobPlacementTransition::Fail { attempt: 1, class: BlobPlacementFailure::SourceUnavailable }
+)]
+#[case::invalidate_revoked(BlobPlacementState::Revoked, BlobPlacementTransition::Invalidate)]
 fn test_illegal_transitions_report_the_state_and_step(
     #[case] state: BlobPlacementState,
     #[case] transition: BlobPlacementTransition,

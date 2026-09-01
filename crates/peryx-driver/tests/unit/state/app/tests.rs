@@ -206,7 +206,7 @@ fn test_record_home_placement_delegates_to_the_installed_capability() {
 }
 
 #[test]
-fn test_record_home_placement_swallows_capability_failures() {
+fn test_record_home_placement_exposes_capability_failures_in_metrics() {
     let capability = Arc::new(HomePlacementCapability {
         observed: Mutex::new(None),
         error: Some("stale fence".to_owned()),
@@ -220,10 +220,12 @@ fn test_record_home_placement_swallows_capability_failures() {
     );
 
     state.serving.record_home_placement(DIGEST_HEX, 2_048, 2);
+    let mut metrics = String::new();
+    state.write_process_metrics(&mut metrics);
 
     assert_eq!(
-        *capability.observed.lock().unwrap(),
-        Some((DIGEST_HEX.to_owned(), 2_048, 2))
+        (capability.observed.lock().unwrap().clone(), metrics),
+        (Some((DIGEST_HEX.to_owned(), 2_048, 2)), home_placement_metrics(1))
     );
 }
 
@@ -235,8 +237,16 @@ fn test_record_home_placement_reports_a_missing_capability() {
     let (_dir, state) = state_with(home_topology("home"));
 
     state.serving.record_home_placement(DIGEST_HEX, 2_048, 2);
+    let mut metrics = String::new();
+    state.write_process_metrics(&mut metrics);
 
-    assert_eq!(*capture.0.lock().unwrap(), ["home placement recorder is unavailable"]);
+    assert_eq!(
+        (capture.0.lock().unwrap().clone(), metrics),
+        (
+            vec!["home placement recorder is unavailable".to_owned()],
+            home_placement_metrics(1),
+        )
+    );
 }
 
 struct Metrics;
@@ -338,7 +348,15 @@ fn test_process_metrics_render_registered_sources() {
 
     state.write_process_metrics(&mut body);
 
-    assert_eq!(body, "metric 1\n");
+    assert_eq!(body, format!("{}metric 1\n", home_placement_metrics(0)));
+}
+
+fn home_placement_metrics(failures: u64) -> String {
+    format!(
+        "# HELP peryx_home_placement_record_failures_total Home placement record failures.\n\
+         # TYPE peryx_home_placement_record_failures_total counter\n\
+         peryx_home_placement_record_failures_total {failures}\n"
+    )
 }
 
 #[tokio::test]

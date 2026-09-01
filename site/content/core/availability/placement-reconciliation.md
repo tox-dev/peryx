@@ -26,7 +26,9 @@ single pass reads the whole ledger:
 - **Policy.** It classifies each digest's placements against the target datacenters and retires verified copies outside
   policy, such as a datacenter removed from membership, by revoking them from serving. A target datacenter that lacks a
   copy fills it through its own copy backlog, so reconciliation schedules removals to converge and leaves the copies to
-  the copier.
+  the copier. The ledger is fleet-wide, so a roster edit on one node retires another datacenter's copies; a revocation
+  is therefore reversible. Once the datacenter is back in policy its revoked record reads as a datacenter that owes the
+  digest, and the copy backlog stages a fresh copy over it under a fence at least as high as the one that revoked it.
 
 ## Repair states
 
