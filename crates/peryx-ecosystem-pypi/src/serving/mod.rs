@@ -16,6 +16,7 @@ use peryx_core::Ecosystem;
 use peryx_core::Role;
 use peryx_core::path::{self, PathSafetyError};
 use peryx_driver::AppState;
+use peryx_driver::client_address;
 use peryx_driver::not_found;
 use peryx_driver::rate_limit::RouteClass;
 use peryx_driver::serving::{
@@ -26,6 +27,7 @@ use peryx_driver::serving::{
 };
 use peryx_driver::state::{SEARCH_VIEW, ServingState, ViewBlock};
 use peryx_events::metrics::MetricFamily;
+use peryx_events::security::RequestContext;
 use peryx_identity::{
     Action, Denial, Grant, Identity, ResourceMatch, VerifiedToken, authorize_grants, parse_basic, strip_auth_scheme,
 };
@@ -299,20 +301,30 @@ impl IndexedProtocolDriver for PypiServing {
 
     async fn post(&self, state: Arc<ServingState>, path: String, request: Request) -> Response {
         let headers = request.headers().clone();
+        let request_context = RequestContext::new(&headers, client_address::resolved(request.extensions()));
         let multipart = match Multipart::from_request(request, &()).await {
             Ok(multipart) => multipart,
             Err(rejection) => return rejection.into_response(),
         };
-        pypi_dispatch_post(state, path, headers, multipart).boxed().await
+        pypi_dispatch_post(state, path, request_context, multipart)
+            .boxed()
+            .await
     }
 
     async fn put(&self, state: Arc<ServingState>, request: Request) -> Response {
         let (parts, _) = request.into_parts();
-        pypi_dispatch_put(state, parts.uri, parts.headers).boxed().await
+        let client_ip = client_address::resolved(&parts.extensions);
+        pypi_dispatch_put(state, parts.uri, RequestContext::new(&parts.headers, client_ip))
+            .boxed()
+            .await
     }
 
-    async fn delete(&self, state: Arc<ServingState>, uri: Uri, headers: HeaderMap) -> Response {
-        pypi_dispatch_delete(state, uri, headers).boxed().await
+    async fn delete(&self, state: Arc<ServingState>, request: Request) -> Response {
+        let (parts, _) = request.into_parts();
+        let client_ip = client_address::resolved(&parts.extensions);
+        pypi_dispatch_delete(state, parts.uri, RequestContext::new(&parts.headers, client_ip))
+            .boxed()
+            .await
     }
 }
 
@@ -715,7 +727,7 @@ fn authorize(
     identity: &UploadIdentity,
     project: Option<&str>,
     action: Action,
-    headers: &HeaderMap,
+    request: RequestContext<'_>,
 ) -> HttpResult<()> {
     if !matches!(hosted.kind, IndexKind::Hosted { .. }) {
         return Err(not_found().into());
@@ -735,7 +747,7 @@ fn authorize(
     let Err(denial) = denial else {
         if project.is_some() {
             security_token_event(
-                headers,
+                request,
                 actor.as_deref(),
                 identity.bearer.as_ref().map(|token| token.id.as_str()),
                 &hosted.name,
@@ -746,7 +758,7 @@ fn authorize(
         return Ok(());
     };
     security_token_event(
-        headers,
+        request,
         actor.as_deref(),
         identity.bearer.as_ref().map(|token| token.id.as_str()),
         &hosted.name,
@@ -805,7 +817,7 @@ fn request_id(headers: &HeaderMap) -> Option<String> {
 }
 
 fn security_token_event(
-    headers: &HeaderMap,
+    request: RequestContext<'_>,
     actor: Option<&str>,
     token_id: Option<&str>,
     route: &str,
@@ -815,7 +827,7 @@ fn security_token_event(
     let mut event = peryx_events::security::Event::new("token_use", result)
         .actor(actor)
         .index(route)
-        .request(headers);
+        .request(request);
     if let Some(token_id) = token_id {
         event = event.token_id(token_id);
     }

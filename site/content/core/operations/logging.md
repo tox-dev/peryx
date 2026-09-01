@@ -43,9 +43,14 @@ peryx serve --log-format json --log-sink file --log-file /var/log/peryx/events.l
 ```
 
 Each repository-action record sets `security_event=true` and `event=index_action`. Shared fields include `action`,
-`result`, `actor`, `index`, `request_id`, and `user_agent`. Ecosystem owners may add subject identifiers. Missing string
-and numeric values use empty strings and zero. Records exclude credentials, bearer tokens, Basic passwords, and URL
-secrets.
+`result`, `actor`, `index`, `request_id`, `user_agent`, and `client_ip`. Ecosystem owners may add subject identifiers.
+Missing string and numeric values use empty strings and zero. Records exclude credentials, bearer tokens, Basic
+passwords, and URL secrets.
+
+`client_ip` records the request's transport peer. When the peer matches a `rate_limit.trusted_proxies` network, the
+field uses the client address from `X-Forwarded-For` or `X-Real-IP`. The rate limiter and security logger share this
+trusted-proxy decision. An untrusted peer cannot override the field with a forwarding header. Background actions and
+accepted requests without an attributable address use an empty string.
 
 Server-role checks use `event=authorization`. Allowed records include `user`, `scope`, `resource_kind`, `resource`,
 `result`, and `reason`. Denied records omit the resource fields and use `reason=no_grant` or

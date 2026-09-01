@@ -17,6 +17,7 @@ use tower::{ServiceBuilder, util::MapRequestLayer};
 use tower_http::trace::{DefaultOnResponse, TraceLayer};
 
 use crate::handlers;
+use peryx_driver::client_address;
 use peryx_driver::http_services::HttpDomainServices;
 use peryx_driver::rate_limit;
 use peryx_driver::state::AppState;
@@ -99,9 +100,14 @@ pub fn router_with_ui(state: Arc<AppState>, services: HttpDomainServices, ui: Mo
     } else {
         router
     };
+    let addresses = Arc::clone(&serving);
     let router = router.layer(
         ServiceBuilder::new()
             .layer(MapRequestLayer::new(canonicalize_request_path))
+            // Rate limiting and security logs must use one trusted-proxy decision.
+            .layer(MapRequestLayer::new(move |request: Request| {
+                client_address::attach(&addresses.rate_limits, request)
+            }))
             .layer(MapRequestLayer::new(move |request: Request| {
                 serving.requests.fetch_add(1, Ordering::Relaxed);
                 request

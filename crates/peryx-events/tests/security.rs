@@ -3,7 +3,7 @@ use std::sync::Mutex;
 
 use http::{HeaderMap, HeaderValue, header};
 use peryx_events::security::{
-    AuthorizationDenial, Event, RoleGrantChange, actor, authorization_denied, role_grant_change,
+    AuthorizationDenial, Event, RequestContext, RoleGrantChange, actor, authorization_denied, role_grant_change,
 };
 use peryx_identity::{Identity, Principal};
 use rstest::rstest;
@@ -156,7 +156,7 @@ fn test_index_action_event_records_all_bounded_context() {
             .count(2)
             .changed(true)
             .reason(Some("accepted"))
-            .request(&headers)
+            .request(RequestContext::new(&headers, Some("203.0.113.9".parse().unwrap())))
             .emit();
     });
 
@@ -186,6 +186,7 @@ fn test_index_action_event_records_all_bounded_context() {
             "reason": "accepted",
             "request_id": "request-1",
             "user_agent": "client/1",
+            "client_ip": "203.0.113.9",
         })
     );
 }
@@ -202,7 +203,9 @@ fn test_index_action_event_discards_non_text_headers() {
     headers.insert("x-request-id", HeaderValue::from_bytes(&[0xff]).unwrap());
 
     tracing::subscriber::with_default(subscriber, || {
-        Event::new("delete", "denied").request(&headers).emit();
+        Event::new("delete", "denied")
+            .request(RequestContext::new(&headers, None))
+            .emit();
     });
 
     capture.rewind().unwrap();
@@ -231,6 +234,7 @@ fn test_index_action_event_discards_non_text_headers() {
             "reason": "",
             "request_id": "",
             "user_agent": "",
+            "client_ip": "",
         })
     );
 }

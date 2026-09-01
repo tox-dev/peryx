@@ -129,3 +129,61 @@ async fn test_security_logs_delete_policy_denial() {
         Some("index is not volatile; delete is disabled")
     );
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_security_logs_the_client_a_trusted_proxy_forwards_for() {
+    let harness = proxied_harness().await;
+    upload_peryxpkg(&harness.state, "/hosted/", &fixture_wheel()).await;
+    let logs = LogCapture::default();
+    let guard = logs.install();
+
+    assert_eq!(
+        request_from_peer(
+            &harness.state,
+            "PUT",
+            "/hosted/peryxpkg/1.0/yank",
+            Some(&upload_auth()),
+            "10.0.0.1",
+            "203.0.113.9",
+        )
+        .await,
+        StatusCode::OK
+    );
+
+    drop(guard);
+    let events = logs.security_events();
+    let yank = events
+        .iter()
+        .find(|event| field(event, "action") == Some("yank") && field(event, "result") == Some("success"))
+        .unwrap();
+    assert_eq!(field(yank, "client_ip"), Some("203.0.113.9"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_security_logs_the_peer_when_an_untrusted_hop_claims_to_forward() {
+    let harness = harness_with(true, false).await;
+    upload_peryxpkg(&harness.state, "/hosted/", &fixture_wheel()).await;
+    let logs = LogCapture::default();
+    let guard = logs.install();
+
+    assert_eq!(
+        request_from_peer(
+            &harness.state,
+            "DELETE",
+            "/hosted/peryxpkg/",
+            Some(&upload_auth()),
+            "198.51.100.7",
+            "203.0.113.9",
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+
+    drop(guard);
+    let events = logs.security_events();
+    let delete = events
+        .iter()
+        .find(|event| field(event, "action") == Some("delete") && field(event, "result") == Some("denied"))
+        .unwrap();
+    assert_eq!(field(delete, "client_ip"), Some("198.51.100.7"));
+}

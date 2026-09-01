@@ -79,7 +79,7 @@ async fn protocol_driver_exposes_only_indexed_operations() {
     );
     assert_eq!(
         driver
-            .delete(state.serving, Uri::from_static("/artifact"), HeaderMap::new())
+            .delete(state.serving, axum::extract::Request::new(Body::empty()))
             .await
             .status(),
         204
@@ -109,7 +109,7 @@ impl IndexedProtocolDriver for Driver {
     async fn put(&self, _: Arc<ServingState>, _: Request) -> axum::response::Response {
         axum::http::StatusCode::NO_CONTENT.into_response()
     }
-    async fn delete(&self, _: Arc<ServingState>, _: Uri, _: HeaderMap) -> axum::response::Response {
+    async fn delete(&self, _: Arc<ServingState>, _: axum::extract::Request) -> axum::response::Response {
         axum::http::StatusCode::NO_CONTENT.into_response()
     }
 }

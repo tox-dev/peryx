@@ -1,6 +1,7 @@
 pub use std::collections::BTreeMap;
 pub use std::fmt::Write as _;
 pub use std::io::Write as _;
+pub use std::net::SocketAddr;
 pub use std::path::Path;
 pub use std::sync::Arc;
 pub use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
@@ -9,6 +10,7 @@ pub use crate::store::CachedIndex;
 pub use crate::store::PypiStore as _;
 pub use crate::{CoreMetadata, File, Provenance, Yanked, to_json};
 pub use axum::body::Body;
+pub use axum::extract::ConnectInfo;
 pub use axum::http::{HeaderMap, Request, StatusCode, header};
 pub use base64::Engine as _;
 pub use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};

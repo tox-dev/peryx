@@ -764,7 +764,7 @@ pub trait IndexedProtocolDriver: EcosystemDriver {
     ) -> Response;
     async fn post(&self, state: Arc<ServingState>, path: String, request: Request) -> Response;
     async fn put(&self, state: Arc<ServingState>, request: Request) -> Response;
-    async fn delete(&self, state: Arc<ServingState>, uri: Uri, headers: HeaderMap) -> Response;
+    async fn delete(&self, state: Arc<ServingState>, request: Request) -> Response;
 }
 
 #[async_trait]

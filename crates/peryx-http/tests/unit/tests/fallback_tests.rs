@@ -281,12 +281,7 @@ impl IndexedProtocolDriver for StubServing {
         request_summary(request).await
     }
 
-    async fn delete(
-        &self,
-        _state: std::sync::Arc<ServingState>,
-        _uri: axum::http::Uri,
-        _headers: axum::http::HeaderMap,
-    ) -> axum::response::Response {
+    async fn delete(&self, _state: std::sync::Arc<ServingState>, _request: axum::extract::Request) -> Response {
         axum::response::IntoResponse::into_response(StatusCode::OK)
     }
 }

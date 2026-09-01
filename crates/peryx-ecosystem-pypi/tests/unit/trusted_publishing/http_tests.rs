@@ -1,8 +1,10 @@
 use std::cell::RefCell;
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use axum::body::Body;
+use axum::extract::ConnectInfo;
 use axum::http::{Method, Request, StatusCode, header};
 use peryx_driver::rate_limit::{RateLimitConfig, RouteLimit};
 use peryx_driver::state::AppState;
@@ -402,9 +404,38 @@ async fn test_oidc_exchange_logs_stable_ids_without_credentials() {
             "changed": false,
             "reason": "",
             "request_id": "request-42",
-            "user_agent": ""
+            "user_agent": "",
+            "client_ip": ""
         })
     );
+}
+
+#[tokio::test]
+async fn test_oidc_exchange_logs_the_address_the_server_resolved_for_the_caller() {
+    let (_dir, state) = state_with_exchange(successful_exchange());
+    let mut request = Request::builder()
+        .method(Method::POST)
+        .uri("/_/oidc/mint-token")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({"token": "external.identity.secret"}).to_string(),
+        ))
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from(([198, 51, 100, 7], 51_000))));
+    let logs = LogCapture::default();
+    let guard = logs.install();
+    let _response = peryx_http::router(state).oneshot(request).await.unwrap();
+
+    drop(guard);
+    let event = logs
+        .text()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .find(|event| event["fields"]["action"] == "token_mint")
+        .unwrap();
+    assert_eq!(event["fields"]["client_ip"], "198.51.100.7");
 }
 
 #[tokio::test]

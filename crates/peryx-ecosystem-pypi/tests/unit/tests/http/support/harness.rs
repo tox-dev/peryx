@@ -170,7 +170,14 @@ async fn harness_with_options(
         60,
         indexes,
         Arc::new(move || ticks.load(Ordering::Relaxed)),
-        peryx_driver::rate_limit::RateLimitConfig::default(),
+        peryx_driver::rate_limit::RateLimitConfig {
+            trusted_proxies: options
+                .trusted_proxies
+                .iter()
+                .map(|network| network.parse().unwrap())
+                .collect(),
+            ..peryx_driver::rate_limit::RateLimitConfig::default()
+        },
         [("pypi".to_owned(), options.upstream_concurrency)],
     );
     Arc::get_mut(&mut state.serving).unwrap().max_stale_secs = options.max_stale_secs;
@@ -194,6 +201,7 @@ struct HarnessOptions {
     upstream_concurrency: usize,
     distributed: bool,
     nested: bool,
+    trusted_proxies: &'static [&'static str],
 }
 
 impl Default for HarnessOptions {
@@ -204,11 +212,27 @@ impl Default for HarnessOptions {
             upstream_concurrency: peryx_driver::rate_limit::DEFAULT_UPSTREAM_CONCURRENCY,
             distributed: false,
             nested: false,
+            trusted_proxies: &[],
         }
     }
 }
 pub async fn harness() -> Harness {
     harness_with(true, true).await
+}
+
+pub async fn proxied_harness() -> Harness {
+    harness_with_options(
+        true,
+        true,
+        Policy::default(),
+        Policy::default(),
+        Policy::default(),
+        HarnessOptions {
+            trusted_proxies: &["10.0.0.0/8"],
+            ..HarnessOptions::default()
+        },
+    )
+    .await
 }
 
 pub async fn authority_harness() -> Harness {

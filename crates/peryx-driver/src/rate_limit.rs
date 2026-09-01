@@ -16,7 +16,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::state::AppState;
 use crate::users::LocalAuthentication;
-use crate::{ProcessRouteMethodNotAllowed, RouteDescriptor, RoutePrincipal, RouteRateLimit};
+use crate::{ProcessRouteMethodNotAllowed, RouteDescriptor, RoutePrincipal, RouteRateLimit, client_address};
 
 /// Concurrent upstream fetches allowed per cached index; `0` (the default) means unlimited.
 ///
@@ -374,8 +374,8 @@ enum ForwardedClient {
     Malformed,
 }
 
-#[derive(Debug)]
-struct MalformedForwarded;
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct MalformedForwarded;
 
 pub struct UpstreamLimits {
     entries: HashMap<String, Arc<UpstreamLimit>>,
@@ -782,13 +782,14 @@ impl RateLimiter {
                 Ok(ActorKey::Token(self.principal_hasher.hash_one(subject)))
             }
             peryx_identity::Principal::Anonymous => Ok(ActorKey::Ip(
-                self.client_ip(request)?.unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+                client_address::resolution(request.extensions())
+                    .unwrap_or_else(|| self.client_ip(request))?
+                    .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST)),
             )),
         }
     }
 
-    /// Rejects malformed forwarded identities instead of merging clients into the peer bucket.
-    fn client_ip(&self, request: &axum::extract::Request) -> Result<Option<IpAddr>, MalformedForwarded> {
+    pub(crate) fn client_ip(&self, request: &axum::extract::Request) -> Result<Option<IpAddr>, MalformedForwarded> {
         let Some(peer) = request.extensions().get::<ConnectInfo<SocketAddr>>() else {
             return Ok(None);
         };

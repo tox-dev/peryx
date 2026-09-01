@@ -58,7 +58,7 @@ impl IndexedProtocolDriver for StubDriver {
         StatusCode::NO_CONTENT.into_response()
     }
 
-    async fn delete(&self, _state: Arc<ServingState>, _uri: Uri, _headers: HeaderMap) -> Response {
+    async fn delete(&self, _state: Arc<ServingState>, _request: axum::extract::Request) -> Response {
         StatusCode::NO_CONTENT.into_response()
     }
 }

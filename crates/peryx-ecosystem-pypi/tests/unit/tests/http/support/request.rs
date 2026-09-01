@@ -42,6 +42,29 @@ pub async fn send_bytes(
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     (status, headers, bytes.to_vec())
 }
+
+pub async fn request_from_peer(
+    state: &Arc<AppState>,
+    verb: &str,
+    uri: &str,
+    auth: Option<&str>,
+    peer: &str,
+    forwarded_for: &str,
+) -> StatusCode {
+    let mut builder = Request::builder()
+        .uri(uri)
+        .method(verb)
+        .header("x-forwarded-for", forwarded_for);
+    if let Some(auth) = auth {
+        builder = builder.header(header::AUTHORIZATION, auth);
+    }
+    let mut request = builder.body(Body::empty()).unwrap();
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(SocketAddr::new(peer.parse().unwrap(), 51_000)));
+    router(state.clone()).oneshot(request).await.unwrap().status()
+}
+
 pub async fn request(state: &Arc<AppState>, verb: &str, uri: &str, auth: Option<&str>) -> StatusCode {
     request_response(state, verb, uri, auth).await.0
 }

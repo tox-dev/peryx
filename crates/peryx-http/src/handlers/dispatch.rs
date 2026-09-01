@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::Extension;
 use axum::extract::{OriginalUri, Request, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
 use super::discover::{index_api, trusts_proxy};
@@ -114,16 +114,12 @@ pub async fn dispatch_put(State(state): State<Arc<AppState>>, request: Request) 
     serving.put(state.serving.clone(), request).await
 }
 
-pub async fn dispatch_delete(
-    State(state): State<Arc<AppState>>,
-    OriginalUri(uri): OriginalUri,
-    headers: HeaderMap,
-) -> Response {
-    let serving = match driver_for(&state, uri.path().trim_start_matches('/')) {
+pub async fn dispatch_delete(State(state): State<Arc<AppState>>, request: Request) -> Response {
+    let serving = match driver_for(&state, request.uri().path().trim_start_matches('/')) {
         Ok(serving) => serving.clone(),
         Err(reason) => return reason.response(),
     };
-    serving.delete(state.serving.clone(), uri, headers).await
+    serving.delete(state.serving.clone(), request).await
 }
 
 #[must_use]

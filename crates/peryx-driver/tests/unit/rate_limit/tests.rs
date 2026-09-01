@@ -26,7 +26,7 @@ use crate::serving::{
     AbsoluteProtocolDriver, EcosystemDriver, IndexedProtocolDriver, ProtocolDriver, RateLimitPrincipal, ServiceDriver,
 };
 use crate::state::{AppState, ServingState};
-use crate::{RouteDescriptor, RouteMethod, RoutePosture, RouteRateLimit};
+use crate::{RouteDescriptor, RouteMethod, RoutePosture, RouteRateLimit, client_address};
 
 struct IndexedDriver;
 
@@ -75,7 +75,7 @@ impl IndexedProtocolDriver for IndexedDriver {
         StatusCode::NO_CONTENT.into_response()
     }
 
-    async fn delete(&self, _state: Arc<ServingState>, _uri: Uri, _headers: HeaderMap) -> Response {
+    async fn delete(&self, _state: Arc<ServingState>, _request: axum::extract::Request) -> Response {
         StatusCode::NO_CONTENT.into_response()
     }
 }
@@ -161,11 +161,7 @@ async fn test_protocol_fixtures_serve_supported_requests() {
     );
     assert_eq!(
         indexed
-            .delete(
-                Arc::clone(&serving),
-                Uri::from_static("/items/resource"),
-                HeaderMap::new(),
-            )
+            .delete(Arc::clone(&serving), Request::new(Body::empty()))
             .await
             .status(),
         StatusCode::NO_CONTENT
@@ -378,6 +374,26 @@ fn test_client_ip_ignores_forwarded_headers_from_untrusted_peer() {
     assert_eq!(
         limiter.client_ip(&request).unwrap(),
         Some(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)))
+    );
+}
+
+#[test]
+fn test_actor_key_uses_the_attached_client_address() {
+    let limiter = proxied_limiter();
+    let mut request = proxied_request();
+    request
+        .headers_mut()
+        .insert("x-forwarded-for", HeaderValue::from_static("198.51.100.1"));
+    let mut request = client_address::attach(&limiter, request);
+    request
+        .headers_mut()
+        .insert("x-forwarded-for", HeaderValue::from_static("198.51.100.2"));
+
+    assert_eq!(
+        limiter
+            .actor_key(peryx_identity::Principal::Anonymous, &request)
+            .unwrap(),
+        ActorKey::Ip("198.51.100.1".parse().unwrap())
     );
 }
 

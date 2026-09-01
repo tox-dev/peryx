@@ -73,7 +73,7 @@ fn test_claim_short_circuit_fails_closed_when_the_claim_cannot_be_read() {
 
 fn audit(headers: &HeaderMap) -> UploadAudit<'_> {
     UploadAudit {
-        headers,
+        request: peryx_events::security::RequestContext::new(headers, None),
         actor: None,
         request_id: None,
         created_at_unix: 0,

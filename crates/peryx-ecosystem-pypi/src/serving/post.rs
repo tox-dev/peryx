@@ -8,6 +8,7 @@ use peryx_driver::not_found;
 use peryx_driver::quota::quota_limit_label;
 use peryx_driver::state::ServingState;
 use peryx_events::metrics::Observation;
+use peryx_events::security::RequestContext;
 use peryx_ha::{AuthorityEpoch, CommittedBlob};
 use peryx_identity::Action;
 use peryx_index::Index;
@@ -35,32 +36,32 @@ use super::{HttpResult, authorize, identify, request_id, upload_target};
 pub async fn pypi_dispatch_post(
     state: Arc<ServingState>,
     path: String,
-    headers: HeaderMap,
+    request: RequestContext<'_>,
     multipart: Multipart,
 ) -> Response {
     state.requests.fetch_add(1, Ordering::Relaxed);
-    let browser = match browser_upload(&headers) {
+    let browser = match browser_upload(request.headers) {
         Ok(browser) => browser,
         Err(error) => return error.into_response(),
     };
     let Some((index, rest)) = state.resolve(&path) else {
         return not_found();
     };
-    let identity = identify(&state, index, &headers);
+    let identity = identify(&state, index, request.headers);
     let actor = peryx_events::security::actor(&identity);
     if !rest.is_empty() {
-        security_upload_event(&headers, actor.as_deref(), &index.route, None, "denied")
+        security_upload_event(request, actor.as_deref(), &index.route, None, "denied")
             .reason(Some("upload path must target an index root"))
             .emit();
         return not_found();
     }
     let Some(hosted) = upload_target(&state, index) else {
-        security_upload_event(&headers, actor.as_deref(), &index.route, None, "denied")
+        security_upload_event(request, actor.as_deref(), &index.route, None, "denied")
             .reason(Some("index does not accept uploads"))
             .emit();
         return (StatusCode::METHOD_NOT_ALLOWED, "index does not accept uploads").into_response();
     };
-    if let Err(error) = authorize(&index.route, hosted, &identity, None, Action::Write, &headers) {
+    if let Err(error) = authorize(&index.route, hosted, &identity, None, Action::Write, request) {
         return error.into_response();
     }
     let response = accept_upload(
@@ -69,7 +70,7 @@ pub async fn pypi_dispatch_post(
             index,
             hosted,
             identity: &identity,
-            headers: &headers,
+            request,
             actor: actor.as_deref(),
             browser,
         },
@@ -131,7 +132,7 @@ struct UploadContext<'a> {
     index: &'a Index,
     hosted: &'a Index,
     identity: &'a super::UploadIdentity,
-    headers: &'a HeaderMap,
+    request: RequestContext<'a>,
     actor: Option<&'a str>,
     browser: bool,
 }
@@ -142,7 +143,7 @@ async fn accept_upload(context: UploadContext<'_>, multipart: Multipart) -> Resp
         index,
         hosted,
         identity,
-        headers,
+        request,
         actor,
         browser,
     } = context;
@@ -153,7 +154,7 @@ async fn accept_upload(context: UploadContext<'_>, multipart: Multipart) -> Resp
     let (form, staged) = match collect_form(multipart, &state.blobs, max_file_size, browser).await {
         Ok(form) => form,
         Err(error) => {
-            security_upload_event(headers, actor, &index.route, Some(&hosted.name), "failure")
+            security_upload_event(request, actor, &index.route, Some(&hosted.name), "failure")
                 .reason(Some("multipart body rejected"))
                 .emit();
             return error.into_response();
@@ -162,7 +163,7 @@ async fn accept_upload(context: UploadContext<'_>, multipart: Multipart) -> Resp
     let Some(staged) = staged else {
         let err = UploadError::Missing("content");
         let (_, reason) = upload_error_message(&err);
-        security_upload_event(headers, actor, &index.route, Some(&hosted.name), "denied")
+        security_upload_event(request, actor, &index.route, Some(&hosted.name), "denied")
             .resource(form.name.as_deref().map(normalize_name).as_deref())
             .group(form.version.as_deref())
             .reason(Some(&reason))
@@ -177,7 +178,7 @@ async fn accept_upload(context: UploadContext<'_>, multipart: Multipart) -> Resp
         Ok(prepared) => prepared,
         Err(err) => {
             let (_, reason) = upload_error_message(&err);
-            security_upload_event(headers, actor, &index.route, Some(&hosted.name), "denied")
+            security_upload_event(request, actor, &index.route, Some(&hosted.name), "denied")
                 .resource(form_project.as_deref())
                 .group(form_version.as_deref())
                 .artifact(form_filename.as_deref())
@@ -187,16 +188,16 @@ async fn accept_upload(context: UploadContext<'_>, multipart: Multipart) -> Resp
         }
     };
     let project = prepared.normalized.clone();
-    if let Err(error) = authorize(&index.route, hosted, identity, Some(&project), Action::Write, headers) {
+    if let Err(error) = authorize(&index.route, hosted, identity, Some(&project), Action::Write, request) {
         return error.into_response();
     }
     let version = prepared.record.version.clone();
     let filename = prepared.filename.clone();
     let digest = prepared.digest.as_str().to_owned();
     let audit = UploadAudit {
-        headers,
+        request,
         actor: actor.map(str::to_owned),
-        request_id: request_id(headers),
+        request_id: request_id(request.headers),
         created_at_unix: upload_time_unix,
         index: &index.name,
         route: &index.route,
@@ -417,7 +418,7 @@ fn replay_response(body: &[u8]) -> Response {
 
 fn emit_admission_rejection(audit: &UploadAudit<'_>) {
     security_upload_event(
-        audit.headers,
+        audit.request,
         audit.actor.as_deref(),
         audit.route,
         Some(audit.hosted),
@@ -545,7 +546,7 @@ fn upload_policy_response(
     // decision is already persisted, so the handler emits the observation and lets the file publish.
     let audit_only = denial.rule == REQUIRED_ATTESTATION_AUDIT_RULE;
     security_upload_event(
-        audit.headers,
+        audit.request,
         audit.actor.as_deref(),
         audit.route,
         Some(audit.hosted),
@@ -561,7 +562,7 @@ fn upload_policy_response(
 }
 
 struct UploadAudit<'a> {
-    headers: &'a HeaderMap,
+    request: RequestContext<'a>,
     actor: Option<String>,
     request_id: Option<String>,
     created_at_unix: i64,
@@ -586,7 +587,7 @@ fn emit_store_side_effects(state: &Arc<ServingState>, audit: &UploadAudit<'_>, s
         peryx_events::webhook::notify(state.as_ref());
     }
     security_upload_event(
-        audit.headers,
+        audit.request,
         audit.actor.as_deref(),
         audit.route,
         Some(audit.hosted),
@@ -624,7 +625,7 @@ fn upload_store_error_response(audit: &UploadAudit<'_>, err: CacheError) -> Resp
         err => {
             let reason = err.user_message();
             security_upload_event(
-                audit.headers,
+                audit.request,
                 audit.actor.as_deref(),
                 audit.route,
                 Some(audit.hosted),
@@ -646,7 +647,7 @@ fn upload_store_error_response(audit: &UploadAudit<'_>, err: CacheError) -> Resp
 /// with the denial recorded against the colliding filename rather than the requested one.
 fn upload_denied_response(audit: &UploadAudit<'_>, filename: &str, reason: &str, message: String) -> Response {
     security_upload_event(
-        audit.headers,
+        audit.request,
         audit.actor.as_deref(),
         audit.route,
         Some(audit.hosted),
@@ -663,7 +664,7 @@ fn upload_denied_response(audit: &UploadAudit<'_>, filename: &str, reason: &str,
 
 fn emit_upload_status_event(audit: &UploadAudit<'_>, block: &UploadStatusBlock) {
     security_upload_event(
-        audit.headers,
+        audit.request,
         audit.actor.as_deref(),
         audit.route,
         Some(audit.hosted),
@@ -768,7 +769,7 @@ pub(super) fn upload_status_response(
 }
 
 fn security_upload_event<'a>(
-    headers: &'a HeaderMap,
+    request: RequestContext<'a>,
     actor: Option<&'a str>,
     route: &'a str,
     hosted_index: Option<&'a str>,
@@ -777,7 +778,7 @@ fn security_upload_event<'a>(
     let event = peryx_events::security::Event::new("upload", result)
         .actor(actor)
         .index(route)
-        .request(headers);
+        .request(request);
     if let Some(hosted_index) = hosted_index {
         event.hosted_index(hosted_index)
     } else {

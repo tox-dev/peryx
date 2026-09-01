@@ -8,8 +8,10 @@ use axum::routing::{get, post};
 use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
 
+use peryx_driver::client_address;
 use peryx_driver::rate_limit::RouteClass;
 use peryx_driver::{AppState, HttpRoutes, RouteDescriptor, RouteMethod, RoutePosture, RouteRateLimit, RouteSet};
+use peryx_events::security::RequestContext;
 
 use super::runtime::{ExchangeError, ExchangedToken, IdentityExchange};
 
@@ -75,7 +77,7 @@ struct MintResponse {
 async fn oidc_mint_token(
     State(state): State<Arc<AppState>>,
     Extension(runtime): Extension<Arc<dyn IdentityExchange>>,
-    headers: HeaderMap,
+    parts: axum::http::request::Parts,
     body: Bytes,
 ) -> Response {
     let Ok(request) = serde_json::from_slice::<MintRequest>(&body) else {
@@ -86,15 +88,15 @@ async fn oidc_mint_token(
             .into_response();
     };
     exchange_response(
-        &headers,
+        RequestContext::new(&parts.headers, client_address::resolved(&parts.extensions)),
         runtime.exchange(&request.token, (state.serving.clock)()).await,
     )
 }
 
-fn exchange_response(headers: &HeaderMap, result: Result<ExchangedToken, ExchangeError>) -> Response {
+fn exchange_response(request: RequestContext<'_>, result: Result<ExchangedToken, ExchangeError>) -> Response {
     match result {
         Ok(exchanged) => {
-            emit_exchange_success(headers, &exchanged);
+            emit_exchange_success(request, &exchanged);
             (
                 [(header::CACHE_CONTROL, "no-store"), (header::PRAGMA, "no-cache")],
                 Json(MintResponse {
@@ -112,7 +114,7 @@ fn exchange_response(headers: &HeaderMap, result: Result<ExchangedToken, Exchang
                 } else {
                     "identity rejected"
                 }))
-                .request(headers)
+                .request(request)
                 .emit();
             (
                 if unavailable {
@@ -133,9 +135,14 @@ fn exchange_response(headers: &HeaderMap, result: Result<ExchangedToken, Exchang
     }
 }
 
-fn emit_exchange_success(headers: &HeaderMap, exchanged: &ExchangedToken) {
-    let request_id = header_text(headers, "x-request-id");
-    let user_agent = header_text(headers, header::USER_AGENT.as_str());
+fn emit_exchange_success(request: RequestContext<'_>, exchanged: &ExchangedToken) {
+    let request_id = header_text(request.headers, "x-request-id");
+    let user_agent = header_text(request.headers, header::USER_AGENT.as_str());
+    let client_ip = request
+        .client_ip
+        .map(|client_ip| client_ip.to_string())
+        .unwrap_or_default();
+    let client_ip = client_ip.as_str();
     tracing::info!(
         target: "peryx::security",
         security_event = true,
@@ -157,6 +164,7 @@ fn emit_exchange_success(headers: &HeaderMap, exchanged: &ExchangedToken) {
         reason = "",
         request_id,
         user_agent,
+        client_ip,
         "index security event"
     );
 }

@@ -1,3 +1,5 @@
+use std::net::IpAddr;
+
 use http::{HeaderMap, header};
 use peryx_identity::{Identity, Principal, Role, Scope, UserId};
 
@@ -79,6 +81,20 @@ pub fn authorization_denied(user: &UserId, scope: Scope, denial: AuthorizationDe
     );
 }
 
+/// Request headers and the client address established by HTTP middleware.
+#[derive(Clone, Copy)]
+pub struct RequestContext<'a> {
+    pub headers: &'a HeaderMap,
+    pub client_ip: Option<IpAddr>,
+}
+
+impl<'a> RequestContext<'a> {
+    #[must_use]
+    pub const fn new(headers: &'a HeaderMap, client_ip: Option<IpAddr>) -> Self {
+        Self { headers, client_ip }
+    }
+}
+
 pub struct Event<'a> {
     action: &'static str,
     result: &'static str,
@@ -96,6 +112,7 @@ pub struct Event<'a> {
     reason: Option<&'a str>,
     request_id: Option<&'a str>,
     user_agent: Option<&'a str>,
+    client_ip: Option<IpAddr>,
 }
 
 impl<'a> Event<'a> {
@@ -118,6 +135,7 @@ impl<'a> Event<'a> {
             reason: None,
             request_id: None,
             user_agent: None,
+            client_ip: None,
         }
     }
 
@@ -194,9 +212,10 @@ impl<'a> Event<'a> {
     }
 
     #[must_use]
-    pub fn request(mut self, headers: &'a HeaderMap) -> Self {
-        self.request_id = request_id(headers);
-        self.user_agent = user_agent(headers);
+    pub fn request(mut self, request: RequestContext<'a>) -> Self {
+        self.request_id = request_id(request.headers);
+        self.user_agent = user_agent(request.headers);
+        self.client_ip = request.client_ip;
         self
     }
 
@@ -213,6 +232,11 @@ impl<'a> Event<'a> {
         let reason = text(self.reason);
         let request_id = text(self.request_id);
         let user_agent = text(self.user_agent);
+        let client_ip = self
+            .client_ip
+            .map(|client_ip| client_ip.to_string())
+            .unwrap_or_default();
+        let client_ip = client_ip.as_str();
         tracing::info!(
             target: "peryx::security",
             security_event = true,
@@ -233,6 +257,7 @@ impl<'a> Event<'a> {
             reason,
             request_id,
             user_agent,
+            client_ip,
             "index security event"
         );
     }

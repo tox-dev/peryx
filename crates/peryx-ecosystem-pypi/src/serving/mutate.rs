@@ -1,13 +1,14 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use futures_util::FutureExt;
 use peryx_core::path::{self};
 use peryx_driver::access::ReadAccess;
 use peryx_driver::not_found;
 use peryx_driver::state::ServingState;
+use peryx_events::security::RequestContext;
 use peryx_identity::{Action, ResourceMatch};
 use peryx_index::{Index, IndexKind};
 
@@ -22,7 +23,7 @@ use super::{authorize, identify, path_error_response, request_id, upload_target}
 
 #[derive(Clone, Copy)]
 struct PromotionAudit<'a> {
-    headers: &'a HeaderMap,
+    request: RequestContext<'a>,
     actor: Option<&'a str>,
     route: &'a str,
     source_index: &'a str,
@@ -44,7 +45,7 @@ fn emit_promotion_refusal(audit: &PromotionAudit<'_>, result: &'static str, reas
         .resource(Some(audit.project))
         .group(Some(audit.version))
         .reason(Some(reason))
-        .request(audit.headers)
+        .request(audit.request)
         .emit();
 }
 
@@ -76,26 +77,30 @@ fn promotion_source<'a>(state: &'a ServingState, route: &str) -> HttpResult<&'a 
 
 /// `PUT /{route}/{project}/[{version}/]yank` marks files yanked (PEP 592, reversible);
 /// `PUT .../restore` clears the hidden marker a DELETE left on read-only upstream files.
-pub async fn pypi_dispatch_put(state: Arc<ServingState>, uri: axum::http::Uri, headers: HeaderMap) -> Response {
+pub async fn pypi_dispatch_put(
+    state: Arc<ServingState>,
+    uri: axum::http::Uri,
+    request: RequestContext<'_>,
+) -> Response {
     state.requests.fetch_add(1, Ordering::Relaxed);
     let path = uri.path().trim_start_matches('/');
-    let (index, hosted, spec, identity) = match removal_target(&state, path, &headers, Action::Write) {
+    let (index, hosted, spec, identity) = match removal_target(&state, path, request, Action::Write) {
         Ok(target) => target,
         Err(error) => return error.into_response(),
     };
     let actor = peryx_events::security::actor(&identity);
     if let Some(spec) = strip_action_segment(spec, "promote") {
-        return promote_request(&state, index, hosted, spec, uri.query(), &headers, actor.as_deref())
+        return promote_request(&state, index, hosted, spec, uri.query(), request, actor.as_deref())
             .boxed()
             .await;
     }
     if let Some(spec) = strip_action_segment(spec, "yank") {
-        return yank_request(&state, index, hosted, spec, uri.query(), &headers, actor.as_deref())
+        return yank_request(&state, index, hosted, spec, uri.query(), request, actor.as_deref())
             .boxed()
             .await;
     }
     if let Some(spec) = strip_action_segment(spec, "restore") {
-        return restore_request(&state, index, hosted, spec, &headers, actor.as_deref())
+        return restore_request(&state, index, hosted, spec, request, actor.as_deref())
             .boxed()
             .await;
     }
@@ -108,7 +113,7 @@ async fn promote_request(
     hosted: &Index,
     spec: &str,
     query: Option<&str>,
-    headers: &HeaderMap,
+    request: RequestContext<'_>,
     actor: Option<&str>,
 ) -> Response {
     let source_route = match promotion_source_route(query) {
@@ -125,7 +130,7 @@ async fn promote_request(
         Err(error) => return error.into_response(),
     };
     let audit = PromotionAudit {
-        headers,
+        request,
         actor,
         route: &index.route,
         source_index: &source.route,
@@ -136,7 +141,7 @@ async fn promote_request(
     // Without this, write on the target alone copies a private release into an index the caller can
     // download from. The named route's own ACL decides, not the hosted layer a virtual source writes
     // through, and a refusal answers like a missing source so the two stay indistinguishable.
-    if ReadAccess::from_headers(state, headers)
+    if ReadAccess::from_headers(state, request.headers)
         .for_index(source)
         .authorize_resource(ResourceMatch::Pattern(&project))
         .is_err()
@@ -178,7 +183,7 @@ async fn yank_request(
     hosted: &Index,
     spec: &str,
     query: Option<&str>,
-    headers: &HeaderMap,
+    request: RequestContext<'_>,
     actor: Option<&str>,
 ) -> Response {
     let (project, version) = match parse_project_version(spec) {
@@ -186,7 +191,7 @@ async fn yank_request(
         Err(error) => return error.into_response(),
     };
     let audit = MutationAudit {
-        headers,
+        request,
         action: "yank",
         actor,
         index: &index.name,
@@ -194,7 +199,7 @@ async fn yank_request(
         hosted_index: &hosted.name,
         project: &project,
         version: version.as_deref(),
-        request_id: request_id(headers),
+        request_id: request_id(request.headers),
     };
     let result = cache::set_yanked_with_webhook(
         state,
@@ -216,7 +221,7 @@ async fn restore_request(
     index: &Index,
     hosted: &Index,
     spec: &str,
-    headers: &HeaderMap,
+    request: RequestContext<'_>,
     actor: Option<&str>,
 ) -> Response {
     let (project, version) = match parse_project_version(spec) {
@@ -224,7 +229,7 @@ async fn restore_request(
         Err(error) => return error.into_response(),
     };
     let audit = MutationAudit {
-        headers,
+        request,
         action: "restore",
         actor,
         index: &index.name,
@@ -232,7 +237,7 @@ async fn restore_request(
         hosted_index: &hosted.name,
         project: &project,
         version: version.as_deref(),
-        request_id: request_id(headers),
+        request_id: request_id(request.headers),
     };
     let result = cache::restore_files_with_webhook(state, &hosted.name, &project, version.as_deref(), |count| {
         prepare_mutation_webhook(state, webhook::RESTORE, &audit, count)
@@ -245,10 +250,14 @@ async fn restore_request(
 
 /// `DELETE /{route}/{project}/[{version}/]` removes files: uploads are soft-deleted to trash (volatile
 /// indexes only), read-only upstream files are hidden reversibly. A `.../yank` suffix un-yanks.
-pub async fn pypi_dispatch_delete(state: Arc<ServingState>, uri: axum::http::Uri, headers: HeaderMap) -> Response {
+pub async fn pypi_dispatch_delete(
+    state: Arc<ServingState>,
+    uri: axum::http::Uri,
+    request: RequestContext<'_>,
+) -> Response {
     state.requests.fetch_add(1, Ordering::Relaxed);
     let path = uri.path().trim_start_matches('/');
-    let (index, hosted, spec, identity) = match removal_target(&state, path, &headers, Action::Delete) {
+    let (index, hosted, spec, identity) = match removal_target(&state, path, request, Action::Delete) {
         Ok(target) => target,
         Err(error) => return error.into_response(),
     };
@@ -259,7 +268,7 @@ pub async fn pypi_dispatch_delete(state: Arc<ServingState>, uri: axum::http::Uri
             Err(error) => return error.into_response(),
         };
         let audit = MutationAudit {
-            headers: &headers,
+            request,
             action: "unyank",
             actor: actor.as_deref(),
             index: &index.name,
@@ -267,7 +276,7 @@ pub async fn pypi_dispatch_delete(state: Arc<ServingState>, uri: axum::http::Uri
             hosted_index: &hosted.name,
             project: &project,
             version: version.as_deref(),
-            request_id: request_id(&headers),
+            request_id: request_id(request.headers),
         };
         let result = cache::set_yanked_with_webhook(
             &state,
@@ -295,7 +304,7 @@ pub async fn pypi_dispatch_delete(state: Arc<ServingState>, uri: axum::http::Uri
         reason: reason.as_deref(),
     };
     let audit = MutationAudit {
-        headers: &headers,
+        request,
         action: "delete",
         actor: actor.as_deref(),
         index: &index.name,
@@ -303,7 +312,7 @@ pub async fn pypi_dispatch_delete(state: Arc<ServingState>, uri: axum::http::Uri
         hosted_index: &hosted.name,
         project: &project,
         version: version.as_deref(),
-        request_id: request_id(&headers),
+        request_id: request_id(request.headers),
     };
     let result = cache::remove_files_with_webhook(
         &state,
@@ -323,20 +332,20 @@ pub async fn pypi_dispatch_delete(state: Arc<ServingState>, uri: axum::http::Uri
 fn removal_target<'a>(
     state: &'a ServingState,
     path: &'a str,
-    headers: &HeaderMap,
+    request: RequestContext<'_>,
     action: Action,
 ) -> HttpResult<(&'a Index, &'a Index, &'a str, super::UploadIdentity)> {
     let (index, rest) = state.resolve(path).ok_or_else(not_found)?;
     let hosted = upload_target(state, index)
         .ok_or_else(|| (StatusCode::METHOD_NOT_ALLOWED, "index is read-only").into_response())?;
-    let identity = identify(state, index, headers);
+    let identity = identify(state, index, request.headers);
     authorize(
         &index.route,
         hosted,
         &identity,
         mutation_project(rest).as_deref(),
         action,
-        headers,
+        request,
     )?;
     Ok((index, hosted, rest, identity))
 }
@@ -351,7 +360,7 @@ const fn is_volatile(hosted: &Index) -> bool {
 }
 
 struct MutationAudit<'a> {
-    headers: &'a HeaderMap,
+    request: RequestContext<'a>,
     action: &'static str,
     actor: Option<&'a str>,
     index: &'a str,
@@ -377,7 +386,7 @@ fn security_mutation_event(audit: &MutationAudit<'_>, result: &Result<usize, Cac
         .group(audit.version)
         .count(count)
         .reason(reason.as_deref())
-        .request(audit.headers)
+        .request(audit.request)
         .emit();
 }
 
@@ -399,7 +408,7 @@ fn security_promotion_event(audit: PromotionAudit<'_>, result: &Result<usize, Ca
         .group(Some(audit.version))
         .count(count)
         .reason(reason.as_deref())
-        .request(audit.headers)
+        .request(audit.request)
         .emit();
 }
 

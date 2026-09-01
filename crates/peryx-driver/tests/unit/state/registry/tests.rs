@@ -130,7 +130,7 @@ impl IndexedProtocolDriver for IndexedDriver {
         StatusCode::NO_CONTENT.into_response()
     }
 
-    async fn delete(&self, _state: Arc<ServingState>, _uri: Uri, _headers: HeaderMap) -> Response {
+    async fn delete(&self, _state: Arc<ServingState>, _request: axum::extract::Request) -> Response {
         StatusCode::NO_CONTENT.into_response()
     }
 }
@@ -590,7 +590,7 @@ async fn test_registry_returns_typed_indexed_driver() {
     );
     assert_eq!(
         driver
-            .delete(state.serving.clone(), Uri::from_static("/artifact"), HeaderMap::new())
+            .delete(state.serving.clone(), axum::extract::Request::new(Body::empty()))
             .await
             .status(),
         StatusCode::NO_CONTENT
