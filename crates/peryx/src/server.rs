@@ -820,6 +820,7 @@ fn build_kind(
                     credential_provider(credential_providers, &index.name, &primary.name),
                     &load_upstream_tls(&index.name, &primary.tls)?,
                     &primary.url,
+                    &primary.trusted_hosts,
                 )?,
                 offline: global_offline || *offline,
             })
@@ -956,6 +957,7 @@ fn build_upstream_routes(
                         credential_provider(credential_providers, &index.name, &upstream.name),
                         &tls,
                         &upstream.url,
+                        &upstream.trusted_hosts,
                     )?;
                     let named = NamedUpstream::new(&upstream.name, client);
                     let Some(artifact_url) = &upstream.artifact_url else {
@@ -980,7 +982,14 @@ fn build_upstream_routes(
                             netrc,
                         )?
                     };
-                    let mirror = build_upstream_client(&index.name, artifact_url, credentials, &tls, &upstream.url)?;
+                    let mirror = build_upstream_client(
+                        &index.name,
+                        artifact_url,
+                        credentials,
+                        &tls,
+                        &upstream.url,
+                        &upstream.trusted_hosts,
+                    )?;
                     Ok(named.with_artifact_mirror(mirror, routing.fallback))
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
@@ -1020,8 +1029,9 @@ fn build_upstream_client(
     credentials: CredentialProvider,
     tls: &UpstreamTls,
     identity_origin: &str,
+    trusted_hosts: &[String],
 ) -> anyhow::Result<UpstreamClient> {
-    UpstreamClient::with_credentials_and_tls_for_origin(upstream, credentials, tls, identity_origin, &[])
+    UpstreamClient::with_credentials_and_tls_for_origin(upstream, credentials, tls, identity_origin, trusted_hosts)
         .with_context(|| format!("build cached index {index} with upstream {}", redact_url(upstream)))
 }
 

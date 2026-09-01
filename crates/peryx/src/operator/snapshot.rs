@@ -112,6 +112,8 @@ struct SnapshotUpstream<'a> {
     url: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     artifact_url: Option<&'a str>,
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    trusted_hosts: &'a [String],
     #[serde(skip_serializing_if = "Option::is_none")]
     username: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -614,6 +616,7 @@ fn snapshot_upstream(upstream: &crate::config::UpstreamConfig) -> SnapshotUpstre
         name: &upstream.name,
         url: &upstream.url,
         artifact_url: upstream.artifact_url.as_deref(),
+        trusted_hosts: &upstream.trusted_hosts,
         username: upstream.username.as_deref(),
         password,
         password_file,

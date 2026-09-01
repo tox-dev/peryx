@@ -616,6 +616,7 @@ quota_audit = true
 name = "primary"
 url = "https://primary.example/catalog/"
 artifact_url = "https://artifacts.example/"
+trusted_hosts = ["artifacts.corp.internal", "10.0.0.5"]
 username = "mirror"
 password = "mirror-secret"
 token_env = "MIRROR_TOKEN"

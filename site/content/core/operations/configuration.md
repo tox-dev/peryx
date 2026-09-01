@@ -429,6 +429,7 @@ keys below belong on the source, never on the parent `[[index]]`.
 | `name`                               | Identifier for the source, unique within the index               | (required) |
 | `url`                                | Upstream API URL                                                 | (required) |
 | `artifact_url`                       | Origin that serves artifacts when it differs from `url`          | `url`      |
+| `trusted_hosts`                      | Hosts allowed to resolve to non-public addresses                 | `[]`       |
 | `username`                           | Basic-auth username for the upstream                             | (none)     |
 | `password`                           | Basic-auth password; `password_file`/`password_env` read it out  | (none)     |
 | `token`                              | Bearer token; takes precedence over username/password            | (none)     |
@@ -441,6 +442,14 @@ keys below belong on the source, never on the parent `[[index]]`.
 | `ca_file`                            | PEM CA bundle added to platform trust for this source            | (none)     |
 | `client_cert_file`                   | PEM client certificate chain; requires `client_key_file`         | (none)     |
 | `client_key_file`                    | Matching unencrypted PEM client key; requires `client_cert_file` | (none)     |
+
+Peryx trusts the host in `url` and `artifact_url` because the operator configured those bases. For every other host in
+an advertised artifact URL or redirect, Peryx requires a public IP address.
+
+Private destinations need an explicit exception. Add the hostname or IP literal to `trusted_hosts`.
+
+Treat this list as a security boundary. Each entry disables the non-public-address check for the named host and every
+address returned by DNS. Peryx binds credentials only to the configured origin.
 
 ```toml
 [[index]]

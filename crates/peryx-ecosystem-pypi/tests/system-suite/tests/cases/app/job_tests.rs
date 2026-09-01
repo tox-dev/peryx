@@ -60,6 +60,7 @@ fn registered_catalog_job_syncs_and_records_history() {
                 name: "primary".to_owned(),
                 url: upstream,
                 artifact_url: None,
+                trusted_hosts: Vec::new(),
                 username: None,
                 password: None,
                 token: None,

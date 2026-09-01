@@ -99,7 +99,8 @@ impl Resolve for OutboundGuard {
             let kept = retain_allowed(trusted, inner.await?);
             if kept.is_empty() {
                 Err(UpstreamError::BlockedDestination {
-                    reason: "host resolves only to non-public addresses".to_owned(),
+                    reason: "host resolves only to non-public addresses; configure `trusted_hosts` to allow it"
+                        .to_owned(),
                 }
                 .into())
             } else {

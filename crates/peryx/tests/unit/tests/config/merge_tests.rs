@@ -275,6 +275,7 @@ alpha = "public"
 name = "internal"
 url = "https://internal.example/api/"
 artifact_url = "https://artifacts.example/objects/"
+trusted_hosts = ["artifacts.corp.internal", "10.0.0.5", "[fd00::1]"]
 username = "reader"
 password_file = "/run/secrets/internal-password"
 
@@ -300,6 +301,10 @@ token = "bearer"
             assert_eq!(
                 primary.artifact_url.as_deref(),
                 Some("https://artifacts.example/objects/")
+            );
+            assert_eq!(
+                primary.trusted_hosts,
+                ["artifacts.corp.internal", "10.0.0.5", "[fd00::1]"]
             );
             assert_eq!(routing.protected, ["internal-item"]);
             assert_eq!(routing.pins.get("alpha").map(String::as_str), Some("public"));
@@ -377,6 +382,23 @@ fn test_upstream_client_certificate_and_key_are_a_pair(#[case] text: &str) {
     assert_eq!(
         toml_error(text).to_string(),
         "index public: `client_cert_file` and `client_key_file` must be configured together"
+    );
+}
+
+#[rstest]
+#[case::empty("")]
+#[case::whitespace(" ")]
+#[case::url("https://artifacts.example")]
+#[case::port("artifacts.example:443")]
+#[case::space("artifacts .example")]
+fn test_trusted_hosts_reject_non_hosts(#[case] host: &str) {
+    assert_eq!(
+        toml_error(&format!(
+            "[[index]]\nname = \"public\"\n[[index.upstream]]\nname = \"primary\"\nurl = \
+             \"https://example/api/\"\ntrusted_hosts = [{host:?}]\n"
+        ))
+        .to_string(),
+        "index public: `trusted_hosts` entries must be hostnames or IP literals"
     );
 }
 

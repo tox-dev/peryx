@@ -686,6 +686,16 @@ fn classify_routed_cached(raw: &mut RawIndex) -> Result<IndexKind, ConfigError> 
 }
 
 fn classify_upstream(index: &str, raw: RawUpstream) -> Result<UpstreamConfig, ConfigError> {
+    if raw
+        .trusted_hosts
+        .iter()
+        .any(|host| host.is_empty() || url::Host::parse(host).is_err())
+    {
+        return Err(ConfigError::Index {
+            name: index.to_owned(),
+            reason: "`trusted_hosts` entries must be hostnames or IP literals",
+        });
+    }
     let password = upstream_secret_source(raw.password, raw.password_file, raw.password_env).map_err(|reason| {
         ConfigError::Index {
             name: index.to_owned(),
@@ -713,6 +723,7 @@ fn classify_upstream(index: &str, raw: RawUpstream) -> Result<UpstreamConfig, Co
         name: raw.name,
         url: raw.url,
         artifact_url: raw.artifact_url,
+        trusted_hosts: raw.trusted_hosts,
         username: raw.username,
         credential_refresh,
         password,

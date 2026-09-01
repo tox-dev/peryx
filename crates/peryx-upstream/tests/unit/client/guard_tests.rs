@@ -181,6 +181,26 @@ async fn resolve(guard: &OutboundGuard, host: &str) -> Result<Vec<SocketAddr>, (
 }
 
 #[tokio::test]
+async fn test_resolver_rejection_names_the_trusted_hosts_setting() {
+    let guard = guard_with(
+        "https://pub.example.com/",
+        &[],
+        Ok(vec!["10.0.0.1:80".parse().unwrap()]),
+    );
+
+    let error = guard
+        .resolve("cdn.example.com".parse().unwrap())
+        .await
+        .err()
+        .expect("expected private addresses to be refused");
+
+    assert_eq!(
+        error.to_string(),
+        "upstream destination is not permitted: host resolves only to non-public addresses; configure `trusted_hosts` to allow it"
+    );
+}
+
+#[tokio::test]
 async fn test_resolver_keeps_only_global_addresses_for_untrusted_host() {
     let addrs = vec!["10.0.0.1:80".parse().unwrap(), "8.8.8.8:80".parse().unwrap()];
     let kept = resolve(

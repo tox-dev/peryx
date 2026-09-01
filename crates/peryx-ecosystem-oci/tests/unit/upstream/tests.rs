@@ -373,7 +373,10 @@ async fn test_manifest_blocks_a_private_bearer_realm() {
 }
 
 #[rstest]
-#[case::loopback_hostname("http://localhost:9/private", "host resolves only to non-public addresses")]
+#[case::loopback_hostname(
+    "http://localhost:9/private",
+    "host resolves only to non-public addresses; configure `trusted_hosts` to allow it"
+)]
 #[case::link_local_literal("http://169.254.169.254/private", "169.254.169.254 is not a public address")]
 #[case::private_literal("http://10.0.0.1/private", "10.0.0.1 is not a public address")]
 #[tokio::test]

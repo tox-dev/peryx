@@ -34,6 +34,7 @@ fn replica_disables_pypi_writers() {
                 name: "primary".to_owned(),
                 url: "https://packages.example/simple/".to_owned(),
                 artifact_url: None,
+                trusted_hosts: Vec::new(),
                 username: Some("replica".to_owned()),
                 password: Some(SecretSource::File("missing-routed-upstream-password".into())),
                 token: None,

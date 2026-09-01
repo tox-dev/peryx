@@ -201,6 +201,7 @@ fn cached_index(ecosystem: Ecosystem, name: &str, route: &str) -> IndexConfig {
                     name: "primary".to_owned(),
                     url: "http://127.0.0.1:1".to_owned(),
                     artifact_url: None,
+                    trusted_hosts: Vec::new(),
                     username: None,
                     password: None,
                     token: None,

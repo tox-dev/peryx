@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
+use futures_util::TryStreamExt as _;
 use http_body_util::BodyExt as _;
 use peryx_identity::{Action, ProviderId};
 use peryx_policy::PolicyAction;
@@ -16,6 +17,8 @@ use peryx_storage::meta::{
 use peryx_upstream::Auth;
 use rstest::rstest;
 use tower::ServiceExt as _;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::config::{
     AuthConfig, AvailabilityConfig, BlobStorageConfig, Config, DcMember, DcMembership, DcRole, LdapBindConfig,
@@ -1480,6 +1483,39 @@ artifact_url = "https://public-artifacts.example/files/"
             .check_resource(PolicyAction::Cached, "blocked.project")
             .is_err()
     );
+}
+
+#[tokio::test]
+async fn test_build_state_allows_a_trusted_private_artifact_host() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/artifact.bin"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"artifact".to_vec()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let state = build_state(&parsed_config(
+        &dir,
+        "[[index]]\nname = \"cache\"\n[[index.upstream]]\nname = \"primary\"\nurl = \
+         \"https://metadata.example/catalog/\"\ntrusted_hosts = [\"localhost\"]\n",
+    ))
+    .unwrap();
+    let source = state.serving.upstream_routes["cache"].source("primary").unwrap();
+
+    let artifact = source
+        .artifacts()
+        .stream_bytes(&format!("http://localhost:{}/artifact.bin", server.address().port()))
+        .await
+        .unwrap()
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap()
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+
+    assert_eq!(artifact, b"artifact");
 }
 
 #[tokio::test]

@@ -29,6 +29,7 @@ fn cached_config(data_dir: &Path, upstream: String, files: &TlsFiles) -> Config 
                         name: "primary".to_owned(),
                         url: upstream,
                         artifact_url: None,
+                        trusted_hosts: Vec::new(),
                         username: None,
                         password: None,
                         token: None,

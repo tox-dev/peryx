@@ -1218,6 +1218,7 @@ fn single_route(url: &str) -> UpstreamRoutingConfig {
             name: "primary".to_owned(),
             url: url.to_owned(),
             artifact_url: None,
+            trusted_hosts: Vec::new(),
             username: None,
             password: None,
             token: None,

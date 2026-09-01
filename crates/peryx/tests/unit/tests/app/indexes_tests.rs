@@ -281,6 +281,7 @@ fn detailed_config(plugins: &PluginRegistry) -> Config {
                     name: "primary".to_owned(),
                     url: "https://upstream.example/packages/".to_owned(),
                     artifact_url: None,
+                    trusted_hosts: Vec::new(),
                     username: None,
                     password: None,
                     token: None,
