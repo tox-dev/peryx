@@ -363,6 +363,103 @@ async fn test_an_installed_snapshot_survives_reopening_the_store() {
     assert_eq!(last_applied, Some(log_id(1, 0, 1)));
 }
 
+/// A build counter that lives only in the process restarts at zero, so the replacement re-issues an
+/// identifier the previous process already handed out at the same applied index.
+#[tokio::test]
+async fn test_rebuilding_after_a_restart_takes_a_new_snapshot_id_at_the_same_log_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut machine = OwnershipStateMachine::with_snapshot_store(open_store(&dir)).unwrap();
+    machine.apply(vec![normal(1, assign("proj", "east"))]).await.unwrap();
+    let before = machine
+        .get_snapshot_builder()
+        .await
+        .build_snapshot()
+        .await
+        .unwrap()
+        .meta;
+    drop(machine);
+
+    let mut restarted = OwnershipStateMachine::with_snapshot_store(reopen_store(&dir)).unwrap();
+    let after = restarted
+        .get_snapshot_builder()
+        .await
+        .build_snapshot()
+        .await
+        .unwrap()
+        .meta;
+
+    assert_eq!(before.snapshot_id, "1-1");
+    assert_eq!(after.snapshot_id, "1-2");
+    assert_eq!(after.last_log_id, before.last_log_id);
+}
+
+/// Uniqueness must not cost lookup: the identifier a restart issues is the one both the running
+/// machine and the reopened store answer with.
+#[tokio::test]
+async fn test_a_snapshot_id_taken_after_a_restart_still_resolves_to_its_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut machine = OwnershipStateMachine::with_snapshot_store(open_store(&dir)).unwrap();
+    machine.apply(vec![normal(1, assign("proj", "east"))]).await.unwrap();
+    machine.get_snapshot_builder().await.build_snapshot().await.unwrap();
+    drop(machine);
+    let mut restarted = OwnershipStateMachine::with_snapshot_store(reopen_store(&dir)).unwrap();
+    let rebuilt = restarted.get_snapshot_builder().await.build_snapshot().await.unwrap();
+
+    let current = restarted.get_current_snapshot().await.unwrap().unwrap();
+    drop(restarted);
+    let mut reopened = OwnershipStateMachine::with_snapshot_store(reopen_store(&dir)).unwrap();
+    let persisted = reopened.get_current_snapshot().await.unwrap().unwrap();
+
+    assert_eq!(current.meta, rebuilt.meta);
+    assert_eq!(persisted.meta, rebuilt.meta);
+    assert_eq!(persisted.snapshot.into_inner(), rebuilt.snapshot.into_inner());
+}
+
+/// Each restart advances the generation rather than resuming it, so no two processes over one store
+/// name a snapshot alike.
+#[tokio::test]
+async fn test_repeated_restarts_never_reissue_an_earlier_snapshot_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut seeded = OwnershipStateMachine::with_snapshot_store(open_store(&dir)).unwrap();
+    seeded.apply(vec![normal(9, assign("proj", "east"))]).await.unwrap();
+    seeded.get_snapshot_builder().await.build_snapshot().await.unwrap();
+    drop(seeded);
+
+    let mut ids = BTreeSet::new();
+    for _ in 0..2 {
+        let mut restarted = OwnershipStateMachine::with_snapshot_store(reopen_store(&dir)).unwrap();
+        let built = restarted.get_snapshot_builder().await.build_snapshot().await.unwrap();
+        ids.insert(built.meta.snapshot_id);
+    }
+
+    assert_eq!(ids, BTreeSet::from(["9-2".to_owned(), "9-3".to_owned()]));
+}
+
+/// Installing a peer's snapshot adopts that peer's identifier, and must leave this store's own
+/// generation standing, or the next local build would republish the identifier just installed.
+#[tokio::test]
+async fn test_installing_a_snapshot_leaves_the_local_generation_standing() {
+    let mut source = OwnershipStateMachine::default();
+    source.apply(vec![normal(1, assign("proj", "east"))]).await.unwrap();
+    let Snapshot { meta, snapshot } = source.get_snapshot_builder().await.build_snapshot().await.unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut target = OwnershipStateMachine::with_snapshot_store(open_store(&dir)).unwrap();
+    target.get_snapshot_builder().await.build_snapshot().await.unwrap();
+    target.install_snapshot(&meta, snapshot).await.unwrap();
+    drop(target);
+
+    let mut restarted = OwnershipStateMachine::with_snapshot_store(reopen_store(&dir)).unwrap();
+    let rebuilt = restarted.get_snapshot_builder().await.build_snapshot().await.unwrap();
+
+    assert_eq!(meta.snapshot_id, "1-1");
+    assert_eq!(rebuilt.meta.snapshot_id, "1-2");
+    assert_eq!(
+        restarted.home_of(&key("proj")).await,
+        Some(DatacenterId("east".to_owned()))
+    );
+}
+
 #[tokio::test]
 async fn test_with_snapshot_store_surfaces_a_store_read_error() {
     let dir = tempfile::tempdir().unwrap();
@@ -378,7 +475,7 @@ async fn test_with_snapshot_store_surfaces_a_store_read_error() {
 async fn test_with_snapshot_store_surfaces_a_corrupt_snapshot_meta() {
     let dir = tempfile::tempdir().unwrap();
     let store = open_store(&dir);
-    store.save_snapshot(b"not valid json", b"[]").unwrap();
+    store.save_snapshot(b"not valid json", b"[]", 1).unwrap();
 
     let error = OwnershipStateMachine::with_snapshot_store(store).unwrap_err();
 
@@ -393,7 +490,7 @@ async fn test_with_snapshot_store_rejects_a_snapshot_whose_state_is_corrupt() {
     machine.apply(vec![normal(1, assign("proj", "east"))]).await.unwrap();
     machine.get_snapshot_builder().await.build_snapshot().await.unwrap();
     let stored = store.read_snapshot().unwrap().unwrap();
-    store.save_snapshot(&stored.meta, b"not a snapshot").unwrap();
+    store.save_snapshot(&stored.meta, b"not a snapshot", 1).unwrap();
     drop(machine);
 
     let error = OwnershipStateMachine::with_snapshot_store(store).unwrap_err();

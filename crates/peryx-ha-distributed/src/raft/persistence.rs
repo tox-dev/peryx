@@ -1,7 +1,7 @@
 //! Entries and markers remain opaque so persistence transactions do not depend on `OpenRaft` types.
 //!
 //! A separate redb database prevents log writes from contending with metadata commits. One
-//! transaction covers each append batch, conflict truncation, compaction purge, or snapshot pair.
+//! transaction covers each append batch, conflict truncation, compaction purge, or snapshot record.
 
 use std::ops::Bound::{Included, Unbounded};
 use std::ops::RangeBounds;
@@ -13,12 +13,16 @@ use redb::{Database, ReadableDatabase as _, ReadableTable as _, TableDefinition}
 /// redb compares integer keys by value, so range scans preserve log-index order without key encoding.
 const RAFT_LOG: TableDefinition<u64, &[u8]> = TableDefinition::new("raft_log");
 const RAFT_META: TableDefinition<&str, &[u8]> = TableDefinition::new("raft_meta");
+/// Counters are typed, so reading one back cannot fail on a byte-length check the store has no
+/// recovery path for.
+const RAFT_COUNTER: TableDefinition<&str, u64> = TableDefinition::new("raft_counter");
 
 const VOTE_KEY: &str = "vote";
 const COMMITTED_KEY: &str = "committed";
 const PURGED_KEY: &str = "purged";
 const SNAPSHOT_META_KEY: &str = "snapshot_meta";
 const SNAPSHOT_DATA_KEY: &str = "snapshot_data";
+const SNAPSHOT_GENERATION_KEY: &str = "snapshot_generation";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredEntry {
@@ -53,6 +57,7 @@ impl RaftLogStore {
         {
             txn.open_table(RAFT_LOG)?;
             txn.open_table(RAFT_META)?;
+            txn.open_table(RAFT_COUNTER)?;
         }
         txn.commit()?;
         Ok(Self { db: Arc::new(db) })
@@ -196,19 +201,33 @@ impl RaftLogStore {
         self.get_meta(PURGED_KEY)
     }
 
-    /// Replaces snapshot metadata and data in one transaction to prevent mismatched pairs.
+    /// Replaces snapshot metadata, data, and the generation that named it in one transaction, to
+    /// prevent mismatched pairs and to reserve the identifier before a builder hands it to a peer.
     ///
     /// # Errors
     /// Returns a store error if the transaction commit fails.
-    pub fn save_snapshot(&self, meta: &[u8], data: &[u8]) -> Result<(), RaftLogError> {
+    pub fn save_snapshot(&self, meta: &[u8], data: &[u8], generation: u64) -> Result<(), RaftLogError> {
         let txn = self.db.begin_write()?;
         {
             let mut table = txn.open_table(RAFT_META)?;
             table.insert(SNAPSHOT_META_KEY, meta)?;
             table.insert(SNAPSHOT_DATA_KEY, data)?;
         }
+        txn.open_table(RAFT_COUNTER)?
+            .insert(SNAPSHOT_GENERATION_KEY, generation)?;
         txn.commit()?;
         Ok(())
+    }
+
+    /// Returns the generation the last saved snapshot reserved, or zero when this store has saved
+    /// none.
+    ///
+    /// # Errors
+    /// Returns a store error if the read fails.
+    pub fn read_snapshot_generation(&self) -> Result<u64, RaftLogError> {
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(RAFT_COUNTER)?;
+        Ok(table.get(SNAPSHOT_GENERATION_KEY)?.map_or(0, |value| value.value()))
     }
 
     /// Returns `None` unless both snapshot records exist.

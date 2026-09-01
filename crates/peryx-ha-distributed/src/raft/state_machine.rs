@@ -1,6 +1,8 @@
 //! Blank and membership entries carry no ownership command and return
 //! [`NonMutating`](OwnershipResponse::NonMutating). Durable instances persist built and installed
-//! snapshots, then reload state, membership, and `last_applied` after restart.
+//! snapshots, then reload state, membership, `last_applied`, and the build generation after restart.
+//! The generation names snapshots, so a replacement process never repeats an identifier a follower
+//! may still be assembling chunks under.
 
 use std::io::Cursor;
 use std::sync::Arc;
@@ -31,7 +33,9 @@ struct Inner {
     state: OwnershipState,
     last_applied: Option<LogId<NodeId>>,
     last_membership: StoredMembership<NodeId, PeryxNode>,
-    snapshots_built: u64,
+    /// Builds this store has named. Durable, because a counter held only in the process restarts at
+    /// zero and re-issues an identifier a peer may still be streaming chunks under.
+    snapshot_generation: u64,
     current_snapshot: Option<StoredSnapshot>,
     snapshot_store: Option<RaftLogStore>,
 }
@@ -61,9 +65,12 @@ impl From<SnapshotStoreError> for StorageError<NodeId> {
 }
 
 impl Inner {
-    /// Reloads state, membership, and `last_applied` after log compaction.
+    /// Reloads state, membership, `last_applied`, and the snapshot generation after log compaction.
     fn load(store: RaftLogStore) -> Result<Self, SnapshotStoreError> {
-        let mut inner = Self::default();
+        let mut inner = Self {
+            snapshot_generation: store.read_snapshot_generation()?,
+            ..Self::default()
+        };
         if let Some(stored) = store.read_snapshot()? {
             let meta: SnapshotMeta<NodeId, PeryxNode> = serde_json::from_slice(&stored.meta)?;
             inner.state = OwnershipState::restore(&stored.data)?;
@@ -81,7 +88,7 @@ impl Inner {
     fn persist_snapshot(&self, meta: &SnapshotMeta<NodeId, PeryxNode>, data: &[u8]) -> Result<(), SnapshotStoreError> {
         if let Some(store) = &self.snapshot_store {
             let meta = serde_json::to_vec(meta).expect("a snapshot meta always serializes to JSON");
-            store.save_snapshot(&meta, data)?;
+            store.save_snapshot(&meta, data, self.snapshot_generation)?;
         }
         Ok(())
     }
@@ -139,14 +146,16 @@ impl RaftSnapshotBuilder<TypeConfig> for OwnershipStateMachine {
     async fn build_snapshot(&mut self) -> Result<Snapshot<TypeConfig>, StorageError<NodeId>> {
         let mut inner = self.inner.lock().await;
         let data = inner.state.snapshot();
-        inner.snapshots_built += 1;
+        inner.snapshot_generation += 1;
         let last_index = inner.last_applied.map_or(0, |log_id| log_id.index);
-        let snapshot_id = format!("{last_index}-{}", inner.snapshots_built);
+        let snapshot_id = format!("{last_index}-{}", inner.snapshot_generation);
         let meta = SnapshotMeta {
             last_log_id: inner.last_applied,
             last_membership: inner.last_membership.clone(),
             snapshot_id,
         };
+        // The generation reaches the store before the identifier reaches `OpenRaft`, so a crash
+        // between the two loses the snapshot rather than leaking a name a restart could repeat.
         inner.persist_snapshot(&meta, &data)?;
         inner.current_snapshot = Some(StoredSnapshot {
             meta: meta.clone(),

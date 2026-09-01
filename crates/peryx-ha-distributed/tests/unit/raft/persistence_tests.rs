@@ -175,11 +175,23 @@ fn test_snapshot_round_trips_and_is_none_before_a_save() {
     let (_dir, store) = store();
     assert_eq!(store.read_snapshot().unwrap(), None);
 
-    store.save_snapshot(b"meta-1", b"data-1").unwrap();
+    store.save_snapshot(b"meta-1", b"data-1", 1).unwrap();
     assert_eq!(store.read_snapshot().unwrap(), Some(snapshot(b"meta-1", b"data-1")));
 
-    store.save_snapshot(b"meta-2", b"data-2").unwrap();
+    store.save_snapshot(b"meta-2", b"data-2", 2).unwrap();
     assert_eq!(store.read_snapshot().unwrap(), Some(snapshot(b"meta-2", b"data-2")));
+}
+
+#[test]
+fn test_the_snapshot_generation_is_zero_before_a_save_and_tracks_every_later_save() {
+    let (_dir, store) = store();
+    assert_eq!(store.read_snapshot_generation().unwrap(), 0);
+
+    store.save_snapshot(b"meta-1", b"data-1", 4).unwrap();
+    assert_eq!(store.read_snapshot_generation().unwrap(), 4);
+
+    store.save_snapshot(b"meta-2", b"data-2", 5).unwrap();
+    assert_eq!(store.read_snapshot_generation().unwrap(), 5);
 }
 
 #[test]
@@ -192,7 +204,7 @@ fn test_state_survives_a_reopen() {
         store.save_vote(b"vote").unwrap();
         store.save_committed(Some(b"committed")).unwrap();
         store.purge(1, b"purged-at-1").unwrap();
-        store.save_snapshot(b"snap-meta", b"snap-data").unwrap();
+        store.save_snapshot(b"snap-meta", b"snap-data", 3).unwrap();
     }
 
     let store = RaftLogStore::open_existing(&path).unwrap();
@@ -204,4 +216,5 @@ fn test_state_survives_a_reopen() {
         store.read_snapshot().unwrap(),
         Some(snapshot(b"snap-meta", b"snap-data"))
     );
+    assert_eq!(store.read_snapshot_generation().unwrap(), 3);
 }
