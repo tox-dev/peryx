@@ -40,8 +40,10 @@ policy still applies, and a missing blob stays missing.
 ## Cache bound
 
 Successful PyPI read responses carry `Cache-Control: public, max-age=60, must-revalidate, no-transform`. A request with
-an `Authorization` header uses `private` in place of `public`. Errors and canonical-URL redirects carry
-`Cache-Control: no-store`.
+an `Authorization` header uses `private` in place of `public`. A `304 Not Modified` states the same directives as the
+`200` it validates, because [RFC 9111 section 4.3.4](https://www.rfc-editor.org/rfc/rfc9111.html#section-4.3.4) copies a
+validated response's fields onto the stored one: a `no-store` there would drop the artifact the client just revalidated.
+Errors and canonical-URL redirects carry `Cache-Control: no-store`.
 
 A create or lift operation invalidates the origin's digest-decision cache before it returns. While any revocation is
 active, Peryx bypasses cached Simple pages and filters the current project model before serialization. A filtered page

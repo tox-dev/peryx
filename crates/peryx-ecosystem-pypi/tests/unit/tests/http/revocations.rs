@@ -193,6 +193,45 @@ async fn test_pypi_read_cache_headers_bound_prior_content_and_redirects() {
     assert_eq!(headers[header::CACHE_CONTROL], "no-store");
 }
 
+/// RFC 9111 s4.3.4 replaces a stored response's fields with the ones its `304` carries, so a validated
+/// response states the policy of the `200` it refreshes, down to the scope the credential selects. A
+/// `no-store` would evict the artifact the client just revalidated, and the `immutable` a download
+/// starts from would outlive the revocation bound that download settles on.
+#[rstest]
+#[case::if_none_match_anonymous(header::IF_NONE_MATCH, header::ETAG, None, "public")]
+#[case::if_none_match_authorized(header::IF_NONE_MATCH, header::ETAG, Some("Basic dW51c2Vk"), "private")]
+#[case::if_modified_since_anonymous(header::IF_MODIFIED_SINCE, header::LAST_MODIFIED, None, "public")]
+#[case::if_modified_since_authorized(
+    header::IF_MODIFIED_SINCE,
+    header::LAST_MODIFIED,
+    Some("Basic dW51c2Vk"),
+    "private"
+)]
+#[tokio::test]
+async fn test_validated_artifact_states_the_cache_policy_of_the_download_it_refreshes(
+    #[case] condition: header::HeaderName,
+    #[case] validator: header::HeaderName,
+    #[case] credential: Option<&str>,
+    #[case] scope: &str,
+) {
+    let h = harness().await;
+    let artifact = put_local_file(&h.state, FILENAME, &fixture_wheel(), "1.0");
+    let uri = format!("/hosted/files/{}/{FILENAME}", artifact.as_str());
+    let mut request: Vec<(&str, &str)> = credential.map(|value| ("authorization", value)).into_iter().collect();
+    let (status, download, body) = get_bytes_with_headers(&h.state, &uri, &request).await;
+    assert_eq!((status, body), (StatusCode::OK, fixture_wheel()));
+    assert_eq!(download[header::CACHE_CONTROL], cache_policy(scope));
+    request.push((condition.as_str(), download[&validator].to_str().unwrap()));
+
+    let (status, validated, body) = get_bytes_with_headers(&h.state, &uri, &request).await;
+
+    assert_eq!(status, StatusCode::NOT_MODIFIED);
+    assert_eq!(validated[header::CACHE_CONTROL], cache_policy(scope));
+    assert_eq!(validated[header::ETAG], download[header::ETAG]);
+    assert_eq!(validated[header::ACCEPT_RANGES], download[header::ACCEPT_RANGES]);
+    assert!(body.is_empty());
+}
+
 #[tokio::test]
 async fn test_revocation_store_failure_denies_artifact_bytes() {
     let (_dir, state, artifact) = state_with_broken_revocation_index();

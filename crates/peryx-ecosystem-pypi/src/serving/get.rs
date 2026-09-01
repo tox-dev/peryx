@@ -820,7 +820,10 @@ fn apply_revocation_cache_policy(response: &mut Response, authenticated: bool) {
         );
         return;
     }
-    let value = if response.status().is_success() {
+    // RFC 9111 s4.3.4 updates the stored response with the `304`'s header fields, so a `304` keeps the
+    // policy of the `200` it validated; `no-store` there would make a cache drop the artifact it just
+    // revalidated and pull the immutable bytes again.
+    let value = if response.status().is_success() || response.status() == StatusCode::NOT_MODIFIED {
         format!(
             "{}, max-age={}, must-revalidate, no-transform",
             if authenticated { "private" } else { "public" },

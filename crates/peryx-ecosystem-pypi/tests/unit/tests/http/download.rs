@@ -428,7 +428,6 @@ async fn test_cached_file_matching_if_none_match_is_not_modified(#[case] field: 
 
     assert_eq!(status, StatusCode::NOT_MODIFIED);
     assert_eq!(headers[header::ETAG], wheel_etag());
-    assert_eq!(headers[header::CACHE_CONTROL], "no-store");
     assert!(body.is_empty());
 }
 #[rstest]
