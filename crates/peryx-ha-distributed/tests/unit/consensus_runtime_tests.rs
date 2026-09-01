@@ -1408,6 +1408,32 @@ async fn test_promoting_a_learner_on_a_stopped_group_is_unavailable() {
     );
 }
 
+#[tokio::test]
+async fn test_removing_a_voter_on_a_stopped_group_is_unavailable() {
+    let dir = tempfile::tempdir().unwrap();
+    let node = leader_node(&dir).await;
+    node.raft().shutdown().await.unwrap();
+    let group = OwnershipGroup::new(node, DatacenterId("east".to_owned()));
+
+    assert_eq!(
+        (
+            matches!(
+                group
+                    .submit(
+                        None,
+                        ControlCommand::RemoveVoter {
+                            datacenter: "east".to_owned(),
+                        }
+                    )
+                    .await,
+                Err(ControlError::Unavailable(_))
+            ),
+            group.cluster_status().voters,
+        ),
+        (true, vec!["east".to_owned()])
+    );
+}
+
 /// Reusing an address is legitimate once its owner is gone, so the endpoint rule must release with the
 /// removal rather than fence the address forever.
 #[tokio::test]
