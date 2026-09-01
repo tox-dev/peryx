@@ -82,8 +82,8 @@ async-trait.workspace = true
 peryx-policy.workspace = true
 peryx-events.workspace = true
 peryx-identity.workspace = true
-peryx-test-support.workspace = true
-peryx-storage.workspace = true
+peryx-storage = { workspace = true, features = ["fault-injection"] }
+peryx-test-support = { workspace = true, features = ["redb-fault"] }
 rstest.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

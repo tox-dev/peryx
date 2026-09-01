@@ -108,12 +108,20 @@ impl BeaconSender {
         self
     }
 
+    /// A node that cannot read its journal still beats, so the writer keeps seeing it alive, but it
+    /// reports no frontier instead of claiming it has applied nothing.
     fn report(&self, sequence: u64) -> HeartbeatReport {
         HeartbeatReport {
             node: self.node.clone(),
             incarnation: self.incarnation,
             sequence,
-            applied: Some(self.meta.current_serial().unwrap_or(0)),
+            applied: match self.meta.current_serial() {
+                Ok(serial) => Some(serial),
+                Err(error) => {
+                    tracing::warn!(error = %error, "heartbeat reports no applied frontier");
+                    None
+                }
+            },
         }
     }
 

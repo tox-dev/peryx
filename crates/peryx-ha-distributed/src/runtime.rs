@@ -135,13 +135,14 @@ struct NodeObservation<'a> {
     frontier: NodeFrontier<'a>,
 }
 
-/// A replica answers from its last published cycle; every other role answers from its own journal.
+/// A replica answers from its last published cycle; every other role answers from its own journal,
+/// and answers `None` when that journal cannot be read.
 enum NodeFrontier<'a> {
     Replica {
         observation: ReplicaObservation,
         upstream: &'a str,
     },
-    Local(u64),
+    Local(Option<u64>),
 }
 
 impl NodeObservation<'_> {
@@ -150,8 +151,10 @@ impl NodeObservation<'_> {
         if !self.blob_store_healthy {
             reasons.push("blob_store");
         }
-        if let NodeFrontier::Replica { observation, .. } = &self.frontier {
-            reasons.extend(observation.readiness_gaps());
+        match &self.frontier {
+            NodeFrontier::Replica { observation, .. } => reasons.extend(observation.readiness_gaps()),
+            NodeFrontier::Local(None) => reasons.push("metadata_store"),
+            NodeFrontier::Local(Some(_)) => {}
         }
         if !self.worker_domain_healthy {
             reasons.push("worker_unhealthy");
@@ -201,6 +204,18 @@ fn group_readiness_source(config: &RuntimeConfig) -> Option<GroupReadinessSource
     })
 }
 
+/// A frontier the store refuses to report is absent, not zero, so readiness fails and the quorum
+/// counts this node as silent instead of as maximally behind.
+fn local_frontier(meta: &MetaStore) -> Option<u64> {
+    match meta.current_serial() {
+        Ok(serial) => Some(serial),
+        Err(error) => {
+            tracing::warn!(error = %error, "availability readiness has no local frontier");
+            None
+        }
+    }
+}
+
 impl AvailabilityNode {
     /// Readiness requires a healthy blob store, replica frontier, and worker domain, each read once.
     async fn observe(&self) -> NodeObservation<'_> {
@@ -208,7 +223,7 @@ impl AvailabilityNode {
             blob_store_healthy: self.blobs.health().await.is_ok(),
             worker_domain_healthy: self.workers.as_ref().is_none_or(|workers| workers.is_healthy()),
             frontier: self.replica.as_ref().map_or_else(
-                || NodeFrontier::Local(self.meta.current_serial().unwrap_or(0)),
+                || NodeFrontier::Local(local_frontier(&self.meta)),
                 |replica| NodeFrontier::Replica {
                     observation: replica.monitor.snapshot(),
                     upstream: &replica.upstream,
@@ -266,14 +281,15 @@ impl AvailabilityNode {
         (ready, body)
     }
 
-    /// Silent members remain in the quorum denominator but contribute no frontier.
-    fn group_readiness(&self, group: &GroupReadinessSource, serial: u64, now: Instant) -> Value {
+    /// Silent members remain in the quorum denominator but contribute no frontier, which is also how
+    /// a writer that cannot read its own journal counts itself.
+    fn group_readiness(&self, group: &GroupReadinessSource, serial: Option<u64>, now: Instant) -> Value {
         let members: Vec<MemberFrontier> = group
             .members
             .iter()
             .map(|(node, role)| {
                 let applied = match role {
-                    MemberRole::Writer => Some(serial),
+                    MemberRole::Writer => serial,
                     MemberRole::Replica => self
                         .liveness
                         .as_ref()

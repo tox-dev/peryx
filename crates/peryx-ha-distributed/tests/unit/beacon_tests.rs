@@ -7,6 +7,7 @@ use axum::http::StatusCode;
 use axum::routing::post;
 use peryx_core::PrometheusSource as _;
 use peryx_storage::meta::{MetaError, MetaStore};
+use peryx_test_support::fault;
 use tokio::sync::mpsc;
 
 use crate::support::{TestServer, http_contract};
@@ -135,6 +136,35 @@ async fn test_beat_reports_the_current_frontier_and_beacon_position() {
         .find(|peer| peer.node == "replica-a")
         .unwrap();
     assert_eq!((peer.incarnation, peer.sequence), (Some(7), Some(3)));
+}
+
+#[tokio::test]
+async fn test_beat_reports_no_frontier_when_the_journal_cannot_be_read() {
+    let (server, tracker) = writer().await;
+    let (inner, journal) = fault::backend();
+    let beacon = BeaconSender::new(
+        &server.url,
+        TOKEN,
+        "replica-a",
+        7,
+        MetaStore::open_backend(fault::faulted(&inner, &journal)).unwrap(),
+        Duration::from_mins(1),
+    )
+    .unwrap();
+    journal.arm(0);
+
+    beacon.beat(3).await.unwrap();
+
+    let now = Instant::now();
+    let peer = tracker
+        .summary(now)
+        .into_iter()
+        .find(|peer| peer.node == "replica-a")
+        .unwrap();
+    assert_eq!(
+        (tracker.applied_frontier("replica-a", now), peer.incarnation),
+        (None, Some(7))
+    );
 }
 
 #[tokio::test]

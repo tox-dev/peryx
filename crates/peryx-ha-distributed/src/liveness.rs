@@ -29,7 +29,10 @@ pub struct HeartbeatReport {
     pub node: String,
     pub incarnation: u64,
     pub sequence: u64,
-    /// Defaults to `None` so reports from replicas that predate frontier reporting still decode.
+    /// Defaults to `None` so reports from replicas that predate frontier reporting still decode. A
+    /// replica whose metadata store cannot be read reports `None` for the same reason it would omit
+    /// the field: it has no frontier to offer, and the writer counts it as a silent member rather
+    /// than as one that has applied nothing.
     #[serde(default)]
     pub applied: Option<u64>,
 }

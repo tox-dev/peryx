@@ -1,136 +1,42 @@
-//! Deterministic redb fault injection for meta-store tests.
+//! Meta-store helpers over the shared redb fault injector, plus the tests that pin its behaviour.
+//!
+//! The injector itself lives in `peryx-test-support` so crates outside this one can make a store's
+//! reads fail; only the helpers that need `MetaStore` internals stay here.
 
-use std::io;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
-use redb::Database;
-#[cfg(test)]
+use peryx_test_support::fault::faulted;
 use redb::WriteTransaction;
 use redb::backends::InMemoryBackend;
 use rstest::rstest;
 
-use super::{MetaDatabase, MetaStore};
+use super::MetaStore;
 
-/// Hand-written to avoid uncovered macro-generated branches.
-#[derive(Debug)]
-struct FaultBackend {
-    inner: Arc<InMemoryBackend>,
-    fault: Arc<Fault>,
-}
-
-impl redb::StorageBackend for FaultBackend {
-    fn len(&self) -> io::Result<u64> {
-        self.fault.pass().and_then(|()| self.inner.len())
-    }
-
-    fn read(&self, offset: u64, out: &mut [u8]) -> io::Result<()> {
-        self.fault.pass().and_then(|()| self.inner.read(offset, out))
-    }
-
-    fn set_len(&self, len: u64) -> io::Result<()> {
-        self.fault.pass().and_then(|()| self.inner.set_len(len))
-    }
-
-    fn sync_data(&self) -> io::Result<()> {
-        self.fault.pass().and_then(|()| self.inner.sync_data())
-    }
-
-    fn write(&self, offset: u64, data: &[u8]) -> io::Result<()> {
-        self.fault.pass().and_then(|()| self.inner.write(offset, data))
-    }
-}
-
-#[derive(Debug)]
-pub struct Fault(AtomicUsize);
-
-impl Fault {
-    const DISABLED: usize = usize::MAX;
-    const INJECTED: usize = Self::DISABLED - 1;
-
-    const fn disabled() -> Self {
-        Self(AtomicUsize::new(Self::DISABLED))
-    }
-
-    pub fn arm(&self, after: usize) {
-        self.0.store(after, Ordering::SeqCst);
-    }
-
-    pub fn disable(&self) {
-        self.0.store(Self::DISABLED, Ordering::SeqCst);
-    }
-
-    pub fn triggered(&self) -> bool {
-        self.0.load(Ordering::SeqCst) == Self::INJECTED
-    }
-
-    fn pass(&self) -> io::Result<()> {
-        let previous = self
-            .0
-            .try_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| match remaining {
-                Self::DISABLED | Self::INJECTED => None,
-                0 => Some(Self::INJECTED),
-                _ => Some(remaining - 1),
-            })
-            .unwrap_or_else(|state| state);
-        if matches!(previous, 0 | Self::INJECTED) {
-            Err(io::Error::other("injected storage failure"))
-        } else {
-            Ok(())
-        }
-    }
-}
-
-fn faulted(inner: &Arc<InMemoryBackend>, fault: &Arc<Fault>) -> FaultBackend {
-    FaultBackend {
-        inner: inner.clone(),
-        fault: fault.clone(),
-    }
-}
-
-fn database(inner: &Arc<InMemoryBackend>, fault: &Arc<Fault>) -> Database {
-    // A zeroed cache sends reads through the fault backend instead of cached pages.
-    Database::builder()
-        .set_cache_size(0)
-        .create_with_backend(faulted(inner, fault))
-        .unwrap()
-}
-
-pub fn backend() -> (Arc<InMemoryBackend>, Arc<Fault>) {
-    (Arc::new(InMemoryBackend::new()), Arc::new(Fault::disabled()))
-}
+pub use peryx_test_support::fault::{Fault, backend};
 
 /// Fault tests must exercise production table definitions.
 pub fn initialized() -> (MetaStore, Arc<InMemoryBackend>, Arc<Fault>) {
     let (inner, fault) = backend();
-    let store = MetaStore::initialize(database(&inner, &fault)).unwrap();
+    let store = MetaStore::open_backend(faulted(&inner, &fault)).unwrap();
     (store, inner, fault)
 }
 
-#[cfg(test)]
+pub fn reopen(inner: &Arc<InMemoryBackend>, fault: &Arc<Fault>) -> MetaStore {
+    MetaStore::reopen_backend(faulted(inner, fault)).unwrap()
+}
+
 pub fn create(
     inner: &Arc<InMemoryBackend>,
     fault: &Arc<Fault>,
     init: impl FnOnce(&WriteTransaction) -> Result<(), redb::TableError>,
 ) -> MetaStore {
-    let database = database(inner, fault);
-    let write = database.begin_write().unwrap();
+    let store = reopen(inner, fault);
+    let write = store.db.begin_write().unwrap();
     init(&write).unwrap();
     write.commit().unwrap();
-    MetaStore {
-        db: Arc::new(MetaDatabase::ReadWrite(database)),
-        clock: super::system_clock(),
-    }
+    store
 }
 
-pub fn reopen(inner: &Arc<InMemoryBackend>, fault: &Arc<Fault>) -> MetaStore {
-    MetaStore {
-        db: Arc::new(MetaDatabase::ReadWrite(database(inner, fault))),
-        clock: super::system_clock(),
-    }
-}
-
-#[cfg(test)]
 pub fn corrupt(store: &MetaStore, table: redb::TableDefinition<'_, &str, &[u8]>, key: &str, bytes: &[u8]) {
     let write = store.db.begin_write().unwrap();
     write.open_table(table).unwrap().insert(key, bytes).unwrap();

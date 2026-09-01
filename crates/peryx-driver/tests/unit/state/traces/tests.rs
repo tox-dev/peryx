@@ -5,12 +5,18 @@ use peryx_core::{NodeRole, TopologyConfig, TopologyMember, TopologyMode};
 use peryx_ha::{AuthorityEpoch, OperationKind, OperationObservation, OperationObserver};
 use peryx_storage::blob::{BlobStore, Digest, WriteEvidence};
 use peryx_storage::meta::MetaStore;
+use peryx_test_support::fault;
 
 use crate::state::{AppState, ServingState};
 
 fn state_with(topology: TopologyConfig) -> (tempfile::TempDir, Arc<ServingState>, Arc<Capture>) {
     let dir = tempfile::tempdir().unwrap();
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let (state, capture) = state_from(meta, &dir, topology);
+    (dir, state, capture)
+}
+
+fn state_from(meta: MetaStore, dir: &tempfile::TempDir, topology: TopologyConfig) -> (Arc<ServingState>, Arc<Capture>) {
     let blobs = BlobStore::new(dir.path().join("blobs"));
     let mut state = AppState::new(meta, blobs, 60, Vec::new());
     let capture = Arc::new(Capture::default());
@@ -25,7 +31,7 @@ fn state_with(topology: TopologyConfig) -> (tempfile::TempDir, Arc<ServingState>
             operations: Some(capture.clone()),
         })
         .unwrap();
-    (dir, state.serving, capture)
+    (state.serving, capture)
 }
 
 fn topology(local: Option<&str>) -> TopologyConfig {
@@ -133,6 +139,19 @@ fn test_record_operation_trace_forwards_the_committed_identity() {
             kind: OperationKind::Publish,
         }]
     );
+}
+
+#[test]
+fn test_record_operation_trace_drops_the_trace_when_the_serial_cannot_be_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let (inner, journal) = fault::backend();
+    let meta = MetaStore::open_backend(fault::faulted(&inner, &journal)).unwrap();
+    let (state, capture) = state_from(meta, &dir, topology(Some("writer")));
+    journal.arm(0);
+
+    state.record_operation_trace(OperationKind::Publish, 4);
+
+    assert_eq!(*capture.0.lock().unwrap(), Vec::new());
 }
 
 #[test]

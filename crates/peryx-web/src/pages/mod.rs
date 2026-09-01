@@ -116,6 +116,12 @@ fn usage_or_error(usage: Result<UiStats, LoaderError>) -> (Option<UiStats>, Opti
     }
 }
 
+/// A serial the caller may not see, or that the metadata store could not report, prints as absent
+/// rather than as a change serial of zero.
+fn serial_stat(serial: Option<u64>) -> String {
+    serial.map_or_else(|| "n/a".to_owned(), |serial| serial.to_string())
+}
+
 /// The per-ecosystem metric groups: one labelled block per ecosystem, so the reader can tell a
 /// ecosystem-scoped counter from the global request count.
 fn ecosystem_stats(data: &UiSnapshot) -> impl IntoView + use<> {

@@ -303,6 +303,35 @@ impl MetaStore {
         Self::initialize(Database::create(path)?)
     }
 
+    /// Creates shared tables over a caller-supplied redb backend.
+    ///
+    /// Test-only, behind the `fault-injection` feature: it lets a test drive the store from a
+    /// backend that fails on demand, and it is absent from a normal build. The page cache is
+    /// disabled so that every read reaches the backend rather than a cached page.
+    ///
+    /// # Errors
+    /// Returns a store error if the database cannot be opened or initialized.
+    #[cfg(any(test, feature = "fault-injection"))]
+    pub fn open_backend(backend: impl redb::StorageBackend) -> Result<Self, MetaError> {
+        Self::initialize(uncached_database(backend)?)
+    }
+
+    /// Opens an already-initialized database over a caller-supplied redb backend.
+    ///
+    /// Test-only, behind the `fault-injection` feature. Unlike [`MetaStore::open_backend`] it
+    /// creates no tables, so a test can reopen a store whose tables a prior fault left partly
+    /// written.
+    ///
+    /// # Errors
+    /// Returns a store error if the database cannot be opened.
+    #[cfg(any(test, feature = "fault-injection"))]
+    pub fn reopen_backend(backend: impl redb::StorageBackend) -> Result<Self, MetaError> {
+        Ok(Self {
+            db: Arc::new(MetaDatabase::ReadWrite(uncached_database(backend)?)),
+            clock: system_clock(),
+        })
+    }
+
     fn initialize(db: Database) -> Result<Self, MetaError> {
         let txn = db.begin_write()?;
         {
@@ -413,6 +442,13 @@ impl MetaStore {
             clock: system_clock(),
         })
     }
+}
+
+/// A zeroed page cache sends every read through the backend instead of a cached page, which is what
+/// makes an injected backend failure observable.
+#[cfg(any(test, feature = "fault-injection"))]
+fn uncached_database(backend: impl redb::StorageBackend) -> Result<Database, redb::DatabaseError> {
+    Database::builder().set_cache_size(0).create_with_backend(backend)
 }
 
 /// A host clock that predates the epoch must not stop the store from opening.

@@ -110,7 +110,8 @@ frontier and `503 Service Unavailable` otherwise, naming every cause in `reasons
 - `readable_lag`: a replica applied the writer's latest serial, but a required derived view - the search index or the
   blob view - has not caught up, so reads still hold below it.
 - `sync_error`: a replica's last poll of its writer failed.
-- `metadata_store`: a replica's own metadata store could not answer, so it cannot say how far it has applied.
+- `metadata_store`: the node's own metadata store could not answer, so it cannot say how far it has applied. Its
+  `serial` is `null` for as long as that holds, never zero.
 - `blob_plane`: a replica's last blob pass failed. Only a later complete pass clears it; applying more metadata does
   not.
 - `retired_peers`: a replica retired every peer it follows, so no source remains to poll.
@@ -151,7 +152,9 @@ A `dc` or `ha` writer that names a member roster folds the group's frontiers int
 `GET /+replication/v1/ready`, under a `group_readiness` field an `operator:read` caller reads. The writer knows its own
 applied `serial`. Each replica sends its highest applied serial to the writer through authenticated
 `POST /+replication/v1/heartbeat` requests, so the writer aggregates the group without dialing a replica. A replica
-without `node_identity` sends no heartbeat and counts as not reporting.
+without `node_identity` sends no heartbeat and counts as not reporting. So does any member whose metadata store cannot
+answer, the writer included: it contributes no frontier rather than a frontier of zero, which would drag
+`durable_frontier` down to it.
 
 The field carries four values. `ready` is whether the group can acknowledge a new write under its durability policy.
 `durable_frontier` is the highest serial the policy's required number of members have all applied, the serial the group

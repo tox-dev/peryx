@@ -12,6 +12,7 @@ use peryx_ha::AvailabilityRuntime as _;
 use peryx_ha::{ControlAuthorizer as _, ReferenceInventory as _};
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::{MetaStore, ObservedFrontier};
+use peryx_test_support::fault;
 use serde_json::Value;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tower::ServiceExt as _;
@@ -376,6 +377,16 @@ fn state() -> (tempfile::TempDir, Arc<AppState>) {
     let meta = crate::support::distributed_meta(dir.path().join("peryx.redb"));
     let blobs = BlobStore::new(dir.path().join("blobs"));
     (dir, Arc::new(AppState::new(meta, blobs, 60, Vec::new())))
+}
+
+/// A writer whose journal reads can be made to fail after the runtime is already assembled.
+fn faulted_state() -> (tempfile::TempDir, Arc<AppState>, Arc<fault::Fault>) {
+    let dir = tempfile::tempdir().unwrap();
+    let (inner, journal) = fault::backend();
+    let meta = MetaStore::open_backend(fault::faulted(&inner, &journal)).unwrap();
+    meta.initialize_distributed_state().unwrap();
+    let blobs = BlobStore::new(dir.path().join("blobs"));
+    (dir, Arc::new(AppState::new(meta, blobs, 60, Vec::new())), journal)
 }
 
 fn install_distributed_services(state: &mut Arc<AppState>, mode: peryx_core::TopologyMode, role: peryx_core::NodeRole) {
@@ -1394,6 +1405,39 @@ async fn ha_runtime_mounts_the_frontier_endpoint() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_writer_without_a_readable_journal_reports_no_serial_and_no_frontier() {
+    let (dir, mut state, journal) = faulted_state();
+    install_distributed_services(&mut state, peryx_core::TopologyMode::Ha, peryx_core::NodeRole::Writer);
+    let mut config = primary_config(&dir, DistributedMode::Ha);
+    config.write_ack_policy = peryx_ha::DurabilityPolicy::Majority;
+    config.node_identity = Some("writer".to_owned());
+    config.writer_identity = Some("writer".to_owned());
+    config.membership = Some(membership(vec![
+        member("writer", "east", "http://127.0.0.1:4462", RuntimeMemberRole::Writer),
+        member("replica", "west", "http://127.0.0.1:4463", RuntimeMemberRole::Replica),
+    ]));
+    let runtime = runtime_with_audience(&config, &state, AvailabilityAudience::Operator).unwrap();
+    journal.arm(0);
+
+    let (_, document) = get(&runtime.routes(), "/+replication/v1/health").await;
+
+    assert_eq!(
+        (
+            &document["ready"],
+            &document["reasons"],
+            &document["serial"],
+            &document["group_readiness"]["durable_frontier"],
+        ),
+        (
+            &serde_json::json!(false),
+            &serde_json::json!(["metadata_store"]),
+            &Value::Null,
+            &serde_json::json!(0),
+        )
+    );
 }
 
 #[tokio::test]

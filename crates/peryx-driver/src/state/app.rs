@@ -357,9 +357,19 @@ impl DistributedAvailability {
         }
     }
 
+    /// A trace whose serial cannot be read is dropped rather than emitted at serial zero: the serial
+    /// seeds the trace identity, so a fabricated one both misreports where the mutation landed and
+    /// collides with every other trace that lost the same read.
     fn record_operation_trace(&self, meta: &MetaStore, kind: peryx_ha::OperationKind, fence: u64) {
         let Some(observer) = &self.operation_observer else {
             return;
+        };
+        let serial = match meta.current_serial() {
+            Ok(serial) => serial,
+            Err(error) => {
+                tracing::warn!(error = %error, "could not read the serial for an operation trace");
+                return;
+            }
         };
         observer.record(peryx_ha::OperationObservation {
             source: self
@@ -368,7 +378,7 @@ impl DistributedAvailability {
                 .clone()
                 .unwrap_or_else(|| "standalone".to_owned()),
             epoch: peryx_ha::AuthorityEpoch(fence),
-            serial: meta.current_serial().unwrap_or(0),
+            serial,
             kind,
         });
     }

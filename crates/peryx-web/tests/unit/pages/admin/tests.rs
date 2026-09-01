@@ -63,7 +63,7 @@ fn admin_status_body_renders_index_states_and_usage() {
         <AdminStatusBody
             data=UiSnapshot {
                 version: "1.2.3".to_owned(),
-                serial: 4,
+                serial: Some(4),
                 requests: 5,
                 indexes: vec![cached, hosted, virtual_index],
                 ..UiSnapshot::default()

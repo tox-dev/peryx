@@ -2,6 +2,8 @@
 //! [`Drop`] reaps descendants after failures.
 
 mod driver;
+#[cfg(feature = "redb-fault")]
+pub mod fault;
 mod process_fixture;
 pub mod toxiproxy;
 

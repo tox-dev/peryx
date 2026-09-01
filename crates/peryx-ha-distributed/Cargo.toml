@@ -42,7 +42,8 @@ criterion = { workspace = true, features = ["async_tokio"] }
 hdrhistogram.workspace = true
 http-body-util.workspace = true
 peryx-policy.workspace = true
-peryx-test-support.workspace = true
+peryx-storage = { workspace = true, features = ["fault-injection"] }
+peryx-test-support = { workspace = true, features = ["redb-fault"] }
 loom = "0.7.2"
 peryx-events = { workspace = true, features = ["test-util"] }
 reqwest = { workspace = true, features = ["json"] }

@@ -42,6 +42,8 @@ uuid.workspace = true
 
 [dev-dependencies]
 argon2.workspace = true
+peryx-storage = { workspace = true, features = ["fault-injection"] }
+peryx-test-support = { workspace = true, features = ["redb-fault"] }
 redb.workspace = true
 rstest.workspace = true
 tempfile.workspace = true

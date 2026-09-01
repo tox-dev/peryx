@@ -10,7 +10,7 @@ use crate::model::{UiEcosystemSummary, UiHosted, UiIndex, UiMetricFamily, UiRece
 struct StatusDocument {
     version: String,
     #[serde(default)]
-    serial: u64,
+    serial: Option<u64>,
     #[serde(default)]
     requests: u64,
     #[serde(default, rename = "by_ecosystem")]

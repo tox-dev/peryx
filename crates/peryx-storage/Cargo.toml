@@ -16,6 +16,8 @@ doc = false
 
 [features]
 container-tests = ["dep:tracing-subscriber"]
+# Test-only: opens a store over a caller-supplied redb backend so reads can be made to fail.
+fault-injection = []
 
 [dependencies]
 atomicwrites.workspace = true
@@ -48,6 +50,7 @@ criterion.workspace = true
 http.workspace = true
 http-body.workspace = true
 http-body-util.workspace = true
+peryx-test-support = { workspace = true, features = ["redb-fault"] }
 rstest.workspace = true
 testcontainers.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

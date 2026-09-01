@@ -10,6 +10,8 @@ use peryx_http::response_security::FieldClassification;
 use peryx_identity::IndexAcl;
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
+use peryx_test_support::fault;
+use rstest::rstest;
 
 use super::{
     has_administrator_access, has_operator_access, index_view, redacted_auth, snapshot_for_class, stats_for_class,
@@ -40,6 +42,29 @@ fn auth_redaction_hides_configured_credentials() {
     ] {
         assert_eq!(redacted_auth(auth), expected, "auth kind: {auth}");
     }
+}
+
+/// An operator sees the serial the store reports, and nothing at all when the store cannot answer:
+/// a change serial of zero would read as a store that has applied nothing.
+#[rstest]
+#[case::readable(false, Some(1))]
+#[case::unreadable(true, None)]
+fn snapshot_reports_a_serial_only_when_the_store_answers(#[case] unreadable: bool, #[case] expected: Option<u64>) {
+    let directory = tempfile::tempdir().unwrap();
+    let (inner, journal) = fault::backend();
+    let app = app_with_meta(
+        &directory,
+        MetaStore::open_backend(fault::faulted(&inner, &journal)).unwrap(),
+    );
+    app.serving.meta.next_serial().unwrap();
+    if unreadable {
+        journal.arm(0);
+    }
+
+    assert_eq!(
+        snapshot_for_class(&app, FieldClassification::Operator, None).serial,
+        expected
+    );
 }
 
 #[test]
@@ -205,8 +230,16 @@ fn stats_authority_gates_drill_results() {
 
 fn app() -> (tempfile::TempDir, AppState) {
     let directory = tempfile::tempdir().unwrap();
-    let app = AppState::new(
+    let app = app_with_meta(
+        &directory,
         MetaStore::open(directory.path().join("peryx.redb")).unwrap(),
+    );
+    (directory, app)
+}
+
+fn app_with_meta(directory: &tempfile::TempDir, meta: MetaStore) -> AppState {
+    AppState::new(
+        meta,
         BlobStore::new(directory.path().join("blobs")),
         60,
         vec![Index {
@@ -217,8 +250,7 @@ fn app() -> (tempfile::TempDir, AppState) {
             policy: peryx_policy::Policy::default(),
             acl: IndexAcl::default(),
         }],
-    );
-    (directory, app)
+    )
 }
 
 fn cached_description(auth: &'static str) -> IndexDescription {

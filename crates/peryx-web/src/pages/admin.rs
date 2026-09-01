@@ -1,7 +1,8 @@
 use leptos::prelude::*;
 
 use super::{
-    ErrorMessage, LoadState, ecosystem_stats, human_size, optional_counters_for, retain, start_refresh, usage_or_error,
+    ErrorMessage, LoadState, ecosystem_stats, human_size, optional_counters_for, retain, serial_stat, start_refresh,
+    usage_or_error,
 };
 use crate::data::load_admin_overview;
 use crate::model::{UiCounters, UiIndex, UiRecentWrite, UiSnapshot, UiStats, UiSummaryStatus};
@@ -56,7 +57,7 @@ fn AdminStatusBody(data: UiSnapshot, usage: Option<UiStats>) -> impl IntoView {
             <div class="metrics-label">"Global"</div>
             <div class="stat-row">
                 <div class="stat"><strong>{data.version.clone()}</strong><span>"version"</span></div>
-                <div class="stat"><strong>{data.serial}</strong><span>"change serial"</span></div>
+                <div class="stat"><strong>{serial_stat(data.serial)}</strong><span>"change serial"</span></div>
                 <div class="stat"><strong>{data.requests}</strong><span>"accepted requests"</span></div>
                 <div class="stat"><strong>{indexes.len()}</strong><span>"indexes"</span></div>
                 <div class="stat"><strong>{kind_count(&indexes, "virtual")}</strong><span>"virtual"</span></div>

@@ -24,11 +24,16 @@ path = "tests/fixture.rs"
 name = "support"
 path = "tests/unit/tests.rs"
 
+[features]
+# Test-only: the deterministic redb fault injector, kept out of production builds.
+redb-fault = ["dep:redb"]
+
 [dependencies]
 async-trait.workspace = true
 axum.workspace = true
 peryx-core.workspace = true
 peryx-driver.workspace = true
+redb = { workspace = true, optional = true }
 reqwest = { workspace = true, features = ["blocking", "gzip", "http2", "json", "rustls-no-provider", "stream"] }
 rustls.workspace = true
 serde_json.workspace = true

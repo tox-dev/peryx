@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct UiSnapshot {
     pub version: String,
-    pub serial: u64,
+    /// Absent when the caller may not see it and when the metadata store cannot report it; the page
+    /// shows neither as a serial of zero.
+    pub serial: Option<u64>,
     pub requests: u64,
     pub ecosystems: Vec<UiEcosystemSummary>,
     pub families: Vec<UiMetricFamily>,

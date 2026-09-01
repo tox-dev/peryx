@@ -38,7 +38,7 @@ fn dashboard_body_renders_overlay_and_standalone_cards() {
         <DashboardBody
             data=UiSnapshot {
                 version: "1.2.3".to_owned(),
-                serial: 4,
+                serial: Some(4),
                 requests: 5,
                 indexes: vec![hosted, standalone, quiet, overlay, quiet_overlay],
                 ..UiSnapshot::default()

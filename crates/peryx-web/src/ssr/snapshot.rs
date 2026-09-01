@@ -39,11 +39,7 @@ fn snapshot_for_class(app: &AppState, class: FieldClassification, recent_limit: 
     let administrator = has_administrator_access(class);
     UiSnapshot {
         version: env!("CARGO_PKG_VERSION").to_owned(),
-        serial: if operator {
-            app.serving.meta.current_serial().unwrap_or(0)
-        } else {
-            0
-        },
+        serial: operator.then(|| app.serving.meta.current_serial().ok()).flatten(),
         requests: if operator {
             app.serving.requests.load(std::sync::atomic::Ordering::Relaxed)
         } else {
