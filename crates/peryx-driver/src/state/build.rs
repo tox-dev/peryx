@@ -356,9 +356,8 @@ fn system_now() -> i64 {
 /// dry-run and an export overlap.
 const RETENTION_PLANS_PER_REPOSITORY: usize = 2;
 
-/// How many request scans may run on blocking workers at once, across every repository and both the
-/// retention-plan and PQL routes. A started worker holds its slot until it returns, so this also bounds
-/// how many threads a burst of cancelled requests can keep busy.
+/// How many request scans may run on blocking workers at once. A started worker holds its slot until
+/// it returns, which bounds the threads retained by cancelled or slow requests.
 const REQUEST_SCAN_WORKERS: usize = 2;
 
 /// The minimal `OpenAPI` document a state serves until the binary installs the assembled one. It names

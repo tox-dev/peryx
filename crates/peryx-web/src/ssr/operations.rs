@@ -11,6 +11,10 @@ const DEFAULT_OPERATION_LIMIT: usize = 25;
 /// # Errors
 ///
 /// Returns a message when the caller lacks operator access or operation data cannot be read.
+///
+/// # Panics
+///
+/// Panics if the blocking operation task panics.
 pub async fn operations() -> Result<OperationsView, String> {
     let app = expect_context::<Arc<AppState>>();
     let class = super::status_class(&app).await;
@@ -20,12 +24,19 @@ pub async fn operations() -> Result<OperationsView, String> {
     ) {
         return Err("You do not have access to operation health.".to_owned());
     }
-    app.serving
-        .operations_view(AvailabilityPageQuery {
-            cursor: None,
-            limit: DEFAULT_OPERATION_LIMIT,
-            include_rows: class == FieldClassification::Administrator,
+    app.blocking_scans
+        .run({
+            let app = Arc::clone(&app);
+            move |_| {
+                app.serving.operations_view(AvailabilityPageQuery {
+                    cursor: None,
+                    limit: DEFAULT_OPERATION_LIMIT,
+                    include_rows: class == FieldClassification::Administrator,
+                })
+            }
         })
+        .await
+        .expect("operation task never panics")
         .map_err(operation_error)
 }
 

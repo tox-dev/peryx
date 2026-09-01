@@ -39,7 +39,7 @@ pub use jobs::cancel_job;
 pub use login::{login_callback, login_start, logout, session};
 pub use policy_decisions::{PolicyDecisionsQuery, policy_decision_error_response, policy_decisions};
 pub use pql::pql_query;
-pub use query::{search, search_error_response, search_response, search_response_offloaded};
+pub use query::{search, search_error_response, search_offloaded, search_response, search_response_offloaded};
 pub use quota::{quota_repository, quota_summary};
 pub use repositories::{
     RepositoriesQuery, create_repository, disable_repository, enable_repository, inspect_repository, list_repositories,

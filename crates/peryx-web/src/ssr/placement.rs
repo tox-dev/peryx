@@ -11,6 +11,10 @@ const DEFAULT_PLACEMENT_LIMIT: usize = 25;
 /// # Errors
 ///
 /// Returns a message when the caller lacks operator access or placement data cannot be read.
+///
+/// # Panics
+///
+/// Panics if the blocking placement task panics.
 pub async fn placements() -> Result<PlacementView, String> {
     let app = expect_context::<Arc<AppState>>();
     let class = super::status_class(&app).await;
@@ -20,12 +24,19 @@ pub async fn placements() -> Result<PlacementView, String> {
     ) {
         return Err("You do not have access to placement health.".to_owned());
     }
-    app.serving
-        .placement_view(AvailabilityPageQuery {
-            cursor: None,
-            limit: DEFAULT_PLACEMENT_LIMIT,
-            include_rows: class == FieldClassification::Administrator,
+    app.blocking_scans
+        .run({
+            let app = Arc::clone(&app);
+            move |_| {
+                app.serving.placement_view(AvailabilityPageQuery {
+                    cursor: None,
+                    limit: DEFAULT_PLACEMENT_LIMIT,
+                    include_rows: class == FieldClassification::Administrator,
+                })
+            }
         })
+        .await
+        .expect("placement task never panics")
         .map_err(placement_error)
 }
 
@@ -41,13 +52,24 @@ fn placement_error(error: PlacementViewError) -> String {
 /// # Errors
 ///
 /// Returns a message when the caller is not an administrator or blob placement cannot be read.
+///
+/// # Panics
+///
+/// Panics if the blocking placement task panics.
 pub async fn blob_placements(digest: String) -> Result<BlobPlacementView, String> {
     let app = expect_context::<Arc<AppState>>();
     let class = super::status_class(&app).await;
     if class != FieldClassification::Administrator {
         return Err("You do not have access to blob placement.".to_owned());
     }
-    app.serving.blob_placement_view(&digest).map_err(blob_placement_error)
+    app.blocking_scans
+        .run({
+            let app = Arc::clone(&app);
+            move |_| app.serving.blob_placement_view(&digest)
+        })
+        .await
+        .expect("blob placement task never panics")
+        .map_err(blob_placement_error)
 }
 
 fn blob_placement_error(error: BlobPlacementViewError) -> String {

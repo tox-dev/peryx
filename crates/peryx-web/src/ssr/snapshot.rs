@@ -25,7 +25,13 @@ pub async fn admin_snapshot() -> UiSnapshot {
 async fn snapshot_with_summaries(recent_limit: Option<usize>) -> UiSnapshot {
     let app = expect_context::<Arc<AppState>>();
     let class = super::status_class(&app).await;
-    snapshot_for_class(&app, class, recent_limit)
+    app.blocking_scans
+        .run({
+            let app = Arc::clone(&app);
+            move |_| snapshot_for_class(&app, class, recent_limit)
+        })
+        .await
+        .expect("snapshot task never panics")
 }
 
 fn snapshot_for_class(app: &AppState, class: FieldClassification, recent_limit: Option<usize>) -> UiSnapshot {

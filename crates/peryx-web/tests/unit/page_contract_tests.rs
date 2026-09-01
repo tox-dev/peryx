@@ -1,10 +1,14 @@
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::mpsc;
 
 use axum::body::{Body, to_bytes};
 use axum::http::Request;
 use futures_util::StreamExt as _;
 use leptos::prelude::*;
 use leptos_router::location::RequestUrl;
+use peryx_driver::http_services::HttpDomainServices;
+use tokio::sync::oneshot;
 use tower::ServiceExt as _;
 
 use crate::App;
@@ -18,17 +22,20 @@ struct Documents;
 
 impl SearchDocumentProvider for Documents {
     fn documents(&self, _context: &IndexerCtx<'_>) -> Result<Vec<SearchDocument>, SearchError> {
-        Ok(vec![SearchDocument {
-            display_label: "Artifact A".to_owned(),
-            resource_key: "artifact-a".to_owned(),
-            route: "root/alpha".to_owned(),
-            index: "root/alpha".to_owned(),
-            ecosystem: "alpha".to_owned(),
-            source: ContentSource::Cached,
-            available_locally: true,
-            summary: Some("Indexed artifact".to_owned()),
-            text: "artifact a".to_owned(),
-        }])
+        Ok(vec![document()])
+    }
+}
+
+struct BlockingDocuments {
+    started: Mutex<Option<oneshot::Sender<()>>>,
+    release: Mutex<mpsc::Receiver<()>>,
+}
+
+impl SearchDocumentProvider for BlockingDocuments {
+    fn documents(&self, _context: &IndexerCtx<'_>) -> Result<Vec<SearchDocument>, SearchError> {
+        self.started.lock().unwrap().take().unwrap().send(()).unwrap();
+        self.release.lock().unwrap().recv().unwrap();
+        Ok(vec![document()])
     }
 }
 
@@ -99,6 +106,57 @@ async fn header_search_renders_indexed_suggestions() {
 }
 
 #[tokio::test]
+async fn server_rendered_search_matches_json_search_without_credentials() {
+    let (_directory, app) = state(true);
+    let owner = Owner::new();
+    owner.set();
+    provide_context(Arc::clone(&app));
+    let rendered = crate::ssr::search("artifact", "all", "all", 1, 25).await.unwrap();
+    let response = peryx_http::router_with_ui(
+        Arc::clone(&app),
+        HttpDomainServices::for_state(&app),
+        ui_pages(app),
+        axum::Router::new(),
+    )
+    .oneshot(
+        Request::builder()
+            .uri("/+search?q=artifact&type=all&availability=all&page=1&page_size=25")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+    let json = serde_json::from_slice::<crate::model::UiSearchPage>(
+        &to_bytes(response.into_body(), usize::MAX).await.unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(rendered, json);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn server_rendered_search_keeps_async_worker_available() {
+    let (started_sender, started) = oneshot::channel();
+    let (release, release_receiver) = mpsc::channel();
+    let (_directory, app) = state_with_indexer(Some(Arc::new(BlockingDocuments {
+        started: Mutex::new(Some(started_sender)),
+        release: Mutex::new(release_receiver),
+    })));
+    let router = ui_pages(app).into_router();
+    let search = tokio::spawn(request(router.clone(), "/search?q=artifact&page_size=25"));
+    started.await.unwrap();
+
+    let login = request(router, "/login").await;
+    assert_eq!(
+        (login.contains("<h1>Sign in</h1>"), search.is_finished()),
+        (true, false)
+    );
+
+    release.send(()).unwrap();
+    assert!(search.await.unwrap().contains("Artifact A"));
+}
+
+#[tokio::test]
 async fn client_router_renders_unknown_paths() {
     let _ = any_spawner::Executor::init_tokio();
     let owner = Owner::new();
@@ -122,8 +180,11 @@ async fn render_with_documents(path: &str) -> String {
 
 async fn render_document(path: &str, documents: bool) -> String {
     let (_directory, app) = state(documents);
-    let response = ui_pages(app)
-        .into_router()
+    request(ui_pages(app).into_router(), path).await
+}
+
+async fn request(router: axum::Router, path: &str) -> String {
+    let response = router
         .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
         .await
         .unwrap();
@@ -131,6 +192,10 @@ async fn render_document(path: &str, documents: bool) -> String {
 }
 
 fn state(documents: bool) -> (tempfile::TempDir, Arc<AppState>) {
+    state_with_indexer(documents.then(|| Arc::new(Documents) as Arc<dyn SearchDocumentProvider>))
+}
+
+fn state_with_indexer(indexer: Option<Arc<dyn SearchDocumentProvider>>) -> (tempfile::TempDir, Arc<AppState>) {
     let directory = tempfile::tempdir().unwrap();
     let mut app = AppState::new(
         MetaStore::open(directory.path().join("peryx.redb")).unwrap(),
@@ -138,11 +203,22 @@ fn state(documents: bool) -> (tempfile::TempDir, Arc<AppState>) {
         60,
         Vec::new(),
     );
-    if documents {
-        Arc::get_mut(&mut app.serving)
-            .unwrap()
-            .search
-            .add_indexer(Arc::new(Documents));
+    if let Some(indexer) = indexer {
+        Arc::get_mut(&mut app.serving).unwrap().search.add_indexer(indexer);
     }
     (directory, Arc::new(app))
+}
+
+fn document() -> SearchDocument {
+    SearchDocument {
+        display_label: "Artifact A".to_owned(),
+        resource_key: "artifact-a".to_owned(),
+        route: "root/alpha".to_owned(),
+        index: "root/alpha".to_owned(),
+        ecosystem: "alpha".to_owned(),
+        source: ContentSource::Cached,
+        available_locally: true,
+        summary: Some("Indexed artifact".to_owned()),
+        text: "artifact a".to_owned(),
+    }
 }

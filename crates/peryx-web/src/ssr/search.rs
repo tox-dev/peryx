@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use leptos::prelude::*;
 use peryx_driver::AppState;
+use peryx_driver::http_services::HttpDomainServices;
 use peryx_search::{AvailabilityFilter, SearchParams, SourceFilter};
 
 use crate::model::UiSearchPage;
@@ -40,11 +41,13 @@ pub async fn search(
                 .search_access(&app.serving.indexes),
         )
     };
-    let response = if let Some(access) = access {
-        app.serving.search.search_authorized(&app.search_ctx(), params, &access)
-    } else {
-        app.serving.search.search(&app.search_ctx(), params)
-    }
+    let response = peryx_http::handlers::search_offloaded(
+        &app.blocking_scans,
+        HttpDomainServices::for_state(&app),
+        params,
+        access,
+    )
+    .await
     .map_err(|error| format!("artifact search: {error}"))?;
     Ok(UiSearchPage::from(response))
 }
