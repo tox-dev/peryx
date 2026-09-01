@@ -193,16 +193,8 @@ fn decode_percent(input: &str) -> Result<Cow<'_, str>, PathSafetyError> {
 }
 
 fn hex_byte(high: u8, low: u8) -> Option<u8> {
-    Some(hex_nibble(high)? << 4 | hex_nibble(low)?)
-}
-
-const fn hex_nibble(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
+    let digits = [high, low];
+    u8::from_str_radix(std::str::from_utf8(&digits).ok()?, 16).ok()
 }
 
 #[cfg(test)]

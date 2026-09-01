@@ -24,26 +24,24 @@ fn test_is_local_artifact_url_matches_the_complete_url(#[case] url: &str, #[case
     assert_eq!(is_local_artifact_url("root/alpha", "aa", "artifact.bin", url), expected);
 }
 
-#[test]
-fn test_path_segments_decode_percent_encoding() {
-    assert_eq!(decode_path_segment("pkg.bin").unwrap(), "pkg.bin");
-    assert_eq!(decode_path_segment("pkg%201.0%23x%3F.bin").unwrap(), "pkg 1.0#x?.bin");
-    assert_eq!(decode_path_segment("pkg%252Fname.bin").unwrap(), "pkg%2Fname.bin");
+#[rstest]
+#[case::unescaped("pkg.bin", "pkg.bin")]
+#[case::reserved("pkg%201.0%23x%3F.bin", "pkg 1.0#x?.bin")]
+#[case::escaped_percent("pkg%252Fname.bin", "pkg%2Fname.bin")]
+#[case::lowercase_hex("pkg%6eame.bin", "pkgname.bin")]
+fn test_path_segments_decode_percent_encoding(#[case] encoded: &str, #[case] expected: &str) {
+    assert_eq!(decode_path_segment(encoded).unwrap(), expected);
+}
+
+#[rstest]
+#[case::truncated("pkg%2")]
+#[case::invalid_pair("pkg%xx")]
+#[case::invalid_low_nibble("pkg%0x")]
+#[case::invalid_utf8("pkg%ff")]
+fn test_path_segments_reject_invalid_percent_encoding(#[case] encoded: &str) {
     assert_eq!(
-        decode_path_segment("pkg%2"),
-        Err(PathSafetyError::InvalidEncoding("pkg%2".to_owned()))
-    );
-    assert_eq!(
-        decode_path_segment("pkg%xx"),
-        Err(PathSafetyError::InvalidEncoding("pkg%xx".to_owned()))
-    );
-    assert_eq!(
-        decode_path_segment("pkg%0x"),
-        Err(PathSafetyError::InvalidEncoding("pkg%0x".to_owned()))
-    );
-    assert_eq!(
-        decode_path_segment("pkg%ff"),
-        Err(PathSafetyError::InvalidEncoding("pkg%ff".to_owned()))
+        decode_path_segment(encoded),
+        Err(PathSafetyError::InvalidEncoding(encoded.to_owned()))
     );
 }
 
