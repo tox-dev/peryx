@@ -8,7 +8,7 @@ use peryx_core::path::{self};
 use peryx_driver::access::ReadAccess;
 use peryx_driver::not_found;
 use peryx_driver::state::ServingState;
-use peryx_events::security::RequestContext;
+use peryx_events::security::{Attribution, RequestContext};
 use peryx_identity::{Action, ResourceMatch};
 use peryx_index::{Index, IndexKind};
 
@@ -24,7 +24,7 @@ use super::{authorize, identify, path_error_response, request_id, upload_target}
 #[derive(Clone, Copy)]
 struct PromotionAudit<'a> {
     request: RequestContext<'a>,
-    actor: Option<&'a str>,
+    attribution: &'a Attribution,
     route: &'a str,
     source_index: &'a str,
     hosted_index: &'a str,
@@ -38,7 +38,7 @@ fn emit_promotion_status_event(audit: &PromotionAudit<'_>, block: &UploadStatusB
 
 fn emit_promotion_refusal(audit: &PromotionAudit<'_>, result: &'static str, reason: &str) {
     peryx_events::security::Event::new("promote", result)
-        .actor(audit.actor)
+        .attribution(audit.attribution)
         .index(audit.route)
         .source_index(audit.source_index)
         .hosted_index(audit.hosted_index)
@@ -88,19 +88,19 @@ pub async fn pypi_dispatch_put(
         Ok(target) => target,
         Err(error) => return error.into_response(),
     };
-    let actor = peryx_events::security::actor(&identity);
+    let attribution = Attribution::resolve(&identity);
     if let Some(spec) = strip_action_segment(spec, "promote") {
-        return promote_request(&state, index, hosted, spec, uri.query(), request, actor.as_deref())
+        return promote_request(&state, index, hosted, spec, uri.query(), request, &attribution)
             .boxed()
             .await;
     }
     if let Some(spec) = strip_action_segment(spec, "yank") {
-        return yank_request(&state, index, hosted, spec, uri.query(), request, actor.as_deref())
+        return yank_request(&state, index, hosted, spec, uri.query(), request, &attribution)
             .boxed()
             .await;
     }
     if let Some(spec) = strip_action_segment(spec, "restore") {
-        return restore_request(&state, index, hosted, spec, request, actor.as_deref())
+        return restore_request(&state, index, hosted, spec, request, &attribution)
             .boxed()
             .await;
     }
@@ -114,7 +114,7 @@ async fn promote_request(
     spec: &str,
     query: Option<&str>,
     request: RequestContext<'_>,
-    actor: Option<&str>,
+    attribution: &Attribution,
 ) -> Response {
     let source_route = match promotion_source_route(query) {
         Ok(route) => route,
@@ -131,7 +131,7 @@ async fn promote_request(
     };
     let audit = PromotionAudit {
         request,
-        actor,
+        attribution,
         route: &index.route,
         source_index: &source.route,
         hosted_index: &hosted.name,
@@ -184,7 +184,7 @@ async fn yank_request(
     spec: &str,
     query: Option<&str>,
     request: RequestContext<'_>,
-    actor: Option<&str>,
+    attribution: &Attribution,
 ) -> Response {
     let (project, version) = match parse_project_version(spec) {
         Ok(parsed) => parsed,
@@ -193,7 +193,7 @@ async fn yank_request(
     let audit = MutationAudit {
         request,
         action: "yank",
-        actor,
+        attribution,
         index: &index.name,
         route: &index.route,
         hosted_index: &hosted.name,
@@ -222,7 +222,7 @@ async fn restore_request(
     hosted: &Index,
     spec: &str,
     request: RequestContext<'_>,
-    actor: Option<&str>,
+    attribution: &Attribution,
 ) -> Response {
     let (project, version) = match parse_project_version(spec) {
         Ok(parsed) => parsed,
@@ -231,7 +231,7 @@ async fn restore_request(
     let audit = MutationAudit {
         request,
         action: "restore",
-        actor,
+        attribution,
         index: &index.name,
         route: &index.route,
         hosted_index: &hosted.name,
@@ -261,7 +261,7 @@ pub async fn pypi_dispatch_delete(
         Ok(target) => target,
         Err(error) => return error.into_response(),
     };
-    let actor = peryx_events::security::actor(&identity);
+    let attribution = Attribution::resolve(&identity);
     if let Some(spec) = strip_action_segment(spec, "yank") {
         let (project, version) = match parse_project_version(spec) {
             Ok(parsed) => parsed,
@@ -270,7 +270,7 @@ pub async fn pypi_dispatch_delete(
         let audit = MutationAudit {
             request,
             action: "unyank",
-            actor: actor.as_deref(),
+            attribution: &attribution,
             index: &index.name,
             route: &index.route,
             hosted_index: &hosted.name,
@@ -300,13 +300,13 @@ pub async fn pypi_dispatch_delete(
     let reason = delete_reason(uri.query());
     let trash = cache::TrashContext {
         deleted_at_unix: (state.clock)(),
-        actor: actor.as_deref(),
+        actor: attribution.actor(),
         reason: reason.as_deref(),
     };
     let audit = MutationAudit {
         request,
         action: "delete",
-        actor: actor.as_deref(),
+        attribution: &attribution,
         index: &index.name,
         route: &index.route,
         hosted_index: &hosted.name,
@@ -362,7 +362,7 @@ const fn is_volatile(hosted: &Index) -> bool {
 struct MutationAudit<'a> {
     request: RequestContext<'a>,
     action: &'static str,
-    actor: Option<&'a str>,
+    attribution: &'a Attribution,
     index: &'a str,
     route: &'a str,
     hosted_index: &'a str,
@@ -379,7 +379,7 @@ fn security_mutation_event(audit: &MutationAudit<'_>, result: &Result<usize, Cac
         Err(err) => ("failure", 0, Some(err.user_message())),
     };
     peryx_events::security::Event::new(audit.action, security_result)
-        .actor(audit.actor)
+        .attribution(audit.attribution)
         .index(audit.route)
         .hosted_index(audit.hosted_index)
         .resource(Some(audit.project))
@@ -400,7 +400,7 @@ fn security_promotion_event(audit: PromotionAudit<'_>, result: &Result<usize, Ca
         Err(err) => ("failure", 0, Some(err.user_message())),
     };
     peryx_events::security::Event::new("promote", security_result)
-        .actor(audit.actor)
+        .attribution(audit.attribution)
         .index(audit.route)
         .source_index(audit.source_index)
         .hosted_index(audit.hosted_index)
@@ -432,7 +432,7 @@ fn prepare_mutation_webhook(
             filename: None,
             digest: None,
             count,
-            actor: audit.actor,
+            actor: audit.attribution.actor(),
             request_id: audit.request_id.as_deref(),
         },
     )

@@ -3,8 +3,6 @@ use std::net::IpAddr;
 use http::{HeaderMap, header};
 use peryx_identity::{Identity, Principal, Role, Scope, UserId};
 
-const UNKNOWN: &str = "unknown";
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RoleGrantChange {
     Grant,
@@ -99,6 +97,7 @@ pub struct Event<'a> {
     action: &'static str,
     result: &'static str,
     actor: Option<&'a str>,
+    presented_user: Option<&'a str>,
     token_id: Option<&'a str>,
     index: Option<&'a str>,
     source_index: Option<&'a str>,
@@ -122,6 +121,7 @@ impl<'a> Event<'a> {
             action,
             result,
             actor: None,
+            presented_user: None,
             token_id: None,
             index: None,
             source_index: None,
@@ -139,9 +139,18 @@ impl<'a> Event<'a> {
         }
     }
 
+    /// The verified actor alone. Emitters that resolve an identity use [`Self::attribution`] instead,
+    /// which also carries what the client presented.
     #[must_use]
     pub const fn actor(mut self, actor: Option<&'a str>) -> Self {
         self.actor = actor;
+        self
+    }
+
+    #[must_use]
+    pub fn attribution(mut self, attribution: &'a Attribution) -> Self {
+        self.actor = attribution.actor();
+        self.presented_user = attribution.presented_user();
         self
     }
 
@@ -221,6 +230,7 @@ impl<'a> Event<'a> {
 
     pub fn emit(&self) {
         let actor = text(self.actor);
+        let presented_user = text(self.presented_user);
         let token_id = text(self.token_id);
         let index = text(self.index);
         let source_index = text(self.source_index);
@@ -244,6 +254,7 @@ impl<'a> Event<'a> {
             action = self.action,
             result = self.result,
             actor,
+            presented_user,
             token_id,
             index,
             source_index,
@@ -263,20 +274,51 @@ impl<'a> Event<'a> {
     }
 }
 
-/// Preserves a presented username so failed authentication remains attributable.
-#[must_use]
-pub fn actor(identity: &Identity) -> Option<String> {
-    if let Some(user) = &identity.user {
-        return Some(if user.is_empty() {
-            UNKNOWN.to_owned()
-        } else {
-            user.clone()
-        });
+/// Who a record attributes an action to.
+///
+/// `actor` is the identity authentication established, and the only field an operator may act on: it
+/// names the credential to revoke and the principal to hold responsible. `presented_user` is the name
+/// the client typed, which nothing verifies. The two are separate because Basic credentials
+/// authenticate on the password alone, so a request that authenticates as one token may present any
+/// username at all, including one belonging to somebody else.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Attribution {
+    actor: Option<String>,
+    presented_user: Option<String>,
+}
+
+impl Attribution {
+    /// A failed authentication keeps its presented username and gets no actor, so the attempt stays
+    /// traceable without being read as an established identity.
+    #[must_use]
+    pub fn resolve(identity: &Identity) -> Self {
+        Self {
+            actor: match &identity.principal {
+                Principal::Named { subject } => Some(subject.clone()),
+                Principal::Anonymous => None,
+            },
+            presented_user: identity.presented_user.as_deref().map(bounded),
+        }
     }
-    match &identity.principal {
-        Principal::Named { subject } => Some(subject.clone()),
-        Principal::Anonymous => None,
+
+    #[must_use]
+    pub fn actor(&self) -> Option<&str> {
+        self.actor.as_deref()
     }
+
+    #[must_use]
+    pub fn presented_user(&self) -> Option<&str> {
+        self.presented_user.as_deref()
+    }
+}
+
+/// A client chooses the presented username, so a record takes at most 64 characters of it and drops
+/// the control characters that would otherwise forge line and field boundaries in a log.
+fn bounded(user: &str) -> String {
+    user.chars()
+        .filter(|character| !character.is_control())
+        .take(64)
+        .collect()
 }
 
 fn request_id(headers: &HeaderMap) -> Option<&str> {

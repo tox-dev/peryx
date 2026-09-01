@@ -143,7 +143,7 @@ async fn test_manifest_push_fires_manifest_push_webhook() {
     assert_eq!(payload["index"], "store");
     assert_eq!(payload["data"]["repository"], "app");
     assert_eq!(payload["data"]["reference"], "1.0");
-    assert_eq!(payload["actor"], "_");
+    assert_eq!(payload["actor"], "uploader");
     assert_eq!(payload["request_id"], "req-42");
 }
 

@@ -241,7 +241,7 @@ async fn test_upload_webhook_is_signed_and_skips_duplicate_upload() {
                 "sha256": Digest::of(&wheel).as_str(),
             },
             "count": 1,
-            "actor": "__token__",
+            "actor": "uploader",
         })
     );
 
@@ -496,7 +496,7 @@ async fn test_delete_webhook_emits_index_change() {
             "hosted_index": "hosted",
             "project": "peryxpkg",
             "count": 1,
-            "actor": "__token__",
+            "actor": "uploader",
         })
     );
 }

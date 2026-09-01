@@ -523,7 +523,9 @@ pub(in crate::registry) async fn delete_manifest(
     let fence = repository_epoch(state, &repo).await;
     let info = store::TrashInfo {
         deleted_at_unix: (state.clock)(),
-        actor: peryx_events::security::actor(&identity),
+        actor: peryx_events::security::Attribution::resolve(&identity)
+            .actor()
+            .map(str::to_owned),
         reason: query_params(query).remove("reason"),
     };
     let requester = Requester {

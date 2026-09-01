@@ -66,10 +66,10 @@ fn test_identify_rejects_non_utf8_and_missing_colon() {
 fn test_identify_keeps_the_presented_user_whatever_the_verdict() {
     let acl = writer_acl("s3cret");
     assert_eq!(
-        acl.identify(Some(&basic(b"alice:nope")), 0).user.as_deref(),
+        acl.identify(Some(&basic(b"alice:nope")), 0).presented_user.as_deref(),
         Some("alice")
     );
-    assert_eq!(acl.identify(None, 0).user, None);
+    assert_eq!(acl.identify(None, 0).presented_user, None);
 }
 
 #[rstest]

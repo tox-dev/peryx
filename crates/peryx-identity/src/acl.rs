@@ -136,7 +136,7 @@ impl IndexAcl {
         let Some(credentials) = credentials else {
             return Identity {
                 principal: Principal::Anonymous,
-                user: None,
+                presented_user: None,
             };
         };
         let principal = self
@@ -148,7 +148,7 @@ impl IndexAcl {
             });
         Identity {
             principal,
-            user: Some(credentials.user.clone()),
+            presented_user: Some(credentials.user.clone()),
         }
     }
 
@@ -182,9 +182,11 @@ impl IndexAcl {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Identity {
+    /// What authentication established. Everything that attributes an action reads this.
     pub principal: Principal,
-    /// Audit context; [`authorize`] does not trust an unverified username.
-    pub user: Option<String>,
+    /// The username the client typed, which nothing verifies: Basic credentials authenticate on the
+    /// password alone, so this names no identity even when `principal` is [`Principal::Named`].
+    pub presented_user: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

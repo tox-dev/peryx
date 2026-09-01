@@ -19,7 +19,8 @@ async fn test_security_logs_upload_success_without_token_secret() {
     assert!(events.iter().any(|event| {
         field(event, "action") == Some("token_use")
             && field(event, "result") == Some("success")
-            && field(event, "actor") == Some("__token__")
+            && field(event, "actor") == Some("uploader")
+            && field(event, "presented_user") == Some("__token__")
             && field(event, "index") == Some("hosted")
     }));
     let upload = events
@@ -56,7 +57,10 @@ async fn test_security_logs_invalid_token_without_secret() {
         .iter()
         .find(|event| field(event, "action") == Some("token_use") && field(event, "result") == Some("denied"))
         .unwrap();
-    assert_eq!(field(token, "actor"), Some("alice"));
+    assert_eq!(
+        (field(token, "actor"), field(token, "presented_user")),
+        (Some(""), Some("alice"))
+    );
     assert_eq!(field(token, "index"), Some("hosted"));
     assert_eq!(field(token, "reason"), Some("invalid upload token"));
 }
@@ -98,8 +102,12 @@ async fn test_security_logs_trusted_token_id_without_the_token() {
         .find(|event| field(event, "action") == Some("token_use") && field(event, "result") == Some("success"))
         .unwrap();
     assert_eq!(
-        (field(&event, "actor"), field(&event, "token_id")),
-        (Some("trusted-publisher:release"), Some(token_id.as_str()))
+        (
+            field(&event, "actor"),
+            field(&event, "presented_user"),
+            field(&event, "token_id")
+        ),
+        (Some("trusted-publisher:release"), Some(""), Some(token_id.as_str()))
     );
 }
 #[tokio::test(flavor = "current_thread")]
@@ -120,7 +128,10 @@ async fn test_security_logs_delete_policy_denial() {
         .iter()
         .find(|event| field(event, "action") == Some("delete") && field(event, "result") == Some("denied"))
         .unwrap();
-    assert_eq!(field(delete, "actor"), Some("__token__"));
+    assert_eq!(
+        (field(delete, "actor"), field(delete, "presented_user")),
+        (Some("uploader"), Some("__token__"))
+    );
     assert_eq!(field(delete, "index"), Some("hosted"));
     assert_eq!(field(delete, "hosted_index"), Some("hosted"));
     assert_eq!(field(delete, "resource"), Some("peryxpkg"));
@@ -186,4 +197,88 @@ async fn test_security_logs_the_peer_when_an_untrusted_hop_claims_to_forward() {
         .find(|event| field(event, "action") == Some("delete") && field(event, "result") == Some("denied"))
         .unwrap();
     assert_eq!(field(delete, "client_ip"), Some("198.51.100.7"));
+}
+
+/// Basic credentials authenticate on the password alone, so a client may type any username beside a
+/// live secret. The record names the token that authorized the write, and files the name it arrived
+/// under where nobody will mistake it for an established identity.
+#[tokio::test(flavor = "current_thread")]
+async fn test_security_credits_the_matched_token_when_the_username_names_someone_else() {
+    let h = harness().await;
+    let (content_type, body) = multipart_body(
+        &upload_fields(),
+        Some(("peryxpkg-1.0-py3-none-any.whl", &fixture_wheel())),
+    );
+    let auth = format!("Basic {}", STANDARD.encode("someone-else:s3cret"));
+    let logs = LogCapture::default();
+    let guard = logs.install();
+
+    assert_eq!(
+        post_upload(&h.state, "/hosted/", Some(&auth), &content_type, body).await,
+        StatusCode::OK
+    );
+
+    drop(guard);
+    let events = logs.security_events();
+    let upload = events
+        .iter()
+        .find(|event| field(event, "action") == Some("upload") && field(event, "result") == Some("success"))
+        .unwrap();
+    assert_eq!(
+        (field(upload, "actor"), field(upload, "presented_user")),
+        (Some("uploader"), Some("someone-else"))
+    );
+}
+
+/// The presented username is client-chosen text of any length, so the record takes a bounded prefix
+/// of it and drops the control characters that would forge line and field boundaries in a log.
+#[tokio::test(flavor = "current_thread")]
+async fn test_security_bounds_the_presented_username() {
+    let h = harness().await;
+    let (content_type, body) = multipart_body(
+        &upload_fields(),
+        Some(("peryxpkg-1.0-py3-none-any.whl", &fixture_wheel())),
+    );
+    let presented = format!("{}\r\ninjected", "n".repeat(80));
+    let auth = format!("Basic {}", STANDARD.encode(format!("{presented}:s3cret")));
+    let logs = LogCapture::default();
+    let guard = logs.install();
+
+    assert_eq!(
+        post_upload(&h.state, "/hosted/", Some(&auth), &content_type, body).await,
+        StatusCode::OK
+    );
+
+    drop(guard);
+    let events = logs.security_events();
+    let upload = events
+        .iter()
+        .find(|event| field(event, "action") == Some("upload") && field(event, "result") == Some("success"))
+        .unwrap();
+    assert_eq!(field(upload, "presented_user"), Some("n".repeat(64).as_str()));
+}
+
+/// An anonymous request establishes nobody, and presents nobody either.
+#[tokio::test(flavor = "current_thread")]
+async fn test_security_records_no_actor_for_an_anonymous_request() {
+    let h = harness().await;
+    let (content_type, body) = multipart_body(&upload_fields(), Some(("peryxpkg-1.0-py3-none-any.whl", b"x")));
+    let logs = LogCapture::default();
+    let guard = logs.install();
+
+    assert_eq!(
+        post_upload(&h.state, "/hosted/", None, &content_type, body).await,
+        StatusCode::UNAUTHORIZED
+    );
+
+    drop(guard);
+    let events = logs.security_events();
+    let token = events
+        .iter()
+        .find(|event| field(event, "action") == Some("token_use") && field(event, "result") == Some("denied"))
+        .unwrap();
+    assert_eq!(
+        (field(token, "actor"), field(token, "presented_user")),
+        (Some(""), Some(""))
+    );
 }

@@ -150,6 +150,8 @@ fn emit_exchange_success(request: RequestContext<'_>, exchanged: &ExchangedToken
         action = "token_mint",
         result = "success",
         actor = exchanged.publisher_id,
+        // A mint carries a verified OIDC identity and no client-chosen username.
+        presented_user = "",
         publisher_id = exchanged.publisher_id,
         token_id = exchanged.token_id,
         index = exchanged.repository,

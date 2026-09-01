@@ -978,7 +978,9 @@ fn prepare_webhook(
             repository: repo,
             reference: version,
             digest,
-            actor: peryx_events::security::actor(request.identity),
+            actor: peryx_events::security::Attribution::resolve(request.identity)
+                .actor()
+                .map(str::to_owned),
             request_id: request_id(request.headers),
         },
     )

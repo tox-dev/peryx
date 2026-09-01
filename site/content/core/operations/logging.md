@@ -43,9 +43,19 @@ peryx serve --log-format json --log-sink file --log-file /var/log/peryx/events.l
 ```
 
 Each repository-action record sets `security_event=true` and `event=index_action`. Shared fields include `action`,
-`result`, `actor`, `index`, `request_id`, `user_agent`, and `client_ip`. Ecosystem owners may add subject identifiers.
-Missing string and numeric values use empty strings and zero. Records exclude credentials, bearer tokens, Basic
-passwords, and URL secrets.
+`result`, `actor`, `presented_user`, `index`, `request_id`, `user_agent`, and `client_ip`. Ecosystem owners may add
+subject identifiers. Missing string and numeric values use empty strings and zero. Records exclude credentials, bearer
+tokens, Basic passwords, and URL secrets.
+
+`actor` names the identity authentication established, and is the only field to attribute an action to. For an index
+credential it is the matched token's name; for trusted publishing it is `trusted-publisher:{binding}`; for a minted
+scoped token it is the subject peryx signed into it. A request that authenticated as nobody has an empty `actor`, and so
+does a background action.
+
+`presented_user` is the username the client sent, which nothing verifies. Basic credentials authenticate on the password
+alone, so this names no identity even beside a full `actor`: a `twine` upload always presents `__token__`, and a client
+is free to present a name that belongs to somebody else. It is kept so a failed attempt stays traceable. The field holds
+at most 64 characters and drops control characters, because the client chooses its contents.
 
 `client_ip` records the request's transport peer. When the peer matches a `rate_limit.trusted_proxies` network, the
 field uses the client address from `X-Forwarded-For` or `X-Real-IP`. The rate limiter and security logger share this

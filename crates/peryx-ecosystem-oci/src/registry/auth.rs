@@ -312,13 +312,16 @@ pub(super) fn identify(state: &ServingState, acl: &IndexAcl, headers: &HeaderMap
     {
         return match signer.verify(token) {
             Ok((principal, grants)) => PresentedIdentity {
-                identity: Identity { principal, user: None },
+                identity: Identity {
+                    principal,
+                    presented_user: None,
+                },
                 authorization: PresentedAuthorization::Bearer(grants),
             },
             Err(_) => PresentedIdentity {
                 identity: Identity {
                     principal: Principal::Anonymous,
-                    user: None,
+                    presented_user: None,
                 },
                 authorization: PresentedAuthorization::InvalidBearer,
             },

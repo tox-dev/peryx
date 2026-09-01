@@ -640,7 +640,7 @@ async fn test_soft_delete_hides_file_but_keeps_blob_and_trash_metadata() {
     let trash = record.trashed.expect("the record carries trash metadata");
     assert_eq!(trash.deleted_at_unix, 1000);
     assert_eq!(trash.reason.as_deref(), Some("bad build"));
-    assert!(trash.actor.is_some(), "the deleting token is recorded");
+    assert_eq!(trash.actor.as_deref(), Some("uploader"));
 }
 #[tokio::test]
 async fn test_soft_delete_then_restore_serves_the_file_again() {

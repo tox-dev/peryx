@@ -27,7 +27,7 @@ use peryx_driver::serving::{
 };
 use peryx_driver::state::{SEARCH_VIEW, ServingState, ViewBlock};
 use peryx_events::metrics::MetricFamily;
-use peryx_events::security::RequestContext;
+use peryx_events::security::{Attribution, RequestContext};
 use peryx_identity::{
     Action, Denial, Grant, Identity, ResourceMatch, VerifiedToken, authorize_grants, parse_basic, strip_auth_scheme,
 };
@@ -689,7 +689,7 @@ fn identify(state: &ServingState, index: &Index, headers: &HeaderMap) -> UploadI
         return UploadIdentity {
             identity: Identity {
                 principal: token.principal.clone(),
-                user: None,
+                presented_user: None,
             },
             bearer: Some(token),
         };
@@ -732,7 +732,7 @@ fn authorize(
     if !matches!(hosted.kind, IndexKind::Hosted { .. }) {
         return Err(not_found().into());
     }
-    let actor = peryx_events::security::actor(identity);
+    let attribution = Attribution::resolve(identity);
     let denial = identity.bearer.as_ref().map_or_else(
         || {
             peryx_identity::authorize(
@@ -748,7 +748,7 @@ fn authorize(
         if project.is_some() {
             security_token_event(
                 request,
-                actor.as_deref(),
+                &attribution,
                 identity.bearer.as_ref().map(|token| token.id.as_str()),
                 &hosted.name,
                 "success",
@@ -759,7 +759,7 @@ fn authorize(
     };
     security_token_event(
         request,
-        actor.as_deref(),
+        &attribution,
         identity.bearer.as_ref().map(|token| token.id.as_str()),
         &hosted.name,
         "denied",
@@ -818,14 +818,14 @@ fn request_id(headers: &HeaderMap) -> Option<String> {
 
 fn security_token_event(
     request: RequestContext<'_>,
-    actor: Option<&str>,
+    attribution: &Attribution,
     token_id: Option<&str>,
     route: &str,
     result: &'static str,
     reason: &str,
 ) {
     let mut event = peryx_events::security::Event::new("token_use", result)
-        .actor(actor)
+        .attribution(attribution)
         .index(route)
         .request(request);
     if let Some(token_id) = token_id {

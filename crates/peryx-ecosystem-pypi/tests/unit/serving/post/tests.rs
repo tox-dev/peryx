@@ -71,10 +71,17 @@ fn test_claim_short_circuit_fails_closed_when_the_claim_cannot_be_read() {
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }
 
-fn audit(headers: &HeaderMap) -> UploadAudit<'_> {
+fn anonymous() -> peryx_events::security::Attribution {
+    peryx_events::security::Attribution::resolve(&peryx_identity::Identity {
+        principal: peryx_identity::Principal::Anonymous,
+        presented_user: None,
+    })
+}
+
+fn audit<'a>(headers: &'a HeaderMap, attribution: &'a peryx_events::security::Attribution) -> UploadAudit<'a> {
     UploadAudit {
         request: peryx_events::security::RequestContext::new(headers, None),
-        actor: None,
+        attribution,
         request_id: None,
         created_at_unix: 0,
         index: "root-pypi",
@@ -90,13 +97,18 @@ fn audit(headers: &HeaderMap) -> UploadAudit<'_> {
 #[test]
 fn test_upload_store_error_response_reports_a_content_collision_as_bad_request() {
     let headers = HeaderMap::new();
-    let response = upload_store_error_response(&audit(&headers), CacheError::FileExists("flask-1.0.whl".to_owned()));
+    let attribution = anonymous();
+    let response = upload_store_error_response(
+        &audit(&headers, &attribution),
+        CacheError::FileExists("flask-1.0.whl".to_owned()),
+    );
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
 #[test]
 fn test_upload_store_error_response_reports_a_store_fault_as_internal_error() {
     let headers = HeaderMap::new();
-    let response = upload_store_error_response(&audit(&headers), CacheError::Meta(meta_error()));
+    let attribution = anonymous();
+    let response = upload_store_error_response(&audit(&headers, &attribution), CacheError::Meta(meta_error()));
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }

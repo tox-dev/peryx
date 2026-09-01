@@ -391,6 +391,7 @@ async fn test_oidc_exchange_logs_stable_ids_without_credentials() {
             "action": "token_mint",
             "result": "success",
             "actor": "release",
+            "presented_user": "",
             "publisher_id": "release",
             "token_id": "token-42",
             "index": "root-pypi",
