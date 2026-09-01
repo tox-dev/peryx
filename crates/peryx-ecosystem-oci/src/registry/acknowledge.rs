@@ -1,21 +1,11 @@
-//! An OCI push answers `201 Created` only once the configured `[availability.write_ack]` policy has
-//! proven the write durable.
-//!
-//! The distribution specification fixes the client-visible success codes; it says nothing about how
-//! many copies stand behind them. Peryx's acknowledgement contract does, and it lives in the shared
-//! availability plane: [`ServingState::confirm_blob_write`] weighs the bytes this node committed
-//! against the peer receipts and the metadata frontier the policy demands. Every terminal OCI blob
-//! write routes its committed result through that one resolver, the same one the package upload path
-//! uses, so both success codes mean the same thing about how much of the cluster holds the content.
-//!
-//! A write the policy cannot prove durable inside its deadline is not a failure: the content is
-//! committed and the operation stays pending, so the client retries the identical request and the
-//! content-addressed commit and membership upsert replay without a second effect.
+//! OCI writes wait for `[availability.write_ack]` before answering success. Blob acknowledgements carry
+//! byte and metadata evidence; manifest acknowledgements carry a journal frontier because metadata holds
+//! their bytes. An unresolved verdict leaves the operation pending for a retry.
 
 use axum::http::header;
 use axum::response::Response;
 use peryx_driver::ServingState;
-use peryx_ha::{AuthorityEpoch, CommittedBlob, WriteDurability};
+use peryx_ha::{AuthorityEpoch, CommittedBlob, CommittedMetadata, WriteDurability};
 use peryx_storage::blob::{Digest, WriteEvidence};
 use peryx_storage::meta::JournalCommit;
 
@@ -30,6 +20,12 @@ pub(in crate::registry) struct BlobAck<'a> {
     /// `None` when the mutation journaled nothing, leaving only the byte dimension to prove.
     pub(in crate::registry) commit: Option<JournalCommit>,
     pub(in crate::registry) evidence: WriteEvidence,
+}
+
+pub(in crate::registry) struct MetadataAck<'a> {
+    pub(in crate::registry) repo: &'a str,
+    pub(in crate::registry) epoch: u64,
+    pub(in crate::registry) commit: JournalCommit,
 }
 
 /// Resolve the configured acknowledgement policy for a committed write.
@@ -73,6 +69,41 @@ pub(in crate::registry) async fn acknowledge_blob(state: &ServingState, ack: Blo
                 evidence = ?ack.evidence,
                 durability = ?durability,
                 "oci write durability unproven within the configured deadline"
+            );
+            Err(durability_pending())
+        }
+    }
+}
+
+pub(in crate::registry) async fn acknowledge_metadata(
+    state: &ServingState,
+    ack: MetadataAck<'_>,
+) -> Result<(), Response> {
+    let authority = crate::name::authority_key(ack.repo);
+    let epoch = AuthorityEpoch(ack.epoch);
+    let durability = state
+        .confirm_metadata_write(CommittedMetadata::new(&authority, epoch, ack.commit))
+        .await;
+    let serial = ack.commit.serial();
+    match durability {
+        WriteDurability::Confirmed { .. } => {
+            tracing::debug!(
+                authority,
+                epoch = epoch.0,
+                serial,
+                evidence = "journal-frontier",
+                "oci metadata write acknowledged"
+            );
+            Ok(())
+        }
+        WriteDurability::Pending | WriteDurability::Unavailable => {
+            tracing::warn!(
+                authority,
+                epoch = epoch.0,
+                serial,
+                evidence = "journal-frontier",
+                durability = ?durability,
+                "oci metadata write durability unproven within the configured deadline"
             );
             Err(durability_pending())
         }

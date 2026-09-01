@@ -217,8 +217,8 @@ fn service_context(dir: &tempfile::TempDir) -> DistributedServiceContext {
     }
 }
 
-#[test]
-fn distributed_services_own_topology_durability_and_metrics() {
+#[tokio::test]
+async fn distributed_services_own_topology_durability_and_metrics() {
     let dir = tempfile::tempdir().unwrap();
     let services = <DistributedServiceAssembly as peryx_ha::AvailabilityAssembler>::assemble(
         &DistributedServiceConfig {
@@ -241,6 +241,20 @@ fn distributed_services_own_topology_durability_and_metrics() {
     assert_eq!(services.topology.mode, peryx_core::TopologyMode::Dc);
     assert_eq!(services.topology.local_node.as_deref(), Some("local"));
     assert_eq!(services.metrics.len(), 1);
+    assert_eq!(
+        services
+            .blobs
+            .metadata_durability()
+            .confirm_metadata(peryx_ha::CommittedMetadata::new(
+                "repository",
+                peryx_ha::AuthorityEpoch(7),
+                peryx_storage::meta::JournalCommit::new(11),
+            ))
+            .await,
+        peryx_ha::WriteDurability::Confirmed {
+            scope: peryx_core::BlobDurability::Filesystem,
+        }
+    );
 }
 
 #[test]

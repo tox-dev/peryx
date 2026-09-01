@@ -53,15 +53,17 @@ Under `availability.mode = "none"` the local commit is the whole policy and push
 the policy counts same-datacenter member receipts for the blob; under `ha` it also waits for the membership write to
 apply in the share of remote datacenters the policy names.
 
+For a manifest, the resolver waits on the publication's journal serial under the same policy and deadline. The metadata
+store holds manifest bytes, so the resolver has no blob-byte dimension and asks no peer for receipts. A filesystem
+`majority` policy with no remote datacenter sources completes from the metadata commit.
+
 A push still short of its policy when `write_ack.deadline-secs` elapses answers `503 UNAVAILABLE` with `Retry-After`
 rather than a success code, because the durable completion may land after the client stops waiting. The content and its
 repository membership are committed either way, which is what gives the metadata frontier something to acknowledge, so
 what the deadline withholds is the promise, not the write. The push records a pending operation keyed by index,
-repository, and digest; the client resends the identical request, and the content-addressed commit and the membership
-upsert replay onto the same operation without a second effect.
-
-Manifest publication is a metadata-only write with no blob bytes and does not yet take part in this acknowledgement;
-that gap needs a metadata-only durability contract in the shared availability crates.
+repository, and digest. A blob retry replays its content-addressed commit and membership upsert without a second effect.
+A manifest retry loads the epoch and journal serial that the first publication checkpointed, then finishes the pending
+operation without publishing another metadata mutation.
 
 ## Details
 

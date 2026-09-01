@@ -6,6 +6,7 @@ use std::sync::Arc;
 use peryx_driver::ServingState;
 
 use crate::error::{ErrorCode, error_response, error_response_with_status};
+use crate::registry::acknowledge::{MetadataAck, acknowledge_metadata};
 use crate::registry::authority::{
     EpochCommit, authority_moved, claim_repository_home, commit_epoch, release_reservation, repository_epoch,
 };
@@ -28,48 +29,46 @@ pub(in crate::registry) async fn put_manifest(
     if policy_blocks(index, PolicyAction::Upload, &repo) {
         return Ok(error_response(ErrorCode::Denied, "image name is blocked by policy"));
     }
-    let (media_type, schema) = match manifest_media_type(headers) {
-        Ok(declared) => declared,
-        Err(response) => return Ok(*response),
+    let manifest = match read_manifest(headers, body, index, &repo, reference).await {
+        Ok(manifest) => manifest,
+        Err(ManifestInputError::Rejected(response)) => return Ok(*response),
+        Err(ManifestInputError::Transport(error)) => return Err(error),
     };
-    let bytes = match axum::body::to_bytes(body, MAX_MANIFEST_BYTES).await {
-        Ok(bytes) => bytes,
-        Err(err) if is_length_limit(&err) => {
-            return Ok(error_response_with_status(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                ErrorCode::SizeInvalid,
-                &format!("manifest exceeds the {MAX_MANIFEST_BYTES}-byte limit"),
-            ));
-        }
-        Err(err) => return Err(ServeError::Transport(err.to_string())),
+    let reference_key = manifest_reference(reference);
+    let operation = journal.then(|| manifest_operation(&index.name, &repo, &manifest.canonical));
+    let _guard = if let Some(operation) = &operation {
+        Some(flight_gate(state, operation).lock().await)
+    } else {
+        None
     };
-    if let Some(response) = policy_size_denial(index, &repo, bytes.len() as u64) {
-        return Ok(response);
-    }
-    let canonical = format!("sha256:{}", Digest::of(&bytes).as_str());
-    if let Reference::Digest(digest) = reference
-        && *digest != canonical
-    {
-        return Ok(error_response(
-            ErrorCode::DigestInvalid,
-            "manifest bytes do not match the digest",
-        ));
-    }
-    let document = match schema.validate(&media_type, &bytes) {
-        Ok(document) => document,
-        Err(fault) => return Ok(error_response(ErrorCode::ManifestInvalid, &fault.to_string())),
-    };
-    if let Some(response) = missing_manifest_reference(state, index, &repo, &document).await? {
-        return Ok(response);
-    }
     let fence = match claim_repository_home(state, &repo).await {
         Ok(fence) => fence,
         Err(response) => return Ok(response),
     };
-    let reservation = match reserve_push(state, index, &repo, reference, &canonical, bytes.len() as u64)? {
-        PushReservation::Rejected(response) => return Ok(response),
-        PushReservation::Admitted(reservation) => reservation,
-    };
+    let referrer = referrer_of(
+        &manifest.canonical,
+        &manifest.media_type,
+        manifest.bytes.len(),
+        &manifest.document,
+    );
+    if let Some(operation) = &operation
+        && let Some(response) = resume_manifest(
+            state,
+            ManifestCompletion::new(
+                index,
+                &repo,
+                name,
+                &manifest.canonical,
+                referrer.as_ref().map(|referrer| referrer.subject.as_str()),
+                operation,
+            ),
+            fence,
+            &reference_key,
+        )
+        .await?
+    {
+        return Ok(response);
+    }
     let version = reference_tag(reference).map(str::to_owned);
     let webhook = prepare_webhook(
         state,
@@ -81,39 +80,266 @@ pub(in crate::registry) async fn put_manifest(
         index,
         &repo,
         version.as_deref(),
-        Some(&canonical),
+        Some(&manifest.canonical),
     );
+    publish_and_acknowledge_manifest(
+        state,
+        ManifestPublication {
+            index,
+            repo: &repo,
+            name,
+            reference,
+            journal,
+            manifest,
+            referrer,
+            operation,
+            reference_key,
+            fence,
+            webhook,
+        },
+    )
+    .await
+}
+
+async fn publish_and_acknowledge_manifest(
+    state: &ServingState,
+    publication: ManifestPublication<'_>,
+) -> Result<Response, ServeError> {
+    let ManifestPublication {
+        index,
+        repo,
+        name,
+        reference,
+        journal,
+        manifest,
+        referrer,
+        operation,
+        reference_key,
+        fence,
+        webhook,
+    } = publication;
+    if let Some(response) = missing_manifest_reference(state, index, repo, &manifest.document).await? {
+        return Ok(response);
+    }
+    let manifest_size = manifest.bytes.len() as u64;
+    let admission = reserve_push(state, index, repo, reference, &manifest.canonical, manifest_size)?;
+    let reservation = match admission {
+        PushReservation::Rejected(response) => return Ok(response),
+        PushReservation::Admitted(reservation) => reservation,
+    };
     let mutation = commit_manifest(
         state,
         fence,
         ManifestWrite {
             index: &index.name,
-            repo: &repo,
-            canonical: &canonical,
-            media_type: &media_type,
-            bytes: &bytes,
-            referrer: referrer_of(&canonical, &media_type, bytes.len(), &document),
+            repo,
+            canonical: &manifest.canonical,
+            media_type: &manifest.media_type,
+            bytes: &manifest.bytes,
+            referrer,
             reference,
             reservation: &reservation,
             journal,
             webhook,
+            operation: operation.as_deref(),
+            reference_key: &reference_key,
+            now: (state.clock)(),
         },
     )
     .await?;
-    let subject = match mutation {
+    let committed = match mutation {
         EpochCommit::Committed(committed) => committed,
         EpochCommit::Fenced => {
             release_reservation(state, reservation)?;
             return Ok(authority_moved());
         }
     };
-    let location = format!("/v2/{name}/manifests/{canonical}");
+    let Some(operation) = operation else {
+        let location = format!("/v2/{name}/manifests/{}", manifest.canonical);
+        record_manifest_success(state, index, repo);
+        return Ok(manifest_created(
+            &location,
+            &manifest.canonical,
+            committed.subject.as_deref(),
+        ));
+    };
+    let commit = committed.commit.expect("manifest durability enables the journal");
+    finish_manifest(
+        state,
+        ManifestCompletion::new(
+            index,
+            repo,
+            name,
+            &manifest.canonical,
+            committed.subject.as_deref(),
+            &operation,
+        ),
+        crate::quota::ManifestCheckpoint {
+            reference: reference_key,
+            epoch: fence,
+            serial: commit.serial(),
+        },
+    )
+    .await
+}
+
+struct ManifestPublication<'a> {
+    index: &'a Index,
+    repo: &'a str,
+    name: &'a str,
+    reference: &'a Reference,
+    journal: crate::outbox::Outbox,
+    manifest: ManifestInput,
+    referrer: Option<store::Referrer>,
+    operation: Option<String>,
+    reference_key: String,
+    fence: u64,
+    webhook: Option<peryx_storage::meta::WebhookEventIntent>,
+}
+
+async fn read_manifest(
+    headers: &HeaderMap,
+    body: Body,
+    index: &Index,
+    repo: &str,
+    reference: &Reference,
+) -> Result<ManifestInput, ManifestInputError> {
+    let (media_type, schema) = manifest_media_type(headers).map_err(ManifestInputError::Rejected)?;
+    let bytes = match axum::body::to_bytes(body, MAX_MANIFEST_BYTES).await {
+        Ok(bytes) => bytes,
+        Err(error) if is_length_limit(&error) => {
+            return Err(ManifestInputError::Rejected(Box::new(error_response_with_status(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                ErrorCode::SizeInvalid,
+                &format!("manifest exceeds the {MAX_MANIFEST_BYTES}-byte limit"),
+            ))));
+        }
+        Err(error) => return Err(ManifestInputError::Transport(ServeError::Transport(error.to_string()))),
+    };
+    if let Some(response) = policy_size_denial(index, repo, bytes.len() as u64) {
+        return Err(ManifestInputError::Rejected(Box::new(response)));
+    }
+    let canonical = format!("sha256:{}", Digest::of(&bytes).as_str());
+    if let Reference::Digest(digest) = reference
+        && *digest != canonical
+    {
+        return Err(ManifestInputError::Rejected(Box::new(error_response(
+            ErrorCode::DigestInvalid,
+            "manifest bytes do not match the digest",
+        ))));
+    }
+    let document = schema.validate(&media_type, &bytes).map_err(|fault| {
+        ManifestInputError::Rejected(Box::new(error_response(ErrorCode::ManifestInvalid, &fault.to_string())))
+    })?;
+    Ok(ManifestInput {
+        media_type,
+        bytes,
+        canonical,
+        document,
+    })
+}
+
+struct ManifestInput {
+    media_type: String,
+    bytes: bytes::Bytes,
+    canonical: String,
+    document: serde_json::Value,
+}
+
+enum ManifestInputError {
+    Rejected(Box<Response>),
+    Transport(ServeError),
+}
+
+async fn resume_manifest(
+    state: &ServingState,
+    completion: ManifestCompletion<'_>,
+    fence: u64,
+    reference: &str,
+) -> Result<Option<Response>, ServeError> {
+    let Some(record) = state.begin_retryable_write(completion.operation)? else {
+        return Ok(None);
+    };
+    if record.response.is_empty() {
+        return Ok(None);
+    }
+    let checkpoint = crate::quota::ManifestCheckpoint::decode(&record.response)?;
+    if checkpoint.epoch != fence || checkpoint.reference != reference {
+        return Ok(None);
+    }
+    finish_manifest(state, completion, checkpoint).await.map(Some)
+}
+
+struct ManifestCompletion<'a> {
+    index: &'a Index,
+    repo: &'a str,
+    name: &'a str,
+    canonical: &'a str,
+    subject: Option<&'a str>,
+    operation: &'a str,
+}
+
+impl<'a> ManifestCompletion<'a> {
+    const fn new(
+        index: &'a Index,
+        repo: &'a str,
+        name: &'a str,
+        canonical: &'a str,
+        subject: Option<&'a str>,
+        operation: &'a str,
+    ) -> Self {
+        Self {
+            index,
+            repo,
+            name,
+            canonical,
+            subject,
+            operation,
+        }
+    }
+}
+
+async fn finish_manifest(
+    state: &ServingState,
+    completion: ManifestCompletion<'_>,
+    checkpoint: crate::quota::ManifestCheckpoint,
+) -> Result<Response, ServeError> {
+    let ManifestCompletion {
+        index,
+        repo,
+        name,
+        canonical,
+        subject,
+        operation,
+    } = completion;
+    if let Err(response) = acknowledge_metadata(
+        state,
+        MetadataAck {
+            repo,
+            epoch: checkpoint.epoch,
+            commit: peryx_storage::meta::JournalCommit::new(checkpoint.serial),
+        },
+    )
+    .await
+    {
+        return Ok(response);
+    }
+    state.finalize_admitted_write(operation, peryx_storage::meta::OperationResult::Published, &[]);
+    state.record_operation_trace(peryx_driver::state::OperationKind::Publish, checkpoint.epoch);
+    record_manifest_success(state, index, repo);
+    Ok(manifest_created(
+        &format!("/v2/{name}/manifests/{canonical}"),
+        canonical,
+        subject,
+    ))
+}
+
+fn record_manifest_success(state: &ServingState, index: &Index, repo: &str) {
     state.metrics.record(Observation::Write {
         repository: index.route.clone(),
-        resource: repo.clone(),
+        resource: repo.to_owned(),
     });
-    peryx_events::webhook::notify(state.as_ref());
-    Ok(manifest_created(&location, &canonical, subject.as_deref()))
+    peryx_events::webhook::notify(state);
 }
 
 fn manifest_media_type(headers: &HeaderMap) -> Result<(String, ManifestSchema), Box<Response>> {
@@ -147,6 +373,14 @@ struct ManifestWrite<'a> {
     reservation: &'a Option<peryx_storage::meta::QuotaReservationRecord>,
     journal: crate::outbox::Outbox,
     webhook: Option<peryx_storage::meta::WebhookEventIntent>,
+    operation: Option<&'a str>,
+    reference_key: &'a str,
+    now: i64,
+}
+
+struct CommittedManifest {
+    subject: Option<String>,
+    commit: Option<peryx_storage::meta::JournalCommit>,
 }
 
 /// Publish the manifest and everything derived from it under one lease check, and return the subject
@@ -159,12 +393,12 @@ async fn commit_manifest(
     state: &ServingState,
     fence: u64,
     write: ManifestWrite<'_>,
-) -> Result<EpochCommit<Option<String>>, ServeError> {
+) -> Result<EpochCommit<CommittedManifest>, ServeError> {
     let subject = write.referrer.as_ref().map(|referrer| referrer.subject.clone());
     commit_epoch(state, write.repo, fence, |lease| {
         lease.guard()?;
         let search_invalidation = crate::search_oci::SearchInvalidationGuard::arm(state, write.repo);
-        crate::quota::publish_manifest(
+        let committed = crate::quota::publish_manifest(
             &state.meta,
             crate::quota::ManifestCommit {
                 index: write.index,
@@ -179,12 +413,32 @@ async fn commit_manifest(
                 reservation: write.reservation.clone(),
                 journal: write.journal,
                 webhook: write.webhook,
+                operation: write.operation.map(|id| crate::quota::ManifestOperation {
+                    id,
+                    reference: write.reference_key,
+                    epoch: fence,
+                    now: write.now,
+                }),
             },
         )?;
         drop(search_invalidation);
-        Ok(subject)
+        Ok(CommittedManifest {
+            subject,
+            commit: committed.journal,
+        })
     })
     .await
+}
+
+fn manifest_operation(index: &str, repo: &str, digest: &str) -> String {
+    format!("oci:manifest:{index}:{repo}:{digest}")
+}
+
+fn manifest_reference(reference: &Reference) -> String {
+    match reference {
+        Reference::Tag(tag) => format!("tag:{tag}"),
+        Reference::Digest(digest) => format!("digest:{digest}"),
+    }
 }
 /// The outcome of reserving quota for a manifest push: the quota rejection response to return, or the
 /// reservation to commit with the manifest (`None` when the push is a re-push or the index is unmetered).

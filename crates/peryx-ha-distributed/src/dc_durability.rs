@@ -2,16 +2,44 @@ use std::fmt::Write as _;
 use std::sync::{Mutex, PoisonError};
 
 use peryx_core::PrometheusSource;
-use peryx_ha::{ByteAckDecision, ByteEvidence, DcAck};
+use peryx_ha::{ByteAckDecision, ByteEvidence, DcAck, DurabilityPolicy, MetadataAckObservation, WriteAckDecision};
 use peryx_storage::blob::BlobDurability;
 
 // Fixed labels cap Prometheus series cardinality.
 const SCOPES: [BlobDurability; 2] = [BlobDurability::Filesystem, BlobDurability::ObjectStore];
+const POLICIES: [DurabilityPolicy; 4] = [
+    DurabilityPolicy::Local,
+    DurabilityPolicy::Majority,
+    DurabilityPolicy::Everywhere,
+    DurabilityPolicy::AtLeast(std::num::NonZeroUsize::MIN),
+];
+const DECISIONS: [WriteAckDecision; 3] = [
+    WriteAckDecision::Confirmed,
+    WriteAckDecision::Pending,
+    WriteAckDecision::Unavailable,
+];
 
 const fn scope_index(scope: BlobDurability) -> usize {
     match scope {
         BlobDurability::Filesystem => 0,
         BlobDurability::ObjectStore => 1,
+    }
+}
+
+const fn policy_index(policy: DurabilityPolicy) -> usize {
+    match policy {
+        DurabilityPolicy::Local => 0,
+        DurabilityPolicy::Majority => 1,
+        DurabilityPolicy::Everywhere => 2,
+        DurabilityPolicy::AtLeast(_) => 3,
+    }
+}
+
+const fn decision_index(decision: WriteAckDecision) -> usize {
+    match decision {
+        WriteAckDecision::Confirmed => 0,
+        WriteAckDecision::Pending => 1,
+        WriteAckDecision::Unavailable => 2,
     }
 }
 
@@ -23,6 +51,9 @@ struct DcDurabilityState {
     quorum_acknowledged: u64,
     quorum_required: u64,
     quorum_remaining: u64,
+    metadata: [[u64; DECISIONS.len()]; POLICIES.len()],
+    metadata_wait_seconds: [f64; POLICIES.len()],
+    metadata_timeouts: [u64; POLICIES.len()],
 }
 
 #[derive(Debug, Default)]
@@ -70,6 +101,15 @@ impl peryx_ha::WriteAckObserver for DcDurabilityMetrics {
             self.record_quorum(decision);
         }
     }
+
+    fn record_metadata(&self, observation: MetadataAckObservation) {
+        let policy = policy_index(observation.policy);
+        self.with(|state| {
+            state.metadata[policy][decision_index(observation.decision)] += 1;
+            state.metadata_wait_seconds[policy] += observation.waited.as_secs_f64();
+            state.metadata_timeouts[policy] += u64::from(observation.timed_out);
+        });
+    }
 }
 
 impl PrometheusSource for DcDurabilityMetrics {
@@ -112,6 +152,41 @@ impl PrometheusSource for DcDurabilityMetrics {
              # TYPE peryx_dc_ack_quorum_remaining gauge\n",
         );
         let _ = writeln!(body, "peryx_dc_ack_quorum_remaining {}", state.quorum_remaining);
+        body.push_str(
+            "# HELP peryx_metadata_ack_total Metadata writes by configured policy and acknowledgement decision.\n\
+             # TYPE peryx_metadata_ack_total counter\n",
+        );
+        for (policy_index, policy) in POLICIES.into_iter().enumerate() {
+            for (decision_index, decision) in DECISIONS.into_iter().enumerate() {
+                let _ = writeln!(
+                    body,
+                    "peryx_metadata_ack_total{{policy=\"{}\",evidence=\"journal-frontier\",decision=\"{}\"}} {}",
+                    policy.as_str(),
+                    decision.as_str(),
+                    state.metadata[policy_index][decision_index]
+                );
+            }
+        }
+        body.push_str(
+            "# HELP peryx_metadata_ack_wait_seconds_total Time spent waiting for metadata acknowledgement.\n\
+             # TYPE peryx_metadata_ack_wait_seconds_total counter\n\
+             # HELP peryx_metadata_ack_timeout_total Metadata acknowledgement deadlines that expired.\n\
+             # TYPE peryx_metadata_ack_timeout_total counter\n",
+        );
+        for (index, policy) in POLICIES.into_iter().enumerate() {
+            let _ = writeln!(
+                body,
+                "peryx_metadata_ack_wait_seconds_total{{policy=\"{}\",evidence=\"journal-frontier\"}} {}",
+                policy.as_str(),
+                state.metadata_wait_seconds[index]
+            );
+            let _ = writeln!(
+                body,
+                "peryx_metadata_ack_timeout_total{{policy=\"{}\",evidence=\"journal-frontier\"}} {}",
+                policy.as_str(),
+                state.metadata_timeouts[index]
+            );
+        }
     }
 }
 

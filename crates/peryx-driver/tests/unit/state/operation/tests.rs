@@ -26,6 +26,26 @@ fn test_claim_admitted_write_records_a_pending_write_with_a_retention_deadline()
 }
 
 #[test]
+fn test_begin_retryable_write_returns_progress_and_reopens_a_terminal_attempt() {
+    let (_dir, state, meta) = state();
+
+    assert_eq!(state.begin_retryable_write("op").unwrap(), None);
+    let pending = state.begin_retryable_write("op").unwrap().unwrap();
+    assert_eq!(
+        (pending.state, pending.response, pending.expiry_unix),
+        (OperationState::Pending, Vec::new(), Some(NOW + 86_400))
+    );
+
+    state.finalize_admitted_write("op", OperationResult::Published, b"done");
+    assert_eq!(state.begin_retryable_write("op").unwrap(), None);
+    let restarted = meta.operation_outcome("op").unwrap().unwrap();
+    assert_eq!(
+        (restarted.state, restarted.response, restarted.updated_at_unix),
+        (OperationState::Pending, Vec::new(), NOW)
+    );
+}
+
+#[test]
 fn test_claim_admitted_write_that_never_finalizes_expires() {
     let (_dir, state, meta) = state();
     state.claim_admitted_write("op");

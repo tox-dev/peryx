@@ -6,8 +6,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use peryx_core::TopologyConfig;
 use peryx_ha::{
-    BlobWriteDurability, ByteEvidence, CommittedBlob, DcAck, MetadataOperation, ReceiptRequest, ReceiptSource,
-    RemoteFrontierSource, WriteAckObserver, WriteDurability, WriteEvidence,
+    BlobWriteDurability, ByteEvidence, CommittedBlob, CommittedMetadata, DcAck, MetadataAckObservation,
+    MetadataEvidence, MetadataOperation, MetadataWriteDurability, ReceiptRequest, ReceiptSource, RemoteFrontierSource,
+    WriteAckDecision, WriteAckObserver, WriteDurability, WriteEvidence,
 };
 
 use crate::{
@@ -156,6 +157,40 @@ impl BlobWriteDurability for DistributedBlobDurability {
             DcAck::Pending => WriteDurability::Pending,
             DcAck::Unknown => WriteDurability::Unavailable,
         }
+    }
+}
+
+#[async_trait]
+impl MetadataWriteDurability for DistributedBlobDurability {
+    async fn confirm_metadata(&self, write: CommittedMetadata<'_>) -> WriteDurability {
+        let started = tokio::time::Instant::now();
+        let (metadata, deadline) = self
+            .metadata_decision(
+                write.authority(),
+                MetadataOperation {
+                    epoch: write.epoch().0,
+                    frontier: write.commit().serial(),
+                },
+            )
+            .await;
+        let (durability, decision) = if metadata.is_acknowledged() {
+            (
+                WriteDurability::Confirmed {
+                    scope: peryx_core::BlobDurability::Filesystem,
+                },
+                WriteAckDecision::Confirmed,
+            )
+        } else {
+            (WriteDurability::Unavailable, WriteAckDecision::Unavailable)
+        };
+        self.observer.record_metadata(MetadataAckObservation {
+            policy: self.policy,
+            evidence: MetadataEvidence::JournalFrontier,
+            waited: started.elapsed(),
+            timed_out: deadline == Deadline::Expired,
+            decision,
+        });
+        durability
     }
 }
 

@@ -5,6 +5,7 @@ use crate::receipt_quorum::ReceiptAck;
 use peryx_storage::blob::Digest;
 
 const SERIES_BUDGET: usize = SCOPES.len() + 2 + 3;
+const METADATA_SERIES_BUDGET: usize = POLICIES.len() * (DECISIONS.len() + 2);
 
 fn rendered(metrics: &DcDurabilityMetrics) -> String {
     let mut body = String::new();
@@ -125,6 +126,64 @@ fn test_write_ack_observer_records_outcome_and_quorum() {
     let body = rendered(&metrics);
     assert!(body.contains("peryx_dc_ack_pending_total 1\n"), "{body}");
     assert!(body.contains("peryx_dc_ack_quorum_required 2\n"), "{body}");
+}
+
+#[test]
+fn test_write_ack_observer_records_metadata_policy_evidence_wait_and_timeout() {
+    let metrics = DcDurabilityMetrics::default();
+    for policy in [
+        DurabilityPolicy::Local,
+        DurabilityPolicy::Majority,
+        DurabilityPolicy::Everywhere,
+        DurabilityPolicy::AtLeast(std::num::NonZeroUsize::MIN),
+    ] {
+        for decision in [
+            peryx_ha::WriteAckDecision::Confirmed,
+            peryx_ha::WriteAckDecision::Pending,
+            peryx_ha::WriteAckDecision::Unavailable,
+        ] {
+            peryx_ha::WriteAckObserver::record_metadata(
+                &metrics,
+                MetadataAckObservation {
+                    policy,
+                    evidence: peryx_ha::MetadataEvidence::JournalFrontier,
+                    waited: std::time::Duration::from_millis(250),
+                    timed_out: decision == peryx_ha::WriteAckDecision::Unavailable,
+                    decision,
+                },
+            );
+        }
+    }
+
+    let body = rendered(&metrics);
+    for policy in ["local", "majority", "everywhere", "at_least"] {
+        for decision in ["confirmed", "pending", "unavailable"] {
+            assert!(
+                body.contains(&format!(
+                    "peryx_metadata_ack_total{{policy=\"{policy}\",evidence=\"journal-frontier\",decision=\"{decision}\"}} 1\n"
+                )),
+                "{body}"
+            );
+        }
+        assert!(
+            body.contains(&format!(
+                "peryx_metadata_ack_wait_seconds_total{{policy=\"{policy}\",evidence=\"journal-frontier\"}} 0.75\n"
+            )),
+            "{body}"
+        );
+        assert!(
+            body.contains(&format!(
+                "peryx_metadata_ack_timeout_total{{policy=\"{policy}\",evidence=\"journal-frontier\"}} 1\n"
+            )),
+            "{body}"
+        );
+    }
+    assert_eq!(
+        body.lines()
+            .filter(|line| line.starts_with("peryx_metadata_ack"))
+            .count(),
+        METADATA_SERIES_BUDGET
+    );
 }
 
 /// An object store answers for the bytes itself, so no node quorum ran and the gauges must not claim one.

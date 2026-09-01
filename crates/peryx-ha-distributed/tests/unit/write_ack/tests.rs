@@ -1,7 +1,10 @@
 use std::sync::Mutex;
 
 use peryx_core::{NodeRole, TopologyMember};
-use peryx_ha::{AuthorityEpoch, ByteAckDecision, ByteEvidence, CommittedBlob, WriteDurability, WriteEvidence};
+use peryx_ha::{
+    AuthorityEpoch, ByteAckDecision, ByteEvidence, CommittedBlob, CommittedMetadata, MetadataAckObservation,
+    MetadataEvidence, WriteAckDecision, WriteDurability, WriteEvidence,
+};
 use peryx_storage::blob::{BlobDurability, Digest};
 use peryx_storage::meta::{MetaError, MetaStore};
 
@@ -9,7 +12,7 @@ use super::*;
 use crate::{LoopbackReceiptSource, LoopbackRemoteFrontierSource};
 
 #[derive(Default)]
-struct Observer(Mutex<Vec<(DcAck, ByteEvidence)>>);
+struct Observer(Mutex<Vec<(DcAck, ByteEvidence)>>, Mutex<Vec<MetadataAckObservation>>);
 
 impl WriteAckObserver for Observer {
     fn record(&self, outcome: DcAck, evidence: &ByteEvidence) {
@@ -17,6 +20,13 @@ impl WriteAckObserver for Observer {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push((outcome, evidence.clone()));
+    }
+
+    fn record_metadata(&self, observation: MetadataAckObservation) {
+        self.1
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(observation);
     }
 }
 
@@ -58,6 +68,114 @@ fn committed(digest: &Digest, evidence: WriteEvidence) -> CommittedBlob<'_> {
         Some(commit),
         evidence,
     )
+}
+
+fn committed_metadata() -> CommittedMetadata<'static> {
+    let directory = tempfile::tempdir().unwrap();
+    let commit = MetaStore::open(directory.path().join("peryx.redb"))
+        .unwrap()
+        .commit_driver_txn_with_commit::<(), MetaError>(|txn| {
+            txn.put("write", b"committed")?;
+            Ok(((), vec![b"write".to_vec()]))
+        })
+        .unwrap()
+        .journal
+        .unwrap();
+    CommittedMetadata::new("repository:alpha", AuthorityEpoch(2), commit)
+}
+
+#[tokio::test(start_paused = true)]
+async fn metadata_only_majority_needs_no_byte_or_remote_source() {
+    let observer = Arc::new(Observer::default());
+    let durability = DistributedBlobDurability::new(
+        TopologyConfig::default(),
+        DurabilityPolicy::Majority,
+        Vec::new(),
+        Vec::new(),
+        Duration::from_secs(5),
+        observer.clone(),
+    );
+
+    let outcome = peryx_ha::MetadataWriteDurability::confirm_metadata(&durability, committed_metadata()).await;
+
+    assert_eq!(
+        outcome,
+        WriteDurability::Confirmed {
+            scope: BlobDurability::Filesystem,
+        }
+    );
+    assert_eq!(
+        *observer.1.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+        [MetadataAckObservation {
+            policy: DurabilityPolicy::Majority,
+            evidence: MetadataEvidence::JournalFrontier,
+            waited: Duration::ZERO,
+            timed_out: false,
+            decision: WriteAckDecision::Confirmed,
+        }]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn metadata_write_waits_for_the_remote_frontier() {
+    let observer = Arc::new(Observer::default());
+    let committed = committed_metadata();
+    let durability = DistributedBlobDurability::new(
+        TopologyConfig::default(),
+        DurabilityPolicy::Local,
+        Vec::new(),
+        vec![Arc::new(
+            LoopbackRemoteFrontierSource::reporting("west", 2, committed.commit().serial()).available_after(1),
+        )],
+        Duration::from_secs(5),
+        observer.clone(),
+    );
+
+    let outcome = peryx_ha::MetadataWriteDurability::confirm_metadata(&durability, committed).await;
+
+    assert_eq!(
+        outcome,
+        WriteDurability::Confirmed {
+            scope: BlobDurability::Filesystem,
+        }
+    );
+    assert_eq!(
+        *observer.1.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+        [MetadataAckObservation {
+            policy: DurabilityPolicy::Local,
+            evidence: MetadataEvidence::JournalFrontier,
+            waited: DEFAULT_FRONTIER_POLL,
+            timed_out: false,
+            decision: WriteAckDecision::Confirmed,
+        }]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn metadata_deadline_records_an_unavailable_timeout() {
+    let observer = Arc::new(Observer::default());
+    let durability = DistributedBlobDurability::new(
+        TopologyConfig::default(),
+        DurabilityPolicy::Everywhere,
+        Vec::new(),
+        vec![Arc::new(LoopbackRemoteFrontierSource::silent("west"))],
+        Duration::ZERO,
+        observer.clone(),
+    );
+
+    let outcome = peryx_ha::MetadataWriteDurability::confirm_metadata(&durability, committed_metadata()).await;
+
+    assert_eq!(outcome, WriteDurability::Unavailable);
+    assert_eq!(
+        *observer.1.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+        [MetadataAckObservation {
+            policy: DurabilityPolicy::Everywhere,
+            evidence: MetadataEvidence::JournalFrontier,
+            waited: Duration::ZERO,
+            timed_out: true,
+            decision: WriteAckDecision::Unavailable,
+        }]
+    );
 }
 
 #[tokio::test]

@@ -2,6 +2,7 @@
 
 mod blob;
 mod endpoint;
+mod metadata;
 mod placement;
 mod reclamation;
 mod reconcile;
@@ -13,6 +14,7 @@ pub use blob::{
     WriteDurability,
 };
 pub use endpoint::{MemberEndpoint, MemberEndpointError};
+pub use metadata::{CommittedMetadata, MetadataWriteDurability};
 pub use placement::{
     ArtifactOrigin, ArtifactPlacement, ArtifactPlacementHealth, ArtifactPlacementPage, ArtifactPlacementQuery,
     ArtifactPlacementRow, ArtifactSource, BackendId, BackendLocation, BlobPlacementDecisionError, BlobPlacementFailure,
@@ -1384,6 +1386,40 @@ pub enum DcAck {
 
 pub trait WriteAckObserver: Send + Sync {
     fn record(&self, outcome: DcAck, evidence: &ByteEvidence);
+
+    fn record_metadata(&self, observation: MetadataAckObservation);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetadataEvidence {
+    JournalFrontier,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteAckDecision {
+    Confirmed,
+    Pending,
+    Unavailable,
+}
+
+impl WriteAckDecision {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Confirmed => "confirmed",
+            Self::Pending => "pending",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MetadataAckObservation {
+    pub policy: DurabilityPolicy,
+    pub evidence: MetadataEvidence,
+    pub waited: std::time::Duration,
+    pub timed_out: bool,
+    pub decision: WriteAckDecision,
 }
 
 #[cfg(test)]

@@ -3,7 +3,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::{AuthorityEpoch, BlobDurability, BlobMetadata, Digest, JournalCommit, WriteEvidence};
+use crate::{
+    AuthorityEpoch, BlobDurability, BlobMetadata, CommittedMetadata, Digest, JournalCommit, MetadataWriteDurability,
+    WriteEvidence,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlobAvailabilityFailure {
@@ -118,6 +121,7 @@ pub trait BlobWriteDurability: Send + Sync {
 pub struct BlobServices {
     availability: Option<Arc<dyn BlobAvailability>>,
     durability: Arc<dyn BlobWriteDurability>,
+    metadata_durability: Arc<dyn MetadataWriteDurability>,
 }
 
 impl BlobServices {
@@ -126,7 +130,14 @@ impl BlobServices {
         Self {
             availability,
             durability,
+            metadata_durability: Arc::new(LocalMetadataDurability),
         }
+    }
+
+    #[must_use]
+    pub fn with_metadata_durability(mut self, durability: Arc<dyn MetadataWriteDurability>) -> Self {
+        self.metadata_durability = durability;
+        self
     }
 
     #[must_use]
@@ -137,5 +148,21 @@ impl BlobServices {
     #[must_use]
     pub fn durability(&self) -> &dyn BlobWriteDurability {
         &*self.durability
+    }
+
+    #[must_use]
+    pub fn metadata_durability(&self) -> &dyn MetadataWriteDurability {
+        &*self.metadata_durability
+    }
+}
+
+struct LocalMetadataDurability;
+
+#[async_trait]
+impl MetadataWriteDurability for LocalMetadataDurability {
+    async fn confirm_metadata(&self, _write: CommittedMetadata<'_>) -> WriteDurability {
+        WriteDurability::Confirmed {
+            scope: BlobDurability::Filesystem,
+        }
     }
 }

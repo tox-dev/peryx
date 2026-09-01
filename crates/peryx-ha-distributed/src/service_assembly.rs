@@ -126,8 +126,9 @@ impl AvailabilityAssembler for DistributedServiceAssembly {
                     context.blobs.clone(),
                     context.clock.clone(),
                 )?,
-                durability,
-            ),
+                durability.clone(),
+            )
+            .with_metadata_durability(durability),
             analytics,
             operations: Arc::new(crate::telemetry::DistributedOperationObserver),
             capabilities: AvailabilityCapabilities::default(),

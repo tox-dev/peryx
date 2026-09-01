@@ -895,6 +895,25 @@ async fn blob_services_can_disable_availability() {
     assert!(services.availability().is_none());
 }
 
+#[tokio::test]
+async fn blob_services_defaults_metadata_durability_to_local() {
+    let services = BlobServices::new(None, Arc::new(Durability(WriteDurability::Pending)));
+
+    assert_eq!(
+        services
+            .metadata_durability()
+            .confirm_metadata(CommittedMetadata::new(
+                "repository",
+                AuthorityEpoch(7),
+                JournalCommit::new(11),
+            ))
+            .await,
+        WriteDurability::Confirmed {
+            scope: BlobDurability::Filesystem,
+        }
+    );
+}
+
 #[rstest]
 #[case(WriteDurability::Confirmed { scope: BlobDurability::Filesystem })]
 #[case(WriteDurability::Confirmed { scope: BlobDurability::ObjectStore })]

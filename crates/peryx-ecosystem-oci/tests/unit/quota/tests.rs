@@ -151,6 +151,7 @@ fn test_manifest_commits_one_of_two_prechecked_reservations() {
                 reservation: Some(reservation),
                 journal: false,
                 webhook: None,
+                operation: None,
             },
         )
         .unwrap();
@@ -184,6 +185,7 @@ fn test_manifest_media_type_overflow_does_not_publish_the_manifest() {
             reservation: None,
             journal: false,
             webhook: None,
+            operation: None,
         },
     );
     assert!(
@@ -226,6 +228,7 @@ fn test_manifest_tag_replacement_commits_a_new_allocation() {
                 reservation: Some(reservation.clone()),
                 journal: false,
                 webhook: None,
+                operation: None,
             },
         )
         .unwrap();

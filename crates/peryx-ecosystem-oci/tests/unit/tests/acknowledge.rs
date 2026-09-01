@@ -10,12 +10,14 @@ use peryx_storage::meta::OperationState;
 use rstest::rstest;
 
 use super::{
-    ObservedWrite, ScriptedDurability, auth, body_has_code, hosted_writable_distributed_with_durability, oci_digest,
-    send, send_body,
+    ObservedMetadataWrite, ObservedWrite, ScriptedDurability, auth, body_has_code,
+    hosted_writable_distributed_with_durability, oci_digest, send, send_body,
 };
 
 const TOKEN: &str = "s3cret";
 const LAYER: &[u8] = b"a-layer-whose-durability-must-be-proven";
+const MANIFEST_TYPE: &str = "application/vnd.oci.image.index.v1+json";
+const MANIFEST: &[u8] = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[]}"#;
 
 const CONFIRMED: WriteDurability = WriteDurability::Confirmed {
     scope: peryx_core::BlobDurability::Filesystem,
@@ -233,6 +235,139 @@ async fn test_a_push_presents_the_evidence_its_own_commit_earned(#[case] push: P
             evidence: peryx_core::WriteEvidence::NodeLocal,
         }]
     );
+}
+
+#[tokio::test]
+async fn test_a_manifest_retry_uses_the_committed_metadata_operation() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, durability, app) = hosted_writable_distributed_with_durability(&dir, TOKEN, WriteDurability::Pending);
+
+    let (status, headers, body) = put_manifest(&app).await;
+
+    assert_eq!(
+        (
+            status,
+            headers[header::RETRY_AFTER].to_str().unwrap(),
+            body_has_code(&body, "UNAVAILABLE")
+        ),
+        (StatusCode::SERVICE_UNAVAILABLE, "1", true)
+    );
+    let serial = state.serving.meta.current_serial().unwrap();
+    assert_eq!(
+        send(&app, Method::GET, "/v2/store/app/manifests/latest").await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        state
+            .serving
+            .meta
+            .operation_outcome(&manifest_operation())
+            .unwrap()
+            .unwrap()
+            .state,
+        OperationState::Pending
+    );
+    assert_eq!(
+        durability.observed_metadata(),
+        [ObservedMetadataWrite {
+            authority: "oci:app".to_owned(),
+            epoch: 0,
+            serial,
+        }]
+    );
+    drop(app);
+    drop(state);
+
+    let (state, durability, app) = hosted_writable_distributed_with_durability(&dir, TOKEN, CONFIRMED);
+    assert_eq!(put_manifest(&app).await.0, StatusCode::CREATED);
+
+    assert_eq!(state.serving.meta.current_serial().unwrap(), serial);
+    assert_eq!(
+        state
+            .serving
+            .meta
+            .operation_outcome(&manifest_operation())
+            .unwrap()
+            .unwrap()
+            .state,
+        OperationState::Published
+    );
+    assert!(durability.observed().is_empty());
+    assert_eq!(
+        durability.observed_metadata(),
+        [ObservedMetadataWrite {
+            authority: "oci:app".to_owned(),
+            epoch: 0,
+            serial,
+        }]
+    );
+}
+
+#[tokio::test]
+async fn test_a_manifest_retry_recovers_an_admission_without_a_checkpoint() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, durability, app) = hosted_writable_distributed_with_durability(&dir, TOKEN, CONFIRMED);
+    assert!(matches!(
+        state
+            .serving
+            .meta
+            .claim_operation(&manifest_operation(), None, 1)
+            .unwrap(),
+        peryx_storage::meta::OperationClaim::Admitted
+    ));
+
+    assert_eq!(put_manifest(&app).await.0, StatusCode::CREATED);
+
+    assert_eq!(
+        state
+            .serving
+            .meta
+            .operation_outcome(&manifest_operation())
+            .unwrap()
+            .unwrap()
+            .state,
+        OperationState::Published
+    );
+    assert_eq!(durability.observed_metadata().len(), 1);
+}
+
+#[tokio::test]
+async fn test_equal_manifest_bytes_under_another_tag_do_not_share_a_pending_checkpoint() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, durability, app) = hosted_writable_distributed_with_durability(&dir, TOKEN, WriteDurability::Pending);
+    assert_eq!(put_manifest_at(&app, "latest").await.0, StatusCode::SERVICE_UNAVAILABLE);
+    let serial = state.serving.meta.current_serial().unwrap();
+
+    durability.answer(CONFIRMED);
+    assert_eq!(put_manifest_at(&app, "stable").await.0, StatusCode::CREATED);
+
+    assert_eq!(state.serving.meta.current_serial().unwrap(), serial + 1);
+    assert_eq!(
+        send(&app, Method::GET, "/v2/store/app/manifests/stable").await.0,
+        StatusCode::OK
+    );
+}
+
+async fn put_manifest(app: &axum::Router) -> (StatusCode, axum::http::HeaderMap, bytes::Bytes) {
+    put_manifest_at(app, "latest").await
+}
+
+async fn put_manifest_at(app: &axum::Router, reference: &str) -> (StatusCode, axum::http::HeaderMap, bytes::Bytes) {
+    send_body(
+        app,
+        Method::PUT,
+        &format!("/v2/store/app/manifests/{reference}"),
+        &[("authorization", &auth(TOKEN)), ("content-type", MANIFEST_TYPE)],
+        MANIFEST.to_vec(),
+    )
+    .await
+}
+
+fn manifest_operation() -> String {
+    format!(
+        "oci:manifest:store:app:sha256:{}",
+        peryx_storage::blob::Digest::of(MANIFEST).as_str()
+    )
 }
 
 fn operation(push: Push, blob: &[u8]) -> String {

@@ -164,6 +164,15 @@ impl AvailabilityState {
         }
     }
 
+    async fn confirm_metadata_write(&self, write: peryx_ha::CommittedMetadata<'_>) -> peryx_ha::WriteDurability {
+        match &self.distributed {
+            Some(state) => state.confirm_metadata_write(write).await,
+            None => peryx_ha::WriteDurability::Confirmed {
+                scope: peryx_core::BlobDurability::Filesystem,
+            },
+        }
+    }
+
     async fn claim_first_publish_home(
         &self,
         authority: &str,
@@ -295,6 +304,10 @@ impl DistributedAvailability {
 
     async fn confirm_blob_write(&self, write: peryx_ha::CommittedBlob<'_>) -> peryx_ha::WriteDurability {
         self.blobs.durability().confirm(write).await
+    }
+
+    async fn confirm_metadata_write(&self, write: peryx_ha::CommittedMetadata<'_>) -> peryx_ha::WriteDurability {
+        self.blobs.metadata_durability().confirm_metadata(write).await
     }
 
     async fn claim_first_publish_home(
@@ -440,6 +453,10 @@ impl ServingState {
 
     pub async fn confirm_blob_write(&self, write: peryx_ha::CommittedBlob<'_>) -> peryx_ha::WriteDurability {
         self.availability.confirm_blob_write(write).await
+    }
+
+    pub async fn confirm_metadata_write(&self, write: peryx_ha::CommittedMetadata<'_>) -> peryx_ha::WriteDurability {
+        self.availability.confirm_metadata_write(write).await
     }
 
     #[must_use]

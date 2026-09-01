@@ -245,12 +245,36 @@ pub struct ManifestCommit<'a> {
     pub reservation: Option<QuotaReservationRecord>,
     pub journal: crate::outbox::Outbox,
     pub webhook: Option<peryx_storage::meta::WebhookEventIntent>,
+    pub operation: Option<ManifestOperation<'a>>,
 }
 
-/// Publish a pushed manifest and every row derived from it - its placement, and the referrer row a
-/// subject query answers from - in one metadata transaction, so a fault leaves the repository serving
-/// what it did before rather than a manifest whose derived rows never landed.
-pub fn publish_manifest(meta: &MetaStore, commit: ManifestCommit<'_>) -> Result<bool, ServeError> {
+pub struct ManifestOperation<'a> {
+    pub id: &'a str,
+    pub reference: &'a str,
+    pub epoch: u64,
+    pub now: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ManifestCheckpoint {
+    pub reference: String,
+    pub epoch: u64,
+    pub serial: u64,
+}
+
+impl ManifestCheckpoint {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        serde_json::to_vec(&self).expect("a manifest checkpoint always serializes")
+    }
+
+    pub fn decode(encoded: &[u8]) -> Result<Self, ServeError> {
+        serde_json::from_slice(encoded).map_err(|error| ServeError::Transport(error.to_string()))
+    }
+}
+
+/// Commits the manifest, its derived rows, and any durability checkpoint in one transaction.
+pub fn publish_manifest(meta: &MetaStore, commit: ManifestCommit<'_>) -> Result<DriverCommit<bool>, ServeError> {
     let ManifestCommit {
         index,
         repo,
@@ -261,6 +285,7 @@ pub fn publish_manifest(meta: &MetaStore, commit: ManifestCommit<'_>) -> Result<
         reservation,
         journal,
         webhook,
+        operation,
     } = commit;
     let body = |txn: &mut DriverTxn| {
         let tag = match reference {
@@ -283,10 +308,28 @@ pub fn publish_manifest(meta: &MetaStore, commit: ManifestCommit<'_>) -> Result<
             digest: canonical.to_owned(),
             tag: tag.map(str::to_owned),
         });
+        if let Some(operation) = &operation {
+            let commit = txn
+                .journal_commit_after(entries.len())?
+                .expect("manifest durability enables the journal");
+            txn.checkpoint_operation(
+                operation.id,
+                &ManifestCheckpoint {
+                    reference: operation.reference.to_owned(),
+                    epoch: operation.epoch,
+                    serial: commit.serial(),
+                }
+                .encode(),
+                operation.now,
+            )
+            .map_err(|error| ServeError::Transport(error.to_string()))?;
+        }
         Ok::<_, ServeError>((publication, entries))
     };
-    finalize(meta, reservation, None, |publication| publication.allocated, body)
-        .map(|committed| committed.value.changed)
+    finalize(meta, reservation, None, |publication| publication.allocated, body).map(|committed| DriverCommit {
+        value: committed.value.changed,
+        journal: committed.journal,
+    })
 }
 
 /// Commit the mutation and report the journal serial it landed at, so a caller that must acknowledge

@@ -161,6 +161,38 @@ impl MetaStore {
         Ok(OperationClaim::Admitted)
     }
 
+    /// Starts another attempt under a terminal operation ID. A pending operation retains its checkpoint.
+    ///
+    /// # Errors
+    /// Returns a store error when the row cannot be read, encoded, or committed.
+    pub fn restart_operation(
+        &self,
+        operation: &str,
+        expiry_unix: Option<i64>,
+        now: i64,
+    ) -> Result<OperationOutcomeRecord, MetaError> {
+        let txn = self.db.begin_write()?;
+        let mut outcomes = txn.open_table(OPERATION_OUTCOME)?;
+        let existing = outcomes
+            .get(operation)?
+            .map(|value| serde_json::from_slice::<OperationOutcomeRecord>(value.value()))
+            .transpose()?;
+        if let Some(record) = existing.filter(|record| !record.state.is_terminal()) {
+            return Ok(record);
+        }
+        let record = OperationOutcomeRecord {
+            state: OperationState::Pending,
+            response: Vec::new(),
+            expiry_unix,
+            updated_at_unix: now,
+        };
+        let encoded = serde_json::to_vec(&record)?;
+        outcomes.insert(operation, encoded.as_slice())?;
+        drop(outcomes);
+        txn.commit()?;
+        Ok(record)
+    }
+
     /// # Errors
     /// Returns [`OperationOutcomeError::NotAdmitted`] when the id was never claimed,
     /// [`OperationOutcomeError::AlreadyFinal`] when it already holds a terminal result, or a store error
@@ -313,6 +345,38 @@ impl MetaStore {
         txn.commit()?;
         Ok(pruned)
     }
+}
+
+pub(super) fn checkpoint_pending_operation(
+    txn: &redb::WriteTransaction,
+    operation: &str,
+    response: &[u8],
+    now: i64,
+) -> Result<(), OperationOutcomeError> {
+    let mut outcomes = txn.open_table(OPERATION_OUTCOME).map_err(MetaError::from)?;
+    let Some(mut record) = outcomes
+        .get(operation)
+        .map_err(MetaError::from)?
+        .map(|value| serde_json::from_slice::<OperationOutcomeRecord>(value.value()))
+        .transpose()
+        .map_err(MetaError::from)?
+    else {
+        return Err(OperationOutcomeError::NotAdmitted {
+            operation: operation.to_owned(),
+        });
+    };
+    if record.state.is_terminal() {
+        return Err(OperationOutcomeError::AlreadyFinal {
+            operation: operation.to_owned(),
+        });
+    }
+    record.response = response.to_vec();
+    record.updated_at_unix = now;
+    let encoded = serde_json::to_vec(&record).map_err(MetaError::from)?;
+    outcomes
+        .insert(operation, encoded.as_slice())
+        .map_err(MetaError::from)?;
+    Ok(())
 }
 
 #[cfg(test)]

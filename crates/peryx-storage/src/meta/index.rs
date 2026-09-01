@@ -673,6 +673,35 @@ impl DriverTxn<'_> {
         self.policy_inputs.insert(repository.to_owned());
     }
 
+    /// Predicts the journal position so this transaction can checkpoint dependent state before commit.
+    ///
+    /// # Errors
+    /// Returns a store error when the serial cannot be read.
+    pub fn journal_commit_after(&self, entries: usize) -> Result<Option<super::JournalCommit>, MetaError> {
+        if entries == 0 {
+            return Ok(None);
+        }
+        let serial = self
+            .txn
+            .open_table(SERIAL)?
+            .get(SERIAL_KEY)?
+            .map_or(0, |value| value.value());
+        Ok(Some(super::JournalCommit::new(serial + entries as u64)))
+    }
+
+    /// Stores an opaque checkpoint with a pending operation in the surrounding transaction.
+    ///
+    /// # Errors
+    /// Returns an operation outcome error when the operation is absent, terminal, or cannot be updated.
+    pub fn checkpoint_operation(
+        &self,
+        operation: &str,
+        response: &[u8],
+        now: i64,
+    ) -> Result<(), super::OperationOutcomeError> {
+        super::operation_outcome::checkpoint_pending_operation(self.txn, operation, response, now)
+    }
+
     /// Includes writes staged earlier in this transaction.
     ///
     /// # Errors

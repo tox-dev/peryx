@@ -1,12 +1,7 @@
-//! An ecosystem mutation claims its operation id as pending before it runs, then finalizes the terminal
-//! result once the bytes commit. The ledger records the write's convergence for the pending-operations
-//! view and dedups a retry to a single terminal record. Recording is best effort and off the publish's
-//! critical path: a ledger fault is swallowed rather than turned into a client error, so it never fails a
-//! durable publish, and the response bytes never reach a log. The ledger only records - it never gates
-//! the mutation, so a repeated write always re-commits its content-addressed bytes and stays retrievable
-//! rather than short-circuiting on the recorded claim.
+//! Regular operation tracing swallows ledger faults. Durability-gated writes use a pending record as a
+//! crash-safe metadata checkpoint and surface ledger errors.
 
-use peryx_storage::meta::OperationResult;
+use peryx_storage::meta::{OperationClaim, OperationOutcomeRecord, OperationResult};
 
 use super::ServingState;
 
@@ -16,6 +11,27 @@ use super::ServingState;
 const OPERATION_RETENTION_SECS: i64 = 24 * 3600;
 
 impl ServingState {
+    /// Claims an operation without a pending checkpoint. A terminal record starts a new attempt under the
+    /// same ID.
+    ///
+    /// # Errors
+    /// Returns a metadata error when the operation record cannot be read or updated.
+    pub fn begin_retryable_write(
+        &self,
+        operation: &str,
+    ) -> Result<Option<OperationOutcomeRecord>, peryx_storage::meta::MetaError> {
+        let now = (self.clock)();
+        let expiry = Some(now + OPERATION_RETENTION_SECS);
+        match self.meta.claim_operation(operation, expiry, now)? {
+            OperationClaim::Admitted => Ok(None),
+            OperationClaim::Existing(record) if !record.state.is_terminal() => Ok(Some(record)),
+            OperationClaim::Existing(_) => {
+                self.meta.restart_operation(operation, expiry, now)?;
+                Ok(None)
+            }
+        }
+    }
+
     /// Claim `operation` as an admitted, pending write before its mutation runs, recording it with a
     /// retention deadline `OPERATION_RETENTION_SECS` out so a write that never finalizes reads `expired`
     /// and is pruned once the deadline passes. A retry of the same id finds the existing record rather than

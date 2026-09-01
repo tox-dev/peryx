@@ -296,6 +296,18 @@ struct Durability {
     observed: std::sync::Mutex<Option<ObservedWrite>>,
 }
 
+struct MetadataDurability {
+    observed: Mutex<Option<(String, peryx_ha::AuthorityEpoch, u64)>>,
+}
+
+#[async_trait]
+impl peryx_ha::MetadataWriteDurability for MetadataDurability {
+    async fn confirm_metadata(&self, write: peryx_ha::CommittedMetadata<'_>) -> peryx_ha::WriteDurability {
+        *self.observed.lock().unwrap() = Some((write.authority().to_owned(), write.epoch(), write.commit().serial()));
+        peryx_ha::WriteDurability::Pending
+    }
+}
+
 impl Durability {
     fn new(outcome: peryx_ha::WriteDurability) -> Self {
         Self {
@@ -348,6 +360,18 @@ async fn test_none_mode_has_no_distributed_runtime() {
                 peryx_ha::AuthorityEpoch(3),
                 None,
                 WriteEvidence::NodeLocal,
+            ))
+            .await,
+        peryx_ha::WriteDurability::Confirmed {
+            scope: BlobDurability::Filesystem,
+        }
+    );
+    assert_eq!(
+        serving
+            .confirm_metadata_write(peryx_ha::CommittedMetadata::new(
+                "catalog",
+                peryx_ha::AuthorityEpoch(3),
+                peryx_storage::meta::JournalCommit::new(1),
             ))
             .await,
         peryx_ha::WriteDurability::Confirmed {
@@ -419,11 +443,15 @@ async fn test_configured_blob_services_receive_requests() {
     let (_dir, mut state) = local_state();
     let availability = Arc::new(Availability::new());
     let durability = Arc::new(Durability::new(peryx_ha::WriteDurability::Pending));
+    let metadata_durability = Arc::new(MetadataDurability {
+        observed: Mutex::new(None),
+    });
     state
         .install_distributed_availability(peryx_ha::AvailabilityStateInstall {
             role: NodeRole::Replica,
             topology: home_topology("home"),
-            blobs: peryx_ha::BlobServices::new(Some(availability.clone()), durability.clone()),
+            blobs: peryx_ha::BlobServices::new(Some(availability.clone()), durability.clone())
+                .with_metadata_durability(metadata_durability.clone()),
             analytics: Arc::new(Completeness),
             capabilities: peryx_ha::AvailabilityCapabilities::default(),
             authority_drainer: None,
@@ -479,6 +507,29 @@ async fn test_configured_blob_services_receive_requests() {
             epoch: peryx_ha::AuthorityEpoch(7),
             evidence: WriteEvidence::ObjectStoreVerified,
         })
+    );
+    let commit = serving
+        .meta
+        .commit_driver_txn_with_commit::<(), peryx_storage::meta::MetaError>(|txn| {
+            txn.put("metadata", b"committed")?;
+            Ok(((), vec![b"metadata".to_vec()]))
+        })
+        .unwrap()
+        .journal
+        .unwrap();
+    assert_eq!(
+        serving
+            .confirm_metadata_write(peryx_ha::CommittedMetadata::new(
+                "catalog",
+                peryx_ha::AuthorityEpoch(8),
+                commit,
+            ))
+            .await,
+        peryx_ha::WriteDurability::Pending
+    );
+    assert_eq!(
+        *metadata_durability.observed.lock().unwrap(),
+        Some(("catalog".to_owned(), peryx_ha::AuthorityEpoch(8), commit.serial()))
     );
 }
 

@@ -40,6 +40,100 @@ fn test_a_second_claim_returns_the_existing_record() {
 }
 
 #[test]
+fn test_driver_transaction_checkpoints_its_committed_journal_position() {
+    let (_dir, store) = store();
+    store.claim_operation("op-1", Some(10), 1).unwrap();
+
+    let committed = store
+        .commit_driver_txn_with_commit::<(), OperationOutcomeError>(|txn| {
+            txn.put("manifest", b"published")?;
+            let entries = vec![b"publish-manifest".to_vec()];
+            let serial = txn.journal_commit_after(entries.len())?.unwrap().serial();
+            txn.checkpoint_operation("op-1", serial.to_string().as_bytes(), 2)?;
+            Ok(((), entries))
+        })
+        .unwrap();
+
+    assert_eq!(committed.journal.unwrap().serial(), 1);
+    assert_eq!(
+        store.operation_outcome("op-1").unwrap(),
+        Some(OperationOutcomeRecord {
+            state: OperationState::Pending,
+            response: b"1".to_vec(),
+            expiry_unix: Some(10),
+            updated_at_unix: 2,
+        })
+    );
+}
+
+#[test]
+fn test_empty_driver_transaction_predicts_no_journal_commit() {
+    let (_dir, store) = store();
+
+    store
+        .commit_driver_txn::<(), crate::meta::MetaError>(|txn| {
+            assert_eq!(txn.journal_commit_after(0)?, None);
+            Ok(((), Vec::new()))
+        })
+        .unwrap();
+}
+
+#[rstest]
+#[case::unclaimed(false, OperationOutcomeError::NotAdmitted { operation: "op-1".to_owned() })]
+#[case::terminal(true, OperationOutcomeError::AlreadyFinal { operation: "op-1".to_owned() })]
+fn test_checkpoint_rejects_an_operation_that_cannot_accept_progress(
+    #[case] terminal: bool,
+    #[case] expected: OperationOutcomeError,
+) {
+    let (_dir, store) = store();
+    if terminal {
+        store.claim_operation("op-1", None, 1).unwrap();
+        store
+            .finalize_operation("op-1", OperationResult::Published, b"", 2)
+            .unwrap();
+    }
+
+    let error = store
+        .commit_driver_txn::<(), OperationOutcomeError>(|txn| {
+            txn.checkpoint_operation("op-1", b"checkpoint", 3)?;
+            Ok(((), Vec::new()))
+        })
+        .unwrap_err();
+
+    assert_eq!(error.to_string(), expected.to_string());
+}
+
+#[test]
+fn test_restart_preserves_pending_progress_and_reopens_a_terminal_operation() {
+    let (_dir, store) = store();
+    store.claim_operation("op-1", Some(10), 1).unwrap();
+    store
+        .commit_driver_txn::<(), OperationOutcomeError>(|txn| {
+            txn.checkpoint_operation("op-1", b"checkpoint", 2)?;
+            Ok(((), Vec::new()))
+        })
+        .unwrap();
+
+    assert_eq!(
+        store.restart_operation("op-1", Some(20), 3).unwrap(),
+        OperationOutcomeRecord {
+            state: OperationState::Pending,
+            response: b"checkpoint".to_vec(),
+            expiry_unix: Some(10),
+            updated_at_unix: 2,
+        }
+    );
+    store
+        .finalize_operation("op-1", OperationResult::Published, b"done", 4)
+        .unwrap();
+    assert_eq!(
+        store.restart_operation("op-1", Some(30), 5).unwrap(),
+        pending(Some(30), 5)
+    );
+    assert_eq!(store.operation_outcome("op-1").unwrap(), Some(pending(Some(30), 5)));
+}
+
+#[test]
 fn test_finalize_stamps_the_terminal_result_and_response() {
     let (_dir, store) = store();
     store.claim_operation("op-1", Some(10), 1).unwrap();

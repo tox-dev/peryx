@@ -63,6 +63,7 @@ fn test_publish_manifest_records_the_reference_it_named(#[case] reference: Refer
             reservation: None,
             journal: true,
             webhook: None,
+            operation: None,
         },
     )
     .unwrap();
@@ -102,8 +103,10 @@ fn publish(
             reservation,
             journal: true,
             webhook: None,
+            operation: None,
         },
     )
+    .map(|committed| committed.value)
 }
 
 /// Everything a reader resolves from a published manifest: the manifest itself, where its bytes live,
@@ -205,6 +208,7 @@ fn test_none_mode_publish_records_no_outbox_entry() {
             reservation: None,
             journal: false,
             webhook: None,
+            operation: None,
         },
     )
     .unwrap();

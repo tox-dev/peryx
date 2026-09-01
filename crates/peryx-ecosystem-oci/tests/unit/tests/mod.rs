@@ -336,17 +336,19 @@ fn install_oci(state: &mut AppState, settings: HashMap<String, IndexSettings>, d
     }
 }
 
-fn install_test_distributed(
+fn install_test_distributed<Durability>(
     state: &mut AppState,
     availability: Option<Arc<dyn peryx_ha::BlobAvailability>>,
-    durability: Arc<dyn peryx_ha::BlobWriteDurability>,
-) {
+    durability: Arc<Durability>,
+) where
+    Durability: peryx_ha::BlobWriteDurability + peryx_ha::MetadataWriteDurability + 'static,
+{
     let ownership = Arc::new(TestOwnership::default());
     state
         .install_distributed_availability(peryx_ha::AvailabilityStateInstall {
             role: peryx_core::NodeRole::Writer,
             topology: local_topology(),
-            blobs: peryx_ha::BlobServices::new(availability, durability),
+            blobs: peryx_ha::BlobServices::new(availability, durability.clone()).with_metadata_durability(durability),
             analytics: Arc::new(UnavailableCompleteness),
             capabilities: peryx_ha::AvailabilityCapabilities {
                 ownership: Some(ownership.clone()),
@@ -384,11 +386,21 @@ impl peryx_ha::BlobWriteDurability for LocalDurability {
     }
 }
 
+#[async_trait::async_trait]
+impl peryx_ha::MetadataWriteDurability for LocalDurability {
+    async fn confirm_metadata(&self, _write: peryx_ha::CommittedMetadata<'_>) -> peryx_ha::WriteDurability {
+        peryx_ha::WriteDurability::Confirmed {
+            scope: peryx_core::BlobDurability::Filesystem,
+        }
+    }
+}
+
 /// Answers every acknowledgement with one scripted verdict and keeps the writes it was asked about, so
 /// a test asserts on what the push presented as evidence as well as on the response it produced.
 struct ScriptedDurability {
     verdict: Mutex<peryx_ha::WriteDurability>,
     seen: Mutex<Vec<ObservedWrite>>,
+    seen_metadata: Mutex<Vec<ObservedMetadataWrite>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -400,11 +412,19 @@ struct ObservedWrite {
     evidence: peryx_core::WriteEvidence,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ObservedMetadataWrite {
+    authority: String,
+    epoch: u64,
+    serial: u64,
+}
+
 impl ScriptedDurability {
     const fn new(verdict: peryx_ha::WriteDurability) -> Self {
         Self {
             verdict: Mutex::new(verdict),
             seen: Mutex::new(Vec::new()),
+            seen_metadata: Mutex::new(Vec::new()),
         }
     }
 
@@ -421,6 +441,10 @@ impl ScriptedDurability {
     fn observed(&self) -> Vec<ObservedWrite> {
         self.seen.lock().unwrap().clone()
     }
+
+    fn observed_metadata(&self) -> Vec<ObservedMetadataWrite> {
+        self.seen_metadata.lock().unwrap().clone()
+    }
 }
 
 #[async_trait::async_trait]
@@ -432,6 +456,18 @@ impl peryx_ha::BlobWriteDurability for ScriptedDurability {
             authority: write.authority().to_owned(),
             journaled: write.commit().is_some(),
             evidence: write.evidence(),
+        });
+        *self.verdict.lock().unwrap()
+    }
+}
+
+#[async_trait::async_trait]
+impl peryx_ha::MetadataWriteDurability for ScriptedDurability {
+    async fn confirm_metadata(&self, write: peryx_ha::CommittedMetadata<'_>) -> peryx_ha::WriteDurability {
+        self.seen_metadata.lock().unwrap().push(ObservedMetadataWrite {
+            authority: write.authority().to_owned(),
+            epoch: write.epoch().0,
+            serial: write.commit().serial(),
         });
         *self.verdict.lock().unwrap()
     }
