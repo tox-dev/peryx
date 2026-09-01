@@ -340,7 +340,7 @@ fn assert_metadata_read_error(backup: &std::path::Path) {
         .unwrap()
         .set_len(1 << 30)
         .unwrap();
-    let identity = std::fs::metadata(metadata).unwrap();
+    let identity = std::fs::metadata(&metadata).unwrap();
     let (ready_send, ready_receive) = mpsc::sync_channel(0);
     let watcher = std::thread::spawn(move || {
         #[cfg(target_os = "linux")]
@@ -366,10 +366,8 @@ fn assert_metadata_read_error(backup: &std::path::Path) {
                     && found.ino() == identity.ino()
                     && (cfg!(target_os = "macos") || found.dev() == identity.dev())
                 {
-                    nix::unistd::close(descriptor).unwrap();
-                    let replacement = std::fs::OpenOptions::new().write(true).open("/dev/null").unwrap();
-                    assert_eq!(replacement.as_raw_fd(), descriptor);
-                    return replacement;
+                    revoke_read_access(descriptor, &metadata);
+                    return;
                 }
             }
         }
@@ -379,8 +377,7 @@ fn assert_metadata_read_error(backup: &std::path::Path) {
 
     let error = backup_verify(backup, &mut out).unwrap_err();
 
-    let replacement = watcher.join().unwrap();
-    std::mem::forget(replacement);
+    watcher.join().unwrap();
     assert_eq!(
         (error.to_string(), String::from_utf8(out).unwrap()),
         (
@@ -412,6 +409,20 @@ fn existing_descriptor(entry: &std::fs::DirEntry) -> Option<(i32, std::fs::Metad
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn descriptor_number(entry: &std::fs::DirEntry) -> i32 {
     entry.file_name().to_string_lossy().parse().unwrap()
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[allow(
+    unsafe_code,
+    reason = "POSIX exposes in-place descriptor replacement through raw integers"
+)]
+fn revoke_read_access(descriptor: i32, path: &std::path::Path) {
+    use std::os::fd::AsRawFd as _;
+
+    let write_only = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+    // SAFETY: the scan found an open descriptor, and `write_only` owns its source descriptor.
+    let rebound = unsafe { nix::libc::dup2(write_only.as_raw_fd(), descriptor) };
+    assert_eq!(rebound, descriptor);
 }
 
 #[rstest]
