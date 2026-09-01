@@ -8,7 +8,9 @@ use peryx_ha::{
     AggregateDelta, AggregateKey, AggregateRow, AnalyticsBatch, AnalyticsBatchSource as _, AuthorityEpoch, IntervalId,
     ProducerId,
 };
-use peryx_storage::meta::{AnalyticsCheckpoint, AnalyticsHandle, MetaStore};
+use peryx_storage::meta::{
+    AnalyticsCheckpoint, AnalyticsDelta, AnalyticsHandle, ArtifactUsageKey, DailyUsageKey, MetaStore, UsageTotals,
+};
 use rstest::rstest;
 
 use super::{
@@ -101,19 +103,12 @@ fn flush_and_assert(metrics: &Metrics, done: impl Fn() -> bool) {
 }
 
 fn persisted_reads(store: &AnalyticsHandle) -> Option<u64> {
-    let bytes = store.load_checkpoint().unwrap().lifetime?;
-    let snapshot: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    Some(
-        snapshot["artifacts"]
-            .as_array()?
-            .iter()
-            .map(|artifact| artifact["reads"].as_u64().unwrap())
-            .sum(),
-    )
+    let rows = store.load_checkpoint().unwrap().lifetime;
+    (!rows.is_empty()).then(|| rows.iter().map(|(_, totals)| totals.reads).sum())
 }
 
-fn persisted_snapshot(snapshot: Option<Vec<u8>>) -> serde_json::Value {
-    serde_json::from_slice(&snapshot.expect("metrics flush did not persist a snapshot")).unwrap()
+fn persisted_daily(store: &AnalyticsHandle) -> Vec<(DailyUsageKey, UsageTotals)> {
+    store.load_checkpoint().unwrap().daily
 }
 
 struct RejectingCheckpointStore {
@@ -125,7 +120,7 @@ impl MetricsStore for RejectingCheckpointStore {
         Ok(AnalyticsCheckpoint::default())
     }
 
-    fn save_checkpoint(&self, _lifetime: &[u8], _daily: &[u8]) -> Result<(), MetricsError> {
+    fn commit_checkpoint(&self, _delta: &AnalyticsDelta) -> Result<(), MetricsError> {
         self.checkpointed.send(()).ok();
         Err(MetricsError::Persistence("read-only store".to_owned()))
     }
@@ -147,8 +142,8 @@ impl MetricsStore for PausingCheckpointStore {
         MetricsStore::load_checkpoint(&self.store)
     }
 
-    fn save_checkpoint(&self, lifetime: &[u8], daily: &[u8]) -> Result<(), MetricsError> {
-        MetricsStore::save_checkpoint(&self.store, lifetime, daily)?;
+    fn commit_checkpoint(&self, delta: &AnalyticsDelta) -> Result<(), MetricsError> {
+        MetricsStore::commit_checkpoint(&self.store, delta)?;
         self.checkpointed.send(()).unwrap();
         self.resumed.lock().unwrap().recv().unwrap();
         Ok(())
@@ -160,8 +155,8 @@ impl MetricsStore for CheckpointStore {
         MetricsStore::load_checkpoint(&self.store)
     }
 
-    fn save_checkpoint(&self, lifetime: &[u8], daily: &[u8]) -> Result<(), MetricsError> {
-        MetricsStore::save_checkpoint(&self.store, lifetime, daily)?;
+    fn commit_checkpoint(&self, delta: &AnalyticsDelta) -> Result<(), MetricsError> {
+        MetricsStore::commit_checkpoint(&self.store, delta)?;
         self.checkpointed.send(()).unwrap();
         Ok(())
     }
@@ -241,51 +236,58 @@ fn test_neutral_daily_snapshot_seeds_a_producer_offline() {
         bytes: 4096,
     };
     meta.analytics()
-        .save_checkpoint(
-            br#"{"artifacts":[]}"#,
-            &serde_json::to_vec(&serde_json::json!({
-                "schema": 1,
-                "buckets": [seeded],
-            }))
-            .unwrap(),
-        )
+        .commit_checkpoint(&AnalyticsDelta {
+            daily: vec![(
+                DailyUsageKey {
+                    day: seeded.day,
+                    repository: seeded.repository.clone(),
+                    resource: seeded.resource.clone(),
+                    group: seeded.group.clone(),
+                    source: seeded.source.clone(),
+                },
+                UsageTotals {
+                    reads: seeded.reads,
+                    bytes: seeded.bytes,
+                },
+            )],
+            ..AnalyticsDelta::default()
+        })
         .unwrap();
     let metrics = Metrics::start_durable(meta.analytics(), None, clock_on_day(seeded.day + 1)).unwrap();
     assert_eq!(metrics.daily_usage(), [seeded]);
 }
 
 #[test]
-fn test_snapshots_emit_neutral_wire_keys() {
+fn test_persisted_rows_carry_neutral_key_dimensions() {
     let (_dir, meta) = store();
     let metrics = Metrics::start_durable(meta.analytics(), None, clock_on_day(4)).unwrap();
     metrics.record(grouped_read("alpha", "demo", "1", Some("upstream"), 3));
     metrics.flush().unwrap();
+
     assert_eq!(
-        persisted_snapshot(meta.analytics().load_checkpoint().unwrap().lifetime),
-        serde_json::json!({
-            "artifacts": [{
-                "repository": "alpha",
-                "resource": "demo",
-                "artifact": "demo-1.bin",
-                "reads": 1,
-                "bytes": 3,
-            }],
-        })
-    );
-    assert_eq!(
-        persisted_snapshot(meta.analytics().load_checkpoint().unwrap().daily),
-        serde_json::json!({
-            "schema": 1,
-            "buckets": [{
-                "day": 4,
-                "repository": "alpha",
-                "resource": "demo",
-                "group": "1",
-                "source": "upstream",
-                "reads": 1,
-                "bytes": 3,
-            }],
-        })
+        meta.analytics().load_checkpoint().unwrap(),
+        AnalyticsCheckpoint {
+            lifetime: vec![(
+                ArtifactUsageKey {
+                    repository: "alpha".to_owned(),
+                    resource: "demo".to_owned(),
+                    artifact: "demo-1.bin".to_owned(),
+                },
+                UsageTotals { reads: 1, bytes: 3 },
+            )],
+            daily: vec![(
+                DailyUsageKey {
+                    day: 4,
+                    repository: "alpha".to_owned(),
+                    resource: "demo".to_owned(),
+                    group: "1".to_owned(),
+                    source: "upstream".to_owned(),
+                },
+                UsageTotals { reads: 1, bytes: 3 },
+            )],
+            migrated_lifetime: None,
+            migrated_daily: None,
+        }
     );
 }
 
@@ -500,7 +502,7 @@ fn test_batches_without_a_read_persist_nothing() {
         1
     );
     assert_eq!(persisted_reads(&meta.analytics()), None);
-    assert!(meta.analytics().load_checkpoint().unwrap().daily.is_none());
+    assert!(persisted_daily(&meta.analytics()).is_empty());
 }
 
 #[test]
@@ -663,10 +665,7 @@ fn test_idle_retention_expires_memory_exports_and_snapshot() {
             .export_sealed_day_batches(&ProducerId("east".to_owned()), AuthorityEpoch(1), -1)
             .is_empty()
     );
-    assert_eq!(
-        persisted_snapshot(meta.analytics().load_checkpoint().unwrap().daily),
-        serde_json::json!({"schema": 1, "buckets": []})
-    );
+    assert!(persisted_daily(&meta.analytics()).is_empty());
 }
 
 #[test]
@@ -876,7 +875,7 @@ fn test_daily_usage_survives_a_restart() {
     let (_dir, meta) = store();
     let metrics = Metrics::start_durable(meta.analytics(), None, clock_on_day(42)).unwrap();
     metrics.record(grouped_read("alpha", "resource-b", "3.0", Some("up"), 12));
-    flush_and_assert(&metrics, || meta.analytics().load_checkpoint().unwrap().daily.is_some());
+    flush_and_assert(&metrics, || !persisted_daily(&meta.analytics()).is_empty());
     drop(metrics);
 
     let restarted = Metrics::start_durable(meta.analytics(), None, clock_on_day(42)).unwrap();
@@ -1030,7 +1029,7 @@ fn test_missing_dimensions_restore_as_empty_labels() {
     let (_dir, meta) = store();
     let metrics = Metrics::start_durable(meta.analytics(), None, clock_on_day(3)).unwrap();
     metrics.record(read("alpha", "resource-b", "resource-b-3.0.bin", 8));
-    flush_and_assert(&metrics, || meta.analytics().load_checkpoint().unwrap().daily.is_some());
+    flush_and_assert(&metrics, || !persisted_daily(&meta.analytics()).is_empty());
     drop(metrics);
 
     let restarted = Metrics::start_durable(meta.analytics(), None, clock_on_day(3)).unwrap();
@@ -1258,7 +1257,7 @@ fn test_usage_window_excludes_adjacent_days() {
     for day in 499..=501 {
         let metrics = Metrics::start_durable(meta.analytics(), None, clock_on_day(day)).unwrap();
         metrics.record(grouped_read("a", "resource-b", "1.0", None, 10));
-        flush_and_assert(&metrics, || meta.analytics().load_checkpoint().unwrap().daily.is_some());
+        flush_and_assert(&metrics, || !persisted_daily(&meta.analytics()).is_empty());
     }
     let metrics = Metrics::start_durable(meta.analytics(), None, clock_on_day(501)).unwrap();
 
@@ -1346,7 +1345,7 @@ fn test_usage_timeline_buckets_reads_by_ascending_day() {
     let (_dir, meta) = store();
     let earlier = Metrics::start_durable(meta.analytics(), None, clock_on_day(500)).unwrap();
     earlier.record(grouped_read("a", "resource-b", "1.0", None, 10));
-    flush_and_assert(&earlier, || meta.analytics().load_checkpoint().unwrap().daily.is_some());
+    flush_and_assert(&earlier, || !persisted_daily(&meta.analytics()).is_empty());
     drop(earlier);
 
     let metrics = Metrics::start_durable(meta.analytics(), None, clock_on_day(501)).unwrap();
@@ -1489,4 +1488,177 @@ fn test_usage_unused_breaks_ties_by_repository_then_resource() {
             ("b".to_owned(), "alpha".to_owned(), 1),
         ]
     );
+}
+
+struct RecordingStore {
+    inner: AnalyticsHandle,
+    deltas: Arc<Mutex<Vec<AnalyticsDelta>>>,
+}
+
+impl MetricsStore for RecordingStore {
+    fn load_checkpoint(&self) -> Result<AnalyticsCheckpoint, MetricsError> {
+        MetricsStore::load_checkpoint(&self.inner)
+    }
+
+    fn commit_checkpoint(&self, delta: &AnalyticsDelta) -> Result<(), MetricsError> {
+        MetricsStore::commit_checkpoint(&self.inner, delta)?;
+        self.deltas.lock().unwrap().push(delta.clone());
+        Ok(())
+    }
+}
+
+/// An interval long enough that only an explicit flush checkpoints, so a recorded delta is exactly
+/// the work one interval asked for.
+const NO_PERIODIC_CHECKPOINT: Duration = Duration::from_hours(1);
+
+fn recording(
+    meta: &MetaStore,
+    retention_days: Option<u32>,
+    clock: Clock,
+) -> (Metrics, Arc<Mutex<Vec<AnalyticsDelta>>>) {
+    let deltas = Arc::new(Mutex::new(Vec::new()));
+    let metrics = Metrics::spawn(
+        Some(Arc::new(RecordingStore {
+            inner: meta.analytics(),
+            deltas: Arc::clone(&deltas),
+        })),
+        retention_days,
+        clock,
+        super::EVENT_QUEUE_CAPACITY,
+        NO_PERIODIC_CHECKPOINT,
+    )
+    .unwrap();
+    (metrics, deltas)
+}
+
+fn checkpoint_after_one_repeat_read(history: usize) -> AnalyticsDelta {
+    let (_dir, meta) = store();
+    let (metrics, deltas) = recording(&meta, Some(30), clock_on_day(19_000));
+    for index in 0..history {
+        metrics.record(grouped_read(
+            "alpha",
+            &format!("resource-{index}"),
+            "1.0",
+            Some("upstream"),
+            4_096,
+        ));
+    }
+    metrics.flush().unwrap();
+    deltas.lock().unwrap().clear();
+    metrics.record(grouped_read("alpha", "resource-0", "1.0", Some("upstream"), 4_096));
+    metrics.flush().unwrap();
+    metrics.shutdown().unwrap();
+    let mut recorded = deltas.lock().unwrap();
+    assert_eq!(recorded.len(), 1);
+    recorded.pop().unwrap()
+}
+
+fn repeat_read_delta() -> AnalyticsDelta {
+    AnalyticsDelta {
+        lifetime: vec![(
+            ArtifactUsageKey {
+                repository: "alpha".to_owned(),
+                resource: "resource-0".to_owned(),
+                artifact: "resource-0-1.0.bin".to_owned(),
+            },
+            UsageTotals { reads: 2, bytes: 8_192 },
+        )],
+        daily: vec![(
+            DailyUsageKey {
+                day: 19_000,
+                repository: "alpha".to_owned(),
+                resource: "resource-0".to_owned(),
+                group: "1.0".to_owned(),
+                source: "upstream".to_owned(),
+            },
+            UsageTotals { reads: 2, bytes: 8_192 },
+        )],
+        expire_daily_before: None,
+        clear_migrated: false,
+    }
+}
+
+#[test]
+fn test_a_checkpoint_writes_only_the_keys_its_interval_changed() {
+    assert_eq!(checkpoint_after_one_repeat_read(64), repeat_read_delta());
+}
+
+/// Sixty-four times the lifetime history must cost the same checkpoint, not sixty-four times as much.
+#[test]
+fn test_checkpoint_work_does_not_grow_with_the_history_it_leaves_alone() {
+    assert_eq!(
+        checkpoint_after_one_repeat_read(4_096),
+        checkpoint_after_one_repeat_read(64)
+    );
+}
+
+#[test]
+fn test_incremental_checkpoints_restore_the_history_a_reader_observed() {
+    let (_dir, meta) = store();
+    let metrics = Metrics::start_durable(meta.analytics(), Some(30), clock_on_day(19_000)).unwrap();
+    for round in 0..4 {
+        for index in 0..8 {
+            metrics.record(grouped_read(
+                "alpha",
+                &format!("resource-{index}"),
+                "1.0",
+                Some("upstream"),
+                10 + round,
+            ));
+        }
+        metrics.flush().unwrap();
+    }
+    let observed = (
+        metrics.usage_totals(None),
+        metrics.daily_usage(),
+        metrics.drill(Some("alpha"), Some("resource-3")),
+    );
+    metrics.shutdown().unwrap();
+
+    let restarted = Metrics::start_durable(meta.analytics(), Some(30), clock_on_day(19_000)).unwrap();
+
+    assert_eq!(
+        (
+            restarted.usage_totals(None),
+            restarted.daily_usage(),
+            restarted.drill(Some("alpha"), Some("resource-3")),
+        ),
+        observed
+    );
+}
+
+#[test]
+fn test_a_bucket_that_expires_before_its_checkpoint_is_pruned_rather_than_written() {
+    let (_dir, meta) = store();
+    let (day, clock) = steppable_clock();
+    let (metrics, deltas) = recording(&meta, Some(2), clock);
+    metrics.record(grouped_read("alpha", "resource-b", "1.0", Some("up"), 3));
+    metrics.drain().unwrap();
+    day.store(5, Ordering::SeqCst);
+
+    metrics.flush().unwrap();
+
+    assert_eq!(
+        deltas.lock().unwrap().last().unwrap().daily,
+        Vec::new(),
+        "an expired bucket must not be written back"
+    );
+    assert_eq!(deltas.lock().unwrap().last().unwrap().expire_daily_before, Some(3));
+    assert!(persisted_daily(&meta.analytics()).is_empty());
+    assert!(metrics.daily_usage().is_empty());
+}
+
+#[test]
+fn test_a_startup_expiry_prunes_the_stored_buckets_before_the_first_read() {
+    let (_dir, meta) = store();
+    let seeded = Metrics::start_durable(meta.analytics(), Some(7), clock_on_day(100)).unwrap();
+    seeded.record(grouped_read("alpha", "resource-b", "1.0", Some("up"), 3));
+    flush_and_assert(&seeded, || !persisted_daily(&meta.analytics()).is_empty());
+    seeded.shutdown().unwrap();
+
+    let restarted = Metrics::start_durable(meta.analytics(), Some(7), clock_on_day(110)).unwrap();
+
+    assert!(persisted_daily(&meta.analytics()).is_empty());
+    assert!(restarted.daily_usage().is_empty());
+    assert_eq!(persisted_reads(&meta.analytics()), Some(1));
 }

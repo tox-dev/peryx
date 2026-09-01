@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError, channel, sync_channel};
 use std::sync::{Arc, RwLock};
@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 
 use peryx_core::Role;
 use peryx_ha::{AggregateDelta, AggregateKey, AggregateRow, AnalyticsBatch, AuthorityEpoch, IntervalId, ProducerId};
-use peryx_storage::meta::{AnalyticsCheckpoint, AnalyticsHandle, MetaError};
+use peryx_storage::meta::{
+    AnalyticsCheckpoint, AnalyticsDelta, AnalyticsHandle, ArtifactUsageKey, DailyUsageKey, MetaError, UsageTotals,
+};
 
 /// Unix seconds supplied by the process clock.
 pub type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
@@ -239,7 +241,7 @@ pub struct RepositoryStats {
 
 pub type StatsTree = HashMap<String, RepositoryStats>;
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 struct ArtifactUsageRow {
     repository: String,
     resource: String,
@@ -249,28 +251,12 @@ struct ArtifactUsageRow {
 }
 
 /// Operational counters restart with the process; only usage persists.
-#[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 struct ReadSnapshot {
     artifacts: Vec<ArtifactUsageRow>,
 }
 
-/// `day` leads ordering so retention removes an expired prefix in one split.
-#[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct DailyKey {
-    day: i64,
-    repository: String,
-    resource: String,
-    group: String,
-    source: String,
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-struct DailyTotals {
-    reads: u64,
-    bytes: u64,
-}
-
-type DailyBuckets = BTreeMap<DailyKey, DailyTotals>;
+type DailyBuckets = BTreeMap<DailyUsageKey, UsageTotals>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DailyUsage {
@@ -283,7 +269,7 @@ pub struct DailyUsage {
     pub bytes: u64,
 }
 
-#[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 struct DailySnapshot {
     schema: u32,
     buckets: Vec<DailyUsage>,
@@ -338,11 +324,11 @@ pub trait MetricsStore: Send + Sync + 'static {
     /// Returns an error when either snapshot cannot be read.
     fn load_checkpoint(&self) -> Result<AnalyticsCheckpoint, MetricsError>;
 
-    /// Commits the lifetime and daily snapshots as one checkpoint.
+    /// Commits the rows one checkpoint changed at a single event frontier.
     ///
     /// # Errors
-    /// Returns an error when either snapshot cannot be written.
-    fn save_checkpoint(&self, lifetime: &[u8], daily: &[u8]) -> Result<(), MetricsError>;
+    /// Returns an error when the delta cannot be written.
+    fn commit_checkpoint(&self, delta: &AnalyticsDelta) -> Result<(), MetricsError>;
 }
 
 impl MetricsStore for AnalyticsHandle {
@@ -350,8 +336,8 @@ impl MetricsStore for AnalyticsHandle {
         Ok(Self::load_checkpoint(self)?)
     }
 
-    fn save_checkpoint(&self, lifetime: &[u8], daily: &[u8]) -> Result<(), MetricsError> {
-        Ok(Self::save_checkpoint(self, lifetime, daily)?)
+    fn commit_checkpoint(&self, delta: &AnalyticsDelta) -> Result<(), MetricsError> {
+        Ok(Self::commit_checkpoint(self, delta)?)
     }
 }
 
@@ -426,28 +412,33 @@ impl Metrics {
         flush_interval: Duration,
     ) -> Result<Self, MetricsError> {
         let (sender, receiver) = sync_channel(capacity);
-        let AnalyticsCheckpoint { lifetime: reads, daily } = store
+        let AnalyticsCheckpoint {
+            lifetime,
+            daily,
+            migrated_lifetime,
+            migrated_daily,
+        } = store
             .as_ref()
             .map(|store| store.load_checkpoint())
             .transpose()?
             .unwrap_or_default();
         let mut initial = StatsTree::new();
-        if let Some(bytes) = reads {
-            restore_reads(
-                &mut initial,
-                serde_json::from_slice(&bytes).map_err(MetricsError::ReadSnapshot)?,
-            );
-        }
+        restore_reads(&mut initial, lifetime);
         let mut daily_initial = DailyBuckets::new();
-        if let Some(bytes) = daily {
-            let snapshot: DailySnapshot = serde_json::from_slice(&bytes).map_err(MetricsError::DailySnapshot)?;
-            if snapshot.schema != DAILY_SCHEMA {
-                return Err(MetricsError::DailySchema(snapshot.schema));
-            }
-            restore_daily(&mut daily_initial, snapshot);
+        restore_daily(&mut daily_initial, daily);
+        let migrated = migrated_lifetime.is_some() || migrated_daily.is_some();
+        if let Some(bytes) = migrated_lifetime {
+            restore_reads(&mut initial, migrated_rows(&bytes)?);
         }
-        if let Some(days) = retention_days {
-            expire_daily(&mut daily_initial, clock(), days);
+        if let Some(bytes) = migrated_daily {
+            restore_daily(&mut daily_initial, migrated_buckets(&bytes)?);
+        }
+        let expired = retention_days.and_then(|days| expire_daily(&mut daily_initial, clock(), days));
+        if let Some(store) = store.as_ref() {
+            let delta = startup_delta(&initial, &daily_initial, migrated, expired);
+            if !delta.is_empty() {
+                store.commit_checkpoint(&delta)?;
+            }
         }
         let tree = Arc::new(RwLock::new(initial));
         let daily = Arc::new(RwLock::new(daily_initial));
@@ -890,15 +881,15 @@ impl Metrics {
         &self,
         repository: Option<&str>,
         interval: &UsageInterval,
-        key: impl Fn(&DailyKey) -> K,
-    ) -> BTreeMap<K, DailyTotals> {
+        key: impl Fn(&DailyUsageKey) -> K,
+    ) -> BTreeMap<K, UsageTotals> {
         let daily = self.daily.read().expect("metrics lock");
-        let mut folded: BTreeMap<K, DailyTotals> = BTreeMap::new();
+        let mut folded: BTreeMap<K, UsageTotals> = BTreeMap::new();
         for (bucket, totals) in daily
             .range(
-                DailyKey {
+                DailyUsageKey {
                     day: interval.from_day,
-                    ..DailyKey::default()
+                    ..DailyUsageKey::default()
                 }..,
             )
             .take_while(|(bucket, _)| bucket.day <= interval.to_day)
@@ -960,9 +951,13 @@ struct Aggregator<'a> {
     clock: &'a Clock,
 }
 
+/// The keys accumulated since the last committed checkpoint. A failed commit keeps them so the next
+/// checkpoint retries exactly the same rows.
 struct FlushState {
     persistent: bool,
-    pending: bool,
+    lifetime: BTreeSet<ArtifactUsageKey>,
+    daily: BTreeSet<DailyUsageKey>,
+    expire_before: Option<i64>,
     interval_started: Instant,
     durability_failure: Arc<RwLock<Option<String>>>,
 }
@@ -971,26 +966,43 @@ impl FlushState {
     fn durable(persistent: bool, durability_failure: Arc<RwLock<Option<String>>>) -> Self {
         Self {
             persistent,
-            pending: false,
+            lifetime: BTreeSet::new(),
+            daily: BTreeSet::new(),
+            expire_before: None,
             interval_started: Instant::now(),
             durability_failure,
         }
     }
 
-    const fn mark(&mut self, dirty: bool) {
-        self.pending |= self.persistent && dirty;
+    fn mark(&mut self, batch: &mut Batch) {
+        if !self.persistent {
+            return;
+        }
+        self.lifetime.extend(std::mem::take(&mut batch.lifetime));
+        self.daily.extend(std::mem::take(&mut batch.daily));
+        self.mark_expired(batch.expired_before);
     }
 
-    const fn pending(&self) -> bool {
-        self.pending
+    fn mark_expired(&mut self, expired: Option<i64>) {
+        self.expire_before = self.expire_before.max(expired);
+    }
+
+    fn clear(&mut self) {
+        self.lifetime.clear();
+        self.daily.clear();
+        self.expire_before = None;
+    }
+
+    fn pending(&self) -> bool {
+        !self.lifetime.is_empty() || !self.daily.is_empty() || self.expire_before.is_some()
     }
 
     fn wake_in(&self, interval: Duration, retention: bool) -> Option<Duration> {
-        (self.pending || retention).then(|| interval.saturating_sub(self.interval_started.elapsed()))
+        (self.pending() || retention).then(|| interval.saturating_sub(self.interval_started.elapsed()))
     }
 
     fn checkpoint_due(&self, interval: Duration) -> bool {
-        self.pending && self.interval_started.elapsed() >= interval
+        self.pending() && self.interval_started.elapsed() >= interval
     }
 
     fn reset_interval(&mut self) {
@@ -1017,8 +1029,8 @@ fn aggregate(
 fn step(receiver: &Receiver<Message>, ctx: &Aggregator, interval: Duration, state: &mut FlushState) -> bool {
     match receive(receiver, state.wake_in(interval, ctx.retention_days.is_some())) {
         Received::Batch(first) => {
-            let batch = absorb_batch(first, receiver, ctx);
-            state.mark(batch.dirty);
+            let mut batch = absorb_batch(first, receiver, ctx);
+            state.mark(&mut batch);
             if let Some(control) = batch.control {
                 let result = if matches!(control, Control::Drain(_)) || !state.pending() {
                     Ok(())
@@ -1038,7 +1050,7 @@ fn step(receiver: &Receiver<Message>, ctx: &Aggregator, interval: Duration, stat
             true
         }
         Received::Idle => {
-            state.mark(expire_retained(ctx.daily, ctx.retention_days, ctx.clock));
+            state.mark_expired(expire_retained(ctx.daily, ctx.retention_days, ctx.clock));
             if state.pending() {
                 if let Err(error) = persist(ctx, state) {
                     tracing::error!(target: "peryx::metrics", %error, "metrics checkpoint failed");
@@ -1078,19 +1090,17 @@ fn absorb_batch(first: Message, receiver: &Receiver<Message>, ctx: &Aggregator) 
             }
         }
     }
-    batch.dirty |= fold_daily_batch(
-        std::mem::take(&mut batch.reads),
-        ctx.daily,
-        ctx.retention_days,
-        ctx.clock,
-    );
+    fold_daily_batch(&mut batch, ctx.daily, ctx.retention_days, ctx.clock);
     batch
 }
 
+/// The keys one drained batch changed, so a checkpoint writes them instead of the whole history.
 #[derive(Default)]
 struct Batch {
-    dirty: bool,
-    reads: Vec<(DailyKey, u64)>,
+    lifetime: Vec<ArtifactUsageKey>,
+    reads: Vec<(DailyUsageKey, u64)>,
+    daily: Vec<DailyUsageKey>,
+    expired_before: Option<i64>,
     control: Option<Control>,
 }
 
@@ -1111,15 +1121,17 @@ impl Control {
 
 fn persist(ctx: &Aggregator, state: &mut FlushState) -> Result<(), MetricsError> {
     let store = ctx.store.expect("a pending checkpoint without a store");
-    let reads = serde_json::to_vec(&snapshot_reads(&ctx.tree.read().expect("metrics lock")))
-        .expect("serialize metrics snapshot");
-    let daily = serde_json::to_vec(&snapshot_daily(&ctx.daily.read().expect("metrics lock")))
-        .expect("serialize daily usage snapshot");
-    let result = store.save_checkpoint(&reads, &daily);
+    let delta = AnalyticsDelta {
+        lifetime: changed_lifetime(&ctx.tree.read().expect("metrics lock"), &state.lifetime),
+        daily: changed_daily(&ctx.daily.read().expect("metrics lock"), &state.daily),
+        expire_daily_before: state.expire_before,
+        clear_migrated: false,
+    };
+    let result = store.commit_checkpoint(&delta);
     state.reset_interval();
     match result {
         Ok(()) => {
-            state.pending = false;
+            state.clear();
             *state.durability_failure.write().expect("metrics lock") = None;
             Ok(())
         }
@@ -1133,8 +1145,7 @@ fn persist(ctx: &Aggregator, state: &mut FlushState) -> Result<(), MetricsError>
 fn absorb(message: Message, tree: &mut StatsTree, batch: &mut Batch) {
     match message {
         Message::Observation { event, recorded_at } => {
-            batch.dirty |= matches!(&event, Observation::Read { .. });
-            collect_daily(&event, recorded_at, &mut batch.reads);
+            collect_durable(&event, recorded_at, batch);
             apply(tree, event);
         }
         Message::Drain(completion) => batch.control = Some(Control::Drain(completion)),
@@ -1143,67 +1154,69 @@ fn absorb(message: Message, tree: &mut StatsTree, batch: &mut Batch) {
     }
 }
 
-fn collect_daily(event: &Observation, recorded_at: i64, out: &mut Vec<(DailyKey, u64)>) {
-    if let Observation::Read {
+/// Only reads carry durable counters, so only they name keys a checkpoint has to write.
+fn collect_durable(event: &Observation, recorded_at: i64, batch: &mut Batch) {
+    let Observation::Read {
         repository,
         resource,
+        artifact,
         group,
         source,
         bytes,
-        ..
     } = event
-    {
-        out.push((
-            DailyKey {
-                day: utc_day(recorded_at),
-                repository: repository.clone(),
-                resource: resource.clone(),
-                group: group.clone().unwrap_or_default(),
-                source: source.clone().unwrap_or_default(),
-            },
-            *bytes,
-        ));
-    }
+    else {
+        return;
+    };
+    batch.lifetime.push(ArtifactUsageKey {
+        repository: repository.clone(),
+        resource: resource.clone(),
+        artifact: artifact.clone(),
+    });
+    batch.reads.push((
+        DailyUsageKey {
+            day: utc_day(recorded_at),
+            repository: repository.clone(),
+            resource: resource.clone(),
+            group: group.clone().unwrap_or_default(),
+            source: source.clone().unwrap_or_default(),
+        },
+        *bytes,
+    ));
 }
 
 /// Applying retention per batch also expires buckets in long-running processes.
-fn fold_daily_batch(
-    reads: Vec<(DailyKey, u64)>,
-    daily: &RwLock<DailyBuckets>,
-    retention_days: Option<u32>,
-    clock: &Clock,
-) -> bool {
+fn fold_daily_batch(batch: &mut Batch, daily: &RwLock<DailyBuckets>, retention_days: Option<u32>, clock: &Clock) {
+    let reads = std::mem::take(&mut batch.reads);
     if reads.is_empty() {
-        return expire_retained(daily, retention_days, clock);
+        batch.expired_before = expire_retained(daily, retention_days, clock);
+        return;
     }
     let mut daily = daily.write().expect("metrics lock");
     for (key, bytes) in reads {
-        let totals = daily.entry(key).or_default();
+        let totals = daily.entry(key.clone()).or_default();
         totals.reads += 1;
         totals.bytes += bytes;
+        batch.daily.push(key);
     }
-    let expired = retention_days.is_some_and(|days| expire_daily(&mut daily, clock(), days));
+    batch.expired_before = retention_days.and_then(|days| expire_daily(&mut daily, clock(), days));
     drop(daily);
-    expired
 }
 
-fn expire_retained(daily: &RwLock<DailyBuckets>, retention_days: Option<u32>, clock: &Clock) -> bool {
-    retention_days.is_some_and(|days| expire_daily(&mut daily.write().expect("metrics lock"), clock(), days))
+fn expire_retained(daily: &RwLock<DailyBuckets>, retention_days: Option<u32>, clock: &Clock) -> Option<i64> {
+    retention_days.and_then(|days| expire_daily(&mut daily.write().expect("metrics lock"), clock(), days))
 }
 
-/// Drop every bucket older than `retention_days` days. Buckets order by day first, so the expired
-/// prefix leaves in one split and the retained totals are never touched.
-fn expire_daily(daily: &mut DailyBuckets, now_secs: i64, retention_days: u32) -> bool {
-    let floor = DailyKey {
-        day: utc_day(now_secs) - i64::from(retention_days),
-        repository: String::new(),
-        resource: String::new(),
-        group: String::new(),
-        source: String::new(),
-    };
+/// Drop every bucket older than `retention_days` days and report the floor a store must prune to.
+/// Buckets order by day first, so the expired prefix leaves in one split and the retained totals are
+/// never touched.
+fn expire_daily(daily: &mut DailyBuckets, now_secs: i64, retention_days: u32) -> Option<i64> {
+    let floor_day = utc_day(now_secs) - i64::from(retention_days);
     let previous_len = daily.len();
-    *daily = daily.split_off(&floor);
-    daily.len() != previous_len
+    *daily = daily.split_off(&DailyUsageKey {
+        day: floor_day,
+        ..DailyUsageKey::default()
+    });
+    (daily.len() != previous_len).then_some(floor_day)
 }
 
 fn daily_rows(daily: &DailyBuckets) -> Vec<DailyUsage> {
@@ -1221,61 +1234,131 @@ fn daily_rows(daily: &DailyBuckets) -> Vec<DailyUsage> {
         .collect()
 }
 
-fn snapshot_daily(daily: &DailyBuckets) -> DailySnapshot {
-    DailySnapshot {
-        schema: DAILY_SCHEMA,
-        buckets: daily_rows(daily),
+fn restore_daily(daily: &mut DailyBuckets, rows: impl IntoIterator<Item = (DailyUsageKey, UsageTotals)>) {
+    for (key, totals) in rows {
+        let bucket = daily.entry(key).or_default();
+        bucket.reads += totals.reads;
+        bucket.bytes += totals.bytes;
     }
 }
 
-fn restore_daily(daily: &mut DailyBuckets, snapshot: DailySnapshot) {
-    for row in snapshot.buckets {
-        let totals = daily
-            .entry(DailyKey {
-                day: row.day,
-                repository: row.repository,
-                resource: row.resource,
-                group: row.group,
-                source: row.source,
-            })
-            .or_default();
-        totals.reads += row.reads;
-        totals.bytes += row.bytes;
-    }
+/// The rows for the keys this interval touched, skipping any the same interval later expired.
+fn changed_daily(daily: &DailyBuckets, keys: &BTreeSet<DailyUsageKey>) -> Vec<(DailyUsageKey, UsageTotals)> {
+    keys.iter()
+        .filter_map(|key| daily.get(key).map(|totals| (key.clone(), *totals)))
+        .collect()
 }
 
-fn snapshot_reads(tree: &StatsTree) -> ReadSnapshot {
-    let artifacts = tree
-        .iter()
-        .flat_map(|(repository, index)| {
-            index.resources.iter().flat_map(move |(resource, stats)| {
-                stats
-                    .artifacts
-                    .iter()
-                    .map(move |(artifact, artifact_stats)| ArtifactUsageRow {
-                        repository: repository.clone(),
-                        resource: resource.clone(),
-                        artifact: artifact.clone(),
-                        reads: artifact_stats.reads,
-                        bytes: artifact_stats.bytes,
-                    })
-            })
+/// The rows for the artifacts this interval touched. A key reaches this set only after `apply`
+/// inserted its counter, so every lookup is total.
+fn changed_lifetime(tree: &StatsTree, keys: &BTreeSet<ArtifactUsageKey>) -> Vec<(ArtifactUsageKey, UsageTotals)> {
+    keys.iter()
+        .map(|key| {
+            let stats = &tree[&key.repository].resources[&key.resource].artifacts[&key.artifact];
+            (
+                key.clone(),
+                UsageTotals {
+                    reads: stats.reads,
+                    bytes: stats.bytes,
+                },
+            )
         })
-        .collect();
-    ReadSnapshot { artifacts }
+        .collect()
 }
 
-fn restore_reads(tree: &mut StatsTree, snapshot: ReadSnapshot) {
-    for row in snapshot.artifacts {
-        let index = tree.entry(row.repository).or_default();
-        index.totals.base.reads += row.reads;
-        index.totals.base.bytes += row.bytes;
-        let resource = index.resources.entry(row.resource).or_default();
-        resource.totals.base.reads += row.reads;
-        resource.totals.base.bytes += row.bytes;
-        let artifact = resource.artifacts.entry(row.artifact).or_default();
-        artifact.reads += row.reads;
-        artifact.bytes += row.bytes;
+/// The one full-tree walk left: adopting values a metadata migration wrote under the pre-row keys.
+fn startup_delta(tree: &StatsTree, daily: &DailyBuckets, migrated: bool, expired: Option<i64>) -> AnalyticsDelta {
+    if !migrated {
+        return AnalyticsDelta {
+            expire_daily_before: expired,
+            ..AnalyticsDelta::default()
+        };
+    }
+    AnalyticsDelta {
+        lifetime: tree
+            .iter()
+            .flat_map(|(repository, index)| {
+                index.resources.iter().flat_map(move |(resource, stats)| {
+                    stats.artifacts.iter().map(move |(artifact, artifact_stats)| {
+                        (
+                            ArtifactUsageKey {
+                                repository: repository.clone(),
+                                resource: resource.clone(),
+                                artifact: artifact.clone(),
+                            },
+                            UsageTotals {
+                                reads: artifact_stats.reads,
+                                bytes: artifact_stats.bytes,
+                            },
+                        )
+                    })
+                })
+            })
+            .collect(),
+        daily: daily.iter().map(|(key, totals)| (key.clone(), *totals)).collect(),
+        expire_daily_before: expired,
+        clear_migrated: true,
+    }
+}
+
+fn migrated_rows(bytes: &[u8]) -> Result<Vec<(ArtifactUsageKey, UsageTotals)>, MetricsError> {
+    let snapshot: ReadSnapshot = serde_json::from_slice(bytes).map_err(MetricsError::ReadSnapshot)?;
+    Ok(snapshot
+        .artifacts
+        .into_iter()
+        .map(|row| {
+            (
+                ArtifactUsageKey {
+                    repository: row.repository,
+                    resource: row.resource,
+                    artifact: row.artifact,
+                },
+                UsageTotals {
+                    reads: row.reads,
+                    bytes: row.bytes,
+                },
+            )
+        })
+        .collect())
+}
+
+fn migrated_buckets(bytes: &[u8]) -> Result<Vec<(DailyUsageKey, UsageTotals)>, MetricsError> {
+    let snapshot: DailySnapshot = serde_json::from_slice(bytes).map_err(MetricsError::DailySnapshot)?;
+    if snapshot.schema != DAILY_SCHEMA {
+        return Err(MetricsError::DailySchema(snapshot.schema));
+    }
+    Ok(snapshot
+        .buckets
+        .into_iter()
+        .map(|row| {
+            (
+                DailyUsageKey {
+                    day: row.day,
+                    repository: row.repository,
+                    resource: row.resource,
+                    group: row.group,
+                    source: row.source,
+                },
+                UsageTotals {
+                    reads: row.reads,
+                    bytes: row.bytes,
+                },
+            )
+        })
+        .collect())
+}
+
+fn restore_reads(tree: &mut StatsTree, rows: impl IntoIterator<Item = (ArtifactUsageKey, UsageTotals)>) {
+    for (key, totals) in rows {
+        let index = tree.entry(key.repository).or_default();
+        index.totals.base.reads += totals.reads;
+        index.totals.base.bytes += totals.bytes;
+        let resource = index.resources.entry(key.resource).or_default();
+        resource.totals.base.reads += totals.reads;
+        resource.totals.base.bytes += totals.bytes;
+        let artifact = resource.artifacts.entry(key.artifact).or_default();
+        artifact.reads += totals.reads;
+        artifact.bytes += totals.bytes;
     }
 }
 

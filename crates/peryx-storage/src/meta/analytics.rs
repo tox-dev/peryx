@@ -1,17 +1,68 @@
 use std::sync::Weak;
 
+use redb::ReadableTable as _;
+
 use super::error::MetaError;
 use super::{
-    ANALYTICS, ANALYTICS_APPLY_KEY, ANALYTICS_DAILY_KEY, ANALYTICS_KEY, ANALYTICS_PRODUCER_KEY, MetaDatabase, MetaStore,
+    ANALYTICS, ANALYTICS_APPLY_KEY, ANALYTICS_DAILY, ANALYTICS_DAILY_KEY, ANALYTICS_KEY, ANALYTICS_LIFETIME,
+    ANALYTICS_PRODUCER_KEY, MetaDatabase, MetaStore,
 };
 
-/// Serialized lifetime and daily metrics from one event frontier.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// Identifies one all-time per-artifact counter.
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ArtifactUsageKey {
+    pub repository: String,
+    pub resource: String,
+    pub artifact: String,
+}
+
+/// Identifies one daily usage bucket. `day` leads the key so retention drops an expired prefix as a
+/// single range and never walks a retained bucket.
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DailyUsageKey {
+    pub day: i64,
+    pub repository: String,
+    pub resource: String,
+    pub group: String,
+    pub source: String,
+}
+
+/// Reads and served bytes accumulated against one key.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UsageTotals {
+    pub reads: u64,
+    pub bytes: u64,
+}
+
+/// Every durable analytics row, read once at startup.
+///
+/// `migrated_lifetime` and `migrated_daily` carry whatever a metadata migration left under the
+/// pre-row keys, which the owner folds into rows and clears through [`AnalyticsDelta`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AnalyticsCheckpoint {
-    /// All-time per-artifact aggregates.
-    pub lifetime: Option<Vec<u8>>,
-    /// Retained daily aggregates.
-    pub daily: Option<Vec<u8>>,
+    pub lifetime: Vec<(ArtifactUsageKey, UsageTotals)>,
+    pub daily: Vec<(DailyUsageKey, UsageTotals)>,
+    pub migrated_lifetime: Option<Vec<u8>>,
+    pub migrated_daily: Option<Vec<u8>>,
+}
+
+/// The rows one checkpoint changes, so a commit costs what the interval touched rather than what
+/// the store holds.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AnalyticsDelta {
+    pub lifetime: Vec<(ArtifactUsageKey, UsageTotals)>,
+    pub daily: Vec<(DailyUsageKey, UsageTotals)>,
+    /// Removes every daily bucket before this UTC day.
+    pub expire_daily_before: Option<i64>,
+    /// Removes the pre-row values once their rows are committed.
+    pub clear_migrated: bool,
+}
+
+impl AnalyticsDelta {
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.lifetime.is_empty() && self.daily.is_empty() && self.expire_daily_before.is_none() && !self.clear_migrated
+    }
 }
 
 /// Does not keep the database open.
@@ -30,36 +81,88 @@ impl MetaStore {
 }
 
 impl AnalyticsHandle {
-    /// Loads both snapshots from one storage snapshot. Returns two absent snapshots before the first
-    /// checkpoint or after the store drops.
+    /// Loads every analytics row from one storage snapshot. Returns an empty checkpoint before the
+    /// first commit or after the store drops.
     ///
     /// # Errors
-    /// Returns a store error if either snapshot cannot be read.
+    /// Returns a store error if any row cannot be read.
     pub fn load_checkpoint(&self) -> Result<AnalyticsCheckpoint, MetaError> {
         let Some(db) = self.db.upgrade() else {
             return Ok(AnalyticsCheckpoint::default());
         };
         let txn = db.begin_read()?;
-        let table = txn.open_table(ANALYTICS)?;
-        Ok(AnalyticsCheckpoint {
-            lifetime: table.get(ANALYTICS_KEY)?.map(|value| value.value().to_vec()),
-            daily: table.get(ANALYTICS_DAILY_KEY)?.map(|value| value.value().to_vec()),
-        })
+        let mut checkpoint = AnalyticsCheckpoint::default();
+        for entry in txn.open_table(ANALYTICS_LIFETIME)?.iter()? {
+            let (key, totals) = entry?;
+            let (repository, resource, artifact) = key.value();
+            checkpoint.lifetime.push((
+                ArtifactUsageKey {
+                    repository: repository.to_owned(),
+                    resource: resource.to_owned(),
+                    artifact: artifact.to_owned(),
+                },
+                totals_of(totals.value()),
+            ));
+        }
+        for entry in txn.open_table(ANALYTICS_DAILY)?.iter()? {
+            let (key, totals) = entry?;
+            let (day, repository, resource, group, source) = key.value();
+            checkpoint.daily.push((
+                DailyUsageKey {
+                    day,
+                    repository: repository.to_owned(),
+                    resource: resource.to_owned(),
+                    group: group.to_owned(),
+                    source: source.to_owned(),
+                },
+                totals_of(totals.value()),
+            ));
+        }
+        let migrated = txn.open_table(ANALYTICS)?;
+        checkpoint.migrated_lifetime = migrated.get(ANALYTICS_KEY)?.map(|value| value.value().to_vec());
+        checkpoint.migrated_daily = migrated.get(ANALYTICS_DAILY_KEY)?.map(|value| value.value().to_vec());
+        Ok(checkpoint)
     }
 
-    /// Saves the lifetime and daily snapshots in one transaction. Does nothing after the store drops.
+    /// Commits the changed rows, the retention prune, and any migrated-value removal as one
+    /// checkpoint at a single event frontier. Does nothing after the store drops.
     ///
     /// # Errors
-    /// Returns a store error if either snapshot cannot be written or the transaction cannot commit.
-    pub fn save_checkpoint(&self, lifetime: &[u8], daily: &[u8]) -> Result<(), MetaError> {
+    /// Returns a store error if any row cannot be written or the transaction cannot commit.
+    pub fn commit_checkpoint(&self, delta: &AnalyticsDelta) -> Result<(), MetaError> {
         let Some(db) = self.db.upgrade() else {
             return Ok(());
         };
         let txn = db.begin_write()?;
         {
-            let mut table = txn.open_table(ANALYTICS)?;
-            table.insert(ANALYTICS_KEY, lifetime)?;
-            table.insert(ANALYTICS_DAILY_KEY, daily)?;
+            let mut lifetime = txn.open_table(ANALYTICS_LIFETIME)?;
+            for (key, totals) in &delta.lifetime {
+                lifetime.insert(
+                    (key.repository.as_str(), key.resource.as_str(), key.artifact.as_str()),
+                    (totals.reads, totals.bytes),
+                )?;
+            }
+            let mut daily = txn.open_table(ANALYTICS_DAILY)?;
+            if let Some(floor) = delta.expire_daily_before {
+                daily.retain_in(..(floor, "", "", "", ""), |_, _| false)?;
+            }
+            for (key, totals) in &delta.daily {
+                daily.insert(
+                    (
+                        key.day,
+                        key.repository.as_str(),
+                        key.resource.as_str(),
+                        key.group.as_str(),
+                        key.source.as_str(),
+                    ),
+                    (totals.reads, totals.bytes),
+                )?;
+            }
+            if delta.clear_migrated {
+                let mut migrated = txn.open_table(ANALYTICS)?;
+                migrated.remove(ANALYTICS_KEY)?;
+                migrated.remove(ANALYTICS_DAILY_KEY)?;
+            }
         }
         txn.commit()?;
         Ok(())
@@ -119,6 +222,14 @@ impl AnalyticsHandle {
         Ok(())
     }
 }
+
+const fn totals_of((reads, bytes): (u64, u64)) -> UsageTotals {
+    UsageTotals { reads, bytes }
+}
+
+#[cfg(test)]
+#[path = "../../tests/unit/meta/analytics_row_tests.rs"]
+mod row_tests;
 
 #[cfg(test)]
 #[path = "../../tests/unit/meta/analytics_fault_tests.rs"]

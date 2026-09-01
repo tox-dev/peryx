@@ -44,7 +44,9 @@ mod version;
 mod webhook;
 mod writer;
 
-pub use analytics::{AnalyticsCheckpoint, AnalyticsHandle};
+pub use analytics::{
+    AnalyticsCheckpoint, AnalyticsDelta, AnalyticsHandle, ArtifactUsageKey, DailyUsageKey, UsageTotals,
+};
 pub use bootstrap::AdministratorBootstrapError;
 pub use error::{MetaError, MetaScanError, WriterIdentityError};
 pub use external_identity::ExternalIdentityStoreError;
@@ -158,6 +160,13 @@ const JOURNAL_BLOBS: TableDefinition<u64, &[u8]> = TableDefinition::new("journal
 /// Drivers own key and value formats so storage needs no ecosystem-specific tables.
 const DRIVER_KV: TableDefinition<&str, &[u8]> = TableDefinition::new("driver_kv");
 const ANALYTICS: TableDefinition<&str, &[u8]> = TableDefinition::new("analytics");
+/// One row per artifact identity, so a checkpoint writes the identities that changed instead of the
+/// whole lifetime history.
+const ANALYTICS_LIFETIME: TableDefinition<(&str, &str, &str), (u64, u64)> = TableDefinition::new("analytics_lifetime");
+/// UTC day, repository, resource, group, source.
+type DailyUsageColumns = (i64, &'static str, &'static str, &'static str, &'static str);
+/// `day` leads the key so retention drops an expired prefix as a single range.
+const ANALYTICS_DAILY: TableDefinition<DailyUsageColumns, (u64, u64)> = TableDefinition::new("analytics_daily");
 const USER: TableDefinition<&str, &[u8]> = TableDefinition::new("server_user");
 const USER_NAME: TableDefinition<&str, &str> = TableDefinition::new("server_user_name");
 const USER_NAME_SCHEMA: TableDefinition<&str, &str> = TableDefinition::new("server_user_name_schema");
@@ -192,7 +201,10 @@ const REFERENCE_REVISION_KEY: &str = "revision";
 const WEBHOOK_SERIAL_KEY: &str = "webhook_delivery";
 const JOB_SERIAL_KEY: &str = "job_run";
 const POLICY_DECISION_SERIAL_KEY: &str = "policy_decision";
+/// Where a metadata migration lands lifetime history it rewrote from an earlier product, which the
+/// metrics owner folds into [`ANALYTICS_LIFETIME`] rows and clears in the same commit.
 const ANALYTICS_KEY: &str = "reads";
+/// The daily counterpart of [`ANALYTICS_KEY`], folded into [`ANALYTICS_DAILY`] rows.
 const ANALYTICS_DAILY_KEY: &str = "daily_usage";
 /// A separate key decouples replica apply-state from producer aggregates.
 const ANALYTICS_APPLY_KEY: &str = "apply_state";
@@ -313,6 +325,8 @@ impl MetaStore {
             txn.open_table(QUOTA_PENDING)?;
             txn.open_table(DRIVER_KV)?;
             txn.open_table(ANALYTICS)?;
+            txn.open_table(ANALYTICS_LIFETIME)?;
+            txn.open_table(ANALYTICS_DAILY)?;
             txn.open_table(USER)?;
             txn.open_table(USER_NAME)?;
             txn.open_table(USER_NAME_SCHEMA)?;

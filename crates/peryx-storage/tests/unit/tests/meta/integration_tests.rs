@@ -12,8 +12,8 @@ use std::sync::{Arc, Barrier};
 
 use crate::blob::{CHUNK_BYTES, ChunkedDigest, Digest};
 use crate::meta::{
-    AnalyticsCheckpoint, IntentAdmission, IntentLimits, IntentUsage, MetaError, MetaStore, NewReconcileEntry,
-    TransferAudit,
+    AnalyticsCheckpoint, AnalyticsDelta, ArtifactUsageKey, IntentAdmission, IntentLimits, IntentUsage, MetaError,
+    MetaStore, NewReconcileEntry, TransferAudit, UsageTotals,
 };
 
 const DISTRIBUTED_TABLES: [&str; 17] = [
@@ -368,7 +368,18 @@ fn test_open_existing_read_only_reads_and_rejects_writes() {
     let writable = MetaStore::open(&path).unwrap();
     assert!(format!("{writable:?}").contains("ReadWrite"));
     assert_eq!(writable.next_serial().unwrap(), 1);
-    writable.analytics().save_checkpoint(b"lifetime", b"daily").unwrap();
+    let checkpoint = AnalyticsDelta {
+        lifetime: vec![(
+            ArtifactUsageKey {
+                repository: "alpha".to_owned(),
+                resource: "demo".to_owned(),
+                artifact: "demo-1.0.bin".to_owned(),
+            },
+            UsageTotals { reads: 1, bytes: 10 },
+        )],
+        ..AnalyticsDelta::default()
+    };
+    writable.analytics().commit_checkpoint(&checkpoint).unwrap();
     drop(writable);
 
     let read_only = MetaStore::open_existing_read_only(path).unwrap();
@@ -379,12 +390,12 @@ fn test_open_existing_read_only_reads_and_rejects_writes() {
     assert_eq!(
         analytics.load_checkpoint().unwrap(),
         AnalyticsCheckpoint {
-            lifetime: Some(b"lifetime".to_vec()),
-            daily: Some(b"daily".to_vec()),
+            lifetime: checkpoint.lifetime.clone(),
+            ..AnalyticsCheckpoint::default()
         }
     );
     assert_read_only(read_only.next_serial().unwrap_err());
-    assert_read_only(analytics.save_checkpoint(b"changed", b"changed").unwrap_err());
+    assert_read_only(analytics.commit_checkpoint(&checkpoint).unwrap_err());
     drop(read_only);
     assert_eq!(analytics.load_checkpoint().unwrap(), AnalyticsCheckpoint::default());
 }

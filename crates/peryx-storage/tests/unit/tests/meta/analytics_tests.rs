@@ -1,8 +1,30 @@
 use super::store;
-use crate::meta::AnalyticsCheckpoint;
+use crate::meta::{AnalyticsCheckpoint, AnalyticsDelta, ArtifactUsageKey, DailyUsageKey, UsageTotals};
+
+fn artifact(resource: &str, artifact: &str) -> ArtifactUsageKey {
+    ArtifactUsageKey {
+        repository: "alpha".to_owned(),
+        resource: resource.to_owned(),
+        artifact: artifact.to_owned(),
+    }
+}
+
+fn bucket(day: i64, resource: &str) -> DailyUsageKey {
+    DailyUsageKey {
+        day,
+        repository: "alpha".to_owned(),
+        resource: resource.to_owned(),
+        group: "1.0".to_owned(),
+        source: "upstream".to_owned(),
+    }
+}
+
+const fn totals(reads: u64, bytes: u64) -> UsageTotals {
+    UsageTotals { reads, bytes }
+}
 
 #[test]
-fn test_analytics_snapshot_is_absent_before_first_save() {
+fn test_analytics_checkpoint_is_empty_before_the_first_commit() {
     let (_dir, meta) = store();
     assert_eq!(
         meta.analytics().load_checkpoint().unwrap(),
@@ -11,37 +33,127 @@ fn test_analytics_snapshot_is_absent_before_first_save() {
 }
 
 #[test]
-fn test_analytics_save_then_load_round_trips_the_checkpoint() {
+fn test_analytics_commit_then_load_round_trips_every_row() {
     let (_dir, meta) = store();
     let handle = meta.analytics();
-    handle.save_checkpoint(b"first lifetime", b"first daily").unwrap();
+    let delta = AnalyticsDelta {
+        lifetime: vec![
+            (artifact("demo", "demo-1.0.bin"), totals(2, 20)),
+            (artifact("other", "other-1.0.bin"), totals(3, 30)),
+        ],
+        daily: vec![(bucket(19_000, "demo"), totals(2, 20))],
+        ..AnalyticsDelta::default()
+    };
+    handle.commit_checkpoint(&delta).unwrap();
     assert_eq!(
         handle.load_checkpoint().unwrap(),
         AnalyticsCheckpoint {
-            lifetime: Some(b"first lifetime".to_vec()),
-            daily: Some(b"first daily".to_vec()),
-        }
-    );
-    handle.save_checkpoint(b"second lifetime", b"second daily").unwrap();
-    assert_eq!(
-        handle.load_checkpoint().unwrap(),
-        AnalyticsCheckpoint {
-            lifetime: Some(b"second lifetime".to_vec()),
-            daily: Some(b"second daily".to_vec()),
+            lifetime: delta.lifetime,
+            daily: delta.daily,
+            migrated_lifetime: None,
+            migrated_daily: None,
         }
     );
 }
 
 #[test]
-fn test_analytics_handle_shares_the_store_database() {
+fn test_analytics_commit_replaces_only_the_rows_it_names() {
     let (_dir, meta) = store();
-    meta.analytics().save_checkpoint(b"lifetime", b"daily").unwrap();
+    let handle = meta.analytics();
+    handle
+        .commit_checkpoint(&AnalyticsDelta {
+            lifetime: vec![
+                (artifact("demo", "demo-1.0.bin"), totals(1, 10)),
+                (artifact("other", "other-1.0.bin"), totals(5, 50)),
+            ],
+            daily: vec![
+                (bucket(19_000, "demo"), totals(1, 10)),
+                (bucket(19_000, "other"), totals(5, 50)),
+            ],
+            ..AnalyticsDelta::default()
+        })
+        .unwrap();
+    handle
+        .commit_checkpoint(&AnalyticsDelta {
+            lifetime: vec![(artifact("demo", "demo-1.0.bin"), totals(2, 20))],
+            daily: vec![(bucket(19_000, "demo"), totals(2, 20))],
+            ..AnalyticsDelta::default()
+        })
+        .unwrap();
     assert_eq!(
-        meta.analytics().load_checkpoint().unwrap(),
+        handle.load_checkpoint().unwrap(),
         AnalyticsCheckpoint {
-            lifetime: Some(b"lifetime".to_vec()),
-            daily: Some(b"daily".to_vec()),
+            lifetime: vec![
+                (artifact("demo", "demo-1.0.bin"), totals(2, 20)),
+                (artifact("other", "other-1.0.bin"), totals(5, 50)),
+            ],
+            daily: vec![
+                (bucket(19_000, "demo"), totals(2, 20)),
+                (bucket(19_000, "other"), totals(5, 50)),
+            ],
+            migrated_lifetime: None,
+            migrated_daily: None,
         }
+    );
+}
+
+#[test]
+fn test_analytics_commit_expires_the_daily_prefix_and_keeps_retained_buckets() {
+    let (_dir, meta) = store();
+    let handle = meta.analytics();
+    handle
+        .commit_checkpoint(&AnalyticsDelta {
+            daily: vec![
+                (bucket(18_998, "demo"), totals(1, 10)),
+                (bucket(18_999, "demo"), totals(2, 20)),
+                (bucket(19_000, "demo"), totals(3, 30)),
+            ],
+            ..AnalyticsDelta::default()
+        })
+        .unwrap();
+    handle
+        .commit_checkpoint(&AnalyticsDelta {
+            daily: vec![(bucket(19_001, "demo"), totals(4, 40))],
+            expire_daily_before: Some(19_000),
+            ..AnalyticsDelta::default()
+        })
+        .unwrap();
+    assert_eq!(
+        handle.load_checkpoint().unwrap().daily,
+        vec![
+            (bucket(19_000, "demo"), totals(3, 30)),
+            (bucket(19_001, "demo"), totals(4, 40)),
+        ]
+    );
+}
+
+#[test]
+fn test_analytics_delta_is_empty_only_without_rows_pruning_or_migrated_values() {
+    assert_eq!(
+        (
+            AnalyticsDelta::default().is_empty(),
+            AnalyticsDelta {
+                lifetime: vec![(artifact("demo", "demo-1.0.bin"), totals(1, 10))],
+                ..AnalyticsDelta::default()
+            }
+            .is_empty(),
+            AnalyticsDelta {
+                daily: vec![(bucket(19_000, "demo"), totals(1, 10))],
+                ..AnalyticsDelta::default()
+            }
+            .is_empty(),
+            AnalyticsDelta {
+                expire_daily_before: Some(19_000),
+                ..AnalyticsDelta::default()
+            }
+            .is_empty(),
+            AnalyticsDelta {
+                clear_migrated: true,
+                ..AnalyticsDelta::default()
+            }
+            .is_empty(),
+        ),
+        (true, false, false, false, false)
     );
 }
 
@@ -56,7 +168,12 @@ fn test_analytics_handle_is_a_noop_once_the_store_drops() {
         (Some(b"retained apply".to_vec()), Some(b"retained producer".to_vec()))
     );
     drop(meta);
-    handle.save_checkpoint(b"ignored", b"ignored").unwrap();
+    handle
+        .commit_checkpoint(&AnalyticsDelta {
+            lifetime: vec![(artifact("demo", "demo-1.0.bin"), totals(1, 10))],
+            ..AnalyticsDelta::default()
+        })
+        .unwrap();
     handle.save_apply(b"ignored").unwrap();
     handle.save_producer(b"ignored").unwrap();
     assert_eq!(handle.load_checkpoint().unwrap(), AnalyticsCheckpoint::default());
