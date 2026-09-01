@@ -566,7 +566,7 @@ pub struct CommandReceipt {
     pub old_voters: Vec<String>,
     pub new_voters: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub transfer_audit: Option<TransferAudit>,
+    pub transfer_audit: Option<Box<TransferAudit>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -77,7 +77,7 @@ impl MembershipControl for Committing {
             outcome: CommandOutcome::Committed,
             old_voters: Vec::new(),
             new_voters: Vec::new(),
-            transfer_audit: Some(audit),
+            transfer_audit: Some(Box::new(audit)),
         }))
     }
 }

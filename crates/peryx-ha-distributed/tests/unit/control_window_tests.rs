@@ -140,7 +140,7 @@ fn authority_receipt(outcome: CommandOutcome) -> CommandReceipt {
 
 fn transfer_receipt(outcome: CommandOutcome, target: &str, epoch: u64) -> CommandReceipt {
     CommandReceipt {
-        transfer_audit: Some(sealed(target, epoch)),
+        transfer_audit: Some(Box::new(sealed(target, epoch))),
         ..authority_receipt(outcome)
     }
 }

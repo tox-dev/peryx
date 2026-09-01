@@ -385,7 +385,7 @@ impl OwnershipState {
             outcome,
             old_voters: Vec::new(),
             new_voters: Vec::new(),
-            transfer_audit: audit.clone(),
+            transfer_audit: audit.clone().map(Box::new),
         };
         self.bind_control(key, command, now_unix, Some(receipt.clone()), audit, audit_projectors);
         ControlResolution::Committed(receipt)
@@ -444,23 +444,23 @@ impl OwnershipState {
 
     pub(crate) fn set_audit_projectors(&mut self, projectors: BTreeSet<String>) {
         for record in self.controls.values_mut() {
-            if let (Some(audit), Some(receipt)) = (&record.audit, &mut record.receipt) {
-                if receipt.transfer_audit.is_none() {
-                    receipt.transfer_audit = Some(audit.clone());
-                }
+            if let (Some(audit), Some(receipt)) = (&record.audit, &mut record.receipt)
+                && receipt.transfer_audit.is_none()
+            {
+                receipt.transfer_audit = Some(Box::new(audit.clone()));
             }
-            if projectors.is_empty() {
-                continue;
-            } else if record.audit.is_some() && record.audit_projectors.is_empty() {
-                // Older snapshots carried the audit without its voter roster or receipt copy. Bind
-                // those records to the membership stored with the snapshot.
-                record.audit_projectors.clone_from(&projectors);
-            } else {
-                record
-                    .audit_projectors
-                    .retain(|projector| projectors.contains(projector));
-                if record.audit_projectors.is_empty() {
-                    record.audit = None;
+            if !projectors.is_empty() {
+                if record.audit.is_some() && record.audit_projectors.is_empty() {
+                    // Older snapshots carried the audit without its voter roster or receipt copy. Bind
+                    // those records to the membership stored with the snapshot.
+                    record.audit_projectors.clone_from(&projectors);
+                } else {
+                    record
+                        .audit_projectors
+                        .retain(|projector| projectors.contains(projector));
+                    if record.audit_projectors.is_empty() {
+                        record.audit = None;
+                    }
                 }
             }
         }
