@@ -679,7 +679,7 @@ impl Cluster {
         if accepted {
             return Ok(());
         }
-        let Some(node) = self.nodes.iter().find(|node| process_alive(node.pid())) else {
+        let Some(node) = self.nodes.iter().find(|node| node.owns_live_process()) else {
             return Err(HarnessError::SignalClosed {
                 node: "cluster".to_owned(),
                 last,
@@ -1235,7 +1235,7 @@ impl Node {
     pub fn diagnostics(&self) -> String {
         format!(
             "process: {} (pid {})\nlog:\n{}",
-            if process_alive(self.process_id) {
+            if self.owns_live_process() {
                 "running"
             } else {
                 "not running"
@@ -1248,7 +1248,7 @@ impl Node {
     fn snapshot(&self) -> NodeArtifact {
         NodeArtifact {
             identity: self.identity.clone(),
-            process: if process_alive(self.process_id) {
+            process: if self.owns_live_process() {
                 format!("running (pid {})", self.process_id)
             } else {
                 format!("not running (pid {})", self.process_id)
@@ -1257,6 +1257,10 @@ impl Node {
             status: self.status().map(|(_, body)| body),
             log_tail: self.log_tail(),
         }
+    }
+
+    fn owns_live_process(&self) -> bool {
+        self.child.as_ref().is_some_and(child_process_alive)
     }
 
     fn stop(&mut self) {
@@ -1754,10 +1758,8 @@ pub fn process_alive(pid: u32) -> bool {
     }
     #[cfg(windows)]
     {
-        use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
-        use windows_sys::Win32::System::Threading::{
-            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-        };
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
 
         #[allow(unsafe_code, reason = "Windows exposes process status through raw handle APIs")]
         unsafe {
@@ -1765,15 +1767,34 @@ pub fn process_alive(pid: u32) -> bool {
             if process.is_null() {
                 return false;
             }
-            let mut status = 0;
-            let queried = GetExitCodeProcess(process, &raw mut status);
+            let alive = windows_process_handle_alive(process);
             CloseHandle(process);
-            matches!(
-                (std::num::NonZero::new(queried), status.cmp(&(STILL_ACTIVE as u32))),
-                (Some(_), std::cmp::Ordering::Equal)
-            )
+            alive
         }
     }
+}
+
+fn child_process_alive(child: &Child) -> bool {
+    #[cfg(unix)]
+    {
+        process_alive(child.id())
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle as _;
+
+        windows_process_handle_alive(child.as_raw_handle())
+    }
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code, reason = "Windows exposes process status through raw handle APIs")]
+fn windows_process_handle_alive(process: windows_sys::Win32::Foundation::HANDLE) -> bool {
+    use windows_sys::Win32::Foundation::STILL_ACTIVE;
+    use windows_sys::Win32::System::Threading::GetExitCodeProcess;
+
+    let mut status = 0;
+    unsafe { GetExitCodeProcess(process, &raw mut status) != 0 && status == STILL_ACTIVE as u32 }
 }
 
 #[must_use]
