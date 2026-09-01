@@ -213,7 +213,7 @@ struct TopologySample {
 }
 
 impl TopologySample {
-    fn projection(&self, view: TopologyView) -> &TopologyProjection {
+    const fn projection(&self, view: TopologyView) -> &TopologyProjection {
         &self.projections[match view {
             TopologyView::Public => 0,
             TopologyView::Operator => 1,
