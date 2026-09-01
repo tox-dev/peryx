@@ -1,4 +1,5 @@
 use std::str::FromStr as _;
+use std::sync::Arc;
 
 use axum::http::{Method, StatusCode, header};
 use peryx_core::{BrowseLink, BrowsePage, BrowseSection};
@@ -6,10 +7,13 @@ use peryx_driver::AppState;
 use peryx_driver::serving::BrowseRequest;
 use peryx_identity::{ArtifactDigest, RevocationReason, UserId};
 use rstest::rstest;
+use tempfile::TempDir;
 use wiremock::matchers::{method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use super::{body_has_code, hosted, oci_digest, proxy, seed_referrer, send, send_with, virtual_stack};
+use super::{
+    body_has_code, hosted, oci_digest, proxy, proxy_with_clock, seed_referrer, send, send_with, virtual_stack,
+};
 use crate::store::{self, Manifest};
 
 const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
@@ -569,32 +573,252 @@ async fn test_active_proxy_tag_filter_accepts_a_null_tag_list() {
     );
 }
 
-#[tokio::test]
-async fn test_active_proxy_tag_filter_omits_an_unresolved_tag() {
+fn unrelated_revocation() -> String {
+    format!("sha256:{}", "e".repeat(64))
+}
+
+fn seed_tag(state: &AppState, tag: &str, digest: &str, fetched_at: i64) {
+    store::put_tag(&state.serving.meta, "hub", "app", tag, digest).unwrap();
+    store::set_tag_freshness(&state.serving.meta, "hub", "app", tag, digest, fetched_at).unwrap();
+}
+
+fn seed_tag_page(state: &AppState, tags: &[&str], fetched_at: i64) {
+    store::set_tag_page(
+        &state.serving.meta,
+        "hub",
+        "app",
+        "",
+        fetched_at,
+        None,
+        serde_json::json!({ "name": "app", "tags": tags })
+            .to_string()
+            .as_bytes(),
+    )
+    .unwrap();
+}
+
+fn stale_proxy(dir: &TempDir, tags: &[&str], targets: &[(&str, &str)]) -> (Arc<AppState>, axum::Router) {
+    let (state, app) = proxy_with_clock(dir, "http://127.0.0.1:0/", Arc::new(|| 1_300));
+    seed_tag_page(&state, tags, 1_000);
+    for (tag, digest) in targets {
+        seed_tag(&state, tag, digest, 1_000);
+    }
+    revoke(&state, &unrelated_revocation());
+    (state, app)
+}
+
+async fn tag_server(tags: &[&str]) -> MockServer {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/v2/app/tags/list"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_raw(br#"{"name":"app","tags":["missing"]}"#.to_vec(), "application/json"),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            serde_json::json!({ "name": "app", "tags": tags }).to_string(),
+            "application/json",
+        ))
         .mount(&server)
         .await;
+    server
+}
+
+async fn mount_tag_target(server: &MockServer, tag: &str, response: ResponseTemplate) {
     Mock::given(method("HEAD"))
-        .and(path("/v2/app/manifests/missing"))
-        .respond_with(ResponseTemplate::new(404))
+        .and(path(format!("/v2/app/manifests/{tag}")))
+        .respond_with(response)
+        .mount(server)
+        .await;
+}
+
+#[rstest]
+#[case::clear(None, &["latest", "stable"])]
+#[case::revoked(Some("stable"), &["latest"])]
+#[tokio::test]
+async fn test_stale_tag_page_filters_bounded_targets(#[case] revoked: Option<&str>, #[case] expected: &[&str]) {
+    let dir = tempfile::tempdir().unwrap();
+    let latest = format!("sha256:{}", "1".repeat(64));
+    let stable = format!("sha256:{}", "2".repeat(64));
+    let (state, app) = stale_proxy(&dir, &["latest", "stable"], &[("latest", &latest), ("stable", &stable)]);
+    if revoked == Some("stable") {
+        revoke(&state, &stable);
+    }
+
+    let (status, _, body) = send(&app, Method::GET, "/v2/hub/app/tags/list").await;
+
+    assert_eq!(
+        (status, serde_json::from_slice::<serde_json::Value>(&body).unwrap()),
+        (
+            StatusCode::OK,
+            serde_json::json!({ "name": "hub/app", "tags": expected })
+        )
+    );
+}
+
+#[rstest]
+#[case::missing(None)]
+#[case::expired(Some(600))]
+#[tokio::test]
+async fn test_stale_tag_page_without_a_bounded_target_reports_the_registry_failure(#[case] fetched_at: Option<i64>) {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = stale_proxy(&dir, &["latest"], &[]);
+    if let Some(fetched_at) = fetched_at {
+        seed_tag(&state, "latest", &format!("sha256:{}", "1".repeat(64)), fetched_at);
+    }
+
+    let (status, headers, _) = send(&app, Method::GET, "/v2/hub/app/tags/list").await;
+
+    assert_eq!(
+        (status, headers[header::CACHE_CONTROL].to_str().unwrap()),
+        (StatusCode::BAD_GATEWAY, "no-store")
+    );
+}
+
+#[tokio::test]
+async fn test_stale_tag_page_fallback_sends_no_target_request() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v2/app/tags/list"))
+        .respond_with(ResponseTemplate::new(503))
         .expect(1)
         .mount(&server)
         .await;
+    Mock::given(method("HEAD"))
+        .and(path("/v2/app/manifests/latest"))
+        .respond_with(ResponseTemplate::new(503))
+        .expect(0)
+        .mount(&server)
+        .await;
     let dir = tempfile::tempdir().unwrap();
-    let (state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
-    revoke(&state, &format!("sha256:{}", "8".repeat(64)));
+    let (state, app) = proxy_with_clock(&dir, &format!("{}/", server.uri()), Arc::new(|| 1_300));
+    seed_tag_page(&state, &["latest"], 1_000);
+    seed_tag(&state, "latest", &format!("sha256:{}", "1".repeat(64)), 1_000);
+    revoke(&state, &unrelated_revocation());
 
     let (status, _, body) = send(&app, Method::GET, "/v2/hub/app/tags/list").await;
-    assert_eq!(status, StatusCode::OK);
+
     assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
-        serde_json::json!({"name":"hub/app","tags":[]})
+        (status, serde_json::from_slice::<serde_json::Value>(&body).unwrap()),
+        (
+            StatusCode::OK,
+            serde_json::json!({ "name": "hub/app", "tags": ["latest"] })
+        )
+    );
+}
+
+#[rstest]
+#[case::server_error(503)]
+#[case::unauthorized(401)]
+#[case::throttled(429)]
+#[tokio::test]
+async fn test_a_non_missing_target_refresh_uses_the_retained_digest(#[case] status: u16) {
+    let server = tag_server(&["latest"]).await;
+    mount_tag_target(&server, "latest", ResponseTemplate::new(status)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
+    seed_tag(&state, "latest", &format!("sha256:{}", "1".repeat(64)), 900);
+    revoke(&state, &unrelated_revocation());
+
+    let (code, _, body) = send(&app, Method::GET, "/v2/hub/app/tags/list").await;
+
+    assert_eq!(
+        (code, serde_json::from_slice::<serde_json::Value>(&body).unwrap()),
+        (
+            StatusCode::OK,
+            serde_json::json!({ "name": "hub/app", "tags": ["latest"] })
+        )
+    );
+}
+
+#[tokio::test]
+async fn test_a_target_transport_failure_uses_the_bounded_digest() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = proxy(&dir, "http://127.0.0.1:0/", false);
+    seed_tag_page(&state, &["latest"], 1_000);
+    seed_tag(&state, "latest", &format!("sha256:{}", "1".repeat(64)), 900);
+    revoke(&state, &unrelated_revocation());
+
+    let (status, _, body) = send(&app, Method::GET, "/v2/hub/app/tags/list").await;
+
+    assert_eq!(
+        (status, serde_json::from_slice::<serde_json::Value>(&body).unwrap()),
+        (
+            StatusCode::OK,
+            serde_json::json!({ "name": "hub/app", "tags": ["latest"] })
+        )
+    );
+}
+
+#[tokio::test]
+async fn test_a_target_without_a_digest_header_uses_the_bounded_digest() {
+    let server = tag_server(&["latest"]).await;
+    mount_tag_target(&server, "latest", ResponseTemplate::new(200)).await;
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
+    seed_tag(&state, "latest", &format!("sha256:{}", "1".repeat(64)), 900);
+    revoke(&state, &unrelated_revocation());
+
+    let (status, _, body) = send(&app, Method::GET, "/v2/hub/app/tags/list").await;
+
+    assert_eq!(
+        (status, serde_json::from_slice::<serde_json::Value>(&body).unwrap()),
+        (
+            StatusCode::OK,
+            serde_json::json!({ "name": "hub/app", "tags": ["latest"] })
+        )
+    );
+}
+
+#[rstest]
+#[case::missing(None)]
+#[case::expired(Some(600))]
+#[tokio::test]
+async fn test_a_failed_target_without_a_bounded_digest_is_not_a_partial_list(#[case] fetched_at: Option<i64>) {
+    let server = tag_server(&["latest"]).await;
+    mount_tag_target(
+        &server,
+        "latest",
+        ResponseTemplate::new(429).insert_header("retry-after", "17"),
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
+    if let Some(fetched_at) = fetched_at {
+        seed_tag(&state, "latest", &format!("sha256:{}", "1".repeat(64)), fetched_at);
+    }
+    revoke(&state, &unrelated_revocation());
+
+    let (status, headers, _) = send(&app, Method::GET, "/v2/hub/app/tags/list").await;
+
+    assert_eq!(
+        (status, headers[header::RETRY_AFTER].to_str().unwrap()),
+        (StatusCode::TOO_MANY_REQUESTS, "17")
+    );
+}
+
+#[tokio::test]
+async fn test_mixed_target_responses_filter_without_false_absence() {
+    let server = tag_server(&["latest", "missing", "stable"]).await;
+    mount_tag_target(&server, "latest", ResponseTemplate::new(503)).await;
+    mount_tag_target(&server, "missing", ResponseTemplate::new(404)).await;
+    let stable = format!("sha256:{}", "2".repeat(64));
+    mount_tag_target(
+        &server,
+        "stable",
+        ResponseTemplate::new(200).insert_header("docker-content-digest", stable.as_str()),
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
+    seed_tag(&state, "latest", &format!("sha256:{}", "1".repeat(64)), 900);
+    seed_tag(&state, "missing", &format!("sha256:{}", "3".repeat(64)), 900);
+    revoke(&state, &stable);
+
+    let (status, _, body) = send(&app, Method::GET, "/v2/hub/app/tags/list").await;
+
+    assert_eq!(
+        (status, serde_json::from_slice::<serde_json::Value>(&body).unwrap()),
+        (
+            StatusCode::OK,
+            serde_json::json!({ "name": "hub/app", "tags": ["latest"] })
+        )
     );
 }
 

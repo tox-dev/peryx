@@ -11,6 +11,22 @@ use peryx_upstream::UpstreamClient;
 const TAG_RESOLUTION_CONCURRENCY: usize = 8;
 const OCI_INDEX_TYPE: &str = "application/vnd.oci.image.index.v1+json";
 
+struct ProxyTagPage {
+    response: Response,
+    stale_error: Option<crate::upstream::UpstreamError>,
+}
+
+enum TagTarget {
+    Digest(String),
+    Missing,
+    Failed(crate::upstream::UpstreamError),
+}
+
+enum TagFilter {
+    Visible(std::collections::BTreeSet<String>),
+    Unresolved(Response),
+}
+
 impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> {
     /// Serve the tag list. With no active revocations a lone online proxy passes upstream through;
     /// every other case filters and unions member tags before applying `n`/`last` pagination.
@@ -36,12 +52,12 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         if let [member] = members.as_slice()
             && let Some(client) = member.proxy_client()
         {
-            let response = self.proxy_tags(state, name, &member.name, client, repo, query).await?;
+            let page = self.proxy_tags(state, name, &member.name, client, repo, query).await?;
             return if active {
-                self.filter_proxy_tag_page(state, name, &member.name, client, repo, response)
+                self.filter_proxy_tag_page(state, name, &member.name, client, repo, page)
                     .await
             } else {
-                serve_proxy_tag_page(name, response).await
+                serve_proxy_tag_page(name, page.response).await
             };
         }
         let tags = self.visible_tag_names(state, name, repo, active, &members).await?;
@@ -109,13 +125,16 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         client: &UpstreamClient,
         repo: &str,
         query: &str,
-    ) -> Result<Response, ServeError> {
+    ) -> Result<ProxyTagPage, ServeError> {
         let now = (state.clock)();
         let cached = store::tag_page(&state.meta, index, repo, query)?;
         if let Some((fetched_at, link, body)) = &cached
             && now.saturating_sub(*fetched_at) < state.ttl_secs
         {
-            return Ok(tag_page_response(name, link.as_deref(), body.clone()));
+            return Ok(ProxyTagPage {
+                response: tag_page_response(name, link.as_deref(), body.clone()),
+                stale_error: None,
+            });
         }
         match self
             .upstream
@@ -130,13 +149,20 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
                     .map(str::to_owned);
                 let body = bounded_body(response, MAX_TAGS_BYTES).await?;
                 store::set_tag_page(&state.meta, index, repo, query, now, link.as_deref(), &body)?;
-                Ok(tag_page_response(name, link.as_deref(), body.to_vec()))
+                Ok(ProxyTagPage {
+                    response: tag_page_response(name, link.as_deref(), body.to_vec()),
+                    stale_error: None,
+                })
             }
             Err(err) => match cached {
-                Some((fetched_at, link, body)) if within_stale_bound(state, fetched_at) => {
-                    Ok(tag_page_response(name, link.as_deref(), body))
-                }
-                _ => Ok(upstream_error_response(&err, "tags")),
+                Some((fetched_at, link, body)) if within_stale_bound(state, fetched_at) => Ok(ProxyTagPage {
+                    response: tag_page_response(name, link.as_deref(), body),
+                    stale_error: Some(err),
+                }),
+                _ => Ok(ProxyTagPage {
+                    response: upstream_error_response(&err, "tags"),
+                    stale_error: None,
+                }),
             },
         }
     }
@@ -158,12 +184,12 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         loop {
             // Each page is cached under its own query, so a virtual index that unions several proxies
             // no longer re-walks every upstream's pagination on every request.
-            let response = self.proxy_tags(state, name, index, client, repo, &query).await?;
+            let fetched = self.proxy_tags(state, name, index, client, repo, &query).await?;
             let response = if active {
-                self.filter_proxy_tag_page(state, name, index, client, repo, response)
+                self.filter_proxy_tag_page(state, name, index, client, repo, fetched)
                     .await?
             } else {
-                response
+                fetched.response
             };
             let (parts, body) = response.into_parts();
             if !parts.status.is_success() {
@@ -194,8 +220,9 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         index: &str,
         client: &UpstreamClient,
         repo: &str,
-        response: Response,
+        page: ProxyTagPage,
     ) -> Result<Response, ServeError> {
+        let ProxyTagPage { response, stale_error } = page;
         if !response.status().is_success() {
             return Ok(response);
         }
@@ -210,7 +237,13 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
             serde_json::Value::Null => Vec::new(),
             _ => return Err(ServeError::Transport("upstream tag list is invalid".to_owned())),
         };
-        let tags = self.visible_proxy_tags(state, index, client, repo, tags).await?;
+        let tags = match self
+            .visible_proxy_tags(state, index, client, repo, tags, stale_error.as_ref())
+            .await?
+        {
+            TagFilter::Visible(tags) => tags,
+            TagFilter::Unresolved(response) => return Ok(response),
+        };
         Ok(tag_page_response(
             name,
             parts.headers.get(header::LINK).and_then(|value| value.to_str().ok()),
@@ -227,47 +260,82 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         client: &UpstreamClient,
         repo: &str,
         tags: Vec<String>,
-    ) -> Result<std::collections::BTreeSet<String>, ServeError> {
-        let checked = futures_util::stream::iter(tags.into_iter().map(|tag| async move {
-            let digest = self.proxy_tag_digest(state, index, client, repo, &tag).await?;
-            let visible = match digest {
-                Some(digest) => digest_decision(state, &digest)? == DigestDecision::Clear,
-                None => false,
-            };
-            Ok::<_, ServeError>((tag, visible))
-        }))
-        .buffer_unordered(TAG_RESOLUTION_CONCURRENCY)
-        .collect::<Vec<_>>()
-        .await;
+        stale_error: Option<&crate::upstream::UpstreamError>,
+    ) -> Result<TagFilter, ServeError> {
         let mut visible = std::collections::BTreeSet::new();
-        for checked in checked {
-            let (tag, clear) = checked?;
-            if clear {
+        if let Some(error) = stale_error {
+            for tag in tags {
+                let Some(digest) = stale_tag_digest(state, index, repo, &tag)? else {
+                    return Ok(TagFilter::Unresolved(upstream_error_response(error, "tags")));
+                };
+                if digest_decision(state, &digest)? == DigestDecision::Clear {
+                    visible.insert(tag);
+                }
+            }
+            return Ok(TagFilter::Visible(visible));
+        }
+        for (tag, target) in self.refresh_tag_targets(state, index, client, repo, tags).await? {
+            let digest = match target {
+                TagTarget::Digest(digest) => digest,
+                TagTarget::Missing => continue,
+                TagTarget::Failed(error) => match stale_tag_digest(state, index, repo, &tag)? {
+                    Some(digest) => digest,
+                    None => return Ok(TagFilter::Unresolved(upstream_error_response(&error, "tags"))),
+                },
+            };
+            if digest_decision(state, &digest)? == DigestDecision::Clear {
                 visible.insert(tag);
             }
         }
-        Ok(visible)
+        Ok(TagFilter::Visible(visible))
     }
 
-    async fn proxy_tag_digest(
+    async fn refresh_tag_targets(
+        &self,
+        state: &ServingState,
+        index: &str,
+        client: &UpstreamClient,
+        repo: &str,
+        tags: Vec<String>,
+    ) -> Result<Vec<(String, TagTarget)>, ServeError> {
+        futures_util::stream::iter(tags.into_iter().map(|tag| async move {
+            let target = self.refresh_tag_target(state, index, client, repo, &tag).await?;
+            Ok::<_, ServeError>((tag, target))
+        }))
+        // Keep errors in page order so concurrent refreshes cannot change the response status.
+        .buffered(TAG_RESOLUTION_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect()
+    }
+
+    async fn refresh_tag_target(
         &self,
         state: &ServingState,
         index: &str,
         client: &UpstreamClient,
         repo: &str,
         tag: &str,
-    ) -> Result<Option<String>, ServeError> {
+    ) -> Result<TagTarget, ServeError> {
         if let Some((fetched_at, digest)) = store::tag_freshness(&state.meta, index, repo, tag)?
             && (state.clock)().saturating_sub(fetched_at) < state.ttl_secs
         {
-            return Ok(Some(digest));
+            return Ok(TagTarget::Digest(digest));
         }
-        let Ok(Some(digest)) = self
+        let digest = match self
             .upstream
             .manifest_digest(client, &self.upstream_repo(index, client, repo), tag)
             .await
-        else {
-            return Ok(None);
+        {
+            Ok(Some(digest)) => digest,
+            Ok(None) => {
+                return Ok(TagTarget::Failed(crate::upstream::UpstreamError::Transport(
+                    "upstream manifest response carries no docker-content-digest".to_owned(),
+                )));
+            }
+            Err(crate::upstream::UpstreamError::Status(StatusCode::NOT_FOUND)) => return Ok(TagTarget::Missing),
+            Err(error) => return Ok(TagTarget::Failed(error)),
         };
         let changed = store::put_tag(&state.meta, index, repo, tag, &digest)?;
         let search_invalidation = changed.then(|| crate::search_oci::SearchInvalidationGuard::arm(state, repo));
@@ -275,7 +343,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         if let Some(search_invalidation) = search_invalidation {
             drop(search_invalidation);
         }
-        Ok(Some(digest))
+        Ok(TagTarget::Digest(digest))
     }
 
     /// The referrer descriptors upstream records for `repo`/`digest`. A registry predating the referrers
@@ -571,6 +639,13 @@ fn paginate(items: &std::collections::BTreeSet<String>, query: &str) -> (Vec<Str
     let page: Vec<String> = rest.by_ref().take(n).cloned().collect();
     let next = rest.next().and_then(|_| page.last()).map(|marker| (n, marker.clone()));
     (page, next)
+}
+
+fn stale_tag_digest(state: &ServingState, index: &str, repo: &str, tag: &str) -> Result<Option<String>, ServeError> {
+    let Some((fetched_at, digest)) = store::tag_freshness(&state.meta, index, repo, tag)? else {
+        return Ok(None);
+    };
+    Ok(within_stale_bound(state, fetched_at).then_some(digest))
 }
 
 fn tag_list_response(name: &str, tags: &std::collections::BTreeSet<String>, query: &str) -> Response {

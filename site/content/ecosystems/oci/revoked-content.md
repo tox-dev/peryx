@@ -29,6 +29,12 @@ local store or upstream. Legacy manifest negotiation checks the selected `linux/
 These responses do not expose the administrator's reason. A metadata failure prevents the origin from serving the
 candidate digest and returns a gateway error.
 
+Only a `404` confirms that the upstream registry no longer resolves a tag. After authentication, throttling, server, or
+transport errors, Peryx uses the target it recorded within `max_stale_secs` and applies the revocation policy to that
+digest. When Peryx serves a tag list from the [stale window](@/core/operations/configuration.md), it reads those
+recorded targets and skips per-tag revalidation against the failed registry. If a listed tag has no target inside the
+same bound, Peryx returns the upstream error instead of a shortened `200`.
+
 Revoking a config or layer does not hide its clear parent manifest. The client can inspect the manifest, then receives
 `BLOB_UNKNOWN` when it requests the revoked digest. If two repositories link the same layer, Peryx blocks both requests.
 Peryx checks one indexed decision for each content request and does not walk the manifest graph.
