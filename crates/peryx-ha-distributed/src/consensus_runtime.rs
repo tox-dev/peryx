@@ -28,6 +28,7 @@ type VoterId = u64;
 /// A peer RPC exceeding this deadline counts as a retryable loss.
 const PEER_RPC_TIMEOUT: Duration = Duration::from_secs(5);
 const MEMBERSHIP_PUBLICATION_TIMEOUT: Duration = Duration::from_secs(5);
+const LEARNER_CATCH_UP_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct ConsensusPlan {
     pub(super) local: VoterId,
@@ -825,6 +826,13 @@ impl OwnershipGroup {
         let metrics = self.node.metrics().borrow().clone();
         let current: BTreeSet<u64> = metrics.membership_config.voter_ids().collect();
         let planned = crate::control::plan_voter_roster(&current, add.map(voter_id), remove.map(voter_id));
+        if let Some(datacenter) = add.filter(|datacenter| {
+            let id = voter_id(datacenter);
+            planned.contains(&id) && !current.contains(&id)
+        }) {
+            self.await_learner_catch_up(datacenter, &metrics.membership_config)
+                .await?;
+        }
         let outcome = if planned == current {
             CommandOutcome::NoChange
         } else {
@@ -836,6 +844,29 @@ impl OwnershipGroup {
         match self.node.raft().change_membership(planned, false).await {
             Ok(response) => Ok(committed_receipt(&response.log_id, outcome, old_voters, new_voters)),
             Err(error) => Err(map_write_error(&error)),
+        }
+    }
+
+    /// The first non-blocking learner add starts replication and returns before catch-up.
+    async fn await_learner_catch_up(
+        &self,
+        datacenter: &str,
+        membership: &StoredMembership<VoterId, PeryxNode>,
+    ) -> Result<(), ControlError> {
+        let id = voter_id(datacenter);
+        let node = membership
+            .nodes()
+            .find_map(|(member, node)| (*member == id).then(|| node.clone()))
+            .ok_or_else(|| {
+                ControlError::Unavailable(format!("datacenter {datacenter:?} is not a registered learner"))
+            })?;
+        match tokio::time::timeout(LEARNER_CATCH_UP_TIMEOUT, self.node.raft().add_learner(id, node, true)).await {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(error)) => Err(map_write_error(&error)),
+            Err(_) => Err(ControlError::Unavailable(format!(
+                "datacenter {datacenter:?} did not catch up within {} seconds",
+                LEARNER_CATCH_UP_TIMEOUT.as_secs()
+            ))),
         }
     }
 

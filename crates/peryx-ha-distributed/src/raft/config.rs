@@ -4,6 +4,9 @@ use std::time::Duration;
 
 use openraft::{Config, ConfigError, SnapshotPolicy};
 
+/// Prevents an unreachable learner with a short log from passing `OpenRaft`'s blocking readiness check.
+const PROMOTION_LAG_THRESHOLD: u64 = 0;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RaftConfig {
     /// Must stay below [`election_timeout_min`](Self::election_timeout_min).
@@ -49,7 +52,7 @@ impl RaftConfig {
             install_snapshot_timeout: millis(self.install_snapshot_timeout),
             send_snapshot_timeout: 0,
             max_payload_entries: 300,
-            replication_lag_threshold: 5_000,
+            replication_lag_threshold: PROMOTION_LAG_THRESHOLD,
             snapshot_policy: SnapshotPolicy::LogsSinceLast(self.snapshot_logs_since_last),
             snapshot_max_chunk_size: 3 * 1024 * 1024,
             max_in_snapshot_log_to_keep: self.max_in_snapshot_log_to_keep,

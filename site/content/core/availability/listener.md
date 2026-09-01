@@ -142,6 +142,14 @@ An `address` follows the same contract as an `[[availability.member]]` address: 
 explicit port and no path, query, fragment, or credentials. A command carrying any other form is rejected as invalid
 before it reaches the log, so a learner cannot join on an address static membership would refuse.
 
+### Learner catch-up before promotion
+
+`promote_voter` and `replace_voter` hold the roster rewrite until the incoming datacenter has replicated the leader's
+latest log entry. A `replace_voter` keeps the outgoing voter until the learner clears that barrier.
+
+After 30 seconds, the endpoint returns `503 Service Unavailable` and retains the previous roster. The learner keeps
+replicating after the refusal; a retry resumes the same catch-up path.
+
 ```
 POST /availability/v1/commands
 Idempotency-Key: 5f0c-transfer-proj-west
@@ -184,12 +192,12 @@ back a failure or waiting out the 15-minute window.
 
 ### Failure statuses
 
-| Status                    | Cause                                                                                        |
-| ------------------------- | -------------------------------------------------------------------------------------------- |
-| `403 Forbidden`           | The actor lacks the administration write scope.                                              |
-| `409 Conflict`            | The command is invalid against the current state, for example transferring to the same home. |
-| `429 Too Many Requests`   | The bounded set of concurrent commands is saturated; retry after one drains.                 |
-| `503 Service Unavailable` | This node is not the leader, cannot reach a quorum, or runs no consensus group.              |
+| Status                    | Cause                                                                                                                |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `403 Forbidden`           | The actor lacks the administration write scope.                                                                      |
+| `409 Conflict`            | The command is invalid against the current state, for example transferring to the same home.                         |
+| `429 Too Many Requests`   | The bounded set of concurrent commands is saturated; retry after one drains.                                         |
+| `503 Service Unavailable` | This node is not the leader, cannot reach a quorum, runs no consensus group, or the named learner has not caught up. |
 
 A `503` from a non-leader node names the current leader in its body when the group knows one, so a client retries
 against it.

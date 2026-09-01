@@ -40,7 +40,6 @@ fn test_unowned_defaults_track_openraft() {
         (
             actual.send_snapshot_timeout,
             actual.max_payload_entries,
-            actual.replication_lag_threshold,
             actual.snapshot_max_chunk_size,
             actual.purge_batch_size,
             actual.enable_tick,
@@ -50,7 +49,6 @@ fn test_unowned_defaults_track_openraft() {
         (
             expected.send_snapshot_timeout,
             expected.max_payload_entries,
-            expected.replication_lag_threshold,
             expected.snapshot_max_chunk_size,
             expected.purge_batch_size,
             expected.enable_tick,
@@ -58,6 +56,13 @@ fn test_unowned_defaults_track_openraft() {
             expected.enable_elect,
         )
     );
+}
+
+#[test]
+fn test_promotion_requires_the_latest_learner_entry_to_match() {
+    let config = RaftConfig::default().into_openraft("ownership").unwrap();
+
+    assert_eq!(config.replication_lag_threshold, 0);
 }
 
 #[test]

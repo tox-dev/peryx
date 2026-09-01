@@ -1161,13 +1161,8 @@ async fn test_replacing_a_voter_adds_the_learner_then_rewrites_the_roster() {
     assert_eq!(receipt.outcome, CommandOutcome::NoChange);
 }
 
-/// Serves the voter ID the roster derives, so a peer that answers for another ID is a misdirection.
-async fn mounted_node(
-    dir: &TempDir,
-    datacenter: &str,
-) -> (RaftNode, String, tokio::task::JoinHandle<std::io::Result<()>>) {
+async fn peer_node(dir: &TempDir, datacenter: &str) -> (RaftNode, tokio::net::TcpListener, axum::Router) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
     let id = voter_id(datacenter);
     let store = RaftLogStore::open(dir.path().join("raft.redb")).unwrap();
     let node = RaftNode::start(
@@ -1181,8 +1176,236 @@ async fn mounted_node(
     .await
     .unwrap();
     let router = crate::raft::network::raft_rpc_router(id, TOKEN, node.rpc_handler()).unwrap();
-    let served = tokio::spawn(std::future::IntoFuture::into_future(axum::serve(listener, router)));
-    (node, format!("http://{address}/"), served)
+    (node, listener, router)
+}
+
+fn serve_node(listener: tokio::net::TcpListener, router: axum::Router) -> tokio::task::JoinHandle<std::io::Result<()>> {
+    tokio::spawn(std::future::IntoFuture::into_future(axum::serve(listener, router)))
+}
+
+/// Serves the voter ID the roster derives, so a peer that answers for another ID is a misdirection.
+async fn mounted_node(
+    dir: &TempDir,
+    datacenter: &str,
+) -> (RaftNode, String, tokio::task::JoinHandle<std::io::Result<()>>) {
+    let (node, listener, router) = peer_node(dir, datacenter).await;
+    let address = listener.local_addr().unwrap();
+    (node, format!("http://{address}/"), serve_node(listener, router))
+}
+
+async fn mounted_leader(dir: &TempDir) -> (RaftNode, String, tokio::task::JoinHandle<std::io::Result<()>>) {
+    let (node, endpoint, served) = mounted_node(dir, "east").await;
+    node.bootstrap(one_voter("east", &endpoint)).await.unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        node.metrics()
+            .wait_for(|metrics| metrics.current_leader == Some(voter_id("east"))),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    (node, endpoint, served)
+}
+
+async fn stop_mounted(node: &RaftNode, served: tokio::task::JoinHandle<std::io::Result<()>>) {
+    node.raft().shutdown().await.unwrap();
+    served.abort();
+    assert!(served.await.unwrap_err().is_cancelled());
+}
+
+fn promote(datacenter: &str) -> ControlCommand {
+    ControlCommand::PromoteVoter {
+        datacenter: datacenter.to_owned(),
+    }
+}
+
+#[tokio::test]
+async fn test_promoting_a_caught_up_learner_seats_it_as_a_voter() {
+    let east_dir = tempfile::tempdir().unwrap();
+    let west_dir = tempfile::tempdir().unwrap();
+    let (east, _, east_served) = mounted_leader(&east_dir).await;
+    let (west, west_endpoint, west_served) = mounted_node(&west_dir, "west").await;
+    let group = OwnershipGroup::new(east.clone(), DatacenterId("east".to_owned()));
+    group
+        .submit(
+            None,
+            ControlCommand::AddLearner {
+                datacenter: "west".to_owned(),
+                address: west_endpoint,
+            },
+        )
+        .await
+        .unwrap();
+
+    let receipt = group.submit(None, promote("west")).await.unwrap().receipt;
+
+    assert_eq!(
+        (receipt.outcome, receipt.old_voters, receipt.new_voters),
+        (
+            CommandOutcome::Committed,
+            vec!["east".to_owned()],
+            vec!["east".to_owned(), "west".to_owned()],
+        )
+    );
+    stop_mounted(&east, east_served).await;
+    stop_mounted(&west, west_served).await;
+}
+
+/// Delaying the learner's router keeps replication at zero, so serving it is the only event that clears the barrier.
+#[tokio::test]
+async fn test_a_learner_with_a_replication_backlog_is_promoted_only_once_it_catches_up() {
+    let east_dir = tempfile::tempdir().unwrap();
+    let west_dir = tempfile::tempdir().unwrap();
+    let (east, _, east_served) = mounted_leader(&east_dir).await;
+    let (west, west_listener, west_router) = peer_node(&west_dir, "west").await;
+    let group = Arc::new(OwnershipGroup::new(east.clone(), DatacenterId("east".to_owned())));
+    group
+        .submit(
+            None,
+            ControlCommand::AddLearner {
+                datacenter: "west".to_owned(),
+                address: format!("http://{}/", west_listener.local_addr().unwrap()),
+            },
+        )
+        .await
+        .unwrap();
+    let mut metrics = east.metrics();
+    let registered = metrics.borrow().last_log_index;
+
+    let promoting = tokio::spawn({
+        let group = Arc::clone(&group);
+        async move { group.submit(None, promote("west")).await }
+    });
+    metrics
+        .wait_for(|metrics| metrics.last_log_index > registered)
+        .await
+        .unwrap();
+    let held = (group.cluster_status().voters, promoting.is_finished());
+    let west_served = serve_node(west_listener, west_router);
+    let receipt = promoting.await.unwrap().unwrap().receipt;
+
+    assert_eq!(
+        held,
+        (vec!["east".to_owned()], false),
+        "the barrier is armed and the roster still excludes the learner"
+    );
+    assert_eq!(receipt.new_voters, ["east".to_owned(), "west".to_owned()]);
+    stop_mounted(&east, east_served).await;
+    stop_mounted(&west, west_served).await;
+}
+
+#[tokio::test]
+async fn test_replacing_a_voter_keeps_it_until_the_learner_catches_up() {
+    let east_dir = tempfile::tempdir().unwrap();
+    let west_dir = tempfile::tempdir().unwrap();
+    let (east, _, east_served) = mounted_leader(&east_dir).await;
+    let (west, west_listener, west_router) = peer_node(&west_dir, "west").await;
+    let group = Arc::new(OwnershipGroup::new(east.clone(), DatacenterId("east".to_owned())));
+    let mut metrics = east.metrics();
+    let registered = metrics.borrow().last_log_index.unwrap();
+    let replacing = tokio::spawn({
+        let group = Arc::clone(&group);
+        let address = format!("http://{}/", west_listener.local_addr().unwrap());
+        async move {
+            group
+                .submit(
+                    None,
+                    ControlCommand::ReplaceVoter {
+                        remove: "east".to_owned(),
+                        datacenter: "west".to_owned(),
+                        address,
+                    },
+                )
+                .await
+        }
+    });
+    metrics
+        .wait_for(|metrics| metrics.last_log_index.is_some_and(|index| index >= registered + 2))
+        .await
+        .unwrap();
+    let held = (group.cluster_status().voters, replacing.is_finished());
+    let west_served = serve_node(west_listener, west_router);
+    let receipt = replacing.await.unwrap().unwrap().receipt;
+
+    assert_eq!(held, (vec!["east".to_owned()], false));
+    assert_eq!(
+        (receipt.old_voters, receipt.new_voters),
+        (vec!["east".to_owned()], vec!["west".to_owned()])
+    );
+    stop_mounted(&east, east_served).await;
+    stop_mounted(&west, west_served).await;
+}
+
+#[tokio::test]
+async fn test_a_timed_out_promotion_keeps_the_roster_and_retries_the_barrier() {
+    let east_dir = tempfile::tempdir().unwrap();
+    let west_dir = tempfile::tempdir().unwrap();
+    let (east, _, east_served) = mounted_leader(&east_dir).await;
+    let (west, west_listener, west_router) = peer_node(&west_dir, "west").await;
+    let group = Arc::new(OwnershipGroup::new(east.clone(), DatacenterId("east".to_owned())));
+    group
+        .submit(
+            None,
+            ControlCommand::AddLearner {
+                datacenter: "west".to_owned(),
+                address: format!("http://{}/", west_listener.local_addr().unwrap()),
+            },
+        )
+        .await
+        .unwrap();
+    let mut metrics = east.metrics();
+    let registered = metrics.borrow().last_log_index.unwrap();
+    let command = promote("west");
+    let promoting = tokio::spawn({
+        let group = Arc::clone(&group);
+        let command = command.clone();
+        async move { group.submit(Some("k1"), command).await }
+    });
+    metrics
+        .wait_for(|metrics| metrics.last_log_index.is_some_and(|index| index >= registered + 2))
+        .await
+        .unwrap();
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(30)).await;
+    tokio::task::yield_now().await;
+    tokio::time::resume();
+    let refused = promoting.await.unwrap().unwrap_err();
+
+    assert_eq!(
+        (
+            matches!(&refused, ControlError::Unavailable(reason) if reason == "datacenter \"west\" did not catch up within 30 seconds"),
+            group.cluster_status().voters,
+        ),
+        (true, vec!["east".to_owned()]),
+        "{refused}"
+    );
+
+    let west_served = serve_node(west_listener, west_router);
+    let retried = group.submit(Some("k1"), command).await.unwrap().receipt;
+
+    assert_eq!(retried.new_voters, ["east".to_owned(), "west".to_owned()]);
+    stop_mounted(&east, east_served).await;
+    stop_mounted(&west, west_served).await;
+}
+
+#[tokio::test]
+async fn test_promoting_a_learner_on_a_stopped_group_is_unavailable() {
+    let dir = tempfile::tempdir().unwrap();
+    let node = leader_node(&dir).await;
+    let group = OwnershipGroup::new(node.clone(), DatacenterId("east".to_owned()));
+    group.submit(None, add_learner("west")).await.unwrap();
+    node.raft().shutdown().await.unwrap();
+
+    assert_eq!(
+        (
+            matches!(
+                group.submit(None, promote("west")).await,
+                Err(ControlError::Unavailable(_))
+            ),
+            group.cluster_status().voters,
+        ),
+        (true, vec!["east".to_owned()])
+    );
 }
 
 /// Reusing an address is legitimate once its owner is gone, so the endpoint rule must release with the
