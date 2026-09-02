@@ -35,6 +35,8 @@ fn to_hex(bytes: &[u8]) -> String {
     out
 }
 
+/// Flush the directory that names `path`.
+///
 /// Syncing a file does not make its rename crash-durable: the directory entry reaches disk only once the
 /// containing directory is itself flushed. A caller that discarded this failure would hand out a
 /// durability receipt for a placement the filesystem never confirmed.
@@ -42,7 +44,7 @@ fn to_hex(bytes: &[u8]) -> String {
 /// # Errors
 /// Returns the failure to open or flush the parent directory, or [`std::io::ErrorKind::InvalidInput`]
 /// when `path` names no entry in a directory.
-fn sync_parent(path: &Path) -> std::io::Result<()> {
+pub fn sync_parent(path: &Path) -> std::io::Result<()> {
     match path.parent() {
         // A bare file name is an entry in the working directory, which is what has to be flushed.
         Some(parent) if parent.as_os_str().is_empty() => sync_dir(Path::new(".")),
@@ -69,9 +71,35 @@ fn create_dir_durable(dir: &Path) -> std::io::Result<()> {
     dir.ancestors().take(missing).try_for_each(sync_parent)
 }
 
+/// Flush a tree from the leaves up.
+///
+/// Every entry written below `path` is durable before the tree itself is linked under a name a reader
+/// will follow.
+///
+/// # Errors
+/// Returns the first read or flush failure, naming the directory that refused it.
+pub fn sync_tree(path: &Path) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(path).map_err(|error| dir_error(&error, "read directory", path))? {
+        let child = entry?.path();
+        if child.is_dir() {
+            sync_tree(&child)?;
+        }
+    }
+    sync_dir(path)
+}
+
+/// Names the directory a durability failure hit, because a caller several layers up otherwise sees a
+/// bare filesystem error and no way to tell which level of a tree refused. The kind survives, since
+/// callers and their tests match on it.
+fn dir_error(error: &std::io::Error, action: &str, path: &Path) -> std::io::Error {
+    std::io::Error::new(error.kind(), format!("{action} {}: {error}", path.display()))
+}
+
 #[cfg(unix)]
 fn sync_dir(path: &Path) -> std::io::Result<()> {
-    std::fs::File::open(path)?.sync_all()
+    std::fs::File::open(path)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|error| dir_error(&error, "flush directory", path))
 }
 
 /// Windows exposes no directory flush — `FlushFileBuffers` rejects a handle opened with backup semantics

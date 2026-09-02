@@ -409,41 +409,18 @@ fn backup_blob_relpath(digest: &Digest) -> String {
     format!("blobs/sha256/{}/{}/{}", &hex[0..2], &hex[2..4], hex)
 }
 
-/// Flush a directory tree from the leaves up, so every entry written below `path` is durable before
-/// the tree itself is linked under a name a reader will follow.
+/// Name the publication step around [`peryx_storage::blob::sync_tree`], which already reports which
+/// directory refused. The durability walk and the platform's flush live in the storage crate, so the
+/// non-unix no-op is written once rather than once per caller.
 fn sync_tree(path: &Path) -> anyhow::Result<()> {
-    for entry in std::fs::read_dir(path).context(format!("read directory {}", path.display()))? {
-        let child = entry
-            .context(format!("read directory entry in {}", path.display()))?
-            .path();
-        if child.is_dir() {
-            sync_tree(&child)?;
-        }
-    }
-    sync_dir(path)
+    peryx_storage::blob::sync_tree(path).context(format!("flush staged tree {}", path.display()))
 }
 
-/// Flush the directory a path is named in. Synchronizing a file does not make the directory entry
-/// that names it durable, so a publication survives a power loss only once its parent is flushed too.
+/// Name the publication step around [`peryx_storage::blob::sync_parent`]. Synchronizing a file does
+/// not make the directory entry that names it durable, so a publication survives a power loss only
+/// once its parent is flushed too.
 fn sync_parent(path: &Path) -> anyhow::Result<()> {
-    let parent = path
-        .parent()
-        .context(format!("path {} has no parent directory", path.display()))?;
-    sync_dir(parent)
-}
-
-#[cfg(unix)]
-fn sync_dir(path: &Path) -> anyhow::Result<()> {
-    File::open(path)
-        .context(format!("open directory {} for sync", path.display()))?
-        .sync_all()
-        .context(format!("sync directory {}", path.display()))
-}
-
-/// Windows offers no directory-entry flush, so publication relies on the rename alone.
-#[cfg(not(unix))]
-fn sync_dir(_path: &Path) -> anyhow::Result<()> {
-    Ok(())
+    peryx_storage::blob::sync_parent(path).context(format!("flush the directory holding {}", path.display()))
 }
 
 fn is_empty_dir(path: &Path) -> anyhow::Result<bool> {

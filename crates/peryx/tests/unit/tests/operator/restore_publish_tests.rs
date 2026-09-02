@@ -67,17 +67,25 @@ fn test_blob_copy_rejects_changes_after_verification(#[case] sha256: &str, #[cas
 }
 
 #[test]
-fn test_sync_tree_reports_a_missing_directory() {
+fn test_sync_tree_names_the_publication_step_and_the_directory() {
     let error = sync_tree(Path::new("/peryx/no/such/staging")).unwrap_err();
 
-    assert_eq!(error.to_string(), "read directory /peryx/no/such/staging");
+    assert_eq!(error.to_string(), "flush staged tree /peryx/no/such/staging");
+    assert!(
+        format!("{error:#}").contains("read directory /peryx/no/such/staging"),
+        "{error:#}"
+    );
 }
 
 #[test]
 fn test_sync_parent_reports_a_parentless_path() {
     let error = sync_parent(Path::new("/")).unwrap_err();
 
-    assert_eq!(error.to_string(), "path / has no parent directory");
+    assert_eq!(error.to_string(), "flush the directory holding /");
+    assert!(
+        format!("{error:#}").contains("has no parent directory to flush"),
+        "{error:#}"
+    );
 }
 
 #[test]

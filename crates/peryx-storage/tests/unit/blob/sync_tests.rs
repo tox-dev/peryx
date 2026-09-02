@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use super::{create_dir_durable, sync_parent};
+use super::{create_dir_durable, sync_parent, sync_tree};
 
 #[test]
 fn test_sync_parent_flushes_the_directory_holding_the_entry() {
@@ -24,11 +24,18 @@ fn test_sync_parent_rejects_a_path_that_names_no_entry() {
 }
 
 #[test]
-fn test_sync_parent_reports_a_missing_directory() {
+fn test_sync_parent_reports_a_missing_directory_by_name() {
     let dir = tempfile::tempdir().unwrap();
-    let error = sync_parent(&dir.path().join("absent").join("blob")).unwrap_err();
+    let absent = dir.path().join("absent");
 
+    let error = sync_parent(&absent.join("blob")).unwrap_err();
+
+    let message = error.to_string();
     assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    assert!(
+        message.starts_with(&format!("flush directory {}", absent.display())),
+        "{message}"
+    );
 }
 
 #[test]
@@ -77,4 +84,29 @@ fn test_create_dir_durable_reports_a_creation_failure() {
 
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
     assert_eq!(created.unwrap_err().kind(), std::io::ErrorKind::PermissionDenied);
+}
+
+#[test]
+fn test_sync_tree_flushes_every_directory_below_the_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let nested = dir.path().join("blobs").join("sha256").join("ab");
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::write(nested.join("blob"), b"payload").unwrap();
+
+    assert!(sync_tree(dir.path()).is_ok());
+}
+
+#[test]
+fn test_sync_tree_names_the_directory_it_could_not_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let absent = dir.path().join("absent");
+
+    let error = sync_tree(&absent).unwrap_err();
+
+    let message = error.to_string();
+    assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    assert!(
+        message.starts_with(&format!("read directory {}", absent.display())),
+        "{message}"
+    );
 }
