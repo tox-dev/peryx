@@ -1,14 +1,14 @@
 use std::sync::Arc;
+use std::task::Poll;
 use std::time::{Duration, Instant};
 
 use axum::Router;
-use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::post;
 use peryx_core::PrometheusSource as _;
 use peryx_storage::meta::{MetaError, MetaStore};
 use peryx_test_support::fault;
-use tokio::sync::mpsc;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use crate::support::{TestServer, http_contract};
 use crate::{
@@ -38,19 +38,6 @@ async fn writer() -> (TestServer, Arc<LivenessTracker>) {
     let mut server = TestServer::start(router).await;
     server.url.push_str("mirror");
     (server, tracker)
-}
-
-async fn recording_writer() -> (TestServer, mpsc::UnboundedReceiver<()>) {
-    async fn record(State(sender): State<mpsc::UnboundedSender<()>>) -> StatusCode {
-        sender.send(()).unwrap();
-        StatusCode::NO_CONTENT
-    }
-
-    let (sender, receiver) = mpsc::unbounded_channel();
-    let router = Router::new()
-        .route("/+replication/v1/heartbeat", post(record))
-        .with_state(sender);
-    (TestServer::start(router).await, receiver)
 }
 
 async fn status_writer(status: StatusCode) -> TestServer {
@@ -253,18 +240,75 @@ async fn test_beat_counts_repeated_failures_by_bounded_class() {
     }
 }
 
-#[tokio::test(start_paused = true)]
+/// Bounds the wait for a beat the beacon is already scheduled to send, so a beacon that stops beating
+/// fails its test instead of blocking the suite.
+const BEAT_ARRIVAL: Duration = Duration::from_secs(30);
+
+/// Tokio rounds timer deadlines up to a millisecond, so stopping this far short of the interval provably
+/// leaves the beacon's timer unfired and the beat that follows is one the beacon timed, not one the test
+/// jumped the clock into.
+const TIMER_TICK: Duration = Duration::from_millis(1);
+
+/// Answers one heartbeat and returns once the beacon has read the answer and hung up.
+///
+/// The reply carries `connection: close`, so the beacon drops the socket as soon as it has the status and
+/// the read below ends on that close. Returning only then is what makes the caller's
+/// [`tokio::time::pause`] safe: the beacon is parked on its interval timer with nothing on the wire, so
+/// there is no in-flight request for the paused clock to jump past.
+async fn answer_beat(listener: &tokio::net::TcpListener) {
+    tokio::time::timeout(BEAT_ARRIVAL, exchange_beat(listener))
+        .await
+        .expect("the beacon sends its next beat");
+}
+
+async fn exchange_beat(listener: &tokio::net::TcpListener) {
+    let (mut connection, _) = listener.accept().await.unwrap();
+    let mut buffer = [0; 1024];
+    let mut request = Vec::new();
+    while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+        let read = connection.read(&mut buffer).await.unwrap();
+        assert_ne!(read, 0, "the request ended before its headers");
+        request.extend_from_slice(&buffer[..read]);
+    }
+    connection
+        .write_all(b"HTTP/1.1 204 No Content\r\nconnection: close\r\ncontent-length: 0\r\n\r\n")
+        .await
+        .unwrap();
+    while connection.read(&mut buffer).await.unwrap() > 0 {}
+}
+
+/// The clock runs whenever a heartbeat is on the wire and is paused only between heartbeats, where the
+/// beacon is parked on its interval timer and nothing but that timer can move the clock.
+///
+/// A paused clock auto-advances to the next timer whenever the runtime parks, and a real socket read
+/// parks. Holding it paused across the round trip therefore spends the request's whole budget on the wire,
+/// since the beacon hands reqwest a request timeout of the same interval: the beat either times out or
+/// survives on whatever margin the jump happened to leave, and either way the beats that arrive are ones
+/// the test's own clock produced rather than ones the beacon timed.
+#[tokio::test]
 async fn test_run_beats_each_interval_until_it_is_dropped() {
-    let (server, mut beats) = recording_writer().await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream = format!("http://{}/", listener.local_addr().unwrap());
     let dir = tempfile::tempdir().unwrap();
     let interval = Duration::from_secs(5);
-    let beacon = BeaconSender::new(&server.url, TOKEN, "replica-a", 1, seeded_meta(&dir, 4), interval).unwrap();
+    let beacon = BeaconSender::new(&upstream, TOKEN, "replica-a", 1, seeded_meta(&dir, 4), interval).unwrap();
+    let start = tokio::time::Instant::now();
     let running = tokio::spawn(beacon.run());
 
-    beats.recv().await.expect("writer stopped");
-    tokio::time::advance(interval).await;
-    beats.recv().await.expect("writer stopped");
+    answer_beat(&listener).await;
+    tokio::time::pause();
+    // A paused clock auto-advances to the earliest pending timer, so sleeping stops at the beacon's timer
+    // when the beacon is due sooner than this and leaves its dial on the socket for the check below.
+    // Advancing would jump straight over an early beat and report the interval the test chose.
+    tokio::time::sleep(interval.checked_sub(TIMER_TICK).unwrap()).await;
+    let early = std::future::poll_fn(|context| Poll::Ready(listener.poll_accept(context))).await;
+    assert!(early.is_pending(), "the beacon beat before its interval elapsed");
+    tokio::time::resume();
+    answer_beat(&listener).await;
 
     running.abort();
-    assert!(running.await.unwrap_err().is_cancelled());
+    assert_eq!(
+        (start.elapsed().as_secs(), running.await.unwrap_err().is_cancelled()),
+        (interval.as_secs(), true)
+    );
 }
