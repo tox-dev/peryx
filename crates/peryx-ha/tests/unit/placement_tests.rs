@@ -175,6 +175,121 @@ fn test_revoked_placement_rejects_a_stale_stage() {
 }
 
 #[test]
+fn test_publish_verifies_a_new_placement_without_a_transfer_attempt() {
+    assert_eq!(
+        decide_blob_placement(&key(), None, &BlobPlacementTransition::Publish { size: 4_096 }, 3, 20).unwrap(),
+        BlobPlacementOutcome::Applied(BlobPlacementRecord {
+            key: key(),
+            state: BlobPlacementState::Verified { size: 4_096 },
+            fence: 3,
+            transfer_attempt: 0,
+            generation: 1,
+            updated_at_unix: 20,
+        })
+    );
+}
+
+#[rstest]
+#[case::pending(BlobPlacementState::Pending)]
+#[case::failed(BlobPlacementState::Failed { class: BlobPlacementFailure::SourceUnavailable })]
+#[case::revoked(BlobPlacementState::Revoked)]
+#[case::mismatched_size(BlobPlacementState::Verified { size: 1 })]
+fn test_publish_settles_an_unverified_placement(#[case] state: BlobPlacementState) {
+    assert_eq!(
+        decide_blob_placement(
+            &key(),
+            Some(&record(state, 3, 2)),
+            &BlobPlacementTransition::Publish { size: 4_096 },
+            3,
+            30,
+        )
+        .unwrap(),
+        BlobPlacementOutcome::Applied(BlobPlacementRecord {
+            key: key(),
+            state: BlobPlacementState::Verified { size: 4_096 },
+            fence: 3,
+            transfer_attempt: 1,
+            generation: 3,
+            updated_at_unix: 30,
+        })
+    );
+}
+
+#[test]
+fn test_republishing_the_same_evidence_is_unchanged() {
+    let prior = record(BlobPlacementState::Verified { size: 4_096 }, 3, 2);
+
+    assert_eq!(
+        decide_blob_placement(
+            &key(),
+            Some(&prior),
+            &BlobPlacementTransition::Publish { size: 4_096 },
+            3,
+            30
+        )
+        .unwrap(),
+        BlobPlacementOutcome::Unchanged(prior)
+    );
+}
+
+#[test]
+fn test_republishing_under_a_newer_fence_claims_the_placement() {
+    let prior = record(BlobPlacementState::Verified { size: 4_096 }, 3, 2);
+
+    assert_eq!(
+        decide_blob_placement(
+            &key(),
+            Some(&prior),
+            &BlobPlacementTransition::Publish { size: 4_096 },
+            9,
+            30
+        )
+        .unwrap(),
+        BlobPlacementOutcome::Applied(BlobPlacementRecord {
+            key: key(),
+            state: BlobPlacementState::Verified { size: 4_096 },
+            fence: 9,
+            transfer_attempt: 1,
+            generation: 3,
+            updated_at_unix: 30,
+        })
+    );
+}
+
+#[test]
+fn test_publish_rejects_a_stale_fence() {
+    let prior = record(BlobPlacementState::Verified { size: 4_096 }, 9, 2);
+
+    assert_eq!(
+        decide_blob_placement(
+            &key(),
+            Some(&prior),
+            &BlobPlacementTransition::Publish { size: 4_096 },
+            3,
+            30
+        ),
+        Err(BlobPlacementDecisionError::StaleFence { current: 9, applied: 3 })
+    );
+}
+
+#[test]
+fn test_repeated_revocation_under_a_newer_fence_claims_the_placement() {
+    let prior = record(BlobPlacementState::Revoked, 3, 2);
+
+    assert_eq!(
+        decide_blob_placement(&key(), Some(&prior), &BlobPlacementTransition::Revoke, 9, 30).unwrap(),
+        BlobPlacementOutcome::Applied(BlobPlacementRecord {
+            key: key(),
+            state: BlobPlacementState::Revoked,
+            fence: 9,
+            transfer_attempt: 1,
+            generation: 3,
+            updated_at_unix: 30,
+        })
+    );
+}
+
+#[test]
 fn test_repeated_failure_is_unchanged() {
     let prior = record(
         BlobPlacementState::Failed {
@@ -385,6 +500,7 @@ fn test_non_stage_transition_requires_a_record(#[case] transition: BlobPlacement
 #[case::stage(BlobPlacementTransition::Stage, "stage")]
 #[case::checkpoint(BlobPlacementTransition::Checkpoint { attempt: 1 }, "checkpoint")]
 #[case::verify(BlobPlacementTransition::Verify { attempt: 1, observed: digest(1), size: 1 }, "verify")]
+#[case::publish(BlobPlacementTransition::Publish { size: 1 }, "publish")]
 #[case::fail(
     BlobPlacementTransition::Fail { attempt: 1, class: BlobPlacementFailure::SourceUnavailable },
     "fail"

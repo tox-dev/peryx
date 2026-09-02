@@ -44,12 +44,24 @@ Verifying a digest that does not match the key records a digest-mismatch failure
 failure on one placement never erases a verified placement in another location, because each
 `(digest, backend, datacenter, location)` is its own row.
 
+A transfer reaches **Verified** through **Pending**, because until the transfer confirms the bytes there is nothing to
+serve. Publishing bytes the local store has already committed does not go through **Pending**: the placement is recorded
+verified in a single write, so no interruption between a stage and a verify can strand a durable local copy in a state
+nothing serves from and no repair pass revisits, and a second publisher of the same digest reads back the row the first
+one settled instead of failing an illegal verify. A published placement settles whatever state the row held, including a
+copy an earlier attempt failed, a copy retirement revoked, and a verified copy recorded under the wrong size.
+
 ## Fencing stale writers
 
 Every placement carries a fencing epoch. A transfer worker applies transitions under the epoch it holds; a write from a
 lower epoch is a stale worker that lost ownership, and it is rejected without changing the record. A higher epoch takes
 over. This keeps a preempted worker from overwriting the decision of the worker that replaced it. Each accepted
 transition also advances a generation counter, so a reader can detect a concurrent change.
+
+A transition that leaves the state alone still carries a higher epoch onto the record. Republishing a copy already
+verified at the same size, or revoking a placement already revoked, writes the new epoch and advances the generation, so
+the epoch it superseded stops being admitted; the same transition presented under the epoch already on the record writes
+nothing.
 
 ## Routing categories
 

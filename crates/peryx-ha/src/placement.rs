@@ -290,6 +290,11 @@ pub enum BlobPlacementTransition {
         observed: ArtifactDigest,
         size: u64,
     },
+    /// Bytes the local store already committed under this digest, so the placement carries its own
+    /// evidence and opens no transfer attempt.
+    Publish {
+        size: u64,
+    },
     Fail {
         attempt: u64,
         class: BlobPlacementFailure,
@@ -305,6 +310,7 @@ impl BlobPlacementTransition {
             Self::Stage => "stage",
             Self::Checkpoint { .. } => "checkpoint",
             Self::Verify { .. } => "verify",
+            Self::Publish { .. } => "publish",
             Self::Fail { .. } => "fail",
             Self::Invalidate => "invalidate",
             Self::Revoke => "revoke",
@@ -314,7 +320,7 @@ impl BlobPlacementTransition {
     const fn attempt(&self) -> Option<u64> {
         match self {
             Self::Checkpoint { attempt } | Self::Verify { attempt, .. } | Self::Fail { attempt, .. } => Some(*attempt),
-            Self::Stage | Self::Invalidate | Self::Revoke => None,
+            Self::Stage | Self::Publish { .. } | Self::Invalidate | Self::Revoke => None,
         }
     }
 }
@@ -447,6 +453,14 @@ fn next_blob_placement<'a>(
         (Some(record), Transition::Fail { class, .. }) if matches!(record.state, State::Pending) => {
             Ok(Applied(State::Failed { class: *class }))
         }
+        // Locally committed bytes settle every unverified state, and a repeat still has to carry a
+        // higher fence onto the row or the epoch it superseded stays admitted.
+        (Some(record), Transition::Publish { size })
+            if record.state == (State::Verified { size: *size }) && fence == record.fence =>
+        {
+            Ok(Unchanged(record))
+        }
+        (_, Transition::Publish { size }) => Ok(Applied(State::Verified { size: *size })),
         (Some(record), Transition::Invalidate) if matches!(record.state, State::Verified { .. }) => {
             Ok(Applied(State::Failed {
                 class: BlobPlacementFailure::DigestMismatch,
@@ -455,7 +469,9 @@ fn next_blob_placement<'a>(
         (Some(record), Transition::Fail { .. }) if matches!(record.state, State::Failed { .. }) => {
             Ok(Unchanged(record))
         }
-        (Some(record), Transition::Revoke) if matches!(record.state, State::Revoked) => Ok(Unchanged(record)),
+        (Some(record), Transition::Revoke) if matches!(record.state, State::Revoked) && fence == record.fence => {
+            Ok(Unchanged(record))
+        }
         (Some(_), Transition::Revoke) => Ok(Applied(State::Revoked)),
         (Some(record), _) => Err(BlobPlacementDecisionError::IllegalTransition {
             from: record.state.status(),

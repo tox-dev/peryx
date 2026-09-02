@@ -1,7 +1,7 @@
 use peryx_ha::{
     ArtifactPlacement, ArtifactSource, BackendId, BackendLocation, BlobPlacementDecisionError, BlobPlacementKey,
-    BlobPlacementOutcome, BlobPlacementRouting, BlobPlacementState, BlobPlacementStatus, BlobPlacementTransition,
-    CompareWrite, DataCenterId, PlacementEvent, decide_blob_placement,
+    BlobPlacementOutcome, BlobPlacementRouting, BlobPlacementStatus, BlobPlacementTransition, CompareWrite,
+    DataCenterId, PlacementEvent, decide_blob_placement,
 };
 use peryx_identity::ArtifactDigest;
 use peryx_storage::meta::{MetaError, MetaStore};
@@ -74,6 +74,12 @@ pub fn apply_blob_placement(
     }
 }
 
+/// Records the local copy of an already committed blob as one fenced compare-and-put.
+///
+/// Staging it first would expose a `Pending` row that no reconciliation pass revisits if the
+/// process dies before the verify, and would leave a second publisher of the same digest verifying
+/// a row the first publisher had already settled.
+///
 /// # Errors
 /// Returns a decision error or a persistence error.
 pub fn record_local_placement(
@@ -91,23 +97,7 @@ pub fn record_local_placement(
         data_center: data_center.clone(),
         location: BackendLocation::for_digest(digest),
     };
-    if let Some(record) = meta.blob_placement(&key)?
-        && matches!(record.state, BlobPlacementState::Verified { .. })
-    {
-        return Ok(BlobPlacementOutcome::Unchanged(record));
-    }
-    let staged = apply_blob_placement(meta, &key, &BlobPlacementTransition::Stage, fence, now)?;
-    apply_blob_placement(
-        meta,
-        &key,
-        &BlobPlacementTransition::Verify {
-            attempt: staged.record().transfer_attempt,
-            observed: digest.clone(),
-            size,
-        },
-        fence,
-        now,
-    )
+    apply_blob_placement(meta, &key, &BlobPlacementTransition::Publish { size }, fence, now)
 }
 
 #[must_use]

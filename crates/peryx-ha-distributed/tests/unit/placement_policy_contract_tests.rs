@@ -250,10 +250,96 @@ fn test_record_local_placement_restores_a_revoked_copy() {
             key,
             state: BlobPlacementState::Verified { size: 2_048 },
             fence: 4,
-            transfer_attempt: 2,
-            generation: 5,
+            transfer_attempt: 0,
+            generation: 3,
             updated_at_unix: 30,
         })
+    );
+}
+
+#[test]
+fn test_record_local_placement_completes_an_interrupted_stage() {
+    let (_directory, store) = store();
+    let backend = BackendId::new("filesystem").unwrap();
+    let data_center = DataCenterId::new("home").unwrap();
+    let artifact = digest(7);
+    let key = BlobPlacementKey {
+        digest: artifact.clone(),
+        backend: backend.clone(),
+        data_center: data_center.clone(),
+        location: BackendLocation::for_digest(&artifact),
+    };
+    apply_blob_placement(&store, &key, &BlobPlacementTransition::Stage, 3, 10).unwrap();
+
+    let outcome = record_local_placement(&store, &backend, &data_center, &artifact, 2_048, 3, 30).unwrap();
+
+    assert_eq!(
+        outcome,
+        BlobPlacementOutcome::Applied(peryx_ha::BlobPlacementRecord {
+            key,
+            state: BlobPlacementState::Verified { size: 2_048 },
+            fence: 3,
+            transfer_attempt: 1,
+            generation: 2,
+            updated_at_unix: 30,
+        })
+    );
+}
+
+#[test]
+fn test_record_local_placement_claims_a_newer_fence() {
+    let (_directory, store) = store();
+    let backend = BackendId::new("filesystem").unwrap();
+    let data_center = DataCenterId::new("home").unwrap();
+    record_local_placement(&store, &backend, &data_center, &digest(7), 2_048, 3, 100).unwrap();
+
+    let outcome = record_local_placement(&store, &backend, &data_center, &digest(7), 2_048, 9, 200).unwrap();
+
+    assert_eq!(outcome.record().fence, 9);
+    assert_eq!(store.blob_placements(&digest(7)).unwrap()[0].fence, 9);
+}
+
+#[test]
+fn test_concurrent_local_placements_settle_one_verified_row() {
+    let (_directory, store) = store();
+    let backend = BackendId::new("filesystem").unwrap();
+    let data_center = DataCenterId::new("home").unwrap();
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(16));
+    let settled = std::thread::scope(|scope| {
+        let writes: [_; 16] = std::array::from_fn(|_| {
+            let barrier = barrier.clone();
+            let backend = backend.clone();
+            let data_center = data_center.clone();
+            let store = store.clone();
+            scope.spawn(move || {
+                barrier.wait();
+                record_local_placement(&store, &backend, &data_center, &digest(7), 2_048, 3, 100)
+            })
+        });
+        let outcomes: Vec<_> = writes.into_iter().map(|write| write.join().unwrap()).collect();
+        let applied = outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, Ok(BlobPlacementOutcome::Applied(_))))
+            .count();
+        (applied, outcomes.iter().filter(|outcome| outcome.is_ok()).count())
+    });
+
+    assert_eq!(settled, (1, 16));
+    assert_eq!(
+        store.blob_placements(&digest(7)).unwrap(),
+        vec![peryx_ha::BlobPlacementRecord {
+            key: BlobPlacementKey {
+                digest: digest(7),
+                backend,
+                data_center,
+                location: BackendLocation::for_digest(&digest(7)),
+            },
+            state: BlobPlacementState::Verified { size: 2_048 },
+            fence: 3,
+            transfer_attempt: 0,
+            generation: 1,
+            updated_at_unix: 100,
+        }]
     );
 }
 
