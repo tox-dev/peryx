@@ -266,6 +266,7 @@ async fn pump_download(
     let upstream = upstream.as_deref().unwrap_or("");
     let digest = digest.as_str();
     tracing::debug!(digest, upstream, bytes, elapsed_ms, "blob transfer ended");
+    let project = project_of_filename(&filename);
     // A failed write must preserve the last verified placement.
     if outcome.is_ok() {
         let _ = ArtifactPlacementStore::put_artifact_placement(
@@ -273,10 +274,13 @@ async fn pump_download(
             digest,
             &ArtifactPlacement::record(ArtifactSource::Proxy, true),
         );
+        // The project's document reports local availability from this row, and a mirrored artifact
+        // reaches it only here, so the document is stale from the moment the bytes land until the
+        // project is retired.
+        state.invalidate_search_resource(&project);
     }
     if outcome.is_err() {
         tracing::warn!(digest, "blob persist rejected");
-        let project = project_of_filename(&filename);
         state.metrics.record(Observation::BlobRejected {
             repository: route,
             resource: project,

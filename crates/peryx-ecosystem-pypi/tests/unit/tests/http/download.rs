@@ -914,3 +914,104 @@ async fn test_removal_storage_error_is_server_error() {
     let status = request(&h.state, "DELETE", "/hosted/peryxpkg/1.0/", Some(&upload_auth())).await;
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
 }
+
+/// Counts the documents it builds, so a test can tell a refresh that re-derived one project from one
+/// that re-derived the store. It composes with the `PyPI` indexer rather than replacing it.
+struct CountingDocs {
+    resources: Vec<String>,
+    built: std::sync::atomic::AtomicUsize,
+}
+
+impl CountingDocs {
+    fn new(count: usize) -> Self {
+        Self {
+            resources: (0..count).map(|position| format!("counted{position}")).collect(),
+            built: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    fn built(&self) -> usize {
+        self.built.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn document(&self, name: &str) -> peryx_search::SearchDocument {
+        self.built.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        peryx_search::SearchDocument {
+            display_label: name.to_owned(),
+            resource_key: name.to_owned(),
+            route: "counted".to_owned(),
+            index: "counted".to_owned(),
+            ecosystem: crate::ECOSYSTEM.as_str().to_owned(),
+            source: peryx_search::ContentSource::Cached,
+            available_locally: false,
+            summary: None,
+            text: name.to_owned(),
+        }
+    }
+}
+
+impl peryx_search::SearchDocumentProvider for CountingDocs {
+    fn documents(
+        &self,
+        _ctx: &peryx_search::IndexerCtx<'_>,
+    ) -> Result<Vec<peryx_search::SearchDocument>, peryx_search::SearchError> {
+        Ok(self.resources.iter().map(|name| self.document(name)).collect())
+    }
+
+    fn resource_update(
+        &self,
+        _ctx: &peryx_search::IndexerCtx<'_>,
+        name: &str,
+    ) -> Result<peryx_search::ResourceUpdate, peryx_search::SearchError> {
+        Ok(peryx_search::ResourceUpdate {
+            keys: vec![peryx_search::document_key("counted", name)],
+            documents: vec![self.document(name)],
+        })
+    }
+}
+
+fn flask_document(state: &Arc<AppState>) -> peryx_search::SearchResult {
+    let mut response = state
+        .serving
+        .search
+        .search(
+            &state.search_ctx(),
+            peryx_search::SearchParams {
+                query: "flask".to_owned(),
+                ..peryx_search::SearchParams::default()
+            },
+        )
+        .unwrap();
+    response.results.pop().expect("the cached project is indexed")
+}
+
+/// A mirrored artifact becomes local when its bytes land, and nothing else writes a row that says so.
+/// The document has to be retired on that write or it keeps advertising the project as remote for as
+/// long as no unrelated change retires it.
+#[tokio::test]
+async fn test_a_cached_download_retires_only_the_project_it_filled() {
+    let docs = Arc::new(CountingDocs::new(8));
+    let h = counted_harness(docs.clone()).await;
+    let wheel = b"wheelcontent";
+    let digest = Digest::of(wheel);
+    let file_url = format!("{}/files/flask.whl", h.server.uri());
+    mount_detail(&h.server, digest.as_str(), &file_url, None).await;
+    Mock::given(method("GET"))
+        .and(path("/files/flask.whl"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(wheel.to_vec()))
+        .mount(&h.server)
+        .await;
+    get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
+    assert!(!flask_document(&h.state).available_locally);
+    docs.built.store(0, std::sync::atomic::Ordering::Relaxed);
+
+    let uri = format!("/pypi/files/{}/flask-1.0-py3-none-any.whl", digest.as_str());
+    let (status, _, body) = get(&h.state, &uri, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, "wheelcontent");
+
+    assert!(flask_document(&h.state).available_locally);
+    // One construction is the scoped path asking for one resource; eight is the fallback asking for
+    // the store.
+    assert_eq!(docs.built(), 1);
+}

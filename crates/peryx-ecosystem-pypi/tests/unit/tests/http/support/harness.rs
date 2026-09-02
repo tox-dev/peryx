@@ -180,7 +180,11 @@ async fn harness_with_options(
         },
         [("pypi".to_owned(), options.upstream_concurrency)],
     );
-    Arc::get_mut(&mut state.serving).unwrap().max_stale_secs = options.max_stale_secs;
+    let serving = Arc::get_mut(&mut state.serving).unwrap();
+    serving.max_stale_secs = options.max_stale_secs;
+    if let Some(indexer) = options.indexer {
+        serving.search.add_indexer(indexer);
+    }
     let state = if options.distributed {
         install_distributed_services(&mut state);
         wire(state, true)
@@ -202,6 +206,8 @@ struct HarnessOptions {
     distributed: bool,
     nested: bool,
     trusted_proxies: &'static [&'static str],
+    /// Composed alongside the `PyPI` indexer, so a test can count the documents a refresh builds.
+    indexer: Option<Arc<dyn peryx_search::SearchDocumentProvider>>,
 }
 
 impl Default for HarnessOptions {
@@ -213,8 +219,26 @@ impl Default for HarnessOptions {
             distributed: false,
             nested: false,
             trusted_proxies: &[],
+            indexer: None,
         }
     }
+}
+
+/// A harness whose search index also answers from `indexer`, so a test can measure the work a refresh
+/// performs rather than only the documents it leaves behind.
+pub async fn counted_harness(indexer: Arc<dyn peryx_search::SearchDocumentProvider>) -> Harness {
+    harness_with_options(
+        true,
+        true,
+        Policy::default(),
+        Policy::default(),
+        Policy::default(),
+        HarnessOptions {
+            indexer: Some(indexer),
+            ..HarnessOptions::default()
+        },
+    )
+    .await
 }
 pub async fn harness() -> Harness {
     harness_with(true, true).await
