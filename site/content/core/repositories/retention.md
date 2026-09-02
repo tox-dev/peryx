@@ -103,6 +103,9 @@ is far larger than the budget still streams.
 [JSON Lines](https://jsonlines.org/) with the summary first. Both require a local administrator. An unauthorized caller
 receives `404` and cannot use errors to infer repository contents.
 
+Both carry a request body but change nothing, so a [read-only replica](@/core/availability/high-availability.md) answers
+them from the copy it serves. Sizing a cleanup does not have to reach the writer.
+
 Example request:
 
 ```json

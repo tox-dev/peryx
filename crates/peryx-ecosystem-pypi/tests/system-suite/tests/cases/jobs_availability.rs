@@ -137,14 +137,36 @@ async fn test_a_read_only_replica_refuses_pypi_mutations(#[case] build: fn(&temp
     let (status, document) = send(
         &router,
         "POST",
-        "/+retention/plan",
+        "/+repositories",
         Some(&root),
-        Some(expire_all("store")),
+        Some(json!({"name": "another", "route": "another", "ecosystem": "pypi"})),
     )
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(document["error"], "read_only_replica");
     assert_eq!(upload(&router, "store", UPLOAD).await, StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[rstest]
+#[case::dc(dc_replica_config as fn(&tempfile::TempDir, &str) -> Config)]
+#[case::ha(ha_replica_config as fn(&tempfile::TempDir, &str) -> Config)]
+#[tokio::test]
+async fn test_a_read_only_replica_serves_a_retention_preview(#[case] build: fn(&tempfile::TempDir, &str) -> Config) {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, router, _runtime) = replica_node(&build(&dir, "http://writer.invalid/")).await;
+    let root = admin(&state).await;
+
+    let (status, plan) = send(
+        &router,
+        "POST",
+        "/+retention/plan",
+        Some(&root),
+        Some(expire_all("store")),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(plan["candidates"], json!([]));
 }
 
 #[tokio::test]
@@ -164,7 +186,7 @@ async fn test_a_replica_surfaces_pypi_state_only_within_its_frontier() {
 
     assert_eq!(state.serving.meta.current_serial().unwrap(), 0);
     assert!(state.serving.meta.get_driver_value(MANAGED_KEY).unwrap().is_none());
-    let refused = send(
+    let unapplied = send(
         &router,
         "POST",
         "/+retention/plan",
@@ -172,8 +194,8 @@ async fn test_a_replica_surfaces_pypi_state_only_within_its_frontier() {
         Some(expire_all("store")),
     )
     .await;
-    assert_eq!(refused.0, StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(refused.1["error"], "read_only_replica");
+    assert_eq!(unapplied.0, StatusCode::OK);
+    assert_eq!(unapplied.1["candidates"], json!([]));
 
     let _active = AvailabilityHandle::activate(runtime).unwrap();
     applied.wait_for(|serial| *serial >= 1).await.unwrap();

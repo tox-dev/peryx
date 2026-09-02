@@ -160,7 +160,7 @@ enum StoreFault {
 }
 
 struct Fixture {
-    _dir: tempfile::TempDir,
+    dir: tempfile::TempDir,
     state: Arc<AppState>,
     serving: Arc<ServingState>,
     app: axum::Router,
@@ -180,7 +180,20 @@ impl Fixture {
     }
 
     async fn with_driver(driver: Arc<dyn RetentionDriver>, clock: Clock) -> Self {
-        Self::build(Some(driver), None, StoreFault::None, Some(clock)).await
+        Self::build(Some(driver), None, StoreFault::None, Some(clock), false).await
+    }
+
+    /// A node serving a copy it may not write, which is what the replica mutation guard reads.
+    async fn replica(driver: StubDriver) -> Self {
+        let driver = Arc::new(driver);
+        Self::build(
+            Some(driver.clone() as Arc<dyn RetentionDriver>),
+            Some(driver as Arc<dyn NameDriver>),
+            StoreFault::None,
+            None,
+            true,
+        )
+        .await
     }
 
     async fn with_capabilities(driver: StubDriver, fault: StoreFault, names: bool) -> Self {
@@ -195,6 +208,7 @@ impl Fixture {
             name_driver,
             fault,
             None,
+            false,
         )
         .await
     }
@@ -204,6 +218,7 @@ impl Fixture {
         name_driver: Option<Arc<dyn NameDriver>>,
         fault: StoreFault,
         clock: Option<Clock>,
+        read_only: bool,
     ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("peryx.redb");
@@ -247,10 +262,11 @@ impl Fixture {
                 registrar.register_name(Ecosystem::new("example"), driver);
             }
         });
+        state.set_read_only(read_only).unwrap();
         let serving = state.serving.clone();
         let state = Arc::new(state);
         Self {
-            _dir: dir,
+            dir,
             app: crate::router(state.clone()),
             state,
             serving,
@@ -1051,4 +1067,58 @@ async fn test_export_reports_a_store_failure_reading_the_identity() {
         .await;
 
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+#[rstest]
+#[case("/+retention/plan")]
+#[case("/+retention/export")]
+#[tokio::test]
+async fn test_a_read_only_replica_serves_a_retention_preview_without_writing(#[case] uri: &str) {
+    let fixture = Fixture::replica(StubDriver {
+        decisions: vec![decision("a"), decision("b")],
+        unsupported: false,
+        fail: None,
+    })
+    .await;
+    let store = fixture.dir.path().join("peryx.redb");
+    let before = std::fs::read(&store).unwrap();
+
+    let response = fixture
+        .post(
+            uri,
+            Some(("Alice", ADMIN_PASSWORD)),
+            Body::from(serde_json::to_vec(&plan_body("hosted")).unwrap()),
+            true,
+        )
+        .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let text = String::from_utf8(bytes.to_vec()).unwrap();
+    assert!(text.contains("\"artifact\":\"a\""));
+    assert_eq!(std::fs::read(&store).unwrap(), before);
+}
+
+#[tokio::test]
+async fn test_a_read_only_replica_still_refuses_an_administration_mutation() {
+    let fixture = Fixture::replica(StubDriver {
+        decisions: Vec::new(),
+        unsupported: false,
+        fail: None,
+    })
+    .await;
+
+    let response = fixture
+        .post(
+            "/+repositories",
+            Some(("Alice", ADMIN_PASSWORD)),
+            Body::from(serde_json::to_vec(&serde_json::json!({"name": "another"})).unwrap()),
+            true,
+        )
+        .await;
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["error"], "read_only_replica");
 }

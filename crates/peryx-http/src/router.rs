@@ -308,12 +308,14 @@ fn repository_routes() -> RouteSet {
             admin_read(RouteMethod::Get, "/+cache/fsck"),
             get(handlers::fsck_cached_contents),
         )
+        // Both previews only read metadata, so they are POSTs for their request body rather than for
+        // any effect, and a replica answers them from the copy it already serves.
         .route(
-            admin_mutation(RouteMethod::Post, "/+retention/plan"),
+            admin_read(RouteMethod::Post, "/+retention/plan"),
             post(handlers::retention_plan),
         )
         .route(
-            admin_mutation(RouteMethod::Post, "/+retention/export"),
+            admin_read(RouteMethod::Post, "/+retention/export"),
             post(handlers::retention_export),
         )
         .route(admin_read(RouteMethod::Get, "/+trash"), get(handlers::list_trash))
@@ -529,7 +531,7 @@ mod route_tests {
                 .iter()
                 .filter(|descriptor| descriptor.posture() == RoutePosture::Mutation)
                 .count(),
-            16
+            14
         );
         assert_eq!(
             [
