@@ -9,6 +9,7 @@ use axum::http::{Method, Request, StatusCode, header};
 use futures_util::{StreamExt as _, stream};
 use http_body_util::BodyExt as _;
 use peryx_driver::AppState;
+#[cfg(unix)]
 use peryx_storage::meta::MetaStore;
 use tokio::sync::oneshot;
 use tower::ServiceExt as _;
