@@ -142,6 +142,8 @@ async fn test_routed_metadata_ranges_use_the_advertising_source_credentials() {
     let dir = tempfile::tempdir().unwrap();
     let state = routed_state(&dir, client, router);
     let record = CachedIndex {
+        source: None,
+        last_modified: None,
         etag: None,
         last_serial: None,
         fetched_at_unix: 1000,

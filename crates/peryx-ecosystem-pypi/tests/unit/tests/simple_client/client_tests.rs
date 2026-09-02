@@ -10,7 +10,7 @@ use wiremock::matchers::{header, header_regex, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::{mount_get, simple_client};
-use crate::simple_client::SimpleClientExt as _;
+use crate::simple_client::{CachedValidators, SimpleClientExt as _};
 
 fn route(first: &MockServer, second: &MockServer) -> UpstreamRouter {
     UpstreamRouter::new(vec![
@@ -52,7 +52,16 @@ async fn test_fetch_project_revalidate_304() {
         .await;
     let client = simple_client(&server);
 
-    let response = client.fetch_project("flask", Some("\"v1\"")).await.unwrap();
+    let response = client
+        .fetch_project(
+            "flask",
+            CachedValidators {
+                etag: Some("\"v1\""),
+                ..CachedValidators::default()
+            },
+        )
+        .await
+        .unwrap();
 
     assert_eq!(response.status, 304);
 }
@@ -68,7 +77,10 @@ async fn test_fetch_project_preserves_retry_after_above_the_wait_budget() {
         .await;
     let client = simple_client(&server);
 
-    let response = client.fetch_project("flask", None).await.unwrap();
+    let response = client
+        .fetch_project("flask", CachedValidators::default())
+        .await
+        .unwrap();
 
     assert_eq!((response.status, response.retry_after.as_deref()), (429, Some("120")));
 }
@@ -90,7 +102,7 @@ async fn test_routed_project_falls_back_on_retryable_status(#[case] status: u16)
     .await;
 
     let route = route(&first, &second);
-    let response = route.fetch_project("flask", None).await.unwrap();
+    let response = route.fetch_project("flask", CachedValidators::default()).await.unwrap();
 
     assert_eq!(response.status, 200);
     assert_eq!(response.source.as_deref(), Some("second"));
@@ -128,7 +140,7 @@ async fn test_routed_project_falls_back_after_a_transport_error() {
     ])
     .unwrap();
 
-    let response = route.fetch_project("flask", None).await.unwrap();
+    let response = route.fetch_project("flask", CachedValidators::default()).await.unwrap();
     close_connection.await.unwrap();
 
     assert_eq!(response.status, 200);
@@ -172,7 +184,7 @@ async fn test_routed_project_falls_back_after_deadline() {
     ])
     .unwrap();
     let running = route.clone();
-    let request = tokio::spawn(async move { running.fetch_project("flask", None).await });
+    let request = tokio::spawn(async move { running.fetch_project("flask", CachedValidators::default()).await });
     refresh_started.notified().await;
     tokio::time::advance(Duration::from_secs(30)).await;
     tokio::time::resume();
@@ -208,7 +220,7 @@ async fn test_routed_project_respects_no_fallback() {
 
     let response = route(&first, &second)
         .with_fallback(false)
-        .fetch_project("flask", None)
+        .fetch_project("flask", CachedValidators::default())
         .await
         .unwrap();
 
@@ -234,7 +246,10 @@ async fn test_routed_project_does_not_fall_back_on_an_invalid_response() {
     .await;
 
     let route = route(&first, &second);
-    let err = route.fetch_project("flask", None).await.unwrap_err();
+    let err = route
+        .fetch_project("flask", CachedValidators::default())
+        .await
+        .unwrap_err();
 
     assert!(matches!(err, UpstreamError::InvalidResponse { .. }));
     assert!(second.received_requests().await.unwrap().is_empty());
@@ -279,7 +294,10 @@ async fn test_routed_project_does_not_fall_back_after_a_credential_failure() {
     ])
     .unwrap();
 
-    let error = route.fetch_project("flask", None).await.unwrap_err();
+    let error = route
+        .fetch_project("flask", CachedValidators::default())
+        .await
+        .unwrap_err();
 
     assert!(matches!(error, UpstreamError::Credential(_)));
     assert!(second.received_requests().await.unwrap().is_empty());
@@ -297,7 +315,10 @@ async fn test_routed_project_head_falls_back() {
     )
     .await;
 
-    let response = route(&first, &second).head_project("flask", None).await.unwrap();
+    let response = route(&first, &second)
+        .head_project("flask", CachedValidators::default())
+        .await
+        .unwrap();
 
     assert_eq!(response.status, 200);
     assert!(response.url.as_str().starts_with(&second.uri()));
@@ -333,13 +354,111 @@ async fn test_routed_project_does_not_reuse_an_unattributed_etag() {
     .await;
 
     route(&first, &second)
-        .fetch_project("flask", Some("\"other-source\""))
+        .fetch_project(
+            "flask",
+            CachedValidators {
+                source: Some("second"),
+                etag: Some("\"other-source\""),
+                last_modified: Some("Tue, 01 Sep 2026 00:00:00 GMT"),
+            },
+        )
         .await
         .unwrap();
 
     let requests = first.received_requests().await.unwrap();
     assert_eq!(requests.len(), 1);
     assert!(!requests[0].headers.contains_key("if-none-match"));
+    assert!(!requests[0].headers.contains_key("if-modified-since"));
+}
+
+const LAST_MODIFIED: &str = "Tue, 01 Sep 2026 00:00:00 GMT";
+
+async fn mount_conditional_not_modified(server: &MockServer) {
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .and(header("if-none-match", "\"v1\""))
+        .respond_with(ResponseTemplate::new(304))
+        .mount(server)
+        .await;
+}
+
+fn stored_by_second() -> CachedValidators<'static> {
+    CachedValidators {
+        source: Some("second"),
+        etag: Some("\"v1\""),
+        last_modified: None,
+    }
+}
+
+async fn validators_sent_to(server: &MockServer) -> Vec<Option<String>> {
+    server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|request| {
+            request
+                .headers
+                .get("if-none-match")
+                .map(|value| value.to_str().unwrap().to_owned())
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn test_routed_project_revalidates_against_the_answering_source() {
+    let first = MockServer::start().await;
+    let second = MockServer::start().await;
+    mount_get(&first, "/simple/flask/", ResponseTemplate::new(404)).await;
+    mount_conditional_not_modified(&second).await;
+
+    let response = route(&first, &second)
+        .fetch_project("flask", stored_by_second())
+        .await
+        .unwrap();
+
+    assert_eq!((response.status, response.source.as_deref()), (304, Some("second")));
+    assert!(response.body.is_empty());
+    assert_eq!(validators_sent_to(&second).await, [Some("\"v1\"".to_owned())]);
+    assert_eq!(validators_sent_to(&first).await, [None]);
+}
+
+#[tokio::test]
+async fn test_routed_project_head_revalidates_against_the_answering_source() {
+    let first = MockServer::start().await;
+    let second = MockServer::start().await;
+    mount_get(&first, "/simple/flask/", ResponseTemplate::new(404)).await;
+    mount_conditional_not_modified(&second).await;
+
+    let response = route(&first, &second)
+        .head_project("flask", stored_by_second())
+        .await
+        .unwrap();
+
+    assert_eq!((response.status, response.source.as_deref()), (304, Some("second")));
+    assert_eq!(validators_sent_to(&second).await, [Some("\"v1\"".to_owned())]);
+    assert_eq!(validators_sent_to(&first).await, [None]);
+}
+
+#[tokio::test]
+async fn test_project_revalidates_with_last_modified_alone() {
+    let server = MockServer::start().await;
+    mount_get(&server, "/simple/flask/", ResponseTemplate::new(304)).await;
+
+    let response = simple_client(&server)
+        .head_project(
+            "flask",
+            CachedValidators {
+                last_modified: Some(LAST_MODIFIED),
+                ..CachedValidators::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status, 304);
+    let sent = server.received_requests().await.unwrap();
+    assert_eq!(sent[0].headers["if-modified-since"], LAST_MODIFIED);
 }
 
 #[tokio::test]
@@ -356,7 +475,14 @@ async fn test_fetch_with_basic_auth() {
         password: "secret".to_owned(),
     };
     let client = UpstreamClient::with_auth(&format!("{}/simple/", server.uri()), auth).unwrap();
-    assert_eq!(client.fetch_project("flask", None).await.unwrap().status, 200);
+    assert_eq!(
+        client
+            .fetch_project("flask", CachedValidators::default())
+            .await
+            .unwrap()
+            .status,
+        200
+    );
 }
 
 #[tokio::test]
@@ -385,7 +511,14 @@ async fn test_fetch_project_preserves_basic_auth_on_same_host_redirect() {
     )
     .unwrap();
 
-    assert_eq!(client.fetch_project("source", None).await.unwrap().status, 200);
+    assert_eq!(
+        client
+            .fetch_project("source", CachedValidators::default())
+            .await
+            .unwrap()
+            .status,
+        200
+    );
 }
 
 #[tokio::test]
@@ -399,7 +532,14 @@ async fn test_fetch_with_bearer_auth() {
         .await;
     let client =
         UpstreamClient::with_auth(&format!("{}/simple/", server.uri()), Auth::Bearer("tok123".to_owned())).unwrap();
-    assert_eq!(client.fetch_project("flask", None).await.unwrap().status, 200);
+    assert_eq!(
+        client
+            .fetch_project("flask", CachedValidators::default())
+            .await
+            .unwrap()
+            .status,
+        200
+    );
 }
 
 #[tokio::test]
@@ -422,7 +562,9 @@ async fn test_upstream_protocol_trait_dispatches_to_the_client() {
         .await;
     let client = simple_client(&server);
     UpstreamProtocol::fetch_index(&client).await.unwrap();
-    UpstreamProtocol::fetch_project(&client, "flask", None).await.unwrap();
+    UpstreamProtocol::fetch_project(&client, "flask", CachedValidators::default())
+        .await
+        .unwrap();
     let bytes = UpstreamProtocol::fetch_bytes(&client, &format!("{}/file.whl", server.uri()))
         .await
         .unwrap();

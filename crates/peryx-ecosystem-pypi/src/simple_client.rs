@@ -77,22 +77,48 @@ impl SimpleHead {
     }
 }
 
+/// The stored response a conditional request may revalidate: the source that produced it and the
+/// validators it arrived with.
+///
+/// [RFC 9111 section 4.3.1](https://www.rfc-editor.org/rfc/rfc9111.html#section-4.3.1) binds a
+/// validator to the one stored response it was received with, so `source` names the routed candidate
+/// that answered it. A router sends the pair only to that candidate and calls every other one
+/// unconditionally. `source` is `None` for a record written before peryx tracked the answering
+/// source, which no candidate can claim, so such a record revalidates nothing until it is refetched.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CachedValidators<'a> {
+    pub source: Option<&'a str>,
+    pub etag: Option<&'a str>,
+    pub last_modified: Option<&'a str>,
+}
+
+impl CachedValidators<'_> {
+    /// The validators `candidate` may be asked about: the stored pair when it answered the stored
+    /// response, and nothing at all otherwise.
+    #[must_use]
+    fn for_candidate(self, candidate: &str) -> Self {
+        if self.source == Some(candidate) {
+            self
+        } else {
+            Self::default()
+        }
+    }
+}
+
 /// Fetch a project's index document, then the project list, then a file's bytes - the `PyPI` Simple
 /// protocol layered over an [`UpstreamClient`] as an extension trait so call sites keep method syntax.
 pub trait SimpleClientExt {
     fn fetch_project(
         &self,
         project: &str,
-        etag: Option<&str>,
+        validators: CachedValidators<'_>,
     ) -> impl Future<Output = Result<SimpleResponse, UpstreamError>> + Send;
 
     fn fetch_index(&self) -> impl Future<Output = Result<SimpleResponse, UpstreamError>> + Send;
 
     fn head_index(
         &self,
-        source: Option<&str>,
-        etag: Option<&str>,
-        last_modified: Option<&str>,
+        validators: CachedValidators<'_>,
     ) -> impl Future<Output = Result<SimpleHead, UpstreamError>> + Send;
 
     /// Start fetching a project's simple page, returning its headers and the open body, so callers
@@ -100,37 +126,42 @@ pub trait SimpleClientExt {
     fn head_project(
         &self,
         project: &str,
-        etag: Option<&str>,
+        validators: CachedValidators<'_>,
     ) -> impl Future<Output = Result<SimpleHead, UpstreamError>> + Send;
 }
 
 impl SimpleClientExt for UpstreamClient {
-    async fn fetch_project(&self, project: &str, etag: Option<&str>) -> Result<SimpleResponse, UpstreamError> {
-        fetch_simple(self, simple_project_url(self, project)?, etag).await
+    async fn fetch_project(
+        &self,
+        project: &str,
+        validators: CachedValidators<'_>,
+    ) -> Result<SimpleResponse, UpstreamError> {
+        fetch_simple(self, simple_project_url(self, project)?, validators).await
     }
 
     async fn fetch_index(&self) -> Result<SimpleResponse, UpstreamError> {
-        fetch_simple(self, simple_index_url(self), None).await
+        fetch_simple(self, simple_index_url(self), CachedValidators::default()).await
     }
 
-    async fn head_index(
-        &self,
-        _source: Option<&str>,
-        etag: Option<&str>,
-        last_modified: Option<&str>,
-    ) -> Result<SimpleHead, UpstreamError> {
-        simple_head(
-            self.send_validated(simple_index_url(self), ACCEPT_SIMPLE, etag, last_modified)
-                .await?,
-        )
+    async fn head_index(&self, validators: CachedValidators<'_>) -> Result<SimpleHead, UpstreamError> {
+        head_simple(self, simple_index_url(self), validators).await
     }
 
-    async fn head_project(&self, project: &str, etag: Option<&str>) -> Result<SimpleHead, UpstreamError> {
-        simple_head(
-            self.send_conditional(simple_project_url(self, project)?, ACCEPT_SIMPLE, etag)
-                .await?,
-        )
+    async fn head_project(&self, project: &str, validators: CachedValidators<'_>) -> Result<SimpleHead, UpstreamError> {
+        head_simple(self, simple_project_url(self, project)?, validators).await
     }
+}
+
+async fn head_simple(
+    client: &UpstreamClient,
+    url: Url,
+    validators: CachedValidators<'_>,
+) -> Result<SimpleHead, UpstreamError> {
+    simple_head(
+        client
+            .send_validated(url, ACCEPT_SIMPLE, validators.etag, validators.last_modified)
+            .await?,
+    )
 }
 
 fn simple_index_url(client: &UpstreamClient) -> Url {
@@ -142,11 +173,17 @@ fn simple_project_url(client: &UpstreamClient, project: &str) -> Result<Url, Ups
 }
 
 impl SimpleClientExt for UpstreamRouter {
-    async fn fetch_project(&self, project: &str, _etag: Option<&str>) -> Result<SimpleResponse, UpstreamError> {
+    async fn fetch_project(
+        &self,
+        project: &str,
+        validators: CachedValidators<'_>,
+    ) -> Result<SimpleResponse, UpstreamError> {
         let mut candidates = NonEmptyCandidates::new(self, project);
         loop {
             let upstream = candidates.current();
-            let result = SimpleClientExt::fetch_project(upstream.client(), project, None).await;
+            let result =
+                SimpleClientExt::fetch_project(upstream.client(), project, validators.for_candidate(upstream.name()))
+                    .await;
             record_health(upstream, &result);
             if fallback_result(result.as_ref().map(SimpleStatus::status)) && candidates.advance() {
                 tracing::warn!(project, upstream = upstream.name(), "trying fallback");
@@ -170,23 +207,13 @@ impl SimpleClientExt for UpstreamRouter {
         }
     }
 
-    async fn head_index(
-        &self,
-        source: Option<&str>,
-        etag: Option<&str>,
-        last_modified: Option<&str>,
-    ) -> Result<SimpleHead, UpstreamError> {
+    async fn head_index(&self, validators: CachedValidators<'_>) -> Result<SimpleHead, UpstreamError> {
         let mut candidates = NonEmptyCandidates::new(self, "");
         loop {
             let upstream = candidates.current();
-            let matches_source = source == Some(upstream.name());
             let result = upstream
                 .client()
-                .head_index(
-                    None,
-                    matches_source.then_some(etag).flatten(),
-                    matches_source.then_some(last_modified).flatten(),
-                )
+                .head_index(validators.for_candidate(upstream.name()))
                 .await;
             record_health(upstream, &result);
             if fallback_result(result.as_ref().map(SimpleStatus::status)) && candidates.advance() {
@@ -197,11 +224,14 @@ impl SimpleClientExt for UpstreamRouter {
         }
     }
 
-    async fn head_project(&self, project: &str, _etag: Option<&str>) -> Result<SimpleHead, UpstreamError> {
+    async fn head_project(&self, project: &str, validators: CachedValidators<'_>) -> Result<SimpleHead, UpstreamError> {
         let mut candidates = NonEmptyCandidates::new(self, project);
         loop {
             let upstream = candidates.current();
-            let result = upstream.client().head_project(project, None).await;
+            let result = upstream
+                .client()
+                .head_project(project, validators.for_candidate(upstream.name()))
+                .await;
             record_health(upstream, &result);
             if fallback_result(result.as_ref().map(SimpleStatus::status)) && candidates.advance() {
                 tracing::warn!(project, upstream = upstream.name(), "trying fallback");
@@ -324,13 +354,19 @@ async fn read_capped(
     Ok(body.freeze())
 }
 
-async fn fetch_simple(client: &UpstreamClient, url: Url, etag: Option<&str>) -> Result<SimpleResponse, UpstreamError> {
+async fn fetch_simple(
+    client: &UpstreamClient,
+    url: Url,
+    validators: CachedValidators<'_>,
+) -> Result<SimpleResponse, UpstreamError> {
     let bounded = client.bounded_read();
     bounded
         .run(Box::pin(async {
             let mut attempt = 0;
             loop {
-                let response = bounded.send_conditional(url.clone(), ACCEPT_SIMPLE, etag).await?;
+                let response = bounded
+                    .send_validated(url.clone(), ACCEPT_SIMPLE, validators.etag, validators.last_modified)
+                    .await?;
                 let head = simple_head(response)?;
                 match read_capped(Box::pin(head.response.bytes_stream()), MAX_SIMPLE_PAGE_BYTES).await {
                     Ok(body) => {
@@ -569,7 +605,7 @@ pub trait UpstreamProtocol {
     fn fetch_project(
         &self,
         project: &str,
-        etag: Option<&str>,
+        validators: CachedValidators<'_>,
     ) -> impl Future<Output = Result<SimpleResponse, UpstreamError>> + Send;
 
     fn fetch_index(&self) -> impl Future<Output = Result<SimpleResponse, UpstreamError>> + Send;
@@ -581,9 +617,9 @@ impl UpstreamProtocol for UpstreamClient {
     fn fetch_project(
         &self,
         project: &str,
-        etag: Option<&str>,
+        validators: CachedValidators<'_>,
     ) -> impl Future<Output = Result<SimpleResponse, UpstreamError>> + Send {
-        SimpleClientExt::fetch_project(self, project, etag)
+        SimpleClientExt::fetch_project(self, project, validators)
     }
 
     fn fetch_index(&self) -> impl Future<Output = Result<SimpleResponse, UpstreamError>> + Send {

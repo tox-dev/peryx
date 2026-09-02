@@ -1845,6 +1845,8 @@ async fn test_pypi_policy_dry_run_writes_a_denial() {
         .put_index(
             "pypi/flask",
             &crate::store::CachedIndex {
+                source: None,
+                last_modified: None,
                 etag: None,
                 last_serial: None,
                 fetched_at_unix: 1000,

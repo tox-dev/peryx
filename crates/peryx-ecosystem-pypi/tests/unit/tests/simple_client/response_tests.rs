@@ -6,7 +6,7 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::{mount_get, simple_client};
-use crate::simple_client::{ResponseCachePolicy, SimpleClientExt as _, response_cache_policy};
+use crate::simple_client::{CachedValidators, ResponseCachePolicy, SimpleClientExt as _, response_cache_policy};
 
 #[tokio::test]
 async fn test_fetch_project_json_with_metadata() {
@@ -22,7 +22,10 @@ async fn test_fetch_project_json_with_metadata() {
     .await;
     let client = simple_client(&server);
 
-    let response = client.fetch_project("flask", None).await.unwrap();
+    let response = client
+        .fetch_project("flask", CachedValidators::default())
+        .await
+        .unwrap();
 
     assert_eq!(response.status, 200);
     assert_eq!(
@@ -45,7 +48,7 @@ async fn test_fetch_project_without_optional_cache_headers() {
     .await;
     let client = simple_client(&server);
 
-    let response = client.fetch_project("bare", None).await.unwrap();
+    let response = client.fetch_project("bare", CachedValidators::default()).await.unwrap();
 
     assert_eq!(response.etag, None);
     assert_eq!(response.last_serial, None);
@@ -62,7 +65,10 @@ async fn test_fetch_project_rejects_missing_content_type() {
     .await;
     let client = simple_client(&server);
 
-    let err = client.fetch_project("bare", None).await.unwrap_err();
+    let err = client
+        .fetch_project("bare", CachedValidators::default())
+        .await
+        .unwrap_err();
 
     assert!(matches!(&err, UpstreamError::InvalidResponse { reason } if reason.ends_with("/simple/bare/")));
     assert_eq!(err.status(), None);
@@ -80,7 +86,10 @@ async fn test_fetch_project_rejects_unsupported_content_type() {
     .await;
     let client = simple_client(&server);
 
-    let err = client.fetch_project("bare", None).await.unwrap_err();
+    let err = client
+        .fetch_project("bare", CachedValidators::default())
+        .await
+        .unwrap_err();
 
     assert!(
         matches!(&err, UpstreamError::InvalidResponse { reason } if reason.contains("application/octet-stream") && reason.ends_with("/simple/bare/"))
@@ -102,7 +111,14 @@ async fn test_fetch_project_invalid_serial_header() {
     .await;
     let client = simple_client(&server);
 
-    assert_eq!(client.fetch_project("x", None).await.unwrap().last_serial, None);
+    assert_eq!(
+        client
+            .fetch_project("x", CachedValidators::default())
+            .await
+            .unwrap()
+            .last_serial,
+        None
+    );
 }
 
 #[tokio::test]
@@ -116,7 +132,7 @@ async fn test_head_project_bytes_reads_body() {
     .await;
     let client = simple_client(&server);
 
-    let response = client.head_project("flask", None).await.unwrap();
+    let response = client.head_project("flask", CachedValidators::default()).await.unwrap();
 
     assert_eq!(&response.bytes().await.unwrap()[..], b"{\"meta\":{}}");
 }
@@ -133,7 +149,7 @@ async fn test_head_project_into_stream_reads_body() {
     let client = simple_client(&server);
 
     let body = client
-        .head_project("flask", None)
+        .head_project("flask", CachedValidators::default())
         .await
         .unwrap()
         .into_stream()
@@ -159,7 +175,11 @@ async fn max_age_of(cache_control: Option<&str>) -> Option<i64> {
         .mount(&server)
         .await;
     let client = simple_client(&server);
-    client.fetch_project("flask", None).await.unwrap().max_age
+    client
+        .fetch_project("flask", CachedValidators::default())
+        .await
+        .unwrap()
+        .max_age
 }
 
 #[tokio::test]

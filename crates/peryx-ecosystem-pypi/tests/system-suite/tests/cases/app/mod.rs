@@ -37,6 +37,8 @@ fn bounded_before(output: &[u8], needle: &str) -> Cursor<Box<[u8]>> {
 
 fn cache_record(body: &[u8]) -> CachedIndex {
     CachedIndex {
+        source: None,
+        last_modified: None,
         etag: None,
         last_serial: None,
         fetched_at_unix: 0,
@@ -54,6 +56,8 @@ fn cache_fixture() -> (tempfile::TempDir, Config, Digest) {
     meta.put_index(
         "pypi/flask",
         &CachedIndex {
+            source: None,
+            last_modified: None,
             body: format!(
                 r#"{{"meta":{{"api-version":"1.1"}},"name":"flask","versions":["1.0"],"files":[{{"filename":"flask-1.0.whl","size":11,"url":"https://files.example/flask.whl","hashes":{{"sha256":"{}"}},"core-metadata":{{"sha256":"{}"}},"yanked":false}}]}}"#,
                 digest.as_str(),

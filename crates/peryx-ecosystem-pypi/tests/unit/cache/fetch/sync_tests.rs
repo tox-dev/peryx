@@ -13,6 +13,7 @@ use super::{
 };
 use crate::SimpleClientExt as _;
 use crate::simple::{CoreMetadata, File, Provenance, Yanked};
+use crate::simple_client::CachedValidators;
 use crate::store::PypiStore as _;
 use crate::store::{
     FilePublication, MetadataClaim, ProjectGeneration, active_project_generation, begin_project_generation,
@@ -44,6 +45,22 @@ fn file(filename: &str, sha256: &str) -> File {
 }
 
 fn seed_active(meta: &MetaStore, index: &str, project: &str, etag: &str, files: &[File]) -> u64 {
+    seed_generation(meta, index, project, Some(etag), None, files)
+}
+
+/// Seed `pypi`'s active generation with the validator pair a routed revalidation would send.
+fn seed_active_validated(meta: &MetaStore, etag: Option<&str>, last_modified: Option<&str>, files: &[File]) -> u64 {
+    seed_generation(meta, "pypi", "flask", etag, last_modified, files)
+}
+
+fn seed_generation(
+    meta: &MetaStore,
+    index: &str,
+    project: &str,
+    etag: Option<&str>,
+    last_modified: Option<&str>,
+    files: &[File],
+) -> u64 {
     let (id, expected) = begin_project_generation(meta, index, project).unwrap();
     let admitted = put_project_files(meta, index, project, id, index, None, files).unwrap();
     publish_project_generation(
@@ -56,8 +73,8 @@ fn seed_active(meta: &MetaStore, index: &str, project: &str, etag: &str, files: 
             source: index.to_owned(),
             url: "https://pypi.org/simple/flask/".to_owned(),
             format: "json".to_owned(),
-            etag: Some(etag.to_owned()),
-            last_modified: None,
+            etag: etag.map(str::to_owned),
+            last_modified: last_modified.map(str::to_owned),
             last_serial: None,
             fetched_at_unix: 1,
             bytes: 1,
@@ -230,6 +247,44 @@ async fn test_sync_304_without_an_active_generation_errors() {
     .unwrap_err();
 
     assert!(matches!(error, ProjectSyncError::Store(_)));
+    assert!(active_project_generation(&meta, "pypi", "flask").unwrap().is_none());
+}
+
+#[tokio::test]
+async fn test_sync_304_revalidates_a_generation_that_carries_only_a_last_modified() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(ResponseTemplate::new(304))
+        .mount(&server)
+        .await;
+    let client = client_for(&server);
+    let (_dir, meta) = store();
+    let id = seed_active_validated(
+        &meta,
+        None,
+        Some("Tue, 01 Sep 2026 00:00:00 GMT"),
+        &[file("flask-1.0.tar.gz", &"a".repeat(64))],
+    );
+
+    let outcome = sync_project_files(
+        &client,
+        &Inflight::default(),
+        &meta,
+        "pypi",
+        &Policy::default(),
+        "flask",
+        client.base_url(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(outcome, ProjectSyncOutcome::NotModified { files: 1 });
+    let sent = server.received_requests().await.unwrap();
+    assert_eq!(sent[0].headers["if-modified-since"], "Tue, 01 Sep 2026 00:00:00 GMT");
+    let active = active_project_generation(&meta, "pypi", "flask").unwrap().unwrap();
+    assert_eq!(active.generation, id);
+    assert_eq!(active.last_modified.as_deref(), Some("Tue, 01 Sep 2026 00:00:00 GMT"));
 }
 
 #[tokio::test]
@@ -535,7 +590,7 @@ async fn test_sync_rejects_a_declared_oversize_body() {
         .await;
     let client = client_for(&server);
     let (_dir, meta) = store();
-    let mut head = client.head_project("flask", None).await.unwrap();
+    let mut head = client.head_project("flask", CachedValidators::default()).await.unwrap();
     head.content_length = Some(MAX_PROJECT_BYTES + 1);
 
     let error = publish_project_response(&meta, "pypi", &Policy::default(), "flask", client.base_url(), head, 1)

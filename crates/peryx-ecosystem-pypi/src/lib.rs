@@ -149,7 +149,9 @@ pub use serving::finalize::{
     Finalization, FinalizeDescriptor, FinalizeError, FinalizeFailure, finalize_admitted_upload,
 };
 #[cfg(feature = "serving")]
-pub use simple_client::{ACCEPT_SIMPLE, SimpleClientExt, SimpleHead, SimpleResponse, UpstreamProtocol};
+pub use simple_client::{
+    ACCEPT_SIMPLE, CachedValidators, SimpleClientExt, SimpleHead, SimpleResponse, UpstreamProtocol,
+};
 
 pub use changelog::{
     CHANGELOG_PAGE_SIZE, ChangelogEntry, ChangelogRequest, ChangelogRequestError, dispatch_changelog_request,

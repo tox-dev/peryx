@@ -90,6 +90,8 @@ async fn test_mirror_json_already_local_record_round_trips() {
     let digest = Digest::of(b"wheel");
     let local_url = format!("/pypi/files/{}/flask-1.0-py3-none-any.whl", digest.as_str());
     let record = CachedIndex {
+        source: None,
+        last_modified: None,
         etag: None,
         last_serial: None,
         fetched_at_unix: 1000,
@@ -307,6 +309,8 @@ async fn test_mirror_detail_serves_stale_json_then_revalidates_in_background() {
         .put_index(
             "pypi/flask",
             &CachedIndex {
+                source: None,
+                last_modified: None,
                 etag: None,
                 last_serial: None,
                 fetched_at_unix: 1000,
@@ -375,6 +379,8 @@ async fn test_mirror_detail_stale_on_5xx() {
         .put_index(
             "pypi/flask",
             &CachedIndex {
+                source: None,
+                last_modified: None,
                 etag: None,
                 last_serial: None,
                 fetched_at_unix: 900,
@@ -429,6 +435,8 @@ async fn test_mirror_detail_stale_on_upstream_error() {
     meta.put_index(
         "pypi/flask",
         &CachedIndex {
+            source: None,
+            last_modified: None,
             etag: None,
             last_serial: None,
             fetched_at_unix: 99_900,
@@ -505,6 +513,8 @@ async fn test_offline_mirror_serves_stale_cached_page() {
     meta.put_index(
         "pypi/flask",
         &CachedIndex {
+            source: None,
+            last_modified: None,
             etag: None,
             last_serial: None,
             fetched_at_unix: 0,
@@ -544,6 +554,8 @@ async fn test_mirror_5xx_without_cache_is_bad_gateway() {
 }
 fn corrupt_cached_record(h: &Harness, key: &str) {
     let record = CachedIndex {
+        source: None,
+        last_modified: None,
         etag: None,
         last_serial: None,
         fetched_at_unix: 1000,

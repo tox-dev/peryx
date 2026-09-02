@@ -52,6 +52,8 @@ fn stale_flask_state(dir: &tempfile::TempDir, upstream: &str, fetched_at: i64) -
         .put_index(
             "pypi/flask",
             &CachedIndex {
+                source: None,
+                last_modified: None,
                 etag: None,
                 last_serial: None,
                 fetched_at_unix: fetched_at,

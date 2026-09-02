@@ -529,6 +529,8 @@ fn state_with_broken_journal() -> (tempfile::TempDir, Arc<AppState>) {
     meta.put_index(
         "pypi/flask",
         &CachedIndex {
+            source: None,
+            last_modified: None,
             etag: None,
             last_serial: None,
             fetched_at_unix: 1_000,

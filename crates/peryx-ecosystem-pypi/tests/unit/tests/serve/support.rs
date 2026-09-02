@@ -24,6 +24,8 @@ type StreamingParts = Result<(PageByteStream, Option<u64>), PageOutcome>;
 
 pub(super) fn fresh_record(body: &[u8]) -> CachedIndex {
     CachedIndex {
+        source: None,
+        last_modified: None,
         etag: None,
         last_serial: None,
         fetched_at_unix: 1000,

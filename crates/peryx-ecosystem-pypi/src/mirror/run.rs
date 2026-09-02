@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::store::CachedIndex;
 use crate::store::PypiStore as _;
-use crate::{ProjectDetail, SimpleClientExt as _, SimpleResponse, parse_detail, parse_detail_html};
+use crate::{CachedValidators, ProjectDetail, SimpleClientExt as _, SimpleResponse, parse_detail, parse_detail_html};
 use anyhow::{Context as _, bail};
 use futures_util::{StreamExt as _, stream};
 use peryx_driver::rate_limit::UpstreamLimits;
@@ -584,7 +584,7 @@ async fn plan_detail(state: &ServingState, target: &Target, project: &str) -> an
         .upstream_routes
         .get(&target.cached)
         .expect("a cached index always has an upstream route");
-    let response = router.fetch_project(project, None).await?;
+    let response = router.fetch_project(project, CachedValidators::default()).await?;
     match response.status {
         200 => parse_response_detail(project, &response).map(Some),
         404 => Ok(None),

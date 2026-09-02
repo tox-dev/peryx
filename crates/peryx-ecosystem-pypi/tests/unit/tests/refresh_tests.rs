@@ -6,10 +6,11 @@ use std::sync::atomic::Ordering;
 use crate::store::CachedIndex;
 use crate::store::PypiStore as _;
 use peryx_storage::blob::Digest;
+use peryx_upstream::{NamedUpstream, UpstreamClient, UpstreamRouter};
 use wiremock::matchers::{header as match_header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use super::http::{detail_json, get, harness, harness_with_policies};
+use super::http::{detail_json, get, harness, harness_with_policies, routed_state};
 use super::{LogCapture, field};
 use crate::cache::refresh_stale_pages;
 use peryx_policy::{Policy, PolicyConfig};
@@ -171,6 +172,8 @@ async fn test_refresh_sweep_skips_policy_denied_project() {
         .put_index(
             "pypi/flask",
             &CachedIndex {
+                source: None,
+                last_modified: None,
                 etag: None,
                 last_serial: None,
                 fetched_at_unix: 0,
@@ -437,6 +440,8 @@ async fn test_stale_serve_records_metric() {
 async fn test_refresh_skips_keys_without_a_mirror() {
     let h = harness().await;
     let record = CachedIndex {
+        source: None,
+        last_modified: None,
         etag: None,
         last_serial: None,
         fetched_at_unix: 0,
@@ -466,4 +471,150 @@ async fn test_refresh_sweep_full_fetch_with_identical_body_is_unchanged() {
     h.clock.fetch_add(61, Ordering::Relaxed);
     let summary = refresh_stale_pages(&h.state.serving).await.unwrap();
     assert_eq!((summary.checked, summary.changed), (1, 0));
+}
+
+const LAST_MODIFIED: &str = "Tue, 01 Sep 2026 00:00:00 GMT";
+
+#[tokio::test]
+async fn test_refresh_sweep_revalidates_unchanged_via_last_modified() {
+    let h = harness().await;
+    let digest = Digest::of(b"wheel");
+    let file_url = format!("{}/files/flask.whl", h.server.uri());
+    mount_page(
+        &h.server,
+        detail_json(digest.as_str(), &file_url),
+        ResponseTemplate::new(200).insert_header("last-modified", LAST_MODIFIED),
+    )
+    .await;
+    get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
+
+    h.server.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(ResponseTemplate::new(304))
+        .mount(&h.server)
+        .await;
+    h.clock.fetch_add(61, Ordering::Relaxed);
+
+    let summary = refresh_stale_pages(&h.state.serving).await.unwrap();
+
+    assert_eq!((summary.checked, summary.changed), (1, 0));
+    let sent = h.server.received_requests().await.unwrap();
+    assert_eq!(sent[0].headers["if-modified-since"], LAST_MODIFIED);
+    let stored = h.state.serving.meta.get_index("pypi/flask").unwrap().unwrap();
+    assert_eq!(stored.last_modified.as_deref(), Some(LAST_MODIFIED));
+}
+
+async fn mount_routed_page(server: &MockServer, body: String) {
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("etag", "\"v1\"")
+                .insert_header("last-modified", LAST_MODIFIED)
+                .insert_header("cache-control", "public, max-age=0")
+                .set_body_raw(body.into_bytes(), "application/vnd.pypi.simple.v1+json"),
+        )
+        .mount(server)
+        .await;
+}
+
+async fn mount_get_404(server: &MockServer) {
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(server)
+        .await;
+}
+
+/// A routed `pypi` whose stale cached page came from `second`, the fallback behind a 404ing `first`.
+async fn routed_page_from_second(
+    dir: &tempfile::TempDir,
+    first: &MockServer,
+    second: &MockServer,
+) -> Arc<peryx_driver::state::AppState> {
+    let file_url = format!("{}/files/flask.whl", second.uri());
+    mount_get_404(first).await;
+    mount_routed_page(second, detail_json(Digest::of(b"wheel").as_str(), &file_url)).await;
+    let primary = UpstreamClient::new(&format!("{}/simple/", first.uri())).unwrap();
+    let router = UpstreamRouter::new(vec![
+        NamedUpstream::new("first", primary.clone()),
+        NamedUpstream::new(
+            "second",
+            UpstreamClient::new(&format!("{}/simple/", second.uri())).unwrap(),
+        ),
+    ])
+    .unwrap();
+    let state = routed_state(dir, primary, router);
+    get(&state, "/pypi/simple/flask/", Some("application/json")).await;
+    first.reset().await;
+    second.reset().await;
+    state
+}
+
+async fn mount_not_modified(server: &MockServer) {
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(ResponseTemplate::new(304))
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn test_a_routed_200_stores_the_source_that_answered_and_its_validators() {
+    let (first, second) = (MockServer::start().await, MockServer::start().await);
+    let dir = tempfile::tempdir().unwrap();
+    let state = routed_page_from_second(&dir, &first, &second).await;
+
+    let stored = state.serving.meta.get_index("pypi/flask").unwrap().unwrap();
+
+    assert_eq!(
+        (
+            stored.source.as_deref(),
+            stored.etag.as_deref(),
+            stored.last_modified.as_deref()
+        ),
+        (Some("second"), Some("\"v1\""), Some(LAST_MODIFIED))
+    );
+}
+
+#[tokio::test]
+async fn test_refresh_sweep_sends_validators_only_to_the_source_that_answered() {
+    let (first, second) = (MockServer::start().await, MockServer::start().await);
+    let dir = tempfile::tempdir().unwrap();
+    let state = routed_page_from_second(&dir, &first, &second).await;
+    let stored = state.serving.meta.get_index("pypi/flask").unwrap().unwrap();
+    mount_get_404(&first).await;
+    mount_not_modified(&second).await;
+
+    let summary = refresh_stale_pages(&state.serving).await.unwrap();
+
+    assert_eq!((summary.checked, summary.changed), (1, 0));
+    let revalidated = second.received_requests().await.unwrap();
+    assert_eq!(revalidated[0].headers["if-none-match"], "\"v1\"");
+    let unvalidated = first.received_requests().await.unwrap();
+    assert_eq!(unvalidated.len(), 1);
+    assert!(!unvalidated[0].headers.contains_key("if-none-match"));
+    assert!(!unvalidated[0].headers.contains_key("if-modified-since"));
+    let refreshed = state.serving.meta.get_index("pypi/flask").unwrap().unwrap();
+    assert_eq!(
+        (refreshed.source.as_deref(), refreshed.body),
+        (Some("second"), stored.body)
+    );
+}
+
+#[tokio::test]
+async fn test_refresh_sweep_rejects_a_304_from_a_source_that_never_answered() {
+    let (first, second) = (MockServer::start().await, MockServer::start().await);
+    let dir = tempfile::tempdir().unwrap();
+    let state = routed_page_from_second(&dir, &first, &second).await;
+    let stored = state.serving.meta.get_index("pypi/flask").unwrap().unwrap();
+    // `first` was asked unconditionally, so its "not modified" is about no page peryx holds.
+    mount_not_modified(&first).await;
+
+    let error = refresh_stale_pages(&state.serving).await.unwrap_err();
+
+    assert!(matches!(error, crate::cache::CacheError::Unavailable));
+    let untouched = state.serving.meta.get_index("pypi/flask").unwrap().unwrap();
+    assert_eq!(untouched, stored);
 }

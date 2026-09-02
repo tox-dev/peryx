@@ -58,6 +58,8 @@ fn fixture(base: &str) -> Fixture {
         .put_index(
             KEY,
             &CachedIndex {
+                source: None,
+                last_modified: None,
                 etag: None,
                 last_serial: None,
                 fetched_at_unix: 0,

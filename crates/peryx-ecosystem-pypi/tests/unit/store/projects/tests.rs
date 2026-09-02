@@ -187,6 +187,8 @@ fn test_catalog_recovery_preserves_active_and_removes_pending_generations() {
 fn test_count_then_delete_project_cache_reports_and_removes_each_row() {
     let (_dir, meta) = store();
     let record = crate::store::CachedIndex {
+        source: None,
+        last_modified: None,
         etag: None,
         last_serial: None,
         fetched_at_unix: 1,
@@ -281,6 +283,8 @@ fn test_delete_project_cache_leaves_a_hosted_publications_bundle_alone() {
 fn test_delete_project_cache_removes_the_freshness_overlay() {
     let (_dir, meta) = store();
     let record = crate::store::CachedIndex {
+        source: None,
+        last_modified: None,
         etag: None,
         last_serial: None,
         fetched_at_unix: 1,

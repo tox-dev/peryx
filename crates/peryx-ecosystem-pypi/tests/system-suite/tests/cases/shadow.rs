@@ -146,6 +146,8 @@ fn seed_cached(state: &AppState) {
          \"hashes\":{{\"sha256\":\"{CACHED_DIGEST}\"}}}}]}}"
     );
     let record = CachedIndex {
+        source: None,
+        last_modified: None,
         etag: None,
         last_serial: None,
         fetched_at_unix: 1000,

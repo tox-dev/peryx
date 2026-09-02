@@ -13,9 +13,9 @@ use peryx_index::{Index, IndexKind};
 use peryx_policy::PolicyAction;
 use peryx_upstream::UpstreamClient;
 
-use crate::simple_client::{SimpleClientExt as _, SimpleHead, SimpleResponse};
+use crate::simple_client::{CachedValidators, SimpleClientExt as _, SimpleHead, SimpleResponse};
 
-use super::fetch::{canonical_raw, persist_page_from};
+use super::fetch::{cached_validators, canonical_raw, persist_page_from, revalidated};
 use super::metadata::spawn_metadata_backfill;
 use super::resolve::{known_metadata, local_detail, resolve_detail, rewrite_urls};
 mod live;
@@ -88,11 +88,11 @@ async fn fetch_project_head(
     name: &str,
     client: &UpstreamClient,
     project: &str,
-    etag: Option<&str>,
+    validators: CachedValidators<'_>,
 ) -> Result<SimpleHead, peryx_upstream::UpstreamError> {
     match state.upstream_routes.get(name) {
-        Some(router) => router.head_project(project, etag).await,
-        None => client.head_project(project, etag).await,
+        Some(router) => router.head_project(project, validators).await,
+        None => client.head_project(project, validators).await,
     }
 }
 
@@ -171,9 +171,9 @@ pub async fn stream_detail(
 
     let now = (state.clock)();
     let cached = cached_record(&state, &key)?;
-    let etag = cached.as_ref().and_then(|record| record.etag.clone());
     let permit = upstream_permit(&state, &cached_name).await?;
-    let Ok(head) = fetch_project_head(&state, &cached_name, &client, &project, etag.as_deref()).await else {
+    let validators = cached_validators(cached.as_ref());
+    let Ok(head) = fetch_project_head(&state, &cached_name, &client, &project, validators).await else {
         return release_then(&state, &key, guard, || Ok(PageOutcome::Fallback));
     };
     match head.status {
@@ -196,7 +196,7 @@ pub async fn stream_detail(
             .await
         }
         304 => {
-            let mut record = cached.ok_or(CacheError::Unavailable)?;
+            let mut record = revalidated(cached, head.source.as_deref())?;
             record.fetched_at_unix = now;
             record.fresh_secs = head.max_age.or(record.fresh_secs);
             state
@@ -313,7 +313,9 @@ async fn buffer_html_page(
         body,
     };
     let record = CachedIndex {
+        source: response.source.clone(),
         etag: response.etag.clone(),
+        last_modified: response.last_modified.clone(),
         last_serial: response.last_serial,
         fetched_at_unix: now,
         content_type: Some("application/vnd.pypi.simple.v1+json".to_owned()),

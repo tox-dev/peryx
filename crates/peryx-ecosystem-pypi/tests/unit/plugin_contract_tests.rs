@@ -206,6 +206,8 @@ fn plugin_online_cache_inspection_matches_offline_reads() {
         .put_index(
             "hosted/flask",
             &CachedIndex {
+                source: None,
+                last_modified: None,
                 etag: Some("v1".to_owned()),
                 last_serial: Some(1),
                 fetched_at_unix: 100,

@@ -94,6 +94,8 @@ pub fn register_publication(
     meta.put_cached_page(crate::store::CachedPageWrite {
         key: &format!("{index}/{project}"),
         record: &crate::store::CachedIndex {
+            source: None,
+            last_modified: None,
             etag: None,
             last_serial: None,
             fetched_at_unix: 0,

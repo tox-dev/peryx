@@ -118,6 +118,8 @@ fn artifact_detail(base: &str) -> ProjectDetail {
 
 fn record(body: Vec<u8>) -> CachedIndex {
     CachedIndex {
+        source: None,
+        last_modified: None,
         etag: None,
         last_serial: None,
         fetched_at_unix: 0,

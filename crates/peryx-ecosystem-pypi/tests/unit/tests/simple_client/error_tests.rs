@@ -1,7 +1,7 @@
 use wiremock::{MockServer, ResponseTemplate};
 
 use super::{mount_get, simple_client};
-use crate::simple_client::SimpleClientExt as _;
+use crate::simple_client::{CachedValidators, SimpleClientExt as _};
 
 #[tokio::test]
 async fn test_fetch_index_reports_decode_errors() {
@@ -34,7 +34,10 @@ async fn test_fetch_project_reports_decode_errors() {
     .await;
     let client = simple_client(&server);
 
-    let err = client.fetch_project("flask", None).await.unwrap_err();
+    let err = client
+        .fetch_project("flask", CachedValidators::default())
+        .await
+        .unwrap_err();
 
     assert_eq!(err.user_message(), "upstream response could not be decoded");
 }

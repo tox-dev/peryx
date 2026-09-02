@@ -468,6 +468,8 @@ async fn test_ui_project_page_shows_source_and_availability_cells() {
         .put_index(
             "pypi/veloxdemo",
             &CachedIndex {
+                source: None,
+                last_modified: None,
                 etag: None,
                 last_serial: None,
                 fetched_at_unix: 0,
@@ -684,6 +686,8 @@ fn detail_router(detail: &serde_json::Value) -> (tempfile::TempDir, axum::Router
         .put_index(
             "pypi/veloxdemo",
             &CachedIndex {
+                source: None,
+                last_modified: None,
                 etag: None,
                 last_serial: None,
                 fetched_at_unix: 0,
@@ -848,6 +852,8 @@ fn file_router(file: &serde_json::Value) -> (tempfile::TempDir, axum::Router) {
     let dir = tempfile::tempdir().unwrap();
     let state = build_state(&ui_config(&dir, true)).unwrap();
     let record = CachedIndex {
+        source: None,
+        last_modified: None,
         etag: None,
         last_serial: None,
         fetched_at_unix: 0,

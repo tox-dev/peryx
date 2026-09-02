@@ -106,6 +106,8 @@ fn cached(rate_limit: RateLimitConfig, detail: &ProjectDetail) -> (tempfile::Tem
     meta.put_index(
         &format!("pypi/{}", detail.name),
         &CachedIndex {
+            source: None,
+            last_modified: None,
             etag: None,
             last_serial: None,
             fetched_at_unix: 1000,

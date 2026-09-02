@@ -40,10 +40,15 @@ impl FreshJsonStream {
             });
         }
 
-        let etag = self.head.etag.clone();
-        let last_serial = self.head.last_serial;
-        let max_age = self.head.max_age;
-        let upstream = self.head.source.clone();
+        let meta = PageMeta {
+            source: self.head.source.clone(),
+            etag: self.head.etag.clone(),
+            last_modified: self.head.last_modified.clone(),
+            last_serial: self.head.last_serial,
+            fresh_secs: self.head.max_age,
+            fetched_at_unix: self.now,
+        };
+        let last_serial = meta.last_serial;
         let base = self.head.url.clone();
         let mut context = self.context;
         context.base = Some(base.clone());
@@ -86,12 +91,8 @@ impl FreshJsonStream {
                         route: self.route,
                         cached: self.cached_name,
                         project: self.project,
-                        etag,
-                        last_serial,
-                        fetched_at: self.now,
-                        fresh_secs: max_age,
+                        meta,
                         base,
-                        upstream,
                     },
                     FlightGuard {
                         key: self.key,
@@ -105,7 +106,8 @@ impl FreshJsonStream {
                 last_serial,
             )),
             JsonPreflight::Complete { raw, served, summary } => {
-                let record = build_record(raw, &base, etag, last_serial, max_age, self.now);
+                let upstream = meta.source.clone();
+                let record = build_record(raw, &base, meta);
                 let expires_at =
                     record.fetched_at_unix + crate::cache::freshness_secs(self.state.ttl_secs, record.fresh_secs);
                 persist_streamed(
@@ -129,20 +131,25 @@ impl FreshJsonStream {
     }
 }
 
-fn build_record(
-    raw: Vec<u8>,
-    base: &url::Url,
+/// The provenance and revalidation metadata a cached page keeps from the response that produced it.
+struct PageMeta {
+    source: Option<String>,
     etag: Option<String>,
+    last_modified: Option<String>,
     last_serial: Option<u64>,
     fresh_secs: Option<i64>,
-    now: i64,
-) -> CachedIndex {
+    fetched_at_unix: i64,
+}
+
+fn build_record(raw: Vec<u8>, base: &url::Url, meta: PageMeta) -> CachedIndex {
     CachedIndex {
-        etag,
-        last_serial,
-        fetched_at_unix: now,
+        source: meta.source,
+        etag: meta.etag,
+        last_modified: meta.last_modified,
+        last_serial: meta.last_serial,
+        fetched_at_unix: meta.fetched_at_unix,
         content_type: Some("application/vnd.pypi.simple.v1+json".to_owned()),
-        fresh_secs,
+        fresh_secs: meta.fresh_secs,
         body: canonical_json(&raw, base).unwrap_or(raw),
     }
 }
@@ -255,12 +262,8 @@ struct LiveStream {
     route: String,
     cached: String,
     project: String,
-    etag: Option<String>,
-    last_serial: Option<u64>,
-    fetched_at: i64,
-    fresh_secs: Option<i64>,
+    meta: PageMeta,
     base: url::Url,
-    upstream: Option<String>,
 }
 
 fn live_stream(
@@ -333,25 +336,15 @@ async fn complete_live(
         route,
         cached,
         project,
-        etag,
-        last_serial,
-        fetched_at,
-        fresh_secs,
+        meta,
         base,
-        upstream,
     } = live;
     let summary = transformer
         .finish()
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::UnexpectedEof, error.to_string()))?;
-    let body = canonical_json(&raw, &base).unwrap_or(raw);
-    let record = CachedIndex {
-        etag,
-        last_serial,
-        fetched_at_unix: fetched_at,
-        content_type: Some("application/vnd.pypi.simple.v1+json".to_owned()),
-        fresh_secs,
-        body,
-    };
+    let last_serial = meta.last_serial;
+    let upstream = meta.source.clone();
+    let record = build_record(raw, &base, meta);
     let expires_at = record.fetched_at_unix + crate::cache::freshness_secs(state.ttl_secs, record.fresh_secs);
     let raw_len = record.body.len();
     let registrations = summary.registrations.clone();

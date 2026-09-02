@@ -16,6 +16,7 @@ use super::{
     redact_url, sync_catalog, write_catalog_chunk, write_catalog_stream,
 };
 use crate::SimpleClientExt as _;
+use crate::simple_client::CachedValidators;
 use crate::store::{
     CatalogGeneration, abort_catalog_generation, begin_catalog_generation, catalog_state, list_projects,
     publish_catalog_generation, put_catalog_projects,
@@ -201,7 +202,7 @@ async fn test_sync_catalog_rejects_declared_oversized_body() {
         .await;
     let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
     let (_dir, meta) = store();
-    let mut response = client.head_index(None, None, None).await.unwrap();
+    let mut response = client.head_index(CachedValidators::default()).await.unwrap();
     response.content_length = Some(MAX_CATALOG_BYTES + 1);
 
     let error = publish_response(&meta, "oversized", client.base_url(), response, 1)
@@ -303,7 +304,7 @@ async fn test_sync_catalog_caps_decompressed_body() {
         .mount(&server)
         .await;
     let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
-    let response = client.head_index(None, None, None).await.unwrap();
+    let response = client.head_index(CachedValidators::default()).await.unwrap();
     let mut output = Vec::new();
 
     let error = write_catalog_stream(response.into_stream(), &mut output, 100_000)

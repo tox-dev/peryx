@@ -39,6 +39,8 @@ fn test_cache_list_handles_unknown_index_keys() {
     meta.put_index(
         "pypi/no-ttl",
         &CachedIndex {
+            source: None,
+            last_modified: None,
             fresh_secs: None,
             ..cache_record(br#"{"files":[]}"#)
         },
@@ -102,6 +104,8 @@ fn test_cache_list_min_age_filter_skips_future_pages() {
     meta.put_index(
         "pypi/future",
         &CachedIndex {
+            source: None,
+            last_modified: None,
             fetched_at_unix: i64::MAX,
             ..cache_record(br#"{"files":[]}"#)
         },

@@ -3,7 +3,7 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::simple_client;
-use crate::simple_client::SimpleClientExt as _;
+use crate::simple_client::{CachedValidators, SimpleClientExt as _};
 
 struct RetryServer {
     url: String,
@@ -98,7 +98,10 @@ async fn test_fetch_project_retries_transient_statuses() {
         .await;
     let client = simple_client(&server);
 
-    let response = client.fetch_project("flask", None).await.unwrap();
+    let response = client
+        .fetch_project("flask", CachedValidators::default())
+        .await
+        .unwrap();
 
     assert_eq!(response.status, 200);
 }
@@ -108,7 +111,10 @@ async fn test_fetch_project_retries_body_errors() {
     let base = truncated_then_ok_server(b"{\"meta\":{}}", Some("application/vnd.pypi.simple.v1+json"));
     let client = UpstreamClient::new(&base).unwrap();
 
-    let response = client.fetch_project("flask", None).await.unwrap();
+    let response = client
+        .fetch_project("flask", CachedValidators::default())
+        .await
+        .unwrap();
 
     assert_eq!(&response.body[..], b"{\"meta\":{}}");
 }

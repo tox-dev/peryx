@@ -599,6 +599,8 @@ pub async fn stale_page_harness(max_stale_secs: i64, fetched_at: i64) -> Harness
         .put_index(
             "pypi/flask",
             &CachedIndex {
+                source: None,
+                last_modified: None,
                 etag: None,
                 last_serial: None,
                 fetched_at_unix: fetched_at,

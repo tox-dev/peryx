@@ -471,6 +471,8 @@ fn seed_cached_project(meta: &MetaStore, digest: &str) {
     meta.put_index(
         "pypi/flask",
         &CachedIndex {
+            source: None,
+            last_modified: None,
             etag: None,
             last_serial: None,
             fetched_at_unix: 900,
@@ -583,6 +585,8 @@ fn archive_browser_app(status: Option<&str>) -> (tempfile::TempDir, Arc<AppState
     meta.put_cached_page(CachedPageWrite {
         key: "pypi/flask",
         record: &CachedIndex {
+            source: None,
+            last_modified: None,
             etag: None,
             last_serial: None,
             fetched_at_unix: 900,

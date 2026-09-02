@@ -11,6 +11,8 @@ fn test_freshness_overlay_encode_decode_roundtrips() {
 
 fn record() -> CachedIndex {
     CachedIndex {
+        source: Some("primary".to_owned()),
+        last_modified: Some("Tue, 01 Sep 2026 00:00:00 GMT".to_owned()),
         etag: Some("\"abc\"".to_owned()),
         last_serial: Some(42),
         fetched_at_unix: 1_700_000_000,
@@ -30,6 +32,23 @@ fn test_encode_decode_roundtrips_a_framed_record() {
     assert!(bytes.starts_with(b"peryx1\n"));
     assert!(bytes.ends_with(b"<html></html>"));
     assert_eq!(CachedIndex::decode(&bytes).unwrap(), original);
+}
+
+#[test]
+fn test_decode_defaults_a_framed_record_written_before_source_was_tracked() {
+    let mut bytes = b"peryx1\n".to_vec();
+    bytes.extend_from_slice(br#"{"etag":"\"abc\"","last_serial":42,"fetched_at_unix":1700000000,"content_type":null}"#);
+    bytes.push(b'\n');
+    bytes.extend_from_slice(b"<html></html>");
+
+    assert_eq!(
+        CachedIndex::decode(&bytes).unwrap(),
+        CachedIndex {
+            source: None,
+            last_modified: None,
+            ..record()
+        }
+    );
 }
 
 #[test]

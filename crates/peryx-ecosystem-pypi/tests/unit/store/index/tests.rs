@@ -20,6 +20,8 @@ fn uninitialized_store() -> (tempfile::TempDir, MetaStore) {
 
 fn record() -> CachedIndex {
     CachedIndex {
+        source: None,
+        last_modified: None,
         etag: Some("\"abc\"".to_owned()),
         last_serial: Some(42),
         fetched_at_unix: 1_700_000_000,

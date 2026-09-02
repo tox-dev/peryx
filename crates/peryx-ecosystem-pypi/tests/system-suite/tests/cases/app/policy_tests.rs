@@ -157,6 +157,8 @@ fn test_policy_dry_run_skips_a_record_for_an_unconfigured_index() {
     let (_dir, config, _digest) = cache_fixture();
     let store = MetaStore::open(config.data_dir.join("peryx.redb")).unwrap();
     let ghost = CachedIndex {
+        source: None,
+        last_modified: None,
         etag: None,
         last_serial: None,
         fetched_at_unix: 0,

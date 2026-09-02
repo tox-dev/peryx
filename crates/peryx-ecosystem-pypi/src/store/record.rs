@@ -4,7 +4,13 @@ use serde::{Deserialize, Serialize};
 /// the raw upstream document; peryx transforms it per request, so one cached page serves any route.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CachedIndex {
+    /// The configured source that answered this response, so a routed revalidation can send the
+    /// validators below to that candidate alone; `None` for a record written before peryx tracked it.
+    #[serde(default)]
+    pub source: Option<String>,
     pub etag: Option<String>,
+    #[serde(default)]
+    pub last_modified: Option<String>,
     pub last_serial: Option<u64>,
     pub fetched_at_unix: i64,
     #[serde(default)]
@@ -181,7 +187,11 @@ const RECORD_PREFIX: &[u8] = b"peryx1\n";
 /// quadrupling storage and dominating every warm read.
 #[derive(Serialize, Deserialize)]
 struct RecordHeader {
+    #[serde(default)]
+    source: Option<String>,
     etag: Option<String>,
+    #[serde(default)]
+    last_modified: Option<String>,
     last_serial: Option<u64>,
     fetched_at_unix: i64,
     content_type: Option<String>,
@@ -195,7 +205,9 @@ impl CachedIndex {
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
         let header = serde_json::to_vec(&RecordHeader {
+            source: self.source.clone(),
             etag: self.etag.clone(),
+            last_modified: self.last_modified.clone(),
             last_serial: self.last_serial,
             fetched_at_unix: self.fetched_at_unix,
             content_type: self.content_type.clone(),
@@ -218,7 +230,9 @@ impl CachedIndex {
         };
         let header: RecordHeader = serde_json::from_slice(header)?;
         Ok(Self {
+            source: header.source,
             etag: header.etag,
+            last_modified: header.last_modified,
             last_serial: header.last_serial,
             fetched_at_unix: header.fetched_at_unix,
             content_type: header.content_type,

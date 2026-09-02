@@ -24,7 +24,7 @@ use crate::store::{
     CatalogGeneration, abort_catalog_generation, begin_catalog_generation, catalog_state, publish_catalog_generation,
     put_catalog_projects, recover_catalog_generations, refresh_catalog_generation,
 };
-use crate::{SimpleClientExt, SimpleError, SimpleHead, is_valid_name, normalize_name};
+use crate::{CachedValidators, SimpleClientExt, SimpleError, SimpleHead, is_valid_name, normalize_name};
 
 /// Root responses are currently about 44 MiB at Warehouse. The cap leaves roughly sixfold growth
 /// while preventing an upstream or decompressor from filling local storage.
@@ -89,17 +89,19 @@ pub async fn sync_catalog<C: SimpleClientExt + Sync>(
     recover_catalog_generations(meta, index)?;
     let previous = catalog_state(meta, index)?.active;
     let head = client
-        .head_index(
-            previous.as_ref().map(|active| active.source.as_str()),
-            previous.as_ref().and_then(|active| active.etag.as_deref()),
-            previous.as_ref().and_then(|active| active.last_modified.as_deref()),
-        )
+        .head_index(CachedValidators {
+            source: previous.as_ref().map(|active| active.source.as_str()),
+            etag: previous.as_ref().and_then(|active| active.etag.as_deref()),
+            last_modified: previous.as_ref().and_then(|active| active.last_modified.as_deref()),
+        })
         .await?;
     let fetched_at_unix = OffsetDateTime::now_utc().unix_timestamp();
     if head.status == 304 {
-        let previous = previous.ok_or(MetaError::DriverPrecondition(
-            "upstream returned 304 without an active catalog".to_owned(),
-        ))?;
+        let previous = previous
+            .filter(|active| head.source.as_deref().is_none_or(|answered| answered == active.source))
+            .ok_or_else(|| {
+                MetaError::DriverPrecondition("upstream returned 304 without a matching catalog".to_owned())
+            })?;
         let generation = previous.generation;
         refresh_catalog_generation(meta, index, generation, head.etag, head.last_modified, fetched_at_unix)?;
         return Ok(CatalogSyncOutcome::NotModified {
@@ -122,7 +124,7 @@ pub async fn sync_catalog<C: SimpleClientExt + Sync>(
 /// # Errors
 /// Returns an error when the transfer, the response status, or the parse fails.
 pub async fn read_catalog_projects<C: SimpleClientExt + Sync>(client: &C) -> Result<Vec<String>, CatalogSyncError> {
-    let head = client.head_index(None, None, None).await?;
+    let head = client.head_index(CachedValidators::default()).await?;
     check_transferable(&head)?;
     let base = head.url.clone();
     let format = catalog_format(head.content_type.as_deref());

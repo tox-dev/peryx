@@ -32,6 +32,8 @@ fn seed_valid_page(meta: &MetaStore) {
     meta.put_index(
         "pypi/flask",
         &CachedIndex {
+            source: None,
+            last_modified: None,
             etag: None,
             last_serial: None,
             fetched_at_unix: 0,
@@ -346,6 +348,8 @@ fn seed_undecodable_detail(meta: &MetaStore, key: &str) {
     meta.put_index(
         key,
         &CachedIndex {
+            source: None,
+            last_modified: None,
             etag: None,
             last_serial: None,
             fetched_at_unix: 0,
@@ -596,6 +600,8 @@ fn test_purge_project_covers_preserved_reference_shapes() {
     meta.put_index(
         "pypi/other",
         &CachedIndex {
+            source: None,
+            last_modified: None,
             etag: None,
             last_serial: None,
             fetched_at_unix: 0,
@@ -608,6 +614,8 @@ fn test_purge_project_covers_preserved_reference_shapes() {
     purge_project(&meta, "pypi", "flask", false).unwrap();
 
     meta.put_index("pypi/plain", &CachedIndex {
+        source: None,
+        last_modified: None,
         etag: None,
         last_serial: None,
         fetched_at_unix: 0,

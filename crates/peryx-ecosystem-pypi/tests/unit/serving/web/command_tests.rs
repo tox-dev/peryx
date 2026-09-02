@@ -86,6 +86,8 @@ fn cached_project(display: &str, versions: &[&str]) -> (tempfile::TempDir, Arc<A
         .put_index(
             "cached/demo",
             &CachedIndex {
+                source: None,
+                last_modified: None,
                 etag: None,
                 last_serial: None,
                 fetched_at_unix: 0,

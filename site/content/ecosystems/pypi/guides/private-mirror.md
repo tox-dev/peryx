@@ -191,12 +191,16 @@ previous generation active. The same retain-on-failure discipline appears in
 metadata, and the reason [devpi](https://github.com/devpi/devpi/blob/main/server/devpi_server/mirror.py) keeps its last
 good project serial when a refresh errors.
 
-Peryx sends `If-None-Match` on the next sync when the active generation carried an `ETag`. A `304 Not Modified` reuses
-that generation without moving an artifact. Peryx advances the observation time and merges validators present on the
-response, as [HTTP cache validation](https://www.rfc-editor.org/rfc/rfc9111.html#section-4.3.4) requires. A `404` leaves
-the prior generation in place. Peryx limits a detail response to 256 MiB and 2,000,000 files. The redirect policy
-permits at most ten redirects, and concurrent syncs of one project inside a process share a lock and fetch. Peryx strips
-user information, query strings, and fragments from persisted source and final URLs.
+Peryx sends `If-None-Match` on the next sync when the active generation carried an `ETag`, and `If-Modified-Since` when
+only `Last-Modified` is available. A `304 Not Modified` reuses that generation without moving an artifact. Peryx
+advances the observation time and merges validators present on the response, as
+[HTTP cache validation](https://www.rfc-editor.org/rfc/rfc9111.html#section-4.3.4) requires. A `404` leaves the prior
+generation in place. Cached project pages revalidate the same way, recording the source that answered alongside the
+validators. Both paths address a validator to the one configured source that produced the stored response, so a routed
+fallback is called unconditionally and a `304` from any other source is refused. Peryx limits a detail response to 256
+MiB and 2,000,000 files. The redirect policy permits at most ten redirects, and concurrent syncs of one project inside a
+process share a lock and fetch. Peryx strips user information, query strings, and fragments from persisted source and
+final URLs.
 
 ### Schedule bounded metadata refreshes
 

@@ -16,6 +16,8 @@ fn test_cache_fsck_reports_metadata_problems() {
     meta.put_index(
         "pypi/bad",
         &CachedIndex {
+            source: None,
+            last_modified: None,
             body: b"not json".to_vec(),
             ..cache_record(b"not json")
         },

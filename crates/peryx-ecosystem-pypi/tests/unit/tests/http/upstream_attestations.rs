@@ -66,6 +66,8 @@ pub(super) fn put_cached_attestation_page(harness: &Harness, digest: &str) {
         .put_cached_page(crate::store::CachedPageWrite {
             key: "pypi/peryxpkg",
             record: &CachedIndex {
+                source: None,
+                last_modified: None,
                 etag: None,
                 last_serial: None,
                 fetched_at_unix: 1_000,
@@ -443,6 +445,8 @@ async fn test_virtual_provenance_without_a_registered_layer_source_is_not_found(
         .put_cached_page(crate::store::CachedPageWrite {
             key: "pypi/peryxpkg",
             record: &CachedIndex {
+                source: None,
+                last_modified: None,
                 etag: None,
                 last_serial: None,
                 fetched_at_unix: 1_000,

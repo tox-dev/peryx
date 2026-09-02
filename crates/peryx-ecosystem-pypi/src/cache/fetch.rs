@@ -21,7 +21,7 @@ use peryx_upstream::UpstreamError;
 use time::OffsetDateTime;
 use url::Url;
 
-use crate::simple_client::{SimpleClientExt as _, SimpleHead, SimpleResponse};
+use crate::simple_client::{CachedValidators, SimpleClientExt as _, SimpleHead, SimpleResponse};
 
 use super::{
     CacheError, NEGATIVE_TTL_SECS, cached_record, flight_gate, is_json, mirror_route, project_negative_key,
@@ -38,20 +38,20 @@ pub(super) async fn fetch_and_store(
     mirror_policy(state, name).check_resource(PolicyAction::Cached, project)?;
     let now = (state.clock)();
     let cached = cached_record(state, key)?;
-    let etag = cached.as_ref().and_then(|record| record.etag.clone());
     let route = mirror_route(state, name);
     let event_project = project.to_owned();
     let _permit = upstream_permit(state, name).await?;
+    let validators = cached_validators(cached.as_ref());
     let response = match state.upstream_routes.get(name) {
-        Some(router) => router.fetch_project(project, etag.as_deref()).await,
-        None => client.fetch_project(project, etag.as_deref()).await,
+        Some(router) => router.fetch_project(project, validators).await,
+        None => client.fetch_project(project, validators).await,
     };
     match response {
         Ok(response) if response.status == 200 => {
             cache_project_response(state, key, name, project, now, cached.as_ref(), &response).map(Some)
         }
         Ok(response) if response.status == 304 => {
-            let mut record = cached.ok_or(CacheError::Unavailable)?;
+            let mut record = revalidated(cached, response.source.as_deref())?;
             record.fetched_at_unix = now;
             record.fresh_secs = response.max_age.or(record.fresh_secs);
             state
@@ -130,6 +130,26 @@ pub(super) async fn fetch_and_store(
     }
 }
 
+/// The stored page a `304` from `answered` revalidates.
+///
+/// A validator belongs to the one stored response it arrived with, so a `304` attributed to any other
+/// source says nothing about the page peryx holds - a routed candidate that never produced it cannot
+/// declare it unchanged.
+pub(super) fn revalidated(cached: Option<CachedIndex>, answered: Option<&str>) -> Result<CachedIndex, CacheError> {
+    cached
+        .filter(|record| record.source.as_deref() == answered)
+        .ok_or(CacheError::Unavailable)
+}
+
+/// The validators a cached page may be revalidated with, bound to the source that produced it.
+pub(super) fn cached_validators(cached: Option<&CachedIndex>) -> CachedValidators<'_> {
+    CachedValidators {
+        source: cached.and_then(|record| record.source.as_deref()),
+        etag: cached.and_then(|record| record.etag.as_deref()),
+        last_modified: cached.and_then(|record| record.last_modified.as_deref()),
+    }
+}
+
 fn cache_project_response(
     state: &ServingState,
     key: &str,
@@ -140,7 +160,9 @@ fn cache_project_response(
     response: &SimpleResponse,
 ) -> Result<CachedIndex, CacheError> {
     let record = CachedIndex {
+        source: response.source.clone(),
         etag: response.etag.clone(),
+        last_modified: response.last_modified.clone(),
         last_serial: response.last_serial,
         fetched_at_unix: now,
         content_type: Some("application/vnd.pypi.simple.v1+json".to_owned()),
@@ -445,14 +467,23 @@ pub async fn sync_project_files<C: crate::SimpleClientExt + Sync>(
     recover_project_generations(meta, index, project)?;
     let previous = active_project_generation(meta, index, project)?;
     let head = client
-        .head_project(project, previous.as_ref().and_then(|active| active.etag.as_deref()))
+        .head_project(
+            project,
+            CachedValidators {
+                source: previous.as_ref().map(|active| active.source.as_str()),
+                etag: previous.as_ref().and_then(|active| active.etag.as_deref()),
+                last_modified: previous.as_ref().and_then(|active| active.last_modified.as_deref()),
+            },
+        )
         .await?;
     let fetched_at_unix = OffsetDateTime::now_utc().unix_timestamp();
     match head.status {
         304 => {
-            let previous = previous.ok_or(MetaError::DriverPrecondition(
-                "upstream returned 304 without an active project generation".to_owned(),
-            ))?;
+            let previous = previous
+                .filter(|active| head.source.as_deref().is_none_or(|answered| answered == active.source))
+                .ok_or_else(|| {
+                    MetaError::DriverPrecondition("upstream returned 304 without a matching generation".to_owned())
+                })?;
             let refreshed = refresh_project_generation(
                 meta,
                 index,
