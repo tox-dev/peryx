@@ -721,6 +721,15 @@ pub trait PypiStore {
         visit: impl FnMut(&str, &[u8]) -> Result<(), E>,
     ) -> Result<(), peryx_storage::meta::MetaScanError<E>>;
 
+    /// Visit the file rows every project generation holds.
+    ///
+    /// # Errors
+    /// Returns a scan error if the store read fails or the visitor returns an error.
+    fn scan_project_file_records<E>(
+        &self,
+        visit: impl FnMut(&str, &[u8]) -> Result<(), E>,
+    ) -> Result<(), peryx_storage::meta::MetaScanError<E>>;
+
     /// Apply one field change to the override record of a file served from a read-only layer.
     ///
     /// # Errors
@@ -1106,6 +1115,13 @@ impl PypiStore for peryx_storage::meta::MetaStore {
         visit: impl FnMut(&str, &[u8]) -> Result<(), E>,
     ) -> Result<(), peryx_storage::meta::MetaScanError<E>> {
         uploads::scan_upload_records(self, visit)
+    }
+
+    fn scan_project_file_records<E>(
+        &self,
+        visit: impl FnMut(&str, &[u8]) -> Result<(), E>,
+    ) -> Result<(), peryx_storage::meta::MetaScanError<E>> {
+        index::scan_project_file_records(self, visit)
     }
 
     fn set_override(

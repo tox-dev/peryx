@@ -829,3 +829,157 @@ fn test_collecting_referenced_digests_refuses_a_row_it_cannot_read() {
         not_utf8_reason('f', "not-hex")
     );
 }
+
+/// A catalog sync stores a project's files as generation rows, and those rows carry the same
+/// digest-keyed source row a cached page writes. Purging a different project must not take a source
+/// the surviving project still needs for a cold download.
+#[test]
+fn test_purge_project_keeps_a_digest_a_generation_still_serves() {
+    let (_dir, meta) = store();
+    seed_valid_page(&meta);
+    let digest = Digest::of(b"wheel");
+    let (generation, expected) = crate::store::begin_project_generation(&meta, "pypi", "django").unwrap();
+    crate::store::put_project_files(
+        &meta,
+        "pypi",
+        "django",
+        generation,
+        "pypi",
+        None,
+        &[File {
+            filename: "django-1.0.whl".to_owned(),
+            url: "https://files/django.whl".to_owned(),
+            hashes: std::collections::BTreeMap::from([("sha256".to_owned(), digest.as_str().to_owned())]),
+            requires_python: None,
+            size: Some(11),
+            upload_time: None,
+            yanked: Yanked::No,
+            core_metadata: CoreMetadata::Absent,
+            dist_info_metadata: CoreMetadata::Absent,
+            gpg_sig: None,
+            provenance: Provenance::Absent,
+        }],
+    )
+    .unwrap();
+    crate::store::publish_project_generation(
+        &meta,
+        "pypi",
+        "django",
+        expected,
+        crate::store::ProjectGeneration {
+            generation,
+            source: "pypi".to_owned(),
+            url: "https://files/django".to_owned(),
+            format: "json".to_owned(),
+            etag: None,
+            last_modified: None,
+            last_serial: None,
+            fetched_at_unix: 0,
+            bytes: 1,
+            files: 1,
+            versions: Vec::new(),
+            project_status: None,
+            project_status_reason: None,
+        },
+    )
+    .unwrap();
+
+    purge_project(&meta, "pypi", "flask", true).unwrap();
+
+    assert!(
+        meta.get_file_url(digest.as_str()).unwrap().is_some(),
+        "django still advertises this digest and needs its source"
+    );
+}
+
+/// A hosted publication's provenance is scoped to that publication, so purging a cached project that
+/// happens to share the digest leaves it alone.
+#[test]
+fn test_purge_project_leaves_a_hosted_publication_its_provenance() {
+    let (_dir, meta) = store();
+    seed_valid_page(&meta);
+    let digest = Digest::of(b"wheel");
+    meta.put_upload(
+        "hosted",
+        "flask",
+        "flask-1.0.whl",
+        crate::to_json(&upload_record("flask-1.0.whl", digest.as_str())).as_bytes(),
+    )
+    .unwrap();
+    meta.put_provenance(
+        "hosted",
+        "flask",
+        digest.as_str(),
+        "flask-1.0.whl",
+        provenance_bundle(DIGEST_B),
+    )
+    .unwrap();
+
+    purge_project(&meta, "pypi", "flask", true).unwrap();
+
+    assert!(
+        meta.get_provenance("hosted", "flask", digest.as_str(), "flask-1.0.whl")
+            .unwrap()
+            .is_some()
+    );
+}
+
+/// Preserving what other projects still advertise must not stop a purge removing what nothing does.
+#[test]
+fn test_purge_project_still_removes_a_digest_no_one_else_advertises() {
+    let (_dir, meta) = store();
+    seed_valid_page(&meta);
+    let digest = Digest::of(b"wheel");
+
+    purge_project(&meta, "pypi", "flask", true).unwrap();
+
+    assert_eq!(meta.get_file_url(digest.as_str()).unwrap(), None);
+}
+
+/// A generation row that does not decode leaves the preserved set incomplete, so the purge refuses
+/// rather than removing a source some project may still advertise.
+#[test]
+fn test_purge_project_reports_a_corrupt_generation_file_row() {
+    let (_dir, meta) = store();
+    seed_valid_page(&meta);
+    meta.put_driver_value(
+        "pypi\u{0}r\u{0}pypi/django/00000000000000000001/django-1.0.whl",
+        b"not json",
+    )
+    .unwrap();
+
+    let error = purge_project(&meta, "pypi", "flask", false).unwrap_err();
+
+    assert!(error.contains("corrupt project file row"), "{error}");
+}
+
+/// The purged project's own generation rows must not preserve its digests, or a catalog-synced project
+/// could never be purged at all.
+#[test]
+fn test_purge_project_ignores_the_target_projects_own_generation_rows() {
+    let (_dir, meta) = store();
+    seed_valid_page(&meta);
+    let digest = Digest::of(b"wheel");
+    meta.put_driver_value(
+        "pypi\u{0}r\u{0}pypi/flask/00000000000000000001/flask-1.0.whl",
+        crate::to_json(&File {
+            filename: "flask-1.0.whl".to_owned(),
+            url: "https://files/flask.whl".to_owned(),
+            hashes: std::collections::BTreeMap::from([("sha256".to_owned(), digest.as_str().to_owned())]),
+            requires_python: None,
+            size: Some(11),
+            upload_time: None,
+            yanked: Yanked::No,
+            core_metadata: CoreMetadata::Absent,
+            dist_info_metadata: CoreMetadata::Absent,
+            gpg_sig: None,
+            provenance: Provenance::Absent,
+        })
+        .as_bytes(),
+    )
+    .unwrap();
+
+    purge_project(&meta, "pypi", "flask", true).unwrap();
+
+    assert_eq!(meta.get_file_url(digest.as_str()).unwrap(), None);
+}

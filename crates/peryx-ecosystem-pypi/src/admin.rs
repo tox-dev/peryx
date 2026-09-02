@@ -380,24 +380,44 @@ fn preserved_refs(meta: &MetaStore, target_key: &str) -> Result<CacheRefs, Strin
         Ok::<(), String>(())
     })
     .map_err(crate::error_message)?;
+    // A project a catalog sync populated keeps its files in generation rows and no cached page body,
+    // so the scan above never sees what it advertises. Reading only the pages would let a purge take
+    // the source row such a project still needs for a cold download.
+    let owned = format!("{target_key}/");
+    meta.scan_project_file_records(|key, bytes| {
+        if key.starts_with(&owned) {
+            return Ok(());
+        }
+        let file = serde_json::from_slice::<crate::File>(bytes)
+            .map_err(|err| format!("corrupt project file row {key}: {err}"))?;
+        add_file_refs(&mut refs, &file);
+        Ok::<(), String>(())
+    })
+    .map_err(crate::error_message)?;
     Ok(refs)
 }
 
 fn add_index_refs(refs: &mut CacheRefs, record: &CachedIndex) -> Result<(), String> {
     for file in parse_detail(&record.body).map_err(crate::error_message)?.files {
-        // Parsing the page canonicalizes every advertised digest, so a `sha256` that survives here is
-        // already the content address peryx keys its blobs by.
-        let Some(sha256) = file.hashes.get("sha256") else {
-            continue;
-        };
-        refs.files.insert(sha256.to_owned());
-        if let CoreMetadata::Hashes(hashes) = file.core_metadata
-            && hashes.contains_key("sha256")
-        {
-            refs.metadata_wheels.insert(sha256.to_owned());
-        }
+        add_file_refs(refs, &file);
     }
     Ok(())
+}
+
+/// Note what one advertised file still refers to.
+///
+/// Parsing the page canonicalizes every advertised digest, so a `sha256` that survives here is already
+/// the content address peryx keys its blobs by.
+fn add_file_refs(refs: &mut CacheRefs, file: &crate::File) {
+    let Some(sha256) = file.hashes.get("sha256") else {
+        return;
+    };
+    refs.files.insert(sha256.clone());
+    if let CoreMetadata::Hashes(hashes) = &file.core_metadata
+        && hashes.contains_key("sha256")
+    {
+        refs.metadata_wheels.insert(sha256.clone());
+    }
 }
 
 /// The indexes that own project and upload rows, paired with the discipline their writes follow.

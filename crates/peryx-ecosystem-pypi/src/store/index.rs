@@ -452,6 +452,30 @@ fn register_file_rows(
     })
 }
 
+/// Visit the file rows every project generation holds, keyed relative to the namespace as
+/// `{index}/{project}/{generation}/{filename}`.
+///
+/// A cached project that a catalog sync populated keeps its files here rather than in a cached page
+/// body, so a caller enumerating what the store still refers to has to read both.
+///
+/// # Errors
+/// Returns a scan error if the store read fails or the visitor returns an error.
+pub fn scan_project_file_records<E>(
+    meta: &MetaStore,
+    mut visit: impl FnMut(&str, &[u8]) -> Result<(), E>,
+) -> Result<(), MetaScanError<E>> {
+    let mut error = None;
+    meta.visit_driver_prefix(super::PROJECT_FILE_PREFIX, |key, record| {
+        if error.is_none() {
+            error = visit(&key[super::PROJECT_FILE_PREFIX.len()..], record).err();
+        }
+    })?;
+    if let Some(err) = error {
+        return Err(MetaScanError::Visit(err));
+    }
+    Ok(())
+}
+
 /// Publish a fully parsed generation, swapping the active pointer only if both the staging
 /// reservation and the active generation still match what the sync observed.
 ///
