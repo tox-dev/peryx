@@ -29,6 +29,23 @@ Bring the job back when a crate is published, or when the workspace reaches a ve
 needs the `baseline` output on the `contracts` job as well, which went with it. Until then `just semver` answers the
 same question on demand and states a release type so the checks run.
 
+A `LEAK` or `LEAK-FAIL` from nextest names a victim rather than a culprit. Nextest reports one when a test process has
+exited and its captured output has not reached EOF, which means another live process still holds the write end of that
+pipe. macOS creates a pipe and sets `FD_CLOEXEC` on it in two steps, so a test binary spawned inside that window
+inherits another test's capture pipe and holds it until it exits. The retaining process is whichever test happened to
+start during the window, and the reported test is whichever happened to finish first. Neither did anything wrong.
+
+Measured on this workspace: of 2,560 children spawned from tests, 37 inherited a descriptor they were never given, and
+every one was a pipe, often both ends of the same one. Twelve tests that only sleep for three seconds, beside a hundred
+that only print, reproduce `LEAK-FAIL` on the printing ones with no subprocess anywhere in the package. Closing
+inherited descriptors in a child changes nothing, because a child is not what holds the pipe.
+
+So a `LEAK` says nothing about the test it names, and the test needs no repair. Record it against
+[#1629](https://github.com/tox-dev/peryx/issues/1629) and move on. Raising `leak-timeout`, excluding a test, retrying,
+or serialising the run would each hide the report without changing what it reports.
+[nextest-rs/nextest#3553](https://github.com/nextest-rs/nextest/pull/3553) fixes the spawn boundary upstream and is not
+yet in a release.
+
 The coverage jobs reject uncovered source lines. `ci-gate` gives branch protection one check name and fails unless every
 required job succeeds.
 
