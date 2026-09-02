@@ -161,7 +161,7 @@ lint-docs: _project-temp
     prek run codespell --all-files
 
 # Check workflows and repository automation.
-lint-automation: _project-temp _archive-binary-contract _browser-contract _codspeed-target-contract _coverage-target-contract _features-tool-contract _frontend-test-contract _mutation-baseline-target-contract _mutation-profile-contract _mutation-shard-count-contract _readthedocs-contract _renovate-contract _sanitizer-target-contract _test-target-contract
+lint-automation: _project-temp _archive-binary-contract _browser-contract _codspeed-target-contract _coverage-target-contract _features-tool-contract _frontend-test-contract _mutation-baseline-target-contract _mutation-profile-contract _mutation-shard-count-contract _paused-clock-contract _readthedocs-contract _renovate-contract _sanitizer-target-contract _test-target-contract
     SKIP=cargo-fmt,cargo-clippy,mdformat,codespell prek run --all-files
 
 _mutation-profile-contract:
@@ -175,6 +175,126 @@ _readthedocs-contract:
     # Read the Docs runs each command as /bin/sh -c '<command>' without escaping, so one quote of its
     # own ends the wrapper and the rest of the line reparses as something else.
     ! grep -q "'" .readthedocs.yaml
+
+# Check that no test holds a paused clock across real socket work without a stated reason.
+#
+# A paused tokio clock auto-advances to the next pending timer whenever the runtime parks, and a
+# socket read parks, so the clock rather than the code can satisfy such a test's assertion. The
+# hazard needs a pending timer at the moment of the park, which most pairings do not have, so this
+# asks for a reason rather than deciding the question itself.
+_paused-clock-contract:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    harness='TestServer::start|TcpListener::bind|MockServer::start|ControlledServer::start|reqwest::(get|Client)|wiremock'
+    program='
+    { source[NR] = $0 }
+    END {
+      total = NR
+      count = 0
+      for (i = 1; i <= total; i++) {
+        if (match(source[i], /^[ \t]*(pub\([a-z()]*\) )?(pub )?(async )?fn [A-Za-z0-9_]+/) == 0)
+          continue
+        indent = source[i]
+        sub(/[^ \t].*$/, "", indent)
+        name = substr(source[i], RSTART, RLENGTH)
+        sub(/.*fn /, "", name)
+        last = total
+        for (j = i + 1; j <= total; j++)
+          if (source[j] == indent "}") { last = j; break }
+        count++
+        named[count] = name
+        defined[name] = count
+        line_of[count] = i
+        body[count] = ""
+        for (j = i; j <= last; j++)
+          body[count] = body[count] source[j] "\n"
+        header = ""
+        for (j = i - 1; j >= 1; j--) {
+          above = source[j]
+          sub(/^[ \t]+/, "", above)
+          if (above == "" || above == "}")
+            break
+          header = source[j] "\n" header
+        }
+        heads[count] = header
+      }
+      for (k = 1; k <= count; k++) {
+        resumes[k] = index(body[k], "tokio::time::resume") > 0
+        paused[k] = index(heads[k], "start_paused") > 0
+        at = index(heads[k], "paused-clock-safe:")
+        reason[k] = at == 0 ? "" : trim(substr(heads[k], at + 18))
+      }
+      for (k = 1; k <= count; k++) {
+        if (paused[k] == 0 && reason[k] != "")
+          tell(k, "states a paused-clock reason but never pauses its clock; delete the comment")
+        if (paused[k] == 0 || harness == 0)
+          continue
+        if (reason[k] != "" && length(reason[k]) < 20)
+          tell(k, "states a paused-clock reason too short for the next reader to re-check")
+        else if (reason[k] == "" && running(k) == 0)
+          tell(k, "holds a paused clock in a file that opens sockets")
+      }
+    }
+    function trim(text) {
+      sub(/\n.*$/, "", text)
+      sub(/^[ \t]+/, "", text)
+      sub(/[ \t]+$/, "", text)
+      return text
+    }
+    function running(start,   queue, head, tail, seen, k, words, w, i, name, text) {
+      head = 1
+      tail = 1
+      queue[1] = start
+      seen[start] = 1
+      while (head <= tail) {
+        k = queue[head++]
+        if (resumes[k])
+          return 1
+        text = body[k]
+        gsub(/[^A-Za-z0-9_]/, " ", text)
+        split(text, words, " ")
+        for (i in words) {
+          name = words[i]
+          if (name in defined) {
+            w = defined[name]
+            if (seen[w] == 0) { seen[w] = 1; queue[++tail] = w }
+          }
+        }
+      }
+      return 0
+    }
+    function tell(k, message) {
+      printf "%s:%d: %s: %s\n", FILENAME, line_of[k], named[k], message
+    }
+    '
+    findings=""
+    while IFS= read -r file; do
+      opens=0
+      if grep -Eq "$harness" "$file"; then
+        opens=1
+      fi
+      found=$(awk -v harness="$opens" "$program" "$file")
+      if [ -n "$found" ]; then
+        findings="$findings$found"$'\n'
+      fi
+    done < <(grep -rlE --include='*.rs' 'start_paused|paused-clock-safe' crates/ | sort)
+    if [ -n "$findings" ]; then
+      printf '%s' "$findings" >&2
+      cat >&2 <<'GUIDANCE'
+
+    Run the clock while the socket work is outstanding and pause only once that work is proven
+    done, the shape PRs #2100, #2108 and #2117 established: bind and accept with the clock running,
+    await the handle or read to EOF to prove the request landed, then pause and step the clock.
+    Prefer sleep over advance for the paused step, since a paused clock stops at the earliest
+    pending timer and advance jumps over an action due sooner than the one under test.
+
+    A test that never leaves work on the wire is fine as it stands. Say why, on the line above its
+    attribute, and this check will take your word for it:
+
+        // paused-clock-safe: the saturated cap answers 429 before any upstream call
+    GUIDANCE
+      exit 1
+    fi
 
 # Check the custom Renovate release matcher.
 _renovate-contract:

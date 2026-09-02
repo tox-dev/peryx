@@ -682,6 +682,7 @@ async fn test_coordinator_gives_up_when_the_target_never_reaches_the_barrier() {
     assert!(store.transfer_audits("proj").unwrap().is_empty());
 }
 
+// paused-clock-safe: the frontier source is an in-process trait implementation, so the coordinator dials nothing
 #[tokio::test(start_paused = true)]
 async fn test_coordinator_refuses_a_second_transfer_for_the_same_authority() {
     let (frontier, probed) = GatedFrontier::new(Some(BARRIER - 1));
@@ -717,6 +718,7 @@ async fn test_coordinator_refuses_a_second_transfer_for_the_same_authority() {
     ));
 }
 
+// paused-clock-safe: the frontier source is an in-process trait implementation, so the coordinator dials nothing
 #[tokio::test(start_paused = true)]
 async fn test_coordinator_cancel_abandons_an_active_transfer() {
     let (frontier, probed) = GatedFrontier::new(Some(BARRIER - 1));

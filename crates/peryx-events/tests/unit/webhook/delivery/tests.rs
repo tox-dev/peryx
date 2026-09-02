@@ -609,6 +609,7 @@ async fn test_worker_discards_malformed_delivery_and_reaches_valid_work() {
     handle.shutdown().await.unwrap();
 }
 
+// paused-clock-safe: the faulted host is a redb store, so the failing deadline read reaches no socket
 #[tokio::test(start_paused = true)]
 async fn test_worker_retries_deadline_reads_with_positive_capped_backoff() {
     let dir = tempfile::tempdir().unwrap();
@@ -640,6 +641,7 @@ async fn test_worker_retries_deadline_reads_with_positive_capped_backoff() {
     handle.shutdown().await.unwrap();
 }
 
+// paused-clock-safe: the faulted host is a redb store, so the failing deadline read reaches no socket
 #[tokio::test(start_paused = true)]
 async fn test_storage_backoff_log_reports_its_delay() {
     let dir = tempfile::tempdir().unwrap();
@@ -669,6 +671,7 @@ async fn test_storage_backoff_log_reports_its_delay() {
     assert!(output.contains("retry_after_ms=100"), "{output}");
 }
 
+// paused-clock-safe: the faulted host is a redb store, so the failing due scan reaches no socket
 #[tokio::test(start_paused = true)]
 async fn test_notification_interrupts_due_scan_backoff() {
     let dir = tempfile::tempdir().unwrap();
@@ -893,6 +896,7 @@ async fn test_empty_scheduler_wait_resumes_on_notification() {
         .unwrap();
 }
 
+// paused-clock-safe: the scheduler waits on a redb store and a notification, dialling no target
 #[tokio::test(start_paused = true)]
 async fn test_scheduled_wait_resumes_at_delivery_time() {
     let dir = tempfile::tempdir().unwrap();
@@ -922,6 +926,7 @@ async fn test_scheduled_wait_resumes_at_delivery_time() {
         .unwrap();
 }
 
+// paused-clock-safe: the scheduler waits on a redb store and a notification, dialling no target
 #[tokio::test(start_paused = true)]
 async fn test_scheduled_wait_caps_a_far_future_deadline() {
     let dir = tempfile::tempdir().unwrap();

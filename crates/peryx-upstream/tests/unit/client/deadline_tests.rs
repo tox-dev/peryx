@@ -111,6 +111,7 @@ async fn test_bounded_read_retries_with_the_remaining_budget() {
     assert_eq!(tokio::time::Instant::now() - started, BOUNDED_READ_TIMEOUT);
 }
 
+// paused-clock-safe: the client is handed a URL it never dials and a future that stays pending
 #[tokio::test(start_paused = true)]
 async fn test_bounded_read_run_reports_its_deadline() {
     let client = UpstreamClient::new("https://upstream.example/").unwrap();

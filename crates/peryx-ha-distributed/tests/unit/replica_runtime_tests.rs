@@ -383,6 +383,7 @@ async fn test_a_cycle_in_flight_never_publishes_half_of_its_result() {
 /// firings: a single `advance` jump leaves the loop parked after one cycle, so the retry the name claims
 /// never happens. The default policy backs off from 100 ms doubling, so one second covers the cycles at
 /// 0, 100 ms, 300 ms and 700 ms.
+// paused-clock-safe: the peer set is empty, so each cycle fails before it reaches a transport
 #[tokio::test(start_paused = true)]
 async fn test_run_retries_a_disconnected_metadata_plane_until_cancelled() {
     let dir = tempfile::tempdir().unwrap();

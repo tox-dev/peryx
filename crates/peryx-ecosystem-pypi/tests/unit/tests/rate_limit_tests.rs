@@ -669,6 +669,7 @@ impl Respond for BlockingResponder {
     }
 }
 
+// paused-clock-safe: the limiter is in memory, so the only timer the clock can reach is its own acquire wait
 #[tokio::test(start_paused = true)]
 async fn test_upstream_acquire_times_out_when_saturated() {
     let limits = UpstreamLimits::new([("pypi".to_owned(), 1)]);
@@ -686,6 +687,7 @@ async fn test_upstream_acquire_times_out_when_saturated() {
     drop(held);
 }
 
+// paused-clock-safe: the saturated cap answers 429 before any upstream call, so the mock server records no request
 #[tokio::test(start_paused = true)]
 async fn test_request_returns_429_when_upstream_cap_saturated() {
     let h = harness(RateLimitConfig::default(), 1).await;
@@ -699,6 +701,7 @@ async fn test_request_returns_429_when_upstream_cap_saturated() {
     assert!(body.contains("rate limit exceeded"));
 }
 
+// paused-clock-safe: the saturated cap answers 429 before any upstream call, so the mock server records no request
 #[tokio::test(start_paused = true)]
 async fn test_virtual_index_surfaces_429_when_only_layer_is_rate_limited() {
     let dir = tempfile::tempdir().unwrap();
