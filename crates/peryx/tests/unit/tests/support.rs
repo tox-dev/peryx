@@ -618,7 +618,7 @@ impl RetentionDriver for Driver {
                 policy: generation.policy,
             },
         })?;
-        let plan = scan.policy.plan_resource(
+        let mut plan = scan.policy.plan_resource(
             scan.now,
             [("2.0", 0), ("1.0", 1)]
                 .into_iter()
@@ -637,6 +637,7 @@ impl RetentionDriver for Driver {
                 })
                 .collect(),
         );
+        plan.skip(scan.skip);
         for decision in plan.decisions() {
             emit(decision)?;
         }

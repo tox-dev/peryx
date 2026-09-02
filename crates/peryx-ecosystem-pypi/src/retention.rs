@@ -11,6 +11,11 @@
 //!
 //! The budget bounds live memory, not output. A project whose decisions serialize to far more than the
 //! budget still streams, because no more than one of them is expanded at a time.
+//!
+//! A resumed page carries its offset in the [scan](RetentionScan::skip), so the plan drops the decisions
+//! before the cursor instead of expanding them. A project that ends before the cursor costs its planning
+//! and nothing more, which is what keeps paging through a repository linear in its artifacts rather than
+//! quadratic in them.
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -40,7 +45,8 @@ pub const RETENTION_PROJECT_BUDGET_BYTES: usize = 256 * 1024 * 1024;
 /// Evaluate one index's hosted uploads against `policy`.
 ///
 /// `start` receives the plan identity after the read snapshot opens and before `emit` receives the first
-/// artifact decision. Either callback may stop the read-only scan by returning an error.
+/// artifact decision. `scan.skip` decisions are dropped ahead of that first one without being expanded.
+/// Either callback may stop the read-only scan by returning an error.
 ///
 /// `budget` caps the memory one project may hold at once (see [`RETENTION_PROJECT_BUDGET_BYTES`]): its
 /// candidates, its plan's compact state, and the single decision in flight. A project whose live set
@@ -89,9 +95,15 @@ fn evaluate_retention_with(
     start: &mut dyn FnMut(RetentionSummary) -> Result<(), String>,
     emit: &mut dyn FnMut(RetentionDecision) -> Result<(), String>,
 ) -> Result<(), String> {
-    let mut current: Option<String> = None;
-    let mut group: Vec<RetentionCandidate> = Vec::new();
-    let mut used: usize = 0;
+    let mut grouping = Grouping {
+        policy: scan.policy,
+        now: scan.now,
+        budget,
+        skip: scan.skip,
+        project: None,
+        candidates: Vec::new(),
+        used: 0,
+    };
     let mut scanned: usize = 0;
     scan_upload_policy_snapshot(
         scan.meta,
@@ -114,59 +126,83 @@ fn evaluate_retention_with(
             let Some((project, _filename)) = key.split_once('/') else {
                 return Ok(());
             };
-            if current.as_deref() != Some(project) {
-                if let Some(previous) = current.as_deref() {
-                    plan_group(&mut group, previous, used, budget, scan.policy, scan.now, emit)?;
-                }
-                current = Some(project.to_owned());
-                used = 0;
-            }
-            let uploaded: Uploaded =
-                serde_json::from_slice(bytes).map_err(|err| format!("corrupt upload record {key}: {err}"))?;
-            let candidate = candidate(project, uploaded);
-            used = used.saturating_add(footprint(&candidate));
-            if used > budget {
-                return Err(over_budget(project, budget));
-            }
-            group.push(candidate);
-            Ok::<(), String>(())
+            grouping.push(key, project, bytes, emit)
         },
     )
     .map_err(error_message)?;
     if scan.cancellation.is_cancelled() {
         return Err("retention scan cancelled".to_owned());
     }
-    if let Some(previous) = current.as_deref() {
-        plan_group(&mut group, previous, used, budget, scan.policy, scan.now, emit).map_err(error_message)?;
+    grouping.plan(emit).map_err(error_message)
+}
+
+/// The candidates read so far for one project, and how many decisions the page still owes its offset.
+///
+/// The scan reads uploads in key order, so a project's records arrive together and a new project name
+/// closes the previous one. Both the byte budget and the resume offset are per-project state, which is
+/// why they travel with the accumulated candidates rather than as loose arguments.
+struct Grouping<'a> {
+    policy: &'a RetentionPolicy,
+    now: Option<i64>,
+    budget: usize,
+    skip: u64,
+    project: Option<String>,
+    candidates: Vec<RetentionCandidate>,
+    used: usize,
+}
+
+impl Grouping<'_> {
+    fn push(
+        &mut self,
+        key: &str,
+        project: &str,
+        bytes: &[u8],
+        emit: &mut dyn FnMut(RetentionDecision) -> Result<(), String>,
+    ) -> Result<(), String> {
+        if self.project.as_deref() != Some(project) {
+            self.plan(emit)?;
+            self.project = Some(project.to_owned());
+        }
+        let uploaded: Uploaded =
+            serde_json::from_slice(bytes).map_err(|err| format!("corrupt upload record {key}: {err}"))?;
+        let candidate = candidate(project, uploaded);
+        self.used = self.used.saturating_add(footprint(&candidate));
+        if self.used > self.budget {
+            return Err(over_budget(project, self.budget));
+        }
+        self.candidates.push(candidate);
+        Ok(())
     }
-    Ok(())
+
+    /// Plans the project just closed and emits the decisions past the page's offset.
+    ///
+    /// The plan is built whether or not the page wants any of its rows, because that is what the byte
+    /// budget is measured against and what counts the decisions the offset consumes. What the offset
+    /// saves is the expansion: skipped rows are dropped from the plan, so the surviving groups a
+    /// removal repeats are never cloned for a row nobody reads.
+    fn plan(&mut self, emit: &mut dyn FnMut(RetentionDecision) -> Result<(), String>) -> Result<(), String> {
+        let Some(project) = self.project.take() else {
+            return Ok(());
+        };
+        let mut candidates = std::mem::take(&mut self.candidates);
+        let used = std::mem::take(&mut self.used);
+        assign_ranks(&mut candidates);
+        let mut plan = self.policy.plan_resource(self.now, candidates);
+        if used.saturating_add(plan.live_bytes()) > self.budget {
+            return Err(over_budget(&project, self.budget));
+        }
+        self.skip -= plan.skip(self.skip);
+        for decision in plan.decisions() {
+            emit(decision)?;
+        }
+        Ok(())
+    }
 }
 
 /// How many upload records the scan reads between cancellation checks. Reading an atomic per record
 /// would cost more than it saves, and a page this small still bounds how long a cancelled request keeps
 /// its blocking worker.
 const RETENTION_SCAN_PAGE: usize = 100;
-
-fn plan_group(
-    group: &mut Vec<RetentionCandidate>,
-    project: &str,
-    used: usize,
-    budget: usize,
-    policy: &RetentionPolicy,
-    now: Option<i64>,
-    emit: &mut dyn FnMut(RetentionDecision) -> Result<(), String>,
-) -> Result<(), String> {
-    let mut group = std::mem::take(group);
-    assign_ranks(&mut group);
-    let plan = policy.plan_resource(now, group);
-    if used.saturating_add(plan.live_bytes()) > budget {
-        return Err(over_budget(project, budget));
-    }
-    for decision in plan.decisions() {
-        emit(decision)?;
-    }
-    Ok(())
-}
 
 fn over_budget(project: &str, budget: usize) -> String {
     format!("retention plan for project {project} exceeds the {budget}-byte per-project memory budget")

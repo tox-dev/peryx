@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use bytes::Bytes;
 use peryx_policy::{
@@ -66,11 +67,48 @@ impl RetentionDriver for StubDriver {
             policy_version: scan.policy.version(),
             frontier: peryx_policy::RetentionFrontier::default(),
         })?;
-        for decision in &self.decisions {
+        for decision in self
+            .decisions
+            .iter()
+            .skip(usize::try_from(scan.skip).unwrap_or(usize::MAX))
+        {
             emit(decision.clone())?;
         }
         if let Some(reason) = &self.fail {
             return Err(reason.clone());
+        }
+        Ok(())
+    }
+}
+
+/// A driver that builds each decision only as it emits it, so `built` counts expansions rather than
+/// rows walked, and records the offset it was handed.
+struct CountingDriver {
+    total: u64,
+    skip: AtomicU64,
+    built: AtomicU64,
+}
+
+impl RetentionDriver for CountingDriver {
+    fn validate_retention(&self, _policy: &RetentionPolicy) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn plan_retention(
+        &self,
+        scan: &crate::serving::RetentionScan<'_>,
+        start: &mut dyn FnMut(peryx_policy::RetentionSummary) -> Result<(), String>,
+        emit: &mut dyn FnMut(RetentionDecision) -> Result<(), String>,
+    ) -> Result<(), String> {
+        self.validate_retention(scan.policy)?;
+        self.skip.store(scan.skip, Ordering::Relaxed);
+        start(peryx_policy::RetentionSummary {
+            policy_version: scan.policy.version(),
+            frontier: peryx_policy::RetentionFrontier::default(),
+        })?;
+        for index in scan.skip..self.total {
+            self.built.fetch_add(1, Ordering::Relaxed);
+            emit(decision(&index.to_string()))?;
         }
         Ok(())
     }
@@ -147,6 +185,23 @@ fn test_plan_streams_every_decision_for_an_unbounded_export() {
     assert_eq!(seen, vec!["a", "b", "c"]);
     assert_eq!(page.emitted, 3);
     assert!(page.next_cursor.is_none());
+}
+
+#[test]
+fn test_plan_builds_only_the_decisions_a_deep_page_returns() {
+    let (_dir, meta) = store();
+    let driver = CountingDriver {
+        total: 1_000,
+        skip: AtomicU64::new(0),
+        built: AtomicU64::new(0),
+    };
+
+    let (seen, page) = collect(&driver, &meta, &empty_policy(), 997, None, None).unwrap();
+
+    assert_eq!(seen, vec!["997", "998", "999"]);
+    assert_eq!(page.emitted, 3);
+    assert_eq!(driver.skip.into_inner(), 997);
+    assert_eq!(driver.built.into_inner(), 3);
 }
 
 #[test]

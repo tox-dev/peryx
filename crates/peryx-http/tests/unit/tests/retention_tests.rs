@@ -60,7 +60,11 @@ impl RetentionDriver for StubDriver {
                 policy: generation.policy,
             },
         })?;
-        for decision in &self.decisions {
+        for decision in self
+            .decisions
+            .iter()
+            .skip(usize::try_from(scan.skip).unwrap_or(usize::MAX))
+        {
             emit(decision.clone())?;
         }
         if let Some(reason) = &self.fail {

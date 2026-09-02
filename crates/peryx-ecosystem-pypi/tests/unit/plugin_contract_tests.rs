@@ -450,6 +450,7 @@ fn plugin_retention_capability_plans_hosted_uploads() {
                 index: "hosted",
                 policy: &policy,
                 now: None,
+                skip: 0,
                 cancellation: &peryx_driver::ScanCancellation::new(),
             },
             &mut |current| {

@@ -99,8 +99,28 @@ fn scan<'a>(
         index,
         policy,
         now: None,
+        skip: 0,
         cancellation,
     }
+}
+
+fn evaluate_from(meta: &MetaStore, index: &str, policy: &RetentionPolicy, skip: u64) -> Vec<RetentionDecision> {
+    let cancellation = ScanCancellation::new();
+    let mut decisions = Vec::new();
+    evaluate_retention(
+        &RetentionScan {
+            skip,
+            ..scan(meta, index, policy, &cancellation)
+        },
+        RETENTION_PROJECT_BUDGET_BYTES,
+        |_| Ok(()),
+        |decision| {
+            decisions.push(decision);
+            Ok(())
+        },
+    )
+    .unwrap();
+    decisions
 }
 
 fn plan(meta: &MetaStore, index: &str, policy: &RetentionPolicy) -> (Vec<RetentionDecision>, RetentionFrontier) {
@@ -198,6 +218,28 @@ fn test_evaluate_retention_orders_versions_by_pep440_and_keeps_the_newest() {
             ("not-a-version", RetentionOutcome::Remove),
         ]
     );
+}
+
+#[rstest]
+#[case::from_the_start(0)]
+#[case::within_the_first_project(1)]
+#[case::at_a_project_boundary(3)]
+#[case::within_the_second_project(4)]
+#[case::past_every_project(5)]
+fn test_evaluate_retention_resumes_at_its_offset(#[case] skip: usize) {
+    let (_dir, meta) = store();
+    for version in ["3.0", "2.0", "1.0"] {
+        seed(&meta, "pypi", "aaa", version, Yanked::No, None);
+    }
+    for version in ["2.0", "1.0"] {
+        seed(&meta, "pypi", "bbb", version, Yanked::No, None);
+    }
+    let policy = expire_all_but_latest(1);
+    let whole = evaluate_from(&meta, "pypi", &policy, 0);
+
+    let resumed = evaluate_from(&meta, "pypi", &policy, skip as u64);
+
+    assert_eq!(resumed, &whole[skip..]);
 }
 
 #[rstest]

@@ -255,6 +255,7 @@ fn driver_set_registers_and_dispatches_independent_capabilities() {
             index: "catalog",
             policy: &peryx_policy::RetentionPolicy::compile(&peryx_policy::RetentionConfig::default(), str::to_owned),
             now: None,
+            skip: 0,
             cancellation: &peryx_driver::ScanCancellation::new(),
         },
         &mut |_| Ok(()),

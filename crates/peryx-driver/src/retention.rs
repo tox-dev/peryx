@@ -148,8 +148,9 @@ impl std::error::Error for RetentionPlanError {}
 /// Streams one retention plan after validating its metadata frontier.
 ///
 /// A mismatched `expect` rejects the resume as [stale](RetentionPlanError::Stale). `start` receives the
-/// snapshot identity before `emit` receives up to `limit` decisions after the skip offset. Either
-/// callback may stop the read-only scan by returning an error.
+/// snapshot identity before `emit` receives up to `limit` decisions. The driver is handed the resume
+/// offset and advances past it itself, so a decision before the cursor is never built. Either callback
+/// may stop the read-only scan by returning an error.
 ///
 /// # Errors
 /// Returns [`RetentionPlanError`] when the repository plans no retention, the cursor is stale, a
@@ -166,7 +167,6 @@ pub fn plan(
     let mut start_stop = None;
     let started = Cell::new(false);
     let mut protocol_error = None;
-    let mut seen = 0_u64;
     let mut emitted = 0_u64;
     let mut stop: Option<Stop> = None;
     let outcome = driver.plan_retention(
@@ -175,6 +175,7 @@ pub fn plan(
             index: query.index,
             policy: query.policy,
             now: query.now,
+            skip: query.after,
             cancellation,
         },
         &mut |current| {
@@ -199,15 +200,10 @@ pub fn plan(
                 protocol_error = Some("the retention driver emitted a decision before opening a snapshot".to_owned());
                 return Err(HALT.to_owned());
             }
-            if seen < query.after {
-                seen += 1;
-                return Ok(());
-            }
             if query.limit.is_some_and(|limit| emitted >= limit as u64) {
                 stop = Some(Stop::Full);
                 return Err(HALT.to_owned());
             }
-            seen += 1;
             emit(&decision).inspect_err(|reason| stop = Some(Stop::Interrupted(reason.clone())))?;
             emitted += 1;
             Ok(())

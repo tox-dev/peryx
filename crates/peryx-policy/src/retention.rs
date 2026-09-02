@@ -133,7 +133,9 @@ impl RetentionPolicy {
     ///
     /// The returned plan holds compact state, not decisions: expanding every decision up front costs
     /// the product of removals and surviving groups, because each removal repeats the whole surviving
-    /// set. [`RetentionPlan::decisions`] expands one decision at a time instead.
+    /// set. [`RetentionPlan::decisions`] expands one decision at a time instead, and
+    /// [`RetentionPlan::skip`] advances past the ones a resumed page does not want without expanding
+    /// them at all.
     #[must_use]
     pub fn plan_resource(&self, now: Option<i64>, mut candidates: Vec<RetentionCandidate>) -> RetentionPlan {
         candidates.sort_by(|left, right| {
@@ -232,7 +234,8 @@ struct Verdict {
 /// times survivors in owned strings — a project with ten thousand versions, half of them retained,
 /// reaches twenty-five million. This holds the survivors once and expands them into a decision only as
 /// [`decisions`](Self::decisions) yields it, so the caller's live set is the candidates, the verdicts,
-/// the surviving-group index, and one decision.
+/// the surviving-group index, and one decision. A page resuming part way through a resource
+/// [skips](Self::skip) to its offset, so the rows before it are dropped rather than expanded.
 pub struct RetentionPlan {
     candidates: Vec<RetentionCandidate>,
     verdicts: Vec<Verdict>,
@@ -256,6 +259,25 @@ impl RetentionPlan {
             .sum();
         // One expanded decision clones the whole index, which is why it counts twice.
         self.verdicts.len() * size_of::<Verdict>() + index * 2
+    }
+
+    /// Drops the first `count` decisions without expanding them, and reports how many it dropped.
+    ///
+    /// This is how a resumed page reaches its offset. Taking and discarding those decisions instead
+    /// would clone the whole surviving set once per removal passed, which is the cost the plan exists
+    /// to avoid; dropping a candidate and its verdict costs only their own bytes. A plan shorter than
+    /// `count` drops all of it, so a caller paging across resources subtracts the return from what it
+    /// still owes and carries the remainder to the next one.
+    ///
+    /// A shared digest is charged to one of its removals when the plan is built, so dropping a verdict
+    /// never moves that charge: row `k` reports the same bytes whether or not the plan was skipped, and
+    /// an export's pages sum to what the unpaged plan sums to. One page can still sum to less than the
+    /// capacity its rows free, because the row a digest was charged to may sit on an earlier page.
+    pub fn skip(&mut self, count: u64) -> u64 {
+        let dropped = usize::try_from(count).unwrap_or(usize::MAX).min(self.candidates.len());
+        self.candidates.drain(..dropped);
+        self.verdicts.drain(..dropped);
+        dropped as u64
     }
 
     /// Expands each decision as it is yielded, in the plan's deterministic order. A consumer that

@@ -248,6 +248,13 @@ pub struct RetentionScan<'a> {
     pub index: &'a str,
     pub policy: &'a peryx_policy::RetentionPolicy,
     pub now: Option<i64>,
+    /// Decisions a resumed page begins after, which the scan advances past without expanding them.
+    ///
+    /// The offset is known before the walk starts, so the driver holds it rather than the caller
+    /// filtering what it emits. A removal repeats every surviving group, so a row built only to be
+    /// discarded costs the retained set, and a page deep into a plan would pay that for every row
+    /// before its cursor.
+    pub skip: u64,
     pub cancellation: &'a crate::ScanCancellation,
 }
 
@@ -259,7 +266,8 @@ pub trait RetentionDriver: Send + Sync {
     /// # Errors
     /// Returns an error when the policy is unsupported or the plan cannot be read or emitted.
     /// Implementations validate the policy, open the candidate snapshot, invoke `start` once, then
-    /// invoke `emit` for its decisions. They check `scan.cancellation` between bounded scan pages.
+    /// invoke `emit` for the decisions after `scan.skip`, which they advance past without expanding.
+    /// They check `scan.cancellation` between bounded scan pages.
     fn plan_retention(
         &self,
         scan: &RetentionScan<'_>,

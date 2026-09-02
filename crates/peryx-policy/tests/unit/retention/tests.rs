@@ -424,6 +424,38 @@ fn a_cached_keep_rule_protects_cached_candidates() {
     assert_eq!(serde_json::to_value(&decisions[0]).unwrap()["class"], "cached");
 }
 
+#[rstest]
+#[case::nothing(0, 0, &["group-a", "group-b", "group-c"])]
+#[case::part_of_the_plan(1, 1, &["group-b", "group-c"])]
+#[case::the_whole_plan(3, 3, &[])]
+#[case::more_than_the_plan_holds(9, 3, &[])]
+fn skipping_drops_the_leading_decisions_and_reports_how_many(
+    #[case] count: u64,
+    #[case] dropped: u64,
+    #[case] remaining: &[&str],
+) {
+    let policy = RetentionPolicy::compile(&RetentionConfig::default(), str::to_owned);
+    let mut plan = policy.plan_resource(
+        None,
+        ["group-a", "group-b", "group-c"]
+            .iter()
+            .enumerate()
+            .map(|(rank, group)| candidate("resource", group, rank as u64))
+            .collect(),
+    );
+
+    let skipped = plan.skip(count);
+
+    assert_eq!(skipped, dropped);
+    assert_eq!(
+        plan.decisions().collect::<Vec<_>>(),
+        remaining
+            .iter()
+            .map(|group| decision("resource", group, RetentionOutcome::Retain, None, &[]))
+            .collect::<Vec<_>>()
+    );
+}
+
 #[test]
 fn decisions_order_by_rank_then_artifact_then_digest() {
     let policy = RetentionPolicy::compile(&RetentionConfig::default(), str::to_owned);
@@ -820,6 +852,28 @@ fn charging_a_shared_digest_once_leaves_the_rows_a_plan_returns_alone() {
     assert_eq!(rows(&shared), rows(&distinct));
     assert_eq!(reclaimed_bytes(&shared), 10);
     assert_eq!(reclaimed_bytes(&distinct), 20);
+}
+
+#[rstest]
+#[case::before_either_reference(0)]
+#[case::past_the_charged_reference(1)]
+#[case::past_both_references(2)]
+fn skipping_leaves_a_shared_digest_charged_to_the_row_that_owns_it(#[case] skip: usize) {
+    let policy = expiring(RetentionSelector::ResourcePrefix { prefix: String::new() });
+    let candidates = || {
+        vec![
+            sharing("group-a", 0, SHARED),
+            sharing("group-b", 1, SHARED),
+            sharing("group-c", 2, "sha256:other"),
+        ]
+    };
+    let whole = policy.plan_decisions(None, candidates());
+    let mut plan = policy.plan_resource(None, candidates());
+
+    plan.skip(skip as u64);
+
+    assert_eq!(whole.iter().map(|row| row.bytes).collect::<Vec<_>>(), vec![10, 0, 10]);
+    assert_eq!(plan.decisions().collect::<Vec<_>>(), whole[skip..]);
 }
 
 /// What a reader summing a plan's removals is told the plan frees.
