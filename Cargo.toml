@@ -155,6 +155,13 @@ lto = "fat"
 [profile.bench]
 lto = false
 
+# Cargo's default of 16 codegen units repartitions whenever any file in the crate changes, and local
+# ThinLTO then folds a different amount of the transform pipeline into `PageTransformer::push_into`.
+# That swung `transform::json[large]` between 14.06 ms and 15.71 ms on commits that never touched
+# `src/stream/`. One unit pins the inlined body.
+[profile.bench.package.peryx-ecosystem-pypi]
+codegen-units = 1
+
 [profile.dist]
 inherits = "release"
 codegen-units = 1

@@ -71,4 +71,9 @@ just codspeed PACKAGE
 PyPI parsing and serving benchmarks use separate builds so parser measurements exclude serving dependencies. CI runs
 those selections in parallel; the local recipe runs both.
 
+`peryx-ecosystem-pypi` builds its benchmarks as a single codegen unit. Under Cargo's default of 16, editing any file in
+the crate repartitions the units, and local ThinLTO then folds a different amount of the measured pipeline into the hot
+body, so simulation reported double-digit movement on commits that never touched the measured path. Keep a benchmarked
+crate on one unit when its hot path is a large inlined body.
+
 Use `simulation` for in-process compute paths. Compare wall-time revisions under the same host conditions outside CI.

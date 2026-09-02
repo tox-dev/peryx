@@ -56,6 +56,8 @@ _codspeed-target-contract:
       | grep -F 'cargo codspeed run -m "simulation" --package "peryx-ecosystem-oci"'
     just --dry-run codspeed-run peryx-ecosystem-pypi 2>&1 \
       | grep -F 'cargo codspeed run -m "simulation" --package "peryx-ecosystem-pypi"'
+    grep -A1 -xF '[profile.bench.package.peryx-ecosystem-pypi]' Cargo.toml \
+      | grep -qxF 'codegen-units = 1'
 
 # Check coverage target isolation.
 _coverage-target-contract:
