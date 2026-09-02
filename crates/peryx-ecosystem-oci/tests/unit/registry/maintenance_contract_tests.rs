@@ -9,7 +9,7 @@ use peryx_storage::meta::MetaStore;
 use super::OciRegistry;
 
 #[test]
-fn registry_exposes_oci_idle_reclamation() {
+fn registry_exposes_oci_maintenance_capabilities() {
     let dir = tempfile::tempdir().unwrap();
     let mut state = AppState::new(
         MetaStore::open(dir.path().join("peryx.redb")).unwrap(),
@@ -41,7 +41,13 @@ fn registry_exposes_oci_idle_reclamation() {
             .collect::<Vec<_>>(),
         vec![crate::ECOSYSTEM]
     );
-    assert_eq!(state.intent_finalizers().count(), 0);
+    assert_eq!(
+        state
+            .intent_finalizers()
+            .map(|(ecosystem, _)| ecosystem.clone())
+            .collect::<Vec<_>>(),
+        vec![crate::ECOSYSTEM]
+    );
     assert_eq!(state.cache_refreshers().count(), 0);
 }
 

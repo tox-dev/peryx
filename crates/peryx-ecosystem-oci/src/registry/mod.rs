@@ -25,7 +25,7 @@ use parking_lot::RwLock;
 use peryx_driver::ServingState;
 use peryx_driver::serving::{
     AbsoluteProtocolDriver, BlobReferenceDriver, BrowseDriver, BrowseRequest, EcosystemDriver, FsckDriver,
-    IdleReclaimer, MetricsDriver, PolicyDriver, ReplicatedApplyDriver, TrashDriver,
+    IdleReclaimer, IntentFinalizer, MetricsDriver, PolicyDriver, ReplicatedApplyDriver, TrashDriver,
 };
 use peryx_driver::state::ViewBlock;
 use peryx_identity::{Action, ArtifactDigest, Denial, DigestDecision, Identity};
@@ -42,10 +42,12 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 mod acknowledge;
+mod admission;
 mod auth;
 mod authority;
 mod blobs;
 mod discovery;
+mod finalize;
 mod manifests;
 mod uploads;
 pub use blobs::download_blob;
@@ -499,6 +501,17 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> IdleReclaimer for OciRegi
             let _ = state.blobs.discard_upload(session).await;
         }
         expired.len()
+    }
+}
+
+#[async_trait]
+impl<S: BuildHasher + Default + Send + Sync + 'static> IntentFinalizer for OciRegistryWithHasher<S> {
+    async fn finalize_admitted(&self, state: Arc<ServingState>) -> u64 {
+        finalize::finalize_admitted(&state, self.journal_outbox).await
+    }
+
+    async fn finalize_retained(&self, state: Arc<ServingState>, authority: &str, intent_key: &str) -> bool {
+        finalize::finalize_retained(&state, self.journal_outbox, authority, intent_key).await
     }
 }
 

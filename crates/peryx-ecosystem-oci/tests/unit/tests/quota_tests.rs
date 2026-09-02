@@ -931,8 +931,11 @@ async fn test_audit_without_limits_records_no_quota_usage() {
     assert_eq!((usage.accounted_bytes.committed, usage.resources.committed), (0, 0));
 }
 
+/// A fenced push keeps its reservation rather than releasing it: the bytes are durable and the write
+/// is retained for its home to finalize, so the capacity it charged belongs to that pending write
+/// until it publishes or the intent expires.
 #[tokio::test]
-async fn test_metered_upload_under_a_superseded_epoch_releases_its_reservation() {
+async fn test_metered_upload_under_a_superseded_epoch_retains_its_reservation() {
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = quota_store_distributed(
         &dir,
@@ -959,7 +962,7 @@ async fn test_metered_upload_under_a_superseded_epoch_releases_its_reservation()
     let usage = state.serving.meta.quota_usage("store").unwrap();
     assert_eq!(
         (usage.accounted_bytes.reserved, usage.accounted_bytes.committed),
-        (0, 0)
+        (blob.len() as u64, 0)
     );
     assert_eq!(
         send(&app, Method::GET, &format!("/v2/store/app/blobs/{digest}"))

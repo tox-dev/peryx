@@ -10,6 +10,7 @@ use super::uploads::created;
 use super::*;
 use crate::error::{ErrorCode, error_response, gateway_error};
 use crate::registry::acknowledge::{BlobAck, acknowledge_blob};
+use crate::registry::admission;
 use crate::registry::authority::{EpochCommit, claim_repository_home, commit_epoch};
 use crate::store::{self};
 use crate::upstream::UpstreamError;
@@ -496,6 +497,63 @@ pub(super) fn release_reservation(
     Ok(())
 }
 
+/// A blob whose bytes are committed and digest-verified, offered for durable ingress admission before
+/// any repository membership records it.
+struct IngressUpload<'a> {
+    index: &'a str,
+    repo: &'a str,
+    digest: &'a str,
+    bytes: u64,
+    operation: &'a str,
+    /// The resumable session the publication closes; `None` for a monolithic push.
+    session: Option<&'a str>,
+    reservation: Option<&'a peryx_storage::meta::QuotaReservationRecord>,
+}
+
+/// Retain `upload` for home finalization. Called only once its bytes are durable and its digest
+/// verified, so the record a crash can leave behind always names content that is already stored.
+fn stage_ingress_intent(state: &ServingState, upload: &IngressUpload<'_>) -> Result<admission::Admission, ServeError> {
+    admission::admit(
+        &state.meta,
+        admission::STAGING_LIMITS,
+        &admission::AdmissionRequest {
+            index: upload.index,
+            repo: upload.repo,
+            digest: upload.digest,
+            size: upload.bytes,
+            operation: upload.operation,
+            session: upload.session,
+            reservation: upload.reservation,
+            ingress_dc: &admission::ingress_dc(state.availability_topology()),
+        },
+        (state.clock)(),
+    )
+}
+
+/// Give back everything a shed push must not keep - its quota reservation and its claimed operation -
+/// and answer the backoff the client retries on. The bytes stay: they are content-addressed, so the
+/// retry commits the same object rather than transferring it again, and content cleanup reclaims them
+/// if it never comes.
+fn shed_push(
+    state: &ServingState,
+    reservation: Option<peryx_storage::meta::QuotaReservationRecord>,
+    operation: &str,
+    response: Response,
+) -> Result<Response, ServeError> {
+    release_reservation(state, reservation)?;
+    state.finalize_admitted_write(operation, OperationResult::Failed, b"");
+    Ok(response)
+}
+
+/// Settle the retained intent whose membership just committed, so the reaper can reclaim it and no
+/// later sweep republishes a write that is already visible.
+fn settle_ingress_intent(state: &ServingState, intent: &str) -> Result<(), ServeError> {
+    state
+        .meta
+        .advance_intent(intent, peryx_storage::meta::IntentPhase::Admitted, (state.clock)())?;
+    Ok(())
+}
+
 pub(super) struct BlobCommitContext<'a> {
     pub(super) state: &'a ServingState,
     pub(super) index: &'a Index,
@@ -546,6 +604,21 @@ pub(super) async fn commit_blob(context: BlobCommitContext<'_>, pending: BlobWri
     state.claim_admitted_write(&operation);
     match pending.commit(&storage).await {
         Ok(receipt) => {
+            let intent = match stage_ingress_intent(
+                state,
+                &IngressUpload {
+                    index: &index.name,
+                    repo,
+                    digest,
+                    bytes: receipt.size,
+                    operation: &operation,
+                    session: None,
+                    reservation: reservation.as_ref(),
+                },
+            )? {
+                admission::Admission::Staged(key) => key,
+                admission::Admission::Shed(response) => return shed_push(state, reservation, &operation, *response),
+            };
             let mutation = commit_epoch(state, repo, fence, |lease| {
                 lease.guard()?;
                 let commit = crate::quota::commit_blob_membership(
@@ -562,11 +635,13 @@ pub(super) async fn commit_blob(context: BlobCommitContext<'_>, pending: BlobWri
                 Ok(commit)
             })
             .await?;
+            // A fenced membership leaves the retained intent, its reservation, and its operation
+            // exactly as they are: the bytes are durable here and the write is still finalizable, so
+            // the home publishes it rather than the client losing it to a mid-flight transfer.
             let EpochCommit::Committed(commit) = mutation else {
-                release_reservation(state, reservation)?;
-                state.finalize_admitted_write(&operation, OperationResult::Failed, b"");
                 return Ok(authority_moved());
             };
+            settle_ingress_intent(state, &intent)?;
             publish_acknowledged(
                 state,
                 &operation,
@@ -662,6 +737,21 @@ pub(super) async fn commit_staged_upload(
     state.claim_admitted_write(&operation);
     match state.blobs.finish_upload(session, &storage).await {
         Ok(receipt) => {
+            let intent = match stage_ingress_intent(
+                state,
+                &IngressUpload {
+                    index: &index.name,
+                    repo,
+                    digest,
+                    bytes: receipt.size,
+                    operation: &operation,
+                    session: Some(session),
+                    reservation: reservation.as_ref(),
+                },
+            )? {
+                admission::Admission::Staged(key) => key,
+                admission::Admission::Shed(response) => return shed_push(state, reservation, &operation, *response),
+            };
             let mutation = commit_epoch(state, repo, fence, |lease| {
                 lease.guard()?;
                 let commit = crate::quota::commit_blob_membership(
@@ -678,11 +768,13 @@ pub(super) async fn commit_staged_upload(
                 Ok(commit)
             })
             .await?;
+            // A fenced membership leaves the retained intent, its reservation, and its operation
+            // exactly as they are: the bytes are durable here and the write is still finalizable, so
+            // the home publishes it rather than the client losing it to a mid-flight transfer.
             let EpochCommit::Committed(commit) = mutation else {
-                release_reservation(state, reservation)?;
-                state.finalize_admitted_write(&operation, OperationResult::Failed, b"");
                 return Ok(authority_moved());
             };
+            settle_ingress_intent(state, &intent)?;
             publish_acknowledged(
                 state,
                 &operation,

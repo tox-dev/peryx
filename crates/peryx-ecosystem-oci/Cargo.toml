@@ -59,7 +59,8 @@ clap = { workspace = true, optional = true }
 [dev-dependencies]
 peryx-events = { workspace = true, features = ["test-util"] }
 peryx-http.workspace = true
-peryx-test-support.workspace = true
+peryx-storage = { workspace = true, features = ["fault-injection"] }
+peryx-test-support = { workspace = true, features = ["redb-fault"] }
 rustls.workspace = true
 base64.workspace = true
 flate2.workspace = true

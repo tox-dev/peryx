@@ -1432,8 +1432,10 @@ fn read_only_app(dir: &tempfile::TempDir) -> axum::Router {
     peryx_http::router(Arc::new(state))
 }
 
+/// A read-only store fails the ingress admission that retains the push, which is the first metadata
+/// write a completion makes. Whichever store write faults, the client sees the same gateway error.
 #[tokio::test]
-async fn test_monolithic_upload_reports_a_membership_store_fault() {
+async fn test_monolithic_upload_reports_an_admission_store_fault() {
     let dir = tempfile::tempdir().unwrap();
     drop(MetaStore::open(dir.path().join("peryx.redb")).unwrap());
     let app = read_only_app(&dir);
@@ -1453,7 +1455,7 @@ async fn test_monolithic_upload_reports_a_membership_store_fault() {
 }
 
 #[tokio::test]
-async fn test_session_finish_reports_a_membership_store_fault() {
+async fn test_session_finish_reports_an_admission_store_fault() {
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = hosted_writable(&dir, TOKEN);
     let blob = b"read-only-session";
