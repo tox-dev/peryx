@@ -128,7 +128,6 @@ impl ByteAvailability {
 pub enum PlacementEvent {
     BytesVerified,
     WriteFailed,
-    BytesRemoved,
     Repaired { present: bool },
 }
 
@@ -151,7 +150,6 @@ impl ArtifactPlacement {
     pub const fn after(self, event: PlacementEvent) -> Self {
         let availability = match event {
             PlacementEvent::BytesVerified => ByteAvailability::Local,
-            PlacementEvent::BytesRemoved => self.source.without_bytes(),
             PlacementEvent::WriteFailed => self.availability,
             PlacementEvent::Repaired { present } => Self::from_presence(self.source, present),
         };

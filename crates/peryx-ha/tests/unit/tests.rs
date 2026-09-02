@@ -112,7 +112,7 @@ fn byte_availability_projects_its_wire_value(
 
 #[rstest]
 #[case::verified(PlacementEvent::BytesVerified, ByteAvailability::Local)]
-#[case::removed(PlacementEvent::BytesRemoved, ByteAvailability::RemoteOnly)]
+#[case::repaired_absent(PlacementEvent::Repaired { present: false }, ByteAvailability::RemoteOnly)]
 #[case::failed(PlacementEvent::WriteFailed, ByteAvailability::RemoteOnly)]
 #[case::repaired(PlacementEvent::Repaired { present: true }, ByteAvailability::Local)]
 fn artifact_placement_applies_events(#[case] event: PlacementEvent, #[case] availability: ByteAvailability) {

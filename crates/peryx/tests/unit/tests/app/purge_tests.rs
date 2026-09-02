@@ -1,3 +1,4 @@
+use peryx_ha::{ArtifactPlacement, ArtifactSource};
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
 use rstest::rstest;
@@ -85,6 +86,55 @@ fn test_cache_purge_orphaned_blobs_propagates_row_output_failures() {
     .unwrap_err();
 
     assert!(error.to_string().contains("failed to write whole buffer"), "{error:#}");
+}
+
+/// Records the placement a fetch would have written for `digest`, and reports whether the store still
+/// holds one afterwards.
+fn placed(config: &Config, digest: &str) -> bool {
+    MetaStore::open_existing(config.data_dir.join("peryx.redb"))
+        .unwrap()
+        .get_artifact_placement(digest)
+        .unwrap()
+        .is_some()
+}
+
+fn record_placement(config: &Config, digest: &str) {
+    MetaStore::open_existing(config.data_dir.join("peryx.redb"))
+        .unwrap()
+        .put_artifact_placement(digest, &ArtifactPlacement::record(ArtifactSource::Proxy, true))
+        .unwrap();
+}
+
+/// A placement row outliving the bytes it describes is a promise no read can keep: the digest is
+/// unreferenced when the purge runs, but a later reference to it would read that row and report content
+/// this node no longer holds.
+#[test]
+fn test_cache_purge_orphaned_blobs_retires_the_placement_with_the_bytes() {
+    let (_dir, config) = empty_cache();
+    let blobs = BlobStore::new(config.data_dir.join("blobs"));
+    let orphan = blobs.write(b"orphan").unwrap();
+    record_placement(&config, orphan.as_str());
+    let mut output = Vec::new();
+
+    app::cache(&config, &orphan_command(true), &mut output).unwrap();
+
+    assert_eq!(
+        (blobs.exists(&orphan), placed(&config, orphan.as_str())),
+        (false, false)
+    );
+}
+
+#[test]
+fn test_cache_purge_orphaned_blobs_dry_run_keeps_the_placement() {
+    let (_dir, config) = empty_cache();
+    let blobs = BlobStore::new(config.data_dir.join("blobs"));
+    let orphan = blobs.write(b"orphan").unwrap();
+    record_placement(&config, orphan.as_str());
+    let mut output = Vec::new();
+
+    app::cache(&config, &orphan_command(false), &mut output).unwrap();
+
+    assert_eq!((blobs.exists(&orphan), placed(&config, orphan.as_str())), (true, true));
 }
 
 fn orphan_command(yes: bool) -> CacheCommand {

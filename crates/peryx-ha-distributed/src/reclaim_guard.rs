@@ -75,6 +75,11 @@ pub fn purge_orphaned_blobs(
         .filter(|candidate| armed.contains(candidate.digest.as_str()))
         .collect::<Vec<_>>();
     for candidate in &selected {
+        // The placement goes before the bytes. An interruption between the two then leaves a digest
+        // whose row claims nothing while the bytes survive, which understates what this node holds; the
+        // other order leaves a row promising bytes that are gone, and a later reference to the same
+        // digest would read that promise and offer content no read can serve.
+        meta.delete_artifact_placement(candidate.digest.as_str())?;
         if let Err(error) = blobs.blocking().delete(&candidate.digest) {
             return Err(OrphanPurgeError::Blob {
                 operation: "delete orphaned blob",

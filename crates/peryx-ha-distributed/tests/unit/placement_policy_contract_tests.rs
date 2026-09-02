@@ -455,7 +455,7 @@ fn test_concurrent_placement_events_converge() {
                             if index % 2 == 0 {
                                 PlacementEvent::BytesVerified
                             } else {
-                                PlacementEvent::BytesRemoved
+                                PlacementEvent::Repaired { present: false }
                             },
                         )
                         .unwrap();
