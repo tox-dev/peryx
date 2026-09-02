@@ -1133,10 +1133,10 @@ async fn test_token_flight_retries_when_the_sender_closes() {
         assert_eq!(sender.receiver_count(), 1);
         upstream.tokens.lock().await.insert(
             cache_key.clone(),
-            CachedToken {
-                credentials: credential.identity(),
-                value: "retried".to_owned(),
-            },
+            credential.identity(),
+            "retried".to_owned(),
+            i64::MAX,
+            0,
         );
         upstream.inflight.lock().await.remove(&cache_key);
         drop(sender);
@@ -1209,10 +1209,10 @@ async fn test_token_flight_reuses_a_token_cached_after_the_registry_request() {
     let cache_key = token_cache_key(base, scope, credential.identity().provider());
     upstream.tokens.lock().await.insert(
         cache_key.clone(),
-        CachedToken {
-            credentials: credential.identity(),
-            value: "cached".to_owned(),
-        },
+        credential.identity(),
+        "cached".to_owned(),
+        i64::MAX,
+        0,
     );
     let challenge = Bearer {
         realm: "unreachable".to_owned(),
@@ -1300,10 +1300,7 @@ async fn test_send_coalesces_concurrent_token_exchanges() {
     for outcome in outcomes {
         assert_eq!(outcome.unwrap(), StatusCode::OK);
     }
-    let cached = {
-        let tokens = upstream.tokens.lock().await;
-        tokens.values().map(|token| token.value.clone()).collect::<Vec<_>>()
-    };
+    let cached = upstream.tokens.lock().await.values();
     assert_eq!(cached, ["tok"]);
 }
 
@@ -1374,4 +1371,79 @@ async fn test_send_reelects_a_leader_after_a_failed_exchange() {
         ),
         (2, 1, 1)
     );
+}
+
+/// Pull twice through one client, the second time at `second_pull_at` on the injected clock, and
+/// report how many token exchanges the realm saw. One means the first token was still good.
+async fn token_exchanges(token_body: &str, second_pull_at: i64) -> usize {
+    let server = MockServer::start().await;
+    let base = format!("{}/", server.uri());
+    Mock::given(method("GET"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(token_body))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v2/library/nginx/manifests/latest"))
+        .and(Unauthenticated)
+        .respond_with(challenge(&base))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v2/library/nginx/manifests/latest"))
+        .and(match_header("authorization", "Bearer tok"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    let now = Arc::new(std::sync::atomic::AtomicI64::new(0));
+    let clock = Arc::clone(&now);
+    let upstream = Upstream::with_clock(Arc::new(move || clock.load(Ordering::Relaxed)));
+    let client = upstream_client(&base, credentials(Auth::None));
+    let realms = TokenRealms::default();
+
+    upstream
+        .manifest(&client, "library/nginx", "latest", &realms)
+        .await
+        .unwrap();
+    now.store(second_pull_at, Ordering::Relaxed);
+    upstream
+        .manifest(&client, "library/nginx", "latest", &realms)
+        .await
+        .unwrap();
+
+    server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|request| request.url.path() == "/token")
+        .count()
+}
+
+/// The realm's own fields decide how long a token is reused. The clock starts at the Unix epoch, so
+/// an `issued_at` before it is a token already partly spent when it arrived.
+#[rstest]
+#[case::absent_defaults_to_a_minute(r#"{"token":"tok"}"#, 54, 1)]
+#[case::absent_expires(r#"{"token":"tok"}"#, 56, 2)]
+#[case::declared(r#"{"token":"tok","expires_in":300}"#, 294, 1)]
+#[case::declared_expires(r#"{"token":"tok","expires_in":300}"#, 296, 2)]
+#[case::capped_at_an_hour(r#"{"token":"tok","expires_in":86400}"#, 3594, 1)]
+#[case::capped_expires(r#"{"token":"tok","expires_in":86400}"#, 3596, 2)]
+#[case::malformed_is_not_retained(r#"{"token":"tok","expires_in":"soon"}"#, 0, 2)]
+#[case::zero_is_not_retained(r#"{"token":"tok","expires_in":0}"#, 0, 2)]
+#[case::negative_is_not_retained(r#"{"token":"tok","expires_in":-30}"#, 0, 2)]
+#[case::issued_at_spends_the_lifetime(r#"{"token":"tok","expires_in":300,"issued_at":"1969-12-31T23:55:00Z"}"#, 0, 2)]
+#[case::issued_at_spends_part_of_it(r#"{"token":"tok","expires_in":300,"issued_at":"1969-12-31T23:59:00Z"}"#, 234, 1)]
+#[case::unreadable_issued_at_starts_at_the_exchange(
+    r#"{"token":"tok","expires_in":300,"issued_at":"not-a-date"}"#,
+    294,
+    1
+)]
+#[tokio::test]
+async fn test_a_token_is_reused_for_the_lifetime_its_realm_declared(
+    #[case] token_body: &str,
+    #[case] second_pull_at: i64,
+    #[case] expected_exchanges: usize,
+) {
+    assert_eq!(token_exchanges(token_body, second_pull_at).await, expected_exchanges);
 }

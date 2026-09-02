@@ -12,14 +12,14 @@ use std::time::Duration;
 use axum::http::{HeaderValue, Method, StatusCode};
 use peryx_identity::strip_auth_scheme;
 use peryx_upstream::{
-    Auth, CredentialError, CredentialIdentity, CredentialProvider, CredentialProviderId, CredentialSnapshot,
-    UpstreamClient,
+    Auth, CredentialError, CredentialProvider, CredentialProviderId, CredentialSnapshot, UpstreamClient,
 };
 use reqwest::Response;
 use tokio::sync::{Mutex, broadcast};
 use tokio::time::{Instant, timeout_at};
 
 use crate::realm::TokenRealms;
+use crate::token_cache::{DeclaredLifetime, TokenCache, TokenCacheKey, expires_at};
 
 const TOKEN_FLIGHT_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -37,19 +37,15 @@ application/vnd.oci.image.index.v1+json, \
 /// `inflight` single-flights token exchanges: concurrent cold pulls that miss the same `(base, scope,
 /// provider)` key elect one leader to trade the challenge for a token while the rest await its result,
 /// so a burst that would otherwise fire one token request per pull fires one for the whole burst.
-#[derive(Debug)]
 pub struct Upstream {
-    tokens: Mutex<HashMap<TokenCacheKey, CachedToken>>,
+    tokens: Mutex<TokenCache>,
     inflight: Mutex<HashMap<TokenCacheKey, broadcast::Sender<String>>>,
     token_flight_timeout: Duration,
+    clock: Clock,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct TokenCacheKey {
-    base: String,
-    scope: String,
-    provider: CredentialProviderId,
-}
+/// Unix seconds. Injected so a test can drive a token past its expiry without waiting for it.
+type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
 
 /// What one token exchange needs beyond its cache key: the challenge to trade, the provider that can
 /// replace a rejected credential, the snapshot in hand, and the realms it may be shown to.
@@ -58,12 +54,6 @@ struct TokenExchange<'a> {
     credentials: &'a CredentialProvider,
     credential: &'a Arc<CredentialSnapshot>,
     realms: &'a TokenRealms,
-}
-
-#[derive(Debug)]
-struct CachedToken {
-    credentials: CredentialIdentity,
-    value: String,
 }
 
 /// Why an upstream pull did not yield bytes to serve.
@@ -142,10 +132,18 @@ impl Default for Upstream {
 impl Upstream {
     #[must_use]
     pub fn new() -> Self {
+        Self::with_clock(Arc::new(unix_now))
+    }
+
+    /// The same client reading `clock` for Unix seconds, which is what decides when a cached token has
+    /// aged out.
+    #[must_use]
+    pub fn with_clock(clock: Clock) -> Self {
         Self {
-            tokens: Mutex::new(HashMap::new()),
+            tokens: Mutex::new(TokenCache::default()),
             inflight: Mutex::new(HashMap::new()),
             token_flight_timeout: TOKEN_FLIGHT_TIMEOUT,
+            clock,
         }
     }
 
@@ -358,9 +356,7 @@ impl Upstream {
         self.tokens
             .lock()
             .await
-            .get(cache_key)
-            .filter(|token| token.credentials == credential.identity())
-            .map(|token| token.value.clone())
+            .get(cache_key, credential.identity(), (self.clock)())
     }
 
     /// Trade the bearer challenge for a token and cache it, refreshing the source credential once if
@@ -373,7 +369,7 @@ impl Upstream {
     ) -> Result<String, UpstreamError> {
         let mut credential = Arc::clone(exchange.credential);
         let mut auth = credential.auth();
-        let token = match self
+        let issued = match self
             .fetch_token(client, exchange.challenge, scope, auth, exchange.realms)
             .await
         {
@@ -389,14 +385,19 @@ impl Upstream {
             }
             result => result?,
         };
-        self.tokens.lock().await.insert(
-            token_cache_key(client.base_url(), scope, credential.identity().provider()),
-            CachedToken {
-                credentials: credential.identity(),
-                value: token.clone(),
-            },
-        );
-        Ok(token)
+        let now = (self.clock)();
+        // A lifetime peryx cannot honour is not a reason to fail the pull: the token serves the
+        // request it was fetched for, and nothing is retained for the next one.
+        if let Some(expires_at) = expires_at(issued.lifetime, issued.issued_at, now) {
+            self.tokens.lock().await.insert(
+                token_cache_key(client.base_url(), scope, credential.identity().provider()),
+                credential.identity(),
+                issued.value.clone(),
+                expires_at,
+                now,
+            );
+        }
+        Ok(issued.value)
     }
 
     async fn attempt(
@@ -431,7 +432,7 @@ impl Upstream {
         scope: &str,
         auth: &Auth,
         realms: &TokenRealms,
-    ) -> Result<String, UpstreamError> {
+    ) -> Result<IssuedToken, UpstreamError> {
         let scope = challenge.scope.as_deref().unwrap_or(scope);
         let mut url = url::Url::parse(&challenge.realm)
             .map_err(|err| UpstreamError::Transport(format!("invalid bearer realm: {err}")))?;
@@ -472,9 +473,16 @@ impl Upstream {
                 return Err(UpstreamError::Status(status));
             }
             let body: TokenResponse = serde_json::from_slice(&read_capped(response).await?)?;
+            let lifetime = declared_lifetime(body.expires_in.as_ref());
+            let issued_at = body.issued_at.as_deref().and_then(parse_issued_at);
             return body
                 .token
                 .or(body.access_token)
+                .map(|value| IssuedToken {
+                    value,
+                    lifetime,
+                    issued_at,
+                })
                 .ok_or_else(|| UpstreamError::Transport("token endpoint returned no token".to_owned()));
         }
         Err(UpstreamError::Transport(format!(
@@ -710,6 +718,39 @@ const fn is_quoted_pair(byte: u8) -> bool {
 struct TokenResponse {
     token: Option<String>,
     access_token: Option<String>,
+    /// Read as raw JSON rather than as a number. A realm that spells its lifetime as a string or an
+    /// object has sent one peryx cannot honour, and refusing to retain that token must not also fail
+    /// the exchange it came from.
+    expires_in: Option<serde_json::Value>,
+    issued_at: Option<String>,
+}
+
+/// A token as its realm issued it: the opaque value, and what the response said about its lifetime.
+struct IssuedToken {
+    value: String,
+    lifetime: DeclaredLifetime,
+    issued_at: Option<i64>,
+}
+
+fn declared_lifetime(expires_in: Option<&serde_json::Value>) -> DeclaredLifetime {
+    match expires_in {
+        None | Some(serde_json::Value::Null) => DeclaredLifetime::Absent,
+        Some(value) => value
+            .as_i64()
+            .map_or(DeclaredLifetime::Malformed, DeclaredLifetime::Seconds),
+    }
+}
+
+/// An `issued_at` peryx cannot read leaves the lifetime measured from the exchange, which is the same
+/// answer as a realm that sent none.
+fn parse_issued_at(issued_at: &str) -> Option<i64> {
+    time::OffsetDateTime::parse(issued_at, &time::format_description::well_known::Rfc3339)
+        .ok()
+        .map(time::OffsetDateTime::unix_timestamp)
+}
+
+fn unix_now() -> i64 {
+    time::OffsetDateTime::now_utc().unix_timestamp()
 }
 
 #[cfg(test)]

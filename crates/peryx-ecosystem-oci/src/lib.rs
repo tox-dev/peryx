@@ -90,6 +90,7 @@ pub(crate) mod registry;
 mod search_oci;
 mod settings;
 mod store;
+mod token_cache;
 mod upstream;
 mod web;
 mod webhook;
