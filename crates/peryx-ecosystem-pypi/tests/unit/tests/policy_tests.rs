@@ -361,8 +361,11 @@ fn test_apply_detail_rejects_project_size_without_file_size() {
     );
 }
 
+/// The Simple API permits a listed release to carry no files, so a declared version outlives every
+/// file that fails to name it. The unparseable filename names no release to check against, which is
+/// how a legacy egg keeps being served.
 #[test]
-fn test_apply_detail_clears_versions_when_no_file_versions_remain() {
+fn test_apply_detail_keeps_a_declared_release_whose_files_name_no_version() {
     let policy = policy(|neutral, _pypi| {
         neutral.block_resources = vec!["blocked".to_owned()];
     });
@@ -381,11 +384,23 @@ fn test_apply_detail_clears_versions_when_no_file_versions_remain() {
         )
         .unwrap();
 
-    assert!(detail.versions.is_empty());
+    assert_eq!(detail.versions, ["1.0"]);
+    assert_eq!(
+        detail
+            .files
+            .iter()
+            .map(|file| file.filename.as_str())
+            .collect::<Vec<_>>(),
+        ["not-a-dist.whl"]
+    );
 }
 
+/// The declared releases are the listed set, deduplicated and ordered, and a served file whose
+/// release upstream never declared joins it rather than being left under no listed version. The
+/// streaming path has always emitted a sorted set, so agreeing on one order is part of the two paths
+/// agreeing at all.
 #[test]
-fn test_apply_detail_preserves_version_order_and_appends_missing_versions() {
+fn test_apply_detail_lists_the_declared_releases_and_the_ones_its_files_name() {
     let policy = policy(|neutral, _pypi| {
         neutral.block_resources = vec!["blocked".to_owned()];
     });
@@ -408,7 +423,118 @@ fn test_apply_detail_preserves_version_order_and_appends_missing_versions() {
         )
         .unwrap();
 
-    assert_eq!(detail.versions, ["3.0", "1.0", "3.0", "2.0"]);
+    assert_eq!(detail.versions, ["1.0", "2.0", "3.0"]);
+    assert_eq!(
+        detail
+            .files
+            .iter()
+            .map(|file| file.filename.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "demo-1.0-py3-none-any.whl",
+            "demo-2.0-py3-none-any.whl",
+            "demo-3.0-py3-none-any.whl"
+        ]
+    );
+}
+
+/// A release the version rule denies leaves both halves of the page: it is not listed, and the files
+/// that belong to it are not served.
+#[test]
+fn test_apply_detail_drops_a_denied_release_from_versions_and_files() {
+    let policy = policy(|_neutral, pypi| pypi.allow_versions = Some(">=2".to_owned()));
+
+    let detail = policy
+        .apply_detail(
+            PolicyAction::Serve,
+            "demo",
+            ProjectDetail {
+                meta: Meta::default(),
+                name: "demo".to_owned(),
+                versions: vec!["1.0".to_owned(), "2.0".to_owned()],
+                files: vec![
+                    file("demo-1.0-py3-none-any.whl", Some(1)),
+                    file("demo-2.0-py3-none-any.whl", Some(1)),
+                ],
+            },
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(detail.versions, ["2.0"]);
+    assert_eq!(
+        detail
+            .files
+            .iter()
+            .map(|file| file.filename.as_str())
+            .collect::<Vec<_>>(),
+        ["demo-2.0-py3-none-any.whl"]
+    );
+}
+
+/// Artifact filtering removes the only file of an allowed release. The release stays listed, which is
+/// what the Simple API permits and what the buffered path used to get wrong.
+#[test]
+fn test_apply_detail_keeps_a_release_whose_only_file_artifact_policy_removed() {
+    let policy = policy(|neutral, _pypi| neutral.max_artifact_size_bytes = Some(4));
+
+    let detail = policy
+        .apply_detail(
+            PolicyAction::Serve,
+            "demo",
+            ProjectDetail {
+                meta: Meta::default(),
+                name: "demo".to_owned(),
+                versions: vec!["1.0".to_owned(), "2.0".to_owned()],
+                files: vec![
+                    file("demo-1.0-py3-none-any.whl", Some(9)),
+                    file("demo-2.0-py3-none-any.whl", Some(1)),
+                ],
+            },
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(detail.versions, ["1.0", "2.0"]);
+    assert_eq!(
+        detail
+            .files
+            .iter()
+            .map(|file| file.filename.as_str())
+            .collect::<Vec<_>>(),
+        ["demo-2.0-py3-none-any.whl"]
+    );
+}
+
+/// An unparseable declared version cannot be shown to satisfy a configured specifier, so it is not
+/// listed; with no specifier the upstream set stands as it arrived.
+#[rstest]
+#[case::unconstrained(None, vec!["1.0", "not a version"])]
+#[case::constrained(Some(">=1"), vec!["1.0"])]
+fn test_apply_detail_judges_an_unparseable_declared_version(
+    #[case] specifier: Option<&str>,
+    #[case] expected: Vec<&str>,
+) {
+    let policy = policy(|neutral, pypi| {
+        neutral.block_resources = vec!["blocked".to_owned()];
+        pypi.allow_versions = specifier.map(str::to_owned);
+    });
+
+    let detail = policy
+        .apply_detail(
+            PolicyAction::Serve,
+            "demo",
+            ProjectDetail {
+                meta: Meta::default(),
+                name: "demo".to_owned(),
+                versions: vec!["1.0".to_owned(), "not a version".to_owned()],
+                files: Vec::new(),
+            },
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(detail.versions, expected);
 }
 
 #[test]
@@ -641,9 +767,11 @@ fn test_apply_detail_hides_a_young_release_and_keeps_an_aged_one() {
         )
         .unwrap();
 
+    // The delay withholds the young release's file, not the release itself: the Simple API permits a
+    // listed version with no files, and erasing 2.0 would tell a resolver the release does not exist.
     let names: Vec<&str> = detail.files.iter().map(|file| file.filename.as_str()).collect();
     assert_eq!(names, ["demo-1.0-py3-none-any.whl"]);
-    assert_eq!(detail.versions, ["1.0"]);
+    assert_eq!(detail.versions, ["1.0", "2.0"]);
 }
 
 #[test]

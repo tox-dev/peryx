@@ -8,7 +8,7 @@ use serde::Serialize;
 
 use super::validator::JsonValidator;
 use super::{PageContext, PageSummary, Registration, TransformError, is_json_whitespace};
-use crate::policy::{PypiPolicy, RemoteMetadataMode};
+use crate::policy::{PypiPolicy, RemoteMetadataMode, VersionAdmission, listed_versions, served_version};
 use crate::simple::{ProjectStatusObject, absolutize, parse_project_status};
 use crate::{CoreMetadata, File, SimpleError, parse_meta};
 
@@ -111,6 +111,9 @@ pub struct PageTransformer {
     document: DocumentState,
     /// Element bytes being captured (a `files` object or the whole `versions` array).
     capture: Vec<u8>,
+    /// The releases of the files served so far, which join the declared set so no served file is
+    /// left belonging to no listed release.
+    served_versions: BTreeSet<String>,
     /// Depth at which the active array closes.
     array_depth: u32,
     registrations: Vec<Registration>,
@@ -155,6 +158,7 @@ impl PageTransformer {
                 },
             },
             capture: Vec::new(),
+            served_versions: BTreeSet::new(),
             array_depth: 0,
             registrations: Vec::new(),
             consumed: 0,
@@ -598,10 +602,19 @@ impl PageTransformer {
         Ok(())
     }
 
+    /// Remember the release a served file belongs to, so `versions` lists it even when upstream did
+    /// not declare it.
+    fn record_served(&mut self, filename: &str) {
+        if let Some(version) = served_version(filename) {
+            self.served_versions.insert(version);
+        }
+    }
+
     fn emit_local_files(&mut self, out: &mut Vec<u8>) {
         if self.project_is_quarantined() {
             return;
         }
+        let mut served: BTreeSet<String> = BTreeSet::new();
         for file in &self.context.local_files {
             // Overrides recorded against a filename that was later uploaded locally apply to the
             // local file too, matching the buffered path; the local file otherwise seeds `skip` only
@@ -628,7 +641,9 @@ impl PageTransformer {
                 write_json(out, file);
             }
             self.document.emitted_in_array = true;
+            served.extend(served_version(&file.filename));
         }
+        self.served_versions.append(&mut served);
     }
 
     /// Rewrite one captured upstream file object and emit it, unless it is shadowed or hidden.
@@ -674,6 +689,7 @@ impl PageTransformer {
             }
             write_json(out, &file);
             self.document.emitted_in_array = true;
+            self.record_served(&file.filename);
             return Ok(());
         }
         if let Some(base) = &self.context.base {
@@ -730,6 +746,7 @@ impl PageTransformer {
         }
         write_json(out, &file);
         self.document.emitted_in_array = true;
+        self.record_served(&file.filename);
         Ok(())
     }
 
@@ -773,14 +790,19 @@ impl PageTransformer {
 
     fn emit_versions(&mut self, out: &mut Vec<u8>) -> Result<(), TransformError> {
         let upstream: Vec<String> = serde_json::from_slice(&self.capture)?;
-        let mut merged: BTreeSet<&str> = BTreeSet::new();
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
         // PEP 700 defines `versions` as a set, so an upstream repeat is a broken page rather than
         // something to silently collapse into the merge with peryx's own versions.
-        if let Some(duplicate) = upstream.iter().find(|version| !merged.insert(version)) {
+        if let Some(duplicate) = upstream.iter().find(|version| !seen.insert(version)) {
             return Err(SimpleError::DuplicateVersion(duplicate.clone()).into());
         }
-        merged.extend(self.context.local_versions.iter().map(String::as_str));
-        write_json(out, &merged);
+        let listed = listed_versions(
+            &VersionAdmission::of(&self.context.policy),
+            upstream,
+            self.context.local_versions.iter().cloned(),
+            self.served_versions.iter().cloned(),
+        );
+        write_json(out, &listed);
         self.document.pep700.versions_seen = true;
         Ok(())
     }

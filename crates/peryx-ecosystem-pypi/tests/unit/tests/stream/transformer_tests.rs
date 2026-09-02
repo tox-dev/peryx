@@ -6,7 +6,7 @@ use rstest::rstest;
 use crate::policy::RemoteMetadataMode;
 
 use super::page_context;
-use crate::policy::{PackageType, PypiPolicyConfig, compile_capabilities};
+use crate::policy::{PackageType, PypiPolicy as _, PypiPolicyConfig, compile_capabilities};
 use crate::store::FileOverride;
 use crate::stream::{
     PageContext, PageSummary, PageTransformer, Registration, TransformError, page_context as build_page_context,
@@ -1189,4 +1189,185 @@ fn test_streaming_keeps_a_size_less_file_on_a_pre_pep700_page() {
 
     let detail = parse_detail(out.as_bytes()).unwrap();
     assert_eq!((detail.files.len(), detail.files[0].size), (1, None));
+}
+
+/// A PEP 700 page whose members are ordered the two ways PEP 691 allows. The bytes differ; the served
+/// result must not.
+fn ordered_page(versions_first: bool) -> String {
+    let versions = r#""versions":["1.0","2.0"]"#;
+    let files = r#""files":[
+        {"filename":"demo-1.0-py3-none-any.whl","url":"https://up/demo-1.0-py3-none-any.whl","hashes":{},"size":10,"yanked":false},
+        {"filename":"demo-2.0-py3-none-any.whl","url":"https://up/demo-2.0-py3-none-any.whl","hashes":{},"size":20,"yanked":false}
+    ]"#;
+    let (first, second) = if versions_first {
+        (versions, files)
+    } else {
+        (files, versions)
+    };
+    format!(r#"{{"meta":{{"api-version":"1.1"}},"name":"demo",{first},{second}}}"#)
+}
+
+fn versioned_context(policy: Policy, local_versions: Vec<String>) -> PageContext {
+    build_page_context(
+        "root/pypi",
+        "demo",
+        policy,
+        Vec::new(),
+        local_versions,
+        &BTreeMap::new(),
+    )
+}
+
+/// The parsed page as the buffered path receives it.
+fn detail_of(page: &str) -> crate::ProjectDetail {
+    let parsed = parse_detail(page.as_bytes()).unwrap();
+    crate::ProjectDetail {
+        meta: parsed.meta,
+        name: parsed.name,
+        versions: parsed.versions,
+        files: parsed.files,
+    }
+}
+
+fn served_versions(page: &str, context: PageContext) -> Vec<String> {
+    let (out, _) = transform(page, context, 7);
+    parse_detail(out.as_bytes()).unwrap().versions
+}
+
+fn served_filenames(page: &str, context: PageContext) -> Vec<String> {
+    let (out, _) = transform(page, context, 7);
+    parse_detail(out.as_bytes())
+        .unwrap()
+        .files
+        .into_iter()
+        .map(|file| file.filename)
+        .collect()
+}
+
+/// A release the version rule denies leaves the streamed page whole: neither the `versions` entry nor
+/// the files that belong to it survive.
+#[test]
+fn test_streamed_page_drops_a_denied_release_from_versions_and_files() {
+    let context = versioned_context(
+        policy(|config| config.allow_versions = Some(">=2".to_owned())),
+        Vec::new(),
+    );
+
+    let (out, _) = transform(&ordered_page(true), context, 7);
+    let detail = parse_detail(out.as_bytes()).unwrap();
+
+    assert_eq!(detail.versions, ["2.0"]);
+    assert_eq!(
+        detail
+            .files
+            .iter()
+            .map(|file| file.filename.as_str())
+            .collect::<Vec<_>>(),
+        ["demo-2.0-py3-none-any.whl"]
+    );
+}
+
+/// Artifact filtering empties a release. The Simple API permits a listed version with no files, so the
+/// release stays listed.
+#[test]
+fn test_streamed_page_keeps_a_release_whose_only_file_artifact_policy_removed() {
+    let context = versioned_context(
+        policy(|config| config.block_package_types = vec![PackageType::Wheel]),
+        Vec::new(),
+    );
+
+    let (out, _) = transform(&ordered_page(true), context, 7);
+    let detail = parse_detail(out.as_bytes()).unwrap();
+
+    assert_eq!(detail.versions, ["1.0", "2.0"]);
+    assert!(detail.files.is_empty());
+}
+
+/// A version this index published itself faces the same rule as an upstream one.
+#[test]
+fn test_streamed_page_judges_a_local_version_by_the_same_rule() {
+    let context = versioned_context(
+        policy(|config| config.allow_versions = Some(">=2".to_owned())),
+        vec!["0.9".to_owned(), "3.0".to_owned()],
+    );
+
+    assert_eq!(served_versions(&ordered_page(true), context), ["2.0", "3.0"]);
+}
+
+/// The whole point of the issue: one input, one logical `versions` array, whichever path serves it.
+#[rstest]
+#[case::unconstrained(None)]
+#[case::constrained(Some(">=2"))]
+fn test_streamed_and_buffered_paths_list_the_same_versions(#[case] specifier: Option<&str>) {
+    let configure = |config: &mut PypiPolicyConfig| config.allow_versions = specifier.map(str::to_owned);
+    let page = ordered_page(true);
+    let buffered = policy(configure)
+        .apply_detail(peryx_policy::PolicyAction::Serve, "demo", detail_of(&page), None)
+        .unwrap();
+
+    assert_eq!(
+        served_versions(&page, versioned_context(policy(configure), Vec::new())),
+        buffered.versions
+    );
+    assert_eq!(
+        served_filenames(&page, versioned_context(policy(configure), Vec::new())),
+        buffered
+            .files
+            .iter()
+            .map(|file| file.filename.clone())
+            .collect::<Vec<_>>()
+    );
+}
+
+/// PEP 691 fixes no member order, and a page whose releases are all declared serves the same either
+/// way: the served files contribute only releases the array already lists.
+#[test]
+fn test_both_member_orders_serve_the_same_page() {
+    let configure = |config: &mut PypiPolicyConfig| config.allow_versions = Some(">=2".to_owned());
+    let versions_first = transform(&ordered_page(true), versioned_context(policy(configure), Vec::new()), 7).0;
+    let files_first = transform(
+        &ordered_page(false),
+        versioned_context(policy(configure), Vec::new()),
+        7,
+    )
+    .0;
+
+    let versions_first = parse_detail(versions_first.as_bytes()).unwrap();
+    let files_first = parse_detail(files_first.as_bytes()).unwrap();
+    assert_eq!(versions_first.versions, files_first.versions);
+    assert_eq!(
+        versions_first
+            .files
+            .iter()
+            .map(|file| file.filename.as_str())
+            .collect::<Vec<_>>(),
+        files_first
+            .files
+            .iter()
+            .map(|file| file.filename.as_str())
+            .collect::<Vec<_>>()
+    );
+}
+
+/// A file whose release upstream never declared is still served, and lists the release it belongs to
+/// rather than being left under none. Until #1207 supplies an authoritative association the filename
+/// is the only signal there is, so the page it arrived in decides where it can be read.
+#[test]
+fn test_a_served_file_contributes_the_release_upstream_left_undeclared() {
+    let page = r#"{"meta":{"api-version":"1.1"},"name":"demo","files":[
+        {"filename":"demo-2.0-py3-none-any.whl","url":"https://up/demo-2.0-py3-none-any.whl","hashes":{},"size":10,"yanked":false}
+    ],"versions":["1.0"]}"#;
+
+    let (out, _) = transform(page, versioned_context(policy(|_| {}), Vec::new()), 7);
+    let detail = parse_detail(out.as_bytes()).unwrap();
+
+    assert_eq!(detail.versions, ["1.0", "2.0"]);
+    assert_eq!(
+        detail
+            .files
+            .iter()
+            .map(|file| file.filename.as_str())
+            .collect::<Vec<_>>(),
+        ["demo-2.0-py3-none-any.whl"]
+    );
 }

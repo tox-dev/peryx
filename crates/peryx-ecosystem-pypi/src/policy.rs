@@ -210,6 +210,9 @@ pub fn compile_capabilities(config: &PypiPolicyConfig) -> Result<PolicyCapabilit
         let Ok(allowed) = VersionSpecifiers::from_str(specifier) else {
             return Err(PypiPolicyError::VersionSpecifiers(specifier.clone()));
         };
+        // The same specifier reaches a declared version string through `VersionAdmission`, which has
+        // no file to build artifact facts from.
+        capabilities = capabilities.with_owner_setting(ALLOW_VERSIONS_SETTING, specifier);
         rules.push(Arc::new(VersionRule { allowed }));
     }
     let allow = package_mask(&config.allow_package_types);
@@ -329,6 +332,81 @@ struct WheelTagSpec {
     field: &'static str,
     allow_rule: &'static str,
     block_rule: &'static str,
+}
+
+/// Where [`VersionAdmission`] reads the configured version specifier back from.
+const ALLOW_VERSIONS_SETTING: &str = "pypi.allow-versions";
+
+/// Whether policy admits a release version named on its own.
+///
+/// [`VersionRule`] judges a file, and builds its version from the parsed filename. A `versions` entry
+/// has no file behind it: it arrives as upstream text that may not parse as a version at all, and
+/// routing it through [`ArtifactFacts`] would also subject it to the size and package-type rules,
+/// which have nothing to say about a release. This reads the one rule that does.
+#[derive(Debug, Clone, Default)]
+pub struct VersionAdmission {
+    allowed: Option<VersionSpecifiers>,
+}
+
+impl VersionAdmission {
+    #[must_use]
+    pub fn of(policy: &Policy) -> Self {
+        Self {
+            allowed: policy
+                .owner_setting(ALLOW_VERSIONS_SETTING)
+                .and_then(|specifier| VersionSpecifiers::from_str(specifier).ok()),
+        }
+    }
+
+    /// With no specifier configured every declared version stands, which keeps the upstream set
+    /// intact when no rule needs to read it. With one, a version peryx cannot parse cannot be shown
+    /// to satisfy it, so it is not listed.
+    #[must_use]
+    pub fn admits(&self, version: &str) -> bool {
+        self.allowed
+            .as_ref()
+            .is_none_or(|allowed| Version::from_str(version).is_ok_and(|version| allowed.contains(&version)))
+    }
+}
+
+/// The `versions` a policy-filtered project detail lists, and the only place either serving path
+/// decides it.
+///
+/// The Simple Repository API requires every served file to belong to a listed version and permits a
+/// listed version to carry no files. So the set follows the declared releases through version policy
+/// rather than the surviving filenames: filtering artifacts leaves an allowed release listed even
+/// when it loses every file, while a release policy denies disappears from both halves.
+///
+/// `declared` is what upstream listed and `local` what this index published itself; both face the
+/// same check, so a locally published version policy denies is no more listed than an upstream one.
+/// `served` carries the releases of the files that survived, which is what keeps a file whose release
+/// upstream failed to declare from being served under no listed version at all. Those files already
+/// passed the artifact rules, version rule included, so they need no second check.
+#[must_use]
+pub fn listed_versions(
+    admission: &VersionAdmission,
+    declared: impl IntoIterator<Item = String>,
+    local: impl IntoIterator<Item = String>,
+    served: impl IntoIterator<Item = String>,
+) -> BTreeSet<String> {
+    let mut listed: BTreeSet<String> = declared
+        .into_iter()
+        .chain(local)
+        .filter(|version| admission.admits(version))
+        .collect();
+    listed.extend(served);
+    listed
+}
+
+/// The release a served file belongs to, as its filename gives it.
+///
+/// A filename peryx cannot parse names no release, and the legacy egg is the standing example peryx
+/// serves anyway, so it contributes nothing rather than being withheld.
+#[must_use]
+pub fn served_version(filename: &str) -> Option<String> {
+    parse_distribution_filename(filename)
+        .ok()
+        .map(|parsed| parsed.version.to_string())
 }
 
 #[derive(Debug)]
@@ -644,10 +722,14 @@ impl PypiPolicy for Policy {
         if !self.active() {
             return Ok(detail);
         }
+        let declared = std::mem::take(&mut detail.versions);
         detail
             .files
             .retain(|file| !admission.files.contains_key(&file.filename));
-        retain_versions_with_files(&mut detail);
+        let served = detail.files.iter().filter_map(|file| served_version(&file.filename));
+        detail.versions = listed_versions(&VersionAdmission::of(self), declared, [], served)
+            .into_iter()
+            .collect();
         Ok(detail)
     }
 
@@ -810,24 +892,6 @@ fn project_size_denial<'a>(
             format!("project size {total} exceeds limit {limit}"),
         )
     })
-}
-
-fn retain_versions_with_files(detail: &mut ProjectDetail) {
-    let versions = detail
-        .files
-        .iter()
-        .filter_map(|file| parse_distribution_filename(&file.filename).ok())
-        .map(|parsed| parsed.version.to_string())
-        .collect::<BTreeSet<_>>();
-    let mut retained = BTreeSet::new();
-    detail.versions.retain(|version| {
-        if !versions.contains(version) {
-            return false;
-        }
-        retained.insert(version.clone());
-        true
-    });
-    detail.versions.extend(versions.difference(&retained).cloned());
 }
 
 #[cfg(test)]

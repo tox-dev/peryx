@@ -118,9 +118,11 @@ async fn test_policy_delays_a_young_upstream_release() {
 
     let (status, _, body) = get(&h.state, "/root/pypi/simple/flask/", Some("application/json")).await;
 
+    // The delay withholds the young release's file, not the release: the Simple API permits a listed
+    // version with no files, and a resolver that sees 2.0 listed and unavailable learns the truth.
     let detail: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(detail["versions"], serde_json::json!(["1.0"]));
+    assert_eq!(detail["versions"], serde_json::json!(["1.0", "2.0"]));
     assert!(body.contains("flask-1.0-py3-none-any.whl"));
     assert!(!body.contains("flask-2.0-py3-none-any.whl"));
 }
