@@ -47,6 +47,9 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 ///
 /// A quiet connection dies here first, so a read budget longer than this cannot be spent. The two are
 /// equal today, and `test_the_read_budget_fits_inside_the_idle_bound` holds that order.
+///
+/// This is also the one bound on [`UpstreamClient::stream_bytes`], which streams artifact bodies under no
+/// deadline at all, so raising it here weakens the only backstop that path has.
 pub(crate) const READ_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The budget one composed metadata read may spend.
@@ -56,7 +59,8 @@ pub(crate) const READ_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 /// read gives up and the caller moves to its next source.
 ///
 /// Raising this past the 30-second bound on a single quiet gap buys nothing, since a stalled connection
-/// is dropped at that bound first and the read then fails for a reason this constant does not name.
+/// is dropped at that bound first and the read then fails for a reason this constant does not name. What
+/// a bounded read may spend is the lower of the two, so moving either one alone changes nothing.
 pub const BOUNDED_READ_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const RANGE_SUPPRESSION_CAPACITY: usize = 1_024;
 pub(crate) const RANGE_SUPPRESSION_TTL: Duration = Duration::from_mins(5);
