@@ -11,13 +11,13 @@ use parking_lot::Mutex;
 use peryx_driver::ServingState;
 use peryx_driver::rate_limit::UpstreamLimits;
 use peryx_index::Index;
-use peryx_storage::blob::Digest;
+use peryx_storage::blob::{BlobErrorKind, Digest};
 use peryx_upstream::UpstreamClient;
 use serde::Serialize;
 use tokio::sync::Semaphore;
 
 use crate::name::{Reference, parse_image_reference};
-use crate::registry::{MAX_MANIFEST_BYTES, bounded_body, download_blob, serving_members};
+use crate::registry::{DownloadError, MAX_MANIFEST_BYTES, bounded_body, download_blob, serving_members};
 use crate::settings::{IndexSettings, upstream_repo};
 use crate::store::{self, Descriptors, Manifest};
 use crate::upstream::Upstream;
@@ -302,6 +302,21 @@ fn descriptors_of(
     }
 }
 
+/// Whether a failed blob ingest belongs to the reference or to the run, the split PR #2110 drew for
+/// manifests. The two arrive at one call site, so the answer has to come from the error rather than
+/// from where it was raised.
+///
+/// A stream that broke is what the upstream sent, and so is content that hashes to something other
+/// than the digest the manifest named: the store refused those bytes and is otherwise intact, so the
+/// rows beside them still mean what they say. Every other fault the store reports is peryx's own
+/// side, and after one of those no later `cached` or `synced` row is a claim anything checked.
+const fn reference_scoped(err: &DownloadError) -> bool {
+    match err {
+        DownloadError::Stream(_) => true,
+        DownloadError::Blob(err) => matches!(err.kind(), BlobErrorKind::DigestMismatch),
+    }
+}
+
 impl Mirror<'_> {
     /// The name `repo` is spelled with upstream. What lands in the store keeps the operator's spelling,
     /// so a mirrored image serves under the name it was asked for.
@@ -509,7 +524,7 @@ impl Mirror<'_> {
         let mut visited: HashSet<String> = HashSet::new();
         let mut pending: Vec<(String, usize)> = Vec::new();
         let (children, blobs) = descriptors;
-        self.blobs(repo, blobs, rows).await;
+        self.blobs(repo, blobs, rows).await?;
         if schedule_children(repo, children, 1, &mut visited, &mut pending, rows) {
             return Ok(());
         }
@@ -537,7 +552,7 @@ impl Mirror<'_> {
         let mut rows = Vec::new();
         let children = match self.manifest_of(repo, &digest, None, &mut rows).await? {
             Some((children, blobs)) => {
-                self.blobs(repo, blobs, &mut rows).await;
+                self.blobs(repo, blobs, &mut rows).await?;
                 children
             }
             None => Vec::new(),
@@ -546,14 +561,21 @@ impl Mirror<'_> {
     }
 
     /// Pull every blob one manifest names, overlapping them under the run's ceiling and reporting
-    /// them in descriptor order.
-    async fn blobs(&self, repo: &str, blobs: Vec<String>, rows: &mut Vec<MirrorRow>) {
+    /// them in descriptor order. A level is drained before a store fault is raised, so the transfers
+    /// already in flight finish and the fault the run ends on is the first in descriptor order rather
+    /// than whichever future happened to fail first.
+    async fn blobs(&self, repo: &str, blobs: Vec<String>, rows: &mut Vec<MirrorRow>) -> anyhow::Result<()> {
         let mut pulled = stream::iter(blobs)
             .map(|digest| self.blob(repo, digest))
             .buffered(self.concurrency);
-        while let Some(row) = pulled.next().await {
-            rows.push(row);
+        let mut fault = None;
+        while let Some(pull) = pulled.next().await {
+            match pull {
+                Ok(row) => rows.push(row),
+                Err(err) => fault = fault.or(Some(err)),
+            }
         }
+        fault.map_or(Ok(()), Err)
     }
 
     /// Claim `digest` for the run. Taken before the ceiling permit, so a manifest waiting on a layer
@@ -567,10 +589,16 @@ impl Mirror<'_> {
         )
     }
 
-    async fn blob(&self, repo: &str, descriptor: String) -> MirrorRow {
+    async fn blob(&self, repo: &str, descriptor: String) -> anyhow::Result<MirrorRow> {
         let digest = descriptor.as_str();
         let Some(storage) = store::blob_digest(digest) else {
-            return MirrorRow::error("blob", repo, digest, digest, "unsupported digest".to_owned());
+            return Ok(MirrorRow::error(
+                "blob",
+                repo,
+                digest,
+                digest,
+                "unsupported digest".to_owned(),
+            ));
         };
         let single_flight = self.blob_lock(digest);
         let _claim = single_flight
@@ -580,14 +608,22 @@ impl Mirror<'_> {
         gated(&self.transfers, self.transfer_blob(repo, digest, &storage)).await
     }
 
-    async fn transfer_blob(&self, repo: &str, digest: &str, storage: &Digest) -> MirrorRow {
+    async fn transfer_blob(&self, repo: &str, digest: &str, storage: &Digest) -> anyhow::Result<MirrorRow> {
         match self.state.blobs.head(storage).await {
-            Ok(Some(_)) => return MirrorRow::cached("blob", repo, digest, digest),
+            Ok(Some(_)) => return Ok(MirrorRow::cached("blob", repo, digest, digest)),
             Ok(None) => {}
-            Err(err) => return MirrorRow::error("blob", repo, digest, digest, err.to_string()),
+            // Asking the store what it holds is peryx's own side. Once that fails the run no longer
+            // knows what is cached, which is what a `cached` row claims.
+            Err(err) => anyhow::bail!("blob store error: {err}"),
         }
         if self.mode == MirrorMode::Verify {
-            return MirrorRow::error("blob", repo, digest, digest, "blob missing".to_owned());
+            return Ok(MirrorRow::error(
+                "blob",
+                repo,
+                digest,
+                digest,
+                "blob missing".to_owned(),
+            ));
         }
         match self
             .upstream
@@ -600,10 +636,13 @@ impl Mirror<'_> {
             .await
         {
             Ok(response) => match download_blob(&self.state.blobs, storage, response).await {
-                Ok(bytes) => MirrorRow::synced("blob", repo, digest, digest, bytes),
-                Err(err) => MirrorRow::error("blob", repo, digest, digest, err.to_string()),
+                Ok(bytes) => Ok(MirrorRow::synced("blob", repo, digest, digest, bytes)),
+                Err(err) if reference_scoped(&err) => {
+                    Ok(MirrorRow::error("blob", repo, digest, digest, err.to_string()))
+                }
+                Err(err) => Err(anyhow::Error::new(err)),
             },
-            Err(err) => MirrorRow::error("blob", repo, digest, digest, err.to_string()),
+            Err(err) => Ok(MirrorRow::error("blob", repo, digest, digest, err.to_string())),
         }
     }
 }

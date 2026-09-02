@@ -41,10 +41,16 @@ could not be read.
 
 Anything the upstream governs is one error row naming the repository, the reference, and the reason, and the run carries
 on: an image the registry does not have, a registry that refuses or cannot be reached, a manifest above the
-four-megabyte ceiling, a connection that stops part way through a body. The references selected after it and the
-siblings scheduled beside it are independent work and are mirrored regardless. A fault on peryx's own side is not the
-same thing. When the metadata store or the blob store fails, every later `synced` and `cached` row would be a claim
-nothing has checked, so the run ends there and reports the fault instead of finishing a report it cannot stand behind.
+four-megabyte ceiling, a connection that stops part way through a body, layer bytes that hash to something other than
+the digest the manifest named. The references selected after it and the siblings scheduled beside it are independent
+work and are mirrored regardless. A fault on peryx's own side is not the same thing. When the metadata store or the blob
+store fails, every later `synced` and `cached` row would be a claim nothing has checked, so the run ends there and
+reports the fault instead of finishing a report it cannot stand behind.
+
+Both kinds reach the same call site while a layer is written, so the split is read off the failure rather than off where
+it was raised. A stream that broke, and bytes that hash to something other than the digest the manifest named, describe
+what the registry sent and leave the store intact. Every other fault the store reports is peryx's own, and a run that
+meets one publishes no report at all.
 
 The closing summary row states the verdict in its status column: `synced` when every selected reference is mirrored,
 `partial` when some are and some failed, `error` when none are. Its reason carries the counts.

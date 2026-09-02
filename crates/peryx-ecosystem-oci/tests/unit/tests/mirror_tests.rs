@@ -834,6 +834,8 @@ async fn test_mirror_rejects_a_corrupt_blob() {
         .unwrap()
         .reason;
     assert!(reason.contains("digest mismatch"), "{reason}");
+    // Bytes the store refused say nothing about the store, so the run reaches its verdict.
+    assert_eq!(rows.last().unwrap().status, "partial");
 }
 
 #[tokio::test]
@@ -889,10 +891,11 @@ async fn test_mirror_reports_blob_body_failures() {
         .unwrap();
     let reason = &rows.iter().find(|row| row.kind == "blob").unwrap().reason;
     assert!(reason.contains("blob body read failed"), "{reason}");
+    assert_eq!(rows.last().unwrap().status, "partial");
 }
 
 #[tokio::test]
-async fn test_mirror_reports_blob_store_failures() {
+async fn test_a_blob_write_fault_ends_the_run() {
     let server = MockServer::start().await;
     let config = b"{}";
     let manifest = format!(
@@ -913,47 +916,82 @@ async fn test_mirror_reports_blob_store_failures() {
         .mount(&server)
         .await;
     let (state, _app) = proxy(&dir, &format!("{}/", server.uri()), false);
-    let rows = mirror(
+
+    let error = mirror(
         &state.serving,
         &state.serving.indexes[0],
         &["library/app:latest".to_owned()],
         MirrorMode::Sync,
     )
     .await
-    .unwrap();
-    let reason = &rows.iter().find(|row| row.kind == "blob").unwrap().reason;
-    assert!(reason.contains("blob store error"), "{reason}");
-    assert!(reason.contains("I/O error"), "{reason}");
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains("blob store error"), "{error}");
+    assert!(error.contains("I/O error"), "{error}");
+}
+
+/// Point one blob's path at itself, so the store faults on that digest and no other.
+#[cfg(unix)]
+fn unreadable_blob_path(root: &std::path::Path, bytes: &[u8]) {
+    let digest = Digest::of(bytes);
+    let hex = digest.as_str();
+    let path = root.join(format!("blobs/sha256/{}/{}/{}", &hex[..2], &hex[2..4], hex));
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&path, &path).unwrap();
 }
 
 #[cfg(unix)]
 #[tokio::test]
-async fn test_mirror_reports_a_blob_head_failure() {
+async fn test_a_blob_head_fault_ends_the_run() {
     let server = MockServer::start().await;
     let config = b"{}";
     let manifest = image_manifest(config, &[]);
     mount_manifest(&server, "library/app", "latest", &manifest, MANIFEST_TYPE).await;
     let dir = tempfile::tempdir().unwrap();
-    let digest = Digest::of(config);
-    let hex = digest.as_str();
-    let path = dir
-        .path()
-        .join(format!("blobs/sha256/{}/{}/{}", &hex[..2], &hex[2..4], hex));
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::os::unix::fs::symlink(&path, &path).unwrap();
+    unreadable_blob_path(dir.path(), config);
     let (state, _app) = proxy(&dir, &format!("{}/", server.uri()), false);
 
-    let rows = mirror(
+    let error = mirror(
         &state.serving,
         &state.serving.indexes[0],
         &["library/app:latest".to_owned()],
         MirrorMode::Sync,
     )
     .await
-    .unwrap();
+    .unwrap_err()
+    .to_string();
 
-    let reason = &rows.iter().find(|row| row.kind == "blob").unwrap().reason;
-    assert!(reason.contains("filesystem blob backend head"), "{reason}");
+    assert!(error.contains("filesystem blob backend head"), "{error}");
+}
+
+/// Both blobs of one manifest fault in the store at once. The level is drained rather than abandoned
+/// at whichever transfer failed first, so the run always ends on the descriptor the manifest named
+/// first and an operator reading two runs of the same image sees the same cause.
+#[cfg(unix)]
+#[tokio::test]
+async fn test_a_level_ends_on_the_first_store_fault_in_descriptor_order() {
+    let server = MockServer::start().await;
+    let config = b"{}";
+    let layer = b"a-layer-of-bytes";
+    let manifest = image_manifest(config, layer);
+    mount_manifest(&server, "library/app", "latest", &manifest, MANIFEST_TYPE).await;
+    let dir = tempfile::tempdir().unwrap();
+    unreadable_blob_path(dir.path(), config);
+    unreadable_blob_path(dir.path(), layer);
+    let (state, _app) = proxy(&dir, &format!("{}/", server.uri()), false);
+
+    let error = mirror(
+        &state.serving,
+        &state.serving.indexes[0],
+        &["library/app:latest".to_owned()],
+        MirrorMode::Sync,
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains(Digest::of(config).as_str()), "{error}");
 }
 
 /// The rows a run that rejects `library/app:latest` must report: the broken rule against the digest,

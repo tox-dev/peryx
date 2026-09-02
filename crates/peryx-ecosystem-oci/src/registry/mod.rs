@@ -50,7 +50,7 @@ mod discovery;
 mod finalize;
 mod manifests;
 mod uploads;
-pub use blobs::download_blob;
+pub use blobs::{DownloadError, download_blob};
 use discovery::serve_catalog;
 use manifests::{delete_manifest, put_manifest, restore_manifest};
 
