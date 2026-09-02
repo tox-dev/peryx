@@ -413,6 +413,42 @@ async fn test_ignite_does_not_bootstrap_a_replica_seed() {
     node.raft().shutdown().await.unwrap();
 }
 
+/// Holding the executor until supervision reports the failure leaves the leadership watcher as the only
+/// branch that can end the run; dropping it first lets the cancellation token win the race.
+#[tokio::test]
+async fn test_ignite_reports_a_consensus_core_that_stops_under_the_executor() {
+    let dir = tempfile::tempdir().unwrap();
+    let plan = ConsensusPlan {
+        local: voter_id("west"),
+        home: DatacenterId("west".to_owned()),
+        seed: false,
+        roster: one_voter("east", "http://east.internal:4460/"),
+        log_path: dir.path().join("raft/ownership-log.redb"),
+        group: "ownership".to_owned(),
+        token: TOKEN.to_owned(),
+    };
+    let (lifecycle, mut failures) = crate::lifecycle::Lifecycle::new();
+    let started = plan
+        .ignite_with_lifecycle(lifecycle, audit_store(&dir, "west"))
+        .await
+        .unwrap();
+
+    started.raft().shutdown().await.unwrap();
+
+    assert_eq!(
+        failures.wait().await,
+        "ownership consensus executor failed: watch ownership consensus leadership: channel closed"
+    );
+    let (_, executor) = started.commit();
+    let exit = tokio::task::spawn_blocking(move || executor.shutdown_and_join())
+        .await
+        .unwrap();
+    assert_eq!(
+        format!("{:#}", exit.unwrap_err()),
+        "watch ownership consensus leadership: channel closed"
+    );
+}
+
 #[tokio::test]
 async fn test_ignite_reports_a_bootstrap_failure() {
     let dir = tempfile::tempdir().unwrap();
