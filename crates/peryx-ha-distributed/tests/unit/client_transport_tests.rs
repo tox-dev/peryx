@@ -63,21 +63,24 @@ fn test_status_contract() {
         classify_status(StatusCode::BAD_REQUEST),
         ReplicationStatus::BadStatus(400)
     );
-    assert_eq!(require_replication_success(StatusCode::OK), Ok(()));
+    assert_eq!(require_replication_success(StatusCode::OK, &HeaderMap::new()), Ok(()));
     assert_eq!(
-        require_replication_success(StatusCode::UNAUTHORIZED),
+        require_replication_success(StatusCode::UNAUTHORIZED, &HeaderMap::new()),
         Err(TransportError::Unauthenticated)
     );
     assert_eq!(
-        require_replication_success(StatusCode::NOT_FOUND),
+        require_replication_success(StatusCode::NOT_FOUND, &HeaderMap::new()),
         Err(TransportError::BadStatus { status: 404 })
     );
     assert_eq!(
-        require_replication_success(StatusCode::SERVICE_UNAVAILABLE),
-        Err(TransportError::ServerError { status: 503 })
+        require_replication_success(StatusCode::SERVICE_UNAVAILABLE, &HeaderMap::new()),
+        Err(TransportError::ServerError {
+            status: 503,
+            retry_after: None,
+        })
     );
     assert_eq!(
-        require_replication_success(StatusCode::NOT_IMPLEMENTED),
+        require_replication_success(StatusCode::NOT_IMPLEMENTED, &HeaderMap::new()),
         Err(TransportError::BadStatus { status: 501 })
     );
     assert_eq!(replication_error(HttpClientError::Timeout), TransportError::Timeout);

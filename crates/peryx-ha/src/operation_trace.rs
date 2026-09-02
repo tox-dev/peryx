@@ -71,10 +71,11 @@ pub struct BlobAckObservation<'evidence> {
     pub bytes_expired: bool,
     /// Whether the metadata dimension's budget expired before it proved.
     pub metadata_expired: bool,
-    /// Peers the byte dimension retired on a terminal failure, which is why a dimension can stop short
-    /// of proving without its budget expiring.
+    /// Peers the byte dimension stopped asking, which is why a dimension can stop short of proving
+    /// without its budget expiring. A peer is retired either for a failure no later poll could revise or
+    /// for spending its retry attempts inside this write; [`SourceFailure::reason`] says which.
     pub bytes_retired: &'evidence [SourceFailure],
-    /// Datacenters the metadata dimension retired on a terminal failure.
+    /// Datacenters the metadata dimension stopped asking, on the same two grounds.
     pub metadata_retired: &'evidence [SourceFailure],
     pub waited: Duration,
 }

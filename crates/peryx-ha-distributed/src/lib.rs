@@ -106,7 +106,7 @@ pub use authority_transfer::{
     recover_transfer_audits,
 };
 pub use availability_http::DistributedHttpRoutes;
-pub use backoff::{DEFAULT_RECONNECT_POLICY, RETRY_EXHAUSTED, ReconnectPolicy, Retry};
+pub use backoff::{DEFAULT_RECONNECT_POLICY, RETRY_EXHAUSTED, ReconnectPolicy, Retry, jitter};
 pub use beacon::{BeaconError, BeaconSender, DEFAULT_BEACON_INTERVAL, HeartbeatError};
 pub use blob::{BlobRequest, BlobTransport, ByteRange, CapacityLimited, LoopbackBlobSource};
 pub use blob_availability::{BlobAvailability, ReferencedBlob, blob_availability};
@@ -326,6 +326,9 @@ mod envelope_tests;
 #[cfg(test)]
 #[path = "../tests/unit/epoch_reservation_tests.rs"]
 mod epoch_reservation_tests;
+#[cfg(test)]
+#[path = "../tests/unit/evidence_gather_tests.rs"]
+mod evidence_gather_tests;
 #[cfg(test)]
 #[path = "../tests/unit/failover_tests.rs"]
 mod failover_tests;

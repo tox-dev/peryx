@@ -156,7 +156,13 @@ async fn test_endpoint_reports_an_unreadable_position_as_a_retryable_fault() {
 
     let error = source(&server.url, "east").fetch_frontier(AUTHORITY).await.unwrap_err();
 
-    assert_eq!(error, TransportError::ServerError { status: 500 });
+    assert_eq!(
+        error,
+        TransportError::ServerError {
+            status: 500,
+            retry_after: None,
+        }
+    );
     assert!(
         error.is_retryable(),
         "a node that cannot read its own position is broken, not empty"

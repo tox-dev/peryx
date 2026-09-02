@@ -87,7 +87,7 @@ impl PeerTransport for HttpPeerTransport {
                 limit: cap,
             });
         }
-        require_replication_success(response.status())?;
+        require_replication_success(response.status(), response.headers())?;
         let body = self.http.read_replication_body(response, cap, true).await?;
         let page: ChangePage = serde_json::from_slice(&body).map_err(|_| TransportError::Malformed)?;
         validate_batch_size(request.max_operations, &page)?;

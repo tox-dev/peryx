@@ -100,7 +100,7 @@ impl RemoteFrontierSource for HttpRemoteFrontierSource {
         if classify_status(response.status()) == ReplicationStatus::NotFound {
             return Ok(None);
         }
-        require_replication_success(response.status())?;
+        require_replication_success(response.status(), response.headers())?;
         let body = self.http.read_small_body(response, MAX_FRONTIER_BYTES).await?;
         let reply: FrontierReply = serde_json::from_slice(&body).map_err(|_| TransportError::Malformed)?;
         Ok(Some(RemoteAck {

@@ -2,14 +2,12 @@
 //! failures, and terminal retirement remain isolated per peer. Identity-derived jitter spreads retry
 //! schedules after shared outages. The caller supplies logical time and drives each round.
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash as _, Hasher as _};
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use futures_util::future::join_all;
 
-use crate::backoff::{ReconnectPolicy, Retry};
+use crate::backoff::{ReconnectPolicy, Retry, jitter};
 use crate::channel::{BoundedChannel, buffer_batch};
 use crate::peer::{BatchRequest, PeerTransport, TransportError, validate_contiguous};
 use crate::protocol::Change;
@@ -462,16 +460,4 @@ impl<T: PeerTransport> PeerSet<T> {
             }
         }
     }
-}
-
-/// Derives retry jitter from peer identity and attempt without shared random state.
-fn jitter(source: &str, attempt: u32, window: Duration) -> Duration {
-    let span = u64::try_from(window.as_nanos()).unwrap_or(u64::MAX);
-    if span == 0 {
-        return Duration::ZERO;
-    }
-    let mut hasher = DefaultHasher::new();
-    source.hash(&mut hasher);
-    attempt.hash(&mut hasher);
-    Duration::from_nanos(hasher.finish() % span)
 }

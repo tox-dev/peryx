@@ -1,6 +1,7 @@
 use std::fmt;
 use std::time::Duration;
 
+use reqwest::header::HeaderMap;
 use reqwest::{Client, ClientBuilder, RequestBuilder, StatusCode, Url};
 
 use crate::peer::TransportError;
@@ -170,11 +171,17 @@ pub const fn classify_status(status: StatusCode) -> ReplicationStatus {
     }
 }
 
-pub const fn require_replication_success(status: StatusCode) -> Result<(), TransportError> {
+/// Classifies a peer reply, carrying the delay the peer asked for out of `headers` so a caller that
+/// backs off can honour it. A peer that names a delay is answering the question a retry schedule can
+/// only guess at, and the headers are gone by the time the caller sees the error.
+pub fn require_replication_success(status: StatusCode, headers: &HeaderMap) -> Result<(), TransportError> {
     match classify_status(status) {
         ReplicationStatus::Success => Ok(()),
         ReplicationStatus::Unauthenticated => Err(TransportError::Unauthenticated),
-        ReplicationStatus::ServerError(status) => Err(TransportError::ServerError { status }),
+        ReplicationStatus::ServerError(status) => Err(TransportError::ServerError {
+            status,
+            retry_after: peryx_upstream::retry::retry_after(headers),
+        }),
         ReplicationStatus::NotFound | ReplicationStatus::BadStatus(_) => Err(TransportError::BadStatus {
             status: status.as_u16(),
         }),

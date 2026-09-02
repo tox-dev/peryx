@@ -685,7 +685,13 @@ fn control_error_derives_distinguish_payloads(#[case] value: ControlError, #[cas
 
 #[rstest]
 #[case(TransportError::Disconnected, TransportError::Timeout)]
-#[case(TransportError::ServerError { status: 500 }, TransportError::ServerError { status: 503 })]
+#[case(TransportError::ServerError {
+            status: 500,
+            retry_after: None,
+        }, TransportError::ServerError {
+            status: 503,
+            retry_after: None,
+        })]
 #[case(TransportError::BadStatus { status: 400 }, TransportError::BadStatus { status: 404 })]
 #[case(
     TransportError::FrameTooLarge { limit: 1, actual: 2 },
@@ -1006,7 +1012,10 @@ fn durability_policy_name_contract(#[case] policy: DurabilityPolicy, #[case] exp
 #[rstest]
 #[case(TransportError::Disconnected, true, None)]
 #[case(TransportError::Timeout, true, None)]
-#[case(TransportError::ServerError { status: 503 }, true, None)]
+#[case(TransportError::ServerError {
+            status: 503,
+            retry_after: None,
+        }, true, None)]
 #[case(TransportError::AtCapacity, true, None)]
 #[case(TransportError::Unauthenticated, false, Some("unauthenticated"))]
 #[case(TransportError::BadStatus { status: 404 }, false, Some("bad_status"))]

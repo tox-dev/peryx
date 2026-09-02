@@ -116,7 +116,7 @@ impl ReceiptSource for HttpReceiptSource {
         if classify_status(response.status()) == ReplicationStatus::NotFound {
             return Ok(None);
         }
-        require_replication_success(response.status())?;
+        require_replication_success(response.status(), response.headers())?;
         let body = self.http.read_small_body(response, MAX_RECEIPT_BYTES).await?;
         let reply: ReceiptReply = serde_json::from_slice(&body).map_err(|_| TransportError::Malformed)?;
         let digest = Digest::from_hex(&reply.digest).ok_or(TransportError::Malformed)?;

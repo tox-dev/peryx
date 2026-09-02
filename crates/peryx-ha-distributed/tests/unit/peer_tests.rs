@@ -85,7 +85,13 @@ fn test_transfer_limits_default_matches_named_constant() {
 fn test_retryable_transport_loss_is_flagged() {
     assert!(TransportError::Disconnected.is_retryable());
     assert!(TransportError::Timeout.is_retryable());
-    assert!(TransportError::ServerError { status: 503 }.is_retryable());
+    assert!(
+        TransportError::ServerError {
+            status: 503,
+            retry_after: None,
+        }
+        .is_retryable()
+    );
     assert!(TransportError::AtCapacity.is_retryable());
     assert!(!TransportError::Unauthenticated.is_retryable());
     assert!(!TransportError::BadStatus { status: 404 }.is_retryable());
@@ -105,7 +111,14 @@ fn test_retryable_transport_loss_is_flagged() {
 fn test_terminal_reason_is_none_for_retryable_and_named_otherwise() {
     assert_eq!(TransportError::Disconnected.terminal_reason(), None);
     assert_eq!(TransportError::Timeout.terminal_reason(), None);
-    assert_eq!(TransportError::ServerError { status: 503 }.terminal_reason(), None);
+    assert_eq!(
+        TransportError::ServerError {
+            status: 503,
+            retry_after: None,
+        }
+        .terminal_reason(),
+        None
+    );
     assert_eq!(TransportError::AtCapacity.terminal_reason(), None);
     assert_eq!(
         TransportError::Unauthenticated.terminal_reason(),

@@ -154,6 +154,7 @@ impl AnalyticsSource for HttpAnalyticsSource {
         if status.is_server_error() {
             return Err(TransportError::ServerError {
                 status: status.as_u16(),
+                retry_after: peryx_upstream::retry::retry_after(response.headers()),
             });
         }
         if !status.is_success() {

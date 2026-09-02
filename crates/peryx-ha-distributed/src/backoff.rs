@@ -2,6 +2,8 @@
 //! clock and timer. Terminal errors fail closed; retryable errors use bounded exponential backoff
 //! until the attempt limit.
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash as _, Hasher as _};
 use std::num::NonZeroU32;
 use std::time::Duration;
 
@@ -85,4 +87,18 @@ impl ReconnectPolicy {
     pub(crate) fn quarantine_delay(&self) -> Duration {
         self.delay_for(self.max_attempts.get())
     }
+}
+
+/// Derives retry jitter from source identity and attempt without shared random state, so peers that
+/// failed together do not come back together and a test can predict the spread it will see.
+#[must_use]
+pub fn jitter(source: &str, attempt: u32, window: Duration) -> Duration {
+    let span = u64::try_from(window.as_nanos()).unwrap_or(u64::MAX);
+    if span == 0 {
+        return Duration::ZERO;
+    }
+    let mut hasher = DefaultHasher::new();
+    source.hash(&mut hasher);
+    attempt.hash(&mut hasher);
+    Duration::from_nanos(hasher.finish() % span)
 }

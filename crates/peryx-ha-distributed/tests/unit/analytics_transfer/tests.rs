@@ -196,7 +196,13 @@ async fn test_http_source_maps_unauthorized() {
 async fn test_http_source_maps_a_server_error() {
     let server = status_server(StatusCode::BAD_GATEWAY).await;
     let error = source(&server.url).fetch_after(0).await.unwrap_err();
-    assert!(matches!(error, TransportError::ServerError { status: 502 }));
+    assert!(matches!(
+        error,
+        TransportError::ServerError {
+            status: 502,
+            retry_after: None,
+        }
+    ));
 }
 
 #[tokio::test]

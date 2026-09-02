@@ -6,7 +6,11 @@ use async_trait::async_trait;
 pub use peryx_ha::{PeerReceipt, ReceiptRequest, ReceiptSource};
 use peryx_storage::blob::Digest;
 
-use crate::evidence_gather::{Attempt, GatherEnd, GatherOutcome, Observation, RetiredSources, gather, outcome};
+use crate::backoff::ReconnectPolicy;
+use crate::evidence_gather::{
+    Attempt, DEFAULT_GATHER_JITTER, GatherEnd, GatherOutcome, GatherSchedule, Observation, RetiredSources, gather,
+    outcome,
+};
 use crate::filesystem_ack::{FilesystemAck, ReceiptOutcome};
 use crate::peer::TransportError;
 use crate::receipt_quorum::ReceiptAck;
@@ -24,9 +28,11 @@ impl From<PeerReceipt> for ReceiptAck {
 
 /// Polls unconfirmed same-datacenter peers until `ack` reaches quorum or `budget` expires.
 ///
-/// Absent receipts and retryable transport faults are missing evidence and are retried; a terminal
-/// fault, including an answer that does not attest `request` from the source's node, retires that
-/// source for the rest of the write and is reported in [`GatherOutcome::retired`].
+/// Absent receipts are missing evidence and are retried on the poll cadence. A retryable transport
+/// fault is retried too, on widening backoff, until the source spends its attempt limit and is retired
+/// for `retry_exhausted`. A terminal fault, including an answer that does not attest `request` from the
+/// source's node, retires that source at once. Both retirements are reported in
+/// [`GatherOutcome::retired`], where the reason says which happened.
 ///
 /// Reports quorum as [`Deadline::Live`](crate::Deadline::Live). A budget that ran out and a peer set
 /// with nothing left to give both report [`Deadline::Expired`](crate::Deadline::Expired), which stays
@@ -43,22 +49,29 @@ pub async fn gather_receipts(
     if ack.is_byte_durable() {
         return outcome(GatherEnd::Durable, retired);
     }
+    let schedule = GatherSchedule {
+        poll,
+        policy: ReconnectPolicy::default(),
+        jitter: DEFAULT_GATHER_JITTER,
+        retired: &retired,
+    };
     let end = gather(
         sources
             .iter()
             .filter(|source| !ack.holds(source.node()))
-            .map(AsRef::as_ref)
+            .map(|source| (source.node(), source.as_ref()))
             .collect(),
         &request,
         budget,
-        poll,
+        &schedule,
         |source, request| {
             let retired = &retired;
             Box::pin(async move {
                 match source.fetch_receipt(*request).await {
                     Ok(Some(receipt)) => Attempt::Found(receipt),
+                    Ok(None) => Attempt::Absent,
                     Err(error) if retired.record(source.node(), &error) => Attempt::Retire,
-                    Ok(None) | Err(_) => Attempt::Retry,
+                    Err(error) => Attempt::Failed(error),
                 }
             })
         },

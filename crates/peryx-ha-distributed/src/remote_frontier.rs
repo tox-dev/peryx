@@ -10,7 +10,11 @@ use async_trait::async_trait;
 pub use peryx_ha::RemoteFrontierSource;
 use peryx_ha::{RemoteAck, TransportError};
 
-use crate::evidence_gather::{Attempt, GatherEnd, GatherOutcome, Observation, RetiredSources, gather, outcome};
+use crate::backoff::ReconnectPolicy;
+use crate::evidence_gather::{
+    Attempt, DEFAULT_GATHER_JITTER, GatherEnd, GatherOutcome, GatherSchedule, Observation, RetiredSources, gather,
+    outcome,
+};
 use crate::remote_durability::{DurabilityPolicy, MetadataOperation, assess_remote_metadata_durability};
 
 pub const DEFAULT_FRONTIER_POLL: Duration = Duration::from_millis(50);
@@ -21,9 +25,11 @@ pub const DEFAULT_FRONTIER_POLL: Duration = Duration::from_millis(50);
 /// including evidence present on entry. `sources` is the configured remote datacenter set the policy
 /// resolves against.
 ///
-/// A missing report and a retryable transport fault are both absent evidence and are polled again. A
-/// terminal fault cannot be revised by another poll, so it retires that datacenter for the rest of the
-/// write and is reported in [`GatherOutcome::retired`] rather than dropped.
+/// A missing report is absent evidence and is polled again. A retryable transport fault is also absent
+/// evidence, but a datacenter that keeps failing is asked on widening backoff rather than on the poll
+/// cadence, and is retired for `retry_exhausted` once it spends its attempt limit. A terminal fault
+/// cannot be revised by another poll at all, so it retires that datacenter at once. Both retirements
+/// are reported in [`GatherOutcome::retired`] rather than dropped, and their reasons tell them apart.
 ///
 /// Otherwise reports [`Deadline::Expired`](crate::Deadline::Expired), either when `budget` runs out
 /// or once no remaining datacenter can report. Each datacenter's latest report replaces its prior
@@ -43,18 +49,28 @@ pub async fn gather_remote_acks(
         sort_acks(acks);
         return outcome(GatherEnd::Durable, retired);
     }
+    let schedule = GatherSchedule {
+        poll,
+        policy: ReconnectPolicy::default(),
+        jitter: DEFAULT_GATHER_JITTER,
+        retired: &retired,
+    };
     let end = gather(
-        sources.iter().map(AsRef::as_ref).collect(),
+        sources
+            .iter()
+            .map(|source| (source.datacenter(), source.as_ref()))
+            .collect(),
         authority,
         budget,
-        poll,
+        &schedule,
         |source, authority| {
             let retired = &retired;
             Box::pin(async move {
                 match source.fetch_frontier(authority).await {
                     Ok(Some(ack)) => Attempt::Found(ack),
+                    Ok(None) => Attempt::Absent,
                     Err(error) if retired.record(source.datacenter(), &error) => Attempt::Retire,
-                    Ok(None) | Err(_) => Attempt::Retry,
+                    Err(error) => Attempt::Failed(error),
                 }
             })
         },

@@ -124,7 +124,7 @@ impl BlobTransport for HttpBlobTransport {
                 Err(TransportError::BadStatus { status: 404 })
             };
         }
-        require_replication_success(response.status())?;
+        require_replication_success(response.status(), response.headers())?;
         response
             .headers()
             .get(CONTENT_LENGTH)
@@ -157,7 +157,7 @@ impl BlobTransport for HttpBlobTransport {
                 Err(TransportError::BadStatus { status: 404 })
             };
         }
-        require_replication_success(response.status())?;
+        require_replication_success(response.status(), response.headers())?;
         if let Some(range) = request.range {
             require_served_range(&response, range)?;
         }

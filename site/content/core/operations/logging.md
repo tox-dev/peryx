@@ -100,8 +100,8 @@ A blob write emits one `availability blob write acknowledged` event:
 | `ack.metadata_acknowledged` | Whether the metadata dimension reached the write's serial                                      |
 | `ack.bytes_expired`         | Whether the byte dimension's budget ran out                                                    |
 | `ack.metadata_expired`      | Whether the metadata dimension's budget ran out                                                |
-| `ack.bytes_retired`         | Peers retired on a terminal failure, as `node=reason` pairs                                    |
-| `ack.metadata_retired`      | Datacenters retired on a terminal failure, as `datacenter=reason` pairs                        |
+| `ack.bytes_retired`         | Peers the write stopped asking, as `node=reason` pairs                                         |
+| `ack.metadata_retired`      | Datacenters the write stopped asking, as `datacenter=reason` pairs                             |
 | `ack.waited_seconds`        | Time the acknowledgement spent resolving                                                       |
 
 A blob write is datacenter-durable only once both dimensions are, so both are reported: the outcome alone does not say
@@ -115,6 +115,12 @@ that fails that way is retired for the rest of the write, the write stops asking
 a failure class such as `unauthenticated` or `malformed`. The class is a fixed token, never response body or credential
 text. Read them together with the expiry fields: an unproven write whose expiry fields are `false` was stopped by the
 sources named in the retired fields, not by its deadline.
+
+A source can also be retired for `retry_exhausted`, which is the one class a later poll could have revised. A source
+failing retryably, such as one answering `503`, is re-asked on widening backoff rather than on the poll cadence, and a
+source that spends its attempt limit inside one write is retired for the rest of that write. It starts the next write
+with a clean slate, so `retry_exhausted` reports a source that was failing throughout one write rather than one that has
+been taken out of service.
 
 Both events carry identity and verdict only. They exclude payload bytes, metadata mutations, content references,
 credentials, and private paths.

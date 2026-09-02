@@ -182,7 +182,10 @@ async fn test_fetch_maps_a_non_page_body_to_malformed() {
 
 #[rstest::rstest]
 #[case::unauthenticated(StatusCode::UNAUTHORIZED, TransportError::Unauthenticated)]
-#[case::server_error(StatusCode::SERVICE_UNAVAILABLE, TransportError::ServerError { status: 503 })]
+#[case::server_error(StatusCode::SERVICE_UNAVAILABLE, TransportError::ServerError {
+            status: 503,
+            retry_after: None,
+        })]
 #[case::bad_status(StatusCode::BAD_REQUEST, TransportError::BadStatus { status: 400 })]
 #[tokio::test]
 async fn test_fetch_maps_http_errors(#[case] status: StatusCode, #[case] expected: TransportError) {

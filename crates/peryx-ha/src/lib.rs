@@ -44,6 +44,7 @@ use std::error::Error;
 use std::fmt;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 pub use peryx_core::{
@@ -1189,7 +1190,11 @@ pub enum TransportError {
     #[error("peer rejected the replication credential")]
     Unauthenticated,
     #[error("peer replication endpoint returned transient server error {status}")]
-    ServerError { status: u16 },
+    ServerError {
+        status: u16,
+        /// The delay the source asked for, when it sent a usable `Retry-After`.
+        retry_after: Option<Duration>,
+    },
     #[error("peer replication endpoint returned status {status}")]
     BadStatus { status: u16 },
     #[error("peer replication reply was not a valid change page")]
@@ -1221,6 +1226,18 @@ pub enum TransportError {
 }
 
 impl TransportError {
+    /// The delay this source asked to be left alone for, when it named one.
+    ///
+    /// A server under load knows more about when it will be ready than a backoff schedule does, so a
+    /// caller treats this as a floor on its own delay rather than a replacement for it.
+    #[must_use]
+    pub const fn retry_after(&self) -> Option<Duration> {
+        match self {
+            Self::ServerError { retry_after, .. } => *retry_after,
+            _ => None,
+        }
+    }
+
     #[must_use]
     pub const fn is_retryable(&self) -> bool {
         matches!(
@@ -1260,7 +1277,10 @@ impl TransportError {
     }
 }
 
-/// A durability source that failed terminally, named alongside the failure class that retired it.
+/// A durability source a write stopped asking, named alongside the class that retired it.
+///
+/// A source is retired either for a failure no later poll could revise, or for spending its retry
+/// attempts inside one write. The second kind is not permanent: the next write asks it again.
 ///
 /// Retirement is the one outcome a later poll cannot revise, so it is the outcome an operator needs
 /// by name: without it a rejected credential and a peer that is merely slow both present as a write
