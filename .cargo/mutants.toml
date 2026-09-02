@@ -1,0 +1,22 @@
+# What mutation testing is asked here, and where the question stops making sense.
+#
+# A surviving mutant means the code could behave another way and no test would notice. That marks a
+# gap where the behaviour is a promise to somebody. Production code promises behaviour to the people
+# running peryx, so a survivor there is a missing test. The paths below promise nothing to anybody
+# outside this repository, so a survivor is noise that each nightly reports again.
+exclude_globs = [
+  # Benchmark workloads build load for CodSpeed to measure. A mutant that changes how many projects a
+  # workload builds moves what the benchmark measures rather than whether anything is correct, and no
+  # test could assert against it.
+  "crates/*/src/bench/**",
+
+  # Tests use the shared harness, so any behaviour change in it either breaks a test that depends on
+  # it, which the suite reports, or reaches nothing, which `-D dead_code` reports. Both answers land
+  # before mutation asks the question. The inventory agrees, with no mutant in this crate surviving a
+  # run. Add a path back if that stops holding, and say here why.
+  "crates/peryx-test-support/**",
+
+  # Fixture binaries the integration suites drive, such as the S3 multipart fixture. They hold up
+  # assertions that live elsewhere, and a mutant in one fails the suite that runs it.
+  "crates/*/tests/**",
+]

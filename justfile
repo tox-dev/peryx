@@ -187,8 +187,22 @@ lint-docs: _project-temp
     prek run codespell --all-files
 
 # Check workflows and repository automation.
-lint-automation: _project-temp _archive-binary-contract _browser-contract _codspeed-target-contract _coverage-target-contract _features-tool-contract _frontend-test-contract _mutation-baseline-target-contract _mutation-profile-contract _mutation-shard-count-contract _paused-clock-contract _readthedocs-contract _renovate-contract _sanitizer-target-contract _test-target-contract
+lint-automation: _project-temp _archive-binary-contract _browser-contract _codspeed-target-contract _coverage-target-contract _features-tool-contract _frontend-test-contract _mutation-baseline-target-contract _mutation-profile-contract _mutation-scope-contract _mutation-shard-count-contract _paused-clock-contract _readthedocs-contract _renovate-contract _sanitizer-target-contract _test-target-contract
     SKIP=cargo-fmt,cargo-clippy,mdformat,codespell prek run --all-files
+
+# Check that mutation scope stays on production code and that the shard plan follows it.
+_mutation-scope-contract:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for glob in 'crates/*/src/bench/**' 'crates/peryx-test-support/**' 'crates/*/tests/**'; do
+      if ! grep -Fq "\"$glob\"" .cargo/mutants.toml; then
+        printf 'mutation scope must exclude %s; see contributing/ci.md for why\n' "$glob" >&2
+        exit 1
+      fi
+    done
+    # The shard count divides the same list the run mutates. Counting a wider plan than the run covers
+    # would size the matrix for mutants nothing then examines.
+    just --dry-run mutation-count 2>&1 | grep -Fq -- '--list --workspace --all-features'
 
 _mutation-profile-contract:
     just --dry-run mutation 0/1 true 2 skip 500 round-robin 2>&1 \

@@ -46,6 +46,22 @@ or serialising the run would each hide the report without changing what it repor
 [nextest-rs/nextest#3553](https://github.com/nextest-rs/nextest/pull/3553) fixes the spawn boundary upstream and is not
 yet in a release.
 
+The nightly mutation run examines production code only. `.cargo/mutants.toml` excludes benchmark workloads under
+`crates/*/src/bench/`, the shared harness in `crates/peryx-test-support/`, and the fixture binaries under
+`crates/*/tests/`. A surviving mutant means the code could behave another way and no test would notice, which marks a
+gap where the behaviour is a promise to somebody. None of those three paths promises anything outside this repository,
+so a survivor in them is noise that each run reports again. The exclusions take 18,902 mutants down to 17,839.
+
+The harness is the one worth arguing about, since a fault injector that stopped injecting would leave every test using
+it green while testing nothing. That failure shows up red instead. A test that arms a fault asserts the faulted outcome,
+so it fails when the fault does not arrive, and `-D dead_code` covers harness behaviour no test reaches. Both checks
+land before mutation asks the question, and the inventory agrees, with no mutant in that crate surviving a run. Add a
+path back if that stops holding, and say in the config why.
+
+Excluding paths shortens the matrix rather than the shards. The nightly derives its shard count from the same list it
+mutates, at `mutation-shard-count "$(just mutation-count)" 128`, so the run goes from 148 shards to 140 with each still
+targeting 128 mutants. A shard takes as long as it did.
+
 The coverage jobs reject uncovered source lines. `ci-gate` gives branch protection one check name and fails unless every
 required job succeeds.
 
