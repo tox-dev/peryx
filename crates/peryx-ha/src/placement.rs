@@ -131,6 +131,27 @@ pub enum PlacementEvent {
     Repaired { present: bool },
 }
 
+/// What this instance records about one digest: where its bytes came from, and whether they can be
+/// served now.
+///
+/// # An absent row
+///
+/// A read of this projection returns `None` for a digest it holds no row for, and that answer is not
+/// an observation. The projection has no opinion about such a digest.
+///
+/// It is not evidence the bytes are absent. Several paths commit bytes without recording a row, which
+/// [#2141](https://github.com/tox-dev/peryx/issues/2141) enumerates, so a digest this node can serve
+/// may have none.
+///
+/// It is not evidence the bytes are present either. An orphan purge deletes the row before the file it
+/// describes, on purpose, so that an interruption understates what the node holds rather than
+/// promising bytes that are already gone.
+///
+/// So a caller may not answer "are the bytes local" from this projection alone. It answers from the
+/// record that independently establishes whether this node wrote the bytes, and consults the
+/// projection to demote that answer, never to establish it. A caller with no such record, and no row,
+/// reports no local bytes. A caller that needs proof the bytes arrived refuses on an absent row rather
+/// than reading it as either outcome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtifactPlacement {
     pub source: ArtifactSource,

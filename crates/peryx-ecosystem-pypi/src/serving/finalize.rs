@@ -1,8 +1,10 @@
 //! Finalizes admitted `PyPI` uploads at their authority home.
 //!
 //! Finalization is fenced and idempotent. A stale authority epoch, a permission the intent no longer
-//! holds, a placement the bytes never reached, or a checksum that disagrees with what was admitted each
-//! rejects the finalize before publication. Only the publish is durable: it runs through
+//! holds, a placement that does not record the bytes as arrived, or a checksum that disagrees with what
+//! was admitted each rejects the finalize before publication. The placement check demands proof rather
+//! than reading an absent row as proof of the opposite: a missing row is no observation at all, so
+//! finalize refuses and the upload retries once the row it needs exists. Only the publish is durable: it runs through
 //! [`commit_finalized_write`](peryx_storage::meta::MetaStore::commit_finalized_write), which stamps the
 //! operation's terminal outcome in the same transaction as the metadata, so a retry after a timeout or a
 //! restart replays the one committed result rather than publishing twice. A refusal carries no such
@@ -128,6 +130,9 @@ pub async fn finalize_admitted_upload(
     if descriptor.artifact_sha256 != intent.digest || descriptor.artifact_size != intent.size {
         return Err(FinalizeError::Rejected(FinalizeFailure::ChecksumMismatch));
     }
+    // Publishing needs positive evidence that the bytes reached this home. An absent row is not that
+    // evidence, and it is not evidence of the reverse either, so this fails closed and the retry
+    // succeeds once the blob plane records the arrival.
     if state.meta.get_artifact_placement(&intent.digest)?.is_none() {
         return Err(FinalizeError::Rejected(FinalizeFailure::MissingPlacement));
     }

@@ -423,6 +423,12 @@ pub async fn advance_blob_frontier_with_evidence(
 
 /// Repairs the placement when byte commit succeeded but the later placement write failed, reporting
 /// whether the row moved to local, which is what a derived view reading availability answers from.
+///
+/// The absent case records rather than reads. This runs for a digest whose bytes this replica has just
+/// confirmed, so the caller holds the observation the projection lacks, and `Proxy` is the replica's
+/// true source: the bytes came from the primary, which can resupply them. It repairs only what the
+/// journal named, so it is no general backstop for the rows
+/// [#2141](https://github.com/tox-dev/peryx/issues/2141) lists.
 fn repair_local_placement(meta: &MetaStore, digest: &Digest) -> Result<bool, SyncError> {
     match meta.get_artifact_placement(digest.as_str())? {
         Some(placement) if placement.availability.is_local() => Ok(false),

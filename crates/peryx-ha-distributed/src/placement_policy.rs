@@ -131,6 +131,13 @@ pub fn record_artifact_placement(
     Ok(placement)
 }
 
+/// Move an existing row along `event`, returning the row it settled at.
+///
+/// Returns `Ok(None)` for a digest with no row. The event names a transition, not a source, so there is
+/// nothing to create a row from, and inventing one would guess the dimension
+/// [`ArtifactPlacement`](peryx_ha::ArtifactPlacement) documents as intrinsic. A caller that knows the
+/// source records it instead, the way the blob plane does when it repairs a digest it has just confirmed.
+///
 /// # Errors
 /// Returns a store error when the placement cannot be read or written.
 pub fn apply_placement_event(

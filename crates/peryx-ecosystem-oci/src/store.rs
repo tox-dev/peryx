@@ -227,6 +227,12 @@ pub fn record_pushed_placement_txn(txn: &mut DriverTxn, digest: &str) {
 }
 
 /// Read local availability without creating the optional placement table.
+///
+/// An absent row reads as no local bytes. That is sound for the digests this answers for, because
+/// [`record_pushed_placement_txn`] writes a pushed manifest's row in the transaction that publishes it
+/// and a mirrored manifest gets one when its bytes land, so a manifest this node serves always has a
+/// row. A caller that asks about a digest with no such guarantee cannot read absence this way; see
+/// [`ArtifactPlacement`] for why.
 pub fn content_available_locally(meta: &MetaStore, digest: &str) -> Result<bool, MetaError> {
     Ok(meta
         .get_artifact_placement(digest)?

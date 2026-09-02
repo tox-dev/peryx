@@ -47,6 +47,9 @@ impl MetaStore {
         Ok(())
     }
 
+    /// `None` means the projection holds no row for `digest`, which is not an observation about the
+    /// bytes in either direction. See [`ArtifactPlacement`] for what a caller may conclude from it.
+    ///
     /// # Errors
     /// Returns a store error when the row cannot be read or decoded.
     pub fn get_artifact_placement(&self, digest: &str) -> Result<Option<ArtifactPlacement>, MetaError> {

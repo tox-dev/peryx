@@ -57,6 +57,21 @@ recording time. `has upstream` is true only for a `proxy` source.
 The failed-write row preserves the prior placement. A failed cache fill cannot drop a verified `local` copy or create
 one from a partial transfer. A metadata fetch or truncated download cannot produce `local`.
 
+## What an absent record means
+
+A digest with no placement record is not a digest peryx has observed to be missing. The projection holds no opinion
+about it, and a reader may conclude nothing about the bytes in either direction.
+
+It is not evidence the bytes are absent, because several write paths commit bytes without recording a record. It is not
+evidence they are present either, because reclaiming an orphaned blob deletes the record before the file it describes,
+so that an interruption understates what the node holds rather than promising bytes that are already gone.
+
+So a reader answers "can this instance serve the bytes" from the record that independently establishes whether the node
+wrote them, and consults the placement only to demote that answer. A hosted upload reads `local` until a hosted-source
+placement says its bytes went away. A proxied file has nothing else vouching for it, so it reads `remote_only` until a
+placement says the bytes arrived. A reader that needs proof the bytes arrived, such as the finalize step of a routed
+upload, refuses on an absent record rather than reading it as either outcome.
+
 ## Repair
 
 The availability projection can drift from the content store when an operator removes a blob out of band or a fill

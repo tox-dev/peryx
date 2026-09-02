@@ -17,7 +17,7 @@ use peryx_driver::access::ReadAccess;
 use peryx_driver::discovery::BaseUrl;
 use peryx_driver::serving::{BrowseDriver as _, BrowseError, BrowseRequest};
 use peryx_driver::{AppState, ServingState};
-use peryx_ha::{ArtifactPlacementStore, ArtifactSource, ByteAvailability};
+use peryx_ha::{ArtifactPlacement, ArtifactPlacementStore, ArtifactSource, ByteAvailability};
 use peryx_identity::{Denial, ResourceMatch};
 use peryx_index::{Index, IndexKind};
 use peryx_storage::blob::{BlobLease, Digest};
@@ -686,6 +686,10 @@ fn browse_serializer(route: &str, project: Option<&str>) -> url::form_urlencoded
 #[path = "../../tests/unit/serving/web/url_tests.rs"]
 mod url_tests;
 
+#[cfg(test)]
+#[path = "../../tests/unit/serving/web/placement_tests.rs"]
+mod placement_tests;
+
 pub(super) fn project_names(state: &ServingState, position: usize) -> Result<Vec<String>, String> {
     let list = cache::resolve_list(state, state.index_at(position))?;
     Ok(list.projects.into_iter().map(|entry| entry.name).collect())
@@ -881,26 +885,38 @@ fn apply_placement(
                 .and_then(|source| source.upstream)
         };
         let placement = ArtifactPlacementStore::get_artifact_placement(&state.meta, &file.sha256)?;
-        if is_hosted {
-            file.source = UiArtifactSource::Hosted;
-            // The upload is authoritative and its bytes are local. Only a hosted-source placement,
-            // which the upload path records and eviction or repair can move, marks it unavailable; a
-            // stale proxied row left by a same-digest mirror is ignored.
-            file.availability = match placement {
-                Some(placement) if matches!(placement.source, ArtifactSource::Hosted) => {
-                    ui_availability(placement.availability)
-                }
-                _ => UiByteAvailability::Local,
-            };
-        } else if let Some(placement) = placement {
-            file.source = ui_source(placement.source);
-            file.availability = ui_availability(placement.availability);
-        } else {
-            file.source = UiArtifactSource::Proxy;
-            file.availability = UiByteAvailability::RemoteOnly;
-        }
+        let resolved = resolve_file_placement(is_hosted, placement);
+        file.source = ui_source(resolved.source);
+        file.availability = ui_availability(resolved.availability);
     }
     Ok(())
+}
+
+/// The source and availability to report for one file, given whether an upload record already
+/// establishes that this node wrote its bytes.
+///
+/// The projection is consulted to demote that answer, never to establish it, because an absent row is
+/// no observation at all: see [`ArtifactPlacement`]. A hosted upload therefore reads local until a
+/// hosted-source row says its bytes went away, and a proxied file reads remote until a row says they
+/// arrived. The upload path records no row for a still-present file today, so the hosted branch runs on
+/// the upload record alone for most files; [#2141](https://github.com/tox-dev/peryx/issues/2141) is
+/// where that gap closes, and closing it changes nothing here.
+pub fn resolve_file_placement(hosted: bool, placement: Option<ArtifactPlacement>) -> ArtifactPlacement {
+    if hosted {
+        // A row left by a same-digest mirror describes that mirror, not this upload, so only a
+        // hosted-source row demotes it.
+        return match placement {
+            Some(placement) if matches!(placement.source, ArtifactSource::Hosted) => placement,
+            _ => ArtifactPlacement {
+                source: ArtifactSource::Hosted,
+                availability: ByteAvailability::Local,
+            },
+        };
+    }
+    placement.unwrap_or(ArtifactPlacement {
+        source: ArtifactSource::Proxy,
+        availability: ByteAvailability::RemoteOnly,
+    })
 }
 
 const fn ui_source(source: ArtifactSource) -> UiArtifactSource {

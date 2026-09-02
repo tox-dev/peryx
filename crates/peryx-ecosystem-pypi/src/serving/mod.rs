@@ -51,6 +51,7 @@ pub(crate) mod response;
 mod upload_form;
 mod upload_ui;
 mod web;
+pub(crate) use web::resolve_file_placement;
 
 pub(super) const BROWSE_PATHS: &[&str] = web::BROWSE_PATHS;
 

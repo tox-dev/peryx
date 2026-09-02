@@ -13,7 +13,7 @@ use crate::{
 use peryx_identity::ArtifactDigest;
 use peryx_policy::PolicyAction;
 use peryx_storage::blob::Digest;
-use peryx_storage::meta::{ArtifactSource, DigestRevocationState, MetaScanError};
+use peryx_storage::meta::{DigestRevocationState, MetaScanError};
 
 use crate::upload::Uploaded;
 use peryx_core::path::local_artifact_url;
@@ -196,15 +196,13 @@ fn is_revoked(ctx: &IndexerCtx<'_>, file: &File) -> Result<bool, SearchError> {
 }
 
 /// Whether any of the project's distributions can be served from local storage right now, decided
-/// from the #441 placement projection so search agrees with the file view [`apply_placement`] renders
-/// without a per-result content-store probe.
+/// from the #441 placement projection so search agrees with the file view without a per-result
+/// content-store probe.
 ///
-/// A hosted upload's bytes are local unless a hosted-source placement marks them evicted; the upload
-/// path records no placement for a still-present file, so hosted-layer membership stands in for one. A
-/// mirrored file is local only when its placement projects [`ByteAvailability::Local`]: a never-fetched
-/// upstream catalog entry has none and stays remote.
+/// Both views resolve a file through [`resolve_file_placement`], so search and the page cannot drift
+/// apart on what an absent row means.
 ///
-/// [`apply_placement`]: crate::serving::web
+/// [`resolve_file_placement`]: crate::serving::resolve_file_placement
 fn available_locally(
     ctx: &IndexerCtx<'_>,
     index: &Index,
@@ -218,17 +216,8 @@ fn available_locally(
             continue;
         };
         let placement = ctx.meta.get_artifact_placement(sha256)?;
-        let local = if hosted.contains(&file.filename) {
-            // A hosted upload's bytes are local unless its own hosted-source placement marks them
-            // gone; a stale proxied row left by a same-digest mirror never overrides the upload.
-            match placement {
-                Some(placement) if placement.source == ArtifactSource::Hosted => placement.availability.is_local(),
-                _ => true,
-            }
-        } else {
-            placement.is_some_and(|placement| placement.availability.is_local())
-        };
-        if local {
+        let resolved = crate::serving::resolve_file_placement(hosted.contains(&file.filename), placement);
+        if resolved.availability.is_local() {
             return Ok(true);
         }
     }
