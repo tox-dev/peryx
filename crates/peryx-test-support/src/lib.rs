@@ -739,6 +739,7 @@ pub struct Node {
     shutdown_path: Option<String>,
     process_events: Receiver<String>,
     ready: bool,
+    listeners: NodeListeners,
     _process_permit: Option<ProcessPermit>,
 }
 
@@ -746,7 +747,7 @@ impl Node {
     fn spawn(
         topology: &Topology,
         member: &MemberSpec,
-        listeners: NodeListeners,
+        mut listeners: NodeListeners,
         writer: Option<&(String, u16)>,
         upstream: Option<&str>,
         roster: &str,
@@ -773,7 +774,7 @@ impl Node {
         }
         let http = http_client(HTTP_TIMEOUT.min(topology.harness.ready_timeout));
         let process_permit = topology.harness.process_limit.as_ref().map(ProcessLimit::acquire);
-        let (child, process_events) = launch(&config, data.path(), port, &topology.harness.binary, listeners)?;
+        let (child, process_events) = launch(&config, data.path(), port, &topology.harness.binary, &mut listeners)?;
         let mut node = Self {
             identity: member.node.clone(),
             process_id: child.id(),
@@ -789,6 +790,7 @@ impl Node {
             shutdown_path: topology.harness.shutdown_path.clone(),
             process_events,
             ready: false,
+            listeners,
             _process_permit: process_permit,
         };
         node.await_ready()?;
@@ -897,13 +899,8 @@ impl Node {
         std::fs::write(&config, config_toml).expect("write config");
         let http = http_client(HTTP_TIMEOUT.min(harness.ready_timeout));
         let process_permit = harness.process_limit.as_ref().map(ProcessLimit::acquire);
-        let (child, process_events) = launch(
-            &config,
-            data.path(),
-            port,
-            &harness.binary,
-            NodeListeners::public(public_listener),
-        )?;
+        let mut listeners = NodeListeners::public(public_listener);
+        let (child, process_events) = launch(&config, data.path(), port, &harness.binary, &mut listeners)?;
         Ok(Self {
             identity: identity.to_owned(),
             process_id: child.id(),
@@ -919,6 +916,7 @@ impl Node {
             shutdown_path: harness.shutdown_path.clone(),
             process_events,
             ready: false,
+            listeners,
             _process_permit: process_permit,
         })
     }
@@ -1169,12 +1167,13 @@ impl Node {
     /// The [`HarnessError`] the fresh process reports while coming up.
     pub fn restart(&mut self) -> Result<(), HarnessError> {
         self.kill();
+        self.listeners.rebind()?;
         let (child, process_events) = launch(
             &self.config,
             self.data.path(),
             self.port,
             &self.binary,
-            NodeListeners::on_ports(self.port, self.control_port)?,
+            &mut self.listeners,
         )?;
         self.process_id = child.id();
         self.child = Some(child);
@@ -1470,7 +1469,7 @@ fn launch(
     data: &std::path::Path,
     port: u16,
     binary: &std::path::Path,
-    listeners: NodeListeners,
+    listeners: &mut NodeListeners,
 ) -> std::io::Result<(Child, Receiver<String>)> {
     let log_path = data.join("peryx.log");
     let log = std::fs::File::create(&log_path).expect("create node log");
@@ -1580,12 +1579,12 @@ pub(crate) fn wait_for_line(
 }
 
 #[cfg(unix)]
-fn inherited_listener_command(binary: &Path, listeners: NodeListeners, log: std::fs::File) -> Command {
+fn inherited_listener_command(binary: &Path, listeners: &mut NodeListeners, log: std::fs::File) -> Command {
     use std::os::fd::OwnedFd;
     use std::process::Stdio;
 
-    let public = listeners.public.listener;
-    let availability = listeners.availability.listener;
+    let public = listeners.public.listener.take();
+    let availability = listeners.availability.listener.take();
     if public.is_none() && availability.is_none() {
         let mut command = Command::new(binary);
         command.stderr(log);
@@ -1615,8 +1614,7 @@ fn inherited_listener_command(binary: &Path, listeners: NodeListeners, log: std:
 }
 
 #[cfg(not(unix))]
-fn inherited_listener_command(binary: &Path, listeners: NodeListeners, log: std::fs::File) -> Command {
-    drop(listeners);
+fn inherited_listener_command(binary: &Path, _listeners: &mut NodeListeners, log: std::fs::File) -> Command {
     let mut command = Command::new(binary);
     command.stderr(log);
     command
@@ -1656,15 +1654,64 @@ fn kill_group(child: &mut Child) {
     let _ = child.wait();
 }
 
+/// Fixture ports are drawn from a fixed band instead of from the operating system's ephemeral
+/// range, which is 49152 upwards on Windows and 32768 upwards on Linux. Nothing outside the harness
+/// hands out a number below those, so no outbound connection's source port can land on a number a
+/// node is about to serve on.
+const FIXTURE_PORT_BASE: u16 = 20_000;
+const FIXTURE_PORT_COUNT: u16 = 5_000;
+/// A reservation holds a socket on [`claim_port`] for as long as it owns the number, and every draw
+/// walks past a candidate whose claim is taken. Unix also hands the child the bound listener, so
+/// the number itself is never free there. Windows has no socket-inheritance path through
+/// [`Command`], so the child binds the number itself after the loader has run, and the claim is the
+/// only thing standing between the draw and that bind.
+const CLAIM_PORT_OFFSET: u16 = FIXTURE_PORT_COUNT;
+
+static NEXT_DRAW: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+
+const fn claim_port(port: u16) -> u16 {
+    port + CLAIM_PORT_OFFSET
+}
+
+/// Every candidate in the band, starting where this process' previous draw started plus one, so
+/// concurrent harnesses and repeated draws do not queue on the same first candidate.
+fn fixture_port_candidates() -> impl Iterator<Item = u16> {
+    let seed = u16::try_from(std::process::id() % u32::from(FIXTURE_PORT_COUNT)).unwrap_or_default();
+    let start = seed.wrapping_add(NEXT_DRAW.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) % FIXTURE_PORT_COUNT;
+    (0..FIXTURE_PORT_COUNT).map(move |offset| FIXTURE_PORT_BASE + (start + offset) % FIXTURE_PORT_COUNT)
+}
+
+#[derive(Debug)]
 struct ListenerReservation {
     port: u16,
+    /// Dropping it returns the number to the band.
+    claim: Option<TcpListener>,
     #[cfg(unix)]
     listener: Option<TcpListener>,
 }
 
 impl ListenerReservation {
     fn ephemeral() -> std::io::Result<Self> {
-        Self::bind(0)
+        Self::claimed(fixture_port_candidates())
+    }
+
+    fn claimed(candidates: impl Iterator<Item = u16>) -> std::io::Result<Self> {
+        for port in candidates {
+            let Ok(claim) = TcpListener::bind(("127.0.0.1", claim_port(port))) else {
+                continue;
+            };
+            let Ok(reservation) = Self::bind(port) else {
+                continue;
+            };
+            return Ok(Self {
+                claim: Some(claim),
+                ..reservation
+            });
+        }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            "every fixture port candidate is claimed",
+        ))
     }
 
     fn bind(port: u16) -> std::io::Result<Self> {
@@ -1672,6 +1719,7 @@ impl ListenerReservation {
         let port = listener.local_addr()?.port();
         Ok(Self {
             port,
+            claim: None,
             #[cfg(unix)]
             listener: Some(listener),
         })
@@ -1680,12 +1728,26 @@ impl ListenerReservation {
     const fn released(port: u16) -> Self {
         Self {
             port,
+            claim: None,
             #[cfg(unix)]
             listener: None,
         }
     }
+
+    /// Take the number back for a restart. The claim outlived the process that just died, so the
+    /// number is still this harness'.
+    fn rebind(&mut self) -> std::io::Result<()> {
+        #[cfg(unix)]
+        if self.port != 0 {
+            // A launch that failed before the child took the descriptor leaves the parent holding it.
+            self.listener = None;
+            self.listener = Some(TcpListener::bind(("127.0.0.1", self.port))?);
+        }
+        Ok(())
+    }
 }
 
+#[derive(Debug)]
 struct NodeListeners {
     public: ListenerReservation,
     availability: ListenerReservation,
@@ -1703,17 +1765,6 @@ impl NodeListeners {
         })
     }
 
-    fn on_ports(public: u16, availability: u16) -> std::io::Result<Self> {
-        Ok(Self {
-            public: ListenerReservation::bind(public)?,
-            availability: if availability == 0 {
-                ListenerReservation::released(0)
-            } else {
-                ListenerReservation::bind(availability)?
-            },
-        })
-    }
-
     const fn public(public: ListenerReservation) -> Self {
         Self {
             public,
@@ -1724,10 +1775,22 @@ impl NodeListeners {
     const fn ports(&self) -> (u16, u16) {
         (self.public.port, self.availability.port)
     }
+
+    fn rebind(&mut self) -> std::io::Result<()> {
+        self.public.rebind()?;
+        self.availability.rebind()
+    }
 }
 
-fn free_port() -> u16 {
-    ListenerReservation::ephemeral().expect("bind ephemeral").port
+/// A claimed number with nothing listening on it, for a caller whose own child binds it.
+fn free_port() -> ListenerReservation {
+    let reservation = ListenerReservation::ephemeral().expect("claim a fixture port");
+    ListenerReservation {
+        port: reservation.port,
+        claim: reservation.claim,
+        #[cfg(unix)]
+        listener: None,
+    }
 }
 
 /// Spawn a stand-alone node forced onto `port`, so a self-test can prove the harness detects a port
