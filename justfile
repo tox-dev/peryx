@@ -129,12 +129,23 @@ _frontend-test-contract:
         exit 1
       fi
     done
-    grep -Fq 'npm --prefix "$directory" test || failed+=("$directory")' <<<"$script"
+    grep -Fq './node_modules/.bin/playwright test --config playwright.config.mjs) || failed+=("$suite")' <<<"$script"
     grep -Fq 'if (( ${#failed[@]} > 0 )); then' <<<"$script"
     grep -Fq 'exit 1' <<<"$script"
+    # A suite that cannot run has to fail the gate. Installing it is the first answer and saying so is
+    # the second; quietly running two suites out of three would report a green frontend that never
+    # exercised the third.
+    grep -Fq 'npm --prefix "$suite" ci' <<<"$script"
+    grep -Fq 'still has no Playwright runner after npm ci' <<<"$script"
+    # Whatever `playwright` resolves to on PATH is a different tool that rejects `test`, so reaching it
+    # turns a missing install into an unrelated error.
+    if grep -Eq '(^|[^/])\bplaywright test\b' <<<"$script"; then
+      printf 'frontend-test must run each suite own Playwright, not the one on PATH\n' >&2
+      exit 1
+    fi
     # Joining the suites into one `;` list puts them back under plain `set -e`, which reports
     # the first broken suite and never runs the rest.
-    if grep -Eq 'npm\b.*\btest\b *;' <<<"$script"; then
+    if grep -Eq 'playwright test\b.*;' <<<"$script"; then
       printf 'frontend-test must not join browser suites with `;`\n' >&2
       exit 1
     fi
@@ -626,7 +637,7 @@ frontend-deps: _project-temp
     npm --prefix crates/peryx-ecosystem-pypi/tests/frontend ci
     npm --prefix crates/peryx-ecosystem-oci/tests/frontend ci
 
-# Run the shared and owner browser suites against an existing build.
+# Run the shared and owner browser suites, installing and building whatever they are missing.
 frontend-test: _project-temp
     #!/usr/bin/env bash
     set -euo pipefail
@@ -634,7 +645,16 @@ frontend-test: _project-temp
     # the recipe then exits non-zero if any of them failed. Collecting the statuses is what
     # buys that: left uncollected, `set -e` ends the run at the first broken suite, and the two
     # larger suites are the ones most likely to break.
-    browser=$(MISE_ENV=browser mise where http:playwright-headless-shell)/chrome-headless-shell
+    suites=(
+      crates/peryx-web/tests/frontend
+      crates/peryx-ecosystem-pypi/tests/frontend
+      crates/peryx-ecosystem-oci/tests/frontend
+    )
+    if ! shell_root=$(MISE_ENV=browser mise where http:playwright-headless-shell 2>/dev/null); then
+      MISE_ENV=browser mise install --locked http:playwright-headless-shell
+      shell_root=$(MISE_ENV=browser mise where http:playwright-headless-shell)
+    fi
+    browser="$shell_root/chrome-headless-shell"
     if [[ -f "$browser.exe" ]]; then
       browser="$browser.exe"
     fi
@@ -642,12 +662,30 @@ frontend-test: _project-temp
     # `export VAR="$(cmd)"` reports the status of `export`, so the lookup gets its own assignment.
     version=$(MISE_ENV=browser mise current http:playwright-headless-shell)
     export PERYX_PLAYWRIGHT_BROWSER_VERSION="$version"
+    # A suite installs when it has no runner or its lock file has moved on, so a fresh worktree runs
+    # the gate instead of reporting a tool it never had. An installed suite skips the work, which is
+    # what keeps the `frontend-deps` step CI runs first from paying for it twice.
+    for suite in "${suites[@]}"; do
+      if [[ ! -x "$suite/node_modules/.bin/playwright" ]] \
+        || [[ "$suite/package-lock.json" -nt "$suite/node_modules/.package-lock.json" ]]; then
+        npm --prefix "$suite" ci
+      fi
+      if [[ ! -x "$suite/node_modules/.bin/playwright" ]]; then
+        printf 'browser suite %s still has no Playwright runner after npm ci\n' "$suite" >&2
+        exit 1
+      fi
+    done
+    # A caller that has already built names its binary, as the coverage run does with its instrumented
+    # copy. Building only when it has not is what lets a fresh worktree run the gate without making CI
+    # build a second server it would not use.
+    if [[ -z "${PERYX_FRONTEND_BINARY:-}" ]]; then
+      cargo leptos build
+    fi
     failed=()
-    for directory in \
-      crates/peryx-web/tests/frontend \
-      crates/peryx-ecosystem-pypi/tests/frontend \
-      crates/peryx-ecosystem-oci/tests/frontend; do
-      npm --prefix "$directory" test || failed+=("$directory")
+    for suite in "${suites[@]}"; do
+      # The suite's own runner rather than whatever `playwright` resolves to: the one on PATH is a
+      # different tool that rejects `test`, so a lane reaching it debugs that instead of the install.
+      (cd "$suite" && ./node_modules/.bin/playwright test --config playwright.config.mjs) || failed+=("$suite")
     done
     if (( ${#failed[@]} > 0 )); then
       printf 'browser suite failed: %s\n' "${failed[@]}" >&2
@@ -802,7 +840,6 @@ browser-lock:
 
 # Build and test the browser application.
 frontend: frontend-deps _project-temp
-    cargo leptos build
     just frontend-test
 
 # Serve the documentation source.
