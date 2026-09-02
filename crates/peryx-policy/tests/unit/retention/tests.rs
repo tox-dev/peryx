@@ -751,6 +751,109 @@ fn a_plan_counts_its_decisions_without_expanding_them() {
     assert_eq!(decisions.len(), 3);
 }
 
+/// The digest two candidates share when a case publishes one content under two artifacts.
+const SHARED: &str = "sha256:shared";
+
+#[rstest]
+#[case::one_digest_under_every_removal(["sha256:a", "sha256:a", "sha256:a"], 10)]
+#[case::one_digest_under_two_of_three(["sha256:a", "sha256:a", "sha256:b"], 20)]
+#[case::three_distinct_digests(["sha256:a", "sha256:b", "sha256:c"], 30)]
+#[case::no_digest_recorded(["", "", ""], 30)]
+fn removals_reclaim_each_digest_once(#[case] digests: [&str; 3], #[case] reclaimable: u64) {
+    let policy = expiring(RetentionSelector::ResourcePrefix { prefix: String::new() });
+    let candidates = digests
+        .iter()
+        .enumerate()
+        .map(|(rank, digest)| sharing(&format!("group-{rank}"), rank as u64, digest))
+        .collect();
+
+    let decisions = policy.plan_decisions(None, candidates);
+
+    assert_eq!(reclaimed_bytes(&decisions), reclaimable);
+}
+
+#[test]
+fn a_digest_a_surviving_artifact_still_references_reclaims_nothing() {
+    let policy = keep_latest(1);
+
+    let decisions = policy.plan_decisions(None, vec![sharing("group-a", 1, SHARED), sharing("group-b", 0, SHARED)]);
+
+    assert_eq!(
+        decisions,
+        vec![
+            RetentionDecision {
+                digest: SHARED.to_owned(),
+                ..decision(
+                    "resource",
+                    "group-b",
+                    RetentionOutcome::Retain,
+                    Some("keep-latest-groups"),
+                    &[],
+                )
+            },
+            RetentionDecision {
+                digest: SHARED.to_owned(),
+                bytes: 0,
+                ..decision(
+                    "resource",
+                    "group-a",
+                    RetentionOutcome::Remove,
+                    Some("resource-prefix"),
+                    &["group-b"],
+                )
+            },
+        ]
+    );
+    assert_eq!(reclaimed_bytes(&decisions), 0);
+}
+
+#[test]
+fn charging_a_shared_digest_once_leaves_the_rows_a_plan_returns_alone() {
+    let policy = expiring(RetentionSelector::ResourcePrefix { prefix: String::new() });
+    let distinct = policy.plan_decisions(
+        None,
+        vec![candidate("resource", "group-a", 0), candidate("resource", "group-b", 1)],
+    );
+
+    let shared = policy.plan_decisions(None, vec![sharing("group-a", 0, SHARED), sharing("group-b", 1, SHARED)]);
+
+    assert_eq!(rows(&shared), rows(&distinct));
+    assert_eq!(reclaimed_bytes(&shared), 10);
+    assert_eq!(reclaimed_bytes(&distinct), 20);
+}
+
+/// What a reader summing a plan's removals is told the plan frees.
+fn reclaimed_bytes(decisions: &[RetentionDecision]) -> u64 {
+    decisions
+        .iter()
+        .filter(|decision| decision.outcome == RetentionOutcome::Remove)
+        .map(|decision| decision.bytes)
+        .sum()
+}
+
+/// Everything a decision states apart from the content it names and the bytes charged for it, so two
+/// plans that differ only in which digests repeat compare equal here.
+fn rows(decisions: &[RetentionDecision]) -> Vec<(&str, &str, RetentionOutcome, &[String])> {
+    decisions
+        .iter()
+        .map(|decision| {
+            (
+                decision.group.as_deref().unwrap_or_default(),
+                decision.artifact.as_str(),
+                decision.outcome,
+                decision.retained_groups.as_slice(),
+            )
+        })
+        .collect()
+}
+
+fn sharing(group: &str, rank: u64, digest: &str) -> RetentionCandidate {
+    RetentionCandidate {
+        digest: digest.to_owned(),
+        ..candidate("resource", group, rank)
+    }
+}
+
 /// One candidate per group, ranked newest first, so `keep-latest-n` retains the first `n`.
 fn ranked_candidates(groups: usize) -> Vec<RetentionCandidate> {
     (0..groups)

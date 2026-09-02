@@ -139,19 +139,20 @@ impl RetentionPolicy {
         candidates.sort_by(|left, right| {
             (left.rank, &left.artifact, &left.digest).cmp(&(right.rank, &right.artifact, &right.digest))
         });
-        let verdicts: Vec<Verdict> = candidates
+        let mut verdicts: Vec<Verdict> = candidates
             .iter()
             .map(|candidate| self.classify(candidate, now))
             .collect();
         let retained: Vec<String> = candidates
             .iter()
             .zip(&verdicts)
-            .filter(|(_, (outcome, _))| *outcome == RetentionOutcome::Retain)
+            .filter(|(_, verdict)| verdict.outcome == RetentionOutcome::Retain)
             .filter_map(|(candidate, _)| candidate.group.as_deref())
             .collect::<BTreeSet<&str>>()
             .into_iter()
             .map(str::to_owned)
             .collect();
+        charge_each_digest_once(&candidates, &mut verdicts);
         RetentionPlan {
             candidates,
             verdicts,
@@ -160,6 +161,15 @@ impl RetentionPolicy {
     }
 
     fn classify(&self, candidate: &RetentionCandidate, now: Option<i64>) -> Verdict {
+        let (outcome, rule) = self.decide(candidate, now);
+        Verdict {
+            outcome,
+            rule,
+            bytes: candidate.bytes,
+        }
+    }
+
+    fn decide(&self, candidate: &RetentionCandidate, now: Option<i64>) -> (RetentionOutcome, Option<&'static str>) {
         if let Some(rule) = self.keep.iter().find(|rule| rule.matches(candidate, now)) {
             return (RetentionOutcome::Retain, Some(rule.name()));
         }
@@ -170,9 +180,51 @@ impl RetentionPolicy {
     }
 }
 
-/// What a policy decided about one candidate, before that decision is expanded. Sixteen-odd bytes per
-/// candidate, so a whole project's verdicts stay negligible beside its candidates.
-type Verdict = (RetentionOutcome, Option<&'static str>);
+/// Charge each digest to at most one of the removals that reference it, before any decision expands.
+///
+/// Content is stored by digest, so several artifacts that share one digest share one stored blob.
+/// Deleting all of them frees that blob once, and deleting some while another keeps it live frees
+/// nothing. A removal that repeats its artifact's own size therefore overstates what the plan frees, by
+/// the whole size of every reference after the first.
+///
+/// The charge belongs here rather than in [`RetentionPlan::decisions`]: expansion sees one row at a
+/// time and cannot know whether an earlier or later row shares the digest, which is precisely how the
+/// double count arises. This changes only what the removals sum to — never which rows the plan returns,
+/// their order, or the size a retained row reports, since two artifacts sharing a digest are still two
+/// artifacts.
+///
+/// The resource under evaluation bounds what is visible: a reference held by another resource is not in
+/// `candidates`, so its digest is charged as if this plan held the last references to it.
+///
+/// A candidate with no digest names no content and can never be shown to share a blob, so it keeps its
+/// own size.
+fn charge_each_digest_once(candidates: &[RetentionCandidate], verdicts: &mut [Verdict]) {
+    let live: BTreeSet<&str> = candidates
+        .iter()
+        .zip(&*verdicts)
+        .filter(|(_, verdict)| verdict.outcome == RetentionOutcome::Retain)
+        .map(|(candidate, _)| candidate.digest.as_str())
+        .collect();
+    let mut charged: BTreeSet<&str> = BTreeSet::new();
+    for (candidate, verdict) in candidates.iter().zip(verdicts) {
+        let digest = candidate.digest.as_str();
+        if verdict.outcome == RetentionOutcome::Remove
+            && !digest.is_empty()
+            && (live.contains(digest) || !charged.insert(digest))
+        {
+            verdict.bytes = 0;
+        }
+    }
+}
+
+/// What a policy decided about one candidate, before that decision is expanded: the outcome, the rule
+/// that produced it, and the bytes this row is charged for. Under forty bytes per candidate, so a whole
+/// project's verdicts stay negligible beside its candidates.
+struct Verdict {
+    outcome: RetentionOutcome,
+    rule: Option<&'static str>,
+    bytes: u64,
+}
 
 /// One resource classified against a policy, ready to stream.
 ///
@@ -214,7 +266,7 @@ impl RetentionPlan {
         self.candidates
             .into_iter()
             .zip(self.verdicts)
-            .map(move |(candidate, (outcome, rule))| RetentionDecision {
+            .map(move |(candidate, verdict)| RetentionDecision {
                 resource: candidate.resource,
                 group: candidate.group,
                 artifact: candidate.artifact,
@@ -222,10 +274,10 @@ impl RetentionPlan {
                 class: candidate.class,
                 visibility: candidate.visibility,
                 source: candidate.source,
-                bytes: candidate.bytes,
-                outcome,
-                rule,
-                retained_groups: match outcome {
+                bytes: verdict.bytes,
+                outcome: verdict.outcome,
+                rule: verdict.rule,
+                retained_groups: match verdict.outcome {
                     RetentionOutcome::Remove => retained.clone(),
                     RetentionOutcome::Retain => Vec::new(),
                 },
@@ -263,6 +315,9 @@ pub struct RetentionDecision {
     pub visibility: RetentionVisibility,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// On a removal, the capacity the plan makes eligible for reclamation: the stored size charged to
+    /// one removal per digest, and zero on every further reference to that digest and on any digest a
+    /// retained decision keeps live. On a retained decision, the artifact's own size.
     pub bytes: u64,
     pub outcome: RetentionOutcome,
     #[serde(skip_serializing_if = "Option::is_none")]

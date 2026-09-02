@@ -175,6 +175,11 @@ fn over_budget(project: &str, budget: usize) -> String {
 /// Project one raw upload record to its compact candidate, moving the fields retention keeps out of the
 /// decoded record so its heavier remainder (the served URL, the full hash map, the metadata and
 /// provenance blobs) drops as this returns. `rank` is filled once the whole project is grouped.
+///
+/// `bytes` is the file's own recorded size. Two releases of a project can publish the same content under
+/// different filenames, and the planner charges the shared digest to one of their removals, so the size
+/// a decision reports is not always the size set here. A record with no `sha256` hash leaves the digest
+/// empty, which names no content and so shares none.
 fn candidate(project: &str, uploaded: Uploaded) -> RetentionCandidate {
     let Uploaded { version, file, trashed } = uploaded;
     let class = if trashed.is_some() {

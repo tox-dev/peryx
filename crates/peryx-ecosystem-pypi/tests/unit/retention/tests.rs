@@ -28,13 +28,25 @@ fn version_digest(version: &str) -> String {
 }
 
 fn seed(meta: &MetaStore, index: &str, project: &str, version: &str, yanked: Yanked, trashed: Option<TrashInfo>) {
+    seed_content(meta, index, project, version, &version_digest(version), yanked, trashed);
+}
+
+fn seed_content(
+    meta: &MetaStore,
+    index: &str,
+    project: &str,
+    version: &str,
+    digest: &str,
+    yanked: Yanked,
+    trashed: Option<TrashInfo>,
+) {
     let filename = format!("{project}-{version}.whl");
     let uploaded = Uploaded {
         version: version.to_owned(),
         file: File {
             filename: filename.clone(),
             url: format!("https://files/{filename}"),
-            hashes: BTreeMap::from([("sha256".to_owned(), version_digest(version))]),
+            hashes: BTreeMap::from([("sha256".to_owned(), digest.to_owned())]),
             requires_python: None,
             size: Some(1024),
             upload_time: Some("2020-01-01T00:00:00Z".to_owned()),
@@ -127,7 +139,7 @@ const WIDE_PROJECT_VERSIONS: usize = 120;
 /// What a plan holds live beyond its candidates: a verdict per candidate, plus the surviving-version
 /// index counted twice, once as the index and once as the decision expanded from it.
 fn plan_footprint(candidates: usize, retained: &[&str]) -> usize {
-    candidates * size_of::<(RetentionOutcome, Option<&'static str>)>() + 2 * owned_bytes(retained)
+    candidates * size_of::<(RetentionOutcome, Option<&'static str>, u64)>() + 2 * owned_bytes(retained)
 }
 
 fn owned_bytes(groups: &[impl AsRef<str>]) -> usize {
@@ -242,6 +254,52 @@ fn test_evaluate_retention_lists_surviving_versions_as_alternatives() {
         .unwrap();
     assert_eq!(removed.group.as_deref(), Some("1.0"));
     assert_eq!(removed.retained_groups, vec!["2.0".to_owned()]);
+}
+
+#[rstest]
+#[case::two_releases_of_one_wheel("shared", "shared", 1024)]
+#[case::two_distinct_wheels("1.0", "1.1", 2048)]
+fn test_evaluate_retention_reclaims_each_removed_digest_once(
+    #[case] older: &str,
+    #[case] newer: &str,
+    #[case] reclaimable: u64,
+) {
+    let (_dir, meta) = store();
+    seed_content(&meta, "pypi", "demo", "1.0", &version_digest(older), Yanked::No, None);
+    seed_content(&meta, "pypi", "demo", "1.1", &version_digest(newer), Yanked::No, None);
+    seed(&meta, "pypi", "demo", "2.0", Yanked::No, None);
+
+    let (decisions, _) = plan(&meta, "pypi", &expire_all_but_latest(1));
+
+    let removed: Vec<&str> = decisions
+        .iter()
+        .filter(|decision| decision.outcome == RetentionOutcome::Remove)
+        .map(|decision| decision.group.as_deref().unwrap_or_default())
+        .collect();
+    assert_eq!(removed, ["1.1", "1.0"]);
+    assert_eq!(reclaimed_bytes(&decisions), reclaimable);
+}
+
+#[test]
+fn test_evaluate_retention_leaves_a_digest_a_kept_release_shares_uncharged() {
+    let (_dir, meta) = store();
+    let shared = version_digest("shared");
+    seed_content(&meta, "pypi", "demo", "1.0", &shared, Yanked::No, None);
+    seed_content(&meta, "pypi", "demo", "2.0", &shared, Yanked::No, None);
+
+    let (decisions, _) = plan(&meta, "pypi", &expire_all_but_latest(1));
+
+    assert_eq!(reclaimed_bytes(&decisions), 0);
+    assert_eq!(decisions[0].bytes, 1024);
+}
+
+/// What a reader summing a plan's removals is told the plan frees.
+fn reclaimed_bytes(decisions: &[RetentionDecision]) -> u64 {
+    decisions
+        .iter()
+        .filter(|decision| decision.outcome == RetentionOutcome::Remove)
+        .map(|decision| decision.bytes)
+        .sum()
 }
 
 #[test]

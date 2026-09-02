@@ -71,10 +71,28 @@ A removal decision also contains:
 
 - `outcome`: `remove`, compared with `retain`
 - `rule`: selector that produced the decision
-- `bytes`: estimated physical size
+- `bytes`: estimated capacity the removal makes eligible for reclamation
 - `retained_groups`: groups left after the planned removal
 
 The output order is total. Evaluating the same snapshot and policy produces the same bytes.
+
+### Reclaimable bytes
+
+Content is stored by digest, so artifacts that share a digest share one stored blob. Summing `bytes` over a plan's
+removals estimates the capacity those removals free, which means a digest counts once however many artifacts reference
+it:
+
+- the first removal of a digest, in plan order, reports the stored size
+- every further removal of the same digest reports `0`
+- every removal of a digest a retained decision keeps live reports `0`, because the blob survives
+
+A retained decision reports the artifact's own size, and an artifact with no recorded digest reports its own size,
+because nothing identifies content it might share.
+
+Deduplication spans the resource under evaluation, which is the unit the planner classifies at once. A reference held by
+another resource, repository, or ecosystem is outside that plan, so a digest they also reference is still counted as
+freed. The estimate is capacity a later reclamation may collect, not bytes deleted synchronously; blob reclamation
+decides what is actually unreferenced.
 
 ## Plan identity
 
