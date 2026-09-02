@@ -33,6 +33,7 @@ const MEMBERSHIP_PREFIX: &str = "oci\u{0}mm\u{0}";
 const BLOB_MEMBERSHIP_PREFIX: &str = "oci\u{0}bm\u{0}";
 const MANIFEST_TRASH_PREFIX: &str = "oci\u{0}mt\u{0}";
 const TAG_TRASH_PREFIX: &str = "oci\u{0}tt\u{0}";
+const TAG_FRESHNESS_PREFIX: &str = "oci\u{0}tf\u{0}";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct ManifestTrash {
@@ -267,6 +268,47 @@ pub fn blob_membership_key(index: &str, repo: &str, digest: &str) -> String {
 #[must_use]
 pub fn is_blob_membership_key(key: &str) -> bool {
     key.starts_with(BLOB_MEMBERSHIP_PREFIX)
+}
+
+/// Every namespace whose key opens `{index}\0{repo}\0`, so a replicated write to one names the
+/// repository whose derived views may have moved.
+const REPOSITORY_PREFIXES: &[&str] = &[
+    TAG_PREFIX,
+    TAG_FRESHNESS_PREFIX,
+    TAG_TRASH_PREFIX,
+    MANIFEST_TRASH_PREFIX,
+    MEMBERSHIP_PREFIX,
+    BLOB_MEMBERSHIP_PREFIX,
+    REFERRER_PREFIX,
+    REFERRER_PAGE_PREFIX,
+];
+
+/// The `(index, repository)` a replicated key names, or `None` when the key names no repository.
+///
+/// A repository name carries `/` but never a NUL, and every namespace listed here writes the index and
+/// the repository as the first two NUL-terminated fields, so the first NUL after the index ends the
+/// repository whatever the namespace appends behind it.
+#[must_use]
+pub fn repository_of_key(key: &str) -> Option<(&str, &str)> {
+    let rest = REPOSITORY_PREFIXES.iter().find_map(|prefix| key.strip_prefix(prefix))?;
+    let (index, rest) = rest.split_once('\u{0}')?;
+    let (repo, _) = rest.split_once('\u{0}')?;
+    (!index.is_empty() && !repo.is_empty()).then_some((index, repo))
+}
+
+/// Whether `key` belongs to the one replicated namespace no derived view reads.
+///
+/// A repository's search document is derived from its tag rows alone: the tags it lists, the digests
+/// they target, and each target's placement. A manifest row is keyed by digest with no repository in
+/// it, and nothing in that derivation opens one, so a page that carries only manifest rows leaves every
+/// document current.
+///
+/// A namespace neither this nor [`repository_of_key`] recognizes is one a replica cannot vouch for, and
+/// it re-derives the whole index rather than guess. That is the safe default for a row kind added
+/// later: slow until it is classified here, never stale.
+#[must_use]
+pub fn derives_no_view(key: &str) -> bool {
+    key.starts_with(MANIFEST_PREFIX)
 }
 
 /// # Errors
@@ -769,7 +811,7 @@ pub fn referrer_page(
 }
 
 fn tag_freshness_key(index: &str, repo: &str, tag: &str) -> String {
-    format!("oci\u{0}tf\u{0}{index}\u{0}{repo}\u{0}{tag}")
+    format!("{TAG_FRESHNESS_PREFIX}{index}\u{0}{repo}\u{0}{tag}")
 }
 
 /// Record that a proxy revalidated `tag` to `digest` at `at` (unix seconds), so a repeat pull within

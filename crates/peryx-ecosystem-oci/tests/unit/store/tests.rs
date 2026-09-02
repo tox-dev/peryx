@@ -503,3 +503,44 @@ fn blob_member() -> (tempfile::TempDir, MetaStore, String) {
     record_blob_membership(&meta, "store", "app", &digest).unwrap();
     (dir, meta, digest)
 }
+
+#[test]
+fn test_repository_of_key_reads_the_index_and_repository_out_of_every_scoped_namespace() {
+    for (key, expected) in [
+        (tag_key("hub", "library/nginx", "1.27"), Some(("hub", "library/nginx"))),
+        (
+            tag_freshness_key("hub", "library/nginx", "1.27"),
+            Some(("hub", "library/nginx")),
+        ),
+        (
+            tag_trash_key("hub", "library/nginx", "1.27"),
+            Some(("hub", "library/nginx")),
+        ),
+        (manifest_trash_key("hub", "app", "sha256:beef"), Some(("hub", "app"))),
+        (membership_key("hub", "app", "sha256:beef"), Some(("hub", "app"))),
+        (blob_membership_key("hub", "app", "sha256:beef"), Some(("hub", "app"))),
+        (referrer_prefix("hub", "app", "sha256:beef"), Some(("hub", "app"))),
+        (referrer_page_key("hub", "app", "sha256:beef"), Some(("hub", "app"))),
+        (manifest_key("sha256:beef"), None),
+        ("oci/upload-session/7".to_owned(), None),
+        ("pypi\u{0}p\u{0}hosted/flask".to_owned(), None),
+        ("oci\u{0}t\u{0}hub\u{0}app".to_owned(), None),
+        ("oci\u{0}t\u{0}\u{0}app\u{0}1.0".to_owned(), None),
+        ("oci\u{0}t\u{0}hub\u{0}\u{0}1.0".to_owned(), None),
+    ] {
+        assert_eq!(repository_of_key(&key), expected, "{key:?}");
+    }
+}
+
+#[test]
+fn test_derives_no_view_names_the_digest_keyed_manifest_row_alone() {
+    for (key, expected) in [
+        (manifest_key("sha256:beef"), true),
+        (manifest_trash_key("hub", "app", "sha256:beef"), false),
+        (membership_key("hub", "app", "sha256:beef"), false),
+        (tag_key("hub", "app", "1.0"), false),
+        ("oci/upload-session/7".to_owned(), false),
+    ] {
+        assert_eq!(derives_no_view(&key), expected, "{key:?}");
+    }
+}

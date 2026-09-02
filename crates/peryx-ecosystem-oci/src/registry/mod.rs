@@ -366,11 +366,13 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> ReplicatedApplyDriver for
     /// answers blob authorization from memory never sees. Dropping the key here is what stops a replica
     /// from serving a digest the home datacenter unlinked. Eviction cannot fail, so it blocks no view.
     ///
-    /// It rebuilds no search document, so it reports none current and leaves every replicated key to
-    /// the neutral full re-derivation that keeps a repository's document honest.
+    /// The page's repository-scoped rows then retire those repositories' search documents through the
+    /// same seam a push uses, so the next query re-derives the repositories the page named instead of
+    /// every repository the replica stores. Reporting them keeps the neutral path from retiring the
+    /// whole index behind that.
     fn apply_replicated_changes<'key>(
         &self,
-        _state: &ServingState,
+        state: &ServingState,
         changed_keys: &'key [String],
     ) -> Result<BTreeSet<&'key str>, ViewBlock> {
         let mut memberships = self.blob_memberships.write();
@@ -381,7 +383,19 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> ReplicatedApplyDriver for
             memberships.remove(key);
         }
         drop(memberships);
-        Ok(BTreeSet::new())
+        let mut retired = BTreeSet::new();
+        for key in changed_keys {
+            if let Some((_index, repo)) = crate::store::repository_of_key(key)
+                && retired.insert(repo)
+            {
+                state.invalidate_search_resource(repo);
+            }
+        }
+        Ok(changed_keys
+            .iter()
+            .filter(|key| crate::store::repository_of_key(key).is_some() || crate::store::derives_no_view(key))
+            .map(String::as_str)
+            .collect())
     }
 }
 
