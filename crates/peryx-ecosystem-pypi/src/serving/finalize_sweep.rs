@@ -56,6 +56,21 @@ pub async fn finalize_admitted(state: &Arc<ServingState>) -> u64 {
     finalized
 }
 
+/// Finalize the one retained write an operator drain named, returning whether it settled. The drain
+/// names the authority it is draining, and the intent's own staging record names the authority it was
+/// admitted for: the two must agree, or this is another authority's write and publishing it here would
+/// settle it under a home that never owned it. Nothing this cannot finalize is settled - a key another
+/// ecosystem minted, a staging record that is gone or unreadable, or a home that refuses the finalize
+/// each leave the intent pending for a later pass.
+pub async fn finalize_retained(state: &Arc<ServingState>, authority: &str, intent_key: &str) -> bool {
+    // A staging record that cannot be read is not evidence the write is gone, so it ends where a refused
+    // finalize ends, still pending. The drain's own listing is what fails a pass on a durable read error.
+    let Ok(Some(intent)) = state.meta.staged_intent(intent_key) else {
+        return false;
+    };
+    intent.authority == authority && finalize_one(state, intent_key, &intent).await
+}
+
 /// Finalize the one intent staged under `key`, returning whether it reached a terminal outcome. Returns
 /// `false` for an intent this node cannot finalize - not `PyPI`, no stored rows, no write token, or fenced
 /// out - so the caller counts only the intents it advanced.

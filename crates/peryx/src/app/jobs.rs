@@ -157,7 +157,8 @@ fn run_authority_drain(
                 .authority_drainer()
                 .cloned()
                 .expect("distributed availability installs authority draining");
-            Ok(Arc::new(AuthorityDrainJob::new(authority, drainer)))
+            let finalizers = state.intent_finalizers().map(|(_, driver)| driver.clone()).collect();
+            Ok(Arc::new(AuthorityDrainJob::new(authority, drainer, finalizers)))
         }),
         out,
     )

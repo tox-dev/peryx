@@ -61,13 +61,21 @@ impl SearchDocumentProvider for MutableDocs {
 impl peryx_ha::AuthorityDrainer for Drainer {
     async fn drain(
         &self,
-        _now: i64,
+        authority: &str,
+        finalizer: &dyn peryx_ha::RetainedWriteFinalizer,
         _cancelled: &(dyn Fn() -> bool + Send + Sync),
     ) -> Result<peryx_ha::AvailabilityTaskReport, peryx_ha::AvailabilityTaskError> {
         Ok(peryx_ha::AvailabilityTaskReport {
             processed: 0,
-            changed: 0,
+            changed: u64::from(finalizer.finalize_retained(authority, "intent").await),
         })
+    }
+}
+
+#[async_trait]
+impl peryx_ha::RetainedWriteFinalizer for Drainer {
+    async fn finalize_retained(&self, _authority: &str, _intent_key: &str) -> bool {
+        false
     }
 }
 
@@ -272,6 +280,10 @@ impl IdleReclaimer for RuntimeCapability {
 impl IntentFinalizer for RuntimeCapability {
     async fn finalize_admitted(&self, _state: Arc<ServingState>) -> u64 {
         2
+    }
+
+    async fn finalize_retained(&self, _state: Arc<ServingState>, authority: &str, intent_key: &str) -> bool {
+        (authority, intent_key) == ("resource", "intent")
     }
 }
 
@@ -655,7 +667,12 @@ async fn test_registry_runtime_settings_replace_defaults() {
     assert_eq!(serving.token_ttl_secs, 41);
     assert_eq!(serving.availability_role(), peryx_core::NodeRole::Replica);
     assert_eq!(
-        serving.authority_drainer().unwrap().drain(0, &|| false).await.unwrap(),
+        serving
+            .authority_drainer()
+            .unwrap()
+            .drain("resource", &Drainer, &|| false)
+            .await
+            .unwrap(),
         peryx_ha::AvailabilityTaskReport {
             processed: 0,
             changed: 0,
@@ -890,6 +907,15 @@ async fn test_install_contexts_publish_registered_behavior() {
             .finalize_admitted(state.serving.clone())
             .await,
         2
+    );
+    assert!(
+        state
+            .intent_finalizers()
+            .next()
+            .unwrap()
+            .1
+            .finalize_retained(state.serving.clone(), "resource", "intent")
+            .await
     );
     assert_eq!(
         state

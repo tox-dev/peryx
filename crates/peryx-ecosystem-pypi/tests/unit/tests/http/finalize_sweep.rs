@@ -419,3 +419,114 @@ async fn test_a_sweep_leaves_an_intent_pending_when_a_validation_refuses() {
         "a refusal records nothing durable",
     );
 }
+
+#[tokio::test]
+async fn test_a_drain_publishes_the_retained_write_of_the_authority_it_names() {
+    let harness = harness_with(true, true).await;
+    initialize_distributed_schema(&harness.state);
+    stage(&harness.state.serving.meta, INTENT_KEY, AUTHORITY);
+    place(&harness.state.serving.meta);
+    put_upload(&harness.state.serving.meta, INDEX, AUTHORITY, FILENAME, RECORD).unwrap();
+
+    let settled = PypiServing
+        .finalize_retained(harness.state.serving.clone(), AUTHORITY, INTENT_KEY)
+        .await;
+
+    assert_eq!(
+        (
+            settled,
+            harness
+                .state
+                .serving
+                .meta
+                .staged_intent(INTENT_KEY)
+                .unwrap()
+                .unwrap()
+                .phase,
+            harness
+                .state
+                .serving
+                .meta
+                .operation_outcome(&operation())
+                .unwrap()
+                .unwrap()
+                .state,
+        ),
+        (true, IntentPhase::Admitted, OperationState::Published),
+    );
+}
+
+#[tokio::test]
+async fn test_a_drain_leaves_a_retained_write_staged_for_another_authority_untouched() {
+    let harness = harness_with(true, true).await;
+    initialize_distributed_schema(&harness.state);
+    stage(&harness.state.serving.meta, INTENT_KEY, AUTHORITY);
+    place(&harness.state.serving.meta);
+    put_upload(&harness.state.serving.meta, INDEX, AUTHORITY, FILENAME, RECORD).unwrap();
+
+    let settled = PypiServing
+        .finalize_retained(harness.state.serving.clone(), "django", INTENT_KEY)
+        .await;
+
+    assert_eq!(
+        (
+            settled,
+            harness
+                .state
+                .serving
+                .meta
+                .staged_intent(INTENT_KEY)
+                .unwrap()
+                .unwrap()
+                .phase,
+            harness.state.serving.meta.operation_outcome(&operation()).unwrap(),
+        ),
+        (false, IntentPhase::Pending, None),
+    );
+}
+
+#[tokio::test]
+async fn test_a_drain_declines_a_key_no_intent_is_staged_under() {
+    let harness = harness_with(true, true).await;
+
+    let settled = PypiServing
+        .finalize_retained(harness.state.serving.clone(), AUTHORITY, INTENT_KEY)
+        .await;
+
+    assert_eq!(
+        (settled, harness.state.serving.meta.staged_intent(INTENT_KEY).unwrap()),
+        (false, None),
+    );
+}
+
+#[tokio::test]
+async fn test_a_drain_declines_a_staging_record_it_cannot_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peryx.redb");
+    let meta = MetaStore::open(&path).unwrap();
+    stage(&meta, INTENT_KEY, AUTHORITY);
+    drop(meta);
+    let database = redb::Database::open(&path).unwrap();
+    let write = database.begin_write().unwrap();
+    {
+        let mut table = write
+            .open_table(redb::TableDefinition::<&str, &[u8]>::new("ingress_intent"))
+            .unwrap();
+        table.insert(INTENT_KEY, b"not json".as_slice()).unwrap();
+    }
+    write.commit().unwrap();
+    drop(database);
+    let app = AppState::with_clock(
+        MetaStore::open_existing(&path).unwrap(),
+        BlobStorage::filesystem(dir.path().join("blobs")),
+        60,
+        Vec::new(),
+        Arc::new(|| 1000),
+    );
+
+    let settled = PypiServing
+        .finalize_retained(app.serving.clone(), AUTHORITY, INTENT_KEY)
+        .await;
+
+    assert!(!settled);
+}

@@ -1,15 +1,16 @@
 use std::num::NonZeroUsize;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use peryx_driver::jobs::{
     CancelJobRun, JobLimits, JobReport, JobRunOutcome, JobScheduler, LeaseScope, NodeJob, scheduled_job,
 };
-use peryx_driver::state::AppState;
+use peryx_driver::serving::IntentFinalizer;
+use peryx_driver::state::{AppState, ServingState};
 use peryx_ha::{
     AuthorityDrainer, AvailabilityCapabilities, AvailabilityTaskError, AvailabilityTaskReport, BlobReclaimer,
-    CrossDcCopier, PlacementReconciler,
+    CrossDcCopier, PlacementReconciler, RetainedWriteFinalizer,
 };
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::{JobKind, MetaStore};
@@ -306,18 +307,33 @@ async fn test_distributed_job_preserves_capability_failure(#[case] case: JobCase
 
 struct Drainer {
     failed: bool,
-    now: AtomicI64,
+    drained: Mutex<Vec<String>>,
+    settled: AtomicBool,
     cancelled: AtomicBool,
+}
+
+impl Drainer {
+    fn new(failed: bool) -> Self {
+        Self {
+            failed,
+            drained: Mutex::new(Vec::new()),
+            settled: AtomicBool::new(false),
+            cancelled: AtomicBool::new(false),
+        }
+    }
 }
 
 #[async_trait]
 impl AuthorityDrainer for Drainer {
     async fn drain(
         &self,
-        now: i64,
+        authority: &str,
+        finalizer: &dyn RetainedWriteFinalizer,
         cancelled: &(dyn Fn() -> bool + Send + Sync),
     ) -> Result<AvailabilityTaskReport, AvailabilityTaskError> {
-        self.now.store(now, Ordering::SeqCst);
+        self.drained.lock().unwrap().push(authority.to_owned());
+        self.settled
+            .store(finalizer.finalize_retained(authority, "intent").await, Ordering::SeqCst);
         self.cancelled.store(cancelled(), Ordering::SeqCst);
         if self.failed {
             Err(AvailabilityTaskError::new("storage", "unavailable"))
@@ -330,6 +346,38 @@ impl AuthorityDrainer for Drainer {
     }
 }
 
+/// Stands in for an installed ecosystem: it publishes the retained writes staged under the keys it
+/// minted and declines the rest, as a real finalizer does for another ecosystem's key.
+struct Ecosystem {
+    prefix: &'static str,
+    offered: Mutex<Vec<String>>,
+}
+
+impl Ecosystem {
+    fn new(prefix: &'static str) -> Arc<Self> {
+        Arc::new(Self {
+            prefix,
+            offered: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn offered(&self) -> Vec<String> {
+        self.offered.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl IntentFinalizer for Ecosystem {
+    async fn finalize_admitted(&self, _: Arc<ServingState>) -> u64 {
+        self.offered().len() as u64
+    }
+
+    async fn finalize_retained(&self, _: Arc<ServingState>, authority: &str, intent_key: &str) -> bool {
+        self.offered.lock().unwrap().push(format!("{authority}/{intent_key}"));
+        intent_key.starts_with(self.prefix)
+    }
+}
+
 #[rstest]
 #[case::success(false, Ok(JobRunOutcome::succeeded(JobReport { processed: 3, changed: 2, ..JobReport::default() })))]
 #[case::failure(true, Err("storage: unavailable".to_owned()))]
@@ -339,21 +387,77 @@ async fn test_authority_drain_runs_through_the_scheduler(
     #[case] expected: Result<JobRunOutcome, String>,
 ) {
     let (_directory, app) = app();
+    let serving = app.serving.clone();
     let scheduler = JobScheduler::new(app.serving, JobLimits::node_local());
-    let drainer = Arc::new(Drainer {
-        failed,
-        now: AtomicI64::new(0),
-        cancelled: AtomicBool::new(false),
-    });
-    let job = Arc::new(AuthorityDrainJob::new("resource", drainer.clone()));
+    let drainer = Arc::new(Drainer::new(failed));
+    let owner = Ecosystem::new("intent");
+    let job = Arc::new(AuthorityDrainJob::new(
+        "resource",
+        drainer.clone(),
+        vec![owner.clone() as Arc<dyn IntentFinalizer>],
+    ));
 
     assert_eq!(job.kind(), "authority_drain");
     assert_eq!(job.scope(), "resource");
     assert_eq!(job.repository(), Some("resource"));
     assert_eq!(job.persist_as(), Some(JobKind::new("authority_drain").unwrap()));
     assert_eq!(scheduler.run(job).await, expected);
-    assert_eq!(drainer.now.load(Ordering::SeqCst), 41);
+    assert_eq!(*drainer.drained.lock().unwrap(), vec!["resource".to_owned()]);
+    assert!(drainer.settled.load(Ordering::SeqCst));
     assert!(!drainer.cancelled.load(Ordering::SeqCst));
+    assert_eq!(owner.offered(), vec!["resource/intent".to_owned()]);
+    assert_eq!(owner.finalize_admitted(serving).await, 1);
+    scheduler.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_authority_drain_dispatches_a_retained_write_to_the_ecosystem_that_owns_its_key() {
+    let (_directory, app) = app();
+    let scheduler = JobScheduler::new(app.serving, JobLimits::node_local());
+    let drainer = Arc::new(Drainer::new(false));
+    let other = Ecosystem::new("other:");
+    let owner = Ecosystem::new("intent");
+    let last = Ecosystem::new("intent");
+    let job = Arc::new(AuthorityDrainJob::new(
+        "resource",
+        drainer.clone(),
+        vec![
+            other.clone() as Arc<dyn IntentFinalizer>,
+            owner.clone(),
+            last.clone() as Arc<dyn IntentFinalizer>,
+        ],
+    ));
+
+    scheduler.run(job).await.unwrap();
+
+    assert!(drainer.settled.load(Ordering::SeqCst));
+    assert_eq!(
+        (other.offered(), owner.offered(), last.offered()),
+        (
+            vec!["resource/intent".to_owned()],
+            vec!["resource/intent".to_owned()],
+            Vec::new()
+        )
+    );
+    scheduler.shutdown().await;
+}
+
+#[tokio::test]
+async fn test_authority_drain_leaves_a_write_no_installed_ecosystem_owns_pending() {
+    let (_directory, app) = app();
+    let scheduler = JobScheduler::new(app.serving, JobLimits::node_local());
+    let drainer = Arc::new(Drainer::new(false));
+    let other = Ecosystem::new("other:");
+    let job = Arc::new(AuthorityDrainJob::new(
+        "resource",
+        drainer.clone(),
+        vec![other.clone() as Arc<dyn IntentFinalizer>],
+    ));
+
+    scheduler.run(job).await.unwrap();
+
+    assert!(!drainer.settled.load(Ordering::SeqCst));
+    assert_eq!(other.offered(), vec!["resource/intent".to_owned()]);
     scheduler.shutdown().await;
 }
 
@@ -366,7 +470,8 @@ struct CancelledDrainer {
 impl AuthorityDrainer for CancelledDrainer {
     async fn drain(
         &self,
-        _: i64,
+        _: &str,
+        _: &dyn RetainedWriteFinalizer,
         cancelled: &(dyn Fn() -> bool + Send + Sync),
     ) -> Result<AvailabilityTaskReport, AvailabilityTaskError> {
         self.started.notify_one();
@@ -388,7 +493,7 @@ async fn test_authority_drain_reports_observed_cancellation() {
         started: Notify::new(),
         release: Notify::new(),
     });
-    let job = Arc::new(AuthorityDrainJob::new("resource", drainer.clone()));
+    let job = Arc::new(AuthorityDrainJob::new("resource", drainer.clone(), Vec::new()));
 
     let cancel = async {
         drainer.started.notified().await;

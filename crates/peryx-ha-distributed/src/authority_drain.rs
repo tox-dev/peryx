@@ -1,15 +1,10 @@
 use std::num::NonZeroUsize;
 
-use crate::{DrainIntent, OldEpochOp, plan_drain};
 use async_trait::async_trait;
-use peryx_ha::{AuthorityDrainer, AvailabilityTaskError, AvailabilityTaskReport};
-use peryx_storage::meta::{IntentPhase, IntentTransition, MetaError, MetaStore};
+use peryx_ha::{AuthorityDrainer, AvailabilityTaskError, AvailabilityTaskReport, RetainedWriteFinalizer};
+use peryx_storage::meta::{MetaError, MetaStore};
 
 const DRAIN_BATCH: NonZeroUsize = NonZeroUsize::new(128).expect("literal is non-zero");
-
-/// An operator drain settles every pending intent, including the ones an ecosystem's finalize sweep has
-/// given up on, so it walks the pending order without a refusal ceiling.
-const DRAIN_REFUSAL_CEILING: u32 = u32::MAX;
 
 pub struct DistributedAuthorityDrainer {
     meta: MetaStore,
@@ -30,45 +25,42 @@ impl DistributedAuthorityDrainer {
 impl AuthorityDrainer for DistributedAuthorityDrainer {
     async fn drain(
         &self,
-        now: i64,
+        authority: &str,
+        finalizer: &dyn RetainedWriteFinalizer,
         cancelled: &(dyn Fn() -> bool + Send + Sync),
     ) -> Result<AvailabilityTaskReport, AvailabilityTaskError> {
-        drain_pending(&self.meta, self.batch, now, cancelled)
+        drain_pending(&self.meta, self.batch, authority, finalizer, cancelled)
+            .await
             .map_err(|error| AvailabilityTaskError::new("storage", error.to_string()))
     }
 }
 
-fn drain_pending(
+/// Offers every write retained for `authority` to its home, in the durable order they were admitted,
+/// and counts the ones that published. A write the home cannot publish yet stays pending for a later
+/// pass; the pass never advances an intent itself, so nothing settles whose effect no transaction
+/// committed. Paging resumes past the last intent offered rather than re-listing from the start, which
+/// is what bounds a pass whose intents all stay pending.
+async fn drain_pending(
     meta: &MetaStore,
     batch: NonZeroUsize,
-    now: i64,
+    authority: &str,
+    finalizer: &dyn RetainedWriteFinalizer,
     cancelled: &(dyn Fn() -> bool + Send + Sync),
 ) -> Result<AvailabilityTaskReport, MetaError> {
     let mut report = AvailabilityTaskReport::default();
+    let mut resume = None;
     loop {
         if cancelled() {
             return Ok(report);
         }
-        let pending = meta.list_pending_intents(batch.get(), DRAIN_REFUSAL_CEILING)?;
-        let count = pending.len();
-        if count == 0 {
+        let pending = meta.list_pending_intents_for(authority, resume, batch.get())?;
+        let Some((_, last)) = pending.last() else {
             return Ok(report);
-        }
-        let plan = plan_drain(
-            pending
-                .into_iter()
-                .map(|(key, _)| DrainIntent {
-                    key,
-                    op: OldEpochOp {
-                        durably_committed: true,
-                        already_applied: false,
-                        superseded: false,
-                    },
-                })
-                .collect(),
-        );
-        for key in plan.finalize {
-            if meta.advance_intent(&key, IntentPhase::Admitted, now)? == IntentTransition::Advanced {
+        };
+        resume = Some(last.seq);
+        let count = pending.len();
+        for (key, _) in pending {
+            if finalizer.finalize_retained(authority, &key).await {
                 report.changed += 1;
             }
         }

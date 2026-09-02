@@ -1026,14 +1026,30 @@ pub trait BlobReclaimer: Send + Sync {
     ) -> Result<AvailabilityTaskReport, AvailabilityTaskError>;
 }
 
+/// Publishes one retained write at the home of the authority that owns it.
+///
+/// A drain settles an intent only through this, so an intent never leaves the pending set without a
+/// metadata transaction having committed its effect.
+#[async_trait]
+pub trait RetainedWriteFinalizer: Send + Sync {
+    /// Publishes the retained write staged under `intent_key` for `authority` and reports whether it
+    /// settled. Everything that stops a publish - an intent staged for another authority, an ecosystem
+    /// that does not own the key, a stale epoch, a read that failed - reports `false` and leaves the
+    /// intent pending, so `false` never means the retained write is gone.
+    async fn finalize_retained(&self, authority: &str, intent_key: &str) -> bool;
+}
+
 #[async_trait]
 pub trait AuthorityDrainer: Send + Sync {
+    /// Drains the writes retained for `authority` alone, publishing each through `finalizer`.
+    ///
     /// # Errors
     ///
     /// Returns [`AvailabilityTaskError`] when authority work cannot drain.
     async fn drain(
         &self,
-        now: i64,
+        authority: &str,
+        finalizer: &dyn RetainedWriteFinalizer,
         cancelled: &(dyn Fn() -> bool + Send + Sync),
     ) -> Result<AvailabilityTaskReport, AvailabilityTaskError>;
 }

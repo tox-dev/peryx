@@ -156,6 +156,12 @@ pub trait IdleReclaimer: Send + Sync {
 #[async_trait]
 pub trait IntentFinalizer: Send + Sync {
     async fn finalize_admitted(&self, state: Arc<ServingState>) -> u64;
+
+    /// Publishes the one retained write staged under `intent_key`, which an operator drain names
+    /// together with the `authority` it is draining, and reports whether it settled. An intent staged
+    /// for another authority, or under a key this ecosystem did not mint, is declined rather than
+    /// published under the named authority.
+    async fn finalize_retained(&self, state: Arc<ServingState>, authority: &str, intent_key: &str) -> bool;
 }
 
 #[async_trait]

@@ -356,6 +356,11 @@ impl IntentFinalizer for StubDriver {
         self.finalize_calls.fetch_add(1, Ordering::SeqCst);
         self.finalize
     }
+
+    async fn finalize_retained(&self, _state: Arc<ServingState>, authority: &str, intent_key: &str) -> bool {
+        self.finalize_calls.fetch_add(1, Ordering::SeqCst);
+        (authority, intent_key) == ("resource", "intent")
+    }
 }
 
 #[async_trait]
@@ -1210,7 +1215,7 @@ async fn test_submit_maintenance_runs_each_registered_capability() {
     let refresh_started = driver.refresh_started.clone();
     state.register_idle_reclaimer(Ecosystem::new("example"), driver.clone());
     state.register_intent_finalizer(Ecosystem::new("example"), driver.clone());
-    state.register_cache_refresher(Ecosystem::new("example"), driver);
+    state.register_cache_refresher(Ecosystem::new("example"), driver.clone());
     let scheduler = JobScheduler::new(state.serving.clone(), JobLimits::node_local());
     submit_maintenance(&state, &scheduler);
     refresh_started.notified().await;
@@ -1230,6 +1235,15 @@ async fn test_submit_maintenance_runs_each_registered_capability() {
             ("idle_reclaim", 1, 1),
             ("intent_finalize", 3, 3),
         ])
+    );
+    assert_eq!(
+        (
+            driver
+                .finalize_retained(state.serving.clone(), "resource", "intent")
+                .await,
+            driver.finalize_retained(state.serving.clone(), "other", "intent").await,
+        ),
+        (true, false)
     );
 }
 

@@ -2,6 +2,8 @@
 //! Per-authority limits prevent one resource from exhausting the ledger; a durable sequence preserves
 //! admission order. Payloads remain opaque to storage.
 
+use std::ops::Bound;
+
 use redb::{ReadableTable as _, ReadableTableMetadata as _};
 use serde::{Deserialize, Serialize};
 
@@ -114,6 +116,18 @@ pub enum IntentUpdate {
     Applied,
     /// The intent is missing or has already settled, so its record stands.
     Ignored,
+}
+
+/// One walk of the pending-order index. `authority` and `max_refusals` both narrow the walk before
+/// `limit` counts a row, so a page holds `limit` rows the caller asked for rather than the first `limit`
+/// pending rows of any shape.
+struct PendingIntents<'a> {
+    /// Only intents staged for this authority, or every authority when `None`.
+    authority: Option<&'a str>,
+    /// Resume strictly after this durable sequence number.
+    after_seq: Option<u64>,
+    limit: usize,
+    max_refusals: u32,
 }
 
 impl MetaStore {
@@ -359,7 +373,40 @@ impl MetaStore {
         limit: usize,
         max_refusals: u32,
     ) -> Result<Vec<(String, StagedIntent)>, MetaError> {
-        if limit == 0 {
+        self.collect_pending(&PendingIntents {
+            authority: None,
+            after_seq: None,
+            limit,
+            max_refusals,
+        })
+    }
+
+    /// Returns up to `limit` pending intents staged for `authority`, in durable admission order,
+    /// resuming strictly after `after_seq`. The authority filter runs before the limit, so a page never
+    /// fills with intents another authority staged first and reports the drained one as empty. The
+    /// cursor is what lets one pass offer an intent exactly once: an intent its home cannot yet publish
+    /// stays pending, and re-listing from the start would offer it again for the rest of the pass. An
+    /// operator drain settles every intent it homes, including the ones an ecosystem's finalize sweep
+    /// has given up on, so refusals do not filter this walk.
+    ///
+    /// # Errors
+    /// Returns a store error when a table cannot be read or a record decoded.
+    pub fn list_pending_intents_for(
+        &self,
+        authority: &str,
+        after_seq: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<(String, StagedIntent)>, MetaError> {
+        self.collect_pending(&PendingIntents {
+            authority: Some(authority),
+            after_seq,
+            limit,
+            max_refusals: u32::MAX,
+        })
+    }
+
+    fn collect_pending(&self, query: &PendingIntents<'_>) -> Result<Vec<(String, StagedIntent)>, MetaError> {
+        if query.limit == 0 {
             return Ok(Vec::new());
         }
         let txn = self.db.begin_read()?;
@@ -368,14 +415,15 @@ impl MetaStore {
         };
         let table = txn.open_table(INGRESS_INTENT)?;
         let mut pending = Vec::new();
-        for entry in order.iter()? {
+        let start = query.after_seq.map_or(Bound::Unbounded, Bound::Excluded);
+        for entry in order.range((start, Bound::Unbounded))? {
             let (_, key) = entry?;
             let key = key.value();
             let Some(value) = table.get(key)? else { continue };
             let record: StagedIntent = serde_json::from_slice(value.value())?;
-            if record.refusals < max_refusals {
+            if record.refusals < query.max_refusals && query.authority.is_none_or(|name| name == record.authority) {
                 pending.push((key.to_owned(), record));
-                if pending.len() == limit {
+                if pending.len() == query.limit {
                     break;
                 }
             }

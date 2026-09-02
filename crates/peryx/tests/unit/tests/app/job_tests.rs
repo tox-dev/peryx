@@ -377,7 +377,7 @@ fn test_job_reindex_rejects_invalid_chunks(#[case] chunk_size: usize, #[case] ex
 }
 
 #[test]
-fn test_job_drain_finalizes_retained_intents() {
+fn test_job_drain_leaves_a_retained_write_no_installed_home_can_publish() {
     let plugins = plugins();
     let (_directory, config) = config_with_intents(&plugins);
 
@@ -388,9 +388,9 @@ fn test_job_drain_finalizes_retained_intents() {
         (
             meta.staged_intent("group\0resource\0key-1").unwrap().unwrap().phase,
             meta.staged_intent("group\0resource\0key-2").unwrap().unwrap().phase,
-            meta.list_pending_intents(10, u32::MAX).unwrap(),
+            meta.list_pending_intents(10, u32::MAX).unwrap().len(),
         ),
-        (IntentPhase::Admitted, IntentPhase::Admitted, Vec::new())
+        (IntentPhase::Pending, IntentPhase::Pending, 2)
     );
 }
 
@@ -404,7 +404,28 @@ fn test_job_drain_reports_counts() {
 
     assert_eq!(
         String::from_utf8(output).unwrap(),
-        "processed\t2\nchanged\t2\nquota_released\t0\nquota_remaining\t0\n"
+        "processed\t2\nchanged\t0\nquota_released\t0\nquota_remaining\t0\n"
+    );
+}
+
+#[test]
+fn test_job_drain_reads_only_the_authority_it_names() {
+    let plugins = plugins();
+    let (directory, config) = config_with_intents(&plugins);
+    stage_intent(
+        &MetaStore::open_existing(directory.path().join("peryx.redb")).unwrap(),
+        "group/other",
+        "group\0other\0key-1",
+        "digest-c",
+        b"three",
+    );
+    let mut output = Vec::new();
+
+    job_with_plugins(&config, &plugins, &drain_command(), &mut output).unwrap();
+
+    assert_eq!(
+        String::from_utf8(output).unwrap(),
+        "processed\t2\nchanged\t0\nquota_released\t0\nquota_remaining\t0\n"
     );
 }
 
@@ -472,25 +493,29 @@ fn config_with_intents(plugins: &PluginRegistry) -> (tempfile::TempDir, Config) 
         ("group\0resource\0key-1", "digest-a", b"one".as_slice()),
         ("group\0resource\0key-2", "digest-b", b"two".as_slice()),
     ] {
-        meta.stage_intent(
-            IntentAdmission {
-                authority: "group/resource",
-                key,
-                digest,
-                size: payload.len().try_into().unwrap(),
-                payload,
-            },
-            IntentLimits {
-                max_records: 10,
-                max_bytes: 1 << 20,
-                backpressure_percent: 80,
-            },
-            1,
-        )
-        .unwrap();
+        stage_intent(&meta, "group/resource", key, digest, payload);
     }
     drop(meta);
     (directory, config)
+}
+
+fn stage_intent(meta: &MetaStore, authority: &str, key: &str, digest: &str, payload: &[u8]) {
+    meta.stage_intent(
+        IntentAdmission {
+            authority,
+            key,
+            digest,
+            size: payload.len().try_into().unwrap(),
+            payload,
+        },
+        IntentLimits {
+            max_records: 10,
+            max_bytes: 1 << 20,
+            backpressure_percent: 80,
+        },
+        1,
+    )
+    .unwrap();
 }
 
 fn store_and_config(plugins: &PluginRegistry) -> (tempfile::TempDir, MetaStore, Config) {

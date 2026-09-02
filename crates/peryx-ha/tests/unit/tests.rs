@@ -832,13 +832,23 @@ struct SuccessfulDrainer;
 impl AuthorityDrainer for SuccessfulDrainer {
     async fn drain(
         &self,
-        now: i64,
+        authority: &str,
+        finalizer: &dyn RetainedWriteFinalizer,
         cancelled: &(dyn Fn() -> bool + Send + Sync),
     ) -> Result<AvailabilityTaskReport, AvailabilityTaskError> {
         Ok(AvailabilityTaskReport {
-            processed: u64::try_from(now).unwrap(),
+            processed: u64::from(finalizer.finalize_retained(authority, "intent").await),
             changed: u64::from(cancelled()),
         })
+    }
+}
+
+struct PublishingHome;
+
+#[async_trait]
+impl RetainedWriteFinalizer for PublishingHome {
+    async fn finalize_retained(&self, authority: &str, intent_key: &str) -> bool {
+        (authority, intent_key) == ("resource", "intent")
     }
 }
 
@@ -846,9 +856,9 @@ impl AuthorityDrainer for SuccessfulDrainer {
 async fn test_authority_drainer_is_object_safe() {
     let drainer: &dyn AuthorityDrainer = &SuccessfulDrainer;
     assert_eq!(
-        drainer.drain(7, &|| false).await.unwrap(),
+        drainer.drain("resource", &PublishingHome, &|| false).await.unwrap(),
         AvailabilityTaskReport {
-            processed: 7,
+            processed: 1,
             changed: 0
         }
     );

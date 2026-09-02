@@ -597,6 +597,10 @@ impl IntentFinalizer for PypiServing {
     async fn finalize_admitted(&self, state: Arc<ServingState>) -> u64 {
         finalize_sweep::finalize_admitted(&state).await
     }
+
+    async fn finalize_retained(&self, state: Arc<ServingState>, authority: &str, intent_key: &str) -> bool {
+        finalize_sweep::finalize_retained(&state, authority, intent_key).await
+    }
 }
 
 #[async_trait]

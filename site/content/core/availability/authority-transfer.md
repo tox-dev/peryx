@@ -56,10 +56,14 @@ a write, the ingress datacenter that received it retains it as an intent (see th
 transport moves arbitrary ingress intents to another datacenter. A local drain runs with
 [`peryx job drain`](@/core/operations/cli.md#job-drain):
 
+- **Scoped.** It reads the intents staged for the authority it names and no others, and the ecosystem that publishes a
+  write checks the authority on its staging record before publishing it, so draining one authority leaves the rest
+  untouched.
 - **Ordered.** It finalizes retained intents in admission order, held by a durable never-reused sequence that survives a
   restart, so the drain is deterministic and two operators running it reach the same result.
-- **Resumable.** Each finalize advances an intent without reapplying it. An interrupted drain resumes at the first
-  pending intent, and rerunning a completed drain is a no-op.
+- **Resumable.** An intent settles in the same transaction that publishes its write, so a write this home cannot publish
+  yet stays pending instead of settling unapplied. An interrupted drain resumes at the first pending intent, and
+  rerunning a completed drain is a no-op.
 - **Bounded.** It finalizes in batches, so a large backlog drains in bounded transactions rather than one unbounded
   scan.
 - **Fence-protected.** The run leases the authority's committed epoch. If the authority transfers during the drain, the

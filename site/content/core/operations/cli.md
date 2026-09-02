@@ -121,16 +121,22 @@ results. A rebuild cancelled at shutdown leaves the served index untouched.
 
 Finalize the ingress write intents an authority's former home left retained, at the datacenter that just took its home.
 When a home fails and the control quorum transfers an authority to a survivor, the ingress datacenters still hold the
-writes the old home never finalized. `drain` reads those intents in stable key order and finalizes each into the new
-home's local metadata, recording an `authority_drain` job you can read back with `list` and `show`. It is the operator
-side of [authority transfer](@/core/availability/authority-transfer.md): the transfer moves the home, and the drain
-settles the writes that were in flight when it moved.
+writes the old home never finalized. `drain` reads the intents staged for the named authority, in the order they were
+admitted, and hands each to the ecosystem that owns it to publish here, recording an `authority_drain` job you can read
+back with `list` and `show`. It is the operator side of [authority transfer](@/core/availability/authority-transfer.md):
+the transfer moves the home, and the drain settles the writes that were in flight when it moved.
 
-The pass is bounded, ordered, and resumable. It finalizes in batches so a large backlog drains in bounded transactions,
-and each finalize only advances an intent, never re-applies it, so re-running after an interruption resumes at the first
-intent still pending rather than double-finalizing settled ones. Because the run names its authority, the scheduler
-fences it: if the same authority transfers again while the drain runs, the run leased a now-superseded epoch and fails
-with `authority_fenced` rather than finalizing under stale authority. Run it again at the current home.
+A write reaches only the authority it was admitted for. The pass reads no other authority's intents, and the ecosystem
+publishing a write checks the authority on its staging record against the one being drained, so draining one authority
+leaves every other one exactly as it was.
+
+The pass is bounded, ordered, and resumable. It works in batches so a large backlog drains in bounded transactions, and
+an intent settles only in the same transaction that publishes its write, so nothing leaves the pending set whose effect
+is not committed and a re-run resumes at the first intent still pending rather than publishing twice. A write this node
+cannot publish - its bytes never arrived, its permission was revoked, its epoch moved - is counted as processed and left
+pending for a later pass rather than settled. Because the run names its authority, the scheduler fences it: if the same
+authority transfers again while the drain runs, the run leased a now-superseded epoch and fails with `authority_fenced`
+rather than finalizing under stale authority. Run it again at the current home.
 
 ## `mirror`
 

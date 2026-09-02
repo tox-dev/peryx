@@ -26,10 +26,14 @@ const STAGED_AT: i64 = 100;
 const DEADLINE: i64 = 60;
 
 fn stage(store: &MetaStore, key: &str) {
+    stage_for(store, "auth", key);
+}
+
+fn stage_for(store: &MetaStore, authority: &str, key: &str) {
     store
         .stage_intent(
             IntentAdmission {
-                authority: "auth",
+                authority,
                 key,
                 digest: "digest-a",
                 size: 10,
@@ -187,4 +191,83 @@ fn test_a_sweep_skips_an_order_entry_whose_row_is_gone() {
         store.list_pending_intents(10, u32::MAX).unwrap(),
         vec![("live".to_owned(), pending(0, 0))]
     );
+}
+
+#[test]
+fn test_a_drain_page_holds_only_the_authority_it_names() {
+    let (_dir, store) = store();
+    stage_for(&store, "other", "other-first");
+    stage_for(&store, "auth", "mine");
+    stage_for(&store, "other", "other-last");
+
+    assert_eq!(
+        store.list_pending_intents_for("auth", None, 10).unwrap(),
+        vec![("mine".to_owned(), pending(1, 0))]
+    );
+}
+
+#[test]
+fn test_a_drain_page_counts_the_named_authority_rather_than_the_rows_ahead_of_it() {
+    let (_dir, store) = store();
+    for key in ["other-0", "other-1", "other-2"] {
+        stage_for(&store, "other", key);
+    }
+    stage_for(&store, "auth", "mine-0");
+    stage_for(&store, "auth", "mine-1");
+
+    assert_eq!(
+        store.list_pending_intents_for("auth", None, 2).unwrap(),
+        vec![
+            ("mine-0".to_owned(), pending(3, 0)),
+            ("mine-1".to_owned(), pending(4, 0))
+        ],
+        "a page bounded before the filter would report the authority as drained"
+    );
+}
+
+#[test]
+fn test_a_drain_resumes_past_the_intent_it_last_offered() {
+    let (_dir, store) = store();
+    for key in ["first", "second", "third"] {
+        stage(&store, key);
+    }
+
+    assert_eq!(
+        store.list_pending_intents_for("auth", Some(0), 10).unwrap(),
+        vec![
+            ("second".to_owned(), pending(1, 0)),
+            ("third".to_owned(), pending(2, 0))
+        ]
+    );
+}
+
+#[test]
+fn test_a_drain_offers_an_intent_the_finalize_sweep_gave_up_on() {
+    let (_dir, store) = store();
+    stage(&store, "refused");
+    for _ in 0..3 {
+        assert_eq!(store.refuse_intent("refused").unwrap(), IntentUpdate::Applied);
+    }
+
+    assert_eq!(
+        store.list_pending_intents_for("auth", None, 10).unwrap(),
+        vec![("refused".to_owned(), pending(0, 3))],
+        "an operator drain settles every intent its home owns, refused or not"
+    );
+}
+
+#[test]
+fn test_a_drain_page_of_no_rows_reads_nothing() {
+    let (_dir, store) = store();
+    stage(&store, "live");
+
+    assert_eq!(store.list_pending_intents_for("auth", None, 0).unwrap(), Vec::new());
+}
+
+#[test]
+fn test_a_drain_of_an_authority_that_staged_nothing_is_empty() {
+    let (_dir, store) = store();
+    stage(&store, "live");
+
+    assert_eq!(store.list_pending_intents_for("other", None, 10).unwrap(), Vec::new());
 }
