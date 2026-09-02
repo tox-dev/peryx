@@ -14,6 +14,7 @@ mod mirror_concurrency_tests;
 mod mirror_contract_tests;
 mod mirror_tests;
 mod negotiate_tests;
+mod openapi_tests;
 mod outbox_tests;
 mod plugin_contract_tests;
 mod policy_tests;

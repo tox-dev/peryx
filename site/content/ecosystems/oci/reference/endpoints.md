@@ -21,7 +21,7 @@ map, see [OCI](@/ecosystems/oci/_index.md); for the wire standards, see
 
 | Method        | Path                                       | Purpose                                 | Success        |
 | ------------- | ------------------------------------------ | --------------------------------------- | -------------- |
-| `GET`         | `/v2/`                                     | API version check                       | `200` or `401` |
+| `GET`, `HEAD` | `/v2/`                                     | API version check                       | `200` or `401` |
 | `GET`         | `/v2/token`                                | Mint a scoped Bearer token              | `200`          |
 | `GET`         | `/v2/_catalog`                             | List repositories with pagination       | `200`          |
 | `GET`, `HEAD` | `/v2/<name>/manifests/<reference>`         | Pull a manifest by tag or digest        | `200`          |
@@ -37,16 +37,16 @@ map, see [OCI](@/ecosystems/oci/_index.md); for the wire standards, see
 | `PUT`         | `/v2/<name>/blobs/uploads/<session>`       | Finish an upload                        | `201`          |
 | `DELETE`      | `/v2/<name>/blobs/uploads/<session>`       | Cancel an upload session                | `204`          |
 | `GET`         | `/v2/<name>/tags/list`                     | List tags with pagination               | `200`          |
-| `GET`         | `/v2/<name>/referrers/<digest>`            | List manifests that refer to `<digest>` | `200`          |
+| `GET`, `HEAD` | `/v2/<name>/referrers/<digest>`            | List manifests that refer to `<digest>` | `200`          |
 
 ## Version check
 
-`GET /v2/` (with or without the trailing slash) is the first request every container client sends. It answers `200` with
-`Docker-Distribution-API-Version: registry/2.0` and an empty body when no OCI index restricts access, or when the
-request carries a credential the realm accepts. When an OCI index restricts access and the request carries none, it
-answers `401` with `WWW-Authenticate: Bearer realm="<base>/v2/token",service="peryx"`, the challenge that starts
-`docker login`. The `/v2/token` endpoint, the scope grammar, and the resource-route error codes are covered in
-[token authentication](@/ecosystems/oci/reference/token-auth.md).
+`GET /v2/` (with or without the trailing slash, and `HEAD` for the headers alone) is the first request every container
+client sends. It answers `200` with `Docker-Distribution-API-Version: registry/2.0` and an empty body when no OCI index
+restricts access, or when the request carries a credential the realm accepts. When an OCI index restricts access and the
+request carries none, it answers `401` with `WWW-Authenticate: Bearer realm="<base>/v2/token",service="peryx"`, the
+challenge that starts `docker login`. The `/v2/token` endpoint, the scope grammar, and the resource-route error codes
+are covered in [token authentication](@/ecosystems/oci/reference/token-auth.md).
 
 ## Manifests
 
@@ -215,7 +215,8 @@ the registered `sha256`/`sha512` algorithms have their fixed hex length enforced
 held only to the general grammar. A well-formed but unknown subject is `200` with an empty `manifests`
 ([digest validation reference](@/ecosystems/oci/reference/registry-behavior.md#referrers-subject-digest-validation)). A
 `?artifactType=<type>` query filters the result to the descriptors whose `artifactType` matches, and the response then
-carries `OCI-Filters-Applied: artifactType` so a client knows the filter was honored.
+carries `OCI-Filters-Applied: artifactType` so a client knows the filter was honored. A `HEAD` answers the same status
+and headers with no body, so a client can read that header before it pulls the index.
 
 For a proxy member peryx also unions in what its upstream reports. A registry that predates the referrers API answers
 `404` on the `/referrers/` route and instead publishes a subject's referrers as an image index under the referrers tag

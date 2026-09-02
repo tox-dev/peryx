@@ -291,6 +291,8 @@ fn plugin_openapi_contains_every_oci_surface() {
         actual,
         BTreeSet::from([
             "/v2/",
+            "/v2/_catalog",
+            "/v2/token",
             "/v2/{name}/blobs/uploads/",
             "/v2/{name}/blobs/uploads/{session}",
             "/v2/{name}/blobs/{digest}",
