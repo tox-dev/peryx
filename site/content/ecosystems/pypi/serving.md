@@ -119,6 +119,24 @@ a layer behind it.
 Metadata peryx reads out of the artifact itself, extracted from the wheel or uploaded alongside it, is a function of the
 digest rather than a claim. That stays shared: every publication of the same digest resolves the same bytes.
 
+### Recovering a missing sidecar
+
+A cached page carries the sidecar digest its upstream advertised, so under its own route peryx makes the same PEP 658
+promise the upstream made. Upstream can break that promise afterwards, leaving the file record in place while the
+`.metadata` sibling behind it stops answering. peryx fills the gap from the wheel, because the sidecar's contents are
+the wheel's own `METADATA` member and peryx already extracts that member for files no upstream advertised.
+
+Recovered bytes have to hash to the digest the page published. An installer verifies that digest, so serving anything
+else trades a `404` for a checksum failure it cannot diagnose. A wheel whose `METADATA` hashes to something other than
+the advertisement means the index and the artifact disagree about the same file, and peryx answers `502` rather than
+pick one of them.
+
+Only a `404` starts recovery. An authentication failure, a rate limit, or a server error leaves the sidecar's existence
+unsettled, so each keeps its own status and retry behavior. A `404` peryx cannot recover from, because the wheel is out
+of reach or carries no `METADATA`, stays a `404`. peryx records that outcome against the sidecar that vanished rather
+than against the artifact, so one index's dead sidecar leaves metadata another index derives from the same bytes
+reachable.
+
 ## Provenance and attestations
 
 A file uploaded with [PEP 740](https://peps.python.org/pep-0740/) attestations carries a `provenance` key on its Simple

@@ -96,6 +96,8 @@ pub enum CacheError {
     Unavailable,
     #[error("upstream provenance is not a PEP 740 attestation document")]
     InvalidProvenance,
+    #[error("the artifact's own metadata does not match the advertised sidecar digest")]
+    AdvertisedMetadataMismatch,
     #[error("offline mode has no cached {0}")]
     OfflineMissing(&'static str),
     #[error("index is not volatile; delete is disabled")]
@@ -180,6 +182,9 @@ impl CacheError {
             Self::Archive(err) => err.to_string(),
             Self::Unavailable => "upstream is unavailable and no cached page exists".to_owned(),
             Self::InvalidProvenance => "upstream provenance is not a PEP 740 attestation document".to_owned(),
+            Self::AdvertisedMetadataMismatch => {
+                "the index advertised a metadata digest the artifact's own metadata does not match".to_owned()
+            }
             Self::OfflineMissing(target) => format!("offline mode has no cached {target}"),
             Self::NotVolatile => "index is not volatile; delete is disabled".to_owned(),
             Self::AuthoritySuperseded => {

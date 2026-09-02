@@ -402,6 +402,7 @@ fn cache_error_status(err: &CacheError, context: &CacheContext<'_>) -> StatusCod
         | CacheError::Simple(_)
         | CacheError::Unavailable
         | CacheError::InvalidProvenance
+        | CacheError::AdvertisedMetadataMismatch
         | CacheError::Stream(_) => StatusCode::BAD_GATEWAY,
     }
 }

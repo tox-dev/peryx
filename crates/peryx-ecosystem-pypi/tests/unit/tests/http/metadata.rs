@@ -239,6 +239,195 @@ async fn test_buffered_persist_inserts_metadata_before_url_query() {
         }))
     );
 }
+const RECOVERED_WHEEL: &str = "peryxpkg-1.0-py3-none-any.whl";
+const RECOVERED_METADATA: &[u8] = b"Metadata-Version: 2.1\nName: peryxpkg\nVersion: 1.0\n";
+
+struct MissingSidecar {
+    h: Harness,
+    artifact: Digest,
+    uri: String,
+}
+
+/// A cached index that advertised `advertised` as the sidecar digest for a wheel whose `.metadata`
+/// sibling answers `404`. `reachable` mounts the wheel for a ranged read; without it the artifact
+/// route answers `404` too and recovery has nothing to read. `siblings` bounds how often the route
+/// may ask upstream for the vanished sidecar, which is what pins whether peryx cached the outcome.
+async fn missing_sidecar(wheel: &[u8], advertised: &Digest, reachable: bool, siblings: u64) -> MissingSidecar {
+    let h = harness().await;
+    let artifact = Digest::of(wheel);
+    let file_url = format!("{}/files/{RECOVERED_WHEEL}", h.server.uri());
+    crate::tests::register_publication(
+        &h.state.serving.meta,
+        "pypi",
+        RECOVERED_WHEEL,
+        artifact.as_str(),
+        Some((&format!("{file_url}.metadata"), advertised.as_str())),
+    );
+    h.state
+        .serving
+        .meta
+        .put_file_url(artifact.as_str(), &file_url, "pypi")
+        .unwrap();
+    Mock::given(method("GET"))
+        .and(path(format!("/files/{RECOVERED_WHEEL}.metadata")))
+        .respond_with(ResponseTemplate::new(404))
+        .expect(siblings)
+        .mount(&h.server)
+        .await;
+    if reachable {
+        Mock::given(method("HEAD"))
+            .and(path(format!("/files/{RECOVERED_WHEEL}")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("accept-ranges", "bytes")
+                    .insert_header("content-length", wheel.len())
+                    .insert_header("etag", WHEEL_ETAG),
+            )
+            .mount(&h.server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/files/{RECOVERED_WHEEL}")))
+            .and(header_regex("range", "^bytes=[0-9]+-[0-9]+$"))
+            .respond_with(range_response(wheel.to_vec()))
+            .mount(&h.server)
+            .await;
+    }
+    let uri = format!("/pypi/files/{}/{RECOVERED_WHEEL}.metadata", artifact.as_str());
+    MissingSidecar { h, artifact, uri }
+}
+
+#[tokio::test]
+async fn test_a_missing_advertised_sidecar_is_recovered_from_the_wheel() {
+    let advertised = Digest::of(RECOVERED_METADATA);
+    let fixture = missing_sidecar(&fixture_wheel_with_metadata(RECOVERED_METADATA), &advertised, true, 1).await;
+
+    let (status, _, body) = get(&fixture.h.state, &fixture.uri, None).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body.as_bytes(), RECOVERED_METADATA);
+    assert_eq!(
+        fixture
+            .h
+            .state
+            .serving
+            .meta
+            .get_metadata_digest(fixture.artifact.as_str())
+            .unwrap(),
+        Some(advertised.as_str().to_owned()),
+    );
+    // The sidecar mock allows one call, so a repeat answered from the blob proves recovery committed
+    // the bytes under the digest the page advertises.
+    let (repeated, _, repeated_body) = get(&fixture.h.state, &fixture.uri, None).await;
+    assert_eq!(repeated, StatusCode::OK);
+    assert_eq!(repeated_body.as_bytes(), RECOVERED_METADATA);
+}
+
+#[tokio::test]
+async fn test_recovered_metadata_that_contradicts_the_advertisement_is_refused() {
+    let advertised = Digest::of(b"Metadata-Version: 2.1\nName: peryxpkg\nVersion: 9.9\n");
+    let fixture = missing_sidecar(&fixture_wheel_with_metadata(RECOVERED_METADATA), &advertised, true, 2).await;
+
+    let (status, _, body) = get(&fixture.h.state, &fixture.uri, None).await;
+
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert!(
+        body.contains("the index advertised a metadata digest the artifact's own metadata does not match"),
+        "{body}"
+    );
+    assert!(fixture.h.state.serving.blobs.head(&advertised).await.unwrap().is_none());
+    assert_eq!(
+        fixture
+            .h
+            .state
+            .serving
+            .meta
+            .get_metadata_digest(fixture.artifact.as_str())
+            .unwrap(),
+        None,
+    );
+    // Nothing caches the refusal, so the second request reaches upstream again. The sidecar mock's
+    // count of two pins that.
+    assert_eq!(
+        get(&fixture.h.state, &fixture.uri, None).await.0,
+        StatusCode::BAD_GATEWAY
+    );
+}
+
+#[tokio::test]
+async fn test_a_wheel_carrying_no_metadata_leaves_the_advertised_sidecar_absent() {
+    let advertised = Digest::of(RECOVERED_METADATA);
+    let fixture = missing_sidecar(&fixture_wheel_without_metadata(), &advertised, true, 1).await;
+
+    let (status, _, body) = get(&fixture.h.state, &fixture.uri, None).await;
+
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(
+        body.contains("no matching cached file or upstream source was found"),
+        "{body}"
+    );
+    assert!(fixture.h.state.serving.blobs.head(&advertised).await.unwrap().is_none());
+    assert_eq!(
+        fixture
+            .h
+            .state
+            .serving
+            .meta
+            .get_metadata_digest(fixture.artifact.as_str())
+            .unwrap(),
+        None,
+    );
+    assert_eq!(get(&fixture.h.state, &fixture.uri, None).await.0, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_an_unrecoverable_sidecar_does_not_suppress_another_index_metadata() {
+    let wheel = fixture_wheel_with_metadata(RECOVERED_METADATA);
+    let fixture = missing_sidecar(&wheel, &Digest::of(RECOVERED_METADATA), false, 1).await;
+    assert_eq!(get(&fixture.h.state, &fixture.uri, None).await.0, StatusCode::NOT_FOUND);
+
+    upload_wheel(&fixture.h.state, RECOVERED_WHEEL, &wheel).await;
+    let uri = format!("/hosted/files/{}/{RECOVERED_WHEEL}.metadata", fixture.artifact.as_str());
+    let (status, _, body) = get(&fixture.h.state, &uri, None).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body.as_bytes(), RECOVERED_METADATA);
+}
+
+#[tokio::test]
+async fn test_a_sidecar_server_error_is_not_recovered_from_the_wheel() {
+    let h = harness().await;
+    let wheel = fixture_wheel_with_metadata(RECOVERED_METADATA);
+    let artifact = Digest::of(&wheel);
+    let file_url = format!("{}/files/{RECOVERED_WHEEL}", h.server.uri());
+    crate::tests::register_publication(
+        &h.state.serving.meta,
+        "pypi",
+        RECOVERED_WHEEL,
+        artifact.as_str(),
+        Some((&format!("{file_url}.metadata"), Digest::of(RECOVERED_METADATA).as_str())),
+    );
+    h.state
+        .serving
+        .meta
+        .put_file_url(artifact.as_str(), &file_url, "pypi")
+        .unwrap();
+    Mock::given(method("GET"))
+        .and(path(format!("/files/{RECOVERED_WHEEL}.metadata")))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&h.server)
+        .await;
+    Mock::given(path(format!("/files/{RECOVERED_WHEEL}")))
+        .respond_with(range_response(wheel))
+        .expect(0)
+        .mount(&h.server)
+        .await;
+
+    let uri = format!("/pypi/files/{}/{RECOVERED_WHEEL}.metadata", artifact.as_str());
+    let (status, ..) = get(&h.state, &uri, None).await;
+
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+}
+
 #[tokio::test]
 async fn test_metadata_not_found_when_unregistered() {
     let h = harness().await;

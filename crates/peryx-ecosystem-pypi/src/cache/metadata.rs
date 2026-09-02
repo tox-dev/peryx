@@ -64,10 +64,6 @@ pub async fn metadata_bytes(
     let artifact_filename = metadata_filename
         .strip_suffix(".metadata")
         .ok_or(CacheError::FileNotFound)?;
-    let negative_key = metadata_negative_key(artifact_digest);
-    if state.negative_fresh(&negative_key) {
-        return Err(CacheError::FileNotFound);
-    }
     let publication = winning_publication(
         state,
         index,
@@ -76,7 +72,7 @@ pub async fn metadata_bytes(
         artifact_filename,
     )?;
     if let Some(FilePublication::Claimed(claim)) = publication {
-        return claimed_metadata(state, &claim, negative_key).await;
+        return claimed_metadata(state, &claim, artifact_digest, route, artifact_filename).await;
     }
     if let Some(metadata_hex) = state.meta.get_metadata_digest(artifact_digest.as_str())? {
         let metadata_digest = Digest::from_hex(&metadata_hex).ok_or(CacheError::FileNotFound)?;
@@ -170,22 +166,77 @@ fn hosted_publication(
 async fn claimed_metadata(
     state: &Arc<ServingState>,
     claim: &MetadataClaim,
-    negative_key: String,
+    artifact_digest: &Digest,
+    route: &str,
+    artifact_filename: &str,
 ) -> Result<Bytes, CacheError> {
     let metadata_digest = Digest::from_hex(&claim.metadata_sha256).ok_or(CacheError::FileNotFound)?;
+    let negative_key = metadata_negative_key(claim);
+    if state.negative_fresh(&negative_key) {
+        return Err(CacheError::FileNotFound);
+    }
     if state.blobs.head(&metadata_digest).await?.is_some() {
         return read_metadata_blob(state, &metadata_digest).await;
     }
     let bytes = match fetch_from_source(state, &claim.source, claim.upstream.as_deref(), &claim.url).await {
         Ok(bytes) => bytes,
+        // Only absence is recoverable. An auth failure, a rate limit, a timeout or a server error
+        // all say the sidecar may still be there, so they keep their own status and retry semantics.
         Err(CacheError::Upstream(err)) if err.status() == Some(404) => {
-            state.remember_negative(negative_key, NEGATIVE_TTL_SECS);
-            return Err(CacheError::FileNotFound);
+            return recover_claimed_metadata(
+                state,
+                &metadata_digest,
+                artifact_digest,
+                route,
+                artifact_filename,
+                negative_key,
+            )
+            .await;
         }
         Err(err) => return Err(err),
     };
     state.blobs.put_bytes_as(&bytes, &metadata_digest).await?;
     Ok(bytes)
+}
+
+/// Rebuild a sidecar the publishing index advertised but no longer serves, out of the artifact itself.
+///
+/// Under PEP 658 the advertisement is peryx's own promise to the installer, so a vanished sibling is
+/// peryx's inconsistency to repair rather than upstream's 404 to forward. The rebuilt bytes hold only
+/// when they hash to the digest the page published, because an installer verifies that digest and
+/// anything else trades a 404 for a checksum failure.
+///
+/// Extraction that produces nothing leaves the sidecar as unavailable as the 404 found it, so the
+/// negative entry still goes in. It says peryx could not produce the sidecar inside its 30-second
+/// life, not that the artifact lacks metadata.
+async fn recover_claimed_metadata(
+    state: &Arc<ServingState>,
+    metadata_digest: &Digest,
+    artifact_digest: &Digest,
+    route: &str,
+    artifact_filename: &str,
+    negative_key: String,
+) -> Result<Bytes, CacheError> {
+    let bytes = match generated_metadata_bytes(state, artifact_digest, route, artifact_filename).await {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            let digest = artifact_digest.as_str();
+            tracing::debug!(
+                ?err,
+                digest,
+                artifact_filename,
+                "advertised metadata recovery found nothing"
+            );
+            state.remember_negative(negative_key, NEGATIVE_TTL_SECS);
+            return Err(CacheError::FileNotFound);
+        }
+    };
+    if Digest::of(&bytes) != *metadata_digest {
+        return Err(CacheError::AdvertisedMetadataMismatch);
+    }
+    state.blobs.put_bytes_as(&bytes, metadata_digest).await?;
+    record_generated_metadata(state, artifact_digest, metadata_digest, route, artifact_filename)?;
+    Ok(Bytes::from(bytes))
 }
 
 async fn read_metadata_blob(state: &Arc<ServingState>, metadata_digest: &Digest) -> Result<Bytes, CacheError> {
@@ -205,11 +256,22 @@ async fn write_generated_metadata(
 ) -> Result<Bytes, CacheError> {
     let bytes = generated_metadata_bytes(state, artifact_digest, route, artifact_filename).await?;
     let metadata_digest = state.blobs.put_bytes(&bytes).await?;
+    record_generated_metadata(state, artifact_digest, &metadata_digest, route, artifact_filename)?;
+    Ok(Bytes::from(bytes))
+}
+
+fn record_generated_metadata(
+    state: &ServingState,
+    artifact_digest: &Digest,
+    metadata_digest: &Digest,
+    route: &str,
+    artifact_filename: &str,
+) -> Result<(), CacheError> {
     state
         .meta
         .put_metadata(artifact_digest.as_str(), metadata_digest.as_str())?;
     super::invalidate_project_route(state, route, &crate::project_of_filename(artifact_filename));
-    Ok(Bytes::from(bytes))
+    Ok(())
 }
 
 async fn generated_metadata_bytes(
@@ -461,8 +523,10 @@ pub fn registered_file_size(state: &ServingState, digest: &Digest) -> Result<Opt
     Ok(state.meta.get_file_url(digest.as_str())?.and_then(|source| source.size))
 }
 
-fn metadata_negative_key(artifact_digest: &Digest) -> String {
-    format!("metadata\0{}", artifact_digest.as_str())
+/// Key the negative entry on the sidecar that went missing rather than on the artifact, so one
+/// index's dead claim leaves metadata another index derives from the same bytes reachable.
+fn metadata_negative_key(claim: &MetadataClaim) -> String {
+    format!("metadata\0{}\0{}", claim.source, claim.url)
 }
 
 #[cfg(test)]

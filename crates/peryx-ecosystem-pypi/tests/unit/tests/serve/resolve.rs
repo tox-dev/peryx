@@ -567,8 +567,10 @@ async fn test_upstream_metadata_error_is_bad_gateway() {
     assert_eq!(status, StatusCode::BAD_GATEWAY);
 }
 #[tokio::test]
-async fn test_upstream_metadata_404_is_negative_cached() {
+async fn test_unrecoverable_metadata_404_is_negative_cached() {
     let h = harness().await;
+    // No artifact route is mounted, so the wheel peryx would rebuild the sidecar from is out of reach
+    // and the 404 stands. The http metadata suite covers recovery from a reachable wheel.
     let digest = Digest::of(b"wheel");
     let file_url = format!("{}/files/flask.whl", h.server.uri());
     let page = format!(
