@@ -52,7 +52,37 @@ impl RaftLogStore {
     /// # Errors
     /// Returns a store error on database open or table initialization failure.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, RaftLogError> {
-        let db = Database::create(path)?;
+        Self::initialize(Database::create(path)?)
+    }
+
+    /// Creates the tables over a caller-supplied redb backend.
+    ///
+    /// Test-only: it lets a test drive the log from a backend it can stall or fail on demand, and it
+    /// is absent from a normal build. The page cache is disabled so that every read reaches the
+    /// backend rather than a cached page.
+    ///
+    /// # Errors
+    /// Returns a store error if the database cannot be opened or initialized.
+    #[cfg(test)]
+    pub fn open_backend(backend: impl redb::StorageBackend) -> Result<Self, RaftLogError> {
+        Self::initialize(Database::builder().set_cache_size(0).create_with_backend(backend)?)
+    }
+
+    /// Opens an already-initialized log over a caller-supplied redb backend.
+    ///
+    /// Test-only. Unlike [`RaftLogStore::open_backend`] it creates no tables, so a test can read
+    /// back the pages a store left behind after a fault poisoned its database handle.
+    ///
+    /// # Errors
+    /// Returns a store error if the database cannot be opened.
+    #[cfg(test)]
+    pub fn reopen_backend(backend: impl redb::StorageBackend) -> Result<Self, RaftLogError> {
+        Ok(Self {
+            db: Arc::new(Database::builder().set_cache_size(0).create_with_backend(backend)?),
+        })
+    }
+
+    fn initialize(db: Database) -> Result<Self, RaftLogError> {
         let txn = db.begin_write()?;
         {
             txn.open_table(RAFT_LOG)?;

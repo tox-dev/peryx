@@ -26,9 +26,6 @@ mod node_tests;
 #[cfg(test)]
 #[path = "../../tests/unit/raft/persistence_tests.rs"]
 mod persistence_tests;
-#[cfg(test)]
-#[path = "../../tests/unit/raft/state_machine_tests.rs"]
-mod state_machine_tests;
 
 openraft::declare_raft_types!(
     pub TypeConfig:

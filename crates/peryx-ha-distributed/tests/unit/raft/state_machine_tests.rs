@@ -1,9 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Cursor;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use openraft::storage::RaftStateMachine;
 use openraft::testing::log_id;
 use openraft::{Entry, EntryPayload, Membership, RaftSnapshotBuilder, Snapshot, SnapshotMeta};
+use redb::backends::InMemoryBackend;
 use tempfile::TempDir;
+use tokio::sync::mpsc;
+use tokio::time::timeout;
 
 use crate::ownership::{Assignment, AssignmentCause, DatacenterId, OwnershipCommand, OwnershipEffect, OwnershipState};
 use crate::raft::persistence::RaftLogStore;
@@ -633,5 +640,232 @@ async fn test_admit_fences_a_superseded_epoch() {
             committed: AuthorityEpoch(1),
             presented: AuthorityEpoch(2),
         }
+    );
+}
+
+/// Bounds a failure only. Each awaited step returns as soon as the gate reports the commit parked.
+const GATE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// A redb backend that parks one commit inside `sync_data` until the test releases it, so a test can
+/// drive the state machine while a snapshot write is genuinely in flight.
+#[derive(Debug)]
+struct GatedBackend {
+    inner: InMemoryBackend,
+    armed: Arc<AtomicBool>,
+    entered: mpsc::UnboundedSender<()>,
+    release: std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+}
+
+impl redb::StorageBackend for GatedBackend {
+    fn len(&self) -> std::io::Result<u64> {
+        self.inner.len()
+    }
+
+    fn read(&self, offset: u64, out: &mut [u8]) -> std::io::Result<()> {
+        self.inner.read(offset, out)
+    }
+
+    fn set_len(&self, len: u64) -> std::io::Result<()> {
+        self.inner.set_len(len)
+    }
+
+    fn sync_data(&self) -> std::io::Result<()> {
+        if self.armed.swap(false, Ordering::SeqCst) {
+            let release = self.release.lock().unwrap().take().unwrap();
+            self.entered.send(()).unwrap();
+            release.recv().unwrap();
+        }
+        self.inner.sync_data()
+    }
+
+    fn write(&self, offset: u64, data: &[u8]) -> std::io::Result<()> {
+        self.inner.write(offset, data)
+    }
+}
+
+struct Gate {
+    armed: Arc<AtomicBool>,
+    entered: mpsc::UnboundedReceiver<()>,
+    release: std::sync::mpsc::Sender<()>,
+}
+
+impl Gate {
+    fn arm(&self) {
+        self.armed.store(true, Ordering::SeqCst);
+    }
+
+    /// Returns once a commit has reached the backend and parked there.
+    async fn await_parked_commit(&mut self) {
+        self.entered.recv().await.unwrap();
+    }
+
+    fn release(&self) {
+        self.release.send(()).unwrap();
+    }
+}
+
+impl Drop for Gate {
+    /// Unparks a commit the test left waiting, so a failed assertion reports itself instead of
+    /// wedging the runtime shutdown behind a blocking thread that never returns.
+    fn drop(&mut self) {
+        let _ = self.release.send(());
+    }
+}
+
+fn gated_store() -> (RaftLogStore, Gate) {
+    let armed = Arc::new(AtomicBool::new(false));
+    let (entered, entered_receiver) = mpsc::unbounded_channel();
+    let (release, release_receiver) = std::sync::mpsc::channel();
+    let store = RaftLogStore::open_backend(GatedBackend {
+        inner: InMemoryBackend::new(),
+        armed: armed.clone(),
+        entered,
+        release: std::sync::Mutex::new(Some(release_receiver)),
+    })
+    .unwrap();
+    (
+        store,
+        Gate {
+            armed,
+            entered: entered_receiver,
+            release,
+        },
+    )
+}
+
+/// A fault poisons the database handle it hit, so reading the pages back needs a fresh one.
+fn reopen_pages(pages: &Arc<InMemoryBackend>, fault: &Arc<peryx_test_support::fault::Fault>) -> RaftLogStore {
+    RaftLogStore::reopen_backend(peryx_test_support::fault::faulted(pages, fault)).unwrap()
+}
+
+async fn snapshot_of(entries: Vec<Entry<TypeConfig>>) -> (SnapshotMeta<u64, PeryxNode>, Vec<u8>) {
+    let mut source = OwnershipStateMachine::default();
+    source.apply(entries).await.unwrap();
+    let Snapshot { meta, snapshot } = source.get_snapshot_builder().await.build_snapshot().await.unwrap();
+    (meta, snapshot.into_inner())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_a_parked_build_commit_holds_up_neither_a_read_nor_an_apply() {
+    let (store, mut gate) = gated_store();
+    let mut machine = OwnershipStateMachine::with_snapshot_store(store).unwrap();
+    machine.apply(vec![normal(1, assign("proj", "east"))]).await.unwrap();
+    let mut builder = machine.get_snapshot_builder().await;
+
+    gate.arm();
+    let build = tokio::spawn(async move { builder.build_snapshot().await });
+    gate.await_parked_commit().await;
+
+    let epoch = timeout(GATE_TIMEOUT, machine.epoch_of(&key("proj"))).await;
+    let responses = timeout(GATE_TIMEOUT, machine.apply(vec![normal(2, advance("proj"))])).await;
+    gate.release();
+    let Snapshot { snapshot, .. } = build.await.unwrap().unwrap();
+
+    let epoch = epoch.expect("read the applied epoch while the commit is parked");
+    let responses = responses.expect("apply an entry while the commit is parked").unwrap();
+    assert_eq!(epoch, AuthorityEpoch(1));
+    assert_eq!(
+        responses,
+        vec![OwnershipResponse::Applied(OwnershipEffect::EpochAdvanced {
+            epoch: AuthorityEpoch(2)
+        })]
+    );
+    // The build captured the state it cloned, so the later apply did not leak into it.
+    let captured = OwnershipState::restore(&snapshot.into_inner()).unwrap();
+    assert_eq!(captured.epoch(&key("proj")), AuthorityEpoch(1));
+    assert_eq!(machine.epoch_of(&key("proj")).await, AuthorityEpoch(2));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_a_parked_install_commit_shows_the_state_the_node_had_before_it() {
+    let (meta, data) = snapshot_of(vec![normal(1, assign("proj", "west")), normal(2, advance("proj"))]).await;
+    let (store, mut gate) = gated_store();
+    let mut machine = OwnershipStateMachine::with_snapshot_store(store).unwrap();
+    machine.apply(vec![normal(1, assign("proj", "east"))]).await.unwrap();
+    let mut installer = machine.clone();
+
+    gate.arm();
+    let install = tokio::spawn(async move { installer.install_snapshot(&meta, Box::new(Cursor::new(data))).await });
+    gate.await_parked_commit().await;
+
+    let during = timeout(GATE_TIMEOUT, machine.home_claim(&key("proj"))).await;
+    gate.release();
+    install.await.unwrap().unwrap();
+    let during = during.expect("read the applied claim while the install commit is parked");
+
+    // No half-installed state is observable: the reader saw the node's own assignment, and the
+    // restored home and epoch appear together once the install publishes.
+    assert_eq!(during, Some((DatacenterId("east".to_owned()), AuthorityEpoch(1))));
+    assert_eq!(
+        machine.home_claim(&key("proj")).await,
+        Some((DatacenterId("west".to_owned()), AuthorityEpoch(2))),
+    );
+}
+
+#[tokio::test]
+async fn test_a_late_candidate_replaces_neither_the_durable_nor_the_current_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = open_store(&dir);
+    let mut machine = OwnershipStateMachine::with_snapshot_store(store.clone()).unwrap();
+    machine.apply(vec![normal(1, assign("proj", "east"))]).await.unwrap();
+    let older = machine.snapshot_candidate().await;
+    machine.apply(vec![normal(2, advance("proj"))]).await.unwrap();
+    let newer = machine.snapshot_candidate().await;
+
+    machine.store_candidate(newer).await.unwrap();
+    machine.store_candidate(older).await.unwrap();
+
+    let durable = OwnershipState::restore(&store.read_snapshot().unwrap().unwrap().data).unwrap();
+    assert_eq!(durable.epoch(&key("proj")), AuthorityEpoch(2));
+    let current = machine.get_current_snapshot().await.unwrap().unwrap();
+    let published = OwnershipState::restore(&current.snapshot.into_inner()).unwrap();
+    assert_eq!(published.epoch(&key("proj")), AuthorityEpoch(2));
+}
+
+#[tokio::test]
+async fn test_a_failed_build_commit_leaves_the_previous_snapshot_standing() {
+    let (pages, fault) = peryx_test_support::fault::backend();
+    let store = RaftLogStore::open_backend(peryx_test_support::fault::faulted(&pages, &fault)).unwrap();
+    let mut machine = OwnershipStateMachine::with_snapshot_store(store).unwrap();
+    machine.apply(vec![normal(1, assign("proj", "east"))]).await.unwrap();
+    machine.get_snapshot_builder().await.build_snapshot().await.unwrap();
+    machine.apply(vec![normal(2, advance("proj"))]).await.unwrap();
+
+    fault.arm(0);
+    let error = machine.get_snapshot_builder().await.build_snapshot().await.unwrap_err();
+    fault.disable();
+
+    assert!(error.to_string().contains("injected storage failure"), "{error}");
+    let durable =
+        OwnershipState::restore(&reopen_pages(&pages, &fault).read_snapshot().unwrap().unwrap().data).unwrap();
+    assert_eq!(durable.epoch(&key("proj")), AuthorityEpoch(1));
+    let current = machine.get_current_snapshot().await.unwrap().unwrap();
+    let published = OwnershipState::restore(&current.snapshot.into_inner()).unwrap();
+    assert_eq!(published.epoch(&key("proj")), AuthorityEpoch(1));
+}
+
+#[tokio::test]
+async fn test_a_failed_install_commit_leaves_the_previous_snapshot_standing() {
+    let (meta, data) = snapshot_of(vec![normal(1, assign("proj", "west")), normal(2, advance("proj"))]).await;
+    let (pages, fault) = peryx_test_support::fault::backend();
+    let store = RaftLogStore::open_backend(peryx_test_support::fault::faulted(&pages, &fault)).unwrap();
+    let mut machine = OwnershipStateMachine::with_snapshot_store(store).unwrap();
+    machine.apply(vec![normal(1, assign("proj", "east"))]).await.unwrap();
+    machine.get_snapshot_builder().await.build_snapshot().await.unwrap();
+
+    fault.arm(0);
+    let error = machine
+        .install_snapshot(&meta, Box::new(Cursor::new(data)))
+        .await
+        .unwrap_err();
+    fault.disable();
+
+    assert!(error.to_string().contains("injected storage failure"), "{error}");
+    let durable =
+        OwnershipState::restore(&reopen_pages(&pages, &fault).read_snapshot().unwrap().unwrap().data).unwrap();
+    assert_eq!(durable.epoch(&key("proj")), AuthorityEpoch(1));
+    assert_eq!(
+        machine.home_of(&key("proj")).await,
+        Some(DatacenterId("east".to_owned()))
     );
 }
