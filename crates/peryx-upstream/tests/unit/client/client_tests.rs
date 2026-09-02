@@ -11,7 +11,8 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::{guarded_client, mount_get, mount_head};
 use crate::client::{
-    Auth, RANGE_SUPPRESSION_CAPACITY, RANGE_SUPPRESSION_TTL, RangeSession, UpstreamClient, UpstreamError, redact_url,
+    Auth, BOUNDED_READ_TIMEOUT, RANGE_SUPPRESSION_CAPACITY, RANGE_SUPPRESSION_TTL, READ_IDLE_TIMEOUT, RangeSession,
+    UpstreamClient, UpstreamError, redact_url,
 };
 
 #[tokio::test]
@@ -1012,4 +1013,13 @@ fn serve_range(listener: &TcpListener, response: RangeResponse, released: &Recei
     if hold_open {
         released.recv().unwrap_err();
     }
+}
+
+/// A read budget longer than the idle bound cannot be spent: a connection that goes quiet is dropped at
+/// [`READ_IDLE_TIMEOUT`] first, so the extra budget is unreachable and a read near its deadline fails for
+/// a reason its own constant does not name. Raising one of the two without the other is the way that
+/// happens, and these are two of five upstream constants that all read 30 seconds today.
+#[test]
+fn test_the_read_budget_fits_inside_the_idle_bound() {
+    assert!(BOUNDED_READ_TIMEOUT <= READ_IDLE_TIMEOUT);
 }

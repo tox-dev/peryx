@@ -22,7 +22,14 @@ const MAX_ORIGIN_BYTES: usize = 2 << 10;
 const MAX_OUTPUT_BYTES: usize = 64 << 10;
 const MIN_TIMEOUT: Duration = Duration::from_millis(1);
 const MAX_TIMEOUT: Duration = Duration::from_mins(5);
+/// How far ahead of its stated expiry a helper credential is reloaded, so a request never carries a
+/// credential that expires while it is in flight. A helper that returns a credential already inside this
+/// margin is rejected rather than used.
 const REFRESH_MARGIN: Duration = Duration::from_secs(30);
+
+/// How long a failed helper load is left alone before another attempt, so a helper that is broken or
+/// prompting is not re-run once per request. This bounds retries after a failure; a successful load
+/// schedules its own reload from the credential's expiry and [`REFRESH_MARGIN`].
 const FAILURE_RETRY: Duration = Duration::from_secs(30);
 static EXECUTIONS: Semaphore = Semaphore::const_new(8);
 

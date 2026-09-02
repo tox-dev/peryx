@@ -9,7 +9,10 @@ use super::redact_url;
 pub const MAX_RETRIES: u32 = 2;
 const RETRY_BASE_MILLIS: u64 = 100;
 const RETRY_CAP_MILLIS: u64 = 2_000;
-pub(super) const RETRY_WAIT_BUDGET: Duration = Duration::from_secs(30);
+/// The longest single `Retry-After` this client waits out inline. A server asking for longer gets its
+/// response handed back to the caller instead, which can decide to queue the work or try elsewhere.
+/// This caps one wait rather than the sum of them; the number of waits is [`MAX_RETRIES`].
+pub(crate) const MAX_HONORED_RETRY_AFTER: Duration = Duration::from_secs(30);
 
 pub(super) fn should_retry_status(status: StatusCode) -> bool {
     status.is_server_error() || matches!(status, StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS)

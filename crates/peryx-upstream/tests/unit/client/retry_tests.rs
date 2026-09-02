@@ -11,7 +11,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::guarded_client;
 use crate::client::UpstreamClient;
-use crate::client::retry::{MAX_RETRIES, retry_after, retry_after_at};
+use crate::client::retry::{MAX_HONORED_RETRY_AFTER, MAX_RETRIES, retry_after, retry_after_at};
 
 #[rstest]
 #[case::seconds(Some(b"5".as_slice()), Some(Duration::from_secs(5)))]
@@ -56,12 +56,15 @@ fn test_retry_after_ignores_a_past_http_date() {
     assert_eq!(retry_after_at(&headers, SystemTime::now()), None);
 }
 
+/// Reads the header from the cap itself, so raising the cap moves this test with it and a call site that
+/// reached for a different 30-second constant would show up here instead of staying invisible.
 #[tokio::test]
 async fn test_retry_after_above_budget_returns_the_original_response() {
+    let refused = MAX_HONORED_RETRY_AFTER.as_secs() + 1;
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/simple/"))
-        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "120"))
+        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", refused.to_string().as_str()))
         .expect(1)
         .mount(&server)
         .await;
@@ -78,7 +81,7 @@ async fn test_retry_after_above_budget_returns_the_original_response() {
 
     assert_eq!(
         (response.status(), response.headers()[RETRY_AFTER].to_str().unwrap()),
-        (reqwest::StatusCode::TOO_MANY_REQUESTS, "120")
+        (reqwest::StatusCode::TOO_MANY_REQUESTS, refused.to_string().as_str())
     );
 }
 

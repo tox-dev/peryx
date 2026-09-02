@@ -25,7 +25,7 @@ use url::Url;
 use self::range::RangeSuppressions;
 use self::response::{header_str, strong_etag};
 use self::retry::{
-    MAX_RETRIES, RETRY_WAIT_BUDGET, retry_after_at, retry_delay, should_retry_error, should_retry_status,
+    MAX_HONORED_RETRY_AFTER, MAX_RETRIES, retry_after_at, retry_delay, should_retry_error, should_retry_status,
     sleep_before_retry_status, sleep_before_retry_str,
 };
 
@@ -41,8 +41,23 @@ pub use self::tls::{UpstreamTls, UpstreamTlsError};
 
 const USER_AGENT: &str = concat!("peryx/", env!("CARGO_PKG_VERSION"));
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const READ_TIMEOUT: Duration = Duration::from_secs(30);
-pub(crate) const BOUNDED_READ_TIMEOUT: Duration = Duration::from_secs(30);
+/// Bounds the gap between two reads of one response, so a peer that accepts and then goes quiet is
+/// abandoned rather than held. This is a per-gap bound, unlike [`BOUNDED_READ_TIMEOUT`], which bounds a
+/// whole composed read: a transfer that keeps delivering bytes runs past this for as long as it likes.
+///
+/// A quiet connection dies here first, so a read budget longer than this cannot be spent. The two are
+/// equal today, and `test_the_read_budget_fits_inside_the_idle_bound` holds that order.
+pub(crate) const READ_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The budget one composed metadata read may spend.
+///
+/// It covers acquiring the request, retrying it and reading the body. `peryx-ecosystem-pypi` builds its
+/// routed-project fallback on [`UpstreamClient::bounded_read`], so this is the span after which such a
+/// read gives up and the caller moves to its next source.
+///
+/// Raising this past the 30-second bound on a single quiet gap buys nothing, since a stalled connection
+/// is dropped at that bound first and the read then fails for a reason this constant does not name.
+pub const BOUNDED_READ_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const RANGE_SUPPRESSION_CAPACITY: usize = 1_024;
 pub(crate) const RANGE_SUPPRESSION_TTL: Duration = Duration::from_mins(5);
 
@@ -913,7 +928,7 @@ impl UpstreamClient {
                 Ok(response) => {
                     if should_retry_status(response.status()) {
                         let server_delay = retry_after_at(response.headers(), SystemTime::now());
-                        if server_delay.is_some_and(|delay| delay > RETRY_WAIT_BUDGET) {
+                        if server_delay.is_some_and(|delay| delay > MAX_HONORED_RETRY_AFTER) {
                             self.reachability.store(REACHABILITY_REACHABLE, Ordering::Relaxed);
                             return Ok(response);
                         }
@@ -975,7 +990,7 @@ fn configure_http_client(
         .pool_idle_timeout(Duration::from_secs(90))
         .tcp_keepalive(Duration::from_mins(1))
         .connect_timeout(CONNECT_TIMEOUT)
-        .read_timeout(READ_TIMEOUT)
+        .read_timeout(READ_IDLE_TIMEOUT)
         .tls_version_min(reqwest::tls::Version::TLS_1_3)
         .dns_resolver(guard.clone())
         .redirect(redirect)
