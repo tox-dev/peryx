@@ -247,9 +247,110 @@ fn provenance_value(provenance_sha256: &str, size: u64) -> String {
 }
 
 /// Split a provenance record into `(bundle sha256, byte length)`, rejecting one missing either field.
-fn split_provenance_value(value: &str) -> Option<(&str, u64)> {
-    let (sha256, size) = value.split_once('\n')?;
-    Some((sha256, size.parse().ok()?))
+fn split_provenance_value<'a>(key: &str, value: &'a str) -> Result<(&'a str, u64), peryx_storage::meta::MetaError> {
+    let (sha256, size) = value
+        .split_once('\n')
+        .ok_or_else(|| peryx_storage::meta::MetaError::DriverRecordMissing {
+            key: key.to_owned(),
+            field: "size",
+        })?;
+    let size = size
+        .parse()
+        .map_err(|source| peryx_storage::meta::MetaError::DriverRecordInteger {
+            key: key.to_owned(),
+            field: "size",
+            source,
+        })?;
+    Ok((sha256, size))
+}
+
+/// Decode a stored record that the namespace defines as UTF-8 text.
+///
+/// A present row that is not text is damage, not absence: mapping it to `None` would serve a stored
+/// artifact as missing and let a purge or repair report success over a row it never read.
+fn record_str(key: &str, raw: Vec<u8>) -> Result<String, peryx_storage::meta::MetaError> {
+    String::from_utf8(raw).map_err(|source| peryx_storage::meta::MetaError::DriverRecordUtf8 {
+        key: key.to_owned(),
+        source,
+    })
+}
+
+/// A `PyPI` driver namespace whose records are UTF-8 text, named so a repair pass can walk each one
+/// in turn instead of reaching for a separate entry point per key prefix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PypiRecords {
+    FileUrl,
+    Metadata,
+    Publication,
+    Project,
+    Override,
+    Provenance,
+}
+
+impl PypiRecords {
+    const fn prefix(self) -> &'static str {
+        match self {
+            Self::FileUrl => FILE_PREFIX,
+            Self::Metadata => METADATA_PREFIX,
+            Self::Publication => PUBLICATION_PREFIX,
+            Self::Project => PROJECTS_PREFIX,
+            Self::Override => OVERRIDE_PREFIX,
+            Self::Provenance => PROVENANCE_PREFIX,
+        }
+    }
+
+    /// The name a report prints for this namespace.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::FileUrl => "file-url",
+            Self::Metadata => "pep658",
+            Self::Publication => "publication",
+            Self::Project => "project",
+            Self::Override => "override",
+            Self::Provenance => "provenance",
+        }
+    }
+}
+
+/// Visit every record under `prefix`, keyed relative to it, stopping at the first one that is not
+/// UTF-8.
+fn scan_utf8_records<E>(
+    meta: &peryx_storage::meta::MetaStore,
+    prefix: &str,
+    mut visit: impl FnMut(&str, &str) -> Result<(), E>,
+) -> Result<(), peryx_storage::meta::MetaScanError<E>> {
+    meta.scan_driver_prefix(prefix, |key, raw| {
+        let value = record_str(key, raw.to_vec())?;
+        visit(&key[prefix.len()..], &value).map_err(peryx_storage::meta::MetaScanError::Visit)
+    })
+}
+
+/// Visit every readable record in `namespace`, collecting the rows that do not decode rather than
+/// stopping at the first.
+///
+/// This is the scan a repair pass wants and no other caller should: enumerating damage is the whole
+/// point of `fsck`, whereas a read that continues past a row it could not decode is how a corrupt
+/// project comes back as an empty one. The returned [`peryx_storage::meta::RepairScan`] names every
+/// skipped key, so a report built from it cannot claim the namespace is clean.
+///
+/// # Errors
+/// Returns a scan error if the store read fails or the visitor returns an error.
+pub fn scan_records_for_repair<E>(
+    meta: &peryx_storage::meta::MetaStore,
+    namespace: PypiRecords,
+    mut visit: impl FnMut(&str, &str) -> Result<(), E>,
+) -> Result<peryx_storage::meta::RepairScan, peryx_storage::meta::MetaScanError<E>> {
+    let prefix = namespace.prefix();
+    let mut scan = peryx_storage::meta::RepairScan::default();
+    meta.scan_driver_prefix(prefix, |key, raw| match record_str(key, raw.to_vec()) {
+        Ok(value) => visit(&key[prefix.len()..], &value).map_err(peryx_storage::meta::MetaScanError::Visit),
+        Err(source) => {
+            scan.skip(&key[prefix.len()..], source);
+            Ok(())
+        }
+    })?;
+    Ok(scan)
 }
 
 /// The `PyPI` metadata surface as inherent-style methods on the neutral [`MetaStore`].
@@ -593,12 +694,12 @@ pub trait PypiStore {
     ) -> Result<bool, peryx_storage::meta::MetaError>;
 
     /// # Errors
-    /// Returns a store error if the read fails.
+    /// Returns a store error if the read fails or a stored record does not decode.
     fn list_overrides(
         &self,
         index: &str,
         normalized: &str,
-    ) -> Result<Vec<(String, String)>, peryx_storage::meta::MetaError>;
+    ) -> Result<std::collections::BTreeMap<String, FileOverride>, peryx_storage::meta::MetaError>;
 
     /// # Errors
     /// Returns a scan error if the store read fails or the visitor fails.
@@ -606,6 +707,16 @@ pub trait PypiStore {
         &self,
         visit: impl FnMut(&str, &str) -> Result<(), E>,
     ) -> Result<(), peryx_storage::meta::MetaScanError<E>>;
+
+    /// Walk one namespace, collecting the rows that do not decode instead of stopping at the first.
+    ///
+    /// # Errors
+    /// Returns a scan error if the store read fails or the visitor fails.
+    fn scan_records_for_repair<E>(
+        &self,
+        namespace: PypiRecords,
+        visit: impl FnMut(&str, &str) -> Result<(), E>,
+    ) -> Result<peryx_storage::meta::RepairScan, peryx_storage::meta::MetaScanError<E>>;
 
     /// # Errors
     /// Returns a store error if the read fails.
@@ -971,7 +1082,7 @@ impl PypiStore for peryx_storage::meta::MetaStore {
         &self,
         index: &str,
         normalized: &str,
-    ) -> Result<Vec<(String, String)>, peryx_storage::meta::MetaError> {
+    ) -> Result<std::collections::BTreeMap<String, FileOverride>, peryx_storage::meta::MetaError> {
         uploads::list_overrides(self, index, normalized)
     }
 
@@ -980,6 +1091,14 @@ impl PypiStore for peryx_storage::meta::MetaStore {
         visit: impl FnMut(&str, &str) -> Result<(), E>,
     ) -> Result<(), peryx_storage::meta::MetaScanError<E>> {
         uploads::scan_override_records(self, visit)
+    }
+
+    fn scan_records_for_repair<E>(
+        &self,
+        namespace: PypiRecords,
+        visit: impl FnMut(&str, &str) -> Result<(), E>,
+    ) -> Result<peryx_storage::meta::RepairScan, peryx_storage::meta::MetaScanError<E>> {
+        scan_records_for_repair(self, namespace, visit)
     }
 
     fn summarize_indexes(
@@ -994,3 +1113,7 @@ impl PypiStore for peryx_storage::meta::MetaStore {
 #[cfg(test)]
 #[path = "../../tests/unit/store/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/store/corruption/tests.rs"]
+mod corruption_tests;

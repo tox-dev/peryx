@@ -633,3 +633,85 @@ fn test_fsck_reports_decodable_invalid_project_details() {
     assert_eq!(fsck_metadata(&meta, &blobs, &mut output).unwrap(), 1);
     assert!(String::from_utf8(output).unwrap().contains("invalid project detail"));
 }
+
+fn not_utf8_reason(table: char, key: &str) -> String {
+    MetaError::DriverRecordUtf8 {
+        key: format!("pypi\u{0}{table}\u{0}{key}"),
+        source: String::from_utf8(vec![0xff, 0xfe]).unwrap_err(),
+    }
+    .to_string()
+}
+
+#[rstest]
+#[case::file_url('f', "not-hex", "file-url")]
+#[case::pep658('d', "not-hex", "pep658")]
+#[case::publication('n', "pypi/demo/sha/demo-1.0.whl", "publication")]
+#[case::project('p', "pypi/flask", "project")]
+#[case::override_record('o', "hosted/demo/demo.whl", "override")]
+#[case::provenance('a', "pypi/flask/sha/flask-1.0.whl", "provenance")]
+fn test_fsck_names_a_record_it_cannot_read_and_marks_the_scan_incomplete(
+    #[case] table: char,
+    #[case] key: &str,
+    #[case] record: &str,
+) {
+    let (dir, meta) = store();
+    let blobs = BlobStore::new(dir.path().join("blobs")).into();
+    meta.put_driver_value(&format!("pypi\u{0}{table}\u{0}{key}"), &[0xff, 0xfe])
+        .unwrap();
+    let mut output = Vec::new();
+
+    let problems = fsck_metadata(&meta, &blobs, &mut output).unwrap();
+
+    assert_eq!(
+        (problems, String::from_utf8(output).unwrap()),
+        (
+            1,
+            format!(
+                "metadata\tpypi\t{record}\t{key}\t{}\nmetadata\tpypi\t{record}\t*\tscan incomplete\n",
+                not_utf8_reason(table, key)
+            )
+        )
+    );
+}
+
+#[test]
+fn test_fsck_still_checks_the_intact_rows_beside_one_it_cannot_read() {
+    let (dir, meta) = store();
+    let blobs = BlobStore::new(dir.path().join("blobs")).into();
+    meta.put_driver_value("pypi\u{0}p\u{0}pypi/flask", b"").unwrap();
+    meta.put_driver_value("pypi\u{0}p\u{0}pypi/torch", &[0xff, 0xfe])
+        .unwrap();
+    let mut output = Vec::new();
+
+    let problems = fsck_metadata(&meta, &blobs, &mut output).unwrap();
+
+    assert_eq!(
+        (problems, String::from_utf8(output).unwrap()),
+        (
+            2,
+            format!(
+                "metadata\tpypi\tproject\tpypi/flask\tinvalid record\nmetadata\tpypi\tproject\tpypi/torch\t{}\nmetadata\tpypi\tproject\t*\tscan incomplete\n",
+                not_utf8_reason('p', "pypi/torch")
+            )
+        )
+    );
+}
+
+#[test]
+fn test_counting_records_refuses_a_store_holding_a_row_it_cannot_read() {
+    let (_dir, meta) = store();
+    meta.put_driver_value("pypi\u{0}f\u{0}not-hex", &[0xff, 0xfe]).unwrap();
+
+    assert_eq!(cache_record_counts(&meta).unwrap_err(), not_utf8_reason('f', "not-hex"));
+}
+
+#[test]
+fn test_collecting_referenced_digests_refuses_a_row_it_cannot_read() {
+    let (_dir, meta) = store();
+    meta.put_driver_value("pypi\u{0}f\u{0}not-hex", &[0xff, 0xfe]).unwrap();
+
+    assert_eq!(
+        referenced_blob_digests(&meta).unwrap_err(),
+        not_utf8_reason('f', "not-hex")
+    );
+}

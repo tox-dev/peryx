@@ -48,7 +48,7 @@ fn test_cache_fsck_reports_metadata_problems() {
         "metadata\tpypi\tupload\thosted/pkg/bad.whl\tinvalid record\n",
         "metadata\tpypi\tupload\t//\tinvalid key\n",
         "metadata\tpypi\tupload\thosted/pkg/pkg-1.0.whl\tmissing blob ",
-        "metadata\tpypi\toverride\t//\tinvalid record\n",
+        "metadata\tpypi\toverride\t//\tinvalid key\n",
         "problems\t8\n",
     ] {
         assert!(text.contains(expected), "{text}");

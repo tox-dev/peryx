@@ -10,10 +10,10 @@ use peryx_driver::serving::{CachePage, PurgeReport};
 use peryx_index::Index;
 use peryx_policy::{PolicyAction, PolicyDenial};
 use peryx_storage::blob::{BlobStorage, Digest};
-use peryx_storage::meta::MetaStore;
+use peryx_storage::meta::{MetaStore, RepairScan};
 
-use crate::store::CachedIndex;
 use crate::store::PypiStore as _;
+use crate::store::{CachedIndex, PypiRecords};
 
 use crate::policy::PypiPolicy as _;
 use crate::upload::Uploaded;
@@ -416,38 +416,46 @@ pub fn fsck_metadata(meta: &MetaStore, blobs: &BlobStorage, out: &mut dyn Write)
         Ok::<(), std::io::Error>(())
     })
     .map_err(crate::error_message)?;
-    meta.scan_file_urls(|digest, value| {
-        if Digest::from_hex(digest).is_none() || split_pair(value).is_none() {
-            problems += 1;
-            writeln!(out, "metadata\tpypi\tfile-url\t{digest}\tinvalid record")?;
-        }
-        Ok::<(), std::io::Error>(())
-    })
-    .map_err(crate::error_message)?;
-    meta.scan_metadata_records(|digest, metadata_digest| {
-        if Digest::from_hex(digest).is_none() || Digest::from_hex(metadata_digest).is_none() {
-            problems += 1;
-            writeln!(out, "metadata\tpypi\tpep658\t{digest}\tinvalid record")?;
-        }
-        Ok::<(), std::io::Error>(())
-    })
-    .map_err(crate::error_message)?;
-    meta.scan_file_publications(|key, value| {
-        if matches!(claimed_sidecar(value), ClaimedSidecar::Unreadable) {
-            problems += 1;
-            writeln!(out, "metadata\tpypi\tpublication\t{key}\tinvalid record")?;
-        }
-        Ok::<(), std::io::Error>(())
-    })
-    .map_err(crate::error_message)?;
-    meta.scan_project_records(|key, display| {
-        if !valid_project_key(key) || display.is_empty() {
-            problems += 1;
-            writeln!(out, "metadata\tpypi\tproject\t{key}\tinvalid record")?;
-        }
-        Ok::<(), std::io::Error>(())
-    })
-    .map_err(crate::error_message)?;
+    let scan = meta
+        .scan_records_for_repair(PypiRecords::FileUrl, |digest, value| {
+            if Digest::from_hex(digest).is_none() || split_pair(value).is_none() {
+                problems += 1;
+                writeln!(out, "metadata\tpypi\tfile-url\t{digest}\tinvalid record")?;
+            }
+            Ok::<(), std::io::Error>(())
+        })
+        .map_err(crate::error_message)?;
+    problems += report_unreadable(&scan, PypiRecords::FileUrl, out)?;
+    let scan = meta
+        .scan_records_for_repair(PypiRecords::Metadata, |digest, metadata_digest| {
+            if Digest::from_hex(digest).is_none() || Digest::from_hex(metadata_digest).is_none() {
+                problems += 1;
+                writeln!(out, "metadata\tpypi\tpep658\t{digest}\tinvalid record")?;
+            }
+            Ok::<(), std::io::Error>(())
+        })
+        .map_err(crate::error_message)?;
+    problems += report_unreadable(&scan, PypiRecords::Metadata, out)?;
+    let scan = meta
+        .scan_records_for_repair(PypiRecords::Publication, |key, value| {
+            if matches!(claimed_sidecar(value), ClaimedSidecar::Unreadable) {
+                problems += 1;
+                writeln!(out, "metadata\tpypi\tpublication\t{key}\tinvalid record")?;
+            }
+            Ok::<(), std::io::Error>(())
+        })
+        .map_err(crate::error_message)?;
+    problems += report_unreadable(&scan, PypiRecords::Publication, out)?;
+    let scan = meta
+        .scan_records_for_repair(PypiRecords::Project, |key, display| {
+            if !valid_project_key(key) || display.is_empty() {
+                problems += 1;
+                writeln!(out, "metadata\tpypi\tproject\t{key}\tinvalid record")?;
+            }
+            Ok::<(), std::io::Error>(())
+        })
+        .map_err(crate::error_message)?;
+    problems += report_unreadable(&scan, PypiRecords::Project, out)?;
     meta.scan_upload_records(|key, bytes| {
         let Some(digests) = upload_digests(bytes) else {
             problems += 1;
@@ -468,22 +476,47 @@ pub fn fsck_metadata(meta: &MetaStore, blobs: &BlobStorage, out: &mut dyn Write)
         Ok::<(), std::io::Error>(())
     })
     .map_err(crate::error_message)?;
-    meta.scan_override_records(|key, record| {
-        if !valid_upload_key(key) || crate::store::FileOverride::decode(record).is_none() {
-            problems += 1;
-            writeln!(out, "metadata\tpypi\toverride\t{key}\tinvalid record")?;
-        }
-        Ok::<(), std::io::Error>(())
-    })
-    .map_err(crate::error_message)?;
-    meta.scan_provenance_records(|key, value| {
-        if valid_provenance(value).is_none() {
-            problems += 1;
-            writeln!(out, "metadata\tpypi\tprovenance\t{key}\tinvalid record")?;
-        }
-        Ok::<(), std::io::Error>(())
-    })
-    .map_err(crate::error_message)?;
+    let scan = meta
+        .scan_records_for_repair(PypiRecords::Override, |key, record| {
+            if !valid_upload_key(key) {
+                problems += 1;
+                writeln!(out, "metadata\tpypi\toverride\t{key}\tinvalid key")?;
+            } else if let Err(error) = crate::store::FileOverride::decode(key, record) {
+                problems += 1;
+                writeln!(out, "metadata\tpypi\toverride\t{key}\t{error}")?;
+            }
+            Ok::<(), std::io::Error>(())
+        })
+        .map_err(crate::error_message)?;
+    problems += report_unreadable(&scan, PypiRecords::Override, out)?;
+    let scan = meta
+        .scan_records_for_repair(PypiRecords::Provenance, |key, value| {
+            if valid_provenance(value).is_none() {
+                problems += 1;
+                writeln!(out, "metadata\tpypi\tprovenance\t{key}\tinvalid record")?;
+            }
+            Ok::<(), std::io::Error>(())
+        })
+        .map_err(crate::error_message)?;
+    problems += report_unreadable(&scan, PypiRecords::Provenance, out)?;
+    Ok(problems)
+}
+
+/// Name every row the scan could not decode, then say the namespace was left incomplete.
+///
+/// A repair pass walks past a damaged row so one bad record cannot hide the rest of the store. The
+/// cost is that its clean-looking output would otherwise cover rows it never read, so the rows it
+/// skipped are reported as problems in their own right.
+fn report_unreadable(scan: &RepairScan, namespace: PypiRecords, out: &mut dyn Write) -> Result<u64, String> {
+    let label = namespace.label();
+    let mut problems = 0;
+    for record in scan.corrupt() {
+        problems += 1;
+        writeln!(out, "metadata\tpypi\t{label}\t{}\t{}", record.key, record.source).map_err(crate::error_message)?;
+    }
+    if scan.is_incomplete() {
+        writeln!(out, "metadata\tpypi\t{label}\t*\tscan incomplete").map_err(crate::error_message)?;
+    }
     Ok(problems)
 }
 

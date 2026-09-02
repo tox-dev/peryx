@@ -544,13 +544,7 @@ fn test_promote_files_checked_rejects_a_source_bundle_it_cannot_read() {
 
     let err = promote(&meta, "staging").unwrap_err();
 
-    assert!(matches!(
-        err,
-        MetaError::DriverRecordMissing {
-            field: "provenance",
-            ..
-        }
-    ));
+    assert!(matches!(err, MetaError::DriverRecordMissing { field: "size", .. }));
     assert!(
         meta.get_driver_value(&upload_key("prod", "flask", "flask-1.0.whl"))
             .unwrap()
@@ -657,7 +651,7 @@ fn test_scan_upload_records_keeps_deleted_row_from_its_snapshot() {
 }
 
 #[test]
-fn test_scan_override_records_visits_valid_and_skips_non_utf8() {
+fn test_scan_override_records_visits_each_record() {
     let (_dir, meta) = store();
     meta.set_override(
         true,
@@ -668,8 +662,6 @@ fn test_scan_override_records_visits_valid_and_skips_non_utf8() {
         123,
     )
     .unwrap();
-    meta.put_driver_value(&override_key("hosted", "flask", "bad.whl"), &[0xff, 0xfe])
-        .unwrap();
     let mut seen = Vec::new();
     meta.scan_override_records(|key, value| {
         seen.push((key.to_owned(), value.to_owned()));
@@ -1074,7 +1066,7 @@ fn test_set_override_keeps_the_yank_of_a_hidden_file() {
 
     let stored = meta.list_overrides("hosted", "flask").unwrap();
     assert_eq!(
-        FileOverride::decode_all(stored).get("flask-1.0.whl"),
+        stored.get("flask-1.0.whl"),
         Some(&FileOverride {
             hidden: false,
             yanked: Yanked::Reason(String::from("CVE-2026-1234")),
@@ -1102,26 +1094,33 @@ fn test_set_override_of_an_absent_record_that_changes_nothing_journals_nothing()
 }
 
 #[test]
-fn test_set_override_writes_over_a_corrupt_record() {
+fn test_set_override_refuses_a_record_it_cannot_read_and_journals_nothing() {
     let (_dir, meta) = store();
-    meta.put_driver_value(&override_key("hosted", "flask", "flask-1.0.whl"), b"hidden")
-        .unwrap();
+    let key = override_key("hosted", "flask", "flask-1.0.whl");
+    meta.put_driver_value(&key, b"hidden").unwrap();
 
-    meta.set_override(
-        true,
-        "hosted",
-        "flask",
-        "flask-1.0.whl",
-        OverrideMutation::Hidden(true),
-        123,
-    )
-    .unwrap();
+    let error = meta
+        .set_override(
+            true,
+            "hosted",
+            "flask",
+            "flask-1.0.whl",
+            OverrideMutation::Hidden(true),
+            123,
+        )
+        .unwrap_err();
 
     assert_eq!(
-        meta.get_driver_value(&override_key("hosted", "flask", "flask-1.0.whl"))
-            .unwrap()
-            .as_deref(),
-        Some(br#"{"hidden":true,"yanked":false}"#.as_slice())
+        (
+            error.to_string(),
+            meta.current_serial().unwrap(),
+            meta.get_driver_value(&key).unwrap()
+        ),
+        (
+            format!("driver record {key:?} does not decode"),
+            0,
+            Some(b"hidden".to_vec())
+        )
     );
 }
 

@@ -5,8 +5,8 @@ use std::convert::Infallible;
 
 use crate::policy::PypiPolicy;
 use crate::source_policy::SourceSelection;
+use crate::store::CachedIndex;
 use crate::store::PypiStore as _;
-use crate::store::{CachedIndex, FileOverride};
 use crate::{
     CoreMetadata, CoreMetadataDoc, File, Meta, ProjectDetail, ProjectStatus, Yanked, parse_detail, parse_metadata,
 };
@@ -452,7 +452,7 @@ fn apply_overrides(
     normalized: &str,
     candidates: &mut [(usize, ProjectDetail)],
 ) -> Result<(), SearchError> {
-    let overrides = FileOverride::decode_all(ctx.meta.list_overrides(hosted, normalized)?);
+    let overrides = ctx.meta.list_overrides(hosted, normalized)?;
     if overrides.is_empty() {
         return Ok(());
     }

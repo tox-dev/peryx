@@ -181,11 +181,14 @@ digest filter applies to blob files. Age and size filters apply before output.
 
 `cache size` reports cached page counts, stale page counts, page record bytes, blob counts and bytes, invalid blob-path
 counts, unpublished stage counts and bytes, and metadata table row counts. Stage bytes belong to writes that never
-finished; a restart sweeps the ones no live write owns.
+finished; a restart sweeps the ones no live write owns. A stored record the command cannot decode fails it, rather than
+being counted as absent and leaving a total that quietly omits the damaged rows.
 
 `cache fsck` checks shared cache records and blob hashes, then dispatches implementation-owned records to the selected
 ecosystem checker. It prints `ok` when it finds no problem; otherwise it prints one row per problem and a `problems`
-total.
+total. Unlike the other commands it walks past a record it cannot decode, so one damaged row cannot hide the rest of the
+store. It names that row and then prints a `scan incomplete` row for the namespace, because the checks that follow ran
+over fewer records than the namespace holds.
 
 `cache purge resource` removes the selected resource's cached metadata and unshared implementation records. It does not
 delete blob files; run `cache purge orphaned-blobs` after a resource purge to reclaim unreferenced blobs.

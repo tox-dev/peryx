@@ -1,7 +1,7 @@
 use super::{
     CatalogGeneration, MetaStore, ProjectCachePurgeCounts, abort_catalog_generation, begin_catalog_generation,
-    catalog_generation_prefix, catalog_state, freshness_key, list_catalog_projects, project_key,
-    publish_catalog_generation, put_catalog_projects, recover_catalog_generations, refresh_catalog_generation,
+    catalog_generation_prefix, catalog_state, freshness_key, list_catalog_projects, publish_catalog_generation,
+    put_catalog_projects, recover_catalog_generations, refresh_catalog_generation,
 };
 use crate::store::PypiStore as _;
 
@@ -298,11 +298,9 @@ fn test_delete_project_cache_removes_the_freshness_overlay() {
 }
 
 #[test]
-fn test_scan_project_records_visits_valid_and_skips_non_utf8() {
+fn test_scan_project_records_visits_each_record() {
     let (_dir, meta) = store();
     meta.put_project("pypi", "flask", "Flask").unwrap();
-    meta.put_driver_value(&project_key("pypi", "bad"), &[0xff, 0xfe])
-        .unwrap();
     let mut seen = Vec::new();
     meta.scan_project_records(|key, value| {
         seen.push((key.to_owned(), value.to_owned()));

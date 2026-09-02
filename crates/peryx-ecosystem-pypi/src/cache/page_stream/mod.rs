@@ -377,9 +377,7 @@ fn streaming_parts(
                 return Ok(None);
             };
             let overrides = match write_target {
-                Some(pos) => crate::store::FileOverride::decode_all(
-                    state.meta.list_overrides(&state.index_at(*pos).name, project)?,
-                ),
+                Some(pos) => state.meta.list_overrides(&state.index_at(*pos).name, project)?,
                 None => std::collections::BTreeMap::new(),
             };
             Ok(Some((

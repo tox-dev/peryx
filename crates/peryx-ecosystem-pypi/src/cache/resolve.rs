@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::policy::PypiPolicy as _;
+use crate::store::CachedIndex;
 use crate::store::PypiStore as _;
-use crate::store::{CachedIndex, FileOverride};
 use crate::upload::Uploaded;
 use crate::{CoreMetadata, File, Meta, ProjectDetail, ProjectList, ProjectListEntry, Yanked, parse_detail};
 use peryx_core::path::{is_local_artifact_url, local_artifact_url};
@@ -367,7 +367,7 @@ fn apply_overrides(
     project: &str,
     candidates: &mut [(usize, ProjectDetail)],
 ) -> Result<(), CacheError> {
-    let overrides = FileOverride::decode_all(state.meta.list_overrides(hosted, project)?);
+    let overrides = state.meta.list_overrides(hosted, project)?;
     if overrides.is_empty() {
         return Ok(());
     }

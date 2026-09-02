@@ -544,8 +544,7 @@ fn hidden_filenames(
         .list_overrides(hosted, normalized)?
         .into_iter()
         .filter(|(filename, record)| {
-            crate::store::FileOverride::decode(record).is_some_and(|record| record.hidden)
-                && version.is_none_or(|version| file_matches_version(filename, version))
+            record.hidden && version.is_none_or(|version| file_matches_version(filename, version))
         })
         .map(|(filename, _)| filename)
         .collect())

@@ -5,7 +5,8 @@ use peryx_storage::meta::{ArtifactOrigin, ArtifactSource, MetaError, MetaScanErr
 
 use super::{
     FILE_PREFIX, METADATA_PREFIX, PROVENANCE_PREFIX, PUBLICATION_PREFIX, ProvenanceSibling, file_key,
-    file_source_value, metadata_key, provenance_key, provenance_value, publication_key, split_provenance_value,
+    file_source_value, metadata_key, provenance_key, provenance_value, publication_key, record_str, scan_utf8_records,
+    split_provenance_value,
 };
 
 /// Where a `PyPI` artifact's bytes came from, mapped once into the neutral [`ArtifactSource`] so no
@@ -62,14 +63,7 @@ pub fn put_file_url(meta: &MetaStore, sha256: &str, url: &str, source: &str) -> 
 pub fn get_file_url(meta: &MetaStore, sha256: &str) -> Result<Option<FileSource>, MetaError> {
     let key = file_key(sha256);
     meta.get_driver_value(&key)?
-        .map(|raw| {
-            String::from_utf8(raw)
-                .map_err(|source| MetaError::DriverRecordUtf8 {
-                    key: key.clone(),
-                    source,
-                })
-                .and_then(|value| split_file_source(&key, &value))
-        })
+        .map(|raw| record_str(&key, raw).and_then(|value| split_file_source(&key, &value)))
         .transpose()
 }
 
@@ -77,14 +71,9 @@ pub fn get_file_url(meta: &MetaStore, sha256: &str) -> Result<Option<FileSource>
 /// Returns a scan error if the store read fails or the visitor returns an error.
 pub fn scan_file_urls<E>(
     meta: &MetaStore,
-    mut visit: impl FnMut(&str, &str) -> Result<(), E>,
+    visit: impl FnMut(&str, &str) -> Result<(), E>,
 ) -> Result<(), MetaScanError<E>> {
-    for key in meta.driver_prefix_keys(FILE_PREFIX)? {
-        if let Some(value) = meta.get_driver_value(&key)?.and_then(|raw| String::from_utf8(raw).ok()) {
-            visit(&key[FILE_PREFIX.len()..], &value).map_err(MetaScanError::Visit)?;
-        }
-    }
-    Ok(())
+    scan_utf8_records(meta, FILE_PREFIX, visit)
 }
 
 /// Record the metadata peryx derived from an artifact's own verified bytes, keyed by that digest.
@@ -102,11 +91,12 @@ pub fn put_metadata(meta: &MetaStore, artifact_sha256: &str, metadata_sha256: &s
 }
 
 /// # Errors
-/// Returns a store error if the read fails.
+/// Returns a store error if the read fails or the record is not valid UTF-8.
 pub fn get_metadata_digest(meta: &MetaStore, artifact_sha256: &str) -> Result<Option<String>, MetaError> {
-    Ok(meta
-        .get_driver_value(&metadata_key(artifact_sha256))?
-        .and_then(|raw| String::from_utf8(raw).ok()))
+    let key = metadata_key(artifact_sha256);
+    meta.get_driver_value(&key)?
+        .map(|raw| record_str(&key, raw))
+        .transpose()
 }
 
 /// # Errors
@@ -161,14 +151,7 @@ pub fn get_file_publication(
 ) -> Result<Option<FilePublication>, MetaError> {
     let key = publication_key(index, normalized, sha256, filename);
     meta.get_driver_value(&key)?
-        .map(|raw| {
-            String::from_utf8(raw)
-                .map_err(|source| MetaError::DriverRecordUtf8 {
-                    key: key.clone(),
-                    source,
-                })
-                .and_then(|value| split_publication(&key, &value))
-        })
+        .map(|raw| record_str(&key, raw).and_then(|value| split_publication(&key, &value)))
         .transpose()
 }
 
@@ -176,14 +159,9 @@ pub fn get_file_publication(
 /// Returns a scan error if the store read fails or the visitor returns an error.
 pub fn scan_file_publications<E>(
     meta: &MetaStore,
-    mut visit: impl FnMut(&str, &str) -> Result<(), E>,
+    visit: impl FnMut(&str, &str) -> Result<(), E>,
 ) -> Result<(), MetaScanError<E>> {
-    for key in meta.driver_prefix_keys(PUBLICATION_PREFIX)? {
-        if let Some(value) = meta.get_driver_value(&key)?.and_then(|raw| String::from_utf8(raw).ok()) {
-            visit(&key[PUBLICATION_PREFIX.len()..], &value).map_err(MetaScanError::Visit)?;
-        }
-    }
-    Ok(())
+    scan_utf8_records(meta, PUBLICATION_PREFIX, visit)
 }
 
 fn split_publication(key: &str, value: &str) -> Result<FilePublication, MetaError> {
@@ -213,14 +191,9 @@ fn split_publication(key: &str, value: &str) -> Result<FilePublication, MetaErro
 /// Returns a scan error if the store read fails or the visitor returns an error.
 pub fn scan_metadata_records<E>(
     meta: &MetaStore,
-    mut visit: impl FnMut(&str, &str) -> Result<(), E>,
+    visit: impl FnMut(&str, &str) -> Result<(), E>,
 ) -> Result<(), MetaScanError<E>> {
-    for key in meta.driver_prefix_keys(METADATA_PREFIX)? {
-        if let Some(value) = meta.get_driver_value(&key)?.and_then(|raw| String::from_utf8(raw).ok()) {
-            visit(&key[METADATA_PREFIX.len()..], &value).map_err(MetaScanError::Visit)?;
-        }
-    }
-    Ok(())
+    scan_utf8_records(meta, METADATA_PREFIX, visit)
 }
 
 /// Record one hosted publication's PEP 740 provenance bundle, storing the bundle blob's own sha256
@@ -247,7 +220,7 @@ pub fn put_provenance(
 }
 
 /// # Errors
-/// Returns a store error if the read fails.
+/// Returns a store error if the read fails or the bundle record is invalid.
 pub fn get_provenance(
     meta: &MetaStore,
     index: &str,
@@ -255,24 +228,22 @@ pub fn get_provenance(
     artifact_sha256: &str,
     filename: &str,
 ) -> Result<Option<(String, u64)>, MetaError> {
-    Ok(meta
-        .get_driver_value(&provenance_key(index, normalized, artifact_sha256, filename))?
-        .and_then(|raw| String::from_utf8(raw).ok())
-        .and_then(|value| split_provenance_value(&value).map(|(sha256, size)| (sha256.to_owned(), size))))
+    let key = provenance_key(index, normalized, artifact_sha256, filename);
+    meta.get_driver_value(&key)?
+        .map(|raw| {
+            let value = record_str(&key, raw)?;
+            split_provenance_value(&key, &value).map(|(sha256, size)| (sha256.to_owned(), size))
+        })
+        .transpose()
 }
 
 /// # Errors
 /// Returns a scan error if the store read fails or the visitor returns an error.
 pub fn scan_provenance_records<E>(
     meta: &MetaStore,
-    mut visit: impl FnMut(&str, &str) -> Result<(), E>,
+    visit: impl FnMut(&str, &str) -> Result<(), E>,
 ) -> Result<(), MetaScanError<E>> {
-    for key in meta.driver_prefix_keys(PROVENANCE_PREFIX)? {
-        if let Some(value) = meta.get_driver_value(&key)?.and_then(|raw| String::from_utf8(raw).ok()) {
-            visit(&key[PROVENANCE_PREFIX.len()..], &value).map_err(MetaScanError::Visit)?;
-        }
-    }
-    Ok(())
+    scan_utf8_records(meta, PROVENANCE_PREFIX, visit)
 }
 
 fn split_file_source(key: &str, value: &str) -> Result<FileSource, MetaError> {

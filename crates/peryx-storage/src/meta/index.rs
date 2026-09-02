@@ -168,21 +168,37 @@ impl MetaStore {
         Ok(keys)
     }
 
+    /// Visits matching records in key order without collecting them, stopping at the first record the
+    /// visitor rejects.
+    ///
+    /// # Errors
+    /// Returns a store error if the read fails, or the visitor's error.
+    pub fn scan_driver_prefix<E: From<MetaError>>(
+        &self,
+        prefix: &str,
+        mut visit: impl FnMut(&str, &[u8]) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let txn = self.db.begin_read().map_err(MetaError::from)?;
+        let table = txn.open_table(DRIVER_KV).map_err(MetaError::from)?;
+        for entry in table.range(prefix..).map_err(MetaError::from)? {
+            let (key, value) = entry.map_err(MetaError::from)?;
+            if !key.value().starts_with(prefix) {
+                break;
+            }
+            visit(key.value(), value.value())?;
+        }
+        Ok(())
+    }
+
     /// Visits matching records in key order without collecting them.
     ///
     /// # Errors
     /// Returns a store error if the read fails.
     pub fn visit_driver_prefix(&self, prefix: &str, mut visit: impl FnMut(&str, &[u8])) -> Result<(), MetaError> {
-        let txn = self.db.begin_read()?;
-        let table = txn.open_table(DRIVER_KV)?;
-        for entry in table.range(prefix..)? {
-            let (key, value) = entry?;
-            if !key.value().starts_with(prefix) {
-                break;
-            }
-            visit(key.value(), value.value());
-        }
-        Ok(())
+        self.scan_driver_prefix(prefix, |key, value| {
+            visit(key, value);
+            Ok(())
+        })
     }
 
     /// Runs dependent driver reads against one snapshot.

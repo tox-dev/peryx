@@ -1,7 +1,6 @@
 //! The reversible per-file override an operator records over a file served from a read-only layer.
 
-use std::collections::BTreeMap;
-
+use peryx_storage::meta::MetaError;
 use serde::{Deserialize, Serialize};
 
 use crate::Yanked;
@@ -22,10 +21,39 @@ pub struct FileOverride {
 }
 
 impl FileOverride {
-    /// Decode a stored override, or `None` when the record does not parse.
-    #[must_use]
-    pub fn decode(raw: &str) -> Option<Self> {
-        serde_json::from_str(raw).ok()
+    /// Decode a stored override.
+    ///
+    /// # Errors
+    /// Returns [`MetaError::DriverRecordSchema`] when the record is a well-formed override from a
+    /// newer peryx, and [`MetaError::DriverRecordMalformed`] when it is damaged. The two call for
+    /// opposite operator actions - upgrade, or repair the row - so they are not one error.
+    pub fn decode(key: &str, raw: &str) -> Result<Self, MetaError> {
+        serde_json::from_str(raw).map_err(|source| {
+            Self::unknown_field(raw).map_or(
+                MetaError::DriverRecordMalformed {
+                    key: key.to_owned(),
+                    source,
+                },
+                |field| MetaError::DriverRecordSchema {
+                    key: key.to_owned(),
+                    field,
+                },
+            )
+        })
+    }
+
+    /// The field a record carries that this build does not write.
+    ///
+    /// Reading the accepted names back out of an encoded record keeps the set from drifting as
+    /// fields are added to the struct.
+    fn unknown_field(raw: &str) -> Option<String> {
+        let known = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&Self::default().encode())
+            .expect("an encoded override is a JSON object");
+        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(raw)
+            .ok()?
+            .into_iter()
+            .map(|(field, _)| field)
+            .find(|field| !known.contains_key(field))
     }
 
     /// # Panics
@@ -39,16 +67,6 @@ impl FileOverride {
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         !self.hidden && matches!(self.yanked, Yanked::No)
-    }
-
-    /// Decode a project's stored overrides, dropping any record that does not parse so a corrupt
-    /// row - which `fsck` reports - cannot hide or yank a file by accident.
-    #[must_use]
-    pub fn decode_all(entries: Vec<(String, String)>) -> BTreeMap<String, Self> {
-        entries
-            .into_iter()
-            .filter_map(|(filename, raw)| Some((filename, Self::decode(&raw)?)))
-            .collect()
     }
 }
 

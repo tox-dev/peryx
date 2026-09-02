@@ -33,6 +33,7 @@ mod reclaim_guard;
 mod reclamation;
 mod reclamation_cursor;
 mod reconcile;
+mod repair;
 mod repository;
 mod revocation;
 mod role_grant;
@@ -92,6 +93,7 @@ pub use quota::{
     QuotaReservationRecord, QuotaReservationState, QuotaResourceUsage, QuotaUsage, QuotaValue,
 };
 pub use reclamation_cursor::ReclamationPhase;
+pub use repair::{CorruptRecord, RepairScan};
 pub use repository::{
     CreateRepositoryError, DesiredRepository, NewRepository, ReconcileAction, ReconcileRepositoryError,
     ReconciledRepository, RepositoryFieldError, RepositoryId, RepositoryPage, RepositoryQuery, RepositoryQueryError,

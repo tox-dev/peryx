@@ -1,3 +1,4 @@
+use peryx_storage::meta::MetaError;
 use rstest::rstest;
 
 use super::{FileOverride, OverrideMutation};
@@ -25,18 +26,38 @@ fn hidden() -> FileOverride {
 )]
 fn test_file_override_round_trips_through_its_stored_form(#[case] record: FileOverride, #[case] encoded: &str) {
     assert_eq!(record.encode(), encoded);
-    assert_eq!(FileOverride::decode(encoded), Some(record));
+    assert_eq!(
+        FileOverride::decode("hosted/demo/demo-1.0.whl", encoded).unwrap(),
+        record
+    );
 }
 
 #[rstest]
 #[case::not_json("hidden")]
 #[case::legacy_hidden_scalar(r#""hidden""#)]
-#[case::unknown_field(r#"{"hidden":false,"yanked":false,"kind":"yanked"}"#)]
 #[case::missing_yanked(r#"{"hidden":true}"#)]
 #[case::missing_hidden(r#"{"yanked":true}"#)]
 #[case::wrong_hidden_type(r#"{"hidden":"true","yanked":false}"#)]
-fn test_file_override_rejects_a_record_it_did_not_write(#[case] raw: &str) {
-    assert_eq!(FileOverride::decode(raw), None);
+fn test_file_override_reports_a_damaged_record_as_malformed(#[case] raw: &str) {
+    let error = FileOverride::decode("hosted/demo/demo-1.0.whl", raw).unwrap_err();
+
+    assert!(
+        matches!(&error, MetaError::DriverRecordMalformed { key, .. } if key == "hosted/demo/demo-1.0.whl"),
+        "{error:?}"
+    );
+}
+
+#[rstest]
+#[case::alongside_known_fields(r#"{"hidden":false,"yanked":false,"kind":"yanked"}"#)]
+#[case::without_them(r#"{"kind":"yanked"}"#)]
+fn test_file_override_reports_a_newer_schema_apart_from_damage(#[case] raw: &str) {
+    let error = FileOverride::decode("hosted/demo/demo-1.0.whl", raw).unwrap_err();
+
+    assert!(
+        matches!(&error, MetaError::DriverRecordSchema { key, field }
+            if key == "hosted/demo/demo-1.0.whl" && field == "kind"),
+        "{error:?}"
+    );
 }
 
 #[rstest]
@@ -45,18 +66,6 @@ fn test_file_override_rejects_a_record_it_did_not_write(#[case] raw: &str) {
 #[case::yanked(yanked(Yanked::Yes), false)]
 fn test_file_override_is_empty_only_when_it_imposes_nothing(#[case] record: FileOverride, #[case] empty: bool) {
     assert_eq!(record.is_empty(), empty);
-}
-
-#[test]
-fn test_decode_all_keeps_readable_records_and_drops_corrupt_ones() {
-    let decoded = FileOverride::decode_all(vec![
-        ("demo-1.0.whl".to_owned(), hidden().encode()),
-        ("demo-2.0.whl".to_owned(), "garbage".to_owned()),
-    ]);
-    assert_eq!(
-        decoded,
-        std::collections::BTreeMap::from([("demo-1.0.whl".to_owned(), hidden())])
-    );
 }
 
 #[rstest]

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     CATALOG_GENERATION_PREFIX, CATALOG_PREFIX, PROJECTS_PREFIX, file_key, freshness_key, index_key, metadata_key,
-    project_key, project_status_key, publication_prefix,
+    project_key, project_status_key, publication_prefix, record_str, scan_utf8_records,
 };
 
 const CATALOG_DELETE_BATCH: usize = 10_000;
@@ -249,25 +249,21 @@ pub fn put_project(meta: &MetaStore, index: &str, normalized: &str, display: &st
 }
 
 /// # Errors
-/// Returns a store error if the read fails.
+/// Returns a store error if the read fails or the record is not valid UTF-8.
 pub fn get_project(meta: &MetaStore, index: &str, normalized: &str) -> Result<Option<String>, MetaError> {
-    Ok(meta
-        .get_driver_value(&project_key(index, normalized))?
-        .and_then(|raw| String::from_utf8(raw).ok()))
+    let key = project_key(index, normalized);
+    meta.get_driver_value(&key)?
+        .map(|raw| record_str(&key, raw))
+        .transpose()
 }
 
 /// # Errors
 /// Returns a scan error if the store read fails or the visitor returns an error.
 pub fn scan_project_records<E>(
     meta: &MetaStore,
-    mut visit: impl FnMut(&str, &str) -> Result<(), E>,
+    visit: impl FnMut(&str, &str) -> Result<(), E>,
 ) -> Result<(), MetaScanError<E>> {
-    for key in meta.driver_prefix_keys(PROJECTS_PREFIX)? {
-        if let Some(value) = meta.get_driver_value(&key)?.and_then(|raw| String::from_utf8(raw).ok()) {
-            visit(&key[PROJECTS_PREFIX.len()..], &value).map_err(MetaScanError::Visit)?;
-        }
-    }
-    Ok(())
+    scan_utf8_records(meta, PROJECTS_PREFIX, visit)
 }
 
 /// # Errors
@@ -287,13 +283,11 @@ pub fn list_projects(meta: &MetaStore, index: &str) -> Result<Vec<String>, MetaE
         for (group_prefix, entries) in prefixes.iter().zip(txn.prefixes(prefixes)?) {
             for (key, raw) in entries {
                 if *group_prefix == prefix {
-                    if let Ok(display) = std::str::from_utf8(&raw) {
-                        local.insert(key[prefix.len()..].to_owned(), display.to_owned());
-                    }
+                    local.insert(key[prefix.len()..].to_owned(), record_str(&key, raw)?);
                 } else if let Some(display) = local.remove(&key[group_prefix.len()..]) {
                     names.push(display);
-                } else if let Ok(display) = std::str::from_utf8(&raw) {
-                    names.push(display.to_owned());
+                } else {
+                    names.push(record_str(&key, raw)?);
                 }
             }
         }

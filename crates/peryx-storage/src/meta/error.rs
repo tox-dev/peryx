@@ -34,6 +34,14 @@ pub enum MetaError {
     },
     #[error("driver record {key:?} is missing field {field:?}")]
     DriverRecordMissing { key: String, field: &'static str },
+    #[error("driver record {key:?} does not decode")]
+    DriverRecordMalformed {
+        key: String,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("driver record {key:?} carries unknown field {field:?} and needs a newer peryx")]
+    DriverRecordSchema { key: String, field: String },
     #[error("external role grant key {key:?} is malformed")]
     MalformedExternalGrantKey { key: String },
     #[error("user name {canonical_name:?} identifies multiple accounts {user_ids:?}")]

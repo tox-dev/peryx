@@ -3,8 +3,7 @@ use std::collections::BTreeMap;
 use peryx_storage::meta::{ArtifactOrigin as _, ArtifactSource, ByteAvailability};
 
 use super::{
-    FilePublication, FileSource, MetaStore, MetadataClaim, ProvenanceSibling, PypiArtifactOrigin, metadata_key,
-    split_file_source,
+    FilePublication, FileSource, MetaStore, MetadataClaim, ProvenanceSibling, PypiArtifactOrigin, split_file_source,
 };
 use crate::store::PypiStore as _;
 
@@ -74,14 +73,6 @@ fn test_put_and_get_metadata_roundtrips_the_derived_digest() {
 }
 
 #[test]
-fn test_get_metadata_digest_skips_a_non_utf8_record() {
-    let (_dir, meta) = store();
-    meta.put_driver_value(&metadata_key("bad"), &[0xff, 0xfe]).unwrap();
-
-    assert_eq!(meta.get_metadata_digest("bad").unwrap(), None);
-}
-
-#[test]
 fn test_get_metadata_digests_skips_missing_records() {
     let (_dir, meta) = store();
     meta.put_metadata("wheelsha", "metasha").unwrap();
@@ -105,20 +96,6 @@ fn test_scan_file_urls_visits_each_record() {
 }
 
 #[test]
-fn test_scan_file_urls_skips_a_non_utf8_record() {
-    let (_dir, meta) = store();
-    meta.put_file_url("aa", "https://files/aa.whl", "pypi").unwrap();
-    meta.put_driver_value(&super::file_key("bad"), &[0xff, 0xfe]).unwrap();
-    let mut count = 0;
-    meta.scan_file_urls(|_digest, _value| {
-        count += 1;
-        Ok::<(), std::io::Error>(())
-    })
-    .unwrap();
-    assert_eq!(count, 1, "the non-UTF-8 record is skipped, the valid one visited");
-}
-
-#[test]
 fn test_scan_metadata_records_visits_each_record() {
     let (_dir, meta) = store();
     meta.put_metadata("wheelsha", "metasha").unwrap();
@@ -129,20 +106,6 @@ fn test_scan_metadata_records_visits_each_record() {
     })
     .unwrap();
     assert_eq!(seen, vec![("wheelsha".to_owned(), "metasha".to_owned())]);
-}
-
-#[test]
-fn test_scan_metadata_records_skips_a_non_utf8_record() {
-    let (_dir, meta) = store();
-    meta.put_metadata("good", "metasha").unwrap();
-    meta.put_driver_value(&metadata_key("bad"), &[0xff, 0xfe]).unwrap();
-    let mut seen = Vec::new();
-    meta.scan_metadata_records(|digest, _value| {
-        seen.push(digest.to_owned());
-        Ok::<(), std::io::Error>(())
-    })
-    .unwrap();
-    assert_eq!(seen, vec!["good".to_owned()], "the non-UTF-8 record is skipped");
 }
 
 fn bundle(provenance_sha256: &str) -> ProvenanceSibling<'_> {
@@ -188,27 +151,40 @@ fn test_get_provenance_reads_only_the_publication_it_was_written_for() {
 #[test]
 fn test_get_provenance_rejects_a_record_missing_its_size() {
     let (_dir, meta) = store();
-    meta.put_driver_value(
-        &super::provenance_key("hosted", "pkg", "wheelsha", "pkg-1.0.whl"),
-        b"provsha",
-    )
-    .unwrap();
+    let key = super::provenance_key("hosted", "pkg", "wheelsha", "pkg-1.0.whl");
+    meta.put_driver_value(&key, b"provsha").unwrap();
+
+    let error = meta
+        .get_provenance("hosted", "pkg", "wheelsha", "pkg-1.0.whl")
+        .unwrap_err();
+
     assert_eq!(
-        meta.get_provenance("hosted", "pkg", "wheelsha", "pkg-1.0.whl").unwrap(),
-        None
+        error.to_string(),
+        format!("driver record {key:?} is missing field \"size\"")
     );
 }
 
 #[test]
-fn test_scan_provenance_records_visits_valid_and_skips_non_utf8() {
+fn test_get_provenance_rejects_a_record_whose_size_is_not_a_number() {
+    let (_dir, meta) = store();
+    let key = super::provenance_key("hosted", "pkg", "wheelsha", "pkg-1.0.whl");
+    meta.put_driver_value(&key, b"provsha\nhuge").unwrap();
+
+    let error = meta
+        .get_provenance("hosted", "pkg", "wheelsha", "pkg-1.0.whl")
+        .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        format!("driver record {key:?} has invalid integer field \"size\"")
+    );
+}
+
+#[test]
+fn test_scan_provenance_records_visits_each_record() {
     let (_dir, meta) = store();
     meta.put_provenance("hosted", "pkg", "good", "pkg-1.0.whl", bundle("provsha"))
         .unwrap();
-    meta.put_driver_value(
-        &super::provenance_key("hosted", "pkg", "bad", "pkg-2.0.whl"),
-        &[0xff, 0xfe],
-    )
-    .unwrap();
     let mut seen = Vec::new();
     meta.scan_provenance_records(|key, value| {
         seen.push((key.to_owned(), value.to_owned()));
@@ -296,11 +272,9 @@ fn test_get_file_publication_rejects_a_non_utf8_record() {
 }
 
 #[test]
-fn test_scan_file_publications_visits_valid_and_skips_non_utf8() {
+fn test_scan_file_publications_visits_each_record() {
     let (_dir, meta) = store();
     seed_publication(&meta, b"https://up/pkg.whl.metadata\nmetasha\npypi\n");
-    meta.put_driver_value(&super::publication_key("pypi", "pkg", "other", "pkg-2.0.whl"), &[0xff])
-        .unwrap();
     let mut seen = Vec::new();
 
     meta.scan_file_publications(|key, value| {

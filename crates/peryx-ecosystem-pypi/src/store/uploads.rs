@@ -6,7 +6,7 @@ use super::journal::JournalEntry;
 use super::overrides::{FileOverride, OverrideMutation};
 use super::{
     OVERRIDE_PREFIX, UPLOAD_PREFIX, metadata_key, override_key, project_key, provenance_key, provenance_prefix,
-    provenance_value, split_provenance_value, upload_key,
+    provenance_value, record_str, scan_utf8_records, split_provenance_value, upload_key,
 };
 use crate::distribution_version_segment;
 
@@ -188,8 +188,11 @@ pub fn publish_file_in_txn<E: From<MetaError>>(
     let record = txn.get(&upload)?;
     let stored_provenance = txn
         .get(&provenance)?
-        .and_then(|raw| String::from_utf8(raw).ok())
-        .and_then(|value| value.split_once('\n').map(|(digest, _size)| digest.to_owned()));
+        .map(|raw| {
+            let value = record_str(&provenance, raw)?;
+            split_provenance_value(&provenance, &value).map(|(digest, _size)| digest.to_owned())
+        })
+        .transpose()?;
     match guard(PublishedState {
         record: record.as_deref(),
         provenance: stored_provenance.as_deref(),
@@ -318,14 +321,8 @@ fn copy_provenance_in_txn(
     let Some(raw) = txn.get(&source)? else {
         return Ok(());
     };
-    let (bundle, size) =
-        std::str::from_utf8(&raw)
-            .ok()
-            .and_then(split_provenance_value)
-            .ok_or(MetaError::DriverRecordMissing {
-                key: source,
-                field: "provenance",
-            })?;
+    let value = record_str(&source, raw.clone())?;
+    let (bundle, size) = split_provenance_value(&source, &value)?;
     txn.reference_blob(bundle, size);
     txn.put(
         &provenance_key(release.index, release.normalized, artifact_sha256, filename),
@@ -607,8 +604,12 @@ pub fn set_override(
 }
 
 /// Read, mutate, and write back one override record inside `txn`, returning the journal action when
-/// the record moved. An unreadable record is treated as absent so an operator can always write a
-/// well-formed one over it; `fsck` is what reports the corruption.
+/// the record moved.
+///
+/// A mutation moves one field and carries the other across, so an unreadable record cannot be
+/// treated as absent: substituting a default silently drops whatever hide or yank the damaged row
+/// held, and commits a journal entry telling every replica the file moved from a state it never
+/// occupied. Corruption stops the write here and `fsck` names the row.
 fn apply_override(
     txn: &mut DriverTxn,
     key: &str,
@@ -616,9 +617,8 @@ fn apply_override(
 ) -> Result<Option<&'static str>, MetaError> {
     let mut record = txn
         .get(key)?
-        .as_deref()
-        .and_then(|raw| std::str::from_utf8(raw).ok())
-        .and_then(FileOverride::decode)
+        .map(|raw| FileOverride::decode(key, &record_str(key, raw)?))
+        .transpose()?
         .unwrap_or_default();
     let Some(action) = mutation.apply(&mut record) else {
         return Ok(None);
@@ -631,15 +631,25 @@ fn apply_override(
     Ok(Some(action))
 }
 
+/// Every override an operator recorded over one project's files, keyed by filename.
+///
+/// A damaged row fails the read rather than dropping out of the map. An override is a withdrawal an
+/// operator imposed, so serving a page that silently omits one serves a file that was administratively
+/// deleted or yanked; an error on the page is the safer answer.
+///
 /// # Errors
-/// Returns a store error if the read fails.
-pub fn list_overrides(meta: &MetaStore, index: &str, normalized: &str) -> Result<Vec<(String, String)>, MetaError> {
+/// Returns a store error if the read fails or a stored record does not decode.
+pub fn list_overrides(
+    meta: &MetaStore,
+    index: &str,
+    normalized: &str,
+) -> Result<BTreeMap<String, FileOverride>, MetaError> {
     let prefix = format!("{OVERRIDE_PREFIX}{index}/{normalized}/");
-    let mut entries = Vec::new();
-    meta.visit_driver_prefix(&prefix, |key, raw| {
-        if let Ok(kind) = std::str::from_utf8(raw) {
-            entries.push((key[prefix.len()..].to_owned(), kind.to_owned()));
-        }
+    let mut entries = BTreeMap::new();
+    meta.scan_driver_prefix(&prefix, |key, raw| {
+        let record = FileOverride::decode(key, &record_str(key, raw.to_vec())?)?;
+        entries.insert(key[prefix.len()..].to_owned(), record);
+        Ok::<(), MetaError>(())
     })?;
     Ok(entries)
 }
@@ -648,20 +658,9 @@ pub fn list_overrides(meta: &MetaStore, index: &str, normalized: &str) -> Result
 /// Returns a scan error if the store read fails or the visitor returns an error.
 pub fn scan_override_records<E>(
     meta: &MetaStore,
-    mut visit: impl FnMut(&str, &str) -> Result<(), E>,
+    visit: impl FnMut(&str, &str) -> Result<(), E>,
 ) -> Result<(), MetaScanError<E>> {
-    let mut error = None;
-    meta.visit_driver_prefix(OVERRIDE_PREFIX, |key, raw| {
-        if error.is_none()
-            && let Ok(kind) = std::str::from_utf8(raw)
-        {
-            error = visit(&key[OVERRIDE_PREFIX.len()..], kind).err();
-        }
-    })?;
-    if let Some(err) = error {
-        return Err(MetaScanError::Visit(err));
-    }
-    Ok(())
+    scan_utf8_records(meta, OVERRIDE_PREFIX, visit)
 }
 
 /// Serialize a journal entry for the journaled batch primitive. `serial` is a placeholder: the
