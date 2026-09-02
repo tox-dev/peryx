@@ -393,15 +393,23 @@ snapshots: _project-temp
       --unreferenced reject --test-runner nextest --nextest-profile ci
 
 # Check workspace public API compatibility.
-semver base="origin/main": _project-temp
-    cargo semver-checks check-release --workspace --default-features --baseline-rev "{{ base }}"
+#
+# The release type is stated rather than inferred. Every crate here reads `0.0.1`, and a `0.0.x` release
+# permits any change, so cargo-semver-checks compares the two versions, finds them equal, assumes a major
+# bump and skips all 254 checks. Naming `patch` asks the question worth asking: what would this change
+# break for someone pinned to the current API. A break is allowed before the first release, so this
+# reports one rather than forbidding it, and CI does not run it.
+semver base="origin/main" release_type="patch": _project-temp
+    cargo semver-checks check-release --workspace --default-features --baseline-rev "{{ base }}" \
+      --release-type "{{ release_type }}"
 
 # Check one deterministic shard of workspace public APIs.
-semver-shard shard shards base="origin/main": _project-temp
+semver-shard shard shards base="origin/main" release_type="patch": _project-temp
     cargo metadata --no-deps --format-version 1 \
       | jq -r --argjson shard "{{ shard }}" --argjson shards "{{ shards }}" \
         '[.packages[] | select(.publish != []) | .name] | to_entries[] | select(.key % $shards == $shard) | .value' \
-      | xargs -n 1 cargo semver-checks check-release --default-features --baseline-rev "{{ base }}" --package
+      | xargs -n 1 cargo semver-checks check-release --default-features --baseline-rev "{{ base }}" \
+        --release-type "{{ release_type }}" --package
 
 # Check snapshots, public APIs, and the release plan.
 lint-contracts base="origin/main": snapshots _coverage-target-contract

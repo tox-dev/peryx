@@ -48,8 +48,6 @@ jobs:
   contracts:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    outputs:
-      baseline: ${{ steps.baseline.outputs.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -59,39 +57,8 @@ jobs:
         with:
           tools: >-
             just jq uv aqua:axodotdev/cargo-dist aqua:mitsuhiko/insta github:nextest-rs/nextest
-      - id: baseline
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          sha=$(gh api "/repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?branch=main&status=success&per_page=1" \
-            --jq '.workflow_runs[0].head_sha // empty')
-          test -n "$sha"
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
       - run: just snapshots
       - run: just release-plan
-
-  semver:
-    name: semver (shard ${{ matrix.shard }} of 7)
-    needs: contracts
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: ./.github/actions/setup
-        with:
-          cache-targets: false
-          tools: just jq github:obi1kenobi/cargo-semver-checks
-      - run: just semver-shard "$SHARD" 7 "$BASE_REV"
-        env:
-          SHARD: ${{ matrix.shard }}
-          BASE_REV: ${{ needs.contracts.outputs.baseline }}
 
   platform:
     name: platform (${{ matrix.os }})
@@ -184,7 +151,7 @@ jobs:
 
   ci-gate:
     if: always()
-    needs: [automation, contracts, coverage, docs, frontend, platform, semver, source]
+    needs: [automation, contracts, coverage, docs, frontend, platform, source]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -192,5 +159,5 @@ jobs:
           needs.automation.result != 'success' || needs.contracts.result != 'success' ||
           needs.coverage.result != 'success' || needs.docs.result != 'success' ||
           needs.frontend.result != 'success' || needs.platform.result != 'success' ||
-          needs.semver.result != 'success' || needs.source.result != 'success'
+          needs.source.result != 'success'
         run: exit 1

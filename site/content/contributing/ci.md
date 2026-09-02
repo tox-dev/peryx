@@ -14,11 +14,20 @@ The required workflow runs these job groups:
 - `source`: Rust formatting, `cargo check`, Clippy, and dependency policy
 - `automation`: repository hooks and workflow validation
 - `contracts`: snapshots, the release plan, and Cargo discovery of publishable packages
-- `semver`: public API compatibility for each publishable package
 - `platform`: platform-boundary tests on macOS and Windows
 - `coverage`: the native workspace suite with all features
 - `frontend`: native and Wasm browser coverage
 - `docs`: rustdoc, Markdown, Mermaid regeneration, and the site build
+
+There is no `semver` job. Every crate reads `0.0.1`, a version at which Cargo permits any change, so cargo-semver-checks
+compared each package against itself, assumed a major bump and skipped all 254 checks while reporting success. Seven
+shards spent 43 minutes of runner time per run to check nothing, and a reader could not tell that green from a green
+that had verified something. Nothing consumes these crates as libraries either: a release ships binaries through `dist`
+and a PyPI package, and no workflow runs `cargo publish`.
+
+Bring the job back when a crate is published, or when the workspace reaches a version where a bump means something. It
+needs the `baseline` output on the `contracts` job as well, which went with it. Until then `just semver` answers the
+same question on demand and states a release type so the checks run.
 
 The coverage jobs reject uncovered source lines. `ci-gate` gives branch protection one check name and fails unless every
 required job succeeds.
