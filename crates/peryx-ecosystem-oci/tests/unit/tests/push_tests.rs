@@ -247,7 +247,7 @@ async fn test_a_session_whose_stage_cannot_be_created_leaves_no_upload_record() 
     std::fs::set_permissions(&blobs, std::fs::Permissions::from_mode(0o755)).unwrap();
     assert_eq!(status, StatusCode::BAD_GATEWAY);
     assert_eq!(
-        state.serving.meta.reclaim_uploads(i64::MAX, 10).unwrap(),
+        state.serving.meta.expired_uploads(i64::MAX, 10).unwrap(),
         Vec::<String>::new()
     );
 }

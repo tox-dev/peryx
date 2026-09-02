@@ -17,7 +17,17 @@ pub trait UploadStore {
     fn advance_upload(&self, session: &str, offset: u64, now: i64) -> Result<bool, MetaError>;
     fn upload_record(&self, session: &str) -> Result<Option<UploadRecord>, MetaError>;
     fn remove_upload(&self, session: &str) -> Result<bool, MetaError>;
-    fn reclaim_uploads(&self, cutoff: i64, limit: usize) -> Result<Vec<String>, MetaError>;
+    /// Sessions untouched since `cutoff`, at most `limit` of them, left where they are.
+    ///
+    /// Selection deletes nothing. The row is the only durable link from an upload id back to its
+    /// staged bytes, so a caller that removed it before discarding the stage would strand those bytes
+    /// with nothing left to find them by, across a restart included.
+    fn expired_uploads(&self, cutoff: i64, limit: usize) -> Result<Vec<String>, MetaError>;
+    /// Remove `session` while it is still untouched since `cutoff`, reporting whether it went.
+    ///
+    /// A request that touched the session after it was selected has made it active again, and an
+    /// active session keeps its row.
+    fn remove_expired_upload(&self, session: &str, cutoff: i64) -> Result<bool, MetaError>;
     /// Reports the journal serial the transaction committed at, which a write acknowledgement waits on
     /// as its metadata evidence.
     fn commit_driver_txn_closing_upload<T, E: From<MetaError>>(
@@ -71,14 +81,26 @@ impl UploadStore for MetaStore {
         self.delete_driver_value(&key(session))
     }
 
-    fn reclaim_uploads(&self, cutoff: i64, limit: usize) -> Result<Vec<String>, MetaError> {
-        self.remove_driver_values_if(PREFIX, limit, |value| {
-            Ok(serde_json::from_slice::<UploadRecord>(value)?.updated_at_unix <= cutoff)
-        })
-        .map(|keys| {
-            keys.into_iter()
-                .map(|key| key.strip_prefix(PREFIX).unwrap_or(&key).to_owned())
-                .collect()
+    fn expired_uploads(&self, cutoff: i64, limit: usize) -> Result<Vec<String>, MetaError> {
+        let mut expired: Vec<String> = Vec::new();
+        self.scan_driver_prefix::<MetaError>(PREFIX, |key, value| {
+            if expired.len() < limit && serde_json::from_slice::<UploadRecord>(value)?.updated_at_unix <= cutoff {
+                expired.push(key.strip_prefix(PREFIX).unwrap_or(key).to_owned());
+            }
+            Ok(())
+        })?;
+        Ok(expired)
+    }
+
+    fn remove_expired_upload(&self, session: &str, cutoff: i64) -> Result<bool, MetaError> {
+        self.update_driver_value(&key(session), |value| {
+            let Some(value) = value else {
+                return Ok((None, false));
+            };
+            if serde_json::from_slice::<UploadRecord>(value)?.updated_at_unix > cutoff {
+                return Ok((Some(value.to_vec()), false));
+            }
+            Ok((None, true))
         })
     }
 

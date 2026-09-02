@@ -118,7 +118,12 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
     }
 
     /// Report an open upload session's progress: `204` with the bytes received so far.
-    pub(super) fn upload_status(
+    ///
+    /// Held under the session gate because the read is also a keep-alive write. Maintenance rechecks
+    /// the timestamp under that gate before it discards anything, and a refresh landing between that
+    /// recheck and the removal would leave a live session pointing at bytes already gone.
+    pub(super) async fn upload_status(
+        &self,
         state: &ServingState,
         headers: &HeaderMap,
         name: &str,
@@ -128,12 +133,13 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
             Ok(target) => target,
             Err(rejection) => return Ok(rejection.into_response()),
         };
-        let Some(record) = session_record(state, &index.name, name, session)? else {
-            return Ok(error_response(ErrorCode::BlobUploadUnknown, "upload unknown"));
+        let lock = self.session_gate.lock(session);
+        let outcome = {
+            let _guard = lock.lock_owned().await;
+            status_locked(state, index, name, session)
         };
-        // A status read is activity, so it keeps the session alive against the idle TTL.
-        state.meta.advance_upload(session, record.offset, (state.clock)())?;
-        Ok(upload_status_response(name, session, record.offset))
+        self.session_gate.release(session);
+        outcome
     }
 
     pub(super) async fn patch_upload(
@@ -274,6 +280,16 @@ async fn mount_blob(state: &ServingState, request: MountRequest<'_>) -> Result<R
         || blob_created(name, mount),
     )
     .await
+}
+
+/// Read the session under the gate and refresh its activity timestamp.
+fn status_locked(state: &ServingState, index: &Index, name: &str, session: &str) -> Result<Response, ServeError> {
+    let Some(record) = session_record(state, &index.name, name, session)? else {
+        return Ok(error_response(ErrorCode::BlobUploadUnknown, "upload unknown"));
+    };
+    // A status read is activity, so it keeps the session alive against the idle TTL.
+    state.meta.advance_upload(session, record.offset, (state.clock)())?;
+    Ok(upload_status_response(name, session, record.offset))
 }
 
 async fn patch_locked(
@@ -462,11 +478,16 @@ async fn append_to_stage(
             .map_err(ServeError::from)
             .map_err(UploadBodyError::Fault)?;
         *offset = staged;
-        state
+        // `advance_upload` reports whether the row was still there. Dropping that answer is what let a
+        // client be told its bytes landed on a session another path had already removed.
+        if !state
             .meta
             .advance_upload(session, staged, (state.clock)())
             .map_err(ServeError::from)
-            .map_err(UploadBodyError::Fault)?;
+            .map_err(UploadBodyError::Fault)?
+        {
+            return Err(UploadBodyError::Vanished);
+        }
     }
     Ok(())
 }
@@ -474,6 +495,9 @@ async fn append_to_stage(
 enum UploadBodyError {
     Fault(ServeError),
     Denied(Response),
+    /// The session's row went while the chunk was being written, so the offset this append reached
+    /// describes an upload the registry no longer has.
+    Vanished,
 }
 
 impl UploadBodyError {
@@ -481,6 +505,7 @@ impl UploadBodyError {
         match self {
             Self::Fault(err) => Err(err),
             Self::Denied(response) => Ok(response),
+            Self::Vanished => Ok(error_response(ErrorCode::BlobUploadUnknown, "upload unknown")),
         }
     }
 }

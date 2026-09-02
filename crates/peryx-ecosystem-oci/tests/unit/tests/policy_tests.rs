@@ -466,7 +466,7 @@ async fn test_policy_refuses_a_blocked_resumable_upload_session() {
     assert_eq!(headers.get(header::LOCATION), None);
     // The refusal precedes `begin_upload`, so the store holds no session to resume the transfer from.
     assert_eq!(
-        state.serving.meta.reclaim_uploads(i64::MAX, 8).unwrap(),
+        state.serving.meta.expired_uploads(i64::MAX, 8).unwrap(),
         Vec::<String>::new()
     );
 

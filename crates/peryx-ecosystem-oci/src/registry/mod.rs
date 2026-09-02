@@ -355,9 +355,17 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> AbsoluteProtocolDriver fo
 
 pub const ABSOLUTE_PREFIXES: &[&str] = &["/v2/"];
 
+/// Every counter the OCI driver publishes: the quota decisions a hosted push meets, and the upload
+/// stages maintenance could not reclaim.
+const OCI_METRIC_FAMILIES: &[peryx_events::metrics::MetricFamily] = &[
+    crate::quota::QUOTA_ADMITTED_FAMILY,
+    crate::quota::QUOTA_REJECTED_FAMILY,
+    UPLOAD_STAGE_RETAINED_FAMILY,
+];
+
 impl<S: BuildHasher + Default + Send + Sync + 'static> MetricsDriver for OciRegistryWithHasher<S> {
     fn metric_families(&self) -> &'static [peryx_events::metrics::MetricFamily] {
-        crate::quota::QUOTA_FAMILIES
+        OCI_METRIC_FAMILIES
     }
 }
 
@@ -526,14 +534,81 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> IdleReclaimer for OciRegi
         let cutoff = (state.clock)().saturating_sub(UPLOAD_SESSION_TTL_SECS);
         let expired = state
             .meta
-            .reclaim_uploads(cutoff, UPLOAD_RECLAIM_BATCH)
+            .expired_uploads(cutoff, UPLOAD_RECLAIM_BATCH)
             .unwrap_or_default();
+        let mut reclaimed = 0;
         for session in &expired {
-            let _ = state.blobs.discard_upload(session).await;
+            reclaimed += usize::from(self.reclaim_session(&state, session, cutoff).await);
         }
-        expired.len()
+        reclaimed
     }
 }
+
+impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> {
+    /// Reclaim one idle session under the gate its `PATCH` and closing `PUT` hold, so maintenance
+    /// cannot take a row out from under a request that is appending to its stage. Answers whether the
+    /// session went, which is what the pass counts.
+    async fn reclaim_session(&self, state: &ServingState, session: &str, cutoff: i64) -> bool {
+        let lock = self.session_gate.lock(session);
+        let reclaimed = {
+            let _guard = lock.lock_owned().await;
+            self.discard_idle_session(state, session, cutoff).await
+        };
+        self.session_gate.release(session);
+        reclaimed
+    }
+
+    /// Discard an idle session's stage and then its row, in that order.
+    ///
+    /// The row outlives the bytes on purpose: it is the only durable link back to the stage, so a
+    /// backend that refuses the deletion leaves the session for the next pass to find rather than
+    /// stranding the bytes under an id nothing records. The removal is conditional for the same
+    /// reason the recheck is: a status read refreshes a session without appending to it, and a
+    /// session that became active again keeps everything it has.
+    async fn discard_idle_session(&self, state: &ServingState, session: &str, cutoff: i64) -> bool {
+        let idle = state
+            .meta
+            .upload_record(session)
+            .ok()
+            .flatten()
+            .filter(|record| record.updated_at_unix <= cutoff);
+        let Some(record) = idle else {
+            return false;
+        };
+        if let Err(err) = state.blobs.discard_upload(session).await {
+            tracing::warn!(session, %err, "retaining an idle upload whose stage could not be discarded");
+            record_retained_stage(state, &record);
+            return false;
+        }
+        state.meta.remove_expired_upload(session, cutoff).unwrap_or(false)
+    }
+}
+
+/// Count a stage the backend would not delete against the index that opened it, so an operator sees
+/// storage the registry is holding and cannot account for. A session whose index left the
+/// configuration while it was open has nowhere to be counted, and the log line still names it.
+fn record_retained_stage(state: &ServingState, record: &crate::upload_session::UploadRecord) {
+    let Some(index) = state.indexes.iter().find(|index| index.name == record.index) else {
+        return;
+    };
+    state.metrics.record(peryx_events::metrics::Observation::Ecosystem {
+        repository: index.route.clone(),
+        resource: record.name.clone(),
+        artifact: None,
+        family: UPLOAD_STAGE_RETAINED_FAMILY.key,
+    });
+}
+
+/// A staged upload the backend refused to delete, left for a later pass to retry.
+const UPLOAD_STAGE_RETAINED_FAMILY: peryx_events::metrics::MetricFamily = peryx_events::metrics::MetricFamily {
+    key: "upload_stage_retained",
+    prom_name: "peryx_oci_upload_stage_retained_total",
+    help: "Idle OCI upload stages retained because the blob backend refused the deletion.",
+    ui_label: "Retained upload stages",
+    roles: &[peryx_core::Role::Hosted],
+    json_name: None,
+    kind: peryx_events::metrics::MetricKind::Counter,
+};
 
 #[async_trait]
 impl<S: BuildHasher + Default + Send + Sync + 'static> IntentFinalizer for OciRegistryWithHasher<S> {
@@ -626,7 +701,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
             OciRoute::UploadStart { name } => self.start_upload(&state, headers, query, &name, body).boxed().await,
             OciRoute::UploadSession { name, session } => {
                 if method == Method::GET {
-                    Self::upload_status(&state, headers, &name, &session)
+                    self.upload_status(&state, headers, &name, &session).boxed().await
                 } else if method == Method::PATCH {
                     self.patch_upload(&state, headers, &name, &session, body).boxed().await
                 } else if method == Method::PUT {

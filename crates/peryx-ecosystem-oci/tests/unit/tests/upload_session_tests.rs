@@ -86,31 +86,57 @@ fn test_remove_closes_the_session_once() {
     assert_eq!(store.upload_record("session-1").unwrap(), None);
 }
 
+/// Selection names the idle sessions and leaves every row where it is, so the stage each row points
+/// at stays findable until something has actually deleted it.
 #[test]
-fn test_reclaim_removes_idle_sessions_and_keeps_fresh_ones() {
+fn test_selection_names_idle_sessions_and_removes_nothing() {
     let (_dir, store) = store();
     store.begin_upload("idle", "hosted", "app/image", 50).unwrap();
     store.begin_upload("fresh", "hosted", "app/other", 100).unwrap();
 
-    assert_eq!(store.reclaim_uploads(50, 10).unwrap(), vec!["idle".to_owned()]);
-    assert_eq!(store.upload_record("idle").unwrap(), None);
+    assert_eq!(store.expired_uploads(50, 10).unwrap(), vec!["idle".to_owned()]);
+    assert!(store.upload_record("idle").unwrap().is_some());
     assert!(store.upload_record("fresh").unwrap().is_some());
 }
 
 #[test]
-fn test_reclaim_honors_the_limit() {
+fn test_selection_honors_the_limit() {
     let (_dir, store) = store();
     store.begin_upload("a", "hosted", "app/a", 1).unwrap();
     store.begin_upload("b", "hosted", "app/b", 1).unwrap();
 
-    assert_eq!(store.reclaim_uploads(50, 1).unwrap().len(), 1);
+    assert_eq!(store.expired_uploads(50, 1).unwrap(), vec!["a".to_owned()]);
+}
+
+/// The removal repeats the idleness test it was selected on, so a session a request touched in
+/// between keeps its row and its bytes.
+#[rstest::rstest]
+#[case::still_idle(50, true, None)]
+#[case::touched_since_selection(100, false, Some(100))]
+fn test_removal_repeats_the_idleness_test(
+    #[case] updated_at: i64,
+    #[case] removed: bool,
+    #[case] remaining: Option<i64>,
+) {
+    let (_dir, store) = store();
+    store.begin_upload("session", "hosted", "app/image", 1).unwrap();
+    store.advance_upload("session", 0, updated_at).unwrap();
+
+    assert_eq!(store.remove_expired_upload("session", 50).unwrap(), removed);
     assert_eq!(
-        ["a", "b"]
-            .iter()
-            .filter(|session| store.upload_record(session).unwrap().is_some())
-            .count(),
-        1
+        store
+            .upload_record("session")
+            .unwrap()
+            .map(|record| record.updated_at_unix),
+        remaining
     );
+}
+
+#[test]
+fn test_removing_an_unknown_session_reports_no_change() {
+    let (_dir, store) = store();
+
+    assert!(!store.remove_expired_upload("missing", 50).unwrap());
 }
 
 #[test]

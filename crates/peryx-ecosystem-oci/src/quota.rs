@@ -44,7 +44,7 @@ pub const fn quota_reservation<'a>(
 }
 
 /// A hosted push admitted against the repository quota.
-const QUOTA_ADMITTED_FAMILY: MetricFamily = MetricFamily {
+pub const QUOTA_ADMITTED_FAMILY: MetricFamily = MetricFamily {
     key: "quota_admitted",
     prom_name: "peryx_oci_quota_admitted_total",
     help: "Hosted OCI pushes admitted against the repository quota.",
@@ -55,7 +55,7 @@ const QUOTA_ADMITTED_FAMILY: MetricFamily = MetricFamily {
 };
 
 /// A hosted push refused by the repository quota.
-const QUOTA_REJECTED_FAMILY: MetricFamily = MetricFamily {
+pub const QUOTA_REJECTED_FAMILY: MetricFamily = MetricFamily {
     key: "quota_rejected",
     prom_name: "peryx_oci_quota_rejected_total",
     help: "Hosted OCI pushes refused by the repository quota.",
@@ -64,9 +64,6 @@ const QUOTA_REJECTED_FAMILY: MetricFamily = MetricFamily {
     json_name: None,
     kind: peryx_events::metrics::MetricKind::Counter,
 };
-
-/// The quota-decision counters the OCI driver publishes.
-pub const QUOTA_FAMILIES: &[MetricFamily] = &[QUOTA_ADMITTED_FAMILY, QUOTA_REJECTED_FAMILY];
 
 /// The outcome of admitting a hosted push against the repository quota.
 pub enum Admission {

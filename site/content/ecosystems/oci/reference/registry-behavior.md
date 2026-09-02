@@ -122,6 +122,18 @@ attempt. By default, a local worker runs the pass once per minute; operators can
 [explicit schedule](@/core/operations/configuration.md#schedules). peryx does not reclaim old sessions when a client
 starts one. When a client changes the name, peryx keeps the original session and staged bytes unchanged.
 
+### Reclaiming an idle session
+
+Reclamation discards the staged bytes first and removes the session record second. The record is the only durable link
+from an upload id back to the bytes it staged, so a backend that refuses the deletion leaves both in place and the next
+pass finds the session again, restart included. A stage held that way increments `upload_stage_retained` and is logged
+with its session id, so an operator can see storage the registry is holding and cannot account for.
+
+Reclamation takes the same per-session lock a `PATCH`, a closing `PUT`, and a status `GET` hold, and it retests the idle
+timestamp once it has that lock. A request that touched the session after it was selected has made it active again, and
+an active session keeps its record and its bytes. A `PATCH` therefore either appends to a live session or answers
+`404 BLOB_UPLOAD_UNKNOWN`; it never reports an offset for a session the registry has removed.
+
 The hosted index's `max_artifact_size_bytes` applies while a monolithic `POST`, chunk `PATCH`, or final `PUT` streams.
 peryx checks the cumulative byte count before writing each chunk. An over-limit request returns `403 DENIED`; for a
 chunked upload, it also removes the session and its staged file, so later requests for that id return

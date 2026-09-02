@@ -28,6 +28,7 @@ mod scope_tests;
 mod search_tests;
 mod serve;
 mod tag_name_tests;
+mod upload_reclaim_tests;
 mod upload_session_tests;
 mod virtual_tests;
 mod web_tests;
