@@ -9,7 +9,7 @@ use peryx_storage::blob::BlobLease;
 
 use crate::cache::{self};
 
-use super::response::{CacheContext, cache_error_response, file_response};
+use super::response::{CacheContext, cache_error_response};
 use super::{HttpResult, path_error_response, safe_filename};
 
 const MEMBER_SIZE_HEADER: &str = "x-peryx-member-size";
@@ -60,7 +60,7 @@ pub(super) async fn inspect_route(
     let path = match cache::file_path(state, digest, route.clone(), filename.clone()).await {
         Ok(path) => path,
         Err(err) => {
-            return file_response(Err(err), CacheContext::file(&route, sha256, &filename));
+            return cache_error_response(&err, CacheContext::file(&route, sha256, &filename));
         }
     };
     match member {

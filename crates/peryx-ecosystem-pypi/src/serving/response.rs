@@ -128,53 +128,45 @@ fn with_last_serial(mut response: Response, last_serial: Option<u64>) -> Respons
     response
 }
 
-/// Artifact response.
-pub fn file_response(result: Result<bytes::Bytes, CacheError>, context: CacheContext<'_>) -> Response {
-    match result {
-        Ok(body) => (
-            [
-                (header::CONTENT_TYPE, "application/octet-stream"),
-                (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
-            ],
-            body,
-        )
-            .into_response(),
-        Err(err) => cache_error_response(&err, context),
-    }
+/// PEP 658 metadata sidecar response.
+pub fn metadata_response(body: bytes::Bytes) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "application/octet-stream"),
+            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+        ],
+        body,
+    )
+        .into_response()
 }
 
-/// Map a provenance result to a response without describing an upstream document as verified.
-pub fn provenance_response(result: Result<ProvenanceBody, CacheError>, context: CacheContext<'_>) -> Response {
-    match result {
-        Ok(body) => {
-            let mut response = body.bytes.into_response();
-            response.headers_mut().insert(
-                header::CONTENT_TYPE,
-                HeaderValue::from_str(&body.media_type).expect("an accepted media type is a valid header"),
-            );
-            response.headers_mut().insert(
-                header::CACHE_CONTROL,
-                HeaderValue::from_static(if body.immutable {
-                    "public, max-age=31536000, immutable"
-                } else {
-                    "no-cache"
-                }),
-            );
-            response.headers_mut().insert(
-                axum::http::HeaderName::from_static("x-peryx-provenance-source"),
-                HeaderValue::from_str(&body.source).unwrap_or(HeaderValue::from_static("upstream")),
-            );
-            response.headers_mut().insert(
-                axum::http::HeaderName::from_static("x-peryx-provenance-availability"),
-                HeaderValue::from_static(match body.availability {
-                    AttestationAvailability::Cached => "cached",
-                    AttestationAvailability::RemoteOnly => "remote-only",
-                }),
-            );
-            response
-        }
-        Err(err) => cache_error_response(&err, context),
-    }
+/// Map a provenance document to a response without describing an upstream document as verified.
+pub fn provenance_response(body: ProvenanceBody) -> Response {
+    let mut response = body.bytes.into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_str(&body.media_type).expect("an accepted media type is a valid header"),
+    );
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(if body.immutable {
+            "public, max-age=31536000, immutable"
+        } else {
+            "no-cache"
+        }),
+    );
+    response.headers_mut().insert(
+        axum::http::HeaderName::from_static("x-peryx-provenance-source"),
+        HeaderValue::from_str(&body.source).unwrap_or(HeaderValue::from_static("upstream")),
+    );
+    response.headers_mut().insert(
+        axum::http::HeaderName::from_static("x-peryx-provenance-availability"),
+        HeaderValue::from_static(match body.availability {
+            AttestationAvailability::Cached => "cached",
+            AttestationAvailability::RemoteOnly => "remote-only",
+        }),
+    );
+    response
 }
 
 #[derive(Clone, Copy)]

@@ -22,8 +22,8 @@ use crate::policy::PypiPolicy;
 
 use super::inspect::inspect_route;
 use super::response::{
-    CacheContext, DownloadRefusal, PageSerial, cache_error_response, detail_response, file_response,
-    html_bytes_response, index_response, json_bytes_response, legacy_bytes_response, legacy_json_response, page_serial,
+    CacheContext, DownloadRefusal, PageSerial, cache_error_response, detail_response, html_bytes_response,
+    index_response, json_bytes_response, legacy_bytes_response, legacy_json_response, metadata_response, page_serial,
     provenance_response,
 };
 use super::{Format, HttpResult, METADATA_FAMILY, PROVENANCE_FAMILY, negotiate, path_error_response, safe_filename};
@@ -398,10 +398,10 @@ async fn file_route(state: &Arc<ServingState>, index: &Index, file: &str, header
             artifact: Some(filename.clone()),
             family: METADATA_FAMILY.key,
         });
-        return file_response(
-            cache::metadata_bytes(state, index, &digest, &route, &filename).await,
-            CacheContext::metadata(&route, digest.as_str(), &filename),
-        );
+        return match cache::metadata_bytes(state, index, &digest, &route, &filename).await {
+            Ok(bytes) => validated_sidecar(metadata_response(bytes.clone()), &bytes, headers),
+            Err(err) => cache_error_response(&err, CacheContext::metadata(&route, digest.as_str(), &filename)),
+        };
     }
     if filename.ends_with(attestation::PROVENANCE_SUFFIX) {
         let artifact_filename = filename
@@ -413,12 +413,16 @@ async fn file_route(state: &Arc<ServingState>, index: &Index, file: &str, header
             artifact: Some(filename.clone()),
             family: PROVENANCE_FAMILY.key,
         });
-        return provenance_response(
-            cache::provenance_bytes(state, index, &digest, artifact_filename)
-                .boxed()
-                .await,
-            CacheContext::provenance(&route, digest.as_str(), &filename),
-        );
+        return match cache::provenance_bytes(state, index, &digest, artifact_filename)
+            .boxed()
+            .await
+        {
+            Ok(body) => {
+                let bytes = body.bytes.clone();
+                validated_sidecar(provenance_response(body), &bytes, headers)
+            }
+            Err(err) => cache_error_response(&err, CacheContext::provenance(&route, digest.as_str(), &filename)),
+        };
     }
     let etag = format!("\"{}\"", digest.as_str());
     if let Some(response) = not_modified(headers, &etag) {
@@ -448,16 +452,50 @@ const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 ///
 /// A digest this index has never cached matches all the same: the URL names the bytes, so a client
 /// holding them holds the current representation whether or not the store does.
+fn not_modified(headers: &HeaderMap, etag: &str) -> Option<Response> {
+    matches_etag(headers, etag).then(|| unchanged(etag, None))
+}
+
+/// Whether the request holds `etag`.
 ///
 /// `If-None-Match` is a list, so every field line has its say: a match in a later line answers the
 /// request even when an earlier one named other bytes.
-fn not_modified(headers: &HeaderMap, etag: &str) -> Option<Response> {
+fn matches_etag(headers: &HeaderMap, etag: &str) -> bool {
     headers
         .get_all(header::IF_NONE_MATCH)
         .iter()
         .filter_map(|field| field.to_str().ok())
         .any(|field| if_none_match(field, etag))
-        .then(|| unchanged(etag, None))
+}
+
+/// Give a PEP 658 or PEP 740 sidecar a strong validator, and answer a matching conditional request
+/// with the `304` it asked for.
+///
+/// The digest in the URL names the artifact, not its sidecar, so the tag is taken over the bytes
+/// this request selected rather than off the path: a cached index refreshes an upstream provenance
+/// document under `no-cache` and its content can change while the artifact's digest cannot. Both
+/// sidecars are bounded and already in hand by this point, so the tag costs one hash of what is
+/// about to be written to the socket.
+///
+/// Evaluating the condition after the representation is selected is also what the membership gate
+/// wants: the download refusal has already run, so a `304` never answers for a pair this index does
+/// not publish. See #1308.
+///
+/// The `304` is that same response with its body dropped, so the cache policy, media type and
+/// provenance headers the `200` carried ride along - RFC 9111 s4.3.4 has a cache update its stored
+/// response from them, and a `304` that re-stamped a proxied provenance document with the artifact
+/// route's immutable policy would freeze a document upstream is still free to change. See #1309.
+fn validated_sidecar(mut response: Response, body: &[u8], headers: &HeaderMap) -> Response {
+    let etag = format!("\"{}\"", Digest::of(body).as_str());
+    response.headers_mut().insert(
+        header::ETAG,
+        HeaderValue::from_str(&etag).expect("a quoted hex digest is a valid header value"),
+    );
+    if matches_etag(headers, &etag) {
+        *response.status_mut() = StatusCode::NOT_MODIFIED;
+        *response.body_mut() = axum::body::Body::empty();
+    }
+    response
 }
 
 /// The `If-Modified-Since` date this request leaves any say in, if it sent one.

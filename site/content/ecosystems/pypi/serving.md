@@ -137,6 +137,17 @@ of reach or carries no `METADATA`, stays a `404`. peryx records that outcome aga
 than against the artifact, so one index's dead sidecar leaves metadata another index derives from the same bytes
 reachable.
 
+### Revalidating a sidecar
+
+Both sidecars carry a strong `ETag` over the document served, so a resolver holding one revalidates it with
+`If-None-Match` and is answered `304` rather than the bytes again. The digest in the URL names the artifact, not its
+sidecar, so the tag is taken over the representation the request resolved rather than read off the path: a proxied
+provenance document is served under `no-cache` and can change while the artifact digest cannot. A `304` repeats the
+`Cache-Control` its `200` carried, so revalidating never rewrites the policy a cache stored.
+
+Revocation enforcement caps every file response at `max-age=60, must-revalidate`. Without a validator a stale entry has
+nothing to revalidate with, so each resolve past the first minute pulls every candidate's metadata again in full.
+
 ## Provenance and attestations
 
 A file uploaded with [PEP 740](https://peps.python.org/pep-0740/) attestations carries a `provenance` key on its Simple

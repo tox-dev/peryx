@@ -33,17 +33,14 @@ async fn test_cache_error_response_preserves_upstream_retry_after() {
 }
 
 #[test]
-fn test_provenance_response_tags_the_integrity_media_type_and_maps_errors() {
-    let served = provenance_response(
-        Ok(ProvenanceBody {
-            bytes: bytes::Bytes::from_static(br#"{"version":1}"#),
-            media_type: crate::attestation::PROVENANCE_MEDIA_TYPE.to_owned(),
-            source: "hosted".to_owned(),
-            immutable: true,
-            availability: AttestationAvailability::Cached,
-        }),
-        CacheContext::provenance("root/pypi", "abc", "pkg-1.0-py3-none-any.whl.provenance"),
-    );
+fn test_provenance_response_tags_the_integrity_media_type() {
+    let served = provenance_response(ProvenanceBody {
+        bytes: bytes::Bytes::from_static(br#"{"version":1}"#),
+        media_type: crate::attestation::PROVENANCE_MEDIA_TYPE.to_owned(),
+        source: "hosted".to_owned(),
+        immutable: true,
+        availability: AttestationAvailability::Cached,
+    });
     assert_eq!(served.status(), StatusCode::OK);
     assert_eq!(
         served.headers().get(header::CONTENT_TYPE).unwrap(),
@@ -54,12 +51,6 @@ fn test_provenance_response_tags_the_integrity_media_type_and_maps_errors() {
         served.headers().get("x-peryx-provenance-availability").unwrap(),
         "cached"
     );
-
-    let missing = provenance_response(
-        Err(CacheError::FileNotFound),
-        CacheContext::provenance("root/pypi", "abc", "pkg-1.0-py3-none-any.whl.provenance"),
-    );
-    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
 }
 
 #[test]

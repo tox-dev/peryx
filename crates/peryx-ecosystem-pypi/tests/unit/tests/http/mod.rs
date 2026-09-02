@@ -25,6 +25,7 @@ mod revocations;
 mod routing;
 mod security;
 mod shadow;
+mod sidecar_validators;
 mod status;
 mod upload;
 mod upstream_attestation_cache;
