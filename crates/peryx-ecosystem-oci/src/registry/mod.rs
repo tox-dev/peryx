@@ -36,7 +36,7 @@ use peryx_storage::meta::MetaError;
 use peryx_upstream::UpstreamClient;
 use std::borrow::Cow;
 use std::collections::hash_map::RandomState;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeSet, HashSet, VecDeque};
 use std::hash::BuildHasher;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -365,7 +365,14 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> ReplicatedApplyDriver for
     /// A replicated blob-membership removal lands as a raw row delete, which the process cache that
     /// answers blob authorization from memory never sees. Dropping the key here is what stops a replica
     /// from serving a digest the home datacenter unlinked. Eviction cannot fail, so it blocks no view.
-    fn apply_replicated_changes(&self, _state: &ServingState, changed_keys: &[String]) -> Result<(), ViewBlock> {
+    ///
+    /// It rebuilds no search document, so it reports none current and leaves every replicated key to
+    /// the neutral full re-derivation that keeps a repository's document honest.
+    fn apply_replicated_changes<'key>(
+        &self,
+        _state: &ServingState,
+        changed_keys: &'key [String],
+    ) -> Result<BTreeSet<&'key str>, ViewBlock> {
         let mut memberships = self.blob_memberships.write();
         for key in changed_keys
             .iter()
@@ -374,7 +381,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> ReplicatedApplyDriver for
             memberships.remove(key);
         }
         drop(memberships);
-        Ok(())
+        Ok(BTreeSet::new())
     }
 }
 

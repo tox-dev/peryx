@@ -379,3 +379,117 @@ async fn test_apply_reports_a_block_when_a_project_view_cannot_rebuild() {
 
     assert_ne!(h.state.serving.meta.view_frontier(SEARCH_VIEW).unwrap(), Some(serial));
 }
+
+const OTHERPKG_WHEEL: &str = "otherpkg-1.0-py3-none-any.whl";
+
+fn search_result(state: &Arc<AppState>) -> Result<usize, peryx_search::SearchError> {
+    state
+        .serving
+        .search
+        .search(&state.search_ctx(), SearchParams::default())
+        .map(|response| response.total)
+}
+
+async fn upload_otherpkg(state: &Arc<AppState>) -> StatusCode {
+    let wheel = fixture_wheel_for_project("otherpkg", "1.0");
+    let fields = vec![
+        (":action", "file_upload"),
+        ("name", "otherpkg"),
+        ("version", "1.0"),
+        ("filetype", "bdist_wheel"),
+    ];
+    let (ct, body) = multipart_body(&fields, Some((OTHERPKG_WHEEL, &wheel)));
+    post_upload(state, "/hosted/", Some(&upload_auth()), &ct, body).await
+}
+
+/// A replica whose published index holds two hosted projects, one of which no longer derives.
+///
+/// The undecodable record is what names the waste: a page that re-derives the whole store walks it and
+/// fails, while a page that rebuilds only the project it changed never reads it.
+async fn replica_with_a_project_it_must_not_re_derive() -> (Harness, Arc<AppState>, Vec<u8>, usize) {
+    let h = authority_harness().await;
+    let wheel = fixture_wheel();
+    assert_eq!(upload_peryxpkg(&h.state, "/hosted/", &wheel).await, StatusCode::OK);
+    assert_eq!(upload_otherpkg(&h.state).await, StatusCode::OK);
+    let replica = replica_state(&h);
+    let published = search_result(&replica).unwrap();
+    assert!(published > 0, "both projects reached the published index");
+
+    h.state
+        .serving
+        .meta
+        .put_upload("hosted", "otherpkg", OTHERPKG_WHEEL, b"not json")
+        .unwrap();
+    (h, replica, wheel, published)
+}
+
+fn replicated_page(replica: &Arc<AppState>, changed: &[String]) {
+    replica.apply(
+        ReplicaPage {
+            changes: changed.len(),
+            serial: 1,
+            primary_serial: 1,
+            revocations: Vec::new(),
+        },
+        changed,
+    );
+}
+
+/// The rows a wheel publish replicates are all covered by rebuilding the project it names: its upload
+/// and project marker, the PEP 658 pointer keyed by the artifact that upload carries, and the count and
+/// order rows the index summary is maintained from.
+#[tokio::test]
+async fn test_a_replicated_publish_re_derives_only_the_project_it_changed() {
+    let (_h, replica, wheel, published) = replica_with_a_project_it_must_not_re_derive().await;
+
+    replicated_page(
+        &replica,
+        &[
+            format!("pypi\u{0}u\u{0}hosted/peryxpkg/{PERYXPKG_WHEEL}"),
+            "pypi\u{0}p\u{0}hosted/peryxpkg".to_owned(),
+            format!("pypi\u{0}d\u{0}{}", Digest::of(&wheel).as_str()),
+            "pypi\u{0}k\u{0}hosted".to_owned(),
+            format!(
+                "pypi\u{0}w\u{0}hosted\u{0}0{:020}/{PERYXPKG_WHEEL}\u{0}peryxpkg\u{0}{PERYXPKG_WHEEL}",
+                1
+            ),
+        ],
+    );
+
+    assert_eq!(search_result(&replica).unwrap(), published);
+}
+
+/// A pointer whose artifact no rebuilt project describes reaches documents this page never touched, so
+/// it still owes the index a re-derivation.
+#[tokio::test]
+async fn test_a_replicated_pointer_for_an_unrebuilt_artifact_re_derives_the_index() {
+    let (_h, replica, ..) = replica_with_a_project_it_must_not_re_derive().await;
+
+    replicated_page(
+        &replica,
+        &[
+            "pypi\u{0}d\u{0}deadbeef".to_owned(),
+            "pypi\u{0}d\u{0}".to_owned(),
+            "pypi\u{0}f\u{0}deadbeef".to_owned(),
+        ],
+    );
+
+    assert!(search_result(&replica).is_err());
+}
+
+/// A mirror replicates a refreshed upstream page under the index prefix and clears the project's
+/// freshness stamp beside it; both name the project whose document changed.
+#[tokio::test]
+async fn test_a_replicated_cached_page_re_derives_only_the_project_it_changed() {
+    let (_h, replica, _wheel, published) = replica_with_a_project_it_must_not_re_derive().await;
+
+    replicated_page(
+        &replica,
+        &[
+            "pypi\u{0}i\u{0}pypi/peryxpkg".to_owned(),
+            "pypi\u{0}h\u{0}pypi/peryxpkg".to_owned(),
+        ],
+    );
+
+    assert_eq!(search_result(&replica).unwrap(), published);
+}

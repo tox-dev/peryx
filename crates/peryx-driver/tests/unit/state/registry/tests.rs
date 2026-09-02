@@ -189,12 +189,12 @@ impl AbsoluteProtocolDriver for Driver {
 }
 
 impl ReplicatedApplyDriver for Driver {
-    fn apply_replicated_changes(
+    fn apply_replicated_changes<'key>(
         &self,
         _state: &crate::ServingState,
-        _changed_keys: &[String],
-    ) -> Result<(), ViewBlock> {
-        Ok(())
+        changed_keys: &'key [String],
+    ) -> Result<std::collections::BTreeSet<&'key str>, ViewBlock> {
+        Ok(changed_keys.iter().map(String::as_str).collect())
     }
 }
 
@@ -427,7 +427,7 @@ async fn test_registered_capabilities_delegate_behavior() {
             .next()
             .unwrap()
             .apply_replicated_changes(state.serving.as_ref(), &[]),
-        Ok(())
+        Ok(std::collections::BTreeSet::new())
     );
     assert_eq!(
         state
@@ -944,7 +944,7 @@ async fn test_install_contexts_publish_registered_behavior() {
             .next()
             .unwrap()
             .apply_replicated_changes(state.serving.as_ref(), &[]),
-        Ok(())
+        Ok(std::collections::BTreeSet::new())
     );
 }
 

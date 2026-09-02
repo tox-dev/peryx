@@ -1,5 +1,5 @@
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::io::Write;
 use std::sync::Arc;
 
@@ -171,9 +171,22 @@ pub trait CacheRefresher: Send + Sync {
 
 /// Replicated-view rebuild capability for replica followers.
 pub trait ReplicatedApplyDriver: Send + Sync {
+    /// Brings this ecosystem's derived views up to `changed_keys` and returns the subset whose search
+    /// documents are current once it returns.
+    ///
+    /// A key the returned set omits is one nothing rebuilt, and the neutral apply path answers it by
+    /// retiring the whole search index for a re-derivation from the store. Reporting a key a driver
+    /// did not cover therefore leaves a stale document published; reporting none costs a full
+    /// re-derivation on the next query and nothing else. Keys belonging to another ecosystem are
+    /// another driver's to report.
+    ///
     /// # Errors
     /// Returns the derived view that could not apply the changes.
-    fn apply_replicated_changes(&self, state: &ServingState, changed_keys: &[String]) -> Result<(), ViewBlock>;
+    fn apply_replicated_changes<'key>(
+        &self,
+        state: &ServingState,
+        changed_keys: &'key [String],
+    ) -> Result<BTreeSet<&'key str>, ViewBlock>;
 }
 
 pub struct JobIndexConfig<'a> {

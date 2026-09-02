@@ -184,14 +184,18 @@ fn project_key(index: &str, normalized: &str) -> String {
 /// the projects prefix. A per-file yank, unyank, or delete goes through `mutate_uploads`, which rewrites
 /// the file's own record under the upload prefix; a yank of a file served from a read-only layer records
 /// an override. Both name a project too, so a replicated per-file change retires the affected project's
-/// page and search document rather than leaving them stale. File, metadata, and journal keys carry no
-/// project.
+/// page and search document rather than leaving them stale. A mirror caches a project's upstream page
+/// under the index prefix and stamps its revalidation under the freshness prefix, both keyed by the same
+/// project. File, metadata, and journal keys carry no project.
 ///
-/// Configuration validation makes index and project names single path segments. A project-marker key is
-/// `{index}/{normalized}`; an upload or override key is `{index}/{normalized}/{filename}`.
+/// Configuration validation makes index and project names single path segments. A project-marker,
+/// cached-page or freshness key is `{index}/{normalized}`; an upload or override key is
+/// `{index}/{normalized}/{filename}`.
 pub(crate) fn project_of_key(key: &str) -> Option<(&str, &str)> {
-    if let Some(rest) = key.strip_prefix(PROJECTS_PREFIX) {
-        return split_index_project(rest);
+    for prefix in [PROJECTS_PREFIX, INDEX_PREFIX, FRESHNESS_PREFIX] {
+        if let Some(rest) = key.strip_prefix(prefix) {
+            return split_index_project(rest);
+        }
     }
     for prefix in [UPLOAD_PREFIX, OVERRIDE_PREFIX] {
         if let Some(rest) = key.strip_prefix(prefix) {
@@ -200,6 +204,31 @@ pub(crate) fn project_of_key(key: &str) -> Option<(&str, &str)> {
         }
     }
     None
+}
+
+/// The artifact a replicated PEP 658 metadata pointer names, or `None` for any other key.
+///
+/// The row is keyed by artifact digest alone, so it names no project on its own; a replica pairs it
+/// with the artifacts of the projects it rebuilt to tell whether one of those already covers it.
+pub(crate) fn metadata_artifact_of_key(key: &str) -> Option<&str> {
+    key.strip_prefix(METADATA_PREFIX).filter(|sha256| !sha256.is_empty())
+}
+
+/// The replicated namespaces no derived view reads.
+///
+/// A file-url row resolves a byte route from an artifact digest, and a count row and an order row
+/// answer an index's summary. Neither the search document a project derives nor the representations a
+/// replica caches for it reads one, so a publish that maintains them alongside its project's own rows
+/// leaves both current.
+///
+/// A namespace this omits is one a replica cannot vouch for, and it re-derives the whole index rather
+/// than guess. That is the safe default for a row kind added later: slow until it is classified here,
+/// never stale.
+const VIEW_NEUTRAL_PREFIXES: &[&str] = &[FILE_PREFIX, COUNT_PREFIX, RECENT_PREFIX];
+
+/// Whether `key` belongs to a namespace no derived view reads.
+pub(crate) fn derives_no_view(key: &str) -> bool {
+    VIEW_NEUTRAL_PREFIXES.iter().any(|prefix| key.starts_with(prefix))
 }
 
 fn split_index_project(rest: &str) -> Option<(&str, &str)> {

@@ -39,7 +39,7 @@ impl SearchDocumentProvider for PypiIndexer {
             collect_projects(ctx, index, &mut projects)?;
             for normalized in projects {
                 if let Some(package) = package_document(ctx, index, &normalized)? {
-                    documents.push(package);
+                    documents.push(package.document);
                 }
             }
         }
@@ -58,7 +58,7 @@ impl SearchDocumentProvider for PypiIndexer {
         for index in ctx.indexes {
             update.keys.push(document_key(&index.route, name));
             if let Some(package) = package_document(ctx, index, name)? {
-                update.documents.push(package);
+                update.documents.push(package.document);
             }
         }
         Ok(update)
@@ -101,11 +101,23 @@ fn infallible_scan_error(error: MetaScanError<Infallible>) -> SearchError {
     }
 }
 
+/// One project's search document and the artifacts it describes.
+pub(crate) struct ProjectDocument {
+    pub(crate) document: SearchDocument,
+    /// The sha256 of every file the document was derived from.
+    ///
+    /// A replica reads it to decide whether a replicated row keyed by artifact digest - the PEP 658
+    /// metadata pointer, which decides the summary and much of the indexed text - can still change a
+    /// document it has not rebuilt. A filename names its own project, so a digest reaching one
+    /// project's files reaches no differently named project's.
+    pub(crate) artifacts: BTreeSet<String>,
+}
+
 pub(crate) fn package_document(
     ctx: &IndexerCtx<'_>,
     index: &Index,
     normalized: &str,
-) -> Result<Option<SearchDocument>, SearchError> {
+) -> Result<Option<ProjectDocument>, SearchError> {
     let mut detail = index_detail(ctx, index, normalized, &index.route)?;
     drop_revoked_files(ctx, &mut detail)?;
     if detail.files.is_empty() {
@@ -125,16 +137,24 @@ pub(crate) fn package_document(
         })
         .to_owned();
     let summary = metadata.as_ref().and_then(|doc| doc.summary.clone());
-    Ok(Some(SearchDocument {
-        text: search_text(&display_label, normalized, &detail, metadata.as_ref()),
-        display_label,
-        resource_key: normalized.to_owned(),
-        route: index.route.clone(),
-        index: index.name.clone(),
-        ecosystem: index.ecosystem.as_str().to_owned(),
-        source,
-        available_locally,
-        summary,
+    let artifacts = detail
+        .files
+        .iter()
+        .filter_map(|file| file.hashes.get("sha256").cloned())
+        .collect();
+    Ok(Some(ProjectDocument {
+        document: SearchDocument {
+            text: search_text(&display_label, normalized, &detail, metadata.as_ref()),
+            display_label,
+            resource_key: normalized.to_owned(),
+            route: index.route.clone(),
+            index: index.name.clone(),
+            ecosystem: index.ecosystem.as_str().to_owned(),
+            source,
+            available_locally,
+            summary,
+        },
+        artifacts,
     }))
 }
 

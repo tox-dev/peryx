@@ -5,6 +5,7 @@
 //! [`EcosystemDriver`]. This module is the `PyPI` implementation; it composes the neutral
 //! surfaces peryx offers a driver (state, path safety, metrics, webhooks, security events, search)
 //! with this crate's cache, upload, and archive logic.
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -559,10 +560,13 @@ fn member_text(member: &str, bytes: Vec<u8>) -> Result<String, String> {
 mod archive_boundary_tests;
 
 impl PypiServing {
-    fn apply_replicated_changes_impl(state: &ServingState, changed_keys: &[String]) -> Result<(), ViewBlock> {
+    fn apply_replicated_changes_impl<'key>(
+        state: &ServingState,
+        changed_keys: &'key [String],
+    ) -> Result<BTreeSet<&'key str>, ViewBlock> {
         let ctx = state.indexer_ctx();
-        let mut views: std::collections::BTreeSet<(usize, &str)> = std::collections::BTreeSet::new();
-        let mut touched: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let mut views: BTreeSet<(usize, &str)> = BTreeSet::new();
+        let mut touched: BTreeSet<String> = BTreeSet::new();
         for key in changed_keys {
             if let Some((index, normalized)) = crate::store::project_of_key(key) {
                 touched.insert(index.to_owned());
@@ -578,18 +582,43 @@ impl PypiServing {
                 view: SEARCH_VIEW.to_owned(),
             }
         });
+        let mut artifacts = BTreeSet::new();
         for (position, normalized) in views {
             let index = &ctx.indexes[position];
-            if let Err(error) = rebuild_project_view(&ctx, &state.search, index, normalized) {
-                tracing::error!(%error, index = %index.name, project = normalized, view = SEARCH_VIEW, "replica search-view rebuild failed; holding the readable frontier");
-                block = Some(ViewBlock {
-                    view: SEARCH_VIEW.to_owned(),
-                });
+            match rebuild_project_view(&ctx, &state.search, index, normalized) {
+                Ok(rebuilt) => artifacts.extend(rebuilt),
+                Err(error) => {
+                    tracing::error!(%error, index = %index.name, project = normalized, view = SEARCH_VIEW, "replica search-view rebuild failed; holding the readable frontier");
+                    block = Some(ViewBlock {
+                        view: SEARCH_VIEW.to_owned(),
+                    });
+                }
             }
             state.invalidate_representations(&index.route, normalized);
         }
-        block.map_or(Ok(()), Err)
+        if let Some(block) = block {
+            return Err(block);
+        }
+        Ok(changed_keys
+            .iter()
+            .filter(|key| current_after_rebuild(key, &artifacts))
+            .map(String::as_str)
+            .collect())
     }
+}
+
+/// Whether the search documents a replicated key can change are the ones this page just rebuilt.
+///
+/// A project-scoped key names the project that was rebuilt, and a row in a view-neutral namespace
+/// changes no document at all. A PEP 658 metadata pointer names an artifact instead, and reaches a
+/// document only through the files that carry the digest, so it is covered exactly when a rebuilt
+/// project describes that artifact - the publish that writes the pointer writes the project's own row
+/// beside it. Every other key is left to the neutral re-derivation.
+fn current_after_rebuild(key: &str, artifacts: &BTreeSet<String>) -> bool {
+    if crate::store::project_of_key(key).is_some() || crate::store::derives_no_view(key) {
+        return true;
+    }
+    crate::store::metadata_artifact_of_key(key).is_some_and(|sha256| artifacts.contains(sha256))
 }
 
 #[async_trait]
@@ -618,7 +647,11 @@ impl CacheRefresher for PypiServing {
 
 #[async_trait]
 impl ReplicatedApplyDriver for PypiServing {
-    fn apply_replicated_changes(&self, state: &ServingState, changed_keys: &[String]) -> Result<(), ViewBlock> {
+    fn apply_replicated_changes<'key>(
+        &self,
+        state: &ServingState,
+        changed_keys: &'key [String],
+    ) -> Result<BTreeSet<&'key str>, ViewBlock> {
         Self::apply_replicated_changes_impl(state, changed_keys)
     }
 }
@@ -650,17 +683,20 @@ fn layers_reach(indexes: &[Index], layers: &[usize], target: usize) -> bool {
 }
 
 /// Re-derive `normalized`'s document as it appears on `index` and replace only that document in the
-/// search index, retiring it when the project no longer has files.
+/// search index, retiring it when the project no longer has files. Reports the artifacts the rebuilt
+/// document describes, so the caller can tell which per-artifact rows the rebuild already covered.
 fn rebuild_project_view(
     ctx: &IndexerCtx<'_>,
     search: &SearchIndex,
     index: &Index,
     normalized: &str,
-) -> Result<(), SearchError> {
-    let docs: Vec<_> = crate::search_pypi::package_document(ctx, index, normalized)?
-        .into_iter()
-        .collect();
-    search.update_resource(&docs, &document_key(&index.route, normalized))
+) -> Result<BTreeSet<String>, SearchError> {
+    let (docs, artifacts) = match crate::search_pypi::package_document(ctx, index, normalized)? {
+        Some(package) => (vec![package.document], package.artifacts),
+        None => (Vec::new(), BTreeSet::new()),
+    };
+    search.update_resource(&docs, &document_key(&index.route, normalized))?;
+    Ok(artifacts)
 }
 
 fn safe_filename(raw: &str) -> Result<String, PathSafetyError> {

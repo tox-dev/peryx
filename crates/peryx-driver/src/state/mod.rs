@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 mod app;
 mod build;
 mod caches;
@@ -37,13 +39,23 @@ impl peryx_ha::ReplicaViewApplier for AppState {
             primary_serial = page.primary_serial,
             "replica page applied"
         );
-        self.serving.bump_search_epoch();
         self.serving.revocations.invalidate_replicated(&page.revocations);
         let mut blocked = None;
+        let mut current = BTreeSet::new();
         for driver in self.replicated_apply_drivers() {
-            if let Err(block) = driver.apply_replicated_changes(&self.serving, changed_keys) {
-                blocked = Some(block);
+            match driver.apply_replicated_changes(&self.serving, changed_keys) {
+                Ok(keys) => current.extend(keys),
+                Err(block) => blocked = Some(block),
             }
+        }
+        // The drivers run first and the epoch retires only what they left behind. Retiring it up
+        // front discarded the documents they went on to rebuild and put every later search back on a
+        // full re-derivation, so the narrowed refresh a driver sets up could never be taken.
+        //
+        // A revocation names a digest and no index maps one back to the projects that publish it, so
+        // it retires the whole view the way an operator's own revocation does.
+        if !page.revocations.is_empty() || changed_keys.iter().any(|key| !current.contains(key.as_str())) {
+            self.serving.bump_search_epoch();
         }
         if let Some(block) = blocked {
             tracing::warn!(view = %block.view, serial = page.serial, "replica view rebuild blocked the frontier");
