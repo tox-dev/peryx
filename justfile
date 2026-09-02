@@ -108,6 +108,21 @@ _mutation-shard-count-contract:
 _features-tool-contract:
     #!/usr/bin/env bash
     set -euo pipefail
+    # A build wrapper is how a developer accelerates the build rather than a tool the build needs, so
+    # the narrowed PATH below must not take it away. `heavy.sh` names sccache by bare word, which the
+    # narrow PATH cannot resolve, and cargo then fails to spawn it instead of reaching the guard this
+    # contract reads. Resolving each wrapper while the full PATH still applies keeps both true.
+    for wrapper in RUSTC_WRAPPER RUSTC_WORKSPACE_WRAPPER; do
+      named="${!wrapper:-}"
+      if [[ -z $named || $named == /* ]]; then
+        continue
+      fi
+      if resolved=$(command -v "$named"); then
+        export "$wrapper=$resolved"
+      else
+        unset "$wrapper"
+      fi
+    done
     export PATH="$(dirname "$(command -v cargo)"):/usr/bin:/bin"
     if command -v rg >/dev/null; then
       echo 'ripgrep is present in the feature contract' >&2
@@ -314,8 +329,18 @@ _renovate-contract:
           | test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))
     ' renovate.json > /dev/null
 
+# Trust this checkout's mise config so a fresh worktree can read its tool versions.
+#
+# mise refuses to read a config it has not been told to trust, and a worktree created minutes ago has
+# not. Running `just` here already runs this repository's recipes, so trusting its tool manifest hands
+# it no reach it did not already have, and without it every browser recipe reports a trust prompt in
+# place of the thing it was asked to check.
+_mise-trusted:
+    @mise trust mise.toml >/dev/null
+    @mise trust mise.browser.toml >/dev/null
+
 # Check browser package, binary, and updater ownership.
-_browser-contract:
+_browser-contract: _mise-trusted
     #!/usr/bin/env bash
     set -euo pipefail
     browser_env=$(MISE_ENV=browser mise env --json)
@@ -461,9 +486,21 @@ features: _project-temp
 
 # Check that the binary rejects an empty composition.
 _zero-feature-binary:
-    @if output="$(cargo check --package peryx --no-default-features --bin peryx 2>&1)"; then \
-      echo 'zero-feature peryx binary compiled' >&2; exit 1; \
-    fi; printf '%s\n' "$output" | grep -F 'the peryx binary requires at least one `composition-*` feature'
+    #!/usr/bin/env bash
+    set -euo pipefail
+    guard='the peryx binary requires at least one `composition-*` feature'
+    if output=$(cargo check --package peryx --no-default-features --bin peryx 2>&1); then
+      printf 'the zero-feature peryx binary compiled; it must refuse an empty composition\n' >&2
+      exit 1
+    fi
+    if grep -Fq "$guard" <<<"$output"; then
+      exit 0
+    fi
+    # Neither outcome the contract knows about. Saying so beats reporting a violation the build never
+    # got far enough to observe, which reads as "your change broke this" when nothing here ran.
+    printf 'unavailable: the zero-feature check could not run, so it proved nothing about this tree\n' >&2
+    printf 'cargo stopped for a reason other than the composition guard:\n%s\n' "$output" >&2
+    exit 1
 
 # Build the shipped server with one composition feature.
 _system-test-build feature: _project-temp
