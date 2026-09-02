@@ -501,8 +501,11 @@ async fn test_sync_returns_the_upstream_status() {
     assert!(matches!(error, ProjectSyncError::Status(500)));
 }
 
+/// `tokio::join!` polls the first future first, so it takes the uncontended gate and holds it across
+/// its upstream request while the second blocks. The queued caller then revalidates what the first one
+/// published and reports the `304` upstream actually returned, rather than the row it found.
 #[tokio::test]
-async fn test_sync_coalesces_concurrent_fetches() {
+async fn test_a_queued_sync_revalidates_what_the_first_published() {
     let server = MockServer::start().await;
     let body = format!(
         r#"{{"meta":{{"api-version":"1.1"}},"versions":[],"name":"flask","files":[
@@ -511,7 +514,19 @@ async fn test_sync_coalesces_concurrent_fetches() {
     );
     Mock::given(method("GET"))
         .and(path("/simple/flask/"))
-        .respond_with(ResponseTemplate::new(200).set_body_raw(body, JSON))
+        .and(header("if-none-match", "v1"))
+        .respond_with(ResponseTemplate::new(304))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("etag", "v1")
+                .set_body_raw(body, JSON),
+        )
+        .expect(1)
         .mount(&server)
         .await;
     let client = client_for(&server);
@@ -526,6 +541,82 @@ async fn test_sync_coalesces_concurrent_fetches() {
 
     assert_eq!(first.unwrap(), ProjectSyncOutcome::Published { files: 1 });
     assert_eq!(second.unwrap(), ProjectSyncOutcome::NotModified { files: 1 });
+    server.verify().await;
+}
+
+/// Both callers revalidate an unchanged generation, so both report the `304` each of them received.
+#[tokio::test]
+async fn test_queued_syncs_each_report_their_own_not_modified() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .and(header("if-none-match", "v1"))
+        .respond_with(ResponseTemplate::new(304))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let client = client_for(&server);
+    let (_dir, meta) = store();
+    seed_active(
+        &meta,
+        "pypi",
+        "flask",
+        "v1",
+        &[file("flask-1.0.tar.gz", &"a".repeat(64))],
+    );
+    let inflight = Inflight::default();
+    let policy = Policy::default();
+
+    let (first, second) = tokio::join!(
+        sync_project_files(&client, &inflight, &meta, "pypi", &policy, "flask", client.base_url()),
+        sync_project_files(&client, &inflight, &meta, "pypi", &policy, "flask", client.base_url()),
+    );
+
+    assert_eq!(first.unwrap(), ProjectSyncOutcome::NotModified { files: 1 });
+    assert_eq!(second.unwrap(), ProjectSyncOutcome::NotModified { files: 1 });
+    server.verify().await;
+}
+
+/// The failure this whole change is about. An active generation is present and the refresh fails, so
+/// the queued caller used to find that row and report `NotModified`, turning the producer's failure
+/// into a success. It now makes its own request and fails the same way.
+#[tokio::test]
+async fn test_a_queued_sync_reports_the_failure_instead_of_the_stale_row() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw("not json", JSON))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let client = client_for(&server);
+    let (_dir, meta) = store();
+    let seeded = seed_active(
+        &meta,
+        "pypi",
+        "flask",
+        "v1",
+        &[file("flask-1.0.tar.gz", &"a".repeat(64))],
+    );
+    let inflight = Inflight::default();
+    let policy = Policy::default();
+
+    let (first, second) = tokio::join!(
+        sync_project_files(&client, &inflight, &meta, "pypi", &policy, "flask", client.base_url()),
+        sync_project_files(&client, &inflight, &meta, "pypi", &policy, "flask", client.base_url()),
+    );
+
+    assert!(first.is_err(), "{first:?}");
+    assert!(second.is_err(), "{second:?}");
+    assert_eq!(
+        active_project_generation(&meta, "pypi", "flask")
+            .unwrap()
+            .unwrap()
+            .generation,
+        seeded,
+        "a failed refresh leaves the generation it could not replace"
+    );
+    server.verify().await;
 }
 
 #[tokio::test]

@@ -103,14 +103,24 @@ async fn test_read_catalog_projects_reports_an_upstream_failure() {
     assert!(matches!(error, CatalogSyncError::Status(503)));
 }
 
+/// The queued caller revalidates what the first one published and reports the `304` upstream returned,
+/// rather than the row it would have found.
 #[tokio::test]
-async fn test_sync_catalog_coalesces_concurrent_fetches() {
+async fn test_a_queued_catalog_sync_revalidates_what_the_first_published() {
     let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/"))
+        .and(header("if-none-match", "v1"))
+        .respond_with(ResponseTemplate::new(304))
+        .expect(1)
+        .mount(&server)
+        .await;
     Mock::given(method("GET"))
         .and(path("/simple/"))
         .respond_with(
             ResponseTemplate::new(200)
                 .insert_header("content-type", "application/vnd.pypi.simple.v1+json")
+                .insert_header("etag", "v1")
                 .set_body_raw(
                     r#"{"meta":{"api-version":"1.4"},"projects":[{"name":"Flask"}]}"#,
                     "application/vnd.pypi.simple.v1+json",
@@ -133,16 +143,18 @@ async fn test_sync_catalog_coalesces_concurrent_fetches() {
         second.unwrap(),
         CatalogSyncOutcome::NotModified { projects: 1 }
     ));
+    server.verify().await;
 }
 
+/// Both callers revalidate an unchanged catalog, so both report the `304` each of them received.
 #[tokio::test]
-async fn test_sync_catalog_coalesces_concurrent_revalidations() {
+async fn test_queued_catalog_syncs_each_report_their_own_not_modified() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/simple/"))
         .and(header("if-none-match", "old"))
         .respond_with(ResponseTemplate::new(304))
-        .expect(1)
+        .expect(2)
         .mount(&server)
         .await;
     let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
@@ -163,6 +175,7 @@ async fn test_sync_catalog_coalesces_concurrent_revalidations() {
         second.unwrap(),
         CatalogSyncOutcome::NotModified { projects: 1 }
     ));
+    server.verify().await;
 }
 
 #[tokio::test]

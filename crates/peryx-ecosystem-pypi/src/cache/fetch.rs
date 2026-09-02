@@ -460,10 +460,11 @@ pub async fn sync_project_files<C: crate::SimpleClientExt + Sync>(
     project: &str,
     fallback_source: &str,
 ) -> Result<ProjectSyncOutcome, ProjectSyncError> {
-    let (_guard, waited) = crate::sync_lock::acquire(inflight, &format!("pypi\0project\0{index}\0{project}")).await;
-    if waited && let Some(active) = active_project_generation(meta, index, project)? {
-        return Ok(ProjectSyncOutcome::NotModified { files: active.files });
-    }
+    // The gate serializes syncs of one project, so a queued caller never joins a stampede. It does not
+    // answer for the caller ahead of it: only a conditional request of its own can tell it whether the
+    // generation it would report is current, and the row alone cannot, least of all when the caller
+    // ahead failed to refresh it.
+    let _guard = crate::sync_lock::acquire(inflight, &format!("pypi\0project\0{index}\0{project}")).await;
     recover_project_generations(meta, index, project)?;
     let previous = active_project_generation(meta, index, project)?;
     let head = client

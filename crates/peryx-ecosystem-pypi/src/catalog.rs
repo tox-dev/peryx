@@ -80,12 +80,7 @@ pub async fn sync_catalog<C: SimpleClientExt + Sync>(
     index: &str,
     fallback_source: &str,
 ) -> Result<CatalogSyncOutcome, CatalogSyncError> {
-    let (_guard, waited) = crate::sync_lock::acquire(inflight, &format!("pypi\0catalog\0{index}")).await;
-    if waited && let Some(active) = catalog_state(meta, index)?.active {
-        return Ok(CatalogSyncOutcome::NotModified {
-            projects: active.projects,
-        });
-    }
+    let _guard = crate::sync_lock::acquire(inflight, &format!("pypi\0catalog\0{index}")).await;
     recover_catalog_generations(meta, index)?;
     let previous = catalog_state(meta, index)?.active;
     let head = client

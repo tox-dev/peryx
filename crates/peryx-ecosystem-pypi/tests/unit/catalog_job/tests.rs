@@ -112,7 +112,7 @@ async fn mount_project(server: &MockServer, project: &str, expected: u64) {
 struct StalledUpstream {
     client: UpstreamClient,
     entered: oneshot::Receiver<()>,
-    release: oneshot::Sender<Option<&'static str>>,
+    release: oneshot::Sender<()>,
     server: tokio::task::JoinHandle<()>,
 }
 
@@ -120,7 +120,7 @@ async fn stalled_upstream(stalled_path: &'static str, root_body: Option<&'static
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let (entered_sender, entered) = oneshot::channel();
-    let (release, release_receiver) = oneshot::channel::<Option<&'static str>>();
+    let (release, release_receiver) = oneshot::channel::<()>();
     let server = tokio::spawn(async move {
         let mut entered_sender = Some(entered_sender);
         let mut release_receiver = Some(release_receiver);
@@ -140,18 +140,7 @@ async fn stalled_upstream(stalled_path: &'static str, root_body: Option<&'static
                 .to_owned();
             if path == stalled_path {
                 entered_sender.take().unwrap().send(()).unwrap();
-                if let Ok(Some(body)) = release_receiver.take().unwrap().await {
-                    socket
-                        .write_all(
-                            format!(
-                                "HTTP/1.1 200 OK\r\ncontent-type: {JSON}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                                body.len()
-                            )
-                            .as_bytes(),
-                        )
-                        .await
-                        .unwrap();
-                }
+                release_receiver.take().unwrap().await.ok();
                 return;
             }
             let body = root_body.expect("only the root request may precede the stalled request");
@@ -183,15 +172,7 @@ async fn await_stalled_request(upstream: &mut StalledUpstream) {
 }
 
 async fn release_stalled_request(upstream: StalledUpstream) {
-    upstream.release.send(None).unwrap();
-    tokio::time::timeout(Duration::from_secs(2), upstream.server)
-        .await
-        .expect("the upstream server exits")
-        .unwrap();
-}
-
-async fn answer_stalled_request(upstream: StalledUpstream, body: &'static str) {
-    upstream.release.send(Some(body)).unwrap();
+    upstream.release.send(()).unwrap();
     tokio::time::timeout(Duration::from_secs(2), upstream.server)
         .await
         .expect("the upstream server exits")
@@ -562,49 +543,91 @@ async fn test_public_job_revalidates_root_and_project_generations_and_tolerates_
     server.verify().await;
 }
 
+/// A root the upstream answers `304` for is a run that changed nothing, and the job records it as
+/// such. Every other root test here serves `200` on every request, so the job's `NotModified` arm was
+/// reached only by the coalescing shortcut this change removes: nothing drove the job through a real
+/// revalidation.
 #[tokio::test]
-async fn test_concurrent_public_jobs_coalesce_root_publication() {
-    let mut upstream = stalled_upstream("/simple/", None).await;
+async fn test_public_job_records_no_change_for_a_revalidated_root() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/"))
+        .and(header("if-none-match", "root-v1"))
+        .respond_with(ResponseTemplate::new(304))
+        .with_priority(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/simple/"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("etag", "root-v1")
+                .set_body_raw(r#"{"meta":{"api-version":"1.4"},"projects":[]}"#, JSON),
+        )
+        .with_priority(10)
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
     let (_dir, app) = app(vec![index(
-        "coalesced",
+        "revalidated-root",
         crate::ECOSYSTEM,
-        IndexKind::Cached {
-            client: upstream.client.clone(),
-            offline: false,
-        },
+        IndexKind::Cached { client, offline: false },
     )]);
 
-    let first = tokio::spawn({
-        let app = app.clone();
-        async move { run(&app, parameters("coalesced", 1, 1)).await }
-    });
-    let second = tokio::spawn({
-        let app = app.clone();
-        async move { run(&app, parameters("coalesced", 1, 1)).await }
-    });
-    await_stalled_request(&mut upstream).await;
-    answer_stalled_request(upstream, r#"{"meta":{"api-version":"1.4"},"projects":[]}"#).await;
-    let (first, second) = tokio::join!(first, second);
-    let first = first.unwrap();
-    let second = second.unwrap();
-    let mut reports = [first.unwrap(), second.unwrap()];
-    reports.sort_by_key(|report| report.changed);
+    let published = run(&app, parameters("revalidated-root", 1, 1)).await.unwrap();
+    let revalidated = run(&app, parameters("revalidated-root", 1, 1)).await.unwrap();
 
     assert_eq!(
-        reports,
-        [
-            JobReport {
-                processed: 0,
-                changed: 0,
-                ..JobReport::default()
-            },
+        (published, revalidated),
+        (
             JobReport {
                 processed: 0,
                 changed: 1,
                 ..JobReport::default()
+            },
+            JobReport {
+                processed: 0,
+                changed: 0,
+                ..JobReport::default()
             }
-        ]
+        )
     );
+    server.verify().await;
+}
+
+/// What the job records is the point of the change. A refresh that fails must not be counted as a
+/// processed project: each run makes its own request, so neither can report a clean run off the
+/// generation row the other one failed to replace.
+#[tokio::test]
+async fn test_concurrent_public_jobs_both_report_a_failed_project_refresh() {
+    let server = MockServer::start().await;
+    mount_root(&server, &["flask"]).await;
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw("not json", JSON))
+        .mount(&server)
+        .await;
+    let client = UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap();
+    let (_dir, app) = app(vec![index(
+        "failing",
+        crate::ECOSYSTEM,
+        IndexKind::Cached { client, offline: false },
+    )]);
+
+    let first = tokio::spawn({
+        let app = app.clone();
+        async move { run(&app, parameters("failing", 1, 1)).await }
+    });
+    let second = tokio::spawn({
+        let app = app.clone();
+        async move { run(&app, parameters("failing", 1, 1)).await }
+    });
+    let (first, second) = tokio::join!(first, second);
+
+    assert!(first.unwrap().unwrap_err().contains("flask"));
+    assert!(second.unwrap().unwrap_err().contains("flask"));
 }
 
 #[tokio::test]
