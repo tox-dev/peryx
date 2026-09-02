@@ -5077,6 +5077,8 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.23.1",
+ "bytes",
+ "http-body 1.1.0",
  "http-body-util",
  "jsonwebtoken",
  "mediatype",

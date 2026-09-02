@@ -1,4 +1,5 @@
-//! Every response leaves the process with the browser defences its handler did not set for itself.
+//! Every response leaves the process with the defaults its handler did not set for itself: the
+//! browser defences, and the framing that decides what a `304` may say about a length it never sent.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -58,6 +59,7 @@ impl IndexedProtocolDriver for StubDriver {
                 [(header::CACHE_CONTROL, "public, max-age=60")],
             )
                 .into_response(),
+            "unchanged-sized" => (StatusCode::NOT_MODIFIED, [(header::CONTENT_LENGTH, "4096")]).into_response(),
             "elsewhere" => Redirect::temporary("/alpha/page").into_response(),
             "opinionated" => (
                 [
@@ -249,6 +251,78 @@ async fn test_a_not_modified_response_keeps_its_cache_policy() {
     assert_eq!(
         (response.status(), value(&response, header::CACHE_CONTROL)),
         (StatusCode::NOT_MODIFIED, Some("public, max-age=60"))
+    );
+}
+
+/// RFC 9112 s6.2 admits a `Content-Length` on a `304` only at the length the `200` would have sent, so
+/// peryx sends none: neither the zero its empty body measures, nor a value a handler picked.
+#[rstest]
+#[case::unstated("/alpha/unchanged")]
+#[case::stated("/alpha/unchanged-sized")]
+#[tokio::test]
+async fn test_a_not_modified_states_no_length(#[case] uri: &str) {
+    let (_dir, state) = state(RateLimitConfig::default());
+
+    let response = fetch(state, uri).await;
+
+    let status = response.status();
+    let stated = response.headers().contains_key(header::CONTENT_LENGTH);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert_eq!((status, stated, body.len()), (StatusCode::NOT_MODIFIED, false, 0));
+}
+
+/// What a client actually receives, over both protocols peryx answers on.
+///
+/// The two disagree about a `304` and only a socket shows it: HTTP/1.1 drops a `Content-Length` whose
+/// body has already ended, while HTTP/2 writes the header map as it stands. So a length left on one
+/// would reach an HTTP/2 client and no other, and a length no `DATA` frame backs is a `PROTOCOL_ERROR`
+/// that client resets the stream on.
+#[rstest]
+#[case::http1_unstated(false, "/alpha/unchanged")]
+#[case::http1_stated(false, "/alpha/unchanged-sized")]
+#[case::http2_unstated(true, "/alpha/unchanged")]
+#[case::http2_stated(true, "/alpha/unchanged-sized")]
+#[tokio::test]
+async fn test_a_not_modified_states_no_length_over_the_wire(#[case] over_http2: bool, #[case] path: &str) {
+    let (_dir, state) = state(RateLimitConfig::default());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let served = tokio::spawn(std::future::IntoFuture::into_future(axum::serve(
+        listener,
+        crate::router(Arc::new(state)),
+    )));
+    let mut client = reqwest::Client::builder();
+    if over_http2 {
+        client = client.http2_prior_knowledge();
+    }
+
+    let response = client
+        .build()
+        .unwrap()
+        .get(format!("http://{address}{path}"))
+        .send()
+        .await
+        .unwrap();
+
+    let status = response.status().as_u16();
+    let stated = response.headers().contains_key(header::CONTENT_LENGTH);
+    // A stated length the client then reads no bytes for is what desynchronises it, so the byte count
+    // is asserted beside the field that would have framed it.
+    let body = response.bytes().await.unwrap();
+    assert_eq!((status, stated, body.len()), (304, false, 0));
+    served.abort();
+}
+
+/// Only a `304` is reframed: every other status keeps the length axum measures off its body.
+#[tokio::test]
+async fn test_a_served_representation_keeps_the_length_of_its_body() {
+    let (_dir, state) = state(RateLimitConfig::default());
+
+    let response = fetch(state, "/alpha/artifact").await;
+
+    assert_eq!(
+        (response.status(), value(&response, header::CONTENT_LENGTH)),
+        (StatusCode::OK, Some("4"))
     );
 }
 

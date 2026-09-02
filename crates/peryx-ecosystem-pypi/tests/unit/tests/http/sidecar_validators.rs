@@ -20,21 +20,31 @@ async fn assert_sidecar_validator(state: &Arc<AppState>, uri: &str, body: &[u8],
             status,
             headers[header::ETAG].to_str().unwrap(),
             headers[header::CACHE_CONTROL].to_str().unwrap(),
+            headers[header::CONTENT_LENGTH].to_str().unwrap(),
             served.as_slice(),
         ),
-        (StatusCode::OK, etag.as_str(), policy, body)
+        (
+            StatusCode::OK,
+            etag.as_str(),
+            policy,
+            body.len().to_string().as_str(),
+            body,
+        )
     );
 
     let (status, headers, revalidated) =
         get_bytes_with_headers(state, uri, &[(header::IF_NONE_MATCH.as_str(), &etag)]).await;
+    // The `200` states the document's length; RFC 9112 s6.2 admits no other on the `304`, so it
+    // states none rather than the zero its dropped body would measure.
     assert_eq!(
         (
             status,
             headers[header::ETAG].to_str().unwrap(),
             headers[header::CACHE_CONTROL].to_str().unwrap(),
+            headers.contains_key(header::CONTENT_LENGTH),
             revalidated.as_slice(),
         ),
-        (StatusCode::NOT_MODIFIED, etag.as_str(), policy, b"".as_slice())
+        (StatusCode::NOT_MODIFIED, etag.as_str(), policy, false, b"".as_slice())
     );
 
     let (status, headers, refused) =

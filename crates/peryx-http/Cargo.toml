@@ -17,6 +17,8 @@ peryx-pql.workspace = true
 peryx-search.workspace = true
 axum = { workspace = true, features = ["matched-path"] }
 base64.workspace = true
+bytes.workspace = true
+http-body.workspace = true
 http-body-util.workspace = true
 mediatype.workspace = true
 pin-project-lite.workspace = true

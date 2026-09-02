@@ -73,6 +73,30 @@ async fn test_manifest_matching_if_none_match_is_not_modified(#[case] reference:
     assert!(body.is_empty());
 }
 
+/// RFC 9112 s6.2 admits a `Content-Length` on a `304` only at the length the `200` would have sent.
+/// A manifest `200` states its document's length, so the `304` standing in for it states none.
+#[rstest]
+#[case::get(Method::GET)]
+#[case::head(Method::HEAD)]
+#[tokio::test]
+async fn test_a_not_modified_manifest_states_no_length(#[case] verb: Method) {
+    let dir = tempfile::tempdir().unwrap();
+    let app = tagged(&dir).await;
+    let uri = "/v2/store/app/manifests/v1";
+    let (_, served, _) = send(&app, verb.clone(), uri).await;
+
+    let (status, headers, _) = send_with(&app, verb, uri, &[("if-none-match", &manifest_etag())]).await;
+
+    assert_eq!(
+        (
+            status,
+            headers.contains_key(header::CONTENT_LENGTH),
+            served[header::CONTENT_LENGTH].to_str().unwrap(),
+        ),
+        (StatusCode::NOT_MODIFIED, false, MANIFEST.len().to_string().as_str())
+    );
+}
+
 #[rstest]
 #[case::weak(&format!("W/{}", manifest_etag()))]
 #[case::any("*")]

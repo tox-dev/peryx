@@ -169,6 +169,10 @@ const TRANSPORT_SECURITY: HeaderValue = HeaderValue::from_static("max-age=315360
 /// than instruction-bound, so the whole policy is one `Router::layer` call: one boxed service, one
 /// future, and one pass over the header map. The transport verdict is settled here, when the router
 /// is built, leaving the per-response work to writing.
+///
+/// The `304` framing rides along for the same reason it has to sit outside every handler: a static
+/// file service answers a conditional request too, and it is no more able to state a length axum
+/// will not overrule than an ecosystem is.
 pub(crate) fn secure_responses(router: Router, state: &Arc<AppState>) -> Router {
     router.layer(BrowserDefaults {
         transport: if state.serving.tls_terminated {
@@ -273,6 +277,7 @@ where
         let this = self.project();
         let mut response = ready!(this.inner.poll(context))?;
         apply_defaults(response.headers_mut(), *this.pins_transport);
+        crate::response_framing::frame_not_modified(&mut response);
         Poll::Ready(Ok(response))
     }
 }

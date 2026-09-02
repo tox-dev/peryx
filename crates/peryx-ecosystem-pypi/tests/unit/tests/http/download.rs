@@ -592,6 +592,30 @@ async fn test_cached_file_the_client_already_dated_is_not_modified() {
     assert_eq!(headers[header::ETAG], wheel_etag());
     assert!(body.is_empty());
 }
+/// RFC 9112 s6.2 admits a `Content-Length` on a `304` only at the length the `200` would have sent,
+/// and RFC 9111 s4.3.4 has a cache write the field over the entry it already holds. The `200` for a
+/// wheel states the wheel's size, so the `304` states no length rather than its empty body's zero.
+#[rstest]
+#[case::tagged("if-none-match", &wheel_etag())]
+#[case::dated("if-modified-since", "Fri, 31 Dec 2100 23:59:59 GMT")]
+#[tokio::test]
+async fn test_a_not_modified_wheel_states_no_length(#[case] field: &str, #[case] value: &str) {
+    let h = harness().await;
+    let uri = cached_wheel_uri(&h);
+    let (_, served, _) = get_bytes(&h.state, &uri, None).await;
+
+    let (status, headers, _) = get_bytes_with_headers(&h.state, &uri, &[(field, value)]).await;
+
+    assert_eq!(
+        (
+            status,
+            headers.contains_key(header::CONTENT_LENGTH),
+            served[header::CONTENT_LENGTH].to_str().unwrap(),
+        ),
+        (StatusCode::NOT_MODIFIED, false, WHEEL.len().to_string().as_str())
+    );
+}
+
 #[tokio::test]
 async fn test_cached_file_is_not_modified_since_a_date_that_has_not_arrived() {
     let h = harness().await;

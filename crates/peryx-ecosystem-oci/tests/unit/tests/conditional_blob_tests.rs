@@ -124,6 +124,33 @@ async fn test_stored_blob_head_matching_if_none_match_is_not_modified() {
     assert!(body.is_empty());
 }
 
+/// RFC 9112 s6.2 admits a `Content-Length` on a `304` only at the length the `200` would have sent.
+/// The `200` for a layer states the layer's size, and the condition outranks a `Range` (RFC 9110
+/// s13.1.2), so neither the whole pull nor a sliced one leaves a length behind on the `304`.
+#[rstest]
+#[case::whole(None)]
+#[case::ranged(Some("bytes=0-3"))]
+#[tokio::test]
+async fn test_a_not_modified_blob_states_no_length(#[case] range: Option<&str>) {
+    let dir = tempfile::tempdir().unwrap();
+    let (app, uri) = stored(&dir).await;
+    let (_, served, _) = send(&app, Method::GET, &uri).await;
+    let etag = blob_etag();
+    let mut conditional = vec![("if-none-match", etag.as_str())];
+    conditional.extend(range.map(|range| ("range", range)));
+
+    let (status, headers, _) = send_with(&app, Method::GET, &uri, &conditional).await;
+
+    assert_eq!(
+        (
+            status,
+            headers.contains_key(header::CONTENT_LENGTH),
+            served[header::CONTENT_LENGTH].to_str().unwrap(),
+        ),
+        (StatusCode::NOT_MODIFIED, false, BLOB.len().to_string().as_str())
+    );
+}
+
 /// A `304` validated the client's copy, so it carries the policy of the `200` it refreshes rather
 /// than the `no-store` a refusal gets.
 #[tokio::test]
