@@ -5,7 +5,6 @@ mod service;
 mod trash;
 
 use peryx_driver::route_auth::{ApiScheme, ReadExposure};
-use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::openapi::{
     ComponentsBuilder, ContactBuilder, InfoBuilder, LicenseBuilder, OpenApi, OpenApiBuilder, PathsBuilder,
     ServerBuilder,
@@ -101,17 +100,6 @@ pub fn openapi_for_with_plugins(
                 .fold(ComponentsBuilder::new(), |components, scheme| {
                     components.security_scheme(scheme.name(), scheme.declaration())
                 })
-                .security_scheme(
-                    "administratorPassword",
-                    SecurityScheme::Http(
-                        HttpBuilder::new()
-                            .scheme(HttpAuthScheme::Basic)
-                            .description(Some(
-                                "A local server user's display name and password. Each operation checks the user's role against its protected resource.",
-                            ))
-                            .build(),
-                    ),
-                )
                 .build(),
         ))
         .build()

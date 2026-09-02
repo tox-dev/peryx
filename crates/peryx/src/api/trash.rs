@@ -1,8 +1,9 @@
 use serde_json::json;
 use utoipa::openapi::path::{HttpMethod, OperationBuilder, ParameterIn, PathItemBuilder};
-use utoipa::openapi::{PathsBuilder, Required, ResponseBuilder, SecurityRequirement};
+use utoipa::openapi::{PathsBuilder, Required, ResponseBuilder};
 
 use peryx_driver::openapi::{api_json_response, bounded_integer_parameter, enum_parameter, parameter};
+use peryx_driver::route_auth::{AdminRealm, RouteAuth};
 
 pub(super) fn trash_paths(paths: PathsBuilder) -> PathsBuilder {
     paths
@@ -35,7 +36,7 @@ fn trash_record_example() -> serde_json::Value {
 }
 
 fn list_trash() -> OperationBuilder {
-    let mut operation = OperationBuilder::new()
+    let mut operation = RouteAuth::WriteOrAdministration.operation(AdminRealm::Trash.unauthorized())
         .tag("operations")
         .summary(Some("List trashed artifacts"))
         .description(Some(
@@ -45,8 +46,6 @@ fn list_trash() -> OperationBuilder {
              reflect content retention and the recovery deadline. Responses exclude credentials and \
              request headers and use `no-store`.",
         ))
-        .security(SecurityRequirement::new("writeToken", Vec::<String>::new()))
-        .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
         .response(
             "200",
             api_json_response(
@@ -60,10 +59,6 @@ fn list_trash() -> OperationBuilder {
                 "The limit, cursor, or a filter is invalid",
                 json!({"error": "limit must be between 1 and 100"}),
             ),
-        )
-        .response(
-            "401",
-            ResponseBuilder::new().description("No valid local or ecosystem credential was presented"),
         )
         .response(
             "403",
@@ -126,7 +121,8 @@ fn list_trash() -> OperationBuilder {
 }
 
 fn inspect_trash() -> OperationBuilder {
-    let mut operation = OperationBuilder::new()
+    let mut operation = RouteAuth::WriteOrAdministration
+        .operation(AdminRealm::Trash.unauthorized())
         .tag("operations")
         .summary(Some("Inspect one trashed artifact"))
         .description(Some(
@@ -134,8 +130,6 @@ fn inspect_trash() -> OperationBuilder {
              role-filtered actor visibility as the list. Returns the current derived state without \
              changing lifecycle, retention, or policy state.",
         ))
-        .security(SecurityRequirement::new("writeToken", Vec::<String>::new()))
-        .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
         .response(
             "200",
             api_json_response("The matching trash record", json!({"record": trash_record_example()})),
@@ -143,10 +137,6 @@ fn inspect_trash() -> OperationBuilder {
         .response(
             "400",
             api_json_response("The ecosystem is unknown", json!({"error": "invalid trash query"})),
-        )
-        .response(
-            "401",
-            ResponseBuilder::new().description("No valid local or ecosystem credential was presented"),
         )
         .response(
             "403",

@@ -7,6 +7,7 @@ use utoipa::openapi::{PathsBuilder, Required, ResponseBuilder, SecurityRequireme
 use peryx_driver::openapi::{
     api_json_response, artifact_search, bounded_integer_parameter, enum_parameter, parameter, text_response,
 };
+use peryx_driver::route_auth::{AdminRealm, ApiScheme, RouteAuth};
 
 /// Register the `/+analytics/*` usage query family, kept apart so the service path list stays short.
 fn analytics_paths(paths: PathsBuilder) -> PathsBuilder {
@@ -136,13 +137,13 @@ fn if_match_parameter() -> utoipa::openapi::path::Parameter {
 
 fn list_repositories() -> OperationBuilder {
     administrator_errors(
-        OperationBuilder::new()
+        RouteAuth::Administration
+            .operation(AdminRealm::Server.unauthorized())
             .tag("operations")
             .summary(Some("List repositories"))
             .description(Some(
                 "Lists repositories in id order with an opaque cursor and a bounded page size. Filter by state.",
             ))
-            .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
             .parameter(
                 enum_parameter(
                     "state",
@@ -192,7 +193,7 @@ fn list_repositories() -> OperationBuilder {
 
 fn create_repository() -> OperationBuilder {
     administrator_errors(
-        OperationBuilder::new()
+        RouteAuth::Administration.operation(AdminRealm::Server.unauthorized())
             .tag("operations")
             .summary(Some("Create a repository"))
             .description(Some(
@@ -200,7 +201,6 @@ fn create_repository() -> OperationBuilder {
                  for the record's life. The response carries the record, an `ETag` for a later `If-Match`, and a \
                  `Location`.",
             ))
-            .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
             .request_body(Some(RequestBodyBuilder::new().required(Some(Required::True)).content("application/json", ContentBuilder::new().example(Some(json!({"route": "root/artifacts", "display_name": "Artifact mirror", "ecosystem": "example", "definition": {}}))).build()).build()))
             .response("201", api_json_response("The created repository", repository_example()))
             .response("409", api_json_response("Another repository already serves the route", json!({"error": "a repository already serves route \"root/artifacts\""})))
@@ -211,13 +211,13 @@ fn create_repository() -> OperationBuilder {
 
 fn inspect_repository() -> OperationBuilder {
     administrator_errors(
-        OperationBuilder::new()
+        RouteAuth::Administration
+            .operation(AdminRealm::Server.unauthorized())
             .tag("operations")
             .summary(Some("Inspect a repository"))
             .description(Some(
                 "Returns one repository by id, with an `ETag` carrying its version.",
             ))
-            .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
             .parameter(repository_id_parameter())
             .response("200", api_json_response("The repository", repository_example())),
     )
@@ -225,7 +225,8 @@ fn inspect_repository() -> OperationBuilder {
 
 fn update_repository() -> OperationBuilder {
     administrator_errors(
-        OperationBuilder::new()
+        RouteAuth::Administration
+            .operation(AdminRealm::Server.unauthorized())
             .tag("operations")
             .summary(Some("Update a repository"))
             .description(Some(
@@ -233,7 +234,6 @@ fn update_repository() -> OperationBuilder {
                  ecosystem cannot change. A failed precondition returns the current `ETag` when the repository \
                  exists.",
             ))
-            .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
             .parameter(repository_id_parameter())
             .parameter(if_match_parameter())
             .request_body(Some(
@@ -282,11 +282,11 @@ fn update_repository() -> OperationBuilder {
 
 fn repository_state_operation(summary: &'static str, description: &'static str) -> OperationBuilder {
     administrator_errors(
-        OperationBuilder::new()
+        RouteAuth::Administration
+            .operation(AdminRealm::Server.unauthorized())
             .tag("operations")
             .summary(Some(summary))
             .description(Some(description))
-            .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
             .parameter(repository_id_parameter())
             .parameter(if_match_parameter())
             .response(
@@ -475,7 +475,8 @@ fn token_paths(paths: PathsBuilder) -> PathsBuilder {
 }
 
 fn cancel_job() -> OperationBuilder {
-    OperationBuilder::new()
+    RouteAuth::Administration
+        .operation(AdminRealm::Server.unauthorized())
         .tag("operations")
         .summary(Some("Cancel a running job"))
         .description(Some(
@@ -485,15 +486,10 @@ fn cancel_job() -> OperationBuilder {
              administration-write scope; an unknown run and an unauthorized caller answer 404 alike, so a denial \
              cannot confirm a run id.",
         ))
-        .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
         .parameter(job_id_parameter())
         .response(
             "202",
             ResponseBuilder::new().description("The cancellation signal reached the running attempt"),
-        )
-        .response(
-            "401",
-            ResponseBuilder::new().description("No valid local user credential was presented"),
         )
         .response(
             "404",
@@ -535,7 +531,10 @@ fn acl() -> OperationBuilder {
              Basic as an access token that holds write over every resource here. Token secrets are never \
              returned, only a marker that one is set.",
         ))
-        .security(SecurityRequirement::new("writeToken", Vec::<String>::new()))
+        .security(SecurityRequirement::new(
+            ApiScheme::WriteToken.name(),
+            Vec::<String>::new(),
+        ))
         .parameter(
             parameter(
                 "index",
@@ -604,7 +603,7 @@ fn discovery() -> OperationBuilder {
 }
 
 fn status() -> OperationBuilder {
-    OperationBuilder::new()
+    RouteAuth::Administration.widening_operation()
         .tag("operations")
         .summary(Some("Health and identity"))
         .description(Some(
@@ -615,7 +614,6 @@ fn status() -> OperationBuilder {
              administrator authority. The response is `private, no-cache`. The example shows the \
              administrator view.",
         ))
-        .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
         .response(
             "200",
             ResponseBuilder::new().description("Caller-filtered process status").content(
@@ -707,7 +705,8 @@ fn readiness() -> OperationBuilder {
 }
 
 fn stats() -> OperationBuilder {
-    OperationBuilder::new()
+    RouteAuth::Administration
+        .operation(AdminRealm::Stats.unauthorized())
         .tag("operations")
         .summary(Some("Usage statistics"))
         .description(Some(
@@ -720,11 +719,6 @@ fn stats() -> OperationBuilder {
              and an `ecosystem` map of the driver's own counters (an adapter-specific metadata family under \
              `metadata`).",
         ))
-        .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
-        .response(
-            "401",
-            ResponseBuilder::new().description("No valid operator credential was presented"),
-        )
         .response(
             "404",
             ResponseBuilder::new().description("The credential holds no operator grant"),
@@ -782,20 +776,15 @@ fn analytics_interval() -> serde_json::Value {
 /// The query parameters, security, and failure responses shared by every `/+analytics/*` view. An
 /// operator query omits `repository`; a repository query names an index route the caller can read.
 fn analytics_query(operation: OperationBuilder) -> OperationBuilder {
-    let mut operation = operation
+    let mut operation = RouteAuth::WriteOrAdministration
+        .guard(operation, Some(AdminRealm::Analytics.unauthorized()))
         .tag("operations")
-        .security(SecurityRequirement::new("writeToken", Vec::<String>::new()))
-        .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
         .response(
             "400",
             api_json_response(
                 "The limit, cursor, time range, or repository filter is invalid",
                 json!({"error": "limit must be between 1 and 100"}),
             ),
-        )
-        .response(
-            "401",
-            ResponseBuilder::new().description("No valid local user credential or repository token was presented"),
         )
         .response(
             "403",
@@ -987,7 +976,8 @@ fn policy_decisions_example() -> serde_json::Value {
 }
 
 fn pql_query() -> OperationBuilder {
-    OperationBuilder::new()
+    RouteAuth::Administration
+        .operation(AdminRealm::Query.unauthorized())
         .tag("operations")
         .summary(Some("Run a PQL query"))
         .description(Some(
@@ -1002,7 +992,6 @@ fn pql_query() -> OperationBuilder {
              presented back, resumes the next page and is refused if the caller's scope has changed. Authenticate \
              with an ecosystem credential to read one repository, or a local administrator to read operator-wide.",
         ))
-        .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
         .request_body(Some(
             RequestBodyBuilder::new()
                 .required(Some(Required::True))
@@ -1044,10 +1033,6 @@ fn pql_query() -> OperationBuilder {
             ),
         )
         .response(
-            "401",
-            ResponseBuilder::new().description("No valid credential was presented"),
-        )
-        .response(
             "404",
             ResponseBuilder::new().description("The caller cannot read the domain; its existence is not disclosed"),
         )
@@ -1066,7 +1051,8 @@ fn pql_query() -> OperationBuilder {
 }
 
 fn policy_decisions() -> OperationBuilder {
-    let mut operation = OperationBuilder::new()
+    let mut operation = RouteAuth::WriteOrAdministration
+        .operation(AdminRealm::PolicyDecisions.unauthorized())
         .tag("operations")
         .summary(Some("Repository policy decisions"))
         .description(Some(
@@ -1076,8 +1062,6 @@ fn policy_decisions() -> OperationBuilder {
              matched rule IDs without credentials or request headers. `fresh` becomes false after repository data, \
              catalog, or policy inputs change.",
         ))
-        .security(SecurityRequirement::new("writeToken", Vec::<String>::new()))
-        .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
         .response(
             "200",
             api_json_response("The matching decisions, newest first", policy_decisions_example()),
@@ -1088,10 +1072,6 @@ fn policy_decisions() -> OperationBuilder {
                 "The limit, cursor, or text filter is invalid",
                 json!({"error": "limit must be between 1 and 100"}),
             ),
-        )
-        .response(
-            "401",
-            ResponseBuilder::new().description("No valid local or ecosystem credential was presented"),
         )
         .response(
             "403",
@@ -1184,10 +1164,6 @@ fn digest_parameter() -> utoipa::openapi::path::Parameter {
 fn administrator_errors(operation: OperationBuilder) -> OperationBuilder {
     operation
         .response(
-            "401",
-            ResponseBuilder::new().description("No valid local user credential was presented"),
-        )
-        .response(
             "404",
             ResponseBuilder::new().description("The caller cannot discover this record, or it does not exist"),
         )
@@ -1202,13 +1178,13 @@ fn administrator_errors(operation: OperationBuilder) -> OperationBuilder {
 
 fn inspect_revocation() -> OperationBuilder {
     administrator_errors(
-        OperationBuilder::new()
+        RouteAuth::Administration
+            .operation(AdminRealm::Server.unauthorized())
             .tag("operations")
             .summary(Some("Inspect a digest revocation"))
             .description(Some(
                 "Returns the current record without changing lifecycle, retention, or policy state.",
             ))
-            .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
             .parameter(digest_parameter())
             .response(
                 "200",
@@ -1226,15 +1202,11 @@ fn inspect_revocation() -> OperationBuilder {
 
 fn list_revocations() -> OperationBuilder {
     administrator_errors(
-        OperationBuilder::new()
+        RouteAuth::Administration.operation(AdminRealm::Server.unauthorized())
             .tag("operations")
             .summary(Some("List digest revocations"))
             .description(Some(
                 "Returns a bounded page of current records in canonical digest order. Lifted records remain visible to administrators.",
-            ))
-            .security(SecurityRequirement::new(
-                "administratorPassword",
-                Vec::<String>::new(),
             ))
             .response(
                 "200",
@@ -1276,15 +1248,11 @@ fn list_revocations() -> OperationBuilder {
 
 fn put_revocation() -> OperationBuilder {
     administrator_errors(
-        OperationBuilder::new()
+        RouteAuth::Administration.operation(AdminRealm::Server.unauthorized())
             .tag("operations")
             .summary(Some("Put an active digest revocation"))
             .description(Some(
                 "Creates or reopens the digest-addressed record. Retrying the same active reason is idempotent; replacing another active reason conflicts.",
-            ))
-            .security(SecurityRequirement::new(
-                "administratorPassword",
-                Vec::<String>::new(),
             ))
             .parameter(digest_parameter())
             .request_body(Some(
@@ -1319,15 +1287,11 @@ fn put_revocation() -> OperationBuilder {
 
 fn lift_revocation() -> OperationBuilder {
     administrator_errors(
-        OperationBuilder::new()
+        RouteAuth::Administration.operation(AdminRealm::Server.unauthorized())
             .tag("operations")
             .summary(Some("Lift a digest revocation"))
             .description(Some(
                 "Transitions an active record to lifted and retains its original reason, actor, and creation time. Retrying a lift is idempotent.",
-            ))
-            .security(SecurityRequirement::new(
-                "administratorPassword",
-                Vec::<String>::new(),
             ))
             .parameter(digest_parameter())
             .response(
@@ -1383,7 +1347,8 @@ fn quota_repository_example() -> serde_json::Value {
 }
 
 fn quota_summary() -> OperationBuilder {
-    OperationBuilder::new()
+    RouteAuth::Administration
+        .operation(AdminRealm::Quota.unauthorized())
         .tag("operations")
         .summary(Some("Repository quota summary"))
         .description(Some(
@@ -1394,7 +1359,6 @@ fn quota_summary() -> OperationBuilder {
              repository. The cursor pages over the static index list, so it stays stable while a reservation \
              changes a counter under it.",
         ))
-        .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
         .response(
             "200",
             api_json_response(
@@ -1408,10 +1372,6 @@ fn quota_summary() -> OperationBuilder {
                 "The limit or cursor is invalid",
                 json!({"error": "limit must be between 1 and 100"}),
             ),
-        )
-        .response(
-            "401",
-            ResponseBuilder::new().description("No valid local user credential was presented"),
         )
         .response(
             "403",
@@ -1445,7 +1405,8 @@ fn quota_summary() -> OperationBuilder {
 }
 
 fn quota_repository() -> OperationBuilder {
-    OperationBuilder::new()
+    RouteAuth::WriteOrAdministration
+        .operation(AdminRealm::Quota.unauthorized())
         .tag("operations")
         .summary(Some("Repository quota detail"))
         .description(Some(
@@ -1453,8 +1414,6 @@ fn quota_repository() -> OperationBuilder {
              response pairs committed and reserved counters with configured limits and reports remaining headroom, \
              or null for an unlimited counter. It identifies no individual artifact.",
         ))
-        .security(SecurityRequirement::new("writeToken", Vec::<String>::new()))
-        .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
         .parameter(
             parameter(
                 "repository",
@@ -1475,10 +1434,6 @@ fn quota_repository() -> OperationBuilder {
                 "The repository selector is missing or invalid",
                 json!({"error": "repository is required"}),
             ),
-        )
-        .response(
-            "401",
-            ResponseBuilder::new().description("No valid local or ecosystem credential was presented"),
         )
         .response(
             "403",
@@ -1521,7 +1476,8 @@ fn grant_id_parameter() -> utoipa::openapi::path::Parameter {
 
 fn list_grants() -> OperationBuilder {
     let mut operation = administrator_errors(
-        OperationBuilder::new()
+        RouteAuth::Administration
+            .operation(AdminRealm::Server.unauthorized())
             .tag("operations")
             .summary(Some("List role grants"))
             .description(Some(
@@ -1529,7 +1485,6 @@ fn list_grants() -> OperationBuilder {
                  user's grants and a `resource` filter one reach's; both need administration authority over what \
                  they select, so a repository administrator may list its own repository but not the whole server.",
             ))
-            .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
             .response(
                 "200",
                 api_json_response(
@@ -1581,7 +1536,8 @@ fn list_grants() -> OperationBuilder {
 
 fn create_grant() -> OperationBuilder {
     administrator_errors(
-        OperationBuilder::new()
+        RouteAuth::Administration
+            .operation(AdminRealm::Server.unauthorized())
             .tag("operations")
             .summary(Some("Grant a role to a user"))
             .description(Some(
@@ -1590,7 +1546,6 @@ fn create_grant() -> OperationBuilder {
                  it administers and never one it lacks, so a grant cannot escalate the caller's own authority. The \
                  response carries the binding, an `ETag` a later revoke matches against, and a `Location`.",
             ))
-            .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
             .request_body(Some(
                 RequestBodyBuilder::new()
                     .required(Some(Required::True))
@@ -1625,14 +1580,14 @@ fn create_grant() -> OperationBuilder {
 
 fn inspect_grant() -> OperationBuilder {
     administrator_errors(
-        OperationBuilder::new()
+        RouteAuth::Administration
+            .operation(AdminRealm::Server.unauthorized())
             .tag("operations")
             .summary(Some("Inspect a role grant"))
             .description(Some(
                 "Returns one binding and the `ETag` that its revocation precondition matches. A caller that cannot \
                  administer the binding's reach cannot tell it apart from one that does not exist.",
             ))
-            .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
             .parameter(grant_id_parameter())
             .response("200", api_json_response("The current binding", grant_example())),
     )
@@ -1640,7 +1595,8 @@ fn inspect_grant() -> OperationBuilder {
 
 fn revoke_grant() -> OperationBuilder {
     administrator_errors(
-        OperationBuilder::new()
+        RouteAuth::Administration
+            .operation(AdminRealm::Server.unauthorized())
             .tag("operations")
             .summary(Some("Revoke a role grant"))
             .description(Some(
@@ -1648,7 +1604,6 @@ fn revoke_grant() -> OperationBuilder {
                  re-assertion returns `412` and keeps the newer grant. The next authorization decision reflects the \
                  removal without a restart.",
             ))
-            .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
             .parameter(grant_id_parameter())
             .parameter(if_match_parameter())
             .response("204", ResponseBuilder::new().description("The binding was removed"))
@@ -1677,7 +1632,8 @@ fn revoke_grant() -> OperationBuilder {
 }
 
 fn cache_purge() -> OperationBuilder {
-    OperationBuilder::new()
+    RouteAuth::Administration
+        .operation(AdminRealm::Server.unauthorized())
         .tag("operations")
         .summary(Some("Purge one cached resource"))
         .description(Some(
@@ -1688,7 +1644,6 @@ fn cache_purge() -> OperationBuilder {
              writers, so a refresh in flight for the same resource cannot republish what it removed and \
              `removed` reports the rows that actually went.",
         ))
-        .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
         .request_body(Some(cache_purge_request_body()))
         .response(
             "200",
@@ -1701,10 +1656,6 @@ fn cache_purge() -> OperationBuilder {
                     "removed": {"file_url_records": 12, "index_pages": 1, "metadata_records": 4, "project_records": 1}
                 }),
             ),
-        )
-        .response(
-            "401",
-            ResponseBuilder::new().description("No valid local administrator credential was presented"),
         )
         .response(
             "404",
@@ -1780,18 +1731,14 @@ fn cache_fsck() -> OperationBuilder {
 }
 
 fn cache_inspection(summary: &'static str, description: &'static str, example: &'static str) -> OperationBuilder {
-    OperationBuilder::new()
+    RouteAuth::Administration
+        .operation(AdminRealm::Server.unauthorized())
         .tag("operations")
         .summary(Some(summary))
         .description(Some(description))
-        .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
         .response(
             "200",
             text_response("The cache inspection report", "text/plain; charset=utf-8", example),
-        )
-        .response(
-            "401",
-            ResponseBuilder::new().description("No valid local administrator credential was presented"),
         )
         .response(
             "404",
@@ -1859,7 +1806,8 @@ fn retention_candidate_example() -> serde_json::Value {
 }
 
 fn retention_plan() -> OperationBuilder {
-    OperationBuilder::new()
+    RouteAuth::Administration
+        .operation(AdminRealm::Server.unauthorized())
         .tag("operations")
         .summary(Some("Preview a repository retention plan"))
         .description(Some(
@@ -1868,7 +1816,6 @@ fn retention_plan() -> OperationBuilder {
              metadata frontier the page read; `next_cursor` resumes the next page and, presented back, rejects a \
              plan whose repository has since changed. Requires a local administrator.",
         ))
-        .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
         .request_body(Some(retention_request_body()))
         .response(
             "200",
@@ -1887,10 +1834,6 @@ fn retention_plan() -> OperationBuilder {
                 "The cursor or limit is invalid",
                 json!({"error": "limit must be between 1 and 1000"}),
             ),
-        )
-        .response(
-            "401",
-            ResponseBuilder::new().description("No valid local administrator credential was presented"),
         )
         .response(
             "404",
@@ -1933,7 +1876,8 @@ fn retention_plan() -> OperationBuilder {
 }
 
 fn retention_export() -> OperationBuilder {
-    OperationBuilder::new()
+    RouteAuth::Administration
+        .operation(AdminRealm::Server.unauthorized())
         .tag("operations")
         .summary(Some("Export a repository retention plan"))
         .description(Some(
@@ -1942,7 +1886,6 @@ fn retention_export() -> OperationBuilder {
              presenting a prior page's `cursor`, which is refused when the repository has changed. The stream is \
              unique to one snapshot, so byte ranges do not apply. Requires a local administrator.",
         ))
-        .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
         .request_body(Some(retention_request_body()))
         .response(
             "200",
@@ -1961,10 +1904,6 @@ fn retention_export() -> OperationBuilder {
                 "The cursor is invalid",
                 json!({"error": "invalid retention plan cursor"}),
             ),
-        )
-        .response(
-            "401",
-            ResponseBuilder::new().description("No valid local administrator credential was presented"),
         )
         .response(
             "404",
@@ -2031,13 +1970,9 @@ fn token_id_parameter() -> utoipa::openapi::path::Parameter {
 }
 
 fn token_errors(operation: OperationBuilder) -> OperationBuilder {
-    operation
+    RouteAuth::Administration
+        .guard(operation, Some(AdminRealm::Server.unauthorized()))
         .tag("operations")
-        .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
-        .response(
-            "401",
-            ResponseBuilder::new().description("No valid local user credential was presented"),
-        )
         .response(
             "404",
             ResponseBuilder::new().description("The caller cannot manage this reach or token, or it does not exist"),

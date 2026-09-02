@@ -17,6 +17,7 @@ use peryx_policy::PolicyDecisionState;
 use crate::response_security::{
     ClassifiedField, FieldClassification, ProtectedCachePolicy, ResponseAuthorization, filter_fields,
 };
+use peryx_driver::route_auth::AdminRealm;
 
 #[derive(Debug, serde::Deserialize)]
 pub struct PolicyDecisionsQuery {
@@ -278,7 +279,7 @@ impl From<PolicyDecisionItem> for PolicyDecisionResponse {
 fn unauthorized() -> Response {
     (
         StatusCode::UNAUTHORIZED,
-        [(header::WWW_AUTHENTICATE, "Basic realm=\"peryx-policy-decisions\"")],
+        [(header::WWW_AUTHENTICATE, AdminRealm::PolicyDecisions.challenge())],
     )
         .into_response()
 }

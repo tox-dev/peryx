@@ -1,9 +1,10 @@
 use serde_json::json;
 use utoipa::openapi::content::ContentBuilder;
 use utoipa::openapi::path::{HttpMethod, OperationBuilder, ParameterIn, PathItemBuilder};
-use utoipa::openapi::{PathsBuilder, ResponseBuilder, SecurityRequirement};
+use utoipa::openapi::{PathsBuilder, ResponseBuilder};
 
 use peryx_driver::openapi::{bounded_integer_parameter, parameter};
+use peryx_driver::route_auth::{AdminRealm, RouteAuth};
 
 #[must_use]
 pub fn availability_paths(paths: PathsBuilder) -> PathsBuilder {
@@ -47,14 +48,12 @@ pub fn availability_paths(paths: PathsBuilder) -> PathsBuilder {
 }
 
 fn analytics_completeness() -> OperationBuilder {
-    let mut operation = OperationBuilder::new()
+    let mut operation = RouteAuth::WriteOrAdministration.operation(AdminRealm::Analytics.unauthorized())
         .tag("operations")
         .summary(Some("Distributed analytics completeness"))
         .description(Some(
             "Reports whether accepted analytics totals cover each configured producer. Repository credentials see the verdict and scoped totals; operators also see producer and cluster frontiers.",
         ))
-        .security(SecurityRequirement::new("writeToken", Vec::<String>::new()))
-        .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
         .response("400", json_response("Invalid query", json!({"error": "limit must be between 1 and 100"})))
         .response("401", ResponseBuilder::new().description("No valid credential was presented"))
         .response("403", ResponseBuilder::new().description("The credential cannot inspect this result"))
@@ -100,13 +99,12 @@ fn analytics_completeness() -> OperationBuilder {
 }
 
 fn availability_topology() -> OperationBuilder {
-    OperationBuilder::new()
+    RouteAuth::Administration.widening_operation()
         .tag("operations")
         .summary(Some("Availability topology snapshot"))
         .description(Some(
             "Returns one role-filtered topology snapshot. Operators see liveness and committed frontiers; administrators also see peer addresses.",
         ))
-        .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
         .response(
             "200",
             json_response(
@@ -127,13 +125,12 @@ fn availability_topology() -> OperationBuilder {
 }
 
 fn availability_topology_stream() -> OperationBuilder {
-    OperationBuilder::new()
+    RouteAuth::Administration.widening_operation()
         .tag("operations")
         .summary(Some("Availability topology stream"))
         .description(Some(
             "Streams the role-filtered topology snapshot when its state changes. Slow readers receive the latest snapshot without a backlog.",
         ))
-        .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
         .response(
             "200",
             ResponseBuilder::new()
@@ -148,7 +145,8 @@ fn availability_topology_stream() -> OperationBuilder {
 }
 
 fn availability_blob_placements() -> OperationBuilder {
-    OperationBuilder::new()
+    RouteAuth::Administration
+        .widening_operation()
         .tag("operations")
         .summary(Some("Blob placement across datacenters"))
         .description(Some("Returns datacenter placement state without backend paths."))
@@ -158,7 +156,6 @@ fn availability_blob_placements() -> OperationBuilder {
             "Content digest",
             json!("sha256:0f1e"),
         ))
-        .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
         .response(
             "200",
             json_response(
@@ -211,7 +208,8 @@ fn paged_health_operation(
     cursor: serde_json::Value,
     example: serde_json::Value,
 ) -> OperationBuilder {
-    OperationBuilder::new()
+    RouteAuth::Administration
+        .widening_operation()
         .tag("operations")
         .summary(Some(summary))
         .description(Some(description))
@@ -229,7 +227,6 @@ fn paged_health_operation(
             Some(1),
             Some(100),
         ))
-        .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
         .response("200", json_response("The bounded health view", example))
 }
 

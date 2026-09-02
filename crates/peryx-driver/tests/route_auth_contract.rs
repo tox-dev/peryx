@@ -1,5 +1,7 @@
+use std::collections::BTreeSet;
+
 use peryx_core::Ecosystem;
-use peryx_driver::route_auth::{ApiScheme, BASIC_CHALLENGE, ReadExposure, RouteAuth};
+use peryx_driver::route_auth::{AdminRealm, ApiScheme, BASIC_CHALLENGE, ReadExposure, RouteAuth};
 use peryx_driver::{Index, IndexKind};
 use peryx_identity::IndexAcl;
 use peryx_policy::{Policy, PolicyConfig};
@@ -38,6 +40,7 @@ fn read_exposure_follows_the_configured_index_acls(#[case] indexes: Vec<Index>, 
 #[case::index_access(ApiScheme::IndexAccessToken, "indexAccessToken", "Basic")]
 #[case::bearer(ApiScheme::BearerGrant, "bearerGrant", "Bearer")]
 #[case::write(ApiScheme::WriteToken, "writeToken", "Basic")]
+#[case::administrator(ApiScheme::AdministratorPassword, "administratorPassword", "Basic")]
 fn each_scheme_names_the_authorization_it_arrives_in(
     #[case] scheme: ApiScheme,
     #[case] name: &str,
@@ -64,6 +67,7 @@ fn every_declared_scheme_is_an_http_credential_with_a_description() {
             ("http".to_owned(), "basic".to_owned(), true),
             ("http".to_owned(), "bearer".to_owned(), true),
             ("http".to_owned(), "basic".to_owned(), true),
+            ("http".to_owned(), "basic".to_owned(), true),
         ]
     );
 }
@@ -83,6 +87,11 @@ fn the_bearer_scheme_declares_its_token_format() {
     vec![ApiScheme::IndexAccessToken, ApiScheme::BearerGrant],
 )]
 #[case::write(RouteAuth::Write, vec![ApiScheme::WriteToken, ApiScheme::BearerGrant])]
+#[case::administration(RouteAuth::Administration, vec![ApiScheme::AdministratorPassword])]
+#[case::write_or_administration(
+    RouteAuth::WriteOrAdministration,
+    vec![ApiScheme::WriteToken, ApiScheme::AdministratorPassword],
+)]
 fn each_route_names_the_credentials_it_accepts(#[case] auth: RouteAuth, #[case] expected: Vec<ApiScheme>) {
     assert_eq!(auth.schemes(), expected);
 }
@@ -103,6 +112,11 @@ fn a_public_read_declares_anonymous_access_and_no_challenge() {
     json!([{"indexAccessToken": []}, {"bearerGrant": []}]),
 )]
 #[case::write(RouteAuth::Write, json!([{"writeToken": []}, {"bearerGrant": []}]))]
+#[case::administration(RouteAuth::Administration, json!([{"administratorPassword": []}]))]
+#[case::write_or_administration(
+    RouteAuth::WriteOrAdministration,
+    json!([{"writeToken": []}, {"administratorPassword": []}]),
+)]
 fn a_guarded_route_lists_its_credentials_and_the_challenge_it_answers(
     #[case] auth: RouteAuth,
     #[case] expected: Value,
@@ -118,4 +132,44 @@ fn a_guarded_route_lists_its_credentials_and_the_challenge_it_answers(
 #[test]
 fn the_basic_challenge_names_the_peryx_realm() {
     assert_eq!(BASIC_CHALLENGE, "Basic realm=\"peryx\"");
+}
+
+/// Every realm is a distinct protection space. Two sharing a challenge would let a credential entered
+/// for one surface reach the other, which is why they are enumerated rather than merged.
+#[test]
+fn every_administration_realm_challenges_in_its_own_protection_space() {
+    let challenges: BTreeSet<&str> = AdminRealm::ALL.iter().map(|realm| realm.challenge()).collect();
+
+    assert_eq!(challenges.len(), AdminRealm::ALL.len());
+    assert!(
+        challenges
+            .iter()
+            .all(|challenge| challenge.starts_with("Basic realm=\"peryx-")),
+        "{challenges:?}"
+    );
+}
+
+/// The documented `401` repeats the challenge its handler sends, so a reader of the contract knows
+/// which protection space a credential belongs to.
+#[test]
+fn a_realm_documents_the_challenge_its_handler_sends() {
+    let documented = serde_json::to_value(AdminRealm::Trash.unauthorized().build()).unwrap();
+
+    assert!(
+        documented["description"]
+            .as_str()
+            .unwrap()
+            .contains(AdminRealm::Trash.challenge()),
+        "{documented}"
+    );
+}
+
+/// A route whose credential widens the answer refuses nobody, so it declares what it accepts and
+/// documents no challenge.
+#[test]
+fn a_widening_route_declares_its_credential_and_no_challenge() {
+    let operation = serde_json::to_value(RouteAuth::Administration.widening_operation().build()).unwrap();
+
+    assert_eq!(operation["security"], json!([{"administratorPassword": []}]));
+    assert_eq!(operation["responses"], json!({}));
 }

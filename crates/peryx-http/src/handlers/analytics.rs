@@ -18,6 +18,7 @@ use peryx_events::metrics::UsageInterval;
 use peryx_identity::{Action, Resource, Scope, UserId, parse_basic};
 
 use crate::response_security::ProtectedCachePolicy;
+use peryx_driver::route_auth::AdminRealm;
 
 const DEFAULT_LIMIT: usize = 25;
 const MAX_LIMIT: usize = 100;
@@ -358,7 +359,7 @@ fn bad_request(message: &str) -> Response {
 fn unauthorized() -> Response {
     (
         StatusCode::UNAUTHORIZED,
-        [(header::WWW_AUTHENTICATE, "Basic realm=\"peryx-analytics\"")],
+        [(header::WWW_AUTHENTICATE, AdminRealm::Analytics.challenge())],
     )
         .into_response()
 }

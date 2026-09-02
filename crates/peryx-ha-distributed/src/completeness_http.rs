@@ -8,6 +8,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use peryx_core::NodeRole;
 use peryx_driver::authz::{Decision, DenyReason, ScopedDecision};
+use peryx_driver::route_auth::AdminRealm;
 use peryx_driver::{AppState, Index, ServingState};
 use peryx_events::metrics::UsageInterval;
 use peryx_ha::{
@@ -356,7 +357,7 @@ impl Rejection {
                 .into_response(),
             Self::Unauthorized => (
                 StatusCode::UNAUTHORIZED,
-                [(header::WWW_AUTHENTICATE, "Basic realm=\"peryx-analytics\"")],
+                [(header::WWW_AUTHENTICATE, AdminRealm::Analytics.challenge())],
             )
                 .into_response(),
         };

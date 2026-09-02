@@ -8,6 +8,7 @@ use axum::http::{Extensions, HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use peryx_driver::authz::{Decision, DenyReason};
 use peryx_driver::jobs::CancelJobRun;
+use peryx_driver::route_auth::AdminRealm;
 use peryx_driver::state::AppState;
 use peryx_identity::{Resource, Scope, parse_basic};
 
@@ -81,7 +82,7 @@ impl Rejection {
                 .into_response(),
             Self::Unauthorized => (
                 StatusCode::UNAUTHORIZED,
-                [(header::WWW_AUTHENTICATE, "Basic realm=\"peryx-administration\"")],
+                [(header::WWW_AUTHENTICATE, AdminRealm::Server.challenge())],
             )
                 .into_response(),
         }

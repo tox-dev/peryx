@@ -164,6 +164,13 @@ fn request_span(request: &Request) -> tracing::Span {
     tracing::info_span!("request", method = %request.method(), uri = %request.uri(), version = ?request.version())
 }
 
+/// The process routes and the semantics each one declares, so a check can read what the router
+/// enforces rather than a list kept beside it.
+#[must_use]
+pub fn service_route_descriptors() -> Vec<RouteDescriptor> {
+    service_routes().into_parts().1
+}
+
 fn service_routes() -> RouteSet {
     public_routes()
         .merge(authentication_routes())
@@ -524,13 +531,13 @@ fn is_read_only_post(state: &AppState, request: &Request) -> bool {
 
 #[cfg(test)]
 mod route_tests {
-    use super::service_routes;
+    use super::service_route_descriptors;
     use peryx_driver::rate_limit::RouteClass;
     use peryx_driver::{RoutePosture, RouteRateLimit};
 
     #[test]
     fn process_routes_declare_complete_semantics() {
-        let (_, descriptors) = service_routes().into_parts();
+        let descriptors = service_route_descriptors();
 
         assert_eq!(descriptors.len(), 52);
         assert_eq!(

@@ -12,6 +12,7 @@ use peryx_driver::state::{AppState, IndexDescription, IndexKind};
 use peryx_identity::{Resource, Scope, parse_basic};
 
 use crate::response_security::ProtectedCachePolicy;
+use peryx_driver::route_auth::AdminRealm;
 
 /// The join lets the render layer scope role-only and ecosystem-only counters. Indexes with no
 /// activity yet report zeros.
@@ -127,7 +128,7 @@ impl StatsRejection {
                 .into_response(),
             Self::Unauthorized => (
                 StatusCode::UNAUTHORIZED,
-                [(header::WWW_AUTHENTICATE, "Basic realm=\"peryx-stats\"")],
+                [(header::WWW_AUTHENTICATE, AdminRealm::Stats.challenge())],
             )
                 .into_response(),
         }

@@ -14,6 +14,7 @@ use peryx_driver::tokens::{CreateScopedToken, ScopedTokenQuery, ScopedTokenQuery
 use peryx_identity::{Action, GrantScope, Resource, Scope, TokenId, TokenName, UserId, parse_basic};
 
 use crate::response_security::ProtectedCachePolicy;
+use peryx_driver::route_auth::AdminRealm;
 
 /// The largest create request body accepted, generous for a name and a handful of actions.
 const MAX_BODY_BYTES: usize = 4 * 1024;
@@ -306,7 +307,7 @@ fn no_store(mut response: Response) -> Response {
 fn unauthorized() -> Response {
     (
         StatusCode::UNAUTHORIZED,
-        [(header::WWW_AUTHENTICATE, "Basic realm=\"peryx-administration\"")],
+        [(header::WWW_AUTHENTICATE, AdminRealm::Server.challenge())],
     )
         .into_response()
 }

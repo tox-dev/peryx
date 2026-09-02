@@ -17,6 +17,7 @@ use peryx_driver::state::AppState;
 use peryx_identity::{Resource, Scope, parse_basic};
 
 use crate::response_security::ProtectedCachePolicy;
+use peryx_driver::route_auth::AdminRealm;
 
 const MAX_BODY_BYTES: usize = 8 * 1024;
 
@@ -288,7 +289,7 @@ async fn administrator(
 fn unauthorized() -> Response {
     (
         StatusCode::UNAUTHORIZED,
-        [(header::WWW_AUTHENTICATE, "Basic realm=\"peryx-administration\"")],
+        [(header::WWW_AUTHENTICATE, AdminRealm::Server.challenge())],
     )
         .into_response()
 }

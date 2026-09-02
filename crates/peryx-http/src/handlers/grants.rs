@@ -18,6 +18,7 @@ use peryx_identity::{GrantScope, Role, RoleGrant, UserId, can_manage_grants, par
 use crate::response_security::ProtectedCachePolicy;
 
 use super::IfMatchError;
+use peryx_driver::route_auth::AdminRealm;
 
 const MAX_BODY: usize = 4 * 1024;
 const DEFAULT_LIMIT: usize = 25;
@@ -292,7 +293,7 @@ fn etag(version: u64) -> HeaderValue {
 fn unauthorized() -> Response {
     (
         StatusCode::UNAUTHORIZED,
-        [(header::WWW_AUTHENTICATE, "Basic realm=\"peryx-administration\"")],
+        [(header::WWW_AUTHENTICATE, AdminRealm::Server.challenge())],
     )
         .into_response()
 }

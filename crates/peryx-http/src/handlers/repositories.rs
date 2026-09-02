@@ -26,6 +26,7 @@ use serde_json::{Value, json};
 use crate::response_security::ProtectedCachePolicy;
 
 use super::IfMatchError;
+use peryx_driver::route_auth::AdminRealm;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -368,7 +369,7 @@ fn unauthorized() -> Response {
     );
     response.headers_mut().insert(
         header::WWW_AUTHENTICATE,
-        HeaderValue::from_static("Basic realm=\"peryx-administration\""),
+        HeaderValue::from_str(AdminRealm::Server.challenge()).expect("a realm challenge is a valid header value"),
     );
     response
 }

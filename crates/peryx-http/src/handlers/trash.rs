@@ -15,6 +15,7 @@ use peryx_identity::{Action, Resource, Scope, UserId, parse_basic};
 use crate::response_security::{
     ClassifiedField, FieldClassification, ProtectedCachePolicy, ResponseAuthorization, filter_fields,
 };
+use peryx_driver::route_auth::AdminRealm;
 
 #[derive(Debug, serde::Deserialize)]
 pub struct TrashListParams {
@@ -425,7 +426,7 @@ fn trash_record(item: TrashItem, actor: ActorDetail, authorization: ResponseAuth
 fn unauthorized() -> Response {
     (
         StatusCode::UNAUTHORIZED,
-        [(header::WWW_AUTHENTICATE, "Basic realm=\"peryx-trash\"")],
+        [(header::WWW_AUTHENTICATE, AdminRealm::Trash.challenge())],
     )
         .into_response()
 }

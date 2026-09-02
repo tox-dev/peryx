@@ -10,6 +10,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse as _, Response};
 use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router};
+use peryx_driver::route_auth::AdminRealm;
 use peryx_ha::{
     ControlActor, ControlAuthorizer, ControlCommand, ControlError, ControlExecutor, ControlPermission,
     OwnershipAuthority,
@@ -315,7 +316,7 @@ fn cancel_error(error: &TransferCancelError) -> Response {
 fn unauthorized() -> Response {
     (
         StatusCode::UNAUTHORIZED,
-        [(header::WWW_AUTHENTICATE, "Basic realm=\"peryx-availability\"")],
+        [(header::WWW_AUTHENTICATE, AdminRealm::Availability.challenge())],
     )
         .into_response()
 }

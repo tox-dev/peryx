@@ -3,6 +3,7 @@ use utoipa::openapi::path::{OperationBuilder, ParameterIn};
 use utoipa::openapi::{Required, ResponseBuilder, SecurityRequirement};
 
 use peryx_driver::openapi::{api_json_response, bounded_integer_parameter, parameter};
+use peryx_driver::route_auth::ApiScheme;
 
 fn shadow_example() -> serde_json::Value {
     json!({
@@ -85,8 +86,14 @@ pub(super) fn shadow_candidates() -> OperationBuilder {
                  readers and authorized ecosystem credentials can inspect the repository. Server operators \
                  without repository access cannot. The query reads stored records without changing selection.",
             ))
-            .security(SecurityRequirement::new("writeToken", Vec::<String>::new()))
-            .security(SecurityRequirement::new("administratorPassword", Vec::<String>::new()))
+            .security(SecurityRequirement::new(
+                ApiScheme::WriteToken.name(),
+                Vec::<String>::new(),
+            ))
+            .security(SecurityRequirement::new(
+                ApiScheme::AdministratorPassword.name(),
+                Vec::<String>::new(),
+            ))
             .response(
                 "200",
                 api_json_response(

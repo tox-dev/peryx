@@ -17,6 +17,7 @@ use peryx_identity::{Resource, Scope, UserId, parse_basic};
 use peryx_policy::{RetentionConfig, RetentionDecision, RetentionPolicy, RetentionSelector, RetentionSummary};
 
 use crate::response_security::ProtectedCachePolicy;
+use peryx_driver::route_auth::AdminRealm;
 
 const MAX_BODY_BYTES: usize = 64 * 1024;
 const DEFAULT_LIMIT: usize = 100;
@@ -282,7 +283,7 @@ fn not_found() -> Response {
 fn unauthorized() -> Response {
     (
         StatusCode::UNAUTHORIZED,
-        [(header::WWW_AUTHENTICATE, "Basic realm=\"peryx-administration\"")],
+        [(header::WWW_AUTHENTICATE, AdminRealm::Server.challenge())],
     )
         .into_response()
 }

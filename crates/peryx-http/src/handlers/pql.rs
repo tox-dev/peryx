@@ -20,6 +20,7 @@ use peryx_pql::{OutputColumn, Page, PqlError, QueryScope, RepoScope, StatusClass
 use crate::response_security::{
     ClassifiedField, FieldClassification, ProtectedCachePolicy, ResponseAuthorization, filter_fields,
 };
+use peryx_driver::route_auth::AdminRealm;
 
 const MAX_BODY_BYTES: usize = 8 * 1024;
 
@@ -112,7 +113,7 @@ impl Rejection {
             Self::Unavailable => problem(StatusCode::SERVICE_UNAVAILABLE, "query service unavailable"),
             Self::Unauthorized => (
                 StatusCode::UNAUTHORIZED,
-                [(header::WWW_AUTHENTICATE, "Basic realm=\"peryx-query\"")],
+                [(header::WWW_AUTHENTICATE, AdminRealm::Query.challenge())],
             )
                 .into_response(),
         }
