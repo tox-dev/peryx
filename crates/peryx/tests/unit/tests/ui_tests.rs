@@ -25,7 +25,7 @@ fn neutral_router() -> (tempfile::TempDir, axum::Router) {
         60,
         Vec::new(),
     );
-    let router = router_for(std::sync::Arc::new(state));
+    let router = router_for(std::sync::Arc::new(state), axum::Router::new());
     (dir, router)
 }
 
@@ -98,7 +98,7 @@ async fn topology_router() -> (tempfile::TempDir, axum::Router, String) {
     let dir = tempfile::tempdir().unwrap();
     let state = build_state_with_plugins(&topology_config(&dir), &plugins()).unwrap();
     let authorization = seed_administrator(&state).await;
-    (dir, router_for(state), authorization)
+    (dir, router_for(state, axum::Router::new()), authorization)
 }
 
 async fn placement_router() -> (tempfile::TempDir, axum::Router, String) {
@@ -123,7 +123,7 @@ async fn placement_router() -> (tempfile::TempDir, axum::Router, String) {
     )
     .unwrap();
     let authorization = seed_administrator(&state).await;
-    (dir, router_for(state), authorization)
+    (dir, router_for(state, axum::Router::new()), authorization)
 }
 
 #[tokio::test]
@@ -216,7 +216,11 @@ async fn ecosystem_metrics_router() -> (tempfile::TempDir, axum::Router, String)
     }
     state.serving.metrics.flush().unwrap();
     let authorization = seed_administrator(&state).await;
-    (dir, router_for(std::sync::Arc::new(state)), authorization)
+    (
+        dir,
+        router_for(std::sync::Arc::new(state), axum::Router::new()),
+        authorization,
+    )
 }
 
 fn ecosystem_index(ecosystem: &'static str) -> Index {

@@ -39,8 +39,8 @@ impl ReplicationRuntime {
         Ok(Self { runtime, config })
     }
 
-    pub fn mount(&self, router: Router) -> Router {
-        router.merge(peryx_ha::AvailabilityRuntime::routes(&self.runtime))
+    pub fn routes(&self) -> Router {
+        peryx_ha::AvailabilityRuntime::routes(&self.runtime)
     }
 
     /// # Errors

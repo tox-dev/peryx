@@ -167,7 +167,7 @@ async fn test_build_router_serves_status() {
         "Basic {}",
         base64::engine::general_purpose::STANDARD.encode("Alice:local password")
     );
-    let router = router_for(state);
+    let router = router_for(state, axum::Router::new());
     let response = tokio::task::LocalSet::new()
         .run_until(
             router.oneshot(

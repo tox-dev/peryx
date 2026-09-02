@@ -225,7 +225,7 @@ async fn test_none_mode_hosted_write_allocates_no_distributed_resources(
         peryx_core::TopologyMode::None
     );
     assert!(config.availability_listener.is_none());
-    let router = router_for(state.clone());
+    let router = router_for(state.clone(), Router::new());
     let response = router
         .clone()
         .oneshot(

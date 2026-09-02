@@ -19,7 +19,7 @@ fn composed() -> (tempfile::TempDir, axum::Router) {
         60,
         Vec::new(),
     ));
-    (dir, router_for(state))
+    (dir, router_for(state, axum::Router::new()))
 }
 
 async fn fetch(router: &axum::Router, uri: &str) -> axum::response::Response {

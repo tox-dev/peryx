@@ -365,7 +365,7 @@ fn claim_writer(dir: &tempfile::TempDir) {
 async fn writer_node(config: &Config) -> (Arc<AppState>, Router, Option<Box<dyn ActiveAvailabilityHandle>>) {
     let state = build_state(config).unwrap();
     if matches!(config.availability, AvailabilityConfig::None) {
-        return (state.clone(), router_for(state), None);
+        return (state.clone(), router_for(state, Router::new()), None);
     }
     let listener = matches!(config.availability, AvailabilityConfig::Ha(_)).then(test_listener);
     let prepared = ReplicationRuntime::new(config, &state)
@@ -385,7 +385,7 @@ async fn writer_node(config: &Config) -> (Arc<AppState>, Router, Option<Box<dyn 
         prepared.handle.listener_address().is_some(),
         matches!(config.availability, AvailabilityConfig::Ha(_))
     );
-    let router = router_for(state.clone()).merge(prepared.public_routes);
+    let router = router_for(state.clone(), prepared.public_routes);
     let active = AvailabilityHandle::activate(prepared.handle).unwrap();
     (state, router, Some(Box::new(active)))
 }
@@ -435,7 +435,7 @@ async fn replica_node(config: &Config) -> (Arc<AppState>, Router, peryx_ha_distr
         )
         .await
         .unwrap();
-    let router = router_for(state.clone()).merge(prepared.public_routes);
+    let router = router_for(state.clone(), prepared.public_routes);
     (state, router, prepared.handle)
 }
 

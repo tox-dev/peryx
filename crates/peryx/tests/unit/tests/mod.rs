@@ -1,4 +1,5 @@
 mod api;
+mod availability_composition_tests;
 mod cli;
 mod identity_availability_tests;
 mod logging_tests;

@@ -33,7 +33,7 @@ fn filter_router() -> (tempfile::TempDir, axum::Router) {
     let dir = tempfile::tempdir().unwrap();
     let state = build_state(&ui_config(&dir, false)).unwrap();
     put_filter_files(&state);
-    (dir, router_for(state))
+    (dir, router_for(state, axum::Router::new()))
 }
 
 fn ui_config(dir: &tempfile::TempDir, cached_offline: bool) -> Config {
@@ -183,7 +183,7 @@ async fn ui_router_admin() -> (tempfile::TempDir, axum::Router, String) {
     let dir = tempfile::tempdir().unwrap();
     let state = build_state(&ui_config(&dir, false)).unwrap();
     let authorization = seed_administrator(&state).await;
-    (dir, router_for(state), authorization)
+    (dir, router_for(state, axum::Router::new()), authorization)
 }
 
 async fn ui_router_admin_stateful() -> (
@@ -195,7 +195,12 @@ async fn ui_router_admin_stateful() -> (
     let dir = tempfile::tempdir().unwrap();
     let state = build_state(&ui_config(&dir, false)).unwrap();
     let authorization = seed_administrator(&state).await;
-    (dir, state.clone(), router_for(state), authorization)
+    (
+        dir,
+        state.clone(),
+        router_for(state, axum::Router::new()),
+        authorization,
+    )
 }
 
 fn rendered_main(body: &str) -> &str {
@@ -479,7 +484,7 @@ async fn test_ui_project_page_shows_source_and_availability_cells() {
             },
         )
         .unwrap();
-    let router = router_for(state);
+    let router = router_for(state, axum::Router::new());
     let (status, body) = get(&router, "/browse?index=pypi&project=veloxdemo").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
@@ -697,7 +702,7 @@ fn detail_router(detail: &serde_json::Value) -> (tempfile::TempDir, axum::Router
             },
         )
         .unwrap();
-    (dir, router_for(state))
+    (dir, router_for(state, axum::Router::new()))
 }
 
 #[tokio::test]
@@ -723,7 +728,7 @@ async fn test_ui_project_page_renders_metadata_and_sanitizes_description_links()
             metadata_digest.as_str().to_owned(),
         )])),
     );
-    let router = router_for(state);
+    let router = router_for(state, axum::Router::new());
     let (status, body) = get(&router, "/browse?index=hosted&project=veloxdemo").await;
     assert_eq!(status, StatusCode::OK);
     let main = rendered_main(&body);
@@ -901,7 +906,7 @@ fn file_router(file: &serde_json::Value) -> (tempfile::TempDir, axum::Router) {
             attestations: &[],
         })
         .unwrap();
-    (dir, router_for(state))
+    (dir, router_for(state, axum::Router::new()))
 }
 
 fn wheel_with_metadata(metadata: &str) -> Vec<u8> {
@@ -993,7 +998,7 @@ async fn test_ui_project_page_shows_contents_for_zipped_eggs() {
         zip.finish().unwrap();
     }
     let digest = put_legacy_file(&state, "veloxdemo-1.0.0.egg", &egg);
-    let router = router_for(state);
+    let router = router_for(state, axum::Router::new());
     let listing_url = format!(
         "/browse?index=hosted&project=veloxdemo&sha256={}&file=veloxdemo-1.0.0.egg",
         digest.as_str()
@@ -1015,7 +1020,7 @@ async fn test_ui_project_page_hides_contents_for_unsupported_legacy_tar() {
     let dir = tempfile::tempdir().unwrap();
     let state = build_state(&ui_config(&dir, false)).unwrap();
     let digest = put_legacy_file(&state, "veloxdemo-1.0.0.tar.bz2", b"legacy tarball");
-    let router = router_for(state);
+    let router = router_for(state, axum::Router::new());
     let (status, body) = get(&router, "/browse?index=hosted&project=veloxdemo").await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("veloxdemo-1.0.0.tar.bz2"));

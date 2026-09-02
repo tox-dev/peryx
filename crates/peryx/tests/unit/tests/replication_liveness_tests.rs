@@ -163,7 +163,7 @@ async fn test_primary_surfaces_replica_liveness_to_an_operator() {
     let state = build_state(&config).unwrap();
     let operator = operator(&state).await;
     let runtime = ReplicationRuntime::new(&config, &state).unwrap();
-    let router = runtime.mount(router_for(state));
+    let router = router_for(state, runtime.routes());
 
     let accepted = heartbeat(&router, json!({"node": "replica-a", "incarnation": 1, "sequence": 1})).await;
     assert_eq!(accepted, StatusCode::ACCEPTED);
@@ -182,7 +182,7 @@ async fn test_liveness_hint_stays_hidden_from_an_unauthenticated_caller() {
     let config = primary_with_roster(&dir);
     let state = build_state(&config).unwrap();
     let runtime = ReplicationRuntime::new(&config, &state).unwrap();
-    let router = runtime.mount(router_for(state));
+    let router = router_for(state, runtime.routes());
 
     let document = health(&router, None).await;
 
@@ -198,7 +198,7 @@ async fn test_primary_without_a_roster_mounts_no_heartbeat_ingest() {
     let state = build_state(&config).unwrap();
     let operator = operator(&state).await;
     let runtime = ReplicationRuntime::new(&config, &state).unwrap();
-    let router = runtime.mount(router_for(state));
+    let router = router_for(state, runtime.routes());
 
     let status = heartbeat(&router, json!({"node": "replica-a", "incarnation": 1, "sequence": 1})).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -215,7 +215,7 @@ async fn test_group_readiness_blocks_until_the_replica_reports_then_clears() {
     let state = build_state(&config).unwrap();
     let operator = operator(&state).await;
     let runtime = ReplicationRuntime::new(&config, &state).unwrap();
-    let router = runtime.mount(router_for(state));
+    let router = router_for(state, runtime.routes());
 
     let readiness = health(&router, Some(&operator)).await["group_readiness"].clone();
     assert_eq!(readiness["ready"], json!(false));
@@ -275,7 +275,7 @@ async fn test_group_readiness_uses_the_write_ack_policy(#[case] policy: Durabili
     let state = build_state(&config).unwrap();
     let operator = operator(&state).await;
     let runtime = ReplicationRuntime::new(&config, &state).unwrap();
-    let readiness = health(&runtime.mount(router_for(state)), Some(&operator)).await["group_readiness"].clone();
+    let readiness = health(&router_for(state, runtime.routes()), Some(&operator)).await["group_readiness"].clone();
 
     assert_eq!(readiness, expected);
 }
@@ -286,7 +286,7 @@ async fn test_group_readiness_stays_hidden_from_an_unauthenticated_caller() {
     let config = primary_with_roster(&dir);
     let state = build_state(&config).unwrap();
     let runtime = ReplicationRuntime::new(&config, &state).unwrap();
-    let router = runtime.mount(router_for(state));
+    let router = router_for(state, runtime.routes());
 
     assert!(health(&router, None).await.get("group_readiness").is_none());
 }
@@ -299,7 +299,7 @@ async fn test_a_rosterless_primary_publishes_no_group_readiness() {
     let state = build_state(&config).unwrap();
     let operator = operator(&state).await;
     let runtime = ReplicationRuntime::new(&config, &state).unwrap();
-    let router = runtime.mount(router_for(state));
+    let router = router_for(state, runtime.routes());
 
     assert!(health(&router, Some(&operator)).await.get("group_readiness").is_none());
 }

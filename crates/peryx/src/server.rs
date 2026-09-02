@@ -72,10 +72,10 @@ pub fn build_router_with_plugins(
 ) -> anyhow::Result<Router> {
     let state = build_state_with_plugins(config, plugins)?;
     match config.availability {
-        crate::config::AvailabilityConfig::None => Ok(router_for(state)),
+        crate::config::AvailabilityConfig::None => Ok(router_for(state, Router::new())),
         crate::config::AvailabilityConfig::Dc(_) | crate::config::AvailabilityConfig::Ha(_) => {
             let runtime = crate::replication::ReplicationRuntime::new(config, &state)?;
-            Ok(runtime.mount(router_for(state)))
+            Ok(router_for(state, runtime.routes()))
         }
     }
 }
@@ -586,13 +586,20 @@ fn make_replica_configs(configs: &mut [IndexConfig]) {
     }
 }
 
-pub fn router_for(state: Arc<AppState>) -> Router {
+/// Compose the process router with the availability surface already inside the response policy.
+///
+/// The availability routes are a parameter rather than something a caller merges onto the result,
+/// because a merge joins routes without re-running the layers already applied: whatever arrives
+/// after this call answers without the browser defaults every other route carries. They join
+/// alongside the static assets, inside the response policy and outside request accounting, so a
+/// liveness poll still answers once a rate-limit budget is spent.
+pub fn router_for(state: Arc<AppState>, availability: Router) -> Router {
     let services = peryx_driver::http_services::HttpDomainServices::for_state(&state);
     peryx_http::router_with_ui(
         Arc::clone(&state),
         services,
         peryx_web::ssr::ui_pages(state),
-        peryx_web::ssr::ui_assets(),
+        peryx_web::ssr::ui_assets().merge(availability),
     )
 }
 

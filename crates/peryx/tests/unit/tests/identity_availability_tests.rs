@@ -147,14 +147,14 @@ fn server_grant(user: &str, role: &str) -> Value {
 
 fn writer_node(config: &Config) -> (Arc<AppState>, Router) {
     let state = build_state(config).unwrap();
-    let router = router_for(state.clone());
+    let router = router_for(state.clone(), Router::new());
     (state, router)
 }
 
 fn replica_node(config: &Config) -> (Arc<AppState>, Router, ReplicationRuntime) {
     let state = build_state(config).unwrap();
     let runtime = ReplicationRuntime::new(config, &state).unwrap();
-    let router = runtime.mount(router_for(state.clone()));
+    let router = router_for(state.clone(), runtime.routes());
     (state, router, runtime)
 }
 

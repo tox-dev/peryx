@@ -756,7 +756,6 @@ async fn test_prepared_process_rolls_back_an_activation_failure() {
     });
     let active = crate::server::activate_plugins(&config, &plugins).unwrap();
     let state = crate::server::build_state_with_active_plugins(&config, &active).unwrap();
-    let router = crate::server::router_for(state.clone());
     let availability = prepare_distributed_availability(
         &config,
         &active,
@@ -770,7 +769,6 @@ async fn test_prepared_process_rolls_back_an_activation_failure() {
         &config,
         config.listen_address().unwrap(),
         state,
-        router,
         Some(availability),
         cancelled(),
     )

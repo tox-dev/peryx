@@ -95,7 +95,7 @@ async fn app() -> (tempfile::TempDir, axum::Router) {
     provision_users(&state.serving).await;
     seed_pypi_trash(&state.serving, "flask-1.0.whl", 1_000);
     seed_pypi_trash(&state.serving, "flask-2.0.whl", 2_000);
-    (dir, router_for(state))
+    (dir, router_for(state, axum::Router::new()))
 }
 
 async fn get(
@@ -258,7 +258,7 @@ async fn test_a_corrupt_record_surfaces_a_store_error() {
         .meta
         .put_upload("hosted", "flask", "flask-1.0.whl", b"not json")
         .unwrap();
-    let router = router_for(state);
+    let router = router_for(state, axum::Router::new());
 
     let (list, _, _) = get(&router, "/+trash", ("Alice", PASSWORD)).await;
     assert_eq!(list, StatusCode::INTERNAL_SERVER_ERROR);

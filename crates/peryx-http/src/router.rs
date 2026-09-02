@@ -36,15 +36,22 @@ pub fn router_with_services(state: Arc<AppState>, services: HttpDomainServices) 
     router_with_ui(state, services, MountedRoutes::default(), Router::new())
 }
 
-/// Composes the whole request surface: service routes, server-rendered pages, and the static assets
-/// those pages fetch.
+/// Composes the whole request surface: service routes, server-rendered pages, and the routes that
+/// answer outside request accounting.
 ///
 /// The pages join the service routes before any layer attaches, because axum applies a layer to the
 /// routes registered at the point of the call: merging them afterwards would leave the pages outside
-/// tracing, route classification and every rate-limit budget. `assets` joins between the request
+/// tracing, route classification and every rate-limit budget. `unmetered` joins between the request
 /// middleware and the response security headers, which is the one position that keeps a hydrating
-/// page's own bytes out of its rendering budget while still handing them a header policy.
-pub fn router_with_ui(state: Arc<AppState>, services: HttpDomainServices, ui: MountedRoutes, assets: Router) -> Router {
+/// page's own bytes and a peer's liveness poll out of every budget while still handing them a header
+/// policy. This is also the last position that gets one: anything merged onto the returned router
+/// sits outside the response policy, so a route that has to carry it arrives here instead.
+pub fn router_with_ui(
+    state: Arc<AppState>,
+    services: HttpDomainServices,
+    ui: MountedRoutes,
+    unmetered: Router,
+) -> Router {
     let mut route_set = service_routes();
     for registered in state.http_routes() {
         route_set = route_set.merge(registered.routes());
@@ -114,10 +121,10 @@ pub fn router_with_ui(state: Arc<AppState>, services: HttpDomainServices, ui: Mo
             }))
             .layer(Extension(services)),
     );
-    // A merge keeps the right-hand router's fallbacks, so the assets have to join from the left:
-    // merging them in from the right would swap the layered 404 and the layered CONNECT catch-all
-    // for the bare ones an asset router carries, dropping those requests out of every middleware.
-    crate::response_security::secure_responses(assets.merge(router), &secured)
+    // A merge keeps the right-hand router's fallbacks, so the unmetered routes have to join from the
+    // left: merging them in from the right would swap the layered 404 and the layered CONNECT
+    // catch-all for the bare ones they carry, dropping those requests out of every middleware.
+    crate::response_security::secure_responses(unmetered.merge(router), &secured)
 }
 
 /// The four dispatchers, the read-only guard and the rate limiter each read the request path for

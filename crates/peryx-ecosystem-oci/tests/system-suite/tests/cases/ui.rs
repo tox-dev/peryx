@@ -443,7 +443,7 @@ async fn test_ui_dashboard_shows_the_oci_registry_endpoint_not_simple() {
     let dir = tempfile::tempdir().unwrap();
     let state = build_state(&oci_ui_config(&dir)).unwrap();
     let authorization = seed_administrator(&state).await;
-    let router = router_for(state);
+    let router = router_for(state, axum::Router::new());
     let (status, body) = get_authorized(&router, "/", &authorization).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("/v2/images/"), "OCI endpoint missing: {body}");

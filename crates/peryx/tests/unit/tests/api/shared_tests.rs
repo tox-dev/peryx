@@ -151,7 +151,10 @@ async fn test_shadow_contract_openapi_matches_the_public_handler() {
         )
         .body(Body::empty())
         .unwrap();
-    let response = crate::server::router_for(state).oneshot(request).await.unwrap();
+    let response = crate::server::router_for(state, axum::Router::new())
+        .oneshot(request)
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body: serde_json::Value =
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();

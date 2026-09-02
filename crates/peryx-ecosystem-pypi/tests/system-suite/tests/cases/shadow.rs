@@ -169,7 +169,7 @@ async fn seeded_state() -> (tempfile::TempDir, Arc<AppState>) {
 
 async fn app() -> (tempfile::TempDir, axum::Router) {
     let (dir, state) = seeded_state().await;
-    (dir, router_for(state))
+    (dir, router_for(state, axum::Router::new()))
 }
 
 fn record_decision(
@@ -299,7 +299,7 @@ async fn test_a_denied_filename_carries_its_decision_on_every_member_row() {
         "blocked-project",
         None,
     );
-    let router = router_for(state);
+    let router = router_for(state, axum::Router::new());
 
     let document = candidates(&router, "/+shadow/candidates?repository=root/pypi&project=acme-pkg").await;
     let rows = document["candidates"].as_array().unwrap();
@@ -336,7 +336,7 @@ async fn test_a_failed_decision_read_surfaces_as_a_server_error() {
         None,
     );
     state.serving.meta.migrate_metadata(&UnreadableDecision).unwrap();
-    let router = router_for(state);
+    let router = router_for(state, axum::Router::new());
 
     let (status, _headers, body) = get(
         &router,
@@ -388,7 +388,7 @@ async fn test_a_waiting_filename_reports_its_retry_window() {
         "cooldown",
         Some(120),
     );
-    let router = router_for(state);
+    let router = router_for(state, axum::Router::new());
 
     let document = candidates(&router, "/+shadow/candidates?repository=root/pypi&project=acme-pkg").await;
     let cached = document["candidates"]

@@ -315,9 +315,8 @@ fn run_server_with_active_plugins(
         let state = crate::server::build_state_with_active_plugins(config, plugins)?;
         crate::server::recover_job_attempts(&state)?;
         crate::server::recover_blob_uploads(&state).await?;
-        let router = crate::server::router_for(state.clone());
         let availability = prepare_process_availability(config, plugins, &state).await?;
-        let result = run_prepared_process(config, listen_address, state, router, availability, shutdown).await;
+        let result = run_prepared_process(config, listen_address, state, availability, shutdown).await;
         if let Some(signal_task) = signal_task {
             signal_task.abort();
         }
@@ -329,15 +328,17 @@ async fn run_prepared_process(
     config: &Config,
     listen_address: std::net::SocketAddr,
     state: Arc<peryx_driver::AppState>,
-    mut router: axum::Router,
     mut prepared_availability: Option<
         peryx_ha::PreparedAvailability<axum::Router, peryx_ha_distributed::DistributedHandle>,
     >,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> anyhow::Result<()> {
-    if let Some(prepared) = &prepared_availability {
-        router = router.merge(prepared.public_routes.clone());
-    }
+    let router = crate::server::router_for(
+        Arc::clone(&state),
+        prepared_availability
+            .as_ref()
+            .map_or_else(axum::Router::new, |prepared| prepared.public_routes.clone()),
+    );
     let is_replica = prepared_availability
         .as_ref()
         .is_some_and(|prepared| prepared.is_replica);

@@ -113,7 +113,6 @@ fn claim_writer(dir: &tempfile::TempDir) {
 
 async fn node(config: &Config) -> (Arc<AppState>, Router, Option<peryx_ha_distributed::DistributedHandle>) {
     let state = build_state(config).unwrap();
-    let mut router = router_for(state.clone());
     let plugins = crate::server::activate_plugins(config, &crate::compiled_plugins()).unwrap();
     let prepared = match &config.availability {
         AvailabilityConfig::None => None,
@@ -133,14 +132,11 @@ async fn node(config: &Config) -> (Arc<AppState>, Router, Option<peryx_ha_distri
             .unwrap(),
         ),
     };
-    let handle = match prepared {
-        Some(prepared) => {
-            router = router.merge(prepared.public_routes);
-            Some(prepared.handle)
-        }
-        None => None,
+    let (availability, handle) = match prepared {
+        Some(prepared) => (prepared.public_routes, Some(prepared.handle)),
+        None => (Router::new(), None),
     };
-    (state, router, handle)
+    (state.clone(), router_for(state, availability), handle)
 }
 
 async fn principal(state: &AppState, name: &str, role: Role) -> String {

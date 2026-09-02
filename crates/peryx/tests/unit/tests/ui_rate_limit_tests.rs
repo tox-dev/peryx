@@ -22,7 +22,7 @@ fn limited(limits: RateLimitConfig) -> (tempfile::TempDir, Arc<AppState>, axum::
         limits,
         std::iter::empty(),
     ));
-    let router = router_for(Arc::clone(&state));
+    let router = router_for(Arc::clone(&state), axum::Router::new());
     (dir, state, router)
 }
 
