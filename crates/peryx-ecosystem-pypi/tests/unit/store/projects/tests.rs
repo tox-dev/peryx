@@ -1,7 +1,7 @@
 use super::{
     CatalogGeneration, MetaStore, ProjectCachePurgeCounts, abort_catalog_generation, begin_catalog_generation,
-    catalog_generation_prefix, catalog_state, freshness_key, list_catalog_projects, publish_catalog_generation,
-    put_catalog_projects, recover_catalog_generations, refresh_catalog_generation,
+    catalog_generation_prefix, catalog_projects_in_snapshot, catalog_state, freshness_key, list_catalog_projects,
+    publish_catalog_generation, put_catalog_projects, recover_catalog_generations, refresh_catalog_generation,
 };
 use crate::store::PypiStore as _;
 
@@ -51,6 +51,45 @@ fn test_list_catalog_projects_is_bounded_and_canonical() {
 
     assert_eq!(list_catalog_projects(&meta, "pypi", 1).unwrap(), vec!["alpha"]);
     assert!(list_catalog_projects(&meta, "missing", 1).unwrap().is_empty());
+}
+
+#[test]
+fn test_list_catalog_projects_keeps_one_generation_when_publication_reclaims_mid_read() {
+    let (_dir, meta) = store();
+    let (retired, expected) = begin_catalog_generation(&meta, "pypi").unwrap();
+    put_catalog_projects(
+        &meta,
+        "pypi",
+        retired,
+        &[
+            ("alpha".to_owned(), "Alpha".to_owned()),
+            ("bravo".to_owned(), "Bravo".to_owned()),
+        ],
+    )
+    .unwrap();
+    publish_catalog_generation(&meta, "pypi", expected, generation(retired, None, None)).unwrap();
+
+    let during = meta
+        .read_driver_txn(|txn| {
+            let (replacement, expected) = begin_catalog_generation(&meta, "pypi").unwrap();
+            put_catalog_projects(
+                &meta,
+                "pypi",
+                replacement,
+                &[("charlie".to_owned(), "Charlie".to_owned())],
+            )
+            .unwrap();
+            publish_catalog_generation(&meta, "pypi", expected, generation(replacement, None, None)).unwrap();
+            recover_catalog_generations(&meta, "pypi").unwrap();
+            catalog_projects_in_snapshot(txn, "pypi", usize::MAX)
+        })
+        .unwrap();
+
+    assert_eq!(during, vec!["alpha", "bravo"]);
+    assert_eq!(
+        list_catalog_projects(&meta, "pypi", usize::MAX).unwrap(),
+        vec!["charlie"]
+    );
 }
 
 #[test]

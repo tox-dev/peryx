@@ -637,6 +637,29 @@ impl DriverReadTxn {
         self.collect_prefix(prefix)
     }
 
+    /// Returns at most `limit` matching keys in key order, so a caller that has already chosen a
+    /// generation from this snapshot can bound how much of it it reads back.
+    ///
+    /// # Errors
+    /// Returns a store error if the snapshot scan fails.
+    pub fn prefix_keys_limited(&self, prefix: &str, limit: usize) -> Result<Vec<String>, MetaError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut keys = Vec::new();
+        for entry in self.table.range(prefix..)? {
+            let (key, _) = entry?;
+            if !key.value().starts_with(prefix) {
+                break;
+            }
+            keys.push(key.value().to_owned());
+            if keys.len() == limit {
+                break;
+            }
+        }
+        Ok(keys)
+    }
+
     fn collect_prefix(&self, prefix: &str) -> Result<DriverEntries, MetaError> {
         let mut entries = Vec::new();
         for entry in self.table.range(prefix..)? {

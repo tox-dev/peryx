@@ -1,4 +1,4 @@
-use peryx_storage::meta::{DriverBatch, DriverTxn, MetaError, MetaScanError, MetaStore};
+use peryx_storage::meta::{DriverBatch, DriverReadTxn, DriverTxn, MetaError, MetaScanError, MetaStore};
 
 use crate::simple::File;
 use crate::stream::metadata_sibling;
@@ -539,27 +539,21 @@ pub fn refresh_project_generation(
 
 /// # Errors
 /// Returns a store error if a read fails or a stored file row cannot be decoded.
-///
 pub fn list_project_files(meta: &MetaStore, index: &str, normalized: &str) -> Result<Vec<File>, MetaError> {
-    let Some(active) = active_project_generation(meta, index, normalized)? else {
+    meta.read_driver_txn(|txn| project_files_in_snapshot(txn, index, normalized))
+}
+
+/// Publication retires the active generation and a later sync reclaims its rows in bounded batches,
+/// so a pointer read and a row scan taken from two snapshots can name a generation whose rows are
+/// already partly or wholly gone. One snapshot is what keeps the answer a whole generation.
+fn project_files_in_snapshot(txn: &DriverReadTxn, index: &str, normalized: &str) -> Result<Vec<File>, MetaError> {
+    let Some(active) = decode_project_meta_state(txn.get(&project_meta_key(index, normalized))?)?.active else {
         return Ok(Vec::new());
     };
-    let prefix = project_generation_prefix(index, normalized, active.generation);
-    let mut files = Vec::new();
-    let mut error = None;
-    meta.visit_driver_prefix(&prefix, |_key, raw| {
-        if error.is_some() {
-            return;
-        }
-        match serde_json::from_slice(raw) {
-            Ok(file) => files.push(file),
-            Err(err) => error = Some(MetaError::from(err)),
-        }
-    })?;
-    if let Some(err) = error {
-        return Err(err);
-    }
-    Ok(files)
+    txn.prefix(&project_generation_prefix(index, normalized, active.generation))?
+        .into_iter()
+        .map(|(_key, raw)| serde_json::from_slice(&raw).map_err(MetaError::from))
+        .collect()
 }
 
 #[cfg(test)]

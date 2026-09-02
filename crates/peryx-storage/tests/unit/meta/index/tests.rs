@@ -61,6 +61,38 @@ fn test_driver_read_txn_keeps_dependent_reads_in_one_snapshot() {
 }
 
 #[test]
+fn test_driver_read_txn_prefix_keys_limited_bounds_one_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    for key in ["catalog/1", "catalog/2", "other/1"] {
+        meta.put_driver_value(key, b"value").unwrap();
+    }
+
+    assert_eq!(
+        meta.read_driver_txn(|txn| {
+            let bounded = txn.prefix_keys_limited("catalog/", 1).unwrap();
+            meta.put_driver_value("catalog/3", b"value").unwrap();
+            Ok::<_, MetaError>((
+                txn.prefix_keys_limited("catalog/", 0).unwrap(),
+                bounded,
+                txn.prefix_keys_limited("catalog/", 9).unwrap(),
+            ))
+        })
+        .unwrap(),
+        (
+            Vec::new(),
+            vec!["catalog/1".to_owned()],
+            vec!["catalog/1".to_owned(), "catalog/2".to_owned()],
+        )
+    );
+    assert_eq!(
+        meta.read_driver_txn(|txn| txn.prefix_keys_limited("catalog/", 9))
+            .unwrap(),
+        vec!["catalog/1", "catalog/2", "catalog/3"]
+    );
+}
+
+#[test]
 fn test_driver_read_txn_reports_snapshot_read_failures() {
     let (meta, _backend, fault) = super::super::fault::initialized();
     fault.arm(0);

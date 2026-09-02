@@ -477,8 +477,8 @@ mod generation {
 
     use super::super::{
         abort_project_generation, active_project_generation, begin_project_generation, list_project_files,
-        project_generation_prefix, project_meta_state, publish_project_generation, put_project_files,
-        recover_project_generations, refresh_project_generation,
+        project_files_in_snapshot, project_generation_prefix, project_meta_state, publish_project_generation,
+        put_project_files, recover_project_generations, refresh_project_generation,
     };
     use super::MetaStore;
     use crate::simple::{CoreMetadata, File, Provenance, Yanked};
@@ -663,6 +663,28 @@ mod generation {
         let (_dir, meta) = store();
         assert!(list_project_files(&meta, "pypi", "flask").unwrap().is_empty());
         assert!(active_project_generation(&meta, "pypi", "flask").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_list_files_keeps_one_generation_when_publication_reclaims_mid_read() {
+        let (_dir, meta) = store();
+        let retired = [
+            file("flask-1.0.tar.gz", Some(&"a".repeat(64))),
+            file("flask-1.1.tar.gz", Some(&"b".repeat(64))),
+        ];
+        let replacement = file("flask-2.0.tar.gz", Some(&"c".repeat(64)));
+        publish(&meta, "pypi", "flask", &retired);
+
+        let during = meta
+            .read_driver_txn(|txn| {
+                publish(&meta, "pypi", "flask", std::slice::from_ref(&replacement));
+                recover_project_generations(&meta, "pypi", "flask").unwrap();
+                project_files_in_snapshot(txn, "pypi", "flask")
+            })
+            .unwrap();
+
+        assert_eq!(during, retired);
+        assert_eq!(list_project_files(&meta, "pypi", "flask").unwrap(), vec![replacement]);
     }
 
     #[test]

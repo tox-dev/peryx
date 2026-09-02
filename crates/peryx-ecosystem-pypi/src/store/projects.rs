@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use peryx_storage::meta::{DriverBatch, MetaError, MetaScanError, MetaStore};
+use peryx_storage::meta::{DriverBatch, DriverReadTxn, MetaError, MetaScanError, MetaStore};
 use serde::{Deserialize, Serialize};
 
 use super::{
@@ -300,12 +300,19 @@ pub fn list_projects(meta: &MetaStore, index: &str) -> Result<Vec<String>, MetaE
 /// # Errors
 /// Returns a store error if the catalog state or project-key scan cannot be read.
 pub fn list_catalog_projects(meta: &MetaStore, index: &str, limit: usize) -> Result<Vec<String>, MetaError> {
-    let Some(active) = catalog_state(meta, index)?.active else {
+    meta.read_driver_txn(|txn| catalog_projects_in_snapshot(txn, index, limit))
+}
+
+/// Publication retires the active catalog and a later sync reclaims its rows in bounded batches, so
+/// a pointer read and a key scan taken from two snapshots can name a generation whose rows are
+/// already partly or wholly gone. One snapshot is what keeps the answer a whole generation.
+fn catalog_projects_in_snapshot(txn: &DriverReadTxn, index: &str, limit: usize) -> Result<Vec<String>, MetaError> {
+    let Some(active) = decode_catalog_state(txn.get(&catalog_key(index))?)?.active else {
         return Ok(Vec::new());
     };
     let prefix = catalog_generation_prefix(index, active.generation);
-    Ok(meta
-        .driver_prefix_keys_limited(&prefix, limit)?
+    Ok(txn
+        .prefix_keys_limited(&prefix, limit)?
         .into_iter()
         .map(|key| key[prefix.len()..].to_owned())
         .collect())
