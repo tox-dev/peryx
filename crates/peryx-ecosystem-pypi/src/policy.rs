@@ -339,10 +339,10 @@ const ALLOW_VERSIONS_SETTING: &str = "pypi.allow-versions";
 
 /// Whether policy admits a release version named on its own.
 ///
-/// [`VersionRule`] judges a file, and builds its version from the parsed filename. A `versions` entry
-/// has no file behind it: it arrives as upstream text that may not parse as a version at all, and
-/// routing it through [`ArtifactFacts`] would also subject it to the size and package-type rules,
-/// which have nothing to say about a release. This reads the one rule that does.
+/// The version-specifier rule judges a file, and builds its version from the parsed filename. A
+/// `versions` entry has no file behind it: it arrives as upstream text that may not parse as a
+/// version at all, and routing it through [`ArtifactFacts`] would also subject it to the size and
+/// package-type rules, which have nothing to say about a release. This reads the one rule that does.
 #[derive(Debug, Clone, Default)]
 pub struct VersionAdmission {
     allowed: Option<VersionSpecifiers>,

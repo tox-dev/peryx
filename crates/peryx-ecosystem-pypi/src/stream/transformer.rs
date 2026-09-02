@@ -604,7 +604,14 @@ impl PageTransformer {
 
     /// Remember the release a served file belongs to, so `versions` lists it even when upstream did
     /// not declare it.
+    ///
+    /// Only until that array is written. PEP 691 fixes no member order, and the order registries
+    /// actually send puts `versions` first, so past that point the answer is already out and reading
+    /// a release off every remaining filename would parse four hundred names for nothing.
     fn record_served(&mut self, filename: &str) {
+        if self.document.pep700.versions_seen {
+            return;
+        }
         if let Some(version) = served_version(filename) {
             self.served_versions.insert(version);
         }
@@ -641,7 +648,9 @@ impl PageTransformer {
                 write_json(out, file);
             }
             self.document.emitted_in_array = true;
-            served.extend(served_version(&file.filename));
+            if !self.document.pep700.versions_seen {
+                served.extend(served_version(&file.filename));
+            }
         }
         self.served_versions.append(&mut served);
     }
