@@ -12,6 +12,7 @@ mod analytics;
 mod blob_chunk_digest;
 mod blob_placement;
 mod bootstrap;
+mod checkpoint;
 mod copy_cursor;
 mod error;
 mod external_identity;
@@ -49,6 +50,7 @@ pub use analytics::{
     AnalyticsCheckpoint, AnalyticsDelta, AnalyticsHandle, ArtifactUsageKey, DailyUsageKey, UsageTotals,
 };
 pub use bootstrap::AdministratorBootstrapError;
+pub use checkpoint::{Checkpoint, CheckpointIdentity, CheckpointManifest, CheckpointState, CheckpointVerifyError};
 pub use error::{MetaError, MetaScanError, WriterIdentityError};
 pub use external_identity::ExternalIdentityStoreError;
 pub use finalize::{FinalizeOutcome, FinalizedWrite};
@@ -159,6 +161,12 @@ const JOURNAL: TableDefinition<u64, &[u8]> = TableDefinition::new("journal");
 const WRITER: TableDefinition<&str, &str> = TableDefinition::new("writer");
 const JOURNAL_MUTATIONS: TableDefinition<u64, &[u8]> = TableDefinition::new("journal_mutations");
 const JOURNAL_BLOBS: TableDefinition<u64, &[u8]> = TableDefinition::new("journal_blobs");
+/// The folded replicated state one checkpoint publishes, and the manifest naming it. Held apart from
+/// [`DRIVER_KV`] so a publication replaces the checkpoint whole without touching live rows.
+const CHECKPOINT_ROW: TableDefinition<&str, &[u8]> = TableDefinition::new("checkpoint_row");
+const CHECKPOINT_REVOCATION: TableDefinition<&str, &[u8]> = TableDefinition::new("checkpoint_revocation");
+const CHECKPOINT_BLOB: TableDefinition<&str, u64> = TableDefinition::new("checkpoint_blob");
+const CHECKPOINT_META: TableDefinition<&str, &[u8]> = TableDefinition::new("checkpoint_meta");
 /// Drivers own key and value formats so storage needs no ecosystem-specific tables.
 const DRIVER_KV: TableDefinition<&str, &[u8]> = TableDefinition::new("driver_kv");
 const ANALYTICS: TableDefinition<&str, &[u8]> = TableDefinition::new("analytics");
