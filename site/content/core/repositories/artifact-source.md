@@ -32,6 +32,13 @@ step with the content store.
 `local` means verified, complete bytes. [Metadata](@/core/reference/glossary.md#artifact) alone does not make an
 artifact local. Neither does a partial transfer that fails digest verification.
 
+A transfer from an upstream ends if it falls behind the rate its delivered bytes have earned it, which bounds a source
+that keeps sending without ever going quiet and so never trips the read timeout. The transfer earns a grace period
+before its first bytes count, then a second of allowance for every 64 KiB delivered, so a large artifact on a slow link
+still finishes while a trickle does not run forever. A transfer stopped this way reports
+`upstream transfer was too slow to finish`, its partial bytes are discarded rather than committed, and the artifact
+stays `remote_only`.
+
 ## Transition table
 
 An artifact's placement starts when it is first recorded and moves only along byte-availability. The source is fixed at

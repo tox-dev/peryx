@@ -7,6 +7,7 @@ mod exec_tests;
 mod netrc_tests;
 mod property_tests;
 mod retry_tests;
+mod throughput_tests;
 
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};

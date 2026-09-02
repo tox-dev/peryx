@@ -24,6 +24,12 @@ pub enum UpstreamError {
     ResponseTooLarge { limit: usize },
     #[error("upstream bounded read deadline exceeded")]
     DeadlineExceeded,
+    /// A streaming transfer fell below the rate its own delivered bytes had earned it.
+    ///
+    /// Distinct from [`Self::DeadlineExceeded`], which bounds a composed metadata read, and from a
+    /// transport timeout, which a caller may resume at the offset it reached. This ends the transfer.
+    #[error("upstream delivered {delivered} bytes below the sustained throughput floor")]
+    BelowThroughputFloor { delivered: u64 },
     #[error("upstream destination is not permitted: {reason}")]
     BlockedDestination { reason: String },
 }
@@ -38,6 +44,7 @@ impl UpstreamError {
             | Self::InvalidResponse { .. }
             | Self::ResponseTooLarge { .. }
             | Self::DeadlineExceeded
+            | Self::BelowThroughputFloor { .. }
             | Self::BlockedDestination { .. } => None,
         }
     }
@@ -58,6 +65,7 @@ impl UpstreamError {
             Self::InvalidResponse { .. } => "upstream returned an invalid response".to_owned(),
             Self::ResponseTooLarge { limit } => format!("upstream response exceeds the {limit}-byte limit"),
             Self::DeadlineExceeded => "upstream request timed out".to_owned(),
+            Self::BelowThroughputFloor { .. } => "upstream transfer was too slow to finish".to_owned(),
             Self::BlockedDestination { .. } => "upstream destination is not permitted".to_owned(),
         }
     }

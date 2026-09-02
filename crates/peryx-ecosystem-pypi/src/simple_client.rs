@@ -295,11 +295,15 @@ const fn fallback_result(result: Result<u16, &UpstreamError>) -> bool {
     match result {
         Ok(status) => matches!(status, 404 | 429 | 500..=599),
         Err(UpstreamError::Http(_) | UpstreamError::DeadlineExceeded) => true,
+        // A throughput failure cannot reach here, since it bounds a streaming body and this routes a
+        // size-capped metadata read. It groups with the rest anyway: the bytes are already on their way
+        // to the client by the time the floor trips, so there is no request left to place elsewhere.
         Err(
             UpstreamError::Credential(_)
             | UpstreamError::Url(_)
             | UpstreamError::InvalidResponse { .. }
             | UpstreamError::ResponseTooLarge { .. }
+            | UpstreamError::BelowThroughputFloor { .. }
             | UpstreamError::BlockedDestination { .. },
         ) => false,
     }

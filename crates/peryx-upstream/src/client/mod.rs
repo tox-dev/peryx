@@ -8,6 +8,7 @@ pub mod retry;
 mod tls;
 
 mod response;
+pub(crate) mod throughput;
 
 use std::future::Future;
 use std::sync::Arc;
@@ -48,8 +49,10 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// A quiet connection dies here first, so a read budget longer than this cannot be spent. The two are
 /// equal today, and `test_the_read_budget_fits_inside_the_idle_bound` holds that order.
 ///
-/// This is also the one bound on [`UpstreamClient::stream_bytes`], which streams artifact bodies under no
-/// deadline at all, so raising it here weakens the only backstop that path has.
+/// [`UpstreamClient::stream_bytes`] streams artifact bodies under no deadline, so this used to be the one
+/// bound that path had. It now holds a throughput floor of its own, which is what catches an upstream
+/// that trickles without ever going quiet. Raising this therefore no longer leaves streaming unguarded,
+/// though the order against the read budget still binds both.
 pub(crate) const READ_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The budget one composed metadata read may spend.
@@ -527,11 +530,18 @@ impl UpstreamClient {
         }
     }
 
-    /// Streams bytes from an absolute URL.
+    /// Streams bytes from an absolute URL, bounded by the rate the transfer sustains.
+    ///
+    /// The read timeout ends a connection that goes quiet, and it is the only bound a body would
+    /// otherwise have: an upstream trickling bytes forever never leaves a gap long enough to trip it.
+    /// The returned stream therefore ends once a transfer has taken longer than its delivered bytes
+    /// have earned, which bounds a trickle without capping a large artifact on a slow link.
     ///
     /// # Errors
     /// Returns [`UpstreamError::Credential`] when refresh fails, or [`UpstreamError::Http`] when the
-    /// request fails or answers a non-success status.
+    /// request fails or answers a non-success status. The stream itself yields
+    /// [`UpstreamError::BelowThroughputFloor`] when the transfer falls behind, leaving the caller with a
+    /// partial body it must discard rather than a short one it could mistake for complete.
     pub async fn stream_bytes(
         &self,
         url: &str,
@@ -549,7 +559,9 @@ impl UpstreamClient {
             })
             .await?
             .error_for_status()?;
-        Ok(response.bytes_stream().map_err(UpstreamError::from))
+        Ok(throughput::bounded(
+            response.bytes_stream().map_err(UpstreamError::from),
+        ))
     }
 
     /// Fetches bytes from an absolute URL.
