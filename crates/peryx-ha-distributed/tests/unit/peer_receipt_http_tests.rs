@@ -8,14 +8,14 @@ use axum::response::IntoResponse;
 use peryx_storage::blob::{BlobStorage, Digest};
 use tower::ServiceExt as _;
 
-use crate::dc_ack::Deadline;
+use crate::evidence_gather::{GatherEnd, GatherOutcome};
 use crate::filesystem_ack::FilesystemAck;
 use crate::peer::TransportError;
 use crate::peer_receipt::{ReceiptRequest, ReceiptSource, gather_receipts};
 use crate::peer_receipt_http::{HttpReceiptError, HttpReceiptSource, ReceiptReply, receipt_router};
 use crate::readiness::DurabilityPolicy;
 use crate::receipt_quorum::ReceiptAck;
-use crate::support::{TestServer, http_contract};
+use crate::support::{TestServer, ended, http_contract};
 
 const ROUTE: &str = "/+replication/v1/receipts/sha256/{digest}";
 const TOKEN: &str = "secret";
@@ -225,7 +225,7 @@ async fn test_a_second_source_aimed_at_one_server_gets_no_receipt() {
     assert!(!error.is_retryable());
 }
 
-async fn quorum_over(servers: &[&TestServer], bound: &[&str], digest: &Digest) -> (Deadline, usize) {
+async fn quorum_over(servers: &[&TestServer], bound: &[&str], digest: &Digest) -> (GatherOutcome, usize) {
     let sources: Vec<Arc<dyn ReceiptSource + Send + Sync>> = bound
         .iter()
         .zip(servers)
@@ -238,7 +238,7 @@ async fn quorum_over(servers: &[&TestServer], bound: &[&str], digest: &Digest) -
         digest: digest.clone(),
     });
 
-    let deadline = gather_receipts(
+    let outcome = gather_receipts(
         &sources,
         request(digest, BYTES.len() as u64),
         &mut ack,
@@ -246,7 +246,7 @@ async fn quorum_over(servers: &[&TestServer], bound: &[&str], digest: &Digest) -
         Duration::from_millis(5),
     )
     .await;
-    (deadline, ack.independent_receipts())
+    (outcome, ack.independent_receipts())
 }
 
 #[tokio::test]
@@ -254,9 +254,13 @@ async fn test_two_sources_aimed_at_one_server_yield_one_receipt() {
     let (_dir, blobs, digest) = store_with(BYTES).await;
     let server = TestServer::start(receipt_router(TOKEN, "east-1", blobs).unwrap()).await;
 
-    let (deadline, receipts) = quorum_over(&[&server, &server], &["east-1", "east-2"], &digest).await;
+    let (outcome, receipts) = quorum_over(&[&server, &server], &["east-1", "east-2"], &digest).await;
 
-    assert_eq!((deadline, receipts), (Deadline::Expired, 2));
+    assert_eq!(
+        (outcome, receipts),
+        (ended(GatherEnd::Exhausted, &[("east-2", "receipt_identity")]), 2),
+        "one process cannot fill two receipt slots, and the slot it could not fill says why"
+    );
 }
 
 #[tokio::test]
@@ -266,9 +270,9 @@ async fn test_distinct_processes_holding_the_bytes_reach_quorum() {
     let east_1 = TestServer::start(receipt_router(TOKEN, "east-1", east_1_blobs).unwrap()).await;
     let east_2 = TestServer::start(receipt_router(TOKEN, "east-2", east_2_blobs).unwrap()).await;
 
-    let (deadline, receipts) = quorum_over(&[&east_1, &east_2], &["east-1", "east-2"], &digest).await;
+    let (outcome, receipts) = quorum_over(&[&east_1, &east_2], &["east-1", "east-2"], &digest).await;
 
-    assert_eq!((deadline, receipts), (Deadline::Live, 3));
+    assert_eq!((outcome, receipts), (ended(GatherEnd::Durable, &[]), 3));
 }
 
 #[tokio::test]
@@ -278,9 +282,13 @@ async fn test_a_replaced_node_contributes_nothing_under_its_predecessor() {
     let east_1 = TestServer::start(receipt_router(TOKEN, "east-1", east_1_blobs).unwrap()).await;
     let replacement = TestServer::start(receipt_router(TOKEN, "east-3", east_3_blobs).unwrap()).await;
 
-    let (deadline, receipts) = quorum_over(&[&east_1, &replacement], &["east-1", "east-2"], &digest).await;
+    let (outcome, receipts) = quorum_over(&[&east_1, &replacement], &["east-1", "east-2"], &digest).await;
 
-    assert_eq!((deadline, receipts), (Deadline::Expired, 2));
+    assert_eq!(
+        (outcome, receipts),
+        (ended(GatherEnd::Exhausted, &[("east-2", "receipt_identity")]), 2),
+        "the successor answers for itself, so the predecessor's slot names the violation"
+    );
 }
 
 #[tokio::test]

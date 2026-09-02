@@ -5,14 +5,15 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use peryx_storage::blob::Digest;
+use rstest::rstest;
 
-use crate::dc_ack::Deadline;
+use crate::evidence_gather::GatherEnd;
 use crate::filesystem_ack::FilesystemAck;
 use crate::peer::TransportError;
 use crate::peer_receipt::{LoopbackReceiptSource, PeerReceipt, ReceiptRequest, ReceiptSource, gather_receipts};
 use crate::readiness::DurabilityPolicy;
 use crate::receipt_quorum::ReceiptAck;
-use crate::support::RequestBlocker;
+use crate::support::{RequestBlocker, ended};
 
 const BUDGET: Duration = Duration::from_secs(5);
 const POLL: Duration = Duration::from_millis(50);
@@ -144,9 +145,9 @@ async fn test_gather_returns_live_without_a_query_when_local_quorum_is_met() {
     source.inject(TransportError::Disconnected);
     let sources = sources(vec![source]);
 
-    let deadline = gather_receipts(&sources, request(&digest()), &mut ack, BUDGET, POLL).await;
+    let outcome = gather_receipts(&sources, request(&digest()), &mut ack, BUDGET, POLL).await;
 
-    assert_eq!(deadline, Deadline::Live);
+    assert_eq!(outcome, ended(GatherEnd::Durable, &[]));
     assert!(ack.is_byte_durable());
 }
 
@@ -158,9 +159,9 @@ async fn test_gather_reaches_quorum_from_a_peer_receipt() {
         LoopbackReceiptSource::absent("c"),
     ]);
 
-    let deadline = gather_receipts(&sources, request(&digest()), &mut ack, BUDGET, POLL).await;
+    let outcome = gather_receipts(&sources, request(&digest()), &mut ack, BUDGET, POLL).await;
 
-    assert_eq!(deadline, Deadline::Live);
+    assert_eq!(outcome, ended(GatherEnd::Durable, &[]));
     assert_eq!(ack.independent_receipts(), 2);
     assert!(ack.is_byte_durable());
 }
@@ -178,14 +179,14 @@ async fn test_gather_queries_a_healthy_peer_while_the_first_peer_is_stalled() {
     let mut ack = local_ack(DurabilityPolicy::Majority, &["a", "b", "c"], "a");
     let digest = digest();
     let gather = tokio::spawn(async move {
-        let deadline = gather_receipts(&sources, request(&digest), &mut ack, BUDGET, POLL).await;
-        (deadline, ack)
+        let outcome = gather_receipts(&sources, request(&digest), &mut ack, BUDGET, POLL).await;
+        (outcome, ack)
     });
 
     started.await.unwrap();
-    let (deadline, ack) = gather.await.unwrap();
+    let (outcome, ack) = gather.await.unwrap();
 
-    assert_eq!((deadline, ack.is_byte_durable()), (Deadline::Live, true));
+    assert_eq!((outcome, ack.is_byte_durable()), (ended(GatherEnd::Durable, &[]), true));
     assert_eq!(cancelled.await, Ok(()));
 }
 
@@ -201,9 +202,9 @@ async fn test_gather_returns_before_a_later_peer_finishes() {
     ];
     let mut ack = local_ack(DurabilityPolicy::Majority, &["a", "b", "c"], "a");
 
-    let deadline = gather_receipts(&sources, request(&digest()), &mut ack, BUDGET, POLL).await;
+    let outcome = gather_receipts(&sources, request(&digest()), &mut ack, BUDGET, POLL).await;
 
-    assert_eq!((deadline, ack.is_byte_durable()), (Deadline::Live, true));
+    assert_eq!((outcome, ack.is_byte_durable()), (ended(GatherEnd::Durable, &[]), true));
 }
 
 #[tokio::test(start_paused = true)]
@@ -214,11 +215,11 @@ async fn test_gather_expires_when_peers_never_deliver() {
         LoopbackReceiptSource::absent("c"),
     ]);
 
-    let deadline = gather_receipts(&sources, request(&digest()), &mut ack, BUDGET, POLL).await;
+    let outcome = gather_receipts(&sources, request(&digest()), &mut ack, BUDGET, POLL).await;
 
     assert_eq!(
-        deadline,
-        Deadline::Expired,
+        outcome,
+        ended(GatherEnd::TimedOut, &[]),
         "a short gather is retry-safe, never durable"
     );
     assert!(!ack.is_byte_durable());
@@ -228,9 +229,12 @@ async fn test_gather_expires_when_peers_never_deliver() {
 async fn test_gather_expires_without_an_eligible_peer() {
     let mut ack = local_ack(DurabilityPolicy::Majority, &["a", "b", "c"], "a");
 
-    let deadline = gather_receipts(&[], request(&digest()), &mut ack, BUDGET, POLL).await;
+    let outcome = gather_receipts(&[], request(&digest()), &mut ack, BUDGET, POLL).await;
 
-    assert_eq!((deadline, ack.is_byte_durable()), (Deadline::Expired, false));
+    assert_eq!(
+        (outcome, ack.is_byte_durable()),
+        (ended(GatherEnd::Exhausted, &[]), false)
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -240,9 +244,9 @@ async fn test_gather_re_polls_a_peer_that_replicates_mid_window() {
         LoopbackReceiptSource::holding("b", digest(), 7).available_after(3),
     ]);
 
-    let deadline = gather_receipts(&sources, request(&digest()), &mut ack, BUDGET, POLL).await;
+    let outcome = gather_receipts(&sources, request(&digest()), &mut ack, BUDGET, POLL).await;
 
-    assert_eq!(deadline, Deadline::Live);
+    assert_eq!(outcome, ended(GatherEnd::Durable, &[]));
     assert!(ack.is_byte_durable());
 }
 
@@ -253,14 +257,35 @@ async fn test_gather_re_polls_past_a_transient_fault() {
     holding.inject(TransportError::Timeout);
     let sources = sources(vec![holding]);
 
-    let deadline = gather_receipts(&sources, request(&digest()), &mut ack, BUDGET, POLL).await;
+    let outcome = gather_receipts(&sources, request(&digest()), &mut ack, BUDGET, POLL).await;
 
     assert_eq!(
-        deadline,
-        Deadline::Live,
+        outcome,
+        ended(GatherEnd::Durable, &[]),
         "a transient fault is re-polled, not a failure"
     );
     assert!(ack.is_byte_durable());
+}
+
+#[rstest]
+#[case::unauthenticated(TransportError::Unauthenticated, "unauthenticated")]
+#[case::malformed(TransportError::Malformed, "malformed")]
+#[tokio::test(start_paused = true)]
+async fn test_gather_retires_a_peer_that_fails_terminally(#[case] fault: TransportError, #[case] reason: &'static str) {
+    let mut ack = local_ack(DurabilityPolicy::Majority, &["a", "b", "c"], "a");
+    let holding = LoopbackReceiptSource::holding("b", digest(), SIZE);
+    holding.inject(fault);
+    let sources = sources(vec![holding]);
+    let started = tokio::time::Instant::now();
+
+    let outcome = gather_receipts(&sources, request(&digest()), &mut ack, BUDGET, POLL).await;
+
+    assert_eq!(
+        (outcome, started.elapsed()),
+        (ended(GatherEnd::Exhausted, &[("b", reason)]), Duration::ZERO),
+        "a retired peer answers no later poll, so the write stops asking instead of waiting out its budget"
+    );
+    assert!(!ack.is_byte_durable());
 }
 
 #[tokio::test(start_paused = true)]
@@ -271,9 +296,9 @@ async fn test_gather_skips_a_peer_it_already_holds_across_rounds() {
         LoopbackReceiptSource::holding("c", digest(), 7).available_after(2),
     ]);
 
-    let deadline = gather_receipts(&sources, request(&digest()), &mut ack, BUDGET, POLL).await;
+    let outcome = gather_receipts(&sources, request(&digest()), &mut ack, BUDGET, POLL).await;
 
-    assert_eq!(deadline, Deadline::Live);
+    assert_eq!(outcome, ended(GatherEnd::Durable, &[]));
     assert_eq!(ack.independent_receipts(), 3);
 }
 
@@ -282,9 +307,9 @@ async fn test_gather_ignores_a_receipt_for_another_digest() {
     let mut ack = local_ack(DurabilityPolicy::Majority, &["a", "b", "c"], "a");
     let sources = sources(vec![LoopbackReceiptSource::holding("b", Digest::of(b"other"), 7)]);
 
-    let deadline = gather_receipts(&sources, request(&digest()), &mut ack, BUDGET, POLL).await;
+    let outcome = gather_receipts(&sources, request(&digest()), &mut ack, BUDGET, POLL).await;
 
-    assert_eq!(deadline, Deadline::Expired);
+    assert_eq!(outcome, ended(GatherEnd::TimedOut, &[]));
     assert_eq!(ack.independent_receipts(), 1, "only the local receipt counts");
 }
 
@@ -297,9 +322,12 @@ async fn test_gather_retires_a_source_that_answers_for_another_node() {
     });
     let sources: Vec<Arc<dyn ReceiptSource + Send + Sync>> = vec![unbound.clone()];
 
-    let deadline = gather_receipts(&sources, request(&digest()), &mut ack, BUDGET, POLL).await;
+    let outcome = gather_receipts(&sources, request(&digest()), &mut ack, BUDGET, POLL).await;
 
-    assert_eq!((deadline, ack.independent_receipts()), (Deadline::Expired, 1));
+    assert_eq!(
+        (outcome, ack.independent_receipts()),
+        (ended(GatherEnd::Exhausted, &[("b", "receipt_identity")]), 1)
+    );
     assert_eq!(
         unbound.calls.load(Ordering::Relaxed),
         1,
@@ -312,8 +340,8 @@ async fn test_gather_ignores_a_receipt_from_a_non_member() {
     let mut ack = local_ack(DurabilityPolicy::Majority, &["a", "b", "c"], "a");
     let sources = sources(vec![LoopbackReceiptSource::holding("stranger", digest(), 7)]);
 
-    let deadline = gather_receipts(&sources, request(&digest()), &mut ack, BUDGET, POLL).await;
+    let outcome = gather_receipts(&sources, request(&digest()), &mut ack, BUDGET, POLL).await;
 
-    assert_eq!(deadline, Deadline::Expired);
+    assert_eq!(outcome, ended(GatherEnd::TimedOut, &[]));
     assert_eq!(ack.independent_receipts(), 1);
 }

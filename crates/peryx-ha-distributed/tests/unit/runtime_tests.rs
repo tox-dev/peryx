@@ -303,11 +303,11 @@ impl peryx_ha::ControlAuthorizer for DenyControl {
 
 #[async_trait::async_trait]
 impl crate::MetadataFrontierProvider for StaticFrontier {
-    async fn frontier(&self, _authority: &str) -> Option<crate::FrontierReply> {
-        self.0.as_ref().map(|frontier| crate::FrontierReply {
+    async fn frontier(&self, _authority: &str) -> Result<Option<crate::FrontierReply>, crate::FrontierReadError> {
+        Ok(self.0.as_ref().map(|frontier| crate::FrontierReply {
             epoch: frontier.epoch,
             applied_frontier: frontier.applied_frontier,
-        })
+        }))
     }
 }
 

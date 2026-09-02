@@ -139,6 +139,7 @@ pub use envelope::{
     SCHEMA_VERSION, SchemaVersion, TraceContext, TraceError, derive_child,
 };
 pub use error::SyncError;
+pub use evidence_gather::{GatherOutcome, SourceFailure};
 pub use failover::{Candidate, Failover, FailoverPolicy};
 pub use filesystem_ack::{FilesystemAck, ReceiptOutcome};
 pub use http::{
@@ -201,7 +202,8 @@ pub use remote_frontier::{
     DEFAULT_FRONTIER_POLL, LoopbackRemoteFrontierSource, RemoteFrontierSource, gather_remote_acks,
 };
 pub use remote_frontier_http::{
-    FrontierReply, HttpRemoteFrontierError, HttpRemoteFrontierSource, MetadataFrontierProvider, frontier_router,
+    FrontierReadError, FrontierReply, HttpRemoteFrontierError, HttpRemoteFrontierSource, MetadataFrontierProvider,
+    frontier_router,
 };
 pub use replica::{AppliedPage, Replica, ReplicaState, SyncOutcome};
 pub use replica_monitor::{ReplicaMonitor, ReplicaObservation};

@@ -100,12 +100,21 @@ A blob write emits one `availability blob write acknowledged` event:
 | `ack.metadata_acknowledged` | Whether the metadata dimension reached the write's serial                                      |
 | `ack.bytes_expired`         | Whether the byte dimension's budget ran out                                                    |
 | `ack.metadata_expired`      | Whether the metadata dimension's budget ran out                                                |
+| `ack.bytes_retired`         | Peers retired on a terminal failure, as `node=reason` pairs                                    |
+| `ack.metadata_retired`      | Datacenters retired on a terminal failure, as `datacenter=reason` pairs                        |
 | `ack.waited_seconds`        | Time the acknowledgement spent resolving                                                       |
 
 A blob write is datacenter-durable only once both dimensions are, so both are reported: the outcome alone does not say
 which one a stalled write is waiting on. A metadata-only write, such as an OCI manifest, emits
 `availability metadata write acknowledged` with the same operation fields, `ack.evidence=journal-frontier`, and a single
-`ack.expired` because the journal frontier is its whole proof.
+`ack.expired` and `ack.retired` because the journal frontier is its whole proof.
+
+A dimension can also stop short without its budget running out. Some failures no later poll can revise: a rejected
+replication credential, a reply that is not a valid frontier or receipt, a receipt naming a different node. A source
+that fails that way is retired for the rest of the write, the write stops asking it, and the retired fields name it with
+a failure class such as `unauthenticated` or `malformed`. The class is a fixed token, never response body or credential
+text. Read them together with the expiry fields: an unproven write whose expiry fields are `false` was stopped by the
+sources named in the retired fields, not by its deadline.
 
 Both events carry identity and verdict only. They exclude payload bytes, metadata mutations, content references,
 credentials, and private paths.
@@ -116,6 +125,9 @@ Find every write that missed its durability level, and the members that did not 
 jq 'select(.fields.message == "availability blob write acknowledged" and .fields."ack.outcome" != "durable")' \
   /var/log/peryx/events.log
 ```
+
+A node that cannot read its own metadata position answers the frontier endpoint `500` rather than `404`, so peers retry
+it as a fault instead of recording it as a node that has not applied the authority.
 
 A replicated write also carries trace context in its operation envelope, so the producer, follower apply, and content
 copy join one trace. A replay retains the trace ID and operation identity but creates a new span ID for the apply work.

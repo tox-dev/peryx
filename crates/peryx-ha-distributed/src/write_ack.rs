@@ -14,8 +14,9 @@ use peryx_ha::{
 
 use crate::telemetry::{record_blob_ack, record_metadata_ack};
 use crate::{
-    AckDecision, DEFAULT_FRONTIER_POLL, DEFAULT_RECEIPT_POLL, Deadline, DurabilityPolicy, FilesystemAck, ReceiptAck,
-    RemoteDurability, assess_remote_metadata_durability, decide_dc_ack, gather_receipts, gather_remote_acks,
+    AckDecision, DEFAULT_FRONTIER_POLL, DEFAULT_RECEIPT_POLL, Deadline, DurabilityPolicy, FilesystemAck, GatherOutcome,
+    ReceiptAck, RemoteDurability, assess_remote_metadata_durability, decide_dc_ack, gather_receipts,
+    gather_remote_acks,
 };
 
 const STANDALONE_NODE: &str = "local";
@@ -77,14 +78,14 @@ impl DistributedBlobDurability {
         &self,
         write: &CommittedBlob<'_>,
         local_members: BTreeSet<String>,
-        metadata: impl Future<Output = (AckDecision, Deadline)>,
-    ) -> (ByteEvidence, Deadline, (AckDecision, Deadline)) {
+        metadata: impl Future<Output = (AckDecision, GatherOutcome)>,
+    ) -> (ByteEvidence, GatherOutcome, (AckDecision, GatherOutcome)) {
         let mut filesystem = FilesystemAck::new(write.digest().clone(), local_members, self.policy);
         filesystem.record(ReceiptAck {
             node: self.local_node(),
             digest: write.digest().clone(),
         });
-        let (byte_deadline, metadata) = tokio::join!(
+        let (bytes, metadata) = tokio::join!(
             gather_receipts(
                 &self.receipt_sources,
                 ReceiptRequest {
@@ -97,7 +98,7 @@ impl DistributedBlobDurability {
             ),
             metadata,
         );
-        (filesystem.evidence(), byte_deadline, metadata)
+        (filesystem.evidence(), bytes, metadata)
     }
 
     /// The write's own identity, taken from its commit receipt rather than from a later journal head, so
@@ -122,12 +123,12 @@ impl DistributedBlobDurability {
         }
     }
 
-    async fn metadata_decision(&self, authority: &str, operation: MetadataOperation) -> (AckDecision, Deadline) {
+    async fn metadata_decision(&self, authority: &str, operation: MetadataOperation) -> (AckDecision, GatherOutcome) {
         if self.remote_sources.is_empty() {
-            return (AckDecision::Acknowledged, Deadline::Live);
+            return (AckDecision::Acknowledged, unqueried());
         }
         let mut acknowledgements = Vec::new();
-        let deadline = gather_remote_acks(
+        let remote = gather_remote_acks(
             &self.remote_sources,
             authority,
             &operation,
@@ -139,7 +140,7 @@ impl DistributedBlobDurability {
         .await;
         let durability =
             assess_remote_metadata_durability(&operation, &acknowledgements, self.remote_sources.len(), self.policy);
-        (remote_decision(&durability, operation.frontier), deadline)
+        (remote_decision(&durability, operation.frontier), remote)
     }
 }
 
@@ -152,7 +153,7 @@ impl BlobWriteDurability for DistributedBlobDurability {
         };
         let metadata = async {
             let Some(commit) = write.commit() else {
-                return (AckDecision::Acknowledged, Deadline::Live);
+                return (AckDecision::Acknowledged, unqueried());
             };
             self.metadata_decision(
                 write.authority(),
@@ -163,7 +164,7 @@ impl BlobWriteDurability for DistributedBlobDurability {
             )
             .await
         };
-        let (evidence, byte_deadline, (metadata, metadata_deadline)) = match write.evidence() {
+        let (evidence, bytes, (metadata, remote)) = match write.evidence() {
             WriteEvidence::NodeLocal => self.gather_node_copies(&write, local_members, metadata).await,
             // The store holds the one copy these nodes share, so polling them for receipts would count
             // that object once per reader rather than finding a second copy.
@@ -171,11 +172,11 @@ impl BlobWriteDurability for DistributedBlobDurability {
                 ByteEvidence::ObjectStore {
                     acknowledged: evidence == WriteEvidence::ObjectStoreVerified,
                 },
-                Deadline::Live,
+                unqueried(),
                 metadata.await,
             ),
         };
-        let outcome = decide_dc_ack(metadata, &evidence, combined_deadline(byte_deadline, metadata_deadline));
+        let outcome = decide_dc_ack(metadata, &evidence, combined_deadline(bytes.deadline, remote.deadline));
         self.observer.record(outcome, &evidence);
         record_blob_ack(
             &OperationTrace::open(self.blob_observation(&write)),
@@ -184,8 +185,10 @@ impl BlobWriteDurability for DistributedBlobDurability {
                 outcome,
                 bytes: &evidence,
                 metadata_acknowledged: metadata.is_acknowledged(),
-                bytes_expired: byte_deadline == Deadline::Expired,
-                metadata_expired: metadata_deadline == Deadline::Expired,
+                bytes_expired: bytes.timed_out,
+                metadata_expired: remote.timed_out,
+                bytes_retired: &bytes.retired,
+                metadata_retired: &remote.retired,
                 waited: started.elapsed(),
             },
         );
@@ -201,7 +204,7 @@ impl BlobWriteDurability for DistributedBlobDurability {
 impl MetadataWriteDurability for DistributedBlobDurability {
     async fn confirm_metadata(&self, write: CommittedMetadata<'_>) -> WriteDurability {
         let started = tokio::time::Instant::now();
-        let (metadata, deadline) = self
+        let (metadata, remote) = self
             .metadata_decision(
                 write.authority(),
                 MetadataOperation {
@@ -224,12 +227,25 @@ impl MetadataWriteDurability for DistributedBlobDurability {
             policy: self.policy,
             evidence: MetadataEvidence::JournalFrontier,
             waited: started.elapsed(),
-            timed_out: deadline == Deadline::Expired,
+            timed_out: remote.timed_out,
             decision,
         };
         self.observer.record_metadata(observation);
-        record_metadata_ack(&OperationTrace::open(self.metadata_observation(&write)), observation);
+        record_metadata_ack(
+            &OperationTrace::open(self.metadata_observation(&write)),
+            observation,
+            &remote.retired,
+        );
         durability
+    }
+}
+
+/// The outcome of a metadata dimension that needed no remote evidence.
+const fn unqueried() -> GatherOutcome {
+    GatherOutcome {
+        deadline: Deadline::Live,
+        timed_out: false,
+        retired: Vec::new(),
     }
 }
 

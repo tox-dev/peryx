@@ -5,7 +5,7 @@ use crate::support::captured;
 use crate::{AuthorityEpoch, BlobReference, Change, MetadataMutation, OperationEnvelope, OperationKind, TraceContext};
 use peryx_ha::{
     BlobAckObservation, ByteAckDecision, ByteEvidence, DcAck, DurabilityPolicy, MetadataAckObservation,
-    MetadataEvidence, OperationObservation, OperationTrace, WriteAckDecision,
+    MetadataEvidence, OperationObservation, OperationTrace, SourceFailure, WriteAckDecision,
 };
 use peryx_storage::blob::BlobDurability;
 
@@ -37,6 +37,13 @@ fn traced(traceparent: Option<&str>) -> OperationEnvelope {
     }
 }
 
+fn failure(source: &str, reason: &'static str) -> SourceFailure {
+    SourceFailure {
+        source: source.to_owned(),
+        reason,
+    }
+}
+
 fn write_trace(serial: Option<u64>) -> OperationTrace {
     OperationTrace::open(OperationObservation {
         source: "primary-a".to_owned(),
@@ -55,6 +62,8 @@ fn blob_ack(outcome: DcAck, bytes: &ByteEvidence, metadata_acknowledged: bool) -
         metadata_acknowledged,
         bytes_expired: false,
         metadata_expired: false,
+        bytes_retired: &[],
+        metadata_retired: &[],
         waited: Duration::from_millis(250),
     }
 }
@@ -219,6 +228,88 @@ fn test_a_write_that_journaled_nothing_records_no_serial() {
 }
 
 #[test]
+fn test_a_blob_write_names_the_sources_each_dimension_retired() {
+    let bytes = ByteEvidence::Filesystem(ByteAckDecision::Pending {
+        nodes: vec!["primary-a".to_owned()],
+        required: 3,
+        remaining: 2,
+    });
+    let trace = write_trace(Some(11));
+
+    let recorded = captured(|| {
+        record_blob_ack(
+            &trace,
+            &BlobAckObservation {
+                bytes_retired: &[
+                    failure("primary-b", "receipt_identity"),
+                    failure("primary-c", "unauthenticated"),
+                ],
+                metadata_retired: &[failure("west", "malformed")],
+                ..blob_ack(DcAck::Unknown, &bytes, false)
+            },
+        );
+    });
+
+    for field in [
+        "ack.bytes_retired=\"primary-b=receipt_identity,primary-c=unauthenticated\"",
+        "ack.metadata_retired=\"west=malformed\"",
+        "ack.bytes_expired=false",
+        "ack.metadata_expired=false",
+    ] {
+        assert!(recorded.contains(field), "{field} missing from {recorded}");
+    }
+}
+
+#[test]
+fn test_a_blob_write_that_retired_nothing_leaves_both_retired_fields_empty() {
+    let bytes = ByteEvidence::ObjectStore { acknowledged: true };
+    let trace = write_trace(Some(11));
+
+    let recorded = captured(|| {
+        record_blob_ack(
+            &trace,
+            &blob_ack(
+                DcAck::Durable {
+                    scope: BlobDurability::ObjectStore,
+                },
+                &bytes,
+                true,
+            ),
+        );
+    });
+
+    for field in ["ack.bytes_retired=\"\"", "ack.metadata_retired=\"\""] {
+        assert!(recorded.contains(field), "{field} missing from {recorded}");
+    }
+}
+
+#[test]
+fn test_a_metadata_write_names_the_datacenter_it_retired() {
+    let trace = write_trace(Some(11));
+
+    let recorded = captured(|| {
+        record_metadata_ack(
+            &trace,
+            MetadataAckObservation {
+                policy: DurabilityPolicy::Everywhere,
+                evidence: MetadataEvidence::JournalFrontier,
+                waited: Duration::from_millis(500),
+                timed_out: false,
+                decision: WriteAckDecision::Unavailable,
+            },
+            &[failure("west", "unauthenticated")],
+        );
+    });
+
+    for field in ["ack.retired=\"west=unauthenticated\"", "ack.expired=false"] {
+        assert!(
+            recorded.contains(field),
+            "an unproven write that did not time out names what stopped it: {field} missing from {recorded}"
+        );
+    }
+}
+
+#[test]
 fn test_a_metadata_write_records_its_journal_frontier_proof() {
     let trace = write_trace(Some(11));
 
@@ -232,6 +323,7 @@ fn test_a_metadata_write_records_its_journal_frontier_proof() {
                 timed_out: true,
                 decision: WriteAckDecision::Unavailable,
             },
+            &[],
         );
     });
 

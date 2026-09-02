@@ -11,7 +11,7 @@
 
 use std::time::Duration;
 
-use crate::{AuthorityEpoch, ByteEvidence, DcAck, DurabilityPolicy, OperationKind};
+use crate::{AuthorityEpoch, ByteEvidence, DcAck, DurabilityPolicy, OperationKind, SourceFailure};
 
 /// The identity of one committed availability write, which every record of that write is joined on.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,6 +71,11 @@ pub struct BlobAckObservation<'evidence> {
     pub bytes_expired: bool,
     /// Whether the metadata dimension's budget expired before it proved.
     pub metadata_expired: bool,
+    /// Peers the byte dimension retired on a terminal failure, which is why a dimension can stop short
+    /// of proving without its budget expiring.
+    pub bytes_retired: &'evidence [SourceFailure],
+    /// Datacenters the metadata dimension retired on a terminal failure.
+    pub metadata_retired: &'evidence [SourceFailure],
     pub waited: Duration,
 }
 

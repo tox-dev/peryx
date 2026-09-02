@@ -130,9 +130,20 @@ pub struct FrontierReply {
     pub applied_frontier: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("metadata frontier could not be read")]
+pub struct FrontierReadError;
+
 #[async_trait]
 pub trait MetadataFrontierProvider: Send + Sync {
-    async fn frontier(&self, authority: &str) -> Option<FrontierReply>;
+    /// `Ok(None)` reports that this node holds no accepted position for `authority`, which is a
+    /// definite answer a peer may act on.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FrontierReadError`] when the node cannot read its own position. A fault is not an
+    /// absence: reporting one as the other lets a peer count a broken node as an applied node.
+    async fn frontier(&self, authority: &str) -> Result<Option<FrontierReply>, FrontierReadError>;
 }
 
 pub struct AvailabilityInstall<Routes> {
@@ -1246,6 +1257,29 @@ impl TransportError {
             self,
             Self::SourceChanged { .. } | Self::FrontierGap { .. } | Self::EmptyBatch { .. }
         )
+    }
+}
+
+/// A durability source that failed terminally, named alongside the failure class that retired it.
+///
+/// Retirement is the one outcome a later poll cannot revise, so it is the outcome an operator needs
+/// by name: without it a rejected credential and a peer that is merely slow both present as a write
+/// that never proved durable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceFailure {
+    pub source: String,
+    /// A bounded token from [`TransportError::terminal_reason`], never response or credential text.
+    pub reason: &'static str,
+}
+
+impl SourceFailure {
+    /// Returns the record for a terminal `error`, or `None` when `error` is worth retrying.
+    #[must_use]
+    pub fn terminal(source: &str, error: &TransportError) -> Option<Self> {
+        error.terminal_reason().map(|reason| Self {
+            source: source.to_owned(),
+            reason,
+        })
     }
 }
 

@@ -13,7 +13,24 @@ use peryx_identity::parse_basic;
 use peryx_storage::meta::MetaStore;
 use peryx_test_support::EcosystemDriverFixture;
 
+use crate::evidence_gather::{GatherEnd, GatherOutcome, RetiredSources, SourceFailure, outcome};
 use crate::{DcDurabilityMetrics, DistributedAnalyticsCompleteness, DistributedBlobDurability};
+
+/// The outcome of a gather that stopped at `end` after retiring `retired` sources, each named by its
+/// identity and the failure class that retired it. `end` maps to the reported deadline through the
+/// production mapping rather than a second copy of it.
+pub fn ended(end: GatherEnd, retired: &[(&str, &'static str)]) -> GatherOutcome {
+    GatherOutcome {
+        retired: retired
+            .iter()
+            .map(|(source, reason)| SourceFailure {
+                source: (*source).to_owned(),
+                reason,
+            })
+            .collect(),
+        ..outcome(end, RetiredSources::default())
+    }
+}
 
 pub struct RequestBlocker {
     signals: Mutex<Option<(tokio::sync::oneshot::Sender<()>, tokio::sync::oneshot::Sender<()>)>>,

@@ -1,6 +1,7 @@
 //! Authenticated HTTP transport for authority-scoped metadata frontiers. A missing frontier maps to
-//! `404`, which the client treats as no report and polls again. Epoch remains part of the reply so the
-//! durability fold can reject fenced reports.
+//! `404`, which the client treats as no report and polls again. A node that cannot read its own
+//! position answers `500` instead, so a storage fault is retried as a fault rather than counted as a
+//! definite absence. Epoch remains part of the reply so the durability fold can reject fenced reports.
 
 use std::fmt;
 use std::sync::Arc;
@@ -11,7 +12,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
-pub use peryx_ha::{FrontierReply, MetadataFrontierProvider};
+pub use peryx_ha::{FrontierReadError, FrontierReply, MetadataFrontierProvider};
 use reqwest::Url;
 
 use crate::client_transport::{
@@ -146,8 +147,9 @@ async fn serve_frontier(
     if !authorized(&headers, &state.token) {
         return unauthorized();
     }
-    state.provider.frontier(&authority).await.map_or_else(
-        || StatusCode::NOT_FOUND.into_response(),
-        |reply| Json(reply).into_response(),
-    )
+    match state.provider.frontier(&authority).await {
+        Ok(Some(reply)) => Json(reply).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 }

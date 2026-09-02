@@ -1023,11 +1023,19 @@ fn durability_policy_name_contract(#[case] policy: DurabilityPolicy, #[case] exp
 fn transport_error_contract(
     #[case] error: TransportError,
     #[case] retryable: bool,
-    #[case] terminal_reason: Option<&str>,
+    #[case] terminal_reason: Option<&'static str>,
 ) {
     assert_eq!(error.clone(), error);
     assert_eq!(error.is_retryable(), retryable);
     assert_eq!(error.terminal_reason(), terminal_reason);
+    assert_eq!(
+        SourceFailure::terminal("west", &error),
+        terminal_reason.map(|reason| SourceFailure {
+            source: "west".to_owned(),
+            reason,
+        }),
+        "only a failure no later poll can revise retires its source"
+    );
     assert!(!error.to_string().is_empty());
 }
 

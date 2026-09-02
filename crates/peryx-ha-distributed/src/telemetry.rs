@@ -10,7 +10,9 @@
 //! [`derive_child`](crate::derive_child).
 
 use crate::envelope::OperationEnvelope;
-use peryx_ha::{BlobAckObservation, ByteAckDecision, ByteEvidence, MetadataAckObservation, OperationTrace};
+use peryx_ha::{
+    BlobAckObservation, ByteAckDecision, ByteEvidence, MetadataAckObservation, OperationTrace, SourceFailure,
+};
 use peryx_storage::blob::BlobDurability;
 
 const NO_SCOPE: &str = "none";
@@ -28,6 +30,8 @@ pub fn record_blob_ack(trace: &OperationTrace, observation: &BlobAckObservation<
     let outcome = observation.outcome.as_str();
     let policy = observation.policy.as_str();
     let waited = observation.waited.as_secs_f64();
+    let bytes_retired = retired_field(observation.bytes_retired);
+    let metadata_retired = retired_field(observation.metadata_retired);
     tracing::info!(
         operation.traceparent = identity.traceparent,
         operation.source = identity.source,
@@ -46,6 +50,8 @@ pub fn record_blob_ack(trace: &OperationTrace, observation: &BlobAckObservation<
         ack.metadata_acknowledged = observation.metadata_acknowledged,
         ack.bytes_expired = observation.bytes_expired,
         ack.metadata_expired = observation.metadata_expired,
+        ack.bytes_retired = bytes_retired,
+        ack.metadata_retired = metadata_retired,
         ack.waited_seconds = waited,
         "availability blob write acknowledged",
     );
@@ -55,11 +61,12 @@ pub fn record_blob_ack(trace: &OperationTrace, observation: &BlobAckObservation<
 ///
 /// Metadata holds its own bytes, so the journal frontier is the whole proof and there is no second
 /// dimension to report.
-pub fn record_metadata_ack(trace: &OperationTrace, observation: MetadataAckObservation) {
+pub fn record_metadata_ack(trace: &OperationTrace, observation: MetadataAckObservation, retired: &[SourceFailure]) {
     let identity = Identity::of(trace);
     let policy = observation.policy.as_str();
     let waited = observation.waited.as_secs_f64();
     let outcome = observation.decision.as_str();
+    let retired = retired_field(retired);
     tracing::info!(
         operation.traceparent = identity.traceparent,
         operation.source = identity.source,
@@ -71,9 +78,28 @@ pub fn record_metadata_ack(trace: &OperationTrace, observation: MetadataAckObser
         ack.outcome = outcome,
         ack.evidence = "journal-frontier",
         ack.expired = observation.timed_out,
+        ack.retired = retired,
         ack.waited_seconds = waited,
         "availability metadata write acknowledged",
     );
+}
+
+/// Joins retired sources as `source=reason` pairs, the way counted node names are joined. `reason` is a
+/// bounded token from the transport, so no response body or credential text reaches the record.
+///
+/// A dimension that stopped short without its budget expiring names the failure that stopped it here,
+/// which is the difference between a peer that rejected the credential and a peer that is behind.
+fn retired_field(retired: &[SourceFailure]) -> String {
+    let mut field = String::new();
+    for failure in retired {
+        if !field.is_empty() {
+            field.push(',');
+        }
+        field.push_str(&failure.source);
+        field.push('=');
+        field.push_str(failure.reason);
+    }
+    field
 }
 
 /// The trace fields every acknowledgement record shares, borrowed as log-ready values.

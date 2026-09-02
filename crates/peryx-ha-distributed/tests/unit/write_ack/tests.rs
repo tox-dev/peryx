@@ -180,6 +180,36 @@ async fn metadata_deadline_records_an_unavailable_timeout() {
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn metadata_write_stops_at_a_remote_that_rejects_the_credential() {
+    let observer = Arc::new(Observer::default());
+    let rejecting = LoopbackRemoteFrontierSource::silent("west");
+    rejecting.inject(peryx_ha::TransportError::Unauthenticated);
+    let durability = DistributedBlobDurability::new(
+        TopologyConfig::default(),
+        DurabilityPolicy::Everywhere,
+        Vec::new(),
+        vec![Arc::new(rejecting)],
+        Duration::from_secs(30),
+        observer.clone(),
+    );
+
+    let outcome = peryx_ha::MetadataWriteDurability::confirm_metadata(&durability, committed_metadata()).await;
+
+    assert_eq!(outcome, WriteDurability::Unavailable);
+    assert_eq!(
+        *observer.1.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+        [MetadataAckObservation {
+            policy: DurabilityPolicy::Everywhere,
+            evidence: MetadataEvidence::JournalFrontier,
+            waited: Duration::ZERO,
+            timed_out: false,
+            decision: WriteAckDecision::Unavailable,
+        }],
+        "a rejected credential is not a slow datacenter, so the write neither waits out its budget nor counts a timeout"
+    );
+}
+
 #[tokio::test]
 async fn rosterless_local_write_is_durable_without_peer_work() {
     let observer = Arc::new(Observer::default());

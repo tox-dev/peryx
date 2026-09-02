@@ -10,17 +10,24 @@ use async_trait::async_trait;
 pub use peryx_ha::RemoteFrontierSource;
 use peryx_ha::{RemoteAck, TransportError};
 
-use crate::dc_ack::Deadline;
-use crate::evidence_gather::{Attempt, Observation, gather};
+use crate::evidence_gather::{Attempt, GatherEnd, GatherOutcome, Observation, RetiredSources, gather, outcome};
 use crate::remote_durability::{DurabilityPolicy, MetadataOperation, assess_remote_metadata_durability};
 
 pub const DEFAULT_FRONTIER_POLL: Duration = Duration::from_millis(50);
 
-/// Returns [`Deadline::Live`] once `acks` prove remote durability under `policy`, including evidence
-/// present on entry. `sources` is the configured remote datacenter set the policy resolves against.
+/// Proves remote metadata durability, or reports why it could not.
 ///
-/// Otherwise polls until `budget` expires and returns [`Deadline::Expired`]. Each datacenter's latest
-/// report replaces its prior report, so duplicates cannot inflate durability.
+/// Reports [`Deadline::Live`](crate::Deadline::Live) once `acks` prove durability under `policy`,
+/// including evidence present on entry. `sources` is the configured remote datacenter set the policy
+/// resolves against.
+///
+/// A missing report and a retryable transport fault are both absent evidence and are polled again. A
+/// terminal fault cannot be revised by another poll, so it retires that datacenter for the rest of the
+/// write and is reported in [`GatherOutcome::retired`] rather than dropped.
+///
+/// Otherwise reports [`Deadline::Expired`](crate::Deadline::Expired), either when `budget` runs out
+/// or once no remaining datacenter can report. Each datacenter's latest report replaces its prior
+/// report, so duplicates cannot inflate durability.
 pub async fn gather_remote_acks(
     sources: &[std::sync::Arc<dyn RemoteFrontierSource + Send + Sync>],
     authority: &str,
@@ -29,25 +36,26 @@ pub async fn gather_remote_acks(
     policy: DurabilityPolicy,
     budget: Duration,
     poll: Duration,
-) -> Deadline {
+) -> GatherOutcome {
     let configured = sources.len();
+    let retired = RetiredSources::default();
     if assess_remote_metadata_durability(operation, acks, configured, policy).is_durable() {
         sort_acks(acks);
-        return Deadline::Live;
+        return outcome(GatherEnd::Durable, retired);
     }
-    let deadline = gather(
+    let end = gather(
         sources.iter().map(AsRef::as_ref).collect(),
         authority,
         budget,
         poll,
         |source, authority| {
+            let retired = &retired;
             Box::pin(async move {
-                source
-                    .fetch_frontier(authority)
-                    .await
-                    .ok()
-                    .flatten()
-                    .map_or(Attempt::Retry, Attempt::Found)
+                match source.fetch_frontier(authority).await {
+                    Ok(Some(ack)) => Attempt::Found(ack),
+                    Err(error) if retired.record(source.datacenter(), &error) => Attempt::Retire,
+                    Ok(None) | Err(_) => Attempt::Retry,
+                }
             })
         },
         |ack| {
@@ -62,7 +70,7 @@ pub async fn gather_remote_acks(
     )
     .await;
     sort_acks(acks);
-    deadline
+    outcome(end, retired)
 }
 
 fn sort_acks(acks: &mut [RemoteAck]) {

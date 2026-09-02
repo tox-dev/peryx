@@ -9,8 +9,8 @@ use peryx_ha::{
     ArtifactPlacementQuery, ArtifactPlacementRow, ArtifactSource, AvailabilityAudience,
     AvailabilityAuthenticationError, AvailabilityAuthorizer, AvailabilityPageQuery, AvailabilityViewReader,
     BlobPlacementRecord, BlobPlacementState, BlobPlacementViewError, ByteAvailability, ControlActor,
-    ControlAuthenticationError, ControlAuthorizer, ControlPermission, FrontierReply, MetadataFrontierProvider,
-    OperationsViewError, PlacementViewError,
+    ControlAuthenticationError, ControlAuthorizer, ControlPermission, FrontierReadError, FrontierReply,
+    MetadataFrontierProvider, OperationsViewError, PlacementViewError,
 };
 use peryx_identity::{Resource, Scope, UserId, parse_basic};
 use peryx_storage::meta::{
@@ -130,18 +130,18 @@ impl ServingStateMetadataFrontierProvider {
 
 #[async_trait]
 impl MetadataFrontierProvider for ServingStateMetadataFrontierProvider {
-    async fn frontier(&self, authority: &str) -> Option<FrontierReply> {
+    async fn frontier(&self, authority: &str) -> Result<Option<FrontierReply>, FrontierReadError> {
         let applied_frontier = match self.0.meta.current_serial() {
             Ok(serial) => serial,
             Err(error) => {
                 tracing::error!(%error, "read metadata frontier");
-                return None;
+                return Err(FrontierReadError);
             }
         };
-        Some(FrontierReply {
+        Ok(Some(FrontierReply {
             epoch: self.0.committed_authority_epoch(authority).await,
             applied_frontier,
-        })
+        }))
     }
 }
 

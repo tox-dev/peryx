@@ -6,8 +6,7 @@ use async_trait::async_trait;
 pub use peryx_ha::{PeerReceipt, ReceiptRequest, ReceiptSource};
 use peryx_storage::blob::Digest;
 
-use crate::dc_ack::Deadline;
-use crate::evidence_gather::{Attempt, Observation, gather};
+use crate::evidence_gather::{Attempt, GatherEnd, GatherOutcome, Observation, RetiredSources, gather, outcome};
 use crate::filesystem_ack::{FilesystemAck, ReceiptOutcome};
 use crate::peer::TransportError;
 use crate::receipt_quorum::ReceiptAck;
@@ -27,9 +26,10 @@ impl From<PeerReceipt> for ReceiptAck {
 ///
 /// Absent receipts and retryable transport faults are missing evidence and are retried; a terminal
 /// fault, including an answer that does not attest `request` from the source's node, retires that
-/// source for the rest of the write.
+/// source for the rest of the write and is reported in [`GatherOutcome::retired`].
 ///
-/// Returns [`Deadline::Live`] for quorum and [`Deadline::Expired`] for timeout. Expiration remains
+/// Reports quorum as [`Deadline::Live`](crate::Deadline::Live). A budget that ran out and a peer set
+/// with nothing left to give both report [`Deadline::Expired`](crate::Deadline::Expired), which stays
 /// ambiguous because a peer may commit after the client stops waiting. The gather skips sources
 /// represented in `ack`, preventing duplicate node receipts from inflating quorum.
 pub async fn gather_receipts(
@@ -38,11 +38,12 @@ pub async fn gather_receipts(
     ack: &mut FilesystemAck,
     budget: Duration,
     poll: Duration,
-) -> Deadline {
+) -> GatherOutcome {
+    let retired = RetiredSources::default();
     if ack.is_byte_durable() {
-        return Deadline::Live;
+        return outcome(GatherEnd::Durable, retired);
     }
-    gather(
+    let end = gather(
         sources
             .iter()
             .filter(|source| !ack.holds(source.node()))
@@ -52,12 +53,12 @@ pub async fn gather_receipts(
         budget,
         poll,
         |source, request| {
+            let retired = &retired;
             Box::pin(async move {
                 match source.fetch_receipt(*request).await {
                     Ok(Some(receipt)) => Attempt::Found(receipt),
-                    Ok(None) => Attempt::Retry,
-                    Err(error) if error.is_retryable() => Attempt::Retry,
-                    Err(_) => Attempt::Retire,
+                    Err(error) if retired.record(source.node(), &error) => Attempt::Retire,
+                    Ok(None) | Err(_) => Attempt::Retry,
                 }
             })
         },
@@ -67,7 +68,8 @@ pub async fn gather_receipts(
             ReceiptOutcome::Ignored => Observation::Pending,
         },
     )
-    .await
+    .await;
+    outcome(end, retired)
 }
 
 #[derive(Debug)]

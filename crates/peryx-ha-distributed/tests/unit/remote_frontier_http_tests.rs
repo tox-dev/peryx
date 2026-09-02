@@ -9,7 +9,8 @@ use axum::{Json, Router};
 use crate::peer::TransportError;
 use crate::remote_frontier::RemoteFrontierSource;
 use crate::remote_frontier_http::{
-    FrontierReply, HttpRemoteFrontierError, HttpRemoteFrontierSource, MetadataFrontierProvider, frontier_router,
+    FrontierReadError, FrontierReply, HttpRemoteFrontierError, HttpRemoteFrontierSource, MetadataFrontierProvider,
+    frontier_router,
 };
 use crate::support::{TestServer, http_contract};
 
@@ -21,19 +22,23 @@ fn source(url: &str, datacenter: &str) -> HttpRemoteFrontierSource {
     HttpRemoteFrontierSource::new(url, datacenter, TOKEN, Duration::from_secs(5)).unwrap()
 }
 
-struct FixedProvider(Option<FrontierReply>);
+struct FixedProvider(Result<Option<FrontierReply>, FrontierReadError>);
 
 #[async_trait]
 impl MetadataFrontierProvider for FixedProvider {
-    async fn frontier(&self, _authority: &str) -> Option<FrontierReply> {
+    async fn frontier(&self, _authority: &str) -> Result<Option<FrontierReply>, FrontierReadError> {
         self.0
     }
 }
 
 fn router_over(reply: Option<FrontierReply>) -> Router {
+    router_answering(Ok(reply))
+}
+
+fn router_answering(answer: Result<Option<FrontierReply>, FrontierReadError>) -> Router {
     frontier_router(
         TOKEN,
-        Arc::new(FixedProvider(reply)) as Arc<dyn MetadataFrontierProvider>,
+        Arc::new(FixedProvider(answer)) as Arc<dyn MetadataFrontierProvider>,
     )
     .unwrap()
 }
@@ -109,7 +114,11 @@ async fn test_fetch_rejects_a_malformed_reply() {
 
 #[test]
 fn test_router_rejects_an_empty_token() {
-    let error = frontier_router("", Arc::new(FixedProvider(None)) as Arc<dyn MetadataFrontierProvider>).unwrap_err();
+    let error = frontier_router(
+        "",
+        Arc::new(FixedProvider(Ok(None))) as Arc<dyn MetadataFrontierProvider>,
+    )
+    .unwrap_err();
 
     assert!(matches!(error, HttpRemoteFrontierError::EmptyToken));
 }
@@ -133,12 +142,25 @@ async fn test_endpoint_serves_a_frontier_end_to_end() {
 }
 
 #[tokio::test]
-async fn test_endpoint_reports_a_node_that_cannot_report_as_absent() {
+async fn test_endpoint_reports_a_node_holding_no_position_as_absent() {
     let server = TestServer::start(router_over(None)).await;
 
     let ack = source(&server.url, "east").fetch_frontier(AUTHORITY).await.unwrap();
 
     assert_eq!(ack, None);
+}
+
+#[tokio::test]
+async fn test_endpoint_reports_an_unreadable_position_as_a_retryable_fault() {
+    let server = TestServer::start(router_answering(Err(FrontierReadError))).await;
+
+    let error = source(&server.url, "east").fetch_frontier(AUTHORITY).await.unwrap_err();
+
+    assert_eq!(error, TransportError::ServerError { status: 500 });
+    assert!(
+        error.is_retryable(),
+        "a node that cannot read its own position is broken, not empty"
+    );
 }
 
 #[tokio::test]

@@ -13,6 +13,7 @@ use peryx_ha::{
 use peryx_identity::{GrantScope, Role};
 use peryx_storage::blob::BlobStore;
 use peryx_storage::meta::MetaStore;
+use peryx_test_support::fault;
 use rstest::rstest;
 
 const PASSWORD: &str = "availability adapter password";
@@ -128,11 +129,30 @@ async fn metadata_frontier_reports_the_committed_position() {
     assert_eq!(
         ServingStateMetadataFrontierProvider::new(state)
             .frontier("resource")
-            .await
-            .unwrap(),
-        peryx_ha::FrontierReply {
+            .await,
+        Ok(Some(peryx_ha::FrontierReply {
             epoch: 0,
             applied_frontier: 1,
-        }
+        }))
+    );
+}
+
+#[tokio::test]
+async fn metadata_frontier_reports_an_unreadable_store_as_a_fault_not_an_absence() {
+    let dir = tempfile::tempdir().unwrap();
+    let (inner, journal) = fault::backend();
+    let state = AppState::new(
+        MetaStore::open_backend(fault::faulted(&inner, &journal)).unwrap(),
+        BlobStore::new(dir.path().join("blobs")),
+        60,
+        Vec::new(),
+    );
+    journal.arm(0);
+
+    assert_eq!(
+        ServingStateMetadataFrontierProvider::new(state.serving)
+            .frontier("resource")
+            .await,
+        Err(peryx_ha::FrontierReadError)
     );
 }
