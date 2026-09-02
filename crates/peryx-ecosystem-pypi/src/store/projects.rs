@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     CATALOG_GENERATION_PREFIX, CATALOG_PREFIX, PROJECTS_PREFIX, file_key, freshness_key, index_key, metadata_key,
-    project_key, project_status_key, publication_prefix, record_str, scan_utf8_records,
+    project_key, project_status_key, publication_prefix, put_project_row, record_str, remove_cached_project_row,
+    scan_utf8_records,
 };
 
 const CATALOG_DELETE_BATCH: usize = 10_000;
@@ -245,7 +246,7 @@ pub struct ProjectCachePurgeCounts {
 /// # Errors
 /// Returns a store error if the write fails.
 pub fn put_project(meta: &MetaStore, index: &str, normalized: &str, display: &str) -> Result<(), MetaError> {
-    meta.put_driver_value(&project_key(index, normalized), display.as_bytes())
+    meta.commit_driver_txn(|txn| put_project_row(txn, index, normalized, display).map(|()| ((), Vec::new())))
 }
 
 /// # Errors
@@ -354,24 +355,27 @@ pub fn delete_project_cache(
     file_digests: &[String],
     metadata_digests: &[String],
 ) -> Result<ProjectCachePurgeCounts, MetaError> {
-    let counts = count_project_cache_purge(meta, index, normalized, file_digests, metadata_digests)?;
-    let key = format!("{index}/{normalized}");
-    let mut batch = DriverBatch::new();
-    batch.delete(index_key(&key));
-    batch.delete(freshness_key(&key));
-    batch.delete(project_key(index, normalized));
-    batch.delete(project_status_key(index, normalized));
-    for digest in file_digests {
-        batch.delete(file_key(digest));
-    }
-    for digest in metadata_digests {
-        batch.delete(metadata_key(digest));
-    }
-    for key in meta.driver_prefix_keys(&publication_prefix(index, normalized))? {
-        batch.delete(key);
-    }
-    meta.commit_driver_batch(&batch, true)?;
-    Ok(counts)
+    let page = format!("{index}/{normalized}");
+    meta.commit_driver_txn(|txn| {
+        let mut counts = ProjectCachePurgeCounts {
+            index_pages: usize::from(txn.remove_local(&index_key(&page))?),
+            project_records: usize::from(remove_cached_project_row(txn, index, normalized)?),
+            project_status_records: usize::from(txn.remove_local(&project_status_key(index, normalized))?),
+            file_url_records: 0,
+            metadata_records: 0,
+        };
+        txn.remove_local(&freshness_key(&page))?;
+        for digest in file_digests {
+            counts.file_url_records += usize::from(txn.remove_local(&file_key(digest))?);
+        }
+        for digest in metadata_digests {
+            counts.metadata_records += usize::from(txn.remove_local(&metadata_key(digest))?);
+        }
+        for (key, _) in txn.prefix(&publication_prefix(index, normalized))? {
+            txn.remove_local(&key)?;
+        }
+        Ok((counts, Vec::new()))
+    })
 }
 
 #[cfg(test)]

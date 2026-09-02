@@ -5,8 +5,9 @@ use peryx_storage::meta::{DriverTxn, MetaError, MetaScanError, MetaStore, QuotaE
 use super::journal::JournalEntry;
 use super::overrides::{FileOverride, OverrideMutation};
 use super::{
-    OVERRIDE_PREFIX, UPLOAD_PREFIX, metadata_key, override_key, project_key, provenance_key, provenance_prefix,
-    provenance_value, record_str, scan_utf8_records, split_provenance_value, upload_key,
+    OVERRIDE_PREFIX, UPLOAD_PREFIX, metadata_key, override_key, provenance_key, provenance_prefix, provenance_value,
+    put_project_row, put_upload_row, record_str, remove_upload_row, scan_utf8_records, split_provenance_value,
+    upload_key,
 };
 use crate::distribution_version_segment;
 
@@ -213,8 +214,8 @@ pub fn publish_file_in_txn<E: From<MetaError>>(
                 txn.put(&provenance, value.as_bytes())?;
                 txn.reference_blob(sibling.provenance_sha256, sibling.size);
             }
-            txn.put(&upload, file.record)?;
-            txn.put(&project_key(file.index, file.normalized), file.display.as_bytes())?;
+            put_upload_row(txn, file.index, file.normalized, file.filename, file.record)?;
+            put_project_row(txn, file.index, file.normalized, file.display)?;
             Ok((
                 true,
                 journal_entries(outbox, || {
@@ -244,7 +245,7 @@ pub fn put_upload(
     filename: &str,
     record: &[u8],
 ) -> Result<(), MetaError> {
-    meta.put_driver_value(&upload_key(index, normalized, filename), record)
+    meta.commit_driver_txn(|txn| put_upload_row(txn, index, normalized, filename, record).map(|()| ((), Vec::new())))
 }
 
 /// Promote a release onto `index`, each target filename admitted only if `guard` accepts it.
@@ -278,7 +279,7 @@ pub fn promote_files_checked<E: From<MetaError>>(
                 Guard::Skip => {}
                 Guard::Commit => {
                     txn.touch_policy_inputs(release.index);
-                    txn.put(&key, record)?;
+                    put_upload_row(txn, release.index, release.normalized, filename, record)?;
                     if let Some(size) = release.blob_sizes.get(token) {
                         txn.reference_blob(token, *size);
                     }
@@ -299,8 +300,7 @@ pub fn promote_files_checked<E: From<MetaError>>(
         if written == 0 {
             return Ok((0, Vec::new()));
         }
-        let project = project_key(release.index, release.normalized);
-        txn.put(&project, release.display.as_bytes())?;
+        put_project_row(txn, release.index, release.normalized, release.display)?;
         Ok((written, journal))
     })
 }
@@ -362,10 +362,8 @@ pub fn mutate_uploads<E: From<MetaError>>(
             let filename = &key[prefix.len()..];
             match mutate(filename, &record)? {
                 UploadMutation::Keep => continue,
-                UploadMutation::Replace(bytes) => txn.put(&key, &bytes)?,
-                UploadMutation::Delete => {
-                    txn.remove(&key)?;
-                }
+                UploadMutation::Replace(bytes) => put_upload_row(txn, index, normalized, filename, &bytes)?,
+                UploadMutation::Delete => remove_upload_row(txn, index, normalized, filename, &record)?,
             }
             txn.touch_policy_inputs(index);
             changed += 1;
@@ -412,7 +410,7 @@ pub fn mutate_uploads_and_overrides<E: From<MetaError>>(
             };
             guard()?;
             txn.touch_policy_inputs(plan.index);
-            txn.put(&key, &bytes)?;
+            put_upload_row(txn, plan.index, plan.normalized, filename, &bytes)?;
             changed += 1;
             journal.extend(journal_entries(plan.outbox, || {
                 journal_bytes(
@@ -512,7 +510,7 @@ pub fn delete_upload(
         let key = upload_key(index, normalized, filename);
         if let Some(record) = txn.get(&key)? {
             txn.touch_policy_inputs(index);
-            txn.remove(&key)?;
+            remove_upload_row(txn, index, normalized, filename, &record)?;
             release_provenance_in_txn(txn, index, normalized, filename)?;
             Ok((
                 true,

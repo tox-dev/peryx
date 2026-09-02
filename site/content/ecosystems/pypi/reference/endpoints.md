@@ -305,8 +305,12 @@ credentialed document:
 An anonymous or repository-only caller therefore sees the configured routes but no upstream host, upload-token state, or
 upload metadata. Upstream URLs drop user info, query strings, and fragments; the document never carries upload-token
 values, upstream usernames, passwords, bearer tokens, URL query secrets, or URL fragments. The administrator `upstream`
-block includes `offline`, `true` when that cached index serves only cached data, and its summary scans metadata keys
-once without fetching upstreams or reading cached artifact bytes.
+block includes `offline`, `true` when that cached index serves only cached data.
+
+The counts and the recent list come from rows peryx maintains as it publishes, so a status request reads one counter per
+index and decodes only the uploads it reports, whether the index holds a hundred files or a hundred million. It fetches
+no upstreams and reads no cached artifact bytes. Recent uploads are newest first with ties broken by filename, and an
+upload whose recorded time is missing or is not RFC 3339 sorts behind every upload peryx can read a time for.
 
 Authenticate with a local user's Basic credential. The admin status page and dashboard render the same access levels, so
 an unauthenticated page shows the routes but not the counters or the sensitive per-index fields.

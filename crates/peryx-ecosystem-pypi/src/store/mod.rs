@@ -36,6 +36,9 @@ pub use record::{
     ProjectMetaState, ProjectStatusRecord, UpstreamAttestation,
 };
 pub use summary::summarize_indexes;
+pub(crate) use summary::{
+    put_cached_project_row, put_project_row, put_upload_row, remove_cached_project_row, remove_upload_row,
+};
 pub(crate) use uploads::publish_file_in_txn;
 pub(crate) use uploads::publish_file_with_commit_if;
 pub(crate) use uploads::scan_upload_policy_snapshot;
@@ -89,6 +92,13 @@ const PROJECT_STATUS_PREFIX: &str = "pypi\u{0}s\u{0}";
 const UPLOAD_PREFIX: &str = "pypi\u{0}u\u{0}";
 /// The former `overrides` table: yanked/hidden markers, keyed by `{index}/{normalized}/{filename}`.
 const OVERRIDE_PREFIX: &str = "pypi\u{0}o\u{0}";
+/// One index's project and upload row counts, keyed by index name. Maintained by every write that adds
+/// or removes one of those rows, so a status request reads a count instead of walking a history.
+const COUNT_PREFIX: &str = "pypi\u{0}k\u{0}";
+/// One published upload's place in its index's newest-first order, keyed by index name, an inverted
+/// upload time, and the names that make the position unique. Holds what the summary reports about that
+/// upload, so reading the newest few decodes only the newest few.
+const RECENT_PREFIX: &str = "pypi\u{0}w\u{0}";
 
 fn index_key(key: &str) -> String {
     format!("{INDEX_PREFIX}{key}")

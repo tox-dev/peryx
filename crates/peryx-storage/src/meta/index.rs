@@ -1,3 +1,5 @@
+use std::ops::ControlFlow;
+
 use peryx_core::Clock;
 use peryx_ha::{ArtifactPlacement, ReclaimGuard};
 use redb::{ReadableTable as _, TableHandle as _};
@@ -643,32 +645,48 @@ impl DriverReadTxn {
     /// # Errors
     /// Returns a store error if the snapshot scan fails.
     pub fn prefix_keys_limited(&self, prefix: &str, limit: usize) -> Result<Vec<String>, MetaError> {
-        if limit == 0 {
-            return Ok(Vec::new());
-        }
         let mut keys = Vec::new();
-        for entry in self.table.range(prefix..)? {
-            let (key, _) = entry?;
+        self.scan_prefix(prefix, |key, _| {
+            if keys.len() == limit {
+                return Ok(ControlFlow::Break(()));
+            }
+            keys.push(key.to_owned());
+            Ok::<_, MetaError>(ControlFlow::Continue(()))
+        })?;
+        Ok(keys)
+    }
+
+    /// Visits matching records in key order, stopping as soon as the visitor breaks.
+    ///
+    /// A caller that wants a bounded answer out of an unbounded namespace - the newest few rows of a
+    /// history, the first page of a generation - reads exactly what it keeps through this, rather than
+    /// materializing the range and discarding most of it.
+    ///
+    /// # Errors
+    /// Returns a store error if the snapshot scan fails, or the visitor's error.
+    pub fn scan_prefix<E: From<MetaError>>(
+        &self,
+        prefix: &str,
+        mut visit: impl FnMut(&str, &[u8]) -> Result<ControlFlow<()>, E>,
+    ) -> Result<(), E> {
+        for entry in self.table.range(prefix..).map_err(MetaError::from)? {
+            let (key, value) = entry.map_err(MetaError::from)?;
             if !key.value().starts_with(prefix) {
                 break;
             }
-            keys.push(key.value().to_owned());
-            if keys.len() == limit {
+            if visit(key.value(), value.value())?.is_break() {
                 break;
             }
         }
-        Ok(keys)
+        Ok(())
     }
 
     fn collect_prefix(&self, prefix: &str) -> Result<DriverEntries, MetaError> {
         let mut entries = Vec::new();
-        for entry in self.table.range(prefix..)? {
-            let (key, value) = entry?;
-            if !key.value().starts_with(prefix) {
-                break;
-            }
-            entries.push((key.value().to_owned(), value.value().to_vec()));
-        }
+        self.scan_prefix(prefix, |key, value| {
+            entries.push((key.to_owned(), value.to_vec()));
+            Ok::<_, MetaError>(ControlFlow::Continue(()))
+        })?;
         Ok(entries)
     }
 }
@@ -777,9 +795,21 @@ impl DriverTxn<'_> {
     /// # Errors
     /// Returns a store error if the write fails.
     pub fn put_local(&mut self, key: &str, value: &[u8]) -> Result<(), MetaError> {
-        self.table.insert(key, value)?;
-        self.wrote_rows = true;
+        self.upsert_local(key, value)?;
         Ok(())
+    }
+
+    /// Returns whether the write inserted a new key, and adds no replicated mutation.
+    ///
+    /// A derived row that counts the rows of a namespace needs the insert/overwrite distinction the
+    /// bare write throws away, on the local side as much as the replicated one.
+    ///
+    /// # Errors
+    /// Returns a store error if the write fails.
+    pub fn upsert_local(&mut self, key: &str, value: &[u8]) -> Result<bool, MetaError> {
+        let inserted = self.table.insert(key, value)?.is_none();
+        self.wrote_rows = true;
+        Ok(inserted)
     }
 
     /// Adds no replicated mutation.

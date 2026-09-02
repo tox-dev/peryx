@@ -12,8 +12,8 @@ use super::record::{
     CachedIndex, CachedIndexPage, FreshnessOverlay, ProjectGeneration, ProjectMetaState, ProjectStatusRecord,
 };
 use super::{
-    INDEX_PREFIX, UpstreamAttestation, file_key, file_source_value, freshness_key, index_key, project_key,
-    project_status_key, publication_key, publication_prefix, publication_value,
+    INDEX_PREFIX, UpstreamAttestation, file_key, file_source_value, freshness_key, index_key, project_status_key,
+    publication_key, publication_prefix, publication_value, put_cached_project_row,
 };
 use super::{project_file_key, project_generation_attestation_prefix, project_generation_prefix, project_meta_key};
 
@@ -79,7 +79,7 @@ pub fn put_cached_page(meta: &MetaStore, write: CachedPageWrite<'_>) -> Result<(
     meta.commit_driver_cache_txn(|txn| {
         txn.put_local(&index_key(key), &record.encode())
             .and_then(|()| txn.remove(&freshness_key(key)).map(|_| ()))
-            .and_then(|()| txn.put_local(&project_key(index, normalized), display.as_bytes()))
+            .and_then(|()| put_cached_project_row(txn, index, normalized, display))
             .and_then(|()| match (project_status, project_status_reason) {
                 (None, None) => txn.remove(&project_status_key(index, normalized)).map(|_| ()),
                 (status, reason) => serde_json::to_vec(&ProjectStatusRecord {
