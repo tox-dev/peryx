@@ -6,6 +6,7 @@ use axum::http::HeaderValue;
 use axum::response::IntoResponse;
 use rstest::rstest;
 use serde::{Deserialize, Serialize};
+use tokio::io::AsyncReadExt as _;
 
 use crate::raft::network::{
     DEFAULT_MAX_RPC_RESPONSE_BYTES, RaftRpc, RaftRpcClient, RaftRpcConfigError, RaftRpcError, RaftRpcHandler,
@@ -282,7 +283,7 @@ async fn test_send_maps_a_refused_connection_to_unreachable() {
 
 #[tokio::test]
 async fn test_send_maps_a_truncated_body_to_unreachable() {
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::io::AsyncWriteExt as _;
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -306,32 +307,76 @@ async fn test_send_maps_a_truncated_body_to_unreachable() {
     task.await.unwrap();
 }
 
-/// Under a paused clock the elapsed span is the deadline the call was handed, so a client-wide bound
-/// would show up as an unrelated number rather than as a slow test.
+/// Bounds the wait for a dial the transport has already been asked to make, so a peer that never
+/// arrives fails its test instead of blocking the suite.
+const PEER_ARRIVAL: Duration = Duration::from_secs(30);
+
+/// A peer that accepts one connection and reads the request it carries but never answers, so a call can
+/// only end on the deadline it was handed. Leaves the clock running, which is why every caller pairs it
+/// with [`advance_to_deadline`].
+///
+/// A paused clock auto-advances to the next timer whenever the runtime parks. Pausing it while the dial
+/// and the request are still on the wire therefore jumps straight to the deadline and abandons the call
+/// before this peer ever accepts it, leaving the test waiting on an accept that can no longer happen.
+async fn silent_peer() -> (String, tokio::task::JoinHandle<tokio::net::TcpStream>) {
+    tokio::time::resume();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    (format!("http://{address}/"), tokio::spawn(receive_request(listener)))
+}
+
+async fn receive_request(listener: tokio::net::TcpListener) -> tokio::net::TcpStream {
+    tokio::time::timeout(PEER_ARRIVAL, read_request(listener))
+        .await
+        .expect("the transport dials its peer")
+}
+
+async fn read_request(listener: tokio::net::TcpListener) -> tokio::net::TcpStream {
+    let (mut connection, _) = listener.accept().await.unwrap();
+    let mut buffer = [0; 1024];
+    let mut request = Vec::new();
+    while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+        let read = connection.read(&mut buffer).await.unwrap();
+        assert_ne!(read, 0, "the request ended before its headers");
+        request.extend_from_slice(&buffer[..read]);
+    }
+    connection
+}
+
+/// Pauses the clock once `peer` holds the whole request, when the call is waiting on nothing but its own
+/// timer, and advances it to `deadline`. Hands back the connection so it stays open and unanswered for
+/// as long as the test holds it.
+async fn advance_to_deadline(
+    peer: tokio::task::JoinHandle<tokio::net::TcpStream>,
+    deadline: tokio::time::Instant,
+) -> tokio::net::TcpStream {
+    let connection = peer.await.unwrap();
+    tokio::time::pause();
+    tokio::time::advance(deadline.saturating_duration_since(tokio::time::Instant::now())).await;
+    connection
+}
+
+/// The clock is paused only once the request has landed, so the elapsed span is the deadline the call was
+/// handed and a client-wide bound would show up as an unrelated number rather than as a slow test.
 #[rstest]
 #[case::under_the_old_client_bound(Duration::from_secs(1))]
 #[case::over_the_old_client_bound(Duration::from_secs(9))]
 #[tokio::test(start_paused = true)]
 async fn test_send_gives_up_on_a_silent_peer_at_the_deadline_it_was_handed(#[case] deadline: Duration) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-    let task = tokio::spawn(async move {
-        let (_connection, _) = listener.accept().await.unwrap();
-        release_rx.await.unwrap();
-    });
-    let client = client(&format!("http://{address}/"), TOKEN);
+    let (address, peer) = silent_peer().await;
+    let client = client(&address, TOKEN);
     let start = tokio::time::Instant::now();
 
-    let error = client
-        .send::<_, Pong>(RaftRpc::AppendEntries, &Ping { n: 1 }, deadline)
-        .await
-        .unwrap_err();
+    let (error, _connection) = tokio::join!(
+        client.send::<_, Pong>(RaftRpc::AppendEntries, &Ping { n: 1 }, deadline),
+        advance_to_deadline(peer, start + deadline)
+    );
 
     let elapsed = start.elapsed().as_secs();
-    assert_eq!((error, elapsed), (RaftRpcError::Timeout, deadline.as_secs()));
-    release_tx.send(()).unwrap();
-    task.await.unwrap();
+    assert_eq!(
+        (error.unwrap_err(), elapsed),
+        (RaftRpcError::Timeout, deadline.as_secs())
+    );
 }
 
 /// A peer still working on the request learns the caller left, so it can stop instead of persisting a
@@ -405,7 +450,7 @@ mod adapter {
     use openraft::storage::SnapshotMeta;
     use serde::Serialize;
 
-    use super::{TOKEN, TestServer};
+    use super::{TOKEN, TestServer, advance_to_deadline, silent_peer};
     use crate::DatacenterId;
     use crate::raft::network::{PeerRaftNetwork, PeerRaftNetworkFactory, RaftRpc, RaftRpcHandler, RaftRpcRejection};
     use crate::raft::{PeryxNode, TypeConfig};
@@ -521,32 +566,23 @@ mod adapter {
         assert_eq!(response.vote, Vote::new(1, 1));
     }
 
-    /// Accepts the connection and never answers, so the call can only end on its own deadline.
-    async fn silent_peer() -> (String, tokio::sync::oneshot::Sender<()>, tokio::task::JoinHandle<()>) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let (release, released) = tokio::sync::oneshot::channel();
-        let task = tokio::spawn(async move {
-            let (_connection, _) = listener.accept().await.unwrap();
-            released.await.unwrap();
-        });
-        (format!("http://{address}/"), release, task)
-    }
-
     /// `OpenRaft` grants a vote the election window, far shorter than the budget it grants a snapshot
     /// chunk, and expects the transport to start cancelling once the soft TTL passes.
     #[tokio::test(start_paused = true)]
     async fn test_a_vote_ends_on_the_ttl_of_its_own_option() {
-        let (url, release, task) = silent_peer().await;
+        let (url, peer) = silent_peer().await;
         let mut network = client_to(&url).await;
         let option = RPCOption::new(Duration::from_secs(4));
         let deadline = option.soft_ttl();
         let start = tokio::time::Instant::now();
 
-        let error = network.vote(vote_req(), option).await.unwrap_err();
+        let (error, _connection) = tokio::join!(
+            network.vote(vote_req(), option),
+            advance_to_deadline(peer, start + deadline)
+        );
 
         assert_eq!(
-            (error, start.elapsed().as_secs()),
+            (error.unwrap_err(), start.elapsed().as_secs()),
             (
                 RPCError::Timeout(Timeout {
                     action: RPCTypes::Vote,
@@ -557,22 +593,23 @@ mod adapter {
                 deadline.as_secs()
             )
         );
-        release.send(()).unwrap();
-        task.await.unwrap();
     }
 
     #[tokio::test(start_paused = true)]
     async fn test_an_append_ends_on_the_ttl_of_its_own_option() {
-        let (url, release, task) = silent_peer().await;
+        let (url, peer) = silent_peer().await;
         let mut network = client_to(&url).await;
         let option = RPCOption::new(Duration::from_secs(8));
         let deadline = option.soft_ttl();
         let start = tokio::time::Instant::now();
 
-        let error = network.append_entries(append_req(), option).await.unwrap_err();
+        let (error, _connection) = tokio::join!(
+            network.append_entries(append_req(), option),
+            advance_to_deadline(peer, start + deadline)
+        );
 
         assert_eq!(
-            (error, start.elapsed().as_secs()),
+            (error.unwrap_err(), start.elapsed().as_secs()),
             (
                 RPCError::Timeout(Timeout {
                     action: RPCTypes::AppendEntries,
@@ -583,24 +620,25 @@ mod adapter {
                 deadline.as_secs()
             )
         );
-        release.send(()).unwrap();
-        task.await.unwrap();
     }
 
     /// The chunked transport retries a chunk in place after a `Timeout`; the whole transfer restarts at
     /// offset zero when the hard TTL elapses around the call instead.
     #[tokio::test(start_paused = true)]
     async fn test_a_snapshot_chunk_ends_on_the_ttl_of_its_own_option() {
-        let (url, release, task) = silent_peer().await;
+        let (url, peer) = silent_peer().await;
         let mut network = client_to(&url).await;
         let option = RPCOption::new(Duration::from_secs(12));
         let deadline = option.soft_ttl();
         let start = tokio::time::Instant::now();
 
-        let error = network.install_snapshot(snapshot_req(), option).await.unwrap_err();
+        let (error, _connection) = tokio::join!(
+            network.install_snapshot(snapshot_req(), option),
+            advance_to_deadline(peer, start + deadline)
+        );
 
         assert_eq!(
-            (error, start.elapsed().as_secs()),
+            (error.unwrap_err(), start.elapsed().as_secs()),
             (
                 RPCError::Timeout(Timeout {
                     action: RPCTypes::InstallSnapshot,
@@ -611,8 +649,6 @@ mod adapter {
                 deadline.as_secs()
             )
         );
-        release.send(()).unwrap();
-        task.await.unwrap();
     }
 
     #[tokio::test]
