@@ -358,6 +358,13 @@ impl VersionAdmission {
         }
     }
 
+    /// Whether any version rule is configured. With none every declared release stands, so the
+    /// filtering pass over a page's releases is skipped rather than walked to remove nothing.
+    #[must_use]
+    pub const fn constrains_versions(&self) -> bool {
+        self.allowed.is_some()
+    }
+
     /// With no specifier configured every declared version stands, which keeps the upstream set
     /// intact when no rule needs to read it. With one, a version peryx cannot parse cannot be shown
     /// to satisfy it, so it is not listed.
@@ -369,33 +376,36 @@ impl VersionAdmission {
     }
 }
 
-/// The `versions` a policy-filtered project detail lists, and the only place either serving path
-/// decides it.
+/// Reduce the declared releases in `versions` to the ones policy lists, then add the releases the
+/// served files belong to. The only place either serving path decides that set.
 ///
 /// The Simple Repository API requires every served file to belong to a listed version and permits a
 /// listed version to carry no files. So the set follows the declared releases through version policy
 /// rather than the surviving filenames: filtering artifacts leaves an allowed release listed even
 /// when it loses every file, while a release policy denies disappears from both halves.
 ///
-/// `declared` is what upstream listed and `local` what this index published itself; both face the
-/// same check, so a locally published version policy denies is no more listed than an upstream one.
-/// `served` carries the releases of the files that survived, which is what keeps a file whose release
-/// upstream failed to declare from being served under no listed version at all. Those files already
-/// passed the artifact rules, version rule included, so they need no second check.
-#[must_use]
-pub fn listed_versions(
+/// `local` is what this index published itself, and it faces the same check, so a locally published
+/// version policy denies is no more listed than an upstream one. `served` carries the releases of the
+/// files that survived, which keeps a file whose release upstream failed to declare from being served
+/// under no listed version; those files already passed the artifact rules, version rule included, so
+/// they need no second check.
+///
+/// The caller owns the set because the streaming path has already built one to reject a duplicate
+/// `versions` entry, and building a second over a four-hundred-release page costs more than the rest
+/// of the transform.
+pub fn apply_version_policy<'a>(
+    versions: &mut BTreeSet<&'a str>,
     admission: &VersionAdmission,
-    declared: impl IntoIterator<Item = String>,
-    local: impl IntoIterator<Item = String>,
-    served: impl IntoIterator<Item = String>,
-) -> BTreeSet<String> {
-    let mut listed: BTreeSet<String> = declared
-        .into_iter()
-        .chain(local)
-        .filter(|version| admission.admits(version))
-        .collect();
-    listed.extend(served);
-    listed
+    local: impl IntoIterator<Item = &'a str>,
+    served: impl IntoIterator<Item = &'a str>,
+) {
+    // Walking a four-hundred-release set to remove nothing is the whole cost of the filter, and no
+    // rule configured is the ordinary case.
+    if admission.constrains_versions() {
+        versions.retain(|version| admission.admits(version));
+    }
+    versions.extend(local.into_iter().filter(|version| admission.admits(version)));
+    versions.extend(served);
 }
 
 /// The release a served file belongs to, as its filename gives it.
@@ -726,10 +736,19 @@ impl PypiPolicy for Policy {
         detail
             .files
             .retain(|file| !admission.files.contains_key(&file.filename));
-        let served = detail.files.iter().filter_map(|file| served_version(&file.filename));
-        detail.versions = listed_versions(&VersionAdmission::of(self), declared, [], served)
-            .into_iter()
+        let served: Vec<String> = detail
+            .files
+            .iter()
+            .filter_map(|file| served_version(&file.filename))
             .collect();
+        let mut listed: BTreeSet<&str> = declared.iter().map(String::as_str).collect();
+        apply_version_policy(
+            &mut listed,
+            &VersionAdmission::of(self),
+            [],
+            served.iter().map(String::as_str),
+        );
+        detail.versions = listed.into_iter().map(str::to_owned).collect();
         Ok(detail)
     }
 

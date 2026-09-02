@@ -8,7 +8,7 @@ use serde::Serialize;
 
 use super::validator::JsonValidator;
 use super::{PageContext, PageSummary, Registration, TransformError, is_json_whitespace};
-use crate::policy::{PypiPolicy, RemoteMetadataMode, VersionAdmission, listed_versions, served_version};
+use crate::policy::{PypiPolicy, RemoteMetadataMode, VersionAdmission, apply_version_policy, served_version};
 use crate::simple::{ProjectStatusObject, absolutize, parse_project_status};
 use crate::{CoreMetadata, File, SimpleError, parse_meta};
 
@@ -799,19 +799,21 @@ impl PageTransformer {
 
     fn emit_versions(&mut self, out: &mut Vec<u8>) -> Result<(), TransformError> {
         let upstream: Vec<String> = serde_json::from_slice(&self.capture)?;
-        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        let mut listed: BTreeSet<&str> = BTreeSet::new();
         // PEP 700 defines `versions` as a set, so an upstream repeat is a broken page rather than
-        // something to silently collapse into the merge with peryx's own versions.
-        if let Some(duplicate) = upstream.iter().find(|version| !seen.insert(version)) {
+        // something to silently collapse into the merge with peryx's own versions. The same set then
+        // becomes the answer, so a page's releases are walked once.
+        if let Some(duplicate) = upstream.iter().find(|version| !listed.insert(version)) {
             return Err(SimpleError::DuplicateVersion(duplicate.clone()).into());
         }
-        let listed = listed_versions(
+        apply_version_policy(
+            &mut listed,
             &VersionAdmission::of(&self.context.policy),
-            upstream,
-            self.context.local_versions.iter().cloned(),
-            self.served_versions.iter().cloned(),
+            self.context.local_versions.iter().map(String::as_str),
+            self.served_versions.iter().map(String::as_str),
         );
         write_json(out, &listed);
+        drop(listed);
         self.document.pep700.versions_seen = true;
         Ok(())
     }
