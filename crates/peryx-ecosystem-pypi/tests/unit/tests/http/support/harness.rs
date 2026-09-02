@@ -723,7 +723,6 @@ pub fn install_distributed_services(state: &mut AppState) {
                 ..Default::default()
             },
             authority_drainer: None,
-            operations: None,
         })
         .unwrap();
     state.register_plugin_service(ownership).unwrap();
@@ -942,6 +941,7 @@ async fn test_local_durability_confirms_the_committed_scope() {
                 peryx_ha::AuthorityEpoch(7),
                 None,
                 peryx_storage::blob::WriteEvidence::NodeLocal,
+                peryx_ha::OperationKind::Publish,
             ))
             .await,
         peryx_ha::WriteDurability::Confirmed {

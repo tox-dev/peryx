@@ -206,6 +206,7 @@ async fn shared_distributed_test_services_expose_their_contracts() {
             peryx_ha::AuthorityEpoch(1),
             None,
             peryx_core::WriteEvidence::NodeLocal,
+            peryx_ha::OperationKind::Publish,
         ))
         .await;
     assert_eq!(

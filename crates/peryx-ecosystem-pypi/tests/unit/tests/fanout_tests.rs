@@ -327,7 +327,6 @@ fn install_remote_availability(state: &mut Arc<AppState>, content: Bytes) {
             analytics: Arc::new(UnavailableCompleteness),
             capabilities: peryx_ha::AvailabilityCapabilities::default(),
             authority_drainer: None,
-            operations: None,
         })
         .expect("remote availability is installed");
 }

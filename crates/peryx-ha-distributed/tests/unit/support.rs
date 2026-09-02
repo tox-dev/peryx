@@ -164,10 +164,69 @@ pub fn install_distributed_services_with_capabilities(
             analytics: Arc::new(DistributedAnalyticsCompleteness),
             capabilities,
             authority_drainer: None,
-            operations: None,
         })
         .unwrap();
     state.register_http_routes(Arc::new(crate::DistributedHttpRoutes));
+}
+
+/// Collects everything a body records through `tracing`, so a test can read the events a write path
+/// emitted rather than only the values it passed to a collaborator. Styling is off: the default format
+/// wraps every field name in ANSI escapes, which no substring assertion on `field=value` would survive.
+pub fn captured(body: impl FnOnce()) -> String {
+    let capture = Capture::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer(capture.clone())
+        .finish();
+    tracing::subscriber::with_default(subscriber, body);
+    std::io::Write::flush(&mut capture.clone()).unwrap();
+    capture.recorded()
+}
+
+/// Collects what a future records through `tracing` while it runs, for a write path whose record is
+/// only written once its acknowledgement resolves.
+pub async fn captured_async<Body: std::future::Future>(body: Body) -> (String, Body::Output) {
+    let capture = Capture::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer(capture.clone())
+        .finish();
+    let guard = tracing::subscriber::set_default(subscriber);
+    let output = body.await;
+    drop(guard);
+    std::io::Write::flush(&mut capture.clone()).unwrap();
+    (capture.recorded(), output)
+}
+
+#[derive(Clone, Default)]
+pub struct Capture(Arc<Mutex<Vec<u8>>>);
+
+impl Capture {
+    fn recorded(&self) -> String {
+        String::from_utf8(self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()).unwrap()
+    }
+}
+
+impl std::io::Write for Capture {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'writer> tracing_subscriber::fmt::MakeWriter<'writer> for Capture {
+    type Writer = Self;
+
+    fn make_writer(&'writer self) -> Self::Writer {
+        self.clone()
+    }
 }
 
 #[cfg(test)]

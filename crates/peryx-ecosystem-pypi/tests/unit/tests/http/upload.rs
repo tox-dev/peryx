@@ -79,7 +79,6 @@ async fn test_upload_uses_the_configured_write_acknowledger() {
             analytics: Arc::new(UnavailableCompleteness),
             capabilities: peryx_ha::AvailabilityCapabilities::default(),
             authority_drainer: None,
-            operations: None,
         })
         .unwrap();
     let wheel = fixture_wheel();

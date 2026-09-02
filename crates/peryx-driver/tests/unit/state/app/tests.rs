@@ -56,7 +56,6 @@ fn state_with_capabilities(
             analytics: Arc::new(Completeness),
             capabilities,
             authority_drainer: None,
-            operations: None,
         })
         .unwrap();
     (dir, state)
@@ -378,6 +377,7 @@ async fn test_none_mode_has_no_distributed_runtime() {
                 peryx_ha::AuthorityEpoch(3),
                 None,
                 WriteEvidence::NodeLocal,
+                peryx_ha::OperationKind::Publish,
             ))
             .await,
         peryx_ha::WriteDurability::Confirmed {
@@ -390,6 +390,7 @@ async fn test_none_mode_has_no_distributed_runtime() {
                 "catalog",
                 peryx_ha::AuthorityEpoch(3),
                 peryx_storage::meta::JournalCommit::new(1),
+                peryx_ha::OperationKind::Publish,
             ))
             .await,
         peryx_ha::WriteDurability::Confirmed {
@@ -473,7 +474,6 @@ async fn test_configured_blob_services_receive_requests() {
             analytics: Arc::new(Completeness),
             capabilities: peryx_ha::AvailabilityCapabilities::default(),
             authority_drainer: None,
-            operations: None,
         })
         .unwrap();
     let serving = state.serving.as_ref();
@@ -513,6 +513,7 @@ async fn test_configured_blob_services_receive_requests() {
                 peryx_ha::AuthorityEpoch(7),
                 None,
                 WriteEvidence::ObjectStoreVerified,
+                peryx_ha::OperationKind::Publish,
             ))
             .await,
         peryx_ha::WriteDurability::Pending
@@ -541,6 +542,7 @@ async fn test_configured_blob_services_receive_requests() {
                 "catalog",
                 peryx_ha::AuthorityEpoch(8),
                 commit,
+                peryx_ha::OperationKind::Publish,
             ))
             .await,
         peryx_ha::WriteDurability::Pending
@@ -570,7 +572,6 @@ async fn test_configured_availability_capabilities_are_exposed() {
                 ..Default::default()
             },
             authority_drainer: None,
-            operations: None,
         })
         .unwrap();
     let serving = state.serving.as_ref();

@@ -3,6 +3,7 @@
 mod blob;
 mod endpoint;
 mod metadata;
+mod operation_trace;
 mod placement;
 mod reclamation;
 mod reconcile;
@@ -15,6 +16,7 @@ pub use blob::{
 };
 pub use endpoint::{MemberEndpoint, MemberEndpointError};
 pub use metadata::{CommittedMetadata, MetadataWriteDurability};
+pub use operation_trace::{BlobAckObservation, OperationObservation, OperationTrace};
 pub use placement::{
     ArtifactOrigin, ArtifactPlacement, ArtifactPlacementHealth, ArtifactPlacementPage, ArtifactPlacementQuery,
     ArtifactPlacementRow, ArtifactSource, BackendId, BackendLocation, BlobPlacementDecisionError, BlobPlacementFailure,
@@ -138,7 +140,6 @@ pub struct AvailabilityInstall<Routes> {
     pub topology: TopologyConfig,
     pub blobs: BlobServices,
     pub analytics: Arc<dyn AnalyticsCompleteness>,
-    pub operations: Arc<dyn OperationObserver>,
     pub capabilities: AvailabilityCapabilities,
     pub authority_drainer: Option<Arc<dyn AuthorityDrainer>>,
     pub metrics: Vec<Arc<dyn PrometheusSource>>,
@@ -152,7 +153,6 @@ pub struct AvailabilityStateInstall {
     pub analytics: Arc<dyn AnalyticsCompleteness>,
     pub capabilities: AvailabilityCapabilities,
     pub authority_drainer: Option<Arc<dyn AuthorityDrainer>>,
-    pub operations: Option<Arc<dyn OperationObserver>>,
 }
 
 #[derive(Default)]
@@ -1104,18 +1104,6 @@ pub enum OperationKind {
     CacheFill,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OperationObservation {
-    pub source: String,
-    pub epoch: AuthorityEpoch,
-    pub serial: u64,
-    pub kind: OperationKind,
-}
-
-pub trait OperationObserver: Send + Sync {
-    fn record(&self, operation: OperationObservation);
-}
-
 impl OperationKind {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -1398,6 +1386,26 @@ pub enum DcAck {
     Durable { scope: BlobDurability },
     Pending,
     Unknown,
+}
+
+impl DcAck {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Durable { .. } => "durable",
+            Self::Pending => "pending",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// The durability scope the write proved, absent while it has proved none.
+    #[must_use]
+    pub const fn scope(self) -> Option<BlobDurability> {
+        match self {
+            Self::Durable { scope } => Some(scope),
+            Self::Pending | Self::Unknown => None,
+        }
+    }
 }
 
 pub trait WriteAckObserver: Send + Sync {

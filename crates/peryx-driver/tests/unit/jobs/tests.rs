@@ -86,7 +86,6 @@ fn install_distributed(state: &mut AppState, capabilities: peryx_ha::Availabilit
             analytics: Arc::new(UnavailableCompleteness),
             capabilities,
             authority_drainer: None,
-            operations: None,
         })
         .unwrap();
 }
@@ -144,6 +143,7 @@ async fn test_distributed_blob_confirmation_uses_the_installed_durability() {
                 peryx_ha::AuthorityEpoch(7),
                 None,
                 peryx_ha::WriteEvidence::NodeLocal,
+                peryx_ha::OperationKind::Publish,
             ))
             .await,
         peryx_ha::WriteDurability::Unavailable

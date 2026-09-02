@@ -264,7 +264,6 @@ async fn mount_blob(state: &ServingState, request: MountRequest<'_>) -> Result<R
     publish_acknowledged(
         state,
         &operation,
-        fence,
         BlobAck {
             repo,
             digest: storage,

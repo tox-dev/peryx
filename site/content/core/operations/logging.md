@@ -73,30 +73,54 @@ jq 'select(.fields.security_event == true and .fields.result == "denied")' /var/
 
 ## Availability trace context
 
-When distributed availability is configured, a replicated write carries
-[W3C trace context](https://www.w3.org/TR/trace-context/) in its operation envelope. The producer, follower apply, and
-content copy can join one trace. A replay retains the trace ID and operation identity but creates a new span ID for the
-apply work.
+When distributed availability is configured, every committed write opens a
+[W3C trace](https://www.w3.org/TR/trace-context/) where its acknowledgement resolves, and records what the configured
+`[availability.write_ack]` policy proved. The trace and span identifiers are drawn from the operating system's entropy,
+so an identifier never repeats and the sampled flag is always set: a mutation is rare next to a read, and its record
+only exists to answer a question about one.
 
-A sampled operation emits one `availability operation` event:
+A blob write emits one `availability blob write acknowledged` event:
 
-| Field                   | Meaning                                    |
-| ----------------------- | ------------------------------------------ |
-| `operation.source`      | Producer datacenter identity               |
-| `operation.epoch`       | Authority epoch at admission               |
-| `operation.serial`      | Producer operation serial                  |
-| `operation.kind`        | Driver operation name                      |
-| `operation.traceparent` | W3C trace context carried by the operation |
+| Field                       | Meaning                                                                                        |
+| --------------------------- | ---------------------------------------------------------------------------------------------- |
+| `operation.traceparent`     | W3C trace context opened for the write                                                         |
+| `operation.source`          | Node that accepted the write                                                                   |
+| `operation.authority`       | Authority the write mutates                                                                    |
+| `operation.epoch`           | Authority epoch the write committed under                                                      |
+| `operation.serial`          | Journal serial from the write's own commit receipt, absent when the mutation journaled nothing |
+| `operation.kind`            | Mutation class                                                                                 |
+| `ack.policy`                | Configured durability policy                                                                   |
+| `ack.outcome`               | `durable`, `pending`, or `unknown`                                                             |
+| `ack.scope`                 | Durability scope proven, or `none`                                                             |
+| `ack.evidence`              | `filesystem` for counted node receipts, `object-store` otherwise                               |
+| `ack.nodes`                 | Datacenter members whose receipt was counted                                                   |
+| `ack.required`              | Byte copies the policy required                                                                |
+| `ack.remaining`             | Byte copies still outstanding                                                                  |
+| `ack.bytes_acknowledged`    | Whether the byte dimension proved                                                              |
+| `ack.metadata_acknowledged` | Whether the metadata dimension reached the write's serial                                      |
+| `ack.bytes_expired`         | Whether the byte dimension's budget ran out                                                    |
+| `ack.metadata_expired`      | Whether the metadata dimension's budget ran out                                                |
+| `ack.waited_seconds`        | Time the acknowledgement spent resolving                                                       |
 
-The event excludes payload bytes, metadata mutations, content references, credentials, and private paths. An operation
-without the sampled trace flag emits no event.
+A blob write is datacenter-durable only once both dimensions are, so both are reported: the outcome alone does not say
+which one a stalled write is waiting on. A metadata-only write, such as an OCI manifest, emits
+`availability metadata write acknowledged` with the same operation fields, `ack.evidence=journal-frontier`, and a single
+`ack.expired` because the journal frontier is its whole proof.
 
-Use the trace ID or the source and serial pair to correlate an operation across nodes:
+Both events carry identity and verdict only. They exclude payload bytes, metadata mutations, content references,
+credentials, and private paths.
+
+Find every write that missed its durability level, and the members that did not answer:
 
 ```shell
-jq 'select(.fields.message == "availability operation" and .fields."operation.serial" == 7)' \
+jq 'select(.fields.message == "availability blob write acknowledged" and .fields."ack.outcome" != "durable")' \
   /var/log/peryx/events.log
 ```
+
+A replicated write also carries trace context in its operation envelope, so the producer, follower apply, and content
+copy join one trace. A replay retains the trace ID and operation identity but creates a new span ID for the apply work.
+A received envelope keeps the sampling its author chose, and an operation without the sampled flag emits no
+`availability operation` event.
 
 ## Related
 

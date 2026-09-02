@@ -1,8 +1,13 @@
-use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use super::{DistributedOperationObserver, operation_telemetry, root_traceparent, sampled, samples, trace_entropy};
+use super::{operation_telemetry, record_blob_ack, record_metadata_ack, sampled};
+use crate::support::captured;
 use crate::{AuthorityEpoch, BlobReference, Change, MetadataMutation, OperationEnvelope, OperationKind, TraceContext};
-use peryx_ha::{OperationObservation, OperationObserver as _};
+use peryx_ha::{
+    BlobAckObservation, ByteAckDecision, ByteEvidence, DcAck, DurabilityPolicy, MetadataAckObservation,
+    MetadataEvidence, OperationObservation, OperationTrace, WriteAckDecision,
+};
+use peryx_storage::blob::BlobDurability;
 
 const SAMPLED_TRACEPARENT: &str = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
 const UNSAMPLED_TRACEPARENT: &str = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00";
@@ -29,6 +34,221 @@ fn traced(traceparent: Option<&str>) -> OperationEnvelope {
             tracestate: None,
         }),
         ..OperationEnvelope::current("primary-a", AuthorityEpoch(3), OperationKind::Publish, secret_change())
+    }
+}
+
+fn write_trace(serial: Option<u64>) -> OperationTrace {
+    OperationTrace::open(OperationObservation {
+        source: "primary-a".to_owned(),
+        authority: "repository:alpha".to_owned(),
+        epoch: AuthorityEpoch(3),
+        serial,
+        kind: OperationKind::Publish,
+    })
+}
+
+fn blob_ack(outcome: DcAck, bytes: &ByteEvidence, metadata_acknowledged: bool) -> BlobAckObservation<'_> {
+    BlobAckObservation {
+        policy: DurabilityPolicy::Majority,
+        outcome,
+        bytes,
+        metadata_acknowledged,
+        bytes_expired: false,
+        metadata_expired: false,
+        waited: Duration::from_millis(250),
+    }
+}
+
+#[test]
+fn test_a_durable_blob_write_records_the_members_that_acknowledged_it() {
+    let bytes = ByteEvidence::Filesystem(ByteAckDecision::Acknowledged {
+        nodes: vec!["primary-a".to_owned(), "primary-b".to_owned()],
+        required: 2,
+    });
+    let trace = write_trace(Some(11));
+
+    let recorded = captured(|| {
+        record_blob_ack(
+            &trace,
+            &blob_ack(
+                DcAck::Durable {
+                    scope: BlobDurability::Filesystem,
+                },
+                &bytes,
+                true,
+            ),
+        );
+    });
+
+    assert!(recorded.contains("availability blob write acknowledged"), "{recorded}");
+    for field in [
+        trace.traceparent.as_str(),
+        "operation.source=\"primary-a\"",
+        "operation.authority=\"repository:alpha\"",
+        "operation.epoch=3",
+        "operation.serial=11",
+        "operation.kind=\"publish\"",
+        "ack.policy=\"majority\"",
+        "ack.outcome=\"durable\"",
+        "ack.scope=\"filesystem\"",
+        "ack.evidence=\"filesystem\"",
+        "ack.nodes=\"primary-a,primary-b\"",
+        "ack.required=2",
+        "ack.remaining=0",
+        "ack.bytes_acknowledged=true",
+        "ack.metadata_acknowledged=true",
+        "ack.waited_seconds=0.25",
+    ] {
+        assert!(recorded.contains(field), "missing {field}: {recorded}");
+    }
+}
+
+/// The verdict alone says a write is not durable. Only the two dimensions say which one it waits on.
+#[test]
+fn test_an_unproven_blob_write_records_the_dimension_that_expired() {
+    let bytes = ByteEvidence::Filesystem(ByteAckDecision::Pending {
+        nodes: vec!["primary-a".to_owned()],
+        required: 3,
+        remaining: 2,
+    });
+    let trace = write_trace(Some(11));
+
+    let recorded = captured(|| {
+        record_blob_ack(
+            &trace,
+            &BlobAckObservation {
+                bytes_expired: true,
+                ..blob_ack(DcAck::Unknown, &bytes, false)
+            },
+        );
+    });
+
+    for field in [
+        "ack.outcome=\"unknown\"",
+        "ack.scope=\"none\"",
+        "ack.nodes=\"primary-a\"",
+        "ack.required=3",
+        "ack.remaining=2",
+        "ack.bytes_acknowledged=false",
+        "ack.metadata_acknowledged=false",
+        "ack.bytes_expired=true",
+        "ack.metadata_expired=false",
+    ] {
+        assert!(recorded.contains(field), "missing {field}: {recorded}");
+    }
+}
+
+#[test]
+fn test_a_pending_blob_write_records_the_metadata_dimension_it_waits_on() {
+    let bytes = ByteEvidence::Filesystem(ByteAckDecision::Acknowledged {
+        nodes: vec!["primary-a".to_owned()],
+        required: 1,
+    });
+
+    let recorded = captured(|| {
+        record_blob_ack(
+            &write_trace(Some(11)),
+            &BlobAckObservation {
+                metadata_expired: true,
+                ..blob_ack(DcAck::Pending, &bytes, false)
+            },
+        );
+    });
+
+    for field in [
+        "ack.outcome=\"pending\"",
+        "ack.bytes_acknowledged=true",
+        "ack.metadata_acknowledged=false",
+        "ack.metadata_expired=true",
+    ] {
+        assert!(recorded.contains(field), "missing {field}: {recorded}");
+    }
+}
+
+/// An object store publishes the single copy every reader shares, so counting node receipts against it
+/// would report the same object once per reader instead of a second copy.
+#[test]
+fn test_an_object_store_write_records_no_node_quorum() {
+    let bytes = ByteEvidence::ObjectStore { acknowledged: true };
+
+    let recorded = captured(|| {
+        record_blob_ack(
+            &write_trace(Some(11)),
+            &blob_ack(
+                DcAck::Durable {
+                    scope: BlobDurability::ObjectStore,
+                },
+                &bytes,
+                true,
+            ),
+        );
+    });
+
+    for field in [
+        "ack.scope=\"object-store\"",
+        "ack.evidence=\"object-store\"",
+        "ack.nodes=\"\"",
+        "ack.required=0",
+        "ack.remaining=0",
+        "ack.bytes_acknowledged=true",
+    ] {
+        assert!(recorded.contains(field), "missing {field}: {recorded}");
+    }
+}
+
+/// Reporting an absent serial as zero would name the journal's first commit, which is a different write.
+#[test]
+fn test_a_write_that_journaled_nothing_records_no_serial() {
+    let bytes = ByteEvidence::ObjectStore { acknowledged: true };
+
+    let recorded = captured(|| {
+        record_blob_ack(
+            &write_trace(None),
+            &blob_ack(
+                DcAck::Durable {
+                    scope: BlobDurability::ObjectStore,
+                },
+                &bytes,
+                true,
+            ),
+        );
+    });
+
+    assert!(recorded.contains("availability blob write acknowledged"), "{recorded}");
+    assert!(!recorded.contains("operation.serial"), "{recorded}");
+}
+
+#[test]
+fn test_a_metadata_write_records_its_journal_frontier_proof() {
+    let trace = write_trace(Some(11));
+
+    let recorded = captured(|| {
+        record_metadata_ack(
+            &trace,
+            MetadataAckObservation {
+                policy: DurabilityPolicy::Everywhere,
+                evidence: MetadataEvidence::JournalFrontier,
+                waited: Duration::from_millis(500),
+                timed_out: true,
+                decision: WriteAckDecision::Unavailable,
+            },
+        );
+    });
+
+    assert!(
+        recorded.contains("availability metadata write acknowledged"),
+        "{recorded}"
+    );
+    for field in [
+        trace.traceparent.as_str(),
+        "operation.serial=11",
+        "ack.policy=\"everywhere\"",
+        "ack.outcome=\"unavailable\"",
+        "ack.evidence=\"journal-frontier\"",
+        "ack.expired=true",
+        "ack.waited_seconds=0.5",
+    ] {
+        assert!(recorded.contains(field), "missing {field}: {recorded}");
     }
 }
 
@@ -98,42 +318,6 @@ fn test_sampled_rejects_a_malformed_flags_field() {
     );
 }
 
-#[derive(Clone, Default)]
-struct Capture(Arc<Mutex<Vec<u8>>>);
-
-impl Capture {
-    fn recorded(&self) -> String {
-        String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
-    }
-}
-
-impl std::io::Write for Capture {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Capture {
-    type Writer = Self;
-
-    fn make_writer(&'a self) -> Self::Writer {
-        self.clone()
-    }
-}
-
-fn captured(body: impl FnOnce()) -> String {
-    let capture = Capture::default();
-    let subscriber = tracing_subscriber::fmt().with_writer(capture.clone()).finish();
-    tracing::subscriber::with_default(subscriber, body);
-    std::io::Write::flush(&mut capture.clone()).unwrap();
-    capture.recorded()
-}
-
 #[test]
 fn test_emit_records_a_sampled_operation_without_its_payload() {
     let recorded = captured(|| operation_telemetry(&traced(Some(SAMPLED_TRACEPARENT))).emit());
@@ -163,21 +347,4 @@ fn test_emit_skips_an_unsampled_operation() {
         recorded.is_empty(),
         "an unsampled operation records nothing: {recorded}"
     );
-}
-
-#[test]
-fn test_distributed_observer_derives_a_root_trace_and_honors_sampling() {
-    let operation = OperationObservation {
-        source: "primary-b".to_owned(),
-        epoch: peryx_ha::AuthorityEpoch(4),
-        serial: 11,
-        kind: peryx_ha::OperationKind::Delete,
-    };
-    let entropy = trace_entropy(&operation);
-    let traceparent = root_traceparent(entropy, samples(entropy));
-
-    assert_eq!(traceparent.len(), 55);
-    assert_eq!(sampled(Some(&traceparent)), samples(entropy));
-    let recorded = captured(|| DistributedOperationObserver.record(operation));
-    assert_eq!(recorded.is_empty(), !samples(entropy));
 }

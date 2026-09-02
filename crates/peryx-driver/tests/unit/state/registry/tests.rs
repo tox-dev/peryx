@@ -643,7 +643,6 @@ async fn test_registry_runtime_settings_replace_defaults() {
             analytics: Arc::new(Completeness),
             capabilities: peryx_ha::AvailabilityCapabilities::default(),
             authority_drainer: Some(Arc::new(Drainer)),
-            operations: None,
         })
         .unwrap();
     let digest = peryx_storage::blob::Digest::of(b"registry");
@@ -686,6 +685,7 @@ async fn test_registry_runtime_settings_replace_defaults() {
                 peryx_ha::AuthorityEpoch(1),
                 None,
                 WriteEvidence::NodeLocal,
+                peryx_ha::OperationKind::Publish,
             ))
             .await,
         peryx_ha::WriteDurability::Unavailable

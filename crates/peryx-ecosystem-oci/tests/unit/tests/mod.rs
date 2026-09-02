@@ -360,7 +360,6 @@ fn install_test_distributed_with_services(state: &mut AppState, blobs: peryx_ha:
                 ..Default::default()
             },
             authority_drainer: None,
-            operations: None,
         })
         .unwrap();
     state.register_plugin_service(ownership).unwrap();

@@ -433,7 +433,6 @@ impl AppState {
             runtime.analytics,
             runtime.capabilities,
             runtime.authority_drainer,
-            runtime.operations,
         ));
         let metrics = availability.home_placement_metrics();
         self.serving_mut()?.availability.distributed = Some(availability);

@@ -245,12 +245,6 @@ impl AvailabilityState {
         }
     }
 
-    pub(super) fn record_operation_trace(&self, meta: &MetaStore, kind: peryx_ha::OperationKind, fence: u64) {
-        if let Some(state) = &self.distributed {
-            state.record_operation_trace(meta, kind, fence);
-        }
-    }
-
     pub(super) fn publish_applied_frontier(&self, serial: u64) {
         if let Some(state) = &self.distributed {
             state.publish_applied_frontier(serial);
@@ -264,7 +258,6 @@ pub(super) struct DistributedAvailability {
     pub blobs: peryx_ha::BlobServices,
     pub analytics_completeness: Arc<dyn peryx_ha::AnalyticsCompleteness>,
     pub authority_drainer: Option<Arc<dyn peryx_ha::AuthorityDrainer>>,
-    pub operation_observer: Option<Arc<dyn peryx_ha::OperationObserver>>,
     pub applied_frontier: peryx_ha::AppliedFrontier,
     pub capabilities: peryx_ha::AvailabilityCapabilities,
     home_placement_metrics: Arc<HomePlacementMetrics>,
@@ -278,7 +271,6 @@ impl DistributedAvailability {
         analytics_completeness: Arc<dyn peryx_ha::AnalyticsCompleteness>,
         capabilities: peryx_ha::AvailabilityCapabilities,
         authority_drainer: Option<Arc<dyn peryx_ha::AuthorityDrainer>>,
-        operation_observer: Option<Arc<dyn peryx_ha::OperationObserver>>,
     ) -> Self {
         Self {
             role,
@@ -286,7 +278,6 @@ impl DistributedAvailability {
             blobs,
             analytics_completeness,
             authority_drainer,
-            operation_observer,
             applied_frontier: peryx_ha::AppliedFrontier::default(),
             capabilities,
             home_placement_metrics: Arc::new(HomePlacementMetrics::default()),
@@ -355,32 +346,6 @@ impl DistributedAvailability {
                 "could not record the verified home placement"
             );
         }
-    }
-
-    /// A trace whose serial cannot be read is dropped rather than emitted at serial zero: the serial
-    /// seeds the trace identity, so a fabricated one both misreports where the mutation landed and
-    /// collides with every other trace that lost the same read.
-    fn record_operation_trace(&self, meta: &MetaStore, kind: peryx_ha::OperationKind, fence: u64) {
-        let Some(observer) = &self.operation_observer else {
-            return;
-        };
-        let serial = match meta.current_serial() {
-            Ok(serial) => serial,
-            Err(error) => {
-                tracing::warn!(error = %error, "could not read the serial for an operation trace");
-                return;
-            }
-        };
-        observer.record(peryx_ha::OperationObservation {
-            source: self
-                .topology
-                .local_node
-                .clone()
-                .unwrap_or_else(|| "standalone".to_owned()),
-            epoch: peryx_ha::AuthorityEpoch(fence),
-            serial,
-            kind,
-        });
     }
 
     fn publish_applied_frontier(&self, serial: u64) {

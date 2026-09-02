@@ -111,7 +111,6 @@ pub async fn store_upload(
     for (digest, size) in &published.placements {
         state.record_home_placement(digest.as_str(), *size, fence);
     }
-    state.record_operation_trace(peryx_driver::state::OperationKind::Publish, fence);
     if published.stored {
         super::invalidate_project(state, name, project);
     }

@@ -908,6 +908,7 @@ async fn blob_services_defaults_metadata_durability_to_local() {
                 "repository",
                 AuthorityEpoch(7),
                 JournalCommit::new(11),
+                OperationKind::Publish,
             ))
             .await,
         WriteDurability::Confirmed {
@@ -931,6 +932,7 @@ async fn blob_services_dispatches_durability(#[case] outcome: WriteDurability) {
         AuthorityEpoch(7),
         None,
         WriteEvidence::NodeLocal,
+        OperationKind::Publish,
     );
     assert_eq!(
         BlobServices::new(None, Arc::new(Durability(outcome)))
@@ -951,6 +953,7 @@ fn committed_blob_exposes_write_context() {
         AuthorityEpoch(7),
         None,
         WriteEvidence::ObjectStoreVerified,
+        OperationKind::Publish,
     );
 
     assert_eq!(write.digest(), &digest);
@@ -1347,7 +1350,7 @@ fn availability_task_contract_preserves_counts_and_errors() {
 }
 
 #[test]
-fn replica_page_and_operation_observer_preserve_replication_context() {
+fn replica_page_preserves_replication_context() {
     let page = ReplicaPage {
         changes: 3,
         serial: 11,
@@ -1357,24 +1360,6 @@ fn replica_page_and_operation_observer_preserve_replication_context() {
     assert_eq!(
         (page.changes, page.serial, page.primary_serial, page.revocations),
         (3, 11, 13, vec![reclamation_digest(7)])
-    );
-
-    let observer = TestOperationObserver::default();
-    let operation = OperationObservation {
-        source: "writer-east".into(),
-        epoch: AuthorityEpoch(7),
-        serial: 11,
-        kind: OperationKind::Publish,
-    };
-    observer.record(operation);
-    assert_eq!(
-        observer.observations.lock().unwrap().as_slice(),
-        [OperationObservation {
-            source: "writer-east".into(),
-            epoch: AuthorityEpoch(7),
-            serial: 11,
-            kind: OperationKind::Publish,
-        }]
     );
 }
 
@@ -1500,17 +1485,6 @@ impl ControlExecutor for TestControlExecutor {
             p50_ms: 2,
             p99_ms: 3,
         }
-    }
-}
-
-#[derive(Default)]
-struct TestOperationObserver {
-    observations: Mutex<Vec<OperationObservation>>,
-}
-
-impl OperationObserver for TestOperationObserver {
-    fn record(&self, operation: OperationObservation) {
-        self.observations.lock().unwrap().push(operation);
     }
 }
 

@@ -86,7 +86,6 @@ pub fn install_services(config: &DistributedServiceConfig, state: &mut AppState)
             analytics: services.analytics,
             capabilities: services.capabilities,
             authority_drainer: services.authority_drainer,
-            operations: Some(services.operations),
         })
         .map_err(anyhow::Error::msg)
         .context("failed to install distributed availability")?;
@@ -130,7 +129,6 @@ impl AvailabilityAssembler for DistributedServiceAssembly {
             )
             .with_metadata_durability(durability),
             analytics,
-            operations: Arc::new(crate::telemetry::DistributedOperationObserver),
             capabilities: AvailabilityCapabilities::default(),
             authority_drainer: Some(Arc::new(crate::DistributedAuthorityDrainer::new(context.meta.clone()))),
             metrics: vec![prometheus],

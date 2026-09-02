@@ -1,27 +1,143 @@
 //! Telemetry includes operation identity, kind, and traceparent, but excludes the change payload. This
 //! keeps credentials, artifact bytes, and private paths out of logs.
 //!
-//! Emission requires the trace's sampled flag. The apply side joins the author trace through
+//! A write-path trace is opened where the acknowledgement resolves, so the record carries the write's
+//! own commit receipt and the evidence the decision was made from. Emission is unconditional there: a
+//! mutation is rare next to a read, and the record only exists to answer questions about one.
+//!
+//! Envelope telemetry is the receiving half and keeps its own sampling: a traceparent that arrives from
+//! a peer carries the sampling that peer chose. The apply side joins the author trace through
 //! [`derive_child`](crate::derive_child).
 
 use crate::envelope::OperationEnvelope;
-use peryx_ha::{OperationObservation, OperationObserver};
+use peryx_ha::{BlobAckObservation, ByteAckDecision, ByteEvidence, MetadataAckObservation, OperationTrace};
+use peryx_storage::blob::BlobDurability;
 
-pub struct DistributedOperationObserver;
+const NO_SCOPE: &str = "none";
 
-impl OperationObserver for DistributedOperationObserver {
-    fn record(&self, operation: OperationObservation) {
-        let entropy = trace_entropy(&operation);
-        let traceparent = root_traceparent(entropy, samples(entropy));
-        OperationTelemetry {
-            source: operation.source,
-            epoch: operation.epoch.0,
-            serial: operation.serial,
-            kind: operation.kind.as_str(),
-            sampled: sampled(Some(&traceparent)),
-            traceparent: Some(traceparent),
+/// Records what a blob write's acknowledgement proved, under the trace opened for that write.
+///
+/// A write that journaled nothing has no serial, and the field is then absent rather than reported as
+/// the zero a reader would mistake for the first commit.
+pub fn record_blob_ack(trace: &OperationTrace, observation: &BlobAckObservation<'_>) {
+    // Bound outside the macro: a field expression runs only while a subscriber is enabled.
+    let identity = Identity::of(trace);
+    let bytes = ByteFields::of(observation.bytes);
+    let nodes = bytes.nodes.as_str();
+    let scope = observation.outcome.scope().map_or(NO_SCOPE, BlobDurability::as_str);
+    let outcome = observation.outcome.as_str();
+    let policy = observation.policy.as_str();
+    let waited = observation.waited.as_secs_f64();
+    tracing::info!(
+        operation.traceparent = identity.traceparent,
+        operation.source = identity.source,
+        operation.authority = identity.authority,
+        operation.epoch = identity.epoch,
+        operation.serial = identity.serial,
+        operation.kind = identity.kind,
+        ack.policy = policy,
+        ack.outcome = outcome,
+        ack.scope = scope,
+        ack.evidence = bytes.evidence,
+        ack.nodes = nodes,
+        ack.required = bytes.required,
+        ack.remaining = bytes.remaining,
+        ack.bytes_acknowledged = bytes.acknowledged,
+        ack.metadata_acknowledged = observation.metadata_acknowledged,
+        ack.bytes_expired = observation.bytes_expired,
+        ack.metadata_expired = observation.metadata_expired,
+        ack.waited_seconds = waited,
+        "availability blob write acknowledged",
+    );
+}
+
+/// Records what a metadata-only write's acknowledgement proved, under the trace opened for that write.
+///
+/// Metadata holds its own bytes, so the journal frontier is the whole proof and there is no second
+/// dimension to report.
+pub fn record_metadata_ack(trace: &OperationTrace, observation: MetadataAckObservation) {
+    let identity = Identity::of(trace);
+    let policy = observation.policy.as_str();
+    let waited = observation.waited.as_secs_f64();
+    let outcome = observation.decision.as_str();
+    tracing::info!(
+        operation.traceparent = identity.traceparent,
+        operation.source = identity.source,
+        operation.authority = identity.authority,
+        operation.epoch = identity.epoch,
+        operation.serial = identity.serial,
+        operation.kind = identity.kind,
+        ack.policy = policy,
+        ack.outcome = outcome,
+        ack.evidence = "journal-frontier",
+        ack.expired = observation.timed_out,
+        ack.waited_seconds = waited,
+        "availability metadata write acknowledged",
+    );
+}
+
+/// The trace fields every acknowledgement record shares, borrowed as log-ready values.
+struct Identity<'trace> {
+    traceparent: &'trace str,
+    source: &'trace str,
+    authority: &'trace str,
+    epoch: u64,
+    serial: Option<u64>,
+    kind: &'static str,
+}
+
+impl<'trace> Identity<'trace> {
+    fn of(trace: &'trace OperationTrace) -> Self {
+        Self {
+            traceparent: &trace.traceparent,
+            source: &trace.operation.source,
+            authority: &trace.operation.authority,
+            epoch: trace.operation.epoch.0,
+            serial: trace.operation.serial,
+            kind: trace.operation.kind.as_str(),
         }
-        .emit();
+    }
+}
+
+/// The byte dimension's counted receipts, flattened to log fields. An object store publishes the one
+/// copy every reader shares, so it counts no node receipt and has no threshold to report.
+struct ByteFields {
+    evidence: &'static str,
+    nodes: String,
+    required: usize,
+    remaining: usize,
+    acknowledged: bool,
+}
+
+impl ByteFields {
+    fn of(evidence: &ByteEvidence) -> Self {
+        match evidence {
+            ByteEvidence::Filesystem(ByteAckDecision::Acknowledged { nodes, required }) => Self {
+                evidence: "filesystem",
+                nodes: nodes.join(","),
+                required: *required,
+                remaining: 0,
+                acknowledged: true,
+            },
+            ByteEvidence::Filesystem(ByteAckDecision::Pending {
+                nodes,
+                required,
+                remaining,
+            }) => Self {
+                evidence: "filesystem",
+                nodes: nodes.join(","),
+                required: *required,
+                remaining: *remaining,
+                acknowledged: false,
+            },
+            ByteEvidence::ObjectStore { acknowledged } => Self {
+                evidence: "object-store",
+                nodes: String::new(),
+                required: 0,
+                remaining: 0,
+                acknowledged: *acknowledged,
+            },
+        }
     }
 }
 
@@ -74,33 +190,6 @@ pub fn operation_telemetry(envelope: &OperationEnvelope) -> OperationTelemetry {
         sampled: sampled(traceparent.as_deref()),
         traceparent,
     }
-}
-
-fn trace_entropy(operation: &OperationObservation) -> u128 {
-    use std::hash::{Hash as _, Hasher as _};
-
-    fn fold(salt: u8, operation: &OperationObservation) -> u64 {
-        let mut hasher = std::hash::DefaultHasher::new();
-        salt.hash(&mut hasher);
-        operation.source.hash(&mut hasher);
-        operation.epoch.0.hash(&mut hasher);
-        operation.serial.hash(&mut hasher);
-        operation.kind.as_str().hash(&mut hasher);
-        hasher.finish()
-    }
-
-    (u128::from(fold(0xA5, operation)) << 64) | u128::from(fold(0x5A, operation))
-}
-
-fn root_traceparent(entropy: u128, sampled: bool) -> String {
-    let trace_id = entropy | 1;
-    let span_id = (entropy >> 64) as u64 | 1;
-    let flags = if sampled { "01" } else { "00" };
-    format!("00-{trace_id:032x}-{span_id:016x}-{flags}")
-}
-
-const fn samples(entropy: u128) -> bool {
-    entropy % 16 < 1
 }
 
 #[cfg(test)]

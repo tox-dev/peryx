@@ -6,11 +6,13 @@ use std::time::Duration;
 use async_trait::async_trait;
 use peryx_core::TopologyConfig;
 use peryx_ha::{
-    BlobWriteDurability, ByteEvidence, CommittedBlob, CommittedMetadata, DcAck, MetadataAckObservation,
-    MetadataEvidence, MetadataOperation, MetadataWriteDurability, ReceiptRequest, ReceiptSource, RemoteFrontierSource,
-    WriteAckDecision, WriteAckObserver, WriteDurability, WriteEvidence,
+    BlobAckObservation, BlobWriteDurability, ByteEvidence, CommittedBlob, CommittedMetadata, DcAck,
+    MetadataAckObservation, MetadataEvidence, MetadataOperation, MetadataWriteDurability, OperationObservation,
+    OperationTrace, ReceiptRequest, ReceiptSource, RemoteFrontierSource, WriteAckDecision, WriteAckObserver,
+    WriteDurability, WriteEvidence,
 };
 
+use crate::telemetry::{record_blob_ack, record_metadata_ack};
 use crate::{
     AckDecision, DEFAULT_FRONTIER_POLL, DEFAULT_RECEIPT_POLL, Deadline, DurabilityPolicy, FilesystemAck, ReceiptAck,
     RemoteDurability, assess_remote_metadata_durability, decide_dc_ack, gather_receipts, gather_remote_acks,
@@ -98,6 +100,28 @@ impl DistributedBlobDurability {
         (filesystem.evidence(), byte_deadline, metadata)
     }
 
+    /// The write's own identity, taken from its commit receipt rather than from a later journal head, so
+    /// a trace names the operation an operator asked about even while newer writes commit behind it.
+    fn blob_observation(&self, write: &CommittedBlob<'_>) -> OperationObservation {
+        OperationObservation {
+            source: self.local_node(),
+            authority: write.authority().to_owned(),
+            epoch: write.epoch(),
+            serial: write.commit().map(peryx_ha::JournalCommit::serial),
+            kind: write.kind(),
+        }
+    }
+
+    fn metadata_observation(&self, write: &CommittedMetadata<'_>) -> OperationObservation {
+        OperationObservation {
+            source: self.local_node(),
+            authority: write.authority().to_owned(),
+            epoch: write.epoch(),
+            serial: Some(write.commit().serial()),
+            kind: write.kind(),
+        }
+    }
+
     async fn metadata_decision(&self, authority: &str, operation: MetadataOperation) -> (AckDecision, Deadline) {
         if self.remote_sources.is_empty() {
             return (AckDecision::Acknowledged, Deadline::Live);
@@ -122,6 +146,7 @@ impl DistributedBlobDurability {
 #[async_trait]
 impl BlobWriteDurability for DistributedBlobDurability {
     async fn confirm(&self, write: CommittedBlob<'_>) -> WriteDurability {
+        let started = tokio::time::Instant::now();
         let Some(local_members) = self.local_members() else {
             return WriteDurability::Unavailable;
         };
@@ -152,6 +177,18 @@ impl BlobWriteDurability for DistributedBlobDurability {
         };
         let outcome = decide_dc_ack(metadata, &evidence, combined_deadline(byte_deadline, metadata_deadline));
         self.observer.record(outcome, &evidence);
+        record_blob_ack(
+            &OperationTrace::open(self.blob_observation(&write)),
+            &BlobAckObservation {
+                policy: self.policy,
+                outcome,
+                bytes: &evidence,
+                metadata_acknowledged: metadata.is_acknowledged(),
+                bytes_expired: byte_deadline == Deadline::Expired,
+                metadata_expired: metadata_deadline == Deadline::Expired,
+                waited: started.elapsed(),
+            },
+        );
         match outcome {
             DcAck::Durable { scope } => WriteDurability::Confirmed { scope },
             DcAck::Pending => WriteDurability::Pending,
@@ -183,13 +220,15 @@ impl MetadataWriteDurability for DistributedBlobDurability {
         } else {
             (WriteDurability::Unavailable, WriteAckDecision::Unavailable)
         };
-        self.observer.record_metadata(MetadataAckObservation {
+        let observation = MetadataAckObservation {
             policy: self.policy,
             evidence: MetadataEvidence::JournalFrontier,
             waited: started.elapsed(),
             timed_out: deadline == Deadline::Expired,
             decision,
-        });
+        };
+        self.observer.record_metadata(observation);
+        record_metadata_ack(&OperationTrace::open(self.metadata_observation(&write)), observation);
         durability
     }
 }

@@ -21,7 +21,6 @@ async fn distributed_frontier_publishes_to_current_and_late_observers() {
             analytics: Arc::new(UnavailableCompleteness),
             capabilities: peryx_ha::AvailabilityCapabilities::default(),
             authority_drainer: None,
-            operations: None,
         })
         .unwrap();
     let mut current = state.serving.replica_applied_frontier().unwrap();
@@ -43,6 +42,7 @@ async fn distributed_frontier_publishes_to_current_and_late_observers() {
                 AuthorityEpoch(1),
                 None,
                 WriteEvidence::NodeLocal,
+                peryx_ha::OperationKind::Publish,
             ))
             .await,
         WriteDurability::Unavailable

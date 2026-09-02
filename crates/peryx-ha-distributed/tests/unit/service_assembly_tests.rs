@@ -249,6 +249,7 @@ async fn distributed_services_own_topology_durability_and_metrics() {
                 "repository",
                 peryx_ha::AuthorityEpoch(7),
                 peryx_storage::meta::JournalCommit::new(11),
+                peryx_ha::OperationKind::Publish,
             ))
             .await,
         peryx_ha::WriteDurability::Confirmed {

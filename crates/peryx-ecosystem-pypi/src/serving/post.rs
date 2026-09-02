@@ -9,7 +9,7 @@ use peryx_driver::quota::quota_limit_label;
 use peryx_driver::state::ServingState;
 use peryx_events::metrics::Observation;
 use peryx_events::security::{Attribution, RequestContext};
-use peryx_ha::{AuthorityEpoch, CommittedBlob};
+use peryx_ha::{AuthorityEpoch, CommittedBlob, OperationKind};
 use peryx_identity::Action;
 use peryx_index::Index;
 use peryx_policy::{Policy, PolicyAction, PolicyDenial};
@@ -355,6 +355,7 @@ async fn store_admitted(
                 AuthorityEpoch(state.committed_authority_epoch(&authority).await),
                 stored.commit,
                 stored.evidence,
+                OperationKind::Publish,
             ))
             .await,
         &intent.operation,

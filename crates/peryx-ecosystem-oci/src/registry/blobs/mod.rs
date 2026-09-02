@@ -570,7 +570,6 @@ pub(super) async fn commit_blob(context: BlobCommitContext<'_>, pending: BlobWri
             publish_acknowledged(
                 state,
                 &operation,
-                fence,
                 BlobAck {
                     repo,
                     digest: &receipt.digest,
@@ -599,14 +598,12 @@ pub(super) async fn commit_blob(context: BlobCommitContext<'_>, pending: BlobWri
 pub(super) async fn publish_acknowledged(
     state: &ServingState,
     operation: &str,
-    fence: u64,
     ack: BlobAck<'_>,
     success: impl FnOnce() -> Response,
 ) -> Result<Response, ServeError> {
     match acknowledge_blob(state, ack).await {
         Ok(()) => {
             state.finalize_admitted_write(operation, OperationResult::Published, b"");
-            state.record_operation_trace(peryx_driver::state::OperationKind::Publish, fence);
             Ok(success())
         }
         Err(response) => Ok(response),
@@ -686,7 +683,6 @@ pub(super) async fn commit_staged_upload(
             publish_acknowledged(
                 state,
                 &operation,
-                fence,
                 BlobAck {
                     repo,
                     digest: &receipt.digest,

@@ -29,7 +29,6 @@ async fn test_fill_remote_degrades_an_availability_failure() {
         analytics: unavailable,
         capabilities: peryx_ha::AvailabilityCapabilities::default(),
         authority_drainer: None,
-        operations: None,
     })
     .unwrap();
     let state = app.serving;
@@ -50,6 +49,7 @@ async fn test_fill_remote_degrades_an_availability_failure() {
             peryx_ha::AuthorityEpoch(1),
             None,
             WriteEvidence::NodeLocal,
+            peryx_ha::OperationKind::Publish,
         ))
         .await;
     let completeness = state.analytics_completeness().unwrap().assess(

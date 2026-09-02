@@ -414,7 +414,6 @@ fn install_distributed_services(state: &mut Arc<AppState>, mode: peryx_core::Top
             analytics: Arc::new(DistributedAnalyticsCompleteness),
             capabilities: peryx_ha::AvailabilityCapabilities::default(),
             authority_drainer: None,
-            operations: None,
         })
         .unwrap();
 }
@@ -684,7 +683,6 @@ async fn remote_blob_availability_requires_a_valid_remote_peer() {
             analytics: Arc::new(DistributedAnalyticsCompleteness),
             capabilities: peryx_ha::AvailabilityCapabilities::default(),
             authority_drainer: None,
-            operations: None,
         })
         .unwrap();
 

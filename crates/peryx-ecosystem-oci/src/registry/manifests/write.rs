@@ -322,7 +322,6 @@ async fn finish_manifest(
         return Ok(response);
     }
     state.finalize_admitted_write(operation, peryx_storage::meta::OperationResult::Published, &[]);
-    state.record_operation_trace(peryx_driver::state::OperationKind::Publish, checkpoint.epoch);
     record_manifest_success(state, index, repo);
     Ok(manifest_created(
         &format!("/v2/{name}/manifests/{canonical}"),

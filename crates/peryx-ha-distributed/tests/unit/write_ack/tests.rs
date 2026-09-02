@@ -3,12 +3,13 @@ use std::sync::Mutex;
 use peryx_core::{NodeRole, TopologyMember};
 use peryx_ha::{
     AuthorityEpoch, ByteAckDecision, ByteEvidence, CommittedBlob, CommittedMetadata, MetadataAckObservation,
-    MetadataEvidence, WriteAckDecision, WriteDurability, WriteEvidence,
+    MetadataEvidence, OperationKind, WriteAckDecision, WriteDurability, WriteEvidence,
 };
 use peryx_storage::blob::{BlobDurability, Digest};
 use peryx_storage::meta::{MetaError, MetaStore};
 
 use super::*;
+use crate::support::captured_async;
 use crate::{LoopbackReceiptSource, LoopbackRemoteFrontierSource};
 
 #[derive(Default)]
@@ -67,6 +68,7 @@ fn committed(digest: &Digest, evidence: WriteEvidence) -> CommittedBlob<'_> {
         AuthorityEpoch(2),
         Some(commit),
         evidence,
+        OperationKind::Publish,
     )
 }
 
@@ -81,7 +83,7 @@ fn committed_metadata() -> CommittedMetadata<'static> {
         .unwrap()
         .journal
         .unwrap();
-    CommittedMetadata::new("repository:alpha", AuthorityEpoch(2), commit)
+    CommittedMetadata::new("repository:alpha", AuthorityEpoch(2), commit, OperationKind::Publish)
 }
 
 #[tokio::test(start_paused = true)]
@@ -230,6 +232,7 @@ async fn unjournaled_local_write_needs_no_metadata_acknowledgement() {
             AuthorityEpoch(2),
             None,
             WriteEvidence::NodeLocal,
+            OperationKind::Publish,
         ))
         .await;
 
@@ -532,4 +535,112 @@ async fn an_expired_metadata_deadline_leaves_an_object_store_write_unknown() {
             .await,
         WriteDurability::Unavailable
     );
+}
+
+/// A `200` proves the configured policy passed, but not which datacenter members proved it. The trace is
+/// where that evidence survives, keyed by the write's own commit receipt.
+#[tokio::test]
+async fn a_confirmed_write_records_a_trace_naming_the_acknowledging_members() {
+    let digest = digest();
+    let durability = DistributedBlobDurability::new(
+        TopologyConfig {
+            members: vec![member("node-a", "east"), member("node-b", "east")],
+            local_node: Some("node-a".to_owned()),
+            ..TopologyConfig::default()
+        },
+        DurabilityPolicy::Everywhere,
+        vec![Arc::new(LoopbackReceiptSource::holding("node-b", digest.clone(), 1))],
+        Vec::new(),
+        Duration::from_millis(10),
+        Arc::new(Observer::default()),
+    );
+    let committed = write(&digest);
+    let serial = committed.commit().unwrap().serial();
+
+    let (recorded, outcome) = captured_async(durability.confirm(committed)).await;
+
+    assert_eq!(
+        outcome,
+        WriteDurability::Confirmed {
+            scope: BlobDurability::Filesystem
+        }
+    );
+    for field in [
+        "availability blob write acknowledged".to_owned(),
+        "operation.source=\"node-a\"".to_owned(),
+        "operation.authority=\"repository:alpha\"".to_owned(),
+        format!("operation.serial={serial}"),
+        "operation.kind=\"publish\"".to_owned(),
+        "ack.outcome=\"durable\"".to_owned(),
+        "ack.nodes=\"node-a,node-b\"".to_owned(),
+        "ack.required=2".to_owned(),
+        "ack.metadata_acknowledged=true".to_owned(),
+    ] {
+        assert!(recorded.contains(&field), "missing {field}: {recorded}");
+    }
+}
+
+/// A write that misses its durability level is the one an operator has to explain, so its trace has to
+/// name the member that never answered and the dimension whose budget ran out.
+#[tokio::test]
+async fn a_write_that_misses_its_durability_level_is_traceable_as_unproven() {
+    let digest = digest();
+    let durability = DistributedBlobDurability::new(
+        TopologyConfig {
+            members: vec![member("node-a", "east"), member("node-b", "east")],
+            local_node: Some("node-a".to_owned()),
+            ..TopologyConfig::default()
+        },
+        DurabilityPolicy::Everywhere,
+        vec![Arc::new(LoopbackReceiptSource::absent("node-b"))],
+        Vec::new(),
+        Duration::ZERO,
+        Arc::new(Observer::default()),
+    );
+
+    let (recorded, outcome) = captured_async(durability.confirm(write(&digest))).await;
+
+    assert_eq!(outcome, WriteDurability::Unavailable);
+    for field in [
+        "ack.outcome=\"unknown\"",
+        "ack.scope=\"none\"",
+        "ack.nodes=\"node-a\"",
+        "ack.required=2",
+        "ack.remaining=1",
+        "ack.bytes_acknowledged=false",
+        "ack.bytes_expired=true",
+    ] {
+        assert!(recorded.contains(field), "missing {field}: {recorded}");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_metadata_write_that_times_out_is_traceable_as_unproven() {
+    let durability = DistributedBlobDurability::new(
+        TopologyConfig::default(),
+        DurabilityPolicy::Everywhere,
+        Vec::new(),
+        vec![Arc::new(LoopbackRemoteFrontierSource::silent("west"))],
+        Duration::ZERO,
+        Arc::new(Observer::default()),
+    );
+    let committed = committed_metadata();
+    let serial = committed.commit().serial();
+
+    let (recorded, outcome) = captured_async(peryx_ha::MetadataWriteDurability::confirm_metadata(
+        &durability,
+        committed,
+    ))
+    .await;
+
+    assert_eq!(outcome, WriteDurability::Unavailable);
+    for field in [
+        "availability metadata write acknowledged".to_owned(),
+        format!("operation.serial={serial}"),
+        "ack.outcome=\"unavailable\"".to_owned(),
+        "ack.evidence=\"journal-frontier\"".to_owned(),
+        "ack.expired=true".to_owned(),
+    ] {
+        assert!(recorded.contains(&field), "missing {field}: {recorded}");
+    }
 }

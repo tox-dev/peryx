@@ -5,7 +5,7 @@ use async_trait::async_trait;
 
 use crate::{
     AuthorityEpoch, BlobDurability, BlobMetadata, CommittedMetadata, Digest, JournalCommit, MetadataWriteDurability,
-    WriteEvidence,
+    OperationKind, WriteEvidence,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,6 +50,7 @@ pub struct CommittedBlob<'a> {
     epoch: AuthorityEpoch,
     commit: Option<JournalCommit>,
     evidence: WriteEvidence,
+    kind: OperationKind,
 }
 
 impl<'a> CommittedBlob<'a> {
@@ -61,6 +62,7 @@ impl<'a> CommittedBlob<'a> {
         epoch: AuthorityEpoch,
         commit: Option<JournalCommit>,
         evidence: WriteEvidence,
+        kind: OperationKind,
     ) -> Self {
         Self {
             digest,
@@ -69,6 +71,7 @@ impl<'a> CommittedBlob<'a> {
             epoch,
             commit,
             evidence,
+            kind,
         }
     }
 
@@ -103,6 +106,12 @@ impl<'a> CommittedBlob<'a> {
     #[must_use]
     pub const fn evidence(&self) -> WriteEvidence {
         self.evidence
+    }
+
+    /// The mutation class the write belongs to, which its trace records.
+    #[must_use]
+    pub const fn kind(&self) -> OperationKind {
+        self.kind
     }
 }
 

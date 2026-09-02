@@ -5,7 +5,7 @@
 use axum::http::header;
 use axum::response::Response;
 use peryx_driver::ServingState;
-use peryx_ha::{AuthorityEpoch, CommittedBlob, CommittedMetadata, WriteDurability};
+use peryx_ha::{AuthorityEpoch, CommittedBlob, CommittedMetadata, OperationKind, WriteDurability};
 use peryx_storage::blob::{Digest, WriteEvidence};
 use peryx_storage::meta::JournalCommit;
 
@@ -45,6 +45,7 @@ pub(in crate::registry) async fn acknowledge_blob(state: &ServingState, ack: Blo
             epoch,
             ack.commit,
             ack.evidence,
+            OperationKind::Publish,
         ))
         .await;
     match durability {
@@ -82,7 +83,12 @@ pub(in crate::registry) async fn acknowledge_metadata(
     let authority = crate::name::authority_key(ack.repo);
     let epoch = AuthorityEpoch(ack.epoch);
     let durability = state
-        .confirm_metadata_write(CommittedMetadata::new(&authority, epoch, ack.commit))
+        .confirm_metadata_write(CommittedMetadata::new(
+            &authority,
+            epoch,
+            ack.commit,
+            OperationKind::Publish,
+        ))
         .await;
     let serial = ack.commit.serial();
     match durability {

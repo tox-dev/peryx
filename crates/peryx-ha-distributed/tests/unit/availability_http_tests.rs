@@ -45,6 +45,7 @@ async fn test_durability_reports_unavailable() {
                 peryx_ha::AuthorityEpoch(1),
                 None,
                 peryx_ha::WriteEvidence::NodeLocal,
+                peryx_ha::OperationKind::Publish,
             ))
             .await,
         WriteDurability::Unavailable
@@ -113,7 +114,6 @@ async fn app(read_only: bool, healthy: bool, role: NodeRole) -> (tempfile::TempD
             analytics: Arc::new(DistributedAnalyticsCompleteness),
             capabilities: peryx_ha::AvailabilityCapabilities::default(),
             authority_drainer: None,
-            operations: None,
         })
         .unwrap();
     state.register_http_routes(Arc::new(crate::DistributedHttpRoutes));
