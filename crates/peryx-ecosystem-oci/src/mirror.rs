@@ -2,16 +2,21 @@
 //! into the store so a cached index can serve them with no upstream, the container analogue of
 //! `peryx mirror sync`. A manifest list is followed into its per-platform manifests.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::sync::Arc;
 
+use futures_util::{StreamExt as _, stream};
+use parking_lot::Mutex;
 use peryx_driver::ServingState;
+use peryx_driver::rate_limit::UpstreamLimits;
 use peryx_index::Index;
 use peryx_storage::blob::Digest;
 use peryx_upstream::UpstreamClient;
 use serde::Serialize;
+use tokio::sync::Semaphore;
 
-use crate::name::{ImageReference, Reference, parse_image_reference};
+use crate::name::{Reference, parse_image_reference};
 use crate::registry::{MAX_MANIFEST_BYTES, bounded_body, download_blob, serving_members};
 use crate::settings::{IndexSettings, upstream_repo};
 use crate::store::{self, Descriptors, Manifest};
@@ -19,6 +24,11 @@ use crate::upstream::Upstream;
 
 /// The media type recorded for a manifest whose upstream response omits one.
 const DEFAULT_MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
+
+/// Upstream and storage work one mirror run overlaps when its index is uncapped. Containerd pulls
+/// three layers at a time by default, and a mirror run asks the same registries for the same content,
+/// so it starts from the same bound rather than firing a whole image index at once.
+const DEFAULT_MIRROR_CONCURRENCY: usize = 3;
 
 /// How many distinct manifests one mirror run fetches before it gives up. A cyclic or explosively
 /// wide graph, which a non-SHA-256 descriptor lets an upstream build without a fixed point, would
@@ -115,7 +125,8 @@ pub enum MirrorMode {
     Verify,
 }
 
-/// The read-only context for one mirror run: the stores, the upstream client, and where to pull from.
+/// The read-only context for one mirror run: the stores, the upstream client, where to pull from, and
+/// the ceiling every transfer of the run shares.
 struct Mirror<'a> {
     state: &'a Arc<ServingState>,
     upstream: &'a Upstream,
@@ -123,6 +134,42 @@ struct Mirror<'a> {
     index: &'a str,
     settings: IndexSettings,
     mode: MirrorMode,
+    /// One permit per transfer in flight, held by every reference of the run, so nesting blobs inside
+    /// a manifest and manifests inside a root cannot multiply the ceiling.
+    transfers: Semaphore,
+    concurrency: usize,
+    /// One transfer at a time per blob digest. Manifests that share a layer are the common case a
+    /// mirror run meets - platform manifests over one base, two tags of one image - and overlapping
+    /// them would otherwise pull those bytes once per manifest. The second arrival waits for the
+    /// first and then reads the store, which is the `cached` row a serial run reported.
+    blob_locks: Mutex<HashMap<String, Arc<Semaphore>>>,
+}
+
+/// One manifest the walk reached: the rows it produced and the children it names, carried with the
+/// depth it was scheduled at so its own children are bounded at the next level down.
+struct WalkStep {
+    rows: Vec<MirrorRow>,
+    children: Vec<String>,
+    depth: usize,
+}
+
+/// The overlap a mirror run may take against a cached index: whatever an operator already grants that
+/// index's serving fetches, and [`DEFAULT_MIRROR_CONCURRENCY`] while it is uncapped.
+fn mirror_ceiling(limits: &UpstreamLimits, index: &str) -> usize {
+    match limits.snapshots().into_iter().find(|snapshot| snapshot.index == index) {
+        Some(snapshot) if snapshot.max_concurrent > 0 => snapshot.max_concurrent,
+        _ => DEFAULT_MIRROR_CONCURRENCY,
+    }
+}
+
+/// Runs `work` under `gate`. The permit is released with `work`, so a manifest that fans out never
+/// holds the gate while the blobs and children it fanned out to queue for one.
+async fn gated<T>(gate: &Semaphore, work: impl Future<Output = T>) -> T {
+    let _permit = gate
+        .acquire()
+        .await
+        .expect("a mirror gate stays open for the whole run");
+    work.await
 }
 
 /// # Errors
@@ -136,13 +183,17 @@ pub async fn mirror(
     mode: MirrorMode,
 ) -> anyhow::Result<Vec<MirrorRow>> {
     let mut rows = Vec::new();
-    let Some(client) = serving_members(state, index).into_iter().find_map(Index::proxy_client) else {
+    let Some((cached_index, client)) = serving_members(state, index)
+        .into_iter()
+        .find_map(|member| member.proxy_client().map(|client| (member.name.clone(), client)))
+    else {
         rows.push(
             MirrorRow::error("summary", "", "", "", "index has no cached upstream".to_owned()).with_index(&index.name),
         );
         return Ok(rows);
     };
     let upstream = Upstream::new();
+    let concurrency = mirror_ceiling(&state.upstream_limits, &cached_index);
     let context = Mirror {
         state,
         upstream: &upstream,
@@ -150,18 +201,17 @@ pub async fn mirror(
         index: &index.name,
         settings,
         mode,
+        transfers: Semaphore::new(concurrency),
+        concurrency,
+        blob_locks: Mutex::default(),
     };
-    for raw in refs {
-        match parse_image_reference(raw) {
-            Some(image) => context.one_ref(&image, &mut rows).await?,
-            None => rows.push(MirrorRow::error(
-                "manifest",
-                raw,
-                "",
-                "",
-                "not a valid image reference".to_owned(),
-            )),
-        }
+    // `buffered` hands references back in the order they were selected however they finish, so a
+    // stalled root holds back only the rows behind it and the report still reads in selection order.
+    let mut walked = stream::iter(refs.iter().cloned())
+        .map(|raw| context.one_ref(raw))
+        .buffered(concurrency);
+    while let Some(walk) = walked.next().await {
+        rows.extend(walk?);
     }
     let (synced, cached, errors, bytes) =
         rows.iter()
@@ -247,15 +297,28 @@ impl Mirror<'_> {
         upstream_repo(self.settings.library_prefix, self.client.base_url(), repo)
     }
 
-    async fn one_ref(&self, image: &ImageReference, rows: &mut Vec<MirrorRow>) -> anyhow::Result<()> {
+    /// Mirror one selected reference into its own slice of the report, so references that overlap
+    /// never interleave their rows.
+    async fn one_ref(&self, raw: String) -> anyhow::Result<Vec<MirrorRow>> {
+        let mut rows = Vec::new();
+        let Some(image) = parse_image_reference(&raw) else {
+            rows.push(MirrorRow::error(
+                "manifest",
+                &raw,
+                "",
+                "",
+                "not a valid image reference".to_owned(),
+            ));
+            return Ok(rows);
+        };
         let (reference, tag) = match &image.reference {
             Reference::Tag(tag) => (tag.as_str(), Some(tag.as_str())),
             Reference::Digest(digest) => (digest.as_str(), None),
         };
-        if let Some(descriptors) = self.manifest_of(&image.repository, reference, tag, rows).await? {
-            self.walk_manifest(&image.repository, descriptors, rows).await?;
+        if let Some(descriptors) = self.manifest_of(&image.repository, reference, tag, &mut rows).await? {
+            self.walk_manifest(&image.repository, descriptors, &mut rows).await?;
         }
-        Ok(())
+        Ok(rows)
     }
 
     /// Pull one manifest and hand back what it depends on. `None` is a reference this run reported on
@@ -270,6 +333,19 @@ impl Mirror<'_> {
         if self.mode == MirrorMode::Verify {
             return self.verify_manifest(repo, reference, tag, rows);
         }
+        gated(&self.transfers, self.pull_manifest(repo, reference, tag, rows)).await
+    }
+
+    /// Fetch a manifest from upstream and record it. Held under the run's gate for the whole
+    /// transfer: the body is the bulk of it, so releasing at the response head would let a run
+    /// stream more manifests at once than the ceiling allows.
+    async fn pull_manifest(
+        &self,
+        repo: &str,
+        reference: &str,
+        tag: Option<&str>,
+        rows: &mut Vec<MirrorRow>,
+    ) -> anyhow::Result<Option<Descriptors>> {
         let response = match self
             .upstream
             .manifest(
@@ -395,13 +471,17 @@ impl Mirror<'_> {
         Ok(Some(descriptors))
     }
 
-    /// Follow a manifest to the blobs it needs, over a work queue rather than recursion: an image
-    /// index enqueues its per-platform manifests; an image manifest names a config blob and layers.
+    /// Follow a manifest to the blobs it needs, one level of the graph at a time: an image index
+    /// enqueues its per-platform manifests; an image manifest names a config blob and layers. A level
+    /// is fetched as a whole, so siblings a parent named together overlap up to the run's ceiling
+    /// instead of each waiting out the one before it.
     ///
     /// A descriptor digest is scheduled at most once per run, so a self-referential or cyclic graph
-    /// terminates and a diamond fetches each shared descendant a single time. Bounds are enforced when
-    /// a child is scheduled, before it is fetched, so a graph a hostile upstream keeps growing stops on
-    /// a stable error row without the fetch that would follow.
+    /// terminates and a diamond fetches each shared descendant a single time. Scheduling stays serial
+    /// between levels, which is what keeps that deduplication and the bounds exact: a level is
+    /// enqueued only once every sibling that could have named the same child has been parsed.
+    /// Bounds are enforced when a child is scheduled, before it is fetched, so a graph a hostile
+    /// upstream keeps growing stops on a stable error row without the fetch that would follow.
     async fn walk_manifest(
         &self,
         repo: &str,
@@ -411,57 +491,85 @@ impl Mirror<'_> {
         let mut visited: HashSet<String> = HashSet::new();
         let mut pending: Vec<(String, usize)> = Vec::new();
         let (children, blobs) = descriptors;
-        for digest in blobs {
-            self.blob(repo, &digest, rows).await;
-        }
+        self.blobs(repo, blobs, rows).await;
         if schedule_children(repo, children, 1, &mut visited, &mut pending, rows) {
             return Ok(());
         }
-        while let Some((digest, depth)) = pending.pop() {
-            let Some((children, blobs)) = self.manifest_of(repo, &digest, None, rows).await? else {
-                continue;
-            };
-            for digest in blobs {
-                self.blob(repo, &digest, rows).await;
+        while !pending.is_empty() {
+            let mut walked = stream::iter(std::mem::take(&mut pending))
+                .map(|(digest, depth)| self.node(repo, digest, depth))
+                .buffered(self.concurrency);
+            let mut level = Vec::new();
+            while let Some(step) = walked.next().await {
+                level.push(step?);
             }
-            if schedule_children(repo, children, depth + 1, &mut visited, &mut pending, rows) {
-                return Ok(());
+            for step in level {
+                rows.extend(step.rows);
+                if schedule_children(repo, step.children, step.depth + 1, &mut visited, &mut pending, rows) {
+                    return Ok(());
+                }
             }
         }
         Ok(())
     }
 
-    async fn blob(&self, repo: &str, digest: &str, rows: &mut Vec<MirrorRow>) {
-        let Some(storage) = store::blob_digest(digest) else {
-            rows.push(MirrorRow::error(
-                "blob",
-                repo,
-                digest,
-                digest,
-                "unsupported digest".to_owned(),
-            ));
-            return;
+    /// Pull one scheduled manifest and the blobs it names. A failure here is a row of this step, so a
+    /// sibling that cannot be reached leaves the rest of its level running.
+    async fn node(&self, repo: &str, digest: String, depth: usize) -> anyhow::Result<WalkStep> {
+        let mut rows = Vec::new();
+        let children = match self.manifest_of(repo, &digest, None, &mut rows).await? {
+            Some((children, blobs)) => {
+                self.blobs(repo, blobs, &mut rows).await;
+                children
+            }
+            None => Vec::new(),
         };
-        match self.state.blobs.head(&storage).await {
-            Ok(Some(_)) => {
-                rows.push(MirrorRow::cached("blob", repo, digest, digest));
-                return;
-            }
+        Ok(WalkStep { rows, children, depth })
+    }
+
+    /// Pull every blob one manifest names, overlapping them under the run's ceiling and reporting
+    /// them in descriptor order.
+    async fn blobs(&self, repo: &str, blobs: Vec<String>, rows: &mut Vec<MirrorRow>) {
+        let mut pulled = stream::iter(blobs)
+            .map(|digest| self.blob(repo, digest))
+            .buffered(self.concurrency);
+        while let Some(row) = pulled.next().await {
+            rows.push(row);
+        }
+    }
+
+    /// Claim `digest` for the run. Taken before the ceiling permit, so a manifest waiting on a layer
+    /// another manifest is already pulling occupies no transfer slot while it waits.
+    fn blob_lock(&self, digest: &str) -> Arc<Semaphore> {
+        Arc::clone(
+            self.blob_locks
+                .lock()
+                .entry(digest.to_owned())
+                .or_insert_with(|| Arc::new(Semaphore::new(1))),
+        )
+    }
+
+    async fn blob(&self, repo: &str, descriptor: String) -> MirrorRow {
+        let digest = descriptor.as_str();
+        let Some(storage) = store::blob_digest(digest) else {
+            return MirrorRow::error("blob", repo, digest, digest, "unsupported digest".to_owned());
+        };
+        let single_flight = self.blob_lock(digest);
+        let _claim = single_flight
+            .acquire()
+            .await
+            .expect("a mirror blob claim outlives the run that waits on it");
+        gated(&self.transfers, self.transfer_blob(repo, digest, &storage)).await
+    }
+
+    async fn transfer_blob(&self, repo: &str, digest: &str, storage: &Digest) -> MirrorRow {
+        match self.state.blobs.head(storage).await {
+            Ok(Some(_)) => return MirrorRow::cached("blob", repo, digest, digest),
             Ok(None) => {}
-            Err(err) => {
-                rows.push(MirrorRow::error("blob", repo, digest, digest, err.to_string()));
-                return;
-            }
+            Err(err) => return MirrorRow::error("blob", repo, digest, digest, err.to_string()),
         }
         if self.mode == MirrorMode::Verify {
-            rows.push(MirrorRow::error(
-                "blob",
-                repo,
-                digest,
-                digest,
-                "blob missing".to_owned(),
-            ));
-            return;
+            return MirrorRow::error("blob", repo, digest, digest, "blob missing".to_owned());
         }
         match self
             .upstream
@@ -473,13 +581,11 @@ impl Mirror<'_> {
             )
             .await
         {
-            Ok(response) => match download_blob(&self.state.blobs, &storage, response).await {
-                Ok(bytes) => rows.push(MirrorRow::synced("blob", repo, digest, digest, bytes)),
-                Err(err) => {
-                    rows.push(MirrorRow::error("blob", repo, digest, digest, err.to_string()));
-                }
+            Ok(response) => match download_blob(&self.state.blobs, storage, response).await {
+                Ok(bytes) => MirrorRow::synced("blob", repo, digest, digest, bytes),
+                Err(err) => MirrorRow::error("blob", repo, digest, digest, err.to_string()),
             },
-            Err(err) => rows.push(MirrorRow::error("blob", repo, digest, digest, err.to_string())),
+            Err(err) => MirrorRow::error("blob", repo, digest, digest, err.to_string()),
         }
     }
 }

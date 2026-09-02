@@ -20,12 +20,12 @@ async fn mirror(
     mirror_with(state, index, IndexSettings::default(), refs, mode).await
 }
 
-const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
-const INDEX_TYPE: &str = "application/vnd.oci.image.index.v1+json";
+pub(super) const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
+pub(super) const INDEX_TYPE: &str = "application/vnd.oci.image.index.v1+json";
 const CONFIG_TYPE: &str = "application/vnd.oci.image.config.v1+json";
 const LAYER_TYPE: &str = "application/vnd.oci.image.layer.v1.tar+gzip";
 
-async fn mount_blob(server: &MockServer, repo: &str, bytes: &[u8]) {
+pub(super) async fn mount_blob(server: &MockServer, repo: &str, bytes: &[u8]) {
     Mock::given(method("GET"))
         .and(path(format!("/v2/{repo}/blobs/{}", oci_digest(bytes))))
         .respond_with(ResponseTemplate::new(200).set_body_raw(bytes.to_vec(), "application/octet-stream"))
@@ -33,7 +33,7 @@ async fn mount_blob(server: &MockServer, repo: &str, bytes: &[u8]) {
         .await;
 }
 
-async fn mount_manifest(server: &MockServer, repo: &str, reference: &str, body: &[u8], media_type: &str) {
+pub(super) async fn mount_manifest(server: &MockServer, repo: &str, reference: &str, body: &[u8], media_type: &str) {
     Mock::given(method("GET"))
         .and(path(format!("/v2/{repo}/manifests/{reference}")))
         .respond_with(ResponseTemplate::new(200).set_body_raw(body.to_vec(), media_type))
@@ -50,7 +50,7 @@ fn image_manifest(config: &[u8], layer: &[u8]) -> Vec<u8> {
     image_manifest_with_layers(config, &[layer])
 }
 
-fn image_manifest_with_layers(config: &[u8], layers: &[&[u8]]) -> Vec<u8> {
+pub(super) fn image_manifest_with_layers(config: &[u8], layers: &[&[u8]]) -> Vec<u8> {
     let layers = layers
         .iter()
         .map(|layer| {
@@ -359,7 +359,7 @@ async fn test_mirror_follows_a_manifest_list() {
 }
 
 /// The marker gives diamond parents distinct digests.
-fn index_over(children: &[&str], marker: &str) -> Vec<u8> {
+pub(super) fn index_over(children: &[&str], marker: &str) -> Vec<u8> {
     let entries = children
         .iter()
         .map(|digest| format!(r#"{{"mediaType":"{MANIFEST_TYPE}","digest":"{digest}","size":7}}"#))
@@ -371,7 +371,7 @@ fn index_over(children: &[&str], marker: &str) -> Vec<u8> {
     .into_bytes()
 }
 
-async fn manifest_fetches(server: &MockServer, repo: &str, reference: &str) -> usize {
+pub(super) async fn manifest_fetches(server: &MockServer, repo: &str, reference: &str) -> usize {
     let target = format!("/v2/{repo}/manifests/{reference}");
     server
         .received_requests()

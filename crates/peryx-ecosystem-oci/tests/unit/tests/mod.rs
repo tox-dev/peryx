@@ -10,6 +10,7 @@ mod frontier;
 mod ingress_admission_tests;
 mod manifest_schema_tests;
 mod metrics_tests;
+mod mirror_concurrency_tests;
 mod mirror_contract_tests;
 mod mirror_tests;
 mod negotiate_tests;
@@ -592,6 +593,25 @@ fn token_from(body: &Bytes) -> String {
 fn proxy(dir: &TempDir, upstream: &str, offline: bool) -> (Arc<AppState>, axum::Router) {
     let client = UpstreamClient::new(upstream).unwrap();
     app_with(dir, oci_index("hub", "hub", IndexKind::Cached { client, offline }))
+}
+
+/// A cached proxy carrying the upstream fetch cap a mirror run reads its ceiling from. `None` leaves
+/// the index uncapped, which is what a default configuration gives it.
+fn proxy_with_upstream_limit(dir: &TempDir, upstream: &str, upstream_concurrency: Option<usize>) -> Arc<AppState> {
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let client = UpstreamClient::new(upstream).unwrap();
+    let mut state = AppState::with_limits(
+        meta,
+        blobs,
+        60,
+        vec![oci_index("hub", "hub", IndexKind::Cached { client, offline: false })],
+        Arc::new(|| 1000),
+        RateLimitConfig::default(),
+        upstream_concurrency.map(|limit| ("hub".to_owned(), limit)),
+    );
+    install_oci(&mut state, HashMap::new(), false);
+    Arc::new(state)
 }
 
 /// Shared bytes must not share repository authorization.

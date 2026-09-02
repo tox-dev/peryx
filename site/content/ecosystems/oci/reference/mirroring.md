@@ -37,6 +37,20 @@ A body that breaks a rule is reported as an error row naming the rule, and neith
 `verify` applies the same check to what the store already holds, so a run never calls an image complete when its layers
 could not be read.
 
+## Concurrency
+
+A run overlaps the work one level of the manifest graph makes available rather than waiting out each descriptor in turn:
+the platform manifests an index names move together, and so do the config and layers of an image manifest. The ceiling
+is the index's [`upstream_concurrency`](@/core/operations/configuration.md), or three while the index is uncapped, which
+is what containerd pulls at once by default. Selected images share that one budget, so one image with many layers costs
+what many images with one layer cost.
+
+The next level is scheduled only after every manifest above it has been parsed, which is what keeps the graph
+deduplicated and the node and depth bounds exact: a digest two parents name is fetched once, and a graph over the bounds
+still stops before the fetch. A layer two manifests share is transferred once and reported cached under the second. An
+image or a sibling the upstream refuses is one error row and leaves the work beside it running, and each selected image
+carries its own rows, so the report reads in selection order however the transfers finish.
+
 ## Repository scope
 
 Manifest bytes are content-addressed, so two repositories mirroring the same image share one copy. The right to serve
