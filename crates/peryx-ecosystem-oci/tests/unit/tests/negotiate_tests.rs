@@ -6,7 +6,8 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::{
-    auth, body_has_code, hosted_writable, image_manifest, oci_digest, proxy, seed_config, send_body, send_with,
+    auth, body_has_code, hosted_writable, image_manifest, mount_head_without_digest, oci_digest, proxy, seed_config,
+    send_body, send_with,
 };
 
 const TOKEN: &str = "s3cret";
@@ -394,6 +395,7 @@ async fn test_get_propagates_a_docker_list_child_fetch_error() {
         .respond_with(ResponseTemplate::new(200).set_body_raw(amd64_docker_list(&child_digest), LIST_TYPE))
         .mount(&server)
         .await;
+    mount_head_without_digest(&server, "/v2/library/app/manifests/latest").await;
     Mock::given(method("GET"))
         .and(path(format!("/v2/library/app/manifests/{child_digest}")))
         .respond_with(ResponseTemplate::new(500))
@@ -481,6 +483,7 @@ async fn test_get_fetches_the_amd64_child_from_a_proxy_member() {
             .mount(&server)
             .await;
     }
+    mount_head_without_digest(&server, "/v2/library/app/manifests/latest").await;
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
 

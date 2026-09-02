@@ -7,7 +7,10 @@ use rstest::rstest;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use super::{auth, hosted_writable, image_manifest, oci_digest, proxy, seed_config, send, send_body, send_with};
+use super::{
+    auth, hosted_writable, image_manifest, mount_head_without_digest, oci_digest, proxy, seed_config, send, send_body,
+    send_with,
+};
 
 const TOKEN: &str = "s3cret";
 const MANIFEST_TYPE: &str = "application/vnd.oci.image.manifest.v1+json";
@@ -250,6 +253,7 @@ async fn test_proxied_tag_matching_if_none_match_is_not_modified() {
         .respond_with(ResponseTemplate::new(200).set_body_raw(MANIFEST.clone(), MANIFEST_TYPE))
         .mount(&server)
         .await;
+    mount_head_without_digest(&server, "/v2/library/nginx/manifests/latest").await;
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
     let uri = "/v2/hub/library/nginx/manifests/latest";

@@ -292,6 +292,11 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         if let Some(response) = fresh_tag(state, &member.name, repo, tag, head)? {
             return Ok(Some(response));
         }
+        // Read the miss under the gate, so a burst of pulls for an unpublished tag costs the one
+        // existence check the leader made rather than one per caller.
+        if state.negative_fresh(&tag_miss_key(&member.name, repo, tag)) {
+            return Ok(None);
+        }
         let fetched = self.revalidate_tag(state, client, &member.name, repo, tag, head).await;
         state.cache.forget_flight(&gate_key);
         fetched
@@ -306,7 +311,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         tag: &str,
         head: bool,
     ) -> Result<Option<Response>, ServeError> {
-        let upstream = self
+        let upstream = match self
             .upstream
             .manifest_digest(
                 client,
@@ -315,8 +320,12 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
                 &self.token_realms(index),
             )
             .await
-            .ok()
-            .flatten();
+        {
+            // `None` is a registry that answered the existence check without naming a digest, which
+            // the spec leaves it room to do. The body is the only remaining way to learn the digest.
+            Ok(digest) => digest,
+            Err(err) => return tag_lookup_failure(state, index, repo, tag, head, &err),
+        };
         if let Some(digest) = upstream.as_deref()
             && digest_decision(state, digest)? == DigestDecision::Revoked
         {
@@ -343,18 +352,53 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
                     }
                 },
             )),
-            // Only 404 proves a tag is absent. Preserve cached tags for authentication and transport failures.
-            Err(UpstreamError::Status(StatusCode::NOT_FOUND)) => {
-                if store::delete_tag(&state.meta, index, repo, tag)? {
-                    state.invalidate_search_resource(repo);
-                }
-                Ok(None)
-            }
-            Err(UpstreamError::Status(status)) if absent_upstream(status) => stale_tag(state, index, repo, tag, head),
-            Err(err) => Ok(Some(
-                stale_tag(state, index, repo, tag, head)?.unwrap_or_else(|| upstream_manifest_error(&err)),
-            )),
+            Err(err) => tag_lookup_failure(state, index, repo, tag, head, &err),
         }
+    }
+}
+
+/// How long a confirmed tag miss answers for before peryx asks the registry again. A deployment
+/// client polling for a tag it is about to publish costs one existence check per window instead of
+/// two registry calls per poll, and the tag becomes visible when the window closes. The same length
+/// the pypi resolver remembers a missing project for.
+const TAG_MISS_TTL_SECS: i64 = 30;
+
+/// The miss-cache key for one member's view of one tag. Keyed by member because a virtual index asks
+/// each member in turn, and one registry answering `404` says nothing about the next.
+fn tag_miss_key(index: &str, repo: &str, tag: &str) -> String {
+    format!("oci\u{0}tagmiss\u{0}{index}\u{0}{repo}\u{0}{tag}")
+}
+
+/// What an upstream tag lookup that failed means, shared by the `HEAD` that revalidates a tag and the
+/// `GET` that follows a registry which would not name a digest.
+///
+/// Only `404` proves the tag is gone, so only `404` retires the cached mapping and records a miss the
+/// next lookup answers from. `403` is the registry declining to show this repository rather than a
+/// statement about the tag, which is why it leaves no miss and lets a virtual index walk on.
+/// Authentication, throttling, server and transport failures keep whatever is cached, and otherwise
+/// reach the client carrying their own status, so a throttled client backs off on the registry's
+/// terms. None of those three ask again with a `GET`, which used to double the traffic against a
+/// registry that had already said it was shedding load.
+fn tag_lookup_failure(
+    state: &ServingState,
+    index: &str,
+    repo: &str,
+    tag: &str,
+    head: bool,
+    err: &UpstreamError,
+) -> Result<Option<Response>, ServeError> {
+    match err {
+        UpstreamError::Status(StatusCode::NOT_FOUND) => {
+            if store::delete_tag(&state.meta, index, repo, tag)? {
+                state.invalidate_search_resource(repo);
+            }
+            state.remember_negative(tag_miss_key(index, repo, tag), TAG_MISS_TTL_SECS);
+            Ok(None)
+        }
+        UpstreamError::Status(status) if absent_upstream(*status) => stale_tag(state, index, repo, tag, head),
+        _ => Ok(Some(
+            stale_tag(state, index, repo, tag, head)?.unwrap_or_else(|| upstream_manifest_error(err)),
+        )),
     }
 }
 

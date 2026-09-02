@@ -13,8 +13,7 @@ fn settings(library_prefix: LibraryPrefix) -> IndexSettings {
 async fn test_library_prefix_rewrites_the_upstream_path_and_token_scope() {
     let server = MockServer::start().await;
     let body = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}"#;
-    Mock::given(method("GET"))
-        .and(path("/v2/library/app/manifests/latest"))
+    Mock::given(pull("/v2/library/app/manifests/latest"))
         .respond_with(ResponseTemplate::new(401).insert_header(
             "www-authenticate",
             format!(r#"Bearer realm="{}/token",service="reg""#, server.uri()).as_str(),
@@ -29,8 +28,7 @@ async fn test_library_prefix_rewrites_the_upstream_path_and_token_scope() {
         .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"token":"abc"}"#))
         .mount(&server)
         .await;
-    Mock::given(method("GET"))
-        .and(path("/v2/library/app/manifests/latest"))
+    Mock::given(pull("/v2/library/app/manifests/latest"))
         .and(match_header("authorization", "Bearer abc"))
         .respond_with(ResponseTemplate::new(200).set_body_raw(body.to_vec(), MANIFEST_TYPE))
         .mount(&server)
@@ -87,6 +85,7 @@ async fn test_upstream_sees_the_client_name_unrewritten(#[case] prefix: LibraryP
         .expect(1)
         .mount(&server)
         .await;
+    mount_head_without_digest(&server, &format!("/v2/{repo}/manifests/latest")).await;
 
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = proxy_with_settings(&dir, &format!("{}/", server.uri()), settings(prefix));

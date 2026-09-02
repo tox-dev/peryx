@@ -11,8 +11,8 @@ use peryx_storage::meta::MetaStore;
 use tower::ServiceExt as _;
 
 use super::{
-    app_with_indexes, auth, body_has_code, oci_digest, oci_index, seed_referrer, send, send_body, send_with,
-    writable_index,
+    app_with_indexes, auth, body_has_code, mount_head_without_digest, oci_digest, oci_index, seed_referrer, send,
+    send_body, send_with, writable_index,
 };
 use crate::store::{self, Manifest};
 use crate::upload_session::UploadStore as _;
@@ -243,6 +243,7 @@ async fn test_unprotected_virtual_manifest_still_uses_the_proxy() {
         .expect(1)
         .mount(&server)
         .await;
+    mount_head_without_digest(&server, "/v2/team/app/manifests/latest").await;
     let dir = tempfile::tempdir().unwrap();
     let (_state, app, recorder) = protected_virtual(&dir, &format!("{}/", server.uri()), false);
 

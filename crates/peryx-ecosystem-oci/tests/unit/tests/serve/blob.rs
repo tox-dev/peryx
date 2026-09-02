@@ -8,8 +8,7 @@ use crate::tests::observe_pending;
 async fn test_token_flow_accepts_case_insensitive_challenge(#[case] scheme: &str) {
     let server = MockServer::start().await;
     let body = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}"#;
-    Mock::given(method("GET"))
-        .and(path("/v2/library/nginx/manifests/latest"))
+    Mock::given(pull("/v2/library/nginx/manifests/latest"))
         .respond_with(ResponseTemplate::new(401).insert_header(
             "www-authenticate",
             format!(r#"{scheme} realm="{}/token",service="reg""#, server.uri()).as_str(),
@@ -23,8 +22,7 @@ async fn test_token_flow_accepts_case_insensitive_challenge(#[case] scheme: &str
         .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"token":"abc"}"#))
         .mount(&server)
         .await;
-    Mock::given(method("GET"))
-        .and(path("/v2/library/nginx/manifests/latest"))
+    Mock::given(pull("/v2/library/nginx/manifests/latest"))
         .and(match_header("authorization", "Bearer abc"))
         .respond_with(ResponseTemplate::new(200).set_body_raw(body.to_vec(), MANIFEST_TYPE))
         .mount(&server)
@@ -50,6 +48,7 @@ async fn test_oversized_upstream_manifest_is_rejected_not_buffered() {
         .respond_with(ResponseTemplate::new(200).set_body_raw(vec![b'x'; 5 * 1024 * 1024], MANIFEST_TYPE))
         .mount(&server)
         .await;
+    mount_head_without_digest(&server, "/v2/library/nginx/manifests/latest").await;
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
     let (status, _, _) = send(&app, Method::GET, "/v2/hub/library/nginx/manifests/latest").await;
@@ -78,9 +77,9 @@ async fn test_concurrent_by_digest_pulls_share_one_upstream_fetch() {
 #[tokio::test]
 async fn test_upstream_rate_limit_becomes_429_with_retry_after() {
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/v2/library/nginx/manifests/latest"))
+    Mock::given(pull("/v2/library/nginx/manifests/latest"))
         .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "17"))
+        .expect(1)
         .mount(&server)
         .await;
     let dir = tempfile::tempdir().unwrap();
@@ -93,9 +92,9 @@ async fn test_upstream_rate_limit_becomes_429_with_retry_after() {
 #[tokio::test]
 async fn test_upstream_rate_limit_without_retry_after_is_still_429() {
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/v2/library/nginx/manifests/latest"))
+    Mock::given(pull("/v2/library/nginx/manifests/latest"))
         .respond_with(ResponseTemplate::new(429))
+        .expect(1)
         .mount(&server)
         .await;
     let dir = tempfile::tempdir().unwrap();
@@ -111,8 +110,7 @@ async fn test_upstream_rate_limit_without_retry_after_is_still_429() {
 #[tokio::test]
 async fn test_upstream_gateway_failure_is_a_gateway_error(#[case] suffix: String) {
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path(format!("/v2/app/{suffix}")))
+    Mock::given(pull(&format!("/v2/app/{suffix}")))
         .respond_with(ResponseTemplate::new(500))
         .mount(&server)
         .await;
@@ -476,8 +474,7 @@ async fn test_truncated_upstream_blob_is_a_gateway_error() {
 #[tokio::test]
 async fn test_token_endpoint_without_a_token_is_a_gateway_error() {
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/v2/app/manifests/latest"))
+    Mock::given(pull("/v2/app/manifests/latest"))
         .respond_with(ResponseTemplate::new(401).insert_header(
             "www-authenticate",
             format!(r#"Bearer realm="{}/token""#, server.uri()).as_str(),
@@ -497,8 +494,7 @@ async fn test_token_endpoint_without_a_token_is_a_gateway_error() {
 #[tokio::test]
 async fn test_token_endpoint_with_invalid_json_is_a_gateway_error() {
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/v2/app/manifests/latest"))
+    Mock::given(pull("/v2/app/manifests/latest"))
         .respond_with(ResponseTemplate::new(401).insert_header(
             "www-authenticate",
             format!(r#"Bearer realm="{}/token""#, server.uri()).as_str(),
@@ -550,6 +546,7 @@ async fn test_concurrent_tag_pulls_share_one_upstream_fetch() {
         .expect(1)
         .mount(&server)
         .await;
+    mount_head_without_digest(&server, "/v2/library/nginx/manifests/latest").await;
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
     let uri = "/v2/hub/library/nginx/manifests/latest";
@@ -579,6 +576,8 @@ async fn test_upstream_manifest_digest_header_is_verified() {
         )
         .mount(&server)
         .await;
+    mount_head_without_digest(&server, "/v2/library/nginx/manifests/good").await;
+    mount_head_without_digest(&server, "/v2/library/nginx/manifests/bad").await;
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
 

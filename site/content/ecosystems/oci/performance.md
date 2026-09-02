@@ -120,6 +120,13 @@ only when that digest changes. The freshness window removes this request from fr
 reduces a burst of stale-tag pulls to one upstream check. [`cache_ttl_secs`](@/core/operations/configuration.md) sets
 the window and defaults to five minutes.
 
+A tag the registry does not have costs one call rather than two. peryx used to read every failed existence check as "the
+registry named no digest" and follow it with a `GET`, which doubled the traffic for a name that does not exist and asked
+a throttled registry a second question after it had already refused the first. A `404` now settles the lookup and is
+remembered for 30 seconds, so a deployment client polling once a second for a tag it is about to publish spends two
+calls a minute instead of a hundred and twenty. See
+[tag lookups a registry refuses](@/ecosystems/oci/reference/registry-behavior.md) for what each status does.
+
 `tag list` used to send each request from a single-member proxy to its upstream, so the benchmark measured a Docker Hub
 round trip. peryx now caches this mutable list for [`cache_ttl_secs`](@/core/operations/configuration.md), revalidates
 it after the window, and answers from the last list when the upstream cannot be reached, bounded by `max_stale_secs`. A

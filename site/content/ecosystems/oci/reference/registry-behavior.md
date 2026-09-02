@@ -52,6 +52,29 @@ A pull by a non-sha256 digest cannot equal the sha256 canonical, so peryx cannot
 the way it does for `sha256:`. The upstream content-addressed the manifest under that digest; peryx serves those bytes
 under the digest the client asked for, and stores them under its own sha256 for the cache.
 
+### Tag lookups a registry refuses
+
+Resolving a tag against a cached upstream starts with a `HEAD`, and what that answers decides whether peryx asks for a
+body at all.
+
+| Existence check                 | Result                                                                    |
+| ------------------------------- | ------------------------------------------------------------------------- |
+| `200` naming the cached digest  | Serve the cached manifest; no body fetch                                  |
+| `200` naming a different digest | Fetch the body and store it                                               |
+| `200` naming no digest          | Fetch the body, which is the only remaining way to learn the digest       |
+| `404`                           | Drop the cached tag, remember the miss for 30 seconds, `MANIFEST_UNKNOWN` |
+| `403`                           | Serve a stale tag within `max_stale_secs`, else `MANIFEST_UNKNOWN`        |
+| `401`, `429`, `5xx`, transport  | Serve a stale tag within `max_stale_secs`, else forward the failure       |
+
+Only `404` states that the tag is gone, so only `404` records anything. A repository the registry declines to show, a
+credential it rejects, a throttle and an outage all leave the cache as it was, and none of them is followed by a `GET`
+against a registry that has already said no. A `429` reaches the client with the registry's own `Retry-After`.
+
+The 30-second window is how long a lookup for a missing tag is answered without asking again, which bounds how far
+behind a publication the repository can be: a tag pushed during the window appears when it closes. A registry that
+answers `404` to a `HEAD` for a manifest it will serve over `GET` does not conform to the distribution specification,
+and peryx believes the `404`.
+
 ### Blobs are sha256 only
 
 A blob digest on a pull, a mount, or the `PUT` that commits an upload must be `sha256:`. Any other algorithm answers

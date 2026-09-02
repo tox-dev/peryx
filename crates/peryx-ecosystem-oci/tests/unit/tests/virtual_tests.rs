@@ -3,8 +3,8 @@ use wiremock::matchers::{method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::{
-    app_with_indexes, auth, gated_response, image_manifest, oci_digest, oci_index, seed_config, send, send_body,
-    virtual_stack, writable_index,
+    app_with_indexes, auth, gated_response, image_manifest, mount_head_without_digest, oci_digest, oci_index,
+    seed_config, send, send_body, virtual_stack, writable_index,
 };
 
 const TOKEN: &str = "s3cret";
@@ -58,6 +58,7 @@ async fn test_virtual_falls_through_to_upstream() {
         .respond_with(ResponseTemplate::new(200).set_body_raw(upstream.clone(), MANIFEST_TYPE))
         .mount(&server)
         .await;
+    mount_head_without_digest(&server, "/v2/app/manifests/edge").await;
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = virtual_stack(&dir, &format!("{}/", server.uri()));
     let (status, _, got) = send(&app, Method::GET, "/v2/reg/app/manifests/edge").await;
@@ -673,6 +674,7 @@ async fn test_two_level_virtual_pull_warms_a_grandchild_proxy_and_serves_it_offl
         .respond_with(ResponseTemplate::new(200).set_body_raw(upstream.clone(), MANIFEST_TYPE))
         .mount(&server)
         .await;
+    mount_head_without_digest(&server, "/v2/app/manifests/latest").await;
     let dir = tempfile::tempdir().unwrap();
     let warm = nested_proxy_stack(&dir, &format!("{}/", server.uri()), false);
     let warming = send(&warm, Method::GET, "/v2/outer/app/manifests/latest").await;

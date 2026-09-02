@@ -7,8 +7,7 @@ async fn test_manifest_by_tag_pulls_through_with_the_token_flow() {
     let server = MockServer::start().await;
     let body = br#"{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json"}"#;
     // Mock ordering keeps anonymous and authenticated responses distinct.
-    Mock::given(method("GET"))
-        .and(path("/v2/library/nginx/manifests/latest"))
+    Mock::given(pull("/v2/library/nginx/manifests/latest"))
         .respond_with(
             ResponseTemplate::new(401).insert_header(
                 "www-authenticate",
@@ -27,8 +26,7 @@ async fn test_manifest_by_tag_pulls_through_with_the_token_flow() {
         .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"token":"abc"}"#))
         .mount(&server)
         .await;
-    Mock::given(method("GET"))
-        .and(path("/v2/library/nginx/manifests/latest"))
+    Mock::given(pull("/v2/library/nginx/manifests/latest"))
         .and(match_header("authorization", "Bearer abc"))
         .respond_with(ResponseTemplate::new(200).set_body_raw(body.to_vec(), MANIFEST_TYPE))
         .mount(&server)
@@ -126,8 +124,7 @@ async fn test_unchanged_tag_refetches_when_the_cached_manifest_is_missing() {
 async fn test_manifest_upstream_401_reports_the_auth_failure() {
     let server = MockServer::start().await;
     // Authentication failures must not be reported as missing manifests.
-    Mock::given(method("GET"))
-        .and(path("/v2/app/manifests/latest"))
+    Mock::given(pull("/v2/app/manifests/latest"))
         .respond_with(ResponseTemplate::new(401))
         .mount(&server)
         .await;
@@ -140,8 +137,7 @@ async fn test_manifest_upstream_401_reports_the_auth_failure() {
 #[tokio::test]
 async fn test_manifest_token_endpoint_failure_is_a_gateway_error() {
     let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/v2/app/manifests/latest"))
+    Mock::given(pull("/v2/app/manifests/latest"))
         .respond_with(ResponseTemplate::new(401).insert_header(
             "www-authenticate",
             format!(r#"Bearer realm="{}/token",service="reg""#, server.uri()).as_str(),
@@ -167,6 +163,7 @@ async fn test_manifest_head_by_tag_returns_headers_only() {
         .respond_with(ResponseTemplate::new(200).set_body_raw(body.to_vec(), MANIFEST_TYPE))
         .mount(&server)
         .await;
+    mount_head_without_digest(&server, "/v2/app/manifests/v1").await;
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
     let (status, headers, got) = send(&app, Method::HEAD, "/v2/hub/app/manifests/v1").await;
@@ -230,6 +227,7 @@ async fn test_manifest_media_type_over_the_storage_limit_is_not_cached() {
         .respond_with(ResponseTemplate::new(200).set_body_raw(body.to_vec(), &"a".repeat(MAX_MEDIA_TYPE_BYTES + 1)))
         .mount(&server)
         .await;
+    mount_head_without_digest(&server, "/v2/app/manifests/latest").await;
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
 
@@ -310,6 +308,7 @@ async fn test_manifest_by_tag_accepts_a_non_sha256_advertised_digest() {
         )
         .mount(&server)
         .await;
+    mount_head_without_digest(&server, "/v2/app/manifests/latest").await;
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
     let (status, headers, got) = send(&app, Method::GET, "/v2/hub/app/manifests/latest").await;
@@ -335,6 +334,7 @@ async fn test_manifest_by_tag_wrong_sha256_advertised_is_a_gateway_error() {
         )
         .mount(&server)
         .await;
+    mount_head_without_digest(&server, "/v2/app/manifests/latest").await;
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
     let (status, _, _) = send(&app, Method::GET, "/v2/hub/app/manifests/latest").await;

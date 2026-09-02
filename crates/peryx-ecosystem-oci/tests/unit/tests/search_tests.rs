@@ -8,8 +8,8 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::{
-    app_with_indexes, auth, hosted_writable, oci_digest, proxy, search_total, send, send_body, virtual_stack,
-    writable_index,
+    app_with_indexes, auth, hosted_writable, mount_head_without_digest, oci_digest, proxy, search_total, send,
+    send_body, virtual_stack, writable_index,
 };
 use crate::OciIndexer;
 use crate::store;
@@ -151,6 +151,7 @@ async fn test_search_refreshes_after_proxy_tag_fill() {
         .respond_with(ResponseTemplate::new(200).set_body_raw(MANIFEST.to_vec(), MANIFEST_TYPE))
         .mount(&server)
         .await;
+    mount_head_without_digest(&server, "/v2/team/app/manifests/latest").await;
     let dir = tempfile::tempdir().unwrap();
     let (_, app) = proxy(&dir, &format!("{}/", server.uri()), false);
     let before = search_total(&app, "app").await;

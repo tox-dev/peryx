@@ -13,6 +13,7 @@ async fn test_a_tag_staler_than_the_bound_is_not_served_when_upstream_fails() {
         .up_to_n_times(1)
         .mount(&server)
         .await;
+    mount_head_without_digest(&server, "/v2/library/nginx/manifests/latest").await;
     let now = Arc::new(AtomicI64::new(1000));
     let ticking = now.clone();
     let (_state, app) = crate::tests::proxy_with_clock(
@@ -24,8 +25,7 @@ async fn test_a_tag_staler_than_the_bound_is_not_served_when_upstream_fails() {
     assert_eq!(send(&app, Method::GET, uri).await.0, StatusCode::OK);
 
     server.reset().await;
-    Mock::given(method("GET"))
-        .and(path("/v2/library/nginx/manifests/latest"))
+    Mock::given(pull("/v2/library/nginx/manifests/latest"))
         .respond_with(ResponseTemplate::new(503))
         .mount(&server)
         .await;
@@ -82,6 +82,7 @@ async fn test_expired_upstream_credentials_do_not_delete_a_cached_tag() {
         .up_to_n_times(1)
         .mount(&server)
         .await;
+    mount_head_without_digest(&server, "/v2/library/nginx/manifests/latest").await;
     let now = Arc::new(AtomicI64::new(1000));
     let ticking = now.clone();
     let (_state, app) = crate::tests::proxy_with_clock(
@@ -93,8 +94,7 @@ async fn test_expired_upstream_credentials_do_not_delete_a_cached_tag() {
 
     // Docker Hub uses `401` for hidden repositories, so stale content remains eligible.
     server.reset().await;
-    Mock::given(method("GET"))
-        .and(path("/v2/library/nginx/manifests/latest"))
+    Mock::given(pull("/v2/library/nginx/manifests/latest"))
         .respond_with(ResponseTemplate::new(401))
         .mount(&server)
         .await;

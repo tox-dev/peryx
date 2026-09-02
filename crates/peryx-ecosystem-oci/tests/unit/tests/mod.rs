@@ -592,6 +592,32 @@ fn token_from(body: &Bytes) -> String {
         .to_owned()
 }
 
+/// Matches both methods a pull uses against one upstream path. A registry answers the existence check
+/// and the body fetch alike, so a fixture that states an outcome for a manifest states it for both
+/// rather than for whichever verb peryx sends first.
+struct Pull(String);
+
+impl wiremock::Match for Pull {
+    fn matches(&self, request: &wiremock::Request) -> bool {
+        matches!(request.method, Method::GET | Method::HEAD) && request.url.path() == self.0
+    }
+}
+
+fn pull(path: &str) -> Pull {
+    Pull(path.to_owned())
+}
+
+/// The existence check a registry answers beside a manifest `GET`, naming no digest of its own. peryx
+/// reads the body to learn what the tag points at, so a fixture mounting this keeps the two upstream
+/// calls it always made; a registry that does name the digest belongs in a revalidation test.
+async fn mount_head_without_digest(server: &wiremock::MockServer, manifest_path: &str) {
+    wiremock::Mock::given(wiremock::matchers::method("HEAD"))
+        .and(wiremock::matchers::path(manifest_path))
+        .respond_with(wiremock::ResponseTemplate::new(200))
+        .mount(server)
+        .await;
+}
+
 fn proxy(dir: &TempDir, upstream: &str, offline: bool) -> (Arc<AppState>, axum::Router) {
     let client = UpstreamClient::new(upstream).unwrap();
     app_with(dir, oci_index("hub", "hub", IndexKind::Cached { client, offline }))

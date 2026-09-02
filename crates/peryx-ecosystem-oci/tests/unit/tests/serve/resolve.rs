@@ -5,22 +5,25 @@ use peryx_identity::IndexAcl;
 #[tokio::test]
 async fn test_upstream_tag_removal_refreshes_search() {
     let dir = tempfile::tempdir().unwrap();
-    let (_server, app) = proxy_after_upstream_tag_removal(&dir).await;
+    let (_server, app, _now) = proxy_after_upstream_tag_removal(&dir).await;
 
     assert_eq!(search_total(&app, "nginx").await, 0);
 }
 
 #[tokio::test]
 async fn test_upstream_tag_removal_disables_stale_serve() {
+    use std::sync::atomic::Ordering;
     let dir = tempfile::tempdir().unwrap();
-    let (server, app) = proxy_after_upstream_tag_removal(&dir).await;
+    let (server, app, now) = proxy_after_upstream_tag_removal(&dir).await;
     server.reset().await;
-    Mock::given(method("GET"))
-        .and(path("/v2/library/nginx/manifests/latest"))
+    Mock::given(pull("/v2/library/nginx/manifests/latest"))
         .respond_with(ResponseTemplate::new(503))
         .expect(1)
         .mount(&server)
         .await;
+    // Past the window the removal recorded, so the registry is asked again rather than answered from
+    // the miss.
+    now.store(100_000, Ordering::Relaxed);
 
     assert_eq!(
         send(&app, Method::GET, "/v2/hub/library/nginx/manifests/latest")
@@ -30,7 +33,9 @@ async fn test_upstream_tag_removal_disables_stale_serve() {
     );
 }
 
-async fn proxy_after_upstream_tag_removal(dir: &tempfile::TempDir) -> (MockServer, axum::Router) {
+async fn proxy_after_upstream_tag_removal(
+    dir: &tempfile::TempDir,
+) -> (MockServer, axum::Router, std::sync::Arc<std::sync::atomic::AtomicI64>) {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicI64, Ordering};
 
@@ -42,6 +47,7 @@ async fn proxy_after_upstream_tag_removal(dir: &tempfile::TempDir) -> (MockServe
         .expect(1)
         .mount(&server)
         .await;
+    mount_head_without_digest(&server, "/v2/library/nginx/manifests/latest").await;
     let now = Arc::new(AtomicI64::new(1000));
     let ticking = now.clone();
     let (_state, app) = crate::tests::proxy_with_clock(
@@ -60,15 +66,9 @@ async fn proxy_after_upstream_tag_removal(dir: &tempfile::TempDir) -> (MockServe
         .expect(1)
         .mount(&server)
         .await;
-    Mock::given(method("GET"))
-        .and(path("/v2/library/nginx/manifests/latest"))
-        .respond_with(ResponseTemplate::new(404))
-        .expect(1)
-        .mount(&server)
-        .await;
     now.store(1000 + 61, Ordering::Relaxed);
     assert_eq!(send(&app, Method::GET, uri).await.0, StatusCode::NOT_FOUND);
-    (server, app)
+    (server, app, now)
 }
 
 #[tokio::test]
@@ -84,6 +84,7 @@ async fn test_proxy_tag_is_cached_within_ttl_then_revalidated() {
         .expect(2)
         .mount(&server)
         .await;
+    mount_head_without_digest(&server, "/v2/library/nginx/manifests/latest").await;
     let now = Arc::new(AtomicI64::new(1000));
     let ticking = now.clone();
     let (_state, app) = crate::tests::proxy_with_clock(
@@ -110,6 +111,7 @@ async fn test_moved_tag_is_refetched_after_the_window() {
         .up_to_n_times(1)
         .mount(&server)
         .await;
+    mount_head_without_digest(&server, "/v2/library/nginx/manifests/latest").await;
     let now = Arc::new(AtomicI64::new(1000));
     let ticking = now.clone();
     let (_state, app) = crate::tests::proxy_with_clock(
@@ -217,6 +219,7 @@ async fn test_proxy_tag_revalidates_when_the_cached_manifest_is_gone() {
         .expect(2)
         .mount(&server)
         .await;
+    mount_head_without_digest(&server, "/v2/library/nginx/manifests/latest").await;
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
     let uri = "/v2/hub/library/nginx/manifests/latest";
