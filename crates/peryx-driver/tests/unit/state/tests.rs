@@ -366,3 +366,79 @@ fn test_page_carrying_a_revocation_re_derives_every_document() {
     assert_eq!(published_documents(&state), 3);
     assert_eq!(docs.built.load(Ordering::Relaxed), 3);
 }
+
+fn blob_commit(keys: &[&str]) -> peryx_ha::BlobCommit {
+    peryx_ha::BlobCommit {
+        digest: format!("sha256:{:064x}", 3),
+        keys: keys.iter().map(|&key| key.to_owned()).collect(),
+    }
+}
+
+/// A replica applies a page before it holds the bytes that page names, so the document it derives
+/// reports those bytes absent. Retiring the same keys once they land costs the resources the record
+/// named, not the store.
+#[test]
+fn test_a_named_blob_commit_rebuilds_only_the_resource_it_named() {
+    let (_dir, state, docs) = indexed_state(&["alpha", "beta", "gamma"], Some(CoveringDriver::new(&["alpha"])));
+
+    state.apply_blob_commit(&[blob_commit(&["alpha"])]);
+
+    assert_eq!(published_documents(&state), 3);
+    assert_eq!(docs.built.load(Ordering::Relaxed), 1);
+}
+
+/// A record naming a blob and no row leaves the resource unknown, and an unknown resource takes the
+/// slow answer rather than a quiet one.
+#[test]
+fn test_a_blob_commit_naming_no_key_re_derives_every_document() {
+    let (_dir, state, docs) = indexed_state(&["alpha", "beta", "gamma"], Some(CoveringDriver::new(&["alpha"])));
+
+    state.apply_blob_commit(&[blob_commit(&[])]);
+
+    assert_eq!(published_documents(&state), 3);
+    assert_eq!(docs.built.load(Ordering::Relaxed), 3);
+}
+
+#[test]
+fn test_a_blob_commit_no_driver_covers_re_derives_every_document() {
+    let (_dir, state, docs) = indexed_state(&["alpha", "beta", "gamma"], Some(CoveringDriver::new(&["alpha"])));
+
+    state.apply_blob_commit(&[blob_commit(&["alpha", "beta"])]);
+
+    assert_eq!(published_documents(&state), 3);
+    assert_eq!(docs.built.load(Ordering::Relaxed), 3);
+}
+
+/// A pass that moved no bytes leaves the index alone, so a cycle whose page carried no blob keeps the
+/// scoped refresh the page itself set up.
+#[test]
+fn test_an_empty_blob_commit_rebuilds_nothing() {
+    let (_dir, state, docs) = indexed_state(&["alpha", "beta", "gamma"], Some(CoveringDriver::new(&["alpha"])));
+
+    state.apply_blob_commit(&[]);
+
+    assert_eq!(published_documents(&state), 3);
+    assert_eq!(docs.built.load(Ordering::Relaxed), 0);
+}
+
+/// A driver that cannot rebuild leaves the blob commit blocked, and the view still owes the whole index
+/// a re-derivation rather than the resource the commit named.
+#[test]
+fn test_a_blocked_blob_commit_re_derives_every_document() {
+    let (_dir, mut state, _meta) = state();
+    let docs = Arc::new(CountingDocs::new(&["alpha", "beta", "gamma"]));
+    state.register_lexicon(Ecosystem::new("indexed"), &Lexicon::NEUTRAL);
+    Arc::get_mut(&mut state.serving)
+        .expect("the serving state is still unique during the build")
+        .search
+        .add_indexer(docs.clone());
+    state.register_replicated_apply_driver(Ecosystem::new("indexed"), Arc::new(BlockedView));
+    let state = Arc::new(state);
+    assert_eq!(published_documents(&state), 3);
+    docs.built.store(0, Ordering::Relaxed);
+
+    state.apply_blob_commit(&[blob_commit(&["alpha"])]);
+
+    assert_eq!(published_documents(&state), 3);
+    assert_eq!(docs.built.load(Ordering::Relaxed), 3);
+}

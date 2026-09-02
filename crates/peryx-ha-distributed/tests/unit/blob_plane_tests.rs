@@ -951,7 +951,7 @@ async fn test_advance_accepts_positive_peer_evidence_for_the_digest() {
         delegates: &delegates,
         local_dc: "dc-a",
     };
-    let (_, served_by_peer) = pull_outstanding_with_evidence(&sources, &meta, &blobs, nz(10), nz(2))
+    let (_, served_by_peer) = pull_outstanding_with_evidence(&sources, &meta, &blobs, nz(10), nz(2), &mut Vec::new())
         .await
         .unwrap();
 

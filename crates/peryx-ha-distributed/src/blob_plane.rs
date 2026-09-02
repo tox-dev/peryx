@@ -1,12 +1,12 @@
 //! Commits verified blobs before recording their local placement. Frontier advancement remains separate,
 //! so metadata stays unreadable until its blobs are locally present or available through read-through.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::num::NonZeroUsize;
 
 use bytes::Bytes;
 use futures_util::FutureExt as _;
-use peryx_ha::{ArtifactSource, PlacementEvent};
+use peryx_ha::{ArtifactSource, BlobCommit, PlacementEvent};
 use peryx_identity::ArtifactDigest;
 use peryx_storage::blob::{BlobStorage, Digest};
 use peryx_storage::meta::MetaStore;
@@ -144,9 +144,11 @@ pub async fn pull_outstanding<T: BlobTransport>(
     batch: NonZeroUsize,
     concurrency: NonZeroUsize,
 ) -> Result<BlobPlaneReport, SyncError> {
-    Ok(pull_outstanding_with_evidence(sources, meta, blobs, batch, concurrency)
-        .await?
-        .0)
+    Ok(
+        pull_outstanding_with_evidence(sources, meta, blobs, batch, concurrency, &mut Vec::new())
+            .await?
+            .0,
+    )
 }
 
 /// Pulls outstanding blobs and returns evidence for blobs served by a peer.
@@ -159,15 +161,19 @@ pub async fn pull_outstanding_with_evidence<T: BlobTransport>(
     blobs: &BlobStorage,
     batch: NonZeroUsize,
     concurrency: NonZeroUsize,
+    committed: &mut Vec<BlobCommit>,
 ) -> Result<(BlobPlaneReport, PeerBlobEvidence), SyncError> {
     let reachable: BTreeSet<String> = sources.delegates.keys().cloned().collect();
-    let referenced = referenced_over_tail(meta, batch)?;
+    let tail = referenced_over_tail(meta, batch)?;
     let mut simple = Vec::new();
     let mut ranged = Vec::new();
     let mut deferred = Vec::new();
-    for (digest, size) in &referenced {
+    let mut placed = BTreeSet::new();
+    for (digest, size) in &tail.referenced {
         if blobs.head(digest).await?.is_some() {
-            repair_local_placement(meta, digest)?;
+            if repair_local_placement(meta, digest)? {
+                placed.insert(digest.as_str().to_owned());
+            }
             continue;
         }
         let descriptors = placement_descriptors(meta, digest)?;
@@ -177,14 +183,22 @@ pub async fn pull_outstanding_with_evidence<T: BlobTransport>(
             BlobDisposition::Whole => simple.push((digest.clone(), *size)),
         }
     }
-    let mut report = pull_referenced(sources.simple, blobs, meta, &simple, concurrency)
-        .boxed()
-        .await?;
-    for (digest, size, plan) in ranged {
-        pull_one_ranged(meta, blobs, sources, &digest, size, &plan, &mut report)
-            .boxed()
-            .await?;
+    let attempted = simple
+        .iter()
+        .map(|(digest, _)| digest.clone())
+        .chain(ranged.iter().map(|(digest, _, _)| digest.clone()))
+        .collect::<Vec<_>>();
+    let pulled = pull_batch(sources, meta, blobs, &simple, ranged, concurrency).await;
+    // A pull reports how many blobs it moved, not which, and this runs whether or not it finished: a
+    // pass that fails after committing some blobs has already made those bytes local, and the next pass
+    // finds them present and reports nothing, so a commit dropped here is never offered again.
+    for digest in attempted {
+        if blobs.head(&digest).await?.is_some() {
+            placed.insert(digest.as_str().to_owned());
+        }
     }
+    *committed = tail.commits(&placed);
+    let mut report = pulled?;
     let mut served_by_peer = BTreeSet::new();
     for (digest, size, dcs) in deferred {
         if probe_deferred_blob(sources, &digest, size, &dcs).await? {
@@ -194,6 +208,25 @@ pub async fn pull_outstanding_with_evidence<T: BlobTransport>(
         }
     }
     Ok((report, PeerBlobEvidence(served_by_peer)))
+}
+
+async fn pull_batch<T: BlobTransport>(
+    sources: &BlobSources<'_, T>,
+    meta: &MetaStore,
+    blobs: &BlobStorage,
+    simple: &[(Digest, u64)],
+    ranged: Vec<(Digest, u64, Vec<String>)>,
+    concurrency: NonZeroUsize,
+) -> Result<BlobPlaneReport, SyncError> {
+    let mut report = pull_referenced(sources.simple, blobs, meta, simple, concurrency)
+        .boxed()
+        .await?;
+    for (digest, size, plan) in ranged {
+        pull_one_ranged(meta, blobs, sources, &digest, size, &plan, &mut report)
+            .boxed()
+            .await?;
+    }
+    Ok(report)
 }
 
 async fn probe_deferred_blob<T: BlobTransport>(
@@ -288,18 +321,50 @@ fn terminal_range_reason(unavailable: &ChunkUnavailable) -> Option<&'static str>
 }
 
 /// Omits unparseable digests from pulls; [`advance_blob_frontier`] still holds the frontier below them.
-fn referenced_over_tail(meta: &MetaStore, batch: NonZeroUsize) -> Result<Vec<(Digest, u64)>, SyncError> {
+/// The blobs the journal tail references, each carrying the metadata keys its own record committed.
+///
+/// A journal record holds the mutations and the blob references of one serial together, so a replica
+/// already stores the association between a blob and the resources whose records named it. Nothing has
+/// to replicate it, derive it from a locator this node may not hold, or carry it in the pull protocol.
+struct ReferencedTail {
+    referenced: Vec<(Digest, u64)>,
+    keys: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl ReferencedTail {
+    /// Pairs each newly local digest with the keys to retire for it, empty when the tail names none.
+    fn commits(&self, placed: &BTreeSet<String>) -> Vec<BlobCommit> {
+        placed
+            .iter()
+            .map(|digest| BlobCommit {
+                digest: digest.clone(),
+                keys: self.keys.get(digest).into_iter().flatten().cloned().collect(),
+            })
+            .collect()
+    }
+}
+
+fn referenced_over_tail(meta: &MetaStore, batch: NonZeroUsize) -> Result<ReferencedTail, SyncError> {
     let frontier = meta.view_frontier(BLOB_VIEW)?.unwrap_or(0);
     let (_authority, records) = meta.journal_page_after(frontier, batch.get())?;
-    let mut referenced = Vec::new();
+    let mut tail = ReferencedTail {
+        referenced: Vec::new(),
+        keys: BTreeMap::new(),
+    };
     for record in &records {
-        for blob in &record.blobs {
-            if let Some(digest) = Digest::from_hex(&blob.sha256) {
-                referenced.push((digest, blob.size));
-            }
+        let named = record
+            .blobs
+            .iter()
+            .filter_map(|blob| Digest::from_hex(&blob.sha256).map(|digest| (digest, blob.size)));
+        for (digest, size) in named {
+            tail.keys
+                .entry(digest.as_str().to_owned())
+                .or_default()
+                .extend(record.mutations.iter().map(|mutation| mutation.key().to_owned()));
+            tail.referenced.push((digest, size));
         }
     }
-    Ok(referenced)
+    Ok(tail)
 }
 
 /// Recomputes [`BLOB_VIEW`] from a bounded journal scan and local blob availability.
@@ -356,18 +421,20 @@ pub async fn advance_blob_frontier_with_evidence(
     Ok(serial)
 }
 
-/// Repairs the placement when byte commit succeeded but the later placement write failed.
-fn repair_local_placement(meta: &MetaStore, digest: &Digest) -> Result<(), SyncError> {
+/// Repairs the placement when byte commit succeeded but the later placement write failed, reporting
+/// whether the row moved to local, which is what a derived view reading availability answers from.
+fn repair_local_placement(meta: &MetaStore, digest: &Digest) -> Result<bool, SyncError> {
     match meta.get_artifact_placement(digest.as_str())? {
-        Some(placement) if placement.availability.is_local() => {}
+        Some(placement) if placement.availability.is_local() => Ok(false),
         Some(_) => {
             apply_placement_event(meta, digest.as_str(), PlacementEvent::BytesVerified)?;
+            Ok(true)
         }
         None => {
             record_artifact_placement(meta, digest.as_str(), ArtifactSource::Proxy, true)?;
+            Ok(true)
         }
     }
-    Ok(())
 }
 
 async fn commit_blob(

@@ -1110,8 +1110,25 @@ impl AppliedFrontier {
     }
 }
 
+/// A blob whose bytes became durable on this node, paired with the replicated keys the journal record
+/// that referenced it carried.
+///
+/// A replica applies metadata before it fetches the bytes that metadata names, so a derived view that
+/// reads whether content is held locally answers from the gap between the two. The keys close it: they
+/// are the same keys the page reported, so the view retires through the contract that already knows how
+/// to name a resource from one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlobCommit {
+    pub digest: String,
+    /// Empty when this node cannot name what the blob belongs to, which retires the whole view rather
+    /// than leaving a document that still reports the bytes as absent.
+    pub keys: Vec<String>,
+}
+
 pub trait ReplicaViewApplier: Send + Sync {
     fn apply(&self, page: ReplicaPage, changed_keys: &[String]);
+    /// Retires the derived views that read the bytes these blobs just made local.
+    fn apply_blob_commit(&self, committed: &[BlobCommit]);
     fn readable_frontier(&self) -> u64;
     fn publish_applied_frontier(&self, serial: u64);
 }

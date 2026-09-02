@@ -198,20 +198,27 @@ impl ReplicaLoop {
         self.monitor.publish(cycle);
     }
 
+    /// Retires the views the newly local blobs belong to before the frontier advances, so a read that
+    /// the frontier lets through cannot see a document still reporting those bytes as absent.
     async fn pull_blobs(&self) -> Result<BlobPlaneReport, SyncError> {
         let sources = BlobSources {
             simple: &self.transport,
             delegates: &self.delegates,
             local_dc: &self.local_dc,
         };
-        let (report, served_by_peer) = pull_outstanding_with_evidence(
+        let mut committed = Vec::new();
+        let pulled = pull_outstanding_with_evidence(
             &sources,
             &self.meta,
             &self.blobs,
             self.page_size,
             REPLICA_BLOB_FETCH_CONCURRENCY,
+            &mut committed,
         )
-        .await?;
+        .await;
+        // Before the error, so a pass that failed after committing some blobs still retires their views.
+        self.views.apply_blob_commit(&committed);
+        let (report, served_by_peer) = pulled?;
         advance_blob_frontier_with_evidence(&self.meta, &self.blobs, self.page_size, &served_by_peer).await?;
         Ok(report)
     }

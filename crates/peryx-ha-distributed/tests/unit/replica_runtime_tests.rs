@@ -23,19 +23,29 @@ use super::*;
 const TOKEN: &str = "replication-secret";
 
 #[derive(Default)]
-struct Views(AtomicU64);
+struct Views {
+    frontier: AtomicU64,
+    committed: Mutex<Vec<peryx_ha::BlobCommit>>,
+}
 
 impl ReplicaViewApplier for Views {
     fn apply(&self, page: ReplicaPage, _changed_keys: &[String]) {
-        self.0.store(page.serial, Ordering::Relaxed);
+        self.frontier.store(page.serial, Ordering::Relaxed);
+    }
+
+    fn apply_blob_commit(&self, committed: &[peryx_ha::BlobCommit]) {
+        self.committed
+            .lock()
+            .expect("the commit log is usable")
+            .extend_from_slice(committed);
     }
 
     fn readable_frontier(&self) -> u64 {
-        self.0.load(Ordering::Relaxed)
+        self.frontier.load(Ordering::Relaxed)
     }
 
     fn publish_applied_frontier(&self, serial: u64) {
-        self.0.store(serial, Ordering::Relaxed);
+        self.frontier.store(serial, Ordering::Relaxed);
     }
 }
 
@@ -48,6 +58,8 @@ struct PausedViews {
 
 impl ReplicaViewApplier for PausedViews {
     fn apply(&self, _page: ReplicaPage, _changed_keys: &[String]) {}
+
+    fn apply_blob_commit(&self, _committed: &[peryx_ha::BlobCommit]) {}
 
     fn readable_frontier(&self) -> u64 {
         self.arrived.send(()).expect("the reader waits for the frontier read");
@@ -476,6 +488,90 @@ async fn test_cycle_keeps_partial_retirement_distinct_from_sync_error() {
         vec![RetiredPeer {
             source: "retired".to_owned(),
             reason: "bad_status",
+        }]
+    );
+}
+
+/// A primary holding one blob, referenced by a change carrying `keys`.
+async fn primary_with_a_blob(dir: &tempfile::TempDir, bytes: &[u8], keys: &[&str]) -> (TestServer, Digest) {
+    let (source_meta, source_blobs) = stores(dir);
+    let digest = source_blobs.put_bytes(bytes).await.unwrap();
+    Replica::new(&source_meta, NonZeroUsize::new(4).unwrap())
+        .apply_page(ChangePage {
+            version: PROTOCOL_VERSION,
+            source: "seed".to_owned(),
+            after: 0,
+            current_serial: 1,
+            changes: vec![Change {
+                serial: 1,
+                event: b"event-1".to_vec(),
+                metadata: keys
+                    .iter()
+                    .map(|key| MetadataMutation::Put {
+                        key: (*key).to_owned(),
+                        value: b"record".to_vec(),
+                    })
+                    .collect(),
+                blobs: vec![BlobReference {
+                    sha256: digest.as_str().to_owned(),
+                    size: bytes.len() as u64,
+                }],
+            }],
+        })
+        .unwrap();
+    let server = TestServer::start(primary_router("primary", TOKEN, source_meta, source_blobs).unwrap()).await;
+    (server, digest)
+}
+
+async fn committed_over_a_cycle(bytes: &[u8], keys: &[&str]) -> Vec<peryx_ha::BlobCommit> {
+    let source_dir = tempfile::tempdir().unwrap();
+    let (server, _digest) = primary_with_a_blob(&source_dir, bytes, keys).await;
+    let target_dir = tempfile::tempdir().unwrap();
+    let (meta, blobs) = stores(&target_dir);
+    let views = Arc::new(Views::default());
+    let mut replica = replica(
+        meta,
+        blobs,
+        metadata(&server.url),
+        blob_transport(&server.url),
+        views.clone(),
+        Arc::new(ReplicaMonitor::new(0)),
+    );
+
+    assert!(replica.cycle().await.unwrap());
+    let committed = views.committed.lock().expect("the commit log is usable");
+    committed.clone()
+}
+
+/// A journal record carries the rows and the blob references of one serial together, so a replica
+/// already holds the association between a blob it just fetched and the resources whose records named
+/// it. Nothing replicates the association, derives it from a locator this node may not hold, or carries
+/// it in the pull protocol.
+#[tokio::test]
+async fn test_a_committed_blob_carries_the_keys_its_record_named() {
+    let committed = committed_over_a_cycle(b"a-replicated-artifact", &["resource", "other"]).await;
+
+    assert_eq!(
+        committed,
+        vec![peryx_ha::BlobCommit {
+            digest: Digest::of(b"a-replicated-artifact").as_str().to_owned(),
+            keys: vec!["other".to_owned(), "resource".to_owned()],
+        }]
+    );
+}
+
+/// A record naming a blob and no row leaves the replica unable to say what the bytes belong to. The
+/// commit still reports, with no keys, so the applier retires the whole view rather than passing over a
+/// document that still reports the bytes as absent.
+#[tokio::test]
+async fn test_a_committed_blob_its_record_cannot_name_reports_no_keys() {
+    let committed = committed_over_a_cycle(b"an-unnamed-artifact", &[]).await;
+
+    assert_eq!(
+        committed,
+        vec![peryx_ha::BlobCommit {
+            digest: Digest::of(b"an-unnamed-artifact").as_str().to_owned(),
+            keys: Vec::new(),
         }]
     );
 }

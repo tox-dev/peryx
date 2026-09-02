@@ -28,6 +28,16 @@ pub enum DriverMutation {
     Delete { key: String },
 }
 
+impl DriverMutation {
+    /// The row this mutation names, whichever way it changed it.
+    #[must_use]
+    pub fn key(&self) -> &str {
+        match self {
+            Self::Put { key, .. } | Self::Delete { key } => key,
+        }
+    }
+}
+
 /// One appended record: an opaque `payload` and the rows and blobs it describes.
 ///
 /// Every writer shares this log, so a `payload` is a JSON object carrying a tag key that names the

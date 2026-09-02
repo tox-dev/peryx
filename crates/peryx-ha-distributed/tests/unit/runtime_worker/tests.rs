@@ -24,6 +24,13 @@ impl ReplicaViewApplier for Views {
         self.frontier.store(page.serial, Ordering::Relaxed);
     }
 
+    fn apply_blob_commit(&self, committed: &[peryx_ha::BlobCommit]) {
+        self.changed.fetch_add(
+            committed.iter().map(|commit| commit.keys.len()).sum(),
+            Ordering::Relaxed,
+        );
+    }
+
     fn readable_frontier(&self) -> u64 {
         self.frontier.load(Ordering::Relaxed)
     }
@@ -78,6 +85,11 @@ fn test_views_apply_pages_and_publish_the_frontier() {
         &["a".to_owned(), "b".to_owned()],
     );
     assert_eq!(views.changed.load(Ordering::Relaxed), 2);
+    views.apply_blob_commit(&[peryx_ha::BlobCommit {
+        digest: "sha256:beef".to_owned(),
+        keys: vec!["c".to_owned()],
+    }]);
+    assert_eq!(views.changed.load(Ordering::Relaxed), 3);
     assert_eq!(views.readable_frontier(), 7);
     views.publish_applied_frontier(11);
     assert_eq!(views.readable_frontier(), 11);
