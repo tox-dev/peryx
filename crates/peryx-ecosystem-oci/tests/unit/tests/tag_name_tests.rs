@@ -85,6 +85,7 @@ async fn test_library_prefixed_tag_list_rewrites_upstream_name_to_client_name() 
     let dir = tempfile::tempdir().unwrap();
     let settings = IndexSettings {
         library_prefix: LibraryPrefix::Always,
+        ..IndexSettings::default()
     };
     let (_state, app) = proxy_with_settings(&dir, &format!("{}/", server.uri()), settings);
 

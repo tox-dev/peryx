@@ -265,8 +265,18 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
     /// path and the token scope must both carry. Everything peryx stores or shows keeps the client's
     /// spelling.
     fn upstream_repo<'a>(&self, index: &str, client: &UpstreamClient, repo: &'a str) -> Cow<'a, str> {
-        let prefix = self.settings.get(index).copied().unwrap_or_default().library_prefix;
+        let prefix = self.index_settings(index).library_prefix;
         crate::settings::upstream_repo(prefix, client.base_url(), repo)
+    }
+
+    /// The token-realm origins the index `index` discloses its upstream credentials to.
+    fn token_realms(&self, index: &str) -> crate::TokenRealms {
+        self.index_settings(index).token_realms
+    }
+
+    /// An index the composition root compiled no `[index.settings]` table for takes the defaults.
+    fn index_settings(&self, index: &str) -> IndexSettings {
+        self.settings.get(index).cloned().unwrap_or_default()
     }
 
     fn random_session() -> Result<String, ServeError> {

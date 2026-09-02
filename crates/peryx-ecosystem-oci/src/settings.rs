@@ -11,6 +11,8 @@ use std::borrow::Cow;
 
 use toml::{Table, Value};
 
+use crate::realm::{TOKEN_REALMS, TokenRealms};
+
 /// The hosts that mean Docker Hub. `docker.io` is what a user writes, `index.docker.io` the name the
 /// v1 API answered on, `registry-1.docker.io` the registry the v2 API actually serves from.
 const DOCKER_HUB_HOSTS: [&str; 3] = ["docker.io", "index.docker.io", "registry-1.docker.io"];
@@ -18,26 +20,34 @@ const DOCKER_HUB_HOSTS: [&str; 3] = ["docker.io", "index.docker.io", "registry-1
 const LIBRARY_PREFIX: &str = "library_prefix";
 
 /// One OCI index's settings, compiled from its `[index.settings]` table.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct IndexSettings {
     pub library_prefix: LibraryPrefix,
+    pub token_realms: TokenRealms,
 }
 
 impl IndexSettings {
     /// # Errors
     /// Returns a user-visible message when a key is unknown to this ecosystem or a value is invalid.
     pub fn compile(settings: &Table) -> Result<Self, String> {
-        if let Some(key) = settings.keys().find(|key| key.as_str() != LIBRARY_PREFIX) {
+        if let Some(key) = settings
+            .keys()
+            .find(|key| !matches!(key.as_str(), LIBRARY_PREFIX | TOKEN_REALMS))
+        {
             return Err(format!("unknown field `{key}` in `[index.settings]`"));
         }
-        settings.get(LIBRARY_PREFIX).map_or_else(
-            || Ok(Self::default()),
-            |value| {
-                Ok(Self {
-                    library_prefix: LibraryPrefix::parse(value)?,
-                })
-            },
-        )
+        Ok(Self {
+            library_prefix: settings
+                .get(LIBRARY_PREFIX)
+                .map(LibraryPrefix::parse)
+                .transpose()?
+                .unwrap_or_default(),
+            token_realms: settings
+                .get(TOKEN_REALMS)
+                .map(TokenRealms::parse)
+                .transpose()?
+                .unwrap_or_default(),
+        })
     }
 }
 

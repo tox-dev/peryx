@@ -138,7 +138,12 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         }
         match self
             .upstream
-            .tags(client, &self.upstream_repo(index, client, repo), query)
+            .tags(
+                client,
+                &self.upstream_repo(index, client, repo),
+                query,
+                &self.token_realms(index),
+            )
             .await
         {
             Ok(response) => {
@@ -325,7 +330,12 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         }
         let digest = match self
             .upstream
-            .manifest_digest(client, &self.upstream_repo(index, client, repo), tag)
+            .manifest_digest(
+                client,
+                &self.upstream_repo(index, client, repo),
+                tag,
+                &self.token_realms(index),
+            )
             .await
         {
             Ok(Some(digest)) => digest,
@@ -365,12 +375,21 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
             return Ok(manifests);
         }
         let upstream_repo = self.upstream_repo(index, client, repo);
-        let manifests = match self.upstream.referrers(client, &upstream_repo, digest).await {
+        let manifests = match self
+            .upstream
+            .referrers(client, &upstream_repo, digest, &self.token_realms(index))
+            .await
+        {
             Ok(response) => referrer_manifests(response, ReferrerSource::Native).await?,
             Err(crate::upstream::UpstreamError::Status(StatusCode::NOT_FOUND)) => {
                 match self
                     .upstream
-                    .manifest(client, &upstream_repo, &crate::name::referrers_tag(digest))
+                    .manifest(
+                        client,
+                        &upstream_repo,
+                        &crate::name::referrers_tag(digest),
+                        &self.token_realms(index),
+                    )
                     .await
                 {
                     Ok(response) => referrer_manifests(response, ReferrerSource::Fallback).await?,

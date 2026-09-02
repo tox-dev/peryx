@@ -81,15 +81,33 @@ blobs within `max_stale_secs` past the freshness window, the same bound used whe
 With an expired upstream credential, cached content remains available within `max_stale_secs`; uncached content returns
 `401`, and logs include the upstream status.
 
-## HTTPS token realms
+## Trusted token realms
 
 The upstream `401` names its token realm in the `WWW-Authenticate` header, and peryx follows it to trade the index's
 credentials for a bearer token. When those credentials are a `username`/`password` pair, peryx sends them as Basic
-authentication, so a realm reached over plain `http` would put the secret on the wire in cleartext. A hostile or
-compromised upstream that answers with `realm="http://attacker/token"` could harvest the mirror's credentials that way,
-even over a TLS-valid connection to the registry itself.
+authentication. The registry picks the realm, so a hostile or compromised upstream that answers with
+`realm="https://attacker.example/token"` would be handing itself the mirror's credentials, over a TLS-valid connection
+to a registry the operator trusts for everything else.
 
-peryx refuses to present Basic credentials to a token realm unless its scheme is `https`. The realm host is not
-constrained: Docker Hub advertises `auth.docker.io`, a different host from the registry, and that stays valid. Every
-token servers should use `https`. A loopback realm (`localhost`) is the only `http` exception because the credentials
-remain on the machine.
+peryx presents those credentials only to the upstream's own origin or to an origin the operator named in
+[`[index.settings].token_realms`](@/ecosystems/oci/reference/settings.md). Docker Hub authenticates at `auth.docker.io`,
+a different host from `registry-1.docker.io`, so an authenticated Hub proxy lists it:
+
+```toml
+[index.settings]
+token_realms = ["https://auth.docker.io"]
+```
+
+Any other realm is still contacted, because that is how a public registry issues an anonymous pull token, but the
+request carries no credentials and each redirect hop is checked again before the next one can receive them. An anonymous
+Hub proxy needs no entry at all.
+
+A realm that then answers `401` names the origin the credentials were withheld from, so a missing `token_realms` entry
+reads as itself rather than as a wrong password:
+
+```text
+bearer realm https://auth.docker.io is not a trusted token realm for this upstream, so the token request
+carried no credentials; add it to `token_realms` to authenticate there
+```
+
+Reaching a realm on a private address is a separate permission that belongs to the upstream's `trusted_hosts`.

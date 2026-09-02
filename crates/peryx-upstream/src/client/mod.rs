@@ -114,6 +114,9 @@ pub struct UpstreamClient {
     bulk: reqwest::Client,
     cross_origin_http: reqwest::Client,
     cross_origin_bulk: reqwest::Client,
+    /// Stops at a redirect so a caller that discloses a credential rules on the next hop itself.
+    no_redirect: reqwest::Client,
+    cross_origin_no_redirect: reqwest::Client,
     base: Url,
     credentials: CredentialProvider,
     guard: OutboundGuard,
@@ -363,31 +366,46 @@ impl UpstreamClient {
         )
         .http1_only()
         .build()?;
-        let (cross_origin_http, cross_origin_bulk) = if matches!((include_identity, tls.has_identity()), (true, true)) {
-            (
-                configure_http_client(
-                    tls.apply(reqwest::Client::builder(), false),
-                    guarded_redirect_policy(&base, tls, false, &guard),
-                    &guard,
+        let no_redirect = configure_http_client(
+            tls.apply(reqwest::Client::builder(), include_identity),
+            reqwest::redirect::Policy::none(),
+            &guard,
+        )
+        .build()?;
+        let (cross_origin_http, cross_origin_bulk, cross_origin_no_redirect) =
+            if matches!((include_identity, tls.has_identity()), (true, true)) {
+                (
+                    configure_http_client(
+                        tls.apply(reqwest::Client::builder(), false),
+                        guarded_redirect_policy(&base, tls, false, &guard),
+                        &guard,
+                    )
+                    .http2_adaptive_window(true)
+                    .build()?,
+                    configure_http_client(
+                        tls.apply(reqwest::Client::builder(), false),
+                        guarded_redirect_policy(&base, tls, false, &guard),
+                        &guard,
+                    )
+                    .http1_only()
+                    .build()?,
+                    configure_http_client(
+                        tls.apply(reqwest::Client::builder(), false),
+                        reqwest::redirect::Policy::none(),
+                        &guard,
+                    )
+                    .build()?,
                 )
-                .http2_adaptive_window(true)
-                .build()?,
-                configure_http_client(
-                    tls.apply(reqwest::Client::builder(), false),
-                    guarded_redirect_policy(&base, tls, false, &guard),
-                    &guard,
-                )
-                .http1_only()
-                .build()?,
-            )
-        } else {
-            (http.clone(), bulk.clone())
-        };
+            } else {
+                (http.clone(), bulk.clone(), no_redirect.clone())
+            };
         Ok(Self {
             http,
             bulk,
             cross_origin_http,
             cross_origin_bulk,
+            no_redirect,
+            cross_origin_no_redirect,
             base,
             credentials,
             guard,
@@ -421,6 +439,14 @@ impl UpstreamClient {
         }
     }
 
+    fn no_redirect(&self, url: &Url) -> &reqwest::Client {
+        if same_origin(&self.base, url) {
+            &self.no_redirect
+        } else {
+            &self.cross_origin_no_redirect
+        }
+    }
+
     /// Builds a guarded request without attaching configured credentials. Protocol drivers with
     /// their own authentication exchange can add credentials at that boundary.
     ///
@@ -435,6 +461,21 @@ impl UpstreamClient {
         let url = Url::parse(url)?;
         self.guard.check_url(&url)?;
         Ok(self.http(&url).request(method, url))
+    }
+
+    /// Builds a guarded request that hands a redirect back instead of following it. A driver that
+    /// attaches a credential of its own decides per hop whether the next destination may receive
+    /// one, rather than delegating that to a redirect policy which cannot see the credential.
+    ///
+    /// # Errors
+    /// Returns [`UpstreamError::BlockedDestination`] for a disallowed destination.
+    pub fn request_without_auth_or_redirects(
+        &self,
+        method: reqwest::Method,
+        url: &Url,
+    ) -> Result<reqwest::RequestBuilder, UpstreamError> {
+        self.guard.check_url(url)?;
+        Ok(self.no_redirect(url).request(method, url.clone()))
     }
 
     /// Opens a connection before traffic so the first request skips TCP and TLS handshakes.

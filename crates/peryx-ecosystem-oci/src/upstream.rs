@@ -6,7 +6,6 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,6 +18,8 @@ use peryx_upstream::{
 use reqwest::Response;
 use tokio::sync::{Mutex, broadcast};
 use tokio::time::{Instant, timeout_at};
+
+use crate::realm::TokenRealms;
 
 const TOKEN_FLIGHT_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -48,6 +49,15 @@ struct TokenCacheKey {
     base: String,
     scope: String,
     provider: CredentialProviderId,
+}
+
+/// What one token exchange needs beyond its cache key: the challenge to trade, the provider that can
+/// replace a rejected credential, the snapshot in hand, and the realms it may be shown to.
+struct TokenExchange<'a> {
+    challenge: &'a Bearer,
+    credentials: &'a CredentialProvider,
+    credential: &'a Arc<CredentialSnapshot>,
+    realms: &'a TokenRealms,
 }
 
 #[derive(Debug)]
@@ -150,9 +160,11 @@ impl Upstream {
         client: &UpstreamClient,
         repo: &str,
         reference: &str,
+        realms: &TokenRealms,
     ) -> Result<Response, UpstreamError> {
         let url = format!("{}v2/{repo}/manifests/{reference}", client.base_url());
-        self.send(Method::GET, client, &url, repo, Some(ACCEPT_MANIFESTS)).await
+        self.send(Method::GET, client, &url, repo, Some(ACCEPT_MANIFESTS), realms)
+            .await
     }
 
     /// Ask what a tag points at, without asking for what it points at.
@@ -168,10 +180,11 @@ impl Upstream {
         client: &UpstreamClient,
         repo: &str,
         reference: &str,
+        realms: &TokenRealms,
     ) -> Result<Option<String>, UpstreamError> {
         let url = format!("{}v2/{repo}/manifests/{reference}", client.base_url());
         let response = self
-            .send(Method::HEAD, client, &url, repo, Some(ACCEPT_MANIFESTS))
+            .send(Method::HEAD, client, &url, repo, Some(ACCEPT_MANIFESTS), realms)
             .await?;
         Ok(response
             .headers()
@@ -182,9 +195,15 @@ impl Upstream {
 
     /// # Errors
     /// Returns [`UpstreamError`] on a non-success status or a transport failure.
-    pub async fn blob(&self, client: &UpstreamClient, repo: &str, digest: &str) -> Result<Response, UpstreamError> {
+    pub async fn blob(
+        &self,
+        client: &UpstreamClient,
+        repo: &str,
+        digest: &str,
+        realms: &TokenRealms,
+    ) -> Result<Response, UpstreamError> {
         let url = format!("{}v2/{repo}/blobs/{digest}", client.base_url());
-        self.send(Method::GET, client, &url, repo, None).await
+        self.send(Method::GET, client, &url, repo, None, realms).await
     }
 
     /// Check a blob's existence and size with a `HEAD`, so a client's pre-flight `HEAD` need not pull
@@ -197,9 +216,10 @@ impl Upstream {
         client: &UpstreamClient,
         repo: &str,
         digest: &str,
+        realms: &TokenRealms,
     ) -> Result<Option<u64>, UpstreamError> {
         let url = format!("{}v2/{repo}/blobs/{digest}", client.base_url());
-        let response = self.send(Method::HEAD, client, &url, repo, None).await?;
+        let response = self.send(Method::HEAD, client, &url, repo, None, realms).await?;
         Ok(response
             .headers()
             .get(reqwest::header::CONTENT_LENGTH)
@@ -214,6 +234,7 @@ impl Upstream {
         client: &UpstreamClient,
         repo: &str,
         digest: &str,
+        realms: &TokenRealms,
     ) -> Result<Response, UpstreamError> {
         let url = format!("{}v2/{repo}/referrers/{digest}", client.base_url());
         self.send(
@@ -222,27 +243,34 @@ impl Upstream {
             &url,
             repo,
             Some("application/vnd.oci.image.index.v1+json"),
+            realms,
         )
         .await
     }
 
     /// # Errors
     /// Returns [`UpstreamError`] on a non-success status or a transport failure.
-    pub async fn tags(&self, client: &UpstreamClient, repo: &str, query: &str) -> Result<Response, UpstreamError> {
+    pub async fn tags(
+        &self,
+        client: &UpstreamClient,
+        repo: &str,
+        query: &str,
+        realms: &TokenRealms,
+    ) -> Result<Response, UpstreamError> {
         let mut url = format!("{}v2/{repo}/tags/list", client.base_url());
         if !query.is_empty() {
             url.push('?');
             url.push_str(query);
         }
-        self.send(Method::GET, client, &url, repo, None).await
+        self.send(Method::GET, client, &url, repo, None, realms).await
     }
 
     /// Send `method` with the token-auth flow: attach a cached token if any, and on a `401` carrying a
     /// bearer challenge, trade the configured credentials for a fresh token, cache it, and replay once.
     /// The token cache is keyed by `(base, scope, provider)` and records the credential generation.
     /// One provider reuses a token until its credentials rotate; distinct providers cannot exchange
-    /// tokens even when their current secret text matches. Credentials only reach the token realm,
-    /// never the registry object endpoint or a blob CDN redirect.
+    /// tokens even when their current secret text matches. Credentials only reach a token realm the
+    /// operator trusts, never the registry object endpoint or a blob CDN redirect.
     async fn send(
         &self,
         method: Method,
@@ -250,6 +278,7 @@ impl Upstream {
         url: &str,
         repo: &str,
         accept: Option<&str>,
+        realms: &TokenRealms,
     ) -> Result<Response, UpstreamError> {
         let scope = format!("repository:{repo}:pull");
         let credentials = client.auth();
@@ -268,15 +297,14 @@ impl Upstream {
         else {
             return finish(response);
         };
+        let exchange = TokenExchange {
+            challenge: &challenge,
+            credentials,
+            credential: &credential,
+            realms,
+        };
         let token = self
-            .acquire_token(
-                client,
-                &cache_key,
-                cached.as_deref(),
-                &challenge,
-                credentials,
-                &credential,
-            )
+            .acquire_token(client, &cache_key, cached.as_deref(), &exchange)
             .await?;
         finish(self.attempt(client, &method, url, accept, Some(&token)).await?)
     }
@@ -290,9 +318,7 @@ impl Upstream {
         client: &UpstreamClient,
         cache_key: &TokenCacheKey,
         rejected_token: Option<&str>,
-        challenge: &Bearer,
-        credentials: &CredentialProvider,
-        credential: &Arc<CredentialSnapshot>,
+        exchange: &TokenExchange<'_>,
     ) -> Result<String, UpstreamError> {
         let deadline = Instant::now() + self.token_flight_timeout;
         loop {
@@ -302,7 +328,7 @@ impl Upstream {
                     sender.subscribe()
                 } else {
                     if let Some(token) = self
-                        .cached_token(cache_key, credential)
+                        .cached_token(cache_key, exchange.credential)
                         .await
                         .filter(|token| Some(token.as_str()) != rejected_token)
                     {
@@ -311,13 +337,10 @@ impl Upstream {
                     let (sender, _) = broadcast::channel(1);
                     inflight.insert(cache_key.clone(), sender.clone());
                     drop(inflight);
-                    let result = timeout_at(
-                        deadline,
-                        self.exchange(client, &cache_key.scope, challenge, credentials, credential.clone()),
-                    )
-                    .await
-                    .map_err(|_| UpstreamError::Transport("token exchange timed out".to_owned()))
-                    .and_then(|result| result);
+                    let result = timeout_at(deadline, self.exchange(client, &cache_key.scope, exchange))
+                        .await
+                        .map_err(|_| UpstreamError::Transport("token exchange timed out".to_owned()))
+                        .and_then(|result| result);
                     self.inflight.lock().await.remove(cache_key);
                     if let Ok(token) = &result {
                         let _ = sender.send(token.clone());
@@ -346,20 +369,23 @@ impl Upstream {
         &self,
         client: &UpstreamClient,
         scope: &str,
-        challenge: &Bearer,
-        credentials: &CredentialProvider,
-        mut credential: Arc<CredentialSnapshot>,
+        exchange: &TokenExchange<'_>,
     ) -> Result<String, UpstreamError> {
+        let mut credential = Arc::clone(exchange.credential);
         let mut auth = credential.auth();
-        let token = match self.fetch_token(client, challenge, scope, auth).await {
+        let token = match self
+            .fetch_token(client, exchange.challenge, scope, auth, exchange.realms)
+            .await
+        {
             Err(UpstreamError::Status(StatusCode::UNAUTHORIZED)) => {
                 let generation = credential.generation();
-                credential = credentials.refresh_after_unauthorized(generation).await?;
+                credential = exchange.credentials.refresh_after_unauthorized(generation).await?;
                 if credential.generation() == generation {
                     return Err(UpstreamError::Status(StatusCode::UNAUTHORIZED));
                 }
                 auth = credential.auth();
-                self.fetch_token(client, challenge, scope, auth).await?
+                self.fetch_token(client, exchange.challenge, scope, auth, exchange.realms)
+                    .await?
             }
             result => result?,
         };
@@ -393,25 +419,22 @@ impl Upstream {
 
     /// Trade a bearer challenge for a token at its realm, presenting the configured credentials so the
     /// realm returns an authenticated token (Docker Hub's higher rate tier) rather than an anonymous one.
+    ///
+    /// The challenge picks the destination, so the credentials go only to an origin the operator
+    /// configured: the upstream's own, or one named in `realms`. Any other realm is still contacted —
+    /// a public registry issues anonymous pull tokens — but without the secret. Redirects are followed
+    /// here rather than by the transport, so each hop is ruled on before it can receive one.
     async fn fetch_token(
         &self,
         client: &UpstreamClient,
         challenge: &Bearer,
         scope: &str,
         auth: &Auth,
+        realms: &TokenRealms,
     ) -> Result<String, UpstreamError> {
         let scope = challenge.scope.as_deref().unwrap_or(scope);
         let mut url = url::Url::parse(&challenge.realm)
             .map_err(|err| UpstreamError::Transport(format!("invalid bearer realm: {err}")))?;
-        if let Auth::Basic { .. } = auth
-            && url.scheme() != "https"
-            && !realm_host_is_loopback(&url)
-        {
-            return Err(UpstreamError::Transport(format!(
-                "insecure bearer realm {}: refusing to send Basic credentials over cleartext",
-                challenge.realm
-            )));
-        }
         {
             let mut query = url.query_pairs_mut();
             query.append_pair("scope", scope);
@@ -419,19 +442,61 @@ impl Upstream {
                 query.append_pair("service", service);
             }
         }
-        let mut request = client.request_without_auth(Method::GET, url.as_str())?;
-        if let Auth::Basic { username, password } = auth {
-            request = request.basic_auth(username, Some(password));
+        for _ in 0..=MAX_TOKEN_REALM_REDIRECTS {
+            let mut request = client.request_without_auth_or_redirects(Method::GET, &url)?;
+            let withheld = match auth {
+                Auth::Basic { username, password } if realms.allows(client.base(), &url) => {
+                    request = request.basic_auth(username, Some(password));
+                    None
+                }
+                Auth::Basic { .. } => Some(url.origin().ascii_serialization()),
+                Auth::None | Auth::Bearer(_) => None,
+            };
+            let response = request.send().await?;
+            let status = response.status();
+            if let Some(location) = redirect_target(&response) {
+                url = url
+                    .join(location)
+                    .map_err(|err| UpstreamError::Transport(format!("invalid bearer realm redirect: {err}")))?;
+                continue;
+            }
+            if status == StatusCode::UNAUTHORIZED
+                && let Some(origin) = withheld
+            {
+                return Err(UpstreamError::Transport(format!(
+                    "bearer realm {origin} is not a trusted token realm for this upstream, so the token \
+                     request carried no credentials; add it to `token_realms` to authenticate there"
+                )));
+            }
+            if !status.is_success() {
+                return Err(UpstreamError::Status(status));
+            }
+            let body: TokenResponse = serde_json::from_slice(&read_capped(response).await?)?;
+            return body
+                .token
+                .or(body.access_token)
+                .ok_or_else(|| UpstreamError::Transport("token endpoint returned no token".to_owned()));
         }
-        let response = request.send().await?;
-        if !response.status().is_success() {
-            return Err(UpstreamError::Status(response.status()));
-        }
-        let body: TokenResponse = serde_json::from_slice(&read_capped(response).await?)?;
-        body.token
-            .or(body.access_token)
-            .ok_or_else(|| UpstreamError::Transport("token endpoint returned no token".to_owned()))
+        Err(UpstreamError::Transport(format!(
+            "bearer realm redirected more than {MAX_TOKEN_REALM_REDIRECTS} times"
+        )))
     }
+}
+
+/// How many redirects a token realm may take before the exchange gives up. A token endpoint answers
+/// with its JSON directly; the allowance exists so a registry that fronts its authorization service
+/// behind one still works, not so a challenge can walk the client around the network.
+const MAX_TOKEN_REALM_REDIRECTS: usize = 3;
+
+/// The `Location` of a redirect response, or `None` for any other response.
+fn redirect_target(response: &Response) -> Option<&str> {
+    if !response.status().is_redirection() {
+        return None;
+    }
+    response
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|value| value.to_str().ok())
 }
 
 /// The largest token-endpoint response the client reads. A bearer token runs a few hundred bytes, so
@@ -452,15 +517,6 @@ async fn read_capped(mut response: Response) -> Result<Vec<u8>, UpstreamError> {
         body.extend_from_slice(&chunk);
     }
     Ok(body)
-}
-
-/// Whether the realm host is a loopback address, the one `http` case where Basic credentials stay on
-/// the machine rather than going out in cleartext. A local or dev registry served over `http` on
-/// `localhost` keeps working; only a routable `http` realm is refused.
-fn realm_host_is_loopback(url: &url::Url) -> bool {
-    url.host_str().is_some_and(|host| {
-        host.eq_ignore_ascii_case("localhost") || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
-    })
 }
 
 fn token_cache_key(base: &str, scope: &str, provider: CredentialProviderId) -> TokenCacheKey {

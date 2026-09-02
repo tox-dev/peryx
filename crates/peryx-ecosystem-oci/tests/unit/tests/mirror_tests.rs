@@ -1232,6 +1232,7 @@ async fn test_mirror_pulls_a_single_segment_name_under_the_library_prefix() {
     let (state, app) = proxy(&dir, &format!("{}/", server.uri()), false);
     let settings = IndexSettings {
         library_prefix: crate::LibraryPrefix::Always,
+        ..IndexSettings::default()
     };
     let rows = mirror_with(
         &state.serving,

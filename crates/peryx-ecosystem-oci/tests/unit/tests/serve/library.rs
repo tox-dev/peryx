@@ -3,7 +3,10 @@ use crate::{IndexSettings, LibraryPrefix};
 use wiremock::matchers::query_param;
 
 fn settings(library_prefix: LibraryPrefix) -> IndexSettings {
-    IndexSettings { library_prefix }
+    IndexSettings {
+        library_prefix,
+        ..IndexSettings::default()
+    }
 }
 
 #[tokio::test]

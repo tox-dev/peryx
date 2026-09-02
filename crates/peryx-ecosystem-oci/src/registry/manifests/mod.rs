@@ -236,7 +236,12 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
     ) -> Result<Option<Response>, ServeError> {
         let response = match self
             .upstream
-            .manifest(client, &self.upstream_repo(index, client, repo), digest)
+            .manifest(
+                client,
+                &self.upstream_repo(index, client, repo),
+                digest,
+                &self.token_realms(index),
+            )
             .await
         {
             Ok(response) => response,
@@ -303,7 +308,12 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
     ) -> Result<Option<Response>, ServeError> {
         let upstream = self
             .upstream
-            .manifest_digest(client, &self.upstream_repo(index, client, repo), tag)
+            .manifest_digest(
+                client,
+                &self.upstream_repo(index, client, repo),
+                tag,
+                &self.token_realms(index),
+            )
             .await
             .ok()
             .flatten();
@@ -317,7 +327,12 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
         }
         match self
             .upstream
-            .manifest(client, &self.upstream_repo(index, client, repo), tag)
+            .manifest(
+                client,
+                &self.upstream_repo(index, client, repo),
+                tag,
+                &self.token_realms(index),
+            )
             .await
         {
             Ok(response) => Ok(Some(

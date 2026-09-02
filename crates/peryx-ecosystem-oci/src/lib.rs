@@ -85,6 +85,7 @@ pub mod openapi;
 mod outbox;
 mod policy;
 mod quota;
+mod realm;
 pub(crate) mod registry;
 mod search_oci;
 mod settings;
@@ -101,6 +102,7 @@ pub use error::{ErrorCode, error_response, gateway_error};
 pub use mirror::{MirrorMode, MirrorRow, mirror};
 pub use outbox::OciMutation;
 pub use quota::quota_reservation;
+pub use realm::TokenRealms;
 pub use registry::OciRegistry;
 #[doc(hidden)]
 pub use registry::OciRegistryWithHasher;
@@ -130,7 +132,9 @@ impl OciInstaller {
             return None;
         }
         let driver = Arc::new(OciRegistry::new(
-            self.settings.iter().map(|(name, settings)| (name.clone(), *settings)),
+            self.settings
+                .iter()
+                .map(|(name, settings)| (name.clone(), settings.clone())),
             self.journal_outbox,
         ));
         context.register_service(driver.clone());
@@ -501,7 +505,7 @@ fn install_compiled(
 ) -> Result<Option<Arc<OciRegistry>>, String> {
     let mut compiled = Vec::with_capacity(settings.len());
     for (name, settings) in settings {
-        let Some(settings) = settings.value::<IndexSettings>().copied() else {
+        let Some(settings) = settings.value::<IndexSettings>().cloned() else {
             return Err(format!("compiled settings for {name} have the wrong type"));
         };
         compiled.push(((*name).to_owned(), settings));

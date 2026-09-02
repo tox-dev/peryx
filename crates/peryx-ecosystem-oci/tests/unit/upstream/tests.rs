@@ -80,6 +80,18 @@ fn credentials(auth: Auth) -> CredentialProvider {
     CredentialProvider::fixed(auth)
 }
 
+fn basic_header(username: &str, password: &str) -> String {
+    format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode(format!("{username}:{password}"))
+    )
+}
+
+fn configured_realms(origins: &[&str]) -> TokenRealms {
+    let entries = origins.iter().map(|origin| toml::Value::from(*origin)).collect();
+    TokenRealms::parse(&toml::Value::Array(entries)).unwrap()
+}
+
 fn upstream_client(base: &str, credentials: CredentialProvider) -> UpstreamClient {
     UpstreamClient::with_credentials_and_tls_for_origin(base, credentials, &UpstreamTls::default(), base, &[]).unwrap()
 }
@@ -125,6 +137,7 @@ async fn assert_manifest_authenticates(server: &MockServer, base: &str) {
             &upstream_client(base, credentials(Auth::None)),
             "library/nginx",
             "latest",
+            &TokenRealms::default(),
         )
         .await
         .unwrap();
@@ -171,6 +184,7 @@ async fn test_manifest_selects_bearer_from_combined_challenges() {
             &upstream_client(&base, credentials(Auth::None)),
             "library/nginx",
             "latest",
+            &TokenRealms::default(),
         )
         .await
         .unwrap();
@@ -238,6 +252,7 @@ async fn test_fetch_token_rejects_an_oversized_response() {
             &upstream_client(&base, credentials(Auth::None)),
             "library/nginx",
             "latest",
+            &TokenRealms::default(),
         )
         .await
         .unwrap_err();
@@ -315,6 +330,7 @@ async fn test_manifest_rejects_malformed_bearer_parameters(#[case] challenge: &s
             &upstream_client(&base, credentials(Auth::None)),
             "library/nginx",
             "latest",
+            &TokenRealms::default(),
         )
         .await;
 
@@ -337,6 +353,7 @@ async fn test_manifest_rejects_an_invalid_bearer_realm() {
             &upstream_client(&base, credentials(Auth::None)),
             "library/nginx",
             "latest",
+            &TokenRealms::default(),
         )
         .await;
 
@@ -362,6 +379,7 @@ async fn test_manifest_blocks_a_private_bearer_realm() {
             &upstream_client(&base, credentials(Auth::None)),
             "library/nginx",
             "latest",
+            &TokenRealms::default(),
         )
         .await
         .unwrap_err();
@@ -395,6 +413,7 @@ async fn test_manifest_blocks_redirects_to_private_destinations(#[case] location
             &upstream_client(&base, credentials(Auth::None)),
             "library/nginx",
             "latest",
+            &TokenRealms::default(),
         )
         .await
         .unwrap_err();
@@ -417,7 +436,11 @@ async fn test_manifest_has_the_shared_read_deadline() {
         request_seen_tx.send(()).unwrap();
         let _ = release_rx.await;
     });
-    let request = tokio::spawn(async move { Upstream::new().manifest(&client, "library/nginx", "latest").await });
+    let request = tokio::spawn(async move {
+        Upstream::new()
+            .manifest(&client, "library/nginx", "latest", &TokenRealms::default())
+            .await
+    });
     request_seen_rx.await.unwrap();
     tokio::time::pause();
     assert!(!request.is_finished());
@@ -428,58 +451,366 @@ async fn test_manifest_has_the_shared_read_deadline() {
     server.await.unwrap();
 }
 
+/// A realm the operator did not name receives the token request but not the secret.
+async fn assert_token_request_is_anonymous(server: &MockServer, auth: &MockServer, client: &UpstreamClient) {
+    Mock::given(method("GET"))
+        .and(path("/v2/library/nginx/manifests/latest"))
+        .and(Unauthenticated)
+        .respond_with(challenge(&format!("{}/", auth.uri())))
+        .expect(1)
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/token"))
+        .and(Unauthenticated)
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"token":"tok"}"#))
+        .expect(1)
+        .mount(auth)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v2/library/nginx/manifests/latest"))
+        .and(match_header("authorization", "Bearer tok"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(server)
+        .await;
+
+    let response = Upstream::new()
+        .manifest(client, "library/nginx", "latest", &TokenRealms::default())
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[rstest]
+#[case::basic(Auth::Basic { username: "alice".to_owned(), password: "pw".to_owned() })]
+#[case::bearer(Auth::Bearer("configured".to_owned()))]
 #[tokio::test]
-async fn test_fetch_token_refuses_basic_credentials_to_a_cleartext_realm() {
+async fn test_fetch_token_withholds_credentials_from_an_untrusted_realm_origin(#[case] auth: Auth) {
+    let server = MockServer::start().await;
+    let realm = MockServer::start().await;
+    let client = upstream_client(&format!("{}/", server.uri()), credentials(auth));
+
+    assert_token_request_is_anonymous(&server, &realm, &client).await;
+}
+
+#[tokio::test]
+async fn test_fetch_token_sends_basic_credentials_to_the_upstream_origin() {
     let server = MockServer::start().await;
     let base = format!("{}/", server.uri());
     Mock::given(method("GET"))
         .and(path("/v2/library/nginx/manifests/latest"))
-        .respond_with(ResponseTemplate::new(401).insert_header(
-            "www-authenticate",
-            r#"Bearer realm="http://token.registry.example/token",service=reg"#,
-        ))
+        .and(Unauthenticated)
+        .respond_with(challenge(&base))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/token"))
+        .and(match_header("authorization", basic_header("alice", "pw").as_str()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"token":"tok"}"#))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v2/library/nginx/manifests/latest"))
+        .and(match_header("authorization", "Bearer tok"))
+        .respond_with(ResponseTemplate::new(200))
         .expect(1)
         .mount(&server)
         .await;
 
-    let result = Upstream::new()
+    // The upstream is reached over cleartext here, which is the case a `localhost` registry serves.
+    let response = Upstream::new()
         .manifest(
             &upstream_client(&base, credentials(basic("alice", "pw"))),
             "library/nginx",
             "latest",
+            &TokenRealms::default(),
         )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_fetch_token_sends_basic_credentials_to_a_configured_realm_origin() {
+    let server = MockServer::start().await;
+    let realm = MockServer::start().await;
+    let base = format!("{}/", server.uri());
+    Mock::given(method("GET"))
+        .and(path("/v2/library/nginx/manifests/latest"))
+        .and(Unauthenticated)
+        .respond_with(challenge(&format!("{}/", realm.uri())))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/token"))
+        .and(match_header("authorization", basic_header("alice", "pw").as_str()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"token":"tok"}"#))
+        .expect(1)
+        .mount(&realm)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v2/library/nginx/manifests/latest"))
+        .and(match_header("authorization", "Bearer tok"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
         .await;
 
-    assert!(
-        matches!(&result, Err(UpstreamError::Transport(message)) if message.starts_with("insecure bearer realm")),
-        "expected a cleartext-realm refusal, got {result:?}"
+    // Docker Hub's shape: the authorization service answers on an origin of its own.
+    let response = Upstream::new()
+        .manifest(
+            &upstream_client(&base, credentials(basic("alice", "pw"))),
+            "library/nginx",
+            "latest",
+            &configured_realms(&[&realm.uri()]),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_fetch_token_names_the_untrusted_realm_origin_it_withheld_from() {
+    let server = MockServer::start().await;
+    let realm = MockServer::start().await;
+    let base = format!("{}/", server.uri());
+    Mock::given(method("GET"))
+        .and(path("/v2/library/nginx/manifests/latest"))
+        .and(Unauthenticated)
+        .respond_with(challenge(&format!("{}/", realm.uri())))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/token"))
+        .and(Unauthenticated)
+        .respond_with(ResponseTemplate::new(401))
+        .expect(1)
+        .mount(&realm)
+        .await;
+
+    let error = Upstream::new()
+        .manifest(
+            &upstream_client(&base, credentials(basic("alice", "pw"))),
+            "library/nginx",
+            "latest",
+            &TokenRealms::default(),
+        )
+        .await
+        .unwrap_err();
+
+    // Only the origin, so the message carries neither the realm path nor the requested scope.
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "bearer realm {} is not a trusted token realm for this upstream, so the token request \
+             carried no credentials; add it to `token_realms` to authenticate there",
+            realm.uri()
+        )
     );
 }
 
 #[tokio::test]
-async fn test_fetch_token_allows_basic_credentials_to_an_https_realm_on_another_host() {
+async fn test_fetch_token_drops_credentials_on_a_redirect_to_another_origin() {
+    let server = MockServer::start().await;
+    let realm = MockServer::start().await;
+    let base = format!("{}/", server.uri());
+    Mock::given(method("GET"))
+        .and(path("/v2/library/nginx/manifests/latest"))
+        .and(Unauthenticated)
+        .respond_with(challenge(&base))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/token"))
+        .and(match_header("authorization", basic_header("alice", "pw").as_str()))
+        .respond_with(ResponseTemplate::new(302).insert_header("location", format!("{}/token", realm.uri()).as_str()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/token"))
+        .and(Unauthenticated)
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"token":"tok"}"#))
+        .expect(1)
+        .mount(&realm)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v2/library/nginx/manifests/latest"))
+        .and(match_header("authorization", "Bearer tok"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let response = Upstream::new()
+        .manifest(
+            &upstream_client(&base, credentials(basic("alice", "pw"))),
+            "library/nginx",
+            "latest",
+            &TokenRealms::default(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_fetch_token_keeps_credentials_across_a_redirect_within_the_trusted_origin() {
+    let server = MockServer::start().await;
+    let base = format!("{}/", server.uri());
+    let credential = basic_header("alice", "pw");
+    Mock::given(method("GET"))
+        .and(path("/v2/library/nginx/manifests/latest"))
+        .and(Unauthenticated)
+        .respond_with(challenge(&base))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/token"))
+        .and(match_header("authorization", credential.as_str()))
+        .respond_with(ResponseTemplate::new(302).insert_header("location", "/auth/token"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/auth/token"))
+        .and(match_header("authorization", credential.as_str()))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"token":"tok"}"#))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v2/library/nginx/manifests/latest"))
+        .and(match_header("authorization", "Bearer tok"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let response = Upstream::new()
+        .manifest(
+            &upstream_client(&base, credentials(basic("alice", "pw"))),
+            "library/nginx",
+            "latest",
+            &TokenRealms::default(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[rstest]
+#[case::private_literal("http://169.254.169.254/token", "169.254.169.254 is not a public address")]
+#[case::resolves_to_loopback(
+    "http://localhost:9/token",
+    "host resolves only to non-public addresses; configure `trusted_hosts` to allow it"
+)]
+#[case::unparseable("http://[", "invalid bearer realm redirect")]
+#[tokio::test]
+async fn test_fetch_token_rejects_a_realm_redirect_off_the_public_internet(
+    #[case] location: &str,
+    #[case] reason: &str,
+) {
     let server = MockServer::start().await;
     let base = format!("{}/", server.uri());
     Mock::given(method("GET"))
         .and(path("/v2/library/nginx/manifests/latest"))
-        .respond_with(ResponseTemplate::new(401).insert_header(
-            "www-authenticate",
-            r#"Bearer realm="https://auth.example.invalid/token",service=reg"#,
-        ))
+        .and(Unauthenticated)
+        .respond_with(challenge(&base))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(302).insert_header("location", location))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let error = Upstream::new()
+        .manifest(
+            &upstream_client(&base, credentials(basic("alice", "pw"))),
+            "library/nginx",
+            "latest",
+            &TokenRealms::default(),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains(reason), "{error}");
+}
+
+#[tokio::test]
+async fn test_fetch_token_stops_a_realm_that_keeps_redirecting() {
+    let server = MockServer::start().await;
+    let base = format!("{}/", server.uri());
+    Mock::given(method("GET"))
+        .and(path("/v2/library/nginx/manifests/latest"))
+        .and(Unauthenticated)
+        .respond_with(challenge(&base))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(307).insert_header("location", "/token"))
+        .expect(4)
+        .mount(&server)
+        .await;
+
+    let error = Upstream::new()
+        .manifest(
+            &upstream_client(&base, credentials(Auth::None)),
+            "library/nginx",
+            "latest",
+            &TokenRealms::default(),
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.to_string(), "bearer realm redirected more than 3 times");
+}
+
+#[tokio::test]
+async fn test_fetch_token_reports_a_redirect_without_a_location() {
+    let server = MockServer::start().await;
+    let base = format!("{}/", server.uri());
+    Mock::given(method("GET"))
+        .and(path("/v2/library/nginx/manifests/latest"))
+        .and(Unauthenticated)
+        .respond_with(challenge(&base))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(302))
         .expect(1)
         .mount(&server)
         .await;
 
     let result = Upstream::new()
         .manifest(
-            &upstream_client(&base, credentials(basic("alice", "pw"))),
+            &upstream_client(&base, credentials(Auth::None)),
             "library/nginx",
             "latest",
+            &TokenRealms::default(),
         )
         .await;
 
-    // Docker Hub authenticates through a separate HTTPS host.
-    assert!(matches!(&result, Err(UpstreamError::Transport(message)) if !message.starts_with("insecure bearer realm")));
+    assert!(matches!(result, Err(UpstreamError::Status(StatusCode::FOUND))));
 }
 
 #[tokio::test]
@@ -512,6 +843,7 @@ async fn test_send_does_not_share_a_token_across_providers() {
             &upstream_client(&base, credentials(basic("alice", "pw"))),
             "library/nginx",
             "latest",
+            &TokenRealms::default(),
         )
         .await
         .unwrap();
@@ -520,6 +852,7 @@ async fn test_send_does_not_share_a_token_across_providers() {
             &upstream_client(&base, credentials(basic("alice", "pw"))),
             "library/nginx",
             "latest",
+            &TokenRealms::default(),
         )
         .await
         .unwrap();
@@ -538,28 +871,14 @@ async fn test_token_realm_401_refreshes_the_source_credential_once() {
         .await;
     Mock::given(method("GET"))
         .and(path("/token"))
-        .and(match_header(
-            "authorization",
-            format!(
-                "Basic {}",
-                base64::engine::general_purpose::STANDARD.encode("alice:old")
-            )
-            .as_str(),
-        ))
+        .and(match_header("authorization", basic_header("alice", "old").as_str()))
         .respond_with(ResponseTemplate::new(401))
         .expect(1)
         .mount(&server)
         .await;
     Mock::given(method("GET"))
         .and(path("/token"))
-        .and(match_header(
-            "authorization",
-            format!(
-                "Basic {}",
-                base64::engine::general_purpose::STANDARD.encode("alice:new")
-            )
-            .as_str(),
-        ))
+        .and(match_header("authorization", basic_header("alice", "new").as_str()))
         .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"token":"tok"}"#))
         .expect(1)
         .mount(&server)
@@ -583,7 +902,7 @@ async fn test_token_realm_401_refreshes_the_source_credential_once() {
     let client = upstream_client(&base, credentials);
 
     let response = Upstream::new()
-        .manifest(&client, "library/nginx", "latest")
+        .manifest(&client, "library/nginx", "latest", &TokenRealms::default())
         .await
         .unwrap();
 
@@ -605,7 +924,9 @@ async fn test_manifest_reports_a_scheduled_credential_refresh_failure() {
     );
     let client = upstream_client(&base, credentials);
 
-    let result = Upstream::new().manifest(&client, "library/nginx", "latest").await;
+    let result = Upstream::new()
+        .manifest(&client, "library/nginx", "latest", &TokenRealms::default())
+        .await;
 
     assert!(matches!(result, Err(UpstreamError::Transport(message)) if message == "source unavailable"));
 }
@@ -638,7 +959,9 @@ async fn test_token_realm_reports_a_source_refresh_failure() {
     );
     let client = upstream_client(&base, credentials);
 
-    let result = Upstream::new().manifest(&client, "library/nginx", "latest").await;
+    let result = Upstream::new()
+        .manifest(&client, "library/nginx", "latest", &TokenRealms::default())
+        .await;
 
     assert!(matches!(result, Err(UpstreamError::Transport(message)) if message == "source unavailable"));
 }
@@ -666,6 +989,7 @@ async fn test_token_realm_401_stops_when_refresh_is_disabled() {
             &upstream_client(&base, credentials(Auth::None)),
             "library/nginx",
             "latest",
+            &TokenRealms::default(),
         )
         .await;
 
@@ -698,8 +1022,14 @@ async fn test_send_reuses_a_cached_token_for_the_same_credentials() {
 
     let upstream = Upstream::new();
     let client = upstream_client(&base, credentials(basic("alice", "pw1")));
-    upstream.manifest(&client, "library/nginx", "latest").await.unwrap();
-    upstream.manifest(&client, "library/nginx", "latest").await.unwrap();
+    upstream
+        .manifest(&client, "library/nginx", "latest", &TokenRealms::default())
+        .await
+        .unwrap();
+    upstream
+        .manifest(&client, "library/nginx", "latest", &TokenRealms::default())
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -738,8 +1068,14 @@ async fn test_send_discards_a_cached_token_after_credential_refresh() {
     let upstream = Upstream::new();
     let client = upstream_client(&base, credentials);
 
-    upstream.manifest(&client, "library/nginx", "latest").await.unwrap();
-    upstream.manifest(&client, "library/nginx", "latest").await.unwrap();
+    upstream
+        .manifest(&client, "library/nginx", "latest", &TokenRealms::default())
+        .await
+        .unwrap();
+    upstream
+        .manifest(&client, "library/nginx", "latest", &TokenRealms::default())
+        .await
+        .unwrap();
 }
 
 /// The barrier makes all pulls contend for one cold token.
@@ -757,7 +1093,7 @@ async fn concurrent_pulls(
         pulls.push(tokio::spawn(async move {
             barrier.wait().await;
             upstream
-                .manifest(&client, "library/nginx", "latest")
+                .manifest(&client, "library/nginx", "latest", &TokenRealms::default())
                 .await
                 .map(|response| response.status())
         }));
@@ -811,10 +1147,17 @@ async fn test_token_flight_retries_when_the_sender_closes() {
         scope: None,
     };
 
+    let realms = TokenRealms::default();
+    let exchange = TokenExchange {
+        challenge: &challenge,
+        credentials: &credentials,
+        credential: &credential,
+        realms: &realms,
+    };
     let ((), token) = tokio::join!(
         biased;
         close,
-        upstream.acquire_token(&client, &cache_key, None, &challenge, &credentials, &credential),
+        upstream.acquire_token(&client, &cache_key, None, &exchange),
     );
 
     assert_eq!(token.unwrap(), "retried");
@@ -839,9 +1182,16 @@ async fn test_token_flight_waiter_returns_the_leader_token() {
         scope: None,
     };
 
+    let realms = TokenRealms::default();
+    let exchange = TokenExchange {
+        challenge: &challenge,
+        credentials: &credentials,
+        credential: &credential,
+        realms: &realms,
+    };
     let (token, _) = tokio::join!(
         biased;
-        upstream.acquire_token(&client, &cache_key, None, &challenge, &credentials, &credential),
+        upstream.acquire_token(&client, &cache_key, None, &exchange),
         async { sender.send("shared".to_owned()).unwrap() },
     );
 
@@ -864,21 +1214,22 @@ async fn test_token_flight_reuses_a_token_cached_after_the_registry_request() {
             value: "cached".to_owned(),
         },
     );
+    let challenge = Bearer {
+        realm: "unreachable".to_owned(),
+        service: None,
+        scope: None,
+    };
+    let realms = TokenRealms::default();
+    let exchange = TokenExchange {
+        challenge: &challenge,
+        credentials: &credentials,
+        credential: &credential,
+        realms: &realms,
+    };
 
     assert_eq!(
         upstream
-            .acquire_token(
-                &client,
-                &cache_key,
-                None,
-                &Bearer {
-                    realm: "unreachable".to_owned(),
-                    service: None,
-                    scope: None,
-                },
-                &credentials,
-                &credential,
-            )
+            .acquire_token(&client, &cache_key, None, &exchange)
             .await
             .unwrap(),
         "cached"
@@ -902,7 +1253,7 @@ async fn test_token_exchange_has_a_deadline() {
     let client = upstream_client(&base, credentials(basic("alice", "pw")));
     let manifest = tokio::spawn(async move {
         upstream
-            .manifest(&client, "library/nginx", "latest")
+            .manifest(&client, "library/nginx", "latest", &TokenRealms::default())
             .await
             .unwrap_err()
             .to_string()

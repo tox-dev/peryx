@@ -431,7 +431,14 @@ async fn test_registered_browse_uses_compiled_library_prefix(
     let protocol_request = observe_tag_list(&server, "protocol").await;
     let browse_request = observe_tag_list(&server, "browse").await;
     let dir = tempfile::tempdir().unwrap();
-    let (state, app) = proxy_with_settings(&dir, &format!("{}/", server.uri()), IndexSettings { library_prefix });
+    let (state, app) = proxy_with_settings(
+        &dir,
+        &format!("{}/", server.uri()),
+        IndexSettings {
+            library_prefix,
+            ..IndexSettings::default()
+        },
+    );
     let protocol = tokio::spawn(async move { send(&app, Method::GET, "/v2/hub/protocol/tags/list").await });
     let protocol_path = protocol_request.await.unwrap();
     let browse = tokio::spawn({

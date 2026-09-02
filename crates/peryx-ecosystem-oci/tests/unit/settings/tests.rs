@@ -11,6 +11,26 @@ fn test_compile_reads_library_prefix(#[case] toml: &str, #[case] expected: Libra
     assert_eq!(settings.library_prefix, expected);
 }
 
+#[rstest]
+#[case::absent("", TokenRealms::default())]
+#[case::listed(
+    r#"token_realms = ["https://auth.example"]"#,
+    TokenRealms::parse(&toml::Value::Array(vec![toml::Value::from("https://auth.example")])).unwrap()
+)]
+fn test_compile_reads_token_realms(#[case] toml: &str, #[case] expected: TokenRealms) {
+    let settings = IndexSettings::compile(&toml.parse::<Table>().unwrap()).unwrap();
+    assert_eq!(settings.token_realms, expected);
+}
+
+#[test]
+fn test_compile_rejects_an_invalid_token_realm() {
+    let settings = r#"token_realms = ["auth.example"]"#.parse::<Table>().unwrap();
+    assert_eq!(
+        IndexSettings::compile(&settings).unwrap_err(),
+        r#"`token_realms` entry "auth.example" is not an absolute URL"#
+    );
+}
+
 #[test]
 fn test_compile_rejects_an_unknown_key() {
     let settings = "libary_prefix = true".parse::<Table>().unwrap();

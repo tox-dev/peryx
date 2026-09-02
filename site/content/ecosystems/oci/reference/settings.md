@@ -1,11 +1,11 @@
 +++
 title = "Index settings"
-description = "The [index.settings] table an OCI index reads: library_prefix, its three values, and what each one rewrites."
+description = "The [index.settings] table an OCI index reads: library_prefix and token_realms, their values, and what each one changes."
 weight = 3
 +++
 
-The OCI implementation validates `[index.settings]` during startup. Unknown keys fail startup. OCI defines one setting:
-`library_prefix`.
+The OCI implementation validates `[index.settings]` during startup. Unknown keys fail startup. OCI defines two settings:
+`library_prefix` and `token_realms`.
 
 ## `library_prefix`
 
@@ -74,6 +74,55 @@ Everything on peryx's side keeps the spelling the client used:
 
 `peryx mirror sync hub --option 'images=["ubuntu:24.04"]'` follows the same rule: it pulls `library/ubuntu` from Hub and
 stores it as `ubuntu`.
+
+## `token_realms`
+
+The extra origins this index may present its upstream `username`/`password` pair to when a registry's `401` names a
+token realm. The upstream's own origin is always trusted, so an index whose registry authenticates on its own host needs
+no entry.
+
+```toml
+[[index]]
+name = "hub"
+route = "hub"
+ecosystem = "oci"
+
+[[index.upstream]]
+name = "primary"
+url = "https://registry-1.docker.io"
+username = "robot"
+password = "..."
+
+[index.settings]
+token_realms = ["https://auth.docker.io"]
+```
+
+A registry chooses the realm, so without this list a compromised or hostile upstream could name a collector of its own
+and receive the credentials configured for it. peryx still contacts an unlisted realm — a public registry issues
+anonymous pull tokens that way — but sends no credentials there, and it re-checks the origin at every redirect hop
+rather than delegating that to the HTTP client.
+
+Each entry is an origin: a scheme, a host, and an optional port, with no userinfo, path, query, or fragment. The
+comparison is exact, so `https://auth.example` does not cover `http://auth.example`, `https://auth.example:8443`, or
+`https://sso.auth.example`. Entries that are not well-formed origins fail startup, and trust is never learned from a
+challenge.
+
+Because the scheme is part of the origin, listing an `http://` entry is how an operator permits Basic credentials on the
+wire in cleartext for that one destination. There is no exception for `localhost`: a development registry served over
+`http` works because its own origin is the upstream, not because of its host.
+
+Reaching a realm is a separate permission from receiving credentials. A realm on a private address is refused by the
+outbound guard whatever this list says, until its host also appears in the upstream's
+[`trusted_hosts`](@/core/operations/configuration.md).
+
+| Entry                       | Effect                                                             |
+| --------------------------- | ------------------------------------------------------------------ |
+| `https://auth.docker.io`    | Docker Hub's separate authorization host receives the credentials  |
+| `http://auth.internal:5001` | An internal realm receives them over cleartext, by operator choice |
+| unlisted origin             | Contacted anonymously; the credentials stay home                   |
+
+An unlisted realm that answers `401` reports which origin was refused the credentials, so the missing entry is named
+rather than looking like a wrong password.
 
 ## Related
 

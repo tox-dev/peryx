@@ -272,7 +272,12 @@ impl Mirror<'_> {
         }
         let response = match self
             .upstream
-            .manifest(self.client, &self.upstream_repo(repo), reference)
+            .manifest(
+                self.client,
+                &self.upstream_repo(repo),
+                reference,
+                &self.settings.token_realms,
+            )
             .await
         {
             Ok(response) => response,
@@ -458,7 +463,16 @@ impl Mirror<'_> {
             ));
             return;
         }
-        match self.upstream.blob(self.client, &self.upstream_repo(repo), digest).await {
+        match self
+            .upstream
+            .blob(
+                self.client,
+                &self.upstream_repo(repo),
+                digest,
+                &self.settings.token_realms,
+            )
+            .await
+        {
             Ok(response) => match download_blob(&self.state.blobs, &storage, response).await {
                 Ok(bytes) => rows.push(MirrorRow::synced("blob", repo, digest, digest, bytes)),
                 Err(err) => {
