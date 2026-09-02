@@ -8,6 +8,11 @@ use crate::client::{BOUNDED_READ_TIMEOUT, UpstreamClient, UpstreamError};
 
 const OK_CHUNKED: &[u8] = b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n";
 
+/// Bounds a wait for server work the client has already been asked to drive, so a request that never
+/// arrives fails its test instead of blocking the suite. The clock runs across every one of these waits,
+/// so the bound is real time.
+const SERVER_STEP: Duration = Duration::from_secs(30);
+
 #[tokio::test(start_paused = true)]
 async fn test_bounded_read_deadline_stops_periodic_chunks() {
     let mut server = ControlledServer::start().await;
@@ -165,15 +170,21 @@ impl ControlledServer {
 
     async fn requested(&mut self) {
         self.run_clock();
-        let event = self.events.recv().await;
+        let event = self.next_event("the client sends its request").await;
         assert!(matches!(event, Some(ServerEvent::Requested)));
     }
 
     async fn write(&mut self, bytes: &'static [u8]) {
         self.commands.send(ServerCommand::Write(bytes)).unwrap();
         self.run_clock();
-        let event = self.events.recv().await;
+        let event = self.next_event("the server writes what it was handed").await;
         assert!(matches!(event, Some(ServerEvent::Written)));
+    }
+
+    async fn next_event(&mut self, expectation: &str) -> Option<ServerEvent> {
+        tokio::time::timeout(SERVER_STEP, self.events.recv())
+            .await
+            .expect(expectation)
     }
 
     /// A paused clock auto-advances to the next timer whenever the runtime parks, so pausing while

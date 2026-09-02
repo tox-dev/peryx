@@ -13,6 +13,10 @@ use super::guarded_client;
 use crate::client::UpstreamClient;
 use crate::client::retry::{MAX_RETRIES, retry_after, retry_after_at};
 
+/// Tokio rounds a sleep deadline up to the next millisecond, so a paused clock lands at most one tick
+/// away from the delay the call logged.
+const TIMER_TICK: Duration = Duration::from_millis(1);
+
 #[rstest]
 #[case::seconds(Some(b"5".as_slice()), Some(Duration::from_secs(5)))]
 #[case::zero(Some(b"0".as_slice()), Some(Duration::from_secs(0)))]
@@ -108,7 +112,9 @@ async fn test_fetch_bytes_honors_retry_after_on_a_retryable_status() {
     assert_eq!(&bytes[..], b"artifactbytes");
 }
 
-#[tokio::test(start_paused = true)]
+/// The status the call reports comes from a real 503 exchange, so the clock runs until that exchange is
+/// over and pauses only for the backoff, which is the only interval this test measures.
+#[tokio::test]
 async fn test_sleep_before_retry_logs_a_redacted_url_and_status() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -123,11 +129,15 @@ async fn test_sleep_before_retry_logs_a_redacted_url_and_status() {
         .unwrap_err();
     let url = url::Url::parse("https://user:secret@example.test/private?token=signed#fragment").unwrap();
     let (capture, guard) = capture_debug_events();
+    tokio::time::pause();
+    let started = tokio::time::Instant::now();
 
     crate::retry::sleep_before_retry(&url, 0, &error).await;
 
+    let waited = started.elapsed();
     let mut event = captured_event(capture, guard, "upstream retry");
     let delay: u64 = event["fields"]["delay_ms"].as_str().unwrap().parse().unwrap();
+    assert!(waited.abs_diff(Duration::from_millis(delay)) <= TIMER_TICK);
     assert!((50..=100).contains(&delay));
     event["fields"]["delay_ms"] = "jitter".into();
     assert_eq!(

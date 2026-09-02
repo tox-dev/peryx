@@ -379,6 +379,10 @@ async fn test_a_cycle_in_flight_never_publishes_half_of_its_result() {
     assert_eq!(after.readiness_gaps(), vec!["blob_plane", "readable_lag"]);
 }
 
+/// Sleeping through the window rather than advancing through it is what lets the loop run between timer
+/// firings: a single `advance` jump leaves the loop parked after one cycle, so the retry the name claims
+/// never happens. The default policy backs off from 100 ms doubling, so one second covers the cycles at
+/// 0, 100 ms, 300 ms and 700 ms.
 #[tokio::test(start_paused = true)]
 async fn test_run_retries_a_disconnected_metadata_plane_until_cancelled() {
     let dir = tempfile::tempdir().unwrap();
@@ -394,11 +398,11 @@ async fn test_run_retries_a_disconnected_metadata_plane_until_cancelled() {
     );
 
     let task = tokio::spawn(replica.run());
-    tokio::time::advance(Duration::from_secs(1)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
 
-    assert!(monitor.snapshot().errors > 0);
+    assert_eq!(monitor.snapshot().errors, 4);
     assert_eq!(monitor.snapshot().readiness_gaps(), vec!["sync_error", "frontier_lag"]);
 }
 

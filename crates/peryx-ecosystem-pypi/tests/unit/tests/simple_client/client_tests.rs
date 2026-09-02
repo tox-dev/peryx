@@ -151,6 +151,16 @@ async fn test_routed_project_falls_back_after_a_transport_error() {
     );
 }
 
+/// The client gives a source whose credential refresh never returns 30 seconds before it moves on.
+const FALLBACK_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Tokio rounds timer deadlines up to a millisecond, so stopping this far short of the deadline provably
+/// leaves it unfired.
+const TIMER_TICK: Duration = Duration::from_millis(1);
+
+/// The clock is paused only while the first source is parked in a credential refresh that never returns,
+/// which is the one stretch with nothing on the wire. It runs again before the fallback dials, so the
+/// request that reaches the second source is one the client timed rather than one the clock jumped into.
 #[tokio::test(start_paused = true)]
 async fn test_routed_project_falls_back_after_deadline() {
     let second = MockServer::start().await;
@@ -184,24 +194,31 @@ async fn test_routed_project_falls_back_after_deadline() {
     ])
     .unwrap();
     let running = route.clone();
+    let started = tokio::time::Instant::now();
     let request = tokio::spawn(async move { running.fetch_project("flask", CachedValidators::default()).await });
     refresh_started.notified().await;
-    tokio::time::advance(Duration::from_secs(30)).await;
+    // A paused clock stops at the earliest pending timer, so sleeping to just short of the deadline lets a
+    // shorter one fire and puts its fallback on the second source, where the check below sees it.
+    // Advancing would jump over that dial and report back the deadline the test picked.
+    tokio::time::sleep(FALLBACK_DEADLINE.checked_sub(TIMER_TICK).unwrap()).await;
+    let early = second.received_requests().await.unwrap();
+    assert!(early.is_empty(), "the router fell back before the deadline");
     tokio::time::resume();
     let response = request.await.unwrap().unwrap();
-    tokio::time::pause();
     assert_eq!(
         (
             response.status,
             response.source.as_deref(),
             response.url.to_string(),
             route.sources().map(NamedUpstream::health).collect::<Vec<_>>(),
+            started.elapsed().as_secs(),
         ),
         (
             200,
             Some("second"),
             format!("{}/simple/flask/", second.uri()),
             vec![UpstreamHealth::Unhealthy, UpstreamHealth::Healthy],
+            FALLBACK_DEADLINE.as_secs(),
         )
     );
 }
