@@ -45,7 +45,7 @@ struct Registry {
     observed: Mutex<InFlight>,
 }
 
-async fn read_path(connection: &mut TcpStream) -> String {
+pub(super) async fn read_path(connection: &mut TcpStream) -> String {
     let mut request = Vec::new();
     while !request.windows(4).any(|window| window == b"\r\n\r\n") {
         let mut chunk = [0; 1024];
@@ -316,7 +316,7 @@ async fn test_mirror_finishes_a_level_past_a_refused_sibling() {
             (children[0].as_str(), "synced"),
             (refused.as_str(), "error"),
             (children[2].as_str(), "synced"),
-            ("", "error"),
+            ("", "partial"),
         ]
     );
     assert_eq!(rows.last().unwrap().reason, "3 synced, 0 cached, 1 errors");

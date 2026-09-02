@@ -173,8 +173,11 @@ async fn gated<T>(gate: &Semaphore, work: impl Future<Output = T>) -> T {
 }
 
 /// # Errors
-/// Returns an error only on a store fault (metadata or blob io); a missing image, unreachable
-/// upstream, or bad blob is a reported row, not an error, so one bad reference never aborts the run.
+/// Returns an error only where the run cannot go on to make sound statements: the index names no
+/// cached upstream to pull from, or the metadata or blob store faulted. Everything upstream governs -
+/// a missing image, a registry that cannot be reached, a body over the manifest ceiling, a connection
+/// that drops mid-body - is a reported row, so one bad reference costs the run neither the references
+/// beside it nor the summary that closes it.
 pub async fn mirror(
     state: &Arc<ServingState>,
     index: &Index,
@@ -187,10 +190,7 @@ pub async fn mirror(
         .into_iter()
         .find_map(|member| member.proxy_client().map(|client| (member.name.clone(), client)))
     else {
-        rows.push(
-            MirrorRow::error("summary", "", "", "", "index has no cached upstream".to_owned()).with_index(&index.name),
-        );
-        return Ok(rows);
+        anyhow::bail!("index {:?} has no cached upstream", index.name);
     };
     let upstream = Upstream::new();
     let concurrency = mirror_ceiling(&state.upstream_limits, &cached_index);
@@ -228,7 +228,7 @@ pub async fn mirror(
         "",
         "",
         "",
-        if errors == 0 { "synced" } else { "error" },
+        verdict(synced + cached, errors),
         bytes,
         format!("{synced} synced, {cached} cached, {errors} errors"),
     ));
@@ -236,6 +236,18 @@ pub async fn mirror(
         row.index.clone_from(&index.name);
     }
     Ok(rows)
+}
+
+/// The status the closing summary row carries, so an operator reads the run's verdict off a fixed
+/// column instead of the counts beside it. A run that mirrored part of what it selected is neither
+/// outcome the two-valued verdict could say: calling it `synced` hides content the mirror is missing,
+/// and calling it `error` hides the images that are now available offline.
+const fn verdict(kept: u64, errors: u64) -> &'static str {
+    match (kept, errors) {
+        (_, 0) => "synced",
+        (0, _) => "error",
+        _ => "partial",
+    }
 }
 
 /// Enqueue a manifest's child descriptors for the walk, deduplicating by digest and holding the graph
@@ -368,9 +380,15 @@ impl Mirror<'_> {
             .and_then(|value| value.to_str().ok())
             .unwrap_or(DEFAULT_MANIFEST_TYPE)
             .to_owned();
-        let bytes = bounded_body(response, MAX_MANIFEST_BYTES)
-            .await
-            .map_err(|err| anyhow::anyhow!(String::from(err)))?;
+        let bytes = match bounded_body(response, MAX_MANIFEST_BYTES).await {
+            Ok(bytes) => bytes,
+            // Nothing local has been written yet, so a body over the ceiling or a connection that
+            // drops mid-stream costs this reference and leaves the rest of the run sound to report.
+            Err(fault) => {
+                rows.push(MirrorRow::error("manifest", repo, reference, "", String::from(fault)));
+                return Ok(None);
+            }
+        };
         let digest = format!("sha256:{}", Digest::of(&bytes).as_str());
         // A by-sha256-digest reference (no tag) pins the exact bytes; if the upstream, or a proxy
         // between, returns something else, storing it under the computed digest would report `synced`

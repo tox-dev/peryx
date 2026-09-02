@@ -12,6 +12,7 @@ mod manifest_schema_tests;
 mod metrics_tests;
 mod mirror_concurrency_tests;
 mod mirror_contract_tests;
+mod mirror_failure_tests;
 mod mirror_tests;
 mod negotiate_tests;
 mod openapi_tests;

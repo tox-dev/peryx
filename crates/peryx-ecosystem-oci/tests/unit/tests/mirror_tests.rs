@@ -177,7 +177,7 @@ async fn test_mirror_summary_counts_mixed_results_and_bytes() {
     .unwrap();
     let summary = rows.last().unwrap();
 
-    assert_eq!(summary.status, "error");
+    assert_eq!(summary.status, "partial");
     assert_eq!(summary.bytes, manifest.len() as u64 + downloaded.len() as u64);
     assert_eq!(summary.reason, "2 synced, 1 cached, 1 errors");
 }
@@ -646,17 +646,15 @@ async fn test_mirror_rejects_malformed_references_before_network_access() {
 async fn test_mirror_needs_a_cached_upstream() {
     let dir = tempfile::tempdir().unwrap();
     let (state, _app) = super::hosted(&dir);
-    let rows = mirror(
+    let error = mirror(
         &state.serving,
         &state.serving.indexes[0],
         &["library/app:latest".to_owned()],
         MirrorMode::Sync,
     )
     .await
-    .unwrap();
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].kind, "summary");
-    assert!(rows[0].reason.contains("no cached upstream"));
+    .unwrap_err();
+    assert_eq!(error.to_string(), r#"index "store" has no cached upstream"#);
 }
 
 #[tokio::test]
@@ -1200,25 +1198,6 @@ async fn test_verify_rejects_a_stored_manifest_the_schema_denies() {
 }
 
 #[tokio::test]
-async fn test_mirror_bounds_an_oversized_manifest() {
-    let server = MockServer::start().await;
-    let body = vec![b'x'; 4 * 1024 * 1024 + 1];
-    mount_manifest(&server, "library/app", "latest", &body, MANIFEST_TYPE).await;
-
-    let dir = tempfile::tempdir().unwrap();
-    let (state, _app) = proxy(&dir, &format!("{}/", server.uri()), false);
-    let err = mirror(
-        &state.serving,
-        &state.serving.indexes[0],
-        &["library/app:latest".to_owned()],
-        MirrorMode::Sync,
-    )
-    .await
-    .unwrap_err();
-    assert!(err.to_string().contains("exceeds"), "{err}");
-}
-
-#[tokio::test]
 async fn test_mirror_pulls_a_single_segment_name_under_the_library_prefix() {
     let server = MockServer::start().await;
     let config = b"{}";
@@ -1408,7 +1387,7 @@ async fn test_verify_rejects_a_child_manifest_cached_under_another_repository() 
     )
     .await
     .unwrap();
-    assert_eq!(partial.last().unwrap().status, "error");
+    assert_eq!(partial.last().unwrap().status, "partial");
 
     let rows = mirror(
         &state.serving,
@@ -1434,7 +1413,7 @@ async fn test_verify_rejects_a_child_manifest_cached_under_another_repository() 
                 "error",
                 "manifest not mirrored for this repository"
             ),
-            ("summary", "", "error", "0 synced, 2 cached, 1 errors"),
+            ("summary", "", "partial", "0 synced, 2 cached, 1 errors"),
         ]
     );
 }

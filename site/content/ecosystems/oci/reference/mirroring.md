@@ -37,6 +37,24 @@ A body that breaks a rule is reported as an error row naming the rule, and neith
 `verify` applies the same check to what the store already holds, so a run never calls an image complete when its layers
 could not be read.
 
+## Failure handling
+
+Anything the upstream governs is one error row naming the repository, the reference, and the reason, and the run carries
+on: an image the registry does not have, a registry that refuses or cannot be reached, a manifest above the
+four-megabyte ceiling, a connection that stops part way through a body. The references selected after it and the
+siblings scheduled beside it are independent work and are mirrored regardless. A fault on peryx's own side is not the
+same thing. When the metadata store or the blob store fails, every later `synced` and `cached` row would be a claim
+nothing has checked, so the run ends there and reports the fault instead of finishing a report it cannot stand behind.
+
+The closing summary row states the verdict in its status column: `synced` when every selected reference is mirrored,
+`partial` when some are and some failed, `error` when none are. Its reason carries the counts.
+
+`sync` and `verify` exit non-zero whenever anything failed, a partial run included, so a zero exit always means the
+mirror holds everything the run selected. That does cost a pipeline a failure when one blob out of many is missing,
+which is the trade peryx takes: a mirror is asked for offline completeness, and a run that dropped content while exiting
+zero would surface as an unexplained pull failure long afterwards. Read the error rows to decide what to retry, since
+each names its own reference.
+
 ## Concurrency
 
 A run overlaps the work one level of the manifest graph makes available rather than waiting out each descriptor in turn:
@@ -48,8 +66,8 @@ what many images with one layer cost.
 The next level is scheduled only after every manifest above it has been parsed, which is what keeps the graph
 deduplicated and the node and depth bounds exact: a digest two parents name is fetched once, and a graph over the bounds
 still stops before the fetch. A layer two manifests share is transferred once and reported cached under the second. An
-image or a sibling the upstream refuses is one error row and leaves the work beside it running, and each selected image
-carries its own rows, so the report reads in selection order however the transfers finish.
+image and each sibling carries its own rows, so the report reads in selection then descriptor order however the
+transfers finish.
 
 ## Repository scope
 

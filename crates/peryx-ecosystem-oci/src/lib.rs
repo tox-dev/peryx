@@ -572,9 +572,14 @@ impl<S: std::hash::BuildHasher + Send + Sync> MirrorDriver for registry::OciRegi
             .map_err(error_message)?;
         let mut errors = 0_u64;
         for row in rows {
-            errors += u64::from(row.status == "error");
+            // The closing summary carries the run's verdict, so counting its status too would tell
+            // the operator one more reference failed than the report names.
+            errors += u64::from(row.kind != "summary" && row.status == "error");
             write_mirror_row(output, &row)?;
         }
+        // A partial run exits non-zero with the rest: a pipeline that reads a zero exit as "the
+        // mirror holds everything I selected" would otherwise ship a mirror missing content, and the
+        // rows above name which references to retry.
         if errors == 0 {
             Ok(())
         } else {

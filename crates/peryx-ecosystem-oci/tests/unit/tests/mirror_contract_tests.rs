@@ -291,6 +291,50 @@ async fn mirror_reports_failed_summary() {
     );
 }
 
+/// A run that mirrored part of what it selected still fails the command, and it names the references
+/// that failed rather than counting its own verdict row among them.
+#[tokio::test]
+async fn mirror_fails_a_partial_run_and_counts_only_the_references_that_failed() {
+    let server = MockServer::start().await;
+    let index_type = "application/vnd.oci.image.index.v1+json";
+    let manifest = format!(r#"{{"schemaVersion":2,"mediaType":"{index_type}","manifests":[]}}"#).into_bytes();
+    Mock::given(method("GET"))
+        .and(path("/v2/library/example/manifests/latest"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(manifest, index_type))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let (state, _) = proxy(&dir, &format!("{}/", server.uri()), false);
+    let empty = toml::Table::new();
+    let request = |action, configured| MirrorRequest {
+        action,
+        index: "hub",
+        settings: &empty,
+        configured,
+        overrides: &empty,
+    };
+    let mirrored = images(&["library/example:latest"]);
+    let mut output = Vec::new();
+    OciRegistry::default()
+        .mirror(state.clone(), request(MirrorAction::Sync, &mirrored), &mut output)
+        .await
+        .unwrap();
+
+    let both = images(&["library/example:latest", "library/absent:latest"]);
+    let mut output = Vec::new();
+    let error = OciRegistry::default()
+        .mirror(state, request(MirrorAction::Verify, &both), &mut output)
+        .await
+        .unwrap_err();
+
+    assert_eq!(error, "mirror found 1 error(s)");
+    let rows = report_rows(std::str::from_utf8(&output).unwrap());
+    assert_eq!(
+        rows.last().unwrap()[6..],
+        ["0", "partial", "0 synced, 1 cached, 1 errors"]
+    );
+}
+
 #[tokio::test]
 async fn mirror_rejects_unknown_indexes_and_empty_selections() {
     let dir = tempfile::tempdir().unwrap();
