@@ -195,6 +195,7 @@ fn fsck_cache(state: &AppState) -> Result<Vec<u8>, String> {
         state.driver_set(),
         &state.serving.meta,
         &state.serving.blobs,
+        &state.serving.indexes,
         &mut output,
     )
     .map_err(|error| format!("cache fsck failed: {error}"))?;

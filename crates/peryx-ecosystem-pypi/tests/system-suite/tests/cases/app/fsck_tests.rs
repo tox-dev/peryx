@@ -51,9 +51,23 @@ fn test_cache_fsck_reports_metadata_problems() {
         "metadata\tpypi\tupload\t//\tinvalid key\n",
         "metadata\tpypi\tupload\thosted/pkg/pkg-1.0.whl\tmissing blob ",
         "metadata\tpypi\toverride\t//\tinvalid key\n",
-        "problems\t8\n",
+        "problems\t10\n",
     ] {
         assert!(text.contains(expected), "{text}");
+    }
+    // The derived rows the empty-named project and upload above left behind. The write path maintains a
+    // count and an order row for whatever index name it is handed, and no configured index is named "".
+    for expected in [
+        format!(
+            "metadata\tpypi\tsummary-count\t{:?}\tno cached or hosted index owns this row\n",
+            "pypi\u{0}k\u{0}"
+        ),
+        format!(
+            "metadata\tpypi\tsummary-order\t{:?}\tno cached or hosted index owns this row\n",
+            "pypi\u{0}w\u{0}\u{0}100000000000000000000/pkg-1.0.whl\u{0}\u{0}"
+        ),
+    ] {
+        assert!(text.contains(&expected), "{text}");
     }
 }
 

@@ -249,12 +249,47 @@ pub trait BlobReferenceDriver: Send + Sync {
 }
 
 pub trait FsckDriver: Send + Sync {
+    /// Report every damaged or disagreeing record, returning how many were found. `indexes` is every
+    /// configured index, of which a driver considers only its own; a check over derived rows needs
+    /// them to tell which index owns a row and on what footing its writes are made.
+    ///
     /// # Errors
-    /// Returns an error when metadata cannot be checked or repaired.
+    /// Returns an error when metadata cannot be checked.
     fn fsck_metadata(
         &self,
         meta: &peryx_storage::meta::MetaStore,
         blobs: &peryx_storage::blob::BlobStorage,
+        indexes: &[peryx_index::Index],
+        out: &mut dyn Write,
+    ) -> Result<u64, String>;
+}
+
+/// Rebuilding what [`FsckDriver`] only reports.
+///
+/// It is a capability of its own because only records derived from other records can be rebuilt: a
+/// damaged record that nothing else determines has no correct value to restore, so an ecosystem
+/// holding none of the former implements none of this.
+pub trait MetadataRepairDriver: Send + Sync {
+    /// Name the records a rebuild would write, without writing them, returning how many there are.
+    ///
+    /// # Errors
+    /// Returns an error when metadata cannot be read.
+    fn preview_metadata_repair(
+        &self,
+        meta: &peryx_storage::meta::MetaStore,
+        indexes: &[peryx_index::Index],
+        out: &mut dyn Write,
+    ) -> Result<u64, String>;
+
+    /// Rebuild those same records, returning how many were repaired and writing one line per record to
+    /// `out`.
+    ///
+    /// # Errors
+    /// Returns an error when metadata cannot be read or written.
+    fn repair_metadata(
+        &self,
+        meta: &peryx_storage::meta::MetaStore,
+        indexes: &[peryx_index::Index],
         out: &mut dyn Write,
     ) -> Result<u64, String>;
 }
@@ -461,6 +496,7 @@ pub trait CapabilityRegistrar {
     fn register_policy_dry_run(&mut self, ecosystem: Ecosystem, driver: Arc<dyn PolicyDryRunDriver>);
     fn register_blob_references(&mut self, ecosystem: Ecosystem, driver: Arc<dyn BlobReferenceDriver>);
     fn register_fsck(&mut self, ecosystem: Ecosystem, driver: Arc<dyn FsckDriver>);
+    fn register_metadata_repair(&mut self, ecosystem: Ecosystem, driver: Arc<dyn MetadataRepairDriver>);
     fn register_retention(&mut self, ecosystem: Ecosystem, driver: Arc<dyn RetentionDriver>);
     fn register_cache(&mut self, ecosystem: Ecosystem, driver: Arc<dyn CacheDriver>);
     fn register_cache_inspect(&mut self, ecosystem: Ecosystem, driver: Arc<dyn CacheInspectDriver>);

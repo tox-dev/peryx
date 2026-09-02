@@ -7,13 +7,13 @@ use std::collections::BTreeSet;
 use std::io::Write;
 
 use peryx_driver::serving::{CachePage, PurgeReport};
-use peryx_index::Index;
+use peryx_index::{Index, IndexKind};
 use peryx_policy::{PolicyAction, PolicyDenial};
 use peryx_storage::blob::{BlobStorage, Digest};
 use peryx_storage::meta::{MetaStore, RepairScan};
 
 use crate::store::PypiStore as _;
-use crate::store::{CachedIndex, PypiRecords};
+use crate::store::{AuditedIndex, CachedIndex, PypiRecords, SummaryDefect};
 
 use crate::policy::PypiPolicy as _;
 use crate::upload::Uploaded;
@@ -170,6 +170,7 @@ pub fn cache_record_counts(meta: &MetaStore) -> Result<Vec<(String, u64)>, Strin
         Ok::<(), std::convert::Infallible>(())
     })
     .map_err(crate::error_message)?;
+    let derived = crate::store::summary_row_counts(meta).map_err(crate::error_message)?;
     Ok(vec![
         ("file_url_records".to_owned(), file_urls),
         ("metadata_records".to_owned(), metadata),
@@ -178,6 +179,8 @@ pub fn cache_record_counts(meta: &MetaStore) -> Result<Vec<(String, u64)>, Strin
         ("upload_records".to_owned(), uploads),
         ("override_records".to_owned(), overrides),
         ("provenance_records".to_owned(), provenance),
+        ("summary_count_records".to_owned(), derived.count_rows),
+        ("summary_order_records".to_owned(), derived.order_rows),
     ])
 }
 
@@ -397,9 +400,90 @@ fn add_index_refs(refs: &mut CacheRefs, record: &CachedIndex) -> Result<(), Stri
     Ok(())
 }
 
+/// The indexes that own project and upload rows, paired with the discipline their writes follow.
+///
+/// A virtual index owns no rows of its own, so it is left out and any derived row naming it is reported
+/// as a row that should not exist.
+fn audited_indexes(indexes: &[Index]) -> Vec<AuditedIndex<'_>> {
+    indexes
+        .iter()
+        .filter(|index| index.ecosystem == crate::ECOSYSTEM)
+        .filter_map(|index| {
+            let local = match index.kind {
+                IndexKind::Cached { .. } => true,
+                IndexKind::Hosted { .. } => false,
+                IndexKind::Virtual { .. } => return None,
+            };
+            Some(AuditedIndex {
+                name: &index.name,
+                local,
+            })
+        })
+        .collect()
+}
+
+fn write_summary_defects(defects: &[SummaryDefect], out: &mut dyn Write) -> Result<u64, String> {
+    let mut problems = 0_u64;
+    for defect in defects {
+        writeln!(
+            out,
+            "metadata\tpypi\t{}\t{}\t{}",
+            defect.namespace, defect.key, defect.message
+        )
+        .map_err(crate::error_message)?;
+        problems += 1;
+    }
+    Ok(problems)
+}
+
+/// Name the derived summary rows a rebuild would write, without writing them.
+///
 /// # Errors
 /// Returns a message when the store cannot be read or `out` cannot be written.
-pub fn fsck_metadata(meta: &MetaStore, blobs: &BlobStorage, out: &mut dyn Write) -> Result<u64, String> {
+pub fn preview_metadata_repair(meta: &MetaStore, indexes: &[Index], out: &mut dyn Write) -> Result<u64, String> {
+    let defects = crate::store::audit_summary_rows(meta, &audited_indexes(indexes)).map_err(crate::error_message)?;
+    write_summary_defects(&defects, out)
+}
+
+/// Rebuild the derived summary rows that disagree with the projects and uploads they describe.
+///
+/// # Errors
+/// Returns a message when the store cannot be read or written, or `out` cannot be written.
+pub fn repair_metadata(meta: &MetaStore, indexes: &[Index], out: &mut dyn Write) -> Result<u64, String> {
+    let defects = crate::store::repair_summary_rows(meta, &audited_indexes(indexes)).map_err(crate::error_message)?;
+    write_summary_defects(&defects, out)
+}
+
+/// Report every record in `namespace` that `invalid` rejects, then the rows the scan could not read at
+/// all. Five of this driver's namespaces differ only in that predicate.
+fn check_records(
+    meta: &MetaStore,
+    namespace: PypiRecords,
+    out: &mut dyn Write,
+    invalid: impl Fn(&str, &str) -> bool,
+) -> Result<u64, String> {
+    let mut problems = 0_u64;
+    let label = namespace.label();
+    let scan = meta
+        .scan_records_for_repair(namespace, |key, value| {
+            if invalid(key, value) {
+                problems += 1;
+                writeln!(out, "metadata\tpypi\t{label}\t{key}\tinvalid record")?;
+            }
+            Ok::<(), std::io::Error>(())
+        })
+        .map_err(crate::error_message)?;
+    Ok(problems + report_unreadable(&scan, namespace, out)?)
+}
+
+/// # Errors
+/// Returns a message when the store cannot be read or `out` cannot be written.
+pub fn fsck_metadata(
+    meta: &MetaStore,
+    blobs: &BlobStorage,
+    indexes: &[Index],
+    out: &mut dyn Write,
+) -> Result<u64, String> {
     let mut problems = 0_u64;
     meta.scan_index_records(|key, bytes| {
         match CachedIndex::decode(bytes) {
@@ -416,46 +500,18 @@ pub fn fsck_metadata(meta: &MetaStore, blobs: &BlobStorage, out: &mut dyn Write)
         Ok::<(), std::io::Error>(())
     })
     .map_err(crate::error_message)?;
-    let scan = meta
-        .scan_records_for_repair(PypiRecords::FileUrl, |digest, value| {
-            if Digest::from_hex(digest).is_none() || split_pair(value).is_none() {
-                problems += 1;
-                writeln!(out, "metadata\tpypi\tfile-url\t{digest}\tinvalid record")?;
-            }
-            Ok::<(), std::io::Error>(())
-        })
-        .map_err(crate::error_message)?;
-    problems += report_unreadable(&scan, PypiRecords::FileUrl, out)?;
-    let scan = meta
-        .scan_records_for_repair(PypiRecords::Metadata, |digest, metadata_digest| {
-            if Digest::from_hex(digest).is_none() || Digest::from_hex(metadata_digest).is_none() {
-                problems += 1;
-                writeln!(out, "metadata\tpypi\tpep658\t{digest}\tinvalid record")?;
-            }
-            Ok::<(), std::io::Error>(())
-        })
-        .map_err(crate::error_message)?;
-    problems += report_unreadable(&scan, PypiRecords::Metadata, out)?;
-    let scan = meta
-        .scan_records_for_repair(PypiRecords::Publication, |key, value| {
-            if matches!(claimed_sidecar(value), ClaimedSidecar::Unreadable) {
-                problems += 1;
-                writeln!(out, "metadata\tpypi\tpublication\t{key}\tinvalid record")?;
-            }
-            Ok::<(), std::io::Error>(())
-        })
-        .map_err(crate::error_message)?;
-    problems += report_unreadable(&scan, PypiRecords::Publication, out)?;
-    let scan = meta
-        .scan_records_for_repair(PypiRecords::Project, |key, display| {
-            if !valid_project_key(key) || display.is_empty() {
-                problems += 1;
-                writeln!(out, "metadata\tpypi\tproject\t{key}\tinvalid record")?;
-            }
-            Ok::<(), std::io::Error>(())
-        })
-        .map_err(crate::error_message)?;
-    problems += report_unreadable(&scan, PypiRecords::Project, out)?;
+    problems += check_records(meta, PypiRecords::FileUrl, out, |digest, value| {
+        Digest::from_hex(digest).is_none() || split_pair(value).is_none()
+    })?;
+    problems += check_records(meta, PypiRecords::Metadata, out, |digest, metadata_digest| {
+        Digest::from_hex(digest).is_none() || Digest::from_hex(metadata_digest).is_none()
+    })?;
+    problems += check_records(meta, PypiRecords::Publication, out, |_key, value| {
+        matches!(claimed_sidecar(value), ClaimedSidecar::Unreadable)
+    })?;
+    problems += check_records(meta, PypiRecords::Project, out, |key, display| {
+        !valid_project_key(key) || display.is_empty()
+    })?;
     meta.scan_upload_records(|key, bytes| {
         let Some(digests) = upload_digests(bytes) else {
             problems += 1;
@@ -489,16 +545,13 @@ pub fn fsck_metadata(meta: &MetaStore, blobs: &BlobStorage, out: &mut dyn Write)
         })
         .map_err(crate::error_message)?;
     problems += report_unreadable(&scan, PypiRecords::Override, out)?;
-    let scan = meta
-        .scan_records_for_repair(PypiRecords::Provenance, |key, value| {
-            if valid_provenance(value).is_none() {
-                problems += 1;
-                writeln!(out, "metadata\tpypi\tprovenance\t{key}\tinvalid record")?;
-            }
-            Ok::<(), std::io::Error>(())
-        })
-        .map_err(crate::error_message)?;
-    problems += report_unreadable(&scan, PypiRecords::Provenance, out)?;
+    problems += check_records(meta, PypiRecords::Provenance, out, |_key, value| {
+        valid_provenance(value).is_none()
+    })?;
+    // The derived rows come last: every check above reads one row on its own, and this one is the only
+    // one that reads a row against the rows it summarizes.
+    let defects = crate::store::audit_summary_rows(meta, &audited_indexes(indexes)).map_err(crate::error_message)?;
+    problems += write_summary_defects(&defects, out)?;
     Ok(problems)
 }
 

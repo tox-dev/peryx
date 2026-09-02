@@ -15,7 +15,7 @@ use clap::{Args, Parser, Subcommand};
 
 pub use cache::{
     CacheCommand, CacheListArgs, CachePurgeCommand, CachePurgeOrphanedBlobsArgs, CachePurgeResourceArgs,
-    CacheRuntimeArgs,
+    CacheRepairArgs, CacheRuntimeArgs,
 };
 pub use config::{ConfigCheckArgs, ConfigCommand};
 pub use index::{IndexCommand, IndexListArgs, IndexShowArgs};

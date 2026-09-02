@@ -275,25 +275,31 @@ fn test_fsck_metadata_reports_every_invalid_record_kind() {
     meta.put_provenance("pypi", "flask", DIGEST_A, "flask-1.0.whl", provenance_bundle(DIGEST_B))
         .unwrap();
     let mut out = Vec::new();
-    let problems = fsck_metadata(&meta, &blobs, &mut out).unwrap();
-    assert_eq!(problems, 7, "{}", String::from_utf8_lossy(&out));
+    let problems = fsck_metadata(&meta, &blobs, &audited_fixture(), &mut out).unwrap();
+    // Seven damaged records, plus the count row: the project above is written straight into the store
+    // while the upload goes through the write path, so the index's count row is short by one project.
+    assert_eq!(problems, 8, "{}", String::from_utf8_lossy(&out));
 }
 
 #[rstest]
-#[case::pep658_artifact('d', "not-hex", format!("url\n{DIGEST_B}\npypi"), "pep658")]
-#[case::pep658_metadata('d', DIGEST_A, "url\nnot-hex\npypi".to_owned(), "pep658")]
-#[case::project_index('p', "/flask", "Flask".to_owned(), "project")]
-#[case::project_name('p', "pypi/", "Flask".to_owned(), "project")]
-#[case::project_display('p', "pypi/flask", String::new(), "project")]
-#[case::publication_metadata('n', "pypi/demo/sha/demo-1.0.whl", "url\nnot-hex\npypi\n".to_owned(), "publication")]
-#[case::publication_truncated('n', "pypi/demo/sha/demo-1.0.whl", "url".to_owned(), "publication")]
-#[case::override_filename('o', "hosted/demo/", r#"{"hidden":true,"yanked":false}"#.to_owned(), "override")]
-#[case::override_kind('o', "hosted/demo/demo.whl", "invalid".to_owned(), "override")]
+#[case::pep658_artifact('d', "not-hex", format!("url\n{DIGEST_B}\npypi"), "pep658", 1)]
+#[case::pep658_metadata('d', DIGEST_A, "url\nnot-hex\npypi".to_owned(), "pep658", 1)]
+#[case::project_index('p', "/flask", "Flask".to_owned(), "project", 1)]
+#[case::project_name('p', "pypi/", "Flask".to_owned(), "project", 1)]
+#[case::project_display('p', "pypi/flask", String::new(), "project", 2)]
+#[case::publication_metadata('n', "pypi/demo/sha/demo-1.0.whl", "url\nnot-hex\npypi\n".to_owned(), "publication", 1)]
+#[case::publication_truncated('n', "pypi/demo/sha/demo-1.0.whl", "url".to_owned(), "publication", 1)]
+#[case::override_filename('o', "hosted/demo/", r#"{"hidden":true,"yanked":false}"#.to_owned(), "override", 1)]
+#[case::override_kind('o', "hosted/demo/demo.whl", "invalid".to_owned(), "override", 1)]
 fn test_fsck_metadata_rejects_each_invalid_field(
     #[case] table: char,
     #[case] key: &str,
     #[case] value: String,
     #[case] record: &str,
+    // `project_display` is the one row here that is well enough keyed to be counted. Writing it
+    // straight into the store leaves its index without the count row a real write would have
+    // maintained, which the summary audit reports in its own right.
+    #[case] problems: u64,
 ) {
     let (dir, meta) = store();
     let blobs = BlobStore::new(dir.path().join("blobs")).into();
@@ -301,7 +307,10 @@ fn test_fsck_metadata_rejects_each_invalid_field(
         .unwrap();
     let mut output = Vec::new();
 
-    assert_eq!(fsck_metadata(&meta, &blobs, &mut output).unwrap(), 1);
+    assert_eq!(
+        fsck_metadata(&meta, &blobs, &audited_fixture(), &mut output).unwrap(),
+        problems
+    );
     assert!(
         String::from_utf8(output)
             .unwrap()
@@ -319,7 +328,10 @@ fn test_fsck_metadata_rejects_an_invalid_upload_key_with_present_blobs() {
         .unwrap();
     let mut output = Vec::new();
 
-    assert_eq!(fsck_metadata(&meta, &blobs, &mut output).unwrap(), 1);
+    assert_eq!(
+        fsck_metadata(&meta, &blobs, &audited_fixture(), &mut output).unwrap(),
+        1
+    );
     assert_eq!(
         String::from_utf8(output).unwrap(),
         "metadata\tpypi\tupload\thosted/demo/\tinvalid key\n"
@@ -454,10 +466,92 @@ fn test_fsck_reports_invalid_upload_keys_and_missing_blobs() {
     meta.put_upload("hosted", "demo", "demo.whl", crate::to_json(&uploaded).as_bytes())
         .unwrap();
     let mut output = Vec::new();
-    assert_eq!(fsck_metadata(&meta, &blobs, &mut output).unwrap(), 2);
+    assert_eq!(
+        fsck_metadata(&meta, &blobs, &audited_fixture(), &mut output).unwrap(),
+        2
+    );
     let output = String::from_utf8(output).unwrap();
     assert!(output.contains("invalid key"));
     assert!(output.contains("missing blob"));
+}
+
+/// The indexes the metadata checks run against: every fixture writes under one of these two names.
+fn audited_fixture() -> Vec<Index> {
+    vec![pypi_index(), hosted_index()]
+}
+
+fn cached_index() -> Index {
+    Index {
+        name: "cached".to_owned(),
+        route: "cached".to_owned(),
+        kind: IndexKind::Cached {
+            client: peryx_upstream::UpstreamClient::new("https://example.invalid/simple/").unwrap(),
+            offline: true,
+        },
+        ..pypi_index()
+    }
+}
+
+fn virtual_index() -> Index {
+    Index {
+        name: "layered".to_owned(),
+        route: "layered".to_owned(),
+        kind: IndexKind::Virtual {
+            layers: Vec::new(),
+            write_target: None,
+        },
+        ..pypi_index()
+    }
+}
+
+/// A cached index owns rows and is audited against them; a virtual index owns none, so a derived row
+/// naming one is a row that should not exist rather than a count that disagrees.
+#[test]
+fn test_fsck_audits_a_cached_index_and_disowns_a_virtual_one() {
+    let (dir, meta) = store();
+    let blobs = BlobStore::new(dir.path().join("blobs")).into();
+    meta.put_driver_value("pypi\u{0}p\u{0}cached/flask", b"Flask").unwrap();
+    meta.put_driver_value("pypi\u{0}k\u{0}layered", b"1\n1").unwrap();
+    let mut output = Vec::new();
+
+    let problems = fsck_metadata(&meta, &blobs, &[cached_index(), virtual_index()], &mut output).unwrap();
+
+    assert_eq!(
+        (problems, String::from_utf8(output).unwrap()),
+        (
+            2,
+            format!(
+                "metadata\tpypi\tsummary-count\t{:?}\tno cached or hosted index owns this row\nmetadata\tpypi\tsummary-count\t{:?}\tcount row is absent, rows hold 1 projects and 0 uploads\n",
+                "pypi\u{0}k\u{0}layered", "pypi\u{0}k\u{0}cached"
+            )
+        )
+    );
+}
+
+/// An index belonging to another ecosystem names no `PyPI` row, so it is not audited here.
+#[test]
+fn test_fsck_ignores_an_index_from_another_ecosystem() {
+    let (dir, meta) = store();
+    let blobs = BlobStore::new(dir.path().join("blobs")).into();
+    meta.put_driver_value("pypi\u{0}k\u{0}hosted", b"1\n1").unwrap();
+    let foreign = Index {
+        ecosystem: peryx_core::Ecosystem::new("oci"),
+        ..hosted_index()
+    };
+    let mut output = Vec::new();
+
+    let problems = fsck_metadata(&meta, &blobs, &[foreign], &mut output).unwrap();
+
+    assert_eq!(
+        (problems, String::from_utf8(output).unwrap()),
+        (
+            1,
+            format!(
+                "metadata\tpypi\tsummary-count\t{:?}\tno cached or hosted index owns this row\n",
+                "pypi\u{0}k\u{0}hosted"
+            )
+        )
+    );
 }
 
 fn pypi_index() -> Index {
@@ -638,7 +732,10 @@ fn test_fsck_reports_decodable_invalid_project_details() {
     seed_undecodable_detail(&meta, "pypi/demo");
     let blobs = BlobStore::new(dir.path().join("blobs")).into();
     let mut output = Vec::new();
-    assert_eq!(fsck_metadata(&meta, &blobs, &mut output).unwrap(), 1);
+    assert_eq!(
+        fsck_metadata(&meta, &blobs, &audited_fixture(), &mut output).unwrap(),
+        1
+    );
     assert!(String::from_utf8(output).unwrap().contains("invalid project detail"));
 }
 
@@ -651,32 +748,40 @@ fn not_utf8_reason(table: char, key: &str) -> String {
 }
 
 #[rstest]
-#[case::file_url('f', "not-hex", "file-url")]
-#[case::pep658('d', "not-hex", "pep658")]
-#[case::publication('n', "pypi/demo/sha/demo-1.0.whl", "publication")]
-#[case::project('p', "pypi/flask", "project")]
-#[case::override_record('o', "hosted/demo/demo.whl", "override")]
-#[case::provenance('a', "pypi/flask/sha/flask-1.0.whl", "provenance")]
+#[case::file_url('f', "not-hex", "file-url", false)]
+#[case::pep658('d', "not-hex", "pep658", false)]
+#[case::publication('n', "pypi/demo/sha/demo-1.0.whl", "publication", false)]
+#[case::project('p', "pypi/flask", "project", true)]
+#[case::override_record('o', "hosted/demo/demo.whl", "override", false)]
+#[case::provenance('a', "pypi/flask/sha/flask-1.0.whl", "provenance", false)]
 fn test_fsck_names_a_record_it_cannot_read_and_marks_the_scan_incomplete(
     #[case] table: char,
     #[case] key: &str,
     #[case] record: &str,
+    // A project row is counted by the row it sits in whether or not its value reads back, so the
+    // project case leaves an index whose count row was never written, and the audit says so.
+    #[case] counted: bool,
 ) {
     let (dir, meta) = store();
     let blobs = BlobStore::new(dir.path().join("blobs")).into();
     meta.put_driver_value(&format!("pypi\u{0}{table}\u{0}{key}"), &[0xff, 0xfe])
         .unwrap();
     let mut output = Vec::new();
+    let uncounted = format!(
+        "metadata\tpypi\tsummary-count\t{:?}\tcount row is absent, rows hold 1 projects and 0 uploads\n",
+        "pypi\u{0}k\u{0}pypi"
+    );
 
-    let problems = fsck_metadata(&meta, &blobs, &mut output).unwrap();
+    let problems = fsck_metadata(&meta, &blobs, &audited_fixture(), &mut output).unwrap();
 
     assert_eq!(
         (problems, String::from_utf8(output).unwrap()),
         (
-            1,
+            1 + u64::from(counted),
             format!(
-                "metadata\tpypi\t{record}\t{key}\t{}\nmetadata\tpypi\t{record}\t*\tscan incomplete\n",
-                not_utf8_reason(table, key)
+                "metadata\tpypi\t{record}\t{key}\t{}\nmetadata\tpypi\t{record}\t*\tscan incomplete\n{}",
+                not_utf8_reason(table, key),
+                if counted { uncounted.as_str() } else { "" }
             )
         )
     );
@@ -691,15 +796,16 @@ fn test_fsck_still_checks_the_intact_rows_beside_one_it_cannot_read() {
         .unwrap();
     let mut output = Vec::new();
 
-    let problems = fsck_metadata(&meta, &blobs, &mut output).unwrap();
+    let problems = fsck_metadata(&meta, &blobs, &audited_fixture(), &mut output).unwrap();
 
     assert_eq!(
         (problems, String::from_utf8(output).unwrap()),
         (
-            2,
+            3,
             format!(
-                "metadata\tpypi\tproject\tpypi/flask\tinvalid record\nmetadata\tpypi\tproject\tpypi/torch\t{}\nmetadata\tpypi\tproject\t*\tscan incomplete\n",
-                not_utf8_reason('p', "pypi/torch")
+                "metadata\tpypi\tproject\tpypi/flask\tinvalid record\nmetadata\tpypi\tproject\tpypi/torch\t{}\nmetadata\tpypi\tproject\t*\tscan incomplete\nmetadata\tpypi\tsummary-count\t{:?}\tcount row is absent, rows hold 2 projects and 0 uploads\n",
+                not_utf8_reason('p', "pypi/torch"),
+                "pypi\u{0}k\u{0}pypi"
             )
         )
     );

@@ -6,8 +6,9 @@ use peryx_core::Ecosystem;
 
 use crate::serving::{
     BlobReferenceDriver, BrowseDriver, CacheDriver, CacheInspectDriver, CachePurgeDriver, CapabilityRegistrar,
-    EcosystemDriver, FsckDriver, ImportDriver, IndexCredentialDriver, IndexSummaryDriver, JobDriver, MetricsDriver,
-    NameDriver, PolicyDriver, PolicyDryRunDriver, RetentionDriver, ServiceDriver, TrashDriver,
+    EcosystemDriver, FsckDriver, ImportDriver, IndexCredentialDriver, IndexSummaryDriver, JobDriver,
+    MetadataRepairDriver, MetricsDriver, NameDriver, PolicyDriver, PolicyDryRunDriver, RetentionDriver, ServiceDriver,
+    TrashDriver,
 };
 
 #[derive(Clone, Default)]
@@ -20,6 +21,7 @@ pub struct DriverSet {
     policy_dry_runs: HashMap<Ecosystem, Arc<dyn PolicyDryRunDriver>>,
     blob_references: HashMap<Ecosystem, Arc<dyn BlobReferenceDriver>>,
     fsck: HashMap<Ecosystem, Arc<dyn FsckDriver>>,
+    metadata_repairs: HashMap<Ecosystem, Arc<dyn MetadataRepairDriver>>,
     retention: HashMap<Ecosystem, Arc<dyn RetentionDriver>>,
     cache: HashMap<Ecosystem, Arc<dyn CacheDriver>>,
     cache_inspections: HashMap<Ecosystem, Arc<dyn CacheInspectDriver>>,
@@ -172,6 +174,10 @@ impl DriverSet {
         self.fsck.iter()
     }
 
+    pub fn metadata_repair_drivers(&self) -> impl Iterator<Item = (&Ecosystem, &Arc<dyn MetadataRepairDriver>)> {
+        self.metadata_repairs.iter()
+    }
+
     #[must_use]
     pub fn get_job(&self, ecosystem: &Ecosystem) -> Option<&Arc<dyn JobDriver>> {
         self.jobs.get(ecosystem)
@@ -247,6 +253,9 @@ impl CapabilityRegistrar for DriverSet {
     }
     fn register_fsck(&mut self, ecosystem: Ecosystem, driver: Arc<dyn FsckDriver>) {
         self.fsck.insert(ecosystem, driver);
+    }
+    fn register_metadata_repair(&mut self, ecosystem: Ecosystem, driver: Arc<dyn MetadataRepairDriver>) {
+        self.metadata_repairs.insert(ecosystem, driver);
     }
     fn register_retention(&mut self, ecosystem: Ecosystem, driver: Arc<dyn RetentionDriver>) {
         self.retention.insert(ecosystem, driver);

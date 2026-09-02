@@ -35,7 +35,10 @@ pub use record::{
     AttestationAvailability, CachedIndex, CachedIndexPage, CachedIndexSummary, FreshnessOverlay, ProjectGeneration,
     ProjectMetaState, ProjectStatusRecord, UpstreamAttestation,
 };
-pub use summary::summarize_indexes;
+pub use summary::{
+    AuditedIndex, SummaryDefect, SummaryRowCounts, audit_summary_rows, repair_summary_rows, summarize_indexes,
+    summary_row_counts,
+};
 pub(crate) use summary::{
     put_cached_project_row, put_project_row, put_upload_row, remove_cached_project_row, remove_upload_row,
 };

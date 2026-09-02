@@ -8,10 +8,10 @@ use peryx_driver::cache_inspection::{
 };
 use peryx_plugin_registry::PluginRegistry;
 
-use super::fsck::fsck_cache;
+use super::fsck::{fsck_cache, repair_cache};
 use super::purge::{purge_orphaned_blobs, purge_resource, validate_orphan_purge_mode};
 use super::{CacheStores, index_names, reject_object_store_blob};
-use crate::cli::{CacheCommand, CacheListArgs, CachePurgeCommand};
+use crate::cli::{CacheCommand, CacheListArgs, CachePurgeCommand, CacheRepairArgs};
 use crate::config::Config;
 
 /// # Errors
@@ -33,18 +33,37 @@ pub fn cache_with_plugins(
     if matches!(command, CacheCommand::Purge(CachePurgeCommand::OrphanedBlobs(_))) {
         validate_orphan_purge_mode(config.availability.mode())?;
     }
-    let writable = matches!(command, CacheCommand::Purge(purge) if purge.confirmed());
+    let writable = matches!(command, CacheCommand::Purge(purge) if purge.confirmed())
+        || matches!(command, CacheCommand::Repair(args) if args.yes);
     let stores = CacheStores::open(config, &plugins, writable)?;
     let drivers = plugins.drivers();
     match command {
         CacheCommand::List(args) => list_cache(config, drivers, &stores, args, unix_now(), out),
         CacheCommand::Size(_) => size_cache(config, drivers, &stores, unix_now(), out),
-        CacheCommand::Fsck(_) => fsck_cache(drivers, &stores, out),
+        CacheCommand::Fsck(_) => fsck_cache(drivers, &stores, &configured_indexes(config, &plugins)?, out),
+        CacheCommand::Repair(args) => repair_summary_records(config, &plugins, drivers, &stores, args, out),
         CacheCommand::Purge(CachePurgeCommand::Resource(args)) => purge_resource(config, drivers, &stores, args, out),
         CacheCommand::Purge(CachePurgeCommand::OrphanedBlobs(args)) => {
             purge_orphaned_blobs(drivers, &stores, args, unix_now(), out)
         }
     }
+}
+
+/// Every configured index, built the way the server builds them so a virtual index resolves the layer
+/// positions its checks depend on.
+fn configured_indexes(config: &Config, plugins: &PluginRegistry) -> anyhow::Result<Vec<peryx_driver::Index>> {
+    crate::server::build_indexes_with_plugins(&config.indexes, &config.auth, config.offline, plugins)
+}
+
+fn repair_summary_records(
+    config: &Config,
+    plugins: &PluginRegistry,
+    drivers: &DriverSet,
+    stores: &CacheStores,
+    args: &CacheRepairArgs,
+    out: &mut dyn Write,
+) -> anyhow::Result<()> {
+    repair_cache(drivers, stores, &configured_indexes(config, plugins)?, args.yes, out)
 }
 
 fn list_cache(

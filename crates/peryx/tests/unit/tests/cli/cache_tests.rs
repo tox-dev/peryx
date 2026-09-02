@@ -4,8 +4,8 @@ use rstest::rstest;
 
 use super::parse;
 use crate::cli::{
-    CacheCommand, CacheListArgs, CachePurgeCommand, CachePurgeOrphanedBlobsArgs, CachePurgeResourceArgs, Command,
-    RuntimeArgs,
+    CacheCommand, CacheListArgs, CachePurgeCommand, CachePurgeOrphanedBlobsArgs, CachePurgeResourceArgs,
+    CacheRepairArgs, Command, RuntimeArgs,
 };
 
 #[test]
@@ -49,6 +49,7 @@ fn test_parse_cache_list_filters() {
 #[case::list(&["peryx", "cache", "list", "--data-dir", "/list"][..], "/list")]
 #[case::size(&["peryx", "cache", "size", "--data-dir", "/size"][..], "/size")]
 #[case::fsck(&["peryx", "cache", "fsck", "--data-dir", "/fsck"][..], "/fsck")]
+#[case::repair(&["peryx", "cache", "repair", "--data-dir", "/repair"][..], "/repair")]
 #[case::purge_resource(
     &[
         "peryx",
@@ -115,5 +116,19 @@ fn test_parse_cache_purge_orphaned_blobs_confirmation() {
                 yes: true,
             },
         )))
+    );
+}
+
+/// A rebuild writes, so it waits for the same confirmation a purge does.
+#[rstest]
+#[case::preview(&["peryx", "cache", "repair"][..], false)]
+#[case::confirmed(&["peryx", "cache", "repair", "--yes"][..], true)]
+fn test_parse_cache_repair_confirms_before_writing(#[case] argv: &[&str], #[case] yes: bool) {
+    assert_eq!(
+        parse(argv).command,
+        Command::Cache(CacheCommand::Repair(CacheRepairArgs {
+            runtime: RuntimeArgs::default(),
+            yes,
+        }))
     );
 }

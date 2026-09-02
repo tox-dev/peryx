@@ -409,10 +409,13 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> BlobReferenceDriver for O
 }
 
 impl<S: BuildHasher + Default + Send + Sync + 'static> FsckDriver for OciRegistryWithHasher<S> {
+    /// `indexes` names no OCI record: every OCI key carries its own repository, so a check reads the
+    /// owning repository off the row rather than off the configuration.
     fn fsck_metadata(
         &self,
         meta: &peryx_storage::meta::MetaStore,
         blobs: &peryx_storage::blob::BlobStorage,
+        _: &[peryx_index::Index],
         out: &mut dyn std::io::Write,
     ) -> Result<u64, String> {
         crate::store::fsck_metadata(meta, blobs, out)

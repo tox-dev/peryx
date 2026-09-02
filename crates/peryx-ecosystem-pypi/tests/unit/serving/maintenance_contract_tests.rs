@@ -8,7 +8,7 @@ use peryx_core::BrowseSection;
 use peryx_core::path::local_artifact_url;
 use peryx_driver::serving::{
     BrowseDriver as _, BrowseRequest, CacheDriver as _, IndexCredentialDriver as _, JobConfig, JobDriver as _,
-    NameDriver as _, PolicyDriver as _, ReplicatedApplyDriver as _, TrashDriver as _,
+    MetadataRepairDriver as _, NameDriver as _, PolicyDriver as _, ReplicatedApplyDriver as _, TrashDriver as _,
 };
 use peryx_driver::{AppState, ServingState};
 use peryx_identity::IndexAcl;
@@ -86,6 +86,8 @@ fn serving_delegates_name_policy_cache_and_trash() {
             "upload_records",
             "override_records",
             "provenance_records",
+            "summary_count_records",
+            "summary_order_records",
         ]
         .map(|kind| (kind.to_owned(), 0))
     );
@@ -548,4 +550,34 @@ fn serving_holds_the_frontier_when_a_replicated_generation_cannot_advance() {
         .unwrap_err();
 
     assert_eq!(block.view, peryx_driver::state::SEARCH_VIEW);
+}
+
+/// The repair capability reaches the same audit `fsck` reports through, so a preview names the row and
+/// a confirmed run rebuilds it.
+#[test]
+fn serving_previews_then_rebuilds_a_summary_row_no_write_path_maintained() {
+    let (_dir, state) = state();
+    state
+        .serving
+        .meta
+        .put_driver_value("pypi\u{0}p\u{0}hosted/flask", b"Flask")
+        .unwrap();
+    let indexes = [hosted_index()];
+    let mut previewed = Vec::new();
+    let mut repaired = Vec::new();
+    let mut again = Vec::new();
+
+    let planned = PypiServing
+        .preview_metadata_repair(&state.serving.meta, &indexes, &mut previewed)
+        .unwrap();
+    let rebuilt = PypiServing
+        .repair_metadata(&state.serving.meta, &indexes, &mut repaired)
+        .unwrap();
+    let remaining = PypiServing
+        .preview_metadata_repair(&state.serving.meta, &indexes, &mut again)
+        .unwrap();
+
+    assert_eq!((planned, rebuilt, remaining), (1, 1, 0));
+    assert_eq!(previewed, repaired);
+    assert!(again.is_empty());
 }

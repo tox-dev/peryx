@@ -138,3 +138,88 @@ const fn command() -> CacheCommand {
         runtime: runtime_args(),
     })
 }
+
+const fn repair_command(yes: bool) -> CacheCommand {
+    CacheCommand::Repair(crate::cli::CacheRepairArgs {
+        runtime: runtime_args(),
+        yes,
+    })
+}
+
+/// A store whose ecosystems offer no rebuildable records still answers, rather than refusing because
+/// nothing claimed the command.
+#[test]
+fn test_cache_repair_plans_nothing_when_no_ecosystem_can_rebuild() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = config_at(&dir);
+    let mut output = Vec::new();
+
+    cache_with_plugins(&config, &plugins(), &repair_command(false), &mut output).unwrap();
+
+    assert_eq!(output, b"planned\t0\n");
+}
+
+/// A preview reports without writing, which is why it can run against the read-only handle the
+/// exclusive metadata store leaves available while the server is up.
+#[test]
+fn test_cache_repair_previews_the_records_a_rebuild_would_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let plugins = crate::tests::support::plugins_with_fsck();
+    let config = crate::config::Config {
+        data_dir: dir.path().to_path_buf(),
+        ..crate::config::Config::with_plugins(&plugins)
+    };
+    MetaStore::open(config.data_dir.join("peryx.redb")).unwrap();
+    let mut output = Vec::new();
+
+    cache_with_plugins(&config, &plugins, &repair_command(false), &mut output).unwrap();
+
+    assert_eq!(output, b"metadata\tcore\twould rebuild\nplanned\t1\n");
+}
+
+#[test]
+fn test_cache_repair_rebuilds_when_confirmed() {
+    let dir = tempfile::tempdir().unwrap();
+    let plugins = crate::tests::support::plugins_with_fsck();
+    let config = crate::config::Config {
+        data_dir: dir.path().to_path_buf(),
+        ..crate::config::Config::with_plugins(&plugins)
+    };
+    MetaStore::open(config.data_dir.join("peryx.redb")).unwrap();
+    let mut output = Vec::new();
+
+    cache_with_plugins(&config, &plugins, &repair_command(true), &mut output).unwrap();
+
+    assert_eq!(output, b"metadata\tcore\trebuilt\nrepaired\t1\n");
+}
+
+#[test]
+fn test_cache_repair_propagates_plugin_output_failures() {
+    let dir = tempfile::tempdir().unwrap();
+    let plugins = crate::tests::support::plugins_with_fsck();
+    let config = crate::config::Config {
+        data_dir: dir.path().to_path_buf(),
+        ..crate::config::Config::with_plugins(&plugins)
+    };
+    MetaStore::open(config.data_dir.join("peryx.redb")).unwrap();
+
+    let error = cache_with_plugins(&config, &plugins, &repair_command(false), &mut bounded_output(0)).unwrap_err();
+
+    assert_eq!(
+        format!("{error:#}"),
+        "repair ecosystem metadata: failed to write whole buffer"
+    );
+}
+
+#[test]
+fn test_cache_repair_propagates_output_failures_on_its_own_summary_line() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = config_at(&dir);
+
+    let error = cache_with_plugins(&config, &plugins(), &repair_command(false), &mut bounded_output(0)).unwrap_err();
+
+    assert_eq!(
+        format!("{error:#}"),
+        "failed to write whole buffer: failed to write whole buffer"
+    );
+}

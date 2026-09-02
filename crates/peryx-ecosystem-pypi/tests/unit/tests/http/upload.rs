@@ -1817,7 +1817,7 @@ async fn test_pypi_maintenance_scans_walk_real_records() {
     );
     let mut report = Vec::new();
     crate::serving::PypiServing
-        .fsck_metadata(meta, blobs, &mut report)
+        .fsck_metadata(meta, blobs, &[], &mut report)
         .unwrap();
 
     let report = crate::serving::PypiServing

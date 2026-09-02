@@ -95,6 +95,7 @@ fn registry_fsck_accepts_consistent_oci_metadata() {
                 .fsck_metadata(
                     &meta,
                     &peryx_storage::blob::BlobStorage::filesystem(dir.path().join("blobs")),
+                    &[],
                     &mut output,
                 )
                 .unwrap(),
@@ -125,6 +126,7 @@ fn registry_fsck_reports_corrupt_manifests() {
             .fsck_metadata(
                 &meta,
                 &peryx_storage::blob::BlobStorage::filesystem(dir.path().join("blobs")),
+                &[],
                 &mut output,
             )
             .unwrap(),
@@ -167,6 +169,7 @@ fn registry_fsck_reports_missing_descriptor_content_and_tag_targets() {
             .fsck_metadata(
                 &meta,
                 &peryx_storage::blob::BlobStorage::filesystem(dir.path().join("blobs")),
+                &[],
                 &mut output,
             )
             .unwrap(),

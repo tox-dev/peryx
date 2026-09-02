@@ -170,6 +170,8 @@ peryx cache list --digest 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e730433
 peryx cache list --stale --min-age-secs 600 --min-size-bytes 1048576
 peryx cache size
 peryx cache fsck
+peryx cache repair
+peryx cache repair --yes
 peryx cache purge resource --index <index> --resource <resource>
 peryx cache purge resource --index <index> --resource <resource> --yes
 peryx cache purge orphaned-blobs
@@ -190,10 +192,20 @@ total. Unlike the other commands it walks past a record it cannot decode, so one
 store. It names that row and then prints a `scan incomplete` row for the namespace, because the checks that follow ran
 over fewer records than the namespace holds.
 
+`cache repair` rebuilds the records `cache fsck` reports that peryx can derive again from other records. A record whose
+value nothing else determines has no correct value to restore, so only derived records are in scope: today that is the
+`PyPI` per-index summary, whose counts and recent-upload order are maintained as rows beside the projects and uploads
+they describe. Each rebuilt row is recomputed from those rows, so a repaired store passes a re-run of `cache fsck`.
+
+`cache repair` previews by default, printing the same rows `cache fsck` prints for those records and a `planned` total,
+and changes nothing. Add `--yes` to rebuild them and get a `repaired` total instead. The preview reads without writing,
+which is what keeps it available while a server holds the store.
+
 `cache purge resource` removes the selected resource's cached metadata and unshared implementation records. It does not
 delete blob files; run `cache purge orphaned-blobs` after a resource purge to reclaim unreferenced blobs.
 
-Purge commands dry-run by default. Add `--yes` to delete the planned rows or blob files.
+Purge and repair commands dry-run by default. Add `--yes` to delete the planned rows or blob files, or to write the
+planned rebuilds.
 
 Every offline `cache` command opens the metadata store, and the store admits one holder at a time, so none of them run
 alongside `serve`. Use the [cache inspection API](@/core/repositories/cache-inspection.md) to list, measure, or check a

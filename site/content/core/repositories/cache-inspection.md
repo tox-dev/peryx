@@ -12,7 +12,7 @@ Each endpoint requires `administration:read` and a local administrator credentia
 `text/plain; charset=utf-8` with the same tab-separated rows as the matching offline command.
 
 `GET /+cache` matches `peryx cache list`. `GET /+cache/size` matches `peryx cache size`, and `GET /+cache/fsck` matches
-`peryx cache fsck`.
+`peryx cache fsck`. There is no endpoint for `peryx cache repair`: these endpoints read, and a rebuild writes.
 
 `GET /+cache` accepts the offline list filters as query parameters: `index`, `resource`, `digest`, `stale`,
 `min_age_secs`, and `min_size_bytes`.

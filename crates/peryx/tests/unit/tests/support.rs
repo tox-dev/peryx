@@ -237,6 +237,7 @@ static FSCK_DRIVER: Driver = Driver {
     capabilities: &[
         Capability::DirectoryImport,
         Capability::Fsck,
+        Capability::MetadataRepair,
         Capability::Mirroring,
         Capability::Names,
         Capability::Retention,
@@ -433,6 +434,7 @@ enum Capability {
     BrokenBlobReferences,
     DirectoryImport,
     Fsck,
+    MetadataRepair,
     Mirroring,
     Names,
     Retention,
@@ -462,6 +464,9 @@ impl Driver {
         if self.has(Capability::Fsck) {
             registrar.register_fsck(self.ecosystem.clone(), Arc::new(self.clone()));
         }
+        if self.has(Capability::MetadataRepair) {
+            registrar.register_metadata_repair(self.ecosystem.clone(), Arc::new(self.clone()));
+        }
     }
 }
 
@@ -486,11 +491,34 @@ fn driver_client_discovery_builds_the_route_endpoint() {
     assert_eq!(ClientDiscovery::client_endpoint(&DRIVER, "index"), "/index/");
 }
 
+impl peryx_driver::serving::MetadataRepairDriver for Driver {
+    fn preview_metadata_repair(
+        &self,
+        _: &MetaStore,
+        _: &[peryx_driver::Index],
+        out: &mut dyn std::io::Write,
+    ) -> Result<u64, String> {
+        writeln!(out, "metadata\t{}\twould rebuild", self.ecosystem.as_str()).map_err(|error| error.to_string())?;
+        Ok(1)
+    }
+
+    fn repair_metadata(
+        &self,
+        _: &MetaStore,
+        _: &[peryx_driver::Index],
+        out: &mut dyn std::io::Write,
+    ) -> Result<u64, String> {
+        writeln!(out, "metadata\t{}\trebuilt", self.ecosystem.as_str()).map_err(|error| error.to_string())?;
+        Ok(1)
+    }
+}
+
 impl FsckDriver for Driver {
     fn fsck_metadata(
         &self,
         _: &MetaStore,
         _: &peryx_storage::blob::BlobStorage,
+        _: &[peryx_driver::Index],
         out: &mut dyn std::io::Write,
     ) -> Result<u64, String> {
         writeln!(out, "metadata\t{}\tinvalid", self.ecosystem.as_str()).map_err(|error| error.to_string())?;

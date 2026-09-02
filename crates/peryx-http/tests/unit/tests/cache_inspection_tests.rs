@@ -70,6 +70,7 @@ impl FsckDriver for Inspector {
         &self,
         _meta: &MetaStore,
         _blobs: &BlobStorage,
+        _indexes: &[peryx_driver::Index],
         out: &mut dyn std::io::Write,
     ) -> Result<u64, String> {
         if matches!(self.failure, Some(Failure::Fsck)) {

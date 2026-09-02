@@ -10,6 +10,8 @@ pub enum CacheCommand {
     Size(CacheRuntimeArgs),
     /// Validate metadata records and blob hashes.
     Fsck(CacheRuntimeArgs),
+    /// Plan or rebuild the derived metadata records `fsck` reports.
+    Repair(CacheRepairArgs),
     /// Plan or run cache cleanup.
     #[command(subcommand)]
     Purge(CachePurgeCommand),
@@ -21,6 +23,7 @@ impl CacheCommand {
         match self {
             Self::List(args) => &args.runtime,
             Self::Size(args) | Self::Fsck(args) => &args.runtime,
+            Self::Repair(args) => &args.runtime,
             Self::Purge(CachePurgeCommand::Resource(args)) => &args.runtime,
             Self::Purge(CachePurgeCommand::OrphanedBlobs(args)) => &args.runtime,
         }
@@ -31,6 +34,16 @@ impl CacheCommand {
 pub struct CacheRuntimeArgs {
     #[command(flatten)]
     pub runtime: RuntimeArgs,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub struct CacheRepairArgs {
+    #[command(flatten)]
+    pub runtime: RuntimeArgs,
+
+    /// Rebuild the planned records; omission previews the plan.
+    #[arg(long)]
+    pub yes: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Args)]

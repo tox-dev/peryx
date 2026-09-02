@@ -41,6 +41,8 @@ pub enum CacheInspectionError {
     RepositoryEcosystems(#[source] MetaError),
     #[error("fsck ecosystem metadata: {0}")]
     EcosystemFsck(String),
+    #[error("repair ecosystem metadata: {0}")]
+    EcosystemRepair(String),
 }
 
 /// Normalizes a resource filter the way the stored keys it is compared against were normalized.
@@ -161,6 +163,7 @@ pub fn write_cache_fsck(
     drivers: &DriverSet,
     meta: &MetaStore,
     blobs: &BlobStorage,
+    indexes: &[peryx_index::Index],
     out: &mut dyn Write,
 ) -> Result<(), CacheInspectionError> {
     let mut problems = 0_u64;
@@ -181,7 +184,7 @@ pub fn write_cache_fsck(
     }
     for (_, driver) in ecosystem_drivers {
         problems += driver
-            .fsck_metadata(meta, blobs, out)
+            .fsck_metadata(meta, blobs, indexes, out)
             .map_err(CacheInspectionError::EcosystemFsck)?;
     }
     blobs
@@ -196,6 +199,38 @@ pub fn write_cache_fsck(
     } else {
         writeln!(out, "problems\t{problems}").map_err(CacheInspectionError::Write)?;
     }
+    Ok(())
+}
+
+/// Rebuild the derived records `fsck` reports, or, when `apply` is false, report what a rebuild would
+/// write without writing it.
+///
+/// A preview and a rebuild name the same records, because both come from the same comparison against
+/// the records those derived rows summarize. Only the rebuild needs a writable store, which is why the
+/// preview stays available while the server holds one.
+///
+/// # Errors
+/// Returns an ecosystem repair or output error.
+pub fn write_cache_repair(
+    drivers: &DriverSet,
+    meta: &MetaStore,
+    indexes: &[peryx_index::Index],
+    apply: bool,
+    out: &mut dyn Write,
+) -> Result<(), CacheInspectionError> {
+    let mut ecosystem_drivers = drivers.metadata_repair_drivers().collect::<Vec<_>>();
+    ecosystem_drivers.sort_unstable_by_key(|(ecosystem, _)| ecosystem.as_str());
+    let mut repaired = 0_u64;
+    for (_, driver) in ecosystem_drivers {
+        repaired += if apply {
+            driver.repair_metadata(meta, indexes, out)
+        } else {
+            driver.preview_metadata_repair(meta, indexes, out)
+        }
+        .map_err(CacheInspectionError::EcosystemRepair)?;
+    }
+    let label = if apply { "repaired" } else { "planned" };
+    writeln!(out, "{label}\t{repaired}").map_err(CacheInspectionError::Write)?;
     Ok(())
 }
 

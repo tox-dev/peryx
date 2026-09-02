@@ -23,8 +23,8 @@ use peryx_driver::rate_limit::RouteClass;
 use peryx_driver::serving::{
     BlobReferenceDriver, BrowseDriver, BrowseRequest, CacheDriver, CacheInspectDriver, CachePurgeDriver,
     CacheRefresher, EcosystemDriver, FsckDriver, ImportDriver, IndexSummaryDriver, IndexedProtocolDriver,
-    IntentFinalizer, JobDriver, MetricsDriver, NameDriver, PolicyDriver, PolicyDryRunDriver, RefreshSweep,
-    ReplicatedApplyDriver, RetentionDriver, ServiceDriver, TrashDriver,
+    IntentFinalizer, JobDriver, MetadataRepairDriver, MetricsDriver, NameDriver, PolicyDriver, PolicyDryRunDriver,
+    RefreshSweep, ReplicatedApplyDriver, RetentionDriver, ServiceDriver, TrashDriver,
 };
 use peryx_driver::state::{SEARCH_VIEW, ServingState, ViewBlock};
 use peryx_events::metrics::MetricFamily;
@@ -402,9 +402,30 @@ impl FsckDriver for PypiServing {
         &self,
         meta: &peryx_storage::meta::MetaStore,
         blobs: &peryx_storage::blob::BlobStorage,
+        indexes: &[Index],
         out: &mut dyn std::io::Write,
     ) -> Result<u64, String> {
-        crate::admin::fsck_metadata(meta, blobs, out)
+        crate::admin::fsck_metadata(meta, blobs, indexes, out)
+    }
+}
+
+impl MetadataRepairDriver for PypiServing {
+    fn preview_metadata_repair(
+        &self,
+        meta: &peryx_storage::meta::MetaStore,
+        indexes: &[Index],
+        out: &mut dyn std::io::Write,
+    ) -> Result<u64, String> {
+        crate::admin::preview_metadata_repair(meta, indexes, out)
+    }
+
+    fn repair_metadata(
+        &self,
+        meta: &peryx_storage::meta::MetaStore,
+        indexes: &[Index],
+        out: &mut dyn std::io::Write,
+    ) -> Result<u64, String> {
+        crate::admin::repair_metadata(meta, indexes, out)
     }
 }
 

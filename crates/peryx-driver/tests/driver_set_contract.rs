@@ -65,6 +65,7 @@ impl FsckDriver for Driver {
         &self,
         _meta: &peryx_storage::meta::MetaStore,
         _blobs: &peryx_storage::blob::BlobStorage,
+        _indexes: &[peryx_driver::Index],
         _out: &mut dyn std::io::Write,
     ) -> Result<u64, String> {
         Err("fsck".to_owned())
@@ -245,7 +246,7 @@ fn driver_set_registers_and_dispatches_independent_capabilities() {
             .next()
             .unwrap()
             .1
-            .fsck_metadata(&meta, &blobs, &mut Vec::new()),
+            .fsck_metadata(&meta, &blobs, &[], &mut Vec::new()),
         Err("fsck".to_owned())
     );
     let mut decisions = Vec::new();
