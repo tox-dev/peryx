@@ -358,8 +358,12 @@ impl EcosystemBrowse for PypiPlugin {
 
 #[cfg(feature = "serving")]
 impl EcosystemOpenApi for PypiPlugin {
-    fn paths(&self, paths: utoipa::openapi::PathsBuilder) -> utoipa::openapi::PathsBuilder {
-        openapi::openapi_paths(paths)
+    fn paths(
+        &self,
+        paths: utoipa::openapi::PathsBuilder,
+        reads: peryx_driver::route_auth::ReadExposure,
+    ) -> utoipa::openapi::PathsBuilder {
+        openapi::openapi_paths(paths, reads)
     }
 }
 

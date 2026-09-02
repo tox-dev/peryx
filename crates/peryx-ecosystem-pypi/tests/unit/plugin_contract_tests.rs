@@ -505,7 +505,15 @@ fn plugin_retention_capability_plans_hosted_uploads() {
 
 #[test]
 fn plugin_openapi_contains_every_pypi_surface() {
-    let paths = serde_json::to_value(EcosystemOpenApi::paths(&PypiPlugin, PathsBuilder::new()).build()).unwrap();
+    let paths = serde_json::to_value(
+        EcosystemOpenApi::paths(
+            &PypiPlugin,
+            PathsBuilder::new(),
+            peryx_driver::route_auth::ReadExposure::Protected,
+        )
+        .build(),
+    )
+    .unwrap();
     let actual: BTreeSet<&str> = paths.as_object().unwrap().keys().map(String::as_str).collect();
     let expected = BTreeSet::from([
         "/_/oidc/audience",

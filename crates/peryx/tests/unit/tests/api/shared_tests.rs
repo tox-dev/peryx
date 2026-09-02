@@ -34,8 +34,12 @@ fn test_oci_only_openapi_omits_the_pypi_shadow_path() {
 fn test_openapi_document_covers_every_endpoint() {
     let spec = serde_json::to_value(openapi()).unwrap();
     let documented: BTreeSet<String> = spec["paths"].as_object().unwrap().keys().cloned().collect();
-    let plugin_spec =
-        serde_json::to_value(crate::compiled_plugins().openapi_paths(PathsBuilder::new()).build()).unwrap();
+    let plugin_spec = serde_json::to_value(
+        crate::compiled_plugins()
+            .openapi_paths(PathsBuilder::new(), peryx_driver::route_auth::ReadExposure::Protected)
+            .build(),
+    )
+    .unwrap();
     let plugin_paths: BTreeSet<String> = plugin_spec.as_object().unwrap().keys().cloned().collect();
     let core_paths: BTreeSet<String> = documented.difference(&plugin_paths).cloned().collect();
     let expected = BTreeSet::from(
@@ -379,4 +383,44 @@ fn openapi_parameter<'a>(spec: &'a serde_json::Value, path: &str, method: &str, 
         .iter()
         .find(|parameter| parameter["name"] == name)
         .unwrap()
+}
+
+/// Every name an operation requires is a scheme the components section declares, and every declared
+/// scheme is required somewhere. A contract that names a credential it does not declare, or declares
+/// one no route takes, describes a client that cannot authenticate.
+#[test]
+fn test_every_required_security_scheme_is_declared_and_used() {
+    let spec = serde_json::to_value(openapi()).unwrap();
+    let declared: BTreeSet<&str> = spec["components"]["securitySchemes"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    let required: BTreeSet<&str> = spec["paths"]
+        .as_object()
+        .unwrap()
+        .values()
+        .flat_map(|methods| methods.as_object().unwrap().values())
+        .filter_map(|operation| operation.get("security"))
+        .flat_map(|requirements| requirements.as_array().unwrap())
+        .flat_map(|requirement| requirement.as_object().unwrap().keys())
+        .map(String::as_str)
+        .collect();
+
+    assert_eq!(declared, required);
+}
+
+/// A read-only credential must not imply writes, so a protected read names neither the write-granting
+/// scheme nor the alias it used to carry.
+#[test]
+#[cfg(feature = "composition-pypi")]
+fn test_protected_reads_do_not_require_the_write_scheme() {
+    let spec = serde_json::to_value(openapi()).unwrap();
+    let pull = &spec["paths"]["/{route}/simple/{project}/"]["get"]["security"];
+
+    assert_eq!(
+        *pull,
+        serde_json::json!([{"indexAccessToken": []}, {"bearerGrant": []}])
+    );
 }

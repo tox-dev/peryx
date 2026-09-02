@@ -436,7 +436,7 @@ fn challenge(service: &str, headers: &HeaderMap, scope: Option<&str>, error: Opt
 }
 
 fn basic_challenge() -> Response {
-    unauthorized("Basic realm=\"peryx\"")
+    unauthorized(peryx_driver::route_auth::BASIC_CHALLENGE)
 }
 
 /// A `401` with the distribution-spec error body and the given `WWW-Authenticate` value.

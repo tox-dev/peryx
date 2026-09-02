@@ -1,10 +1,11 @@
 use super::shared::{
-    OperationBuilder, ResponseBuilder, accept_param, forbidden_read_response, json, json_response,
-    policy_denial_response, project_param, route_param, unauthorized_read_response,
+    OperationBuilder, ReadExposure, ResponseBuilder, RouteAuth, accept_param, forbidden_read_response, json,
+    json_response, policy_denial_response, project_param, read_challenge, route_param,
 };
 
-pub(super) fn project_list() -> OperationBuilder {
-    OperationBuilder::new()
+pub(super) fn project_list(reads: ReadExposure) -> OperationBuilder {
+    RouteAuth::Read(reads)
+        .operation(read_challenge())
         .tag("simple")
         .summary(Some("List projects"))
         .description(Some(
@@ -24,12 +25,11 @@ pub(super) fn project_list() -> OperationBuilder {
                 }),
             ),
         )
-        .response("401", unauthorized_read_response())
         .response("403", forbidden_read_response())
         .response("404", ResponseBuilder::new().description("No index at this route"))
 }
-pub(super) fn project_detail() -> OperationBuilder {
-    OperationBuilder::new()
+pub(super) fn project_detail(reads: ReadExposure) -> OperationBuilder {
+    RouteAuth::Read(reads).operation(read_challenge())
         .tag("simple")
         .summary(Some("Project detail"))
         .description(Some(
@@ -66,7 +66,6 @@ pub(super) fn project_detail() -> OperationBuilder {
                 }),
             ),
         )
-        .response("401", unauthorized_read_response())
         .response(
             "403",
             policy_denial_response("Index policy denied the project detail", "serve"),

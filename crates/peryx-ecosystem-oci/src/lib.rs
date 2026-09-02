@@ -275,8 +275,12 @@ impl EcosystemBrowse for OciPlugin {
 }
 
 impl EcosystemOpenApi for OciPlugin {
-    fn paths(&self, paths: utoipa::openapi::PathsBuilder) -> utoipa::openapi::PathsBuilder {
-        openapi::openapi_paths(paths)
+    fn paths(
+        &self,
+        paths: utoipa::openapi::PathsBuilder,
+        reads: peryx_driver::route_auth::ReadExposure,
+    ) -> utoipa::openapi::PathsBuilder {
+        openapi::openapi_paths(paths, reads)
     }
 }
 
@@ -488,7 +492,7 @@ fn browse_denial(denial: Denial) -> Response {
         Denial::Forbidden => StatusCode::FORBIDDEN.into_response(),
         Denial::Unavailable | Denial::Unauthenticated => (
             StatusCode::UNAUTHORIZED,
-            [(header::WWW_AUTHENTICATE, "Basic realm=\"peryx\"")],
+            [(header::WWW_AUTHENTICATE, peryx_driver::route_auth::BASIC_CHALLENGE)],
         )
             .into_response(),
     }

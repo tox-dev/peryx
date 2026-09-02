@@ -786,7 +786,7 @@ fn authorize(
     Err(match denial {
         Denial::Unauthenticated => (
             StatusCode::UNAUTHORIZED,
-            [(header::WWW_AUTHENTICATE, "Basic realm=\"peryx\"")],
+            [(header::WWW_AUTHENTICATE, peryx_driver::route_auth::BASIC_CHALLENGE)],
             "unauthorized",
         )
             .into_response(),

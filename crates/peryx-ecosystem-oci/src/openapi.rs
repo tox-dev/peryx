@@ -10,20 +10,21 @@ use utoipa::openapi::header::{Header, HeaderBuilder};
 use utoipa::openapi::path::{HttpMethod, OperationBuilder, ParameterBuilder, ParameterIn, PathItemBuilder};
 use utoipa::openapi::request_body::RequestBodyBuilder;
 use utoipa::openapi::schema::{KnownFormat, ObjectBuilder, SchemaFormat, Type};
-use utoipa::openapi::{PathsBuilder, Required, ResponseBuilder, SecurityRequirement};
+use utoipa::openapi::{PathsBuilder, Required, ResponseBuilder};
 
 use peryx_driver::openapi::{api_json_response, bounded_integer_parameter, parameter, query_param};
+use peryx_driver::route_auth::{ReadExposure, RouteAuth};
 
 /// The OCI distribution-spec `/v2/` routes an OCI index serves, plus peryx's own restore and layer
 /// browser. The composition root folds each ecosystem's paths into one document.
 #[must_use]
-pub fn openapi_paths(paths: PathsBuilder) -> PathsBuilder {
+pub fn openapi_paths(paths: PathsBuilder, reads: ReadExposure) -> PathsBuilder {
     paths
         .path(
             "/v2/",
             PathItemBuilder::new()
-                .operation(HttpMethod::Get, oci_version_check())
-                .operation(HttpMethod::Head, oci_version_head())
+                .operation(HttpMethod::Get, oci_version_check(reads))
+                .operation(HttpMethod::Head, oci_version_head(reads))
                 .build(),
         )
         .path(
@@ -32,13 +33,15 @@ pub fn openapi_paths(paths: PathsBuilder) -> PathsBuilder {
         )
         .path(
             "/v2/_catalog",
-            PathItemBuilder::new().operation(HttpMethod::Get, oci_catalog()).build(),
+            PathItemBuilder::new()
+                .operation(HttpMethod::Get, oci_catalog(reads))
+                .build(),
         )
         .path(
             "/v2/{name}/manifests/{reference}",
             PathItemBuilder::new()
-                .operation(HttpMethod::Get, oci_manifest_pull())
-                .operation(HttpMethod::Head, oci_manifest_head())
+                .operation(HttpMethod::Get, oci_manifest_pull(reads))
+                .operation(HttpMethod::Head, oci_manifest_head(reads))
                 .operation(HttpMethod::Put, oci_manifest_push())
                 .operation(HttpMethod::Delete, oci_manifest_delete())
                 .build(),
@@ -52,15 +55,15 @@ pub fn openapi_paths(paths: PathsBuilder) -> PathsBuilder {
         .path(
             "/v2/{name}/blobs/{digest}",
             PathItemBuilder::new()
-                .operation(HttpMethod::Get, oci_blob_pull())
-                .operation(HttpMethod::Head, oci_blob_head())
+                .operation(HttpMethod::Get, oci_blob_pull(reads))
+                .operation(HttpMethod::Head, oci_blob_head(reads))
                 .operation(HttpMethod::Delete, oci_blob_delete())
                 .build(),
         )
         .path(
             "/v2/{name}/blobs/{digest}/contents",
             PathItemBuilder::new()
-                .operation(HttpMethod::Get, oci_layer_contents())
+                .operation(HttpMethod::Get, oci_layer_contents(reads))
                 .build(),
         )
         .path(
@@ -81,14 +84,14 @@ pub fn openapi_paths(paths: PathsBuilder) -> PathsBuilder {
         .path(
             "/v2/{name}/tags/list",
             PathItemBuilder::new()
-                .operation(HttpMethod::Get, oci_tags_list())
+                .operation(HttpMethod::Get, oci_tags_list(reads))
                 .build(),
         )
         .path(
             "/v2/{name}/referrers/{digest}",
             PathItemBuilder::new()
-                .operation(HttpMethod::Get, oci_referrers())
-                .operation(HttpMethod::Head, oci_referrers_head())
+                .operation(HttpMethod::Get, oci_referrers(reads))
+                .operation(HttpMethod::Head, oci_referrers_head(reads))
                 .build(),
         )
 }
@@ -191,8 +194,9 @@ fn oci_challenge(description: &str, scope: &str) -> ResponseBuilder {
     )
 }
 
-fn oci_version_check() -> OperationBuilder {
-    OperationBuilder::new()
+fn oci_version_check(reads: ReadExposure) -> OperationBuilder {
+    RouteAuth::Read(reads)
+        .operation(oci_challenge("An OCI index restricts access", ""))
         .tag("oci")
         .summary(Some("Registry version check"))
         .description(Some(
@@ -207,11 +211,11 @@ fn oci_version_check() -> OperationBuilder {
                 .description("Registry API capability response")
                 .header("Docker-Distribution-API-Version", header("Always `registry/2.0`")),
         )
-        .response("401", oci_challenge("An OCI index restricts access", ""))
 }
 
-fn oci_version_head() -> OperationBuilder {
-    OperationBuilder::new()
+fn oci_version_head(reads: ReadExposure) -> OperationBuilder {
+    RouteAuth::Read(reads)
+        .operation(oci_challenge("An OCI index restricts access", ""))
         .tag("oci")
         .summary(Some("Registry version check without a body"))
         .description(Some("The version check's headers alone. Same statuses as the `GET`."))
@@ -221,7 +225,6 @@ fn oci_version_head() -> OperationBuilder {
                 .description("Registry API capability response")
                 .header("Docker-Distribution-API-Version", header("Always `registry/2.0`")),
         )
-        .response("401", oci_challenge("An OCI index restricts access", ""))
 }
 
 fn oci_token() -> OperationBuilder {
@@ -284,8 +287,12 @@ fn oci_token() -> OperationBuilder {
         )
 }
 
-fn oci_catalog() -> OperationBuilder {
-    OperationBuilder::new()
+fn oci_catalog(reads: ReadExposure) -> OperationBuilder {
+    RouteAuth::Read(reads)
+        .operation(oci_challenge(
+            "A private OCI index is configured and the request carries no `registry:catalog:*` grant",
+            "registry:catalog:*",
+        ))
         .tag("oci")
         .summary(Some("List repositories"))
         .description(Some(
@@ -318,17 +325,11 @@ fn oci_catalog() -> OperationBuilder {
                 header("`</v2/_catalog?n=<n>&last=<marker>>; rel=\"next\"`, present only when more remains"),
             ),
         )
-        .response(
-            "401",
-            oci_challenge(
-                "A private OCI index is configured and the request carries no `registry:catalog:*` grant",
-                "registry:catalog:*",
-            ),
-        )
 }
 
-fn oci_manifest_pull() -> OperationBuilder {
-    OperationBuilder::new()
+fn oci_manifest_pull(reads: ReadExposure) -> OperationBuilder {
+    RouteAuth::Read(reads)
+        .operation(oci_challenge("The index refuses this read", "repository:<name>:pull"))
         .tag("oci")
         .summary(Some("Pull a manifest"))
         .description(Some(
@@ -358,10 +359,6 @@ fn oci_manifest_pull() -> OperationBuilder {
             ),
         )
         .response(
-            "401",
-            oci_challenge("The index refuses this read", "repository:<name>:pull"),
-        )
-        .response(
             "404",
             oci_error(
                 "No member can serve the reference",
@@ -371,8 +368,9 @@ fn oci_manifest_pull() -> OperationBuilder {
         )
 }
 
-fn oci_manifest_head() -> OperationBuilder {
-    OperationBuilder::new()
+fn oci_manifest_head(reads: ReadExposure) -> OperationBuilder {
+    RouteAuth::Read(reads)
+        .operation(oci_challenge("The index refuses this read", "repository:<name>:pull"))
         .tag("oci")
         .summary(Some("Check a manifest"))
         .description(Some(
@@ -397,10 +395,6 @@ fn oci_manifest_head() -> OperationBuilder {
                 "DIGEST_INVALID",
                 "manifest digest is invalid",
             ),
-        )
-        .response(
-            "401",
-            oci_challenge("The index refuses this read", "repository:<name>:pull"),
         )
         .response(
             "404",
@@ -456,7 +450,11 @@ fn manifest_not_modified_response() -> ResponseBuilder {
 }
 
 fn oci_manifest_push() -> OperationBuilder {
-    OperationBuilder::new()
+    RouteAuth::Write
+        .operation(oci_challenge(
+            "Missing or wrong credentials",
+            "repository:<name>:pull,push",
+        ))
         .tag("oci")
         .summary(Some("Push a manifest"))
         .description(Some(
@@ -465,7 +463,6 @@ fn oci_manifest_push() -> OperationBuilder {
              `Content-Type` declares and may name only blobs and child manifests this repository can \
              already serve. Requires a writable hosted index and its upload token.",
         ))
-        .security(SecurityRequirement::new("uploadToken", Vec::<String>::new()))
         .parameter(name_param())
         .parameter(reference_param())
         .parameter(parameter(
@@ -525,10 +522,6 @@ fn oci_manifest_push() -> OperationBuilder {
             ),
         )
         .response(
-            "401",
-            oci_challenge("Missing or wrong credentials", "repository:<name>:pull,push"),
-        )
-        .response(
             "403",
             oci_error(
                 "Read-only index, uploads disabled, or blocked by policy",
@@ -547,7 +540,11 @@ fn oci_manifest_push() -> OperationBuilder {
 }
 
 fn oci_manifest_delete() -> OperationBuilder {
-    OperationBuilder::new()
+    RouteAuth::Write
+        .operation(oci_challenge(
+            "Missing or wrong credentials",
+            "repository:<name>:pull,delete",
+        ))
         .tag("oci")
         .summary(Some("Trash a manifest or tag"))
         .description(Some(
@@ -555,7 +552,6 @@ fn oci_manifest_delete() -> OperationBuilder {
              tag alone; deleting a digest hides it and every tag in this repository pointing at it. \
              Repositories that share the same content stay visible.",
         ))
-        .security(SecurityRequirement::new("uploadToken", Vec::<String>::new()))
         .parameter(name_param())
         .parameter(reference_param())
         .parameter(parameter(
@@ -574,10 +570,6 @@ fn oci_manifest_delete() -> OperationBuilder {
             ),
         )
         .response(
-            "401",
-            oci_challenge("Missing or wrong credentials", "repository:<name>:pull,delete"),
-        )
-        .response(
             "403",
             oci_error("Read-only index or uploads disabled", "DENIED", "index is read-only"),
         )
@@ -588,7 +580,11 @@ fn oci_manifest_delete() -> OperationBuilder {
 }
 
 fn oci_manifest_restore() -> OperationBuilder {
-    OperationBuilder::new()
+    RouteAuth::Write
+        .operation(oci_challenge(
+            "Missing or wrong credentials",
+            "repository:<name>:pull,delete",
+        ))
         .tag("oci")
         .summary(Some("Restore a trashed manifest or tag"))
         .description(Some(
@@ -596,7 +592,6 @@ fn oci_manifest_restore() -> OperationBuilder {
              again. Digest restore reclaims tags whose live slot is empty and reports reused tags \
              without overwriting them.",
         ))
-        .security(SecurityRequirement::new("uploadToken", Vec::<String>::new()))
         .parameter(name_param())
         .parameter(reference_param())
         .response(
@@ -609,10 +604,6 @@ fn oci_manifest_restore() -> OperationBuilder {
                     "OCI-Tag-Conflicts",
                     header("Comma-separated tags left alone because another digest holds them"),
                 ),
-        )
-        .response(
-            "401",
-            oci_challenge("Missing or wrong credentials", "repository:<name>:pull,delete"),
         )
         .response(
             "403",
@@ -628,8 +619,9 @@ fn oci_manifest_restore() -> OperationBuilder {
         )
 }
 
-fn oci_blob_pull() -> OperationBuilder {
-    OperationBuilder::new()
+fn oci_blob_pull(reads: ReadExposure) -> OperationBuilder {
+    RouteAuth::Read(reads)
+        .operation(oci_challenge("The index refuses this read", "repository:<name>:pull"))
         .tag("oci")
         .summary(Some("Pull a blob"))
         .description(Some(
@@ -668,10 +660,6 @@ fn oci_blob_pull() -> OperationBuilder {
             ),
         )
         .response(
-            "401",
-            oci_challenge("The index refuses this read", "repository:<name>:pull"),
-        )
-        .response(
             "404",
             oci_error(
                 "Neither stored under this repository nor available upstream",
@@ -687,8 +675,9 @@ fn oci_blob_pull() -> OperationBuilder {
         )
 }
 
-fn oci_blob_head() -> OperationBuilder {
-    OperationBuilder::new()
+fn oci_blob_head(reads: ReadExposure) -> OperationBuilder {
+    RouteAuth::Read(reads)
+        .operation(oci_challenge("The index refuses this read", "repository:<name>:pull"))
         .tag("oci")
         .summary(Some("Check a blob"))
         .description(Some(
@@ -708,10 +697,6 @@ fn oci_blob_head() -> OperationBuilder {
                 "DIGEST_INVALID",
                 "only sha256 blob digests are supported",
             ),
-        )
-        .response(
-            "401",
-            oci_challenge("The index refuses this read", "repository:<name>:pull"),
         )
         .response(
             "404",
@@ -747,7 +732,11 @@ fn blob_not_modified_response() -> ResponseBuilder {
 }
 
 fn oci_blob_delete() -> OperationBuilder {
-    OperationBuilder::new()
+    RouteAuth::Write
+        .operation(oci_challenge(
+            "Missing or wrong credentials",
+            "repository:<name>:pull,delete",
+        ))
         .tag("oci")
         .summary(Some("Delete a blob"))
         .description(Some(
@@ -755,7 +744,6 @@ fn oci_blob_delete() -> OperationBuilder {
              shared content store for `cache purge orphaned-blobs` to reclaim once no provider \
              references it.",
         ))
-        .security(SecurityRequirement::new("uploadToken", Vec::<String>::new()))
         .parameter(name_param())
         .parameter(digest_param())
         .response("202", ResponseBuilder::new().description("Removed"))
@@ -768,10 +756,6 @@ fn oci_blob_delete() -> OperationBuilder {
             ),
         )
         .response(
-            "401",
-            oci_challenge("Missing or wrong credentials", "repository:<name>:pull,delete"),
-        )
-        .response(
             "403",
             oci_error("Read-only index or uploads disabled", "DENIED", "index is read-only"),
         )
@@ -781,8 +765,9 @@ fn oci_blob_delete() -> OperationBuilder {
         )
 }
 
-fn oci_layer_contents() -> OperationBuilder {
-    OperationBuilder::new()
+fn oci_layer_contents(reads: ReadExposure) -> OperationBuilder {
+    RouteAuth::Read(reads)
+        .operation(oci_challenge("The index refuses this read", "repository:<name>:pull"))
         .tag("oci")
         .summary(Some("Browse a layer's files"))
         .description(Some(
@@ -852,7 +837,11 @@ fn oci_layer_contents() -> OperationBuilder {
 }
 
 fn oci_blob_upload_start() -> OperationBuilder {
-    OperationBuilder::new()
+    RouteAuth::Write
+        .operation(oci_challenge(
+            "Missing or wrong credentials, or no pull grant on the `from` repository",
+            "repository:<name>:pull,push",
+        ))
         .tag("oci")
         .summary(Some("Begin, mount, or monolithically push a blob"))
         .description(Some(
@@ -862,7 +851,6 @@ fn oci_blob_upload_start() -> OperationBuilder {
              pushes the whole blob in this request body (spec end-4b). A bare `POST` opens a session the \
              client fills with `PATCH` and closes with `PUT` (spec end-4a).",
         ))
-        .security(SecurityRequirement::new("uploadToken", Vec::<String>::new()))
         .parameter(name_param())
         .parameter(query_param(
             "digest",
@@ -900,13 +888,6 @@ fn oci_blob_upload_start() -> OperationBuilder {
             ),
         )
         .response(
-            "401",
-            oci_challenge(
-                "Missing or wrong credentials, or no pull grant on the `from` repository",
-                "repository:<name>:pull,push",
-            ),
-        )
-        .response(
             "403",
             oci_error(
                 "Read-only index, uploads disabled, blocked by policy, or over the index's size limit",
@@ -917,21 +898,20 @@ fn oci_blob_upload_start() -> OperationBuilder {
 }
 
 fn oci_blob_upload_status() -> OperationBuilder {
-    OperationBuilder::new()
+    RouteAuth::Write
+        .operation(oci_challenge(
+            "Missing or wrong credentials",
+            "repository:<name>:pull,push",
+        ))
         .tag("oci")
         .summary(Some("Report upload progress"))
         .description(Some(
             "The bytes the session has received (spec end-13). A status read counts as activity, so it \
              holds the session against the one-hour idle reclamation.",
         ))
-        .security(SecurityRequirement::new("uploadToken", Vec::<String>::new()))
         .parameter(name_param())
         .parameter(session_param())
         .response("204", upload_session_response("Current upload offset"))
-        .response(
-            "401",
-            oci_challenge("Missing or wrong credentials", "repository:<name>:pull,push"),
-        )
         .response(
             "403",
             oci_error("Read-only index or uploads disabled", "DENIED", "index is read-only"),
@@ -960,7 +940,11 @@ fn upload_session_response(description: &str) -> ResponseBuilder {
 }
 
 fn oci_blob_upload_chunk() -> OperationBuilder {
-    OperationBuilder::new()
+    RouteAuth::Write
+        .operation(oci_challenge(
+            "Missing or wrong credentials",
+            "repository:<name>:pull,push",
+        ))
         .tag("oci")
         .summary(Some("Append a chunk"))
         .description(Some(
@@ -968,16 +952,11 @@ fn oci_blob_upload_chunk() -> OperationBuilder {
              mid-body failure leaves the session recorded at the bytes that reached disk, so a client \
              resumes from the reported `Range` rather than re-uploading.",
         ))
-        .security(SecurityRequirement::new("uploadToken", Vec::<String>::new()))
         .parameter(name_param())
         .parameter(session_param())
         .parameter(content_range_param())
         .request_body(Some(blob_body("The chunk's bytes").build()))
         .response("202", upload_session_response("Appended"))
-        .response(
-            "401",
-            oci_challenge("Missing or wrong credentials", "repository:<name>:pull,push"),
-        )
         .response(
             "403",
             oci_error(
@@ -1004,7 +983,11 @@ fn oci_blob_upload_chunk() -> OperationBuilder {
 }
 
 fn oci_blob_upload_finish() -> OperationBuilder {
-    OperationBuilder::new()
+    RouteAuth::Write
+        .operation(oci_challenge(
+            "Missing or wrong credentials",
+            "repository:<name>:pull,push",
+        ))
         .tag("oci")
         .summary(Some("Finish an upload"))
         .description(Some(
@@ -1013,7 +996,6 @@ fn oci_blob_upload_finish() -> OperationBuilder {
              leaves the stage and offset untouched and the client can retry the same final chunk without \
              appending it twice.",
         ))
-        .security(SecurityRequirement::new("uploadToken", Vec::<String>::new()))
         .parameter(name_param())
         .parameter(session_param())
         .parameter(query_param("digest", "The whole blob's digest", json!("sha256:2c3e...")).required(Required::True))
@@ -1034,10 +1016,6 @@ fn oci_blob_upload_finish() -> OperationBuilder {
                 "DIGEST_INVALID",
                 "finishing an upload requires a digest",
             ),
-        )
-        .response(
-            "401",
-            oci_challenge("Missing or wrong credentials", "repository:<name>:pull,push"),
         )
         .response(
             "403",
@@ -1065,21 +1043,20 @@ fn oci_blob_upload_finish() -> OperationBuilder {
 }
 
 fn oci_blob_upload_cancel() -> OperationBuilder {
-    OperationBuilder::new()
+    RouteAuth::Write
+        .operation(oci_challenge(
+            "Missing or wrong credentials",
+            "repository:<name>:pull,push",
+        ))
         .tag("oci")
         .summary(Some("Cancel an upload session"))
         .description(Some(
             "Drops the session's durable record and its staged bytes (spec end-14), so a client that \
              abandons a push reclaims the disk immediately instead of waiting for the idle sweep.",
         ))
-        .security(SecurityRequirement::new("uploadToken", Vec::<String>::new()))
         .parameter(name_param())
         .parameter(session_param())
         .response("204", ResponseBuilder::new().description("Cancelled"))
-        .response(
-            "401",
-            oci_challenge("Missing or wrong credentials", "repository:<name>:pull,push"),
-        )
         .response(
             "403",
             oci_error("Read-only index or uploads disabled", "DENIED", "index is read-only"),
@@ -1095,8 +1072,9 @@ fn oci_blob_upload_cancel() -> OperationBuilder {
         )
 }
 
-fn oci_tags_list() -> OperationBuilder {
-    OperationBuilder::new()
+fn oci_tags_list(reads: ReadExposure) -> OperationBuilder {
+    RouteAuth::Read(reads)
+        .operation(oci_challenge("The index refuses this read", "repository:<name>:pull"))
         .tag("oci")
         .summary(Some("List tags"))
         .description(Some(
@@ -1126,10 +1104,6 @@ fn oci_tags_list() -> OperationBuilder {
             ),
         )
         .response(
-            "401",
-            oci_challenge("The index refuses this read", "repository:<name>:pull"),
-        )
-        .response(
             "404",
             oci_error(
                 "`name` matches no OCI index route",
@@ -1139,8 +1113,9 @@ fn oci_tags_list() -> OperationBuilder {
         )
 }
 
-fn oci_referrers() -> OperationBuilder {
-    OperationBuilder::new()
+fn oci_referrers(reads: ReadExposure) -> OperationBuilder {
+    RouteAuth::Read(reads)
+        .operation(oci_challenge("The index refuses this read", "repository:<name>:pull"))
         .tag("oci")
         .summary(Some("List referrers"))
         .description(Some(
@@ -1166,10 +1141,6 @@ fn oci_referrers() -> OperationBuilder {
             ),
         )
         .response(
-            "401",
-            oci_challenge("The index refuses this read", "repository:<name>:pull"),
-        )
-        .response(
             "404",
             oci_error(
                 "`name` matches no OCI index route",
@@ -1179,8 +1150,9 @@ fn oci_referrers() -> OperationBuilder {
         )
 }
 
-fn oci_referrers_head() -> OperationBuilder {
-    OperationBuilder::new()
+fn oci_referrers_head(reads: ReadExposure) -> OperationBuilder {
+    RouteAuth::Read(reads)
+        .operation(oci_challenge("The index refuses this read", "repository:<name>:pull"))
         .tag("oci")
         .summary(Some("Check the referrers listing"))
         .description(Some(
@@ -1202,10 +1174,6 @@ fn oci_referrers_head() -> OperationBuilder {
                 "DIGEST_INVALID",
                 "referrers digest is malformed",
             ),
-        )
-        .response(
-            "401",
-            oci_challenge("The index refuses this read", "repository:<name>:pull"),
         )
         .response(
             "404",

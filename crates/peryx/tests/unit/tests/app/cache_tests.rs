@@ -312,7 +312,7 @@ async fn test_cache_plugin_contract() {
     );
     assert!(
         plugins
-            .openapi_paths(PathsBuilder::new())
+            .openapi_paths(PathsBuilder::new(), peryx_driver::route_auth::ReadExposure::Protected)
             .build()
             .paths
             .contains_key("/cache-fixture")
@@ -551,7 +551,7 @@ impl peryx_driver::serving::DistributedRuntime for CachePlugin {
 }
 
 impl EcosystemOpenApi for CachePlugin {
-    fn paths(&self, paths: PathsBuilder) -> PathsBuilder {
+    fn paths(&self, paths: PathsBuilder, _reads: peryx_driver::route_auth::ReadExposure) -> PathsBuilder {
         paths.path("/cache-fixture", PathItem::new(HttpMethod::Get, Operation::new()))
     }
 }

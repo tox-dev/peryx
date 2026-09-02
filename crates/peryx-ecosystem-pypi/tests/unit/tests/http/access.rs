@@ -350,3 +350,82 @@ async fn test_virtual_route_over_public_layers_stays_open() {
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains(WHEEL), "{body}");
 }
+
+/// Every documented read this ecosystem guards, with a request that reaches it. `<digest>` stands for
+/// the seeded wheel's sha256.
+const DOCUMENTED_READS: &[(&str, &str)] = &[
+    ("/{route}/simple/", "/vault/simple/"),
+    ("/{route}/simple/{project}/", "/vault/simple/peryxpkg/"),
+    ("/{route}/{project}/json", "/vault/peryxpkg/json"),
+    ("/{route}/{project}/{version}/json", "/vault/peryxpkg/1.0/json"),
+    (
+        "/{route}/files/{sha256}/{filename}",
+        "/vault/files/<digest>/peryxpkg-1.0-py3-none-any.whl",
+    ),
+    (
+        "/{route}/files/{sha256}/{filename}.metadata",
+        "/vault/files/<digest>/peryxpkg-1.0-py3-none-any.whl.metadata",
+    ),
+    (
+        "/{route}/inspect/{sha256}/{filename}",
+        "/vault/inspect/<digest>/peryxpkg-1.0-py3-none-any.whl",
+    ),
+    (
+        "/{route}/inspect/{sha256}/{filename}/{member}",
+        "/vault/inspect/<digest>/peryxpkg-1.0-py3-none-any.whl/peryxpkg-1.0.dist-info/METADATA",
+    ),
+];
+
+fn guarded_read_templates(paths: &serde_json::Value) -> BTreeSet<&str> {
+    paths
+        .as_object()
+        .unwrap()
+        .iter()
+        .filter(|(_, methods)| {
+            methods["get"]["security"].as_array().is_some_and(|requirements| {
+                requirements.iter().any(|requirement| {
+                    requirement
+                        .get(peryx_driver::route_auth::ApiScheme::IndexAccessToken.name())
+                        .is_some()
+                })
+            })
+        })
+        .map(|(template, _)| template.as_str())
+        .collect()
+}
+
+/// The document declares an index access token on exactly the reads a private index challenges, and
+/// the challenge it sends is the `Basic` scheme that token arrives in. Both sides read one description
+/// of what the route takes, and this is what keeps them from drifting apart.
+#[tokio::test]
+async fn test_documented_read_security_matches_what_a_private_index_challenges() {
+    let paths = serde_json::to_value(
+        peryx_driver::serving::EcosystemOpenApi::paths(
+            &crate::PypiPlugin,
+            utoipa::openapi::PathsBuilder::new(),
+            peryx_driver::route_auth::ReadExposure::Protected,
+        )
+        .build(),
+    )
+    .unwrap();
+    let (_dir, state, digest) = seeded(private_acl(&["*"])).await;
+
+    assert_eq!(
+        guarded_read_templates(&paths),
+        DOCUMENTED_READS.iter().map(|(template, _)| *template).collect()
+    );
+    for (template, uri) in DOCUMENTED_READS {
+        let (status, headers, _) = get_with_auth(&state, &uri.replace("<digest>", digest.as_str()), None).await;
+        let challenged = headers[header::WWW_AUTHENTICATE].to_str().unwrap();
+        assert_eq!(
+            (status, challenged),
+            (StatusCode::UNAUTHORIZED, peryx_driver::route_auth::BASIC_CHALLENGE),
+            "{template}"
+        );
+        assert_eq!(
+            peryx_driver::route_auth::ApiScheme::IndexAccessToken.auth_scheme(),
+            challenged.split(' ').next().unwrap(),
+            "{template}"
+        );
+    }
+}

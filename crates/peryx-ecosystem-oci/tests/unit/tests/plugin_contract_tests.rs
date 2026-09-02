@@ -282,9 +282,15 @@ async fn plugin_browse_requires_an_installed_driver() {
 
 #[test]
 fn plugin_openapi_contains_every_oci_surface() {
-    let paths =
-        serde_json::to_value(peryx_driver::serving::EcosystemOpenApi::paths(&OciPlugin, PathsBuilder::new()).build())
-            .unwrap();
+    let paths = serde_json::to_value(
+        peryx_driver::serving::EcosystemOpenApi::paths(
+            &OciPlugin,
+            PathsBuilder::new(),
+            peryx_driver::route_auth::ReadExposure::Protected,
+        )
+        .build(),
+    )
+    .unwrap();
     let actual: BTreeSet<&str> = paths.as_object().unwrap().keys().map(String::as_str).collect();
 
     assert_eq!(

@@ -137,7 +137,7 @@ fn read_denial_response(denial: Denial) -> Response {
         // on its ACL; an unauthenticated caller gets the challenge either way.
         Denial::Unauthenticated | Denial::Unavailable => (
             StatusCode::UNAUTHORIZED,
-            [(header::WWW_AUTHENTICATE, "Basic realm=\"peryx\"")],
+            [(header::WWW_AUTHENTICATE, peryx_driver::route_auth::BASIC_CHALLENGE)],
             "unauthorized",
         )
             .into_response(),

@@ -1,10 +1,11 @@
 use super::shared::{
-    ContentBuilder, OperationBuilder, ParameterIn, RequestBodyBuilder, Required, ResponseBuilder, SecurityRequirement,
-    json, parameter, policy_denial_response, project_param, route_param, text_response, version_param,
+    ContentBuilder, OperationBuilder, ParameterIn, RequestBodyBuilder, Required, ResponseBuilder, RouteAuth, json,
+    parameter, policy_denial_response, project_param, route_param, text_response, version_param,
 };
 
 pub(super) fn upload() -> OperationBuilder {
-    OperationBuilder::new()
+    RouteAuth::Write
+        .operation(ResponseBuilder::new().description("Missing or wrong token"))
         .tag("publish")
         .summary(Some("Upload a distribution"))
         .description(Some(
@@ -17,7 +18,6 @@ pub(super) fn upload() -> OperationBuilder {
              upload shadows any upstream file of the same name.",
         ))
         .parameter(route_param())
-        .security(SecurityRequirement::new("uploadToken", [""; 0]))
         .request_body(Some(
             RequestBodyBuilder::new()
                 .description(Some("`multipart/form-data` with `:action=file_upload`"))
@@ -47,7 +47,6 @@ pub(super) fn upload() -> OperationBuilder {
                 "metadata Name \"other\" does not match upload name \"peryxpkg\"",
             ),
         )
-        .response("401", ResponseBuilder::new().description("Missing or wrong token"))
         .response(
             "403",
             policy_denial_response(
@@ -86,7 +85,8 @@ pub(super) fn restore() -> OperationBuilder {
     )
 }
 pub(super) fn promote() -> OperationBuilder {
-    OperationBuilder::new()
+    RouteAuth::Write
+        .operation(ResponseBuilder::new().description("Missing or wrong token"))
         .tag("publish")
         .summary(Some("Promote a release"))
         .description(Some(
@@ -110,7 +110,6 @@ pub(super) fn promote() -> OperationBuilder {
             .required(Required::True)
             .build(),
         )
-        .security(SecurityRequirement::new("uploadToken", [""; 0]))
         .response(
             "200",
             text_response(
@@ -123,7 +122,6 @@ pub(super) fn promote() -> OperationBuilder {
             "400",
             ResponseBuilder::new().description("Missing `from`, unsafe path segment, or missing version"),
         )
-        .response("401", ResponseBuilder::new().description("Missing or wrong token"))
         .response(
             "403",
             ResponseBuilder::new().description("Project status rejects writes on the target route"),
@@ -176,18 +174,17 @@ fn version_removal_operation(summary: &str, description: &str, example: &str) ->
 }
 
 fn removal_operation(summary: &str, description: &str, example: &str) -> OperationBuilder {
-    OperationBuilder::new()
+    RouteAuth::Write
+        .operation(ResponseBuilder::new().description("Missing or wrong token"))
         .tag("publish")
         .summary(Some(summary))
         .description(Some(description))
         .parameter(route_param())
         .parameter(project_param())
-        .security(SecurityRequirement::new("uploadToken", [""; 0]))
         .response(
             "200",
             text_response("Done; the body counts affected files", "text/plain", example),
         )
-        .response("401", ResponseBuilder::new().description("Missing or wrong token"))
         .response("404", ResponseBuilder::new().description("Nothing matched"))
         .response(
             "405",

@@ -1,13 +1,14 @@
 //! Downloading an artifact and its PEP 658 metadata sibling.
 
 use super::shared::{
-    ContentBuilder, OperationBuilder, ResponseBuilder, filename_param, if_modified_since_param, if_none_match_param,
-    if_range_param, policy_denial_response, range_param, route_param, sha256_param, text_response,
-    unauthorized_read_response,
+    ContentBuilder, OperationBuilder, ReadExposure, ResponseBuilder, RouteAuth, filename_param,
+    if_modified_since_param, if_none_match_param, if_range_param, policy_denial_response, range_param, read_challenge,
+    route_param, sha256_param, text_response,
 };
 
-pub(super) fn file_download() -> OperationBuilder {
-    OperationBuilder::new()
+pub(super) fn file_download(reads: ReadExposure) -> OperationBuilder {
+    RouteAuth::Read(reads)
+        .operation(read_challenge())
         .tag("files")
         .summary(Some("Download an artifact"))
         .description(Some(
@@ -56,7 +57,6 @@ pub(super) fn file_download() -> OperationBuilder {
             ResponseBuilder::new()
                 .description("The digest is not 64 lowercase hex, or the filename is not a safe path segment"),
         )
-        .response("401", unauthorized_read_response())
         .response(
             "404",
             ResponseBuilder::new().description("No file with this digest is known"),
@@ -70,8 +70,9 @@ pub(super) fn file_download() -> OperationBuilder {
             ResponseBuilder::new().description("The upstream cache failed or the bytes did not match the digest"),
         )
 }
-pub(super) fn metadata_download() -> OperationBuilder {
-    OperationBuilder::new()
+pub(super) fn metadata_download(reads: ReadExposure) -> OperationBuilder {
+    RouteAuth::Read(reads)
+        .operation(read_challenge())
         .tag("files")
         .summary(Some("Download PEP 658 core metadata"))
         .description(Some(
@@ -91,7 +92,6 @@ pub(super) fn metadata_download() -> OperationBuilder {
                 "Metadata-Version: 2.1\nName: peryxpkg\nVersion: 1.0\nRequires-Python: >=3.8\n",
             ),
         )
-        .response("401", unauthorized_read_response())
         .response(
             "404",
             ResponseBuilder::new().description("The artifact has no known metadata sibling"),

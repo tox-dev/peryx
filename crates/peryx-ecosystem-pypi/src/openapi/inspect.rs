@@ -1,11 +1,12 @@
 use super::shared::{
-    ContentBuilder, OperationBuilder, ParameterIn, ResponseBuilder, bounded_integer_parameter, filename_param, json,
-    parameter, policy_denial_response, route_param, sha256_param, string_array_parameter, text_response,
-    unauthorized_read_response,
+    ContentBuilder, OperationBuilder, ParameterIn, ReadExposure, ResponseBuilder, RouteAuth, bounded_integer_parameter,
+    filename_param, json, parameter, policy_denial_response, read_challenge, route_param, sha256_param,
+    string_array_parameter, text_response,
 };
 
-pub(super) fn inspect_listing() -> OperationBuilder {
-    OperationBuilder::new()
+pub(super) fn inspect_listing(reads: ReadExposure) -> OperationBuilder {
+    RouteAuth::Read(reads)
+        .operation(read_challenge())
         .tag("files")
         .summary(Some("List archive members"))
         .description(Some(
@@ -89,15 +90,15 @@ pub(super) fn inspect_listing() -> OperationBuilder {
             "416",
             ResponseBuilder::new().description("The requested member offset is beyond the member size"),
         )
-        .response("401", unauthorized_read_response())
         .response(
             "403",
             policy_denial_response("Project status or index policy does not allow downloads", "serve"),
         )
         .response("422", ResponseBuilder::new().description("The archive cannot be read"))
 }
-pub(super) fn inspect_member() -> OperationBuilder {
-    OperationBuilder::new()
+pub(super) fn inspect_member(reads: ReadExposure) -> OperationBuilder {
+    RouteAuth::Read(reads)
+        .operation(read_challenge())
         .tag("files")
         .summary(Some("Read an archive member"))
         .description(Some(
@@ -124,7 +125,6 @@ pub(super) fn inspect_member() -> OperationBuilder {
                 "Metadata-Version: 2.1\nName: peryxpkg\nVersion: 1.0\n",
             ),
         )
-        .response("401", unauthorized_read_response())
         .response(
             "403",
             policy_denial_response("Project status or index policy does not allow downloads", "serve"),

@@ -2,11 +2,12 @@ pub(super) use peryx_driver::openapi::{
     api_json_response, bounded_integer_parameter, enum_parameter, parameter, route_param, string_array_parameter,
     text_response,
 };
+pub(super) use peryx_driver::route_auth::{ReadExposure, RouteAuth};
 pub(super) use serde_json::json;
 pub(super) use utoipa::openapi::content::ContentBuilder;
 pub(super) use utoipa::openapi::path::{OperationBuilder, ParameterBuilder, ParameterIn};
 pub(super) use utoipa::openapi::request_body::RequestBodyBuilder;
-pub(super) use utoipa::openapi::{Required, ResponseBuilder, SecurityRequirement};
+pub(super) use utoipa::openapi::{Required, ResponseBuilder};
 
 pub(super) const MIME_SIMPLE_JSON: &str = "application/vnd.pypi.simple.v1+json";
 pub(super) fn project_param() -> ParameterBuilder {
@@ -48,9 +49,9 @@ pub(super) fn policy_denial_response(description: &str, action: &str) -> Respons
     )
 }
 
-/// What the index ACL refuses a read with. Every read route answers these, and says the same thing
-/// whether or not the resource exists.
-pub(super) fn unauthorized_read_response() -> ResponseBuilder {
+/// What the index ACL refuses a read with. Every protected read answers this, and says the same
+/// thing whether or not the resource exists.
+pub(super) fn read_challenge() -> ResponseBuilder {
     ResponseBuilder::new().description(
         "The index does not allow anonymous reads and the request carried no usable credential; the \
          reply carries `WWW-Authenticate: Basic realm=\"peryx\"`",

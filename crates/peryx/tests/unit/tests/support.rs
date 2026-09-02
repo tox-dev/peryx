@@ -402,7 +402,7 @@ fn register_plain_driver(context: &mut RuntimeInstallContext<'_>) {
 struct OpenApi;
 
 impl EcosystemOpenApi for OpenApi {
-    fn paths(&self, paths: PathsBuilder) -> PathsBuilder {
+    fn paths(&self, paths: PathsBuilder, _reads: peryx_driver::route_auth::ReadExposure) -> PathsBuilder {
         paths
     }
 }

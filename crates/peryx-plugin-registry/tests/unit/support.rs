@@ -399,7 +399,7 @@ impl EcosystemBrowse for Browse {
 struct OpenApi(Ecosystem);
 
 impl EcosystemOpenApi for OpenApi {
-    fn paths(&self, paths: PathsBuilder) -> PathsBuilder {
+    fn paths(&self, paths: PathsBuilder, _reads: peryx_driver::route_auth::ReadExposure) -> PathsBuilder {
         paths.path(
             if self.0 == PRIMARY {
                 "/alpha-extension"

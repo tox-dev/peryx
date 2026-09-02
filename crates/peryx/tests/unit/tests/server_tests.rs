@@ -123,7 +123,11 @@ fn configured_indexes_select_owner_runtime_and_openapi() {
         );
         assert_eq!(
             state.openapi(),
-            crate::api::openapi_json_for_with_plugins(peryx_ha::AvailabilityResources::None, &active)
+            crate::api::openapi_json_for_with_plugins(
+                peryx_ha::AvailabilityResources::None,
+                &active,
+                peryx_driver::route_auth::ReadExposure::of(&state.serving.indexes),
+            )
         );
     }
 }
@@ -148,6 +152,7 @@ fn empty_index_configuration_installs_no_owner_runtime() {
         crate::api::openapi_json_for_with_plugins(
             peryx_ha::AvailabilityResources::None,
             &plugins.activate([]).unwrap(),
+            peryx_driver::route_auth::ReadExposure::of(&state.serving.indexes),
         )
     );
 }

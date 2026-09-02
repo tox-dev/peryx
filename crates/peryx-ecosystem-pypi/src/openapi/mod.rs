@@ -1,6 +1,7 @@
 //! The `OpenAPI` description of the `PyPI` Simple API, legacy JSON, file, inspect and publish
 //! operations this driver serves, one submodule per surface.
 
+use peryx_driver::route_auth::ReadExposure;
 use utoipa::openapi::PathsBuilder;
 use utoipa::openapi::path::{HttpMethod, PathItemBuilder};
 
@@ -26,21 +27,21 @@ use simple::{project_detail, project_list};
 use trusted_publishing::{oidc_audience, oidc_mint_token};
 
 #[must_use]
-pub fn openapi_paths(paths: PathsBuilder) -> PathsBuilder {
+pub fn openapi_paths(paths: PathsBuilder, reads: ReadExposure) -> PathsBuilder {
     let paths = paths
         .path(
             "/{route}/simple/",
             PathItemBuilder::new()
-                .operation(HttpMethod::Get, project_list())
+                .operation(HttpMethod::Get, project_list(reads))
                 .build(),
         )
         .path(
             "/{route}/simple/{project}/",
             PathItemBuilder::new()
-                .operation(HttpMethod::Get, project_detail())
+                .operation(HttpMethod::Get, project_detail(reads))
                 .build(),
         );
-    let paths = legacy_json_paths(paths);
+    let paths = legacy_json_paths(paths, reads);
     paths
         .path(
             "/_/oidc/audience",
@@ -57,13 +58,13 @@ pub fn openapi_paths(paths: PathsBuilder) -> PathsBuilder {
         .path(
             "/{route}/files/{sha256}/{filename}",
             PathItemBuilder::new()
-                .operation(HttpMethod::Get, file_download())
+                .operation(HttpMethod::Get, file_download(reads))
                 .build(),
         )
         .path(
             "/{route}/files/{sha256}/{filename}.metadata",
             PathItemBuilder::new()
-                .operation(HttpMethod::Get, metadata_download())
+                .operation(HttpMethod::Get, metadata_download(reads))
                 .build(),
         )
         .path(
@@ -91,13 +92,13 @@ pub fn openapi_paths(paths: PathsBuilder) -> PathsBuilder {
         .path(
             "/{route}/inspect/{sha256}/{filename}",
             PathItemBuilder::new()
-                .operation(HttpMethod::Get, inspect_listing())
+                .operation(HttpMethod::Get, inspect_listing(reads))
                 .build(),
         )
         .path(
             "/{route}/inspect/{sha256}/{filename}/{member}",
             PathItemBuilder::new()
-                .operation(HttpMethod::Get, inspect_member())
+                .operation(HttpMethod::Get, inspect_member(reads))
                 .build(),
         )
         .path(
@@ -128,18 +129,18 @@ pub fn openapi_paths(paths: PathsBuilder) -> PathsBuilder {
                 .build(),
         )
 }
-fn legacy_json_paths(paths: PathsBuilder) -> PathsBuilder {
+fn legacy_json_paths(paths: PathsBuilder, reads: ReadExposure) -> PathsBuilder {
     paths
         .path(
             "/{route}/{project}/json",
             PathItemBuilder::new()
-                .operation(HttpMethod::Get, legacy_project_json())
+                .operation(HttpMethod::Get, legacy_project_json(reads))
                 .build(),
         )
         .path(
             "/{route}/{project}/{version}/json",
             PathItemBuilder::new()
-                .operation(HttpMethod::Get, legacy_release_json())
+                .operation(HttpMethod::Get, legacy_release_json(reads))
                 .build(),
         )
 }

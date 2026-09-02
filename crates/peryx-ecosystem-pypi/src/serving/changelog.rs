@@ -70,7 +70,7 @@ fn authorize(state: &ServingState, headers: &HeaderMap) -> HttpResult<()> {
     if unauthenticated {
         Err((
             StatusCode::UNAUTHORIZED,
-            [(header::WWW_AUTHENTICATE, "Basic realm=\"peryx\"")],
+            [(header::WWW_AUTHENTICATE, peryx_driver::route_auth::BASIC_CHALLENGE)],
             "unauthorized",
         )
             .into_response()

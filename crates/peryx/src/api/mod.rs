@@ -4,6 +4,7 @@
 mod service;
 mod trash;
 
+use peryx_driver::route_auth::{ApiScheme, ReadExposure};
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::openapi::{
     ComponentsBuilder, ContactBuilder, InfoBuilder, LicenseBuilder, OpenApi, OpenApiBuilder, PathsBuilder,
@@ -19,12 +20,17 @@ pub fn openapi_json() -> String {
 
 #[must_use]
 pub fn openapi_json_with_plugins(plugins: &peryx_plugin_registry::PluginRegistry) -> String {
-    openapi_json_for_with_plugins(peryx_ha::AvailabilityResources::Distributed, plugins)
+    openapi_json_for_with_plugins(peryx_ha::AvailabilityResources::Distributed, plugins, STANDALONE_READS)
 }
+
+/// The exposure a document generated outside a running server describes. A deployment serves its own
+/// document from its own configuration; this one names every credential a read can carry, because the
+/// reader has not told us whether their indexes restrict reads.
+const STANDALONE_READS: ReadExposure = ReadExposure::Protected;
 
 #[must_use]
 pub fn openapi_json_for(resources: peryx_ha::AvailabilityResources) -> String {
-    openapi_json_for_with_plugins(resources, &crate::compiled_plugins())
+    openapi_json_for_with_plugins(resources, &crate::compiled_plugins(), STANDALONE_READS)
 }
 
 /// # Panics
@@ -33,9 +39,10 @@ pub fn openapi_json_for(resources: peryx_ha::AvailabilityResources) -> String {
 pub fn openapi_json_for_with_plugins(
     resources: peryx_ha::AvailabilityResources,
     plugins: &peryx_plugin_registry::PluginRegistry,
+    reads: ReadExposure,
 ) -> String {
-    let mut document =
-        serde_json::to_value(openapi_for_with_plugins(resources, plugins)).expect("OpenAPI document always serializes");
+    let mut document = serde_json::to_value(openapi_for_with_plugins(resources, plugins, reads))
+        .expect("OpenAPI document always serializes");
     document.sort_all_objects();
     let mut json = serde_json::to_string_pretty(&document).expect("OpenAPI document always serializes");
     json.push('\n');
@@ -49,18 +56,19 @@ pub fn openapi() -> OpenApi {
 
 #[must_use]
 pub fn openapi_with_plugins(plugins: &peryx_plugin_registry::PluginRegistry) -> OpenApi {
-    openapi_for_with_plugins(peryx_ha::AvailabilityResources::Distributed, plugins)
+    openapi_for_with_plugins(peryx_ha::AvailabilityResources::Distributed, plugins, STANDALONE_READS)
 }
 
 #[must_use]
 pub fn openapi_for(resources: peryx_ha::AvailabilityResources) -> OpenApi {
-    openapi_for_with_plugins(resources, &crate::compiled_plugins())
+    openapi_for_with_plugins(resources, &crate::compiled_plugins(), STANDALONE_READS)
 }
 
 #[must_use]
 pub fn openapi_for_with_plugins(
     resources: peryx_ha::AvailabilityResources,
     plugins: &peryx_plugin_registry::PluginRegistry,
+    reads: ReadExposure,
 ) -> OpenApi {
     OpenApiBuilder::new()
         .info(
@@ -86,29 +94,13 @@ pub fn openapi_for_with_plugins(
             .url("http://127.0.0.1:4433")
             .description(Some("A local peryx with the default configuration"))
             .build()]))
-        .paths(paths(resources.has_routes(), plugins))
+        .paths(paths(resources.has_routes(), plugins, reads))
         .components(Some(
-            ComponentsBuilder::new()
-                .security_scheme(
-                    "writeToken",
-                    SecurityScheme::Http(
-                        HttpBuilder::new()
-                            .scheme(HttpAuthScheme::Basic)
-                            .description(Some(
-                                "The password is a write-granting access token of the hosted index.",
-                            ))
-                            .build(),
-                    ),
-                )
-                .security_scheme(
-                    "uploadToken",
-                    SecurityScheme::Http(
-                        HttpBuilder::new()
-                            .scheme(HttpAuthScheme::Basic)
-                            .description(Some("Deprecated alias for `writeToken`."))
-                            .build(),
-                    ),
-                )
+            ApiScheme::ALL
+                .into_iter()
+                .fold(ComponentsBuilder::new(), |components, scheme| {
+                    components.security_scheme(scheme.name(), scheme.declaration())
+                })
                 .security_scheme(
                     "administratorPassword",
                     SecurityScheme::Http(
@@ -125,8 +117,8 @@ pub fn openapi_for_with_plugins(
         .build()
 }
 
-fn paths(distributed: bool, plugins: &peryx_plugin_registry::PluginRegistry) -> PathsBuilder {
-    let ecosystems = plugins.openapi_paths(PathsBuilder::new());
+fn paths(distributed: bool, plugins: &peryx_plugin_registry::PluginRegistry, reads: ReadExposure) -> PathsBuilder {
+    let ecosystems = plugins.openapi_paths(PathsBuilder::new(), reads);
     let services = service::service_paths(ecosystems);
     let services = if distributed {
         peryx_ha_distributed::availability_paths(services)

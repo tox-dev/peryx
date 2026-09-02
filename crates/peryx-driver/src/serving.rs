@@ -133,7 +133,11 @@ pub trait EcosystemBrowse: Send + Sync {
 }
 
 pub trait EcosystemOpenApi: Send + Sync {
-    fn paths(&self, paths: utoipa::openapi::PathsBuilder) -> utoipa::openapi::PathsBuilder;
+    fn paths(
+        &self,
+        paths: utoipa::openapi::PathsBuilder,
+        reads: crate::route_auth::ReadExposure,
+    ) -> utoipa::openapi::PathsBuilder;
 }
 
 pub trait EcosystemSnippet: Send + Sync {

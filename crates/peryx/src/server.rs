@@ -362,6 +362,7 @@ fn configure_state(
     state.set_openapi(crate::api::openapi_json_for_with_plugins(
         config.availability.mode().availability_resources(),
         plugins,
+        peryx_driver::route_auth::ReadExposure::of(&state.serving.indexes),
     ));
     Ok(())
 }

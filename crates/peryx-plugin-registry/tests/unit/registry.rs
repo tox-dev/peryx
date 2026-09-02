@@ -239,7 +239,9 @@ fn activation_accepts_no_ecosystems() {
     registry
         .install_drivers(&mut state.runtime_install_context().unwrap(), &settings())
         .unwrap();
-    let openapi = registry.openapi_paths(PathsBuilder::new()).build();
+    let openapi = registry
+        .openapi_paths(PathsBuilder::new(), peryx_driver::route_auth::ReadExposure::Protected)
+        .build();
 
     assert_eq!(
         (
@@ -294,7 +296,9 @@ fn activation_filters_all_derived_capabilities() {
     registry
         .install_drivers(&mut state.runtime_install_context().unwrap(), &settings())
         .unwrap();
-    let openapi = registry.openapi_paths(PathsBuilder::new()).build();
+    let openapi = registry
+        .openapi_paths(PathsBuilder::new(), peryx_driver::route_auth::ReadExposure::Protected)
+        .build();
 
     assert_eq!(
         (
@@ -955,7 +959,9 @@ fn distributed_install_preserves_plugin_errors() {
 
 #[test]
 fn openapi_paths_include_each_registration() {
-    let paths = registry().openapi_paths(PathsBuilder::new()).build();
+    let paths = registry()
+        .openapi_paths(PathsBuilder::new(), peryx_driver::route_auth::ReadExposure::Protected)
+        .build();
     assert_eq!(
         (
             paths.get_path_item("/alpha-extension").is_some(),

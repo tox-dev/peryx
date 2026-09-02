@@ -10,6 +10,7 @@ use axum::routing::get;
 use peryx_core::Ecosystem;
 use peryx_driver::discovery::BaseUrl;
 use peryx_driver::rate_limit::RouteClass;
+use peryx_driver::route_auth::ReadExposure;
 use peryx_driver::serving::{
     CapabilityInstallContext, ClientDiscovery, CompiledEcosystemSettings, DistributedInstallContext,
     DistributedRuntime, EcosystemAuth, EcosystemBrowse, EcosystemConfig, EcosystemDriver, EcosystemOpenApi,
@@ -578,10 +579,10 @@ impl PluginRegistry {
     }
 
     #[must_use]
-    pub fn openapi_paths(&self, paths: PathsBuilder) -> PathsBuilder {
+    pub fn openapi_paths(&self, paths: PathsBuilder, reads: ReadExposure) -> PathsBuilder {
         self.registrations
             .iter()
-            .fold(paths, |paths, registration| registration.openapi.paths(paths))
+            .fold(paths, |paths, registration| registration.openapi.paths(paths, reads))
     }
 
     /// # Errors

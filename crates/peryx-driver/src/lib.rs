@@ -22,6 +22,7 @@ pub mod range;
 pub mod rate_limit;
 pub mod retention;
 pub mod revocations;
+pub mod route_auth;
 pub mod serving;
 pub mod state;
 pub mod tokens;
