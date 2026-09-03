@@ -562,6 +562,19 @@ impl ServingState {
         self.availability.finish_authority_epoch_write(lease).await
     }
 
+    /// Release the quorum lease a metadata commit held, if the commit took one.
+    ///
+    /// A release that cannot commit is reported rather than returned: the metadata commit it spanned has
+    /// already happened, and failing the request afterwards would tell the caller its write was lost. The
+    /// lease then lapses on its own, which delays the authority's next transfer until it expires.
+    pub async fn release_authority_epoch_write(&self, lease: Option<crate::state::AuthorityWriteLease>) {
+        if let Some(lease) = lease
+            && let Err(error) = self.finish_authority_epoch_write(&lease).await
+        {
+            tracing::warn!(%error, authority = lease.authority, "authority write lease release failed");
+        }
+    }
+
     /// # Errors
     /// The [`OwnershipError`](crate::state::OwnershipError) the commit failed with.
     pub async fn transfer_authority_home(

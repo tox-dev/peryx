@@ -1,5 +1,5 @@
-use std::collections::HashSet;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::collections::{BTreeMap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use super::{
@@ -11,6 +11,7 @@ use bytes::Bytes;
 use peryx_driver::state::{ClusterStatus, HomeClaim, OwnershipAuthority, OwnershipError, TransferOutcome};
 use peryx_index::{Index, IndexKind};
 use peryx_policy::{Policy, PolicyConfig};
+use tokio::sync::Notify;
 
 const TOKEN: &str = "s3cret";
 // An index with no children is the cheapest manifest a push accepts: these tests fence the write
@@ -458,6 +459,176 @@ impl OwnershipAuthority for EpochAuthority {
     ) -> Result<Option<TransferOutcome>, OwnershipError> {
         Ok(None)
     }
+}
+
+/// The reading every clock in the lease-release test returns, far enough inside the lease this
+/// authority issues that nothing expires while the test runs.
+const LEASE_NOW: i64 = 1000;
+
+/// An authority that keeps the write leases it issues, the way the committed ownership state machine
+/// keeps them. `OwnershipState::transfer` refuses a home transfer while the authority record still
+/// holds a write lease, and the consensus runtime reports that refusal to the caller as
+/// `OwnershipError::Unavailable`. A lease a writer never released therefore blocks the next transfer
+/// until it expires, which is how a caller observes whether the release happened.
+struct LeaseLedger {
+    epoch: u64,
+    live: Mutex<BTreeMap<String, i64>>,
+    issued: AtomicU64,
+    /// Signalled once the first lease is recorded, so an observer looks while the writer still holds it.
+    leased: Notify,
+    /// Awaited by that first lease, so the writer keeps holding it until the observer has looked.
+    observed: Notify,
+    watched: AtomicBool,
+}
+
+impl LeaseLedger {
+    fn homed_at(epoch: u64) -> Arc<Self> {
+        Arc::new(Self {
+            epoch,
+            live: Mutex::new(BTreeMap::new()),
+            issued: AtomicU64::new(0),
+            leased: Notify::new(),
+            observed: Notify::new(),
+            watched: AtomicBool::new(false),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl OwnershipAuthority for LeaseLedger {
+    async fn claim_home(&self, _authority: &str) -> Result<HomeClaim, OwnershipError> {
+        Ok(HomeClaim {
+            home: "local".to_owned(),
+            epoch: self.epoch,
+        })
+    }
+
+    fn cluster_status(&self) -> ClusterStatus {
+        ClusterStatus {
+            leader: None,
+            term: 0,
+            voters: Vec::new(),
+        }
+    }
+
+    async fn committed_epoch(&self, _authority: &str) -> u64 {
+        self.epoch
+    }
+
+    async fn admit_epoch(&self, _authority: &str, presented: u64) -> bool {
+        presented == self.epoch
+    }
+
+    /// Leases whatever epoch the writer presents. Fencing a stale one is the subject of the other
+    /// authorities in this file; this one is about what happens to the lease afterwards.
+    async fn begin_epoch_write(
+        &self,
+        authority: &str,
+        presented: u64,
+    ) -> Result<Option<peryx_ha::AuthorityWriteLease>, OwnershipError> {
+        let id = format!("write-{}", self.issued.fetch_add(1, Ordering::SeqCst));
+        let lease = peryx_ha::AuthorityWriteLease {
+            authority: authority.to_owned(),
+            epoch: presented,
+            id: id.clone(),
+            expires_at_unix: LEASE_NOW + peryx_ha::AUTHORITY_WRITE_LEASE_SECS,
+        };
+        self.live.lock().unwrap().insert(id, lease.expires_at_unix);
+        if !self.watched.swap(true, Ordering::SeqCst) {
+            self.leased.notify_one();
+            self.observed.notified().await;
+        }
+        Ok(Some(lease))
+    }
+
+    async fn finish_epoch_write(&self, lease: &peryx_ha::AuthorityWriteLease) -> Result<(), OwnershipError> {
+        self.live.lock().unwrap().remove(&lease.id);
+        Ok(())
+    }
+
+    async fn transfer_home(&self, _authority: &str, new_home: &str) -> Result<Option<TransferOutcome>, OwnershipError> {
+        let mut live = self.live.lock().unwrap();
+        live.retain(|_, expires_at_unix| *expires_at_unix > LEASE_NOW);
+        if live.is_empty() {
+            Ok(Some(TransferOutcome {
+                from: "local".to_owned(),
+                to: new_home.to_owned(),
+                epoch: self.epoch + 1,
+            }))
+        } else {
+            Err(OwnershipError::Unavailable(
+                "authority transfer is blocked by a live write lease".to_owned(),
+            ))
+        }
+    }
+}
+
+/// A manifest push holds the repository's write lease across its metadata commit and releases it on the
+/// way out. The release is observable through the next transfer: a lease the push kept would refuse it
+/// until the lease expired, so the same transfer refused mid-push has to succeed once the push returns.
+#[tokio::test]
+async fn test_a_manifest_push_releases_its_write_lease_to_the_next_transfer() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = hosted_writable_distributed_with_clock(&dir, TOKEN, Arc::new(|| LEASE_NOW));
+    let group = LeaseLedger::homed_at(5);
+    bind_ownership(&state, group.clone());
+    let during = tokio::spawn({
+        let (state, group) = (state.clone(), group.clone());
+        async move {
+            group.leased.notified().await;
+            let refused = state.serving.transfer_authority_home("oci:store/app", "west").await;
+            group.observed.notify_one();
+            refused
+        }
+    });
+
+    let pushed = push(&app, "v1").await;
+    let during = during.await.unwrap().map_err(|error| error.to_string());
+    let after = state
+        .serving
+        .transfer_authority_home("oci:store/app", "west")
+        .await
+        .map_err(|error| error.to_string());
+
+    assert_eq!(pushed, StatusCode::CREATED);
+    assert_eq!(
+        during,
+        Err("ownership claim did not commit: authority transfer is blocked by a live write lease".to_owned()),
+        "the push must hold its lease across the metadata commit",
+    );
+    assert_eq!(
+        after,
+        Ok(Some(TransferOutcome {
+            from: "local".to_owned(),
+            to: "west".to_owned(),
+            epoch: 6,
+        })),
+        "the push must release its lease, or the next transfer waits out the lease expiry",
+    );
+}
+
+/// The ledger fences nothing and names no topology, so a refused transfer in the test above can only
+/// be the lease the push still held.
+#[tokio::test]
+async fn test_the_lease_ledger_reports_its_epoch_and_names_no_topology() {
+    let ledger = LeaseLedger::homed_at(5);
+
+    assert_eq!(
+        (
+            ledger.cluster_status(),
+            ledger.committed_epoch("oci:store/app").await,
+            ledger.admit_epoch("oci:store/app", 5).await,
+        ),
+        (
+            ClusterStatus {
+                leader: None,
+                term: 0,
+                voters: Vec::new(),
+            },
+            5,
+            true
+        )
+    );
 }
 
 fn metered_app(dir: &tempfile::TempDir, max_bytes: u64) -> (Arc<peryx_driver::AppState>, axum::Router) {

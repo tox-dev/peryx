@@ -91,11 +91,7 @@ impl EpochLease<'_> {
     }
 
     async fn finish(self) {
-        if let Some(lease) = self.lease
-            && let Err(error) = self.state.finish_authority_epoch_write(&lease).await
-        {
-            tracing::warn!(%error, authority = lease.authority, "authority write lease release failed");
-        }
+        self.state.release_authority_epoch_write(self.lease).await;
     }
 }
 
