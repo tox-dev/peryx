@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
+use crate::policy::PypiPolicy as _;
 use crate::quota::PendingQuota;
 use crate::store::PypiStore as _;
 use crate::store::{Guard, PromotedRelease};
@@ -127,33 +128,52 @@ pub async fn store_upload(
 /// Returns [`CacheError::NoPromotableFiles`] when the source hosted layer has no matching upload,
 /// [`CacheError::FileExists`] when a target filename exists with different bytes, or another
 /// [`CacheError`] on metadata-store or decode failures.
+/// Copy a release from `source` onto the index `route` names, writing through `hosted`.
+///
+/// A promotion publishes into the target's namespace, so the target decides what may land there: each
+/// eligible record faces the upload policy a direct upload would face and reserves the target's quota
+/// before anything is written. Policy or quota refusing any file leaves the release unpublished, since
+/// a half-promoted release is neither the old state nor the requested one.
 pub async fn promote_release(
     state: &ServingState,
     source: &str,
-    target: &str,
-    target_route: &str,
+    route: &Index,
+    hosted: &Index,
     normalized: &str,
     version: &str,
 ) -> Result<usize, CacheError> {
+    let target = hosted.name.as_str();
+    let target_route = route.route.as_str();
     let fence = control_epoch(state, normalized).await;
     let mut matched = false;
     let mut records = Vec::new();
     let mut blob_sizes = BTreeMap::new();
+    let mut sizes = Vec::new();
     for (filename, bytes) in state.meta.list_upload_entries(source, normalized)? {
         let mut uploaded: Uploaded = serde_json::from_slice(&bytes)?;
         if uploaded.trashed.is_some() || !versions_match(&uploaded.version, version) {
             continue;
         }
         matched = true;
-        let digest = uploaded
+        // A record's sha256 is folded to lowercase 64-hex when it deserializes and dropped when it is
+        // anything else, so one lookup answers both halves: a record that parses no digest here is a
+        // record that carries none.
+        let parsed = uploaded
             .file
             .hashes
             .get("sha256")
-            .cloned()
+            .and_then(|sha256| peryx_storage::blob::Digest::from_hex(sha256))
             .ok_or_else(|| CacheError::MissingSha256(filename.clone()))?;
-        if let Some(size) = uploaded.file.size {
+        let digest = parsed.as_str().to_owned();
+        let size = promoted_size(state, &uploaded.file, &parsed).await?;
+        if let Some(size) = size {
             blob_sizes.insert(digest.clone(), size);
         }
+        let predicate_types = promoted_predicate_types(state, source, normalized, &parsed, &filename).await?;
+        if let Some(denial) = promotion_denial(route, hosted, normalized, &uploaded.file, &predicate_types) {
+            return Err(CacheError::Policy(denial));
+        }
+        sizes.push((filename.clone(), digest.clone(), size));
         uploaded.file.url = local_artifact_url(target_route, &digest, &filename);
         // The bundle is copied onto the target publication, so its marker names the target's route.
         if let crate::Provenance::Url(_) = uploaded.file.provenance {
@@ -176,6 +196,12 @@ pub async fn promote_release(
         .meta
         .get_project(source, normalized)?
         .unwrap_or_else(|| normalized.to_owned());
+    let submitted_at_unix = (state.clock)();
+    let mut pending = reserve_promotion_quota(state, route, hosted, normalized, version, &sizes, submitted_at_unix)?;
+    let reservations: BTreeMap<String, uuid::Uuid> = pending
+        .iter()
+        .map(|(filename, quota)| (filename.clone(), quota.record().id))
+        .collect();
     let release = PromotedRelease {
         source,
         index: target,
@@ -183,7 +209,8 @@ pub async fn promote_release(
         display: &display,
         records: &records,
         blob_sizes: &blob_sizes,
-        submitted_at_unix: (state.clock)(),
+        reservations: &reservations,
+        submitted_at_unix,
     };
     let promoted = commit_control(state, normalized, fence, |lease| {
         lease.check()?;
@@ -192,6 +219,11 @@ pub async fn promote_release(
             .promote_files_checked(crate::replication_enabled(state), &release, promote_conflict)
     })
     .await?;
+    // The transaction already committed or released every allocation. Letting these drop would run a
+    // second release over rows the commit owns, so they are handed over rather than dropped.
+    for (_, quota) in &mut pending {
+        quota.finish();
+    }
     if promoted > 0 {
         super::invalidate_project(state, target, normalized);
     }
@@ -556,4 +588,126 @@ fn upload_filenames(state: &ServingState, hosted: &str, normalized: &str) -> Res
         .into_iter()
         .map(|(filename, _)| filename)
         .collect())
+}
+
+/// The size a promoted record carries, from its own row or from the stored blob when the row omits it.
+///
+/// A record written before sizes were recorded still names bytes peryx holds, so the blob answers for
+/// it rather than the promotion refusing a file the target could account for.
+async fn promoted_size(
+    state: &ServingState,
+    file: &crate::File,
+    digest: &peryx_storage::blob::Digest,
+) -> Result<Option<u64>, CacheError> {
+    if let Some(size) = file.size {
+        return Ok(Some(size));
+    }
+    Ok(state.blobs.head(digest).await?.map(|metadata| metadata.bytes))
+}
+
+/// The target's refusal of a promoted file, if it has one.
+///
+/// The named route and the hosted layer it writes through each judge the file, matching what a direct
+/// upload faces. An audit-mode attestation requirement records its observation without refusing, so it
+/// does not block a promotion it would not have blocked on upload.
+fn promotion_denial(
+    route: &Index,
+    hosted: &Index,
+    normalized: &str,
+    file: &crate::File,
+    predicate_types: &BTreeSet<String>,
+) -> Option<peryx_policy::PolicyDenial> {
+    for index in std::iter::once(route).chain((hosted.name != route.name).then_some(hosted)) {
+        if let Err(denial) =
+            index
+                .policy
+                .check_upload(peryx_policy::PolicyAction::Upload, normalized, file, predicate_types)
+            && denial.rule != crate::policy::REQUIRED_ATTESTATION_AUDIT_RULE
+        {
+            return Some(denial);
+        }
+    }
+    None
+}
+
+/// The predicate types the source publication's stored bundle declares, so an attestation rule on the
+/// target judges the same set the upload was judged on.
+async fn promoted_predicate_types(
+    state: &ServingState,
+    source: &str,
+    normalized: &str,
+    sha256: &peryx_storage::blob::Digest,
+    filename: &str,
+) -> Result<BTreeSet<String>, CacheError> {
+    // No row and a row peryx cannot look up are one answer here: there is no document to read, so the
+    // file carries no predicate type for a rule to match.
+    let bundle = state
+        .meta
+        .get_provenance(source, normalized, sha256.as_str(), filename)?
+        .and_then(|(bundle, _)| peryx_storage::blob::Digest::from_hex(&bundle));
+    let Some(bundle) = bundle else {
+        return Ok(BTreeSet::new());
+    };
+    let document = state
+        .blobs
+        .read_bytes(&bundle, super::provenance::MAX_PROVENANCE_BYTES as u64)
+        .await?;
+    Ok(crate::attestation::stored_predicate_types(
+        &document,
+        sha256.as_str(),
+        filename,
+    ))
+}
+
+/// Hold one target allocation per promoted file.
+///
+/// Each file reserves for itself, so quota reports what the promotion stored rather than one synthetic
+/// row for a release. A file whose size no row or blob can supply cannot be accounted for, so it is
+/// refused rather than published outside the limit the operator set.
+fn reserve_promotion_quota(
+    state: &ServingState,
+    route: &Index,
+    hosted: &Index,
+    normalized: &str,
+    version: &str,
+    sizes: &[(String, String, Option<u64>)],
+    submitted_at_unix: i64,
+) -> Result<Vec<(String, PendingQuota)>, CacheError> {
+    let Some(quota) = crate::quota::effective_project_quota(route, hosted) else {
+        return Ok(Vec::new());
+    };
+    let package = crate::PackageName::new(normalized);
+    let mut held = Vec::new();
+    for (filename, digest, size) in sizes {
+        let Some(size) = size else {
+            return Err(CacheError::QuotaDenied(format!(
+                "promoted file {filename:?} has no recorded size, so the target quota cannot account for it"
+            )));
+        };
+        let request =
+            crate::quota::quota_reservation(&hosted.name, &package, Some(version), digest, *size, submitted_at_unix);
+        match crate::quota::admit_upload(&state.meta, request, quota.limits, quota.max_project_bytes)? {
+            crate::quota::Admission::Reserved(reservation) => held.push((filename.clone(), reservation)),
+            crate::quota::Admission::Rejected(rejection) => {
+                return Err(CacheError::QuotaDenied(quota_denial_reason(&rejection, filename)));
+            }
+        }
+    }
+    Ok(held)
+}
+
+fn quota_denial_reason(rejection: &crate::quota::QuotaRejection, filename: &str) -> String {
+    match rejection {
+        crate::quota::QuotaRejection::ProjectBytes { total } => {
+            format!("promoting {filename:?} would take the project to {total} bytes, past its configured limit")
+        }
+        crate::quota::QuotaRejection::Limits(violations) => {
+            let limits = violations
+                .iter()
+                .map(|violation| peryx_driver::quota::quota_limit_label(&crate::PYPI_LEXICON, *violation))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("promoting {filename:?} exceeds the target quota: {limits}")
+        }
+    }
 }

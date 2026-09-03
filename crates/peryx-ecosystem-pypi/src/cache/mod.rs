@@ -132,6 +132,11 @@ pub enum CacheError {
     Policy(#[from] PolicyDenial),
     #[error(transparent)]
     Quota(#[from] peryx_storage::meta::QuotaError),
+    /// A configured quota refused the write. Distinct from [`Self::Quota`], which reports a
+    /// quota-store failure: this one is the operator's own limit answering, so it is the caller's
+    /// problem and carries the limit that refused rather than a server fault.
+    #[error("{0}")]
+    QuotaDenied(String),
 }
 
 impl From<crate::SimpleError> for CacheError {
@@ -211,6 +216,7 @@ impl CacheError {
             Self::VirtualIndexCycle(cycle) => format!("virtual index composition cycle: {cycle}"),
             Self::Policy(err) => crate::serving::response::pypi_reason(&err.reason),
             Self::Quota(err) => format!("quota accounting error: {err}"),
+            Self::QuotaDenied(reason) => reason.clone(),
         }
     }
 }

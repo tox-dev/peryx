@@ -428,3 +428,13 @@ fn test_message_names_the_reason_for_every_variant() {
         assert!(error.message().contains(expected), "{error:?} -> {}", error.message());
     }
 }
+
+/// A document peryx cannot read declares no predicate types, so a promotion judges it as carrying no
+/// attestation rather than failing on it.
+#[rstest::rstest]
+#[case::not_json(b"not json".to_vec())]
+#[case::wrong_version(serde_json::json!({"version": 99, "attestation_bundles": []}).to_string().into_bytes())]
+#[case::no_bundles(serde_json::json!({"version": 1, "attestation_bundles": []}).to_string().into_bytes())]
+fn stored_predicate_types_reads_nothing_from_an_unusable_document(#[case] document: Vec<u8>) {
+    assert!(crate::attestation::stored_predicate_types(&document, "aa", "pkg-1.0-py3-none-any.whl").is_empty());
+}

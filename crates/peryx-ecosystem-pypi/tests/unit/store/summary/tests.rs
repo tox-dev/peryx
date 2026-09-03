@@ -425,6 +425,7 @@ fn test_promoting_a_release_counts_its_files_and_project() {
                 display: "Flask",
                 records: &records,
                 blob_sizes: &BTreeMap::new(),
+                reservations: &BTreeMap::new(),
                 submitted_at_unix: 0,
             },
             |_filename, _token, _stored| Ok(Guard::Commit),

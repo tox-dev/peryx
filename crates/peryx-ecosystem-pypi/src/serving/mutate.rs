@@ -164,15 +164,7 @@ async fn promote_request(
         emit_promotion_status_event(&audit, &block);
         return block.response;
     }
-    let result = cache::promote_release(
-        state,
-        &source_local.name,
-        &hosted.name,
-        &index.route,
-        &project,
-        &version,
-    )
-    .await;
+    let result = cache::promote_release(state, &source_local.name, index, hosted, &project, &version).await;
     security_promotion_event(audit, &result);
     promotion_response(result)
 }

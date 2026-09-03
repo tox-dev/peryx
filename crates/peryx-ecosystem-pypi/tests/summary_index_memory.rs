@@ -66,6 +66,7 @@ fn store(uploads: u32) -> (tempfile::TempDir, MetaStore) {
             display: "Flask",
             records: &records,
             blob_sizes: &BTreeMap::new(),
+            reservations: &BTreeMap::new(),
             submitted_at_unix: 0,
         },
         |_filename, _token, _stored| Ok(Guard::Commit),

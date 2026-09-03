@@ -398,14 +398,20 @@ pub fn routed_state(dir: &tempfile::TempDir, primary: UpstreamClient, router: Up
 }
 
 pub async fn authority_promotion_harness() -> Harness {
-    promotion_harness_with(true).await
+    promotion_harness_with(true, Policy::default()).await
 }
 
 pub async fn promotion_harness() -> Harness {
-    promotion_harness_with(false).await
+    promotion_harness_with(false, Policy::default()).await
 }
 
-async fn promotion_harness_with(distributed: bool) -> Harness {
+/// A promotion harness whose `prod` target carries `target_policy`, so a test can ask what the target
+/// admits rather than only what the source held.
+pub async fn promotion_harness_with_target_policy(target_policy: Policy) -> Harness {
+    promotion_harness_with(true, target_policy).await
+}
+
+async fn promotion_harness_with(distributed: bool, target_policy: Policy) -> Harness {
     let dir = tempfile::tempdir().unwrap();
     let server = MockServer::start().await;
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
@@ -438,7 +444,7 @@ async fn promotion_harness_with(distributed: bool) -> Harness {
             route: "prod".to_owned(),
             ecosystem: crate::ECOSYSTEM,
             kind: IndexKind::Hosted { volatile: true },
-            policy: Policy::default(),
+            policy: target_policy,
             acl: crate::tests::writer_acl("s3cret".to_owned()),
         },
         Index {

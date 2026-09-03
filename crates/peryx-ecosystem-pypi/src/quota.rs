@@ -2,6 +2,7 @@ use peryx_core::Role;
 use peryx_driver::ServingState;
 use peryx_events::metrics::{MetricFamily, Observation};
 use peryx_index::Index;
+use peryx_policy::Policy;
 use peryx_storage::meta::{
     AccountingClass, MetaStore, NewQuotaReservation, QuotaError, QuotaLimit, QuotaLimits, QuotaReservationRecord,
 };
@@ -128,6 +129,57 @@ pub fn record_decision(state: &ServingState, index: &Index, project: &str, rejec
             QUOTA_ADMITTED_FAMILY.key
         },
     });
+}
+
+/// The quota a write faces on one route: the named index's limits merged with the hosted layer it
+/// writes through, since a virtual route answers to both.
+#[derive(Clone, Copy)]
+pub struct EffectiveQuota {
+    pub limits: QuotaLimits,
+    pub max_project_bytes: Option<u64>,
+}
+#[must_use]
+pub fn effective_project_quota(index: &Index, hosted: &Index) -> Option<EffectiveQuota> {
+    match (
+        policy_quota(&index.policy),
+        (hosted.name != index.name)
+            .then(|| policy_quota(&hosted.policy))
+            .flatten(),
+    ) {
+        (Some(index), Some(hosted)) => Some(merge_quotas(index, hosted)),
+        (Some(quota), None) | (None, Some(quota)) => Some(quota),
+        (None, None) => None,
+    }
+}
+fn policy_quota(policy: &Policy) -> Option<EffectiveQuota> {
+    (policy.enforces_quota() || policy.has_resource_size_limit()).then(|| EffectiveQuota {
+        limits: QuotaLimits {
+            max_artifact_bytes: policy.max_artifact_size(),
+            max_accounted_bytes: policy.max_accounted_bytes(),
+            max_resources: policy.max_resources(),
+            max_groups_per_resource: policy.max_groups_per_resource(),
+            audit: policy.quota_audit(),
+        },
+        max_project_bytes: policy.max_resource_size(),
+    })
+}
+fn merge_quotas(first: EffectiveQuota, second: EffectiveQuota) -> EffectiveQuota {
+    EffectiveQuota {
+        limits: QuotaLimits {
+            max_artifact_bytes: minimum(first.limits.max_artifact_bytes, second.limits.max_artifact_bytes),
+            max_accounted_bytes: minimum(first.limits.max_accounted_bytes, second.limits.max_accounted_bytes),
+            max_resources: minimum(first.limits.max_resources, second.limits.max_resources),
+            max_groups_per_resource: minimum(
+                first.limits.max_groups_per_resource,
+                second.limits.max_groups_per_resource,
+            ),
+            audit: first.limits.audit && second.limits.audit,
+        },
+        max_project_bytes: minimum(first.max_project_bytes, second.max_project_bytes),
+    }
+}
+fn minimum(first: Option<u64>, second: Option<u64>) -> Option<u64> {
+    first.into_iter().chain(second).min()
 }
 
 #[cfg(test)]

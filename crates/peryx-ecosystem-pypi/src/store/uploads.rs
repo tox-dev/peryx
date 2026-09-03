@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use peryx_storage::meta::{DriverTxn, MetaError, MetaScanError, MetaStore, QuotaError, QuotaReservationRecord};
+use uuid::Uuid;
 
 use super::journal::JournalEntry;
 use super::overrides::{FileOverride, OverrideMutation};
@@ -71,6 +72,9 @@ pub struct PromotedRelease<'a> {
     pub records: &'a [(String, String, Vec<u8>)],
     /// The artifact size for each digest known to the promotion.
     pub blob_sizes: &'a BTreeMap<String, u64>,
+    /// The quota allocation held for each promoted filename. A file the guard skips releases its own
+    /// allocation, so an idempotent re-promotion is accounted for as the no-op it is.
+    pub reservations: &'a BTreeMap<String, Uuid>,
     /// When the promotion was submitted, as Unix seconds.
     pub submitted_at_unix: i64,
 }
@@ -270,39 +274,48 @@ pub fn promote_files_checked<E: From<MetaError>>(
     release: &PromotedRelease<'_>,
     guard: impl Fn(&str, &str, Option<&[u8]>) -> Result<Guard, E>,
 ) -> Result<usize, E> {
-    meta.commit_driver_txn(|txn| {
-        let mut written = 0;
-        let mut journal = Vec::new();
-        for (filename, token, record) in release.records {
-            let key = upload_key(release.index, release.normalized, filename);
-            match guard(filename, token, txn.get(&key)?.as_deref())? {
-                Guard::Skip => {}
-                Guard::Commit => {
-                    txn.touch_policy_inputs(release.index);
-                    put_upload_row(txn, release.index, release.normalized, filename, record)?;
-                    if let Some(size) = release.blob_sizes.get(token) {
-                        txn.reference_blob(token, *size);
+    let held: Vec<Uuid> = release.reservations.values().copied().collect();
+    meta.commit_driver_txn_with_quotas::<_, PublishError<E>>(
+        &held,
+        |(_, committed): &(usize, Vec<Uuid>)| committed.clone(),
+        |txn| {
+            let mut written = 0;
+            let mut committed = Vec::new();
+            let mut journal = Vec::new();
+            for (filename, token, record) in release.records {
+                let key = upload_key(release.index, release.normalized, filename);
+                match guard(filename, token, txn.get(&key)?.as_deref()).map_err(PublishError::Body)? {
+                    Guard::Skip => {}
+                    Guard::Commit => {
+                        committed.extend(release.reservations.get(filename).copied());
+                        txn.touch_policy_inputs(release.index);
+                        put_upload_row(txn, release.index, release.normalized, filename, record)?;
+                        if let Some(size) = release.blob_sizes.get(token) {
+                            txn.reference_blob(token, *size);
+                        }
+                        copy_provenance_in_txn(txn, release, filename, token)?;
+                        written += 1;
+                        journal.extend(journal_entries(outbox, || {
+                            journal_bytes(
+                                "add-file",
+                                release.normalized,
+                                journal_version(filename, record).as_deref(),
+                                Some(filename),
+                                release.submitted_at_unix,
+                            )
+                        }));
                     }
-                    copy_provenance_in_txn(txn, release, filename, token)?;
-                    written += 1;
-                    journal.extend(journal_entries(outbox, || {
-                        journal_bytes(
-                            "add-file",
-                            release.normalized,
-                            journal_version(filename, record).as_deref(),
-                            Some(filename),
-                            release.submitted_at_unix,
-                        )
-                    }));
                 }
             }
-        }
-        if written == 0 {
-            return Ok((0, Vec::new()));
-        }
-        put_project_row(txn, release.index, release.normalized, release.display)?;
-        Ok((written, journal))
-    })
+            if written == 0 {
+                return Ok(((0, Vec::new()), Vec::new()));
+            }
+            put_project_row(txn, release.index, release.normalized, release.display)?;
+            Ok(((written, committed), journal))
+        },
+    )
+    .map(|(written, _)| written)
+    .map_err(map_publish_error)
 }
 
 /// Carry a promoted publication's provenance bundle onto the target index.

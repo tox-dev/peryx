@@ -379,6 +379,21 @@ pub async fn upload_wheel_to(state: &Arc<AppState>, uri: &str, filename: &str, v
     );
     Digest::of(bytes)
 }
+/// The sdist counterpart of [`upload_wheel_to`], so a test can build a release of more than one file.
+pub async fn upload_sdist_to(state: &Arc<AppState>, uri: &str, filename: &str, version: &str, bytes: &[u8]) -> Digest {
+    let fields = vec![
+        (":action", "file_upload"),
+        ("name", "peryxpkg"),
+        ("version", version),
+        ("filetype", "sdist"),
+    ];
+    let (ct, body) = multipart_body(&fields, Some((filename, bytes)));
+    assert_eq!(
+        post_upload(state, uri, Some(&upload_auth()), &ct, body).await,
+        StatusCode::OK
+    );
+    Digest::of(bytes)
+}
 pub fn blob_count(state: &AppState) -> u64 {
     let mut count = 0;
     state

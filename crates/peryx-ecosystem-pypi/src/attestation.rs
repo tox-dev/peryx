@@ -172,23 +172,53 @@ pub fn summarize_provenance(document: &[u8], sha256: &str, filename: &str) -> Op
     (!summaries.is_empty()).then_some(summaries)
 }
 
-fn summarize_attestation(attestation: &Value, sha256: &str, filename: &str) -> AttestationView {
-    let Some(statement) = attestation["envelope"]["statement"]
+/// The predicate types a stored provenance document declares for a distribution whose subject binds.
+///
+/// Promotion judges a copied file against the target's attestation rules, and the bundle peryx already
+/// stored is what the target would serve. Reading it here gives those rules the same set the upload
+/// was judged on, untruncated, rather than the display form [`summarize_provenance`] renders.
+#[must_use]
+pub fn stored_predicate_types(document: &[u8], sha256: &str, filename: &str) -> BTreeSet<String> {
+    let Ok(stored) = serde_json::from_slice::<StoredProvenance>(document) else {
+        return BTreeSet::new();
+    };
+    if stored.version != SUPPORTED_VERSION {
+        return BTreeSet::new();
+    }
+    stored
+        .attestation_bundles
+        .into_iter()
+        .flat_map(|bundle| bundle.attestations)
+        .take(MAX_ATTESTATIONS)
+        .filter_map(|attestation| read_attestation(&attestation, sha256, filename))
+        .filter(|(_, subject)| *subject == SubjectMatch::Matched)
+        .filter_map(|(predicate_type, _)| predicate_type)
+        .collect()
+}
+
+/// One attestation's predicate type and whether its subject binds, before any display shaping.
+fn read_attestation(attestation: &Value, sha256: &str, filename: &str) -> Option<(Option<String>, SubjectMatch)> {
+    let statement = attestation["envelope"]["statement"]
         .as_str()
         .and_then(|encoded| STANDARD.decode(encoded).ok())
         .filter(|decoded| decoded.len() <= MAX_STATEMENT_BYTES)
-        .and_then(|decoded| serde_json::from_slice::<Statement>(&decoded).ok())
-    else {
+        .and_then(|decoded| serde_json::from_slice::<Statement>(&decoded).ok())?;
+    Some((
+        statement.predicate_type,
+        subject_match(&statement.subject, sha256, filename),
+    ))
+}
+
+fn summarize_attestation(attestation: &Value, sha256: &str, filename: &str) -> AttestationView {
+    let Some((predicate_type, subject)) = read_attestation(attestation, sha256, filename) else {
         return AttestationView {
             predicate_type: None,
             subject: SubjectMatch::Unknown,
         };
     };
     AttestationView {
-        predicate_type: statement
-            .predicate_type
-            .map(|predicate| predicate.chars().take(MAX_PREDICATE_TYPE_CHARS).collect()),
-        subject: subject_match(&statement.subject, sha256, filename),
+        predicate_type: predicate_type.map(|predicate| predicate.chars().take(MAX_PREDICATE_TYPE_CHARS).collect()),
+        subject,
     }
 }
 

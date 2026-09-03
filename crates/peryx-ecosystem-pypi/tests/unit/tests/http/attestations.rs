@@ -38,7 +38,12 @@ pub(super) async fn upload_with_attestations(state: &Arc<AppState>, wheel: &[u8]
     upload_with_attestations_to(state, "/root/pypi/", wheel, field).await
 }
 
-async fn upload_with_attestations_to(state: &Arc<AppState>, route: &str, wheel: &[u8], field: &str) -> StatusCode {
+pub(super) async fn upload_with_attestations_to(
+    state: &Arc<AppState>,
+    route: &str,
+    wheel: &[u8],
+    field: &str,
+) -> StatusCode {
     let fields = vec![
         (":action", "file_upload"),
         ("name", "peryxpkg"),

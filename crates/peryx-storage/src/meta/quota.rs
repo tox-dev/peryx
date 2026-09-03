@@ -306,6 +306,40 @@ impl MetaStore {
         )
     }
 
+    /// Commits driver metadata and settles several allocations in the same transaction: the ids the
+    /// body reports as written are committed and the rest released.
+    ///
+    /// A write that reserves per file needs this. Settling one allocation at a time would leave a
+    /// window where some files are accounted for and others are not, and a release-wide allocation
+    /// would report one row for what the caller stored as many.
+    ///
+    /// # Errors
+    /// Returns the body's error, [`QuotaError::ReservationUnavailable`] when an id names no pending
+    /// reservation, or a store error. Peryx rolls back driver and quota rows when any step fails.
+    pub fn commit_driver_txn_with_quotas<T, E>(
+        &self,
+        reservations: &[Uuid],
+        committed: impl FnOnce(&T) -> Vec<Uuid>,
+        body: impl FnOnce(&mut super::DriverTxn) -> Result<(T, Vec<Vec<u8>>), E>,
+    ) -> Result<T, E>
+    where
+        E: From<MetaError> + From<QuotaError>,
+    {
+        self.commit_driver_txn_at(
+            None,
+            None,
+            true,
+            |txn, value| {
+                let committed = committed(value);
+                reservations
+                    .iter()
+                    .try_for_each(|id| settle_reservation(txn, *id, committed.contains(id)))
+                    .map_err(E::from)
+            },
+            body,
+        )
+    }
+
     /// # Errors
     /// Returns a quota, body, or store error without committing partial changes.
     pub fn commit_driver_txn_with_quota_if_commit<T, E>(

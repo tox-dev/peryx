@@ -21,7 +21,7 @@ use super::{
     source_client,
 };
 
-const MAX_PROVENANCE_BYTES: usize = 2 * 1024 * 1024;
+pub(super) const MAX_PROVENANCE_BYTES: usize = 2 * 1024 * 1024;
 
 /// A hosted or upstream provenance representation and the state exposed with it.
 pub struct ProvenanceBody {

@@ -12,13 +12,13 @@ use peryx_events::security::{Attribution, RequestContext};
 use peryx_ha::{AuthorityEpoch, CommittedBlob, OperationKind};
 use peryx_identity::Action;
 use peryx_index::Index;
-use peryx_policy::{Policy, PolicyAction, PolicyDenial};
+use peryx_policy::{PolicyAction, PolicyDenial};
 use peryx_storage::blob::Digest;
-use peryx_storage::meta::{IntentPhase, OperationClaim, OperationResult, OperationState, QuotaLimit, QuotaLimits};
+use peryx_storage::meta::{IntentPhase, OperationClaim, OperationResult, OperationState, QuotaLimit};
 
 use crate::cache::{self, CacheError};
 use crate::policy::{PypiPolicy, REQUIRED_ATTESTATION_AUDIT_RULE};
-use crate::quota::{self, Admission, PendingQuota, QuotaRejection};
+use crate::quota::{self, Admission, PendingQuota, QuotaRejection, effective_project_quota};
 use crate::upload::{self, UploadError};
 use crate::webhook::{self, PypiWebhook};
 use crate::{PYPI_LEXICON, PackageName, ProjectStatus, normalize_name};
@@ -476,58 +476,6 @@ fn project_quota_reservation(
             Err(Box::new(upload_limits_denial(&violations, project, audit.filename)))
         }
     }
-}
-
-#[derive(Clone, Copy)]
-struct EffectiveQuota {
-    limits: QuotaLimits,
-    max_project_bytes: Option<u64>,
-}
-
-fn effective_project_quota(index: &Index, hosted: &Index) -> Option<EffectiveQuota> {
-    match (
-        policy_quota(&index.policy),
-        (hosted.name != index.name)
-            .then(|| policy_quota(&hosted.policy))
-            .flatten(),
-    ) {
-        (Some(index), Some(hosted)) => Some(merge_quotas(index, hosted)),
-        (Some(quota), None) | (None, Some(quota)) => Some(quota),
-        (None, None) => None,
-    }
-}
-
-fn policy_quota(policy: &Policy) -> Option<EffectiveQuota> {
-    (policy.enforces_quota() || policy.has_resource_size_limit()).then(|| EffectiveQuota {
-        limits: QuotaLimits {
-            max_artifact_bytes: policy.max_artifact_size(),
-            max_accounted_bytes: policy.max_accounted_bytes(),
-            max_resources: policy.max_resources(),
-            max_groups_per_resource: policy.max_groups_per_resource(),
-            audit: policy.quota_audit(),
-        },
-        max_project_bytes: policy.max_resource_size(),
-    })
-}
-
-fn merge_quotas(first: EffectiveQuota, second: EffectiveQuota) -> EffectiveQuota {
-    EffectiveQuota {
-        limits: QuotaLimits {
-            max_artifact_bytes: minimum(first.limits.max_artifact_bytes, second.limits.max_artifact_bytes),
-            max_accounted_bytes: minimum(first.limits.max_accounted_bytes, second.limits.max_accounted_bytes),
-            max_resources: minimum(first.limits.max_resources, second.limits.max_resources),
-            max_groups_per_resource: minimum(
-                first.limits.max_groups_per_resource,
-                second.limits.max_groups_per_resource,
-            ),
-            audit: first.limits.audit && second.limits.audit,
-        },
-        max_project_bytes: minimum(first.max_project_bytes, second.max_project_bytes),
-    }
-}
-
-fn minimum(first: Option<u64>, second: Option<u64>) -> Option<u64> {
-    first.into_iter().chain(second).min()
 }
 
 fn upload_policy_response(

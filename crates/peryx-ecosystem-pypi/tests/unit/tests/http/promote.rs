@@ -739,3 +739,379 @@ async fn test_promote_logs_the_refused_source_read() {
         )
     );
 }
+
+/// A wheel the target would refuse from a direct upload is refused from a promotion too. Promotion
+/// copies a record into the target's namespace, so the target's rules decide what may land there.
+#[tokio::test]
+async fn test_promote_applies_the_target_upload_policy() {
+    let h = promotion_harness_with_target_policy(policy(|_neutral, pypi| {
+        pypi.block_wheel_pythons = vec!["py3".to_owned()];
+    }))
+    .await;
+    let wheel = fixture_wheel();
+    upload_wheel_to(&h.state, "/staging/", "peryxpkg-1.0-py3-none-any.whl", "1.0", &wheel).await;
+
+    let (status, _) = request_response(
+        &h.state,
+        "PUT",
+        "/prod/peryxpkg/1.0/promote?from=staging",
+        Some(&upload_auth()),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (listing, _) = request_response(&h.state, "GET", "/prod/simple/peryxpkg/", None).await;
+    assert_eq!(listing, StatusCode::NOT_FOUND);
+}
+
+/// A release that would cross the target's project-byte limit publishes no file at all, rather than
+/// the prefix that happened to fit.
+#[tokio::test]
+async fn test_promote_refuses_a_release_that_crosses_the_target_quota() {
+    let h = promotion_harness_with_target_policy(policy(|neutral, _pypi| {
+        neutral.max_resource_size_bytes = Some(16);
+    }))
+    .await;
+    let wheel = fixture_wheel();
+    upload_wheel_to(&h.state, "/staging/", "peryxpkg-1.0-py3-none-any.whl", "1.0", &wheel).await;
+
+    let (status, _) = request_response(
+        &h.state,
+        "PUT",
+        "/prod/peryxpkg/1.0/promote?from=staging",
+        Some(&upload_auth()),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (listing, _) = request_response(&h.state, "GET", "/prod/simple/peryxpkg/", None).await;
+    assert_eq!(listing, StatusCode::NOT_FOUND);
+}
+
+/// A promoted release accounts for each file it publishes, so the target's usage matches the bytes it
+/// now stores rather than one synthetic row for the release.
+#[tokio::test]
+async fn test_promote_accounts_for_every_promoted_file() {
+    let h = promotion_harness_with_target_policy(policy(|neutral, _pypi| {
+        neutral.max_resource_size_bytes = Some(1_000_000);
+    }))
+    .await;
+    let first = fixture_wheel();
+    let second = fixture_sdist();
+    upload_wheel_to(&h.state, "/staging/", "peryxpkg-1.0-py3-none-any.whl", "1.0", &first).await;
+    upload_sdist_to(&h.state, "/staging/", "peryxpkg-1.0.tar.gz", "1.0", &second).await;
+
+    let (status, body) = request_response(
+        &h.state,
+        "PUT",
+        "/prod/peryxpkg/1.0/promote?from=staging",
+        Some(&upload_auth()),
+    )
+    .await;
+
+    assert_eq!((status, body.as_str()), (StatusCode::OK, "promoted 2 file(s)"));
+    assert_eq!(
+        h.state
+            .serving
+            .meta
+            .quota_usage("prod")
+            .unwrap()
+            .accounted_bytes
+            .committed,
+        (first.len() + second.len()) as u64
+    );
+}
+
+/// Re-promoting the same release publishes nothing the second time, so it accounts for nothing the
+/// second time either. A skipped file that still consumed quota would drift the target's usage above
+/// what it stores.
+#[tokio::test]
+async fn test_promote_charges_no_quota_for_a_file_it_skips() {
+    let h = promotion_harness_with_target_policy(policy(|neutral, _pypi| {
+        neutral.max_resource_size_bytes = Some(1_000_000);
+    }))
+    .await;
+    let wheel = fixture_wheel();
+    upload_wheel_to(&h.state, "/staging/", "peryxpkg-1.0-py3-none-any.whl", "1.0", &wheel).await;
+    let auth = upload_auth();
+    request_response(&h.state, "PUT", "/prod/peryxpkg/1.0/promote?from=staging", Some(&auth)).await;
+    let after_first = h
+        .state
+        .serving
+        .meta
+        .quota_usage("prod")
+        .unwrap()
+        .accounted_bytes
+        .committed;
+
+    let (status, body) =
+        request_response(&h.state, "PUT", "/prod/peryxpkg/1.0/promote?from=staging", Some(&auth)).await;
+
+    assert_eq!((status, body.as_str()), (StatusCode::OK, "promoted 0 file(s)"));
+    assert_eq!(
+        h.state
+            .serving
+            .meta
+            .quota_usage("prod")
+            .unwrap()
+            .accounted_bytes
+            .committed,
+        after_first
+    );
+}
+
+/// A target that refuses one file of a release publishes none of it, and accounts for none of it. Half
+/// a release is neither the state the caller asked for nor the one they had.
+#[tokio::test]
+async fn test_promote_leaves_no_allocation_when_one_file_is_refused() {
+    let h = promotion_harness_with_target_policy(policy(|neutral, pypi| {
+        neutral.max_resource_size_bytes = Some(1_000_000);
+        pypi.block_package_types = vec![crate::policy::PackageType::Sdist];
+    }))
+    .await;
+    upload_wheel_to(
+        &h.state,
+        "/staging/",
+        "peryxpkg-1.0-py3-none-any.whl",
+        "1.0",
+        &fixture_wheel(),
+    )
+    .await;
+    upload_sdist_to(&h.state, "/staging/", "peryxpkg-1.0.tar.gz", "1.0", &fixture_sdist()).await;
+
+    let (status, _) = request_response(
+        &h.state,
+        "PUT",
+        "/prod/peryxpkg/1.0/promote?from=staging",
+        Some(&upload_auth()),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        h.state
+            .serving
+            .meta
+            .quota_usage("prod")
+            .unwrap()
+            .accounted_bytes
+            .committed,
+        0
+    );
+    let (listing, _) = request_response(&h.state, "GET", "/prod/simple/peryxpkg/", None).await;
+    assert_eq!(listing, StatusCode::NOT_FOUND);
+}
+
+/// The target's attestation rule judges the bundle the source publication carries, so a promotion is
+/// admitted on the same evidence the upload was. Reading the stored document is what makes that
+/// possible: the record itself keeps no predicate types.
+#[tokio::test]
+async fn test_promote_reads_the_stored_bundle_for_the_target_attestation_rule() {
+    let h = promotion_harness_with_target_policy(policy(|_neutral, pypi| {
+        pypi.required_attestations = vec!["https://docs.pypi.org/attestations/publish/v1".to_owned()];
+    }))
+    .await;
+    let wheel = fixture_wheel();
+    let field = super::attestations::attestations_field(super::attestations::FILENAME, Digest::of(&wheel).as_str());
+    assert_eq!(
+        super::attestations::upload_with_attestations_to(&h.state, "/staging/", &wheel, &field).await,
+        StatusCode::OK
+    );
+
+    let (status, body) = request_response(
+        &h.state,
+        "PUT",
+        "/prod/peryxpkg/1.0/promote?from=staging",
+        Some(&upload_auth()),
+    )
+    .await;
+
+    assert_eq!((status, body.as_str()), (StatusCode::OK, "promoted 1 file(s)"));
+}
+
+/// A record written without a size still names bytes peryx holds, so the blob answers for it and the
+/// target accounts for the file rather than refusing it.
+#[tokio::test]
+async fn test_promote_recovers_a_missing_size_from_the_stored_blob() {
+    let h = promotion_harness_with_target_policy(policy(|neutral, _pypi| {
+        neutral.max_resource_size_bytes = Some(1_000_000);
+    }))
+    .await;
+    let wheel = fixture_wheel();
+    upload_wheel_to(&h.state, "/staging/", "peryxpkg-1.0-py3-none-any.whl", "1.0", &wheel).await;
+    forget_recorded_size(&h, "peryxpkg-1.0-py3-none-any.whl");
+
+    let (status, body) = request_response(
+        &h.state,
+        "PUT",
+        "/prod/peryxpkg/1.0/promote?from=staging",
+        Some(&upload_auth()),
+    )
+    .await;
+
+    assert_eq!((status, body.as_str()), (StatusCode::OK, "promoted 1 file(s)"));
+    assert_eq!(
+        h.state
+            .serving
+            .meta
+            .quota_usage("prod")
+            .unwrap()
+            .accounted_bytes
+            .committed,
+        wheel.len() as u64
+    );
+}
+
+/// A record whose size neither its row nor a stored blob can supply cannot be accounted for, so the
+/// target refuses it rather than publishing outside the limit the operator set.
+#[tokio::test]
+async fn test_promote_refuses_a_file_whose_size_nothing_can_supply() {
+    let h = promotion_harness_with_target_policy(policy(|neutral, _pypi| {
+        neutral.max_resource_size_bytes = Some(1_000_000);
+    }))
+    .await;
+    upload_wheel_to(
+        &h.state,
+        "/staging/",
+        "peryxpkg-1.0-py3-none-any.whl",
+        "1.0",
+        &fixture_wheel(),
+    )
+    .await;
+    forget_recorded_size(&h, "peryxpkg-1.0-py3-none-any.whl");
+    rewrite_digest(&h, "peryxpkg-1.0-py3-none-any.whl", &"a".repeat(64));
+
+    let (status, _) = request_response(
+        &h.state,
+        "PUT",
+        "/prod/peryxpkg/1.0/promote?from=staging",
+        Some(&upload_auth()),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        h.state
+            .serving
+            .meta
+            .quota_usage("prod")
+            .unwrap()
+            .accounted_bytes
+            .committed,
+        0
+    );
+}
+
+/// A repository-wide byte limit refuses the file by name, so the reply says which limit answered
+/// rather than reporting a project total that did not move.
+#[tokio::test]
+async fn test_promote_reports_the_repository_limit_that_refused_the_file() {
+    let h = promotion_harness_with_target_policy(policy(|neutral, _pypi| {
+        neutral.max_accounted_bytes = Some(8);
+    }))
+    .await;
+    upload_wheel_to(
+        &h.state,
+        "/staging/",
+        "peryxpkg-1.0-py3-none-any.whl",
+        "1.0",
+        &fixture_wheel(),
+    )
+    .await;
+
+    let (status, body) = request_response(
+        &h.state,
+        "PUT",
+        "/prod/peryxpkg/1.0/promote?from=staging",
+        Some(&upload_auth()),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(body.contains("exceeds the target quota"), "{body}");
+}
+
+/// Drop the size a stored upload row records, leaving the blob as the only place its byte count lives.
+fn forget_recorded_size(h: &Harness, filename: &str) {
+    rewrite_upload_row(h, filename, |record| {
+        record.as_object_mut().unwrap()["file"]
+            .as_object_mut()
+            .unwrap()
+            .remove("size");
+    });
+}
+
+/// Point a stored upload row at a digest that names no blob peryx can even look up.
+fn rewrite_digest(h: &Harness, filename: &str, digest: &str) {
+    rewrite_upload_row(h, filename, |record| {
+        record.as_object_mut().unwrap()["file"].as_object_mut().unwrap()["hashes"]
+            .as_object_mut()
+            .unwrap()
+            .insert("sha256".to_owned(), serde_json::json!(digest));
+    });
+}
+
+fn rewrite_upload_row(h: &Harness, filename: &str, edit: impl FnOnce(&mut serde_json::Value)) {
+    let raw = h
+        .state
+        .serving
+        .meta
+        .get_upload("staging", "peryxpkg", filename)
+        .unwrap()
+        .unwrap();
+    let mut record: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+    edit(&mut record);
+    h.state
+        .serving
+        .meta
+        .put_upload("staging", "peryxpkg", filename, &to_json(&record).into_bytes())
+        .unwrap();
+}
+
+/// A conflict aborts the whole transaction, allocations included. The target keeps the usage its own
+/// upload left and gains nothing from the promotion it refused.
+#[tokio::test]
+async fn test_promote_leaves_no_allocation_when_a_filename_conflicts() {
+    let h = promotion_harness_with_target_policy(policy(|neutral, _pypi| {
+        neutral.max_resource_size_bytes = Some(1_000_000);
+    }))
+    .await;
+    upload_wheel_to(
+        &h.state,
+        "/staging/",
+        "peryxpkg-1.0-py3-none-any.whl",
+        "1.0",
+        &fixture_wheel(),
+    )
+    .await;
+    let resident = fixture_wheel_with_body("1.0", b"VALUE = 2\n");
+    upload_wheel_to(&h.state, "/prod/", "peryxpkg-1.0-py3-none-any.whl", "1.0", &resident).await;
+    let before = h
+        .state
+        .serving
+        .meta
+        .quota_usage("prod")
+        .unwrap()
+        .accounted_bytes
+        .committed;
+
+    let (status, _) = request_response(
+        &h.state,
+        "PUT",
+        "/prod/peryxpkg/1.0/promote?from=staging",
+        Some(&upload_auth()),
+    )
+    .await;
+
+    assert_eq!((status, before), (StatusCode::CONFLICT, resident.len() as u64));
+    assert_eq!(
+        h.state
+            .serving
+            .meta
+            .quota_usage("prod")
+            .unwrap()
+            .accounted_bytes
+            .committed,
+        before
+    );
+}

@@ -437,7 +437,7 @@ fn test_promote_files_checked_writes_the_release_project_and_journal() {
     let blob_sizes = BTreeMap::from([("artifact-sha".to_owned(), 8)]);
 
     let written = meta
-        .promote_files_checked(
+        .promote_files_checked::<MetaError>(
             true,
             &PromotedRelease {
                 source: "staging",
@@ -446,6 +446,7 @@ fn test_promote_files_checked_writes_the_release_project_and_journal() {
                 display: "Flask",
                 records: &records,
                 blob_sizes: &blob_sizes,
+                reservations: &BTreeMap::new(),
                 submitted_at_unix: 123,
             },
             |filename, digest, existing| {
@@ -559,7 +560,7 @@ fn promote(meta: &MetaStore, source: &str) -> Result<usize, MetaError> {
         "artifact-sha".to_owned(),
         br#"{"version":"1.0"}"#.to_vec(),
     )];
-    meta.promote_files_checked(
+    meta.promote_files_checked::<MetaError>(
         true,
         &PromotedRelease {
             source,
@@ -568,6 +569,7 @@ fn promote(meta: &MetaStore, source: &str) -> Result<usize, MetaError> {
             display: "Flask",
             records: &records,
             blob_sizes: &BTreeMap::from([("artifact-sha".to_owned(), 8)]),
+            reservations: &BTreeMap::new(),
             submitted_at_unix: 123,
         },
         |_filename, _digest, _existing| Ok::<_, MetaError>(Guard::Commit),
