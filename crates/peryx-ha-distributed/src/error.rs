@@ -1,7 +1,7 @@
 use std::error::Error;
 
 use peryx_storage::blob::BlobError;
-use peryx_storage::meta::MetaError;
+use peryx_storage::meta::{CheckpointInstallError, CheckpointStageError, MetaError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum SyncError {
@@ -33,6 +33,10 @@ pub enum SyncError {
     LocalSerialMismatch { cursor: u64, journal: u64 },
     #[error("invalid sha256 digest {0:?}")]
     InvalidDigest(String),
+    #[error("checkpoint transfer: {0}")]
+    Checkpoint(#[from] CheckpointInstallError),
+    #[error("checkpoint chunk does not continue the transfer: {0}")]
+    CheckpointChunk(#[from] CheckpointStageError),
     #[error("blob {digest} has conflicting sizes {first} and {second}")]
     ConflictingBlobSize { digest: String, first: u64, second: u64 },
     #[error("blob {digest} has {actual} bytes; expected {expected}")]

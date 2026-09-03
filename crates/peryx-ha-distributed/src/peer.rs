@@ -4,6 +4,8 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 pub use peryx_ha::TransportError;
 
+use peryx_storage::meta::CheckpointManifest;
+
 use crate::change_page::MAX_CHANGE_PAGE_BYTES;
 use crate::http::constant_time_eq;
 use crate::protocol::{Change, ChangePage, PROTOCOL_VERSION};
@@ -91,6 +93,36 @@ pub trait PeerTransport: Sync {
     /// Returns a retryable [`TransportError`] on transport loss and a terminal one on a credential,
     /// bound, or framing violation.
     async fn fetch_batch(&self, request: BatchRequest) -> Result<BatchFrame, TransportError>;
+
+    /// The manifest of the checkpoint this peer publishes, which a reader below its floor verifies a
+    /// transfer against.
+    ///
+    /// The default refuses. A transport that serves no checkpoint leaves a reader below the floor with
+    /// nowhere to go, and saying so is what turns that into a reported failure rather than a wait.
+    ///
+    /// # Errors
+    /// Returns [`TransportError::CheckpointUnavailable`] when the peer publishes none, and a retryable
+    /// error on transport loss.
+    async fn checkpoint_manifest(&self) -> Result<CheckpointManifest, TransportError> {
+        Err(TransportError::CheckpointUnavailable)
+    }
+
+    /// One window of the peer's published checkpoint, starting where `cursor` names.
+    ///
+    /// # Errors
+    /// Returns [`TransportError::CheckpointUnavailable`] by default, and a retryable error on transport
+    /// loss.
+    async fn checkpoint_chunk(&self, cursor: &str) -> Result<CheckpointWindow, TransportError> {
+        let _ = cursor;
+        Err(TransportError::CheckpointUnavailable)
+    }
+}
+
+/// One window of a checkpoint, and the cursor naming where the window after it begins.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckpointWindow {
+    pub bytes: Vec<u8>,
+    pub next: String,
 }
 
 pub struct LoopbackPeer {

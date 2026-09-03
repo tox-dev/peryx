@@ -575,3 +575,122 @@ async fn test_a_committed_blob_its_record_cannot_name_reports_no_keys() {
         }]
     );
 }
+
+/// A source that has installed a checkpoint holds no records below its serial, which is what a pruned
+/// writer will look like. A replica reading from it is refused, recovers through the checkpoint, and
+/// stands at the serial the manifest named.
+#[tokio::test]
+async fn test_a_cycle_recovers_through_a_checkpoint_when_the_source_refuses_the_cursor() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let (source_meta, source_blobs) = stores(&source_dir);
+    for index in 0..6 {
+        source_meta
+            .commit_driver_txn(|txn| {
+                txn.put(&format!("pypi\u{0}p\u{0}hosted/pkg{index:04}"), b"display")
+                    .map(|()| ((), vec![b"{}".to_vec()]))
+            })
+            .unwrap();
+    }
+    let identity = peryx_storage::meta::CheckpointIdentity {
+        source: "primary".to_owned(),
+        protocol_version: PROTOCOL_VERSION,
+        schema_version: 1,
+    };
+    let manifest = source_meta.publish_checkpoint(identity.clone()).unwrap();
+    // The source becomes a node that installed the checkpoint, so its journal starts above the cursor
+    // a fresh replica asks from.
+    let installed_dir = tempfile::tempdir().unwrap();
+    let (installed, _installed_blobs) = stores(&installed_dir);
+    installed.begin_checkpoint_transfer(&manifest).unwrap();
+    let whole = source_meta
+        .checkpoint_chunk(&peryx_storage::meta::CheckpointCursor::start(), 1 << 20)
+        .unwrap();
+    installed
+        .stage_checkpoint_chunk(&manifest, 0, &whole.bytes, "done")
+        .unwrap()
+        .unwrap();
+    installed
+        .install_staged_checkpoint("replication\u{0}state", br#"{"source":"primary","serial":6}"#)
+        .unwrap();
+    let server = TestServer::start(primary_router("primary", TOKEN, installed, source_blobs).unwrap()).await;
+
+    let target_dir = tempfile::tempdir().unwrap();
+    let (meta, blobs) = stores(&target_dir);
+    let mut replica = replica(
+        meta.clone(),
+        blobs,
+        metadata(&server.url),
+        blob_transport(&server.url),
+        Arc::new(Views::default()),
+        Arc::new(ReplicaMonitor::new(0)),
+    );
+
+    replica.cycle().await.unwrap();
+
+    assert_eq!(meta.current_serial().unwrap(), manifest.serial);
+    assert_eq!(
+        meta.get_driver_value("pypi\u{0}p\u{0}hosted/pkg0000")
+            .unwrap()
+            .as_deref(),
+        Some(&b"display"[..])
+    );
+}
+
+fn refused_below_floor(source: &str) -> crate::RetiredPeer {
+    crate::RetiredPeer {
+        source: source.to_owned(),
+        reason: "checkpoint_required",
+    }
+}
+
+/// A source the peer set no longer holds is passed over. Nothing removes a member mid-cycle today, so
+/// this is what keeps the recovery from depending on that staying true.
+#[tokio::test]
+async fn test_a_recovery_skips_a_source_the_peer_set_no_longer_holds() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let (source_meta, source_blobs) = stores(&source_dir);
+    let server = TestServer::start(primary_router("primary", TOKEN, source_meta, source_blobs).unwrap()).await;
+    let target_dir = tempfile::tempdir().unwrap();
+    let (meta, blobs) = stores(&target_dir);
+    let mut replica = replica(
+        meta,
+        blobs,
+        metadata(&server.url),
+        blob_transport(&server.url),
+        Arc::new(Views::default()),
+        Arc::new(ReplicaMonitor::new(0)),
+    );
+
+    assert!(
+        !replica
+            .recover_retired_below_floor(&[refused_below_floor("absent")])
+            .await
+    );
+}
+
+/// A source that refused the cursor and publishes no checkpoint leaves the replica where it was, with
+/// the failure reported rather than a half-installed state.
+#[tokio::test]
+async fn test_a_recovery_from_a_source_without_a_checkpoint_reports_no_progress() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let (source_meta, source_blobs) = stores(&source_dir);
+    let server = TestServer::start(primary_router("primary", TOKEN, source_meta, source_blobs).unwrap()).await;
+    let target_dir = tempfile::tempdir().unwrap();
+    let (meta, blobs) = stores(&target_dir);
+    let before = meta.current_serial().unwrap();
+    let mut replica = replica(
+        meta.clone(),
+        blobs,
+        metadata(&server.url),
+        blob_transport(&server.url),
+        Arc::new(Views::default()),
+        Arc::new(ReplicaMonitor::new(0)),
+    );
+
+    assert!(
+        !replica
+            .recover_retired_below_floor(&[refused_below_floor("primary")])
+            .await
+    );
+    assert_eq!(meta.current_serial().unwrap(), before);
+}

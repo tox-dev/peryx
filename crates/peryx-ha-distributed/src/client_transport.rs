@@ -26,6 +26,8 @@ pub enum ReplicationStatus {
     Success,
     Unauthenticated,
     NotFound,
+    /// The reader's cursor is below what the peer retains.
+    CheckpointRequired,
     ServerError(u16),
     BadStatus(u16),
 }
@@ -166,6 +168,7 @@ pub const fn classify_status(status: StatusCode) -> ReplicationStatus {
         200..=299 => ReplicationStatus::Success,
         401 => ReplicationStatus::Unauthenticated,
         404 => ReplicationStatus::NotFound,
+        410 => ReplicationStatus::CheckpointRequired,
         500 | 502..=599 => ReplicationStatus::ServerError(status),
         _ => ReplicationStatus::BadStatus(status),
     }
@@ -182,6 +185,7 @@ pub fn require_replication_success(status: StatusCode, headers: &HeaderMap) -> R
             status,
             retry_after: peryx_upstream::retry::retry_after(headers),
         }),
+        ReplicationStatus::CheckpointRequired => Err(TransportError::CheckpointRequired),
         ReplicationStatus::NotFound | ReplicationStatus::BadStatus(_) => Err(TransportError::BadStatus {
             status: status.as_u16(),
         }),

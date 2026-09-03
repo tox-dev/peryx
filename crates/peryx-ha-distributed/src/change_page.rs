@@ -41,9 +41,28 @@ pub enum ChangePageBody {
         serial: u64,
         bytes: u64,
     },
+    /// The records after the reader's cursor are no longer held, so no page can carry it forward and a
+    /// checkpoint is the only way on.
+    ///
+    /// It names no serial. A reader that resumed from one named here would resume from what the writer
+    /// held when it answered rather than from the checkpoint it went on to install, and a floor that
+    /// moved in between would leave its cursor and its state at different serials.
+    BelowFloor,
     Unsynced,
     Cancelled,
     Failed,
+}
+
+/// Whether the records after `after` are gone.
+///
+/// A journal that starts above the next record the reader needs has lost the range between them. An
+/// empty journal is the same answer wherever its serial is not zero: a node that installed a checkpoint
+/// stands at that serial holding no records below it.
+const fn below_floor(after: u64, current_serial: u64, floor: Option<u64>) -> bool {
+    match floor {
+        Some(floor) => after.saturating_add(1) < floor,
+        None => after < current_serial,
+    }
 }
 
 /// Reads and encodes one page, stopping between records once `cancellation` is raised or the next
@@ -86,9 +105,15 @@ pub fn build_change_page(
         changes.push(change);
         ControlFlow::Continue(())
     });
-    let Ok(current_serial) = walked else {
+    // The floor read joins the walk's result, so one arm answers a store this node cannot read at all
+    // rather than two that differ only in which read noticed.
+    let Ok((current_serial, floor)) = walked.and_then(|serial| meta.journal_floor().map(|floor| (serial, floor)))
+    else {
         return ChangePageBody::Failed;
     };
+    if below_floor(after, current_serial, floor) {
+        return ChangePageBody::BelowFloor;
+    }
     if cancellation.is_cancelled() {
         return ChangePageBody::Cancelled;
     }
@@ -111,6 +136,11 @@ pub fn change_page_response(built: Result<ChangePageBody, JoinError>) -> Respons
         Ok(ChangePageBody::RecordTooLarge { serial, bytes }) => (
             StatusCode::PAYLOAD_TOO_LARGE,
             format!("journal record {serial} encodes to {bytes} bytes; a change page holds {MAX_CHANGE_PAGE_BYTES}"),
+        )
+            .into_response(),
+        Ok(ChangePageBody::BelowFloor) => (
+            StatusCode::GONE,
+            "the records after this cursor are no longer retained; install a checkpoint",
         )
             .into_response(),
         Ok(ChangePageBody::Unsynced) => {

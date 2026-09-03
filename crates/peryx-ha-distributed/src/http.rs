@@ -13,7 +13,7 @@ use axum::routing::get;
 use futures_util::Stream;
 use peryx_driver::BlockingScanExecutor;
 use peryx_storage::blob::{BlobErrorKind, BlobRead, BlobReadBody, BlobStorage, Digest, RangeRequest, parse_range};
-use peryx_storage::meta::MetaStore;
+use peryx_storage::meta::{CheckpointCursor, MetaStore};
 use reqwest::Url;
 use serde::Deserialize;
 use tokio::io::AsyncReadExt as _;
@@ -32,6 +32,16 @@ use crate::replica::Replica;
 const ONE: NonZeroUsize = NonZeroUsize::new(1).expect("1 is non-zero");
 
 const CHANGES_PATH: &str = "+replication/v1/changes";
+
+/// Names where the window after this one begins, and is absent on the last.
+pub const CHECKPOINT_CURSOR_HEADER: header::HeaderName = header::HeaderName::from_static("x-peryx-checkpoint-cursor");
+
+/// Caps one checkpoint window.
+///
+/// A window ends on an entry boundary once it reaches this, so the cap bounds what either side holds
+/// for one hop rather than what a checkpoint may weigh. It matches the change-page cap, since both
+/// bound the same thing: what a node spends on a peer that is catching up.
+pub const MAX_CHECKPOINT_CHUNK_BYTES: usize = 4 * 1024 * 1024;
 const USER_AGENT: &str = concat!("peryx-ha-distributed/", env!("CARGO_PKG_VERSION"));
 
 pub const DEFAULT_MAX_CHANGE_PAGE_SIZE: usize = 1_000;
@@ -186,6 +196,11 @@ struct ChangesQuery {
     limit: usize,
 }
 
+#[derive(Deserialize)]
+struct CheckpointChunkQuery {
+    cursor: Option<String>,
+}
+
 impl ChangesQuery {
     /// Rejects an unusable limit before a permit or a store read is spent on it.
     fn rejection(&self) -> Option<Response> {
@@ -238,6 +253,8 @@ pub fn primary_router_with_limits(
     }
     Ok(Router::new()
         .route("/+replication/v1/changes", get(serve_changes))
+        .route("/+replication/v1/checkpoint", get(serve_checkpoint_manifest))
+        .route("/+replication/v1/checkpoint/chunk", get(serve_checkpoint_chunk))
         .route("/+replication/v1/blobs/sha256/{digest}", get(serve_blob))
         .with_state(PrimaryHttpState {
             source,
@@ -267,6 +284,53 @@ async fn serve_changes(
         .try_run(move |cancellation| build_change_page(&meta, &source, query.after, query.limit, cancellation))
         .await;
     built.map_or_else(change_pages_at_capacity, change_page_response)
+}
+
+/// Answers the manifest of the published checkpoint, which a reader below the floor verifies its
+/// transfer against.
+async fn serve_checkpoint_manifest(State(state): State<PrimaryHttpState>, headers: HeaderMap) -> Response {
+    if !authorized(&headers, &state.token) {
+        return unauthorized();
+    }
+    match state.meta.checkpoint_manifest() {
+        Ok(Some(manifest)) => axum::Json(manifest).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, "no checkpoint has been published").into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+/// Answers one window of the published checkpoint's canonical encoding.
+///
+/// The window travels as bytes rather than a JSON envelope, because a checkpoint reaches a gigabyte and
+/// base64 would add a third to every byte of it. Where the next window begins travels in a header, and
+/// its absence is the end of the transfer.
+async fn serve_checkpoint_chunk(
+    State(state): State<PrimaryHttpState>,
+    headers: HeaderMap,
+    Query(query): Query<CheckpointChunkQuery>,
+) -> Response {
+    if !authorized(&headers, &state.token) {
+        return unauthorized();
+    }
+    let Some(cursor) = CheckpointCursor::from_token(query.cursor.as_deref().unwrap_or("r")) else {
+        return (StatusCode::BAD_REQUEST, "unreadable checkpoint cursor").into_response();
+    };
+    let meta = state.meta.clone();
+    let built = state
+        .change_pages
+        .try_run(move |_| meta.checkpoint_chunk(&cursor, MAX_CHECKPOINT_CHUNK_BYTES))
+        .await;
+    match built {
+        None => change_pages_at_capacity(),
+        Some(Err(_) | Ok(Err(_))) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Some(Ok(Ok(chunk))) => {
+            // A tag, a colon and hex are all a token holds, so it is always a legal header value.
+            let cursor = chunk.next.token().parse().expect("a cursor token is header-safe");
+            let mut response = ([(header::CONTENT_TYPE, "application/octet-stream")], chunk.bytes).into_response();
+            response.headers_mut().insert(CHECKPOINT_CURSOR_HEADER, cursor);
+            response
+        }
+    }
 }
 
 /// Relays the authoritative writer's identity from durable replica state, preserving the single-source
@@ -478,3 +542,7 @@ pub fn unauthorized() -> Response {
 #[cfg(test)]
 #[path = "../tests/unit/http_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/checkpoint_http_tests.rs"]
+mod checkpoint_http_tests;

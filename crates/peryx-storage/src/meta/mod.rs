@@ -13,6 +13,7 @@ mod blob_chunk_digest;
 mod blob_placement;
 mod bootstrap;
 mod checkpoint;
+mod checkpoint_transfer;
 mod copy_cursor;
 mod error;
 mod external_identity;
@@ -51,6 +52,9 @@ pub use analytics::{
 };
 pub use bootstrap::AdministratorBootstrapError;
 pub use checkpoint::{Checkpoint, CheckpointIdentity, CheckpointManifest, CheckpointState, CheckpointVerifyError};
+pub use checkpoint_transfer::{
+    CheckpointChunk, CheckpointCursor, CheckpointInstallError, CheckpointStageError, StagedCheckpoint,
+};
 pub use error::{MetaError, MetaScanError, WriterIdentityError};
 pub use external_identity::ExternalIdentityStoreError;
 pub use finalize::{FinalizeOutcome, FinalizedWrite};
@@ -167,6 +171,10 @@ const CHECKPOINT_ROW: TableDefinition<&str, &[u8]> = TableDefinition::new("check
 const CHECKPOINT_REVOCATION: TableDefinition<&str, &[u8]> = TableDefinition::new("checkpoint_revocation");
 const CHECKPOINT_BLOB: TableDefinition<&str, u64> = TableDefinition::new("checkpoint_blob");
 const CHECKPOINT_META: TableDefinition<&str, &[u8]> = TableDefinition::new("checkpoint_meta");
+/// A checkpoint arriving over the wire, staged by encoding offset so an install interrupted at a chunk
+/// boundary resumes from what it holds rather than from nothing.
+const CHECKPOINT_STAGING: TableDefinition<u64, &[u8]> = TableDefinition::new("checkpoint_staging");
+const CHECKPOINT_STAGING_META: TableDefinition<&str, &[u8]> = TableDefinition::new("checkpoint_staging_meta");
 /// Drivers own key and value formats so storage needs no ecosystem-specific tables.
 const DRIVER_KV: TableDefinition<&str, &[u8]> = TableDefinition::new("driver_kv");
 const ANALYTICS: TableDefinition<&str, &[u8]> = TableDefinition::new("analytics");

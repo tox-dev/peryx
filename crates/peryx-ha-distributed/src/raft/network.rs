@@ -201,11 +201,14 @@ const fn require_rpc_success(status: StatusCode) -> Result<(), RaftRpcError> {
     match classify_status(status) {
         ReplicationStatus::Success => Ok(()),
         ReplicationStatus::Unauthenticated => Err(RaftRpcError::Unauthenticated),
-        ReplicationStatus::NotFound | ReplicationStatus::ServerError(_) | ReplicationStatus::BadStatus(_) => {
-            Err(RaftRpcError::RemoteError {
-                status: status.as_u16(),
-            })
-        }
+        // A Raft peer serves no change feed, so a checkpoint status from one is a remote error like any
+        // other status it has no meaning for.
+        ReplicationStatus::NotFound
+        | ReplicationStatus::CheckpointRequired
+        | ReplicationStatus::ServerError(_)
+        | ReplicationStatus::BadStatus(_) => Err(RaftRpcError::RemoteError {
+            status: status.as_u16(),
+        }),
     }
 }
 

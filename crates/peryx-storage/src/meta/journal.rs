@@ -142,6 +142,23 @@ impl MetaStore {
         Ok(current_serial)
     }
 
+    /// The lowest serial the journal still holds, or `None` when it holds nothing.
+    ///
+    /// A reader whose cursor sits below this has lost the records it would need to catch up, which is
+    /// what makes a checkpoint the only way forward for it. Reading what the journal holds rather than a
+    /// recorded floor keeps this true the moment retention starts removing rows, and true today, when
+    /// nothing removes any.
+    ///
+    /// # Errors
+    /// Returns a store error if the read fails.
+    pub fn journal_floor(&self) -> Result<Option<u64>, MetaError> {
+        let txn = self.db.begin_read()?;
+        let Some(table) = super::open_optional_table(&txn, JOURNAL)? else {
+            return Ok(None);
+        };
+        Ok(table.first()?.map(|(serial, _)| serial.value()))
+    }
+
     /// Reads at most `limit` values after `after` with the head serial from the same snapshot.
     ///
     /// # Errors

@@ -267,6 +267,17 @@ impl<T: PeerTransport> PeerSet<T> {
         }
     }
 
+    /// The transport a source speaks through, for work that runs beside the change feed rather than in
+    /// it. A checkpoint transfer is the one such: the feed refused the cursor, and the recovery reaches
+    /// the same peer over the same connection.
+    #[must_use]
+    pub fn transport(&self, source: &str) -> Option<&T> {
+        self.members
+            .iter()
+            .find(|member| member.source == source)
+            .map(|member| &member.transport)
+    }
+
     /// Re-arms a peer retired for a protocol violation. Returns false for an unknown or active peer.
     pub fn rearm(&mut self, source: &str) -> bool {
         let Some(member) = self.member_mut(source) else {

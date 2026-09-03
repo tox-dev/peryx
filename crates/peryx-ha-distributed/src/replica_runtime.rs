@@ -13,6 +13,9 @@ use crate::{
     SyncOutcome, TransportError, advance_blob_frontier_with_evidence, pull_outstanding_with_evidence, pull_round,
 };
 
+/// The retirement reason a peer that refused this replica's cursor carries.
+const CHECKPOINT_REQUIRED_REASON: &str = "checkpoint_required";
+
 pub const REPLICA_BLOB_FETCH_CONCURRENCY: std::num::NonZeroUsize =
     std::num::NonZeroUsize::new(8).expect("8 is non-zero");
 
@@ -140,6 +143,7 @@ impl ReplicaLoop {
             Ok(round) => round,
             Err(error) => return Ok(self.publish_metadata_failure(error, None, started)),
         };
+        let recovered = self.recover_retired_below_floor(&round.retired).await;
         let retired = Some(RetiredPeers {
             peers: round.retired,
             fully_retired: round.fully_retired,
@@ -151,7 +155,9 @@ impl ReplicaLoop {
             };
             return Ok(self.publish_metadata_failure(error, retired, started));
         }
-        if !round.answered {
+        // A recovery advanced this replica, so the round reads as answered even though no peer served a
+        // page: reporting a disconnect would back off from a source that just handed over a checkpoint.
+        if !round.answered && !recovered {
             let loss = TransportError::Disconnected;
             self.publish_metadata_failure(SyncError::primary(loss.clone()), retired, started);
             return Err(loss);
@@ -196,6 +202,40 @@ impl ReplicaLoop {
     fn publish(&self, cycle: ReplicaCycle) {
         self.metrics.record_cycle(&cycle);
         self.monitor.publish(cycle);
+    }
+
+    /// Installs a checkpoint from any peer that refused this replica's cursor as below its floor.
+    ///
+    /// The refusal is terminal for the page that raised it, so the peer is retired and the recovery runs
+    /// beside the feed rather than as another attempt at it. The peer is re-armed at the serial the
+    /// install landed on, which is the manifest's rather than anything the refusal carried.
+    /// Reports whether any peer recovered, which is what makes the round count as answered.
+    async fn recover_retired_below_floor(&mut self, retired: &[crate::RetiredPeer]) -> bool {
+        let below_floor: Vec<String> = retired
+            .iter()
+            .filter(|peer| peer.reason == CHECKPOINT_REQUIRED_REASON)
+            .map(|peer| peer.source.clone())
+            .collect();
+        let mut recovered = false;
+        for source in below_floor {
+            let Some(peer) = self.metadata.transport(&source) else {
+                continue;
+            };
+            match Replica::new(&self.meta, self.page_size)
+                .install_checkpoint(peer, &source)
+                .await
+            {
+                Ok(serial) => {
+                    tracing::info!(source, serial, "installed a checkpoint after falling below the floor");
+                    self.metadata.commit(&source, serial);
+                    self.metadata.rearm(&source);
+                    self.views.publish_applied_frontier(serial);
+                    recovered = true;
+                }
+                Err(error) => tracing::error!(%error, source, "checkpoint install failed"),
+            }
+        }
+        recovered
     }
 
     /// Retires the views the newly local blobs belong to before the frontier advances, so a read that

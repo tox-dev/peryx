@@ -310,3 +310,154 @@ impl SaturatedPages {
         }
     }
 }
+
+/// A node that installed a checkpoint stands at that serial holding no records below it, which is what
+/// a pruned writer will look like once retention runs and is what the below-floor answer is for.
+fn installed_at(dir: &tempfile::TempDir, name: &str, through: &[&[u8]]) -> MetaStore {
+    let (_source_dir, source) = journaled(through);
+    let manifest = source
+        .publish_checkpoint(peryx_storage::meta::CheckpointIdentity {
+            source: "primary-a".to_owned(),
+            protocol_version: PROTOCOL_VERSION,
+            schema_version: 1,
+        })
+        .unwrap();
+    let target = MetaStore::open(dir.path().join(name)).unwrap();
+    target.begin_checkpoint_transfer(&manifest).unwrap();
+    let whole = source
+        .checkpoint_chunk(&peryx_storage::meta::CheckpointCursor::start(), 1 << 20)
+        .unwrap();
+    target
+        .stage_checkpoint_chunk(&manifest, 0, &whole.bytes, "done")
+        .unwrap()
+        .unwrap();
+    target
+        .install_staged_checkpoint("replication\u{0}state", br#"{"source":"primary-a","serial":3}"#)
+        .unwrap();
+    target
+}
+
+#[tokio::test]
+async fn test_a_cursor_below_the_retained_records_is_told_to_install_a_checkpoint() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = installed_at(&dir, "installed.redb", &[b"one", b"two", b"three"]);
+
+    let (status, body) = served(build_change_page(&meta, "primary-a", 0, 10, &ScanCancellation::new())).await;
+
+    assert_eq!(
+        (status, String::from_utf8(body).unwrap()),
+        (
+            StatusCode::GONE,
+            "the records after this cursor are no longer retained; install a checkpoint".to_owned()
+        )
+    );
+}
+
+/// A reader already at the installed serial has lost nothing, so it reads as caught up rather than
+/// below the floor.
+#[tokio::test]
+async fn test_a_cursor_at_the_installed_serial_is_served_as_caught_up() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = installed_at(&dir, "installed.redb", &[b"one", b"two", b"three"]);
+
+    let (status, body) = served(build_change_page(&meta, "primary-a", 3, 10, &ScanCancellation::new())).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(serde_json::from_slice::<ChangePage>(&body).unwrap().changes, Vec::new());
+}
+
+/// A writer that has pruned nothing still holds every record, so the answer never fires there.
+#[tokio::test]
+async fn test_a_writer_that_retains_its_whole_journal_never_answers_below_the_floor() {
+    let (_dir, meta) = journaled(&[b"one", b"two", b"three"]);
+
+    let (status, _body) = served(build_change_page(&meta, "primary-a", 0, 10, &ScanCancellation::new())).await;
+
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_the_primary_handler_answers_below_the_floor() {
+    let dir = tempfile::tempdir().unwrap();
+    let router = primary_router_with_limits(
+        "primary-a",
+        TOKEN,
+        installed_at(&dir, "installed.redb", &[b"one", b"two", b"three"]),
+        BlobStorage::filesystem(dir.path().join("blobs")),
+        DEFAULT_MAX_CONCURRENT_BLOB_STREAMS,
+        BlockingScanExecutor::new(1),
+    )
+    .unwrap();
+
+    let response = router
+        .oneshot(authenticated("/+replication/v1/changes?after=0&limit=10"))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::GONE);
+}
+
+/// The relay reads the same journal through the replica's own source identity, so a peer fetching
+/// through a replica is told the same thing the writer would tell it.
+#[tokio::test]
+async fn test_the_follower_relay_answers_below_the_floor() {
+    let dir = tempfile::tempdir().unwrap();
+    let router = follower_router_with_change_pages(
+        TOKEN,
+        installed_at(&dir, "installed.redb", &[b"one", b"two", b"three"]),
+        BlockingScanExecutor::new(1),
+    )
+    .unwrap();
+
+    let response = router
+        .oneshot(authenticated("/+replication/v1/changes?after=0&limit=10"))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::GONE);
+}
+
+/// A store that cannot be read cannot say what it retains, so the page fails rather than guessing that
+/// the reader is or is not below the floor.
+#[tokio::test]
+async fn test_a_journal_that_cannot_be_read_fails_the_page() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let (status, _body) = served(build_change_page(
+        &unreadable_store(&dir),
+        "primary-a",
+        0,
+        10,
+        &ScanCancellation::new(),
+    ))
+    .await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+/// A checkpoint window is built on the same blocking workers a change page uses, so a node with every
+/// slot occupied refuses the window rather than queueing behind the pages.
+#[tokio::test]
+async fn test_a_checkpoint_window_is_refused_while_every_build_slot_is_taken() {
+    let dir = tempfile::tempdir().unwrap();
+    let pages = BlockingScanExecutor::new(1);
+    let router = primary_router_with_limits(
+        "primary-a",
+        TOKEN,
+        installed_at(&dir, "installed.redb", &[b"one", b"two", b"three"]),
+        BlobStorage::filesystem(dir.path().join("blobs")),
+        DEFAULT_MAX_CONCURRENT_BLOB_STREAMS,
+        pages.clone(),
+    )
+    .unwrap();
+    let saturated = SaturatedPages::start(&pages, 1).await;
+
+    let response = router
+        .oneshot(authenticated("/+replication/v1/checkpoint/chunk"))
+        .await
+        .unwrap();
+    let status = response.status();
+    saturated.release().await;
+
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+}

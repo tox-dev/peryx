@@ -3,13 +3,16 @@ use std::num::NonZeroUsize;
 
 use peryx_identity::ArtifactDigest;
 use peryx_storage::blob::Digest;
-use peryx_storage::meta::{DriverBlobReference, DriverMutation, JournalEntry, MetaStore, ServerMutation};
+use peryx_storage::meta::{
+    CheckpointCursor, CheckpointManifest, DriverBlobReference, DriverMutation, JournalEntry, MetaStore, ServerMutation,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::error::SyncError;
+use crate::peer::PeerTransport;
 use crate::protocol::{ChangePage, MetadataMutation, PROTOCOL_VERSION, Primary};
 
-const REPLICA_STATE_KEY: &str = "replication\0state";
+pub const REPLICA_STATE_KEY: &str = "replication\0state";
 const REPLICA_KEY_PREFIX: &str = "replication\0";
 
 /// Durable resume cursor pinned to one source.
@@ -72,6 +75,66 @@ impl<'store> Replica<'store> {
             return Err(SyncError::LocalSerialMismatch { cursor, journal });
         }
         Ok(state)
+    }
+
+    /// Fetches, verifies and installs the checkpoint `peer` publishes, and reports the serial this
+    /// replica now stands at.
+    ///
+    /// The resume serial is the installed manifest's, never the one the refused page asked for. A floor
+    /// that advanced between the refusal and the install would otherwise leave the cursor and the state
+    /// at different serials, which no later page could reveal.
+    ///
+    /// A transfer resumes from what the store already staged for the same manifest, so an install
+    /// interrupted at a chunk boundary continues rather than refetching. A chunk that cannot join the
+    /// staged bytes drops the staging, and the next attempt starts from the beginning.
+    ///
+    /// # Errors
+    /// Returns a transport error, a store error, or the reason the transfer failed verification.
+    pub async fn install_checkpoint<T: PeerTransport>(&self, peer: &T, source: &str) -> Result<u64, SyncError> {
+        let manifest = peer.checkpoint_manifest().await.map_err(SyncError::primary)?;
+        let resumed = self
+            .meta
+            .staged_checkpoint()?
+            .filter(|staged| staged.manifest == manifest);
+        let (offset, cursor) = if let Some(staged) = resumed {
+            (staged.received, staged.cursor)
+        } else {
+            self.meta.begin_checkpoint_transfer(&manifest)?;
+            (0, CheckpointCursor::start().token())
+        };
+        self.stage_and_install(peer, &manifest, source, offset, cursor).await
+    }
+
+    /// Pulls the windows after `offset` and installs once the transfer is whole.
+    async fn stage_and_install<T: PeerTransport>(
+        &self,
+        peer: &T,
+        manifest: &CheckpointManifest,
+        source: &str,
+        offset: u64,
+        cursor: String,
+    ) -> Result<u64, SyncError> {
+        let (mut offset, mut cursor) = (offset, cursor);
+        while offset < manifest.bytes && cursor != CheckpointCursor::Done.token() {
+            let window = peer.checkpoint_chunk(&cursor).await.map_err(SyncError::primary)?;
+            match self
+                .meta
+                .stage_checkpoint_chunk(manifest, offset, &window.bytes, &window.next)?
+            {
+                Ok(staged) => offset = staged.received,
+                Err(refused) => {
+                    self.meta.discard_staged_checkpoint()?;
+                    return Err(refused.into());
+                }
+            }
+            cursor = window.next;
+        }
+        let state = serde_json::to_vec(&ReplicaState {
+            source: source.to_owned(),
+            serial: manifest.serial,
+        })?;
+        let installed = self.meta.install_staged_checkpoint(REPLICA_STATE_KEY, &state)?;
+        Ok(installed.serial)
     }
 
     /// Commits metadata, journal entries, cursor, and blob references in one transaction. The blob plane
@@ -281,3 +344,7 @@ impl ValidatedPage {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/checkpoint_install_tests.rs"]
+mod checkpoint_install_tests;

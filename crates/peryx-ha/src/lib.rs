@@ -1214,6 +1214,16 @@ pub enum TransportError {
     },
     #[error("peer replication endpoint returned status {status}")]
     BadStatus { status: u16 },
+    /// The peer no longer retains the records after this reader's cursor.
+    ///
+    /// Terminal for the page that raised it, because no request size and no number of retries can make
+    /// a pruned record reappear. What answers it is a checkpoint install, which is a different action
+    /// rather than another attempt at the same one.
+    #[error("peer no longer retains the records after this cursor")]
+    CheckpointRequired,
+    /// The peer serves no checkpoint, so a reader below its floor has no way forward.
+    #[error("peer publishes no checkpoint to recover from")]
+    CheckpointUnavailable,
     #[error("peer replication reply was not a valid change page")]
     Malformed,
     #[error("batch frame is {actual} bytes; the transport caps a frame at {limit}")]
@@ -1272,6 +1282,8 @@ impl TransportError {
             Self::RangeMismatch { .. } => Some("range_mismatch"),
             Self::BlobNotFound { .. } => Some("blob_not_found"),
             Self::BadStatus { .. } => Some("bad_status"),
+            Self::CheckpointRequired => Some("checkpoint_required"),
+            Self::CheckpointUnavailable => Some("checkpoint_unavailable"),
             Self::Malformed => Some("malformed"),
             Self::FrameTooLarge { .. } => Some("frame_too_large"),
             Self::RecordTooLarge { .. } => Some("record_too_large"),

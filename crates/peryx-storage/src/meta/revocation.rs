@@ -173,6 +173,39 @@ fn index_key(status: DigestRevocationStatus, digest: &str) -> String {
     format!("{}{digest}", status.index_prefix())
 }
 
+/// Replaces every revocation with `records`, rebuilding the status index and the active count.
+///
+/// A checkpoint install is a replacement, so the count is recomputed from what arrives rather than
+/// stepped from what was there: stepping would underflow on a lifted record whose active predecessor
+/// the install had just removed.
+///
+/// # Errors
+/// Returns a store error when a table cannot be opened, written, or encoded.
+pub(super) fn replace_digest_revocations(
+    txn: &redb::WriteTransaction,
+    records: &std::collections::BTreeMap<String, DigestRevocation>,
+) -> Result<(), MetaError> {
+    txn.delete_table(DIGEST_REVOCATION)?;
+    txn.delete_table(DIGEST_REVOCATION_BY_STATUS)?;
+    txn.delete_table(DIGEST_REVOCATION_STATE)?;
+    let mut rows = txn.open_table(DIGEST_REVOCATION)?;
+    let mut index = txn.open_table(DIGEST_REVOCATION_BY_STATUS)?;
+    let mut active = 0_u64;
+    for (digest, record) in records {
+        let status = record.state.status();
+        rows.insert(digest.as_str(), serde_json::to_vec(record)?.as_slice())?;
+        index.insert(index_key(status, digest).as_str(), ())?;
+        if status == DigestRevocationStatus::Active {
+            active += 1;
+        }
+    }
+    drop(rows);
+    drop(index);
+    txn.open_table(DIGEST_REVOCATION_STATE)?
+        .insert(ACTIVE_COUNT_KEY, active)?;
+    Ok(())
+}
+
 /// Writes the row, the status index, and the active count together in the caller's transaction.
 ///
 /// Every writer goes through here: an operator action on the primary, and journal replay on a replica.

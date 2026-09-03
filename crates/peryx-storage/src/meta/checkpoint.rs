@@ -32,7 +32,7 @@ use super::{
 };
 
 /// Names the single manifest row, which one publication replaces whole.
-const MANIFEST_KEY: &str = "manifest";
+pub(super) const MANIFEST_KEY: &str = "manifest";
 
 /// What names a checkpoint's origin. The versions belong to the replication layer rather than to
 /// storage, so the caller supplies them and storage only binds them into the manifest it signs.
