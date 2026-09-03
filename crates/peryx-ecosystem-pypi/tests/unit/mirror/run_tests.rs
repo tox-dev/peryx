@@ -297,7 +297,9 @@ async fn sync_over_every_project_publishes_the_catalog_and_its_metrics() {
     .await
     .unwrap();
 
-    assert_eq!(fixture.state.serving.meta.list_projects("pypi").unwrap(), ["Demo"]);
+    // The catalog names Demo and its detail answers 404, so the sync retires it. The root list follows
+    // the authoritative detail rather than the catalog snapshot that still carries the name.
+    assert!(fixture.state.serving.meta.list_projects("pypi").unwrap().is_empty());
     assert_eq!(
         catalog_metrics(&fixture),
         BTreeMap::from([

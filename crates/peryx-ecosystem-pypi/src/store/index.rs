@@ -13,7 +13,8 @@ use super::record::{
 };
 use super::{
     INDEX_PREFIX, UpstreamAttestation, file_key, file_source_value, freshness_key, index_key, project_status_key,
-    publication_key, publication_prefix, publication_value, put_cached_project_row,
+    publication_key, publication_prefix, publication_value, put_cached_project_row, remove_cached_project_row,
+    retired_key,
 };
 use super::{project_file_key, project_generation_attestation_prefix, project_generation_prefix, project_meta_key};
 
@@ -100,6 +101,8 @@ pub fn put_cached_page(meta: &MetaStore, write: CachedPageWrite<'_>) -> Result<(
                 })
             })
             .and_then(|()| replace_project_upstream_attestations_in_txn(txn, index, normalized, upstream, attestations))
+            // The page answers for the project again, so the retirement it carried is over.
+            .and_then(|()| txn.remove_local(&retired_key(index, normalized)).map(|_| ()))
     })
 }
 
@@ -140,8 +143,28 @@ pub fn retire_cached_project(meta: &MetaStore, key: &str, index: &str, project: 
             .and_then(|()| txn.remove(&freshness_key(key)).map(|_| ()))
             .and_then(|()| remove_project_publications_in_txn(txn, index, project))
             .and_then(|()| replace_project_upstream_attestations_in_txn(txn, index, project, None, &[]))
+            // The display row carries the project's name in the root list and its count in the index
+            // summary, so it goes through the write path that keeps that count in step.
+            .and_then(|()| remove_cached_project_row(txn, index, project).map(|_| ()))
+            .and_then(|()| txn.remove_local(&project_status_key(index, project)).map(|_| ()))
+            .and_then(|()| txn.put_local(&retired_key(index, project), &[]))
+            .and_then(|()| retire_active_generation_in_txn(txn, index, project))
             .map(|()| ((), Vec::new()))
     })
+}
+
+/// Hand the active generation to the cleanup slot the next sync sweeps.
+///
+/// A retired project serves nothing, so its file rows are dead weight. Nothing else would collect
+/// them: the recovery pass sweeps the staging and retired slots and leaves the active one alone,
+/// which is what makes it safe to run before every sync.
+fn retire_active_generation_in_txn(txn: &mut DriverTxn<'_>, index: &str, normalized: &str) -> Result<(), MetaError> {
+    let mut state = decode_project_meta_state(txn.get(&project_meta_key(index, normalized))?)?;
+    let Some(active) = state.active.take() else {
+        return Ok(());
+    };
+    state.retired = Some(active.generation);
+    store_project_meta_state(txn, index, normalized, &state)
 }
 
 /// Drop every publication record a project's page left behind, so a page peryx no longer holds

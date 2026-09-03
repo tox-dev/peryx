@@ -1,12 +1,12 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use peryx_storage::meta::{DriverBatch, DriverReadTxn, MetaError, MetaScanError, MetaStore};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    CATALOG_GENERATION_PREFIX, CATALOG_PREFIX, PROJECTS_PREFIX, file_key, freshness_key, index_key, metadata_key,
-    project_key, project_status_key, publication_prefix, put_project_row, record_str, remove_cached_project_row,
-    scan_utf8_records,
+    CATALOG_GENERATION_PREFIX, CATALOG_PREFIX, PROJECTS_PREFIX, RETIRED_PREFIX, file_key, freshness_key, index_key,
+    metadata_key, project_key, project_status_key, publication_prefix, put_project_row, record_str,
+    remove_cached_project_row, scan_utf8_records,
 };
 
 const CATALOG_DELETE_BATCH: usize = 10_000;
@@ -279,13 +279,26 @@ pub fn list_projects(meta: &MetaStore, index: &str) -> Result<Vec<String>, MetaE
             Some(catalog_prefix) => &[&prefix, catalog_prefix],
             None => &[&prefix],
         };
+        // A project the detail route retired stays in the active catalog generation, which is a
+        // whole-index snapshot no single retirement rewrites. Its tombstone is what takes it out of
+        // the listing until a `200` republishes it.
+        let retired_prefix = format!("{RETIRED_PREFIX}{index}/");
+        let mut retired = BTreeSet::new();
+        txn.scan_prefix(&retired_prefix, |key, _| {
+            retired.insert(key[retired_prefix.len()..].to_owned());
+            Ok::<_, MetaError>(std::ops::ControlFlow::Continue(()))
+        })?;
         let mut local = BTreeMap::new();
         let mut names = Vec::new();
         for (group_prefix, entries) in prefixes.iter().zip(txn.prefixes(prefixes)?) {
             for (key, raw) in entries {
+                let normalized = &key[group_prefix.len()..];
+                if retired.contains(normalized) {
+                    continue;
+                }
                 if *group_prefix == prefix {
-                    local.insert(key[prefix.len()..].to_owned(), record_str(&key, raw)?);
-                } else if let Some(display) = local.remove(&key[group_prefix.len()..]) {
+                    local.insert(normalized.to_owned(), record_str(&key, raw)?);
+                } else if let Some(display) = local.remove(normalized) {
                     names.push(display);
                 } else {
                     names.push(record_str(&key, raw)?);

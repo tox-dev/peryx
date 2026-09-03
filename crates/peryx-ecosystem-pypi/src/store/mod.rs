@@ -91,6 +91,12 @@ const PROJECT_META_PREFIX: &str = "pypi\u{0}m\u{0}";
 const PROJECT_FILE_PREFIX: &str = "pypi\u{0}r\u{0}";
 /// The former `project_status` table: explicit status markers, keyed by `{index}/{normalized}`.
 const PROJECT_STATUS_PREFIX: &str = "pypi\u{0}s\u{0}";
+/// Projects an authoritative `404` retired, keyed by `{index}/{normalized}`.
+///
+/// A retirement can remove every row it owns and still leave the project named by the active catalog
+/// generation, which is a whole-index snapshot no single project may rewrite. The tombstone outlives
+/// those rows so the root list stops naming the project until a `200` republishes it.
+const RETIRED_PREFIX: &str = "pypi\u{0}x\u{0}";
 /// The former `uploads` table: hosted file records, keyed by `{index}/{normalized}/{filename}`.
 const UPLOAD_PREFIX: &str = "pypi\u{0}u\u{0}";
 /// The former `overrides` table: yanked/hidden markers, keyed by `{index}/{normalized}/{filename}`.
@@ -237,6 +243,10 @@ pub(crate) fn derives_no_view(key: &str) -> bool {
 fn split_index_project(rest: &str) -> Option<(&str, &str)> {
     let (index, normalized) = rest.rsplit_once('/')?;
     (!index.is_empty() && !normalized.is_empty()).then_some((index, normalized))
+}
+
+fn retired_key(index: &str, normalized: &str) -> String {
+    format!("{RETIRED_PREFIX}{index}/{normalized}")
 }
 
 fn project_status_key(index: &str, normalized: &str) -> String {

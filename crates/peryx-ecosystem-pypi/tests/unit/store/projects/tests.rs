@@ -352,3 +352,40 @@ fn test_scan_project_records_visits_each_record() {
     .unwrap();
     assert_eq!(seen, vec![("pypi/flask".to_owned(), "Flask".to_owned())]);
 }
+
+/// The upstream root can still name a project whose detail it answers `404` for. peryx retired the
+/// detail, so the root list has to stop naming it too, even while the active catalog generation does.
+#[test]
+fn test_a_retired_project_leaves_the_root_list_the_catalog_still_names() {
+    let (_dir, meta) = store();
+    let (id, expected) = begin_catalog_generation(&meta, "pypi").unwrap();
+    put_catalog_projects(&meta, "pypi", id, &[("acme".to_owned(), "Acme".to_owned())]).unwrap();
+    publish_catalog_generation(&meta, "pypi", expected, generation(id, None, None)).unwrap();
+    meta.put_cached_page(crate::store::CachedPageWrite {
+        key: "pypi/acme",
+        record: &crate::store::CachedIndex {
+            source: None,
+            last_modified: None,
+            etag: None,
+            last_serial: None,
+            fetched_at_unix: 1,
+            content_type: None,
+            fresh_secs: None,
+            body: Vec::new(),
+        },
+        index: "pypi",
+        normalized: "acme",
+        display: "Acme",
+        source: "pypi",
+        upstream: None,
+        project_status: None,
+        project_status_reason: None,
+        files: &[],
+        attestations: &[],
+    })
+    .unwrap();
+
+    meta.retire_cached_project("pypi/acme", "pypi", "acme").unwrap();
+
+    assert_eq!(meta.list_projects("pypi").unwrap(), Vec::<String>::new());
+}

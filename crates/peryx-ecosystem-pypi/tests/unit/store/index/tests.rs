@@ -865,6 +865,19 @@ mod generation {
                 .is_empty()
         );
     }
+
+    /// A retired project serves no files, so its active generation moves to the slot the next sync
+    /// sweeps. The recovery pass leaves an active generation alone, so nothing else would collect it.
+    #[test]
+    fn test_retire_cached_project_hands_its_generation_to_cleanup() {
+        let (_dir, meta) = store();
+        let active = publish(&meta, "pypi", "acme", &[file("acme-1.0.tar.gz", Some(&"a".repeat(64)))]);
+
+        meta.retire_cached_project("pypi/acme", "pypi", "acme").unwrap();
+
+        let state = project_meta_state(&meta, "pypi", "acme").unwrap();
+        assert_eq!((state.active, state.retired), (None, Some(active)));
+    }
 }
 
 #[test]
@@ -901,4 +914,58 @@ fn test_retire_cached_project_drops_its_publication_records() {
             .unwrap(),
         None
     );
+}
+
+/// A `404` on the authoritative detail retires the project, so the root list must stop naming it. The
+/// display row outlives the page today and keeps it listed.
+#[test]
+fn test_retire_cached_project_drops_it_from_the_root_list() {
+    let (_dir, meta) = store();
+    meta.put_cached_page(crate::store::CachedPageWrite {
+        key: "pypi/acme",
+        record: &record(),
+        index: "pypi",
+        normalized: "acme",
+        display: "Acme",
+        source: "pypi",
+        upstream: None,
+        project_status: Some("quarantined"),
+        project_status_reason: Some("held"),
+        files: &[],
+        attestations: &[],
+    })
+    .unwrap();
+
+    meta.retire_cached_project("pypi/acme", "pypi", "acme").unwrap();
+
+    assert_eq!(meta.list_projects("pypi").unwrap(), Vec::<String>::new());
+    assert_eq!(meta.get_project_status("pypi", "acme").unwrap(), None);
+}
+
+/// A later `200` ends the retirement. The project comes back from the new response, carrying neither
+/// the display spelling nor the status the retired page had.
+#[test]
+fn test_a_republished_page_ends_the_retirement() {
+    let (_dir, meta) = store();
+    let cached = record();
+    let page = |display: &'static str, status: Option<&'static str>| crate::store::CachedPageWrite {
+        key: "pypi/acme",
+        record: &cached,
+        index: "pypi",
+        normalized: "acme",
+        display,
+        source: "pypi",
+        upstream: None,
+        project_status: status,
+        project_status_reason: None,
+        files: &[],
+        attestations: &[],
+    };
+    meta.put_cached_page(page("Acme", Some("quarantined"))).unwrap();
+    meta.retire_cached_project("pypi/acme", "pypi", "acme").unwrap();
+
+    meta.put_cached_page(page("ACME", None)).unwrap();
+
+    assert_eq!(meta.list_projects("pypi").unwrap(), vec!["ACME".to_owned()]);
+    assert_eq!(meta.get_project_status("pypi", "acme").unwrap(), None);
 }
