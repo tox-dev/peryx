@@ -101,6 +101,10 @@ const RETIRED_PREFIX: &str = "pypi\u{0}x\u{0}";
 const UPLOAD_PREFIX: &str = "pypi\u{0}u\u{0}";
 /// The former `overrides` table: yanked/hidden markers, keyed by `{index}/{normalized}/{filename}`.
 const OVERRIDE_PREFIX: &str = "pypi\u{0}o\u{0}";
+/// Releases already announced in the changelog, keyed by `{index}/{normalized}/{version}`. Written by
+/// the publication that emits the release's `new-release` entry, so the next file for that version
+/// attaches to a release the client has already been told about instead of announcing it again.
+const ANNOUNCED_RELEASE_PREFIX: &str = "pypi\u{0}e\u{0}";
 /// One index's project and upload row counts, keyed by index name. Maintained by every write that adds
 /// or removes one of those rows, so a status request reads a count instead of walking a history.
 const COUNT_PREFIX: &str = "pypi\u{0}k\u{0}";
@@ -228,12 +232,13 @@ pub(crate) fn metadata_artifact_of_key(key: &str) -> Option<&str> {
 /// A file-url row resolves a byte route from an artifact digest, and a count row and an order row
 /// answer an index's summary. Neither the search document a project derives nor the representations a
 /// replica caches for it reads one, so a publish that maintains them alongside its project's own rows
-/// leaves both current.
+/// leaves both current. An announced-release row is read only by the next publication deciding whether
+/// to emit a `new-release` entry, and no view reports whether a release was announced.
 ///
 /// A namespace this omits is one a replica cannot vouch for, and it re-derives the whole index rather
 /// than guess. That is the safe default for a row kind added later: slow until it is classified here,
 /// never stale.
-const VIEW_NEUTRAL_PREFIXES: &[&str] = &[FILE_PREFIX, COUNT_PREFIX, RECENT_PREFIX];
+const VIEW_NEUTRAL_PREFIXES: &[&str] = &[FILE_PREFIX, COUNT_PREFIX, RECENT_PREFIX, ANNOUNCED_RELEASE_PREFIX];
 
 /// Whether `key` belongs to a namespace no derived view reads.
 pub(crate) fn derives_no_view(key: &str) -> bool {
@@ -271,6 +276,10 @@ pub(crate) fn upload_key(index: &str, normalized: &str, filename: &str) -> Strin
 
 fn override_key(index: &str, normalized: &str, filename: &str) -> String {
     format!("{OVERRIDE_PREFIX}{index}/{normalized}/{filename}")
+}
+
+pub(crate) fn announced_release_key(index: &str, normalized: &str, version: &str) -> String {
+    format!("{ANNOUNCED_RELEASE_PREFIX}{index}/{normalized}/{version}")
 }
 
 fn file_source_value(url: &str, source: &str, size: Option<u64>, upstream: Option<&str>) -> String {

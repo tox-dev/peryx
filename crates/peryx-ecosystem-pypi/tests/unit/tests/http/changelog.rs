@@ -24,6 +24,7 @@ fn entry(serial: u64) -> Vec<u8> {
         project: format!("project-{serial}"),
         version: Some("1.0".to_owned()),
         filename: Some(format!("project_{serial}-1.0-py3-none-any.whl")),
+        python: None,
     })
     .unwrap()
 }

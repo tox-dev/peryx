@@ -159,7 +159,7 @@ pub use changelog::{
 };
 pub use filename::{
     DistributionFilename, DistributionFilenameError, DistributionKind, distribution_name_segment,
-    distribution_version_segment, parse_distribution_filename,
+    distribution_python_tag, distribution_version_segment, parse_distribution_filename,
 };
 pub use html::{parse_detail_html, parse_index_html};
 pub use legacy_json::render_legacy_json;

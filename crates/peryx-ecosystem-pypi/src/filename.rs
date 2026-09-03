@@ -130,6 +130,25 @@ pub fn distribution_name_segment(filename: &str) -> Option<&str> {
     None
 }
 
+/// Warehouse's `pyversion` for a distribution filename: a wheel's Python-tag component, `source`
+/// for everything else.
+///
+/// Warehouse sets this field once, when it records the file, and then renders it in two places a
+/// client reads: the legacy JSON `python_version`, and the changelog action `add {pyversion} file
+/// {filename}`. Deriving both from one function is what keeps the two agreeing. A wheel name is
+/// `name-version[-build]-python-abi-platform`, so the tag is third from the end; any other shape,
+/// and every non-wheel, reports `source`, which is what Warehouse records for an sdist.
+#[must_use]
+pub fn distribution_python_tag(filename: &str) -> &str {
+    let Some(stem) = strip_ascii_suffix_ignore_case(filename, ".whl") else {
+        return "source";
+    };
+    match stem.split('-').count() {
+        5 | 6 => stem.rsplit('-').nth(2).unwrap_or("source"),
+        _ => "source",
+    }
+}
+
 fn parse_wheel_filename(stem: &str) -> Result<DistributionFilename, DistributionFilenameError> {
     let parts: Vec<&str> = stem.split('-').collect();
     let [name, version, python, abi, platform] = parts.as_slice() else {

@@ -33,6 +33,11 @@ pub struct JournalEntry {
     pub project: String,
     pub version: Option<String>,
     pub filename: Option<String>,
+    /// Warehouse's `pyversion` for the file this entry names: `source` for an sdist, the wheel's
+    /// Python-tag component otherwise. Absent on entries that name no file, and on rows written
+    /// before peryx recorded it, which read back exactly as they did then.
+    #[serde(default)]
+    pub python: Option<String>,
 }
 
 /// Decoded `PyPI` journal entries and the head serial from one storage snapshot.
@@ -62,7 +67,7 @@ pub fn read_changelog_page(meta: &MetaStore, after: i64, limit: usize) -> Result
             project: entry.project,
             version: entry.version,
             timestamp: entry.submitted_at_unix,
-            action: warehouse_action(&entry.action, entry.filename.as_deref()),
+            action: warehouse_action(&entry.action, entry.filename.as_deref(), entry.python.as_deref()),
             serial: entry.serial,
         })
         .collect();
@@ -128,13 +133,23 @@ impl JournalEntry {
     }
 }
 
-fn warehouse_action(action: &str, filename: Option<&str>) -> String {
+/// Render one entry the way Warehouse's changelog renders it, which is what a mirror client parses.
+///
+/// Warehouse writes `add {pyversion} file {filename}` for a publication and `new release` when a
+/// version first appears, so a client that keys on those strings sees the same text from peryx. A row
+/// written before peryx recorded the Python value keeps the shorter text it was stored with rather
+/// than gaining a value peryx would have to invent for it.
+fn warehouse_action(action: &str, filename: Option<&str>, python: Option<&str>) -> String {
     let action = match action {
-        "add-file" | "promote" => "add file",
-        "delete-file" => "remove file",
-        action => action,
+        "new-release" => return "new release".to_owned(),
+        "add-file" | "promote" => python.map_or_else(|| "add file".to_owned(), |python| format!("add {python} file")),
+        "delete-file" => "remove file".to_owned(),
+        action => action.to_owned(),
     };
-    filename.map_or_else(|| action.to_owned(), |filename| format!("{action} {filename}"))
+    match filename {
+        Some(filename) => format!("{action} {filename}"),
+        None => action,
+    }
 }
 
 #[cfg(test)]

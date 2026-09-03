@@ -7,8 +7,8 @@ use serde_json::{Map, Value, json};
 
 use crate::version::{VersionKey, version_key};
 use crate::{
-    CoreMetadataDoc, File, ProjectDetail, Yanked, distribution_version_segment, file_matches_version,
-    parse_distribution_filename, parse_version, sorted_desc,
+    CoreMetadataDoc, File, ProjectDetail, Yanked, distribution_python_tag, distribution_version_segment,
+    file_matches_version, parse_distribution_filename, parse_version, sorted_desc,
 };
 
 /// Bucket a project's files by release version in a single pass, so rendering every release is linear
@@ -131,7 +131,7 @@ fn legacy_file(file: &File) -> Value {
         "has_sig": file.gpg_sig.unwrap_or(false),
         "md5_digest": file.hashes.get("md5").map(String::as_str),
         "packagetype": packagetype(&file.filename),
-        "python_version": python_version(&file.filename),
+        "python_version": distribution_python_tag(&file.filename),
         "requires_python": &file.requires_python,
         "size": file.size,
         "upload_time": file.upload_time.as_deref().map(legacy_upload_time),
@@ -254,19 +254,6 @@ fn packagetype(filename: &str) -> &'static str {
         "bdist_egg"
     } else {
         "sdist"
-    }
-}
-
-fn python_version(filename: &str) -> &str {
-    if !extension_eq(filename, "whl") {
-        return "source";
-    }
-    // A wheel name is name-version[-build]-python-abi-platform, so the tag is always third from the
-    // end. Collecting the stem allocated a Vec per file just to read one of its middle elements.
-    let stem = &filename[..filename.len() - 4];
-    match stem.split('-').count() {
-        5 | 6 => stem.rsplit('-').nth(2).unwrap_or("source"),
-        _ => "source",
     }
 }
 
