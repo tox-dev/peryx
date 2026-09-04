@@ -430,29 +430,19 @@ async fn file_route(state: &Arc<ServingState>, index: &Index, file: &str, header
     }
     let range = applicable_range(headers, &etag);
     if head {
-        return head_blob(
-            state,
-            &index.name,
-            &route,
-            &filename,
-            &digest,
+        let conditions = BlobConditions {
             range,
-            &etag,
-            conditional_date(headers),
-        )
-        .await;
+            etag: &etag,
+            since: conditional_date(headers),
+        };
+        return head_blob(state, &index.name, &route, &filename, &digest, conditions).await;
     }
-    serve_blob(
-        state,
-        index.name.clone(),
-        route,
-        &filename,
-        digest,
+    let conditions = BlobConditions {
         range,
-        &etag,
-        conditional_date(headers),
-    )
-    .await
+        etag: &etag,
+        since: conditional_date(headers),
+    };
+    serve_blob(state, index.name.clone(), route, &filename, digest, conditions).await
 }
 
 const IMMUTABLE: &str = "public, max-age=31536000, immutable";
@@ -650,16 +640,23 @@ fn legacy_json_target(rest: &str) -> HttpResult<Option<LegacyJsonTarget>> {
 /// body behind it, so its `GET` streams the whole representation and ignores the `Range`; the `HEAD`
 /// says the same. Its `Content-Length` is the size the index page registered, and is omitted when the
 /// page carried none: an uncached artifact's length is not peryx's to invent.
+/// The conditional-request fields a blob response evaluates. RFC 9110 s13.2.2 applies the validator
+/// and the date before the range, so they travel together rather than as three loose arguments.
+struct BlobConditions<'a> {
+    range: Option<&'a str>,
+    etag: &'a str,
+    since: Option<&'a str>,
+}
+
 async fn head_blob(
     state: &Arc<ServingState>,
     index: &str,
     route: &str,
     filename: &str,
     digest: &Digest,
-    range: Option<&str>,
-    etag: &str,
-    since: Option<&str>,
+    conditions: BlobConditions<'_>,
 ) -> Response {
+    let BlobConditions { range, etag, since } = conditions;
     let probe = match cache::probe_file(state, index, filename, digest).await {
         Ok(probe) => probe,
         Err(err) => return cache_error_response(&err, CacheContext::file(route, digest.as_str(), filename)),
@@ -733,10 +730,9 @@ async fn serve_blob(
     route: String,
     filename: &str,
     digest: Digest,
-    range: Option<&str>,
-    etag: &str,
-    since: Option<&str>,
+    conditions: BlobConditions<'_>,
 ) -> Response {
+    let BlobConditions { range, etag, since } = conditions;
     let digest_hex = digest.as_str().to_owned();
     let blob_headers = [
         (header::CONTENT_TYPE, "application/octet-stream"),

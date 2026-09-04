@@ -235,7 +235,7 @@ fn test_count_then_delete_project_cache_reports_and_removes_each_row() {
         fresh_secs: None,
         body: Vec::new(),
     };
-    let file_digests = vec!["a".repeat(64)];
+    let file_digests = ["a".repeat(64)];
     let metadata_digests = vec!["b".repeat(64)];
     meta.put_cached_page(crate::store::CachedPageWrite {
         key: "pypi/flask",

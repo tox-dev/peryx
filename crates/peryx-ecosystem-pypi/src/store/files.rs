@@ -113,7 +113,7 @@ pub fn scan_file_urls<E>(
 /// One definition of the shape, shared by every reader: the scan that feeds the orphan-blob collector
 /// and the `fsck` predicate both need the digest out of the key, and each parsing it for itself is how
 /// one of them ends up reading the whole key as a digest.
-pub(crate) fn split_file_source_key(key: &str) -> Option<(&str, &str, &str)> {
+pub fn split_file_source_key(key: &str) -> Option<(&str, &str, &str)> {
     let (index, rest) = key.split_once('/')?;
     let (normalized, sha256) = rest.split_once('/')?;
     (!index.is_empty() && !normalized.is_empty() && !sha256.is_empty()).then_some((index, normalized, sha256))

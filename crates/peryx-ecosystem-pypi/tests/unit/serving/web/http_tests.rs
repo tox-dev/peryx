@@ -131,7 +131,7 @@ async fn browse_http_reports_a_source_record_decode_failure(#[case] record: &[u8
     let meta = MetaStore::open(&path).unwrap();
     let digest = Digest::of(b"remote wheel");
     seed_cached_project(&meta, digest.as_str());
-    meta.put_driver_value(&format!("pypi\0f\0{}", digest.as_str()), record)
+    meta.put_driver_value(&format!("pypi\0f\0pypi/flask/{}", digest.as_str()), record)
         .unwrap();
 
     let state = cached_app(&directory, meta);

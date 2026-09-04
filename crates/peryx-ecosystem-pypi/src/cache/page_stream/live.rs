@@ -119,12 +119,8 @@ impl FreshJsonStream {
                     &summary,
                     upstream.as_deref(),
                 )?;
-                spawn_metadata_backfill(
-                    &self.state,
-                    self.cached_name.clone(),
-                    self.route.clone(),
-                    &summary.registrations,
-                );
+                let owner = self.cached_name.clone();
+                spawn_metadata_backfill(&self.state, owner, self.route.clone(), &summary.registrations);
                 let bytes = Bytes::from(served);
                 self.state
                     .cache
