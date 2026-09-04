@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use peryx_core::{Ecosystem, LexiconRegistry, PrometheusSource};
+use peryx_ha::{ArtifactPlacement, ArtifactPlacementStore, ArtifactSource};
 use peryx_storage::blob::BlobStorage;
 use peryx_storage::meta::MetaStore;
 use peryx_upstream::UpstreamRouter;
@@ -508,9 +509,29 @@ impl ServingState {
         self.availability.placement_reconciler()
     }
 
-    /// Placement failure cannot invalidate an already committed blob.
+    /// Record both placements a hosted push produces, neither of which can invalidate the blob it
+    /// already committed.
+    ///
+    /// The ledger entry names the backend and datacenter holding the bytes, which is a cluster fact,
+    /// so it lands only where a distributed deployment keeps one. The artifact projection answers
+    /// whether this instance can serve them, which is node-local and as true of a single node as of a
+    /// replica, so it is written either way. The two are separate tables, and a reader who takes this
+    /// function's name to mean only the ledger will miss the projection it also maintains.
     pub fn record_home_placement(&self, digest_hex: &str, size: u64, fence: u64) {
+        self.record_hosted_placement(digest_hex);
         self.availability.record_home_placement(digest_hex, size, fence);
+    }
+
+    /// A push wrote verified bytes here, so the projection reads hosted and local.
+    ///
+    /// A store fault leaves the bytes on disk and the projection behind it, which is the direction the
+    /// artifact source and availability contract settles on: the write that produced the bytes does not
+    /// fail for a projection it could not update.
+    fn record_hosted_placement(&self, digest_hex: &str) {
+        let placement = ArtifactPlacement::record(ArtifactSource::Hosted, true);
+        if let Err(error) = ArtifactPlacementStore::put_artifact_placement(&self.meta, digest_hex, &placement) {
+            tracing::warn!(digest = digest_hex, %error, "recording the hosted artifact placement failed");
+        }
     }
 
     /// Returns `authority`'s committed home and epoch, assigning the local datacenter when unowned.
