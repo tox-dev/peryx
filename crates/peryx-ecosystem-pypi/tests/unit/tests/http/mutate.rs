@@ -869,3 +869,42 @@ async fn test_deleting_every_file_takes_the_project_out_of_the_root_listing() {
         "the root index still advertises a project whose detail page is gone: {list}"
     );
 }
+
+#[tokio::test]
+async fn test_restoring_a_trashed_project_returns_it_with_its_published_spelling() {
+    let h = authority_harness().await;
+    upload_peryxpkg(&h.state, "/root/pypi/", &fixture_wheel()).await;
+    let (_, _, published) = get(&h.state, "/root/pypi/simple/", Some("application/json")).await;
+    assert_eq!(
+        request(&h.state, "DELETE", "/root/pypi/peryxpkg/", Some(&upload_auth())).await,
+        StatusCode::OK
+    );
+
+    assert_eq!(
+        request(&h.state, "PUT", "/root/pypi/peryxpkg/restore", Some(&upload_auth())).await,
+        StatusCode::OK
+    );
+
+    let (status, _, restored) = get(&h.state, "/root/pypi/simple/", Some("application/json")).await;
+    assert_eq!((status, restored), (StatusCode::OK, published));
+}
+
+#[tokio::test]
+async fn test_deleting_one_file_of_a_multi_file_project_keeps_the_project_listed() {
+    let h = authority_harness().await;
+    upload_peryxpkg(&h.state, "/root/pypi/", &fixture_wheel()).await;
+    upload_version(&h.state, "/root/pypi/", "2.0").await;
+
+    assert_eq!(
+        request(&h.state, "DELETE", "/root/pypi/peryxpkg/1.0", Some(&upload_auth())).await,
+        StatusCode::OK
+    );
+
+    let (detail_status, ..) = get(&h.state, "/root/pypi/simple/peryxpkg/", Some("application/json")).await;
+    let (_, _, list) = get(&h.state, "/root/pypi/simple/", Some("application/json")).await;
+    assert_eq!(detail_status, StatusCode::OK);
+    assert!(
+        list.contains("peryxpkg"),
+        "a project that still serves a file stays listed: {list}"
+    );
+}

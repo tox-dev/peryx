@@ -1469,3 +1469,46 @@ fn test_promote_files_checked_announces_no_release_for_a_file_that_names_no_vers
         )]
     );
 }
+
+/// Nothing in production removes an upload record today: the served `DELETE` trashes it and retention
+/// only plans. These drive the store API so the project row keeps step with the last record whenever
+/// an apply phase does arrive.
+#[test]
+fn test_removing_the_last_upload_takes_the_projects_row_with_it() {
+    let (_dir, meta) = store();
+    meta.publish_file_if(true, &published(), |_| Ok::<_, MetaError>(Guard::Commit))
+        .unwrap();
+    assert_eq!(meta.get_project("hosted", "flask").unwrap().as_deref(), Some("Flask"));
+
+    meta.delete_upload(true, "hosted", "flask", "flask-1.0.whl", 123)
+        .unwrap();
+
+    assert_eq!(
+        (
+            meta.get_project("hosted", "flask").unwrap(),
+            meta.list_projects("hosted").unwrap()
+        ),
+        (None, Vec::new())
+    );
+}
+
+#[test]
+fn test_publishing_after_the_last_upload_went_writes_the_new_spelling() {
+    let (_dir, meta) = store();
+    meta.publish_file_if(true, &published(), |_| Ok::<_, MetaError>(Guard::Commit))
+        .unwrap();
+    meta.delete_upload(true, "hosted", "flask", "flask-1.0.whl", 123)
+        .unwrap();
+
+    meta.publish_file_if(
+        true,
+        &PublishedFile {
+            display: "FLASK",
+            ..published()
+        },
+        |_| Ok::<_, MetaError>(Guard::Commit),
+    )
+    .unwrap();
+
+    assert_eq!(meta.get_project("hosted", "flask").unwrap().as_deref(), Some("FLASK"));
+}
