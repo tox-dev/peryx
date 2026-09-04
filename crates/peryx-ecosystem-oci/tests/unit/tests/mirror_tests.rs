@@ -1267,6 +1267,49 @@ async fn test_mirror_pulls_a_single_segment_name_under_the_library_prefix() {
     assert_eq!(got, manifest);
 }
 
+/// A mirrored blob is an artifact this node now holds and an upstream can resupply, so the projection
+/// records it proxied and local. A digest the mirror never pulled keeps no row.
+#[tokio::test]
+async fn test_mirror_records_a_placement_for_the_blobs_it_pulls() {
+    let server = MockServer::start().await;
+    let config = b"{}";
+    let layer = b"a-layer-with-a-placement";
+    let manifest = image_manifest(config, layer);
+    mount_manifest(&server, "library/app", "latest", &manifest, MANIFEST_TYPE).await;
+    mount_blob(&server, "library/app", config).await;
+    mount_blob(&server, "library/app", layer).await;
+    let dir = tempfile::tempdir().unwrap();
+    let (state, _app) = proxy(&dir, &format!("{}/", server.uri()), false);
+
+    let rows = mirror(
+        &state.serving,
+        &state.serving.indexes[0],
+        &["library/app:latest".to_owned()],
+        MirrorMode::Sync,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(rows.last().unwrap().status, "synced");
+    let stored = oci_digest(layer);
+    let stored = stored.strip_prefix("sha256:").unwrap();
+    assert_eq!(
+        state.serving.meta.get_artifact_placement(stored).unwrap(),
+        Some(peryx_ha::ArtifactPlacement::record(
+            peryx_ha::ArtifactSource::Proxy,
+            true
+        ))
+    );
+    assert_eq!(
+        state
+            .serving
+            .meta
+            .get_artifact_placement(&"0".repeat(64))
+            .unwrap(),
+        None
+    );
+}
+
 const SHARED_CONFIG: &[u8] = b"{}";
 const SHARED_LAYER: &[u8] = b"a-layer-two-repositories-name";
 
