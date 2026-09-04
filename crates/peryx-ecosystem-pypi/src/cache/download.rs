@@ -28,15 +28,17 @@ mod cache_coverage_tests;
 ///
 pub async fn file_path(
     state: Arc<ServingState>,
+    index: String,
     digest: Digest,
     route: String,
     filename: String,
 ) -> Result<BlobLease, CacheError> {
-    Ok(file_path_with_size(state, digest, route, filename).await?.0)
+    Ok(file_path_with_size(state, index, digest, route, filename).await?.0)
 }
 
 pub async fn file_path_with_size(
     state: Arc<ServingState>,
+    index: String,
     digest: Digest,
     route: String,
     filename: String,
@@ -59,7 +61,7 @@ pub async fn file_path_with_size(
         let handle = if let Some(running) = existing_download(&state, &digest) {
             running
         } else {
-            start_download(&state, &digest, route, filename).await?
+            start_download(&state, &index, &digest, route, filename).await?
         };
         release_flight(&state, digest.as_str(), guard);
         handle
@@ -87,7 +89,12 @@ pub enum FileProbe {
 /// # Errors
 /// Returns [`CacheError::FileNotFound`] if the digest has no known source, [`CacheError::OfflineMissing`]
 /// if the index it came from is offline, or another error on a store failure.
-pub async fn probe_file(state: &ServingState, digest: &Digest) -> Result<FileProbe, CacheError> {
+pub async fn probe_file(
+    state: &ServingState,
+    index: &str,
+    filename: &str,
+    digest: &Digest,
+) -> Result<FileProbe, CacheError> {
     ensure_digest_clear(state, digest)?;
     // One stat answers "is it cached", sizes it, and dates it, where the streaming path needs the
     // handle too. The date is what a `GET` of the same blob validates on, so a `HEAD` states it too.
@@ -96,7 +103,7 @@ pub async fn probe_file(state: &ServingState, digest: &Digest) -> Result<FilePro
     }
     let source = state
         .meta
-        .get_file_url(digest.as_str())?
+        .get_file_url(index, &crate::project_of_filename(filename), digest.as_str())?
         .ok_or(CacheError::FileNotFound)?;
     if source_client(state, &source.source, source.upstream.as_deref())?.1 {
         return Err(CacheError::OfflineMissing("file"));
@@ -124,6 +131,7 @@ pub enum FileOutcome {
 ///
 pub async fn stream_file(
     state: Arc<ServingState>,
+    index: String,
     digest: Digest,
     route: String,
     filename: String,
@@ -148,12 +156,14 @@ pub async fn stream_file(
         let handle = if let Some(running) = existing_download(&state, &digest) {
             running
         } else {
-            start_download(&state, &digest, route.clone(), filename.clone()).await?
+            start_download(&state, &index, &digest, route.clone(), filename.clone()).await?
         };
         release_flight(&state, digest.as_str(), guard);
         handle
     };
-    Ok(FileOutcome::Live(tail_download(state, digest, handle, route, filename)))
+    Ok(FileOutcome::Live(tail_download(
+        state, index, digest, handle, route, filename,
+    )))
 }
 
 /// Fill the local content store from a verified remote placement before the upstream fetch, returning
@@ -171,13 +181,14 @@ async fn fill_remote(state: &ServingState, digest: &Digest) -> Option<BlobMetada
 
 async fn start_download(
     state: &Arc<ServingState>,
+    index: &str,
     digest: &Digest,
     route: String,
     filename: String,
 ) -> Result<DownloadHandle, CacheError> {
     let source = state
         .meta
-        .get_file_url(digest.as_str())?
+        .get_file_url(index, &crate::project_of_filename(&filename), digest.as_str())?
         .ok_or(CacheError::FileNotFound)?;
     let (client, offline) = source_artifact_client(state, &source.source, source.upstream.as_deref())?;
     if offline {
@@ -318,6 +329,7 @@ async fn drain_to_blob(
 /// One client's view of a live download while it tails the pump's temp file.
 struct Tail {
     state: Arc<ServingState>,
+    index: String,
     digest: Digest,
     handle: DownloadHandle,
     file: Option<tokio::fs::File>,
@@ -330,6 +342,7 @@ struct Tail {
 
 pub fn tail_download(
     state: Arc<ServingState>,
+    index: String,
     digest: Digest,
     handle: DownloadHandle,
     route: String,
@@ -338,10 +351,11 @@ pub fn tail_download(
     use futures_util::StreamExt as _;
     use tokio::io::AsyncReadExt as _;
     if handle.tail().is_none() {
-        return committed_download(state, digest, handle, route, filename);
+        return committed_download(state, index, digest, handle, route, filename);
     }
     let tail = Tail {
         state,
+        index,
         digest,
         handle,
         file: None,
@@ -387,7 +401,7 @@ pub fn tail_download(
             }
             match progress.done {
                 Some(Ok(())) => {
-                    let (version, source) = download_dimensions(&tail.state, &tail.digest, &tail.filename);
+                    let (version, source) = download_dimensions(&tail.state, &tail.index, &tail.digest, &tail.filename);
                     tail.state.metrics.record(Observation::Read {
                         repository: tail.route.clone(),
                         resource: project_of_filename(&tail.filename),
@@ -420,11 +434,16 @@ pub fn tail_download(
 /// from the local store: a hosted upload and any blob with no recorded upstream both yield `None`, so
 /// a response served without routing to an upstream carries no source. The read is local and off the
 /// cross-node path, so it stays within the collection boundary's constraints.
-pub fn download_dimensions(state: &ServingState, digest: &Digest, filename: &str) -> (Option<String>, Option<String>) {
+pub fn download_dimensions(
+    state: &ServingState,
+    index: &str,
+    digest: &Digest,
+    filename: &str,
+) -> (Option<String>, Option<String>) {
     let version = crate::distribution_version_segment(filename).map(str::to_owned);
     let source = state
         .meta
-        .get_file_url(digest.as_str())
+        .get_file_url(index, &crate::project_of_filename(filename), digest.as_str())
         .ok()
         .flatten()
         .and_then(|source| source.upstream);
@@ -433,6 +452,7 @@ pub fn download_dimensions(state: &ServingState, digest: &Digest, filename: &str
 
 fn committed_download(
     state: Arc<ServingState>,
+    index: String,
     digest: Digest,
     mut handle: DownloadHandle,
     route: String,
@@ -448,10 +468,10 @@ fn committed_download(
             .boxed();
         Ok::<_, std::io::Error>(
             futures_util::stream::try_unfold(
-                (stream, state, digest, route, filename, 0u64),
-                |(mut stream, state, digest, route, filename, bytes)| async move {
+                (stream, state, index, digest, route, filename, 0u64),
+                |(mut stream, state, index, digest, route, filename, bytes)| async move {
                     let Some(chunk) = stream.next().await.transpose()? else {
-                        let (version, source) = download_dimensions(&state, &digest, &filename);
+                        let (version, source) = download_dimensions(&state, &index, &digest, &filename);
                         state.metrics.record(Observation::Read {
                             repository: route,
                             resource: project_of_filename(&filename),
@@ -463,7 +483,7 @@ fn committed_download(
                         return Ok(None);
                     };
                     let bytes = bytes.saturating_add(chunk.len() as u64);
-                    Ok(Some((chunk, (stream, state, digest, route, filename, bytes))))
+                    Ok(Some((chunk, (stream, state, index, digest, route, filename, bytes))))
                 },
             )
             .boxed(),

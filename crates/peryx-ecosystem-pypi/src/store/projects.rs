@@ -4,7 +4,7 @@ use peryx_storage::meta::{DriverBatch, DriverReadTxn, MetaError, MetaScanError, 
 use serde::{Deserialize, Serialize};
 
 use super::{
-    CATALOG_GENERATION_PREFIX, CATALOG_PREFIX, PROJECTS_PREFIX, RETIRED_PREFIX, file_key, freshness_key, index_key,
+    CATALOG_GENERATION_PREFIX, CATALOG_PREFIX, PROJECTS_PREFIX, RETIRED_PREFIX, file_prefix, freshness_key, index_key,
     metadata_key, project_key, project_status_key, publication_prefix, put_project_row, record_str,
     remove_cached_project_row, scan_utf8_records,
 };
@@ -338,14 +338,14 @@ pub fn count_project_cache_purge(
     meta: &MetaStore,
     index: &str,
     normalized: &str,
-    file_digests: &[String],
     metadata_digests: &[String],
 ) -> Result<ProjectCachePurgeCounts, MetaError> {
     let key = format!("{index}/{normalized}");
     let mut file_url_records = 0;
-    for digest in file_digests {
-        file_url_records += usize::from(meta.get_driver_value(&file_key(digest))?.is_some());
-    }
+    meta.scan_driver_prefix(&file_prefix(index, normalized), |_key, _value| {
+        file_url_records += 1;
+        Ok::<(), MetaError>(())
+    })?;
     let mut metadata_records = 0;
     for digest in metadata_digests {
         metadata_records += usize::from(meta.get_driver_value(&metadata_key(digest))?.is_some());
@@ -365,7 +365,6 @@ pub fn delete_project_cache(
     meta: &MetaStore,
     index: &str,
     normalized: &str,
-    file_digests: &[String],
     metadata_digests: &[String],
 ) -> Result<ProjectCachePurgeCounts, MetaError> {
     let page = format!("{index}/{normalized}");
@@ -378,8 +377,8 @@ pub fn delete_project_cache(
             metadata_records: 0,
         };
         txn.remove_local(&freshness_key(&page))?;
-        for digest in file_digests {
-            counts.file_url_records += usize::from(txn.remove_local(&file_key(digest))?);
+        for (key, _) in txn.prefix(&file_prefix(index, normalized))? {
+            counts.file_url_records += usize::from(txn.remove_local(&key)?);
         }
         for digest in metadata_digests {
             counts.metadata_records += usize::from(txn.remove_local(&metadata_key(digest))?);

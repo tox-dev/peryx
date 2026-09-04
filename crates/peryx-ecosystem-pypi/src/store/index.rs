@@ -93,11 +93,12 @@ pub fn put_cached_page(meta: &MetaStore, write: CachedPageWrite<'_>) -> Result<(
             .and_then(|()| {
                 files.iter().try_for_each(|file| {
                     let value = file_source_value(&file.url, source, file.size, upstream);
-                    txn.put_local(&file_key(&file.sha256), value.as_bytes()).and_then(|()| {
-                        let key = publication_key(index, normalized, &file.sha256, &file.filename);
-                        let value = publication_value(file.metadata.as_ref(), source, upstream);
-                        txn.put_local(&key, value.as_bytes())
-                    })
+                    txn.put_local(&file_key(index, normalized, &file.sha256), value.as_bytes())
+                        .and_then(|()| {
+                            let key = publication_key(index, normalized, &file.sha256, &file.filename);
+                            let value = publication_value(file.metadata.as_ref(), source, upstream);
+                            txn.put_local(&key, value.as_bytes())
+                        })
                 })
             })
             .and_then(|()| replace_project_upstream_attestations_in_txn(txn, index, normalized, upstream, attestations))
@@ -459,7 +460,7 @@ fn register_file_rows(
         return Ok(());
     };
     let source_value = file_source_value(&file.url, source, file.size, upstream);
-    txn.put_local(&file_key(sha256), source_value.as_bytes())?;
+    txn.put_local(&file_key(index, project, sha256), source_value.as_bytes())?;
     let claim = match file.metadata() {
         CoreMetadata::Hashes(hashes) => hashes
             .get("sha256")

@@ -119,7 +119,12 @@ impl FreshJsonStream {
                     &summary,
                     upstream.as_deref(),
                 )?;
-                spawn_metadata_backfill(&self.state, self.route.clone(), &summary.registrations);
+                spawn_metadata_backfill(
+                    &self.state,
+                    self.cached_name.clone(),
+                    self.route.clone(),
+                    &summary.registrations,
+                );
                 let bytes = Bytes::from(served);
                 self.state
                     .cache
@@ -369,7 +374,7 @@ async fn complete_live(
     })
     .await
     .expect("page persist task never panics");
-    spawn_metadata_backfill(&state, route, &registrations);
+    spawn_metadata_backfill(&state, cached.clone(), route, &registrations);
     state.cache.store_hot_versioned(
         representation_key,
         Bytes::from(std::mem::take(&mut served)),

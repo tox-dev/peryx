@@ -28,9 +28,11 @@ use crate::{CoreMetadata, ProjectDetail, normalize_name, parse_detail};
 /// it cannot fully account for.
 pub fn referenced_blob_digests(meta: &MetaStore) -> Result<BTreeSet<String>, String> {
     let mut digests = BTreeSet::new();
-    meta.scan_file_urls(|digest, value| {
+    meta.scan_file_urls(|index, normalized, digest, value| {
         if Digest::from_hex(digest).is_none() || split_pair(value).is_none() {
-            return Err(format!("invalid file URL record for digest {digest:?}"));
+            return Err(format!(
+                "invalid file URL record for {index}/{normalized} digest {digest:?}"
+            ));
         }
         digests.insert(digest.to_owned());
         Ok(())
@@ -135,7 +137,7 @@ pub fn cache_record_counts(meta: &MetaStore) -> Result<Vec<(String, u64)>, Strin
     let mut uploads = 0_u64;
     let mut overrides = 0_u64;
     let mut provenance = 0_u64;
-    meta.scan_file_urls(|_digest, _value| {
+    meta.scan_file_urls(|_index, _normalized, _digest, _value| {
         file_urls += 1;
         Ok::<(), std::convert::Infallible>(())
     })
@@ -310,17 +312,16 @@ pub fn purge_project(meta: &MetaStore, index: &str, project: &str, apply: bool) 
     let target_key = format!("{index}/{normalized}");
     let target = project_refs(meta, &target_key)?;
     let preserved = preserved_refs(meta, &target_key)?;
-    let file_digests = target.files.difference(&preserved.files).cloned().collect::<Vec<_>>();
     let metadata_digests = target
         .metadata_wheels
         .difference(&preserved.files)
         .cloned()
         .collect::<Vec<_>>();
     let counts = if apply {
-        meta.delete_project_cache(index, &normalized, &file_digests, &metadata_digests)
+        meta.delete_project_cache(index, &normalized, &metadata_digests)
             .map_err(crate::error_message)?
     } else {
-        meta.count_project_cache_purge(index, &normalized, &file_digests, &metadata_digests)
+        meta.count_project_cache_purge(index, &normalized, &metadata_digests)
             .map_err(crate::error_message)?
     };
     Ok(PurgeReport {
@@ -470,8 +471,13 @@ pub fn preview_metadata_repair(meta: &MetaStore, indexes: &[Index], out: &mut dy
 /// # Errors
 /// Returns a message when the store cannot be read or written, or `out` cannot be written.
 pub fn repair_metadata(meta: &MetaStore, indexes: &[Index], out: &mut dyn Write) -> Result<u64, String> {
+    let dropped = crate::store::drop_legacy_file_sources(meta).map_err(crate::error_message)?;
+    if dropped > 0 {
+        writeln!(out, "dropped {dropped} download source(s) that named no publication")
+            .map_err(crate::error_message)?;
+    }
     let defects = crate::store::repair_summary_rows(meta, &audited_indexes(indexes)).map_err(crate::error_message)?;
-    write_summary_defects(&defects, out)
+    write_summary_defects(&defects, out).map(|summary| summary + dropped as u64)
 }
 
 /// Report every record in `namespace` that `invalid` rejects, then the rows the scan could not read at

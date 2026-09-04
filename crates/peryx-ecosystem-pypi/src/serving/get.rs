@@ -432,6 +432,7 @@ async fn file_route(state: &Arc<ServingState>, index: &Index, file: &str, header
     if head {
         return head_blob(
             state,
+            &index.name,
             &route,
             &filename,
             &digest,
@@ -441,7 +442,17 @@ async fn file_route(state: &Arc<ServingState>, index: &Index, file: &str, header
         )
         .await;
     }
-    serve_blob(state, route, &filename, digest, range, &etag, conditional_date(headers)).await
+    serve_blob(
+        state,
+        index.name.clone(),
+        route,
+        &filename,
+        digest,
+        range,
+        &etag,
+        conditional_date(headers),
+    )
+    .await
 }
 
 const IMMUTABLE: &str = "public, max-age=31536000, immutable";
@@ -588,7 +599,7 @@ async fn download_policy_denial(
     let size = if let Some(metadata) = state.blobs.head(digest).await? {
         Some(metadata.bytes)
     } else {
-        cache::registered_file_size(state, digest)?
+        cache::registered_file_size(state, &index.name, filename, digest)?
     };
     Ok(index.policy.check_download(PolicyAction::Serve, filename, size).err())
 }
@@ -641,6 +652,7 @@ fn legacy_json_target(rest: &str) -> HttpResult<Option<LegacyJsonTarget>> {
 /// page carried none: an uncached artifact's length is not peryx's to invent.
 async fn head_blob(
     state: &Arc<ServingState>,
+    index: &str,
     route: &str,
     filename: &str,
     digest: &Digest,
@@ -648,7 +660,7 @@ async fn head_blob(
     etag: &str,
     since: Option<&str>,
 ) -> Response {
-    let probe = match cache::probe_file(state, digest).await {
+    let probe = match cache::probe_file(state, index, filename, digest).await {
         Ok(probe) => probe,
         Err(err) => return cache_error_response(&err, CacheContext::file(route, digest.as_str(), filename)),
     };
@@ -717,6 +729,7 @@ async fn head_blob(
 /// write it would name has not happened - so it goes out with the tag alone, as it did before.
 async fn serve_blob(
     state: &Arc<ServingState>,
+    index: String,
     route: String,
     filename: &str,
     digest: Digest,
@@ -731,7 +744,15 @@ async fn serve_blob(
         (header::ACCEPT_RANGES, "bytes"),
         (header::ETAG, etag),
     ];
-    match cache::stream_file(state.clone(), digest.clone(), route.clone(), filename.to_owned()).await {
+    match cache::stream_file(
+        state.clone(),
+        index.clone(),
+        digest.clone(),
+        route.clone(),
+        filename.to_owned(),
+    )
+    .await
+    {
         Ok(cache::FileOutcome::Cached(metadata)) => {
             let size = metadata.bytes;
             let modified = metadata.modified.map(|stored| last_modified(stored, SystemTime::now()));
@@ -777,7 +798,7 @@ async fn serve_blob(
             };
             let metrics = state.metrics.clone();
             let project = crate::project_of_filename(filename);
-            let (version, source) = cache::download_dimensions(state, &digest, filename);
+            let (version, source) = cache::download_dimensions(state, &index, &digest, filename);
             let filename = filename.to_owned();
             let body =
                 peryx_driver::body::on_body_complete(peryx_driver::body::blob_read(read), length, move |bytes| {

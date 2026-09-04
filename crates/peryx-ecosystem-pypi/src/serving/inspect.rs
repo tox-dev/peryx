@@ -57,7 +57,8 @@ pub(super) async fn inspect_route(
         Ok(None) => {}
         Err(err) => return cache_error_response(&err, CacheContext::file(&route, sha256, &filename)),
     }
-    let path = match cache::file_path(state, digest, route.clone(), filename.clone()).await {
+    let owner = index.name.clone();
+    let path = match cache::file_path(state, owner, digest, route.clone(), filename.clone()).await {
         Ok(path) => path,
         Err(err) => {
             return cache_error_response(&err, CacheContext::file(&route, sha256, &filename));

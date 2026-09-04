@@ -727,7 +727,7 @@ pub(super) async fn project_page(
         ui.name = display;
     }
     apply_actions(&route, &mut ui);
-    apply_placement(&state, &hosted, &mut ui).map_err(crate::error_message)?;
+    apply_placement(&state, &index.name, &normalized, &hosted, &mut ui).map_err(crate::error_message)?;
     apply_provenance(&state, &hosted, &normalized, &mut ui).await;
     let default = default_version(&ui);
     // A pre-PEP 700 upstream names no versions, so no release owns a file and the newest sibling stands in.
@@ -871,6 +871,8 @@ fn collect_hosted_filenames(
 /// not recorded - an upstream catalog entry never fetched - stays proxied and remote-only.
 fn apply_placement(
     state: &ServingState,
+    index: &str,
+    normalized: &str,
     hosted: &BTreeMap<String, String>,
     ui: &mut ProjectView,
 ) -> Result<(), peryx_storage::meta::MetaError> {
@@ -881,7 +883,7 @@ fn apply_placement(
         } else {
             state
                 .meta
-                .get_file_url(&file.sha256)?
+                .get_file_url(index, normalized, &file.sha256)?
                 .and_then(|source| source.upstream)
         };
         let placement = ArtifactPlacementStore::get_artifact_placement(&state.meta, &file.sha256)?;
@@ -1097,7 +1099,8 @@ pub(super) async fn artifact_path_in_project(
             body: refusal.body,
         });
     }
-    cache::file_path(state, digest, route.clone(), filename.clone())
+    let owner = index.name.clone();
+    cache::file_path(state, owner, digest, route.clone(), filename.clone())
         .await
         .map_err(&context)
 }

@@ -38,18 +38,28 @@ pub struct FileSource {
     pub upstream: Option<String>,
 }
 
-/// Record where a blob digest can be fetched from: its upstream URL and the cached index it came from.
+/// Record where one index's publication of a blob digest can be fetched from: its upstream URL and the
+/// cached index it came from.
 ///
-/// The index name lets a fetch on a cache miss reuse that index's authentication. Recording the locator
-/// also registers the artifact's neutral placement. For a proxied artifact whose bytes are not yet local,
-/// a later package read resolves availability from the index without probing the content store. A
+/// The index name lets a fetch on a cache miss reuse that index's authentication, which is why the row
+/// belongs to the publication rather than to the digest: two indexes may both advertise one artifact,
+/// and each is right about a different upstream and a different credential. Recording the locator also
+/// registers the artifact's neutral placement. For a proxied artifact whose bytes are not yet local, a
+/// later package read resolves availability from the index without probing the content store. A
 /// re-discovery keeps a cached artifact's local state.
 ///
 /// # Errors
 /// Returns a store error if the write fails.
-pub fn put_file_url(meta: &MetaStore, sha256: &str, url: &str, source: &str) -> Result<(), MetaError> {
+pub fn put_file_url(
+    meta: &MetaStore,
+    index: &str,
+    normalized: &str,
+    sha256: &str,
+    url: &str,
+    source: &str,
+) -> Result<(), MetaError> {
     let value = file_source_value(url, source, None, None);
-    meta.put_driver_value(&file_key(sha256), value.as_bytes())?;
+    meta.put_driver_value(&file_key(index, normalized, sha256), value.as_bytes())?;
     ArtifactPlacementStore::insert_artifact_placement(
         meta,
         sha256,
@@ -60,8 +70,13 @@ pub fn put_file_url(meta: &MetaStore, sha256: &str, url: &str, source: &str) -> 
 
 /// # Errors
 /// Returns a store error if the read fails or the source record is invalid.
-pub fn get_file_url(meta: &MetaStore, sha256: &str) -> Result<Option<FileSource>, MetaError> {
-    let key = file_key(sha256);
+pub fn get_file_url(
+    meta: &MetaStore,
+    index: &str,
+    normalized: &str,
+    sha256: &str,
+) -> Result<Option<FileSource>, MetaError> {
+    let key = file_key(index, normalized, sha256);
     meta.get_driver_value(&key)?
         .map(|raw| record_str(&key, raw).and_then(|value| split_file_source(&key, &value)))
         .transpose()
@@ -69,11 +84,63 @@ pub fn get_file_url(meta: &MetaStore, sha256: &str) -> Result<Option<FileSource>
 
 /// # Errors
 /// Returns a scan error if the store read fails or the visitor returns an error.
+/// Visit every source row as `(index, normalized, sha256, value)`.
+///
+/// The key names the publication that advertised the download, so its last segment is the digest and
+/// the rest is the owner. Splitting here rather than at each caller is what keeps a reader from
+/// handing `{index}/{normalized}/{sha256}` to something that expects a digest: the orphan-blob
+/// collector reads this scan, and a whole key mistaken for a digest would spare no blob at all.
+///
+/// # Errors
+/// Returns a scan error if the store read fails, a key does not carry all three parts, or the
+/// visitor returns an error.
 pub fn scan_file_urls<E>(
     meta: &MetaStore,
-    visit: impl FnMut(&str, &str) -> Result<(), E>,
+    mut visit: impl FnMut(&str, &str, &str, &str) -> Result<(), E>,
 ) -> Result<(), MetaScanError<E>> {
-    scan_utf8_records(meta, FILE_PREFIX, visit)
+    meta.scan_driver_prefix(FILE_PREFIX, |key, raw| {
+        let Some((index, normalized, sha256)) = split_file_owner(&key[FILE_PREFIX.len()..]) else {
+            return Ok(());
+        };
+        let value = record_str(key, raw.to_vec())?;
+        visit(index, normalized, sha256, &value).map_err(MetaScanError::Visit)
+    })
+}
+
+/// The `{index}/{normalized}/{sha256}` a source key carries, or `None` for a row written before the
+/// key named an owner.
+fn split_file_owner(key: &str) -> Option<(&str, &str, &str)> {
+    let (index, rest) = key.split_once('/')?;
+    let (normalized, sha256) = rest.split_once('/')?;
+    (!index.is_empty() && !normalized.is_empty() && !sha256.is_empty()).then_some((index, normalized, sha256))
+}
+
+/// Delete every source row written before the key named an owner, reporting how many went.
+///
+/// Such a row records a URL, an index and an upstream but not which publication they belonged to, and
+/// peryx cannot recover that: the whole defect was that the last writer's answer overwrote everyone
+/// else's. Inventing an owner would re-assert exactly the claim that was wrong, so the row is dropped
+/// and the next page fetch or catalog sync writes an owned one in its place. Until then the artifact
+/// has no cached locator, so a cold download for it fetches the page again first, and a blob nothing
+/// else references may be reclaimed before that happens and downloaded again after.
+///
+/// # Errors
+/// Returns a store error if the scan or the removal fails.
+pub fn drop_legacy_file_sources(meta: &MetaStore) -> Result<usize, MetaError> {
+    let mut legacy = Vec::new();
+    meta.scan_driver_prefix(FILE_PREFIX, |key, _value| {
+        if split_file_owner(&key[FILE_PREFIX.len()..]).is_none() {
+            legacy.push(key.to_owned());
+        }
+        Ok::<(), MetaError>(())
+    })?;
+    meta.commit_driver_txn(|txn| {
+        let mut dropped = 0;
+        for key in &legacy {
+            dropped += usize::from(txn.remove_local(key)?);
+        }
+        Ok((dropped, Vec::new()))
+    })
 }
 
 /// Record the metadata peryx derived from an artifact's own verified bytes, keyed by that digest.

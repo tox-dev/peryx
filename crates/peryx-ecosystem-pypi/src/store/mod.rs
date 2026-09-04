@@ -11,9 +11,9 @@ mod summary;
 mod uploads;
 
 pub use files::{
-    FilePublication, FileSource, MetadataClaim, PypiArtifactOrigin, get_file_publication, get_file_url,
-    get_metadata_digest, get_metadata_digests, get_provenance, put_file_url, put_metadata, put_provenance,
-    scan_file_publications, scan_file_urls, scan_metadata_records, scan_provenance_records,
+    FilePublication, FileSource, MetadataClaim, PypiArtifactOrigin, drop_legacy_file_sources, get_file_publication,
+    get_file_url, get_metadata_digest, get_metadata_digests, get_provenance, put_file_url, put_metadata,
+    put_provenance, scan_file_publications, scan_file_urls, scan_metadata_records, scan_provenance_records,
 };
 pub use index::{
     CachedPageWrite, PublishedFileWrite, abort_project_generation, active_project_generation, begin_project_generation,
@@ -57,7 +57,14 @@ const INDEX_PREFIX: &str = "pypi\u{0}i\u{0}";
 /// The freshness overlay a `304 Not Modified` writes: the fetch time and lifetime for a page whose
 /// body did not change, keyed by the same route key so a revalidation rewrites a header, not a body.
 const FRESHNESS_PREFIX: &str = "pypi\u{0}h\u{0}";
-/// The former `artifact_source` table: upstream source URLs, keyed by artifact digest.
+/// The former `artifact_source` table: where one index's publication of an artifact is fetched from,
+/// keyed by `{index}/{normalized}/{sha256}`.
+///
+/// The URL, the owning index, and the routed upstream are the publisher's word about its own
+/// download, not a property of the bytes: two indexes may both advertise one digest and each is
+/// correct about a different upstream. Keying by digest alone made the last writer decide whose
+/// upstream and whose credentials every cold download used. The artifact blob itself still
+/// deduplicates by verified digest, because the bytes really are shared.
 const FILE_PREFIX: &str = "pypi\u{0}f\u{0}";
 /// Metadata peryx derived from an artifact's own verified bytes - extracted from the archive, or
 /// uploaded alongside it - keyed by artifact digest. The bytes are a function of the digest, so this
@@ -121,8 +128,12 @@ fn freshness_key(key: &str) -> String {
     format!("{FRESHNESS_PREFIX}{key}")
 }
 
-fn file_key(sha256: &str) -> String {
-    format!("{FILE_PREFIX}{sha256}")
+fn file_key(index: &str, normalized: &str, sha256: &str) -> String {
+    format!("{FILE_PREFIX}{index}/{normalized}/{sha256}")
+}
+
+fn file_prefix(index: &str, normalized: &str) -> String {
+    format!("{FILE_PREFIX}{index}/{normalized}/")
 }
 
 fn metadata_key(sha256: &str) -> String {
@@ -229,7 +240,7 @@ pub(crate) fn metadata_artifact_of_key(key: &str) -> Option<&str> {
 
 /// The replicated namespaces no derived view reads.
 ///
-/// A file-url row resolves a byte route from an artifact digest, and a count row and an order row
+/// A file-url row resolves a byte route for one index's publication, and a count row and an order row
 /// answer an index's summary. Neither the search document a project derives nor the representations a
 /// replica caches for it reads one, so a publish that maintains them alongside its project's own rows
 /// leaves both current. An announced-release row is read only by the next publication deciding whether
@@ -487,17 +498,29 @@ pub trait PypiStore {
 
     /// # Errors
     /// Returns a store error if the write fails.
-    fn put_file_url(&self, sha256: &str, url: &str, source: &str) -> Result<(), peryx_storage::meta::MetaError>;
+    fn put_file_url(
+        &self,
+        index: &str,
+        normalized: &str,
+        sha256: &str,
+        url: &str,
+        source: &str,
+    ) -> Result<(), peryx_storage::meta::MetaError>;
 
     /// # Errors
     /// Returns a store error if the read fails.
-    fn get_file_url(&self, sha256: &str) -> Result<Option<FileSource>, peryx_storage::meta::MetaError>;
+    fn get_file_url(
+        &self,
+        index: &str,
+        normalized: &str,
+        sha256: &str,
+    ) -> Result<Option<FileSource>, peryx_storage::meta::MetaError>;
 
     /// # Errors
     /// Returns a scan error if the store read fails or the visitor fails.
     fn scan_file_urls<E>(
         &self,
-        visit: impl FnMut(&str, &str) -> Result<(), E>,
+        visit: impl FnMut(&str, &str, &str, &str) -> Result<(), E>,
     ) -> Result<(), peryx_storage::meta::MetaScanError<E>>;
 
     /// Record the metadata derived from an artifact's own bytes.
@@ -651,7 +674,6 @@ pub trait PypiStore {
         &self,
         index: &str,
         normalized: &str,
-        file_digests: &[String],
         metadata_digests: &[String],
     ) -> Result<ProjectCachePurgeCounts, peryx_storage::meta::MetaError>;
 
@@ -661,7 +683,6 @@ pub trait PypiStore {
         &self,
         index: &str,
         normalized: &str,
-        file_digests: &[String],
         metadata_digests: &[String],
     ) -> Result<ProjectCachePurgeCounts, peryx_storage::meta::MetaError>;
 
@@ -855,17 +876,29 @@ impl PypiStore for peryx_storage::meta::MetaStore {
         index::put_cached_page(self, write)
     }
 
-    fn put_file_url(&self, sha256: &str, url: &str, source: &str) -> Result<(), peryx_storage::meta::MetaError> {
-        files::put_file_url(self, sha256, url, source)
+    fn put_file_url(
+        &self,
+        index: &str,
+        normalized: &str,
+        sha256: &str,
+        url: &str,
+        source: &str,
+    ) -> Result<(), peryx_storage::meta::MetaError> {
+        files::put_file_url(self, index, normalized, sha256, url, source)
     }
 
-    fn get_file_url(&self, sha256: &str) -> Result<Option<FileSource>, peryx_storage::meta::MetaError> {
-        files::get_file_url(self, sha256)
+    fn get_file_url(
+        &self,
+        index: &str,
+        normalized: &str,
+        sha256: &str,
+    ) -> Result<Option<FileSource>, peryx_storage::meta::MetaError> {
+        files::get_file_url(self, index, normalized, sha256)
     }
 
     fn scan_file_urls<E>(
         &self,
-        visit: impl FnMut(&str, &str) -> Result<(), E>,
+        visit: impl FnMut(&str, &str, &str, &str) -> Result<(), E>,
     ) -> Result<(), peryx_storage::meta::MetaScanError<E>> {
         files::scan_file_urls(self, visit)
     }
@@ -1054,20 +1087,18 @@ impl PypiStore for peryx_storage::meta::MetaStore {
         &self,
         index: &str,
         normalized: &str,
-        file_digests: &[String],
         metadata_digests: &[String],
     ) -> Result<ProjectCachePurgeCounts, peryx_storage::meta::MetaError> {
-        projects::count_project_cache_purge(self, index, normalized, file_digests, metadata_digests)
+        projects::count_project_cache_purge(self, index, normalized, metadata_digests)
     }
 
     fn delete_project_cache(
         &self,
         index: &str,
         normalized: &str,
-        file_digests: &[String],
         metadata_digests: &[String],
     ) -> Result<ProjectCachePurgeCounts, peryx_storage::meta::MetaError> {
-        projects::delete_project_cache(self, index, normalized, file_digests, metadata_digests)
+        projects::delete_project_cache(self, index, normalized, metadata_digests)
     }
 
     fn publish_file_if<E: From<peryx_storage::meta::MetaError>>(

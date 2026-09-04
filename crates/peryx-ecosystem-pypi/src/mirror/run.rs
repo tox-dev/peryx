@@ -487,8 +487,14 @@ async fn sync_file(
     if let Some(metadata) = state.blobs.head(&digest).await? {
         return Ok(SyncOutcome::Cached(metadata.bytes));
     }
-    let (_, bytes) =
-        crate::cache::file_path_with_size(state, digest, target.route.clone(), file.filename.clone()).await?;
+    let (_, bytes) = crate::cache::file_path_with_size(
+        state,
+        target.cached.clone(),
+        digest,
+        target.route.clone(),
+        file.filename.clone(),
+    )
+    .await?;
     Ok(SyncOutcome::Downloaded(bytes))
 }
 
