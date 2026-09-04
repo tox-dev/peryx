@@ -179,7 +179,13 @@ fn read_requirements(
         };
         let line = requirement_line(&logical);
         if let Some(nested) = include_target(line) {
-            let nested = file.path.parent().unwrap_or_else(|| Path::new(".")).join(nested);
+            // Every file on this stack came from `requirement_file`, which read it, and `Path::parent`
+            // answers `None` only for an empty path or one that is nothing but a root or a prefix.
+            // A root is a directory and an empty path names nothing, so neither is readable and
+            // neither reaches here. A bare filename keeps its empty parent, which joins to the
+            // sibling this wants.
+            let parent = file.path.parent().expect("requirement_file read this path as a file");
+            let nested = parent.join(nested);
             let canonical = canonical_requirements_path(&nested)?;
             if let Some(cycle_start) = stack.iter().position(|file| file.canonical == canonical) {
                 let mut cycle = stack[cycle_start..]

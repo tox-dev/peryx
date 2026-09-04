@@ -838,3 +838,26 @@ fn publish(state: &peryx_driver::ServingState, filename: &str) {
         .put_upload("private", "demo", filename, &serde_json::to_vec(&uploaded).unwrap())
         .unwrap();
 }
+
+/// `Path::parent` answers `None` only for an empty path or one that is nothing but a root or a
+/// prefix, and `read_requirements` asks for a parent only for a file it has already read. These pin
+/// the refusal that makes the two cases meet: a root is a directory rather than a readable file, and
+/// an empty path names nothing, so neither survives to become a `RequirementFile`.
+#[tokio::test]
+async fn mirror_refuses_a_requirements_path_that_names_nothing() {
+    assert!(mirror_requirements(&[Path::new("")]).await.is_err());
+}
+
+#[tokio::test]
+async fn mirror_refuses_a_requirements_path_that_is_only_a_root() {
+    assert!(mirror_requirements(&[Path::new("/")]).await.is_err());
+}
+
+#[tokio::test]
+async fn mirror_refuses_an_include_of_a_path_that_is_only_a_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("requirements.txt");
+    std::fs::write(&root, "-r /\n").unwrap();
+
+    assert!(mirror_requirements(&[&root]).await.is_err());
+}
