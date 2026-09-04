@@ -30,7 +30,7 @@ async fn replay(script: Vec<Chunk>) -> Vec<Result<usize, UpstreamError>> {
 }
 
 fn floor_for(span: Duration) -> usize {
-    usize::try_from(THROUGHPUT_FLOOR * span.as_secs()).unwrap()
+    usize::try_from(THROUGHPUT_FLOOR.get() * span.as_secs()).unwrap()
 }
 
 /// A transfer holding the floor is never stopped, however long it runs.
