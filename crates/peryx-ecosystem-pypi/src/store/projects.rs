@@ -4,9 +4,9 @@ use peryx_storage::meta::{DriverBatch, DriverReadTxn, MetaError, MetaScanError, 
 use serde::{Deserialize, Serialize};
 
 use super::{
-    CATALOG_GENERATION_PREFIX, CATALOG_PREFIX, PROJECTS_PREFIX, RETIRED_PREFIX, file_prefix, freshness_key, index_key,
-    metadata_key, project_key, project_status_key, publication_prefix, put_project_row, record_str,
-    remove_cached_project_row, scan_utf8_records,
+    CATALOG_GENERATION_PREFIX, CATALOG_PREFIX, LIVE_UPLOADS_PREFIX, PROJECTS_PREFIX, RETIRED_PREFIX, file_prefix,
+    freshness_key, index_key, metadata_key, project_key, project_status_key, publication_prefix, put_project_row,
+    record_str, remove_cached_project_row, scan_utf8_records,
 };
 
 const CATALOG_DELETE_BATCH: usize = 10_000;
@@ -288,12 +288,24 @@ pub fn list_projects(meta: &MetaStore, index: &str) -> Result<Vec<String>, MetaE
             retired.insert(key[retired_prefix.len()..].to_owned());
             Ok::<_, MetaError>(std::ops::ControlFlow::Continue(()))
         })?;
+        // A live-uploads row exists only where uploads happened, so its absence means a cached project,
+        // which the page it came from keeps listed. Where one exists it decides: a project whose files
+        // are all trashed serves nothing, and advertising it here would name a project whose detail page
+        // answers `404`. One scan answers for the whole index rather than a read per project.
+        let serving_prefix = format!("{LIVE_UPLOADS_PREFIX}{index}/");
+        let mut emptied = BTreeSet::new();
+        txn.scan_prefix(&serving_prefix, |key, raw| {
+            if !serves_any_file(raw) {
+                emptied.insert(key[serving_prefix.len()..].to_owned());
+            }
+            Ok::<_, MetaError>(std::ops::ControlFlow::Continue(()))
+        })?;
         let mut local = BTreeMap::new();
         let mut names = Vec::new();
         for (group_prefix, entries) in prefixes.iter().zip(txn.prefixes(prefixes)?) {
             for (key, raw) in entries {
                 let normalized = &key[group_prefix.len()..];
-                if retired.contains(normalized) {
+                if retired.contains(normalized) || emptied.contains(normalized) {
                     continue;
                 }
                 if *group_prefix == prefix {
@@ -309,6 +321,17 @@ pub fn list_projects(meta: &MetaStore, index: &str) -> Result<Vec<String>, MetaE
         names.sort();
         Ok(names)
     })
+}
+
+/// Whether a live-uploads row reports at least one untrashed upload.
+///
+/// A row this cannot read counts as serving, so a listing never loses a project to a decode failure.
+fn serves_any_file(raw: &[u8]) -> bool {
+    std::str::from_utf8(raw)
+        .ok()
+        .and_then(|value| value.split_once('\n'))
+        .and_then(|(serving, _)| serving.parse::<i64>().ok())
+        .is_none_or(|serving| serving > 0)
 }
 
 /// # Errors
