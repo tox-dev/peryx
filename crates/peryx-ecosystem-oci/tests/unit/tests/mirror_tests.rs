@@ -1301,11 +1301,7 @@ async fn test_mirror_records_a_placement_for_the_blobs_it_pulls() {
         ))
     );
     assert_eq!(
-        state
-            .serving
-            .meta
-            .get_artifact_placement(&"0".repeat(64))
-            .unwrap(),
+        state.serving.meta.get_artifact_placement(&"0".repeat(64)).unwrap(),
         None
     );
 }

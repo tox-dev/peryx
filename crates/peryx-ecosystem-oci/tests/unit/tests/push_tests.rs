@@ -473,11 +473,7 @@ async fn test_monolithic_upload_records_its_artifact_placement() {
         ))
     );
     assert_eq!(
-        state
-            .serving
-            .meta
-            .get_artifact_placement(&"0".repeat(64))
-            .unwrap(),
+        state.serving.meta.get_artifact_placement(&"0".repeat(64)).unwrap(),
         None
     );
 }

@@ -1,6 +1,6 @@
 //! What a committed placement records, and what a failed record does to the caller.
 
-use peryx_ha::{ArtifactPlacement, ArtifactPlacementStore as _, ArtifactSource};
+use peryx_ha::{ArtifactPlacement, ArtifactSource};
 
 use crate::meta::fault::initialized;
 

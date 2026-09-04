@@ -57,6 +57,17 @@ recording time. `has upstream` is true only for a `proxy` source.
 The failed-write row preserves the prior placement. A failed cache fill cannot drop a verified `local` copy or create
 one from a partial transfer. A metadata fetch or truncated download cannot produce `local`.
 
+## Not the blob placement ledger
+
+peryx keeps two placement records and they answer different questions. This projection holds one row per digest and says
+whether *this instance* can serve the bytes and where they came from. The
+[blob placement ledger](@/core/repositories/blob-placement.md) holds up to 64 rows per digest, keyed by backend,
+datacenter and location, and records *every known location* so a read can route to one.
+
+The names run together in the code as well. A hosted push calls `record_home_placement`, which for a long time wrote the
+ledger alone, so a reader checking that the push path recorded a placement was right about one table and wrong about the
+other. It now records both.
+
 ## What an absent record means
 
 A digest with no placement record is not a digest peryx has observed to be missing. The projection holds no opinion

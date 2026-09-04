@@ -7,8 +7,8 @@ use crate::store::{FilePublication, MetadataClaim};
 use crate::stream::Registration;
 use bytes::Bytes;
 use peryx_driver::state::ServingState;
-use peryx_index::{Index, IndexKind};
 use peryx_ha::ArtifactSource;
+use peryx_index::{Index, IndexKind};
 use peryx_storage::blob::Digest;
 use peryx_upstream::{ArtifactClient, RangeError, RangeSession};
 
