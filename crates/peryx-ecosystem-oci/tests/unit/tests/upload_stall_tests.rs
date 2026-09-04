@@ -84,8 +84,8 @@ async fn test_a_stalled_chunk_leaves_a_session_the_client_can_resume() {
 
     assert_eq!(
         stalled,
-        StatusCode::BAD_GATEWAY,
-        "a cut chunk must not read as accepted"
+        StatusCode::REQUEST_TIMEOUT,
+        "a client that stopped sending is told the server gave up waiting, not that an upstream failed"
     );
     assert_eq!(
         landed.map(|record| record.offset),
@@ -183,7 +183,7 @@ async fn test_a_stalled_chunk_delays_the_reclaim_pass_by_one_bound() {
     let reclaimed = reclaim(&state).await;
     let waited = started.elapsed();
 
-    assert_eq!(appending.await.unwrap(), StatusCode::BAD_GATEWAY);
+    assert_eq!(appending.await.unwrap(), StatusCode::REQUEST_TIMEOUT);
     assert_eq!(reclaimed, 2, "the stalled session and the one queued behind it both go");
     assert!(
         (STALL_BOUND..STALL_BOUND * 2).contains(&waited),

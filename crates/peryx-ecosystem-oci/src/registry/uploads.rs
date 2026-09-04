@@ -3,7 +3,8 @@ use super::blobs::{
     publish_acknowledged, release_reservation, upload_epoch,
 };
 use super::*;
-use crate::error::{ErrorCode, error_response};
+use crate::error::{ErrorCode, error_response, error_response_with_status};
+use peryx_driver::body::BodyFailure;
 use crate::registry::acknowledge::BlobAck;
 use crate::registry::authority::{EpochCommit, commit_epoch};
 use crate::store::{self};
@@ -485,7 +486,7 @@ async fn append_to_stage(
     let mut stream = body.into_data_stream();
     let limit = index.policy.max_artifact_size();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|err| UploadBodyError::Fault(ServeError::Transport(err.to_string())))?;
+        let chunk = chunk.map_err(|err| UploadBodyError::ClientBody(BodyFailure::of(&err), Some(*offset)))?;
         let size = *offset + chunk.len() as u64;
         if limit.is_some_and(|limit| size > limit) {
             return Err(UploadBodyError::Denied(
@@ -516,9 +517,31 @@ async fn append_to_stage(
 enum UploadBodyError {
     Fault(ServeError),
     Denied(Response),
+    /// The client's bytes stopped arriving, carrying the offset a resumable session reached.
+    ClientBody(BodyFailure, Option<u64>),
     /// The session's row went while the chunk was being written, so the offset this append reached
     /// describes an upload the registry no longer has.
     Vanished,
+}
+
+/// Answer a request body that failed on the client's side.
+///
+/// Nothing upstream serves a request body, so `502` would name the wrong party and invite an
+/// intermediary to retry against a different backend for a condition no backend change reaches. A
+/// stall is the server giving up on a message that never arrived, which is what `408` says, and it
+/// leaves the client free to repeat the request or resume the session at the offset its bytes reached.
+fn client_body_response(failure: BodyFailure, resume: Option<u64>) -> Response {
+    match failure {
+        BodyFailure::Stalled(after) => {
+            let resumable = resume.map_or_else(String::new, |offset| format!(", resumable from byte {offset}"));
+            error_response_with_status(
+                StatusCode::REQUEST_TIMEOUT,
+                ErrorCode::BlobUploadInvalid,
+                &format!("the request body sent nothing for {after:?}{resumable}"),
+            )
+        }
+        BodyFailure::Interrupted => error_response(ErrorCode::BlobUploadInvalid, "the request body ended early"),
+    }
 }
 
 impl UploadBodyError {
@@ -526,6 +549,7 @@ impl UploadBodyError {
         match self {
             Self::Fault(err) => Err(err),
             Self::Denied(response) => Ok(response),
+            Self::ClientBody(failure, resume) => Ok(client_body_response(failure, resume)),
             Self::Vanished => Ok(error_response(ErrorCode::BlobUploadUnknown, "upload unknown")),
         }
     }
@@ -556,7 +580,7 @@ async fn append_body(
     let mut stream = body.into_data_stream();
     let limit = index.policy.max_artifact_size();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|err| UploadBodyError::Fault(ServeError::Transport(err.to_string())))?;
+        let chunk = chunk.map_err(|err| UploadBodyError::ClientBody(BodyFailure::of(&err), None))?;
         let size = *offset + chunk.len() as u64;
         if limit.is_some_and(|limit| size > limit) {
             return Err(UploadBodyError::Denied(

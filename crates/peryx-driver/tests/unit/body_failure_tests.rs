@@ -19,9 +19,11 @@ impl std::fmt::Display for Wrapper {
     }
 }
 
+/// A handler never sees the stall itself: whatever read the body wraps it, so the chain is what the
+/// classification has to walk.
 #[test]
 fn test_a_stall_is_recognized_through_the_reader_that_wrapped_it() {
-    let stalled = Wrapper(Box::new(Stalled(Duration::from_secs(30))));
+    let stalled = Wrapper(Box::new(Stalled::new(Duration::from_secs(30))));
 
     assert_eq!(BodyFailure::of(&stalled), BodyFailure::Stalled(Duration::from_secs(30)));
 }
@@ -29,7 +31,7 @@ fn test_a_stall_is_recognized_through_the_reader_that_wrapped_it() {
 #[test]
 fn test_a_bare_stall_is_recognized() {
     assert_eq!(
-        BodyFailure::of(&Stalled(Duration::from_secs(5))),
+        BodyFailure::of(&Stalled::new(Duration::from_secs(5))),
         BodyFailure::Stalled(Duration::from_secs(5))
     );
 }

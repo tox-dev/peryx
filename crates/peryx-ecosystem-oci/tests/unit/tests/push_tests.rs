@@ -1512,7 +1512,7 @@ async fn test_session_finish_reports_an_admission_store_fault() {
 }
 
 #[tokio::test]
-async fn test_monolithic_upload_body_read_error_is_a_gateway_error() {
+async fn test_monolithic_upload_body_read_error_is_a_client_error() {
     let dir = tempfile::tempdir().unwrap();
     let (_state, app) = hosted_writable(&dir, TOKEN);
     let erroring = futures_util::stream::iter(vec![
@@ -1526,7 +1526,7 @@ async fn test_monolithic_upload_body_read_error_is_a_gateway_error() {
         .body(Body::from_stream(erroring))
         .unwrap();
     let response = app.clone().oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let _ = response.into_body().collect().await;
 }
 
@@ -2290,7 +2290,7 @@ async fn test_patch_body_read_error_keeps_session_resumable() {
         .body(Body::from_stream(chunks))
         .unwrap();
     let response = app.clone().oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
     let (status, headers, _) = send_with(&app, Method::GET, &location, &[("authorization", &auth(TOKEN))]).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
