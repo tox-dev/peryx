@@ -2,6 +2,7 @@
 
 pub mod handlers;
 mod request_stall;
+pub use request_stall::{BodyFailure, Stalled};
 mod response_framing;
 pub mod response_security;
 pub mod router;

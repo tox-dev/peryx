@@ -74,3 +74,41 @@ where
         self.body.size_hint()
     }
 }
+
+/// Why reading a request body ended without the bytes the handler was waiting for.
+///
+/// The bytes of a request body come from the client, so no failure reading one is an upstream fault
+/// and none of them may answer `502`. What the client should do next still differs, so the edge that
+/// bounds the body is where the two are told apart: a handler holding an opaque body error cannot
+/// recover the distinction, and every handler that tried would derive it again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BodyFailure {
+    /// The client sent no frame for the bound. The request never completed, so it may be repeated,
+    /// and a resumable session picks up at the offset its bytes reached.
+    Stalled(Duration),
+    /// The body stopped for some other reason: a dropped connection, or framing the server could not
+    /// read. Repeating it unchanged fails the same way.
+    Interrupted,
+}
+
+impl BodyFailure {
+    /// Classify the error a request-body stream ended with.
+    ///
+    /// The stall arrives wrapped by whatever read the body, so the whole source chain is searched
+    /// rather than the outermost error alone.
+    #[must_use]
+    pub fn of(error: &(dyn std::error::Error + 'static)) -> Self {
+        let mut current = Some(error);
+        while let Some(error) = current {
+            if let Some(stalled) = error.downcast_ref::<Stalled>() {
+                return Self::Stalled(stalled.0);
+            }
+            current = error.source();
+        }
+        Self::Interrupted
+    }
+}
+
+#[cfg(test)]
+#[path = "../tests/unit/request_stall_tests.rs"]
+mod request_stall_tests;
