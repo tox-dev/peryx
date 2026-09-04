@@ -25,7 +25,7 @@ use peryx_policy::PolicyAction;
 use peryx_storage::blob::{
     BlobError, BlobErrorKind, BlobMetadata, BlobStorage, BlobWrite, Digest, RangeRequest, parse_range,
 };
-use peryx_storage::meta::OperationResult;
+use peryx_storage::meta::{MetaStore, OperationResult};
 use std::sync::Arc;
 
 impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> {
@@ -262,7 +262,7 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
                 .await
             {
                 Ok(response) => {
-                    let bytes = match download_blob(&state.blobs, storage, response).await {
+                    let bytes = match download_blob(&state.meta, &state.blobs, storage, response).await {
                         Ok(bytes) => bytes,
                         Err(err) => return Ok(BlobFetch::Gateway(download_error_response(err))),
                     };
@@ -433,12 +433,20 @@ async fn join_layer_contents(task: tokio::task::JoinHandle<Response>) -> Respons
 }
 
 pub async fn download_blob(
+    meta: &MetaStore,
     blobs: &BlobStorage,
     storage: &Digest,
     response: reqwest::Response,
 ) -> Result<u64, DownloadError> {
     let stream = response.bytes_stream().map_err(|err| err.to_string());
-    ingest_blob(blobs, storage, Box::pin(stream)).await
+    let bytes = ingest_blob(blobs, storage, Box::pin(stream)).await?;
+    // Both callers reach here by pulling a blob this node did not host, so the projection records the
+    // one thing a later read wants to know without probing the content store: the bytes are here and
+    // an upstream can resupply them. Taking the store here is what stops a third caller forgetting.
+    if let Err(error) = store::record_content_placement(meta, storage.as_str(), store::OciArtifactOrigin::Mirrored, true) {
+        tracing::warn!(digest = storage.as_str(), %error, "recording the mirrored blob placement failed");
+    }
+    Ok(bytes)
 }
 
 /// Drain a byte stream into a staged blob and commit it under `storage`. Takes the transfer error

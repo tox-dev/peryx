@@ -8,6 +8,7 @@ use crate::stream::Registration;
 use bytes::Bytes;
 use peryx_driver::state::ServingState;
 use peryx_index::{Index, IndexKind};
+use peryx_ha::{ArtifactPlacement, ArtifactPlacementStore, ArtifactSource};
 use peryx_storage::blob::Digest;
 use peryx_upstream::{ArtifactClient, RangeError, RangeSession};
 
@@ -196,6 +197,7 @@ async fn claimed_metadata(
         Err(err) => return Err(err),
     };
     state.blobs.put_bytes_as(&bytes, &metadata_digest).await?;
+    record_sidecar_placement(state, &metadata_digest, ArtifactSource::Proxy);
     Ok(bytes)
 }
 
@@ -270,8 +272,23 @@ fn record_generated_metadata(
     state
         .meta
         .put_metadata(artifact_digest.as_str(), metadata_digest.as_str())?;
+    record_sidecar_placement(state, metadata_digest, ArtifactSource::Generated);
     super::invalidate_project_route(state, route, &crate::project_of_filename(artifact_filename));
     Ok(())
+}
+
+/// Record the sidecar blob this node just committed, so the projection answers for it the way it does
+/// for the artifact beside it.
+///
+/// A sidecar is an artifact by the same definition as the wheel it describes: immutable bytes
+/// addressed by digest. A store fault leaves the bytes committed and the projection behind them rather
+/// than failing a read whose bytes are already on disk.
+fn record_sidecar_placement(state: &ServingState, metadata_digest: &Digest, source: ArtifactSource) {
+    let placement = ArtifactPlacement::record(source, true);
+    if let Err(error) = ArtifactPlacementStore::put_artifact_placement(&state.meta, metadata_digest.as_str(), &placement)
+    {
+        tracing::warn!(digest = metadata_digest.as_str(), %error, "recording the sidecar placement failed");
+    }
 }
 
 async fn generated_metadata_bytes(

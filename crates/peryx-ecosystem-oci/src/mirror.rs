@@ -635,7 +635,7 @@ impl Mirror<'_> {
             )
             .await
         {
-            Ok(response) => match download_blob(&self.state.blobs, storage, response).await {
+            Ok(response) => match download_blob(&self.state.meta, &self.state.blobs, storage, response).await {
                 Ok(bytes) => Ok(MirrorRow::synced("blob", repo, digest, digest, bytes)),
                 Err(err) if reference_scoped(&err) => {
                     Ok(MirrorRow::error("blob", repo, digest, digest, err.to_string()))
