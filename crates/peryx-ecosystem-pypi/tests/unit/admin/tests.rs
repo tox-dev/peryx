@@ -988,3 +988,29 @@ fn test_purge_project_ignores_the_target_projects_own_generation_rows() {
 
     assert_eq!(meta.get_file_url("pypi", "flask", digest.as_str()).unwrap(), None);
 }
+
+#[test]
+fn test_repair_reports_and_drops_a_source_row_that_names_no_publication() {
+    let (_dir, meta) = store();
+    seed_valid_page(&meta);
+    meta.put_driver_value(
+        &format!("pypi\0f\0{}", Digest::of(b"wheel").as_str()),
+        b"https://legacy.example/flask.whl\npypi",
+    )
+    .unwrap();
+    let mut out = Vec::new();
+
+    let problems = repair_metadata(&meta, &[cached_index()], &mut out).unwrap();
+
+    assert!(problems >= 1);
+    assert!(
+        String::from_utf8(out)
+            .unwrap()
+            .contains("dropped 1 download source(s) that named no publication")
+    );
+    assert_eq!(
+        crate::store::drop_legacy_file_sources(&meta).unwrap(),
+        0,
+        "the sweep is idempotent"
+    );
+}

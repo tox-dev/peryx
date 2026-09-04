@@ -329,12 +329,8 @@ async fn generated_metadata_bytes(
     route: &str,
     filename: &str,
 ) -> Result<Vec<u8>, CacheError> {
-    let source = winning_file_source(
-        state,
-        index,
-        &crate::project_of_filename(filename),
-        artifact_digest.as_str(),
-    )?;
+    let project = crate::project_of_filename(filename);
+    let source = winning_file_source(state, index, &project, artifact_digest.as_str())?;
     if state.blobs.head(artifact_digest).await?.is_some() {
         let lease = state.blobs.materialize(artifact_digest).await?;
         return metadata_from_artifact_path(filename, lease.path())?.ok_or(CacheError::FileNotFound);
