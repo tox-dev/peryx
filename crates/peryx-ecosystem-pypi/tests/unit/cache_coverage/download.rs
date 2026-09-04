@@ -237,7 +237,14 @@ async fn missing_tail(state: &ServingState) -> BlobTail {
 }
 
 async fn drain(state: &Arc<ServingState>, digest: Digest, handle: DownloadHandle) -> Result<Vec<u8>, std::io::Error> {
-    let mut stream = tail_download(state.clone(), digest, handle, "pypi".to_owned(), "tail.whl".to_owned());
+    let mut stream = tail_download(
+        state.clone(),
+        "pypi".to_owned(),
+        digest,
+        handle,
+        "pypi".to_owned(),
+        "tail.whl".to_owned(),
+    );
     let mut body = Vec::new();
     while let Some(item) = stream.next().await {
         body.extend_from_slice(&item?);
@@ -258,6 +265,7 @@ async fn test_tail_of_a_truncated_temp_file_errors() {
     let (handle, sender) = handle_with(pending.tail().unwrap(), progress);
     let mut stream = tail_download(
         h.state.serving.clone(),
+        "pypi".to_owned(),
         Digest::of(b"tail-target"),
         handle,
         "pypi".to_owned(),
@@ -283,6 +291,7 @@ async fn test_tail_switches_to_the_committed_blob_when_the_temp_file_is_gone() {
     let (handle, sender) = handle_with(missing_tail(&h.state.serving).await, progress);
     let mut stream = tail_download(
         h.state.serving.clone(),
+        "pypi".to_owned(),
         digest,
         handle,
         "pypi".to_owned(),
@@ -309,6 +318,7 @@ async fn test_committed_tail_holds_its_materialized_lease_until_eof() {
     let (handle, sender) = handle_with(missing_tail(&h.state.serving).await, progress);
     let mut stream = tail_download(
         h.state.serving.clone(),
+        "pypi".to_owned(),
         digest,
         handle,
         "pypi".to_owned(),

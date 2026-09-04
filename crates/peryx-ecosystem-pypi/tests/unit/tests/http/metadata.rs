@@ -268,7 +268,13 @@ async fn missing_sidecar(wheel: &[u8], advertised: &Digest, reachable: bool, sib
     h.state
         .serving
         .meta
-        .put_file_url(artifact.as_str(), &file_url, "pypi")
+        .put_file_url(
+            "pypi",
+            &crate::project_of_filename(RECOVERED_WHEEL),
+            artifact.as_str(),
+            &file_url,
+            "pypi",
+        )
         .unwrap();
     Mock::given(method("GET"))
         .and(path(format!("/files/{RECOVERED_WHEEL}.metadata")))
@@ -411,7 +417,13 @@ async fn test_a_sidecar_server_error_is_not_recovered_from_the_wheel() {
     h.state
         .serving
         .meta
-        .put_file_url(artifact.as_str(), &file_url, "pypi")
+        .put_file_url(
+            "pypi",
+            &crate::project_of_filename(RECOVERED_WHEEL),
+            artifact.as_str(),
+            &file_url,
+            "pypi",
+        )
         .unwrap();
     Mock::given(method("GET"))
         .and(path(format!("/files/{RECOVERED_WHEEL}.metadata")))

@@ -10,6 +10,7 @@ mod record;
 mod summary;
 mod uploads;
 
+pub(crate) use files::split_file_source_key;
 pub use files::{
     FilePublication, FileSource, MetadataClaim, PypiArtifactOrigin, drop_legacy_file_sources, get_file_publication,
     get_file_url, get_metadata_digest, get_metadata_digests, get_provenance, put_file_url, put_metadata,

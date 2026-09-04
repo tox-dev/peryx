@@ -1790,7 +1790,8 @@ async fn test_pypi_maintenance_scans_walk_real_records() {
 
     let sibling = Digest::of(b"the metadata sibling");
     blobs.put_bytes_as(b"a wheel", &digest).await.unwrap();
-    meta.put_file_url(digest.as_str(), &file_url, "pypi").unwrap();
+    meta.put_file_url("pypi", "flask", digest.as_str(), &file_url, "pypi")
+        .unwrap();
     crate::tests::register_publication(
         meta,
         "pypi",

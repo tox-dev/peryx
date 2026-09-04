@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use crate::project_of_filename;
-use crate::store::PypiStore as _;
 use bytes::Bytes;
 use peryx_driver::download::{DownloadHandle, DownloadProducer};
 use peryx_driver::rate_limit::UpstreamPermit;
@@ -101,9 +100,7 @@ pub async fn probe_file(
     if let Some(blob) = state.blobs.head(digest).await? {
         return Ok(FileProbe::Cached(blob.bytes, blob.modified));
     }
-    let source = state
-        .meta
-        .get_file_url(index, &crate::project_of_filename(filename), digest.as_str())?
+    let source = super::winning_file_source(state, index, &project_of_filename(filename), digest.as_str())?
         .ok_or(CacheError::FileNotFound)?;
     if source_client(state, &source.source, source.upstream.as_deref())?.1 {
         return Err(CacheError::OfflineMissing("file"));
@@ -186,9 +183,7 @@ async fn start_download(
     route: String,
     filename: String,
 ) -> Result<DownloadHandle, CacheError> {
-    let source = state
-        .meta
-        .get_file_url(index, &crate::project_of_filename(&filename), digest.as_str())?
+    let source = super::winning_file_source(state, index, &project_of_filename(&filename), digest.as_str())?
         .ok_or(CacheError::FileNotFound)?;
     let (client, offline) = source_artifact_client(state, &source.source, source.upstream.as_deref())?;
     if offline {
@@ -441,9 +436,7 @@ pub fn download_dimensions(
     filename: &str,
 ) -> (Option<String>, Option<String>) {
     let version = crate::distribution_version_segment(filename).map(str::to_owned);
-    let source = state
-        .meta
-        .get_file_url(index, &crate::project_of_filename(filename), digest.as_str())
+    let source = super::winning_file_source(state, index, &project_of_filename(filename), digest.as_str())
         .ok()
         .flatten()
         .and_then(|source| source.upstream);

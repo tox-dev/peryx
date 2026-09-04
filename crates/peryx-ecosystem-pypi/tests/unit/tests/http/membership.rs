@@ -375,7 +375,13 @@ async fn test_virtual_index_inherits_its_layers_publications() {
     h.state
         .serving
         .meta
-        .put_file_url(foreign.as_str(), "https://files.example/other.whl", "pypi")
+        .put_file_url(
+            "root-pypi",
+            &crate::project_of_filename(WHEEL),
+            foreign.as_str(),
+            "https://files.example/other.whl",
+            "pypi",
+        )
         .unwrap();
 
     let (layered, _, body) = get_bytes(&h.state, &format!("/root/pypi/files/{}/{WHEEL}", digest.as_str()), None).await;

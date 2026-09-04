@@ -15,7 +15,7 @@ fn test_cache_purge_project_dry_run_keeps_records() {
     );
     let meta = MetaStore::open_existing(config.data_dir.join("peryx.redb")).unwrap();
     assert!(meta.get_index("pypi/flask").unwrap().is_some());
-    assert!(meta.get_file_url(digest.as_str()).unwrap().is_some());
+    assert!(meta.get_file_url("pypi", "flask", digest.as_str()).unwrap().is_some());
 }
 
 #[test]
@@ -163,7 +163,7 @@ fn test_cache_purge_project_yes_removes_metadata_records() {
     );
     let meta = MetaStore::open_existing(config.data_dir.join("peryx.redb")).unwrap();
     assert!(meta.get_index("pypi/flask").unwrap().is_none());
-    assert!(meta.get_file_url(digest.as_str()).unwrap().is_none());
+    assert!(meta.get_file_url("pypi", "flask", digest.as_str()).unwrap().is_none());
     assert!(meta.get_metadata_digest(digest.as_str()).unwrap().is_none());
     assert!(meta.list_projects("pypi").unwrap().is_empty());
 }
@@ -171,7 +171,7 @@ fn test_cache_purge_project_yes_removes_metadata_records() {
 #[test]
 fn test_cache_purge_orphaned_blobs_rejects_invalid_references() {
     let (_dir, meta, config) = store_and_config();
-    meta.put_file_url("bad", "https://files.example/pkg.whl", "pypi")
+    meta.put_file_url("pypi", "pkg", "bad", "https://files.example/pkg.whl", "pypi")
         .unwrap();
     drop(meta);
     let mut out = Vec::new();

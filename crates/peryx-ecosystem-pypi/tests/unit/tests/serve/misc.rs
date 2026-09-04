@@ -63,11 +63,18 @@ async fn test_broken_upstream_transfer_forwards_the_error() {
     h.state
         .serving
         .meta
-        .put_file_url(digest.as_str(), &server.upstream, "pypi")
+        .put_file_url(
+            "pypi",
+            &crate::project_of_filename("x.whl"),
+            digest.as_str(),
+            &server.upstream,
+            "pypi",
+        )
         .unwrap();
     let mut stream = live_stream(
         cache::stream_file(
             h.state.serving.clone(),
+            "pypi".to_owned(),
             digest.clone(),
             "pypi".to_owned(),
             "x.whl".to_owned(),
@@ -91,6 +98,7 @@ async fn test_cached_file_stream_returns_no_live_body() {
 
     let outcome = cache::stream_file(
         h.state.serving.clone(),
+        "pypi".to_owned(),
         digest,
         "pypi".to_owned(),
         "cached.whl".to_owned(),

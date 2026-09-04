@@ -568,7 +568,7 @@ fn test_caching_then_purging_a_project_counts_it_and_gives_it_back() {
     .unwrap();
     let cached = meta.summarize_indexes(&["pypi".to_owned()], 5).unwrap();
 
-    meta.delete_project_cache("pypi", "flask", &[], &[]).unwrap();
+    meta.delete_project_cache("pypi", "flask", &[]).unwrap();
     let purged = meta.summarize_indexes(&["pypi".to_owned()], 5).unwrap();
 
     assert_eq!(cached["pypi"].resource_count, 1);

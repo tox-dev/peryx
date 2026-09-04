@@ -279,7 +279,13 @@ async fn test_file_source_not_a_mirror_is_not_found() {
     h.state
         .serving
         .meta
-        .put_file_url(digest.as_str(), "http://x/orphan.whl", "hosted")
+        .put_file_url(
+            "pypi",
+            &crate::project_of_filename("orphan.whl"),
+            digest.as_str(),
+            "http://x/orphan.whl",
+            "hosted",
+        )
         .unwrap();
     let uri = format!("/pypi/files/{}/orphan.whl", digest.as_str());
     let (status, ..) = get(&h.state, &uri, None).await;
@@ -775,7 +781,15 @@ async fn test_head_of_an_uncached_file_on_an_offline_mirror_is_unavailable() {
     let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
     let digest = Digest::of(WHEEL);
     crate::tests::register_publication(&meta, "pypi", "flask-1.0-py3-none-any.whl", digest.as_str(), None);
-    crate::store::PypiStore::put_file_url(&meta, digest.as_str(), "https://files.example/flask.whl", "pypi").unwrap();
+    crate::store::PypiStore::put_file_url(
+        &meta,
+        "pypi",
+        "flask",
+        digest.as_str(),
+        "https://files.example/flask.whl",
+        "pypi",
+    )
+    .unwrap();
     let indexes = vec![Index {
         name: "pypi".to_owned(),
         route: "pypi".to_owned(),

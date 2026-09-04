@@ -13,6 +13,11 @@ use crate::store::PypiStore as _;
 use peryx_driver::download::DownloadHandle;
 use peryx_driver::state::{AppState, ServingState};
 
+/// The artifact the streams below ask for, and so the project their source rows are keyed under.
+const STALLED: &str = "stalled.whl";
+/// The artifact [`detail_json`] publishes, which is what a stream over a mounted page asks for.
+const PUBLISHED: &str = "flask-1.0-py3-none-any.whl";
+
 struct TestUpstream {
     url: String,
     address: std::net::SocketAddr,
@@ -88,11 +93,16 @@ fn truncated_upstream() -> TestUpstream {
 }
 
 async fn live_stream_for(state: &Arc<ServingState>, digest: &Digest) -> cache::FileOutcome {
+    live_stream_for_file(state, digest, STALLED).await
+}
+
+async fn live_stream_for_file(state: &Arc<ServingState>, digest: &Digest, filename: &str) -> cache::FileOutcome {
     cache::stream_file(
         state.clone(),
+        "pypi".to_owned(),
         digest.clone(),
         "pypi".to_owned(),
-        "stalled.whl".to_owned(),
+        filename.to_owned(),
     )
     .await
     .unwrap()
@@ -134,7 +144,13 @@ async fn test_concurrent_cold_requests_stream_before_the_transfer_finishes() {
     h.state
         .serving
         .meta
-        .put_file_url(digest.as_str(), &upstream.url, "pypi")
+        .put_file_url(
+            "pypi",
+            &crate::project_of_filename(STALLED),
+            digest.as_str(),
+            &upstream.url,
+            "pypi",
+        )
         .unwrap();
 
     let mut leader = live_stream(live_stream_for(&h.state.serving, &digest).await).expect("a live stream");
@@ -168,7 +184,13 @@ async fn test_client_arriving_after_commit_streams_from_disk() {
     h.state
         .serving
         .meta
-        .put_file_url(digest.as_str(), &upstream.url, "pypi")
+        .put_file_url(
+            "pypi",
+            &crate::project_of_filename(STALLED),
+            digest.as_str(),
+            &upstream.url,
+            "pypi",
+        )
         .unwrap();
     let mut leader = live_stream(live_stream_for(&h.state.serving, &digest).await).expect("a live stream");
     upstream.release();
@@ -189,6 +211,7 @@ async fn test_blob_committed_while_waiting_on_the_gate_serves_from_disk() {
     let guard = gate.lock_owned().await;
     let waiting = cache::stream_file(
         h.state.serving.clone(),
+        "pypi".to_owned(),
         digest.clone(),
         "pypi".to_owned(),
         "parked.whl".to_owned(),
@@ -221,8 +244,8 @@ async fn test_digest_mismatch_fails_every_tail_and_persists_nothing() {
         .await;
     get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
     let outcomes = futures_util::future::join_all([
-        live_stream_for(&h.state.serving, &digest),
-        live_stream_for(&h.state.serving, &digest),
+        live_stream_for_file(&h.state.serving, &digest, PUBLISHED),
+        live_stream_for_file(&h.state.serving, &digest, PUBLISHED),
     ])
     .await;
     for outcome in outcomes {
@@ -250,7 +273,13 @@ async fn test_abandoned_download_still_fills_the_cache() {
     h.state
         .serving
         .meta
-        .put_file_url(digest.as_str(), &file_url, "pypi")
+        .put_file_url(
+            "pypi",
+            &crate::project_of_filename(STALLED),
+            digest.as_str(),
+            &file_url,
+            "pypi",
+        )
         .unwrap();
     let outcome = live_stream_for(&h.state.serving, &digest).await;
     assert!(matches!(outcome, cache::FileOutcome::Live(_)));
@@ -271,7 +300,13 @@ async fn test_stage_cleanup_error_removes_the_live_download() {
     h.state
         .serving
         .meta
-        .put_file_url(digest.as_str(), &upstream.url, "pypi")
+        .put_file_url(
+            "pypi",
+            &crate::project_of_filename(STALLED),
+            digest.as_str(),
+            &upstream.url,
+            "pypi",
+        )
         .unwrap();
     let outcome = live_stream_for(&h.state.serving, &digest).await;
     let mut handle = h.state.serving.downloads.get(digest.as_str()).unwrap();
@@ -377,6 +412,7 @@ async fn test_file_path_serves_a_remote_placement_without_upstream() {
 
     let lease = cache::file_path(
         h.state.serving.clone(),
+        "pypi".to_owned(),
         digest.clone(),
         "pypi".to_owned(),
         "x.whl".to_owned(),

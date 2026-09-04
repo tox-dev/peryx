@@ -253,6 +253,8 @@ async fn test_offline_generated_wheel_metadata_range_fetch_is_unavailable() {
         .serving
         .meta
         .put_file_url(
+            "pypi",
+            "flask",
             artifact.as_str(),
             "https://example.invalid/files/flask-1.0-py3-none-any.whl",
             "pypi",
@@ -372,7 +374,7 @@ async fn test_buffered_resolution_uses_the_upstream_route() {
         state
             .serving
             .meta
-            .get_file_url(Digest::of(b"wheel").as_str())
+            .get_file_url("pypi", "flask", Digest::of(b"wheel").as_str())
             .unwrap()
             .unwrap()
             .upstream

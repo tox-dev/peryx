@@ -60,7 +60,13 @@ async fn assert_mirror_json_resolves(file_url: &str, expected_source: impl FnOnc
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains(&format!("/pypi/files/{}/flask-1.0-py3-none-any.whl", digest.as_str())));
     assert!(!body.contains(&format!("\"url\":\"{file_url}\"")));
-    let source = h.state.serving.meta.get_file_url(digest.as_str()).unwrap().unwrap();
+    let source = h
+        .state
+        .serving
+        .meta
+        .get_file_url("pypi", "flask", digest.as_str())
+        .unwrap()
+        .unwrap();
     assert_eq!(source.url, expected_source(&h.server.uri()));
 }
 #[tokio::test]
@@ -247,7 +253,14 @@ async fn test_persist_page_skips_policy_denied_file_registrations() {
     let (status, ..) = get(&h.state, "/pypi/simple/flask/", Some("application/json")).await;
 
     assert_eq!(status, StatusCode::OK);
-    assert!(h.state.serving.meta.get_file_url(digest.as_str()).unwrap().is_none());
+    assert!(
+        h.state
+            .serving
+            .meta
+            .get_file_url("pypi", "flask", digest.as_str())
+            .unwrap()
+            .is_none()
+    );
 }
 #[rstest]
 #[case::json(None)]

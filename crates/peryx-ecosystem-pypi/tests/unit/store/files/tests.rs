@@ -3,7 +3,8 @@ use std::collections::BTreeMap;
 use peryx_storage::meta::{ArtifactOrigin as _, ArtifactSource, ByteAvailability};
 
 use super::{
-    FilePublication, FileSource, MetaStore, MetadataClaim, ProvenanceSibling, PypiArtifactOrigin, split_file_source,
+    FILE_PREFIX, FilePublication, FileSource, MetaStore, MetadataClaim, ProvenanceSibling, PypiArtifactOrigin,
+    split_file_source,
 };
 use crate::store::PypiStore as _;
 
@@ -16,11 +17,11 @@ fn store() -> (tempfile::TempDir, MetaStore) {
 #[test]
 fn test_put_and_get_file_url() {
     let (_dir, meta) = store();
-    assert_eq!(meta.get_file_url("deadbeef").unwrap(), None);
-    meta.put_file_url("deadbeef", "https://files.example/pkg.whl", "pypi")
+    assert_eq!(meta.get_file_url("pypi", "pkg", "deadbeef").unwrap(), None);
+    meta.put_file_url("pypi", "pkg", "deadbeef", "https://files.example/pkg.whl", "pypi")
         .unwrap();
     assert_eq!(
-        meta.get_file_url("deadbeef").unwrap(),
+        meta.get_file_url("pypi", "pkg", "deadbeef").unwrap(),
         Some(FileSource {
             url: "https://files.example/pkg.whl".to_owned(),
             source: "pypi".to_owned(),
@@ -40,7 +41,7 @@ fn test_origin_maps_to_the_neutral_source() {
 fn test_recording_a_cached_locator_projects_a_remote_only_placement() {
     let (_dir, meta) = store();
     meta.initialize_distributed_state().unwrap();
-    meta.put_file_url("deadbeef", "https://files.example/pkg.whl", "pypi")
+    meta.put_file_url("pypi", "pkg", "deadbeef", "https://files.example/pkg.whl", "pypi")
         .unwrap();
     assert_eq!(
         meta.get_artifact_placement("deadbeef").unwrap().unwrap().availability,
@@ -85,14 +86,28 @@ fn test_get_metadata_digests_skips_missing_records() {
 #[test]
 fn test_scan_file_urls_visits_each_record() {
     let (_dir, meta) = store();
-    meta.put_file_url("aa", "https://files/aa.whl", "pypi").unwrap();
+    meta.put_file_url("pypi", "aa", "aa", "https://files/aa.whl", "pypi")
+        .unwrap();
     let mut seen = Vec::new();
-    meta.scan_file_urls(|digest, value| {
-        seen.push((digest.to_owned(), value.to_owned()));
+    meta.scan_file_urls(|index, normalized, digest, value| {
+        seen.push((
+            index.to_owned(),
+            normalized.to_owned(),
+            digest.to_owned(),
+            value.to_owned(),
+        ));
         Ok::<(), std::io::Error>(())
     })
     .unwrap();
-    assert_eq!(seen, vec![("aa".to_owned(), "https://files/aa.whl\npypi".to_owned())]);
+    assert_eq!(
+        seen,
+        vec![(
+            "pypi".to_owned(),
+            "aa".to_owned(),
+            "aa".to_owned(),
+            "https://files/aa.whl\npypi".to_owned()
+        )]
+    );
 }
 
 #[test]
@@ -289,5 +304,91 @@ fn test_scan_file_publications_visits_each_record() {
             "pypi/pkg/wheelsha/pkg-1.0.whl".to_owned(),
             "https://up/pkg.whl.metadata\nmetasha\npypi\n".to_owned()
         )]
+    );
+}
+
+#[test]
+fn test_each_index_resolves_its_own_source_for_one_shared_digest() {
+    let (_dir, meta) = store();
+
+    meta.put_file_url("alpha", "flask", "deadbeef", "https://alpha.example/flask.whl", "alpha")
+        .unwrap();
+    meta.put_file_url("beta", "flask", "deadbeef", "https://beta.example/flask.whl", "beta")
+        .unwrap();
+
+    assert_eq!(
+        (
+            meta.get_file_url("alpha", "flask", "deadbeef").unwrap(),
+            meta.get_file_url("beta", "flask", "deadbeef").unwrap(),
+        ),
+        (
+            Some(FileSource {
+                url: "https://alpha.example/flask.whl".to_owned(),
+                source: "alpha".to_owned(),
+                size: None,
+                upstream: None,
+            }),
+            Some(FileSource {
+                url: "https://beta.example/flask.whl".to_owned(),
+                source: "beta".to_owned(),
+                size: None,
+                upstream: None,
+            }),
+        )
+    );
+}
+
+#[test]
+fn test_one_indexes_source_is_invisible_to_another_index() {
+    let (_dir, meta) = store();
+
+    meta.put_file_url("alpha", "flask", "deadbeef", "https://alpha.example/flask.whl", "alpha")
+        .unwrap();
+
+    assert_eq!(meta.get_file_url("beta", "flask", "deadbeef").unwrap(), None);
+}
+
+#[test]
+fn test_a_source_row_naming_no_publication_is_dropped_rather_than_given_an_owner() {
+    let (_dir, meta) = store();
+    meta.put_driver_value(
+        &format!("{FILE_PREFIX}deadbeef"),
+        b"https://legacy.example/pkg.whl\npypi",
+    )
+    .unwrap();
+    meta.put_file_url("alpha", "flask", "feedface", "https://alpha.example/flask.whl", "alpha")
+        .unwrap();
+
+    let dropped = crate::store::drop_legacy_file_sources(&meta).unwrap();
+
+    assert_eq!(dropped, 1);
+    assert!(
+        meta.get_file_url("alpha", "flask", "feedface").unwrap().is_some(),
+        "an owned row survives the sweep"
+    );
+}
+
+#[test]
+fn test_a_source_row_naming_no_publication_is_skipped_rather_than_failing_the_scan() {
+    let (_dir, meta) = store();
+    meta.put_driver_value(
+        &format!("{FILE_PREFIX}deadbeef"),
+        b"https://legacy.example/pkg.whl\npypi",
+    )
+    .unwrap();
+    meta.put_file_url("alpha", "flask", "feedface", "https://alpha.example/flask.whl", "alpha")
+        .unwrap();
+
+    let mut seen = Vec::new();
+    meta.scan_file_urls(|index, normalized, digest, _value| {
+        seen.push((index.to_owned(), normalized.to_owned(), digest.to_owned()));
+        Ok::<(), std::convert::Infallible>(())
+    })
+    .unwrap();
+
+    assert_eq!(
+        seen,
+        [("alpha".to_owned(), "flask".to_owned(), "feedface".to_owned())],
+        "the orphan-blob collector never sees a key it would read as a digest"
     );
 }

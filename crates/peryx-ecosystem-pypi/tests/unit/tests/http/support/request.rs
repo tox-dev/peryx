@@ -91,7 +91,17 @@ pub async fn request_response(
 /// download by hand seeds the publication with it.
 pub fn publish_file(state: &AppState, index: &str, filename: &str, digest: &Digest, url: &str) {
     crate::tests::register_publication(&state.serving.meta, index, filename, digest.as_str(), None);
-    state.serving.meta.put_file_url(digest.as_str(), url, index).unwrap();
+    state
+        .serving
+        .meta
+        .put_file_url(
+            index,
+            &crate::project_of_filename(filename),
+            digest.as_str(),
+            url,
+            index,
+        )
+        .unwrap();
 }
 pub fn revoke_digest(state: &AppState, digest: &Digest) {
     state

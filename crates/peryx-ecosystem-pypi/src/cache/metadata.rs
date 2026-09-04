@@ -146,6 +146,50 @@ fn winning_publication(
     }
 }
 
+/// The download source the publication `index` serves, or `None` when it serves none.
+///
+/// A source row belongs to the index whose page advertised the download, so a virtual index holds
+/// none of its own. It walks its leaves in the shadow order that decides which publication wins, and
+/// answers with the first leaf holding one, so a virtual route resolves the same publication its
+/// membership check just matched instead of missing a row that is there.
+///
+/// A hosted index has no upstream to fetch from: its bytes are the ones peryx was given.
+///
+/// # Errors
+/// Returns [`CacheError`] when the store cannot be read.
+pub fn winning_file_source(
+    state: &ServingState,
+    index: &str,
+    project: &str,
+    sha256: &str,
+) -> Result<Option<crate::store::FileSource>, CacheError> {
+    let Some(position) = state.indexes.iter().position(|candidate| candidate.name == index) else {
+        return Ok(None);
+    };
+    file_source_at(state, position, project, sha256)
+}
+
+fn file_source_at(
+    state: &ServingState,
+    position: usize,
+    project: &str,
+    sha256: &str,
+) -> Result<Option<crate::store::FileSource>, CacheError> {
+    let index = state.index_at(position);
+    match &index.kind {
+        IndexKind::Cached { .. } => Ok(state.meta.get_file_url(&index.name, project, sha256)?),
+        IndexKind::Hosted { .. } => Ok(None),
+        IndexKind::Virtual { layers, .. } => {
+            for leaf in peryx_index::leaf_order(&state.indexes, layers) {
+                if let Some(source) = file_source_at(state, leaf, project, sha256)? {
+                    return Ok(Some(source));
+                }
+            }
+            Ok(None)
+        }
+    }
+}
+
 fn hosted_publication(
     state: &ServingState,
     index: &str,
@@ -285,9 +329,12 @@ async fn generated_metadata_bytes(
     route: &str,
     filename: &str,
 ) -> Result<Vec<u8>, CacheError> {
-    let source = state
-        .meta
-        .get_file_url(index, &crate::project_of_filename(filename), artifact_digest.as_str())?;
+    let source = winning_file_source(
+        state,
+        index,
+        &crate::project_of_filename(filename),
+        artifact_digest.as_str(),
+    )?;
     if state.blobs.head(artifact_digest).await?.is_some() {
         let lease = state.blobs.materialize(artifact_digest).await?;
         return metadata_from_artifact_path(filename, lease.path())?.ok_or(CacheError::FileNotFound);
@@ -546,10 +593,10 @@ pub fn registered_file_size(
     filename: &str,
     digest: &Digest,
 ) -> Result<Option<u64>, CacheError> {
-    Ok(state
-        .meta
-        .get_file_url(index, &crate::project_of_filename(filename), digest.as_str())?
-        .and_then(|source| source.size))
+    Ok(
+        winning_file_source(state, index, &crate::project_of_filename(filename), digest.as_str())?
+            .and_then(|source| source.size),
+    )
 }
 
 /// Key the negative entry on the sidecar that went missing rather than on the artifact, so one

@@ -88,7 +88,13 @@ async fn test_file_whose_source_is_not_a_mirror_is_not_found() {
     h.state
         .serving
         .meta
-        .put_file_url(digest.as_str(), "https://up.example/x.whl", "hosted")
+        .put_file_url(
+            "pypi",
+            &crate::project_of_filename("x.whl"),
+            digest.as_str(),
+            "https://up.example/x.whl",
+            "hosted",
+        )
         .unwrap();
     let uri = format!("/pypi/files/{}/x.whl", digest.as_str());
     let (status, ..) = get(&h.state, &uri, None).await;
@@ -198,6 +204,7 @@ async fn test_file_path_returns_blob_cached_while_waiting_for_gate() {
         .expect("the held gate has an active flight");
     let task = tokio::spawn(cache::file_path(
         h.state.serving.clone(),
+        "pypi".to_owned(),
         digest.clone(),
         "pypi".to_owned(),
         "flask.whl".to_owned(),
@@ -246,11 +253,18 @@ async fn test_file_path_offline_mirror_miss_is_unavailable() {
     state
         .serving
         .meta
-        .put_file_url(digest.as_str(), "https://example.invalid/files/flask.whl", "pypi")
+        .put_file_url(
+            "pypi",
+            "flask",
+            digest.as_str(),
+            "https://example.invalid/files/flask.whl",
+            "pypi",
+        )
         .unwrap();
 
     let err = cache::file_path(
         state.serving.clone(),
+        "pypi".to_owned(),
         digest,
         "pypi".to_owned(),
         "flask-1.0-py3-none-any.whl".to_owned(),

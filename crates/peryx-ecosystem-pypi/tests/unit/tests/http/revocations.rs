@@ -270,6 +270,8 @@ async fn test_revoked_uncached_digest_is_rejected_before_upstream_fetch() {
         .serving
         .meta
         .put_file_url(
+            "pypi",
+            &crate::project_of_filename(FILENAME),
             artifact.as_str(),
             &format!("{}/files/{FILENAME}", h.server.uri()),
             "pypi",

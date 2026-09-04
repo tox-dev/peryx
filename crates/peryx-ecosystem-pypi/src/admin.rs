@@ -300,7 +300,12 @@ fn upload_key_parts<'a>(key: &'a str, index_names: &[&str]) -> Option<(String, &
 }
 
 /// Purge one project's cached records from `index`, keeping any blob a still-cached project or a
-/// hosted upload also references. A hosted publication's provenance bundle is not cache data and is
+/// hosted upload also references.
+///
+/// The project's own download sources go whole, by owner prefix, rather than by that difference. They
+/// name this publication and no other, so another project advertising the same digest is no reason to
+/// keep them, and applying the difference to them would strand exactly the rows this purge exists to
+/// remove. What the difference still decides is the shared, digest-keyed remote metadata. A hosted publication's provenance bundle is not cache data and is
 /// released with the publication, so a purge never touches it. With `apply`, deletes the records and
 /// returns the removed counts; otherwise counts what a purge would remove. Returns the normalized
 /// project name alongside.
@@ -526,8 +531,9 @@ pub fn fsck_metadata(
         Ok::<(), std::io::Error>(())
     })
     .map_err(crate::error_message)?;
-    problems += check_records(meta, PypiRecords::FileUrl, out, |digest, value| {
-        Digest::from_hex(digest).is_none() || split_pair(value).is_none()
+    problems += check_records(meta, PypiRecords::FileUrl, out, |key, value| {
+        crate::store::split_file_source_key(key).is_none_or(|(.., digest)| Digest::from_hex(digest).is_none())
+            || split_pair(value).is_none()
     })?;
     problems += check_records(meta, PypiRecords::Metadata, out, |digest, metadata_digest| {
         Digest::from_hex(digest).is_none() || Digest::from_hex(metadata_digest).is_none()

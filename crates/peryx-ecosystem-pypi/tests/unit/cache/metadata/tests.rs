@@ -59,6 +59,7 @@ async fn test_metadata_backfill_candidates_skip_existing_and_successful_records(
     run_metadata_backfill_candidates(
         state.clone(),
         "pypi".to_owned(),
+        "pypi".to_owned(),
         vec![
             MetadataBackfillCandidate {
                 digest: existing,
@@ -84,6 +85,7 @@ async fn test_spawn_metadata_backfill_synthesizes_registered_wheels_and_logs_fai
     spawn_metadata_backfill(
         &state,
         "pypi".to_owned(),
+        "pypi".to_owned(),
         &[
             registration("broken-1.0-py3-none-any.whl", &unfetchable),
             registration("pkg-1.0-py3-none-any.whl", &cached),
@@ -108,6 +110,7 @@ async fn test_metadata_backfill_rejects_work_before_spawning_when_capacity_is_fu
 
     spawn_metadata_backfill(
         &state,
+        "pypi".to_owned(),
         "pypi".to_owned(),
         &[registration("pkg-1.0-py3-none-any.whl", &digest)],
     );
@@ -143,6 +146,7 @@ async fn test_metadata_backfill_reaps_completed_tasks_before_accepting_more() {
 
     spawn_metadata_backfill(
         &state,
+        "pypi".to_owned(),
         "pypi".to_owned(),
         &[registration("pkg-1.0-py3-none-any.whl", &digest)],
     );

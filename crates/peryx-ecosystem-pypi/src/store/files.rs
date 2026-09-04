@@ -99,7 +99,7 @@ pub fn scan_file_urls<E>(
     mut visit: impl FnMut(&str, &str, &str, &str) -> Result<(), E>,
 ) -> Result<(), MetaScanError<E>> {
     meta.scan_driver_prefix(FILE_PREFIX, |key, raw| {
-        let Some((index, normalized, sha256)) = split_file_owner(&key[FILE_PREFIX.len()..]) else {
+        let Some((index, normalized, sha256)) = split_file_source_key(&key[FILE_PREFIX.len()..]) else {
             return Ok(());
         };
         let value = record_str(key, raw.to_vec())?;
@@ -109,7 +109,11 @@ pub fn scan_file_urls<E>(
 
 /// The `{index}/{normalized}/{sha256}` a source key carries, or `None` for a row written before the
 /// key named an owner.
-fn split_file_owner(key: &str) -> Option<(&str, &str, &str)> {
+///
+/// One definition of the shape, shared by every reader: the scan that feeds the orphan-blob collector
+/// and the `fsck` predicate both need the digest out of the key, and each parsing it for itself is how
+/// one of them ends up reading the whole key as a digest.
+pub(crate) fn split_file_source_key(key: &str) -> Option<(&str, &str, &str)> {
     let (index, rest) = key.split_once('/')?;
     let (normalized, sha256) = rest.split_once('/')?;
     (!index.is_empty() && !normalized.is_empty() && !sha256.is_empty()).then_some((index, normalized, sha256))
@@ -129,7 +133,7 @@ fn split_file_owner(key: &str) -> Option<(&str, &str, &str)> {
 pub fn drop_legacy_file_sources(meta: &MetaStore) -> Result<usize, MetaError> {
     let mut legacy = Vec::new();
     meta.scan_driver_prefix(FILE_PREFIX, |key, _value| {
-        if split_file_owner(&key[FILE_PREFIX.len()..]).is_none() {
+        if split_file_source_key(&key[FILE_PREFIX.len()..]).is_none() {
             legacy.push(key.to_owned());
         }
         Ok::<(), MetaError>(())

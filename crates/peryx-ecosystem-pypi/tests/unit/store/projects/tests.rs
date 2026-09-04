@@ -268,17 +268,16 @@ fn test_count_then_delete_project_cache_reports_and_removes_each_row() {
         metadata_records: 1,
     };
     assert_eq!(
-        meta.count_project_cache_purge("pypi", "flask", &file_digests, &metadata_digests)
+        meta.count_project_cache_purge("pypi", "flask", &metadata_digests)
             .unwrap(),
         expected
     );
     assert_eq!(
-        meta.delete_project_cache("pypi", "flask", &file_digests, &metadata_digests)
-            .unwrap(),
+        meta.delete_project_cache("pypi", "flask", &metadata_digests).unwrap(),
         expected
     );
     assert!(meta.get_index("pypi/flask").unwrap().is_none());
-    assert!(meta.get_file_url(&file_digests[0]).unwrap().is_none());
+    assert!(meta.get_file_url("pypi", "flask", &file_digests[0]).unwrap().is_none());
     assert!(meta.get_metadata_digest(&metadata_digests[0]).unwrap().is_none());
     assert_eq!(
         meta.get_file_publication("pypi", "flask", &file_digests[0], "flask-1.0.whl")
@@ -307,8 +306,7 @@ fn test_delete_project_cache_leaves_a_hosted_publications_bundle_alone() {
     )
     .unwrap();
 
-    meta.delete_project_cache("pypi", "flask", std::slice::from_ref(&file_digest), &[])
-        .unwrap();
+    meta.delete_project_cache("pypi", "flask", &[]).unwrap();
 
     assert_eq!(
         meta.get_provenance("hosted", "flask", &file_digest, "flask-1.0.whl")
@@ -335,7 +333,7 @@ fn test_delete_project_cache_removes_the_freshness_overlay() {
     meta.touch_index_freshness("pypi/flask", 42, Some(9)).unwrap();
     assert!(meta.get_driver_value(&freshness_key("pypi/flask")).unwrap().is_some());
 
-    meta.delete_project_cache("pypi", "flask", &[], &[]).unwrap();
+    meta.delete_project_cache("pypi", "flask", &[]).unwrap();
 
     assert!(meta.get_driver_value(&freshness_key("pypi/flask")).unwrap().is_none());
 }

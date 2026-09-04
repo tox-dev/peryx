@@ -147,7 +147,7 @@ fn test_put_cached_page_records_file_url_size_and_status() {
     })
     .unwrap();
 
-    let source = meta.get_file_url("feedface").unwrap().unwrap();
+    let source = meta.get_file_url("pypi", "pkg", "feedface").unwrap().unwrap();
     assert_eq!(source.size, Some(42), "the file's size line round-trips");
     assert_eq!(source.upstream.as_deref(), Some("mirror"));
     assert_eq!(
@@ -560,7 +560,7 @@ mod generation {
         let listed = list_project_files(&meta, "pypi", "flask").unwrap();
         assert_eq!(listed.len(), 2);
         assert_eq!(listed[0].filename, "flask-1.0-py3-none-any.whl");
-        let source = meta.get_file_url(&"a".repeat(64)).unwrap().unwrap();
+        let source = meta.get_file_url("pypi", "flask", &"a".repeat(64)).unwrap().unwrap();
         assert_eq!(source.url, "https://files.example/flask-1.0-py3-none-any.whl");
         assert_eq!(source.size, Some(10));
         let publication = meta

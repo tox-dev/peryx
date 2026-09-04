@@ -132,7 +132,7 @@ async fn test_sync_publishes_a_json_detail() {
     let active = active_project_generation(&meta, "pypi", "flask").unwrap().unwrap();
     assert_eq!(active.format, "json");
     assert_eq!(active.etag.as_deref(), Some("v1"));
-    assert!(meta.get_file_url(&"a".repeat(64)).unwrap().is_some());
+    assert!(meta.get_file_url("pypi", "flask", &"a".repeat(64)).unwrap().is_some());
 }
 
 #[tokio::test]
@@ -844,7 +844,7 @@ async fn test_sync_folds_an_upper_case_html_digest_into_the_stored_file_row() {
     .await
     .unwrap();
 
-    assert!(meta.get_file_url(&sha).unwrap().is_some());
+    assert!(meta.get_file_url("pypi", "flask", &sha).unwrap().is_some());
 }
 
 #[tokio::test]

@@ -21,7 +21,7 @@ fn store() -> (tempfile::TempDir, MetaStore) {
 /// One well-formed row in every namespace this issue names, so each case proves the healthy row is
 /// still read while the damaged one is reported.
 fn seed_healthy(meta: &MetaStore) {
-    meta.put_file_url(HEALTHY, "https://files.example/aa.whl", "pypi")
+    meta.put_file_url("pypi", "pkg", HEALTHY, "https://files.example/aa.whl", "pypi")
         .unwrap();
     meta.put_metadata(HEALTHY, "metasha").unwrap();
     meta.put_driver_value(&publication_key("pypi", "pkg", HEALTHY, "pkg-1.0.whl"), b"")
@@ -44,7 +44,7 @@ fn seed_healthy(meta: &MetaStore) {
 
 fn corrupt_key(namespace: PypiRecords) -> String {
     match namespace {
-        PypiRecords::FileUrl => file_key(CORRUPT),
+        PypiRecords::FileUrl => file_key("pypi", "pkg", CORRUPT),
         PypiRecords::Metadata => metadata_key(CORRUPT),
         PypiRecords::Publication => publication_key("pypi", "pkg", CORRUPT, "pkg-2.0.whl"),
         PypiRecords::Project => project_key("pypi", CORRUPT),
@@ -56,7 +56,8 @@ fn corrupt_key(namespace: PypiRecords) -> String {
 /// The healthy row's key as a scan reports it: relative to the namespace prefix.
 fn healthy_row(namespace: PypiRecords) -> &'static str {
     match namespace {
-        PypiRecords::FileUrl | PypiRecords::Metadata => "aa",
+        PypiRecords::FileUrl => "pypi/pkg/aa",
+        PypiRecords::Metadata => "aa",
         PypiRecords::Publication => "pypi/pkg/aa/pkg-1.0.whl",
         PypiRecords::Project => "pypi/aa",
         PypiRecords::Override => "hosted/pkg/aa-1.0.whl",
@@ -66,7 +67,8 @@ fn healthy_row(namespace: PypiRecords) -> &'static str {
 
 fn corrupt_row(namespace: PypiRecords) -> &'static str {
     match namespace {
-        PypiRecords::FileUrl | PypiRecords::Metadata => "bb",
+        PypiRecords::FileUrl => "pypi/pkg/bb",
+        PypiRecords::Metadata => "bb",
         PypiRecords::Publication => "pypi/pkg/bb/pkg-2.0.whl",
         PypiRecords::Project => "pypi/bb",
         PypiRecords::Override => "hosted/pkg/bb-2.0.whl",
@@ -82,7 +84,9 @@ fn scan(meta: &MetaStore, namespace: PypiRecords) -> Result<Vec<String>, MetaSca
             Ok::<(), Infallible>(())
         };
         match namespace {
-            PypiRecords::FileUrl => meta.scan_file_urls(&mut visit),
+            PypiRecords::FileUrl => meta.scan_file_urls(|index, normalized, digest, value| {
+                visit(&format!("{index}/{normalized}/{digest}"), value)
+            }),
             PypiRecords::Metadata => meta.scan_metadata_records(&mut visit),
             PypiRecords::Publication => meta.scan_file_publications(&mut visit),
             PypiRecords::Project => meta.scan_project_records(&mut visit),
@@ -186,7 +190,7 @@ fn test_a_repair_scan_names_the_record_it_could_not_read(#[case] namespace: Pypi
 }
 
 fn read_file_url(meta: &MetaStore) -> Result<(), MetaError> {
-    meta.get_file_url(CORRUPT).map(drop)
+    meta.get_file_url("pypi", "pkg", CORRUPT).map(drop)
 }
 
 fn read_metadata_digest(meta: &MetaStore) -> Result<(), MetaError> {

@@ -97,7 +97,14 @@ async fn test_online_purge_removes_the_page_a_racing_refresh_published() {
         }
     );
     assert!(state.serving.meta.get_index("pypi/flask").unwrap().is_none());
-    assert!(state.serving.meta.get_file_url(refreshed.as_str()).unwrap().is_none());
+    assert!(
+        state
+            .serving
+            .meta
+            .get_file_url("pypi", "flask", refreshed.as_str())
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -191,7 +198,14 @@ async fn test_online_purge_preview_counts_without_removing() {
         }
     );
     assert!(h.state.serving.meta.get_index("pypi/flask").unwrap().is_some());
-    assert!(h.state.serving.meta.get_file_url(digest.as_str()).unwrap().is_some());
+    assert!(
+        h.state
+            .serving
+            .meta
+            .get_file_url("pypi", "flask", digest.as_str())
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[tokio::test]

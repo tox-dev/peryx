@@ -69,7 +69,7 @@ fn cache_fixture() -> (tempfile::TempDir, Config, Digest) {
     )
     .unwrap();
     meta.put_project("pypi", "flask", "Flask").unwrap();
-    meta.put_file_url(digest.as_str(), "https://files.example/flask.whl", "pypi")
+    meta.put_file_url("pypi", "flask", digest.as_str(), "https://files.example/flask.whl", "pypi")
         .unwrap();
     meta.put_metadata(digest.as_str(), metadata_digest.as_str()).unwrap();
     let config = config_at(&dir);

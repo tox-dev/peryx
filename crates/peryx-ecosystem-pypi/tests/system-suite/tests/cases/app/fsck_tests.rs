@@ -23,7 +23,7 @@ fn test_cache_fsck_reports_metadata_problems() {
         },
     )
     .unwrap();
-    meta.put_file_url("bad", "https://files.example/pkg.whl", "pypi")
+    meta.put_file_url("pypi", "pkg", "bad", "https://files.example/pkg.whl", "pypi")
         .unwrap();
     meta.put_metadata("bad", "also-bad").unwrap();
     meta.put_project("", "", "").unwrap();
@@ -44,7 +44,7 @@ fn test_cache_fsck_reports_metadata_problems() {
     let text = String::from_utf8(out).unwrap();
     for expected in [
         "metadata\tpypi\tindex\tpypi/bad\tinvalid project detail\n",
-        "metadata\tpypi\tfile-url\tbad\tinvalid record\n",
+        "metadata\tpypi\tfile-url\tpypi/pkg/bad\tinvalid record\n",
         "metadata\tpypi\tpep658\tbad\tinvalid record\n",
         "metadata\tpypi\tproject\t/\tinvalid record\n",
         "metadata\tpypi\tupload\thosted/pkg/bad.whl\tinvalid record\n",

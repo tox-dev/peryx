@@ -30,7 +30,7 @@ pub use fetch::{
     sync_project_files,
 };
 pub(crate) use metadata::publishes_file;
-pub use metadata::{metadata_bytes, registered_file_size};
+pub use metadata::{metadata_bytes, registered_file_size, winning_file_source};
 pub(crate) use mutate::{
     RemovalContext, remove_files_with_webhook, restore_files_with_webhook, set_yanked_with_webhook, store_upload,
 };

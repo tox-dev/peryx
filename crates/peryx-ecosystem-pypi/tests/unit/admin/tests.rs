@@ -44,7 +44,7 @@ fn seed_valid_page(meta: &MetaStore) {
     )
     .unwrap();
     meta.put_project("pypi", "flask", "Flask").unwrap();
-    meta.put_file_url(digest.as_str(), "https://files/flask.whl", "pypi")
+    meta.put_file_url("pypi", "flask", digest.as_str(), "https://files/flask.whl", "pypi")
         .unwrap();
     meta.put_metadata(digest.as_str(), metadata_digest.as_str()).unwrap();
     meta.put_driver_value(
@@ -186,7 +186,7 @@ fn test_cache_record_counts_counts_each_record_kind() {
 fn test_referenced_blob_digests_rejects_a_corrupt_file_url_record() {
     let (_dir, meta) = store();
 
-    meta.put_driver_value("pypi\u{0}f\u{0}not-hex", b"https://files/x\npypi")
+    meta.put_driver_value("pypi\u{0}f\u{0}pypi/flask/not-hex", b"https://files/x\npypi")
         .unwrap();
     assert!(referenced_blob_digests(&meta).is_err());
 }
@@ -814,19 +814,24 @@ fn test_fsck_still_checks_the_intact_rows_beside_one_it_cannot_read() {
 #[test]
 fn test_counting_records_refuses_a_store_holding_a_row_it_cannot_read() {
     let (_dir, meta) = store();
-    meta.put_driver_value("pypi\u{0}f\u{0}not-hex", &[0xff, 0xfe]).unwrap();
+    meta.put_driver_value("pypi\u{0}f\u{0}pypi/flask/not-hex", &[0xff, 0xfe])
+        .unwrap();
 
-    assert_eq!(cache_record_counts(&meta).unwrap_err(), not_utf8_reason('f', "not-hex"));
+    assert_eq!(
+        cache_record_counts(&meta).unwrap_err(),
+        not_utf8_reason('f', "pypi/flask/not-hex")
+    );
 }
 
 #[test]
 fn test_collecting_referenced_digests_refuses_a_row_it_cannot_read() {
     let (_dir, meta) = store();
-    meta.put_driver_value("pypi\u{0}f\u{0}not-hex", &[0xff, 0xfe]).unwrap();
+    meta.put_driver_value("pypi\u{0}f\u{0}pypi/flask/not-hex", &[0xff, 0xfe])
+        .unwrap();
 
     assert_eq!(
         referenced_blob_digests(&meta).unwrap_err(),
-        not_utf8_reason('f', "not-hex")
+        not_utf8_reason('f', "pypi/flask/not-hex")
     );
 }
 
@@ -887,7 +892,7 @@ fn test_purge_project_keeps_a_digest_a_generation_still_serves() {
     purge_project(&meta, "pypi", "flask", true).unwrap();
 
     assert!(
-        meta.get_file_url(digest.as_str()).unwrap().is_some(),
+        meta.get_file_url("pypi", "django", digest.as_str()).unwrap().is_some(),
         "django still advertises this digest and needs its source"
     );
 }
@@ -933,7 +938,7 @@ fn test_purge_project_still_removes_a_digest_no_one_else_advertises() {
 
     purge_project(&meta, "pypi", "flask", true).unwrap();
 
-    assert_eq!(meta.get_file_url(digest.as_str()).unwrap(), None);
+    assert_eq!(meta.get_file_url("pypi", "flask", digest.as_str()).unwrap(), None);
 }
 
 /// A generation row that does not decode leaves the preserved set incomplete, so the purge refuses
@@ -981,5 +986,5 @@ fn test_purge_project_ignores_the_target_projects_own_generation_rows() {
 
     purge_project(&meta, "pypi", "flask", true).unwrap();
 
-    assert_eq!(meta.get_file_url(digest.as_str()).unwrap(), None);
+    assert_eq!(meta.get_file_url("pypi", "flask", digest.as_str()).unwrap(), None);
 }

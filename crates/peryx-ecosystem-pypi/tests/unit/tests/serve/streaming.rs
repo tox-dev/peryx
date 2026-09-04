@@ -142,7 +142,7 @@ async fn test_live_stream_records_the_routed_upstream() {
         state
             .serving
             .meta
-            .get_file_url(digest.as_str())
+            .get_file_url("pypi", "flask", digest.as_str())
             .unwrap()
             .unwrap()
             .upstream
