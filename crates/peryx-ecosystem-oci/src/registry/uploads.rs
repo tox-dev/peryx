@@ -4,7 +4,6 @@ use super::blobs::{
 };
 use super::*;
 use crate::error::{ErrorCode, error_response, error_response_with_status};
-use peryx_driver::body::BodyFailure;
 use crate::registry::acknowledge::BlobAck;
 use crate::registry::authority::{EpochCommit, commit_epoch};
 use crate::store::{self};
@@ -15,6 +14,7 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
 use http_body::Body as _;
 use peryx_driver::ServingState;
+use peryx_driver::body::BodyFailure;
 use peryx_storage::blob::Digest;
 use peryx_storage::meta::OperationResult;
 

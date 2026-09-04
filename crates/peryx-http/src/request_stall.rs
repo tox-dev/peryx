@@ -7,8 +7,8 @@ use std::task::{Context, Poll, ready};
 use std::time::Duration;
 
 use http_body::{Body, Frame, SizeHint};
-use pin_project_lite::pin_project;
 use peryx_driver::body::Stalled;
+use pin_project_lite::pin_project;
 use tokio::time::Sleep;
 
 pin_project! {

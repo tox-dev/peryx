@@ -44,3 +44,13 @@ fn test_any_other_failure_reads_as_interrupted() {
 
     assert_eq!(BodyFailure::of(&broken), BodyFailure::Interrupted);
 }
+
+/// The stall reaches a log through this wording, so it says which end went quiet and how long it
+/// waited rather than naming the reader that surfaced it.
+#[test]
+fn test_a_stall_says_how_long_it_waited() {
+    assert_eq!(
+        Stalled::new(Duration::from_secs(30)).to_string(),
+        "the request body sent nothing for 30s"
+    );
+}
