@@ -1,8 +1,9 @@
-use axum::extract::Multipart;
+use axum::extract::{Multipart, multipart};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use blake2::Blake2bVar;
 use blake2::digest::{Update as _, VariableOutput as _};
+use peryx_driver::body::BodyFailure;
 use peryx_policy::{PolicyAction, PolicyDenial};
 
 use crate::DistributionFilenameError;
@@ -38,7 +39,7 @@ pub(super) async fn collect_form(
     let mut form = UploadForm::default();
     let mut staged = None;
     let mut budget = FormBudget::default();
-    while let Some(field) = multipart.next_field().await.map_err(reject)? {
+    while let Some(field) = multipart.next_field().await.map_err(|error| body_reject(&error))? {
         budget.add_part()?;
         let field_name = field.name().unwrap_or_default().to_owned();
         if field_name == "content" {
@@ -214,7 +215,7 @@ async fn read_text_field(
     budget: &mut FormBudget,
 ) -> HttpResult<String> {
     let mut bytes = Vec::new();
-    while let Some(chunk) = field.chunk().await.map_err(reject)? {
+    while let Some(chunk) = field.chunk().await.map_err(|error| body_reject(&error))? {
         if bytes.len().saturating_add(chunk.len()) > limit {
             return Err((
                 StatusCode::BAD_REQUEST,
@@ -230,7 +231,7 @@ async fn read_text_field(
 }
 
 async fn drain_field(mut field: axum::extract::multipart::Field<'_>, budget: &mut FormBudget) -> HttpResult<()> {
-    while let Some(chunk) = field.chunk().await.map_err(reject)? {
+    while let Some(chunk) = field.chunk().await.map_err(|error| body_reject(&error))? {
         budget.add_text(chunk.len())?;
     }
     Ok(())
@@ -310,6 +311,24 @@ fn hex(bytes: &[u8]) -> String {
 /// Map any multipart read or decode failure to a 400 response.
 fn reject(err: impl std::fmt::Display) -> Response {
     (StatusCode::BAD_REQUEST, format!("bad upload: {err}")).into_response()
+}
+
+/// A read of the multipart body that failed.
+///
+/// The bytes come from the client either way, so the only question is whether it stopped sending or
+/// sent something the server could not read. `BodyFailure` answers that once for every ecosystem
+/// instead of each guessing from the message, and the two answers differ for the client: a stall says
+/// nothing about the form, so repeating the upload is the right move, while a malformed form repeated
+/// unchanged fails again.
+fn body_reject(error: &multipart::MultipartError) -> Response {
+    match BodyFailure::of(error) {
+        BodyFailure::Stalled(after) => (
+            StatusCode::REQUEST_TIMEOUT,
+            format!("upload stopped: the request body sent nothing for {after:?}"),
+        )
+            .into_response(),
+        BodyFailure::Interrupted => reject(error),
+    }
 }
 
 fn storage_reject(err: impl std::fmt::Display) -> Response {

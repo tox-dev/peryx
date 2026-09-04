@@ -7,6 +7,7 @@ use std::task::{Context, Poll, ready};
 use std::time::Duration;
 
 use http_body::{Body, Frame, SizeHint};
+use peryx_driver::body::Stalled;
 use pin_project_lite::pin_project;
 use tokio::time::Sleep;
 
@@ -32,19 +33,6 @@ impl<B> StallBounded<B> {
     }
 }
 
-/// The error a stalled body ends with, worded for the client that stopped sending rather than for the
-/// handler that was reading.
-#[derive(Debug)]
-pub struct Stalled(Duration);
-
-impl std::error::Error for Stalled {}
-
-impl std::fmt::Display for Stalled {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "the request body sent nothing for {:?}", self.0)
-    }
-}
-
 impl<B> Body for StallBounded<B>
 where
     B: Body,
@@ -60,7 +48,7 @@ where
         }
         let idle = this.idle.as_mut().as_pin_mut().expect("the wait was just armed");
         if idle.poll(cx).is_ready() {
-            return Poll::Ready(Some(Err(Box::new(Stalled(*this.stall)))));
+            return Poll::Ready(Some(Err(Box::new(Stalled::new(*this.stall)))));
         }
         let frame = ready!(this.body.poll_frame(cx));
         this.idle.set(None);

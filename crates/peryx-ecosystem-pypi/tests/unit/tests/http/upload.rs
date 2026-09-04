@@ -2191,3 +2191,30 @@ fn multipart_body_with_content_length(declared: u64, content: &[u8]) -> (String,
     head.extend_from_slice(&body[header_end + 4..]);
     (content_type, head)
 }
+
+/// A client that stops mid-form is told the server gave up waiting on a message that never arrived.
+/// It is not told its form was malformed, which would be wrong about the form and would suggest
+/// repeating the upload is pointless, and it is not told an upstream failed, since none serves a
+/// request body.
+#[tokio::test(start_paused = true)]
+async fn test_a_stalled_upload_body_reports_a_timeout() {
+    let h = harness().await;
+    let (content_type, body) = multipart_body(&[], Some(("peryxpkg-1.0-py3-none-any.whl", b"ab")));
+    let opening = Bytes::copy_from_slice(&body[..body.len() / 2]);
+    let stalling = futures_util::StreamExt::chain(
+        futures_util::stream::once(async move { Ok::<_, Infallible>(opening) }),
+        futures_util::stream::once(std::future::pending::<Result<Bytes, Infallible>>()),
+    );
+
+    let (status, _) = post_upload_body_with_headers_response(
+        &h.state,
+        "/root/pypi/",
+        Some(&upload_auth()),
+        &content_type,
+        &[],
+        Body::from_stream(stalling),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::REQUEST_TIMEOUT);
+}
