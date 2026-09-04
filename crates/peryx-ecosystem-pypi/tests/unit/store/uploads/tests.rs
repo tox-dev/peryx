@@ -78,11 +78,25 @@ fn test_publish_file_if_commit_writes_record_sibling_project_and_serial() {
         "the sibling row is written"
     );
     assert_eq!(meta.get_project("hosted", "flask").unwrap().as_deref(), Some("Flask"));
-    let journal = read_journal_entries(&meta, 0, 1).unwrap().entries.pop().unwrap();
-    assert_eq!(journal.action, "add-file");
-    assert_eq!(journal.version.as_deref(), Some("1.0"));
-    assert_eq!(journal.filename.as_deref(), Some("flask-1.0.whl"));
-    assert_eq!(journal.submitted_at_unix, 123);
+    let journal = read_journal_entries(&meta, 0, 2).unwrap().entries;
+    assert_eq!(
+        journal
+            .iter()
+            .map(|entry| (
+                entry.action.as_str(),
+                entry.filename.as_deref(),
+                entry.python.as_deref()
+            ))
+            .collect::<Vec<_>>(),
+        [
+            ("new-release", None, None),
+            // `flask-1.0.whl` carries no wheel tags, so there is no Python value to read off it and
+            // the entry reports Warehouse's sdist default rather than inventing one.
+            ("add-file", Some("flask-1.0.whl"), Some("source")),
+        ]
+    );
+    assert!(journal.iter().all(|entry| entry.version.as_deref() == Some("1.0")));
+    assert!(journal.iter().all(|entry| entry.submitted_at_unix == 123));
 }
 
 #[test]
@@ -271,7 +285,7 @@ fn test_publish_file_if_records_artifact_and_metadata_blobs() {
         .unwrap();
 
     assert_eq!(
-        meta.journal_after(0, 1).unwrap()[0].blobs,
+        meta.journal_after(0, 2).unwrap().last().unwrap().blobs,
         vec![
             peryx_storage::meta::DriverBlobReference {
                 sha256: "artifact-sha".to_owned(),
@@ -308,7 +322,10 @@ fn test_publish_file_if_writes_the_provenance_row_and_references_its_blob() {
         Some(("provenance-sha".to_owned(), 16))
     );
     assert!(
-        meta.journal_after(0, 1).unwrap()[0]
+        meta.journal_after(0, 2)
+            .unwrap()
+            .last()
+            .unwrap()
             .blobs
             .contains(&peryx_storage::meta::DriverBlobReference {
                 sha256: "provenance-sha".to_owned(),
@@ -464,7 +481,7 @@ fn test_promote_files_checked_writes_the_release_project_and_journal() {
         Some(br#"{"version":"1.0"}"#.as_slice())
     );
     assert_eq!(meta.get_project("hosted", "flask").unwrap().as_deref(), Some("Flask"));
-    let batch = meta.journal_after(0, 1).unwrap().pop().unwrap();
+    let batch = meta.journal_after(0, 2).unwrap().pop().unwrap();
     assert_eq!(
         batch.blobs,
         vec![peryx_storage::meta::DriverBlobReference {
@@ -472,11 +489,16 @@ fn test_promote_files_checked_writes_the_release_project_and_journal() {
             size: 8,
         }]
     );
-    let journal = read_journal_entries(&meta, 0, 1).unwrap().entries.pop().unwrap();
-    assert_eq!(journal.action, "add-file");
-    assert_eq!(journal.version.as_deref(), Some("1.0"));
-    assert_eq!(journal.filename.as_deref(), Some("flask-1.0.whl"));
-    assert_eq!(journal.submitted_at_unix, 123);
+    let journal = read_journal_entries(&meta, 0, 2).unwrap().entries;
+    assert_eq!(
+        journal
+            .iter()
+            .map(|entry| (entry.action.as_str(), entry.filename.as_deref()))
+            .collect::<Vec<_>>(),
+        [("new-release", None), ("add-file", Some("flask-1.0.whl"))]
+    );
+    assert!(journal.iter().all(|entry| entry.version.as_deref() == Some("1.0")));
+    assert!(journal.iter().all(|entry| entry.submitted_at_unix == 123));
 }
 
 #[test]
@@ -1254,4 +1276,196 @@ fn test_hosted_mutation_advances_only_its_own_repository(#[case] mutation: Hoste
     apply_hosted_mutation(&meta, mutation);
 
     assert_eq!((before, revisions(&meta)), ([0, 0, 0], expected));
+}
+
+fn wheel() -> PublishedFile<'static> {
+    PublishedFile {
+        filename: "flask-1.0-py3-none-any.whl",
+        artifact_sha256: "wheel-sha",
+        ..published()
+    }
+}
+
+fn sdist() -> PublishedFile<'static> {
+    PublishedFile {
+        filename: "flask-1.0.tar.gz",
+        artifact_sha256: "sdist-sha",
+        metadata: None,
+        ..published()
+    }
+}
+
+fn journal_actions(meta: &MetaStore) -> Vec<(String, Option<String>, Option<String>)> {
+    read_journal_entries(meta, 0, 16)
+        .unwrap()
+        .entries
+        .into_iter()
+        .map(|entry| (entry.action, entry.filename, entry.python))
+        .collect()
+}
+
+#[test]
+fn test_publish_file_if_announces_the_release_before_the_file() {
+    let (_dir, meta) = store();
+
+    meta.publish_file_if(true, &sdist(), |_| Ok::<_, MetaError>(Guard::Commit))
+        .unwrap();
+    meta.publish_file_if(true, &wheel(), |_| Ok::<_, MetaError>(Guard::Commit))
+        .unwrap();
+
+    assert_eq!(
+        journal_actions(&meta),
+        [
+            ("new-release".to_owned(), None, None),
+            (
+                "add-file".to_owned(),
+                Some("flask-1.0.tar.gz".to_owned()),
+                Some("source".to_owned())
+            ),
+            (
+                "add-file".to_owned(),
+                Some("flask-1.0-py3-none-any.whl".to_owned()),
+                Some("py3".to_owned())
+            ),
+        ]
+    );
+}
+
+#[test]
+fn test_publish_file_if_announces_a_version_once_however_many_files_it_gains() {
+    let (_dir, meta) = store();
+
+    meta.publish_file_if(true, &wheel(), |_| Ok::<_, MetaError>(Guard::Commit))
+        .unwrap();
+    meta.publish_file_if(true, &sdist(), |_| Ok::<_, MetaError>(Guard::Commit))
+        .unwrap();
+
+    assert_eq!(
+        journal_actions(&meta)
+            .iter()
+            .map(|(action, ..)| action.as_str())
+            .collect::<Vec<_>>(),
+        ["new-release", "add-file", "add-file"]
+    );
+}
+
+#[test]
+fn test_publish_file_if_keeps_a_release_announced_after_its_last_file_is_deleted() {
+    let (_dir, meta) = store();
+    meta.publish_file_if(true, &published(), |_| Ok::<_, MetaError>(Guard::Commit))
+        .unwrap();
+    assert!(
+        meta.delete_upload(true, "hosted", "flask", "flask-1.0.whl", 123)
+            .unwrap()
+    );
+
+    meta.publish_file_if(true, &published(), |_| Ok::<_, MetaError>(Guard::Commit))
+        .unwrap();
+
+    assert_eq!(
+        journal_actions(&meta)
+            .iter()
+            .map(|(action, ..)| action.as_str())
+            .collect::<Vec<_>>(),
+        ["new-release", "add-file", "delete-file", "add-file"]
+    );
+}
+
+#[test]
+fn test_publish_file_if_announces_a_release_the_unjournaled_publication_left_unannounced() {
+    let (_dir, meta) = store();
+
+    meta.publish_file_if(false, &wheel(), |_| Ok::<_, MetaError>(Guard::Commit))
+        .unwrap();
+    meta.publish_file_if(true, &sdist(), |_| Ok::<_, MetaError>(Guard::Commit))
+        .unwrap();
+
+    assert_eq!(
+        journal_actions(&meta)
+            .iter()
+            .map(|(action, ..)| action.as_str())
+            .collect::<Vec<_>>(),
+        ["new-release", "add-file"]
+    );
+}
+
+#[test]
+fn test_promote_files_checked_announces_a_release_once_across_its_files() {
+    let (_dir, meta) = store();
+    let records = vec![
+        (
+            "flask-1.0.tar.gz".to_owned(),
+            "sdist-sha".to_owned(),
+            br#"{"version":"1.0"}"#.to_vec(),
+        ),
+        (
+            "flask-1.0-py3-none-any.whl".to_owned(),
+            "wheel-sha".to_owned(),
+            br#"{"version":"1.0"}"#.to_vec(),
+        ),
+    ];
+
+    meta.promote_files_checked::<MetaError>(
+        true,
+        &PromotedRelease {
+            source: "staging",
+            index: "hosted",
+            normalized: "flask",
+            display: "Flask",
+            records: &records,
+            blob_sizes: &BTreeMap::new(),
+            reservations: &BTreeMap::new(),
+            submitted_at_unix: 123,
+        },
+        |_, _, _| Ok::<_, MetaError>(Guard::Commit),
+    )
+    .unwrap();
+
+    assert_eq!(
+        journal_actions(&meta),
+        [
+            ("new-release".to_owned(), None, None),
+            (
+                "add-file".to_owned(),
+                Some("flask-1.0.tar.gz".to_owned()),
+                Some("source".to_owned())
+            ),
+            (
+                "add-file".to_owned(),
+                Some("flask-1.0-py3-none-any.whl".to_owned()),
+                Some("py3".to_owned())
+            ),
+        ]
+    );
+}
+
+#[test]
+fn test_promote_files_checked_announces_no_release_for_a_file_that_names_no_version() {
+    let (_dir, meta) = store();
+    let records = vec![("README".to_owned(), "readme-sha".to_owned(), b"{}".to_vec())];
+
+    meta.promote_files_checked::<MetaError>(
+        true,
+        &PromotedRelease {
+            source: "staging",
+            index: "hosted",
+            normalized: "flask",
+            display: "Flask",
+            records: &records,
+            blob_sizes: &BTreeMap::new(),
+            reservations: &BTreeMap::new(),
+            submitted_at_unix: 123,
+        },
+        |_, _, _| Ok::<_, MetaError>(Guard::Commit),
+    )
+    .unwrap();
+
+    assert_eq!(
+        journal_actions(&meta),
+        [(
+            "add-file".to_owned(),
+            Some("README".to_owned()),
+            Some("source".to_owned())
+        )]
+    );
 }

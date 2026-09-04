@@ -92,8 +92,8 @@ async fn test_finalize_publishes_rows_outcome_and_intent_advance() {
     );
     assert_eq!(
         harness.state.serving.meta.current_serial().unwrap(),
-        1,
-        "the publish appends exactly one outbox journal entry"
+        2,
+        "the publish appends the release announcement and the file entry"
     );
     let record = harness
         .state
@@ -240,8 +240,8 @@ async fn test_finalize_replays_the_first_result_without_a_second_write() {
     );
     assert_eq!(
         harness.state.serving.meta.current_serial().unwrap(),
-        1,
-        "the replay appends no second journal entry"
+        2,
+        "the replay appends nothing beyond the first publish's two entries"
     );
 }
 
@@ -400,7 +400,7 @@ async fn test_a_transient_refusal_finalizes_on_retry_once_the_condition_clears()
             response: b"upload accepted".to_vec()
         })
     );
-    assert_eq!(harness.state.serving.meta.current_serial().unwrap(), 1);
+    assert_eq!(harness.state.serving.meta.current_serial().unwrap(), 2);
 }
 
 #[tokio::test]

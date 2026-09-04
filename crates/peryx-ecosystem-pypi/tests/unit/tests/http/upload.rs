@@ -529,7 +529,7 @@ async fn test_hosted_simple_response_emits_local_serial(#[case] uri: &str) {
     let (status, headers, _) = get(&h.state, uri, Some("application/json")).await;
 
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(headers.get("x-pypi-last-serial").unwrap(), "1");
+    assert_eq!(headers.get("x-pypi-last-serial").unwrap(), "2");
 }
 #[tokio::test]
 async fn test_hosted_simple_serial_advances_after_mutation() {
@@ -540,8 +540,8 @@ async fn test_hosted_simple_serial_advances_after_mutation() {
     assert_eq!(upload_version(&h.state, "/hosted/", "2.0").await, StatusCode::OK);
     let (_, second_headers, _) = get(&h.state, "/hosted/simple/peryxpkg/", Some("application/json")).await;
 
-    assert_eq!(first_headers.get("x-pypi-last-serial").unwrap(), "1");
-    assert_eq!(second_headers.get("x-pypi-last-serial").unwrap(), "2");
+    assert_eq!(first_headers.get("x-pypi-last-serial").unwrap(), "2");
+    assert_eq!(second_headers.get("x-pypi-last-serial").unwrap(), "4");
 }
 #[tokio::test]
 async fn test_virtual_simple_response_omits_uncombined_serial() {

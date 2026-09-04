@@ -42,12 +42,29 @@ that reads only foreign records returns no rows while resuming past them.
 
 Local actions use Warehouse's human-readable form while retaining peryx's per-file precision:
 
-| Mutation                   | Changelog action                          |
-| -------------------------- | ----------------------------------------- |
-| Upload or promotion        | `add file <filename>`                     |
-| Soft or permanent deletion | `remove file <filename>`                  |
-| Yank or unyank             | `yank <filename>` or `unyank <filename>`  |
-| Hide or restore            | `hide <filename>` or `restore <filename>` |
+| Mutation                          | Changelog action                          |
+| --------------------------------- | ----------------------------------------- |
+| First journaled file of a release | `new release`                             |
+| Upload or promotion               | `add <pyversion> file <filename>`         |
+| Soft or permanent deletion        | `remove file <filename>`                  |
+| Yank or unyank                    | `yank <filename>` or `unyank <filename>`  |
+| Hide or restore                   | `hide <filename>` or `restore <filename>` |
+
+`<pyversion>` is the value Warehouse records on the file: `source` for an sdist, and the Python-tag component for a
+wheel, so `add source file demo-1.0.tar.gz` and `add cp311 file demo-1.0-cp311-cp311-manylinux1_x86_64.whl`. Warehouse
+reads it from the uploader's `pyversion` form field; peryx's upload API has no such field, so peryx reads it off the
+filename, and a filename whose shape carries no tag reports `source`. Records written before peryx recorded that value
+render as `add file <filename>` and keep that form.
+
+Warehouse emits `new release` when it creates the release, before the file that caused it, so a client creates the
+release and then attaches files to it. peryx emits one `new release` per version per index, ahead of the first file of
+that version to reach the journal, and never repeats it. Deleting every file of a release does not un-announce it, which
+matches Warehouse: deleting files leaves the release standing, and a client keeps the release it already created.
+
+peryx keys the announcement on the version as written, where Warehouse keys on `canonicalize_version`, so a project that
+publishes both `1.0` and `1.0.0` gets one `new release` per spelling although the detail page groups them into one
+release. The extra event costs a client a redundant page read; a missing one would leave it attaching files to a release
+it never created.
 
 Each promotion record identifies one changed file rather than emitting an ambiguous project event. Each new record
 carries the release version and mutation time. Records written before timestamps were introduced remain readable and

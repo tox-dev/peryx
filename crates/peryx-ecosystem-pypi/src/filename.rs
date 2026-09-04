@@ -133,11 +133,13 @@ pub fn distribution_name_segment(filename: &str) -> Option<&str> {
 /// Warehouse's `pyversion` for a distribution filename: a wheel's Python-tag component, `source`
 /// for everything else.
 ///
-/// Warehouse sets this field once, when it records the file, and then renders it in two places a
-/// client reads: the legacy JSON `python_version`, and the changelog action `add {pyversion} file
-/// {filename}`. Deriving both from one function is what keeps the two agreeing. A wheel name is
-/// `name-version[-build]-python-abi-platform`, so the tag is third from the end; any other shape,
-/// and every non-wheel, reports `source`, which is what Warehouse records for an sdist.
+/// Warehouse takes the value from the uploader's `pyversion` form field and renders it in two places
+/// a client reads: the legacy JSON `python_version`, and the changelog action `add {pyversion} file
+/// {filename}`. peryx's upload API carries no such field and validates `filetype` against the parsed
+/// filename, so it reconstructs the value from the filename and both readers share this one function
+/// rather than reconstructing it apart. A wheel name is `name-version[-build]-python-abi-platform`,
+/// so the tag is third from the end; any other shape, and every non-wheel, reports `source`, which is
+/// what an sdist upload declares.
 #[must_use]
 pub fn distribution_python_tag(filename: &str) -> &str {
     let Some(stem) = strip_ascii_suffix_ignore_case(filename, ".whl") else {

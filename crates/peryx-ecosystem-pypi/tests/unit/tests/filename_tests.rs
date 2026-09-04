@@ -1,4 +1,9 @@
-use crate::{DistributionFilenameError, DistributionKind, distribution_version_segment, parse_distribution_filename};
+use rstest::rstest;
+
+use crate::{
+    DistributionFilenameError, DistributionKind, distribution_python_tag, distribution_version_segment,
+    parse_distribution_filename,
+};
 
 #[test]
 fn test_distribution_version_segment_reads_sdist_version_after_the_last_dash() {
@@ -133,4 +138,17 @@ fn test_parse_distribution_filename_rejects_unsupported_multibyte_input() {
         parse_distribution_filename("mel\u{485}hp\n").unwrap_err(),
         DistributionFilenameError::UnsupportedExtension
     );
+}
+
+#[rstest]
+#[case::sdist_tar_gz("proj-1.0.tar.gz", "source")]
+#[case::sdist_zip("proj-1.0.zip", "source")]
+#[case::legacy_egg("simplejson-3.0.egg", "source")]
+#[case::wheel("Flask-1.0-py3-none-any.whl", "py3")]
+#[case::wheel_with_build_tag("proj-2.1-1-cp311-cp311-manylinux1_x86_64.whl", "cp311")]
+#[case::wheel_uppercase_suffix("proj-1.0-py2.py3-none-any.WHL", "py2.py3")]
+#[case::wheel_of_another_shape("noversion.whl", "source")]
+#[case::not_a_distribution("README", "source")]
+fn test_distribution_python_tag_matches_warehouse_pyversion(#[case] filename: &str, #[case] expected: &str) {
+    assert_eq!(distribution_python_tag(filename), expected);
 }

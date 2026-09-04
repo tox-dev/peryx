@@ -145,7 +145,14 @@ async fn test_promote_journals_the_artifact_reference() {
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
-        h.state.serving.meta.journal_after(serial, 1).unwrap()[0].blobs,
+        h.state
+            .serving
+            .meta
+            .journal_after(serial, 2)
+            .unwrap()
+            .last()
+            .unwrap()
+            .blobs,
         vec![peryx_storage::meta::DriverBlobReference {
             sha256: digest.as_str().to_owned(),
             size: wheel.len() as u64,
@@ -380,11 +387,14 @@ async fn test_promote_copies_only_live_source_files() {
         (
             (StatusCode::OK, "promoted 1 file(s)".to_owned()),
             vec!["peryxpkg-1.0.0-py3-none-any.whl"],
-            vec![(
-                "add-file".to_owned(),
-                Some("1.0.0".to_owned()),
-                Some("peryxpkg-1.0.0-py3-none-any.whl".to_owned()),
-            )],
+            vec![
+                ("new-release".to_owned(), Some("1.0.0".to_owned()), None),
+                (
+                    "add-file".to_owned(),
+                    Some("1.0.0".to_owned()),
+                    Some("peryxpkg-1.0.0-py3-none-any.whl".to_owned()),
+                ),
+            ],
             Some("success"),
             Some(1),
         )

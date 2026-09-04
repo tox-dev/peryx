@@ -222,13 +222,8 @@ pub fn publish_file_in_txn<E: From<MetaError>>(
             put_project_row(txn, file.index, file.normalized, file.display)?;
             let mut journal = Vec::new();
             if outbox {
-                journal.extend(announce_release_in_txn(
-                    txn,
-                    file.index,
-                    file.normalized,
-                    Some(file.version),
-                    file.submitted_at_unix,
-                )?);
+                let target = JournalTarget::of(file.index, file.normalized, file.submitted_at_unix);
+                journal.extend(announce_release(txn, &target, Some(file.version))?);
                 journal.push(journal_bytes(
                     "add-file",
                     file.normalized,
@@ -303,22 +298,7 @@ pub fn promote_files_checked<E: From<MetaError>>(
                         copy_provenance_in_txn(txn, release, filename, token)?;
                         written += 1;
                         if outbox {
-                            let version = journal_version(filename, record);
-                            journal.extend(announce_release_in_txn(
-                                txn,
-                                release.index,
-                                release.normalized,
-                                version.as_deref(),
-                                release.submitted_at_unix,
-                            )?);
-                            journal.push(journal_bytes(
-                                "add-file",
-                                release.normalized,
-                                version.as_deref(),
-                                Some(filename),
-                                Some(distribution_python_tag(filename)),
-                                release.submitted_at_unix,
-                            ));
+                            journal.extend(promoted_file_journal(txn, release, filename, record)?);
                         }
                     }
                 }
@@ -717,6 +697,46 @@ fn journal_bytes(
     .expect("journal entry always serializes")
 }
 
+/// The index, project, and mutation time every journal entry for one publication shares.
+struct JournalTarget<'a> {
+    index: &'a str,
+    normalized: &'a str,
+    submitted_at_unix: i64,
+}
+
+impl<'a> JournalTarget<'a> {
+    const fn of(index: &'a str, normalized: &'a str, submitted_at_unix: i64) -> Self {
+        Self {
+            index,
+            normalized,
+            submitted_at_unix,
+        }
+    }
+}
+
+/// The journal entries one promoted file contributes, in the order a client must read them.
+fn promoted_file_journal(
+    txn: &mut DriverTxn,
+    release: &PromotedRelease<'_>,
+    filename: &str,
+    record: &[u8],
+) -> Result<Vec<Vec<u8>>, MetaError> {
+    let version = journal_version(filename, record);
+    let target = JournalTarget::of(release.index, release.normalized, release.submitted_at_unix);
+    let mut entries: Vec<Vec<u8>> = announce_release(txn, &target, version.as_deref())?
+        .into_iter()
+        .collect();
+    entries.push(journal_bytes(
+        "add-file",
+        release.normalized,
+        version.as_deref(),
+        Some(filename),
+        Some(distribution_python_tag(filename)),
+        release.submitted_at_unix,
+    ));
+    Ok(entries)
+}
+
 /// Announce a release in the changelog the first time one of its files is journaled, and report the
 /// `new-release` entry that has to precede the file's own.
 ///
@@ -725,33 +745,37 @@ fn journal_bytes(
 /// peryx has no release row to hang that on, so it records that a release has been announced and
 /// emits the event only when that record is absent.
 ///
-/// The row tracks the announcement, not the release. A publication that journals nothing - an import
-/// - leaves it unset, so the first file that *is* journaled still announces the version rather than
+/// The row tracks the announcement, not the release. An import journals nothing and so leaves the row
+/// unset, and the first file that does reach the journal still announces the version rather than
 /// attaching to a release no reader was ever told about. Nothing removes the row: deleting every file
 /// leaves the release announced, matching Warehouse, where deleting files leaves the `Release` row
 /// standing and a client keeps the release it already created.
-fn announce_release_in_txn(
+///
+/// The key is the version as written, where Warehouse keys on `canonicalize_version`, so a project
+/// publishing `1.0` and `1.0.0` announces each spelling although `version_key` groups them into one
+/// release on the detail page. That errs toward announcing twice, never toward not announcing: a
+/// client that hears about a release it already has re-reads a page, while one that never hears about
+/// it attaches files to a release it has not created.
+fn announce_release(
     txn: &mut DriverTxn,
-    index: &str,
-    normalized: &str,
+    target: &JournalTarget<'_>,
     version: Option<&str>,
-    submitted_at_unix: i64,
 ) -> Result<Option<Vec<u8>>, MetaError> {
     let Some(version) = version else {
         return Ok(None);
     };
-    let key = announced_release_key(index, normalized, version);
+    let key = announced_release_key(target.index, target.normalized, version);
     if txn.get(&key)?.is_some() {
         return Ok(None);
     }
     txn.put(&key, version.as_bytes())?;
     Ok(Some(journal_bytes(
         "new-release",
-        normalized,
+        target.normalized,
         Some(version),
         None,
         None,
-        submitted_at_unix,
+        target.submitted_at_unix,
     )))
 }
 
