@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -127,8 +128,8 @@ pub fn router_with_ui(
     // A merge keeps the right-hand router's fallbacks, so the unmetered routes have to join from the
     // left: merging them in from the right would swap the layered 404 and the layered CONNECT
     // catch-all for the bare ones they carry, dropping those requests out of every middleware.
-    // The unmetered routes join outside request accounting on purpose, so they take the stall bound at
-    // their own join point rather than going without one.
+    // The unmetered routes join outside request accounting on purpose, so they take the same bounds at
+    // their own join point rather than going without them.
     crate::response_security::secure_responses(unmetered.layer(bounded).merge(router), &secured)
 }
 
@@ -138,15 +139,28 @@ pub fn router_with_ui(
 /// thirty seconds of silence is a stalled transfer whichever end has gone quiet.
 const REQUEST_STALL_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Bound the gap between a request body's frames, so a client that stops sending cannot hold its
-/// handler, and whatever that handler locked, until the connection itself dies.
+/// The rate a request body must hold on average across its whole life, once the grace below runs out.
 ///
-/// The bound is on the gap rather than on the request, because those are different questions. A large
-/// upload over a slow link is making progress and has to be allowed to finish, so a total bound would
-/// have to exceed the slowest legitimate transfer, which leaves it far too loose to catch a stall. It
-/// would also cut across the throughput floor that already bounds long transfers, which answers the
-/// trickle a gap bound cannot see. A body that has already ended cannot stall, so it stays as it is
-/// and a request without one pays nothing.
+/// Well under the floor peryx applies to an upstream it reads from, because an uplink is the slow half
+/// of most consumer connections and this bounds a hold rather than enforcing a service level. At this
+/// rate a 100 MiB layer has three and a half hours and a 2 GiB layer three days, while a client sending
+/// a frame every twenty-nine seconds runs out on its second frame.
+const REQUEST_THROUGHPUT_FLOOR: NonZeroU64 = NonZeroU64::new(8 * 1024).unwrap();
+
+/// Time a body holds before its delivered bytes have earned it any, covering the request line, the
+/// headers and the first frame. One silent gap is already allowed by the stall bound, so allowing the
+/// same span here keeps a client that starts slowly from being cut for a pause the other bound accepts.
+const REQUEST_THROUGHPUT_GRACE: Duration = REQUEST_STALL_TIMEOUT;
+
+/// Bound a request body by silence and by progress, so a client cannot hold its handler, and whatever
+/// that handler locked, until the connection itself dies.
+///
+/// Neither bound is on the request as a whole, because a large upload over a slow link is making
+/// progress and has to finish: a total bound would have to exceed the slowest legitimate transfer,
+/// which leaves it far too loose to catch anything. The gap bound catches a client that stops sending,
+/// and the floor catches the one that keeps sending without getting anywhere, which satisfies the gap
+/// bound forever. A body that has already ended can do neither, so it stays as it is and a request
+/// without one pays nothing.
 fn bound_request_body(request: Request) -> Request {
     if request.body().is_end_stream() {
         return request;
@@ -154,7 +168,11 @@ fn bound_request_body(request: Request) -> Request {
     let (parts, body) = request.into_parts();
     Request::from_parts(
         parts,
-        Body::new(crate::request_stall::StallBounded::new(REQUEST_STALL_TIMEOUT, body)),
+        Body::new(crate::request_bounds::BoundedBody::new(
+            REQUEST_STALL_TIMEOUT,
+            peryx_core::ThroughputBudget::new(REQUEST_THROUGHPUT_FLOOR, REQUEST_THROUGHPUT_GRACE),
+            body,
+        )),
     )
 }
 

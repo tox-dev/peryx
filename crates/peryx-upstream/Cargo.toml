@@ -9,6 +9,7 @@ description = "Guarded HTTP client and source router for peryx upstreams."
 autotests = false
 
 [dependencies]
+peryx-core.workspace = true
 reqwest = { workspace = true, features = ["gzip", "http2", "rustls-no-provider", "stream"] }
 rustls.workspace = true
 url.workspace = true

@@ -1,5 +1,6 @@
-//! The gap bound the server edge puts on a request body, seen through the handler that streams one.
-//! A chunk that stops arriving ends; a chunk that keeps arriving does not, however long it takes.
+//! The two bounds the server edge puts on a request body, seen through the handler that streams one.
+//! A chunk that stops arriving ends, and so does one that keeps arriving without getting anywhere. A
+//! chunk that pays its way ends neither way, however long it runs.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -21,8 +22,11 @@ const TOKEN: &str = "s3cret";
 /// The gap the server edge allows a request body, named here because the reclaim measurement below is
 /// about that number: a change to it changes how long one stalled client delays a pass.
 const STALL_BOUND: Duration = Duration::from_secs(30);
-/// Under the bound, so a body that pauses this long between frames is still making progress.
+/// Under the bound, so a body that pauses this long between frames never trips it.
 const SHORT_OF_THE_BOUND: Duration = Duration::from_secs(25);
+/// The rate the edge asks a request body to hold on average, so a frame this size every
+/// `SHORT_OF_THE_BOUND` is a transfer paying its way rather than a trickle.
+const FLOOR_BYTES_PER_SECOND: usize = 8 * 1024;
 
 fn registry(dir: &tempfile::TempDir) -> (Arc<AppState>, axum::Router) {
     let clock = Arc::new(AtomicI64::new(1000));
@@ -103,31 +107,29 @@ async fn test_a_stalled_chunk_leaves_a_session_the_client_can_resume() {
     );
 }
 
-/// The bound is on the gap, so a chunk that keeps arriving is never cut however long it takes in total.
-/// Three frames spaced just under the bound run well past it and still land.
+/// A chunk delivering at the floor, in frames spaced just under the gap bound, trips neither: the gap
+/// bound sees frames arriving and the floor sees bytes earning the time they take. Its total runs well
+/// past both, which is the point of bounding a gap and a rate rather than a duration.
 #[tokio::test(start_paused = true)]
 async fn test_a_slow_chunk_that_keeps_arriving_is_not_cut() {
     let dir = tempfile::tempdir().unwrap();
     let (state, app) = registry(&dir);
     let (session, opened) = open_session(&app, b"first").await;
-    let trickle = stream::iter([
-        Bytes::from_static(b"aa"),
-        Bytes::from_static(b"bb"),
-        Bytes::from_static(b"cc"),
-    ])
-    .then(|frame| async move {
+    let paid_for = FLOOR_BYTES_PER_SECOND * usize::try_from(SHORT_OF_THE_BOUND.as_secs()).unwrap();
+    let earned = Bytes::from(vec![b'x'; paid_for]);
+    let paying = stream::iter([earned.clone(), earned.clone(), earned.clone()]).then(|frame| async move {
         tokio::time::sleep(SHORT_OF_THE_BOUND).await;
         Ok::<_, std::io::Error>(frame)
     });
 
     let started = tokio::time::Instant::now();
-    let status = patch_stream(app.clone(), &session, Body::from_stream(trickle)).await;
+    let status = patch_stream(app.clone(), &session, Body::from_stream(paying)).await;
     let elapsed = started.elapsed();
 
     assert_eq!(status, StatusCode::ACCEPTED);
     assert_eq!(
         state.serving.meta.upload_record(&session).unwrap().map(|r| r.offset),
-        Some(opened + 6),
+        Some(opened + 3 * earned.len() as u64),
     );
     assert!(
         elapsed > STALL_BOUND * 2,
@@ -190,4 +192,37 @@ async fn test_a_stalled_chunk_delays_the_reclaim_pass_by_one_bound() {
         "the pass waits one stall bound, not for as long as the client stays connected",
     );
     assert_eq!(state.serving.meta.upload_record(&other_session).unwrap(), None);
+}
+
+/// A client sending just often enough to keep the gap bound satisfied still has to get somewhere. The
+/// floor ends a trickle on the frame its earned time runs out, and what it managed to send stays in the
+/// session for it to resume from.
+#[tokio::test(start_paused = true)]
+async fn test_a_trickling_chunk_is_cut_by_the_throughput_floor() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = registry(&dir);
+    let (session, opened) = open_session(&app, b"first").await;
+    // A kilobyte every twenty-nine seconds never goes quiet, and earns an eighth of a second each time.
+    let dribble = Bytes::from(vec![b'x'; 1024]);
+    let landed = dribble.len() as u64;
+    let trickle = stream::iter([dribble.clone(), dribble.clone(), dribble]).then(|frame| async move {
+        tokio::time::sleep(SHORT_OF_THE_BOUND.saturating_add(Duration::from_secs(4))).await;
+        Ok::<_, std::io::Error>(frame)
+    });
+
+    let cut = patch_stream(app.clone(), &session, Body::from_stream(trickle)).await;
+    let stopped_at = state.serving.meta.upload_record(&session).unwrap().map(|r| r.offset);
+    let resumed = patch_stream(app.clone(), &session, Body::from("rest")).await;
+
+    assert_eq!(cut, StatusCode::BAD_GATEWAY, "a trickle must not read as accepted");
+    assert_eq!(
+        stopped_at,
+        Some(opened + landed),
+        "the session keeps the bytes that reached disk"
+    );
+    assert_eq!(
+        resumed,
+        StatusCode::ACCEPTED,
+        "the client resumes the session it still has"
+    );
 }
