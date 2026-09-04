@@ -140,6 +140,24 @@ fn test_stage_usage_counts_root_and_fan_out_stages() {
     assert_eq!(store.stage_usage().unwrap(), StageUsage { files: 2, bytes: 17 });
 }
 
+/// A usage figure assembled from a walk that stopped early is not a usage figure. Reporting the
+/// bytes it reached would understate what is on disk, and a caller sizing a sweep from it would free
+/// less than it believed.
+#[cfg(unix)]
+#[test]
+fn test_stage_usage_propagates_an_unreadable_store() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let (_dir, store) = store();
+    let root = store.staging_dir();
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let usage = store.stage_usage();
+
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(usage.unwrap_err().kind(), BlobErrorKind::Io);
+}
+
 #[test]
 fn test_scan_leaves_stage_files_out_of_the_content_addressed_entries() {
     let (_dir, store) = store();

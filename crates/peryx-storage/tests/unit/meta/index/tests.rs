@@ -220,3 +220,63 @@ fn test_remove_driver_values_if_stops_after_prefix() {
             .is_empty()
     );
 }
+
+/// A bounded prefix scan that fails must not come back as a shorter list. A short list reads as
+/// fewer matching keys, and a caller reading back a generation it already chose from this snapshot
+/// would take the short list for the whole of it.
+///
+/// A store handle does not survive its own injected failure, so each step reopens the retained pages
+/// rather than reusing one handle.
+#[test]
+fn driver_prefix_keys_limited_never_returns_a_short_list() {
+    let (meta, inner, fault) = crate::meta::fault::initialized();
+    for key in ["catalog/1", "catalog/2", "catalog/3", "other/1"] {
+        meta.put_driver_value(key, b"value").unwrap();
+    }
+    let whole = meta
+        .read_driver_txn(|txn| txn.prefix_keys_limited("catalog/", 10))
+        .unwrap();
+    assert_eq!(whole.len(), 3);
+    drop(meta);
+
+    let mut failed = 0_u32;
+    for fail_after in 0..192 {
+        let meta = crate::meta::fault::reopen(&inner, &fault);
+        fault.arm(fail_after);
+        let listed = meta.read_driver_txn(|txn| txn.prefix_keys_limited("catalog/", 10));
+        fault.disable();
+        match listed {
+            Ok(keys) => assert_eq!(keys, whole, "injecting after {fail_after} reads listed short"),
+            Err(_) => failed += 1,
+        }
+    }
+
+    assert!(failed > 0, "no injection point reached the scan");
+}
+
+/// The same guarantee for the unbounded collect: a scan that fails partway must not present the rows
+/// it had gathered as the whole prefix.
+#[test]
+fn driver_prefix_never_returns_a_short_collection() {
+    let (meta, inner, fault) = crate::meta::fault::initialized();
+    for key in ["catalog/1", "catalog/2", "catalog/3", "other/1"] {
+        meta.put_driver_value(key, b"value").unwrap();
+    }
+    let whole = meta.read_driver_txn(|txn| txn.prefix("catalog/")).unwrap();
+    assert_eq!(whole.len(), 3);
+    drop(meta);
+
+    let mut failed = 0_u32;
+    for fail_after in 0..192 {
+        let meta = crate::meta::fault::reopen(&inner, &fault);
+        fault.arm(fail_after);
+        let collected = meta.read_driver_txn(|txn| txn.prefix("catalog/"));
+        fault.disable();
+        match collected {
+            Ok(entries) => assert_eq!(entries, whole, "injecting after {fail_after} reads collected short"),
+            Err(_) => failed += 1,
+        }
+    }
+
+    assert!(failed > 0, "no injection point reached the scan");
+}

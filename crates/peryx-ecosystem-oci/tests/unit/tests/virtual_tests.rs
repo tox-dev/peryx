@@ -312,6 +312,42 @@ async fn test_virtual_referrers_discard_local_results_when_a_proxy_fails() {
     );
 }
 
+/// A referrers document past the manifest bound is refused by size rather than read into memory, so
+/// an upstream cannot spend peryx's memory on a body it would reject anyway.
+///
+/// The failing-proxy case beside this one answers with the same status, so the reason is asserted
+/// too: a status alone would not tell the two apart.
+#[tokio::test]
+async fn test_virtual_referrers_refuse_an_oversized_upstream_document() {
+    let server = MockServer::start().await;
+    let subject = format!("sha256:{}", "b".repeat(64));
+    Mock::given(method("GET"))
+        .and(path(format!("/v2/app/referrers/{subject}")))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_raw(
+                serde_json::json!({
+                    "schemaVersion": 2,
+                    "mediaType": "application/vnd.oci.image.index.v1+json",
+                    "manifests": [],
+                    "padding": "a".repeat(5 * 1024 * 1024),
+                })
+                .to_string()
+                .into_bytes(),
+                "application/vnd.oci.image.index.v1+json",
+            ),
+        )
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = virtual_stack(&dir, &format!("{}/", server.uri()));
+
+    let (status, _, body) = send(&app, Method::GET, &format!("/v2/reg/app/referrers/{subject}")).await;
+
+    let rendered = String::from_utf8_lossy(&body).into_owned();
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{rendered}");
+    assert!(rendered.contains("upstream body exceeds 4194304 bytes"), "{rendered}");
+}
+
 #[tokio::test]
 async fn test_virtual_referrers_keep_local_results_when_a_proxy_is_empty() {
     let server = MockServer::start().await;

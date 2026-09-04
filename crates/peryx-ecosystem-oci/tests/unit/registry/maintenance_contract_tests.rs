@@ -145,6 +145,111 @@ fn registry_fsck_reports_corrupt_manifests() {
     );
 }
 
+fn blobs(dir: &tempfile::TempDir) -> peryx_storage::blob::BlobStorage {
+    peryx_storage::blob::BlobStorage::filesystem(dir.path().join("blobs"))
+}
+
+/// A check that cannot read the manifests has not found the metadata clean, so it reports the read
+/// failure rather than the zero problems it happens to have counted.
+#[test]
+fn registry_fsck_surfaces_a_failure_reading_manifests() {
+    let dir = tempfile::tempdir().unwrap();
+    let (pages, fault) = peryx_test_support::fault::backend();
+    let meta = MetaStore::open_backend(peryx_test_support::fault::faulted(&pages, &fault)).unwrap();
+    let mut output = Vec::new();
+    fault.arm(0);
+
+    let error = OciRegistry::default()
+        .fsck_metadata(&meta, &blobs(&dir), &[], &mut output)
+        .unwrap_err();
+
+    assert!(error.contains("injected storage failure"), "{error}");
+    assert!(output.is_empty(), "{output:?}");
+}
+
+/// A descriptor check that cannot stat the blob store has not established the layer is absent, so
+/// the storage failure reaches the operator instead of a "missing blob" finding it did not verify.
+#[test]
+fn registry_fsck_surfaces_a_failure_reading_blobs() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let layer = format!("sha256:{}", "c".repeat(64));
+    let image = manifest(format!("{{\"layers\":[{{\"digest\":\"{layer}\"}}]}}").as_bytes());
+    crate::store::record_manifest(&meta, "images", "app", &digest(&image), &image).unwrap();
+    // A regular file where the blob root belongs, so every path under it fails as not a directory.
+    let root = dir.path().join("blobs");
+    std::fs::write(&root, b"not a directory").unwrap();
+    let mut output = Vec::new();
+
+    let error = OciRegistry::default()
+        .fsck_metadata(
+            &meta,
+            &peryx_storage::blob::BlobStorage::filesystem(root),
+            &[],
+            &mut output,
+        )
+        .unwrap_err();
+
+    assert!(!error.is_empty());
+    assert!(output.is_empty(), "reported a finding it never confirmed: {output:?}");
+}
+
+/// The tag scan is a second read, so `arm(0)` never reaches it: the manifest scan consumes the
+/// injection first. Sweeping the injection point finds the run that fails during the tags, and
+/// since both reads fail with the same text the report is the discriminator - empty means the
+/// manifest scan failed, non-empty means the manifest findings were written and the tags then did.
+#[test]
+fn registry_fsck_surfaces_a_failure_reading_tags() {
+    let dir = tempfile::tempdir().unwrap();
+    let (pages, fault) = peryx_test_support::fault::backend();
+    let meta = MetaStore::open_backend(peryx_test_support::fault::faulted(&pages, &fault)).unwrap();
+    meta.put_driver_value(&format!("oci\0m\0sha256:{}", "b".repeat(64)), b"invalid")
+        .unwrap();
+    crate::store::put_tag(&meta, "images", "app", "latest", &format!("sha256:{}", "c".repeat(64))).unwrap();
+
+    drop(meta);
+    // A handle does not survive its own injected failure: reusing one across armings leaves every
+    // later sweep step failing in the manifest scan. Each step reopens the retained pages instead.
+    let during_tags = (0..128).find(|&fail_after| {
+        let meta = MetaStore::reopen_backend(peryx_test_support::fault::faulted(&pages, &fault)).unwrap();
+        fault.arm(fail_after);
+        let mut output = Vec::new();
+        let failed = OciRegistry::default()
+            .fsck_metadata(&meta, &blobs(&dir), &[], &mut output)
+            .is_err();
+        fault.disable();
+        failed && !output.is_empty()
+    });
+
+    assert!(
+        during_tags.is_some(),
+        "no injection point failed after a manifest finding was written"
+    );
+}
+
+/// A finding an operator never receives is not a finding, so a report that cannot be written fails
+/// the check instead of counting the problem and returning success.
+#[test]
+fn registry_fsck_surfaces_a_failure_writing_a_report() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    meta.put_driver_value(&format!("oci\0m\0sha256:{}", "b".repeat(64)), b"invalid")
+        .unwrap();
+
+    let error = OciRegistry::default()
+        // A zero-capacity cursor rather than a writer of our own: a hand-rolled one would carry a
+        // `flush` nothing on this path calls, which is an uncovered arm of the test itself.
+        .fsck_metadata(
+            &meta,
+            &blobs(&dir),
+            &[],
+            &mut std::io::Cursor::new(Box::<[u8]>::default()),
+        )
+        .unwrap_err();
+
+    assert!(error.contains("failed to write whole buffer"), "{error}");
+}
+
 #[test]
 fn registry_fsck_reports_missing_descriptor_content_and_tag_targets() {
     let dir = tempfile::tempdir().unwrap();

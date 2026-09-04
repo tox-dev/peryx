@@ -1014,3 +1014,91 @@ fn test_repair_reports_and_drops_a_source_row_that_names_no_publication() {
         "the sweep is idempotent"
     );
 }
+
+/// The check sums problems across nine scans, so a failure in any of them must not come back as a
+/// smaller count. A short problem count is a false all-clear in the same way a short defect list is:
+/// an operator reads "three problems" as the whole truth and fixes three.
+///
+/// A store handle does not survive its own injected failure, so each step reopens the retained pages
+/// rather than reusing one handle.
+#[test]
+fn fsck_metadata_never_reports_fewer_problems_than_exist() {
+    let dir = tempfile::tempdir().unwrap();
+    let blobs: BlobStorage = BlobStore::new(dir.path().join("blobs")).into();
+    let (pages, fault) = peryx_test_support::fault::backend();
+    let meta = MetaStore::open_backend(peryx_test_support::fault::faulted(&pages, &fault)).unwrap();
+    meta.put_driver_value("pypi\u{0}i\u{0}pypi/flask", b"garbage").unwrap();
+    meta.put_driver_value("pypi\u{0}f\u{0}not-hex", b"u\npypi").unwrap();
+    meta.put_driver_value("pypi\u{0}d\u{0}not-hex", b"u\nm\npypi").unwrap();
+    meta.put_driver_value("pypi\u{0}p\u{0}pypi/flask", b"").unwrap();
+    meta.put_upload("pypi", "flask", "flask-1.0.whl", b"not json").unwrap();
+    meta.put_driver_value("pypi\u{0}o\u{0}pypi/flask/flask-1.0.whl", b"bogus")
+        .unwrap();
+    meta.put_driver_value("pypi\u{0}a\u{0}pypi/flask/not-hex/flask-1.0.whl", b"abc\n16")
+        .unwrap();
+    meta.put_provenance("pypi", "flask", DIGEST_A, "flask-1.0.whl", provenance_bundle(DIGEST_B))
+        .unwrap();
+    let mut whole_report = Vec::new();
+    let whole = fsck_metadata(&meta, &blobs, &audited_fixture(), &mut whole_report).unwrap();
+    assert_eq!(whole, 8, "{}", String::from_utf8_lossy(&whole_report));
+    drop(meta);
+
+    let mut failed = 0_u32;
+    for fail_after in 0..256 {
+        let meta = MetaStore::reopen_backend(peryx_test_support::fault::faulted(&pages, &fault)).unwrap();
+        fault.arm(fail_after);
+        let mut report = Vec::new();
+        let counted = fsck_metadata(&meta, &blobs, &audited_fixture(), &mut report);
+        fault.disable();
+        match counted {
+            Ok(problems) => assert_eq!(
+                (problems, report),
+                (whole, whole_report.clone()),
+                "injecting after {fail_after} reads reported short"
+            ),
+            Err(_) => failed += 1,
+        }
+    }
+
+    assert!(failed > 0, "no injection point reached the checks");
+}
+
+/// A purge decides what to keep from a scan of the project's file rows, so a scan that fails partway
+/// must not hand back a smaller preserved set. Preserving less means removing more, and the rows it
+/// would take are the ones a project populated by a catalog sync needs for a cold download.
+///
+/// The run is a dry run, so the store is identical at every injection point and any difference in
+/// the report comes from the scan rather than from what an earlier step deleted.
+///
+/// A store handle does not survive its own injected failure, so each step reopens the retained pages
+/// rather than reusing one handle.
+#[test]
+fn purge_project_never_preserves_less_than_it_should() {
+    let (pages, fault) = peryx_test_support::fault::backend();
+    let meta = MetaStore::open_backend(peryx_test_support::fault::faulted(&pages, &fault)).unwrap();
+    seed_valid_page(&meta);
+    let uploaded = upload_record("other-1.0.tar.gz", Digest::of(b"preserved upload").as_str());
+    meta.put_upload(
+        "hosted",
+        "other",
+        "other-1.0.tar.gz",
+        crate::to_json(&uploaded).as_bytes(),
+    )
+    .unwrap();
+    let whole = super::purge_project(&meta, "pypi", "flask", false).unwrap();
+    drop(meta);
+
+    let mut failed = 0_u32;
+    for fail_after in 0..192 {
+        let meta = MetaStore::reopen_backend(peryx_test_support::fault::faulted(&pages, &fault)).unwrap();
+        fault.arm(fail_after);
+        let report = super::purge_project(&meta, "pypi", "flask", false);
+        fault.disable();
+        match report {
+            Ok(got) => assert_eq!(got, whole, "injecting after {fail_after} reads preserved less"),
+            Err(_) => failed += 1,
+        }
+    }
+
+    assert!(failed > 0, "no injection point reached the scan");
+}

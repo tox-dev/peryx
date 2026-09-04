@@ -54,9 +54,13 @@ fn test_logging_layers_cover_formats_and_platform_sinks() {
     let _ = journald_layer(LogFormat::Pretty);
     let _ = syslog_layer(LogFormat::Pretty);
     let _ = syslog_layer(LogFormat::Json);
-    for sink in [LogSink::Journald, LogSink::Syslog] {
+    let directory = tempfile::tempdir().unwrap();
+    // Every sink arm has to run in this one binary: llvm-cov scores a function by its best
+    // instantiation, so arms split across two compilations still read as uncovered.
+    for sink in [LogSink::Stdout, LogSink::File, LogSink::Journald, LogSink::Syslog] {
         let _ = logging_layer(&LogConfig {
             sink,
+            file: Some(directory.path().join("peryx.log")),
             ..LogConfig::default()
         });
     }

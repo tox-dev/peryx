@@ -189,3 +189,23 @@ fn http_client() -> reqwest::Client {
         .build()
         .unwrap()
 }
+
+/// A request that cannot even be built never reached a server, so it carries no status. Reporting
+/// one would attribute a failure that happened here to a response nobody received.
+#[tokio::test]
+async fn fetch_bounded_reports_a_request_it_cannot_build() {
+    // The shared helper installs the crypto provider a bare client would panic without.
+    let transport = insecure_transport();
+    let request = transport.client().get("http://exa mple.invalid/");
+
+    // `err()` rather than `unwrap_err()`: the success type carries no Debug, and adding one to
+    // reach it would change the crate rather than test it.
+    let error = crate::oidc_http::fetch_bounded(transport.as_ref(), request, 1024)
+        .await
+        .err();
+
+    assert_eq!(
+        error,
+        Some(crate::oidc_http::BoundedResponseError::Transport { status: None })
+    );
+}

@@ -1020,6 +1020,8 @@ fn durability_policy_name_contract(#[case] policy: DurabilityPolicy, #[case] exp
 #[case(TransportError::Unauthenticated, false, Some("unauthenticated"))]
 #[case(TransportError::BadStatus { status: 404 }, false, Some("bad_status"))]
 #[case(TransportError::Malformed, false, Some("malformed"))]
+#[case(TransportError::CheckpointRequired, false, Some("checkpoint_required"))]
+#[case(TransportError::CheckpointUnavailable, false, Some("checkpoint_unavailable"))]
 #[case(TransportError::FrameTooLarge { limit: 1, actual: 2 }, false, Some("frame_too_large"))]
 #[case(TransportError::TooManyOperations { limit: 1, actual: 2 }, false, Some("too_many_operations"))]
 #[case(TransportError::RecordTooLarge { serial: 4, limit: 2 }, false, Some("record_too_large"))]
@@ -1029,6 +1031,8 @@ fn durability_policy_name_contract(#[case] policy: DurabilityPolicy, #[case] exp
 #[case(TransportError::DigestMismatch { expected: "a".into(), actual: "b".into() }, false, Some("digest_mismatch"))]
 #[case(TransportError::RangeMismatch { expected: "bytes 0-7".into(), actual: "bytes 0-99".into() }, false, Some("range_mismatch"))]
 #[case(TransportError::BlobNotFound { digest: "a".into() }, false, Some("blob_not_found"))]
+#[case(TransportError::ReceiptIdentity { expected: "a".into(), actual: "b".into() }, false, Some("receipt_identity"))]
+#[case(TransportError::ReceiptSize { expected: 1, actual: 2 }, false, Some("receipt_size"))]
 fn transport_error_contract(
     #[case] error: TransportError,
     #[case] retryable: bool,

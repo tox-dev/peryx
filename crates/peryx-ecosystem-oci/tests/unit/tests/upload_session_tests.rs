@@ -312,3 +312,34 @@ fn test_metered_closing_upload_without_a_session_commits_the_rows() {
 fn settle<T>(_: &T) -> bool {
     true
 }
+
+/// A scan that fails must not come back as a shorter list. The reaper deletes what this returns, so
+/// a short list leaves expired sessions holding their reserved bytes with nothing to retry them.
+///
+/// A store handle does not survive its own injected failure, so each step reopens the retained pages
+/// rather than reusing one handle.
+#[test]
+fn test_expired_uploads_never_returns_a_short_list() {
+    let (pages, fault) = peryx_test_support::fault::backend();
+    let meta = MetaStore::open_backend(peryx_test_support::fault::faulted(&pages, &fault)).unwrap();
+    for (id, repo, at) in [("a", "app/a", 1), ("b", "app/b", 2), ("c", "app/c", 3)] {
+        meta.begin_upload(id, "hosted", repo, at).unwrap();
+    }
+    let whole = meta.expired_uploads(50, 10).unwrap();
+    assert_eq!(whole.len(), 3);
+    drop(meta);
+
+    let mut failed = 0_u32;
+    for fail_after in 0..192 {
+        let meta = MetaStore::reopen_backend(peryx_test_support::fault::faulted(&pages, &fault)).unwrap();
+        fault.arm(fail_after);
+        let listed = meta.expired_uploads(50, 10);
+        fault.disable();
+        match listed {
+            Ok(ids) => assert_eq!(ids, whole, "injecting after {fail_after} reads listed short"),
+            Err(_) => failed += 1,
+        }
+    }
+
+    assert!(failed > 0, "no injection point reached the scan");
+}

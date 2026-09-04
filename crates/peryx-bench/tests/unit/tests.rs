@@ -923,3 +923,24 @@ fn metadata_start_failure_is_reported() {
         "cargo did not start"
     );
 }
+
+/// A scratch directory that cannot be created has to name the path it failed on. The profile write
+/// that follows depends on it, and a bare io error would leave whoever reads the failure guessing
+/// which directory the benchmark wanted.
+#[tokio::test]
+async fn machine_profile_publish_names_the_scratch_it_cannot_create() {
+    let dir = tempfile::tempdir().unwrap();
+    let blocked = dir.path().join("occupied");
+    std::fs::write(&blocked, b"not a directory").unwrap();
+    let scratch = blocked.join("scratch");
+
+    let error = MachineProfile::system(dir.path())
+        .publish(Some(&scratch))
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        format!("{error}"),
+        format!("cannot create benchmark scratch at {}", scratch.display())
+    );
+}

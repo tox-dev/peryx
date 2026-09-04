@@ -129,7 +129,8 @@ regex = { workspace = true, optional = true }
 # The changelog reader shares one journal with every other driver, so its tests read what a real one writes.
 peryx-ecosystem-oci.workspace = true
 peryx-events = { workspace = true, features = ["test-util"] }
-peryx-test-support.workspace = true
+peryx-storage = { workspace = true, features = ["fault-injection"] }
+peryx-test-support = { workspace = true, features = ["redb-fault"] }
 httpdate.workspace = true
 rstest.workspace = true
 rustls.workspace = true

@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use peryx_index::serving::Inflight;
 use peryx_policy::Policy;
 use peryx_storage::meta::MetaStore;
-use peryx_upstream::UpstreamClient;
+use peryx_upstream::{NamedUpstream, UpstreamClient, UpstreamRouter};
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -937,4 +937,50 @@ async fn test_sync_stores_a_sidecar_claim_only_for_a_digest_that_content_address
         get_file_publication(&meta, "pypi", "flask", &sha, "flask-1.0-py3-none-any.whl").unwrap(),
         expected
     );
+}
+
+/// A routed 304 names the source that answered, and only a generation that same source published
+/// may be reused. Without the match a source swapped in behind one index would have its "not
+/// modified" applied to files another source had published.
+///
+/// The plain client leaves the answering source absent, so this needs a router to say one at all.
+#[tokio::test]
+async fn test_sync_304_reuses_a_generation_the_answering_source_published() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/simple/flask/"))
+        .and(header("if-none-match", "v1"))
+        .respond_with(ResponseTemplate::new(304).insert_header("etag", "v2"))
+        .mount(&server)
+        .await;
+    let router = UpstreamRouter::new(vec![NamedUpstream::new(
+        "pypi",
+        UpstreamClient::new(&format!("{}/simple/", server.uri())).unwrap(),
+    )])
+    .unwrap();
+    let (_dir, meta) = store();
+    let id = seed_active(
+        &meta,
+        "pypi",
+        "flask",
+        "v1",
+        &[file("flask-1.0.tar.gz", &"a".repeat(64))],
+    );
+
+    let outcome = sync_project_files(
+        &router,
+        &Inflight::default(),
+        &meta,
+        "pypi",
+        &Policy::default(),
+        "flask",
+        "https://pypi.org/simple/",
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(outcome, ProjectSyncOutcome::NotModified { files: 1 });
+    let active = active_project_generation(&meta, "pypi", "flask").unwrap().unwrap();
+    assert_eq!(active.generation, id, "the answering source published this generation");
+    assert_eq!(active.etag.as_deref(), Some("v2"));
 }

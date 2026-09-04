@@ -357,3 +357,34 @@ fn test_a_foreign_record_carries_no_pypi_tag() {
 
     assert_eq!(payload.get(PYPI_OP_TAG), None);
 }
+
+/// A journal read that fails must not come back as a shorter page. A reader treats the page it gets
+/// as everything after its cursor, so a short page is a false "caught up" and the entries it skipped
+/// are never asked for again.
+///
+/// A store handle does not survive its own injected failure, so each step reopens the retained pages
+/// rather than reusing one handle.
+#[test]
+fn read_journal_entries_never_returns_a_short_page() {
+    let (pages, fault) = peryx_test_support::fault::backend();
+    let meta = MetaStore::open_backend(peryx_test_support::fault::faulted(&pages, &fault)).unwrap();
+    meta.commit_driver_txn(|_| Ok::<_, MetaError>(((), vec![value("first"), value("second"), value("third")])))
+        .unwrap();
+    let whole = read_journal_entries(&meta, 0, 10).unwrap();
+    assert_eq!(whole.entries.len(), 3);
+    drop(meta);
+
+    let mut failed = 0_u32;
+    for fail_after in 0..160 {
+        let meta = MetaStore::reopen_backend(peryx_test_support::fault::faulted(&pages, &fault)).unwrap();
+        fault.arm(fail_after);
+        let read = read_journal_entries(&meta, 0, 10);
+        fault.disable();
+        match read {
+            Ok(snapshot) => assert_eq!(snapshot, whole, "injecting after {fail_after} reads read short"),
+            Err(_) => failed += 1,
+        }
+    }
+
+    assert!(failed > 0, "no injection point reached the journal read");
+}

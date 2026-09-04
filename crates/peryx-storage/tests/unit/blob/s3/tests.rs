@@ -62,6 +62,30 @@ fn test_multipart_part_size_rejects_the_first_byte_above_the_protocol_limit() {
     );
 }
 
+/// The size check runs before the first request, so an object past the protocol limit is refused
+/// against a bucket that was never contacted. The refusal still has to name the backend and the
+/// operation, or an operator sees a bare size complaint with nothing to attach it to.
+#[tokio::test]
+async fn test_upload_stage_names_the_backend_that_refused_an_oversized_object() {
+    let directory = tempfile::tempdir().unwrap();
+    let backend = backend(directory.path());
+    let digest = Digest::of(b"payload");
+    let staged = directory.path().join("staged");
+    std::fs::write(&staged, b"payload").unwrap();
+    let len = MAX_MULTIPART_BYTES + 1;
+
+    let error = backend.upload_stage(&digest, len, &staged).await.unwrap_err();
+
+    assert_eq!(error.kind(), BlobErrorKind::LimitExceeded);
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "s3 blob backend commit for {}: blob size {len} exceeds {MAX_MULTIPART_BYTES} byte limit",
+            digest.as_str()
+        )
+    );
+}
+
 #[tokio::test]
 async fn test_upload_acquisition_reuses_an_inflight_result() {
     let directory = tempfile::tempdir().unwrap();

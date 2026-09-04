@@ -1,8 +1,8 @@
 use peryx_storage::meta::{MetaStore, QuotaLimit, QuotaLimits, QuotaReservationState, QuotaUsage};
 
 use super::{
-    ManifestCommit, ReserveOutcome, commit_blob_membership, finalize, publish_manifest, quota_reservation,
-    release_blob_membership, reserve,
+    ManifestCheckpoint, ManifestCommit, ManifestOperation, ReserveOutcome, commit_blob_membership, finalize,
+    publish_manifest, quota_reservation, release_blob_membership, reserve,
 };
 use crate::name::Reference;
 use crate::registry::ServeError;
@@ -245,4 +245,101 @@ fn test_manifest_tag_replacement_commits_a_new_allocation() {
         ),
         (8, 1)
     );
+}
+
+/// A stored checkpoint that cannot be decoded has to fail the replay it was read for. Treating it as
+/// absent would let a request that already committed run a second time.
+///
+/// The round trip is the control: without it a `decode` that rejected everything would pass.
+#[test]
+fn test_manifest_checkpoint_reports_a_record_it_cannot_decode() {
+    let checkpoint = ManifestCheckpoint {
+        reference: "sha256:aa".to_owned(),
+        epoch: 3,
+        serial: 9,
+    };
+
+    assert_eq!(ManifestCheckpoint::decode(&checkpoint.encode()).unwrap(), checkpoint);
+    assert!(matches!(
+        ManifestCheckpoint::decode(b"not a checkpoint"),
+        Err(ServeError::Transport(_))
+    ));
+}
+
+/// A publish that cannot record its idempotency checkpoint must not leave the manifest behind. The
+/// checkpoint is what a retry reads to decide the work is already done, so a manifest committed
+/// without one is published again on the next attempt as though it had never landed.
+///
+/// Each step gets its own backend, because a publish mutates and the next injection point would
+/// otherwise run against whatever the previous one left. The fault is armed after the store opens
+/// so the count applies to the publish rather than to creating the tables.
+#[test]
+fn test_publish_manifest_never_commits_without_its_checkpoint() {
+    let manifest = Manifest {
+        media_type: "application/vnd.oci.image.manifest.v1+json".to_owned(),
+        bytes: b"{}".to_vec(),
+    };
+    let reference = Reference::Tag("stable".to_owned());
+    // The control: with nothing injected the publish lands and the manifest is readable. Without it
+    // the sweep below would pass against a publish that always failed.
+    let (pages, fault) = peryx_test_support::fault::backend();
+    let meta = MetaStore::open_backend(peryx_test_support::fault::faulted(&pages, &fault)).unwrap();
+    meta.claim_operation("op-1", None, 100).unwrap();
+    publish_manifest(&meta, checkpoint_commit(&manifest, &reference)).unwrap();
+    drop(meta);
+    let meta = MetaStore::reopen_backend(peryx_test_support::fault::faulted(&pages, &fault)).unwrap();
+    assert!(meta.get_driver_value("oci\u{0}m\u{0}sha256:a").unwrap().is_some());
+    drop(meta);
+
+    let mut failed = 0_u32;
+    for fail_after in 0..192 {
+        let (pages, fault) = peryx_test_support::fault::backend();
+        let meta = MetaStore::open_backend(peryx_test_support::fault::faulted(&pages, &fault)).unwrap();
+        // The checkpoint refuses an operation nobody claimed, so without this every step fails for
+        // that reason instead of the injected one and the sweep proves nothing.
+        meta.claim_operation("op-1", None, 100).unwrap();
+        fault.arm(fail_after);
+        let published = publish_manifest(&meta, checkpoint_commit(&manifest, &reference));
+        fault.disable();
+        drop(meta);
+
+        let meta = MetaStore::reopen_backend(peryx_test_support::fault::faulted(&pages, &fault)).unwrap();
+        let stored = meta.get_driver_value("oci\u{0}m\u{0}sha256:a").unwrap().is_some();
+        // Empty while pending, so a recorded response is what says the checkpoint landed. Presence
+        // of the record alone would only prove the claim above ran.
+        let checkpointed = meta
+            .operation_outcome("op-1")
+            .unwrap()
+            .is_some_and(|record| !record.response.is_empty());
+        failed += u32::from(published.is_err());
+        assert_eq!(
+            stored,
+            checkpointed,
+            "injecting after {fail_after} reads left manifest={stored} and checkpoint={checkpointed} \
+             disagreeing, published_ok={}",
+            published.is_ok()
+        );
+    }
+
+    assert!(failed > 0, "no injection point reached the publish");
+}
+
+fn checkpoint_commit<'a>(manifest: &'a Manifest, reference: &'a Reference) -> ManifestCommit<'a> {
+    ManifestCommit {
+        index: "store",
+        repo: "app",
+        canonical: "sha256:a",
+        manifest,
+        reference,
+        referrer: None,
+        reservation: None,
+        journal: true,
+        webhook: None,
+        operation: Some(ManifestOperation {
+            id: "op-1",
+            reference: "stable",
+            epoch: 1,
+            now: 100,
+        }),
+    }
 }

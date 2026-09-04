@@ -655,3 +655,135 @@ fn test_plan_error_display_names_each_failure() {
             .contains("boom")
     );
 }
+
+struct PanickingDriver;
+
+impl RetentionDriver for PanickingDriver {
+    fn validate_retention(&self, _policy: &RetentionPolicy) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn plan_retention(
+        &self,
+        _scan: &crate::serving::RetentionScan<'_>,
+        _start: &mut dyn FnMut(peryx_policy::RetentionSummary) -> Result<(), String>,
+        _emit: &mut dyn FnMut(RetentionDecision) -> Result<(), String>,
+    ) -> Result<(), String> {
+        panic!("the plugin driver came apart");
+    }
+}
+
+/// A driver that comes apart takes the worker with it, so nothing ever sends the summary the request
+/// is waiting on. The wait has to end as an interruption rather than hanging on a sender that will
+/// never write. A driver returning without a snapshot does not reach this: the export validates that
+/// itself and forwards a store error through the channel.
+#[tokio::test]
+async fn test_export_body_ends_the_wait_when_the_worker_dies() {
+    let (_dir, meta) = store();
+    let driver: Arc<dyn RetentionDriver> = Arc::new(PanickingDriver);
+    let gates = super::RetentionGates::new(1);
+    let permit = gates.try_enter("alpha").unwrap();
+    let export = super::RetentionExport {
+        index: "alpha".to_owned(),
+        ecosystem: "example".to_owned(),
+        policy: empty_policy(),
+        now: None,
+        after: 0,
+        expect: None,
+    };
+
+    let error = super::export_body(driver, meta, export, permit).await.unwrap_err();
+
+    assert!(format!("{error:?}").contains("export worker stopped"), "{error:?}");
+}
+
+/// A driver that opens a second snapshot has already sent the first, so the request is answered and
+/// the violation has to reach the caller through the body it is already streaming.
+#[tokio::test]
+async fn test_export_body_reports_a_second_snapshot_through_the_stream() {
+    let (_dir, meta) = store();
+    let driver: Arc<dyn RetentionDriver> = Arc::new(InvalidDriver(SnapshotViolation::Repeated));
+    let gates = super::RetentionGates::new(1);
+    let permit = gates.try_enter("alpha").unwrap();
+    let export = super::RetentionExport {
+        index: "alpha".to_owned(),
+        ecosystem: "example".to_owned(),
+        policy: empty_policy(),
+        now: None,
+        after: 0,
+        expect: None,
+    };
+
+    let (_, body) = super::export_body(driver, meta, export, permit).await.unwrap();
+    let error = axum::body::to_bytes(body, usize::MAX).await.unwrap_err();
+
+    assert!(format!("{error:?}").contains("more than one snapshot"), "{error:?}");
+}
+
+/// Parks inside the plan until the test releases it, so the request can be abandoned first and the
+/// summary send lands on a receiver that is already gone.
+struct GatedDriver {
+    entered: tokio::sync::mpsc::UnboundedSender<()>,
+    release: std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    saw: tokio::sync::mpsc::UnboundedSender<String>,
+}
+
+impl RetentionDriver for GatedDriver {
+    fn validate_retention(&self, _policy: &RetentionPolicy) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn plan_retention(
+        &self,
+        scan: &crate::serving::RetentionScan<'_>,
+        start: &mut dyn FnMut(peryx_policy::RetentionSummary) -> Result<(), String>,
+        _emit: &mut dyn FnMut(RetentionDecision) -> Result<(), String>,
+    ) -> Result<(), String> {
+        self.entered.send(()).unwrap();
+        // Blocking is correct here: the plan already runs on the blocking pool.
+        let release = self.release.lock().unwrap().take().expect("released once");
+        release.recv().unwrap();
+        let summary = peryx_policy::RetentionSummary {
+            policy_version: scan.policy.version(),
+            frontier: peryx_policy::RetentionFrontier::default(),
+        };
+        start(summary).inspect_err(|reason| self.saw.send(reason.clone()).unwrap())
+    }
+}
+
+/// A client that abandons an export leaves nothing waiting for the summary, so the send that opens
+/// the snapshot has nowhere to go. The worker has to learn the request is gone rather than carry on
+/// producing a body no one will read.
+///
+/// The order is forced rather than raced: the driver parks inside the plan, the test drops the
+/// request and waits for that drop to complete, and only then is the driver released.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_export_body_tells_the_worker_when_the_request_is_gone() {
+    let (_dir, meta) = store();
+    let (entered, mut entered_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (saw, mut saw_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (release, release_rx) = std::sync::mpsc::channel();
+    let driver: Arc<dyn RetentionDriver> = Arc::new(GatedDriver {
+        entered,
+        release: std::sync::Mutex::new(Some(release_rx)),
+        saw,
+    });
+    let gates = super::RetentionGates::new(1);
+    let permit = gates.try_enter("alpha").unwrap();
+    let export = super::RetentionExport {
+        index: "alpha".to_owned(),
+        ecosystem: "example".to_owned(),
+        policy: empty_policy(),
+        now: None,
+        after: 0,
+        expect: None,
+    };
+    let request = tokio::spawn(async move { super::export_body(driver, meta, export, permit).await.map(|_| ()) });
+
+    entered_rx.recv().await.expect("the plan parked");
+    request.abort();
+    assert!(request.await.unwrap_err().is_cancelled());
+    release.send(()).unwrap();
+
+    assert_eq!(saw_rx.recv().await.as_deref(), Some("export request gone"));
+}

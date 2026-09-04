@@ -465,3 +465,22 @@ fn test_restore_replaces_stale_staging_and_aside_paths() {
         (true, false, false)
     );
 }
+
+/// A backup config that is not text cannot be read, and the failure has to name the file it was
+/// reading rather than surfacing a bare encoding error. A restore reads the config before it
+/// verifies anything, so this is the first thing an operator hears about a damaged backup.
+#[test]
+fn test_restore_names_the_backup_config_it_cannot_read() {
+    let fixture = valid_backup();
+    std::fs::write(fixture.backup.join("config.toml"), [0xff, 0xfe]).unwrap();
+
+    let error = operator::restore(
+        &fixture.backup,
+        &fixture.root.path().join("restored"),
+        false,
+        &mut Vec::new(),
+    )
+    .unwrap_err();
+
+    assert!(format!("{error:#}").contains("read backup config"), "{error:#}");
+}
