@@ -67,6 +67,14 @@ _coverage-target-contract:
       | grep -F 'export CARGO_TARGET_DIR="{{ coverage_target_root }}/frontend"'
     just --dry-run coverage-native 2>&1 \
       | grep -F 'PERYX_BIN="{{ native_coverage_binary }}"'
+    # LLVM's total is the bound that holds, since a line shared by a covered call and an uncovered
+    # closure leaves the uncovered list while staying missed in the total.
+    just --dry-run coverage-native 2>&1 \
+      | grep -F -- '--fail-uncovered-lines 0 --fail-under-lines 100 --show-missing-lines'
+    # The gate reports to the terminal. Folding it back into the lcov write makes a failure print
+    # nothing at all, which leaves the reader a bare exit code.
+    ! just --dry-run coverage-native 2>&1 \
+      | grep -F -- '--fail-under-lines 100' | grep -Fq -- '--lcov'
 
 # Check that the default test suite receives the built Peryx binary.
 _test-target-contract:
@@ -1174,16 +1182,26 @@ package-sdist output="dist": _project-temp
 
 # Measure native Rust coverage.
 coverage-native output=".tox/coverage/native.lcov": test-deps _docker-ready
-    mkdir -p "$(dirname "{{ output }}")"
+    #!/usr/bin/env bash
+    set -euo pipefail
+    output="{{ output }}"
+    mkdir -p "$(dirname "$output")"
     cargo llvm-cov clean --workspace
     cargo llvm-cov --workspace --all-features --bench '*' --no-report
     PERYX_BIN="{{ native_coverage_binary }}" \
       PATH="{{ tools_root }}/bin:$PATH" cargo llvm-cov nextest --workspace \
       --all-features --profile ci --lib --bins --tests --examples \
       -E 'not(test(e2e_live))' --no-report
-    cargo llvm-cov report --no-default-ignore-filename-regex \
-      --ignore-filename-regex '/(\.cargo/(registry|git)|\.rustup/toolchains|rustc/[0-9a-f]+)/' \
-      --fail-uncovered-lines 0 --show-missing-lines --lcov --output-path "{{ output }}"
+    ignore='/(\.cargo/(registry|git)|\.rustup/toolchains|rustc/[0-9a-f]+)/'
+    cargo llvm-cov report --no-default-ignore-filename-regex --ignore-filename-regex "$ignore" \
+      --lcov --output-path "$output"
+    # `--fail-uncovered-lines` counts only a line that no function reached. Where a covered call and an
+    # uncovered closure share one physical line, that line leaves the uncovered list while LLVM still
+    # counts it missed, so the total is the bound that holds and the two disagree. Writing this report
+    # to the terminal rather than into the lcov file is what makes a failure name the files: a file
+    # with missed lines and nothing listed under Uncovered Lines holds the shared-line kind.
+    cargo llvm-cov report --no-default-ignore-filename-regex --ignore-filename-regex "$ignore" \
+      --fail-uncovered-lines 0 --fail-under-lines 100 --show-missing-lines
 
 # Measure native and Wasm frontend coverage.
 coverage-frontend native_output=".tox/coverage/frontend-native.lcov" wasm_output=".tox/coverage/frontend-wasm.lcov" merged_output=".tox/coverage/frontend.lcov": _project-temp
