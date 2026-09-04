@@ -107,6 +107,15 @@ const PROJECT_STATUS_PREFIX: &str = "pypi\u{0}s\u{0}";
 const RETIRED_PREFIX: &str = "pypi\u{0}x\u{0}";
 /// The former `uploads` table: hosted file records, keyed by `{index}/{normalized}/{filename}`.
 const UPLOAD_PREFIX: &str = "pypi\u{0}u\u{0}";
+/// How many upload records a hosted project holds and how many of those are untrashed, keyed by
+/// `{index}/{normalized}`. Maintained by every write that adds or removes an upload row, in that
+/// write's own transaction.
+///
+/// The root listing needs to know whether a project still serves anything, and the project row alone
+/// cannot say: trashing the last file leaves the row behind, so the index went on advertising a
+/// project whose detail page had started answering `404`. A row exists only where uploads happened,
+/// so a cached project carries none and stays listed on the strength of its page.
+const LIVE_UPLOADS_PREFIX: &str = "pypi\u{0}l\u{0}";
 /// The former `overrides` table: yanked/hidden markers, keyed by `{index}/{normalized}/{filename}`.
 const OVERRIDE_PREFIX: &str = "pypi\u{0}o\u{0}";
 /// Releases already announced in the changelog, keyed by `{index}/{normalized}/{version}`. Written by
@@ -288,6 +297,10 @@ pub(crate) fn upload_key(index: &str, normalized: &str, filename: &str) -> Strin
 
 fn override_key(index: &str, normalized: &str, filename: &str) -> String {
     format!("{OVERRIDE_PREFIX}{index}/{normalized}/{filename}")
+}
+
+fn live_uploads_key(index: &str, normalized: &str) -> String {
+    format!("{LIVE_UPLOADS_PREFIX}{index}/{normalized}")
 }
 
 pub(crate) fn announced_release_key(index: &str, normalized: &str, version: &str) -> String {

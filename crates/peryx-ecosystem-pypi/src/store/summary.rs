@@ -24,7 +24,9 @@ use peryx_driver::serving::{IndexSummary, RecentWrite};
 use peryx_storage::meta::{DriverReadTxn, DriverTxn, MetaError, MetaStore};
 use serde::{Deserialize, Serialize};
 
-use super::{COUNT_PREFIX, PROJECTS_PREFIX, RECENT_PREFIX, UPLOAD_PREFIX, project_key, upload_key};
+use super::{
+    COUNT_PREFIX, PROJECTS_PREFIX, RECENT_PREFIX, UPLOAD_PREFIX, live_uploads_key, project_key, record_str, upload_key,
+};
 
 /// Whether a derived row travels with the row it describes or stays on the node that wrote it.
 ///
@@ -56,7 +58,12 @@ pub fn put_cached_project_row(
 /// Drop a cached project's marker, keeping the index's project count in step. Returns whether it was
 /// there.
 pub fn remove_cached_project_row(txn: &mut DriverTxn, index: &str, normalized: &str) -> Result<bool, MetaError> {
-    let scope = RowScope::Local;
+    remove_project_row(txn, RowScope::Local, index, normalized)
+}
+
+/// Drop a project's marker in one scope, keeping the index's project count in step. Returns whether it
+/// was there.
+fn remove_project_row(txn: &mut DriverTxn, scope: RowScope, index: &str, normalized: &str) -> Result<bool, MetaError> {
     let removed = remove_row(txn, scope, &project_key(index, normalized))?;
     if removed {
         adjust_counts(txn, scope, index, -1, 0)?;
@@ -92,9 +99,12 @@ pub fn put_upload_row(
     let key = upload_key(index, normalized, filename);
     let previous = txn.get(&key)?;
     retire_order_row(txn, scope, index, normalized, filename, previous.as_deref())?;
+    let live = i64::from(serves_files(record)) - previous.as_deref().map_or(0, |bytes| i64::from(serves_files(bytes)));
+    let rows = i64::from(previous.is_none());
     if write_row(txn, scope, &key, record)? {
         adjust_counts(txn, scope, index, 0, 1)?;
     }
+    adjust_live_uploads(txn, scope, index, normalized, live, rows)?;
     if let Some(recent) = recent_upload(normalized, filename, record) {
         let value = serde_json::to_vec(&RecentRecord::from(&recent))?;
         write_row(txn, scope, &order_key(index, &recent, filename), &value)?;
@@ -114,7 +124,64 @@ pub fn remove_upload_row(
     let scope = RowScope::Replicated;
     retire_order_row(txn, scope, index, normalized, filename, Some(record))?;
     remove_row(txn, scope, &upload_key(index, normalized, filename))?;
-    adjust_counts(txn, scope, index, 0, -1)
+    adjust_counts(txn, scope, index, 0, -1)?;
+    adjust_live_uploads(txn, scope, index, normalized, -i64::from(serves_files(record)), -1)
+}
+
+/// Whether an upload record still serves its file, which is what the root listing asks about. A
+/// record peryx cannot parse counts as serving, so a row it fails to read hides no project.
+fn serves_files(record: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(record).map_or(true, |value| value["trashed"].is_null())
+}
+
+/// Move a hosted project's untrashed and total upload counts together, and drop the project once the
+/// last record goes.
+///
+/// Both numbers live in one row so a single read and write keep them consistent, and both move in the
+/// transaction that moved the upload row: a count written separately would trade the inconsistency
+/// this closes for a window where the listing and the rows disagree.
+///
+/// Trashing the last file leaves the project row standing so a restore returns the spelling it was
+/// published under. Removing the last record takes the project row and this one with it, so a later
+/// upload writes its own display spelling rather than inheriting the old one.
+fn adjust_live_uploads(
+    txn: &mut DriverTxn,
+    scope: RowScope,
+    index: &str,
+    normalized: &str,
+    live: i64,
+    rows: i64,
+) -> Result<(), MetaError> {
+    let key = live_uploads_key(index, normalized);
+    let (mut serving, mut total) = txn
+        .get(&key)?
+        .map(|raw| decode_live_uploads(&key, &raw))
+        .transpose()?
+        .unwrap_or((0, 0));
+    serving = serving.saturating_add(live).max(0);
+    total = total.saturating_add(rows).max(0);
+    if total == 0 {
+        remove_row(txn, scope, &key)?;
+        remove_project_row(txn, scope, index, normalized)?;
+        return Ok(());
+    }
+    write_row(txn, scope, &key, format!("{serving}\n{total}").as_bytes()).map(|_| ())
+}
+
+fn decode_live_uploads(key: &str, raw: &[u8]) -> Result<(i64, i64), MetaError> {
+    let value = record_str(key, raw.to_vec())?;
+    let (serving, total) = value.split_once('\n').ok_or(MetaError::DriverRecordMissing {
+        key: key.to_owned(),
+        field: "total",
+    })?;
+    let parse = |field: &'static str, text: &str| {
+        text.parse::<i64>().map_err(|source| MetaError::DriverRecordInteger {
+            key: key.to_owned(),
+            field,
+            source,
+        })
+    };
+    Ok((parse("serving", serving)?, parse("total", total)?))
 }
 
 /// The counts and newest writes of each named index, read from the maintained rows.
