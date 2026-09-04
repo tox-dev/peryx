@@ -849,3 +849,23 @@ fn assert_no_topology(body: &str) {
         "stale-epoch response should guide a retry: {body}"
     );
 }
+
+#[tokio::test]
+async fn test_deleting_every_file_takes_the_project_out_of_the_root_listing() {
+    let h = authority_harness().await;
+    upload_peryxpkg(&h.state, "/root/pypi/", &fixture_wheel()).await;
+
+    assert_eq!(
+        request(&h.state, "DELETE", "/root/pypi/peryxpkg/", Some(&upload_auth())).await,
+        StatusCode::OK
+    );
+
+    let (detail_status, ..) = get(&h.state, "/root/pypi/simple/peryxpkg/", Some("application/json")).await;
+    let (list_status, _, list) = get(&h.state, "/root/pypi/simple/", Some("application/json")).await;
+
+    assert_eq!((detail_status, list_status), (StatusCode::NOT_FOUND, StatusCode::OK));
+    assert!(
+        !list.contains("peryxpkg"),
+        "the root index still advertises a project whose detail page is gone: {list}"
+    );
+}
