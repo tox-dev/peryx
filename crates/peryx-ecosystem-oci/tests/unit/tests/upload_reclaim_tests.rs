@@ -18,8 +18,9 @@ use super::{auth, body_has_code, send_body};
 use crate::upload_session::UploadStore as _;
 
 const TOKEN: &str = "s3cret";
-/// Longer than any chunk a test writes, so a cancel that answers within it answered without the gate.
-const WELL_PAST_ANY_CHUNK: std::time::Duration = std::time::Duration::from_secs(30);
+/// Inside the stall bound the edge puts on a request body, so the append the cancel waits for is still
+/// in flight across the whole window: a cancel that answers within it answered without taking the gate.
+const WHILE_THE_APPEND_HOLDS: std::time::Duration = std::time::Duration::from_secs(5);
 /// Far enough past the session TTL that every open session is a reclamation candidate.
 const LONG_AFTER: i64 = 1_000_000;
 
@@ -245,7 +246,7 @@ async fn test_a_cancel_waits_for_the_chunk_in_flight() {
     let appending = tokio::spawn(patch_stream(app.clone(), session.clone(), body));
     holding.await.unwrap();
 
-    let during = tokio::time::timeout(WELL_PAST_ANY_CHUNK, cancel(&app, &session))
+    let during = tokio::time::timeout(WHILE_THE_APPEND_HOLDS, cancel(&app, &session))
         .await
         .ok()
         .map(|(status, _)| status);

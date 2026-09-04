@@ -12,6 +12,7 @@ use axum::http::Uri;
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse as _, Response};
 use axum::routing::{any, delete, get, post, put};
+use http_body::Body as _;
 use http_body_util::BodyExt as _;
 use tower::{ServiceBuilder, util::MapRequestLayer};
 use tower_http::trace::{DefaultOnResponse, TraceLayer};
@@ -108,8 +109,10 @@ pub fn router_with_ui(
         router
     };
     let addresses = Arc::clone(&serving);
+    let bounded = MapRequestLayer::new(bound_request_body);
     let router = router.layer(
         ServiceBuilder::new()
+            .layer(bounded.clone())
             .layer(MapRequestLayer::new(canonicalize_request_path))
             // Rate limiting and security logs must use one trusted-proxy decision.
             .layer(MapRequestLayer::new(move |request: Request| {
@@ -124,7 +127,35 @@ pub fn router_with_ui(
     // A merge keeps the right-hand router's fallbacks, so the unmetered routes have to join from the
     // left: merging them in from the right would swap the layered 404 and the layered CONNECT
     // catch-all for the bare ones they carry, dropping those requests out of every middleware.
-    crate::response_security::secure_responses(unmetered.merge(router), &secured)
+    // The unmetered routes join outside request accounting on purpose, so they take the stall bound at
+    // their own join point rather than going without one.
+    crate::response_security::secure_responses(unmetered.layer(bounded).merge(router), &secured)
+}
+
+/// How long a request body may go without delivering a frame before the server stops waiting for it.
+///
+/// The span peryx already allows an upstream it is reading from, applied to the other direction:
+/// thirty seconds of silence is a stalled transfer whichever end has gone quiet.
+const REQUEST_STALL_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Bound the gap between a request body's frames, so a client that stops sending cannot hold its
+/// handler, and whatever that handler locked, until the connection itself dies.
+///
+/// The bound is on the gap rather than on the request, because those are different questions. A large
+/// upload over a slow link is making progress and has to be allowed to finish, so a total bound would
+/// have to exceed the slowest legitimate transfer, which leaves it far too loose to catch a stall. It
+/// would also cut across the throughput floor that already bounds long transfers, which answers the
+/// trickle a gap bound cannot see. A body that has already ended cannot stall, so it stays as it is
+/// and a request without one pays nothing.
+fn bound_request_body(request: Request) -> Request {
+    if request.body().is_end_stream() {
+        return request;
+    }
+    let (parts, body) = request.into_parts();
+    Request::from_parts(
+        parts,
+        Body::new(crate::request_stall::StallBounded::new(REQUEST_STALL_TIMEOUT, body)),
+    )
 }
 
 /// The four dispatchers, the read-only guard and the rate limiter each read the request path for

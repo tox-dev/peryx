@@ -30,6 +30,7 @@ mod serve;
 mod tag_name_tests;
 mod upload_reclaim_tests;
 mod upload_session_tests;
+mod upload_stall_tests;
 mod virtual_tests;
 mod web_tests;
 mod webhooks_tests;
