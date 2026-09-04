@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use peryx_core::{Ecosystem, LexiconRegistry, PrometheusSource};
-use peryx_ha::{ArtifactPlacement, ArtifactPlacementStore, ArtifactSource};
+use peryx_ha::ArtifactSource;
 use peryx_storage::blob::BlobStorage;
 use peryx_storage::meta::MetaStore;
 use peryx_upstream::UpstreamRouter;
@@ -523,15 +523,8 @@ impl ServingState {
     }
 
     /// A push wrote verified bytes here, so the projection reads hosted and local.
-    ///
-    /// A store fault leaves the bytes on disk and the projection behind it, which is the direction the
-    /// artifact source and availability contract settles on: the write that produced the bytes does not
-    /// fail for a projection it could not update.
     fn record_hosted_placement(&self, digest_hex: &str) {
-        let placement = ArtifactPlacement::record(ArtifactSource::Hosted, true);
-        if let Err(error) = ArtifactPlacementStore::put_artifact_placement(&self.meta, digest_hex, &placement) {
-            tracing::warn!(digest = digest_hex, %error, "recording the hosted artifact placement failed");
-        }
+        self.meta.record_committed_placement(digest_hex, ArtifactSource::Hosted);
     }
 
     /// Returns `authority`'s committed home and epoch, assigning the local datacenter when unowned.

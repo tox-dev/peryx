@@ -443,9 +443,7 @@ pub async fn download_blob(
     // Both callers reach here by pulling a blob this node did not host, so the projection records the
     // one thing a later read wants to know without probing the content store: the bytes are here and
     // an upstream can resupply them. Taking the store here is what stops a third caller forgetting.
-    if let Err(error) = store::record_content_placement(meta, storage.as_str(), store::OciArtifactOrigin::Mirrored, true) {
-        tracing::warn!(digest = storage.as_str(), %error, "recording the mirrored blob placement failed");
-    }
+    meta.record_committed_placement(storage.as_str(), peryx_ha::ArtifactSource::Proxy);
     Ok(bytes)
 }
 

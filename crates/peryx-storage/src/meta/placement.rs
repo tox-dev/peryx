@@ -2,7 +2,7 @@ use std::ops::Bound::{Excluded, Unbounded};
 
 use peryx_ha::{
     ArtifactPlacement, ArtifactPlacementHealth, ArtifactPlacementPage, ArtifactPlacementQuery, ArtifactPlacementRow,
-    ArtifactPlacementStore, ByteAvailability,
+    ArtifactPlacementStore, ArtifactSource, ByteAvailability,
 };
 use redb::{ReadableTable as _, ReadableTableMetadata as _};
 
@@ -45,6 +45,20 @@ impl MetaStore {
             table.insert(digest.as_str(), serde_json::to_vec(placement)?.as_slice())?;
         }
         Ok(())
+    }
+
+    /// Record a digest whose verified bytes this instance has just committed.
+    ///
+    /// Every path that commits blob bytes owes the projection a row, and each of them reaches this
+    /// rather than writing one itself, so they share one answer to what a failed projection write
+    /// means. It means nothing to the caller: the bytes are content-addressed and already durable, so
+    /// the honest outcome is bytes on disk with the projection behind them, which the convergence pass
+    /// reconciles. A push, a pull or an import does not fail for a row it could not write.
+    pub fn record_committed_placement(&self, digest: &str, source: ArtifactSource) {
+        let placement = ArtifactPlacement::record(source, true);
+        if let Err(error) = self.put_artifact_placement(digest, &placement) {
+            tracing::warn!(digest, %error, "recording the committed artifact placement failed");
+        }
     }
 
     /// `None` means the projection holds no row for `digest`, which is not an observation about the
@@ -261,3 +275,7 @@ impl ArtifactPlacementStore for MetaStore {
         Self::artifact_placement_health(self)
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/meta/placement_tests.rs"]
+mod placement_tests;

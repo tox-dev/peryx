@@ -476,7 +476,7 @@ pub fn store_prepared_blocking(
     .into_iter()
     .flatten()
     {
-        record_imported_placement(meta, digest);
+        meta.record_committed_placement(digest.as_str(), peryx_ha::ArtifactSource::Hosted);
     }
     store_record(
         meta,
@@ -487,17 +487,6 @@ pub fn store_prepared_blocking(
         None,
         false,
     )
-}
-
-/// A store fault leaves the imported bytes committed and the projection behind them rather than
-/// failing an import whose blobs already landed.
-fn record_imported_placement(meta: &MetaStore, digest: &Digest) {
-    let placement = peryx_ha::ArtifactPlacement::record(peryx_ha::ArtifactSource::Hosted, true);
-    if let Err(error) =
-        peryx_ha::ArtifactPlacementStore::put_artifact_placement(meta, digest.as_str(), &placement)
-    {
-        tracing::warn!(digest = digest.as_str(), %error, "recording the imported artifact placement failed");
-    }
 }
 
 fn staged_reference(blob: &BlobStaged) -> (Digest, u64) {

@@ -8,7 +8,7 @@ use crate::stream::Registration;
 use bytes::Bytes;
 use peryx_driver::state::ServingState;
 use peryx_index::{Index, IndexKind};
-use peryx_ha::{ArtifactPlacement, ArtifactPlacementStore, ArtifactSource};
+use peryx_ha::ArtifactSource;
 use peryx_storage::blob::Digest;
 use peryx_upstream::{ArtifactClient, RangeError, RangeSession};
 
@@ -284,11 +284,7 @@ fn record_generated_metadata(
 /// addressed by digest. A store fault leaves the bytes committed and the projection behind them rather
 /// than failing a read whose bytes are already on disk.
 fn record_sidecar_placement(state: &ServingState, metadata_digest: &Digest, source: ArtifactSource) {
-    let placement = ArtifactPlacement::record(source, true);
-    if let Err(error) = ArtifactPlacementStore::put_artifact_placement(&state.meta, metadata_digest.as_str(), &placement)
-    {
-        tracing::warn!(digest = metadata_digest.as_str(), %error, "recording the sidecar placement failed");
-    }
+    state.meta.record_committed_placement(metadata_digest.as_str(), source);
 }
 
 async fn generated_metadata_bytes(
