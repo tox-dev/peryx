@@ -1,5 +1,5 @@
 //! Reclaiming an idle upload: what survives a backend that will not delete the stage, and what a
-//! request appending to that session sees while maintenance is looking at it.
+//! request appending to that session sees while maintenance or a cancel is looking at it.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -18,6 +18,8 @@ use super::{auth, body_has_code, send_body};
 use crate::upload_session::UploadStore as _;
 
 const TOKEN: &str = "s3cret";
+/// Longer than any chunk a test writes, so a cancel that answers within it answered without the gate.
+const WELL_PAST_ANY_CHUNK: std::time::Duration = std::time::Duration::from_secs(30);
 /// Far enough past the session TTL that every open session is a reclamation candidate.
 const LONG_AFTER: i64 = 1_000_000;
 
@@ -64,6 +66,19 @@ async fn patch_stream(app: axum::Router, session: String, body: Body) -> (Status
     let response = app.oneshot(request).await.unwrap();
     let status = response.status();
     (status, response.into_body().collect().await.unwrap().to_bytes())
+}
+
+/// `DELETE` one session, the request a client sends to abandon an upload.
+async fn cancel(app: &axum::Router, session: &str) -> (StatusCode, Bytes) {
+    let (status, _, body) = send_body(
+        app,
+        Method::DELETE,
+        &format!("/v2/store/app/blobs/uploads/{session}"),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+    (status, body)
 }
 
 /// Run one maintenance pass through the driver the router installed, so it contends for the same
@@ -208,4 +223,58 @@ async fn test_an_append_whose_session_vanishes_answers_unknown_upload() {
 
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(body_has_code(&body, "BLOB_UPLOAD_UNKNOWN"), "{body:?}");
+}
+
+/// A cancel takes the session gate, so it cannot remove the row under an append that has already read
+/// its offset. The client pays for that: a `DELETE` sent while a chunk is in flight waits for the
+/// chunk. Time here is virtual, so the wait the assertion names costs the test nothing.
+#[tokio::test(start_paused = true)]
+async fn test_a_cancel_waits_for_the_chunk_in_flight() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app, _now) = registry(&dir);
+    let session = open_session(&app, b"first").await;
+    // The body parks after the append has taken the gate and read the offset it will write at, which
+    // is the window a cancel must not slip into.
+    let (parked, holding) = oneshot::channel();
+    let (release, released) = oneshot::channel();
+    let body = Body::from_stream(stream::once(async move {
+        parked.send(()).unwrap();
+        released.await.unwrap();
+        Ok::<_, std::io::Error>(Bytes::from_static(b"second"))
+    }));
+    let appending = tokio::spawn(patch_stream(app.clone(), session.clone(), body));
+    holding.await.unwrap();
+
+    let during = tokio::time::timeout(WELL_PAST_ANY_CHUNK, cancel(&app, &session))
+        .await
+        .ok()
+        .map(|(status, _)| status);
+    release.send(()).unwrap();
+    let (appended, _) = appending.await.unwrap();
+    let (after, _) = cancel(&app, &session).await;
+
+    assert_eq!(during, None, "a cancel must not answer while an append holds the gate");
+    assert_eq!(
+        (appended, after),
+        (StatusCode::ACCEPTED, StatusCode::NO_CONTENT),
+        "the append keeps its session, and the cancel it delayed takes it afterwards",
+    );
+    assert_eq!(state.serving.meta.upload_record(&session).unwrap(), None);
+}
+
+/// The other direction: once a cancel has taken the gate and removed the row, the next chunk re-reads
+/// the session under that gate and finds nothing, so it reports an unknown upload rather than an offset
+/// into a stage that is already gone.
+#[tokio::test]
+async fn test_an_append_after_a_cancel_answers_unknown_upload() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app, _now) = registry(&dir);
+    let session = open_session(&app, b"first").await;
+
+    let (cancelled, _) = cancel(&app, &session).await;
+    let (status, body) = patch_stream(app.clone(), session.clone(), Body::from("second")).await;
+
+    assert_eq!((cancelled, status), (StatusCode::NO_CONTENT, StatusCode::NOT_FOUND));
+    assert!(body_has_code(&body, "BLOB_UPLOAD_UNKNOWN"));
+    assert_eq!(state.serving.meta.upload_record(&session).unwrap(), None);
 }

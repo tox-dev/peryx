@@ -98,6 +98,12 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
 
     /// Cancel an open upload session (spec end-14): remove its staged bytes and answer `204`, or `404`
     /// when the id names no session this index opened.
+    ///
+    /// Held under the session gate, like every other mutation of a session row. A cancel that removed
+    /// the row outside it would take the session out from under an append that had already read its
+    /// offset, which is the interleaving the append-side recheck exists to catch. The cost is on the
+    /// client: a `DELETE` that arrives while a chunk is being written waits for that chunk, and nothing
+    /// bounds a chunk but the connection carrying it.
     pub(super) async fn cancel_upload(
         &self,
         state: &ServingState,
@@ -109,12 +115,13 @@ impl<S: BuildHasher + Default + Send + Sync + 'static> OciRegistryWithHasher<S> 
             Ok(target) => target,
             Err(rejection) => return Ok(rejection.into_response()),
         };
-        let Some(_record) = session_record(state, &index.name, name, session)? else {
-            return Ok(error_response(ErrorCode::BlobUploadUnknown, "upload unknown"));
+        let lock = self.session_gate.lock(session);
+        let outcome = {
+            let _guard = lock.lock_owned().await;
+            cancel_locked(state, index, name, session).await
         };
-        state.blobs.discard_upload(session).await.map_err(ServeError::from)?;
-        state.meta.remove_upload(session)?;
-        Ok(StatusCode::NO_CONTENT.into_response())
+        self.session_gate.release(session);
+        outcome
     }
 
     /// Report an open upload session's progress: `204` with the bytes received so far.
@@ -280,6 +287,20 @@ async fn mount_blob(state: &ServingState, request: MountRequest<'_>) -> Result<R
         || blob_created(name, mount),
     )
     .await
+}
+
+/// Discard the session's stage under the gate, then its row.
+///
+/// The bytes go before the record for the reason maintenance uses the same order: the row is the only
+/// durable link back to the stage, so a backend that refuses the deletion leaves a session the reclaim
+/// sweep will find rather than bytes under an id nothing records.
+async fn cancel_locked(state: &ServingState, index: &Index, name: &str, session: &str) -> Result<Response, ServeError> {
+    if session_record(state, &index.name, name, session)?.is_none() {
+        return Ok(error_response(ErrorCode::BlobUploadUnknown, "upload unknown"));
+    }
+    state.blobs.discard_upload(session).await.map_err(ServeError::from)?;
+    state.meta.remove_upload(session)?;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 /// Read the session under the gate and refresh its activity timestamp.
