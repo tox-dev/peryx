@@ -278,3 +278,30 @@ fn test_same_bytes_reupload_of_the_same_bundle_is_an_idempotent_no_op() {
 
     assert!(!publish_wheel(&meta, &blobs, &wheel, Some("YmFy")).unwrap());
 }
+
+/// An import commits the same verified bytes a push does, so the projection answers for its
+/// distribution and its metadata sidecar alike. A digest the import never wrote keeps no row, which is
+/// what separates an artifact this node does not hold from one it holds and never recorded.
+#[test]
+fn test_store_prepared_blocking_records_a_placement_for_every_blob_it_commits() {
+    let wheel = wheel_metadata("Flask", "1.0");
+    let dir = tempfile::tempdir().unwrap();
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let blobs = BlobStorage::filesystem(dir.path().join("blobs"));
+
+    publish_wheel(&meta, &blobs, &wheel, None).unwrap();
+
+    let hosted = Some(peryx_ha::ArtifactPlacement::record(
+        peryx_ha::ArtifactSource::Hosted,
+        true,
+    ));
+    let artifact = Digest::of(&wheel);
+    let metadata = meta.get_metadata_digest(artifact.as_str()).unwrap();
+    assert_eq!(meta.get_artifact_placement(artifact.as_str()).unwrap(), hosted);
+    assert_eq!(
+        meta.get_artifact_placement(&metadata.expect("the import records a metadata sibling"))
+            .unwrap(),
+        hosted
+    );
+    assert_eq!(meta.get_artifact_placement(&"0".repeat(64)).unwrap(), None);
+}

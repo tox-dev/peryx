@@ -444,6 +444,44 @@ async fn test_monolithic_upload() {
     );
 }
 
+/// A pushed blob leaves the projection a row, and a digest this node never took leaves none. Without
+/// both halves the table cannot tell an artifact it does not hold from one it holds and never
+/// recorded, which is what makes the placement health aggregate readable.
+#[tokio::test]
+async fn test_monolithic_upload_records_its_artifact_placement() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, app) = hosted_writable(&dir, TOKEN);
+    let blob = b"placement-recorded-blob";
+    let digest = oci_digest(blob);
+    let stored = digest.strip_prefix("sha256:").unwrap();
+
+    let (status, _, _) = send_body(
+        &app,
+        Method::POST,
+        &format!("/v2/store/app/blobs/uploads/?digest={digest}"),
+        &[("authorization", &auth(TOKEN))],
+        blob.to_vec(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(
+        state.serving.meta.get_artifact_placement(stored).unwrap(),
+        Some(peryx_ha::ArtifactPlacement::record(
+            peryx_ha::ArtifactSource::Hosted,
+            true
+        ))
+    );
+    assert_eq!(
+        state
+            .serving
+            .meta
+            .get_artifact_placement(&"0".repeat(64))
+            .unwrap(),
+        None
+    );
+}
+
 #[tokio::test]
 async fn test_monolithic_upload_digest_mismatch() {
     let dir = tempfile::tempdir().unwrap();
