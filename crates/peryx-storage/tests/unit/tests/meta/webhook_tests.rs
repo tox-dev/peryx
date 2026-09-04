@@ -1,11 +1,77 @@
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::io::{Read as _, Seek as _};
-use std::sync::Mutex;
+use std::sync::OnceLock;
 
 use rstest::rstest;
 
 use super::store;
 use crate::meta::{MetaStore, NewWebhookDelivery, WebhookDeliveryAttempt, WebhookDeliveryStatus, WebhookEventIntent};
+
+thread_local! {
+    /// Where this thread's events go while it holds a [`Captured`], and nowhere otherwise.
+    static CAPTURE: RefCell<Option<std::fs::File>> = const { RefCell::new(None) };
+}
+
+/// Hands each event to the capture belonging to the thread that raised it, so one subscriber serves
+/// every test at once. Both writers it returns are standard ones, which keeps the routing decision as
+/// the only behaviour here.
+struct ThreadCapture;
+
+impl tracing_subscriber::fmt::MakeWriter<'_> for ThreadCapture {
+    type Writer = Box<dyn std::io::Write>;
+
+    fn make_writer(&self) -> Self::Writer {
+        CAPTURE.with_borrow(|capture| match capture {
+            Some(file) => Box::new(file.try_clone().expect("a capture file clones")) as Self::Writer,
+            None => Box::new(std::io::sink()),
+        })
+    }
+}
+
+/// The events this thread raises, until it drops.
+///
+/// The subscriber is installed once for the whole binary rather than per test, because a callsite
+/// decides its interest the first time any thread executes it and every thread reads that decision
+/// afterwards. A per-test subscriber leaves that decision to whichever thread arrives first: one
+/// holding no subscriber resolves the callsite against nothing, caches `never`, and silences the
+/// callsite for the tests that are asserting on it. A subscriber that outlives every test cannot be
+/// the one missing when that question is asked.
+struct Captured(std::fs::File);
+
+impl Captured {
+    fn install() -> Self {
+        static SUBSCRIBER: OnceLock<()> = OnceLock::new();
+        SUBSCRIBER.get_or_init(|| {
+            let subscriber = tracing_subscriber::fmt()
+                .with_ansi(false)
+                .without_time()
+                .with_writer(ThreadCapture)
+                .finish();
+            tracing::subscriber::set_global_default(subscriber)
+                .expect("the test binary installs one global subscriber");
+        });
+        let file = tempfile::tempfile().expect("a capture file opens");
+        CAPTURE.with_borrow_mut(|slot| *slot = Some(file.try_clone().expect("a capture file clones")));
+        Self(file)
+    }
+
+    fn output(&self) -> String {
+        let mut reader = self.0.try_clone().expect("a capture file clones");
+        reader.rewind().expect("a capture file rewinds");
+        let mut output = String::new();
+        reader
+            .read_to_string(&mut output)
+            .expect("the fmt subscriber writes utf-8");
+        output
+    }
+}
+
+impl Drop for Captured {
+    fn drop(&mut self) {
+        CAPTURE.with_borrow_mut(|slot| *slot = None);
+    }
+}
 
 fn none() -> HashSet<(String, String)> {
     HashSet::new()
@@ -346,31 +412,22 @@ fn test_webhook_queue_scan_skips_and_cleans_damaged_rows(#[case] damage: QueueDa
 
     let store = MetaStore::open_existing(&path).unwrap();
     assert_eq!(store.next_webhook_delivery_at().unwrap(), Some(20));
-    let mut capture = tempfile::tempfile().unwrap();
-    let subscriber = tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_writer(Mutex::new(capture.try_clone().unwrap()))
-        .finish();
-    tracing::subscriber::with_default(subscriber, || {
-        for _ in 0..2 {
-            assert_eq!(
-                store
-                    .list_due_webhook_deliveries(100, 10, &none())
-                    .unwrap()
-                    .into_iter()
-                    .map(|record| record.id)
-                    .collect::<Vec<_>>(),
-                std::slice::from_ref(&healthy)
-            );
-        }
-    });
+    let captured = Captured::install();
+    for _ in 0..2 {
+        assert_eq!(
+            store
+                .list_due_webhook_deliveries(100, 10, &none())
+                .unwrap()
+                .into_iter()
+                .map(|record| record.id)
+                .collect::<Vec<_>>(),
+            std::slice::from_ref(&healthy)
+        );
+    }
     if matches!(damage, QueueDamage::InvalidJson) {
         assert_eq!(store.get_webhook_delivery(damaged.as_deref().unwrap()).unwrap(), None);
     }
-    capture.rewind().unwrap();
-    let mut output = String::new();
-    capture.read_to_string(&mut output).unwrap();
+    let output = captured.output();
     assert_eq!(output.matches("discarding damaged webhook queue rows").count(), 1);
     assert!(output.contains(&format!("{count}=1")), "{output}");
     assert!(!output.contains("unbounded-corrupt-identifier"));
@@ -456,4 +513,26 @@ fn test_list_due_separates_same_target_name_across_indexes() {
 
     let ids: Vec<&str> = due.iter().map(|record| record.id.as_str()).collect();
     assert_eq!(ids, [first.as_str(), second.as_str()]);
+}
+
+/// The interleaving that silenced this file's captures: a thread holding no subscriber is the first to
+/// execute a callsite, which is when its interest is decided for every thread that follows. A capture
+/// that only exists for the length of one test is absent at that moment; the binary's subscriber is
+/// not, so the event still reaches the thread asserting on it.
+#[test]
+fn test_a_capture_survives_a_neighbour_reaching_the_callsite_first() {
+    let captured = Captured::install();
+    std::thread::spawn(unsubscribed_first_event).join().unwrap();
+    unsubscribed_first_event();
+
+    assert!(
+        captured.output().contains("callsite registered by a bare thread"),
+        "a thread holding no subscriber decided this callsite for every thread that followed"
+    );
+}
+
+/// A callsite of its own, so the test asserts on a first execution rather than on one some earlier test
+/// already resolved.
+fn unsubscribed_first_event() {
+    tracing::warn!(target: "peryx::webhook", "callsite registered by a bare thread");
 }
