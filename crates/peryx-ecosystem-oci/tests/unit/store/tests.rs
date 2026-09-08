@@ -544,3 +544,118 @@ fn test_derives_no_view_names_the_digest_keyed_manifest_row_alone() {
         assert_eq!(derives_no_view(&key), expected, "{key:?}");
     }
 }
+
+fn oci_manifest() -> Manifest {
+    Manifest {
+        media_type: "application/vnd.oci.image.manifest.v1+json".to_owned(),
+        bytes: b"{}".to_vec(),
+    }
+}
+
+/// Publish `digest` under `tag` and report what the publication decided.
+fn publish(meta: &MetaStore, digest: &str, tag: Option<&str>) -> ManifestPublication {
+    meta.commit_driver_txn(|txn| {
+        let published = publish_manifest_txn(txn, "hub", "app", digest, &oci_manifest(), tag)?;
+        Ok::<_, ManifestWriteError>((published, Vec::new()))
+    })
+    .unwrap()
+}
+
+/// Edit the store underneath a publication, so the next one sees exactly one of its four inputs
+/// changed. `remove` names keys to drop, `add` names keys to create; a trash entry's value is never
+/// read, only its presence.
+fn adjust(meta: &MetaStore, remove: &[String], add: &[String]) {
+    meta.commit_driver_txn(|txn| {
+        for key in remove {
+            txn.remove(key)?;
+        }
+        for key in add {
+            txn.put(key, b"{}")?;
+        }
+        Ok::<_, MetaError>(((), Vec::new()))
+    })
+    .unwrap();
+}
+
+/// A key under the blob membership namespace is one; a manifest membership key is not, though the two
+/// namespaces sit next to each other and both mention the same repository.
+#[test]
+fn test_only_a_blob_namespace_key_reads_as_blob_membership() {
+    assert!(is_blob_membership_key(&blob_membership_key("hub", "app", "sha256:aa")));
+    assert!(!is_blob_membership_key(&membership_key("hub", "app", "sha256:aa")));
+}
+
+/// Trashing a tag keeps the digest it pointed at, which is what a restore puts back.
+#[test]
+fn test_a_trashed_tag_remembers_the_digest_it_pointed_at() {
+    let (_dir, meta) = store();
+    publish(&meta, "sha256:aa", Some("stable"));
+
+    trash_tag(
+        &meta,
+        "hub",
+        "app",
+        "stable",
+        &TrashInfo {
+            deleted_at_unix: 7,
+            actor: None,
+            reason: None,
+        },
+        false,
+        |_| None,
+    )
+    .unwrap();
+
+    assert_eq!(
+        trashed_tag_digest(&meta, "hub", "app", "stable").unwrap(),
+        Some("sha256:aa".to_owned())
+    );
+}
+
+/// A publication reports a change when any one of its four inputs moved, so each is tested as the only
+/// one that did. Asserting them together would let one carry the others: the flag is a disjunction,
+/// and a case where two inputs move cannot say which one the answer came from.
+#[test]
+fn test_a_publication_reports_a_change_from_a_new_membership_alone() {
+    let (_dir, meta) = store();
+    publish(&meta, "sha256:aa", Some("stable"));
+    adjust(&meta, &[membership_key("hub", "app", "sha256:aa")], &[]);
+
+    let republished = publish(&meta, "sha256:aa", Some("stable"));
+
+    assert!(republished.changed, "a membership this push created is a change");
+}
+
+/// The same, for a manifest coming back out of the trash while nothing else moves.
+#[test]
+fn test_a_publication_reports_a_change_from_a_cleared_manifest_trash_alone() {
+    let (_dir, meta) = store();
+    publish(&meta, "sha256:aa", Some("stable"));
+    adjust(&meta, &[], &[manifest_trash_key("hub", "app", "sha256:aa")]);
+
+    let republished = publish(&meta, "sha256:aa", Some("stable"));
+
+    assert!(republished.changed, "a manifest this push untrashed is a change");
+}
+
+/// The same, for a tag coming back out of the trash while it already points where it is being put.
+#[test]
+fn test_a_publication_reports_a_change_from_a_cleared_tag_trash_alone() {
+    let (_dir, meta) = store();
+    publish(&meta, "sha256:aa", Some("stable"));
+    adjust(&meta, &[], &[tag_trash_key("hub", "app", "stable")]);
+
+    let republished = publish(&meta, "sha256:aa", Some("stable"));
+
+    assert!(republished.changed, "a tag this push untrashed is a change");
+}
+
+/// A push that moves nothing reports no change, which is what makes the four cases above mean
+/// something rather than always answering true.
+#[test]
+fn test_a_publication_that_moves_nothing_reports_no_change() {
+    let (_dir, meta) = store();
+    publish(&meta, "sha256:aa", Some("stable"));
+
+    assert!(!publish(&meta, "sha256:aa", Some("stable")).changed);
+}
