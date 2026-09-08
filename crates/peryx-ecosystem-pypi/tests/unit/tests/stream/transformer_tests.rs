@@ -1388,3 +1388,41 @@ fn transformer_dispatches_a_member_name_spelled_with_escapes(#[case] files_key: 
     assert_eq!(registrations, transform(&plain, plain_context(), 7).1);
     assert!(!registrations.is_empty(), "the escaped key has to reach the file walk");
 }
+
+/// A page that carries no `project-status` of its own gets the seeded one, and knowing half of it is
+/// still knowing something: a status with no reason, or a reason with no status, has to reach the
+/// page. Only a page seeded with neither has nothing to add.
+#[rstest]
+#[case::status_without_reason(Some("quarantined"), None)]
+#[case::reason_without_status(None, Some("under review"))]
+#[case::both(Some("quarantined"), Some("under review"))]
+fn transformer_seeds_a_project_status_it_knows_any_part_of(
+    #[case] status: Option<&str>,
+    #[case] reason: Option<&str>,
+) {
+    let mut transformer = PageTransformer::new(plain_context());
+    transformer.seed_project_status(status.map(str::to_owned), reason.map(str::to_owned));
+    let mut out = Vec::new();
+    for piece in upstream_page().as_bytes().chunks(7) {
+        transformer.push_into(piece, &mut out).unwrap();
+    }
+    transformer.finish().unwrap();
+
+    assert!(
+        String::from_utf8(out).unwrap().contains(r#""project-status""#),
+        "a seeded status peryx knows any part of belongs on the page"
+    );
+}
+
+#[test]
+fn transformer_seeds_no_project_status_it_knows_nothing_of() {
+    let mut transformer = PageTransformer::new(plain_context());
+    transformer.seed_project_status(None, None);
+    let mut out = Vec::new();
+    for piece in upstream_page().as_bytes().chunks(7) {
+        transformer.push_into(piece, &mut out).unwrap();
+    }
+    transformer.finish().unwrap();
+
+    assert!(!String::from_utf8(out).unwrap().contains(r#""project-status""#));
+}
