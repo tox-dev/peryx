@@ -12,7 +12,7 @@ use peryx_ha::{CommandOutcome, ControlCommit};
 
 use super::{
     AuditRecord, CommandMetrics, CommandReceipt, ControlCommand, ControlError, ControlPlane, DurationSource, KeyEntry,
-    KeyState, MembershipControl, evict_committed, percentile, plan_voter_roster,
+    KeyState, MembershipControl, evict_committed, percentile, plan_voter_roster, push_bounded,
 };
 use peryx_core::Clock;
 
@@ -639,5 +639,56 @@ fn test_the_outcome_serializes_to_its_snake_case_name() {
     assert_eq!(
         serde_json::to_string(&CommandOutcome::NoChange).unwrap(),
         "\"no_change\"",
+    );
+}
+
+/// The cap is how many the window holds, so a window filled to it is full rather than over. Evicting
+/// at the cap would keep one fewer than the operator asked to retain.
+#[test]
+fn test_eviction_leaves_a_window_filled_to_its_cap() {
+    let done = |key: &str, index: u64| KeyEntry {
+        key: key.to_owned(),
+        command: transfer(),
+        state: KeyState::Done(receipt(index)),
+    };
+    let mut receipts = VecDeque::from([done("k0", 1), done("k1", 2)]);
+
+    evict_committed(&mut receipts, 2);
+
+    assert_eq!(
+        receipts.iter().map(|entry| entry.key.clone()).collect::<Vec<_>>(),
+        ["k0", "k1"]
+    );
+}
+
+/// The same ceiling on the latency window: filling it to the cap keeps everything, and the oldest
+/// leaves only once something arrives past it.
+#[test]
+fn test_a_bounded_queue_holds_exactly_its_cap() {
+    let mut queue = VecDeque::new();
+
+    for latency in 1..=3 {
+        push_bounded(&mut queue, latency, 3);
+    }
+    let filled = queue.iter().copied().collect::<Vec<i64>>();
+    push_bounded(&mut queue, 4, 3);
+
+    assert_eq!((filled, queue.iter().copied().collect::<Vec<i64>>()), (vec![1, 2, 3], vec![2, 3, 4]));
+}
+
+/// Abandoning a key drops the claim that key is waiting on and nothing else. Every other key's waiter
+/// is still expecting an answer, and a claim that has already settled is a receipt a retry can replay.
+#[test]
+fn test_abandoning_one_key_leaves_the_others_claimed() {
+    let control = ScriptedControl::new([Ok(committed(7))]);
+    let plane = ControlPlane::new(control, fixed_unix_clock());
+    let _abandoned = plane.claim("k0", &transfer());
+    let _waiting = plane.claim("k1", &transfer());
+
+    plane.abandon("k0");
+
+    assert_eq!(
+        plane.lock().receipts.iter().map(|entry| entry.key.clone()).collect::<Vec<_>>(),
+        ["k1"]
     );
 }
