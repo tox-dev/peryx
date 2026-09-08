@@ -140,6 +140,36 @@ fn tar_gz_with_directory_and_file(path: &str, bytes: &[u8]) -> Vec<u8> {
     tarball
 }
 
+/// `wheel_metadata` buffers the wheel and `wheel_metadata_path` streams a staged one, so the two
+/// answer through separate instantiations of the same reader. A wheel that carries no readable
+/// `METADATA` must read as absent through both, or which answer a caller gets depends on which
+/// entry point the upload happened to take.
+#[rstest]
+#[case::not_a_wheel(
+    "pkg-1.0.zip",
+    zip_with_file(
+        "pkg-1.0.dist-info/METADATA",
+        b"Metadata-Version: 2.1\n",
+        zip::CompressionMethod::Stored
+    )
+)]
+#[case::no_metadata_member(
+    "pkg-1.0-py3-none-any.whl",
+    zip_with_file("pkg/module.py", b"x = 1\n", zip::CompressionMethod::Stored)
+)]
+#[case::metadata_is_a_directory("pkg-1.0-py3-none-any.whl", zip_with_directory("pkg-1.0.dist-info/METADATA/"))]
+#[case::metadata_is_a_symlink("pkg-1.0-py3-none-any.whl", zip_with_symlink("pkg-1.0.dist-info/METADATA"))]
+fn test_a_wheel_without_readable_metadata_is_absent_from_bytes_and_from_a_path(
+    #[case] filename: &str,
+    #[case] wheel: Vec<u8>,
+) {
+    let staged = temp_archive(&wheel);
+
+    let from_path = wheel_metadata_path(filename, staged.path()).expect("reads the staged wheel");
+
+    assert_eq!((wheel_metadata(filename, &wheel), from_path), (None, None));
+}
+
 #[test]
 fn test_extracts_metadata_documents_without_buffering_archives() {
     let wheel = zip_with_file(
