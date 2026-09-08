@@ -673,7 +673,10 @@ fn test_a_bounded_queue_holds_exactly_its_cap() {
     let filled = queue.iter().copied().collect::<Vec<i64>>();
     push_bounded(&mut queue, 4, 3);
 
-    assert_eq!((filled, queue.iter().copied().collect::<Vec<i64>>()), (vec![1, 2, 3], vec![2, 3, 4]));
+    assert_eq!(
+        (filled, queue.iter().copied().collect::<Vec<i64>>()),
+        (vec![1, 2, 3], vec![2, 3, 4])
+    );
 }
 
 /// Abandoning a key drops the claim that key is waiting on and nothing else. Every other key's waiter
@@ -688,7 +691,12 @@ fn test_abandoning_one_key_leaves_the_others_claimed() {
     plane.abandon("k0");
 
     assert_eq!(
-        plane.lock().receipts.iter().map(|entry| entry.key.clone()).collect::<Vec<_>>(),
+        plane
+            .lock()
+            .receipts
+            .iter()
+            .map(|entry| entry.key.clone())
+            .collect::<Vec<_>>(),
         ["k1"]
     );
 }

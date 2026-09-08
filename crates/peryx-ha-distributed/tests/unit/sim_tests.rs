@@ -387,8 +387,5 @@ fn losing_an_acknowledgement_names_a_serial_beyond_the_frontier() {
 
     let trace = execute(&config(0, solo(), 0, Some(Defect::LoseAcknowledged)), &plan);
 
-    assert!(
-        matches!(trace.outcome, Outcome::Violated { invariant: Invariant::Rpo, .. }),
-        "acknowledging past the frontier has to break the recovery point objective: {trace:?}"
-    );
+    assert!(matches!(trace.outcome, Outcome::Violated { invariant, .. } if invariant == Invariant::Rpo));
 }

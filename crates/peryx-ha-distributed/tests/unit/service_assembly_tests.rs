@@ -1538,7 +1538,11 @@ fn test_bindings_carry_the_active_flag_both_ways() {
     bindings.deactivate();
 
     assert_eq!(
-        (before, activated, bindings.active.load(std::sync::atomic::Ordering::Acquire)),
+        (
+            before,
+            activated,
+            bindings.active.load(std::sync::atomic::Ordering::Acquire)
+        ),
         (false, true, false)
     );
 }

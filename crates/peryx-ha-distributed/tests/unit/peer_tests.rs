@@ -482,7 +482,12 @@ async fn test_fetch_batch_accepts_a_request_at_the_operations_limit() {
         .unwrap();
 
     assert_eq!(
-        frame.page().changes.iter().map(|change| change.serial).collect::<Vec<u64>>(),
+        frame
+            .page()
+            .changes
+            .iter()
+            .map(|change| change.serial)
+            .collect::<Vec<u64>>(),
         vec![1, 2]
     );
 }

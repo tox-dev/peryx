@@ -643,7 +643,10 @@ fn test_receiver_cursor_accepts_day_zero() {
         .unwrap();
 
     assert_eq!(
-        (receiver.after_day(&ProducerId("dc-a".to_owned())), receiver.resume_day()),
+        (
+            receiver.after_day(&ProducerId("dc-a".to_owned())),
+            receiver.resume_day()
+        ),
         (0, 0)
     );
 }
