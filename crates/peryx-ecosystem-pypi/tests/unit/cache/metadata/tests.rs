@@ -535,3 +535,83 @@ async fn test_virtual_index_surfaces_an_undecodable_hosted_record() {
 
     assert!(matches!(err, CacheError::Parse(_)), "{err:?}");
 }
+
+const RANGED_WHEEL: &str = "sample_pkg-1.0-py3-none-any.whl";
+const RANGED_METADATA: &str = "Metadata-Version: 2.1\nName: sample-pkg\nVersion: 1.0\n";
+
+fn ranged_wheel_bytes() -> Vec<u8> {
+    use std::io::Write as _;
+    let mut bytes = Vec::new();
+    let mut archive = zip::ZipWriter::new(std::io::Cursor::new(&mut bytes));
+    let options = zip::write::SimpleFileOptions::default();
+    for (name, content) in [
+        ("sample_pkg/__init__.py", "__version__ = \"1.0\"\n"),
+        ("sample_pkg-1.0.dist-info/METADATA", RANGED_METADATA),
+        (
+            "sample_pkg-1.0.dist-info/WHEEL",
+            "Wheel-Version: 1.0\nGenerator: peryx-test\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        ),
+    ] {
+        archive.start_file(name, options).unwrap();
+        archive.write_all(content.as_bytes()).unwrap();
+    }
+    archive.finish().unwrap();
+    bytes
+}
+
+/// A server that answers the ranged read the way a real one does: a `HEAD` carrying the length and a
+/// strong validator, then each `GET` returning exactly the bytes its `Range` asked for.
+struct RangedWheelServer(Vec<u8>);
+
+impl wiremock::Respond for RangedWheelServer {
+    fn respond(&self, request: &wiremock::Request) -> wiremock::ResponseTemplate {
+        let etag = "\"sample-pkg-1.0\"";
+        let Some(range) = request.headers.get("range") else {
+            return wiremock::ResponseTemplate::new(200)
+                .insert_header("etag", etag)
+                .insert_header("accept-ranges", "bytes")
+                .insert_header("content-length", self.0.len().to_string().as_str());
+        };
+        let spec = range.to_str().unwrap().trim_start_matches("bytes=").to_owned();
+        let (start, end) = spec.split_once('-').expect("a bounded range");
+        let (start, end): (usize, usize) = (start.parse().unwrap(), end.parse().unwrap());
+        wiremock::ResponseTemplate::new(206)
+            .insert_header("etag", etag)
+            .insert_header(
+                "content-range",
+                format!("bytes {start}-{end}/{}", self.0.len()).as_str(),
+            )
+            .set_body_bytes(self.0[start..=end].to_vec())
+    }
+}
+
+/// Reading a wheel's metadata over ranges is arithmetic on offsets and lengths: where the central
+/// directory starts and ends, where the member's data begins, and how far it runs. Every one of those
+/// ends is inclusive, so each is a length short of the next offset. Getting any of them wrong asks the
+/// server for the wrong bytes, and the answer is either a refused range or a member that will not
+/// decode, never the metadata.
+///
+/// Nothing drove that arithmetic before: the only ranged-read test rejected bad filenames without
+/// fetching anything.
+#[tokio::test]
+async fn test_a_wheel_member_is_read_back_whole_over_ranges() {
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::path(format!("/files/{RANGED_WHEEL}")))
+        .respond_with(RangedWheelServer(ranged_wheel_bytes()))
+        .mount(&server)
+        .await;
+    let client = ArtifactClient::from(UpstreamClient::new(&format!("{}/", server.uri())).unwrap());
+
+    let outcome = wheel_metadata_by_range(
+        &client,
+        &format!("{}/files/{RANGED_WHEEL}", server.uri()),
+        RANGED_WHEEL,
+    )
+    .await
+    .unwrap();
+
+    let RemoteMetadata::Found(metadata) = outcome else {
+        panic!("the member is present, so the ranged read finds it");
+    };
+    assert_eq!(String::from_utf8(metadata).unwrap(), RANGED_METADATA);
+}
