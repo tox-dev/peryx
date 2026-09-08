@@ -351,3 +351,44 @@ fn invariants_re_hold_after_a_fenced_fault() {
     assert_eq!(committed.epoch, AuthorityEpoch(2));
     assert_eq!(committed.kind, OperationKind::Delete);
 }
+
+/// The simulator's choices have to be the same stream on every machine and every run, because a trace
+/// that cannot be replayed cannot be minimized. Pinning the draws pins every bit of the mixer that
+/// produces them.
+#[test]
+fn seeded_draws_follow_the_splitmix64_stream() {
+    let mut rng = Rng::seeded(0);
+
+    let drawn = [rng.next_u64(), rng.next_u64(), rng.next_u64()];
+
+    assert_eq!(
+        drawn,
+        [0xE220_A839_7B1D_CDAF, 0x6E78_9E6A_A1B9_65F4, 0x06C4_5D18_8009_454F]
+    );
+}
+
+/// `LoseAcknowledged` acknowledges a serial the source never sent. Reaching for one it already sent
+/// would acknowledge work that is committed, which breaks nothing, so the plan has to send twice
+/// before it acknowledges: after a single send, the serial below the frontier is zero and absent from
+/// the truth as well, and the invariant trips whichever direction the defect reaches.
+#[test]
+fn losing_an_acknowledgement_names_a_serial_beyond_the_frontier() {
+    let plan = vec![
+        Action::Produce {
+            source: 0,
+            kind: OperationKind::Publish,
+        },
+        Action::Produce {
+            source: 0,
+            kind: OperationKind::Publish,
+        },
+        Action::Acknowledge { source: 0 },
+    ];
+
+    let trace = execute(&config(0, solo(), 0, Some(Defect::LoseAcknowledged)), &plan);
+
+    assert!(
+        matches!(trace.outcome, Outcome::Violated { invariant: Invariant::Rpo, .. }),
+        "acknowledging past the frontier has to break the recovery point objective: {trace:?}"
+    );
+}
