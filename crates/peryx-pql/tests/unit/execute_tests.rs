@@ -482,6 +482,27 @@ fn test_run_end_to_end_binds_parameters() {
     );
 }
 
+#[rstest]
+#[case::bool_true("blocked", Value::Bool(true), &[("resource-a", 300), ("resource-d", 250), ("resource-c", 100)])]
+#[case::bool_false("blocked", Value::Bool(false), &[("resource-b", 200)])]
+#[case::int("reads", Value::Int(7), &[("resource-c", 100)])]
+fn test_run_binds_a_parameter_of_the_column_type(
+    #[case] column: &str,
+    #[case] value: Value,
+    #[case] expected: &[(&str, i64)],
+) {
+    let page = run(
+        &format!("from policy.decisions where {column} == :value select resource, evaluated_at"),
+        &std::collections::BTreeMap::from([("value".to_owned(), value)]),
+        &operator_scope(),
+        None,
+        &TestSource::new(decisions()),
+    )
+    .expect("runs");
+
+    assert_eq!(page, resource_time_page(expected, None));
+}
+
 #[test]
 fn test_run_resolves_a_timestamp_before_fetch() {
     let source = TestSource::new(decisions());
