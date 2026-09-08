@@ -782,3 +782,11 @@ fn test_footprint_counts_the_bytes_of_every_owned_field(#[case] longer: &str) {
 fn test_footprint_starts_from_the_struct_the_candidate_occupies() {
     assert_eq!(super::footprint(&footprint_candidate("", "", "", "")), size_of::<RetentionCandidate>());
 }
+
+/// The default per-project budget is 256 MiB. Written as a product of three numbers and compared
+/// against nowhere else, an operator changed inside it would move the size every project is planned
+/// against while every test that merely passes it along kept passing.
+#[test]
+fn test_the_project_budget_is_two_hundred_and_fifty_six_mebibytes() {
+    assert_eq!(RETENTION_PROJECT_BUDGET_BYTES, 268_435_456);
+}
