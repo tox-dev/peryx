@@ -697,7 +697,7 @@ frontend-deps: _project-temp
     npm --prefix crates/peryx-ecosystem-oci/tests/frontend ci
 
 # Run the shared and owner browser suites, installing and building whatever they are missing.
-frontend-test: _project-temp
+frontend-test: _project-temp _mise-trusted
     #!/usr/bin/env bash
     set -euo pipefail
     # Every suite runs even after an earlier one fails, so a single CI round reports all three;
