@@ -655,3 +655,7 @@ fn upload_key<'key>(key: &'key str, index: &str) -> Option<(&'key str, &'key str
     let (project, filename) = rest.split_once('/')?;
     (!project.is_empty() && !filename.is_empty()).then_some((project, filename))
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/search_pypi/tests.rs"]
+mod tests;
