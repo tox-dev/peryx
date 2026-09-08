@@ -19,6 +19,12 @@ fn band() -> std::ops::Range<u16> {
     FIXTURE_PORT_BASE..FIXTURE_PORT_BASE + FIXTURE_PORT_COUNT
 }
 
+/// Every draw below hands `claimed` the same iterator type, so one instantiation of it runs the
+/// skips, the success and the exhausted band rather than each outcome landing in a different one.
+fn draw(candidates: impl IntoIterator<Item = u16>) -> std::io::Result<ListenerReservation> {
+    ListenerReservation::claimed(candidates.into_iter().collect::<Vec<_>>().into_iter())
+}
+
 #[test]
 fn startup_log_keeps_the_failure_and_backtrace_tail() {
     let lines: Vec<_> = (0..80).map(|index| format!("line {index}")).collect();
@@ -44,8 +50,8 @@ fn reservation_holds_a_claim_on_a_port_below_the_ephemeral_range() {
 #[test]
 fn reservation_walks_past_a_candidate_another_draw_claimed() {
     let held = ListenerReservation::ephemeral().expect("claim a fixture port");
-    let reservation = ListenerReservation::claimed(std::iter::once(held.port).chain(fixture_port_candidates()))
-        .expect("draw past the held claim");
+    let reservation =
+        draw(std::iter::once(held.port).chain(fixture_port_candidates())).expect("draw past the held claim");
     assert_ne!(reservation.port, held.port);
 }
 
@@ -55,8 +61,8 @@ fn reservation_walks_past_a_candidate_whose_number_is_bound() {
     // the number rather than on the claim.
     let held = ListenerReservation::ephemeral().expect("claim a fixture port");
     let bound = claim_port(held.port);
-    let reservation = ListenerReservation::claimed(std::iter::once(bound).chain(fixture_port_candidates()))
-        .expect("draw past the bound number");
+    let reservation =
+        draw(std::iter::once(bound).chain(fixture_port_candidates())).expect("draw past the bound number");
     assert_ne!(reservation.port, bound);
 }
 
@@ -64,7 +70,7 @@ fn reservation_walks_past_a_candidate_whose_number_is_bound() {
 fn reservation_reports_a_band_with_nothing_left() {
     let held = ListenerReservation::ephemeral().expect("claim a fixture port");
     assert_eq!(
-        ListenerReservation::claimed(std::iter::once(held.port))
+        draw(std::iter::once(held.port))
             .map_err(|error| error.kind())
             .unwrap_err(),
         ErrorKind::AddrInUse,
