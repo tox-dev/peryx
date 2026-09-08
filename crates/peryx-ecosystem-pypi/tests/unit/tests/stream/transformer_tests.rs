@@ -1371,3 +1371,20 @@ fn test_a_served_file_contributes_the_release_upstream_left_undeclared() {
         ["demo-2.0-py3-none-any.whl"]
     );
 }
+
+/// A member name spelled with `\uXXXX` escapes is the same name, so the page dispatches the same way
+/// as one spelled literally. Only this drives the key decoder's hex arithmetic, and the two letter
+/// ranges are separate arms, so each spelling has to be its own case.
+#[rstest]
+#[case::lowercase_hex(r"\u0066\u0069\u006c\u0065\u0073")]
+#[case::uppercase_hex(r"\u0066\u0069\u006C\u0065\u0073")]
+#[case::escape_then_literal(r"\u0066iles")]
+fn transformer_dispatches_a_member_name_spelled_with_escapes(#[case] files_key: &str) {
+    let plain = upstream_page();
+    let escaped = plain.replace(r#""files""#, &format!(r#""{files_key}""#));
+
+    let (_, registrations) = transform(&escaped, plain_context(), 7);
+
+    assert_eq!(registrations, transform(&plain, plain_context(), 7).1);
+    assert!(!registrations.is_empty(), "the escaped key has to reach the file walk");
+}
