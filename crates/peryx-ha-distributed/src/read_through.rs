@@ -199,8 +199,9 @@ impl RemotePlacementReader {
         total_length: usize,
         catalog: Option<&ChunkedDigest>,
     ) -> Result<ReadThroughOutcome, ReadThroughError> {
-        let mut attempt = 1u32;
-        loop {
+        // The policy gives up at its own attempt bound, so this range is the same bound written where
+        // the walk can be read: the loop cannot outlive the budget even if the two ever disagree.
+        for attempt in 1..=self.policy.max_attempts() {
             let mut admitted = self.admit(sources);
             if admitted.is_empty() {
                 return Ok(ReadThroughOutcome::Unavailable);
@@ -228,15 +229,13 @@ impl RemotePlacementReader {
                         return Ok(ReadThroughOutcome::Unavailable);
                     }
                     match self.policy.on_error(representative(&failures), attempt) {
-                        Retry::After(delay) => {
-                            tokio::time::sleep(delay).await;
-                            attempt += 1;
-                        }
+                        Retry::After(delay) => tokio::time::sleep(delay).await,
                         Retry::GiveUp { .. } => return Ok(ReadThroughOutcome::Unavailable),
                     }
                 }
             }
         }
+        Ok(ReadThroughOutcome::Unavailable)
     }
 
     fn admit<'a>(&self, sources: &'a [Source]) -> Vec<AdmittedSource<'a>> {

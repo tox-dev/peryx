@@ -86,6 +86,12 @@ impl ReconnectPolicy {
         delay.min(self.max_delay)
     }
 
+    /// How many retryable failures the policy will absorb before it gives up.
+    #[must_use]
+    pub const fn max_attempts(&self) -> u32 {
+        self.max_attempts.get()
+    }
+
     pub(crate) fn quarantine_delay(&self) -> Duration {
         self.delay_for(self.max_attempts.get())
     }

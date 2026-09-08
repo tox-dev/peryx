@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU32, NonZeroUsize};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -390,9 +390,9 @@ async fn test_open_circuit_skips_a_source_then_recovers_after_cooldown() {
         },
         policy: ReconnectPolicy::new(
             Duration::from_millis(1),
-            std::num::NonZeroU32::new(2).unwrap(),
+            NonZeroU32::new(2).unwrap(),
             Duration::from_millis(1),
-            std::num::NonZeroU32::new(1).unwrap(),
+            NonZeroU32::new(1).unwrap(),
         ),
         ..DEFAULT_READ_THROUGH_LIMITS
     };
@@ -867,4 +867,34 @@ fn test_the_default_read_through_limits_bound_a_fetch_and_its_buffer() {
         ),
         (64 * 1024 * 1024, 8 * 1024 * 1024)
     );
+}
+
+/// A source that never recovers has to run out of attempts. The retry that lands on the second try
+/// never reads the counter, because one failure gives up or serves whatever the counter says; only
+/// exhaustion depends on it climbing.
+#[tokio::test(start_paused = true)]
+async fn test_a_source_that_never_recovers_runs_out_of_attempts() {
+    let (_dir, meta, blobs) = stores();
+    let content = Bytes::from_static(b"never lands");
+    let digest = Digest::of(&content);
+    seed_verified(&meta, &digest, "east", "filesystem", "east/a", content.len() as u64);
+    let refusing = peer(content.clone(), usize::MAX, TransportError::Timeout, Corruption::None);
+    let limits = ReadThroughLimits {
+        circuit: CircuitConfig {
+            trip_after: 99,
+            ..DEFAULT_CIRCUIT
+        },
+        policy: ReconnectPolicy::new(
+            Duration::from_millis(1),
+            NonZeroU32::new(2).unwrap(),
+            Duration::from_millis(8),
+            NonZeroU32::new(3).unwrap(),
+        ),
+        ..DEFAULT_READ_THROUGH_LIMITS
+    };
+    let reader = reader(&meta, &blobs, "home", delegates([("east", refusing)]), limits);
+
+    let outcome = reader.read_through(&digest).await.unwrap();
+
+    assert!(matches!(outcome, ReadThroughOutcome::Unavailable));
 }
