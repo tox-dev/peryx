@@ -734,3 +734,49 @@ fn test_version_key_desc_ranks_releases_before_legacy_spellings() {
     assert_eq!(super::version_key_desc(&legacy, &release), Ordering::Greater);
     assert_eq!(super::version_key_desc(&other_legacy, &legacy), Ordering::Less);
 }
+
+fn footprint_candidate(resource: &str, group: &str, artifact: &str, digest: &str) -> RetentionCandidate {
+    RetentionCandidate {
+        resource: resource.to_owned(),
+        artifact: artifact.to_owned(),
+        digest: digest.to_owned(),
+        class: RetentionClass::Hosted,
+        visibility: RetentionVisibility::Active,
+        source: None,
+        bytes: 0,
+        upload_time_unix: None,
+        group: Some(group.to_owned()),
+        rank: 0,
+        orphan: false,
+    }
+}
+
+/// The estimate counts the bytes each owned field holds beyond the struct itself, so lengthening one
+/// field moves the total by exactly that many bytes and lengthening none moves it not at all.
+///
+/// Checking a total against a second copy of the same formula cannot catch an operator changing
+/// inside it, because the copy changes with it. Checking what each field contributes can.
+#[rstest]
+#[case::resource("resource")]
+#[case::group("group")]
+#[case::artifact("artifact")]
+#[case::digest("digest")]
+fn test_footprint_counts_the_bytes_of_every_owned_field(#[case] longer: &str) {
+    let fields = |field: &str| match field {
+        "resource" => ("aaaaaaa", "b", "c", "d"),
+        "group" => ("a", "bbbbbbb", "c", "d"),
+        "artifact" => ("a", "b", "ccccccc", "d"),
+        _ => ("a", "b", "c", "ddddddd"),
+    };
+    let base = super::footprint(&footprint_candidate("a", "b", "c", "d"));
+    let (resource, group, artifact, digest) = fields(longer);
+
+    let grown = super::footprint(&footprint_candidate(resource, group, artifact, digest));
+
+    assert_eq!(grown, base + 6, "lengthening {longer} by six bytes has to move the estimate by six");
+}
+
+#[test]
+fn test_footprint_starts_from_the_struct_the_candidate_occupies() {
+    assert_eq!(super::footprint(&footprint_candidate("", "", "", "")), size_of::<RetentionCandidate>());
+}
