@@ -71,12 +71,28 @@ fn reservation_reports_a_band_with_nothing_left() {
     );
 }
 
+/// The restart hazard in reverse: the number has to stay bound through the moment the process that
+/// was serving on it goes away, or something else can take it before the replacement starts.
+#[cfg(unix)]
 #[test]
-fn reservation_rebinds_the_same_number_for_a_restart() {
+fn reservation_holds_the_number_while_its_process_dies() {
     let mut reservation = ListenerReservation::ephemeral().expect("claim a fixture port");
     let port = reservation.port;
-    reservation.rebind().expect("take the number back");
-    assert_eq!(reservation.port, port);
+    let held = reservation
+        .hold()
+        .expect("hold the number")
+        .expect("a reservation that bound one");
+
+    // Losing the child's copy, which is what a kill does.
+    reservation.listener = None;
+
+    assert_eq!(held.local_addr().expect("held address").port(), port);
+    assert_eq!(
+        TcpListener::bind(("127.0.0.1", port))
+            .map_err(|error| error.kind())
+            .unwrap_err(),
+        ErrorKind::AddrInUse,
+    );
     assert_eq!(
         TcpListener::bind(("127.0.0.1", claim_port(port)))
             .map_err(|error| error.kind())
@@ -85,11 +101,11 @@ fn reservation_rebinds_the_same_number_for_a_restart() {
     );
 }
 
+#[cfg(unix)]
 #[test]
-fn reservation_rebind_leaves_an_unused_control_number_alone() {
-    let mut reservation = ListenerReservation::released(0);
-    reservation.rebind().expect("skip the unused number");
-    assert_eq!(reservation.port, 0);
+fn reservation_holds_nothing_for_an_unused_control_number() {
+    let reservation = ListenerReservation::released(0);
+    assert!(reservation.hold().expect("hold an unused number").is_none());
 }
 
 #[test]
