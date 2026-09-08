@@ -866,3 +866,155 @@ fn test_rate_limit_errors_keep_status_and_retry_header() {
     assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(response.headers()[header::RETRY_AFTER], "41");
 }
+
+/// The classes a request actually spent, so a test can say which bucket took the charge rather than
+/// only that some bucket refused. Two mutations of the classifier produce the same status by
+/// charging the wrong class, and a status assertion cannot tell them apart.
+fn charged(serving: &ServingState) -> Vec<(&'static str, u64, u64)> {
+    serving
+        .rate_limits
+        .counters()
+        .into_iter()
+        .filter(|snapshot| snapshot.allowed > 0 || snapshot.denied > 0)
+        .map(|snapshot| (snapshot.class, snapshot.allowed, snapshot.denied))
+        .collect()
+}
+
+/// A service only classifies its own POST. The same path arriving as a GET is classified by route,
+/// so a guard that stopped checking the method would charge a read to whatever class the service
+/// claims for its write - here the admin bucket, which is far scarcer than listing.
+#[tokio::test]
+async fn test_enforce_keeps_a_service_post_class_off_a_get() {
+    let (_dir, mut state) = app(RateLimitConfig::enabled_defaults());
+    state.register_capabilities(|registrar| {
+        registrar.register_service(Ecosystem::new("example"), Arc::new(IndexedDriver));
+    });
+    let serving = state.serving.clone();
+    let router = router(state);
+
+    let status = router
+        .oneshot(Request::get("/+special").body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+        .status();
+
+    assert_eq!(
+        (status, charged(&serving)),
+        (StatusCode::NO_CONTENT, vec![("listing", 1, 0)])
+    );
+}
+
+fn routable_state(config: RateLimitConfig) -> (tempfile::TempDir, AppState) {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = MetaStore::open(dir.path().join("peryx.redb")).unwrap();
+    let blobs = BlobStore::new(dir.path().join("blobs"));
+    let mut state = AppState::with_rate_limits(
+        meta,
+        blobs,
+        60,
+        vec![Index {
+            name: "items".to_owned(),
+            route: "items".to_owned(),
+            ecosystem: Ecosystem::new("example"),
+            kind: IndexKind::Hosted { volatile: true },
+            policy: Policy::default(),
+            acl: IndexAcl::default(),
+        }],
+        config,
+        [],
+    );
+    state.register_rate_limit_principal(Ecosystem::new("example"), &IndexedDriver);
+    state
+        .register_protocol(ProtocolDriver::Indexed(Arc::new(IndexedDriver)), default_indexer())
+        .unwrap();
+    (dir, state)
+}
+
+fn declared_listing(credential: Option<&str>) -> Request<Body> {
+    let mut request = process_request("/items/resource", RouteRateLimit::Class(RouteClass::Listing));
+    if let Some(credential) = credential {
+        request
+            .headers_mut()
+            .insert(header::AUTHORIZATION, HeaderValue::from_str(credential).unwrap());
+    }
+    request
+}
+
+/// A declared class settles the classification on its own, so the middleware skips the driver lookup
+/// and every request from one address shares that address's bucket, credential or not.
+///
+/// Resolving a driver anyway would bucket the credentialed request by its subject instead, and the
+/// pair would stop sharing - so one address could spend the class twice over. The status alone does
+/// not show it: the first request succeeds either way, and only the second reveals whether the two
+/// were charged to the same bucket.
+#[tokio::test]
+async fn test_enforce_shares_one_address_bucket_when_the_class_is_declared() {
+    let (_dir, state) = routable_state(RateLimitConfig {
+        listing: RouteLimit::new(1, 60),
+        ..RateLimitConfig::enabled_defaults()
+    });
+    let serving = state.serving.clone();
+    let router = router(state);
+
+    let credentialed = router
+        .clone()
+        .oneshot(declared_listing(Some("opaque")))
+        .await
+        .unwrap()
+        .status();
+    let anonymous = router.oneshot(declared_listing(None)).await.unwrap().status();
+
+    assert_eq!(
+        (credentialed, anonymous, charged(&serving)),
+        (
+            StatusCode::NO_CONTENT,
+            StatusCode::TOO_MANY_REQUESTS,
+            vec![("listing", 1, 1)]
+        )
+    );
+}
+
+/// A configured limiter reports itself enabled, which is what every caller checks before spending
+/// work on limiting at all. The sibling test covers the default, and a limiter that always answered
+/// "disabled" would pass that one while turning limiting off everywhere.
+#[test]
+fn test_a_configured_limiter_reports_itself_enabled() {
+    assert!(RateLimiter::new(RateLimitConfig::enabled_defaults()).enabled());
+}
+
+/// A refusal names the kind of client it charged, so an operator reading the security log can tell a
+/// shared address apart from one credential spending its own bucket. Two kinds run here rather than
+/// one, because a constant answer satisfies either on its own.
+///
+/// The credentialed pair is asserted first. It has to appear before the anonymous pair's absence of
+/// `client=ip` would mean anything, since a capture that never reached the callsite reads the same as
+/// one whose event carried a different value.
+#[tokio::test]
+async fn test_a_refusal_names_the_client_kind_it_charged() {
+    let captured = crate::capture::Captured::install();
+    let (_dir, state) = routable_state(RateLimitConfig {
+        listing: RouteLimit::new(1, 60),
+        artifact: RouteLimit::new(1, 60),
+        ..RateLimitConfig::enabled_defaults()
+    });
+    let router = router(state);
+    let credentialed = || {
+        Request::get("/items/resource")
+            .header(header::AUTHORIZATION, "Bearer opaque")
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    router.clone().oneshot(credentialed()).await.unwrap();
+    let by_credential = router.clone().oneshot(credentialed()).await.unwrap().status();
+    router.clone().oneshot(declared_listing(None)).await.unwrap();
+    let by_address = router.oneshot(declared_listing(None)).await.unwrap().status();
+
+    assert_eq!(
+        (by_credential, by_address),
+        (StatusCode::TOO_MANY_REQUESTS, StatusCode::TOO_MANY_REQUESTS)
+    );
+    let output = captured.output();
+    assert_eq!(output.matches(r#"client="token""#).count(), 1, "{output}");
+    assert_eq!(output.matches(r#"client="ip""#).count(), 1, "{output}");
+}

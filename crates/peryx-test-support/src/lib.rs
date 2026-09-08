@@ -747,7 +747,7 @@ impl Node {
     fn spawn(
         topology: &Topology,
         member: &MemberSpec,
-        mut listeners: NodeListeners,
+        listeners: NodeListeners,
         writer: Option<&(String, u16)>,
         upstream: Option<&str>,
         roster: &str,
@@ -774,7 +774,7 @@ impl Node {
         }
         let http = http_client(HTTP_TIMEOUT.min(topology.harness.ready_timeout));
         let process_permit = topology.harness.process_limit.as_ref().map(ProcessLimit::acquire);
-        let (child, process_events) = launch(&config, data.path(), port, &topology.harness.binary, &mut listeners)?;
+        let (child, process_events) = launch(&config, data.path(), port, &topology.harness.binary, &listeners)?;
         let mut node = Self {
             identity: member.node.clone(),
             process_id: child.id(),
@@ -899,8 +899,8 @@ impl Node {
         std::fs::write(&config, config_toml).expect("write config");
         let http = http_client(HTTP_TIMEOUT.min(harness.ready_timeout));
         let process_permit = harness.process_limit.as_ref().map(ProcessLimit::acquire);
-        let mut listeners = NodeListeners::public(public_listener);
-        let (child, process_events) = launch(&config, data.path(), port, &harness.binary, &mut listeners)?;
+        let listeners = NodeListeners::public(public_listener);
+        let (child, process_events) = launch(&config, data.path(), port, &harness.binary, &listeners)?;
         Ok(Self {
             identity: identity.to_owned(),
             process_id: child.id(),
@@ -1166,15 +1166,12 @@ impl Node {
     /// # Errors
     /// The [`HarnessError`] the fresh process reports while coming up.
     pub fn restart(&mut self) -> Result<(), HarnessError> {
+        // Held before the process dies and returned afterwards, so the number is never free for
+        // anything else to bind. Rebinding after the kill left a gap that widened under load.
+        let held = self.listeners.hold()?;
         self.kill();
-        self.listeners.rebind()?;
-        let (child, process_events) = launch(
-            &self.config,
-            self.data.path(),
-            self.port,
-            &self.binary,
-            &mut self.listeners,
-        )?;
+        self.listeners.restore(held);
+        let (child, process_events) = launch(&self.config, self.data.path(), self.port, &self.binary, &self.listeners)?;
         self.process_id = child.id();
         self.child = Some(child);
         self.process_events = process_events;
@@ -1266,6 +1263,7 @@ impl Node {
 
     fn stop(&mut self) {
         self.ready = false;
+        self.listeners.release();
         let Some(mut child) = self.child.take() else {
             return;
         };
@@ -1469,11 +1467,11 @@ fn launch(
     data: &std::path::Path,
     port: u16,
     binary: &std::path::Path,
-    listeners: &mut NodeListeners,
+    listeners: &NodeListeners,
 ) -> std::io::Result<(Child, Receiver<String>)> {
     let log_path = data.join("peryx.log");
     let log = std::fs::File::create(&log_path).expect("create node log");
-    let mut command = inherited_listener_command(&resolve_executable(binary)?, listeners, log);
+    let mut command = inherited_listener_command(&resolve_executable(binary)?, listeners, log)?;
     command
         .arg("serve")
         .args(["--host", "127.0.0.1"])
@@ -1579,16 +1577,22 @@ pub(crate) fn wait_for_line(
 }
 
 #[cfg(unix)]
-fn inherited_listener_command(binary: &Path, listeners: &mut NodeListeners, log: std::fs::File) -> Command {
+fn inherited_listener_command(
+    binary: &Path,
+    listeners: &NodeListeners,
+    log: std::fs::File,
+) -> std::io::Result<Command> {
     use std::os::fd::OwnedFd;
     use std::process::Stdio;
 
-    let public = listeners.public.listener.take();
-    let availability = listeners.availability.listener.take();
+    // The child gets a reference to the socket rather than the parent's only one, so the number
+    // stays bound when the child dies and a restart never has to race for it again.
+    let public = listeners.public.hold()?;
+    let availability = listeners.availability.hold()?;
     if public.is_none() && availability.is_none() {
         let mut command = Command::new(binary);
         command.stderr(log);
-        return command;
+        return Ok(command);
     }
 
     let script = if availability.is_some() {
@@ -1610,14 +1614,18 @@ fn inherited_listener_command(binary: &Path, listeners: &mut NodeListeners, log:
     } else {
         command.stderr(log);
     }
-    command
+    Ok(command)
 }
 
 #[cfg(not(unix))]
-fn inherited_listener_command(binary: &Path, _listeners: &mut NodeListeners, log: std::fs::File) -> Command {
+fn inherited_listener_command(
+    binary: &Path,
+    _listeners: &NodeListeners,
+    log: std::fs::File,
+) -> std::io::Result<Command> {
     let mut command = Command::new(binary);
     command.stderr(log);
-    command
+    Ok(command)
 }
 
 /// Resolves the shipped server from runtime metadata, falling back to `PATH`.
@@ -1734,16 +1742,12 @@ impl ListenerReservation {
         }
     }
 
-    /// Take the number back for a restart. The claim outlived the process that just died, so the
-    /// number is still this harness'.
-    fn rebind(&mut self) -> std::io::Result<()> {
-        #[cfg(unix)]
-        if self.port != 0 {
-            // A launch that failed before the child took the descriptor leaves the parent holding it.
-            self.listener = None;
-            self.listener = Some(TcpListener::bind(("127.0.0.1", self.port))?);
-        }
-        Ok(())
+    /// A second reference to the same socket, so the number stays bound while the process holding
+    /// the other one dies. Cloning rather than rebinding is what leaves no instant where the number
+    /// belongs to nobody.
+    #[cfg(unix)]
+    fn hold(&self) -> std::io::Result<Option<TcpListener>> {
+        self.listener.as_ref().map(TcpListener::try_clone).transpose()
     }
 }
 
@@ -1776,10 +1780,44 @@ impl NodeListeners {
         (self.public.port, self.availability.port)
     }
 
-    fn rebind(&mut self) -> std::io::Result<()> {
-        self.public.rebind()?;
-        self.availability.rebind()
+    fn hold(&self) -> std::io::Result<HeldListeners> {
+        Ok(HeldListeners {
+            #[cfg(unix)]
+            public: self.public.hold()?,
+            #[cfg(unix)]
+            availability: self.availability.hold()?,
+        })
     }
+
+    fn restore(&mut self, held: HeldListeners) {
+        #[cfg(unix)]
+        {
+            self.public.listener = held.public;
+            self.availability.listener = held.availability;
+        }
+        #[cfg(not(unix))]
+        drop(held);
+    }
+
+    /// Give the numbers back once the node is down for good, so a killed node refuses connections
+    /// the way a missing one does rather than queueing them behind a socket nobody accepts on.
+    fn release(&mut self) {
+        #[cfg(unix)]
+        {
+            self.public.listener = None;
+            self.availability.listener = None;
+        }
+    }
+}
+
+/// The parent's own references to a node's listening sockets, carried across the gap in
+/// [`Node::restart`] where the old process has exited and the new one has not started.
+#[derive(Debug)]
+struct HeldListeners {
+    #[cfg(unix)]
+    public: Option<TcpListener>,
+    #[cfg(unix)]
+    availability: Option<TcpListener>,
 }
 
 /// A claimed number with nothing listening on it, for a caller whose own child binds it.

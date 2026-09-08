@@ -29,6 +29,7 @@ fn route_parameter_matches_contract() {
 #[case::null(json!(null), json!({}))]
 #[case::boolean(json!(true), json!({"type": "boolean"}))]
 #[case::integer(json!(2), json!({"type": "integer"}))]
+#[case::negative_integer(json!(-1), json!({"type": "integer"}))]
 #[case::number(json!(2.5), json!({"type": "number"}))]
 #[case::string(json!("two"), json!({"type": "string"}))]
 #[case::array(json!([2]), json!({"type": "array"}))]

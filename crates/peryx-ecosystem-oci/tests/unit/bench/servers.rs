@@ -1,3 +1,5 @@
+use rstest::rstest;
+
 use super::*;
 
 #[cfg(unix)]
@@ -85,7 +87,7 @@ fn capture_stream_records_lines_and_signals_the_marker() {
     .join()
     .unwrap();
 
-    receiver.try_recv().unwrap();
+    assert_eq!(receiver.try_recv().unwrap(), "registry ready");
     assert_eq!(std::fs::read_to_string(log_path).unwrap(), "starting\nregistry ready\n");
 }
 
@@ -155,4 +157,28 @@ async fn readiness_pull_runs_crane() {
         std::fs::read_to_string(arguments).unwrap(),
         format!("pull --insecure registry.test/repo:tag {}\n", image.display())
     );
+}
+
+/// peryx binds whatever port it is given, so the startup line is the only place the real one appears.
+/// The harness sets no log format, so the field has to be read in either of the two peryx emits.
+#[rstest]
+#[case::pretty(
+    "2026-09-08T10:00:00Z  INFO peryx: addr=127.0.0.1:34567 indexes=1 scheme=\"http\" peryx listening",
+    34567
+)]
+#[case::json(
+    "{\"timestamp\":\"2026-09-08T10:00:00Z\",\"level\":\"INFO\",\"fields\":{\"message\":\"peryx listening\",\"addr\":\"127.0.0.1:34567\",\"indexes\":1}}",
+    34567
+)]
+fn peryx_ready_port_reads_the_bound_port(#[case] line: &str, #[case] expected: u16) {
+    assert_eq!(peryx_ready_port(line), Some(expected));
+}
+
+/// A line without the field, or with something unparseable in it, yields nothing rather than a port
+/// the server never bound, so the caller reports that the server did not say.
+#[rstest]
+#[case::no_field("peryx listening")]
+#[case::not_a_port("addr=127.0.0.1:not-a-port peryx listening")]
+fn peryx_ready_port_refuses_a_line_that_does_not_carry_one(#[case] line: &str) {
+    assert_eq!(peryx_ready_port(line), None);
 }

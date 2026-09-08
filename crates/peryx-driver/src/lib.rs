@@ -51,5 +51,9 @@ pub fn not_found() -> axum::response::Response {
 }
 
 #[cfg(test)]
+#[path = "../tests/unit/capture.rs"]
+mod capture;
+
+#[cfg(test)]
 #[path = "../tests/unit/tests/mod.rs"]
 mod tests;

@@ -616,7 +616,6 @@ impl NodeJob for SearchRebuildJob {
             }),
             RebuildOutcome::Aborted { documents } => JobRunOutcome::cancelled(JobReport {
                 processed: documents,
-                changed: 0,
                 ..JobReport::default()
             }),
         })

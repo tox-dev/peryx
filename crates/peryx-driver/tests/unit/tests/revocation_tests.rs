@@ -121,3 +121,30 @@ fn test_revocation_service_fails_closed_on_a_store_type_error() {
     assert!(service.has_active().is_err());
     assert!(service.decision(&digest()).is_err());
 }
+
+/// The audit record says whether the request changed anything, so an operator replaying an incident
+/// can tell the revocation that took effect from the retries behind it.
+///
+/// The two records are asserted in order rather than by count, because inverting the flag emits the
+/// same pair the other way round and a count cannot tell those apart. Asserting a record the code
+/// must emit also keeps a capture that never reached the callsite from reading as a pass.
+#[test]
+fn test_revocation_put_records_whether_it_changed_anything() {
+    let captured = crate::capture::Captured::install();
+    let (_dir, _store, service) = service();
+    let digest = digest();
+    let actor = UserId::random();
+    let reason = RevocationReason::new("incident").unwrap();
+
+    service.put(&digest, &reason, &actor, 10).unwrap();
+    service.put(&digest, &reason, &actor, 11).unwrap();
+
+    let output = captured.output();
+    // In order, not by count: inverting the flag emits the same two records the other way round.
+    let recorded: Vec<&str> = output
+        .split("changed=")
+        .skip(1)
+        .map(|rest| rest.split_whitespace().next().expect("a recorded flag has a value"))
+        .collect();
+    assert_eq!(recorded, ["true", "false"], "{output}");
+}

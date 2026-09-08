@@ -204,3 +204,58 @@ fn test_running_a_search_persists_the_view_frontier_and_lifts_readability() {
         }
     );
 }
+
+fn ecosystem_index(name: &str, route: &str, ecosystem: &'static str, kind: IndexKind) -> Index {
+    Index {
+        name: name.to_owned(),
+        route: route.to_owned(),
+        ecosystem: Ecosystem::new(ecosystem),
+        kind,
+        policy: Policy::default(),
+        acl: IndexAcl::default(),
+    }
+}
+
+/// A writable route is the index matching all three of ecosystem, name, and a kind that accepts
+/// writes. Two out of three is not a match, and each of the three decoys here satisfies a different
+/// pair: a read-through cache under the right name takes no writes, a same-named index in another
+/// ecosystem is a different repository, and a writable index under another name is not this one.
+#[test]
+fn test_writable_index_route_needs_ecosystem_name_and_a_writable_kind() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = AppState::new(
+        peryx_storage::meta::MetaStore::open(dir.path().join("peryx.redb")).unwrap(),
+        peryx_storage::blob::BlobStore::new(dir.path().join("blobs")),
+        60,
+        vec![
+            ecosystem_index(
+                "images",
+                "images",
+                "oci",
+                IndexKind::Cached {
+                    client: UpstreamClient::new("https://upstream.example/artifacts/").unwrap(),
+                    offline: false,
+                },
+            ),
+            ecosystem_index("images", "pypi-images", "pypi", IndexKind::Hosted { volatile: false }),
+            ecosystem_index("other", "other", "oci", IndexKind::Hosted { volatile: false }),
+            ecosystem_index(
+                "writable",
+                "writable-route",
+                "oci",
+                IndexKind::Hosted { volatile: false },
+            ),
+        ],
+    );
+    let serving = Arc::get_mut(&mut state.serving).expect("a freshly built state has one owner");
+    let mut routes: Vec<Arc<dyn crate::http_routes::HttpRoutes>> = Vec::new();
+    let context = crate::serving::AuthInstallContext::new(serving, &mut routes);
+
+    assert_eq!(
+        (
+            context.writable_index_route(&Ecosystem::new("oci"), "images"),
+            context.writable_index_route(&Ecosystem::new("oci"), "writable"),
+        ),
+        (None, Some("writable-route"))
+    );
+}

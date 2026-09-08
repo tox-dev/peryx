@@ -97,6 +97,8 @@ fn test_campaign_inputs_parse() {
             .collect::<Vec<_>>()
     );
     assert_eq!(configured_topologies(Some("3x2")), vec![topology(3, 2)]);
+    assert_eq!(configured_revision(None), "local");
+    assert_eq!(configured_revision(Some("abc123".to_owned())), "abc123");
     assert_eq!(
         configured_artifacts(None),
         PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("sim-campaign")
@@ -131,7 +133,7 @@ impl CampaignPlan {
             shard_total: env_u64("PERYX_SIM_SHARD_TOTAL", 1).max(1),
             topologies: configured_topologies(env::var("PERYX_SIM_TOPOLOGY").ok().as_deref()),
             artifacts: configured_artifacts(env::var("PERYX_SIM_ARTIFACTS").ok().as_deref()),
-            revision: env::var("GITHUB_SHA").unwrap_or_else(|_| "local".to_owned()),
+            revision: configured_revision(env::var("GITHUB_SHA").ok()),
             defect: env::var("PERYX_SIM_DEFECT").ok().as_deref().and_then(parse_defect),
         }
     }
@@ -236,6 +238,10 @@ fn env_u64(key: &str, default: u64) -> u64 {
 
 fn parse_env_u64(value: Option<&str>, default: u64) -> u64 {
     value.and_then(|value| value.parse().ok()).unwrap_or(default)
+}
+
+fn configured_revision(sha: Option<String>) -> String {
+    sha.unwrap_or_else(|| "local".to_owned())
 }
 
 fn configured_topologies(pinned: Option<&str>) -> Vec<Topology> {

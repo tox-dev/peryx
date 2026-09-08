@@ -87,7 +87,7 @@ impl FsckDriver for Inspector {
         if matches!(self.failure, Some(Failure::Fsck)) {
             return Err("cannot check metadata".to_owned());
         }
-        writeln!(out, "metadata\texample\tinvalid row").map_err(|error| error.to_string())?;
+        writeln!(out, "metadata\texample\tinvalid row").expect("the response body sink cannot fail");
         Ok(1)
     }
 }

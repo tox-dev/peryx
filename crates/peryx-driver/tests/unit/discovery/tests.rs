@@ -64,6 +64,13 @@ fn test_base_url_from_request_uses_host_header_without_proxy_headers() {
     );
 }
 
+/// A URL is rejected for naming a scheme peryx cannot serve over, whether or not it carries a host.
+/// The `file:` case above has no host to offer, so it cannot tell that rule from the host rule.
+#[test]
+fn test_base_url_rejects_an_unsupported_scheme_that_names_a_host() {
+    assert!(BaseUrl::parse("ftp://example.test/").is_err());
+}
+
 #[test]
 fn test_base_url_from_request_ignores_untrusted_forwarded_origin() {
     let mut headers = HeaderMap::new();

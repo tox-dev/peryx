@@ -205,16 +205,16 @@ fn test_openapi_parameters_declare_exactly_one_shape() {
                     .as_array()
                     .into_iter()
                     .flatten()
-                    .filter(move |parameter| {
-                        ["schema", "content"]
+                    .map(move |parameter| {
+                        let shapes = ["schema", "content"]
                             .into_iter()
                             .filter(|field| parameter.get(field).is_some())
-                            .count()
-                            != 1
+                            .count();
+                        (method, path, &parameter["in"], &parameter["name"], shapes)
                     })
-                    .map(move |parameter| (method, path, &parameter["in"], &parameter["name"]))
             })
         })
+        .filter(|(.., shapes)| *shapes != 1)
         .collect::<Vec<_>>();
 
     assert!(invalid.is_empty(), "parameters without one shape: {invalid:?}");
