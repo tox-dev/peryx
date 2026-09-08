@@ -83,9 +83,7 @@ async fn breadcrumb(url: &str) -> String {
         .to_html_stream_in_order()
         .collect::<String>()
         .await;
-    let start = html
-        .find(r#"<p class="breadcrumb">"#)
-        .unwrap_or_else(|| panic!("no breadcrumb in {html}"));
+    let start = html.find(r#"<p class="breadcrumb">"#).expect("breadcrumb opens");
     let end = html[start..].find("</p>").expect("breadcrumb closes") + start;
     html[start..end].to_owned()
 }

@@ -1,4 +1,4 @@
-use super::{MetaError, MetaScanError, MetaStore};
+use super::{DriverReadTxn, MetaError, MetaScanError, MetaStore};
 
 #[test]
 fn test_driver_prefix_keys_limited_bounds_results() {
@@ -95,8 +95,11 @@ fn test_driver_read_txn_prefix_keys_limited_bounds_one_snapshot() {
 #[test]
 fn test_driver_read_txn_reports_snapshot_read_failures() {
     let (meta, _backend, fault) = super::super::fault::initialized();
+    let read = |txn: &DriverReadTxn| txn.get("catalog/1");
+
+    assert!(meta.read_driver_txn::<_, MetaError>(read).is_ok());
     fault.arm(0);
-    assert!(meta.read_driver_txn(|txn| txn.get("catalog/1")).is_err());
+    assert!(meta.read_driver_txn::<_, MetaError>(read).is_err());
     fault.disable();
 }
 

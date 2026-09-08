@@ -579,7 +579,7 @@ async fn test_a_publish_releases_its_write_lease_to_the_next_transfer() {
         .serving
         .transfer_authority_home("peryxpkg", "west")
         .await
-        .map_err(|error| error.to_string());
+        .expect("the transfer runs once the publish releases its lease");
 
     assert_eq!((published.0, published.1.as_str()), (StatusCode::OK, "upload accepted"));
     assert_eq!(
@@ -589,11 +589,11 @@ async fn test_a_publish_releases_its_write_lease_to_the_next_transfer() {
     );
     assert_eq!(
         after,
-        Ok(Some(TransferOutcome {
+        Some(TransferOutcome {
             from: "local".to_owned(),
             to: "west".to_owned(),
             epoch: 2,
-        })),
+        }),
         "the publish must release its lease, or the next transfer waits out the lease expiry",
     );
 }

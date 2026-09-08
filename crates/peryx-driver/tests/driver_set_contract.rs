@@ -484,6 +484,29 @@ async fn driver_set_dispatches_browse_capability() {
     );
 }
 
+/// A driver that cannot write its row must fail the repair rather than report a row it never
+/// emitted. The zero-capacity sink refuses the first byte, so the failure lands inside the driver
+/// and arrives as `EcosystemRepair` rather than as the trailing label's own `Write`.
+#[rstest::rstest]
+#[case::preview(false)]
+#[case::apply(true)]
+fn cache_repair_surfaces_a_driver_write_failure(#[case] apply: bool) {
+    let mut set = DriverSet::default();
+    let ecosystem = Ecosystem::new("alpha");
+    set.register_metadata_repair(ecosystem.clone(), Arc::new(Driver { ecosystem }));
+    let directory = tempfile::tempdir().unwrap();
+    let meta = peryx_storage::meta::MetaStore::open(directory.path().join("peryx.redb")).unwrap();
+    let mut closed: &mut [u8] = &mut [];
+
+    let error = peryx_driver::cache_inspection::write_cache_repair(&set, &meta, &[], apply, &mut closed)
+        .expect_err("the sink refuses the row");
+
+    assert_eq!(
+        error.to_string(),
+        "repair ecosystem metadata: failed to write whole buffer"
+    );
+}
+
 /// The driver registry is a hash map, so the repair report needs an order of its own or two runs
 /// list the ecosystems differently and an operator diffing them reads the swap as change.
 ///
