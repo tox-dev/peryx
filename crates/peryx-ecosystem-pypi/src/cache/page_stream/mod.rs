@@ -123,6 +123,8 @@ pub async fn stream_detail(
 ) -> Result<PageOutcome, CacheError> {
     let index = state.index_at(position);
     index.policy.check_resource(PolicyAction::Serve, &project)?;
+    // A resource size limit makes a policy active, so this is also what keeps a size-limited index off
+    // the streaming path: it cannot total a project's bytes as it goes.
     if index.policy.active() || super::has_active_revocations(&state)? {
         return Ok(PageOutcome::Fallback);
     }
@@ -332,7 +334,6 @@ fn streaming_parts(
     project: &str,
 ) -> Result<Option<(String, UpstreamClient, bool, crate::stream::PageContext)>, CacheError> {
     match &index.kind {
-        _ if index.policy.has_resource_size_limit() => Ok(None),
         IndexKind::Cached { client, offline } => Ok(Some((
             index.name.clone(),
             client.clone(),
