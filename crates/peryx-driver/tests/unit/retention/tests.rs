@@ -659,8 +659,10 @@ fn test_plan_error_display_names_each_failure() {
 struct PanickingDriver;
 
 impl RetentionDriver for PanickingDriver {
+    // The driver comes apart at the first thing the worker asks of it, which the plan then asks for,
+    // so both methods this trait requires are on the path the test drives.
     fn validate_retention(&self, _policy: &RetentionPolicy) -> Result<(), String> {
-        Ok(())
+        panic!("the plugin driver came apart");
     }
 
     fn plan_retention(
@@ -669,8 +671,7 @@ impl RetentionDriver for PanickingDriver {
         _start: &mut dyn FnMut(peryx_policy::RetentionSummary) -> Result<(), String>,
         _emit: &mut dyn FnMut(RetentionDecision) -> Result<(), String>,
     ) -> Result<(), String> {
-        self.validate_retention(scan.policy)?;
-        panic!("the plugin driver came apart");
+        self.validate_retention(scan.policy)
     }
 }
 
