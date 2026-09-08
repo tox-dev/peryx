@@ -464,3 +464,25 @@ async fn test_drain_rejects_an_empty_batch_behind_the_frontier() {
     let error = drain_to_frontier(&transport, 0, ops(2), ops(100)).await.unwrap_err();
     assert_eq!(error, TransportError::EmptyBatch { frontier: 4, after: 0 });
 }
+
+/// The operations cap is what a puller is allowed to ask for, so a request naming exactly the limit is
+/// the largest page the peer advertised rather than one past it. Only the request above the limit was
+/// covered, where refusing at the limit and refusing past it read the same.
+#[tokio::test]
+async fn test_fetch_batch_accepts_a_request_at_the_operations_limit() {
+    let peer = seeded_peer("primary-a", "secret", 2);
+    let transport = LoopbackTransport::connect(&peer, "secret");
+
+    let frame = transport
+        .fetch_batch(BatchRequest {
+            after: 0,
+            max_operations: DEFAULT_TRANSFER_LIMITS.max_operations,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        frame.page().changes.iter().map(|change| change.serial).collect::<Vec<u64>>(),
+        vec![1, 2]
+    );
+}

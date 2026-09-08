@@ -390,3 +390,22 @@ async fn test_gather_accepts_seeded_evidence_that_already_meets_the_quorum() {
 
     assert_eq!(outcome, ended(GatherEnd::Durable, &[]));
 }
+
+/// The loopback source stands in for a datacenter that has not answered yet, so the rounds it stays
+/// silent for are its contract. A gather reaches the same verdict whether the answer arrives on the
+/// first round or the third, which leaves the count unpinned by the outcomes the gathers assert.
+#[tokio::test]
+async fn test_a_loopback_frontier_source_holds_back_the_rounds_it_was_given() {
+    let source = LoopbackRemoteFrontierSource::reporting("west", 3, 9).available_after(2);
+
+    let rounds = [
+        source.fetch_frontier("proj").await.unwrap(),
+        source.fetch_frontier("proj").await.unwrap(),
+        source.fetch_frontier("proj").await.unwrap(),
+    ];
+
+    assert_eq!(
+        rounds.map(|round| round.map(|ack| ack.datacenter)),
+        [None, None, Some("west".to_owned())]
+    );
+}
