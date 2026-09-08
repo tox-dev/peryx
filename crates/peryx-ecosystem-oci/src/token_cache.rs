@@ -30,7 +30,7 @@ const MAX_LIFETIME_SECS: i64 = 3600;
 /// either side does not hand a request a token the registry has already stopped taking.
 const EXPIRY_SKEW_SECS: i64 = 5;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TokenCacheKey {
     pub base: String,
     pub scope: String,
@@ -153,7 +153,9 @@ impl TokenCache {
             .iter()
             .map(|(key, entry)| (entry.used_at, key.clone()))
             .collect();
-        order.sort_unstable_by_key(|(used_at, _)| *used_at);
+        // The key breaks ties, because an unstable sort on the counter alone leaves entries that share
+        // one value in `HashMap` iteration order, which makes the eviction victim arbitrary.
+        order.sort_unstable();
         for (_, key) in order {
             if self.within_budget() {
                 return;

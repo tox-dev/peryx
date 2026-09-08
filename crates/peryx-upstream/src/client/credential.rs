@@ -56,7 +56,7 @@ impl CredentialError {
 }
 
 /// Opaque identity of one configured credential provider.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CredentialProviderId(u64);
 
 /// Opaque identity of one provider's credential generation.
