@@ -1,7 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::num::{NonZeroU32, NonZeroUsize};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::{
@@ -31,8 +31,14 @@ enum Corruption {
 }
 
 struct Peer {
-    content: Bytes,
-    fail_first: AtomicUsize,
+    /// Keyed by digest so one peer can stand behind more than one artifact, which is what a test needs
+    /// to read twice from the same source without the first read publishing the second's answer.
+    contents: HashMap<Digest, Bytes>,
+    /// One entry per fetch, so a peer can fail again after it has answered. A countdown could only
+    /// describe an opening run of failures, which leaves the successes between them unexpressible.
+    schedule: Mutex<VecDeque<bool>>,
+    /// What the peer answers once the schedule runs out.
+    keeps_failing: bool,
     error: TransportError,
     corruption: Corruption,
 }
@@ -41,19 +47,26 @@ struct Peer {
 impl BlobTransport for Peer {
     async fn fetch_blob(&self, request: BlobRequest) -> Result<Vec<u8>, TransportError> {
         if self
-            .fail_first
-            .try_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| remaining.checked_sub(1))
-            .is_ok()
+            .schedule
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pop_front()
+            .unwrap_or(self.keeps_failing)
         {
             return Err(self.error.clone());
         }
+        let content = self
+            .contents
+            .get(&request.digest)
+            .cloned()
+            .unwrap_or_else(|| Bytes::from_static(b""));
         let range = request.range.unwrap_or(ByteRange {
             offset: 0,
-            length: self.content.len(),
+            length: content.len(),
         });
-        let start = range.offset.min(self.content.len());
-        let end = start.saturating_add(range.length).min(self.content.len());
-        let mut bytes = self.content[start..end].to_vec();
+        let start = range.offset.min(content.len());
+        let end = start.saturating_add(range.length).min(content.len());
+        let mut bytes = content[start..end].to_vec();
         match self.corruption {
             Corruption::None => {}
             Corruption::Content => bytes.iter_mut().for_each(|byte| *byte ^= 0xFF),
@@ -65,10 +78,26 @@ impl BlobTransport for Peer {
     }
 }
 
+/// `usize::MAX` reads as a peer that never answers, which no schedule of that length could hold.
 fn peer(content: Bytes, fail_first: usize, error: TransportError, corruption: Corruption) -> DcTransport {
+    if fail_first == usize::MAX {
+        return Arc::new(Peer {
+            contents: HashMap::from([(Digest::of(&content), content)]),
+            schedule: Mutex::new(VecDeque::new()),
+            keeps_failing: true,
+            error,
+            corruption,
+        });
+    }
+    peer_answering(content, &vec![true; fail_first], error, corruption)
+}
+
+/// A peer whose answers follow `schedule`, one entry per fetch, and which answers once it runs out.
+fn peer_answering(content: Bytes, schedule: &[bool], error: TransportError, corruption: Corruption) -> DcTransport {
     Arc::new(Peer {
-        content,
-        fail_first: AtomicUsize::new(fail_first),
+        contents: HashMap::from([(Digest::of(&content), content)]),
+        schedule: Mutex::new(schedule.iter().copied().collect()),
+        keeps_failing: false,
         error,
         corruption,
     })
@@ -473,8 +502,9 @@ async fn test_serves_through_a_capacity_limited_delegate() {
     seed_verified(&meta, &digest, "east", "filesystem", "east/a", content.len() as u64);
     let bounded: DcTransport = Arc::new(CapacityLimited::new(
         Peer {
-            content: content.clone(),
-            fail_first: AtomicUsize::new(0),
+            contents: HashMap::from([(digest.clone(), content.clone())]),
+            schedule: Mutex::new(VecDeque::new()),
+            keeps_failing: false,
             error: TransportError::Disconnected,
             corruption: Corruption::None,
         },
@@ -897,4 +927,46 @@ async fn test_a_source_that_never_recovers_runs_out_of_attempts() {
     let outcome = reader.read_through(&digest).await.unwrap();
 
     assert!(matches!(outcome, ReadThroughOutcome::Unavailable));
+}
+
+/// A source that answered is a source that works, so the failure that preceded it stops counting
+/// towards the breaker. Reading twice from one source is what shows it: a read that recovers leaves the
+/// next read a closed circuit, where a recovery that went unrecorded would leave the count one short of
+/// the trip and the second failure would open it.
+#[tokio::test(start_paused = true)]
+async fn test_a_recovered_read_clears_the_failures_before_it() {
+    let (_dir, meta, blobs) = stores();
+    let first = Bytes::from_static(b"first artifact through a flaky source");
+    let second = Bytes::from_static(b"second artifact through the same source");
+    let (first_digest, second_digest) = (Digest::of(&first), Digest::of(&second));
+    for (digest, content) in [(&first_digest, &first), (&second_digest, &second)] {
+        seed_verified(&meta, digest, "east", "filesystem", "east/a", content.len() as u64);
+    }
+    let flaky = Arc::new(Peer {
+        contents: HashMap::from([
+            (first_digest.clone(), first.clone()),
+            (second_digest.clone(), second.clone()),
+        ]),
+        // Each read loses once and then answers.
+        schedule: Mutex::new(VecDeque::from([true, false, true, false])),
+        keeps_failing: false,
+        error: TransportError::Timeout,
+        corruption: Corruption::None,
+    }) as DcTransport;
+    let limits = ReadThroughLimits {
+        circuit: CircuitConfig {
+            trip_after: 2,
+            ..DEFAULT_CIRCUIT
+        },
+        ..DEFAULT_READ_THROUGH_LIMITS
+    };
+    let reader = reader(&meta, &blobs, "home", delegates([("east", flaky)]), limits);
+
+    let recovered = reader.read_through(&first_digest).await.unwrap();
+    let again = reader.read_through(&second_digest).await.unwrap();
+
+    assert!(matches!(
+        (recovered, again),
+        (ReadThroughOutcome::Served(_), ReadThroughOutcome::Served(_))
+    ));
 }
