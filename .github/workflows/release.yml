@@ -41,7 +41,7 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
-      - uses: ./.github/actions/setup
+      - uses: $/.github/actions/setup
         with:
           tools: aqua:axodotdev/cargo-dist
       - name: Cache dist
@@ -90,7 +90,7 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
-      - uses: ./.github/actions/setup
+      - uses: $/.github/actions/setup
         with:
           tools: aqua:axodotdev/cargo-dist
       - name: Fetch local artifacts
@@ -271,7 +271,7 @@ jobs:
       - plan
       - host
     if: ${{ !fromJson(needs.plan.outputs.val).announcement_is_prerelease || fromJson(needs.plan.outputs.val).publish_prereleases }}
-    uses: ./.github/workflows/publish-pypi.yml
+    uses: $/.github/workflows/publish-pypi.yml
     with:
       plan: ${{ needs.plan.outputs.val }}
     permissions:

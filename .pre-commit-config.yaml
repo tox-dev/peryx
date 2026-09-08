@@ -55,7 +55,7 @@ repos:
           - --ignore-words-list=ser,unparseable,atleast,wronly,fpr
           - --ignore-words=site/.codespell-ignore-words.txt
   - repo: https://github.com/zizmorcore/zizmor-pre-commit
-    rev: v1.29.0
+    rev: v1.30.0
     hooks:
       - id: zizmor
   - repo: meta
