@@ -594,3 +594,39 @@ async fn test_a_transformed_page_expires_a_freshness_after_it_was_fetched() {
         "and stale once it does"
     );
 }
+
+#[tokio::test]
+async fn test_a_page_under_a_size_limit_is_served_buffered_rather_than_streamed() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = custom_state(&dir, "https://example.invalid/simple/", |client| {
+        vec![Index {
+            name: "pypi".to_owned(),
+            route: "pypi".to_owned(),
+            ecosystem: crate::ECOSYSTEM,
+            kind: IndexKind::Cached { client, offline: true },
+            policy: peryx_policy::Policy::compile(
+                &peryx_policy::PolicyConfig {
+                    max_resource_size_bytes: Some(1_000_000),
+                    ..peryx_policy::PolicyConfig::default()
+                },
+                str::to_owned,
+            ),
+            acl: IndexAcl::default(),
+        }]
+    });
+    let page = files_before_status_page("https://example.invalid/files/flask.whl", Digest::of(b"wheel").as_str(), None);
+    state
+        .serving
+        .meta
+        .put_index("pypi/flask", &fresh_record(page.as_bytes()))
+        .unwrap();
+
+    let outcome = cache::stream_detail(state.serving.clone(), 0, "flask".to_owned())
+        .await
+        .unwrap();
+
+    assert!(
+        matches!(outcome, PageOutcome::Fallback),
+        "the streaming path cannot count a project's bytes towards a limit, so it declines the page"
+    );
+}
