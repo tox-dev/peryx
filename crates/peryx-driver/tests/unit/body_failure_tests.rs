@@ -19,6 +19,15 @@ impl std::fmt::Display for Wrapper {
     }
 }
 
+/// The reader's own wording carries nothing of what it wrapped. That is what makes the tests below
+/// evidence of a chain walk rather than of a message match, so it is asserted rather than assumed.
+#[test]
+fn test_the_wrapping_reader_says_nothing_of_what_it_wrapped() {
+    let wrapped = Wrapper(Box::new(Stalled::new(Duration::from_secs(30))));
+
+    assert_eq!(wrapped.to_string(), "reading the body failed");
+}
+
 /// A handler never sees the stall itself: whatever read the body wraps it, so the chain is what the
 /// classification has to walk.
 #[test]
