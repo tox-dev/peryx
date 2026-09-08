@@ -10,7 +10,11 @@ use crate::{CoreMetadata, File, Provenance, Yanked};
 /// cannot claim the whole allowance, or a project would be indexed under its name and nothing else.
 #[test]
 fn test_the_text_budgets_leave_room_for_catalog_text() {
-    assert!(IDENTITY_TEXT_BYTES + CORE_METADATA_TEXT_BYTES < INDEXED_TEXT_BYTES);
+    let claimed = IDENTITY_TEXT_BYTES + CORE_METADATA_TEXT_BYTES;
+    assert!(
+        claimed < INDEXED_TEXT_BYTES,
+        "the two bounded shares cannot claim the whole allowance, or catalog text gets none"
+    );
     assert!(
         [IDENTITY_TEXT_BYTES, CORE_METADATA_TEXT_BYTES]
             .iter()
