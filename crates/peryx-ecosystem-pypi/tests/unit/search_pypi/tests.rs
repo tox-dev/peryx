@@ -116,3 +116,35 @@ fn test_present_file_routes_only_a_url_that_points_away(#[case] url: &str, #[cas
     assert_eq!(file.url != url, rewritten, "url became {}", file.url);
     assert!(file.url.starts_with('/'), "either way it points at this node: {}", file.url);
 }
+
+fn detail_listing(versions: usize) -> crate::ProjectDetail {
+    let listed = (0..versions)
+        .map(|index| format!(r#""{index}.0.0""#))
+        .collect::<Vec<_>>()
+        .join(",");
+    let page = format!(r#"{{"meta":{{"api-version":"1.1"}},"name":"demo","versions":[{listed}],"files":[]}}"#);
+    let parsed = crate::parse_detail(page.as_bytes()).unwrap();
+    crate::ProjectDetail {
+        meta: parsed.meta,
+        name: parsed.name,
+        versions: parsed.versions,
+        files: parsed.files,
+    }
+}
+
+/// Catalog text is allowed whatever identity and core metadata leave unspent, so a project with a
+/// short name and no metadata can list far more versions than the catalog's own share would hold.
+/// Subtracting that leftover instead of adding it cuts the list short while every other section looks
+/// the same.
+#[test]
+fn test_catalog_text_takes_the_budget_the_other_sections_left() {
+    let detail = detail_listing(31);
+
+    let text = super::search_text("demo", "demo", &detail, None);
+
+    assert!(
+        text.contains("30.0.0"),
+        "the last version fits in the budget the other sections did not use: {} bytes",
+        text.len()
+    );
+}
