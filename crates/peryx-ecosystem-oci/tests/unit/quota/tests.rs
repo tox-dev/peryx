@@ -311,13 +311,12 @@ fn test_publish_manifest_never_commits_without_its_checkpoint() {
             .operation_outcome("op-1")
             .unwrap()
             .is_some_and(|record| !record.response.is_empty());
-        failed += u32::from(published.is_err());
+        let published_ok = published.is_ok();
+        failed += u32::from(!published_ok);
         assert_eq!(
-            stored,
-            checkpointed,
+            stored, checkpointed,
             "injecting after {fail_after} reads left manifest={stored} and checkpoint={checkpointed} \
-             disagreeing, published_ok={}",
-            published.is_ok()
+             disagreeing, published_ok={published_ok}"
         );
     }
 

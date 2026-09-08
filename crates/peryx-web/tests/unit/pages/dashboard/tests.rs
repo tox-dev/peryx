@@ -2,7 +2,7 @@ use leptos::prelude::*;
 
 use crate::model::{UiCounters, UiIndex, UiSnapshot, UiStats, UiSummaryStatus};
 
-use super::DashboardBody;
+use super::{DashboardBody, OverlayCard};
 
 fn index(name: &str, kind: &str, layers: Vec<String>) -> UiIndex {
     UiIndex {
@@ -62,4 +62,34 @@ fn dashboard_body_renders_overlay_and_standalone_cards() {
     let empty = view! { <DashboardBody data=UiSnapshot::default() usage=Some(UiStats::default()) /> }.to_html();
     assert!(empty.contains("Indexes"), "{empty}");
     assert!(!empty.contains("Standalone indexes"), "{empty}");
+}
+
+fn overlay_html(upload_to: Option<&str>) -> String {
+    let mut overlay = index("overlay", "virtual", vec!["member".to_owned()]);
+    overlay.upload_to = upload_to.map(str::to_owned);
+    let member = index("member", "hosted", Vec::new());
+
+    view! { <OverlayCard index=overlay all=vec![member] counters=None /> }.to_html()
+}
+
+/// A layer is named, and the card reports the kind of the member wearing that name. Matching any
+/// other member would label the layer with a kind that is not its own.
+#[test]
+fn overlay_card_labels_a_layer_with_its_own_members_kind() {
+    let html = overlay_html(None);
+
+    assert!(html.contains("badge kind-hosted"), "{html}");
+    assert!(!html.contains(">?<"), "an unmatched layer falls back to '?': {html}");
+}
+
+/// Writes land on one named layer, so only the layer that name points at carries the marker.
+#[test]
+fn overlay_card_marks_only_the_named_upload_target() {
+    assert!(overlay_html(Some("member")).contains("writes land here"));
+}
+
+/// A layer that is not the upload target goes unmarked, which is what makes the marker mean anything.
+#[test]
+fn overlay_card_leaves_a_layer_that_is_not_the_target_unmarked() {
+    assert!(!overlay_html(Some("elsewhere")).contains("writes land here"));
 }

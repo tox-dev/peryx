@@ -659,17 +659,19 @@ fn test_plan_error_display_names_each_failure() {
 struct PanickingDriver;
 
 impl RetentionDriver for PanickingDriver {
+    // The driver comes apart at the first thing the worker asks of it, which the plan then asks for,
+    // so both methods this trait requires are on the path the test drives.
     fn validate_retention(&self, _policy: &RetentionPolicy) -> Result<(), String> {
-        Ok(())
+        panic!("the plugin driver came apart");
     }
 
     fn plan_retention(
         &self,
-        _scan: &crate::serving::RetentionScan<'_>,
+        scan: &crate::serving::RetentionScan<'_>,
         _start: &mut dyn FnMut(peryx_policy::RetentionSummary) -> Result<(), String>,
         _emit: &mut dyn FnMut(RetentionDecision) -> Result<(), String>,
     ) -> Result<(), String> {
-        panic!("the plugin driver came apart");
+        self.validate_retention(scan.policy)
     }
 }
 
@@ -739,6 +741,7 @@ impl RetentionDriver for GatedDriver {
         start: &mut dyn FnMut(peryx_policy::RetentionSummary) -> Result<(), String>,
         _emit: &mut dyn FnMut(RetentionDecision) -> Result<(), String>,
     ) -> Result<(), String> {
+        self.validate_retention(scan.policy)?;
         self.entered.send(()).unwrap();
         // Blocking is correct here: the plan already runs on the blocking pool.
         let release = self.release.lock().unwrap().take().expect("released once");
