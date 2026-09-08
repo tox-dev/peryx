@@ -10,7 +10,12 @@ fn test_the_text_budgets_divide_the_document_allowance() {
         IDENTITY_TEXT_BYTES + CORE_METADATA_TEXT_BYTES + CATALOG_TEXT_BYTES,
         INDEXED_TEXT_BYTES
     );
-    assert!(CATALOG_TEXT_BYTES > 0, "catalog text needs a share of the allowance");
+    assert!(
+        [IDENTITY_TEXT_BYTES, CORE_METADATA_TEXT_BYTES, CATALOG_TEXT_BYTES]
+            .iter()
+            .all(|share| *share * 8 >= INDEXED_TEXT_BYTES),
+        "a share too small to hold a project name is not a share of anything"
+    );
 }
 
 #[test]
