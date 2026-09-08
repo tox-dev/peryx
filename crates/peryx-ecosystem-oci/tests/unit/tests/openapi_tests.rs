@@ -551,3 +551,118 @@ fn test_a_protected_read_lists_its_credentials_as_alternatives() {
         serde_json::json!([{"indexAccessToken": []}, {"bearerGrant": []}])
     );
 }
+
+/// A parameter carries the location a client reads it from and the prose that says what to put
+/// there. An empty one still counts in the parameter list, so the name alone decides nothing.
+#[rstest]
+#[case(
+    "/v2/{name}/manifests/{reference}",
+    "get",
+    "reference",
+    "Path",
+    "A tag or an `algorithm:hex` digest"
+)]
+#[case(
+    "/v2/{name}/manifests/{reference}",
+    "get",
+    "If-None-Match",
+    "Header",
+    "Entity tags the client already holds"
+)]
+#[case(
+    "/v2/{name}/blobs/uploads/{session}",
+    "patch",
+    "session",
+    "Path",
+    "An in-progress upload session id"
+)]
+#[case(
+    "/v2/{name}/blobs/uploads/{session}",
+    "patch",
+    "Content-Range",
+    "Header",
+    "The inclusive `<start>-<end>` this chunk covers"
+)]
+fn test_a_documented_parameter_says_where_it_goes_and_what_it_holds(
+    #[case] template: &str,
+    #[case] method: &str,
+    #[case] name: &str,
+    #[case] location: &str,
+    #[case] description: &str,
+) {
+    let paths = documented_paths(ReadExposure::Protected);
+    let parameters = operation(&paths, template, method)["parameters"].clone();
+    let found = parameters
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|parameter| parameter["name"] == name)
+        .unwrap_or_else(|| panic!("{name} is not documented on {method} {template}: {parameters}"))
+        .clone();
+
+    assert_eq!(found["in"], location.to_lowercase(), "{found}");
+    assert!(
+        found["description"].as_str().unwrap_or_default().contains(description),
+        "{found}"
+    );
+}
+
+/// A response says what it means and which headers it sets. An emptied one keeps its status code, so
+/// the status set alone cannot tell a documented response from a blank one.
+#[rstest]
+#[case("/v2/{name}/manifests/{reference}", "get", "200", "Negotiated manifest body",
+    &["Content-Length", "Docker-Content-Digest", "ETag", "Vary"], "application/vnd.oci.image.manifest.v1+json")]
+#[case("/v2/{name}/manifests/{reference}", "get", "304", "The client already holds the negotiated manifest",
+    &["Docker-Content-Digest", "ETag", "Vary"], "")]
+#[case("/v2/{name}/blobs/{digest}", "get", "200", "Blob body",
+    &["Accept-Ranges", "Content-Length", "Docker-Content-Digest", "ETag"], "application/octet-stream")]
+#[case("/v2/{name}/blobs/{digest}", "get", "304", "The client already holds the blob",
+    &["Accept-Ranges", "Docker-Content-Digest", "ETag"], "")]
+#[case("/v2/{name}/referrers/{digest}", "get", "200", "An image index of referrers",
+    &["OCI-Filters-Applied"], "application/vnd.oci.image.index.v1+json")]
+fn test_a_documented_response_carries_its_description_headers_and_body(
+    #[case] template: &str,
+    #[case] method: &str,
+    #[case] status: &str,
+    #[case] description: &str,
+    #[case] headers: &[&str],
+    #[case] media_type: &str,
+) {
+    let paths = documented_paths(ReadExposure::Protected);
+    let response = operation(&paths, template, method)["responses"][status].clone();
+
+    assert_eq!(response["description"], description, "{response}");
+    let documented: BTreeSet<&str> = response["headers"]
+        .as_object()
+        .map(|headers| headers.keys().map(String::as_str).collect())
+        .unwrap_or_default();
+    assert_eq!(
+        documented,
+        headers.iter().copied().collect::<BTreeSet<_>>(),
+        "{response}"
+    );
+    if media_type.is_empty() {
+        assert!(
+            response["content"].as_object().is_none_or(serde_json::Map::is_empty),
+            "{response}"
+        );
+    } else {
+        assert!(response["content"][media_type].is_object(), "{response}");
+    }
+}
+
+/// A challenge for a route that names no scope offers the basic realm as well, because a deployment
+/// running no token realm has nothing to send a client to. A scoped challenge says `scope=` instead,
+/// so the two wordings must not collapse into one.
+#[test]
+fn test_an_unscoped_challenge_offers_the_basic_realm() {
+    let paths = documented_paths(ReadExposure::Protected);
+    let challenge = operation(&paths, "/v2/", "get")["responses"]["401"]["headers"]["WWW-Authenticate"].clone();
+    let wording = challenge["description"].as_str().unwrap_or_default();
+
+    assert!(wording.contains("`Basic realm=\"peryx\"`"), "{challenge}");
+    assert!(
+        !wording.contains("scope="),
+        "an unscoped route must not advertise a scope: {challenge}"
+    );
+}
