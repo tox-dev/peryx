@@ -82,7 +82,7 @@ fn meta_error() -> MetaError {
 }
 
 /// A policy denial is reported in the vocabulary the client speaks. The neutral engine names a
-/// resource, an artifact and a group; a PyPI reader knows those as a project, a filename and a
+/// resource, an artifact and a group; a `PyPI` reader knows those as a project, a filename and a
 /// version, and knows its allow lists by project. A name left untranslated reaches the client as
 /// engine jargon it has no way to act on.
 #[test]
