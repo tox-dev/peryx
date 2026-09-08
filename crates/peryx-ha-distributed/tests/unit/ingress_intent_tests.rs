@@ -162,3 +162,15 @@ fn test_advance_ignores_a_duplicate_state_and_an_unknown_intent() {
     );
     assert_eq!(ledger.get(&unknown), None);
 }
+
+/// A ledger holding an intent is not empty. The two readers answer about the same contents, so a
+/// caller that asks either one gets the same account of what is staged.
+#[test]
+fn test_a_staged_intent_leaves_the_ledger_reporting_it() {
+    let mut ledger = IntentLedger::new(NonZeroUsize::new(4).unwrap());
+    let empty = (ledger.len(), ledger.is_empty());
+
+    ledger.stage(intent("k1", "a", 1));
+
+    assert_eq!((empty, ledger.len(), ledger.is_empty()), ((0, true), 1, false));
+}

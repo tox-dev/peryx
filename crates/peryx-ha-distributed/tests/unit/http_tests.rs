@@ -820,3 +820,19 @@ fn range_request(digest: &Digest, range: &str) -> Request<Body> {
         .body(Body::empty())
         .unwrap()
 }
+
+/// The token comparison folds every byte difference into one answer, and it has to keep the properties
+/// that make it usable for a secret. Length is part of the comparison, a single differing byte is
+/// enough to reject, and two differences that would cancel under exclusive-or must not cancel here.
+#[test]
+fn test_constant_time_eq_rejects_by_length_and_by_any_difference() {
+    assert_eq!(
+        (
+            super::constant_time_eq(b"secret", b"secret"),
+            super::constant_time_eq(b"a", b"ab"),
+            super::constant_time_eq(b"a", b"b"),
+            super::constant_time_eq(b"aa", b"bb"),
+        ),
+        (true, false, false, false)
+    );
+}
