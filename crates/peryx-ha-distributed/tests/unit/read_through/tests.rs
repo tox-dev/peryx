@@ -854,3 +854,17 @@ async fn test_a_catalogued_fetch_keeps_the_stored_chunk_digests() {
     assert!(matches!(outcome, ReadThroughOutcome::Served(_)));
     assert_eq!(stored_chunk_digest(&meta, &digest), Some(chunked(&content, 8)));
 }
+
+/// What one read-through fetch may pull, and how much of it is held in memory at a time, are limits an
+/// operator sizes a node against. A fetch is bounded at sixty-four mebibytes and streams it eight at a
+/// time, so the buffer stays a fraction of the transfer rather than the whole of it.
+#[test]
+fn test_the_default_read_through_limits_bound_a_fetch_and_its_buffer() {
+    assert_eq!(
+        (
+            DEFAULT_READ_THROUGH_LIMITS.per_fetch_bytes.get(),
+            DEFAULT_READ_THROUGH_LIMITS.chunk_bytes.get()
+        ),
+        (64 * 1024 * 1024, 8 * 1024 * 1024)
+    );
+}
