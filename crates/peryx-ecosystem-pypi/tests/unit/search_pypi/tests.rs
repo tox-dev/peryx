@@ -136,14 +136,19 @@ fn detail_listing(versions: usize) -> crate::ProjectDetail {
 /// short name and no metadata can list far more versions than the catalog's own share would hold.
 /// Subtracting that leftover instead of adding it cuts the list short while every other section looks
 /// the same.
+///
+/// The listing has to be this long because the budgets are: the whole allowance is `MAX_TOKEN_LEN`,
+/// just under 64 KiB, so the catalog's own share is about 16 KiB and the leftover being tested is
+/// about 32 KiB. A shorter listing fits inside every arrangement of those numbers and tells them
+/// apart from nothing. Building it costs a few tens of microseconds.
 #[test]
 fn test_catalog_text_takes_the_budget_the_other_sections_left() {
-    let detail = detail_listing(31);
+    let detail = detail_listing(5_000);
 
     let text = super::search_text("demo", "demo", &detail, None);
 
     assert!(
-        text.contains("30.0.0"),
+        text.contains("4999.0.0"),
         "the last version fits in the budget the other sections did not use: {} bytes",
         text.len()
     );
