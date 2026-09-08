@@ -566,7 +566,6 @@ impl PageTransformer {
                 }
             }
             b',' if self.depth == self.array_depth => {}
-            _ if self.capture.is_empty() && is_json_whitespace(byte) => {}
             _ => self.capture.push(byte),
         }
         Ok(())

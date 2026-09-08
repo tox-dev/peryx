@@ -1426,3 +1426,23 @@ fn transformer_seeds_no_project_status_it_knows_nothing_of() {
 
     assert!(!String::from_utf8(out).unwrap().contains(r#""project-status""#));
 }
+
+/// Whitespace between file elements is captured with them and handed to the JSON parser, which skips
+/// it the way the grammar says to. The page transforms the same whether upstream indents its files or
+/// packs them, so nothing depends on the element bytes starting at the opening brace.
+#[test]
+fn transformer_reads_a_file_element_indented_away_from_its_brace() {
+    let packed = r#"{"meta":{"api-version":"1.1"},"name":"demo","versions":["1.0"],"files":[{"filename":"demo-1.0-py3-none-any.whl","url":"https://up/demo-1.0-py3-none-any.whl","hashes":{},"size":10,"yanked":false},{"filename":"demo-1.0.tar.gz","url":"https://up/demo-1.0.tar.gz","hashes":{},"size":20,"yanked":false}]}"#;
+    let spaced = packed.replace(r#"[{"filename""#, "[\n\t   {\"filename\"").replace(
+        r#",{"filename":"demo-1.0.tar.gz""#,
+        ",\n\t   \t{\"filename\":\"demo-1.0.tar.gz\"",
+    );
+
+    let (spaced_out, spaced_registrations) = transform(&spaced, plain_context(), 5);
+
+    assert_eq!(
+        (spaced_out, spaced_registrations),
+        transform(packed, plain_context(), 5),
+        "indentation around an element is not part of it"
+    );
+}
