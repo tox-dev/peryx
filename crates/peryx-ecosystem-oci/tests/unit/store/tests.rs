@@ -659,3 +659,62 @@ fn test_a_publication_that_moves_nothing_reports_no_change() {
 
     assert!(!publish(&meta, "sha256:aa", Some("stable")).changed);
 }
+
+fn trash_info() -> TrashInfo {
+    TrashInfo {
+        deleted_at_unix: 7,
+        actor: None,
+        reason: None,
+    }
+}
+
+/// A manifest is trashed out of one repository, so the check that it belongs to *this* one has to
+/// stand on its own. The bytes live under a digest shared by every repository, so their presence says
+/// nothing about membership: a repository that never held the manifest would otherwise trash it.
+#[test]
+fn test_a_repository_cannot_trash_a_manifest_it_never_held() {
+    let (_dir, meta) = store();
+    publish(&meta, "sha256:aa", Some("stable"));
+
+    let trashed = trash_manifest(&meta, "hub", "other", "sha256:aa", &trash_info(), false, None).unwrap();
+
+    assert_eq!(
+        trashed, None,
+        "another repository's manifest is not this one's to trash"
+    );
+}
+
+/// Restoring one tag releases that tag from the trashed manifest's list and leaves the rest, so a
+/// later manifest restore brings back only what is still trashed. Releasing the wrong side would
+/// leave the restored tag listed and drop the one still waiting.
+#[test]
+fn test_restoring_one_tag_leaves_the_others_trashed() {
+    let (_dir, meta) = store();
+    publish(&meta, "sha256:aa", Some("first"));
+    publish(&meta, "sha256:aa", Some("second"));
+    trash_manifest(&meta, "hub", "app", "sha256:aa", &trash_info(), false, None).unwrap();
+
+    restore_tag(&meta, "hub", "app", "first", false, |_| None).unwrap();
+    let outcome = restore_manifest(&meta, "hub", "app", "sha256:aa", false, None).unwrap();
+
+    assert_eq!(
+        outcome,
+        RestoreManifestOutcome::Restored {
+            restored: vec!["second".to_owned()],
+            conflicts: Vec::new(),
+        }
+    );
+}
+
+/// A page whose link fills the record leaves no body, and the length it declares is exactly the bytes
+/// that follow. Reading that as too short would discard a page that is whole.
+#[test]
+fn test_a_page_whose_link_fills_the_record_reads_back() {
+    let (_dir, meta) = store();
+    set_tag_page(&meta, "hub", "app", "", 42, Some("</v2/x?n=1>"), b"").unwrap();
+
+    assert_eq!(
+        tag_page(&meta, "hub", "app", "").unwrap(),
+        Some((42, Some("</v2/x?n=1>".to_owned()), Vec::new()))
+    );
+}
