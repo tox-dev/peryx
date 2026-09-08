@@ -630,3 +630,20 @@ fn test_receiver_apply_error_leaves_the_cursor_unmoved() {
     assert_eq!(receiver.after_day(&ProducerId("dc-a".to_owned())), 1);
     assert_eq!(receiver.total(&key(2, "1.0", "")), AggregateDelta::default());
 }
+
+/// Day zero is a day. The cursor starts below the first day a producer can send so that accepting that
+/// day moves it, and every other case here sends a day of one or more, where a cursor seeded at either
+/// side of zero would answer the same.
+#[test]
+fn test_receiver_cursor_accepts_day_zero() {
+    let mut receiver = AnalyticsReceiver::new(DEFAULT_APPLY_LIMITS);
+
+    receiver
+        .apply(&batch(interval("dc-a", 1, 0), &[(key(7, "1.0", ""), 1, 10)]))
+        .unwrap();
+
+    assert_eq!(
+        (receiver.after_day(&ProducerId("dc-a".to_owned())), receiver.resume_day()),
+        (0, 0)
+    );
+}

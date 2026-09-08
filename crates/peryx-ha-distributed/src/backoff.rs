@@ -76,10 +76,12 @@ impl ReconnectPolicy {
     pub fn delay_for(&self, attempt: u32) -> Duration {
         let mut delay = self.base;
         for _ in 1..attempt {
-            match delay.checked_mul(self.multiplier.get()) {
-                Some(next) if next < self.max_delay => delay = next,
-                _ => return self.max_delay,
-            }
+            // Overflow is the cap by another name, and everything below it is clamped on the way out,
+            // so the walk up needs no ceiling of its own.
+            let Some(next) = delay.checked_mul(self.multiplier.get()) else {
+                return self.max_delay;
+            };
+            delay = next;
         }
         delay.min(self.max_delay)
     }

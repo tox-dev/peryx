@@ -65,7 +65,8 @@ async fn drain_pending(
             }
         }
         report.processed += count as u64;
-        if count < batch.get() {
+        // A page holds what the batch asked for or the last of them, never more.
+        if count != batch.get() {
             return Ok(report);
         }
     }

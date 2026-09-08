@@ -353,9 +353,7 @@ impl World {
         });
         let target = &mut self.nodes[node];
         target.frontier[source] = message.serial;
-        if message.epoch > target.accepted[source] {
-            target.accepted[source] = message.epoch;
-        }
+        target.accepted[source] = target.accepted[source].max(message.epoch);
         target.log.insert((source, message.serial), committed);
         *target.applied.entry((source, message.serial)).or_insert(0) += 1;
         target.ever_visible.insert((source, message.serial));
