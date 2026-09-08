@@ -9,12 +9,12 @@ use super::*;
 #[case::dockerfile("Dockerfile")]
 #[case::containerfile("Containerfile")]
 #[case::nested("opt/app/Dockerfile")]
-fn test_a_container_build_file_reads_as_text(#[case] path: &str) {
+fn test_a_build_file_reads_as_text(#[case] path: &str) {
     assert_eq!(PROFILE.member_kind(path), MemberKind::Text);
 }
 
 /// The claim above is the profile's own, not something the generic rules would have said anyway.
 #[test]
-fn test_the_generic_rules_do_not_claim_a_container_build_file() {
+fn test_the_generic_rules_do_not_claim_a_build_file() {
     assert_eq!(generic_member_kind("Dockerfile"), MemberKind::Unknown);
 }
