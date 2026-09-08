@@ -74,6 +74,19 @@ fn test_cached_index_names_its_role_and_lists_no_members() {
     assert!(described.precedence.is_empty());
 }
 
+/// The upload flag answers whether a token can write now, so it reads the wall clock rather than a
+/// fixed point. A token that expired years ago must not present as one that can still upload.
+#[test]
+fn test_describe_indexes_expires_a_token_against_the_wall_clock() {
+    let indexes = vec![index(
+        "alpha",
+        IndexKind::Hosted { volatile: false },
+        token_acl(&[Action::Write], Some(1_600_000_000)),
+    )];
+
+    assert!(!describe_indexes(&indexes)[0].uploads);
+}
+
 #[test]
 fn test_describe_indexes_preserves_input_order() {
     let indexes = vec![

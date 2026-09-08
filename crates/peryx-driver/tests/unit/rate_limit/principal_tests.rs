@@ -379,3 +379,31 @@ async fn body(response: axum::response::Response) -> String {
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
     String::from_utf8(bytes.to_vec()).unwrap()
 }
+
+/// A window that rolls over opens a new one, and the limit applies inside it. Dating the new window
+/// in the past instead would let every later request roll it over again, leaving the class unlimited
+/// from its first expiry onward - and the request that performs the rollover still succeeds, so only
+/// the one after it shows which happened.
+///
+/// The sibling probe test stops at readmission; a probe charges nothing, so it never reaches the
+/// rollover this covers.
+#[test]
+fn test_a_rolled_over_window_still_enforces_its_limit() {
+    let millis = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let handle = Arc::clone(&millis);
+    let limiter = RateLimiter::with_clock(
+        RateLimitConfig {
+            admin: RouteLimit::new(1, 1),
+            ..RateLimitConfig::enabled_defaults()
+        },
+        Arc::new(move || Duration::from_millis(handle.load(Ordering::SeqCst))),
+    );
+    let actor = ActorKey::User(7);
+    assert!(limiter.check(RouteClass::Admin, actor).is_ok());
+    assert!(limiter.check(RouteClass::Admin, actor).is_err());
+
+    millis.store(1_001, Ordering::SeqCst);
+
+    assert!(limiter.check(RouteClass::Admin, actor).is_ok());
+    assert!(limiter.check(RouteClass::Admin, actor).is_err());
+}

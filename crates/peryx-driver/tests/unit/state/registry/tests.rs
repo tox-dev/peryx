@@ -343,6 +343,16 @@ fn register_driver_capabilities(state: &mut AppState) {
     });
 }
 
+/// A server with no ecosystem driver registered serves nothing, and the scheduler and status
+/// surfaces branch on that. The registered case is covered below; without this one the answer could
+/// be a constant.
+#[test]
+fn test_registry_reports_no_driver_before_any_is_registered() {
+    let (_dir, state) = state();
+
+    assert!(!state.has_any_driver());
+}
+
 #[test]
 fn test_registry_installs_neutral_driver_capabilities() {
     let (_dir, mut state) = state();

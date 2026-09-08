@@ -196,6 +196,23 @@ fn app(route: &str, resource: &str) -> (tempfile::TempDir, Arc<ServingState>, He
 }
 
 fn app_with_acl(route: &str, resource: &str, acl: IndexAcl) -> (tempfile::TempDir, Arc<ServingState>, HeaderMap) {
+    app_with_grants(
+        route,
+        acl,
+        &[
+            Grant {
+                resources: vec![Glob::new("ignored")],
+                actions: BTreeSet::from([Action::Write]),
+            },
+            Grant {
+                resources: vec![Glob::new(resource)],
+                actions: BTreeSet::from([Action::Read]),
+            },
+        ],
+    )
+}
+
+fn app_with_grants(route: &str, acl: IndexAcl, grants: &[Grant]) -> (tempfile::TempDir, Arc<ServingState>, HeaderMap) {
     let dir = tempfile::tempdir().unwrap();
     let meta = peryx_storage::meta::MetaStore::open(dir.path().join("peryx.redb")).unwrap();
     let blobs = peryx_storage::blob::BlobStore::new(dir.path().join("blobs"));
@@ -217,16 +234,7 @@ fn app_with_acl(route: &str, resource: &str, acl: IndexAcl) -> (tempfile::TempDi
         &Principal::Named {
             subject: "reader".to_owned(),
         },
-        &[
-            Grant {
-                resources: vec![Glob::new("ignored")],
-                actions: BTreeSet::from([Action::Write]),
-            },
-            Grant {
-                resources: vec![Glob::new(resource)],
-                actions: BTreeSet::from([Action::Read]),
-            },
-        ],
+        grants,
         4_102_444_500,
         300,
     );
@@ -780,5 +788,42 @@ fn test_route_read_judges_a_leaf_route_on_its_own_acl() {
     assert_eq!(
         access.authorize_read(&state, 0, ResourceMatch::Pattern("app")),
         Err(Denial::Unauthenticated)
+    );
+}
+
+/// A bearer grant authorizes a read only when it carries the read action *and* covers the resource.
+/// Neither half alone is enough, and a grant that satisfies one while failing the other is exactly
+/// the shape that would slip through if the two conditions were ever joined with `or`: a token
+/// holding read somewhere else would read everywhere, and a token scoped here but never granted
+/// read would read anyway.
+///
+/// The token carries one grant, so nothing else in the set can carry the decision.
+#[rstest]
+#[case::read_but_for_another_route(vec![Glob::new("elsewhere/app")], Action::Read)]
+#[case::this_route_but_never_read(vec![Glob::new("images/app")], Action::Write)]
+fn test_bearer_read_access_needs_the_action_and_the_resource_together(
+    #[case] resources: Vec<Glob>,
+    #[case] action: Action,
+) {
+    let (_dir, state, headers) = app_with_grants(
+        "images",
+        IndexAcl {
+            anonymous_read: false,
+            tokens: Vec::new(),
+        },
+        &[Grant {
+            resources,
+            actions: BTreeSet::from([action]),
+        }],
+    );
+    let access = ReadAccess::from_headers(&state, &headers);
+    let access = access.for_index(state.index_at(0));
+
+    assert_eq!(
+        (
+            access.authorize_any_resource(),
+            access.authorize_resource(ResourceMatch::Any),
+        ),
+        (Err(Denial::Forbidden), Err(Denial::Forbidden))
     );
 }

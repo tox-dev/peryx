@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use http_body::{Body, Frame, SizeHint};
 use peryx_core::ThroughputBudget;
+use peryx_driver::body::{Stalled, TooSlow};
 use pin_project_lite::pin_project;
 use tokio::time::{Instant, Sleep};
 
@@ -43,35 +44,6 @@ impl<B> BoundedBody<B> {
     }
 }
 
-/// The error a body that stopped arriving ends with, worded for the client that stopped sending rather
-/// than for the handler that was reading.
-#[derive(Debug)]
-pub struct Stalled(Duration);
-
-impl std::error::Error for Stalled {}
-
-impl std::fmt::Display for Stalled {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "the request body sent nothing for {:?}", self.0)
-    }
-}
-
-/// The error a body that kept arriving without getting anywhere ends with.
-#[derive(Debug)]
-pub struct TooSlow(u64);
-
-impl std::error::Error for TooSlow {}
-
-impl std::fmt::Display for TooSlow {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "the request body delivered {} bytes below the sustained throughput floor",
-            self.0
-        )
-    }
-}
-
 impl<B> Body for BoundedBody<B>
 where
     B: Body,
@@ -89,7 +61,7 @@ where
         }
         let idle = this.idle.as_mut().as_pin_mut().expect("the wait was just armed");
         if idle.poll(cx).is_ready() {
-            return Poll::Ready(Some(Err(Box::new(Stalled(*this.stall)))));
+            return Poll::Ready(Some(Err(Box::new(Stalled::new(*this.stall)))));
         }
         let frame = ready!(this.body.poll_frame(cx));
         this.idle.set(None);
@@ -103,7 +75,7 @@ where
         // Only data carries bytes, so a trailer earns the body nothing and cannot buy it more time.
         this.budget.deliver(frame.data_ref().map_or(0, bytes::Buf::remaining));
         if this.budget.is_starved(now.saturating_duration_since(started)) {
-            return Poll::Ready(Some(Err(Box::new(TooSlow(this.budget.delivered())))));
+            return Poll::Ready(Some(Err(Box::new(TooSlow::new(this.budget.delivered())))));
         }
         Poll::Ready(Some(Ok(frame)))
     }
