@@ -177,7 +177,7 @@ impl VerifierExt for OidcVerifier {
 fn test_public_verifier_accepts_an_https_issuer() {
     assert!(
         OidcVerifier::new(
-            ["https://issuer.example".to_owned()],
+            vec!["https://issuer.example".to_owned()],
             "peryx",
             transport("https://issuer.example")
         )

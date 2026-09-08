@@ -200,6 +200,21 @@ async fn test_resolver_rejection_names_the_trusted_hosts_setting() {
     );
 }
 
+/// `trusted_hosts` is what the rejection above tells an operator to configure, so a host named
+/// there keeps the private addresses an untrusted host loses.
+#[tokio::test]
+async fn test_resolver_keeps_private_addresses_for_a_trusted_host() {
+    let private: SocketAddr = "10.0.0.1:80".parse().unwrap();
+    let kept = resolve(
+        &guard_with("https://pub.example.com/", &["cdn.example.com"], Ok(vec![private])),
+        "cdn.example.com",
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(kept, vec![private]);
+}
+
 #[tokio::test]
 async fn test_resolver_keeps_only_global_addresses_for_untrusted_host() {
     let addrs = vec!["10.0.0.1:80".parse().unwrap(), "8.8.8.8:80".parse().unwrap()];

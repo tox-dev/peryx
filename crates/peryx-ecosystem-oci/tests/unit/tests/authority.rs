@@ -588,7 +588,7 @@ async fn test_a_manifest_push_releases_its_write_lease_to_the_next_transfer() {
         .serving
         .transfer_authority_home("oci:store/app", "west")
         .await
-        .map_err(|error| error.to_string());
+        .expect("the transfer runs once the push releases its lease");
 
     assert_eq!(pushed, StatusCode::CREATED);
     assert_eq!(
@@ -598,11 +598,11 @@ async fn test_a_manifest_push_releases_its_write_lease_to_the_next_transfer() {
     );
     assert_eq!(
         after,
-        Ok(Some(TransferOutcome {
+        Some(TransferOutcome {
             from: "local".to_owned(),
             to: "west".to_owned(),
             epoch: 6,
-        })),
+        }),
         "the push must release its lease, or the next transfer waits out the lease expiry",
     );
 }

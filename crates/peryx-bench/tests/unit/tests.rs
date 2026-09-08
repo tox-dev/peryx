@@ -6,15 +6,26 @@ use rstest::rstest;
 
 use super::*;
 
+fn record_exit(exited: &std::cell::Cell<bool>) -> impl Fn(&clap::Error) -> anyhow::Result<()> {
+    move |_| {
+        exited.set(true);
+        Ok(())
+    }
+}
+
 #[test]
 fn runner_finish_preserves_success_and_runtime_errors() {
-    assert!(finish(Ok(()), &|_| unreachable!()).is_ok());
+    let exited = std::cell::Cell::new(false);
+    let exit = record_exit(&exited);
+
+    assert!(finish(Ok(()), &exit).is_ok());
     assert_eq!(
-        finish(Err(anyhow::anyhow!("benchmark failed")), &|_| unreachable!())
+        finish(Err(anyhow::anyhow!("benchmark failed")), &exit)
             .unwrap_err()
             .to_string(),
         "benchmark failed"
     );
+    assert!(!exited.get());
 }
 
 #[test]
@@ -22,10 +33,7 @@ fn runner_finish_delegates_argument_errors() {
     let exited = std::cell::Cell::new(false);
     finish(
         Err(clap::Error::new(clap::error::ErrorKind::UnknownArgument).into()),
-        &|_| {
-            exited.set(true);
-            Ok(())
-        },
+        &record_exit(&exited),
     )
     .unwrap();
 
