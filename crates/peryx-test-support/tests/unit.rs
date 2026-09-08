@@ -154,3 +154,24 @@ fn node_timeout_reports_a_reaped_child_while_the_event_channel_is_open() {
     drop(event_sender);
     assert!(matches!(signal, StartupSignal::Exited(_)));
 }
+
+/// A draw that runs out of candidates has to say so rather than hand back a number something else
+/// holds. One occupied candidate is the whole condition: the draw walks the list it is given, so
+/// exhausting a list of one exhausts it exactly as a full band would, in a millisecond and without
+/// taking the band away from anything else running.
+///
+/// The held port is drawn from the ephemeral range and the candidate worked back from it, which
+/// keeps the whole test clear of the fixture band.
+#[test]
+fn listener_reservation_reports_an_exhausted_candidate_list() {
+    let held = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let taken = held.local_addr().unwrap().port();
+    let candidate = taken
+        .checked_sub(CLAIM_PORT_OFFSET)
+        .expect("an ephemeral port sits above the claim offset");
+
+    let error = ListenerReservation::claimed(std::iter::once(candidate)).unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::AddrInUse);
+    assert_eq!(error.to_string(), "every fixture port candidate is claimed");
+}

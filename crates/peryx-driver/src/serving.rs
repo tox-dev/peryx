@@ -168,6 +168,30 @@ pub trait IntentFinalizer: Send + Sync {
     async fn finalize_retained(&self, state: Arc<ServingState>, authority: &str, intent_key: &str) -> bool;
 }
 
+/// A finalizer a test registers to watch a runtime install one.
+///
+/// Its two halves report one count. The retained half settles whatever it is handed and the admitted
+/// half answers with how much it has settled, so a caller reading either half sees the same work
+/// rather than a constant it could not tell from an unregistered finalizer.
+#[cfg(any(test, feature = "test-doubles"))]
+#[derive(Debug, Default)]
+pub struct SettlingFinalizer {
+    settled: std::sync::atomic::AtomicU64,
+}
+
+#[cfg(any(test, feature = "test-doubles"))]
+#[async_trait]
+impl IntentFinalizer for SettlingFinalizer {
+    async fn finalize_admitted(&self, _state: Arc<ServingState>) -> u64 {
+        self.settled.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    async fn finalize_retained(&self, _state: Arc<ServingState>, _authority: &str, _intent_key: &str) -> bool {
+        self.settled.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        true
+    }
+}
+
 #[async_trait]
 pub trait CacheRefresher: Send + Sync {
     async fn refresh_stale(&self, state: Arc<ServingState>) -> Result<RefreshSweep, String>;

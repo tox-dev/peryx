@@ -7,6 +7,10 @@ license.workspace = true
 repository.workspace = true
 description = "Neutral runtime contracts and process state."
 
+[features]
+# Test-only: a finalizer double a consumer registers to observe that a runtime installed one.
+test-doubles = []
+
 [dependencies]
 peryx-core.workspace = true
 peryx-events.workspace = true

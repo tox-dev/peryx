@@ -1072,3 +1072,65 @@ async fn test_roster_frontier_reads_a_reachable_datacenter() {
 
     assert_eq!(source.applied_frontier("west").await.unwrap(), Some(1));
 }
+
+/// Answers every command as committed without sealing an audit, and counts what it was asked to run
+/// so a test can hold the drive to one submission per transfer.
+#[derive(Default)]
+struct UnsealedControl {
+    executed: std::sync::atomic::AtomicU64,
+}
+
+#[async_trait::async_trait]
+impl peryx_ha::ControlExecutor for UnsealedControl {
+    async fn execute(
+        &self,
+        _actor: &str,
+        _key: Option<&str>,
+        _command: ControlCommand,
+    ) -> Result<peryx_ha::CommandReceipt, ControlError> {
+        self.executed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(peryx_ha::CommandReceipt {
+            term: 1,
+            index: 2,
+            outcome: peryx_ha::CommandOutcome::Committed,
+            old_voters: Vec::new(),
+            new_voters: Vec::new(),
+            transfer_audit: None,
+        })
+    }
+
+    fn metrics(&self) -> peryx_ha::ControlMetrics {
+        peryx_ha::ControlMetrics {
+            completed: self.executed.load(std::sync::atomic::Ordering::Relaxed),
+            p50_ms: 0,
+            p99_ms: 0,
+        }
+    }
+}
+
+/// A commit consensus applied without sealing an audit leaves the drive nothing to record, so it
+/// reports the transfer unsealed rather than carrying on with no audit to store or hand back.
+///
+/// The keyed path seals one: `AttemptControl` resolves in the ownership state machine, which returns
+/// a receipt carrying the audit it sealed. The fallback does not. When that machine answers
+/// `Claimed` rather than applying the control, the group runs the command through its own executor,
+/// and the receipt that path builds sets no audit at all. This holds the drive to the answer it owes
+/// a caller when it is handed that receipt.
+///
+/// The count is asserted beside the error because a drive that resubmitted on an unsealed receipt
+/// would reach the same error through a second consensus command for one transfer.
+#[tokio::test]
+async fn test_commit_transfer_reports_a_receipt_that_carries_no_audit() {
+    let plan = ready(request());
+    let consensus = Consensus::homed(&["proj"]);
+    let (_dir, store) = meta();
+    let control = UnsealedControl::default();
+
+    let error = commit_transfer(&plan, &control, &consensus, &store).await.unwrap_err();
+
+    assert!(
+        matches!(&error, TransferDriveError::Unsealed(id) if id == "t-1"),
+        "{error:?}"
+    );
+    assert_eq!(peryx_ha::ControlExecutor::metrics(&control).completed, 1);
+}

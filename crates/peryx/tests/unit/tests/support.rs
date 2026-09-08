@@ -76,6 +76,10 @@ pub fn store_repositories(meta: &MetaStore, ecosystems: &[&str]) {
     }
 }
 
+pub fn plugins_without_names() -> PluginRegistry {
+    registry(&NAMELESS_REGISTRATION)
+}
+
 pub fn plugins_without_retention() -> PluginRegistry {
     plugin_registry(&PLAIN_REGISTRATION, &PLAIN_RUNTIME, &PLAIN_RUNTIME, &PLAIN_DRIVER, None)
 }
@@ -218,6 +222,20 @@ static DRIVER: Driver = Driver {
         Capability::Retention,
     ],
 };
+/// Retention without names, so an index on this ecosystem has no normalizer to route a selector
+/// through and the raw text stands.
+static NAMELESS_DRIVER: Driver = Driver {
+    ecosystem: CORE,
+    capabilities: &[Capability::Retention],
+};
+static NAMELESS_RUNTIME: Runtime = Runtime {
+    driver: &NAMELESS_DRIVER,
+};
+static NAMELESS_REGISTRATION: Registration = Registration {
+    driver: &NAMELESS_DRIVER,
+    runtime: &NAMELESS_RUNTIME,
+};
+
 static BLOB_DRIVER: Driver = Driver {
     ecosystem: CORE,
     capabilities: &[

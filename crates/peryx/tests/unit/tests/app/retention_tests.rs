@@ -3,7 +3,9 @@ use peryx_policy::{RetentionFrontier, RetentionSummary};
 use rstest::rstest;
 
 use super::*;
-use crate::app::tests::{bounded_output, config_at, plugins, plugins_without_retention, runtime_args};
+use crate::app::tests::{
+    bounded_output, config_at, plugins, plugins_without_names, plugins_without_retention, runtime_args,
+};
 
 const HEADER: &str = "action\tresource\tgroup\tartifact\tdigest\tclass\tvisibility\tbytes\trule\n";
 
@@ -345,4 +347,81 @@ fn export_command(cursor: Option<String>) -> RetentionCommand {
         rules: None,
         cursor,
     })
+}
+
+/// A resource prefix is normalised through the ecosystem's own name rules before it is compiled, so
+/// a rule written the way a person writes a name selects what a rule written the way the store spells
+/// it selects. Two runs differing only in case have to produce the same plan, and would not if the
+/// prefix reached the policy verbatim: the policy version covers the compiled selectors.
+/// Both commands compile their own rules, so each needs its own normalization. They are separate
+/// call sites of the same helper, and covering one says nothing about the other.
+#[rstest]
+#[case::dry_run(false)]
+#[case::export(true)]
+fn test_retention_normalizes_a_resource_prefix_before_compiling(#[case] export: bool) {
+    let plan = |prefix: &str| {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Config {
+            data_dir: dir.path().to_path_buf(),
+            ..Config::with_plugins(&plugins())
+        };
+        drop(peryx_storage::meta::MetaStore::open(config.data_dir.join("peryx.redb")).unwrap());
+        let rules = dir.path().join("rules.toml");
+        std::fs::write(
+            &rules,
+            format!("[[keep]]\nselector = \"resource-prefix\"\nprefix = \"{prefix}\"\n"),
+        )
+        .unwrap();
+        let command = if export {
+            RetentionCommand::Export(RetentionExportArgs {
+                runtime: runtime_args(),
+                index: "main".to_owned(),
+                rules: Some(rules),
+                cursor: None,
+            })
+        } else {
+            let mut args = dry_run_args("main");
+            args.rules = Some(rules);
+            RetentionCommand::DryRun(args)
+        };
+        let mut output = Vec::new();
+        retention_with_plugins(&config, &plugins(), &command, &mut output).unwrap();
+        String::from_utf8(output).unwrap()
+    };
+
+    let written_by_hand = plan("Flask");
+
+    // The control: a different prefix has to produce a different plan. Without it a rules file that
+    // never compiled into a selector at all would make every run identical and pass this vacuously.
+    assert_ne!(written_by_hand, plan("Django"));
+    assert_eq!(written_by_hand, plan("flask"));
+}
+
+/// An ecosystem with no name rules has nothing to route a selector through, so the prefix stands as
+/// it was written. This is the other half of the normalization: its sibling asserts two spellings
+/// compile to one policy where a normalizer exists, and this asserts they stay two where none does.
+#[test]
+fn test_retention_keeps_a_prefix_an_ecosystem_cannot_normalize() {
+    let plan = |prefix: &str| {
+        let plugins = plugins_without_names();
+        let dir = tempfile::tempdir().unwrap();
+        let config = Config {
+            data_dir: dir.path().to_path_buf(),
+            ..Config::with_plugins(&plugins)
+        };
+        drop(peryx_storage::meta::MetaStore::open(config.data_dir.join("peryx.redb")).unwrap());
+        let rules = dir.path().join("rules.toml");
+        std::fs::write(
+            &rules,
+            format!("[[keep]]\nselector = \"resource-prefix\"\nprefix = \"{prefix}\"\n"),
+        )
+        .unwrap();
+        let mut args = dry_run_args("main");
+        args.rules = Some(rules);
+        let mut output = Vec::new();
+        retention_with_plugins(&config, &plugins, &RetentionCommand::DryRun(args), &mut output).unwrap();
+        String::from_utf8(output).unwrap()
+    };
+
+    assert_ne!(plan("Flask"), plan("flask"));
 }

@@ -42,7 +42,7 @@ pub(super) fn write_invalid_blob_path(root: &std::path::Path) {
     std::fs::write(path, b"x").unwrap();
 }
 
-pub(super) use crate::tests::support::{plugins, plugins_without_retention};
+pub(super) use crate::tests::support::{plugins, plugins_without_names, plugins_without_retention};
 
 fn s3_config() -> S3StorageConfig {
     S3StorageConfig {

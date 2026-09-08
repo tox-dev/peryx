@@ -94,6 +94,7 @@ tracing-journald = "0.3"
 
 [dev-dependencies]
 async-trait.workspace = true
+peryx-driver = { workspace = true, features = ["test-doubles"] }
 peryx-search.workspace = true
 peryx-test-support.workspace = true
 tokio = { workspace = true, features = ["test-util"] }

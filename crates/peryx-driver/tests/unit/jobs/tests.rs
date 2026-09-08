@@ -24,7 +24,7 @@ use super::{
     PluginScheduledJob, RegisteredScheduledJob, Schedule, ScheduledJob, ScheduledJobFactory, SearchRebuildJob,
     run_schedules, scheduled_job, submit_maintenance,
 };
-use crate::serving::{CacheRefresher, IdleReclaimer, IntentFinalizer, RefreshSweep};
+use crate::serving::{CacheRefresher, IdleReclaimer, IntentFinalizer, RefreshSweep, SettlingFinalizer};
 use crate::state::{
     AppState, Clock, SINGLETON_LEASE_SECS, ServingState, SingletonAcquisition, SingletonLease, SingletonRelease,
     SingletonRenewal,
@@ -1106,6 +1106,33 @@ async fn test_idle_reclaim_reports_changed_resources() {
     assert_eq!(job.kind(), "idle_reclaim");
     assert_eq!(job.scope(), "example");
     assert_eq!(job.persist_as(), Some(JobKind::new("idle_reclaim").unwrap()));
+}
+
+/// The double a consumer registers to watch a runtime install a finalizer. Its two halves report one
+/// count, so the admitted job answers with what the retained half settled rather than with a constant
+/// a caller could not tell from an unregistered finalizer.
+#[tokio::test]
+async fn test_the_settling_double_reports_what_its_retained_half_settled() {
+    let (_dir, state) = serving();
+    let finalizer = Arc::new(SettlingFinalizer::default());
+
+    assert!(finalizer.finalize_retained(state.clone(), "resource", "intent").await);
+    assert!(finalizer.finalize_retained(state.clone(), "resource", "other").await);
+
+    assert_eq!(
+        IntentFinalizeJob {
+            ecosystem: Ecosystem::new("example"),
+            finalizer: finalizer.clone(),
+        }
+        .run(&context(state, CancellationToken::new()))
+        .await
+        .unwrap(),
+        JobRunOutcome::succeeded(JobReport {
+            processed: 2,
+            changed: 2,
+            ..JobReport::default()
+        })
+    );
 }
 
 #[tokio::test]
