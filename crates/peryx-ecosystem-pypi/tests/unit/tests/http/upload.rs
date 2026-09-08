@@ -2250,3 +2250,61 @@ async fn test_a_trickling_upload_body_reports_a_timeout() {
     assert_eq!(status, StatusCode::REQUEST_TIMEOUT);
     assert!(body.contains("below the throughput floor"), "{body}");
 }
+
+/// A finalized upload's result is replayable for a day, and once the reaper takes it the same bytes
+/// arriving again are a fresh operation that reaches the store and finds them already there. The audit
+/// trail then says so: a success carrying no reason, and a noop naming the duplicate.
+///
+/// The window is pinned from both sides, since a reaper that runs a second early prunes nothing and one
+/// that runs on time prunes exactly this record. Only that pair fixes where the day ends.
+#[tokio::test]
+async fn test_a_resend_after_the_replay_window_is_audited_as_a_noop() {
+    const PUBLISHED_AT: i64 = 1_000;
+    const A_DAY_LATER: i64 = PUBLISHED_AT + 24 * 3600;
+    let h = authority_harness().await;
+    let logs = LogCapture::default();
+    let _guard = logs.install();
+    h.clock.store(PUBLISHED_AT, Ordering::Relaxed);
+    upload_peryxpkg(&h.state, "/root/pypi/", &fixture_wheel()).await;
+
+    let early = h
+        .state
+        .serving
+        .meta
+        .prune_operation_outcomes(PUBLISHED_AT + 1, 100)
+        .unwrap();
+    let due = h
+        .state
+        .serving
+        .meta
+        .prune_operation_outcomes(A_DAY_LATER, 100)
+        .unwrap();
+    h.clock.store(A_DAY_LATER, Ordering::Relaxed);
+    upload_peryxpkg(&h.state, "/root/pypi/", &fixture_wheel()).await;
+
+    let audited = logs
+        .security_events()
+        .into_iter()
+        .filter(|event| field(event, "action") == Some("upload"))
+        .map(|event| {
+            (
+                field(&event, "result").map(str::to_owned),
+                field(&event, "reason").map(str::to_owned),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        (early, due, audited),
+        (
+            0,
+            1,
+            vec![
+                (Some("success".to_owned()), Some(String::new())),
+                (
+                    Some("noop".to_owned()),
+                    Some("same content already stored".to_owned())
+                ),
+            ]
+        )
+    );
+}
