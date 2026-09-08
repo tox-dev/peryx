@@ -25,7 +25,6 @@ use peryx_search::{
 
 const IDENTITY_TEXT_BYTES: usize = INDEXED_TEXT_BYTES / 4;
 const CORE_METADATA_TEXT_BYTES: usize = INDEXED_TEXT_BYTES / 2;
-const CATALOG_TEXT_BYTES: usize = INDEXED_TEXT_BYTES - IDENTITY_TEXT_BYTES - CORE_METADATA_TEXT_BYTES;
 
 /// Produces `PyPI` search documents for the neutral search index.
 #[derive(Debug, Clone, Copy, Default)]
@@ -554,9 +553,11 @@ fn search_text(
         push_metadata(&mut core_metadata, metadata, CORE_METADATA_TEXT_BYTES);
     }
 
-    let catalog_limit = CATALOG_TEXT_BYTES
-        + IDENTITY_TEXT_BYTES.saturating_sub(identity.len())
-        + CORE_METADATA_TEXT_BYTES.saturating_sub(core_metadata.len());
+    // Catalog text is bounded by the whole allowance rather than by a share of it. Working out what
+    // identity and core metadata left unspent computed the same bound the assembly below already
+    // applies: the three sections are joined under `INDEXED_TEXT_BYTES`, and separators make that
+    // join bind a byte or two sooner than any share arithmetic could. One cap, applied once.
+    let catalog_limit = INDEXED_TEXT_BYTES;
     let mut catalog = String::with_capacity(512);
     push_unique_text(
         &mut catalog,

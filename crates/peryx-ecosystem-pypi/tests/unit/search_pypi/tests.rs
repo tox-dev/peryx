@@ -1,21 +1,18 @@
-use super::{CATALOG_TEXT_BYTES, CORE_METADATA_TEXT_BYTES, IDENTITY_TEXT_BYTES, push_text};
+use super::{CORE_METADATA_TEXT_BYTES, IDENTITY_TEXT_BYTES, push_text};
 use peryx_search::INDEXED_TEXT_BYTES;
 use rstest::rstest;
 use std::collections::BTreeMap;
 
 use crate::{CoreMetadata, File, Provenance, Yanked};
 
-/// The three text budgets divide one indexed-document allowance between identity, core metadata and
-/// catalog text, so they have to add back up to it. Derived by arithmetic and read nowhere else,
-/// nothing else says what that arithmetic is for.
+/// Identity and core metadata each hold a bounded share of the one indexed-text allowance, and what
+/// they leave is what catalog text has to work with. Neither share may collapse, and the two together
+/// cannot claim the whole allowance, or a project would be indexed under its name and nothing else.
 #[test]
-fn test_the_text_budgets_divide_the_document_allowance() {
-    assert_eq!(
-        IDENTITY_TEXT_BYTES + CORE_METADATA_TEXT_BYTES + CATALOG_TEXT_BYTES,
-        INDEXED_TEXT_BYTES
-    );
+fn test_the_text_budgets_leave_room_for_catalog_text() {
+    assert!(IDENTITY_TEXT_BYTES + CORE_METADATA_TEXT_BYTES < INDEXED_TEXT_BYTES);
     assert!(
-        [IDENTITY_TEXT_BYTES, CORE_METADATA_TEXT_BYTES, CATALOG_TEXT_BYTES]
+        [IDENTITY_TEXT_BYTES, CORE_METADATA_TEXT_BYTES]
             .iter()
             .all(|share| *share * 8 >= INDEXED_TEXT_BYTES),
         "a share too small to hold a project name is not a share of anything"
