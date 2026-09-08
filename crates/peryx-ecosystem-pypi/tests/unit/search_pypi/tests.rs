@@ -1,6 +1,9 @@
 use super::{CATALOG_TEXT_BYTES, CORE_METADATA_TEXT_BYTES, IDENTITY_TEXT_BYTES, push_text};
 use peryx_search::INDEXED_TEXT_BYTES;
 use rstest::rstest;
+use std::collections::BTreeMap;
+
+use crate::{CoreMetadata, File, Provenance, Yanked};
 
 /// The three text budgets divide one indexed-document allowance between identity, core metadata and
 /// catalog text, so they have to add back up to it. Derived by arithmetic and read nowhere else,
@@ -68,4 +71,48 @@ fn test_a_project_record_key_names_one_segment(#[case] key: &str, #[case] expect
 #[case::no_filename("images/flask", None)]
 fn test_an_upload_key_names_a_project_and_a_file(#[case] key: &str, #[case] expected: Option<(&str, &str)>) {
     assert_eq!(super::upload_key(key, "images"), expected);
+}
+
+fn presented(url: &str, core_metadata: CoreMetadata) -> File {
+    File {
+        filename: "flask-1.0-py3-none-any.whl".to_owned(),
+        url: url.to_owned(),
+        hashes: BTreeMap::from([("sha256".to_owned(), "a".repeat(64))]),
+        requires_python: None,
+        size: Some(10),
+        upload_time: None,
+        yanked: Yanked::No,
+        core_metadata,
+        dist_info_metadata: CoreMetadata::Absent,
+        gpg_sig: None,
+        provenance: Provenance::Absent,
+    }
+}
+
+/// A sidecar peryx can verify is one that names its own digest. A claim of `Available` says a sidecar
+/// exists without saying which bytes it is, so it cannot be served and is dropped; hashes naming
+/// `sha256` are kept.
+#[rstest]
+#[case::names_its_digest(CoreMetadata::Hashes(BTreeMap::from([("sha256".to_owned(), "b".repeat(64))])), true)]
+#[case::names_no_digest(CoreMetadata::Available, false)]
+#[case::names_another_hash(CoreMetadata::Hashes(BTreeMap::from([("md5".to_owned(), "c".repeat(32))])), false)]
+fn test_present_file_keeps_only_metadata_that_names_its_digest(
+    #[case] metadata: CoreMetadata,
+    #[case] kept: bool,
+) {
+    let file = super::present_file(presented("https://files.example/flask.whl", metadata), "root/pypi");
+
+    assert_eq!(*file.metadata() != CoreMetadata::Absent, kept);
+}
+
+/// An upstream URL is rewritten to this node's own route so a reader fetches through peryx, and a URL
+/// that already points here is left as it is rather than routed a second time.
+#[rstest]
+#[case::upstream("https://files.example/flask-1.0-py3-none-any.whl", true)]
+#[case::already_local("/root/pypi/files/aaa/flask-1.0-py3-none-any.whl", false)]
+fn test_present_file_routes_only_a_url_that_points_away(#[case] url: &str, #[case] rewritten: bool) {
+    let file = super::present_file(presented(url, CoreMetadata::Absent), "root/pypi");
+
+    assert_eq!(file.url != url, rewritten, "url became {}", file.url);
+    assert!(file.url.starts_with('/'), "either way it points at this node: {}", file.url);
 }
