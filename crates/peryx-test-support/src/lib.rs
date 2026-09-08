@@ -1171,13 +1171,7 @@ impl Node {
         let held = self.listeners.hold()?;
         self.kill();
         self.listeners.restore(held);
-        let (child, process_events) = launch(
-            &self.config,
-            self.data.path(),
-            self.port,
-            &self.binary,
-            &self.listeners,
-        )?;
+        let (child, process_events) = launch(&self.config, self.data.path(), self.port, &self.binary, &self.listeners)?;
         self.process_id = child.id();
         self.child = Some(child);
         self.process_events = process_events;
