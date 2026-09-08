@@ -762,13 +762,15 @@ fn footprint_candidate(resource: &str, group: &str, artifact: &str, digest: &str
 #[case::artifact("artifact")]
 #[case::digest("digest")]
 fn test_footprint_counts_the_bytes_of_every_owned_field(#[case] longer: &str) {
+    // Distinct lengths above one, so scaling a field by its neighbour cannot leave the growth
+    // looking like a sum: with every field one byte long, multiplying by one moves nothing.
     let fields = |field: &str| match field {
-        "resource" => ("aaaaaaa", "b", "c", "d"),
-        "group" => ("a", "bbbbbbb", "c", "d"),
-        "artifact" => ("a", "b", "ccccccc", "d"),
-        _ => ("a", "b", "c", "ddddddd"),
+        "resource" => ("aaaaaaaa", "bbb", "cccc", "ddddd"),
+        "group" => ("aa", "bbbbbbbbb", "cccc", "ddddd"),
+        "artifact" => ("aa", "bbb", "cccccccccc", "ddddd"),
+        _ => ("aa", "bbb", "cccc", "ddddddddddd"),
     };
-    let base = super::footprint(&footprint_candidate("a", "b", "c", "d"));
+    let base = super::footprint(&footprint_candidate("aa", "bbb", "cccc", "ddddd"));
     let (resource, group, artifact, digest) = fields(longer);
 
     let grown = super::footprint(&footprint_candidate(resource, group, artifact, digest));
