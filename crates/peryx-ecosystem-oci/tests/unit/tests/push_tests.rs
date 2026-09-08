@@ -688,6 +688,32 @@ async fn test_mount_falls_back_to_a_session(#[case] present: bool, #[case] sourc
     );
 }
 
+/// The blob store is content addressed and shared across repositories, so a digest that exists at all
+/// is readable by digest from anywhere. Mounting it has to ask the further question of whether the
+/// repository named in `from` actually holds it, or a client could graft any blob in the deployment
+/// onto its own repository by naming a source that never had it.
+#[tokio::test]
+async fn test_a_mount_from_a_repository_without_the_blob_opens_a_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app) = hosted_writable(&dir, TOKEN);
+    let digest = upload_blob(&app, "store/private/app", b"private-layer").await;
+
+    let (status, headers, _) = send_body(
+        &app,
+        Method::POST,
+        &format!("/v2/store/target/app/blobs/uploads/?mount={digest}&from=store/source/app"),
+        &[("authorization", &auth(TOKEN))],
+        Vec::new(),
+    )
+    .await;
+
+    assert_eq!(
+        (status, headers.contains_key(header::LOCATION)),
+        (StatusCode::ACCEPTED, true),
+        "the mount must not be granted from a repository that never held the blob"
+    );
+}
+
 #[tokio::test]
 async fn test_manifest_put_by_tag_then_pull_and_list() {
     let dir = tempfile::tempdir().unwrap();

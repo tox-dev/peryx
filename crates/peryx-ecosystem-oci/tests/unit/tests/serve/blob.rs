@@ -143,6 +143,14 @@ async fn test_blob_pulls_through_then_serves_a_range() {
     assert_eq!(status, StatusCode::PARTIAL_CONTENT);
     assert_eq!(headers[header::CONTENT_RANGE], format!("bytes 0-3/{}", blob.len()));
     assert_eq!(got, &blob[..4]);
+
+    // A range that starts past the first byte is what separates the served length from the end
+    // offset. Every range asserted above begins at zero, where the two agree.
+    let (status, headers, got) = send_with(&app, Method::GET, &uri, &[("range", "bytes=2-5")]).await;
+    assert_eq!(status, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(headers[header::CONTENT_RANGE], format!("bytes 2-5/{}", blob.len()));
+    assert_eq!(headers[header::CONTENT_LENGTH], "4");
+    assert_eq!(got, &blob[2..6]);
 }
 
 #[rstest]
