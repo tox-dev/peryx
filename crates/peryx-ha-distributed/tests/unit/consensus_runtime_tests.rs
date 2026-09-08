@@ -2236,3 +2236,90 @@ async fn test_reacquiring_within_one_term_fences_the_previous_holder() {
         SingletonRenewal::Lost
     );
 }
+
+/// Promotion moves the quorum: replacing the leader leaves a configuration whose only voter is the
+/// node being promoted, so the commit under it waits on that node alone. A peer that answered long
+/// enough to catch up and then stopped used to leave the call waiting with nothing to wait on.
+#[tokio::test]
+async fn test_replacing_a_voter_gives_up_when_the_promoted_peer_stops_answering() {
+    let east_dir = tempfile::tempdir().unwrap();
+    let west_dir = tempfile::tempdir().unwrap();
+    let (east, _, east_served) = mounted_leader(&east_dir).await;
+    let west_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let west_id = voter_id("west");
+    let west = RaftNode::start(
+        west_id,
+        RaftConfig::default(),
+        "ownership",
+        PeerRaftNetworkFactory::new(west_id, TOKEN, Duration::from_secs(1)),
+        RaftLogStoreAdapter::new(RaftLogStore::open(west_dir.path().join("raft.redb")).unwrap()),
+        OwnershipStateMachine::default(),
+    )
+    .await
+    .unwrap();
+    let (rejected, _rejections) = tokio::sync::mpsc::unbounded_channel();
+    let gate = Arc::new(AppendGate::new(rejected));
+    let router = crate::raft::network::raft_rpc_router(
+        west_id,
+        TOKEN,
+        Arc::new(GatedRaftRpcHandler {
+            inner: west.rpc_handler(),
+            gate: Arc::clone(&gate),
+        }),
+    )
+    .unwrap();
+    let group = Arc::new(OwnershipGroup::new(east.clone(), DatacenterId("east".to_owned())));
+    let address = format!("http://{}/", west_listener.local_addr().unwrap());
+    let replacing = tokio::spawn({
+        let group = Arc::clone(&group);
+        async move {
+            group
+                .submit(
+                    None,
+                    ControlCommand::ReplaceVoter {
+                        remove: "east".to_owned(),
+                        datacenter: "west".to_owned(),
+                        address,
+                    },
+                )
+                .await
+        }
+    });
+    let mut east_metrics = east.metrics();
+    east_metrics
+        .wait_for(|metrics| {
+            metrics
+                .membership_config
+                .nodes()
+                .any(|(_, member)| member.datacenter.0 == "west")
+        })
+        .await
+        .unwrap();
+    let west_served = serve_node(west_listener, router);
+    // West answering carries it through catch-up and into the roster, and the roster naming it as a
+    // voter is the transition from the bounded catch-up to the commit under the new quorum. Closing the
+    // gate there leaves that commit nothing to wait on, where closing it earlier would have run out the
+    // catch-up bound instead and told us about the wrong wait.
+    east_metrics
+        .wait_for(|metrics| metrics.membership_config.voter_ids().any(|id| id == west_id))
+        .await
+        .unwrap();
+    gate.block();
+
+    // The bound is what this test is here to see fire, so it spends it. The commit's timer is created
+    // inside the submit, after this point, which is why the clock cannot be moved to it from here.
+    let refused = replacing.await.unwrap().unwrap_err();
+
+    assert_eq!(
+        refused.to_string(),
+        "consensus command did not commit: the voter change did not commit within 30 seconds"
+    );
+    // The commit stopped inside joint consensus, so the roster still names the voter being replaced
+    // rather than stranding the cluster on the node that stopped answering.
+    assert_eq!(
+        group.cluster_status().voters,
+        vec!["east".to_owned(), "west".to_owned()]
+    );
+    stop_mounted(&east, east_served).await;
+    west_served.abort();
+}

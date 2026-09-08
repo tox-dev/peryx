@@ -35,6 +35,17 @@ const MEMBERSHIP_PUBLICATION_TIMEOUT: Duration = Duration::from_secs(5);
 const AUDIT_RECOVERY_RETRY_DELAY: Duration = Duration::from_secs(1);
 const LEARNER_CATCH_UP_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How long a membership change may take to commit before the caller is told the cluster is
+/// unavailable.
+///
+/// Promotion moves the quorum: replacing the leader leaves a configuration whose only voter is the
+/// node being promoted, so a commit under it waits on that node alone and waits forever when it stops
+/// answering. Catch-up beside it replicates a whole log to a fresh learner inside this same span, and a
+/// commit is one append round to the new quorum, so a span that is generous for the heavier operation
+/// cannot be tight for this one. A replacement that spends both bounds still answers inside a minute,
+/// well within the per-test timeout the suite allows.
+const MEMBERSHIP_COMMIT_TIMEOUT: Duration = Duration::from_secs(30);
+
 pub struct ConsensusPlan {
     pub(super) local: VoterId,
     pub(super) home: DatacenterId,
@@ -931,7 +942,12 @@ impl OwnershipGroup {
         admit_member_identity(&metrics.membership_config, id, &node)?;
         let voters: BTreeSet<u64> = metrics.membership_config.voter_ids().collect();
         let voters = voter_names(&metrics.membership_config, &voters);
-        match self.node.raft().add_learner(id, node, false).await {
+        match commit_membership(
+            self.node.raft().add_learner(id, node, false),
+            &format!("datacenter {datacenter:?} did not join"),
+        )
+        .await?
+        {
             Ok(response) => Ok(committed_receipt(
                 &response.log_id,
                 CommandOutcome::Committed,
@@ -962,7 +978,12 @@ impl OwnershipGroup {
         // A promoted learner has node data, so both audit rosters can use datacenter names.
         let old_voters = voter_names(&metrics.membership_config, &current);
         let new_voters = voter_names(&metrics.membership_config, &planned);
-        match self.node.raft().change_membership(planned, false).await {
+        match commit_membership(
+            self.node.raft().change_membership(planned, false),
+            "the voter change did not commit",
+        )
+        .await?
+        {
             Ok(response) => Ok(committed_receipt(&response.log_id, outcome, old_voters, new_voters)),
             Err(error) => Err(map_write_error(&error)),
         }
@@ -1069,6 +1090,19 @@ fn map_ownership_read_error(error: RaftError<VoterId, CheckIsLeaderError<VoterId
 /// disagrees with committed metadata would commit nothing and still report success. Two IDs sharing one
 /// endpoint is worse: the leader opens a replication stream per ID to the same process, and one process
 /// then answers a vote under two voter identities.
+/// Bounds a membership commit, so a configuration whose quorum stops answering ends the call rather
+/// than holding it forever.
+async fn commit_membership<T, E>(
+    commit: impl Future<Output = Result<T, E>>,
+    what: &str,
+) -> Result<Result<T, E>, ControlError> {
+    tokio::time::timeout(MEMBERSHIP_COMMIT_TIMEOUT, commit)
+        .await
+        .map_err(|_| {
+            ControlError::Unavailable(format!("{what} within {} seconds", MEMBERSHIP_COMMIT_TIMEOUT.as_secs()))
+        })
+}
+
 fn admit_member_identity(
     membership: &StoredMembership<VoterId, PeryxNode>,
     id: VoterId,
