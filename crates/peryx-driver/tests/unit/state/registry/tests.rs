@@ -995,7 +995,9 @@ fn test_read_only_retry_interval_is_observable() {
     assert_eq!(state.serving.read_only_retry_after(), Some(Duration::from_secs(17)));
 }
 
-fn assert_search_invalidation_refreshes(invalidate: impl FnOnce(&ServingState)) {
+/// How many documents match the text written after the index was first published. One means the
+/// invalidation retired the stale document; zero means the index still holds what it had.
+fn matches_after_invalidation(invalidate: impl FnOnce(&ServingState)) -> usize {
     let (_dir, mut state) = state();
     let text = Arc::new(Mutex::new("old".to_owned()));
     state.register_lexicon(Ecosystem::new("indexed"), &Lexicon::NEUTRAL);
@@ -1015,28 +1017,47 @@ fn assert_search_invalidation_refreshes(invalidate: impl FnOnce(&ServingState)) 
 
     invalidate(&state.serving);
 
-    assert_eq!(
-        services
-            .search()
-            .search(
-                SearchParams {
-                    query: "new".to_owned(),
-                    ..SearchParams::default()
-                },
-                None,
-            )
-            .unwrap()
-            .total,
-        1
-    );
+    services
+        .search()
+        .search(
+            SearchParams {
+                query: "new".to_owned(),
+                ..SearchParams::default()
+            },
+            None,
+        )
+        .unwrap()
+        .total
 }
 
 #[test]
 fn test_search_epoch_refreshes_the_published_index() {
-    assert_search_invalidation_refreshes(ServingState::bump_search_epoch);
+    assert_eq!(matches_after_invalidation(ServingState::bump_search_epoch), 1);
 }
 
 #[test]
 fn test_scoped_search_invalidation_refreshes_the_resource() {
-    assert_search_invalidation_refreshes(|state| state.invalidate_search_resource("package"));
+    assert_eq!(
+        matches_after_invalidation(|state| state.invalidate_search_resource("package")),
+        1
+    );
+}
+
+/// A caller holding a change count retires the resource exactly as an unconditional caller does.
+#[test]
+fn test_a_counted_invalidation_refreshes_the_resource() {
+    assert_eq!(
+        matches_after_invalidation(|state| state.invalidate_search_resource_for_changes("package", 2)),
+        1
+    );
+}
+
+/// A caller that changed nothing leaves the published index alone, so the search still answers with
+/// what it held. Re-deriving it would cost a rebuild to reach the state it already agreed with.
+#[test]
+fn test_an_invalidation_for_no_changes_leaves_the_index_alone() {
+    assert_eq!(
+        matches_after_invalidation(|state| state.invalidate_search_resource_for_changes("package", 0)),
+        0
+    );
 }

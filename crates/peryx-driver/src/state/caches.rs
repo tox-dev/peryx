@@ -48,6 +48,18 @@ impl ServingState {
         self.search.invalidate_resource(resource);
     }
 
+    /// Retire `resource`'s search documents when `changes` says something about it actually changed.
+    ///
+    /// A caller that changed nothing has nothing to retire, and asking anyway costs the index a
+    /// re-derivation to reach the state it already held. The count rides in rather than being tested
+    /// at the call site so that every caller holding one answers the question the same way.
+    pub fn invalidate_search_resource_for_changes(&self, resource: &str, changes: usize) {
+        if changes == 0 {
+            return;
+        }
+        self.invalidate_search_resource(resource);
+    }
+
     /// The highest metadata serial a replica may expose and the view holding it back, from the
     /// authoritative serial and every required view's durable frontier. Metadata above it stays
     /// hidden until the lagging view catches up, so a read never mixes new metadata with a stale view.

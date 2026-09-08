@@ -543,7 +543,8 @@ pub(in crate::registry) async fn delete_manifest(
                         Some(digest),
                     )
                 })?;
-                (digest.is_some(), digest.is_some())
+                // Trashing a tag retires exactly the one named.
+                (digest.is_some(), usize::from(digest.is_some()))
             }
             Reference::Digest(digest) => {
                 let webhook = prepare_webhook(
@@ -556,17 +557,15 @@ pub(in crate::registry) async fn delete_manifest(
                     Some(digest),
                 );
                 let removed = store::trash_manifest(&state.meta, &index.name, &repo, digest, &info, journal, webhook)?;
-                (removed.is_some(), removed.is_some_and(|tags| tags > 0))
+                (removed.is_some(), removed.unwrap_or(0))
             }
         })
     })
     .await?;
-    let EpochCommit::Committed((removed, search_changed)) = mutation else {
+    let EpochCommit::Committed((removed, retired_tags)) = mutation else {
         return Ok(authority_moved());
     };
-    if search_changed {
-        state.invalidate_search_resource(&repo);
-    }
+    state.invalidate_search_resource_for_changes(&repo, retired_tags);
     Ok(if removed {
         peryx_events::webhook::notify(state.as_ref());
         accepted()
@@ -650,9 +649,7 @@ pub(in crate::registry) async fn restore_manifest(
         }
         EpochCommit::Fenced => return Ok(authority_moved()),
     };
-    if restored > 0 {
-        state.invalidate_search_resource(&repo);
-    }
+    state.invalidate_search_resource_for_changes(&repo, restored);
     peryx_events::webhook::notify(state.as_ref());
     let mut builder = Response::builder()
         .status(StatusCode::ACCEPTED)
