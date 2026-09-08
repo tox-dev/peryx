@@ -1,6 +1,7 @@
 use std::str::FromStr as _;
 
 use peryx_identity::{ArtifactDigest, RevocationReason, UserId};
+use rstest::rstest;
 
 use crate::meta::checkpoint_transfer::{CheckpointCursor, CheckpointInstallError, CheckpointStageError};
 use crate::meta::fault::initialized;
@@ -470,6 +471,47 @@ fn test_bytes_that_end_inside_an_entry_are_refused_as_malformed() {
 
     assert!(
         matches!(refused, CheckpointInstallError::Malformed { .. }),
+        "{refused:?}"
+    );
+}
+
+/// One entry of the canonical encoding: a tag, then a length-prefixed key and value.
+fn entry(tag: u8, key: &[u8], value: &[u8]) -> Vec<u8> {
+    let mut frame = vec![tag];
+    for field in [key, value] {
+        frame.extend_from_slice(&(field.len() as u64).to_le_bytes());
+        frame.extend_from_slice(field);
+    }
+    frame
+}
+
+/// The encoder writes every key as UTF-8 and every revocation as its own JSON, so an entry that
+/// arrives otherwise is damage. Refusing the install is what keeps a row from landing under a key the
+/// reader guessed at, and a revocation the reader could not parse from being dropped silently.
+#[rstest]
+#[case::key_is_not_utf8(entry(b'r', &[0xff, 0xfe], b"row"))]
+#[case::revocation_is_not_json(entry(b'v', b"sha256:abc", b"not json"))]
+fn test_a_damaged_entry_is_refused_as_malformed(#[case] frame: Vec<u8>) {
+    let replica = store();
+    let manifest = CheckpointManifest {
+        identity: identity(),
+        serial: 1,
+        rows: 0,
+        revocations: 0,
+        blobs: 0,
+        bytes: frame.len() as u64,
+        digest: String::new(),
+    };
+    replica.begin_checkpoint_transfer(&manifest).unwrap();
+    replica
+        .stage_checkpoint_chunk(&manifest, 0, &frame, "done")
+        .unwrap()
+        .unwrap();
+
+    let refused = replica.install_staged_checkpoint(CURSOR_KEY, CURSOR_VALUE).unwrap_err();
+
+    assert!(
+        matches!(refused, CheckpointInstallError::Malformed { offset: 0 }),
         "{refused:?}"
     );
 }
