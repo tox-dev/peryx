@@ -406,3 +406,169 @@ async fn test_readiness_reports_an_unhealthy_blob_store() {
 
     assert_eq!(get(&state, "/+ready", false).await.0, StatusCode::SERVICE_UNAVAILABLE);
 }
+
+/// Two indexes share the `example`/`hosted` bucket, so every neutral family here is a sum of two
+/// distinct non-zero contributions. A merge that assigns instead of accumulating, or that drops
+/// either side, lands on a different number rather than on the same one.
+#[tokio::test]
+async fn test_metrics_sums_every_neutral_family_over_a_shared_bucket() {
+    let (_dir, state) = app().await;
+    seed_a_second_contributor(&state);
+
+    let (status, body) = get(&state, "/metrics", false).await;
+
+    assert_eq!(status, StatusCode::OK);
+    let hosted = "ecosystem=\"example\",role=\"hosted\"";
+    let cached = "ecosystem=\"example\",role=\"cached\"";
+    let expected = [
+        format!("peryx_pages_served_total{{{hosted}}} 3"),
+        format!("peryx_artifacts_served_total{{{hosted}}} 4"),
+        format!("peryx_artifacts_served_bytes_total{{{hosted}}} 160"),
+        format!("peryx_artifacts_rejected_total{{{hosted}}} 6"),
+        format!("peryx_artifacts_uploaded_total{{{hosted}}} 5"),
+        format!("peryx_upstream_refreshes_total{{{cached}}} 3"),
+        format!("peryx_upstream_pages_changed_total{{{cached}}} 2"),
+        format!("peryx_stale_pages_served_total{{{cached}}} 4"),
+        format!("peryx_upstream_errors_total{{{cached}}} 5"),
+    ];
+    let present: Vec<_> = expected.iter().filter(|line| body.contains(line.as_str())).collect();
+    assert_eq!(present, expected.iter().collect::<Vec<_>>(), "rendered body:\n{body}");
+}
+
+/// The per-ecosystem summary carries the same accumulation and its own name. Pinning the whole
+/// array catches a field dropped from the summary as well as a total that stopped adding up.
+#[tokio::test]
+async fn test_status_summarizes_every_counter_and_names_each_ecosystem() {
+    let (_dir, state) = app().await;
+    seed_a_second_contributor(&state);
+
+    let (status, body) = get(&state, "/+status", true).await;
+    let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["by_ecosystem"],
+        serde_json::json!([
+            {"bytes": 0, "ecosystem": "bare", "families": {}, "pages": 0, "reads": 0, "rejected": 0, "writes": 0},
+            {
+                "bytes": 160, "ecosystem": "example", "families": {"ecosystem": 5},
+                "pages": 3, "reads": 4, "rejected": 6, "writes": 5,
+            },
+            {"bytes": 0, "ecosystem": "missing", "families": {}, "pages": 0, "reads": 0, "rejected": 0, "writes": 0},
+        ])
+    );
+}
+
+/// `hosted-a` already carries one page, one write, five ecosystem events and three extension
+/// events. This gives `hosted-b` a different non-zero count for each of those, and fills the
+/// cached-only families, so no total can be read off a single index.
+fn seed_a_second_contributor(state: &Arc<AppState>) {
+    let metrics = &state.serving.metrics;
+    metrics.record(Observation::Read {
+        repository: "hosted-a".to_owned(),
+        resource: "resource".to_owned(),
+        artifact: "artifact".to_owned(),
+        group: None,
+        source: None,
+        bytes: 100,
+    });
+    metrics.record(Observation::BlobRejected {
+        repository: "hosted-a".to_owned(),
+        resource: "resource".to_owned(),
+    });
+    for _ in 0..2 {
+        metrics.record(Observation::Page {
+            repository: "hosted-b".to_owned(),
+            resource: "resource".to_owned(),
+        });
+    }
+    for _ in 0..3 {
+        metrics.record(Observation::Read {
+            repository: "hosted-b".to_owned(),
+            resource: "resource".to_owned(),
+            artifact: "artifact".to_owned(),
+            group: None,
+            source: None,
+            bytes: 20,
+        });
+    }
+    for _ in 0..4 {
+        metrics.record(Observation::Write {
+            repository: "hosted-b".to_owned(),
+            resource: "resource".to_owned(),
+        });
+    }
+    for _ in 0..5 {
+        metrics.record(Observation::BlobRejected {
+            repository: "hosted-b".to_owned(),
+            resource: "resource".to_owned(),
+        });
+    }
+    for changed in [true, true, false] {
+        metrics.record(Observation::Refresh {
+            repository: "cached".to_owned(),
+            resource: "resource".to_owned(),
+            changed,
+        });
+    }
+    for _ in 0..4 {
+        metrics.record(Observation::StaleServed {
+            repository: "cached".to_owned(),
+            resource: "resource".to_owned(),
+        });
+    }
+    for _ in 0..5 {
+        metrics.record(Observation::UpstreamError {
+            repository: "cached".to_owned(),
+            resource: "resource".to_owned(),
+        });
+    }
+    metrics.flush().unwrap();
+}
+
+/// A driver's families belong to its own ecosystem and to the roles it declares. Pinning the whole
+/// set catches a family written for an ecosystem no driver owns, and one written for a role it does
+/// not support: `ecosystem` is hosted-only, so a cached row for it is wrong.
+#[tokio::test]
+async fn test_metrics_writes_a_driver_family_only_for_its_ecosystem_and_roles() {
+    let (_dir, state) = app().await;
+    seed_a_second_contributor(&state);
+
+    let (status, body) = get(&state, "/metrics", false).await;
+    let mut families: Vec<_> = body.lines().filter(|line| line.starts_with("peryx_example_")).collect();
+    families.sort_unstable();
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        families,
+        [
+            "peryx_example_ecosystem_total{ecosystem=\"bare\",role=\"hosted\"} 0",
+            "peryx_example_ecosystem_total{ecosystem=\"example\",role=\"hosted\"} 5",
+            "peryx_example_extension_total{ecosystem=\"bare\",role=\"hosted\"} 0",
+            "peryx_example_extension_total{ecosystem=\"example\",role=\"cached\"} 0",
+            "peryx_example_extension_total{ecosystem=\"example\",role=\"hosted\"} 7",
+        ]
+    );
+}
+
+/// Drilling into one repository reports that repository. `hosted-a` and `hosted-b` carry different
+/// counts for every field, so a filter that selects the others lands on different numbers.
+#[tokio::test]
+async fn test_stats_reports_the_requested_repository_rather_than_its_neighbours() {
+    let (_dir, state) = app().await;
+    seed_a_second_contributor(&state);
+
+    let (status, body) = get(&state, "/+stats?repository=hosted-a", true).await;
+    let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["totals"],
+        serde_json::json!({
+            "base": {"bytes": 100, "pages": 1, "reads": 1, "rejected": 1},
+            "cached": {"changed": 0, "refreshes": 0, "stale_served": 0, "upstream_errors": 0},
+            "ecosystem": {"ecosystem": 5},
+            "hosted": {"extension_events": 3, "writes": 1},
+        })
+    );
+}
