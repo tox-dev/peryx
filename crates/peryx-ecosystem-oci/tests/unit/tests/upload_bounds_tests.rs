@@ -57,7 +57,7 @@ async fn open_session(app: &axum::Router, chunk: &[u8]) -> (String, u64) {
     (location.rsplit('/').next().unwrap().to_owned(), chunk.len() as u64)
 }
 
-async fn patch_stream(app: axum::Router, session: &str, body: Body) -> StatusCode {
+async fn patch_stream(app: axum::Router, session: &str, body: Body) -> (StatusCode, String) {
     let request = Request::builder()
         .method(Method::PATCH)
         .uri(format!("/v2/store/app/blobs/uploads/{session}"))
@@ -66,8 +66,8 @@ async fn patch_stream(app: axum::Router, session: &str, body: Body) -> StatusCod
         .unwrap();
     let response = app.oneshot(request).await.unwrap();
     let status = response.status();
-    response.into_body().collect().await.unwrap();
-    status
+    let read = response.into_body().collect().await.unwrap().to_bytes();
+    (status, String::from_utf8_lossy(&read).into_owned())
 }
 
 /// A client that stops sending mid-chunk gives up its handler, and the session it was appending to
@@ -82,14 +82,18 @@ async fn test_a_stalled_chunk_leaves_a_session_the_client_can_resume() {
     let stalling = stream::once(async { Ok::<_, std::io::Error>(Bytes::from_static(b"second")) })
         .chain(stream::once(std::future::pending()));
 
-    let stalled = patch_stream(app.clone(), &session, Body::from_stream(stalling)).await;
+    let (stalled, refusal) = patch_stream(app.clone(), &session, Body::from_stream(stalling)).await;
     let landed = state.serving.meta.upload_record(&session).unwrap();
-    let resumed = patch_stream(app.clone(), &session, Body::from("third")).await;
+    let (resumed, _) = patch_stream(app.clone(), &session, Body::from("third")).await;
 
     assert_eq!(
         stalled,
-        StatusCode::BAD_GATEWAY,
+        StatusCode::REQUEST_TIMEOUT,
         "a cut chunk must not read as accepted"
+    );
+    assert!(
+        refusal.contains("sent nothing for") && refusal.contains(&format!("resumable from byte {}", opened + 6)),
+        "the client is told it stopped sending and where to pick up: {refusal}",
     );
     assert_eq!(
         landed.map(|record| record.offset),
@@ -123,7 +127,7 @@ async fn test_a_slow_chunk_that_keeps_arriving_is_not_cut() {
     });
 
     let started = tokio::time::Instant::now();
-    let status = patch_stream(app.clone(), &session, Body::from_stream(paying)).await;
+    let (status, _) = patch_stream(app.clone(), &session, Body::from_stream(paying)).await;
     let elapsed = started.elapsed();
 
     assert_eq!(status, StatusCode::ACCEPTED);
@@ -177,7 +181,7 @@ async fn test_a_stalled_chunk_delays_the_reclaim_pass_by_one_bound() {
     });
     let appending = tokio::spawn({
         let (app, session) = (app.clone(), stalled_session.clone());
-        async move { patch_stream(app, &session, Body::from_stream(stalling)).await }
+        async move { patch_stream(app, &session, Body::from_stream(stalling)).await.0 }
     });
     holding.await.unwrap();
 
@@ -185,7 +189,7 @@ async fn test_a_stalled_chunk_delays_the_reclaim_pass_by_one_bound() {
     let reclaimed = reclaim(&state).await;
     let waited = started.elapsed();
 
-    assert_eq!(appending.await.unwrap(), StatusCode::BAD_GATEWAY);
+    assert_eq!(appending.await.unwrap(), StatusCode::REQUEST_TIMEOUT);
     assert_eq!(reclaimed, 2, "the stalled session and the one queued behind it both go");
     assert!(
         (STALL_BOUND..STALL_BOUND * 2).contains(&waited),
@@ -210,11 +214,16 @@ async fn test_a_trickling_chunk_is_cut_by_the_throughput_floor() {
         Ok::<_, std::io::Error>(frame)
     });
 
-    let cut = patch_stream(app.clone(), &session, Body::from_stream(trickle)).await;
+    let (cut, refusal) = patch_stream(app.clone(), &session, Body::from_stream(trickle)).await;
     let stopped_at = state.serving.meta.upload_record(&session).unwrap().map(|r| r.offset);
-    let resumed = patch_stream(app.clone(), &session, Body::from("rest")).await;
+    let (resumed, _) = patch_stream(app.clone(), &session, Body::from("rest")).await;
 
-    assert_eq!(cut, StatusCode::BAD_GATEWAY, "a trickle must not read as accepted");
+    assert_eq!(cut, StatusCode::REQUEST_TIMEOUT, "a trickle must not read as accepted");
+    assert!(
+        refusal.contains("below the throughput floor")
+            && refusal.contains(&format!("resumable from byte {}", opened + landed)),
+        "the client is told it fell short of the floor and where to pick up: {refusal}",
+    );
     assert_eq!(
         stopped_at,
         Some(opened + landed),

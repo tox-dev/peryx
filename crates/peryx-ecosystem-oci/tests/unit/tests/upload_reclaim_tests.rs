@@ -279,3 +279,20 @@ async fn test_an_append_after_a_cancel_answers_unknown_upload() {
     assert!(body_has_code(&body, "BLOB_UPLOAD_UNKNOWN"));
     assert_eq!(state.serving.meta.upload_record(&session).unwrap(), None);
 }
+
+/// A backend that refuses the chunk is peryx failing rather than the client, so an append keeps the
+/// gateway status that a body the client stopped sending no longer takes.
+#[cfg(unix)]
+#[tokio::test]
+async fn test_a_chunk_the_backend_refuses_is_a_gateway_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_state, app, _now) = registry(&dir);
+    let session = open_session(&app, b"a-layer").await;
+    let stage = dir.path().join("blobs/uploads").join(&session);
+
+    set_mode(&stage, 0o444);
+    let (status, body) = patch_stream(app.clone(), session, Body::from("more")).await;
+    set_mode(&stage, 0o644);
+
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{body:?}");
+}
