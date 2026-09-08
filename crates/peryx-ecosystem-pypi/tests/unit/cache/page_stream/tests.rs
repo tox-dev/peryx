@@ -148,3 +148,37 @@ async fn test_revalidation_keeps_the_stale_page_when_upstream_is_unparseable() {
 fn test_the_json_preflight_reads_sixty_four_kibibytes() {
     assert_eq!(super::JSON_META_PREFLIGHT_BYTES, 65_536);
 }
+
+fn context_holding(local_versions: Vec<String>) -> crate::stream::PageContext {
+    crate::stream::page_context(
+        "root/pypi",
+        "demo",
+        peryx_policy::Policy::default(),
+        Vec::new(),
+        local_versions,
+        &std::collections::BTreeMap::new(),
+    )
+}
+
+/// An upstream that has nothing to say leaves peryx serving whatever it holds of its own. A project
+/// with no local files and no local versions has nothing, so the page is genuinely absent; holding
+/// either one is enough to answer from the local side instead. Requiring both to be missing is what
+/// separates those, and nothing exercised a project holding versions but no files.
+#[test]
+fn test_a_page_with_nothing_local_is_absent_rather_than_fallible() {
+    assert!(matches!(
+        missing_upstream_outcome(&context_holding(Vec::new())),
+        PageOutcome::NotFound
+    ));
+}
+
+#[test]
+fn test_a_page_holding_only_versions_still_falls_back_to_them() {
+    assert!(
+        matches!(
+            missing_upstream_outcome(&context_holding(vec!["1.0".to_owned()])),
+            PageOutcome::Fallback
+        ),
+        "a version peryx holds is something to serve, so the page is not absent"
+    );
+}
