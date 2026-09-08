@@ -345,3 +345,28 @@ async fn test_gather_ignores_a_receipt_from_a_non_member() {
     assert_eq!(outcome, ended(GatherEnd::TimedOut, &[]));
     assert_eq!(ack.independent_receipts(), 1);
 }
+
+/// The loopback source stands in for a peer across the gather tests, so the two things a caller reads
+/// from it have to hold: the node it answers as, and the rounds it stays silent for. A gather reaches
+/// the same verdict whether a source answers on the first round or the third, which is why neither is
+/// pinned by the outcomes those tests assert.
+#[tokio::test]
+async fn test_a_loopback_source_names_its_node_and_holds_back_the_rounds_it_was_given() {
+    let source = LoopbackReceiptSource::holding("east-1", digest(), 7).available_after(2);
+    let request = ReceiptRequest {
+        digest: &digest(),
+        size: 7,
+    };
+
+    let named = source.node().to_owned();
+    let rounds = [
+        source.fetch_receipt(request).await.unwrap(),
+        source.fetch_receipt(request).await.unwrap(),
+        source.fetch_receipt(request).await.unwrap(),
+    ];
+
+    assert_eq!(
+        (named, rounds.map(|round| round.map(|receipt| receipt.node))),
+        ("east-1".to_owned(), [None, None, Some("east-1".to_owned())])
+    );
+}
